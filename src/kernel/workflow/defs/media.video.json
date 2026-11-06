@@ -1,0 +1,343 @@
+{
+  "schema_version": "0.2.0",
+  "id": "media.video",
+  "name": "media.video",
+  "description": "Sample uniformly spaced frames and extract the audio track of a video, catalogued in a media manifest.",
+  "trigger": {
+    "type": "manual",
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "obj_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "obj_id": {
+          "type": "string"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "uniform"
+          ],
+          "default": "uniform"
+        },
+        "max_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 16
+        },
+        "frame_max_edge": {
+          "type": "integer",
+          "minimum": 128,
+          "maximum": 2048,
+          "default": 1280
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_duration_ms": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 14400000,
+              "default": 3600000
+            }
+          }
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "obj_id",
+        "content_id",
+        "size"
+      ],
+      "properties": {
+        "obj_id": {
+          "type": "string"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "uniform"
+          ],
+          "default": "uniform"
+        },
+        "max_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 16
+        },
+        "frame_max_edge": {
+          "type": "integer",
+          "minimum": 128,
+          "maximum": 2048,
+          "default": 1280
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_duration_ms": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 14400000,
+              "default": 3600000
+            }
+          }
+        },
+        "content_id": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "capabilities",
+      "name": "Capabilities",
+      "executor": "/tool/media.capabilities@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {},
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "revision"
+        ],
+        "properties": {
+          "revision": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "object"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "probe",
+      "name": "Probe",
+      "executor": "/tool/media.probe@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${trigger.output.content_id}",
+        "family": "video"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "kind",
+          "size"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "pages": {
+            "type": "integer"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "has_audio": {
+            "type": "boolean"
+          },
+          "has_video": {
+            "type": "boolean"
+          },
+          "format": {
+            "type": "string"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "extract_frames",
+      "name": "Extract frames",
+      "executor": "/tool/media.extract_frames@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${trigger.output.content_id}",
+        "strategy": "${trigger.output.strategy}",
+        "max_frames": "${trigger.output.max_frames}",
+        "frame_max_edge": "${trigger.output.frame_max_edge}",
+        "max_duration_ms": "${trigger.output.limits.max_duration_ms}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "frames",
+          "duration_ms"
+        ],
+        "properties": {
+          "frames": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "duration_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        },
+        "timeout": "600s"
+      }
+    },
+    {
+      "id": "extract_audio",
+      "name": "Extract audio",
+      "executor": "/tool/media.extract_audio@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${trigger.output.content_id}",
+        "max_duration_ms": "${trigger.output.limits.max_duration_ms}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "audio_obj_id": {
+            "type": "string"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        },
+        "timeout": "600s"
+      }
+    },
+    {
+      "id": "build_catalog",
+      "name": "Build catalog",
+      "executor": "/tool/media.build_catalog@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "family": "video",
+        "source_content_id": "${trigger.output.content_id}",
+        "derived_content_id": null,
+        "probe": "${probe.output}",
+        "frames": "${extract_frames.output}",
+        "audio": "${extract_audio.output}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "manifest_obj_id",
+          "summary",
+          "complete"
+        ],
+        "properties": {
+          "manifest_obj_id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "object"
+          },
+          "complete": {
+            "type": "boolean"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "capabilities",
+      "to": "probe"
+    },
+    {
+      "from": "probe",
+      "to": "extract_frames"
+    },
+    {
+      "from": "extract_frames",
+      "to": "extract_audio"
+    },
+    {
+      "from": "extract_audio",
+      "to": "build_catalog"
+    },
+    {
+      "from": "build_catalog"
+    }
+  ],
+  "guards": {
+    "max_duration": "30m"
+  }
+}

@@ -57,7 +57,7 @@ async fn start() -> Server {
 async fn start_with(tune: impl FnOnce(&mut ServerConfig)) -> Server {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("exports");
-    for d in ["home/alice/docs", "home/bob/share/private", "home/bob/share/pub", "srv/library"] {
+    for d in ["home/alice/docs", "home/bob/share/private", "home/bob/share/pub", "srv/library", "srv/publish/site"] {
         std::fs::create_dir_all(data.join(d)).unwrap();
     }
     std::fs::write(data.join("home/alice/docs/a.txt"), b"alice").unwrap();
@@ -536,4 +536,64 @@ async fn dfs_objects_follow_the_path_acl() {
     let (status, profile) = get("?type=profile", "alice").await;
     assert_eq!(status, 200, "{profile}");
     name_lib::ObjectProfile::from_value(profile).unwrap().validate().unwrap();
+}
+
+/// `public.<zone>` serves `srv/publish` whatever the ACL says, so the ACL may not claim otherwise.
+#[tokio::test]
+async fn srv_publish_cannot_be_narrowed() {
+    let s = start().await;
+    let owner = s.client(Some("owner")).await;
+    let public = json!([{"principal": "public", "level": "read"}]);
+    let r = owner.set_acl("/srv/publish", true, public.clone()).await;
+    assert_eq!(r["ok"], true, "{r}");
+    let staff = json!([{"principal": "user:alice", "level": "read"}]);
+    for (path, inherit, entries) in [
+        ("/srv/publish", true, staff.clone()),
+        ("/srv/publish", false, json!([])),
+        ("/srv/publish", true, json!([])),
+        ("/srv/publish/site", false, staff.clone()),
+    ] {
+        assert_eq!(owner.code("set_acl", json!({"at": {"path": path}, "args": {"inherit": inherit, "entries": entries}})).await, "INVALID_ARGUMENT", "{path}");
+    }
+    // Adding to what the public can read is fine, and so is every other path.
+    assert_eq!(owner.set_acl("/srv/publish/site", true, staff.clone()).await["ok"], true);
+    assert_eq!(owner.set_acl("/srv/publish", false, json!([{"principal": "public", "level": "read"}, {"principal": "user:alice", "level": "write"}])).await["ok"], true);
+    assert_eq!(owner.set_acl("/srv/library", false, staff).await["ok"], true);
+}
+
+/// `/nfs/v1/read` shares the Desktop origin: what is in a file never runs there (D24).
+#[tokio::test]
+async fn read_never_runs_content_on_the_origin() {
+    let s = start().await;
+    std::fs::write(s.data.join("home/bob/share/x.html"), b"<script>alert(1)</script>").unwrap();
+    std::fs::write(s.data.join("home/bob/share/x.svg"), b"<svg onload='alert(1)'/>").unwrap();
+    std::fs::write(s.data.join("home/bob/share/x.png"), b"png").unwrap();
+    std::fs::write(s.data.join("home/bob/share/x.pdf"), b"pdf").unwrap();
+    let owner = s.client(Some("owner")).await;
+    let auth = format!("Bearer {}", token("owner"));
+    let get = |name: &'static str, query: &'static str| {
+        let (base, auth) = (s.base.clone(), auth.clone());
+        let owner = &owner;
+        async move {
+            let id = owner.node_id(&format!("/home/bob/share/{name}")).await;
+            reqwest::Client::new().get(format!("{base}/nfs/v1/read/{id}{query}")).header("Authorization", auth).send().await.unwrap()
+        }
+    };
+    let html = get("x.html", "").await;
+    assert_eq!(html.headers()["content-type"], "application/octet-stream");
+    assert!(html.headers()["content-disposition"].to_str().unwrap().starts_with("attachment"));
+    assert_eq!(html.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(html.headers()["referrer-policy"], "no-referrer");
+    assert!(html.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox"));
+    assert_eq!(html.bytes().await.unwrap().as_ref(), b"<script>alert(1)</script>", "the bytes are still there for a preview to read");
+    let svg = get("x.svg", "").await;
+    assert_eq!(svg.headers()["content-type"], "image/svg+xml");
+    assert!(svg.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox"));
+    let png = get("x.png", "").await;
+    assert_eq!(png.headers()["content-type"], "image/png");
+    assert!(png.headers()["content-disposition"].to_str().unwrap().starts_with("inline"));
+    let saved = get("x.png", "?download=1").await;
+    assert!(saved.headers()["content-disposition"].to_str().unwrap().starts_with("attachment"));
+    let pdf = get("x.pdf", "").await;
+    assert!(!pdf.headers()["content-security-policy"].to_str().unwrap().contains("sandbox"), "a browser would refuse to show it");
 }

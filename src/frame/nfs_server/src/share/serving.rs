@@ -301,12 +301,6 @@ pub async fn download_inner(
     serve(state, token, inner, q, headers).await
 }
 
-/// Inline only for types a browser renders without running content.
-fn inline_type(mime: &str) -> bool {
-    let major = mime.split('/').next().unwrap_or("");
-    matches!(major, "image" | "video" | "audio") || mime == "application/pdf" || mime == "text/plain"
-}
-
 async fn serve(state: SharedState, token: String, inner: String, q: HashMap<String, String>, headers: HeaderMap) -> Response {
     let Some(link) = resolve_link(&state, &token) else { return not_found() };
     if !unlocked(&state, &link, &headers) {
@@ -324,14 +318,6 @@ async fn serve(state: SharedState, token: String, inner: String, q: HashMap<Stri
     }
     let mime = file.meta.get("mime").and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| snapshot::base_mime(&file.name));
     // HTML and other active types are never rendered on the share origin.
-    let renders = inline_type(&mime);
-    let content_type = if mime.starts_with("text/") && renders {
-        format!("{mime}; charset=utf-8")
-    } else if renders || !mime.contains("html") && !mime.contains("xml") && !mime.contains("javascript") {
-        mime.clone()
-    } else {
-        "application/octet-stream".to_string()
-    };
     let len = file.size;
     let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
     let (start, end, status) = match crate::server::parse_range(range, len) {
@@ -355,27 +341,19 @@ async fn serve(state: SharedState, token: String, inner: String, q: HashMap<Stri
             }
         }
     };
-    let encoded = percent_encoding::utf8_percent_encode(&file.name, percent_encoding::NON_ALPHANUMERIC).to_string();
-    let disposition = if want_download || !renders { "attachment" } else { "inline" };
     let mut builder = Response::builder()
         .status(status)
-        .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, content_len)
-        .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CONTENT_DISPOSITION, format!("{disposition}; filename*=UTF-8''{encoded}"))
-        .header(
-            header::CONTENT_SECURITY_POLICY,
-            // Browsers refuse to show PDFs in a sandboxed document.
-            if mime == "application/pdf" { "default-src 'none'; object-src 'self'" } else { "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'" },
-        );
+        .header(header::ACCEPT_RANGES, "bytes");
     if status == StatusCode::PARTIAL_CONTENT {
         builder = builder.header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", start, end, len));
     }
     let mut r = builder.body(body).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    let policy = ndn_lib::apply_content_policy(r.headers_mut(), &mime, Some(&file.name), want_download);
     common_headers(r.headers_mut());
     let inner_path = (!segs.is_empty()).then(|| segs.join("/"));
     // Previews on the page are inline fetches: only saved copies count as downloads.
-    record(&state, &link, &headers, "download", status, content_len, inner_path, start == 0 && disposition == "attachment");
+    record(&state, &link, &headers, "download", status, content_len, inner_path, start == 0 && (want_download || !policy.inline));
     r
 }
 

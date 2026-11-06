@@ -1,0 +1,144 @@
+{
+  "schema_version": "0.2.0",
+  "id": "wf-dv-human-actions",
+  "name": "DV Human Actions",
+  "description": "A draft waits for a person: approve publishes it, modify publishes their version, reject discards it.",
+  "trigger": {
+    "type": "manual"
+  },
+  "steps": [
+    {
+      "id": "draft",
+      "name": "Draft",
+      "type": "autonomous",
+      "executor": "/tool/test.echo@1",
+      "idempotent": false,
+      "skippable": false,
+      "input": {
+        "value": "draft"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "echo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "echo"
+        ]
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "review",
+      "name": "Review",
+      "type": "human_confirm",
+      "skippable": false,
+      "subject_ref": "${draft.output}",
+      "prompt": "Publish this draft?",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected"
+            ]
+          },
+          "final_subject": {
+            "type": "object",
+            "properties": {
+              "echo": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "echo"
+            ]
+          },
+          "feedback": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      }
+    },
+    {
+      "id": "publish",
+      "name": "Publish",
+      "type": "autonomous",
+      "executor": "/tool/test.echo@1",
+      "idempotent": false,
+      "skippable": false,
+      "input": {
+        "value": "${review.output.final_subject}"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "discard",
+      "name": "Discard",
+      "type": "autonomous",
+      "executor": "/tool/test.echo@1",
+      "idempotent": false,
+      "skippable": false,
+      "input": {
+        "value": "discarded"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "type": "branch",
+      "id": "decision",
+      "on": "${review.output.decision}",
+      "paths": {
+        "approved": "publish",
+        "rejected": "discard"
+      },
+      "max_iterations": 1
+    }
+  ],
+  "edges": [
+    {
+      "from": "draft",
+      "to": "review"
+    },
+    {
+      "from": "review",
+      "to": "decision"
+    },
+    {
+      "from": "publish"
+    },
+    {
+      "from": "discard"
+    }
+  ]
+}

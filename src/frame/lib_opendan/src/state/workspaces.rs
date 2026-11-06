@@ -325,7 +325,7 @@ impl FsWorkspaces {
     /// switch), or an enabled node runtime.
     fn runtime_available(&self, runtime_id: &str) -> Result<bool> {
         let registered = self.runtime_record(runtime_id)?;
-        if is_native_runtime(runtime_id) {
+        if is_private_runtime(runtime_id) {
             if registered.is_some_and(|r| r.availability != RuntimeAvailability::Available) {
                 return Ok(false);
             }
@@ -335,14 +335,12 @@ impl FsWorkspaces {
                 .join(".local-unavailable.json")
                 .exists());
         }
-        Ok(registered.is_some_and(|r| {
-            r.kind.is_node() && r.exec.is_some() && r.availability == RuntimeAvailability::Available
-        }))
+        Ok(registered.is_some_and(|r| r.connector.is_node() && r.usable()))
     }
 
     fn unavailable(&self, runtime_id: &str) -> OpenDanError {
         match self.runtime_record(runtime_id).ok().flatten() {
-            None if !is_native_runtime(runtime_id) => invalid(
+            None if !is_private_runtime(runtime_id) => invalid(
                 "runtime_unavailable",
                 format!("{runtime_id}: not a runtime of this agent (see `runtime list`)"),
             ),
@@ -361,7 +359,7 @@ impl FsWorkspaces {
         if !self.runtime_available(runtime_id)? {
             return Err(self.unavailable(runtime_id));
         }
-        if is_native_runtime(runtime_id) {
+        if is_private_runtime(runtime_id) {
             return Ok(Target::Local);
         }
         let record = self
@@ -369,7 +367,7 @@ impl FsWorkspaces {
             .ok_or_else(|| self.unavailable(runtime_id))?;
         let ops_dir = self.layout.workspaces_dir().join(".remote_ops");
         match crate::runtime::open_node_target(&record, &ops_dir).await {
-            Ok(target) => Ok(Target::Node(target)),
+            Ok(target) => Ok(Target::Node(target.into_inner())),
             Err(e) => Err(invalid("runtime_unavailable", format!("{runtime_id}: {e}"))),
         }
     }
@@ -1125,7 +1123,7 @@ impl WorkspaceManager for FsWorkspaces {
         _who: &str,
     ) -> Result<Vec<WorkspaceRecord>> {
         let _lock = self.lock()?;
-        if !is_native_runtime(runtime_id) {
+        if !is_private_runtime(runtime_id) {
             return Err(invalid("unsupported_runtime", runtime_id));
         }
         let marker = self.layout.workspaces_dir().join(".local-unavailable.json");
@@ -1145,13 +1143,13 @@ impl WorkspaceManager for FsWorkspaces {
         }
         let mut records = self.all()?;
         for record in &mut records {
-            if is_native_runtime(&record.location.runtime_id) {
+            if is_private_runtime(&record.location.runtime_id) {
                 self.observe(record).await?;
             }
         }
         Ok(records
             .into_iter()
-            .filter(|r| is_native_runtime(&r.location.runtime_id))
+            .filter(|r| is_private_runtime(&r.location.runtime_id))
             .collect())
     }
 }

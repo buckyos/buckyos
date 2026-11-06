@@ -708,14 +708,6 @@ fn encode_tools(request: &LlmChatInvokeRequest) -> ProtocolResultValue<Value> {
 fn encode_response_format(format: &LlmResponseFormat) -> ProtocolResultValue<Value> {
     match format.format_type {
         LlmResponseFormatType::Text => Ok(json!({"type": "text"})),
-        LlmResponseFormatType::Json | LlmResponseFormatType::JsonObject => {
-            if format.json_schema.is_some() {
-                return Err(ProtocolError::invalid_request(
-                    "json_object response format must not include json_schema",
-                ));
-            }
-            Ok(json!({"type": "json_object"}))
-        }
         LlmResponseFormatType::JsonSchema => {
             let schema = format.json_schema.as_ref().ok_or_else(|| {
                 ProtocolError::invalid_request("json_schema response format requires a schema")

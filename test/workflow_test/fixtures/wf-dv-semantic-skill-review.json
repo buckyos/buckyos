@@ -2,7 +2,9 @@
   "schema_version": "0.2.0",
   "id": "wf-dv-semantic-skill-review",
   "name": "DV Semantic Skill Review",
-  "trigger": { "type": "manual" },
+  "trigger": {
+    "type": "manual"
+  },
   "steps": [
     {
       "id": "caption",
@@ -11,19 +13,26 @@
       "executor": "service::aicc.vision.caption",
       "idempotent": true,
       "input": {
-        "resources": [
-          {
-            "kind": "url",
-            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
-            "mime_hint": "image/jpeg"
-          }
-        ],
-        "model": "vision.caption"
+        "exact_model": "route:vision.caption",
+        "image": {
+          "kind": "url",
+          "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+          "mime_hint": "image/jpeg"
+        }
       },
       "output_schema": {
         "type": "object",
-        "properties": { "text": { "type": "string" } },
-        "required": ["text"]
+        "properties": {
+          "captions": {
+            "type": "array"
+          },
+          "usage": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "captions"
+        ]
       }
     },
     {
@@ -33,18 +42,29 @@
       "executor": "/skill/image-quality-review",
       "idempotent": true,
       "input": {
-        "caption": "${caption.output.text}",
+        "caption": "${caption.output.captions}",
         "policy": "product_listing"
       },
       "output_schema": {
         "type": "object",
-        "properties": { "text": { "type": "string" } },
-        "required": ["text"]
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
       }
     }
   ],
   "edges": [
-    { "from": "caption", "to": "semantic_review" },
-    { "from": "semantic_review" }
+    {
+      "from": "caption",
+      "to": "semantic_review"
+    },
+    {
+      "from": "semantic_review"
+    }
   ]
 }

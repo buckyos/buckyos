@@ -163,6 +163,33 @@ fn public_link(link: Option<ShareLink>) -> Option<ShareLink> {
     Some(ShareLink { url: url.to_string(), title, summary: link.summary.trim().chars().take(280).collect() })
 }
 
+fn composed_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["share", "reason", "text", "tags", "link"],
+        "properties": {
+            "share": {"type": "boolean"},
+            "reason": {"type": "string"},
+            "text": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "link": {"anyOf": [
+                {"type": "null"},
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["url", "title", "summary"],
+                    "properties": {
+                        "url": {"type": "string"},
+                        "title": {"type": "string"},
+                        "summary": {"type": "string"}
+                    }
+                }
+            ]}
+        }
+    })
+}
+
 fn parse_composed(text: &str) -> Result<Composed> {
     let trimmed = text.trim();
     let body = trimmed
@@ -192,7 +219,7 @@ pub async fn compose(
         temperature: None,
         max_completion_tokens: Some(1024),
         force_json: true,
-        json_schema: None,
+        json_schema: Some(composed_schema()),
         provider_options: None,
         disable_capabilities: vec![
             buckyos_api::features::WEB_SEARCH.to_string(),

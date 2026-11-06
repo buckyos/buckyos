@@ -4,7 +4,7 @@ import { Copy, X } from 'lucide-react'
 import type {
   AnalysisIssue,
   WorkflowGraphNode,
-} from '../mock/types'
+} from '../types'
 
 interface Props {
   node: WorkflowGraphNode

@@ -80,7 +80,7 @@ Zone 的 Agent 也是发表者（2026-10-23）：`users/<owner>/agents/<agent_id
 ### 2.4 入口与键
 
 - 入口 URL：`https://<zone>/home/<user>/<namespace>/@/<key>`，user 为用户名（`[A-Za-z0-9_.-]`，`~zone` 保留给汇总列表、不能作入口），namespace 为 `feed`（正文、评论、引用转发）、`reactions`（点赞、点踩、公开收藏、普通转发）、`follows`（关注声明）。键字符集 `[A-Za-z0-9._-]{1,128}`。DID 形式的入口（E08）只接受名字系统解析出 `owner == publisher` 的内容 DID。
-- 引用形式（2026-10-29，[key url.md](../key%20url.md) §6 / 裁决 D10、D11）：入口、发表流、投递入口、Follow 等跨 Zone 持久引用一律是 `https://<zone>/home/<user>/...`，它也是这些对象的默认 Object URL；本 Zone 内 `obj://homestation/home/<user>/...`（含 `obj://homestation/home/~zone`）是同一对象的别名，只在输入时归一化为 https 形式（`evaluation::path_to_entry`），不写入签名内容。旧的 `cyfs://<zone>/home/...` 形式不再解析。读者证明 `aud` 为 `https://<被读 zone>/home`。
+- 引用形式（2026-10-29，[key url.md](../key%20url.md) §6 / 裁决 D10、D11）：入口、发表流、投递入口、Follow 等跨 Zone 持久引用一律是 `https://<zone>/home/<user>/...`，它也是这些对象的默认 Object URL；本 Zone 内 `obj://homestation/home/<user>/...`（含 `obj://homestation/home/~zone`）是同一对象的别名，只在输入时归一化为 https 形式（`evaluation::path_to_entry`），不写入签名内容。旧的 `cyfs://<zone>/home/...` 形式不再解析。
 - DID Object Provider：`/kapi/homestation/obj/home/<user>[/feed[/@/<key>]|/inbox]`（`src/obj_provider.rs`），Card 的 `alsoKnownAs` 依次为 https 默认 URL、Provider 端点与 `obj://` 别名，Profile 在 `?type=profile`；读取走 `/home/<user>/...` 协议路径的同一读者规则（会话令牌）。inbox 投递动作仍是 CYFS dispatch 的 `PUT https://<zone>/home/<user>/inbox`，Provider 只暴露其 target。
 - 发表时的键：正文 `p-<随机>`、评论 `c-…`、引用转发 `q-…`、分享抓取 `clip-…`。
 - **互动键摘要**（§21）：`<type>-` + `hex(sha256("homestation/reaction/v1\n<互动者 DID>\n<目标 ObjId>\n<type>"))` 的前 16 字节；关注键 `f-` + `hex(sha256("homestation/follow/v1\n<关注者>\n<被关注者>"))` 前 16 字节。
@@ -112,10 +112,9 @@ Zone → HTTP 源站：`https://<zone>`，可在服务 settings 的 `peers` 或�
 | 方式 | 头 | 读者 |
 | --- | --- | --- |
 | 无 | — | 匿名，只得公开条目 |
-| 读者证明 | `Authorization: DID <JWT>` | 其他 Zone 的用户 |
-| 会话令牌 | `Authorization: Bearer <session token>` 或 `?access=<token>` | 同 Zone 用户；读自己的主页得到所有者视图 |
+| 会话令牌 | `Authorization: Bearer <session token>` 或 `?access=<token>` | 同 Zone 用户，读自己的主页得到所有者视图；其他 Zone 的用户持目标 Zone 签发的 External 会话 |
 
-读者证明是自签 JWT：`{ "iss": "<读者 DID>", "aud": "https://<被读 zone>/home", "iat", "exp" (≤ iat+600), "jti" }`，签名者须被 `iss` 授权（含 Zone 托管）。证明面向整个 Zone，读同一 Zone 内任何用户的主页都可用。HomeStation 代表某个用户 Pull 时以该用户为 `iss`、用 Zone 的签名者签发。**实现选择**：架构 §21 的“读者身份认证方式”在接入 CYFS 跨 Zone 身份机制前采用这一格式；证明在有效期内可以重放，只用于幂等读取。
+其他 Zone 的用户持目标 Zone verify-hub 签发的 External 会话读取，读者是会话主体的 DID。HomeStation 代表某个用户 Pull 时，经 `CrossZoneClient` 以该用户身份换取会话（`pull.rs`）；门户预览则匿名读取。其他 `Authorization` 方案会被拒绝（`auth.rs` 的 `reader_from_request`）。
 
 ### 3.3 HTTP 路径
 
@@ -137,13 +136,14 @@ Zone 级：
 | `GET /home/<user>/feed?mode=changes&since=<cursor>[&limit=&objects=1]` | 变化读取：`since` 之后的 Head 变化（含受众变化，`kind=audience`）；游标早于压缩点时 `resync: true` |
 | `GET /home/<user>/<feed\|reactions\|follows>/@/<key>` | 条目当前 Head（JWT）；不存在与无权读取同为 404 |
 | `GET /home/<user>/objects/<ObjId>` | 对象（JWT 或 canonical JSON）；受限条目附 `hs-audience: restricted` |
-| `GET /home/<user>/objects/<cyfile ObjId>/content` | 单 chunk 文件的内容，供媒体元素使用 |
+| `GET /home/<user>/objects/<cyfile ObjId>/content` | 文件内容（Range），供媒体元素使用。这个路由和 Desktop 同源，活动类型不会在这里执行：只有图片、音视频、PDF、纯文本内联，其余 `application/octet-stream` 加下载，都带 `nosniff`、CSP、`no-referrer` |
+| `GET /home/<user>/objects/<cyfile ObjId>/ref` | 文件在 nfs-server 数据面上的绑定和只读令牌。令牌是持有即可读的链接，所以只对公开条目和 owner 发放；受限条目的读者走 `/content`，每次按受众判定 |
 | `GET /home/<user>/chunks/<ChunkId>` | chunk 数据，接收方按 ChunkId 校验 |
 | `GET /home/<user>/comments?target=<ObjId>[&type=]` | 作者视图（目标是该用户的版本）或收录者视图（收录模式） |
 | `GET /home/<user>/profile` | 门户资料：DID、用户名、名称、简介、`avatar`（Message Center 中本人联系人的公开头像，可无）、发表流 / 投递入口、关注者数、作品精选（按读者过滤） |
 | `GET /home/<user>/index/recent?since=&limit=` | 收录者最近收到的公开发表（冷启动） |
 | `PUT /home/<user>/inbox` | CYFS dispatch 投递（§3.4） |
-| `GET /home/<user>/inbox?dispatch-status=<ObjId>` | dispatch 状态查询 |
+| `GET /home/<user>/inbox?dispatch-status=<ObjId>` | dispatch 状态查询：要求认证，只回答投递方和 owner，其他人一律 `unknown-dispatch` |
 
 列表响应不签名，条目是签名的 Head。展示 / 变化读取的 `objects` 是“随附”：读者有权读的对象及其部件（ObjId → JWT/JSON），接收方逐个按 ObjId 校验（§5.5）。条目的 `restricted` 与 `tier`（`public`/`followers`/`friends`/`group`/`dids`）是不签名的附带信息。
 
@@ -213,7 +213,7 @@ Push 对象（§13.1）：
 | 关注补看 | `candidates.list {cursor, includeRead, limit}`、`candidates.open {objId}`、`candidates.admit {objId}` |
 | 条目与资源 | `item.get {objId, reader?}`、`item.cards {objIds}`、`item.wrapped_body`、`item.retry_resources`、`item.fetch {objId, from}` |
 | 评论 | `comments.list {objId, view: local\|author\|collector:<did>, type}`、`comments.set_listing {target, commentId, listed}`、`comments.sync` |
-| 发表流 | `published.list {owner, reader, kind, cursor, limit}`（自己的条目带 `zoneFeed: true` 表示已列入汇总列表）、`published.changes {reader, after}`、`published.entries`（Head 调试）。owner 不是自己时远程读取对方发表流：读者为自己时带读者证明，否则匿名读取；以第三人的身份读取无法实现，按匿名返回并标 `readerApproximated: true`；非所有者读者的卡片不含 `personal`/`reading` |
+| 发表流 | `published.list {owner, reader, kind, cursor, limit}`（自己的条目带 `zoneFeed: true` 表示已列入汇总列表）、`published.changes {reader, after}`、`published.entries`（Head 调试）。owner 不是自己时远程读取对方发表流：读者为自己时带跨 Zone 会话，否则匿名读取；以第三人的身份读取无法实现，按匿名返回并标 `readerApproximated: true`；非所有者读者的卡片不含 `personal`/`reading` |
 | Zone 汇总列表 | `zone.set_listing {entry, listed}`：列入或移出自己的一条公开正文 / 引用转发；无写权限 `homestation.zoneFeed.notWriter`，非公开 `homestation.validation.zoneFeedPublic`，已撤回 `homestation.zoneFeed.withdrawn` |
 | 互动 | `interact.like / bookmark {public} / read_later / dislike / repost {objId, on}`、`interact.quote {objId, text, audience}`、`interact.comment {objId, text}` |
 | 条目 | `entry.withdraw`、`entry.edit {entry, text}`、`entry.set_audience {entry, audience}`、`entry.retry_delivery` |
@@ -232,7 +232,9 @@ Push 对象（§13.1）：
 
 ### 5.1 受众（§4.5）
 
-受众只存在于 `published.audience`。判定：匿名只看公开；关注者受众给已收到有效关注声明的人（好友也算，好友默认互相关注）；好友（`friend_state = friend`）与分组（用户 tag）按读取时的 Message Center 关系（缓存 30 秒，联系人变更事件到达时作废）；指定 DID 按名单；owner 看全部。点赞默认公开；目标受限时，评论、点赞、公开收藏的受众固定为原作者，且不投递收录者；受限对象不能普通转发或引用转发（`repost_blocked:restricted`）。受众调整不签发 Head，只追加 `audience` 变化；扩大后新读者在变化读取里看到该条目，并收到一次 Push。
+受众只存在于 `published.audience`。判定：匿名只看公开；关注者受众给已收到有效关注声明的人（好友也算，好友默认互相关注）；好友（`friend_state = friend`）与分组（用户 tag）按读取时的 Message Center 关系（缓存 30 秒，联系人变更事件到达时作废）；指定 DID 按名单；owner 看全部。点赞默认公开；目标受限时，评论、点赞、公开收藏的受众固定为原作者，且不投递收录者；受限对象不能普通转发或引用转发（`repost_blocked:restricted`）。受众调整不签发 Head，只追加 `audience` 变化；扩大后新读者在变化读取里看到该条目，并收到一次 Push。公开收窄为受限时，撤销已发给读者的 `/ref` 令牌。
+
+公开条目的文件附件同时在 `https://<zone>/ndn/<file_id>` 匿名可读（应用对象桶设计 §4.6.5）：`publish_version` 时经 `bucket.provide_public` 提供（`requested_by` 是 owner，要求 owner 持有整棵对象树；Station 自己产生的字节如长文正文、网页快照没有这个证明，只留在 `/objects/<id>/content`），条目撤回或受众收窄时 `bucket.withdraw_public`，启动时 `reconcile_public_provision` 对账。
 
 ### 5.2 待读管线（§8）
 
@@ -367,7 +369,7 @@ Desktop 前端：`pnpm exec playwright test tests/e2e/pages/homestation.spec.ts`
 
 | 文件 | 场景 |
 | --- | --- |
-| `network.rs` | 按读者身份的展示读取与读者证明（A66、A69、A32）；投递准入、披露、幂等、Push/Pull 合并（A01、A04、A05）；版本、撤回、旧 Head 重放、先 Head 后对象、同 seq 冲突（A17、A23、A24、A26、A30）；入口命名空间与内容规则（A46–A48）；他人门户的匿名预览、空闲时变化计数不动（A43） |
+| `network.rs` | 按读者身份的展示读取（A66、A69、A32）；投递准入、披露、幂等、Push/Pull 合并（A01、A04、A05）；版本、撤回、旧 Head 重放、先 Head 后对象、同 seq 冲突（A17、A23、A24、A26、A30）；入口命名空间与内容规则（A46–A48）；他人门户的匿名预览、空闲时变化计数不动（A43） |
 | `interactions.rs` | 评论与点赞到达作者与收录者、多视图合并与去重、作者移除可观测、取消点赞（A12–A16、A21–A23、A27）；受限内容的转发与评论（A70、A71）；私有 / 公开收藏、普通转发与引用转发（A11、A28、A40、A49、A74） |
 | `reading.rs` | 媒体按 ObjId 准备与校验、发布幂等、AI 标签过滤与修正、搜索、不看（A02、A06、A35、A41、A44、A51–A53、A56）；关注补看（A37–A39）；收录者冷启动（A18）；变化读取与压缩重同步（A67、A68） |
 | `services.rs` | 评价服务的身份 / 文件 / 路径 / InnerPath 目标、复用与刷新、异步任务、共享（A57–A62）；修正作用域（A64、A65）；消费证明（A19、A20）；权限边界（A25、A43） |
@@ -380,7 +382,7 @@ Desktop 前端：`pnpm exec playwright test tests/e2e/pages/homestation.spec.ts`
 | 项 | 现状 |
 | --- | --- |
 | Head 字段 | 增加 `publisher`（§2.3） |
-| 读者身份 | 自签读者证明（§3.2），待对齐 CYFS 跨 Zone 身份机制 |
+| 读者身份 | 跨 Zone 登录换取的 External 会话（§3.2） |
 | 我关注的人 | `homestation.following` 是 `sources` 的投影，My Network 只读显示；别处对该 tag 的改动会在下次对账时按 `sources` 改回。HomeStation 自己写 tag 也会产生联系人变更事件，多触发一轮不写任何东西的好友同步与对账（已知） |
 | Zone 托管签名 | 服务模式用 OOD 设备密钥替 Zone 的所有用户签名；验证方接受发表者所在 Zone 的设备（已知风险：Zone 可以替其用户签名）。用户自己的密钥（`security/<user>/key`）未使用 |
 | Agent | 已支持为发表者（§1）；Agent 没有自己的 Message Center 联系人，`friends`/`group` 受众对它不可用，只发 `public`；跨 Zone 的 Agent 关注未验证 |

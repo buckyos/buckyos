@@ -43,6 +43,79 @@
       ],
       "type": "string"
     },
+    "ExecutorOp": {
+      "oneOf": [
+        {
+          "enum": [
+            "open_stream",
+            "describe",
+            "exec",
+            "read",
+            "write",
+            "edit",
+            "computer_inspect",
+            "computer_observe",
+            "computer_act",
+            "query",
+            "cancel"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Create a directory (and missing parents inside the roots).",
+          "enum": [
+            "mkdir"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Whether a path is a file, a directory or missing.",
+          "enum": [
+            "stat"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Move a regular file inside the roots (atomic commit of a transfer).",
+          "enum": [
+            "rename"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Delete a regular file inside the roots.",
+          "enum": [
+            "remove"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "InstallGrant": {
+      "description": "What an Agent may install on a runtime.",
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Commands a skill brings, into the Agent's own bin.",
+          "enum": [
+            "agent_bin"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "System-wide packages (ExtTools, package managers).",
+          "enum": [
+            "system"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "RuntimeAvailability": {
       "enum": [
         "available",
@@ -59,37 +132,43 @@
       ],
       "type": "string"
     },
-    "RuntimeKind": {
-      "oneOf": [
-        {
-          "enum": [
-            "container",
-            "remote_ssh"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "The owner's desktop host (`host`): a node's embedded executor.",
-          "enum": [
-            "host_native"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Another node's embedded executor.",
-          "enum": [
-            "remote_node"
-          ],
-          "type": "string"
-        }
-      ]
-    },
-    "RuntimePlatform": {
-      "description": "The platform of a runtime: `os` is `linux | macos | windows`, `shell` the program name commands are written for (`bash`, `pwsh`, …).",
+    "RuntimeCaps": {
+      "description": "What the machine can do: learned when the runtime is checked, except `baseline`, which its registrar declares.",
       "properties": {
         "arch": {
           "default": "",
           "type": "string"
+        },
+        "baseline": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RuntimeBaseline"
+            }
+          ],
+          "default": "standard",
+          "description": "Declared (Q5): decides the sessions' cmd_skills and what their prompts say."
+        },
+        "baseline_check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BaselineCheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "desktop": {
+          "default": false,
+          "description": "A desktop session the executor can observe or control.",
+          "type": "boolean"
+        },
+        "identity_mode": {
+          "description": "`current_user` / `switch_user`: how a node executes.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "os": {
           "default": "",
@@ -98,8 +177,239 @@
         "shell": {
           "default": "",
           "type": "string"
+        },
+        "tools_check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ToolsCheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
+      "type": "object"
+    },
+    "RuntimeConnector": {
+      "description": "How a runtime is reached: the only type tag of a record.",
+      "oneOf": [
+        {
+          "description": "This process's own environment.",
+          "properties": {
+            "type": {
+              "enum": [
+                "native"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A Node Executor: a node's embedded one (`node_did`) or a standalone executor (`executor_id`, form B), logged in under `profile_id`.",
+          "properties": {
+            "executor_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "node_did": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "profile_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "node_executor"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "profile_id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "identity_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "port": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "ssh"
+              ],
+              "type": "string"
+            },
+            "user": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "host",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RuntimeGrant": {
+      "description": "What this agent may do on the runtime: the node policy narrowed by the owner, with the daemon URL's term. `roots` is the executor's boundary (empty: unlimited); the agent's directories follow the directory convention (`<owner home>/agents/<agent_id>` on the private runtime, `<account home>/.opendan/<agent_id>` on a node) and are not recorded.",
+      "properties": {
+        "computer": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ComputerAccess"
+            }
+          ],
+          "default": "none"
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "install": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InstallGrant"
+            }
+          ],
+          "default": "none"
+        },
+        "ops": {
+          "default": [],
+          "description": "Executor operations granted; empty before the executor was asked.",
+          "items": {
+            "$ref": "#/definitions/ExecutorOp"
+          },
+          "type": "array"
+        },
+        "roots": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Long-lived workspaces may be created there.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "RuntimeLifecycle": {
+      "description": "`retired`: withdrawn, expired or unregistered; kept for its history, never a candidate.",
+      "enum": [
+        "active",
+        "retired"
+      ],
+      "type": "string"
+    },
+    "RuntimeUsage": {
+      "description": "How the agent has used a runtime (the \"runtimes used\" view).",
+      "properties": {
+        "last_session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_used_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessions_total": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "skill_commands": {
+          "default": [],
+          "description": "Skill commands installed there.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspaces": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "ToolsCheck": {
+      "description": "Commands beyond the standard tools verified to exist on a runtime (`check --commands`, skill installation).",
+      "properties": {
+        "checked_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "missing": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "present": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "checked_at_ms"
+      ],
       "type": "object"
     }
   },
@@ -107,34 +417,24 @@
     "availability": {
       "$ref": "#/definitions/RuntimeAvailability"
     },
-    "baseline": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/RuntimeBaseline"
-        }
-      ],
-      "description": "The environment its registrar declares (Q5): decides the sessions' cmd_skills and what their prompts say."
-    },
-    "baseline_check": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/BaselineCheck"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "description": "The last check of its standard tools; a hint that never changes `baseline`."
-    },
     "builtin": {
       "default": false,
       "description": "Created by the host; cannot be unregistered.",
       "type": "boolean"
     },
-    "capabilities": {
-      "default": null,
-      "description": "`{tools, network, os}` as far as known."
+    "caps": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RuntimeCaps"
+        }
+      ],
+      "default": {
+        "arch": "",
+        "baseline": "standard",
+        "desktop": false,
+        "os": "",
+        "shell": ""
+      }
     },
     "checked_at_ms": {
       "default": null,
@@ -145,30 +445,37 @@
         "null"
       ]
     },
-    "computer": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/ComputerAccess"
-        }
-      ],
-      "default": "none",
-      "description": "ComputerUse the owner granted the agent on this runtime."
+    "connector": {
+      "$ref": "#/definitions/RuntimeConnector"
     },
     "default": {
       "default": false,
-      "description": "The session-runtime new sessions take unless one is named or inherited (the owner's `default_runtime_id`); exactly one record carries it.",
+      "description": "The owner's default runtime (`default_runtime_id`): the machine the owner means by \"my computer\" and where the owner's absolute paths are read; never where a chat runs.",
       "type": "boolean"
     },
-    "description": {
+    "desc": {
       "default": "",
+      "description": "One sentence for people and the model.",
       "type": "string"
     },
-    "exec": {
-      "default": null,
-      "description": "How the runtime layer reaches it (`agent_tool` RuntimeConfig); `None`: there is no executor for it yet."
+    "enabled": {
+      "default": true,
+      "description": "Switched on in the owner's settings (a disabled runtime keeps its record and says why it is unavailable).",
+      "type": "boolean"
     },
-    "kind": {
-      "$ref": "#/definitions/RuntimeKind"
+    "grant": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RuntimeGrant"
+        }
+      ],
+      "default": {
+        "computer": "none",
+        "install": "none",
+        "ops": [],
+        "roots": [],
+        "workspace": false
+      }
     },
     "last_error": {
       "default": null,
@@ -177,21 +484,16 @@
         "null"
       ]
     },
-    "name": {
-      "type": "string"
-    },
-    "platform": {
+    "lifecycle": {
       "allOf": [
         {
-          "$ref": "#/definitions/RuntimePlatform"
+          "$ref": "#/definitions/RuntimeLifecycle"
         }
       ],
-      "default": {
-        "arch": "",
-        "os": "",
-        "shell": ""
-      },
-      "description": "Learned from the runtime when it is checked."
+      "default": "active"
+    },
+    "name": {
+      "type": "string"
     },
     "registered_at_ms": {
       "format": "uint64",
@@ -206,14 +508,6 @@
       "minimum": 0.0,
       "type": "integer"
     },
-    "roots": {
-      "default": [],
-      "description": "Where workspaces are best placed in it.",
-      "items": {
-        "type": "string"
-      },
-      "type": "array"
-    },
     "runtime_host": {
       "description": "`native_host_id()` of the host that registered it.",
       "type": "string"
@@ -226,6 +520,18 @@
       "minimum": 0.0,
       "type": "integer"
     },
+    "usage": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RuntimeUsage"
+        }
+      ],
+      "default": {
+        "sessions_total": 0,
+        "skill_commands": [],
+        "workspaces": 0
+      }
+    },
     "version": {
       "format": "uint32",
       "minimum": 0.0,
@@ -234,8 +540,7 @@
   },
   "required": [
     "availability",
-    "baseline",
-    "kind",
+    "connector",
     "name",
     "registered_at_ms",
     "registered_by",

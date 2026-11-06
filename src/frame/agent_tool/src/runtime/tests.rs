@@ -148,6 +148,7 @@ fn config_merge_resolves_source_paths_and_resets_kind() {
         workdir: Some("/home/devtest/ws".into()),
         remote_node: Some(RemoteNodeConfig {
             node_did: Some("did:web:ood1.test.buckyos.io".into()),
+            executor_id: None,
             profile_id: Some("dev".into()),
         }),
         ..Default::default()

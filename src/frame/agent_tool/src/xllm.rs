@@ -5253,6 +5253,12 @@ async fn bootstrap_appclient_session(
     Ok(())
 }
 
+/// `force_json` without a schema: any JSON object. A bare `{"type": "object"}`
+/// gets `{}` from Gemini, so further properties are allowed explicitly.
+fn any_json_object_schema() -> Value {
+    json!({"type": "object", "additionalProperties": true})
+}
+
 /// AICC → `LlmClient` 适配（buckyos Provider）。
 pub struct AiccLlmClient {
     session_token: Option<String>,
@@ -5360,18 +5366,16 @@ impl AiccLlmClient {
         for feature in disable_capabilities {
             disable.set_feature_disabled(&feature);
         }
-        let response_format = if force_json {
-            match json_schema {
-                Some(schema) => Some(LlmResponseFormat::json_schema(
-                    Some("llm_response".to_string()),
-                    schema,
-                    None,
-                )),
-                None => Some(LlmResponseFormat::json_object()),
+        let response_format = force_json.then(|| match json_schema {
+            Some(schema) => {
+                LlmResponseFormat::json_schema(Some("llm_response".to_string()), schema, None)
             }
-        } else {
-            None
-        };
+            None => LlmResponseFormat::json_schema(
+                Some("llm_response".to_string()),
+                any_json_object_schema(),
+                Some(false),
+            ),
+        });
         let request = LlmChatInvokeRequest {
             trace_id,
             execution_mode: AiccExecutionMode::Immediate,
@@ -5711,12 +5715,9 @@ impl LlmClient for OpenAiLlmClient {
             body["tool_choice"] = json!("auto");
         }
         if req.force_json {
-            body["response_format"] = match req.json_schema {
-                Some(schema) => {
-                    json!({"type":"json_schema","json_schema":{"name":"xllm_result","schema":schema}})
-                }
-                None => json!({"type":"json_object"}),
-            };
+            let schema = req.json_schema.unwrap_or_else(any_json_object_schema);
+            body["response_format"] =
+                json!({"type":"json_schema","json_schema":{"name":"xllm_result","schema":schema}});
         }
         if let Some(Value::Object(extra)) = req.provider_options {
             for (k, v) in extra {
@@ -9802,7 +9803,7 @@ mod tests {
                 "exact_model",
             ),
         ] {
-            for mode in ["text", "json_object", "json_schema"] {
+            for mode in ["text", "any_json", "json_schema"] {
                 let calls = Arc::new(StdMutex::new(Vec::new()));
                 let response = aicc_success_response();
                 let client = AiccClient::new_in_process(Box::new(RecordingAicc {
@@ -9812,7 +9813,7 @@ mod tests {
                 let mut request = aicc_inference_request(model);
                 request.allow_tool_calls = mode == "json_schema";
                 request.force_json = mode != "text";
-                if mode == "json_object" {
+                if mode == "any_json" {
                     request.json_schema = None;
                 }
                 let result = AiccLlmClient::infer_with_client(&client, request)
@@ -9844,8 +9845,15 @@ mod tests {
                         "type": "json_schema",
                         "json_schema": {"name": "llm_response", "schema": {"type": "object"}}
                     });
-                } else if mode == "json_object" {
-                    expected["response_format"] = json!({"type": "json_object"});
+                } else if mode == "any_json" {
+                    expected["response_format"] = json!({
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "llm_response",
+                            "schema": {"type": "object", "additionalProperties": true},
+                            "strict": false
+                        }
+                    });
                 }
                 if model_field == "logical_model" {
                     expected["requirements"] = json!({});

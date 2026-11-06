@@ -1,12 +1,12 @@
 /* ── AI prompt page – copy-and-paste a structured prompt to ChatGPT/etc. ── */
 
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Check, ClipboardCopy, Sparkles } from 'lucide-react'
 import { useWorkflowStore } from '../hooks/use-workflow-store'
 
 export function AIPromptPage({ onImport }: { onImport: () => void }) {
   const store = useWorkflowStore()
-  const prompt = useMemo(() => store.buildAiPrompt(), [store])
+  const prompt = store.buildAiPrompt()
   const [copied, setCopied] = useState(false)
 
   function copy() {
@@ -90,7 +90,7 @@ export function AIPromptPage({ onImport }: { onImport: () => void }) {
             className="text-[10px] uppercase tracking-wider"
             style={{ color: 'var(--cp-muted)' }}
           >
-            schema_version: {store.schemaVersion} · executors: {store.executors.length}
+            schema_version: {store.schemaVersion} · functions: {store.executors.length}
           </span>
         </div>
         <pre

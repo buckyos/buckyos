@@ -7,8 +7,7 @@
 //!   status（Run / Step / Map shard）。
 //! - scheduler 在 Thunk task 上覆盖 status / progress / payload / error，
 //!   workflow 只负责 Thunk task 的创建（落 ACL）。
-//! - 用户写 TaskData 中的 `human_action`，由 orchestrator 的 apply_task_data
-//!   解释；tracker 只负责在校验失败时把 `last_error` 回写到 TaskData。
+//! - 人工动作走 `workflow.submit_human_action` RPC，不经过 task_manager。
 
 use crate::error::{WorkflowError, WorkflowResult};
 use crate::runtime::{NodeRunState, RunStatus, WorkflowRun};
@@ -16,15 +15,17 @@ use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, BindAppExecutorReq, CreatePromisedTaskReq, CreateTaskExecutor,
     CreateTaskReq, StorageDomain, Task, TaskDataErrorInfo, TaskDataProgress, TaskError,
-    TaskExecutor, TaskManagerClient, TaskPhase, TaskWaitReason, TaskWaitReasonKind, ThunkTaskData,
-    ThunkTaskRequest, WorkflowMapShardTaskData, WorkflowMapShardTaskRequest, WorkflowRunTaskData,
-    WorkflowRunTaskRequest, WorkflowRunTaskResult, WorkflowStepTaskData, WorkflowStepTaskRequest,
+    TaskExecutor, TaskManagerClient, TaskPhase, TaskWaitReason, TaskWaitReasonKind,
+    ThunkExecutionError, ThunkTaskData, ThunkTaskRequest, WorkflowMapShardTaskData,
+    WorkflowMapShardTaskRequest, WorkflowRunTaskData, WorkflowRunTaskRequest,
+    WorkflowRunTaskResult, WorkflowStepTaskData, WorkflowStepTaskRequest,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 /// 一个 Step（含 control node）当前应该呈现给 task_manager 的视图。
 /// 由 orchestrator 在每次状态机转换后构造，传给 tracker。
@@ -43,7 +44,11 @@ pub struct StepTaskView {
     pub stakeholders: Vec<String>,
     pub progress_message: Option<String>,
     pub error: Option<String>,
+    /// Structured `{code, message, details, retryable}` when the step failed.
+    pub error_detail: Option<Value>,
     pub output: Option<Value>,
+    /// `cache` / `executed` / `direct` / `submitted`.
+    pub source: Option<String>,
     /// 进入 WaitingHuman 时的时间戳（UNIX 秒）。
     pub waiting_human_since: Option<i64>,
 }
@@ -62,15 +67,35 @@ pub struct MapShardTaskView {
 #[derive(Debug, Clone)]
 pub struct ThunkTaskView {
     pub node_id: String,
+    pub execution_id: String,
     pub thunk_obj_id: String,
     pub attempt: u32,
     pub shard_index: Option<u32>,
+    pub requested_by: Option<String>,
+}
+
+/// Execution-side state of a thunk task, reported by the runner.
+#[derive(Debug, Clone)]
+pub enum ThunkTaskPhase {
+    Queued,
+    Running,
+    Succeeded(Value),
+    Failed(ThunkExecutionError),
+    Cancelled(ThunkExecutionError),
 }
 
 #[async_trait]
 pub trait WorkflowTaskTracker: Send + Sync {
     /// Run 整体状态同步到 root task。
     async fn sync_run(&self, run: &WorkflowRun) -> WorkflowResult<()>;
+
+    /// Creates the Run's root task and returns its id, which is the run id: a
+    /// Run and its root task are one thing (workflow service §0.1). `run` has no
+    /// id yet. Trackers without a TaskMgr mint a local one.
+    async fn create_run_task(&self, run: &WorkflowRun) -> WorkflowResult<String> {
+        let _ = run;
+        Ok(format!("run-{}", Uuid::new_v4()))
+    }
 
     /// Step / control-node 状态同步到 Run task 下的 step 子任务。
     async fn sync_step(&self, run: &WorkflowRun, step: &StepTaskView) -> WorkflowResult<()> {
@@ -88,22 +113,21 @@ pub trait WorkflowTaskTracker: Send + Sync {
         Ok(())
     }
 
-    /// 投递给 scheduler 的 thunk 子任务（仅创建 + 写描述性字段，scheduler 后续
-    /// 覆盖 status / progress / payload）。
+    /// Creates the thunk subtask under its step (ACL + tree position); the
+    /// runner then drives it with [`Self::update_thunk`].
     async fn sync_thunk(&self, run: &WorkflowRun, thunk: &ThunkTaskView) -> WorkflowResult<()> {
         let _ = (run, thunk);
         Ok(())
     }
 
-    /// 校验失败时把原因写回 Step task 的 TaskData.last_error，让 TaskMgr UI 重新
-    /// 提示用户修正。task 状态不变（仍是 WaitingForApproval）。
-    async fn report_step_validation_error(
+    /// Runner-side progress / terminal state of a thunk task.
+    async fn update_thunk(
         &self,
-        run: &WorkflowRun,
-        node_id: &str,
-        message: &str,
+        run_id: &str,
+        execution_id: &str,
+        phase: ThunkTaskPhase,
     ) -> WorkflowResult<()> {
-        let _ = (run, node_id, message);
+        let _ = (run_id, execution_id, phase);
         Ok(())
     }
 }
@@ -126,17 +150,22 @@ pub struct RecordingTaskTracker {
 
 #[derive(Debug, Default)]
 struct RecordingState {
+    pub created_run_tasks: Vec<String>,
     pub runs: Vec<WorkflowRun>,
     pub steps: HashMap<(String, String), StepTaskView>,
     pub step_history: Vec<(String, StepTaskView)>,
     pub map_shards: HashMap<(String, String, u32), MapShardTaskView>,
     pub thunks: HashMap<(String, String), ThunkTaskView>,
-    pub validation_errors: Vec<(String, String, String)>,
+    pub thunk_phases: Vec<(String, String, String)>,
 }
 
 impl RecordingTaskTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub async fn created_run_tasks(&self) -> Vec<String> {
+        self.inner.lock().await.created_run_tasks.clone()
     }
 
     pub async fn step(&self, run_id: &str, node_id: &str) -> Option<StepTaskView> {
@@ -173,29 +202,35 @@ impl RecordingTaskTracker {
             .cloned()
     }
 
-    pub async fn thunk(&self, run_id: &str, thunk_obj_id: &str) -> Option<ThunkTaskView> {
+    pub async fn thunk(&self, run_id: &str, execution_id: &str) -> Option<ThunkTaskView> {
         self.inner
             .lock()
             .await
             .thunks
-            .get(&(run_id.to_string(), thunk_obj_id.to_string()))
+            .get(&(run_id.to_string(), execution_id.to_string()))
             .cloned()
     }
 
-    pub async fn validation_errors(&self, node_id: &str) -> Vec<String> {
+    pub async fn thunk_phases(&self, execution_id: &str) -> Vec<String> {
         self.inner
             .lock()
             .await
-            .validation_errors
+            .thunk_phases
             .iter()
-            .filter(|(_, n, _)| n == node_id)
-            .map(|(_, _, msg)| msg.clone())
+            .filter(|(_, id, _)| id == execution_id)
+            .map(|(_, _, phase)| phase.clone())
             .collect()
     }
 }
 
 #[async_trait]
 impl WorkflowTaskTracker for RecordingTaskTracker {
+    async fn create_run_task(&self, _run: &WorkflowRun) -> WorkflowResult<String> {
+        let task_id = format!("t-{}", Uuid::new_v4().simple());
+        self.inner.lock().await.created_run_tasks.push(task_id.clone());
+        Ok(task_id)
+    }
+
     async fn sync_run(&self, run: &WorkflowRun) -> WorkflowResult<()> {
         let mut guard = self.inner.lock().await;
         guard.runs.push(run.clone());
@@ -233,23 +268,29 @@ impl WorkflowTaskTracker for RecordingTaskTracker {
     async fn sync_thunk(&self, run: &WorkflowRun, thunk: &ThunkTaskView) -> WorkflowResult<()> {
         let mut guard = self.inner.lock().await;
         guard.thunks.insert(
-            (run.run_id.clone(), thunk.thunk_obj_id.clone()),
+            (run.run_id.clone(), thunk.execution_id.clone()),
             thunk.clone(),
         );
         Ok(())
     }
 
-    async fn report_step_validation_error(
+    async fn update_thunk(
         &self,
-        run: &WorkflowRun,
-        node_id: &str,
-        message: &str,
+        run_id: &str,
+        execution_id: &str,
+        phase: ThunkTaskPhase,
     ) -> WorkflowResult<()> {
-        let mut guard = self.inner.lock().await;
-        guard.validation_errors.push((
-            run.run_id.clone(),
-            node_id.to_string(),
-            message.to_string(),
+        let label = match &phase {
+            ThunkTaskPhase::Queued => "queued".to_string(),
+            ThunkTaskPhase::Running => "running".to_string(),
+            ThunkTaskPhase::Succeeded(_) => "succeeded".to_string(),
+            ThunkTaskPhase::Failed(err) => format!("failed:{}", err.code),
+            ThunkTaskPhase::Cancelled(err) => format!("cancelled:{}", err.code),
+        };
+        self.inner.lock().await.thunk_phases.push((
+            run_id.to_string(),
+            execution_id.to_string(),
+            label,
         ));
         Ok(())
     }
@@ -264,13 +305,11 @@ pub struct TaskManagerTaskTracker {
 
 #[derive(Default)]
 struct TaskTrackerState {
-    /// run_id -> root task id
-    run_tasks: HashMap<String, String>,
     /// (run_id, node_id) -> step task id
     step_tasks: HashMap<(String, String), String>,
     /// (run_id, for_each_id, shard_index) -> map_shard task id
     map_shard_tasks: HashMap<(String, String, u32), String>,
-    /// (run_id, thunk_obj_id) -> thunk task id
+    /// (run_id, execution_id) -> thunk task id
     thunk_tasks: HashMap<(String, String), String>,
 }
 
@@ -386,32 +425,6 @@ impl TaskManagerTaskTracker {
         }
     }
 
-    async fn ensure_run_task(&self, run: &WorkflowRun) -> WorkflowResult<String> {
-        if let Some(task_id) = self.state.lock().await.run_tasks.get(&run.run_id).cloned() {
-            return Ok(task_id);
-        }
-
-        let task_name = format!("{} [{}]", run.workflow_name, run.run_id);
-        let parent_id = run_task_parent(run);
-        // The run id doubles as the idempotency key, so a restarted tracker
-        // finds the same root task instead of minting a duplicate.
-        let task = self
-            .create_tracked_task(
-                task_name,
-                WORKFLOW_RUN_SCHEMA_ID.to_string(),
-                run_request_data(run),
-                parent_id,
-                format!("wf-run-{}", run.run_id),
-            )
-            .await?;
-        self.state
-            .lock()
-            .await
-            .run_tasks
-            .insert(run.run_id.clone(), task.task_id.clone());
-        Ok(task.task_id)
-    }
-
     async fn ensure_step_task(
         &self,
         run: &WorkflowRun,
@@ -421,15 +434,13 @@ impl TaskManagerTaskTracker {
         if let Some(task_id) = self.state.lock().await.step_tasks.get(&key).cloned() {
             return Ok(task_id);
         }
-        let parent_id = self.ensure_run_task(run).await?;
-
         let task_name = format!("{} [{}/{}]", step.name, run.run_id, step.node_id);
         let task = self
             .create_tracked_task(
                 task_name,
                 WORKFLOW_STEP_SCHEMA_ID.to_string(),
                 initial_step_task_data(run, step),
-                Some(parent_id),
+                Some(run.run_id.clone()),
                 format!("wf-step-{}-{}", run.run_id, step.node_id),
             )
             .await?;
@@ -461,10 +472,7 @@ impl TaskManagerTaskTracker {
             .step_tasks
             .get(&(run.run_id.clone(), shard.for_each_id.clone()))
             .cloned();
-        let parent_id = match parent_id {
-            Some(id) => id,
-            None => self.ensure_run_task(run).await?,
-        };
+        let parent_id = parent_id.unwrap_or_else(|| run.run_id.clone());
 
         let task = self
             .create_tracked_task(
@@ -494,7 +502,7 @@ impl TaskManagerTaskTracker {
         run: &WorkflowRun,
         thunk: &ThunkTaskView,
     ) -> WorkflowResult<String> {
-        let key = (run.run_id.clone(), thunk.thunk_obj_id.clone());
+        let key = (run.run_id.clone(), thunk.execution_id.clone());
         if let Some(task_id) = self.state.lock().await.thunk_tasks.get(&key).cloned() {
             return Ok(task_id);
         }
@@ -515,18 +523,15 @@ impl TaskManagerTaskTracker {
                 .get(&(run.run_id.clone(), thunk.node_id.clone()))
                 .cloned()
         };
-        let parent_id = match parent_id {
-            Some(id) => id,
-            None => self.ensure_run_task(run).await?,
-        };
+        let parent_id = parent_id.unwrap_or_else(|| run.run_id.clone());
 
         let task = self
             .create_tracked_task(
-                format!("thunk:{} [{}]", thunk.thunk_obj_id, run.run_id),
+                format!("{} [{}]", thunk.thunk_obj_id, thunk.execution_id),
                 WORKFLOW_THUNK_SCHEMA_ID.to_string(),
                 thunk_task_data(run, thunk),
                 Some(parent_id),
-                format!("wf-thunk-{}-{}", run.run_id, thunk.thunk_obj_id),
+                format!("wf-thunk-{}", thunk.execution_id),
             )
             .await?;
         self.state
@@ -699,10 +704,51 @@ fn runner_envelope(task: &Task) -> buckyos_api::RunnerWriteEnvelope {
 
 #[async_trait]
 impl WorkflowTaskTracker for TaskManagerTaskTracker {
+    async fn create_run_task(&self, run: &WorkflowRun) -> WorkflowResult<String> {
+        let task = self
+            .create_tracked_task(
+                run.workflow_name.clone(),
+                WORKFLOW_RUN_SCHEMA_ID.to_string(),
+                run_request_data(run),
+                run_task_parent(run),
+                format!("wf-run-{}", Uuid::new_v4()),
+            )
+            .await?;
+        // The service is the creator / executor; the verified requester gets a
+        // read grant on the whole tree so TaskMgr visibility matches the run's
+        // own authorization (TODO D13).
+        if let Some((user_id, app_id)) = run.requested_by.as_deref().and_then(|p| p.split_once('/')) {
+            let client = self.client().await?;
+            let grant = buckyos_api::GrantTaskAccessReq {
+                task_id: task.task_id.clone(),
+                grant: buckyos_api::TaskAclGrantSpec {
+                    subject: buckyos_api::TaskGrantSubject::Principal {
+                        user_id: user_id.to_string(),
+                        app_id: app_id.to_string(),
+                    },
+                    actions: vec![
+                        buckyos_api::TaskAction::ReadMeta,
+                        buckyos_api::TaskAction::ReadInput,
+                        buckyos_api::TaskAction::ReadResult,
+                    ],
+                    scope: buckyos_api::TaskGrantScope::WholeTree,
+                    data_scope: buckyos_api::TaskDataScope::Full,
+                },
+                expected_revision: task.revision,
+            };
+            if let Err(err) = client.grant_task_access(grant).await {
+                log::warn!(
+                    "workflow tracker: grant run task {} to {} failed: {}",
+                    task.task_id, user_id, err
+                );
+            }
+        }
+        Ok(task.task_id)
+    }
+
     async fn sync_run(&self, run: &WorkflowRun) -> WorkflowResult<()> {
-        let task_id = self.ensure_run_task(run).await?;
         self.mirror_state(
-            &task_id,
+            &run.run_id,
             map_run_state(run.status),
             run_task_data(run),
             run.status.to_string(),
@@ -746,57 +792,54 @@ impl WorkflowTaskTracker for TaskManagerTaskTracker {
     }
 
     async fn sync_thunk(&self, run: &WorkflowRun, thunk: &ThunkTaskView) -> WorkflowResult<()> {
-        // Thunk 任务只做创建（ACL 落地 + 树结构）；执行状态由消费方驱动。
         let _ = self.ensure_thunk_task(run, thunk).await?;
         Ok(())
     }
 
-    async fn report_step_validation_error(
+    async fn update_thunk(
         &self,
-        run: &WorkflowRun,
-        node_id: &str,
-        message: &str,
+        run_id: &str,
+        execution_id: &str,
+        phase: ThunkTaskPhase,
     ) -> WorkflowResult<()> {
         let task_id = {
             let guard = self.state.lock().await;
             guard
-                .step_tasks
-                .get(&(run.run_id.clone(), node_id.to_string()))
+                .thunk_tasks
+                .get(&(run_id.to_string(), execution_id.to_string()))
                 .cloned()
         };
         let Some(task_id) = task_id else {
             return Ok(());
         };
-        let client = self.client().await?;
-        let task = client
-            .get_task(&task_id)
-            .await
-            .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
-        if task.phase.is_terminal() {
-            return Ok(());
-        }
-        self.write_progress(
-            &client,
-            task,
-            Some(task_data_value(WorkflowStepTaskData {
-                request: WorkflowStepTaskRequest {
-                    run_id: run.run_id.clone(),
-                    node_id: node_id.to_string(),
-                    ..Default::default()
-                },
-                progress: None,
-                result: None,
-                human_action: None,
-                last_error: Some(TaskDataErrorInfo {
-                    message: Some(message.to_string()),
-                    ts: Some(chrono::Utc::now().timestamp()),
-                    ..Default::default()
-                }),
-            })),
-            Some(message.to_string()),
-        )
-        .await
-        .map(|_| ())
+        let (state, payload, message) = match phase {
+            ThunkTaskPhase::Queued => (
+                MirrorState::Pending,
+                json!({"execution_id": execution_id, "phase": "queued"}),
+                "queued".to_string(),
+            ),
+            ThunkTaskPhase::Running => (
+                MirrorState::Running,
+                json!({"execution_id": execution_id, "phase": "running"}),
+                "running".to_string(),
+            ),
+            ThunkTaskPhase::Succeeded(result) => (
+                MirrorState::Succeeded,
+                json!({"execution_id": execution_id, "result": result}),
+                "succeeded".to_string(),
+            ),
+            ThunkTaskPhase::Failed(error) => (
+                MirrorState::Failed(error.code.clone()),
+                json!({"execution_id": execution_id, "error": error}),
+                error.message.clone(),
+            ),
+            ThunkTaskPhase::Cancelled(error) => (
+                MirrorState::Canceled,
+                json!({"execution_id": execution_id, "error": error}),
+                error.message.clone(),
+            ),
+        };
+        self.mirror_state(&task_id, state, payload, message).await
     }
 }
 
@@ -823,14 +866,12 @@ fn run_task_parent(run: &WorkflowRun) -> Option<String> {
 fn run_request_data(run: &WorkflowRun) -> Value {
     task_data_value(WorkflowRunTaskData {
         request: WorkflowRunTaskRequest {
-            run_id: run.run_id.clone(),
             workflow_id: run.workflow_id.clone(),
             workflow_name: run.workflow_name.clone(),
             plan_version: run.plan_version,
         },
         progress: None,
         result: None,
-        human_action: None,
         last_error: None,
     })
 }
@@ -849,7 +890,6 @@ fn run_task_data(run: &WorkflowRun) -> Value {
     let completed = summary.get("Completed").copied().unwrap_or_default();
     task_data_value(WorkflowRunTaskData {
         request: WorkflowRunTaskRequest {
-            run_id: run.run_id.clone(),
             workflow_id: run.workflow_id.clone(),
             workflow_name: run.workflow_name.clone(),
             plan_version: run.plan_version,
@@ -860,7 +900,6 @@ fn run_task_data(run: &WorkflowRun) -> Value {
             summary,
             updated_at: Some(run.updated_at),
         }),
-        human_action: None,
         last_error: None,
     })
 }
@@ -870,7 +909,6 @@ fn initial_step_task_data(run: &WorkflowRun, step: &StepTaskView) -> Value {
         request: workflow_step_request(run, step),
         progress: None,
         result: None,
-        human_action: None,
         last_error: None,
     })
 }
@@ -880,11 +918,22 @@ fn step_task_data(run: &WorkflowRun, step: &StepTaskView) -> Value {
         request: workflow_step_request(run, step),
         progress: None,
         result: step.output.clone(),
-        human_action: None,
-        last_error: step.error.as_ref().map(|err| TaskDataErrorInfo {
-            message: Some(err.clone()),
-            ts: Some(chrono::Utc::now().timestamp()),
-            ..Default::default()
+        last_error: step.error.as_ref().map(|err| {
+            let mut extra = std::collections::BTreeMap::new();
+            if let Some(detail) = step.error_detail.clone() {
+                if let Some(code) = detail.get("code").cloned() {
+                    extra.insert("code".to_string(), code);
+                }
+                extra.insert("detail".to_string(), detail);
+            }
+            if let Some(source) = step.source.clone() {
+                extra.insert("source".to_string(), Value::String(source));
+            }
+            TaskDataErrorInfo {
+                message: Some(err.clone()),
+                ts: Some(chrono::Utc::now().timestamp()),
+                extra,
+            }
         }),
     })
 }
@@ -954,8 +1003,11 @@ fn thunk_task_data(run: &WorkflowRun, thunk: &ThunkTaskView) -> Value {
     }
     task_data_value(ThunkTaskData {
         request: ThunkTaskRequest {
+            runner: Some("workflow/local".to_string()),
             node_id: Some(thunk.node_id.clone()),
+            execution_id: Some(thunk.execution_id.clone()),
             thunk_obj_id: Some(thunk.thunk_obj_id.clone()),
+            requested_by: thunk.requested_by.clone().or_else(|| run.requested_by.clone()),
             extra,
             ..Default::default()
         },

@@ -5,14 +5,18 @@ pub use bin_overlay::{BinPlan, ToolPlan};
 use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 use crate::session::SessionDir;
+use agent_tool::runtime::executor::{ExecutorDirectory, ExecutorTarget};
+use agent_tool::runtime::files::{LocalFileBackend, RuntimeFiles, WholeWriteMode, WriteChunk};
 use agent_tool::runtime::node::{NodeExecutorConnector, RemoteNodeTarget, REMOTE_NODE_KIND};
 use agent_tool::runtime::{RuntimeConfig, RuntimeOpenCtx};
 use agent_tool::xllm::{LoopModel, ToolsConfig, XllmDeps};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 static NODE_CONNECTOR: RwLock<Option<Arc<dyn NodeExecutorConnector>>> = RwLock::new(None);
+static EXECUTOR_RESOLVER: RwLock<Option<Arc<dyn ExecutorResolver>>> = RwLock::new(None);
 
 /// Install the connector this process reaches Node Executors with (tests,
 /// hosts with their own transport). Default: the BuckyOS runtime's gateway.
@@ -28,7 +32,74 @@ pub fn node_connector() -> Arc<dyn NodeExecutorConnector> {
         .unwrap_or_else(|| Arc::new(agent_tool::runtime::node::BuckyosNodeConnector))
 }
 
-/// The `remote_node` configuration a node runtime's registration carries.
+/// How a standalone executor (form B, daemon URL) is reached: the route the
+/// control panel hands out for it now.
+pub struct ExecutorRoute {
+    pub connector: Arc<dyn NodeExecutorConnector>,
+    pub profile_id: String,
+    pub expires_at_ms: Option<u64>,
+}
+
+/// Resolves a standalone executor's id to its connector (tests, hosts with
+/// their own directory). Default: the control panel's online list.
+#[async_trait]
+pub trait ExecutorResolver: Send + Sync {
+    async fn resolve(&self, executor_id: &str, profile_id: &str) -> Result<ExecutorRoute>;
+}
+
+pub fn set_executor_resolver(resolver: Arc<dyn ExecutorResolver>) {
+    *EXECUTOR_RESOLVER.write().expect("executor resolver") = Some(resolver);
+}
+
+struct BuckyosExecutorResolver;
+
+#[async_trait]
+impl ExecutorResolver for BuckyosExecutorResolver {
+    async fn resolve(&self, executor_id: &str, profile_id: &str) -> Result<ExecutorRoute> {
+        let directory = ExecutorDirectory::from_buckyos_runtime();
+        let online = directory.list().await.map_err(OpenDanError::Bind)?;
+        let target = online.iter().find(|t| t.executor_id == executor_id).ok_or_else(|| {
+            OpenDanError::Bind(format!("executor `{executor_id}` is not online (see `executor_list`)"))
+        })?;
+        let profile = if profile_id.is_empty() {
+            match target.profiles.as_slice() {
+                [one] => one.clone(),
+                [] => return Err(OpenDanError::Bind(format!("executor `{executor_id}` offers no profile to this agent"))),
+                many => {
+                    return Err(OpenDanError::Bind(format!(
+                        "executor `{executor_id}` offers several profiles ({}); the runtime setting must name one",
+                        many.join(", ")
+                    )))
+                }
+            }
+        } else {
+            if !target.profiles.iter().any(|p| p == profile_id) {
+                return Err(OpenDanError::Bind(format!("executor `{executor_id}` does not offer profile `{profile_id}` now")));
+            }
+            profile_id.to_string()
+        };
+        let connector = directory
+            .connector(ExecutorTarget {
+                executor_id: executor_id.to_string(),
+                generation: target.generation,
+                profile_id: profile.clone(),
+                store_id: target.store_id.clone(),
+            })
+            .await
+            .map_err(OpenDanError::Bind)?;
+        Ok(ExecutorRoute { connector, profile_id: profile, expires_at_ms: target.expires_at_ms })
+    }
+}
+
+fn executor_resolver() -> Arc<dyn ExecutorResolver> {
+    EXECUTOR_RESOLVER
+        .read()
+        .expect("executor resolver")
+        .clone()
+        .unwrap_or_else(|| Arc::new(BuckyosExecutorResolver))
+}
+
+/// The `remote_node` configuration a node runtime's record carries.
 pub fn node_config_of(runtime_id: &str, exec: &serde_json::Value) -> Result<RuntimeConfig> {
     let config: RuntimeConfig = serde_json::from_value(exec.clone())
         .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: invalid exec: {e}")))?;
@@ -39,9 +110,13 @@ pub fn node_config_of(runtime_id: &str, exec: &serde_json::Value) -> Result<Runt
         )));
     }
     let node = config.remote_node.as_ref();
-    if node.and_then(|n| n.node_did.as_deref()).is_none_or(str::is_empty)
-        || node.and_then(|n| n.profile_id.as_deref()).is_none_or(str::is_empty)
-    {
+    let executor = node.and_then(|n| n.executor_id.as_deref()).is_some_and(|e| !e.is_empty());
+    if node.and_then(|n| n.connect_target()).is_none() {
+        return Err(OpenDanError::Bind(format!(
+            "runtime `{runtime_id}`: remote_node needs node_did or executor_id"
+        )));
+    }
+    if !executor && node.and_then(|n| n.profile_id.as_deref()).is_none_or(str::is_empty) {
         return Err(OpenDanError::Bind(format!(
             "runtime `{runtime_id}`: remote_node needs node_did and profile_id"
         )));
@@ -49,28 +124,107 @@ pub fn node_config_of(runtime_id: &str, exec: &serde_json::Value) -> Result<Runt
     Ok(config)
 }
 
+/// The connector a node runtime configuration executes through, and the
+/// configuration with the executor's profile resolved; `expires_at_ms`
+/// when a standalone executor's route has a term.
+pub async fn connector_for(
+    runtime_id: &str,
+    config: &RuntimeConfig,
+) -> Result<(Arc<dyn NodeExecutorConnector>, RuntimeConfig, Option<u64>)> {
+    let mut config = config.clone();
+    let node = config.remote_node.clone().unwrap_or_default();
+    match node.executor_id.as_deref().filter(|e| !e.is_empty()) {
+        Some(executor_id) => {
+            let route = executor_resolver()
+                .resolve(executor_id, node.profile_id.as_deref().unwrap_or_default())
+                .await
+                .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: {e}")))?;
+            if let Some(n) = config.remote_node.as_mut() {
+                n.profile_id = Some(route.profile_id);
+            }
+            Ok((route.connector, config, route.expires_at_ms))
+        }
+        None => Ok((node_connector(), config, None)),
+    }
+}
+
+/// A node runtime opened as a target directory, with what its route said.
+pub struct NodeTarget {
+    target: RemoteNodeTarget,
+    expires_at_ms: Option<u64>,
+}
+
+impl NodeTarget {
+    /// When a standalone executor's grant ends, as its route reports.
+    pub fn expires_at_ms(&self) -> Option<u64> {
+        self.expires_at_ms
+    }
+
+    pub fn into_files(self) -> Box<dyn RuntimeFiles> {
+        Box::new(self.target)
+    }
+
+    pub fn into_inner(self) -> RemoteNodeTarget {
+        self.target
+    }
+}
+
+impl std::ops::Deref for NodeTarget {
+    type Target = RemoteNodeTarget;
+    fn deref(&self) -> &RemoteNodeTarget {
+        &self.target
+    }
+}
+
 /// Open a node runtime as a target directory (workspace placement, the
-/// default session directory): login + describe through the connector.
-pub async fn open_node_target(record: &RuntimeRecord, ops_dir: &Path) -> Result<RemoteNodeTarget> {
+/// default session directory): login + describe through its connector.
+pub async fn open_node_target(record: &RuntimeRecord, ops_dir: &Path) -> Result<NodeTarget> {
     let exec = record
-        .exec
-        .as_ref()
+        .exec()
         .ok_or_else(|| OpenDanError::Bind(format!("runtime `{}` is not enabled", record.runtime_id)))?;
-    let config = node_config_of(&record.runtime_id, exec)?;
+    let config = node_config_of(&record.runtime_id, &exec)?;
     open_node_target_of(&record.runtime_id, &config, ops_dir).await
 }
 
-async fn open_node_target_of(runtime_id: &str, config: &RuntimeConfig, ops_dir: &Path) -> Result<RemoteNodeTarget> {
+pub async fn open_node_target_of(runtime_id: &str, config: &RuntimeConfig, ops_dir: &Path) -> Result<NodeTarget> {
+    let (connector, config, expires_at_ms) = connector_for(runtime_id, config).await?;
     let node = config.remote_node.clone().unwrap_or_default();
-    RemoteNodeTarget::open(
-        node_connector(),
-        node.node_did.as_deref().unwrap_or_default(),
+    let target = RemoteNodeTarget::open(
+        connector,
+        node.connect_target().unwrap_or_default(),
         node.profile_id.as_deref().unwrap_or_default(),
         runtime_id,
         ops_dir.to_path_buf(),
     )
     .await
-    .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: {e}")))
+    .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: {e}")))?;
+    Ok(NodeTarget { target, expires_at_ms })
+}
+
+/// The directory of this agent on a node: `<account home>/.opendan/<agent_id>`
+/// (directory convention). The executor's account home must lie inside
+/// the granted roots.
+pub fn node_agent_dir(target: &RemoteNodeTarget, runtime_id: &str, agent_id: &str) -> Result<String> {
+    let home = target
+        .described()
+        .info
+        .home
+        .clone()
+        .filter(|h| !h.trim().is_empty())
+        .ok_or_else(|| {
+            OpenDanError::Bind(format!(
+                "runtime `{runtime_id}`: its executor reports no account home, so the agent's directory there (<home>/.opendan/{agent_id}) cannot be placed"
+            ))
+        })?;
+    let roots = target.workdir_roots();
+    let grant = RuntimeGrant { roots: roots.iter().map(PathBuf::from).collect(), ..Default::default() };
+    if !grant.within_roots(&home) {
+        return Err(OpenDanError::Bind(format!(
+            "runtime `{runtime_id}`: the account home {home} is outside the granted roots ({}); ask the administrator to include it",
+            roots.join(", ")
+        )));
+    }
+    Ok(target_join(&home, &[".opendan", agent_id]))
 }
 
 /// Join path parts below `base` with the separator of the target OS (a
@@ -166,7 +320,7 @@ pub async fn resolve_workspace(
         return Ok(None);
     };
     let record = agent.workspaces().check(&workspace.workspace_id).await?;
-    let native = is_native_runtime(&record.location.runtime_id);
+    let native = is_private_runtime(&record.location.runtime_id);
     if record.lifecycle != WorkspaceLifecycle::Active
         || record.availability != WorkspaceAvailability::Available
         || record.runtime_host != native_host_id()
@@ -230,7 +384,7 @@ pub async fn verify_workspace(
                     record.availability
                 )));
             }
-            if is_native_runtime(&record.location.runtime_id) {
+            if is_private_runtime(&record.location.runtime_id) {
                 verify_workspace_access(&binding.location.directory, binding.access)?;
                 let actual = std::fs::canonicalize(&binding.location.directory)
                     .map_err(|e| invalid(e.to_string()))?;
@@ -357,7 +511,7 @@ fn settle_for_session(
         return Ok(());
     }
     if let Some(frozen) = &cfg.runtime.frozen {
-        config.baseline = Some(frozen.baseline);
+        config.baseline = Some(frozen.baseline());
     }
     let expected = resolve_workdir(sd)?;
     if let Some(workdir) = &config.workdir {
@@ -386,11 +540,8 @@ pub async fn runtime_for_session(
     runtime_id: Option<&str>,
     deps: &XllmDeps,
 ) -> Result<Arc<dyn AgentRuntime>> {
-    if let Some(frozen) = cfg.runtime.frozen.as_ref().filter(|f| f.kind.is_node()) {
-        let exec = frozen.exec.as_ref().ok_or_else(|| {
-            OpenDanError::Bind(format!("runtime `{}` was frozen without an executor", frozen.runtime_id))
-        })?;
-        let mut config = node_config_of(&frozen.runtime_id, exec)?;
+    if let Some(frozen) = cfg.runtime.frozen.as_ref().filter(|f| f.is_node()) {
+        let mut config = node_config_of(&frozen.runtime_id, &frozen.exec())?;
         config.id = Some(frozen.runtime_id.clone());
         if let Some(declared) = declared_runtime(sd, cfg)? {
             if declared.kind.is_some() && declared.kind() != REMOTE_NODE_KIND {
@@ -402,11 +553,13 @@ pub async fn runtime_for_session(
             }
             config.env.extend(declared.env);
         }
-        config.baseline = Some(frozen.baseline);
+        config.baseline = Some(frozen.baseline());
         config.workdir = Some(node_workdir(sd, agent, &frozen.runtime_id, &config).await?);
         let mut deps = deps.clone();
         if deps.node_executor.is_none() {
-            deps.node_executor = Some(node_connector());
+            let (connector, resolved, _) = connector_for(&frozen.runtime_id, &config).await?;
+            deps.node_executor = Some(connector);
+            config = resolved;
         }
         return agent_tool::runtime::RuntimeRegistry::from_config_with(&config, &deps)
             .map_err(|e| OpenDanError::Bind(e.to_string()));
@@ -431,8 +584,8 @@ pub async fn runtime_for_session(
 }
 
 /// Where a node-runtime session works on its node: what is bound, else
-/// `<first root>/.opendan/<agent>/sessions/<sid>`, created now (the
-/// executor's `mkdir`, idempotent).
+/// `<account home>/.opendan/<agent>/sessions/<sid>` ([`node_agent_dir`]),
+/// created now (the executor's `mkdir`, idempotent).
 async fn node_workdir(
     sd: &SessionDir,
     agent: &dyn crate::state::AgentStateClient,
@@ -443,10 +596,8 @@ async fn node_workdir(
         return Ok(known);
     }
     let target = open_node_target_of(runtime_id, config, &sd.state_dir().join("runtime_ops")).await?;
-    let root = target.workdir_roots().first().cloned().ok_or_else(|| {
-        OpenDanError::Bind(format!("runtime `{runtime_id}`: the node grants no working directory root"))
-    })?;
-    let dir = target_join(&root, &[".opendan", agent.agent_id(), "sessions", sd.sid()]);
+    let base = node_agent_dir(&target, runtime_id, agent.agent_id())?;
+    let dir = target_join(&base, &["sessions", sd.sid()]);
     target
         .mkdir(&dir)
         .await
@@ -509,10 +660,157 @@ pub fn session_runtime(
         .map_err(|e| OpenDanError::Bind(e.to_string()))
 }
 
-/// The schema of `binding.json`: version 5 binds the session-runtime and
-/// the session's working directory there; the workspace is recorded beside
-/// it, never as the working directory.
-pub const BINDING_SCHEMA: &str = "opendan.binding/5";
+/// One runtime as a prompt sees it (the plan table's columns, runtime
+/// lifecycle TODO §5.3).
+pub fn runtime_entry(r: &RuntimeRecord) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "id": r.runtime_id,
+        "name": r.name,
+        "connector": r.connector.as_str(),
+        "os": r.caps.platform.os,
+        "shell": r.caps.platform.shell,
+        "baseline": r.caps.baseline.as_str(),
+        "available": r.usable(),
+        "default": r.default,
+        "private": r.is_private(),
+        "computer": r.grant.computer.as_str(),
+        "install": r.grant.install,
+        "read_only": r.grant.read_only(),
+        "workspace": r.grant.workspace,
+        "roots": r.grant.roots,
+        "desktop": r.caps.desktop,
+        "skill_commands": r.usage.skill_commands,
+        "desc": r.desc,
+    });
+    if let Some(t) = &r.caps.tools_check {
+        v["tools"] = serde_json::json!(t.present);
+    }
+    if let Some(t) = r.grant.expires_at_ms {
+        v["expires_at_ms"] = serde_json::json!(t);
+    }
+    if !r.usable() {
+        v["error"] = serde_json::json!(r.last_error);
+    }
+    v
+}
+
+/// One readable line of a runtime record (`runtime list`, the plan's
+/// `<runtimes>` table).
+pub fn runtime_line(r: &RuntimeRecord) -> String {
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let platform = [&r.caps.platform.os, &r.caps.platform.arch, &r.caps.platform.shell]
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| one_line(s))
+        .collect::<Vec<_>>();
+    let mut flags = Vec::new();
+    if r.is_private() {
+        flags.push("private".to_string());
+    }
+    if r.default {
+        flags.push("owner default".to_string());
+    }
+    if r.lifecycle == RuntimeLifecycle::Retired {
+        flags.push("retired".to_string());
+    } else if !r.enabled {
+        flags.push("disabled".to_string());
+    }
+    if r.grant.read_only() {
+        flags.push("read-only".to_string());
+    }
+    if !r.grant.workspace {
+        flags.push("no workspaces".to_string());
+    }
+    if r.caps.desktop {
+        flags.push("desktop".to_string());
+    }
+    if let Some(t) = r.grant.expires_at_ms {
+        flags.push(format!("expires {t}"));
+    }
+    let availability = serde_json::to_value(r.availability)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let install = serde_json::to_value(r.grant.install)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let mut line = format!(
+        "- {}: {} — {}; {}; {}; {}; computer: {}; install: {}{}",
+        r.runtime_id,
+        one_line(&r.name),
+        r.connector.as_str(),
+        if platform.is_empty() { "platform unknown".into() } else { platform.join(" / ") },
+        r.caps.baseline.as_str(),
+        availability,
+        r.grant.computer.as_str(),
+        install,
+        if flags.is_empty() { String::new() } else { format!(" [{}]", flags.join(", ")) },
+    );
+    if !r.grant.roots.is_empty() {
+        line.push_str(&format!("; roots: {}", r.grant.roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")));
+    }
+    if let Some(t) = r.caps.tools_check.as_ref().filter(|t| !t.present.is_empty()) {
+        line.push_str(&format!("; commands: {}", t.present.join(", ")));
+    }
+    if !r.usage.skill_commands.is_empty() {
+        line.push_str(&format!("; skill commands: {}", r.usage.skill_commands.join(", ")));
+    }
+    if !r.desc.is_empty() {
+        line.push_str(&format!(" — {}", one_line(&r.desc)));
+    }
+    line
+}
+
+/// The runtimes a session's prompt knows (`runtime_status.runtimes`), by
+/// its `runtime_view` (runtime lifecycle TODO §0.3): a chat its private
+/// runtime and the owner's default (M2); work its working runtime and the
+/// private one; a plan every active runtime, with one readable line each
+/// for its `<runtimes>` table (M6).
+pub async fn runtimes_view(agent: &dyn crate::state::AgentStateClient, cfg: &SessionConfig) -> serde_json::Value {
+    let view = cfg.session.policy.runtime_view;
+    let all: Vec<RuntimeRecord> = agent
+        .runtimes()
+        .list()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.lifecycle == RuntimeLifecycle::Active)
+        .collect();
+    let private = all.iter().find(|r| r.is_private()).map(runtime_entry);
+    let owner_default = all.iter().find(|r| r.default && !r.is_private()).map(runtime_entry);
+    let working = cfg.runtime.runtime_id();
+    match view {
+        RuntimeView::Chat => serde_json::json!({
+            "view": "chat",
+            "private": private,
+            "owner_default": owner_default,
+        }),
+        RuntimeView::Work => serde_json::json!({
+            "view": "work",
+            "working": working,
+            "private": private,
+        }),
+        RuntimeView::All => serde_json::json!({
+            "view": "all",
+            "working": working,
+            "private": private,
+            "owner_default": owner_default,
+            "all": all.iter().map(runtime_entry).collect::<Vec<_>>(),
+            "lines": all.iter().map(runtime_line).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+/// The schema of `binding.json`: version 6 binds the working runtime (by
+/// its connector) and the session's working directory there; the workspace
+/// is recorded beside it, never as the working directory.
+pub const BINDING_SCHEMA: &str = "opendan.binding/6";
+
+/// The connector of a runtime descriptor's kind (`native`, `remote_node`).
+pub fn connector_of_kind(kind: &str) -> &'static str {
+    if kind == REMOTE_NODE_KIND { "node_executor" } else { "native" }
+}
 
 pub async fn bind_or_verify(
     sd: &SessionDir,
@@ -554,7 +852,7 @@ pub async fn bind_or_verify(
     let binding = Binding {
         schema: BINDING_SCHEMA.into(),
         runtime_id: desc.runtime_id.clone(),
-        kind: desc.kind.clone(),
+        connector: connector_of_kind(&desc.kind).into(),
         target: desc.target.clone(),
         workdir: desc.workdir.clone(),
         workspace: cfg.workspace_binding.clone(),
@@ -574,10 +872,10 @@ pub async fn bind_or_verify(
     if let Some(b) = &existing {
         if !b.same_binding(&binding) {
             return Err(OpenDanError::RuntimeMismatch {
-                bound: format!("{} {} {} {}", b.runtime_id, b.kind, b.target, b.workdir),
+                bound: format!("{} {} {} {}", b.runtime_id, b.connector, b.target, b.workdir),
                 provided: format!(
                     "{} {} {} {}",
-                    binding.runtime_id, binding.kind, binding.target, binding.workdir
+                    binding.runtime_id, binding.connector, binding.target, binding.workdir
                 ),
             });
         }
@@ -659,7 +957,7 @@ async fn write_session_context(
     let state_url = crate::session_context::node_state_url(agent.agent_id());
     let (ctx, token) = crate::session_context::new_context(&key, agent.agent_id(), cfg, workdir, state_url);
     let target = open_node_target_of(cfg.runtime.runtime_id(), &rt.config(), &sd.state_dir().join("runtime_ops")).await?;
-    crate::session_context::write_context(&target, &ctx, &token).await
+    crate::session_context::write_context(&*target, &ctx, &token).await
 }
 
 /// Open `rt` at `workdir` without tools and run one command there (binding
@@ -714,50 +1012,73 @@ pub async fn run_probe(
     .map_err(|e| OpenDanError::Bind(e.to_string()))
 }
 
+/// A node runtime record as an `AgentRuntime` working in `workdir`
+/// (checks, agent-level operations).
+async fn node_runtime_of(record: &RuntimeRecord, workdir: &str) -> Result<Arc<dyn AgentRuntime>> {
+    let exec = record
+        .exec()
+        .ok_or_else(|| OpenDanError::Bind(format!("runtime `{}` is not enabled", record.runtime_id)))?;
+    let mut config = node_config_of(&record.runtime_id, &exec)?;
+    config.id = Some(record.runtime_id.clone());
+    config.workdir = Some(workdir.to_string());
+    config.baseline = Some(record.caps.baseline);
+    let (connector, config, _) = connector_for(&record.runtime_id, &config).await?;
+    let deps = XllmDeps {
+        node_executor: Some(connector),
+        ..Default::default()
+    };
+    agent_tool::runtime::RuntimeRegistry::from_config_with(&config, &deps).map_err(|e| OpenDanError::Bind(e.to_string()))
+}
+
+/// This process's environment as an `AgentRuntime` working in `workdir`.
+fn private_runtime_of(workdir: &Path) -> Result<Arc<dyn AgentRuntime>> {
+    let config = RuntimeConfig {
+        kind: Some("native".into()),
+        id: Some(PRIVATE_RUNTIME.into()),
+        workdir: Some(workdir.display().to_string()),
+        ..Default::default()
+    };
+    agent_tool::runtime::RuntimeRegistry::from_config(&config).map_err(|e| OpenDanError::Bind(e.to_string()))
+}
+
+/// The first granted root of a node runtime: where checks run.
+fn node_check_dir(record: &RuntimeRecord) -> Result<String> {
+    record
+        .grant
+        .roots
+        .first()
+        .map(|p| p.display().to_string())
+        .ok_or_else(|| OpenDanError::Bind(format!("runtime `{}`: no granted root is known yet (check it first)", record.runtime_id)))
+}
+
+/// Run `probe` on `record`'s runtime and return the names of `names` it
+/// printed as missing.
+async fn missing_on(record: &RuntimeRecord, ops_dir: &Path, names: &[&str], what: &str) -> Result<Vec<String>> {
+    if record.is_private() {
+        let beside: Vec<PathBuf> = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .into_iter()
+            .collect();
+        return Ok(crate::baseline::missing_locally(names, None, &beside));
+    }
+    let root = node_check_dir(record)?;
+    let rt = node_runtime_of(record, &root).await?;
+    let probe = crate::baseline::missing_probe(names, record.caps.platform.os == "windows");
+    let out = run_probe(rt.as_ref(), Path::new(&root), Vec::new(), what, ops_dir, probe, 30_000).await?;
+    if out.exit_code != 0 {
+        return Err(OpenDanError::Bind(format!("the check exited {}: {}", out.exit_code, out.stderr.trim())));
+    }
+    Ok(crate::baseline::parse_missing(&out.stdout, names))
+}
+
 /// The standard tools of a runtime ([`crate::baseline`]): looked for on this
-/// machine for the agent's own container (helpers come from the session
+/// machine for the agent's private runtime (helpers come from the session
 /// bin), through the runtime's executor for a node. A check that cannot run
 /// says why; it never changes the declared baseline.
 pub async fn check_baseline(record: &RuntimeRecord, ops_dir: &Path) -> BaselineCheck {
-    let checked = async {
-        if record.kind == RuntimeKind::Container {
-            let names = crate::baseline::required_commands(true);
-            let beside: Vec<PathBuf> = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(Path::to_path_buf))
-                .into_iter()
-                .collect();
-            return Ok(crate::baseline::missing_locally(&names, None, &beside));
-        }
-        let exec = record
-            .exec
-            .as_ref()
-            .ok_or_else(|| OpenDanError::Bind(format!("runtime `{}` is not enabled", record.runtime_id)))?;
-        let mut config = node_config_of(&record.runtime_id, exec)?;
-        let root = record.roots.first().cloned().ok_or_else(|| {
-            OpenDanError::Bind(format!("runtime `{}`: the node grants no working directory root", record.runtime_id))
-        })?;
-        config.id = Some(record.runtime_id.clone());
-        config.workdir = Some(root.display().to_string());
-        let deps = XllmDeps {
-            node_executor: Some(node_connector()),
-            ..Default::default()
-        };
-        let rt = agent_tool::runtime::RuntimeRegistry::from_config_with(&config, &deps)
-            .map_err(|e| OpenDanError::Bind(e.to_string()))?;
-        let names = crate::baseline::required_commands(false);
-        let probe = crate::baseline::missing_probe(&names, record.platform.os == "windows");
-        let out = run_probe(rt.as_ref(), &root, Vec::new(), "baseline-check", ops_dir, probe, 30_000).await?;
-        if out.exit_code != 0 {
-            return Err(OpenDanError::Bind(format!(
-                "the check exited {}: {}",
-                out.exit_code,
-                out.stderr.trim()
-            )));
-        }
-        Ok(crate::baseline::parse_missing(&out.stdout, &names))
-    }
-    .await;
+    let names = crate::baseline::required_commands(record.is_private());
+    let checked = missing_on(record, ops_dir, &names, "baseline-check").await;
     let checked_at_ms = crate::now_ms();
     match checked {
         Ok(missing) => BaselineCheck {
@@ -775,11 +1096,264 @@ pub async fn check_baseline(record: &RuntimeRecord, ops_dir: &Path) -> BaselineC
     }
 }
 
+/// Whether `commands` exist on the runtime (`caps.tools_check`): skill
+/// installation, `check --commands`.
+pub async fn check_commands(record: &RuntimeRecord, ops_dir: &Path, commands: &[String]) -> ToolsCheck {
+    let names: Vec<&str> = commands.iter().map(String::as_str).collect();
+    let checked = missing_on(record, ops_dir, &names, "tools-check").await;
+    let checked_at_ms = crate::now_ms();
+    match checked {
+        Ok(missing) => ToolsCheck {
+            checked_at_ms,
+            present: commands.iter().filter(|c| !missing.contains(c)).cloned().collect(),
+            missing,
+            error: None,
+        },
+        Err(e) => ToolsCheck {
+            checked_at_ms,
+            present: Vec::new(),
+            missing: Vec::new(),
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// What one agent-level command on a runtime did (`runtime_exec`), kept
+/// under `<agent_root>/state/runtime_ops/<op_id>.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeOpRecord {
+    pub op_id: String,
+    pub runtime_id: String,
+    pub command: String,
+    pub cwd: String,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+    pub started_at_ms: u64,
+    pub finished_at_ms: u64,
+    /// Who asked (a session id, `skill-install`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// The tool call a session ran it for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+}
+
+/// A session's own record of an `agent-session run` (R-U12), under its
+/// `state/runtime_ops/<op_id>.json`, beside the agent-level one.
+pub fn session_run_record(sd: &SessionDir, op: &RuntimeOpRecord, call_id: Option<String>) -> Result<RuntimeOpRecord> {
+    let mut record = op.clone();
+    record.call_id = call_id;
+    let dir = sd.state_dir().join(RUNTIME_OPS_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| OpenDanError::io(&dir, e))?;
+    crate::fsutil::atomic_replace_json(&dir.join(format!("{}.json", record.op_id)), &record)?;
+    Ok(record)
+}
+
+pub const RUNTIME_OPS_DIR: &str = "runtime_ops";
+pub const RUNTIME_EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
+pub const RUNTIME_EXEC_MAX_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+
+fn runtime_ops_dir(agent: &dyn crate::state::AgentStateClient) -> Result<PathBuf> {
+    let root = agent
+        .agent_root()
+        .ok_or_else(|| OpenDanError::Bind("agent-level runtime operations need the AgentRoot on this host".into()))?;
+    Ok(root.join("state").join(RUNTIME_OPS_DIR))
+}
+
+/// A runtime record usable for an agent-level operation now, else why not
+/// (R-U5: refused, never replaced).
+pub async fn usable_runtime(agent: &dyn crate::state::AgentStateClient, runtime_id: &str) -> Result<RuntimeRecord> {
+    let record = agent
+        .runtimes()
+        .lookup(runtime_id)
+        .await?
+        .ok_or_else(|| OpenDanError::NotFound(format!("runtime {runtime_id} (see `agent-session runtime list`)")))?;
+    if record.lifecycle == RuntimeLifecycle::Retired {
+        return Err(OpenDanError::Bind(format!("runtime `{}` is retired: it is kept for its history only", record.runtime_id)));
+    }
+    if !record.usable() {
+        return Err(OpenDanError::Bind(format!(
+            "runtime `{}` is not available: {}{}",
+            record.runtime_id,
+            record.last_error.clone().unwrap_or_else(|| format!("{:?}", record.availability)),
+            match record.checked_at_ms {
+                Some(t) => format!(" (last checked at {t}; an owner can open a runtime in the directory)"),
+                None => String::new(),
+            }
+        )));
+    }
+    Ok(record)
+}
+
+/// Run one command on a runtime of the agent, outside any session (R-U3):
+/// `agent-session run`, skill installation, tool checks. `cwd` must be
+/// inside the runtime's granted roots (a node needs one; the private
+/// runtime defaults to the AgentRoot). Output and exit code are returned
+/// and archived under `state/runtime_ops/<op_id>.json`; a command that
+/// outlives `timeout_ms` is reported as timed out with what it printed.
+pub async fn runtime_exec(
+    agent: &dyn crate::state::AgentStateClient,
+    runtime_id: &str,
+    command: &str,
+    cwd: Option<&str>,
+    timeout_ms: u64,
+    by: Option<&str>,
+) -> Result<RuntimeOpRecord> {
+    let record = usable_runtime(agent, runtime_id).await?;
+    if !record.grant.can_exec() {
+        return Err(OpenDanError::Bind(format!(
+            "runtime `{}` grants no Exec to this agent (ops: {:?})",
+            record.runtime_id, record.grant.ops
+        )));
+    }
+    let ops_dir = runtime_ops_dir(agent)?;
+    let op_id = format!("op-{}", uuid::Uuid::new_v4().simple());
+    let timeout_ms = timeout_ms.clamp(1_000, RUNTIME_EXEC_MAX_TIMEOUT_MS);
+    let started_at_ms = crate::now_ms();
+    let (rt, workdir, layers): (Arc<dyn AgentRuntime>, String, Vec<PathBuf>) = if record.is_private() {
+        let dir = match cwd {
+            Some(c) => PathBuf::from(c),
+            None => agent.agent_root().map(Path::to_path_buf).unwrap_or_else(std::env::temp_dir),
+        };
+        if !dir.is_absolute() || !dir.is_dir() {
+            return Err(OpenDanError::InvalidArgument(format!("--cwd {} is not an existing absolute directory on the private runtime", dir.display())));
+        }
+        let mut layers = Vec::new();
+        if let Some(root) = agent.agent_root() {
+            if root.join("tools").is_dir() {
+                layers.push(root.join("tools"));
+            }
+        }
+        (private_runtime_of(&dir)?, dir.display().to_string(), layers)
+    } else {
+        let dir = cwd
+            .filter(|c| !c.trim().is_empty())
+            .ok_or_else(|| OpenDanError::InvalidArgument(format!("--cwd is required on runtime `{}`: a directory inside its granted roots", record.runtime_id)))?;
+        if !buckyos_api::is_absolute_node_path(dir) || dir.split(['/', '\\']).any(|p| p == "..") {
+            return Err(OpenDanError::InvalidArgument(format!("--cwd `{dir}` must be an absolute path without `..`")));
+        }
+        if !record.grant.within_roots(dir) {
+            return Err(OpenDanError::Bind(format!(
+                "--cwd `{dir}` is outside the roots granted on `{}`: {}",
+                record.runtime_id,
+                record.grant.roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+            )));
+        }
+        (node_runtime_of(&record, dir).await?, dir.to_string(), Vec::new())
+    };
+    let out = run_probe(rt.as_ref(), Path::new(&workdir), layers, &op_id, &ops_dir, command.to_string(), timeout_ms).await;
+    let finished_at_ms = crate::now_ms();
+    let op = match out {
+        Ok(out) => RuntimeOpRecord {
+            op_id,
+            runtime_id: record.runtime_id.clone(),
+            command: command.to_string(),
+            cwd: workdir,
+            exit_code: out.exit_code,
+            stdout: out.stdout,
+            stderr: out.stderr,
+            timed_out: out.timed_out,
+            started_at_ms,
+            finished_at_ms,
+            by: by.map(str::to_string),
+            call_id: None,
+        },
+        Err(e) => RuntimeOpRecord {
+            op_id,
+            runtime_id: record.runtime_id.clone(),
+            command: command.to_string(),
+            cwd: workdir,
+            exit_code: 125,
+            stdout: String::new(),
+            stderr: e.to_string(),
+            timed_out: false,
+            started_at_ms,
+            finished_at_ms,
+            by: by.map(str::to_string),
+            call_id: None,
+        },
+    };
+    std::fs::create_dir_all(&ops_dir).map_err(|e| OpenDanError::io(&ops_dir, e))?;
+    crate::fsutil::atomic_replace_json(&ops_dir.join(format!("{}.json", op.op_id)), &op)?;
+    Ok(op)
+}
+
+/// The record of an earlier `runtime_exec` (a session recovering asks
+/// instead of replaying).
+pub fn runtime_op(agent: &dyn crate::state::AgentStateClient, op_id: &str) -> Result<Option<RuntimeOpRecord>> {
+    crate::ids::validate_session_id(op_id).map_err(|_| OpenDanError::InvalidArgument(format!("bad op id `{op_id}`")))?;
+    crate::fsutil::read_json_opt(&runtime_ops_dir(agent)?.join(format!("{op_id}.json")))
+}
+
+/// Put a local file or directory onto a runtime of the agent at
+/// `remote_dir` (R-U3): skill commands, ExtTools installers. Files are
+/// written whole in chunks; returns the remote paths written.
+pub async fn runtime_put(
+    agent: &dyn crate::state::AgentStateClient,
+    runtime_id: &str,
+    local: &Path,
+    remote_dir: &str,
+) -> Result<Vec<String>> {
+    let record = usable_runtime(agent, runtime_id).await?;
+    if !local.exists() {
+        return Err(OpenDanError::InvalidArgument(format!("{} does not exist", local.display())));
+    }
+    if !buckyos_api::is_absolute_node_path(remote_dir) || remote_dir.split(['/', '\\']).any(|p| p == "..") {
+        return Err(OpenDanError::InvalidArgument(format!("remote directory `{remote_dir}` must be an absolute path without `..`")));
+    }
+    if !record.grant.within_roots(remote_dir) {
+        return Err(OpenDanError::Bind(format!("`{remote_dir}` is outside the roots granted on `{}`", record.runtime_id)));
+    }
+    let files: Box<dyn RuntimeFiles> = if record.is_private() {
+        Box::new(LocalFileBackend)
+    } else {
+        open_node_target(&record, &runtime_ops_dir(agent)?).await?.into_files()
+    };
+    let mut written = Vec::new();
+    let mut pending = vec![(local.to_path_buf(), remote_dir.to_string())];
+    while let Some((path, dir)) = pending.pop() {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if path.is_dir() {
+            let sub = if path == local { dir.clone() } else { target_join(&dir, &[&name]) };
+            let rd = std::fs::read_dir(&path).map_err(|e| OpenDanError::io(&path, e))?;
+            for entry in rd {
+                let entry = entry.map_err(|e| OpenDanError::io(&path, e))?;
+                pending.push((entry.path(), sub.clone()));
+            }
+            continue;
+        }
+        let data = std::fs::read(&path).map_err(|e| OpenDanError::io(&path, e))?;
+        if data.len() as u64 > crate::transfer::MAX_NODE_TRANSFER_BYTES {
+            return Err(OpenDanError::InvalidArgument(format!("{} is larger than {} bytes", path.display(), crate::transfer::MAX_NODE_TRANSFER_BYTES)));
+        }
+        let remote = target_join(&dir, &[&name]);
+        let chunk = files.limits().max_chunk_bytes.max(1) as usize;
+        let mut offset = 0usize;
+        loop {
+            let end = (offset + chunk).min(data.len());
+            let (mode, expected_size) = if offset == 0 { (WholeWriteMode::Replace, None) } else { (WholeWriteMode::Append, Some(offset as u64)) };
+            files
+                .write_chunk(&remote, WriteChunk { mode, expected_size, expected_hash: None, data: &data[offset..end] })
+                .await
+                .map_err(|e| OpenDanError::Bind(format!("write {remote}: {:?}: {}", e.code, e.message)))?;
+            offset = end;
+            if offset >= data.len() {
+                break;
+            }
+        }
+        written.push(remote);
+    }
+    written.sort();
+    Ok(written)
+}
+
 /// The session's PATH layers live on this machine: a node runtime gets none
 /// and finds its commands on the node's own PATH (TODO §6.1).
 pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<SessionEnv> {
     let mut layers = Vec::new();
-    if binding.kind != REMOTE_NODE_KIND {
+    if binding.connector != "node_executor" {
         layers.push(ctx.session_dir.join(RUNTIME_DIR).join("bin"));
         if let Some(root) = &ctx.agent_root {
             layers.extend(skill_tool_dirs(root, &ctx.cmd_skills));
@@ -791,7 +1365,7 @@ pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<
     let env = session_env_vars(ctx, &binding.runtime_id).await?;
     Ok(SessionEnv {
         runtime_id: binding.runtime_id.clone(),
-        kind: binding.kind.clone(),
+        kind: binding.connector.clone(),
         workdir: binding.workdir.clone().into(),
         path_layers: layers,
         env,
@@ -891,11 +1465,14 @@ mod tests {
 
     #[test]
     fn node_exec_must_be_a_complete_remote_node_config() {
-        let ok = node_exec("did:dev:abc", "did:web:jarvis.example.com");
+        let ok = RuntimeConnector::node("did:dev:abc", "did:web:jarvis.example.com").exec();
         let config = node_config_of("host", &ok).unwrap();
         assert_eq!(config.kind(), REMOTE_NODE_KIND);
         assert!(node_config_of("host", &serde_json::json!({ "kind": "native" })).is_err());
         assert!(node_config_of("host", &serde_json::json!({ "kind": "remote_node" })).is_err());
+        // A standalone executor resolves its profile when it is reached.
+        let exec = RuntimeConnector::executor("dev-1", None).exec();
+        assert_eq!(node_config_of("exec-dev-1", &exec).unwrap().remote_node.unwrap().connect_target(), Some("dev-1"));
     }
 
     #[test]

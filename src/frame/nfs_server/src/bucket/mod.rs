@@ -237,6 +237,12 @@ pub async fn session_from_headers(state: &AppState, creds: &Credentials) -> Buck
     session_of(state, None).await
 }
 
+/// §6.4 (d): what `/ndn/` serves to anyone can be bound by anyone, no Dropship problem there.
+fn publicly_provided(state: &AppState, obj_id: &str) -> bool {
+    let (Some(store), Ok(id)) = (state.buckets.loaded(), ndn_lib::ObjId::new(obj_id)) else { return false };
+    [buckyos_api::nfs_public_objects_bucket(), buckyos_api::nfs_public_cache_bucket()].iter().any(|b| store.ndn_bound_in(b, &id).unwrap_or(false))
+}
+
 /// RBAC (first layer) for one request, cached per resource and action.
 struct RbacPolicy {
     state: Arc<AppState>,
@@ -285,7 +291,7 @@ impl IdentityPolicy for RbacPolicy {
 
     async fn holds(&self, obj_id: &str) -> bool {
         let p = self.ndm_principal();
-        ndm::holds(&self.state, &p, obj_id) || ndm::allowed(&self.state, &p, ndm::RES_OBJECTS, "read").await
+        ndm::holds(&self.state, &p, obj_id) || publicly_provided(&self.state, obj_id) || ndm::allowed(&self.state, &p, ndm::RES_OBJECTS, "read").await
     }
 }
 
@@ -310,7 +316,7 @@ impl IdentityPolicy for AgentPolicy {
     }
 
     async fn holds(&self, obj_id: &str) -> bool {
-        ndm::holds(&self.state, &self.principal, obj_id) || ndm::allowed(&self.state, &self.principal, ndm::RES_OBJECTS, "read").await
+        ndm::holds(&self.state, &self.principal, obj_id) || publicly_provided(&self.state, obj_id) || ndm::allowed(&self.state, &self.principal, ndm::RES_OBJECTS, "read").await
     }
 }
 

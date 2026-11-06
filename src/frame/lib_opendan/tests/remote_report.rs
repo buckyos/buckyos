@@ -92,7 +92,10 @@ impl NodeExecutorConnector for Node {
                         };
                         json!({"type":"query_ok", "request_id":id, "op":op, "chunk":chunk})
                     }
-                    other => panic!("unexpected executor operation: {other}"),
+                    // The check after `register` probes the standard tools: this
+                    // node runs nothing, and says so.
+                    other => json!({"type":"error", "request_id":id,
+                        "error":{"code":"capability", "message":format!("mock node: no {other}")}}),
                 };
                 server.write_all(&encode_executor_control(&response).unwrap()).await.unwrap();
             }
@@ -149,11 +152,13 @@ async fn a_remote_report_uploads_the_file_and_the_ui_forwards_its_object_id() {
     let node = Arc::new(Node { payload: payload.clone(), reads: Arc::new(Mutex::new(vec![])) });
     let config: RuntimeConfig = serde_json::from_value(json!({"kind":"remote_node", "id":"remote-media",
         "workdir":ROOT, "remote_node":{"node_did":NODE, "profile_id":"media"}})).unwrap();
+    libopendan::runtime::set_node_connector(node.clone());
     agent.runtimes().register(&RuntimeRegister {
-        runtime_id: "remote-media".into(), kind: RuntimeKind::RemoteNode, name: "Remote media".into(),
-        description: String::new(), exec: Some(serde_json::to_value(&config).unwrap()), roots: vec![],
-        capabilities: json!({}), default: false, computer: Default::default(),
+        runtime_id: "remote-media".into(),
+        connector: RuntimeConnector::NodeExecutor { node_did: Some(NODE.into()), executor_id: None, profile_id: "media".into() },
+        name: "Remote media".into(), desc: String::new(), enabled: true, default: false,
         baseline: buckyos_api::RuntimeBaseline::Standard,
+        grant: RuntimeGrant { roots: vec![ROOT.into()], ..Default::default() },
     }, APP).await.unwrap();
     let mut spec = SessionTemplate::load("work", None).unwrap().spec("deliver the remote video");
     spec.prompt.llm_context = json!({"tools":{"enabled":true,"tools":[{"groupname":"bash"},{"name":"report"}]}});
@@ -172,7 +177,7 @@ async fn a_remote_report_uploads_the_file_and_the_ui_forwards_its_object_id() {
     let result = drive(&work, &deps, StopWhen::TurnClosed).await;
     assert!(matches!(result, DriveResult::TurnClosed { status: TurnStatus::Completed, .. }), "{result:?}");
     let binding = work.binding_opt().unwrap().unwrap();
-    assert_eq!(binding.kind, "remote_node");
+    assert_eq!(binding.connector, "node_executor");
     assert_eq!(binding.target["store_id"], "test-ledger");
     assert_eq!(binding.workdir, ROOT);
     let report = work.state().unwrap().final_report.unwrap();

@@ -55,9 +55,11 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent workspace list|get|create|import|discover|check|archive|restore|unregister|set-url|runtime-impact|set-runtime ...
         (list: [--active] [--runtime <id>] [--text <text>] [--json])
         (create/import: --runtime <id> --directory <abs path on that runtime> [--url <https://project>])
-  xagent runtime list [--available] [--json] | get <id> | check <id> | baseline [--json] [--check [--overlay]]
-                 | register <id> --kind container|host_native|remote_ssh --name <n> [--description <t>] [--exec <json>] [--root <dir>]...
-                   [--baseline standard|extended]
+  xagent runtime list [--available] [--json] | get <id> | check <id> [--commands <a,b>] | baseline [--json] [--check [--overlay]]
+                 | register <id> --connector ssh --host <h> [--user <u>] [--port <p>] [--identity-file <f>] --name <n> [--desc <t>]
+                   --root <dir>... [--baseline standard|extended] [--expires-at-ms <t>]   (development; owners add runtimes in the directory)
+                 | update <id> --expected-revision <n> [--name <n>] [--desc <t>] [--root <dir>]... | unregister <id> --expected-revision <n>
+                 | op <op_id>   (the record of an earlier `run`)
                  | update <id> --expected-revision <n> [--name <n>] [--description <t>] [--root <dir>]...
                  | unregister <id> --expected-revision <n>
   xagent goal   create --objective <text> [--title <t>] [--lifecycle achieve|maintain] [--achieved-when <t>]
@@ -103,6 +105,10 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         <end> = session:<path> | workspace:<path> | <runtime_id>:<absolute path>; one regular file between the session's
         runtimes, verified by hash and committed by rename; an existing target only with --replace
         (exit 0 committed, 1 failed, 4 cancelled)
+  run --runtime <runtime_id|workspace> [--cwd <abs dir on it>] [--timeout <secs>] -- <command...>
+        one command on another runtime of this agent (only from a session whose working runtime is the private one);
+        `workspace` runs in the session's workspace directory, a runtime id needs --cwd inside its granted roots;
+        the target's own PATH and shell; output and exit code come back as they are (exit 124: timed out)
   task state|cancel <task_id>   (a task of the run this command runs in, e.g. a shell command that continued as a task;
         its end comes back to the session as input on its own — nothing waits for it; exit 0 running/finished, 1 failed, 2 unknown)
   runtime list [--available] [--json] | get <id> | check <id> | baseline [--json] | workspace ...
@@ -1755,7 +1761,7 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
         Ok(WorkspaceLocation {
             runtime_id: a
                 .get("runtime")
-                .unwrap_or_else(|| CONTAINER_RUNTIME.into()),
+                .unwrap_or_else(|| PRIVATE_RUNTIME.into()),
             directory,
         })
     };
@@ -1956,29 +1962,15 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
         "list" => {
             let mut all = registry.list().await?;
             if a.has("available") {
-                all.retain(|r| r.availability == RuntimeAvailability::Available);
+                all.retain(|r| r.usable());
             }
             if a.has("json") {
                 print(&all);
             } else {
                 list_heading("Runtimes", all.len());
                 for r in &all {
-                    let platform = [&r.platform.os, &r.platform.arch, &r.platform.shell]
-                        .into_iter()
-                        .filter(|s| !s.trim().is_empty())
-                        .map(|s| inline_text(s))
-                        .collect::<Vec<_>>();
-                    println!(
-                        "- {}: {} — {}; {}; {}{}; computer: {}",
-                        r.runtime_id, inline_text(&r.name),
-                        if platform.is_empty() { "platform unknown".into() } else { platform.join(" / ") },
-                        r.baseline.as_str(), list_label(r.availability),
-                        if r.default { "; default" } else { "" }, r.computer.as_str(),
-                    );
-                    if !r.roots.is_empty() {
-                        println!("  Workspace roots: {}", r.roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
-                    }
-                    match &r.baseline_check {
+                    println!("{}", crate::runtime::runtime_line(r));
+                    match &r.caps.baseline_check {
                         Some(check) => {
                             if !check.missing.is_empty() {
                                 println!("  Tool check: missing {}", check.missing.join(", "));
@@ -1990,6 +1982,12 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                             }
                         }
                         None => println!("  Tool check: not checked"),
+                    }
+                    if let Some(tools) = &r.caps.tools_check {
+                        println!("  Commands verified: {}{}", tools.present.join(", "), if tools.missing.is_empty() { String::new() } else { format!("; missing {}", tools.missing.join(", ")) });
+                    }
+                    if r.usage.sessions_total > 0 || r.usage.workspaces > 0 {
+                        println!("  Used by {} sessions, {} workspaces{}", r.usage.sessions_total, r.usage.workspaces, r.usage.last_session_id.as_ref().map(|s| format!("; last {s}")).unwrap_or_default());
                     }
                     if let Some(error) = &r.last_error {
                         println!("  Error: {}", inline_text(error));
@@ -2006,36 +2004,60 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                     .ok_or_else(|| bad(format!("runtime {id} is not registered")))?,
             );
         }
-        "check" => print(&registry.check(&a.next("runtime id")?).await?),
+        "check" => {
+            let id = a.next("runtime id")?;
+            let commands: Vec<String> = a
+                .all("commands")
+                .iter()
+                .flat_map(|v| v.split(',').map(|x| x.trim().to_string()))
+                .filter(|x| !x.is_empty())
+                .collect();
+            print(&registry.check(&id, &commands).await?);
+        }
+        "op" => {
+            let id = a.next("op id")?;
+            print(&crate::runtime::runtime_op(c.agent.as_ref(), &id)?.ok_or_else(|| bad(format!("no runtime operation {id}")))?);
+        }
         "register" => {
-            let kind = match a.get("kind").as_deref() {
-                Some("container") => RuntimeKind::Container,
-                Some("host_native") => RuntimeKind::HostNative,
-                Some("remote_node") => RuntimeKind::RemoteNode,
-                Some("remote_ssh") => RuntimeKind::RemoteSsh,
-                _ => return Err(bad("--kind takes container | host_native | remote_node | remote_ssh")),
+            let connector = match a.get("connector").as_deref() {
+                Some("ssh") => RuntimeConnector::Ssh {
+                    host: a.get("host").ok_or_else(|| bad("missing --host"))?,
+                    user: a.get("user"),
+                    port: a.get("port").map(|p| p.parse::<u16>().map_err(|_| bad("--port takes a number"))).transpose()?,
+                    identity_file: a.get("identity-file"),
+                },
+                Some("node_executor") => RuntimeConnector::NodeExecutor {
+                    node_did: a.get("node-did"),
+                    executor_id: a.get("executor-id"),
+                    profile_id: a.get("profile").unwrap_or_default(),
+                },
+                _ => return Err(bad("--connector takes ssh | node_executor (the private runtime and the owner's nodes are projected from the settings)")),
             };
-            let exec = a.get("exec").map(|e| json_arg::<Value>(&e)).transpose()?;
             print(
                 &registry
                     .register(
                         &RuntimeRegister {
                             runtime_id: a.next("runtime id")?,
-                            kind,
+                            connector,
                             name: a.get("name").ok_or_else(|| bad("missing --name"))?,
-                            description: a.get("description").unwrap_or_default(),
-                            exec,
-                            roots: a.all("root").into_iter().map(PathBuf::from).collect(),
-                            capabilities: json!({}),
+                            desc: a.get("desc").unwrap_or_default(),
+                            enabled: true,
                             default: false,
-                            computer: Default::default(),
                             baseline: match a.get("baseline").as_deref() {
                                 None | Some("standard") => buckyos_api::RuntimeBaseline::Standard,
                                 Some("extended") => buckyos_api::RuntimeBaseline::Extended,
                                 Some(b) => return Err(bad(format!("--baseline takes standard | extended, not `{b}`"))),
                             },
+                            grant: RuntimeGrant {
+                                ops: Vec::new(),
+                                roots: a.all("root").into_iter().map(PathBuf::from).collect(),
+                                computer: Default::default(),
+                                install: Default::default(),
+                                workspace: false,
+                                expires_at_ms: a.num("expires-at-ms")?,
+                            },
                         },
-                        &c.who,
+                        &format!("dev:{}", c.who),
                     )
                     .await?,
             );
@@ -2052,7 +2074,7 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                                 bad("missing --expected-revision (read runtime get first)")
                             })?,
                             name: a.get("name"),
-                            description: a.get("description"),
+                            desc: a.get("desc"),
                             roots: (!roots.is_empty())
                                 .then(|| roots.into_iter().map(PathBuf::from).collect()),
                         },
@@ -2066,14 +2088,62 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
             let revision = a
                 .num("expected-revision")?
                 .ok_or_else(|| bad("missing --expected-revision (read runtime get first)"))?;
-            registry.unregister(&id, revision, &c.who).await?;
-            print(&json!({ "runtime_id": id, "unregistered": true }));
+            print(&registry.unregister(&id, revision, &c.who).await?);
         }
         _ => return Err(bad(format!("unknown runtime command `{command}`"))),
     }
     Ok(0)
 }
 
+/// `run --runtime <id|workspace> [--cwd <dir>] [--timeout <secs>] -- <command...>`:
+/// one command on another runtime of this agent, from a session whose
+/// working runtime is the private one (R-W5). The command words after `--`
+/// are joined for the target's shell.
+async fn cmd_runtime_run(argv: Vec<String>) -> R<i32> {
+    let split = argv.iter().position(|x| x == "--").ok_or_else(|| bad("run takes `-- <command...>` after its options"))?;
+    let command = argv[split + 1..].join(" ");
+    if command.trim().is_empty() {
+        return Err(bad("run: no command after `--`"));
+    }
+    let a = Args::parse(argv[..split].to_vec(), &[]);
+    let sid = env_sid().ok_or_else(|| bad("run runs inside a session ($OPENDAN_SESSION_ID)"))?;
+    let c = ctx(&a, None, false).await?;
+    let entry = c
+        .agent
+        .sessions()
+        .lookup(&sid)
+        .await?
+        .ok_or_else(|| bad(format!("session {sid} is not registered")))?;
+    let sd = SessionDir::open(&entry.location)?;
+    let cfg = sd.config()?;
+    if !cfg.runtime.is_private() {
+        return Err(bad(format!(
+            "this session's working runtime is `{}`: a single-machine session has no `agent-session run`; its creator places the material and commands on that machine",
+            cfg.runtime.runtime_id()
+        )));
+    }
+    let target = a.get("runtime").ok_or_else(|| bad("missing --runtime <runtime_id|workspace>"))?;
+    let (runtime_id, cwd) = if target == "workspace" {
+        let b = cfg
+            .workspace_binding
+            .as_ref()
+            .ok_or_else(|| bad("the session has no workspace; name a runtime id and --cwd"))?;
+        (canonical_runtime(&b.location.runtime_id).to_string(), Some(b.location.directory.display().to_string()))
+    } else {
+        (canonical_runtime(&target).to_string(), a.get("cwd"))
+    };
+    if is_private_runtime(&runtime_id) && target != "workspace" {
+        return Err(bad("the private runtime is where this session's `shell` already runs; use `shell`"));
+    }
+    let timeout_ms = a
+        .num::<u64>("timeout")?
+        .map(|s| s * 1000)
+        .unwrap_or(crate::runtime::RUNTIME_EXEC_DEFAULT_TIMEOUT_MS);
+    let op = crate::runtime::runtime_exec(c.agent.as_ref(), &runtime_id, &command, cwd.as_deref(), timeout_ms, Some(&format!("session:{sid}"))).await?;
+    let record = crate::runtime::session_run_record(&sd, &op, env_call_id())?;
+    print(&record);
+    Ok(if op.timed_out { 124 } else { op.exit_code })
+}
 /// The caller of a goal operation: inside a session its kind decides what it
 /// may do (`$OPENDAN_SESSION_ID`), outside the owner side.
 fn goal_caller(c: &Ctx) -> GoalCaller {
@@ -2755,6 +2825,11 @@ async fn real_main() -> R<i32> {
         return Ok(if argv.is_empty() { 2 } else { 0 });
     }
     let cmd = argv.remove(0);
+    // `run -- <command>` is the session helper `agent-session run`; `xagent
+    // run <sid>` drives a session.
+    if cmd == "run" && argv.iter().any(|x| x == "--") && remote_context(&mut argv.clone()).is_none() {
+        return cmd_runtime_run(argv).await;
+    }
     if let Some((path, sc)) = remote_context(&mut argv) {
         // What only reads this machine runs here; the rest is the session's
         // business on the control side.

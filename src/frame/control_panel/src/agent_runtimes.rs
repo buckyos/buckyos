@@ -161,6 +161,7 @@ pub(crate) async fn apply_create_defaults(kv: &dyn AgentKv, owner: &str, setting
                 node_did: host.node_did.clone(),
             },
             baseline: None,
+            grant: None,
         },
     );
     settings.default_runtime_id = Some(HOST_RUNTIME_ID.to_string());
@@ -232,6 +233,7 @@ pub(crate) async fn apply_update(
                             node_did: offer.node_did.clone(),
                         },
                         baseline: None,
+                        grant: None,
                     }
                 }
             };
@@ -334,7 +336,7 @@ pub(crate) fn directory_view(
             }
             let (kind, target) = match &r.target {
                 AgentRuntimeTarget::Node { node_id, node_did } => ("node", json!({"node_id": node_id, "node_did": node_did})),
-                AgentRuntimeTarget::Executor { executor_id } => ("executor", json!({"executor_id": executor_id})),
+                AgentRuntimeTarget::Executor { executor_id, profile_id } => ("executor", json!({"executor_id": executor_id, "profile_id": profile_id})),
             };
             let mut entry = json!({
                 "runtime_id": id, "kind": kind, "closed": true, "withdrawn": true,

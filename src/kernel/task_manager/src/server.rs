@@ -10,7 +10,7 @@ use crate::acl::{
     compute_permission, summarize_task, trim_task, Principal, TaskPermission,
     SYSTEM_ROLE_ZONE_TRUSTED,
 };
-use crate::json_schema::validate_json_schema;
+use buckyos_api::validate_json_schema;
 use crate::task_store::{now_ms, CreateTaskArgs, MutationOutcome, TaskStore};
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -2460,7 +2460,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                     name: "run tree".into(),
                     schema_id: WORKFLOW_RUN_TREE_TASK_SCHEMA_ID.to_string(),
                     schema_version: None,
-                    input: json!({"request": {"run_id": "r1"}}),
+                    input: json!({"request": {"workflow_id": "w1"}}),
                     executor: CreateTaskExecutor::SelfApp {
                         app_instance_id: None,
                     },

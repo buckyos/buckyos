@@ -241,7 +241,7 @@ const buildFixtures = () => {
       }),
       report: '',
       config: config(UI, 'ui_chat', ['ui_chat']),
-      binding: { schema: 'opendan.binding/4', target: { kind: 'native' }, runtime_id: 'rt-native-01', kind: 'native', workdir: `${ROOT}/sessions/${UI}/work`, bound_at_ms: ago(86000), bound_by: WHO },
+      binding: { schema: 'opendan.binding/6', target: { kind: 'native' }, runtime_id: 'private', connector: 'native', workdir: `${ROOT}/sessions/${UI}/work`, bound_at_ms: ago(86000), bound_by: WHO },
       statistics: { input_tokens: 48210, output_tokens: 3922, total_tokens: 52132, rounds: 11, rounds_failed: 0, rounds_interrupted: 0, turns: 3 },
       runs: ['run-0001', 'run-0002', 'run-0003'],
       lease_holder: null,
@@ -270,7 +270,7 @@ const buildFixtures = () => {
       }),
       report: '# Weekly downloads\n\n- 14 files, 3 archives\n- (in progress)\n',
       config: config(WORK_RUNNING, 'work_plan', ['work_plan', 'work_do', 'work_report']),
-      binding: { schema: 'opendan.binding/4', target: { node_did: 'did:web:pc.test.buckyos.io', profile_id: 'agent-3f9c1a07b2e4', workdir: '/home/devtest/Downloads' }, runtime_id: 'rt-node-07', kind: 'remote_node', workdir: '/home/devtest/Downloads', bound_at_ms: ago(370), bound_by: WHO },
+      binding: { schema: 'opendan.binding/6', target: { node_did: 'did:web:pc.test.buckyos.io', profile_id: 'agent-3f9c1a07b2e4', workdir: '/home/devtest/Downloads' }, runtime_id: 'rt-node-07', connector: 'node_executor', workdir: '/home/devtest/Downloads', bound_at_ms: ago(370), bound_by: WHO },
       statistics: { input_tokens: 9120, output_tokens: 801, total_tokens: 9921, rounds: 4, rounds_failed: 0, rounds_interrupted: 1, turns: 1 },
       runs: ['run-0001', 'run-0002'],
       lease_holder: { resource: `session:${WORK_RUNNING}`, epoch: 5, holder: { runner_id: 'rn-51c2', principal: WHO, host: 'ood1', pid: 4411 }, acquired_at_ms: ago(120), released_at_ms: null },
@@ -634,25 +634,28 @@ export const createMockDataModel = (): OpenDanDataModel => {
       source_session: null, conflict: null, last_error: 'Directory does not exist; locate the moved workspace to restore access.',
     },
   ]
+  const allOps = ['open_stream', 'describe', 'exec', 'read', 'write', 'edit', 'mkdir', 'stat', 'rename', 'remove', 'computer_inspect', 'computer_observe', 'computer_act', 'query', 'cancel']
   const runtimes: KnownRuntime[] = [
     {
-      version: 1, runtime_id: 'container', kind: 'container', name: 'Agent container',
-      description: "The environment the agent itself runs in; commands run directly. It is the agent's container: paths here are not the owner's host paths.",
-      runtime_host: 'mock-host', exec: { kind: 'native' }, roots: [`${ROOT}/workspaces`, '/home/devtest'],
-      capabilities: { network: true, os: 'linux' }, availability: 'available', builtin: true, default: false, computer: 'none',
-      baseline: 'extended', platform: { os: 'linux', arch: 'x86_64', shell: 'bash' },
-      baseline_check: { checked_at_ms: ago(60), missing: [], ok: true },
+      version: 4, runtime_id: 'private', name: 'Private runtime',
+      desc: "Your own environment: the agent's container. Commands run directly; paths here are not the owner's host paths.",
+      runtime_host: 'mock-host', connector: { type: 'native' }, enabled: true,
+      caps: { os: 'linux', arch: 'x86_64', shell: 'bash', desktop: false, baseline: 'extended', baseline_check: { checked_at_ms: ago(60), missing: [], ok: true } },
+      grant: { ops: allOps, roots: [], computer: 'none', install: 'system', workspace: true },
+      availability: 'available', builtin: true, default: false, lifecycle: 'active',
+      usage: { sessions_total: 12, last_used_at_ms: ago(300), last_session_id: UI, workspaces: 2, skill_commands: [] },
       revision: 1, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(86400),
       checked_at_ms: ago(60), last_error: null,
     },
     {
-      version: 2, runtime_id: 'host', kind: 'host_native', name: 'Host machine',
-      description: "Node `desktop` (did:dev:mock): the owner's machine, where the owner's own files and tools are; commands and files go through its node executor.",
-      runtime_host: 'mock-host', exec: { kind: 'remote_node', remote_node: { node_did: 'did:dev:mock', profile_id: 'agent-0123456789ab' } },
-      roots: ['/Users/devtest'], capabilities: { enabled: true, node_id: 'desktop', os: 'macos', computer: 'observe' },
-      availability: 'available', builtin: true, default: true, computer: 'observe',
-      baseline: 'standard', platform: { os: 'macos', arch: 'aarch64', shell: 'zsh' },
-      baseline_check: { checked_at_ms: ago(60), missing: ['aicc-tool', 'gen_image'], ok: false },
+      version: 4, runtime_id: 'host', name: "Owner's desktop",
+      desc: "The owner's own machine (node `desktop`), shared with the owner: the owner's files and tools are here; commands and files go through its node executor.",
+      runtime_host: 'mock-host', connector: { type: 'node_executor', node_did: 'did:dev:mock', profile_id: 'agent-0123456789ab' }, enabled: true,
+      caps: { os: 'macos', arch: 'aarch64', shell: 'zsh', desktop: true, identity_mode: 'current_user', baseline: 'standard',
+        baseline_check: { checked_at_ms: ago(60), missing: ['aicc-tool', 'gen_image'], ok: false } },
+      grant: { ops: allOps.filter((op) => op !== 'computer_act'), roots: ['/Users/devtest'], computer: 'observe', install: 'none', workspace: true },
+      availability: 'available', builtin: true, default: true, lifecycle: 'active',
+      usage: { sessions_total: 1, last_used_at_ms: ago(370), last_session_id: WORK_RUNNING, workspaces: 1, skill_commands: [] },
       revision: 3, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(600),
       checked_at_ms: ago(60), last_error: null,
     },
@@ -661,7 +664,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
     runtimes: { host: { enabled: true, computer: 'observe', target: { kind: 'node', node_id: 'desktop', node_did: 'did:dev:mock' } } },
     default_runtime_id: 'host',
   }
-  const availableRuntimeIds = () => runtimes.filter((r) => r.availability === 'available').map((r) => r.runtime_id).concat('local')
+  const availableRuntimeIds = () => runtimes.filter((r) => r.availability === 'available').map((r) => r.runtime_id).concat('local', 'container')
   const findWorkspace = (workspaceId: string) => {
     const workspace = workspaces.find((record) => record.workspace_id === workspaceId)
     if (!workspace) throw new OpenDanError('not_found', `workspace ${workspaceId} is not registered`)
@@ -848,18 +851,19 @@ export const createMockDataModel = (): OpenDanDataModel => {
         if (patch.computer) entry.computer = patch.computer
         if (patch.baseline !== undefined) entry.baseline = patch.baseline
       }
-      if (patch.default === true) runtimeSettings.default_runtime_id = patch.runtime_id
-      if (patch.default === false && runtimeSettings.default_runtime_id === patch.runtime_id) runtimeSettings.default_runtime_id = 'container'
+      const asSetting = (id: string) => (id === 'private' ? 'container' : id)
+      if (patch.default === true) runtimeSettings.default_runtime_id = asSetting(patch.runtime_id)
+      if (patch.default === false && runtimeSettings.default_runtime_id === asSetting(patch.runtime_id)) runtimeSettings.default_runtime_id = 'container'
       if (runtimeSettings.default_runtime_id !== 'container' && !runtimeSettings.runtimes[runtimeSettings.default_runtime_id]?.enabled) runtimeSettings.default_runtime_id = 'container'
       for (const r of runtimes) {
         const chosen = runtimeSettings.runtimes[r.runtime_id]
-        r.default = runtimeSettings.default_runtime_id === r.runtime_id
+        r.default = runtimeSettings.default_runtime_id === asSetting(r.runtime_id)
         if (chosen) {
-          r.computer = chosen.computer
-          r.baseline = chosen.baseline ?? 'standard'
+          r.grant.computer = chosen.computer
+          r.caps.baseline = chosen.baseline ?? 'standard'
+          r.enabled = chosen.enabled
           r.availability = chosen.enabled ? 'available' : 'runtime_unavailable'
           r.last_error = chosen.enabled ? null : 'the `host` runtime is not enabled for this agent'
-          r.exec = chosen.enabled ? r.exec ?? { kind: 'remote_node' } : null
         }
       }
       return structuredClone(runtimeSettings)

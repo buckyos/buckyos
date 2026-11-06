@@ -20,10 +20,10 @@ extended = standard + 该 runtime 已准备的第三方工具、语言环境或�
 
 两种基线都描述 **Session 执行端具备什么能力**，与执行端的位置和操作系统分别记录：
 
-- `container`、`host_native`、`remote_node` 等说明执行位置；`standard`、`extended` 说明环境基线。节点上的 runtime 同样可以是 `extended`。
+- `connector`（`native` 私有 runtime、`node_executor` 节点或 daemon 设备、`ssh`）说明执行位置；`standard`、`extended` 说明环境基线。节点上的 runtime 同样可以是 `extended`。
 - `platform` 说明操作系统、架构和 shell。`extended` 不会让 Windows 自动具备 Linux 命令或脚本语法。
 - Workspace 说明材料和项目文件所在的 runtime 与目录，不决定 Session 的基线。只用来存放 Workspace 的机器不必安装完整 Agent 工具集。
-- 一个 Session 创建时冻结自己的 runtime、基线和平台。选择顺序为显式 `--runtime`、继承父 Session、Agent 默认；修改默认 runtime 或其声明不会自动改变已有 Session。
+- 一个 Session 创建时冻结自己的工作 runtime、基线和平台。chat（UI）Session 恒为私有 runtime；其它 Session 的选择顺序为显式 `--runtime`、继承父 Session、私有 runtime（owner 的默认 runtime 不参与，它只说明 owner 的机器在哪，见 [runtime 工作模型 TODO](../../notepads/opendan-agent-runtime-lifecycle-todo.md) §0.3）；修改默认 runtime 或其声明不会自动改变已有 Session。
 
 当前系统对 aios 容器声明 `extended`；host/节点 runtime 取 owner 的声明，缺省 `standard`。**声明为 extended 不表示装齐所有开发软件，也不表示必须挂载 ExtTool 卷。** 当前 aios 的实际附加工具见 §3。
 

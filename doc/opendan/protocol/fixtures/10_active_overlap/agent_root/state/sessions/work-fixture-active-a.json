@@ -27,7 +27,7 @@
     "rev": 2,
     "run_state": "running",
     "acceptance": "n/a",
-    "one_line_status": "",
+    "one_line_status": "working",
     "report_brief": "",
     "turn_open": true,
     "activity": {
@@ -37,19 +37,19 @@
           "kind": "path",
           "ref": "ws:snake/src/",
           "mode": "write",
-          "since_ms": 1793591511210
+          "since_ms": 1793864756533
         }
       ],
-      "heartbeat_ms": 1793591511210
+      "heartbeat_ms": 1793864756533
     },
     "last_runner": {
-      "runner_id": "rn-dda1c212af8c466d",
+      "runner_id": "rn-b24766005b454e1f",
       "host": "${FIXTURE_HOST}",
-      "pid": 2811544,
+      "pid": 234333,
       "lock_epoch": 1,
-      "at_ms": 1793591511212
+      "at_ms": 1793864756534
     },
-    "updated_at_ms": 1793591511210
+    "updated_at_ms": 1793864756533
   },
   "location_rev": 0
 }

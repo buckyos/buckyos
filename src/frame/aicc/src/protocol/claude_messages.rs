@@ -418,17 +418,6 @@ fn normalize_claude_api_output(
 }
 
 fn validate_canonical_options(request: &LlmChatInvokeRequest) -> ProtocolResultValue<()> {
-    if let Some(format) = &request.response_format {
-        if !matches!(
-            format.format_type,
-            LlmResponseFormatType::Text | LlmResponseFormatType::JsonSchema
-        ) {
-            return Err(ProtocolError::new(
-                ProtocolErrorKind::UnsupportedOperation,
-                "Claude Messages codec does not map canonical structured output",
-            ));
-        }
-    }
     if request.output.is_some() {
         return Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,

@@ -14,27 +14,31 @@
 //! | `obj://ndm/uploads` | write  | upload chunks, register own objects, existence checks |
 //! | `obj://ndm/objects` | read   | read any object or chunk                            |
 //! | `obj://ndm/retain`  | write  | pin/unpin under the caller's own owner prefix       |
-//! | `obj://ndm/manage`  | write  | delete, GC, fs anchors, edges, pins of any owner    |
+//! | `obj://ndm/manage`  | write  | delete, GC, fs anchors, edges, pins of any owner, granting holdings |
 //!
 //! What a caller uploaded or registered stays readable to it (`ndm_holdings`)
 //! and is held in the store by a lease for [`HOLD_TTL_SECS`], long enough for
 //! the business that uses it (a message, a post, an app package) to take its
-//! own retention.
+//! own retention. A service that produced objects for an authorized requester
+//! hands them over with [`grant_holdings`].
 
 pub mod forward;
 pub mod import;
 pub mod uploads;
 
 use crate::auth::Credentials;
+use crate::bucket::Session;
 use crate::config::AuthMode;
 use crate::error::NfsResult;
 use crate::fsutil::unix_now;
-use crate::state::AppState;
+use crate::state::{AppState, SharedState};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use bucket_store::{BucketError, BucketResult};
 use named_store::{NamedDataMgr, NamedDataMgrNodeGateway, NamedDataMgrZoneGateway, NdmZoneGatewayConfig, PinScope};
 use ndn_lib::ObjId;
 use rusqlite::{params, OptionalExtension};
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -115,6 +119,10 @@ pub struct Principal {
     token: Option<String>,
 }
 
+fn holding_key(user: &str, app: &str) -> String {
+    format!("{user}|{app}")
+}
+
 impl Principal {
     pub fn new(user: String, app_key: String, app: String, token: Option<String>) -> Self {
         Principal { user, app_key, app, token }
@@ -122,7 +130,7 @@ impl Principal {
 
     /// Owner of uploads and holdings: the same user through the same app.
     pub fn key(&self) -> String {
-        format!("{}|{}", self.user, self.app)
+        holding_key(&self.user, &self.app)
     }
 
     /// Pin owners a caller with `obj://ndm/retain` may use.
@@ -260,6 +268,34 @@ pub async fn hold_checked(state: &AppState, store: &NamedDataMgr, p: &Principal,
         params![p.key(), obj_id.to_string(), how, unix_now()],
     ).map_err(|e| ndm_error(StatusCode::SERVICE_UNAVAILABLE, "retention_failed", e))?;
     Ok(())
+}
+
+/// `bucket.grant_holdings { user_id, app_id, obj_ids }`: exactly these objects become
+/// readable to that user through that app. Nothing below them is covered: a held file
+/// is read through the file, its chunks stay out of reach. No lease is taken; the
+/// granting service keeps retaining what it produced.
+pub async fn grant_holdings(state: &SharedState, session: &Session, user_id: &str, app_id: &str, obj_ids: &[String]) -> BucketResult<Value> {
+    crate::ndn::public::require(state, session, RES_MANAGE).await?;
+    if user_id.is_empty() || app_id.is_empty() {
+        return Err(BucketError::InvalidArgument("user_id and app_id are required".into()));
+    }
+    let ids = obj_ids
+        .iter()
+        .map(|id| ObjId::new(id).map(|o| o.to_string()).map_err(|e| BucketError::InvalidArgument(format!("obj_ids: {e}"))))
+        .collect::<BucketResult<Vec<_>>>()?;
+    let key = holding_key(user_id, app_id);
+    let now = unix_now();
+    let mut conn = state.db.lock();
+    let tx = conn.transaction()?;
+    for id in &ids {
+        tx.execute(
+            "INSERT INTO ndm_holdings(principal, obj_id, how, at) VALUES (?1, ?2, 'granted', ?3)
+             ON CONFLICT(principal, obj_id) DO UPDATE SET at=excluded.at",
+            params![key, id, now],
+        )?;
+    }
+    tx.commit()?;
+    Ok(serde_json::json!({"granted": ids.len()}))
 }
 
 /// Read access to one object or chunk: the general read right, or the caller's own holding.

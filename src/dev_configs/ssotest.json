@@ -59,7 +59,7 @@
           "sudo hostnamectl set-hostname alice-ood1",
           "sudo mkdir -p /opt/buckyos",
           "sudo chown -R ubuntu:ubuntu /opt/buckyos",
-          "sudo tee /etc/systemd/system/ssotest-firewall.service >/dev/null <<'EOF'\n[Unit]\nDescription=ssotest: reject inbound 80/443/2980 to simulate a NAT OOD\nWants=network-pre.target\nBefore=network-pre.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/iptables -I INPUT 1 -i lo -j ACCEPT\nExecStart=/usr/sbin/iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT\n\n[Install]\nWantedBy=multi-user.target\nEOF",
+          "sudo tee /etc/systemd/system/ssotest-firewall.service >/dev/null <<'EOF'\n[Unit]\nDescription=ssotest: reject inbound 80/443/2980 to simulate a NAT OOD\nWants=network-pre.target\nBefore=network-pre.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/iptables -I INPUT 1 -i lo -j ACCEPT\nExecStart=/usr/sbin/iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT\nExecStart=/usr/sbin/ip6tables -I INPUT 1 -i lo -j ACCEPT\nExecStart=/usr/sbin/ip6tables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT\n\n[Install]\nWantedBy=multi-user.target\nEOF",
           "sudo systemctl daemon-reload && sudo systemctl enable --now ssotest-firewall.service"
         ],
         "instance_commands": [
@@ -127,7 +127,7 @@
           "sudo hostnamectl set-hostname charlie-ood1",
           "sudo mkdir -p /opt/buckyos",
           "sudo chown -R ubuntu:ubuntu /opt/buckyos",
-          "sudo tee /etc/systemd/system/ssotest-firewall.service >/dev/null <<'EOF'\n[Unit]\nDescription=ssotest: the router maps 80/443 and the RTCP port 2981, not 2980\nWants=network-pre.target\nBefore=network-pre.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/iptables -I INPUT 1 -i lo -j ACCEPT\nExecStart=/usr/sbin/iptables -I INPUT 2 ! -i lo -p tcp --dport 2980 -j REJECT\n\n[Install]\nWantedBy=multi-user.target\nEOF",
+          "sudo tee /etc/systemd/system/ssotest-firewall.service >/dev/null <<'EOF'\n[Unit]\nDescription=ssotest: the router maps 80/443 and the RTCP port 2981, not 2980\nWants=network-pre.target\nBefore=network-pre.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/sbin/iptables -I INPUT 1 -i lo -j ACCEPT\nExecStart=/usr/sbin/iptables -I INPUT 2 ! -i lo -p tcp --dport 2980 -j REJECT\nExecStart=/usr/sbin/ip6tables -I INPUT 1 -i lo -j ACCEPT\nExecStart=/usr/sbin/ip6tables -I INPUT 2 ! -i lo -p tcp --dport 2980 -j REJECT\n\n[Install]\nWantedBy=multi-user.target\nEOF",
           "sudo systemctl daemon-reload && sudo systemctl enable --now ssotest-firewall.service"
         ],
         "instance_commands": [

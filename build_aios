@@ -16,11 +16,17 @@ SUPPORTED_ARCHES=("amd64" "aarch64")
 # use uv with this system Python 3.12; Node.js comes from the official tarball
 # (NODE_VERSION in the Dockerfile), not Debian's EOL nodejs/npm. pandoc is a
 # tool package of the ExtTool volume (publish/exttool/install_pandoc.sh).
+# ffmpeg / poppler-utils / LibreOffice headless / fonts / locales are the
+# workflow media tool baseline (doc/workflow/media tool baseline.md); the
+# workflow host must carry the same set, the image alone does not satisfy it.
 RUNTIME_PACKAGES=(
   "bash" "ca-certificates" "curl" "git" "jq" "rsync"
   "tree" "unzip" "xz-utils"
   "python3"
   "ffmpeg" "imagemagick" "poppler-utils" "tesseract-ocr"
+  "libreoffice-core-nogui" "libreoffice-writer-nogui" "libreoffice-impress-nogui" "libreoffice-calc-nogui"
+  "fonts-dejavu-core" "fonts-liberation" "fonts-noto-core" "fonts-noto-cjk"
+  "locales"
 )
 EXTRA_APT_PACKAGES=()
 SELECTED_ARCHES=()
@@ -592,6 +598,9 @@ EOF
        /usr/lib/*-linux-gnu/libGLX_mesa.so* \
     && rm -rf /usr/lib/*-linux-gnu/dri
 
+# UTF-8 locale for soffice (document -> PDF) and the other media tools; en_US.UTF-8
+# is generated so LibreOffice has a full locale besides C.UTF-8.
+RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen en_US.UTF-8
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # Node.js LTS (official build; npm/npx/corepack included).

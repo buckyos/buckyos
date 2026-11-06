@@ -22,15 +22,13 @@ use serde_json::json;
 fn lab(baseline: RuntimeBaseline, default: bool) -> RuntimeRegister {
     RuntimeRegister {
         runtime_id: "lab".into(),
-        kind: RuntimeKind::RemoteNode,
+        connector: RuntimeConnector::node("did:dev:lab", AGENT),
         name: "Lab node".into(),
-        description: String::new(),
-        exec: Some(node_exec("did:dev:lab", AGENT)),
-        roots: vec![],
-        capabilities: json!({}),
+        desc: String::new(),
+        enabled: true,
         default,
-        computer: Default::default(),
         baseline,
+        grant: RuntimeGrant { roots: vec!["/lab".into()], ..Default::default() },
     }
 }
 
@@ -48,33 +46,55 @@ fn skill(env: &Env, name: &str, front: &str) {
 async fn the_workspace_never_chooses_the_session_runtime() {
     let env = Env::new();
     let agent = env.agent();
+    mock_node(&["/lab"], "/lab/home");
     agent.runtimes().register(&lab(RuntimeBaseline::Standard, true), APP).await.unwrap();
     let directory = env.root.join("project");
     std::fs::create_dir(&directory).unwrap();
     let workspace = env.workspace(&directory).await;
 
-    // The agent's default runtime, with a workspace on the container.
-    let mut spec = work_spec("default runtime, container workspace");
+    // Nobody placed the work: it runs on the private runtime, never on the
+    // owner's default (`lab`), with a workspace on the private runtime.
+    let mut spec = work_spec("unplaced work, private workspace");
     spec.workspace = Some(workspace.clone());
     let sd = env.create_work(spec).await;
     let cfg = sd.config().unwrap();
     let frozen = cfg.runtime.frozen.clone().unwrap();
-    assert_eq!((frozen.runtime_id.as_str(), frozen.selected_by), ("lab", RuntimeSelection::Default));
-    assert_eq!(frozen.baseline, RuntimeBaseline::Standard);
+    assert_eq!((frozen.runtime_id.as_str(), frozen.selected_by), ("private", RuntimeSelection::Private));
+    assert_eq!(frozen.baseline(), RuntimeBaseline::Extended);
     assert_eq!(cfg.workspace_binding.as_ref().unwrap().location.runtime_id, "local");
     let view = libopendan::runtime::workspace_view(&cfg).unwrap();
-    assert_eq!(view["runtime_id"], "container");
-    assert_eq!(view["same_runtime"], false);
+    assert_eq!(view["runtime_id"], "private");
+    assert_eq!(view["same_runtime"], true);
 
-    // An explicit runtime with the same workspace: no conflict.
+    // The owner's default runtime, named explicitly, with the same workspace
+    // on the private runtime: no conflict.
+    let mut spec = work_spec("lab runtime");
+    spec.workspace = Some(workspace.clone());
+    spec.runtime.requirement.runtime_id = Some("lab".into());
+    let on_lab = env.create_work(spec).await;
+    let lcfg = on_lab.config().unwrap();
+    assert_eq!(lcfg.runtime.runtime_id(), "lab");
+    assert_eq!(lcfg.runtime.frozen.as_ref().unwrap().baseline(), RuntimeBaseline::Standard);
+    assert_eq!(libopendan::runtime::workspace_view(&lcfg).unwrap()["same_runtime"], false);
+    // The former name of the private runtime is still understood.
     let mut spec = work_spec("container runtime");
     spec.workspace = Some(workspace.clone());
     spec.runtime.requirement.runtime_id = Some("container".into());
     let parent = env.create_work(spec).await;
     let pcfg = parent.config().unwrap();
-    assert_eq!(pcfg.runtime.runtime_id(), "container");
-    assert_eq!(pcfg.runtime.frozen.as_ref().unwrap().baseline, RuntimeBaseline::Extended);
+    assert_eq!(pcfg.runtime.runtime_id(), "private");
+    assert_eq!(pcfg.runtime.frozen.as_ref().unwrap().selected_by, RuntimeSelection::Explicit);
     assert_eq!(libopendan::runtime::workspace_view(&pcfg).unwrap()["same_runtime"], true);
+
+    // A chat always runs on the private runtime, whatever the default.
+    let mut chat = work_spec("chat");
+    chat.kind = SessionKind::Ui;
+    chat.class = "ui".into();
+    let chat = env.create_work(chat).await;
+    let ccfg = chat.config().unwrap();
+    assert_eq!(ccfg.runtime.runtime_id(), "private");
+    assert_eq!(ccfg.runtime.frozen.as_ref().unwrap().selected_by, RuntimeSelection::Private);
+    assert!(ccfg.runtime.is_private());
 
     // A sub session inherits the workspace and names another runtime; the
     // parent keeps both of its own.
@@ -108,7 +128,7 @@ async fn the_workspace_never_chooses_the_session_runtime() {
     .await
     .unwrap();
     let icfg = inherited.config().unwrap();
-    assert_eq!(icfg.runtime.runtime_id(), "container");
+    assert_eq!(icfg.runtime.runtime_id(), "private");
     assert_eq!(icfg.runtime.frozen.as_ref().unwrap().selected_by, RuntimeSelection::Inherited);
 }
 
@@ -137,6 +157,7 @@ async fn a_session_works_in_its_own_directory_and_is_told_where_the_workspace_is
 async fn cmd_skills_follow_the_session_runtimes_declared_baseline() {
     let env = Env::new();
     let agent = env.agent();
+    mock_node(&["/lab"], "/lab/home");
     agent.runtimes().register(&lab(RuntimeBaseline::Standard, false), APP).await.unwrap();
     skill(&env, "plain", "");
     skill(&env, "media", "baseline: extended\n");
@@ -245,6 +266,7 @@ async fn forwarded_helpers_work_in_a_long_windows_session_directory() {
     }
     let env = Env::at(&root);
     let agent = env.agent();
+    mock_node(&["/lab"], "/lab/home");
     agent.runtimes().register(&lab(RuntimeBaseline::Standard, false), APP).await.unwrap();
     let sd = env.create_work(work_spec("long helper directory")).await;
     assert!(sd.path().as_os_str().encode_wide().count() > 260);
@@ -436,7 +458,7 @@ async fn files_are_copied_between_the_session_and_its_workspace() {
     assert_eq!((got.size, got.bytes_done), (payload.len() as u64, payload.len() as u64));
     assert_eq!(std::fs::read(sd.path().join("in/a.bin")).unwrap(), payload);
     assert!(got.hash.as_deref().unwrap().starts_with("sha256:"));
-    assert_eq!(got.to.runtime_id, "container");
+    assert_eq!(got.to.runtime_id, "private");
     assert_eq!(status(&sd, &got.transfer_id).unwrap(), got);
     // The same call again: the committed copy is checked, not redone.
     let again = copy(agent.as_ref(), &sd, &req("workspace:素材 a.bin", "session:in/a.bin", false, Some("c1")))

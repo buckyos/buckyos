@@ -53,6 +53,10 @@ pub struct SessionTemplate {
     /// `agent.toml [session.<class>] tick_secs`: how often the session's
     /// `timer:` subscriptions tick while it waits for its work (0: never).
     pub tick_secs: u64,
+    /// `agent.toml [session.<class>] runtime_view`: which runtimes the
+    /// session's prompt knows (`chat | work | all`; a UI session `chat`, a
+    /// plan `all`).
+    pub runtime_view: RuntimeView,
 }
 
 /// Objective of a one-to-one UI session: what the conversation is for,
@@ -137,6 +141,7 @@ impl SessionTemplate {
             objective: None,
             default_cmd_skills: Vec::new(),
             tick_secs: policy.tick_secs,
+            runtime_view: if kind == SessionKind::Ui { RuntimeView::Chat } else { RuntimeView::Work },
         };
         Some(match class {
             // A Work Session has many Turns: every reply closes one (the
@@ -334,6 +339,9 @@ impl SessionTemplate {
                 .and_then(|n| u64::try_from(n).ok())
                 .ok_or_else(|| bad("tick_secs"))?;
         }
+        if let Some(v) = parse("runtime_view")? {
+            t.runtime_view = serde_json::from_value(v).map_err(|_| bad("runtime_view (chat | work | all)"))?;
+        }
         for (key, slot) in [
             ("max_process_depth", &mut t.max_process_depth),
             ("max_sub_sessions", &mut t.max_sub_sessions),
@@ -409,6 +417,7 @@ impl SessionTemplate {
             max_sub_sessions: self.max_sub_sessions,
             max_session_depth: self.max_session_depth,
             tick_secs: self.tick_secs,
+            runtime_view: self.runtime_view,
         }
     }
 

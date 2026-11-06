@@ -4,7 +4,7 @@
 
 本协议落实 [OpenDAN Agent Workspace 设计](<../OpenDAN Agent Workspace 设计.md>) 的首轮本地实现。Workspace 是独立于 Session 的长期目录；稳定身份不由目录路径决定。Agent State 保存 Known Workspaces，Session 保存创建时解析的位置快照。
 
-位置的 `runtime_id` 引用 Agent State 的 Runtime 登记（[Agent State Protocol](<Agent State Protocol.md>) §10）。**分层**（2026-10-23，集成 TODO §3.4）：登记、身份、URL、revision、独占租约和重定位规则全部在 Agent State 的控制侧文件；runtime 侧只是目标目录。`container`（旧记录的 `local`，视为同一 Runtime）上这些目录操作是本地文件操作；`host` 等 `available` 的节点 runtime 上收敛为执行器的 `describe(workdir)`（存在性与规范化）、`stat`、`read`/`write`（`.opendan-workspace.json`）和 `mkdir`，不为远端引入 list/rename/remove。`directory` 的绝对性按目标 OS 判定（`buckyos_api::is_absolute_node_path`，Windows 路径不交给 Linux Runner canonicalize），目录重叠按目标 OS 的路径规则比较。远端 `create` 没有列目录操作，只以“没有身份元信息”判定可创建；远端 discover/import 首期只接受显式目录。runtime 未启用或不可用时其上的 Workspace 不可用，创建 / 导入明确失败并说明原因。登记及 Session 快照用 `runtime_host` 固定控制侧宿主身份。尚未接入跨主机锁或文件同步。
+位置的 `runtime_id` 引用 Agent State 的 Runtime 登记（[Agent State Protocol](<Agent State Protocol.md>) §10）。**分层**（2026-10-23，集成 TODO §3.4）：登记、身份、URL、revision、独占租约和重定位规则全部在 Agent State 的控制侧文件；runtime 侧只是目标目录。`private`（旧记录的 `container` / `local`，视为同一 Runtime）上这些目录操作是本地文件操作；`host` 等可用的节点 runtime 上收敛为执行器的 `describe(workdir)`（存在性与规范化）、`stat`、`read`/`write`（`.opendan-workspace.json`）和 `mkdir`，不为远端引入 list/rename/remove。`directory` 的绝对性按目标 OS 判定（`buckyos_api::is_absolute_node_path`，Windows 路径不交给 Linux Runner canonicalize），目录重叠按目标 OS 的路径规则比较。远端 `create` 没有列目录操作，只以“没有身份元信息”判定可创建；远端 discover/import 首期只接受显式目录。runtime 未启用或不可用时其上的 Workspace 不可用，创建 / 导入明确失败并说明原因。登记及 Session 快照用 `runtime_host` 固定控制侧宿主身份。尚未接入跨主机锁或文件同步。
 
 Workspace 的产品语义是 **runtime + directory + url**：`url` 是可选的项目关联（http/https 链接，不含用户名密码，≤2048），用于跨 Agent 交接和识别同一项目；它不是目录、凭据、授权或唯一键，填了也不克隆。
 
@@ -40,7 +40,7 @@ Workspace 的产品语义是 **runtime + directory + url**：`url` 是可选的�
 
 `session_config` 升为 `/7`，`binding` 升为 `/4`（2026-10-25 起 `/5`，见下）。`workspace` 为 `{workspace_id, access}`，不再接受 `kind:agent/external` 和路径引用；`workspace_binding` 持久保存稳定 ID、登记/位置修订、Runtime/目录、`runtime_host` 和访问模式。
 
-创建时解析并核验。**2026-10-25 起（primary-runtime TODO，`binding` 为 `/5`）Workspace 不决定 Session 的执行位置**：session-runtime 由显式选择 / 继承 / Agent 默认决定，默认 cwd 永远是 session-runtime 上的 Session 工作目录；Workspace 只贡献自己的 runtime 与目录（写在 binding 的 `workspace` 快照、提示词的 runtime 状态与本机 runtime 的 `OPENDAN_WORKSPACE_ID / _RUNTIME / _DIR` 里）。两者同 runtime 时命令可直接 `cd` 进 Workspace 目录；不同 runtime 时经 `agent-session copy --from workspace:<path> --to session:<path>`（及反向）复制文件，不要求共享磁盘。另行给出的 Runtime workdir 必须是 Session 工作目录。已有 Session 的配置和 binding 均不得改为另一个 Workspace、目录或访问模式；子 Session 的继承也不能扩大访问能力，只读 Workspace 也不接受复制写入。
+创建时解析并核验。**2026-10-25 起（primary-runtime TODO，`binding` 为 `/5`；2026-11-04 起 `/6`，runtime 工作模型 TODO）Workspace 不决定 Session 的执行位置**：工作 runtime 由 chat 恒私有 / 显式选择 / 继承 / 私有决定，默认 cwd 永远是工作 runtime 上的 Session 工作目录；Workspace 只贡献自己的 runtime 与目录（写在 binding 的 `workspace` 快照、提示词的 runtime 状态与本机 runtime 的 `OPENDAN_WORKSPACE_ID / _RUNTIME / _DIR` 里）。两者同 runtime 时命令可直接 `cd` 进 Workspace 目录；不同 runtime 时经 `agent-session copy --from workspace:<path> --to session:<path>`（及反向）复制文件，不要求共享磁盘。另行给出的 Runtime workdir 必须是 Session 工作目录。已有 Session 的配置和 binding 均不得改为另一个 Workspace、目录或访问模式；子 Session 的继承也不能扩大访问能力，只读 Workspace 也不接受复制写入。
 
 启动、恢复和工具调用前核验登记、位置修订、目录元信息和执行环境。绑定 Workspace 的 run 不允许独立 `xllm --resume` 绕过校验和写锁，必须由 `xagent run` 驱动。原绑定不可访问或失效时，Session 终态失败并保留原 binding 和执行证据；不重建目录、不改绑、不因访问恢复而重启失败 Session。后续工作须创建新 Session。
 

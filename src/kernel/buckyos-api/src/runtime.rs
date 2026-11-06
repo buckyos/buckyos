@@ -361,7 +361,7 @@ impl BuckyOSRuntime {
         }
     }
 
-    pub(crate) fn named_store_base_url(&self) -> String {
+    pub fn named_store_base_url(&self) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
                 let url = self.get_appclient_service_url(NFS_SERVER_SERVICE_NAME, self.force_https);
@@ -2829,12 +2829,14 @@ impl BuckyOSRuntime {
         Ok(OpenDanClient::new(krpc_client))
     }
 
-    pub fn get_zone_ndn_base_url(&self) -> String {
-        let mut schema = "http";
-        if self.force_https {
-            schema = "https";
-        }
-        format!("{}://{}/ndn/", schema, self.zone_id.to_host_name())
+    /// The `/ndn/` URL of an object: a process of this Zone reads through its
+    /// NodeGateway; `zone` names another Zone, read at `https://<zone>`.
+    pub fn ndn_read_url(&self, zone: Option<&str>, obj_id: &ndn_lib::ObjId, hint: Option<&ndn_lib::NdnHint>) -> String {
+        let origin = match zone {
+            Some(zone) => format!("https://{zone}"),
+            None => format!("http://{}:{}", self.resolve_local_service_host(), self.node_gateway_port),
+        };
+        crate::ndn_read_url(&origin, &obj_id.to_string(), hint)
     }
 
     //return (url,is_local)

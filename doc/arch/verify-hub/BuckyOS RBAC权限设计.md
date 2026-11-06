@@ -86,7 +86,7 @@ g, demo-app, app
 | `taskmgr` | `obj://taskmgr/<task_id>`（单个 Task）、`obj://taskmgr/users/{users}`（某用户 Task 集合视图） | 现有 `obj://task/{user}` 与服务名不一致，第 2 段改名为 `obj://taskmgr/users/{user}`；TaskMgr 内部按 creator app_id 的细判不变 |
 | `kmsg` | `obj://kmsg/<queue_id>` | `read` 拉取、`write` 投递、`subscribe` 事件 |
 | `bucket` | `obj://bucket/<scope>/<appid>/<owner>/<name>/<key>`（现有） | 不变；`list\|read\|create\|write\|delete\|manage` |
-| `ndm` | `obj://ndm/{uploads,objects,retain,manage}`（现有） | 不变 |
+| `ndm` | `obj://ndm/{uploads,objects,retain,manage}`（现有）；`obj://ndm/public`（`write` 只给 `frame`，系统服务替本人公开对象）；`obj://ndm/public_cache`（`write` 给 `app`、`frame`，请求缓存别处已公开的内容） | 不变 |
 | `msg-center` | 对象路径：`obj://msg-center/owners/<owner_did>/sessions[/<sid>]`、`obj://msg-center/owners/<owner_did>/contacts[/<did>]`、`obj://msg-center/messages/<msg_id>`。资源 key：现有 `inbox/<addr>`、`sent/<addr>`、`group_inbox/<addr>`、`request_box/<addr>`、`objects`、`notify`、`contact_tags/<app>`、`contact_membership`、`group`（create）保留 | `owners/<did>/...` 前缀与现有 `owners/*` 规则同形（裁决 D12）；群组对象 `obj://<group-did-host>/...` 的权限由 GroupMgr 按 action 判 |
 | `aiworkspace` | `obj://aiworkspace/<ws_id>`（工作区）、`obj://aiworkspace/<ws_id>/entities/<entity_id>`、`obj://aiworkspace/<ws_id>/path/<...>` | 组级：`users` 对 `obj://aiworkspace/*` `read\|write\|create`，`agent` 对 `obj://aiworkspace/*` `read\|list\|query\|subscribe`；owner / 分享 / public 在服务内按工作区 ACL 判。wish run 的 `proc.*` 仍按 `proc.claim` |
 | `homestation` | `obj://homestation/home/{users}`、`.../feed`、`.../feed/@/<key>`、`.../inbox`、`obj://homestation/home/~zone` | owner：`users` 对 `obj://homestation/home/{users}/*` `read\|write\|create\|delete`；public 读由 reader proof / 公开策略在服务内判；`inbox` 的 `write` 即投递动作；跨 Zone 投递经网关换成本 key 后以 external 主体 enforce |

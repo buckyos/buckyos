@@ -1,0 +1,56 @@
+{
+  "schema_version": "0.2.0",
+  "id": "wf-dv-ensure-sleep",
+  "name": "DV Ensure Sleep",
+  "description": "A single test.sleep step long enough for concurrent ensure=true requests to merge into one active run.",
+  "trigger": {
+    "type": "manual",
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000,
+          "default": 4000
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "nap",
+      "name": "Sleep",
+      "type": "autonomous",
+      "executor": "/tool/test.sleep@1",
+      "idempotent": false,
+      "skippable": false,
+      "input": {
+        "ms": "${trigger.output.ms}"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "slept_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "slept_ms"
+        ]
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "nap"
+    }
+  ]
+}

@@ -1253,6 +1253,7 @@ fn settled_status(status: ExecutorOpStatus, what: &str) -> Result<ExecutorOpStat
 pub struct RemoteNodeTarget {
     client: Arc<NodeClient>,
     described: ExecutorDescribeOk,
+    caps: Vec<buckyos_api::ExecutorOp>,
     max_file_bytes: usize,
 }
 
@@ -1276,12 +1277,18 @@ impl RemoteNodeTarget {
         Ok(Self {
             client: Arc::new(client),
             described,
+            caps: login.caps,
             max_file_bytes: login.limits.max_file_bytes as usize,
         })
     }
 
     pub fn described(&self) -> &ExecutorDescribeOk {
         &self.described
+    }
+
+    /// The operations the executor granted at login.
+    pub fn caps(&self) -> &[buckyos_api::ExecutorOp] {
+        &self.caps
     }
 
     pub fn os(&self) -> &str {
@@ -1693,7 +1700,7 @@ impl RemoteNodeRuntime {
         let provisional = RuntimeDescriptor {
             runtime_id: config.id.clone().unwrap_or_default(),
             kind: REMOTE_NODE_KIND.into(),
-            host: config.remote_node.as_ref().and_then(|n| n.node_did.clone()),
+            host: config.remote_node.as_ref().and_then(|n| n.connect_target().map(str::to_string)),
             target: Value::Null,
             workdir: config.workdir.clone().unwrap_or_default(),
             capabilities: Capabilities::default(),
@@ -1708,7 +1715,7 @@ impl RemoteNodeRuntime {
 
     fn target(&self) -> (String, String) {
         let node = self.config.remote_node.clone().unwrap_or_default();
-        (node.node_did.unwrap_or_default(), node.profile_id.unwrap_or_default())
+        (node.connect_target().unwrap_or_default().to_string(), node.profile_id.unwrap_or_default())
     }
 
     fn runtime_id(&self) -> String {

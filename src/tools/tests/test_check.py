@@ -76,3 +76,18 @@ class RuntimeProcessTests(unittest.TestCase):
     def test_argv_executable_matches_when_process_name_is_truncated(self):
         proc = check.ProcessInfo(1, "long-service-na", "/opt/buckyos/bin/long-service-name --serve")
         self.assertTrue(check.process_matches(proc, ["long-service-name"]))
+
+
+class WorkflowServiceTests(unittest.TestCase):
+    def test_workflow_service_is_listed_for_processes_ports_and_logs(self):
+        self.assertEqual(check.PROCESS_ALIASES["workflow"], ("workflow",))
+        self.assertEqual(check.ACTIVE_PORTS["workflow"], 4070)
+        self.assertEqual(check.LOG_DIR_CANDIDATES["workflow"], ("workflow",))
+        processes = [
+            check.ProcessInfo(1, "workflow", "/opt/buckyos/bin/workflow/workflow"),
+            check.ProcessInfo(2, "node_daemon", "/opt/buckyos/bin/node-daemon/node_daemon"),
+        ]
+        self.assertEqual(
+            [p.pid for p in check.find_processes(processes, check.PROCESS_ALIASES["workflow"])],
+            [1],
+        )

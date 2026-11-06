@@ -10,6 +10,16 @@ pub const NFS_SHARE_BUCKET: &str = "shares";
 /// key `<work_key>`. Pinned (`app_data`): nfs-server expires results unread for
 /// 30 days and keeps the total under `preview_cache_mib` itself.
 pub const NFS_PREVIEW_CACHE_BUCKET: &str = "preview-cache";
+/// Zone bucket of what this Zone publishes for `/ndn/` (bucket design §4.6.5): key
+/// `<provider>/<entry>/<root_obj_id>`, bound by `bucket.provide_public`, unbound
+/// when the entry is withdrawn or its audience narrows.
+pub const NFS_PUBLIC_OBJECTS_BUCKET: &str = "public-objects";
+/// Zone bucket of content anonymously readable elsewhere, re-served on `/ndn/`:
+/// key `<appid>/<root_obj_id>`, bound by `bucket.cache_public` after a verified
+/// download. Not pinned; may be evicted at any time.
+pub const NFS_PUBLIC_CACHE_BUCKET: &str = "public-cache";
+/// Soft limit of the whole public cache; each app has its own smaller limit.
+pub const NFS_PUBLIC_CACHE_QUOTA_MIB: u64 = 64 * 1024;
 /// App pool limit of the nfs-server buckets (D17); one share is at most 64 GiB.
 pub const NFS_SERVER_STORAGE_QUOTA_MIB: u64 = 1024 * 1024;
 
@@ -26,11 +36,25 @@ pub fn nfs_server_bucket_decls() -> HashMap<String, BucketDecl> {
         default_ttl_days: None,
         lifecycle: Vec::new(),
     };
-    HashMap::from([(NFS_SHARE_BUCKET.to_string(), zone_data()), (NFS_PREVIEW_CACHE_BUCKET.to_string(), zone_data())])
+    let public_cache = BucketDecl { data_policy: DataPolicy::Cache, quota_mib: Some(NFS_PUBLIC_CACHE_QUOTA_MIB), ..zone_data() };
+    HashMap::from([
+        (NFS_SHARE_BUCKET.to_string(), zone_data()),
+        (NFS_PREVIEW_CACHE_BUCKET.to_string(), zone_data()),
+        (NFS_PUBLIC_OBJECTS_BUCKET.to_string(), zone_data()),
+        (NFS_PUBLIC_CACHE_BUCKET.to_string(), public_cache),
+    ])
 }
 
 pub fn nfs_share_bucket() -> BucketId {
     BucketId::zone(NFS_SERVER_SERVICE_NAME, NFS_SHARE_BUCKET).expect("valid nfs-server bucket id")
+}
+
+pub fn nfs_public_objects_bucket() -> BucketId {
+    BucketId::zone(NFS_SERVER_SERVICE_NAME, NFS_PUBLIC_OBJECTS_BUCKET).expect("valid nfs-server bucket id")
+}
+
+pub fn nfs_public_cache_bucket() -> BucketId {
+    BucketId::zone(NFS_SERVER_SERVICE_NAME, NFS_PUBLIC_CACHE_BUCKET).expect("valid nfs-server bucket id")
 }
 
 pub fn nfs_preview_cache_bucket() -> BucketId {

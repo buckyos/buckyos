@@ -42,6 +42,7 @@ file://localhost/abs/path       等价于空 host
   1. 有来源 runtime 上下文（Agent 工具、SSH / node_executor 工具的返回值）：属于产生它的 runtime，按该 runtime 的 cwd / 挂载解释。
   2. 没有来源上下文（用户输入、持久化引用、跨 Agent 传递）：按 Zone 的 **default device** 解释。
 - **default device 是 Zone 级设置**，指向 cluster 中某一设备（Desktop 常见值为 ood1，只是现状不是规则）。它只用于解释已经写成 `file:///path` 的输入；相对路径、`/tmp/x` 这类裸路径由来源 runtime + cwd 推导，不走 default device。
+- **chat 里用户打的裸路径 = owner 默认 runtime 的设备**（2026-11-04，[runtime 工作模型 TODO](../notepads/opendan-agent-runtime-lifecycle-todo.md) M7）。BuckyOS 体系内的 app 与工具说到路径一律写 URL（`file://<device>/…`、`cyfs://`、`obj://`）或 ObjId，所以 `/Users/…`、`C:\…`、`/home/…` 这类传统绝对路径只会来自用户输入；它有来源——owner 本人——Agent 把它解释为 owner 默认 runtime（`AgentSettings.default_runtime_id`，Agent State 里 `default` 的那条记录）所在设备上的 `file://<device_id>/<path>`，经 `read` 或 `agent-session copy --from <owner 默认 runtime id>:<path>` 读取；该 runtime 不可用或路径不存在时再试 Agent 的私有 runtime，并把实际解释写进回复。与上一条分工：D2 的 Zone default device 只管没有任何来源的持久 `file:///path` 引用。
 - 跨上下文输出（发消息、写 Hint / Memory / Notebook、交给另一个 Agent）前，把空 host 补成显式 device id；经真实挂载确认位于 DFS 映射目录的文件，改用 `cyfs://` 引用（§5）。容器临时文件或镜像层文件不能自动转 CYFS。
 
 ## 4. `obj://`：DID Object 引用
@@ -75,7 +76,7 @@ obj://<entity-id>/<inner-path>     实体对象，entity-id 自带 Zone
 | `taskmgr` | 任务管理器（task-manager） | `obj://taskmgr/<task_id>` |
 | `kmsg` | 消息队列服务（kmsg） | `obj://kmsg/<queue_id>` |
 | `bucket` | 应用对象桶（nfs-server） | `obj://bucket/<scope>/<appid>/<owner>/<name>/<key>`（zone 桶的 owner 写 `_`），指向某个桶里 key 的当前绑定。设计见 [应用对象桶 Bucket 设计](arch/应用对象桶%20Bucket%20设计.md) §4.2；Rust `buckyos_api::bucket_obj_url` / `parse_bucket_obj_url`，websdk `bucket.bucketObjUrl` / `parseBucketObjUrl` |
-| `ndm` | NamedData 管理（nfs-server 内） | RBAC 资源 `obj://ndm/{uploads,objects,retain,manage}` |
+| `ndm` | NamedData 管理（nfs-server 内） | RBAC 资源 `obj://ndm/{uploads,objects,retain,manage,public,public_cache}` |
 | `msg-center` | Message Center | `obj://msg-center/owners/<owner_did>/sessions[/<sid>]`、`.../owners/<owner_did>/contacts[/<did>]`、`obj://msg-center/messages/<msg_id>`；`inbox / sent / group_inbox / request_box / objects / notify / contact_tags / contact_membership` 是 RBAC 资源 key，不是对象路径 |
 | `aiworkspace` | AI Workspace | `obj://aiworkspace/<ws_id>`、`.../entities/<entity_id>`、`.../path/<...>` |
 | `homestation` | HomeStation | `obj://homestation/home/<user>`、`/feed`、`/feed/@/<key>`、`/inbox`、`obj://homestation/home/~zone` |
@@ -111,6 +112,7 @@ cyfs://<objid>.<zone>/inner   同上，并给出内容来源 Zone 线索
 - `cyfs:///path` 与 `cyfs://_/path` 都表示当前 **Zone**（不是当前物理节点）；文档里优先写 `cyfs:///path`，需要跨 Zone 定位时才写出 Zone。
 - `cyfs:///xxxx` 的 xxxx 是路径；`cyfs://xxxx` 的 xxxx 是 authority。是否为 ObjId 用严格编解码判定，不靠"看起来像 hash"。
 - ObjId 指向确定内容，编辑产生新 ObjId；可变路径和它的某个 ObjId 快照只能声明版本关联，不能声明永久等价。
+- `cyfs://<objid>.<zone>/<inner>` 的 HTTP 形式是 `https://<zone>/ndn/<objid>/@/<inner>`，见第二部分的 ndn 标准路径；`objectEndpoint` / `object_endpoint` 按此解析。
 - `$BUCKYOS_ROOT/data/<path>` 对应 `cyfs:///<path>`，映射按真实挂载与规范路径做（检查路径段边界、`..`、符号链接、容器→宿主映射），不是字符串删前缀。NFS 当前只导出启动时的非点号一级目录，未导出的路径是"访问能力缺失"，不是 URI 非法。
 - `cyfs:///srv/publish/<path>` 对应 `https://public.<zone>/<path>`（已有 public 发布映射）。
 
@@ -207,7 +209,9 @@ http://public.$zone_hostname/xxxx -> 映射到 data/srv/publish
 
 
 ### zone内的 ndn 标准路径
-http://$zone_hostname/ndn/$chunkid (GET | HEAD | PUT/PATCH)
+https://$zone_hostname/ndn/$obj_id[/@/$inner_path][?hint=$hint] (GET | HEAD)
+
+跨 Zone 按 ObjId 读取对象的统一协议，由 nfs-server 承接（网关 `/ndn/*`）。FileObject 的 URL 返回文件字节并支持 HTTP Range，ffmpeg、curl、`<video>` 可以直接读。知道 ObjId 本身不授权：只放行 Zone 公开提供的对象，其他对象要在 `hint` 里带令牌；`hint` 还可带从授权根到目标的路径；不读 cookie 和 Bearer，拒绝一律 404。URL 用 Rust `buckyos_api::ndn_read_url` / `runtime.ndn_read_url`、websdk `objectUrl.ndnReadUrl` 构造，带令牌的 URL 不持久保存。设计见 [应用对象桶 Bucket 设计](arch/应用对象桶%20Bucket%20设计.md) §4.6.5。
 
 ### 应用对象桶的数据面
 https://$zone_hostname/bucket/v1/$bucket_id/$key (GET | HEAD | PUT | DELETE)

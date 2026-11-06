@@ -422,6 +422,8 @@ pub const MSG_CENTER_STORAGE_QUOTA_MIB: u64 = 100 * 1024;
 /// A chat zone outgrows the per-bucket default of one million keys.
 const MSG_CENTER_BUCKET_MAX_OBJECTS: u64 = 100_000_000;
 pub const METHOD_MSG_COLLECT_ATTACHMENT: &str = "msg.collect_attachment";
+/// Asked of the sender's Zone for a recipient: a short read token for one attachment key.
+pub const METHOD_MSG_ATTACHMENT_TICKET: &str = "msg.attachment_ticket";
 
 /// Buckets the scheduler declares in `services/msg-center/spec`
 /// (`doc/message_hub/Message Center Durable Data Schema.md`, Storage Strategy).

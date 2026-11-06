@@ -1,10 +1,10 @@
 use crate::analysis::{analyze_workflow, AnalysisIssue};
 use crate::dsl::*;
 use crate::error::{WorkflowError, WorkflowResult};
+use crate::function_registry::FunctionRegistry;
 use crate::types::{AwaitKind, ExecutorRef, Expr, JoinStrategy, ValueTemplate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +29,13 @@ pub struct CompiledWorkflow {
     pub nodes: BTreeMap<String, CompiledNode>,
     pub graph: WorkflowGraph,
     pub warnings: Vec<AnalysisIssue>,
+    /// node id -> bound `func:<hex>`; part of the revision.
+    #[serde(default)]
+    pub resolved_functions: BTreeMap<String, String>,
+    /// `hash(canonical(definition + resolved_functions))`, no timestamps or
+    /// process counters (TODO D12).
+    #[serde(default)]
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,14 +385,29 @@ impl WorkflowGraph {
 }
 
 pub fn compile_workflow(definition: WorkflowDefinition) -> WorkflowResult<CompileOutput> {
+    compile_workflow_with(definition, &FunctionRegistry::new())
+}
+
+pub fn compile_workflow_with(
+    definition: WorkflowDefinition,
+    registry: &FunctionRegistry,
+) -> WorkflowResult<CompileOutput> {
     let (report, context) = analyze_workflow(&definition);
     if report.has_errors() {
         return Err(WorkflowError::Analysis(report));
     }
 
     let mut nodes = BTreeMap::new();
+    let mut resolved_functions = BTreeMap::new();
     for step in &definition.steps {
-        let expr = compile_step(step, &definition)?;
+        let expr = compile_step(step, &definition, registry)?;
+        if let Expr::Apply {
+            fun_id: Some(fun_id),
+            ..
+        } = &expr
+        {
+            resolved_functions.insert(step.id.clone(), fun_id.clone());
+        }
         nodes.insert(
             step.id.clone(),
             CompiledNode {
@@ -414,6 +436,7 @@ pub fn compile_workflow(definition: WorkflowDefinition) -> WorkflowResult<Compil
         );
     }
 
+    let revision = definition_revision(&definition, &resolved_functions);
     let compiled = CompiledWorkflow {
         schema_version: definition.schema_version.clone(),
         workflow_id: definition.id.clone(),
@@ -422,6 +445,8 @@ pub fn compile_workflow(definition: WorkflowDefinition) -> WorkflowResult<Compil
         nodes,
         graph: context.graph,
         warnings: report.warnings.clone(),
+        resolved_functions,
+        revision,
     };
 
     Ok(CompileOutput {
@@ -430,7 +455,24 @@ pub fn compile_workflow(definition: WorkflowDefinition) -> WorkflowResult<Compil
     })
 }
 
-fn compile_step(step: &StepDefinition, _workflow: &WorkflowDefinition) -> WorkflowResult<Expr> {
+/// `hash(canonical(definition + resolved fun_ids))`.
+pub fn definition_revision(
+    definition: &WorkflowDefinition,
+    resolved_functions: &BTreeMap<String, String>,
+) -> String {
+    let value = serde_json::json!({
+        "definition": definition,
+        "functions": resolved_functions,
+    });
+    let (id, _) = ndn_lib::build_named_object_by_json("wfrev", &value);
+    hex::encode(&id.obj_hash)
+}
+
+fn compile_step(
+    step: &StepDefinition,
+    _workflow: &WorkflowDefinition,
+    registry: &FunctionRegistry,
+) -> WorkflowResult<Expr> {
     match step.step_type {
         StepType::Autonomous => {
             let executor_str = step.executor.clone().ok_or_else(|| {
@@ -445,6 +487,31 @@ fn compile_step(step: &StepDefinition, _workflow: &WorkflowDefinition) -> Workfl
                     executor: executor_str.clone(),
                 }
             })?;
+            // `/tool/<name>@<version>` and `func::<obj_id>` bind to a real
+            // FunctionObject at compile time; the bound executor is the full id
+            // and is never re-hashed.
+            let (executor, fun_id) = match &executor {
+                ExecutorRef::SemanticPath(path) if path.starts_with("/tool/") => {
+                    let function = registry.resolve_executor(path).ok_or_else(|| {
+                        WorkflowError::UnresolvedFunction {
+                            node_id: step.id.clone(),
+                            executor: path.clone(),
+                        }
+                    })?;
+                    let id = function.fun_id().to_string();
+                    (ExecutorRef::Actual(format!("func::{id}")), Some(id))
+                }
+                ExecutorRef::Actual(_) if executor.is_function_object() => {
+                    let function = registry.resolve_executor(executor.as_str()).ok_or_else(|| {
+                        WorkflowError::UnresolvedFunction {
+                            node_id: step.id.clone(),
+                            executor: executor.as_str().to_string(),
+                        }
+                    })?;
+                    (executor.clone(), Some(function.fun_id().to_string()))
+                }
+                _ => (executor.clone(), None),
+            };
             let params = match step.input.as_ref() {
                 Some(Value::Object(map)) => map
                     .iter()
@@ -456,16 +523,6 @@ fn compile_step(step: &StepDefinition, _workflow: &WorkflowDefinition) -> Workfl
                     params
                 }
                 None => BTreeMap::new(),
-            };
-
-            // 仅 `func::<objid>` 这类已绑定到 FunctionObject 的实际定义会有 fun_id；
-            // 其余 (service:: / http:: / appservice:: / operator:: 以及未展开的
-            // /agent/、/skill/、/tool/ 语义链接) 留空，由编排器在执行阶段决定走
-            // adapter 还是先经 registry 展开。
-            let fun_id = if executor.is_function_object() {
-                Some(hash_executor(executor.as_str()))
-            } else {
-                None
             };
 
             Ok(Expr::Apply {
@@ -610,12 +667,6 @@ fn compile_value_template(value: &Value) -> WorkflowResult<ValueTemplate> {
         )),
         _ => Ok(ValueTemplate::Literal(value.clone())),
     }
-}
-
-fn hash_executor(executor: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(executor.as_bytes());
-    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

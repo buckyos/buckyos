@@ -4,7 +4,19 @@
 
 P0: Workflow 当前把 `idempotent` 建模成默认 true 的弱声明，这对外部 service 节点不安全。外部 service 是否幂等经常不可证明，甚至同一个接口在不同参数、不同 provider、不同后端版本下语义都可能变化。幂等性必须是强声明：只有明确标注为幂等的节点，才允许自动 retry、跨 Run cache 命中、失败后自动重新调度；未声明或不确定时应按非幂等处理。
 
-## 当前代码事实
+## 2026-11-05 更新：重试安全与纯度分离（已落地部分）
+
+[notepads/llm-media-pipeline-workflow-todo.md](llm-media-pipeline-workflow-todo.md) §2.3 第 3 条把两个概念拆开：
+
+- **`idempotent`（Step 声明）决定重试安全**：失败后是否允许自动 / 人工 retry，以及 rollback 边界。仍是 DSL bool，serde 缺省 true（F8 未改）。
+- **`is_pure`（FunctionObject 字段，进 hash）决定结果能否复用**：`FunctionObject.is_pure` 改为 false 时 `fun_id` 变化，旧缓存自然失效。
+- **缓存门禁统一为 `step.idempotent && function.is_pure`**（`src/kernel/workflow/src/orchestrator.rs::schedule_apply`，thunk 路径）；允许“幂等但非 pure”（`media.capabilities` 每次执行、永不缓存）。本批媒体定义在播种前检查原始 JSON 显式声明了 `idempotent`（`src/kernel/workflow/src/system_defs.rs::validate_media_definition`），`max_attempts = 1`、`fallback = abort`。
+- 纯度门禁之外还看本次结果：`ThunkExecutionResult.cacheable = false`（被预算截断、含 retryable 条目错误的 partial）不写缓存。
+- 编排器侧 adapter（`service::` / `http::` / `appservice::`）仍只看 `compiled.idempotent` 读写缓存，键为 `hash(executor 字符串, 输入)`，不含指纹——下面的 P0 风险对这条路径仍然成立。
+
+**仍未解决（F8）**：DSL `idempotent` 缺省 true，无法区分“未声明”与“显式 true”；外部 executor 非显式幂等的自动重试治理（建议 1、2、4、7）未实施。`ThunkObject` 现已不含 `idempotent`（它不是计算身份的一部分），建议 5 改为：runner 侧从 `FunctionObject.is_pure` 与 `ThunkExecution` 的 attempt 判断，而不是在 ThunkObject 上加字段。
+
+## 当前代码事实（2026-11-05 之前的核对，行号已过期）
 
 - DSL 层 `StepDefinition.idempotent` 默认 true：`src/kernel/buckyos-api/src/workflow_dsl.rs:47`。这意味着 DSL 作者不写字段时，引擎会乐观认为节点幂等。
 - 编译层把 step 的 `idempotent` 原样放进 `CompiledNode` 和 `Expr::Apply`：`src/kernel/workflow/src/compiler.rs:388`、`src/kernel/workflow/src/compiler.rs:471`。

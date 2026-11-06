@@ -421,8 +421,28 @@ pub fn object_endpoint(url: &ObjectUrl, origin: &str, current_zone: Option<&str>
         ObjectUrl::CyfsPath { zone, path } if zone.is_none() || zone.as_deref() == current_zone => {
             Some(format!("{origin}/kapi/dfs/obj{}", path.trim_end_matches('/')))
         }
+        ObjectUrl::CyfsObject { obj_id, source_zone, inner_path } => {
+            let origin = match source_zone {
+                Some(zone) if Some(zone.as_str()) != current_zone => format!("https://{zone}"),
+                _ => origin.to_string(),
+            };
+            let inner = inner_path.trim_matches('/');
+            let tail = if inner.is_empty() { String::new() } else { format!("/@/{inner}") };
+            Some(format!("{origin}{}{}{tail}", ndn_lib::NDN_PATH_PREFIX, obj_id.to_string()))
+        }
         ObjectUrl::Web { url } => Some(url.clone()),
         _ => None,
+    }
+}
+
+/// `<origin>/ndn/<obj_id>[?hint=...]`, the plain-HTTP read of a named object
+/// (doc/arch/应用对象桶 Bucket 设计.md §4.6.5). The hint is canonical and encoded
+/// here; such a URL is built when a request needs it and never stored: it may hold a token.
+pub fn ndn_read_url(origin: &str, obj_id: &str, hint: Option<&ndn_lib::NdnHint>) -> String {
+    let origin = origin.trim_end_matches('/');
+    match hint.and_then(ndn_lib::NdnHint::to_query) {
+        Some(query) => format!("{origin}{}{obj_id}?{query}", ndn_lib::NDN_PATH_PREFIX),
+        None => format!("{origin}{}{obj_id}", ndn_lib::NDN_PATH_PREFIX),
     }
 }
 
@@ -722,6 +742,18 @@ mod tests {
         event: Option<String>,
         #[serde(default)]
         event_key: Option<String>,
+        #[serde(default)]
+        ndn_read: Option<NdnReadVector>,
+        #[serde(default)]
+        ndn_read_url: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct NdnReadVector {
+        origin: String,
+        obj_id: String,
+        #[serde(default)]
+        hint: Option<ndn_lib::NdnHint>,
     }
 
     fn kind_of(url: &ObjectUrl) -> &'static str {
@@ -780,10 +812,26 @@ mod tests {
             if v.no_endpoint {
                 assert_eq!(endpoint, None, "{} has no endpoint", v.input);
             }
+            if let (Some(read), Some(expected)) = (&v.ndn_read, &v.ndn_read_url) {
+                let hint: Option<ndn_lib::NdnHint> = read.hint.clone();
+                assert_eq!(&ndn_read_url(&read.origin, &read.obj_id, hint.as_ref()), expected);
+            }
             if let (Some(event), Some(key)) = (&v.event, &v.event_key) {
                 assert_eq!(&parsed.object_event_key(event).unwrap(), key, "event key of {}", v.input);
             }
         }
+    }
+
+    #[test]
+    fn a_named_object_url_resolves_to_ndn_at_its_zone() {
+        let obj_id = ObjId::new_by_raw("cyfile".to_string(), vec![7; 32]);
+        let id = obj_id.to_string();
+        let url = |tail: &str| parse_object_url(&format!("cyfs://{}{tail}", obj_id.to_base32())).unwrap();
+        let endpoint = |u: &ObjectUrl| object_endpoint(u, "http://gw:3180", Some("test.buckyos.io")).unwrap();
+        assert_eq!(endpoint(&url(".other.example/a/b.txt")), format!("https://other.example/ndn/{id}/@/a/b.txt"));
+        assert_eq!(endpoint(&url(".other.example")), format!("https://other.example/ndn/{id}"));
+        assert_eq!(endpoint(&url(".test.buckyos.io/x")), format!("http://gw:3180/ndn/{id}/@/x"));
+        assert_eq!(endpoint(&url("/x")), format!("http://gw:3180/ndn/{id}/@/x"));
     }
 
     #[test]

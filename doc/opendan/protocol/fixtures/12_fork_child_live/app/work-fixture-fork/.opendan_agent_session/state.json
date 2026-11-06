@@ -1,7 +1,7 @@
 {
   "acceptance": "n/a",
   "activity": {
-    "heartbeat_ms": 1793591511622,
+    "heartbeat_ms": 1793864756919,
     "summary": "research then answer"
   },
   "bootstrap_done": true,
@@ -11,23 +11,23 @@
   "live_run": {
     "applied_input_seq": 1,
     "flushed_input_seq": 0,
-    "run_id": "20261101-195151-f3a36b",
+    "run_id": "20261104-214556-06c4b3",
     "turns": [
       {
-        "at_ms": 1793591511616,
+        "at_ms": 1793864756914,
         "hook": "on_context_switch",
         "input_seq": 1,
         "turn": 1
       }
     ]
   },
-  "one_line_status": "",
+  "one_line_status": "working (research)",
   "open_turn": {
-    "at_ms": 1793591511530,
+    "at_ms": 1793864756839,
     "hook": "on_init",
     "index": 1,
     "input_seq": 1,
-    "run_id": "20261101-195151-2b887b"
+    "run_id": "20261104-214556-b5132b"
   },
   "perception_seq": 0,
   "process_entry": "research",
@@ -44,12 +44,12 @@
       "entry": "plan",
       "flushed_input_seq": 1,
       "flushed_step_index": 2,
-      "handover_at_ms": 1793591511581,
+      "handover_at_ms": 1793864756886,
       "role": "caller",
-      "run_id": "20261101-195151-2b887b",
+      "run_id": "20261104-214556-b5132b",
       "turns": [
         {
-          "at_ms": 1793591511530,
+          "at_ms": 1793864756839,
           "hook": "on_init",
           "input_seq": 1,
           "turn": 1
@@ -58,8 +58,8 @@
     }
   ],
   "recent_keys": [],
-  "reported_rev": 3,
-  "rev": 4,
+  "reported_rev": 4,
+  "rev": 5,
   "run_state": "running",
   "schema": "opendan.session_state/6",
   "stop_requested": false,
@@ -68,16 +68,16 @@
   },
   "turn_seq": 1,
   "turns_completed": 0,
-  "updated_at_ms": 1793591511622,
+  "updated_at_ms": 1793864756919,
   "worklog": {
-    "committed_bytes": 1827,
+    "committed_bytes": 1874,
     "committed_seq": 7
   },
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 2811630,
+    "pid": 234431,
     "principal": "app:app2@alice",
-    "runner_id": "rn-4529985810fe4b4a"
+    "runner_id": "rn-1bfbbfbdf0f445af"
   }
 }

@@ -213,7 +213,9 @@ impl Home {
         let runtime_id = text_param(params, "runtime_id")?
             .filter(|s| !s.is_empty())
             .ok_or_else(|| invalid("param `runtime_id` is required".into()))?;
-        if runtime_id != buckyos_api::CONTAINER_RUNTIME_ID {
+        let private = libopendan::protocol::is_private_runtime(&runtime_id);
+        let runtime_id = if private { buckyos_api::CONTAINER_RUNTIME_ID.to_string() } else { runtime_id };
+        if !private {
             let entry = settings.runtimes.get_mut(&runtime_id).ok_or_else(|| {
                 invalid(format!(
                     "runtime `{runtime_id}` is not one of this agent's runtimes; the control panel adds runtimes (agent.update)"
@@ -231,6 +233,15 @@ impl Home {
             if let Some(baseline) = params.get("baseline") {
                 entry.baseline = serde_json::from_value(baseline.clone())
                     .map_err(|_| invalid("param `baseline` takes standard | extended | null".into()))?;
+            }
+            // The owner's grant beyond the node policy (install, workspaces,
+            // narrowed roots, term): the Agent State projects it as is.
+            if let Some(grant) = params.get("grant") {
+                entry.grant = if grant.is_null() {
+                    None
+                } else {
+                    Some(serde_json::from_value(grant.clone()).map_err(|e| invalid(format!("param `grant`: {e}")))?)
+                };
             }
         }
         if let Some(default) = params.get("default").and_then(Value::as_bool) {

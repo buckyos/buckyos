@@ -161,7 +161,7 @@ function WorkInfo({ target, card }: { target: WorklogTarget; card?: WorkCard }) 
       <dl className="space-y-1 text-xs">
         {created ? field(t('messagehub.work.info.created'), new Date(created).toLocaleString(), 'work-info-created') : null}
         {finished ? field(t('messagehub.work.info.finished'), new Date(finished).toLocaleString(), 'work-info-finished') : null}
-        {runtime?.runtime_id ? field(t('messagehub.work.info.runtime'), [runtime.runtime_id, runtime.kind && runtime.kind !== runtime.runtime_id ? runtime.kind : ''].filter(Boolean).join(' · '), 'work-info-runtime') : null}
+        {runtime?.runtime_id ? field(t('messagehub.work.info.runtime'), [runtime.runtime_id, runtime.connector?.type && runtime.connector.type !== 'native' ? runtime.connector.type : ''].filter(Boolean).join(' · '), 'work-info-runtime') : null}
         {workspace?.workspace_id ? field(t('messagehub.work.info.workspace'), [workspace.workspace_id, workspace.access].filter(Boolean).join(' · '), 'work-info-workspace') : null}
         {models.length > 0 ? field(t('messagehub.work.info.tokens'), models.map(item => `${displayModel(item.model) ?? item.model} · ${t('messagehub.work.tokensIn', undefined, { value: formatTokens(item.input_tokens) })} · ${t('messagehub.work.tokensOut', undefined, { value: formatTokens(item.output_tokens) })}`).join('\n'), 'work-info-tokens') : null}
       </dl>

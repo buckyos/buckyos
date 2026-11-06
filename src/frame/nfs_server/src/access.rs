@@ -368,6 +368,20 @@ impl AppState {
         Ok(out)
     }
 
+    /// `public.<zone>` serves `srv/publish` without looking at any ACL: narrowing
+    /// the record could only make this API say something the public host contradicts
+    /// (bucket design G8). Moving a file out is what stops publishing it.
+    fn keep_publish_public(root: &str, rel: &str, a: &SetAclArgs) -> NfsResult<()> {
+        if root != "srv" || !(rel == "publish" || rel.starts_with("publish/")) {
+            return Ok(());
+        }
+        let public_read = a.entries.iter().any(|e| e.principal == crate::acl::PUBLIC && e.level >= Level::Read);
+        if public_read || (a.inherit && rel != "publish") {
+            return Ok(());
+        }
+        Err(invalid("srv/publish is served to everyone by public.<zone>; its ACL cannot be narrowed, move the file out instead"))
+    }
+
     pub fn op_set_acl(&self, actor: &Actor, at: Option<&Locator>, args: &Value) -> NfsResult<Value> {
         let a: SetAclArgs = serde_json::from_value(args.clone()).map_err(|e| invalid(format!("bad set_acl args: {}", e)))?;
         let clearing = a.inherit && a.entries.is_empty();
@@ -385,6 +399,7 @@ impl AppState {
         if self.acls.level(actor, &root, &rel) < Level::Manage {
             return Err(denied("manage", actor));
         }
+        Self::keep_publish_public(&root, &rel, &a)?;
         let current = self.acls.get(&root, &rel);
         if let Some(expected) = &a.expected_revision {
             let cur = record_revision(current.as_ref());

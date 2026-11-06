@@ -69,8 +69,8 @@
     "bound_by": {
       "type": "string"
     },
-    "kind": {
-      "description": "`native | remote_node`.",
+    "connector": {
+      "description": "`native | node_executor`: how the working runtime is reached.",
       "type": "string"
     },
     "runtime_id": {
@@ -98,7 +98,7 @@
   "required": [
     "bound_at_ms",
     "bound_by",
-    "kind",
+    "connector",
     "runtime_id",
     "schema",
     "target",

@@ -33,6 +33,7 @@ buckyos-api = { path = "../../kernel/buckyos-api" }
 grammers-client = { version = "=0.8.0", features = ["markdown", "html"] }
 grammers-mtsender = "=0.8.0"
 reqwest = { workspace = true, features = ["multipart"] }
+ndn-toolkit = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

@@ -163,11 +163,19 @@ async fn push_admission_and_idempotency() {
         .unwrap();
     assert_eq!(other_zone.status().as_u16(), 404);
 
-    // The status query reports what was accepted.
+    // The status query reports what was accepted, to the party that delivered it.
     let id = ndn_lib::ObjId::new(&obj_id).unwrap();
-    let (status, body, headers) = net.get(&format!("{}/inbox?dispatch-status={}", bob.home, id.to_base32()), None).await;
+    let status_url = format!("{}/inbox?dispatch-status={}", bob.home, id.to_base32());
+    let (status, body, _) = net.get(&status_url, None).await;
+    assert_eq!(status, 401, "anonymous: {body}");
+    let (status, _, headers) = net.get(&status_url, Some(net.proof("eve", "bob").await)).await;
+    assert_eq!(status, 404, "someone else cannot tell it arrived");
+    assert_eq!(headers.get("cyfs-dispatch-error").unwrap(), "unknown-dispatch");
+    let (status, body, headers) = net.get(&status_url, Some(net.proof("alice", "bob").await)).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(headers.get("cyfs-dispatch-status").unwrap(), "accepted");
+    let (status, _, _) = net.get(&status_url, Some("Bearer tok-bob".to_string())).await;
+    assert_eq!(status, 200, "the home's owner sees its own inbox");
 }
 
 /// E14–E16, A17, A23, A24, A26, A27, A30, A50: versions by Head only, monotonic seq, stale

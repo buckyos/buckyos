@@ -2,7 +2,9 @@
   "schema_version": "0.2.0",
   "id": "wf-dv-agent-callback",
   "name": "DV Agent Callback",
-  "trigger": { "type": "manual" },
+  "trigger": {
+    "type": "manual"
+  },
   "steps": [
     {
       "id": "request_manual_tag",
@@ -13,10 +15,20 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "tags": { "type": "array", "items": { "type": "string" } },
-          "source": { "type": "string" }
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "type": "string"
+          }
         },
-        "required": ["tags", "source"]
+        "required": [
+          "tags",
+          "source"
+        ]
       }
     },
     {
@@ -26,24 +38,48 @@
       "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "input": {
-        "model": "llm.chat",
+        "logical_model": "llm.chat",
         "messages": [
-          { "role": "system", "content": "Echo the input as JSON." },
-          { "role": "user", "content": "${request_manual_tag.output.source}" }
-        ],
-        "input_json": {
-          "response_format": { "type": "json_object" }
-        }
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "Repeat what the user says."
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "${request_manual_tag.output.source}"
+              }
+            ]
+          }
+        ]
       },
       "output_schema": {
         "type": "object",
-        "properties": { "text": { "type": "string" } },
-        "required": ["text"]
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
       }
     }
   ],
   "edges": [
-    { "from": "request_manual_tag", "to": "echo_tags" },
-    { "from": "echo_tags" }
+    {
+      "from": "request_manual_tag",
+      "to": "echo_tags"
+    },
+    {
+      "from": "echo_tags"
+    }
   ]
 }

@@ -4,16 +4,56 @@
 //! unique id / 端口 / [`AppDoc`] 生成集中放在 buckyos-api，
 //! workflow service 自身和 scheduler 都从这里取，避免常量分裂。
 
-use crate::{AppDoc, AppType, SelectorType};
+use crate::workflow_dsl::WorkflowDefinition;
+use crate::workflow_runtime::{EventEnvelope, NodeRunState, RunStatus};
+use crate::{AppDoc, AppType, FunctionObject, FunctionRegistration, SelectorType, ThunkExecutionError};
 use ::kRPC::*;
 use name_lib::DID;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 pub const WORKFLOW_SERVICE_UNIQUE_ID: &str = "workflow";
 pub const WORKFLOW_SERVICE_NAME: &str = "workflow";
 pub const WORKFLOW_SERVICE_PORT: u16 = 4070;
 pub const WORKFLOW_SERVICE_HTTP_PATH: &str = "/kapi/workflow";
+
+/// `zone/workflow/zone/artifacts`: files produced by workflow functions
+/// (page images, extracted text, frames, audio tracks). Temp data, 30 days.
+pub const WORKFLOW_BUCKET_ARTIFACTS: &str = "artifacts";
+pub const WORKFLOW_ARTIFACTS_TTL_DAYS: u32 = 30;
+/// `zone/workflow/zone/scratch`: inputs frozen for a run. Temp data, 7 days.
+pub const WORKFLOW_BUCKET_SCRATCH: &str = "scratch";
+pub const WORKFLOW_SCRATCH_TTL_DAYS: u32 = 7;
+pub const WORKFLOW_STORAGE_QUOTA_MIB: u64 = 16384;
+
+pub fn workflow_bucket_decls() -> std::collections::HashMap<String, crate::bucket_client::BucketDecl> {
+    use crate::bucket_client::{BucketDecl, BucketKind, BucketScope, DataPolicy};
+    let temp = |days| BucketDecl {
+        kind: BucketKind::Data,
+        data_policy: DataPolicy::Temp,
+        scope: BucketScope::Zone,
+        versioning: None,
+        quota_mib: None,
+        max_objects: None,
+        default_ttl_days: Some(days),
+        lifecycle: Vec::new(),
+    };
+    std::collections::HashMap::from([
+        (WORKFLOW_BUCKET_ARTIFACTS.to_string(), temp(WORKFLOW_ARTIFACTS_TTL_DAYS)),
+        (WORKFLOW_BUCKET_SCRATCH.to_string(), temp(WORKFLOW_SCRATCH_TTL_DAYS)),
+    ])
+}
+
+pub fn workflow_artifacts_bucket() -> crate::bucket_client::BucketId {
+    crate::bucket_client::BucketId::zone(WORKFLOW_SERVICE_UNIQUE_ID, WORKFLOW_BUCKET_ARTIFACTS)
+        .expect("valid workflow bucket id")
+}
+
+pub fn workflow_scratch_bucket() -> crate::bucket_client::BucketId {
+    crate::bucket_client::BucketId::zone(WORKFLOW_SERVICE_UNIQUE_ID, WORKFLOW_BUCKET_SCRATCH)
+        .expect("valid workflow bucket id")
+}
 
 pub fn generate_workflow_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -250,6 +290,438 @@ pub struct WorkflowValidateScheduledTaskResult {
     pub warnings: Vec<String>,
 }
 
+/// Structured execution error of a step / run (`{code, message, details, retryable}`).
+pub type WorkflowExecutionError = ThunkExecutionError;
+
+/// `{ok:false, error, message, detail}` as the service returns it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowRpcError {
+    #[serde(rename = "error")]
+    pub code: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub detail: Value,
+}
+
+impl WorkflowRpcError {
+    pub fn from_response(value: &Value) -> Option<Self> {
+        if value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            return None;
+        }
+        let code = value.get("error").and_then(Value::as_str)?.to_string();
+        Some(Self {
+            code,
+            message: value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            detail: value.get("detail").cloned().unwrap_or(Value::Null),
+        })
+    }
+
+    /// Decodes the error a `WorkflowServiceClient` call surfaced.
+    pub fn from_rpc_error(err: &RPCErrors) -> Option<Self> {
+        let detail = err.detail()?;
+        Some(Self {
+            code: detail.code.clone(),
+            message: detail.message.clone(),
+            detail: detail.data.clone().unwrap_or(Value::Null),
+        })
+    }
+
+    pub fn is_not_found(&self) -> bool {
+        self.code.ends_with("_not_found")
+    }
+}
+
+impl WorkflowRpcError {
+    pub fn into_rpc_error(self) -> RPCErrors {
+        let data = (!self.detail.is_null()).then(|| self.detail.clone());
+        RPCErrors::Detailed(RPCErrorDetail::new(self.code, self.message, data))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowDefinitionSource {
+    System,
+    UserImported,
+    AppRegistered,
+    AgentGenerated,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowDefinitionStatus {
+    Draft,
+    Active,
+    Archived,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowSubmitDefinitionReq {
+    pub definition: WorkflowDefinition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<WorkflowDefinitionSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<WorkflowOwner>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowSubmitDefinitionResult {
+    pub workflow_id: String,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub revision: String,
+    pub source: WorkflowDefinitionSource,
+    #[serde(default)]
+    pub analysis: Value,
+    #[serde(default)]
+    pub definition: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowDefinitionSummary {
+    pub id: String,
+    pub name: String,
+    pub owner: WorkflowOwner,
+    pub source: WorkflowDefinitionSource,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub revision: String,
+    pub status: WorkflowDefinitionStatus,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub warnings: u64,
+    #[serde(default)]
+    pub errors: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowDefinitionRecord {
+    pub id: String,
+    pub name: String,
+    pub owner: WorkflowOwner,
+    pub source: WorkflowDefinitionSource,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub revision: String,
+    #[serde(default)]
+    pub resolved_functions: BTreeMap<String, String>,
+    pub definition: WorkflowDefinition,
+    #[serde(default)]
+    pub compiled: Value,
+    #[serde(default)]
+    pub analysis: Value,
+    pub status: WorkflowDefinitionStatus,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowListDefinitionsReq {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<WorkflowOwner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<WorkflowDefinitionStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<WorkflowDefinitionSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowDryRunResult {
+    #[serde(default)]
+    pub analysis: Value,
+    #[serde(default)]
+    pub graph: Value,
+    #[serde(default)]
+    pub revision: String,
+    #[serde(default)]
+    pub resolved_functions: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowCreateRunReq {
+    /// Record id, or the logical id of a system definition (`media.pdf`).
+    pub workflow_id: String,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub input: Value,
+    #[serde(default)]
+    pub auto_start: bool,
+    /// Join the caller's active run with the same definition revision,
+    /// normalized input and environment revision instead of creating one.
+    #[serde(default)]
+    pub ensure: bool,
+    /// How long the service may wait for a terminal state before answering
+    /// (capped at 5000 ms by the service).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<WorkflowOwner>,
+}
+
+impl WorkflowCreateRunReq {
+    pub fn new(workflow_id: impl Into<String>, input: Value) -> Self {
+        Self {
+            workflow_id: workflow_id.into(),
+            input,
+            auto_start: false,
+            ensure: false,
+            wait_ms: None,
+            callback_url: None,
+            owner: None,
+        }
+    }
+
+    pub fn ensure(mut self, wait_ms: u64) -> Self {
+        self.auto_start = true;
+        self.ensure = true;
+        self.wait_ms = Some(wait_ms);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowCreateRunResult {
+    pub run_id: String,
+    #[serde(default)]
+    pub workflow_id: String,
+    pub status: RunStatus,
+    #[serde(default)]
+    pub revision: String,
+    #[serde(default)]
+    pub reused: bool,
+    #[serde(default)]
+    pub output: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub events: Vec<EventEnvelope>,
+    #[serde(default)]
+    pub seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowStartRunReq {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowCancelRunReq {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowRunTransition {
+    pub run_id: String,
+    pub status: RunStatus,
+    #[serde(default)]
+    pub accepted: bool,
+    #[serde(default)]
+    pub events: Vec<EventEnvelope>,
+    #[serde(default)]
+    pub from_seq: u64,
+    #[serde(default)]
+    pub to_seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowRunGraph {
+    pub run_id: String,
+    pub workflow_id: String,
+    #[serde(default)]
+    pub workflow_name: String,
+    pub status: RunStatus,
+    #[serde(default)]
+    pub revision: String,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub executor: Option<String>,
+    #[serde(default)]
+    pub owner: Option<WorkflowOwner>,
+    #[serde(default)]
+    pub graph: Value,
+    #[serde(default)]
+    pub nodes: Value,
+    #[serde(default)]
+    pub node_states: BTreeMap<String, NodeRunState>,
+    #[serde(default)]
+    pub node_outputs: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub node_errors: BTreeMap<String, WorkflowExecutionError>,
+    #[serde(default)]
+    pub node_sources: BTreeMap<String, String>,
+    #[serde(default)]
+    pub node_attempts: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub human_waiting_nodes: Vec<String>,
+    #[serde(default)]
+    pub pending_thunks: Value,
+    #[serde(default)]
+    pub metrics: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub output: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub deadline_at: Option<i64>,
+    #[serde(default)]
+    pub execution_epoch: u64,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub seq: u64,
+}
+
+impl WorkflowRunGraph {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self.status,
+            RunStatus::Completed | RunStatus::Failed | RunStatus::Aborted | RunStatus::BudgetExhausted
+        )
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowRunDelivery {
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+    /// How many objects the requester may now read through NDM.
+    #[serde(default)]
+    pub held: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowRunOutput {
+    pub run_id: String,
+    pub status: RunStatus,
+    #[serde(default)]
+    pub terminal: bool,
+    #[serde(default)]
+    pub revision: String,
+    #[serde(default)]
+    pub output: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub node_errors: BTreeMap<String, WorkflowExecutionError>,
+    #[serde(default)]
+    pub run_error: Option<WorkflowExecutionError>,
+    #[serde(default)]
+    pub delivery: WorkflowRunDelivery,
+}
+
+impl WorkflowRunOutput {
+    /// The first structured error of a failed run: the run-level one, else
+    /// the first failed node's.
+    pub fn first_error(&self) -> Option<&WorkflowExecutionError> {
+        self.run_error
+            .as_ref()
+            .or_else(|| self.node_errors.values().next())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowListRunsReq {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<WorkflowOwner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowRunSummary {
+    pub run_id: String,
+    pub workflow_id: String,
+    #[serde(default)]
+    pub workflow_name: String,
+    pub status: RunStatus,
+    #[serde(default)]
+    pub revision: String,
+    #[serde(default)]
+    pub owner: Option<WorkflowOwner>,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub seq: u64,
+    #[serde(default)]
+    pub progress: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowHistoryReq {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowHistoryResult {
+    pub run_id: String,
+    #[serde(default)]
+    pub status: Option<RunStatus>,
+    #[serde(default)]
+    pub events: Vec<EventEnvelope>,
+    #[serde(default)]
+    pub next_seq: u64,
+    #[serde(default)]
+    pub current_seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowFunctionInfo {
+    pub fun_id: String,
+    pub registration: FunctionRegistration,
+    pub object: FunctionObject,
+    #[serde(default)]
+    pub published: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowCapabilities {
+    #[serde(default)]
+    pub execution_epoch: u64,
+    #[serde(default)]
+    pub environment: Value,
+    #[serde(default)]
+    pub functions: u64,
+}
+
 pub struct WorkflowServiceClient {
     krpc_client: Box<kRPC>,
 }
@@ -366,6 +838,109 @@ impl WorkflowServiceClient {
         parse_response(value)
     }
 
+    // ----- Definition / Function -----------------------------------------
+
+    pub async fn submit_definition(
+        &self,
+        request: WorkflowSubmitDefinitionReq,
+    ) -> Result<WorkflowSubmitDefinitionResult> {
+        let value = self.call_ok("submit_definition", request).await?;
+        parse_response(value)
+    }
+
+    pub async fn get_definition(&self, workflow_id: &str) -> Result<WorkflowDefinitionRecord> {
+        let value = self
+            .call_ok("get_definition", json!({ "workflow_id": workflow_id }))
+            .await?;
+        field(value, "definition")
+    }
+
+    pub async fn list_definitions(
+        &self,
+        request: WorkflowListDefinitionsReq,
+    ) -> Result<Vec<WorkflowDefinitionSummary>> {
+        let value = self.call_ok("list_definitions", request).await?;
+        field(value, "definitions")
+    }
+
+    pub async fn dry_run(&self, definition: WorkflowDefinition) -> Result<WorkflowDryRunResult> {
+        let value = self
+            .call_ok("dry_run", json!({ "definition": definition }))
+            .await?;
+        parse_response(value)
+    }
+
+    pub async fn list_functions(&self, prefix: Option<&str>) -> Result<Vec<WorkflowFunctionInfo>> {
+        let value = self
+            .call_ok("list_functions", json!({ "prefix": prefix }))
+            .await?;
+        field(value, "functions")
+    }
+
+    pub async fn get_function(&self, fun_id: &str) -> Result<WorkflowFunctionInfo> {
+        let value = self
+            .call_ok("get_function", json!({ "fun_id": fun_id }))
+            .await?;
+        field(value, "function")
+    }
+
+    pub async fn get_function_by_name(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<WorkflowFunctionInfo> {
+        let value = self
+            .call_ok("get_function", json!({ "name": name, "version": version }))
+            .await?;
+        field(value, "function")
+    }
+
+    pub async fn get_capabilities(&self) -> Result<WorkflowCapabilities> {
+        let value = self.call_ok("get_capabilities", json!({})).await?;
+        parse_response(value)
+    }
+
+    // ----- Run -------------------------------------------------------------
+
+    pub async fn create_run(&self, request: WorkflowCreateRunReq) -> Result<WorkflowCreateRunResult> {
+        let value = self.call_ok("create_run", request).await?;
+        parse_response(value)
+    }
+
+    pub async fn start_run(&self, request: WorkflowStartRunReq) -> Result<WorkflowRunTransition> {
+        let value = self.call_ok("start_run", request).await?;
+        parse_response(value)
+    }
+
+    pub async fn cancel_run(&self, request: WorkflowCancelRunReq) -> Result<WorkflowRunTransition> {
+        let value = self.call_ok("cancel_run", request).await?;
+        parse_response(value)
+    }
+
+    pub async fn get_run_graph(&self, run_id: &str) -> Result<WorkflowRunGraph> {
+        let value = self
+            .call_ok("get_run_graph", json!({ "run_id": run_id }))
+            .await?;
+        parse_response(value)
+    }
+
+    pub async fn get_run_output(&self, run_id: &str) -> Result<WorkflowRunOutput> {
+        let value = self
+            .call_ok("get_run_output", json!({ "run_id": run_id }))
+            .await?;
+        parse_response(value)
+    }
+
+    pub async fn list_runs(&self, request: WorkflowListRunsReq) -> Result<Vec<WorkflowRunSummary>> {
+        let value = self.call_ok("list_runs", request).await?;
+        field(value, "runs")
+    }
+
+    pub async fn get_history(&self, request: WorkflowHistoryReq) -> Result<WorkflowHistoryResult> {
+        let value = self.call_ok("get_history", request).await?;
+        parse_response(value)
+    }
+
     async fn set_scheduled_task_state(
         &self,
         method: &str,
@@ -394,12 +969,10 @@ impl WorkflowServiceClient {
         if value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             return Ok(value);
         }
-        let message = value
-            .get("message")
-            .or_else(|| value.get("error"))
-            .and_then(Value::as_str)
-            .unwrap_or("workflow request failed");
-        Err(RPCErrors::ReasonError(message.to_string()))
+        match WorkflowRpcError::from_response(&value) {
+            Some(err) => Err(err.into_rpc_error()),
+            None => Err(RPCErrors::ReasonError("workflow request failed".to_string())),
+        }
     }
 }
 
@@ -407,4 +980,131 @@ fn parse_response<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(|error| {
         RPCErrors::ParserResponseError(format!("parse response failed: {}", error))
     })
+}
+
+fn field<T: for<'de> Deserialize<'de>>(value: Value, name: &str) -> Result<T> {
+    value
+        .get(name)
+        .cloned()
+        .ok_or_else(|| RPCErrors::ParserResponseError(format!("missing `{name}`")))
+        .and_then(parse_response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn create_run_response_round_trips() {
+        let value = json!({
+            "ok": true,
+            "run_id": "run-1",
+            "workflow_id": "media.pdf",
+            "status": "running",
+            "revision": "ab12",
+            "reused": true,
+            "output": {},
+            "events": [],
+            "seq": 3
+        });
+        let result: WorkflowCreateRunResult = parse_response(value).unwrap();
+        assert_eq!(result.status, RunStatus::Running);
+        assert!(result.reused);
+        assert_eq!(result.workflow_id, "media.pdf");
+        let req = WorkflowCreateRunReq::new("media.pdf", json!({"obj_id": "cyfile:ab"})).ensure(2000);
+        let wire = serde_json::to_value(&req).unwrap();
+        assert_eq!(wire, json!({"workflow_id": "media.pdf", "input": {"obj_id": "cyfile:ab"}, "auto_start": true, "ensure": true, "wait_ms": 2000}));
+    }
+
+    #[test]
+    fn run_output_and_graph_carry_structured_errors() {
+        let value = json!({
+            "ok": true,
+            "run_id": "run-2",
+            "status": "failed",
+            "terminal": true,
+            "revision": "r",
+            "output": {},
+            "node_errors": {"render_pdf_pages": {"code": "tools_missing", "message": "pdftoppm missing", "details": {"tools_missing": ["pdftoppm"]}, "retryable": false}},
+            "run_error": null,
+            "delivery": {"artifacts": []}
+        });
+        let output: WorkflowRunOutput = parse_response(value).unwrap();
+        assert_eq!(output.status, RunStatus::Failed);
+        assert_eq!(output.first_error().unwrap().code, "tools_missing");
+        assert_eq!(output.first_error().unwrap().details["tools_missing"][0], "pdftoppm");
+
+        let graph = json!({
+            "ok": true,
+            "run_id": "run-2",
+            "workflow_id": "media.pdf",
+            "workflow_name": "media.pdf",
+            "status": "completed",
+            "revision": "r",
+            "requested_by": "u/app",
+            "executor": "workflow",
+            "owner": {"user_id": "u", "app_id": "app"},
+            "graph": {},
+            "nodes": {},
+            "node_states": {"probe": "completed"},
+            "node_outputs": {"probe": {"kind": "pdf", "size": 1}},
+            "node_errors": {},
+            "node_sources": {"probe": "cache"},
+            "node_attempts": {"probe": 1},
+            "human_waiting_nodes": [],
+            "pending_thunks": {},
+            "metrics": {},
+            "output": {"build_catalog": {"manifest_obj_id": "mmanifest:aa"}},
+            "deadline_at": null,
+            "execution_epoch": 2,
+            "created_at": 1,
+            "updated_at": 2,
+            "seq": 9
+        });
+        let graph: WorkflowRunGraph = parse_response(graph).unwrap();
+        assert!(graph.is_terminal());
+        assert_eq!(graph.node_states["probe"], NodeRunState::Completed);
+        assert_eq!(graph.node_sources["probe"], "cache");
+        assert_eq!(graph.output["build_catalog"]["manifest_obj_id"], "mmanifest:aa");
+    }
+
+    #[test]
+    fn error_payloads_keep_their_code() {
+        let err = WorkflowRpcError::from_response(&json!({
+            "ok": false,
+            "error": "run_not_found",
+            "id": "run-9"
+        }))
+        .unwrap();
+        assert!(err.is_not_found());
+        let rpc = err.clone().into_rpc_error();
+        let back = WorkflowRpcError::from_rpc_error(&rpc).unwrap();
+        assert_eq!(back.code, "run_not_found");
+        assert!(WorkflowRpcError::from_response(&json!({"ok": true})).is_none());
+    }
+
+    #[test]
+    fn definition_summaries_and_functions_parse() {
+        let summary: WorkflowDefinitionSummary = parse_response(json!({
+            "id": "media.pdf", "name": "media.pdf", "owner": {"user_id": "system", "app_id": "workflow"},
+            "source": "system", "read_only": true, "revision": "r", "status": "active", "version": 1,
+            "tags": ["system"], "created_at": 1, "updated_at": 1, "warnings": 0, "errors": 0
+        }))
+        .unwrap();
+        assert_eq!(summary.source, WorkflowDefinitionSource::System);
+        assert!(summary.read_only);
+        let list: Vec<WorkflowFunctionInfo> = field(
+            json!({"ok": true, "functions": [{
+                "fun_id": "func:00",
+                "registration": {"name": "media.probe", "version": "1", "fun_id": "func:00", "timeout": 60},
+                "object": {"func_type": "native", "content": "media.probe/impl-1", "is_pure": true,
+                           "params_schema": {}, "result_type": {"Object": "media.probe"}, "result_schema": {}}
+            }]}),
+            "functions",
+        )
+        .unwrap();
+        assert_eq!(list[0].registration.name, "media.probe");
+        assert_eq!(list[0].object.func_type, crate::FunctionType::Native);
+    }
 }

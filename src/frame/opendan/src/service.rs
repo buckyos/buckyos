@@ -652,7 +652,7 @@ mod permission_tests {
             "cognition.notebook_append", "artifacts.decide", "workspaces.create",
             "workspaces.import", "workspaces.discover", "workspaces.check", "workspaces.update",
             "workspaces.archive", "workspaces.unregister", "workspaces.set_runtime_available",
-            "runtimes.register", "runtimes.update", "runtimes.check", "runtimes.unregister",
+            "runtimes.register", "runtimes.update", "runtimes.check", "runtimes.unregister", "runtimes.note_usage",
             "goals.create", "goals.revise", "goals.set_status", "goals.reopen", "goals.restart",
             "notify.send", "notify.cancel", "notify.answer", "skills.install", "skills.remove",
             "session.stop", "session.decide", "session.post", "goals.activate", "goals.post",

@@ -128,6 +128,7 @@ pub fn is_write(method: &str) -> bool {
             | "runtimes.update"
             | "runtimes.check"
             | "runtimes.unregister"
+            | "runtimes.note_usage"
             | "goals.create"
             | "goals.revise"
             | "goals.set_status"
@@ -323,11 +324,25 @@ pub async fn serve_call(
             (Err(e), _) | (_, Err(e)) => Err(e),
         },
         "runtimes.check" => match arg::<String>(params, "runtime_id") {
-            Ok(id) => agent.runtimes().check(&id).await.and_then(out),
+            Ok(id) => {
+                let commands: Vec<String> = params
+                    .get("commands")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|e| OpenDanError::InvalidArgument(format!("param `commands`: {e}")))
+                    .unwrap_or_default()
+                    .unwrap_or_default();
+                agent.runtimes().check(&id, &commands).await.and_then(out)
+            }
             Err(e) => Err(e),
         },
         "runtimes.unregister" => match (arg::<String>(params, "runtime_id"), arg::<u64>(params, "expected_revision")) {
             (Ok(id), Ok(revision)) => agent.runtimes().unregister(&id, revision, who).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "runtimes.note_usage" => match (arg::<String>(params, "runtime_id"), arg::<RuntimeUsageEvent>(params, "event")) {
+            (Ok(id), Ok(event)) => agent.runtimes().note_usage(&id, &event).await.and_then(out),
             (Err(e), _) | (_, Err(e)) => Err(e),
         },
         "workspaces.set_runtime_available" => match (arg::<String>(params, "runtime_id"), arg::<bool>(params, "available")) {
@@ -920,15 +935,18 @@ impl RuntimeRegistry for KrpcAgentStateClient {
     async fn update(&self, runtime_id: &str, request: &RuntimeUpdate, _who: &str) -> Result<RuntimeRecord> {
         self.call("runtimes.update", json!({ "runtime_id": runtime_id, "request": request })).await
     }
-    async fn check(&self, runtime_id: &str) -> Result<RuntimeRecord> {
-        self.call("runtimes.check", json!({ "runtime_id": runtime_id })).await
+    async fn check(&self, runtime_id: &str, commands: &[String]) -> Result<RuntimeRecord> {
+        self.call("runtimes.check", json!({ "runtime_id": runtime_id, "commands": commands })).await
     }
-    async fn unregister(&self, runtime_id: &str, expected_revision: u64, _who: &str) -> Result<()> {
+    async fn unregister(&self, runtime_id: &str, expected_revision: u64, _who: &str) -> Result<RuntimeRecord> {
         self.call(
             "runtimes.unregister",
             json!({ "runtime_id": runtime_id, "expected_revision": expected_revision }),
         )
         .await
+    }
+    async fn note_usage(&self, runtime_id: &str, event: &RuntimeUsageEvent) -> Result<()> {
+        self.call("runtimes.note_usage", json!({ "runtime_id": runtime_id, "event": event })).await
     }
     async fn ensure_builtin(&self, _builtin: &[RuntimeRegister], _who: &str) -> Result<Vec<RuntimeRecord>> {
         Err(OpenDanError::Forbidden(

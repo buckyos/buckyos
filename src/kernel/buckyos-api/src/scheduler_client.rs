@@ -1,6 +1,6 @@
 use crate::{
-    AppDoc, AppInstanceId, AppRegistry, AppType, FunctionObject, InstallError, InstallPlan,
-    SelectorType, TaskId, ThunkObject,
+    AppDoc, AppInstanceId, AppRegistry, AppType, FunctionObject, FunctionRegistration,
+    InstallError, InstallPlan, SelectorType, TaskId, ThunkObject,
 };
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -32,14 +32,21 @@ pub struct SchedulerRunThunkRequest {
     pub task_id: i64,
     pub thunk: ThunkObject,
     pub function_object: FunctionObject,
+    pub registration: FunctionRegistration,
 }
 
 impl SchedulerRunThunkRequest {
-    pub fn new(task_id: i64, thunk: ThunkObject, function_object: FunctionObject) -> Self {
+    pub fn new(
+        task_id: i64,
+        thunk: ThunkObject,
+        function_object: FunctionObject,
+        registration: FunctionRegistration,
+    ) -> Self {
         Self {
             task_id,
             thunk,
             function_object,
+            registration,
         }
     }
 
@@ -371,9 +378,11 @@ impl SchedulerClient {
         &self,
         thunk: ThunkObject,
         function_object: FunctionObject,
+        registration: FunctionRegistration,
         task_id: i64,
     ) -> Result<SchedulerRunThunkResponse> {
-        let request = SchedulerRunThunkRequest::new(task_id, thunk, function_object);
+        let request =
+            SchedulerRunThunkRequest::new(task_id, thunk, function_object, registration);
         match self {
             Self::InProcess(handler) => {
                 handler

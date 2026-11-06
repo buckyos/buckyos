@@ -116,9 +116,21 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
             .unwrap_or_default()
             .to_string()
     };
+    // A chat knows two runtimes (M2): its private one, where its commands
+    // run, and the owner's default — the owner's machine, named for work
+    // and for the owner's absolute paths; nothing else.
+    let runtimes = i.runtime_status.get("runtimes").filter(|r| r.is_object());
     let kind = field("kind");
     if !kind.is_empty() {
-        let mut t = format!("runtime {kind}");
+        let mut t = String::from("your private runtime");
+        let private_id = runtimes
+            .and_then(|r| r.pointer("/private/id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !private_id.is_empty() {
+            t.push_str(&format!(" `{private_id}`"));
+        }
+        t.push_str(": commands run here");
         let host = field("hostname");
         if !host.is_empty() {
             t.push_str(&format!(" on {host}"));
@@ -136,6 +148,28 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
             t.push_str(&format!(", {baseline} environment"));
         }
         out.push(BackgroundLine::new("runtime", t));
+    }
+    if let Some(r) = runtimes {
+        let line = match r.get("owner_default").filter(|d| d.is_object()) {
+            Some(d) => {
+                let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+                let available = d.get("available").and_then(Value::as_bool).unwrap_or(false);
+                let mut t = format!("owner's default runtime `{}` ({}", s("id"), if s("os").is_empty() { "os unknown".into() } else { s("os") });
+                t.push_str(if available { ", available" } else { ", not available" });
+                if s("computer") != "none" {
+                    t.push_str(&format!(", desktop access {}", s("computer")));
+                }
+                t.push_str("): the owner's machine — absolute paths the owner gives are read there; work there is a work session on it, not done from this chat");
+                if !available {
+                    if let Some(e) = d.get("error").and_then(Value::as_str) {
+                        t.push_str(&format!("; {e}"));
+                    }
+                }
+                t
+            }
+            None => "owner's default runtime: none besides your private runtime".to_string(),
+        };
+        out.push(BackgroundLine::new("owner_runtime", line));
     }
     if let Some(w) = i.runtime_status.get("workspace").filter(|w| w.is_object()) {
         let s = |k: &str| w.get(k).and_then(Value::as_str).unwrap_or_default();

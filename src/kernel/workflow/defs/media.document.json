@@ -1,0 +1,416 @@
+{
+  "schema_version": "0.2.0",
+  "id": "media.document",
+  "name": "media.document",
+  "description": "Convert an office document to PDF with LibreOffice, then reuse the PDF text / page image steps.",
+  "trigger": {
+    "type": "manual",
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "obj_id",
+        "format"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "obj_id": {
+          "type": "string"
+        },
+        "dpi": {
+          "type": "integer",
+          "minimum": 36,
+          "maximum": 300,
+          "default": 144
+        },
+        "max_long_edge": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 4096,
+          "default": 2048
+        },
+        "page_range": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxItems": 200,
+          "default": []
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_pages": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          }
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "docx",
+            "pptx",
+            "odt",
+            "odp",
+            "doc",
+            "ppt",
+            "rtf",
+            "txt"
+          ]
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "obj_id",
+        "format",
+        "content_id",
+        "size"
+      ],
+      "properties": {
+        "obj_id": {
+          "type": "string"
+        },
+        "dpi": {
+          "type": "integer",
+          "minimum": 36,
+          "maximum": 300,
+          "default": 144
+        },
+        "max_long_edge": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 4096,
+          "default": 2048
+        },
+        "page_range": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxItems": 200,
+          "default": []
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_pages": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          }
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "docx",
+            "pptx",
+            "odt",
+            "odp",
+            "doc",
+            "ppt",
+            "rtf",
+            "txt"
+          ]
+        },
+        "content_id": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "capabilities",
+      "name": "Capabilities",
+      "executor": "/tool/media.capabilities@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {},
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "revision"
+        ],
+        "properties": {
+          "revision": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "object"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "probe",
+      "name": "Probe",
+      "executor": "/tool/media.probe@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${trigger.output.content_id}",
+        "family": "document"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "kind",
+          "size"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "pages": {
+            "type": "integer"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "has_audio": {
+            "type": "boolean"
+          },
+          "has_video": {
+            "type": "boolean"
+          },
+          "format": {
+            "type": "string"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "to_pdf",
+      "name": "Convert to PDF",
+      "executor": "/tool/media.to_pdf@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${trigger.output.content_id}",
+        "format": "${trigger.output.format}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "pdf_content_id",
+          "pdf_obj_id",
+          "pages"
+        ],
+        "properties": {
+          "pdf_content_id": {
+            "type": "string"
+          },
+          "pdf_obj_id": {
+            "type": "string"
+          },
+          "pages": {
+            "type": "integer"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        },
+        "timeout": "600s"
+      }
+    },
+    {
+      "id": "extract_pdf_text",
+      "name": "Extract PDF text",
+      "executor": "/tool/media.extract_pdf_text@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${to_pdf.output.pdf_content_id}",
+        "page_range": "${trigger.output.page_range}",
+        "max_pages": "${trigger.output.limits.max_pages}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "pages",
+          "total_pages"
+        ],
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "total_pages": {
+            "type": "integer"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        },
+        "timeout": "300s"
+      }
+    },
+    {
+      "id": "render_pdf_pages",
+      "name": "Render PDF pages",
+      "executor": "/tool/media.render_pdf_pages@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${to_pdf.output.pdf_content_id}",
+        "dpi": "${trigger.output.dpi}",
+        "max_long_edge": "${trigger.output.max_long_edge}",
+        "page_range": "${trigger.output.page_range}",
+        "max_pages": "${trigger.output.limits.max_pages}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "pages",
+          "total_pages"
+        ],
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "total_pages": {
+            "type": "integer"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        },
+        "timeout": "600s"
+      }
+    },
+    {
+      "id": "build_catalog",
+      "name": "Build catalog",
+      "executor": "/tool/media.build_catalog@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "family": "document",
+        "source_content_id": "${trigger.output.content_id}",
+        "derived_content_id": "${to_pdf.output.pdf_content_id}",
+        "probe": "${probe.output}",
+        "text": "${extract_pdf_text.output}",
+        "images": "${render_pdf_pages.output}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "manifest_obj_id",
+          "summary",
+          "complete"
+        ],
+        "properties": {
+          "manifest_obj_id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "object"
+          },
+          "complete": {
+            "type": "boolean"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "capabilities",
+      "to": "probe"
+    },
+    {
+      "from": "probe",
+      "to": "to_pdf"
+    },
+    {
+      "from": "to_pdf",
+      "to": "extract_pdf_text"
+    },
+    {
+      "from": "extract_pdf_text",
+      "to": "render_pdf_pages"
+    },
+    {
+      "from": "render_pdf_pages",
+      "to": "build_catalog"
+    },
+    {
+      "from": "build_catalog"
+    }
+  ],
+  "guards": {
+    "max_duration": "45m"
+  }
+}

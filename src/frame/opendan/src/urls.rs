@@ -30,8 +30,9 @@ impl std::fmt::Debug for AgentUrlReader {
 
 /// The device a node runtime runs on: the first label of its `node_did` (`did:web:ood1.<zone>` → `ood1`).
 fn runtime_device(record: &RuntimeRecord) -> Option<String> {
-    let exec = record.exec.as_ref()?;
-    let node_did = exec.pointer("/remote_node/node_did")?.as_str()?;
+    let libopendan::protocol::RuntimeConnector::NodeExecutor { node_did: Some(node_did), .. } = &record.connector else {
+        return None;
+    };
     let host = DID::from_str(node_did).ok()?.to_host_name();
     host.split('.').next().map(str::to_string)
 }
@@ -46,7 +47,7 @@ impl AgentUrlReader {
             .map_err(|e| AgentToolError::ExecFailed(format!("runtimes: {e}")))?;
         let record = records
             .iter()
-            .find(|r| r.kind.is_node() && runtime_device(r).as_deref() == Some(device))
+            .find(|r| r.usable() && runtime_device(r).as_deref() == Some(device))
             .ok_or_else(|| {
                 AgentToolError::InvalidArgs(format!(
                     "{url}: no runtime of device {device} is registered for this Agent (`agent-session runtime list`), so its files are not reachable"
@@ -110,9 +111,9 @@ mod tests {
         assert!(err.to_string().contains("no runtime of device node2"), "{err}");
 
         let record: RuntimeRecord = serde_json::from_value(json!({
-            "version": 1, "runtime_id": "lab", "kind": "remote_node", "name": "lab", "runtime_host": "h",
-            "exec": { "kind": "remote_node", "remote_node": { "node_did": "did:web:node2.test.buckyos.io", "profile_id": "p" } },
-            "availability": "available", "baseline": "standard", "revision": 1, "registered_by": "x",
+            "version": 4, "runtime_id": "lab", "name": "lab", "runtime_host": "h",
+            "connector": { "type": "node_executor", "node_did": "did:web:node2.test.buckyos.io", "profile_id": "p" },
+            "availability": "available", "revision": 1, "registered_by": "x",
             "registered_at_ms": 1, "updated_at_ms": 1
         }))
         .unwrap();

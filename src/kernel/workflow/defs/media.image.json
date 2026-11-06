@@ -1,0 +1,268 @@
+{
+  "schema_version": "0.2.0",
+  "id": "media.image",
+  "name": "media.image",
+  "description": "Fit an image for a vision model: probe, then downscale / re-encode within the requested limits.",
+  "trigger": {
+    "type": "manual",
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "obj_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "obj_id": {
+          "type": "string"
+        },
+        "max_long_edge": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 4096,
+          "default": 2048
+        },
+        "max_pixels": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 16777216,
+          "default": 4194304
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 16384,
+          "maximum": 20971520,
+          "default": 3670016
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "required": [
+        "obj_id",
+        "content_id",
+        "size"
+      ],
+      "properties": {
+        "obj_id": {
+          "type": "string"
+        },
+        "max_long_edge": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 4096,
+          "default": 2048
+        },
+        "max_pixels": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 16777216,
+          "default": 4194304
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 16384,
+          "maximum": 20971520,
+          "default": 3670016
+        },
+        "content_id": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "capabilities",
+      "name": "Capabilities",
+      "executor": "/tool/media.capabilities@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {},
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "revision"
+        ],
+        "properties": {
+          "revision": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "object"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "probe",
+      "name": "Probe",
+      "executor": "/tool/media.probe@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${trigger.output.content_id}",
+        "family": "image"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "kind",
+          "size"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "pages": {
+            "type": "integer"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "has_audio": {
+            "type": "boolean"
+          },
+          "has_video": {
+            "type": "boolean"
+          },
+          "format": {
+            "type": "string"
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "fit_image",
+      "name": "Fit image",
+      "executor": "/tool/media.fit_image@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "content_id": "${trigger.output.content_id}",
+        "max_long_edge": "${trigger.output.max_long_edge}",
+        "max_pixels": "${trigger.output.max_pixels}",
+        "max_bytes": "${trigger.output.max_bytes}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "model_media_obj_id",
+          "mime",
+          "original",
+          "sent",
+          "actions"
+        ],
+        "properties": {
+          "model_media_obj_id": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "original": {
+            "type": "object",
+            "properties": {
+              "mime": {
+                "type": "string"
+              },
+              "width": {
+                "type": "integer"
+              },
+              "height": {
+                "type": "integer"
+              },
+              "bytes": {
+                "type": "integer"
+              }
+            }
+          },
+          "sent": {
+            "type": "object",
+            "properties": {
+              "mime": {
+                "type": "string"
+              },
+              "width": {
+                "type": "integer"
+              },
+              "height": {
+                "type": "integer"
+              },
+              "bytes": {
+                "type": "integer"
+              }
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        },
+        "timeout": "120s"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "capabilities",
+      "to": "probe"
+    },
+    {
+      "from": "probe",
+      "to": "fit_image"
+    },
+    {
+      "from": "fit_image"
+    }
+  ],
+  "guards": {
+    "max_duration": "10m"
+  }
+}

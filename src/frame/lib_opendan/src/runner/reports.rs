@@ -137,14 +137,18 @@ fn remote_artifact_path(sh: &Shared, name: &str) -> Result<String> {
 
 async fn remote_artifact_target(sh: &Shared, cfg: &SessionConfig) -> Result<RemoteNodeTarget> {
     let frozen = cfg.runtime.frozen.as_ref().ok_or_else(|| invalid("missing frozen runtime"))?;
-    let config = crate::runtime::node_config_of(
-        &frozen.runtime_id,
-        frozen.exec.as_ref().ok_or_else(|| invalid("missing frozen node executor"))?,
-    )?;
+    let config = crate::runtime::node_config_of(&frozen.runtime_id, &frozen.exec())?;
+    let (connector, config) = match sh.deps.xllm.node_executor.clone() {
+        Some(connector) => (connector, config),
+        None => {
+            let (connector, config, _) = crate::runtime::connector_for(&frozen.runtime_id, &config).await?;
+            (connector, config)
+        }
+    };
     let node = config.remote_node.ok_or_else(|| invalid("missing node executor configuration"))?;
     let target = RemoteNodeTarget::open(
-        sh.deps.xllm.node_executor.clone().unwrap_or_else(crate::runtime::node_connector),
-        node.node_did.as_deref().unwrap_or_default(),
+        connector,
+        node.connect_target().unwrap_or_default(),
         node.profile_id.as_deref().unwrap_or_default(),
         &frozen.runtime_id,
         sh.dir.state_dir().join("runtime_ops"),

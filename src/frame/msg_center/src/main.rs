@@ -21,8 +21,11 @@ mod obj_provider;
 mod object_access;
 mod owner_session;
 mod owner_session_db;
+mod remote_attachment;
 #[cfg(test)]
 mod test_contact_network;
+#[cfg(test)]
+mod test_remote_attachment;
 #[cfg(test)]
 mod test_cross_zone;
 #[cfg(test)]
@@ -237,6 +240,14 @@ impl RPCHandler for MsgCenterHttpServer {
                 let result = self.handle_reload_settings().await?;
                 return Ok(RPCResponse {
                     result: RPCResult::Success(result),
+                    seq: req.seq,
+                    trace_id: req.trace_id,
+                });
+            }
+            if req.method == buckyos_api::METHOD_MSG_ATTACHMENT_TICKET {
+                let value = center.attachment_ticket(req.params.clone(), &ctx).await?;
+                return Ok(RPCResponse {
+                    result: RPCResult::Success(value),
                     seq: req.seq,
                     trace_id: req.trace_id,
                 });

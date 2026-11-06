@@ -1,0 +1,80 @@
+{
+  "schema_version": "0.2.0",
+  "id": "wf-dv-echo-cache",
+  "name": "DV Echo Cache",
+  "description": "Two test.echo steps; the second run of the same definition must reuse both from the step cache.",
+  "trigger": {
+    "type": "manual"
+  },
+  "steps": [
+    {
+      "id": "a",
+      "name": "Echo A",
+      "type": "autonomous",
+      "executor": "/tool/test.echo@1",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "value": "dv-echo"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "echo": {},
+          "calls": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "echo"
+        ]
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    },
+    {
+      "id": "b",
+      "name": "Echo B",
+      "type": "autonomous",
+      "executor": "/tool/test.echo@1",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "value": {
+          "from_a": "${a.output.echo}"
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "echo": {},
+          "calls": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "echo"
+        ]
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "b"
+    },
+    {
+      "from": "b"
+    }
+  ]
+}

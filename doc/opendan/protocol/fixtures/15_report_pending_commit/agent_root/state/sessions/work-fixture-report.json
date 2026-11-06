@@ -18,21 +18,21 @@
     "rev": 2,
     "run_state": "running",
     "acceptance": "n/a",
-    "one_line_status": "",
+    "one_line_status": "working",
     "report_brief": "",
     "turn_open": true,
     "activity": {
       "summary": "submit the verified answer",
-      "heartbeat_ms": 1793591511860
+      "heartbeat_ms": 1793864757075
     },
     "last_runner": {
-      "runner_id": "rn-b58f85d5872a4147",
+      "runner_id": "rn-6aa5c917c55d4b35",
       "host": "${FIXTURE_HOST}",
-      "pid": 2811798,
+      "pid": 234615,
       "lock_epoch": 1,
-      "at_ms": 1793591511862
+      "at_ms": 1793864757076
     },
-    "updated_at_ms": 1793591511860
+    "updated_at_ms": 1793864757075
   },
   "location_rev": 0
 }

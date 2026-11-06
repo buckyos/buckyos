@@ -27,12 +27,12 @@ Workflow 引擎本身只认 Expr Tree（`Apply` / `Match` / `Par` / `Map` / `Awa
 4. 返回值直接回填到 `node_outputs`，再激活下游节点。
 5. `human_confirm` / `human_required` 编译为 `Await`，由编排器等待人类输入。
 
-FunctionObject / ThunkObject / Node Daemon Runner 是后续阶段的执行基础设施。它们重要，但不是第一期 executor 开发者必须实现的主路径。
+FunctionObject / ThunkObject 通道已在 2026-11-05 以系统内置媒体管线首次真实落地（§7）：`/tool/media.*@1` 在编译期绑定真实 FunctionObject，由 workflow 进程内的 `LocalThunkRunner` 执行 `FunctionType::Native`。Scheduler + Node Daemon Runner 的分布式执行仍是后续阶段。
 
 术语上要区分两层：
 
 - **定义层**：`FunctionObject` 描述一个 executor 能力，包括代码/包/脚本、参数约束、资源需求、结果类型等。
-- **执行层**：`FunctionObject + params = ThunkObject`。编排器真正投递给 Scheduler / Node Daemon Runner 的是 `ThunkObject`。
+- **执行层**：`FunctionObject + params = ThunkObject`（计算身份，不含 run 元信息）。编排器投递的是 `ThunkExecution`（`execution_id` 等一次执行的事实）+ `ThunkObject`；P0 的接收方是 workflow 进程内的 `LocalThunkRunner`，后续才是 Scheduler / Node Daemon Runner。
 
 ## 1. 分类总表
 
@@ -43,7 +43,7 @@ FunctionObject / ThunkObject / Node Daemon Runner 是后续阶段的执行基础
 | Agent / Skill / Tool 语义链接 | `/agent/<name>` / `/skill/<name>` / `/tool/<name>` | `Apply` | 看最终目标 | 先展开为实际 executor 定义，再由对应 adapter 执行 | 由展开后的 executor 决定 | P0 |
 | 人工输入 | `type: human_confirm` / `human_required` | `Await` | 否 | 编排器 + Msg Center | - | P0 |
 | 内置算子 | `operator::<name>` | `Apply` | 否 | 编排器内置函数 | 通常幂等 | P1 |
-| FunctionObject | `func::<objid>` / registry-resolved function | `Apply` |是 | Scheduler + Node Daemon Runner | 由 FunctionObject 决定 | 后续 |
+| FunctionObject | `func::<objid>` / `/tool/<name>@<version>`（registry 绑定） | `Apply` | 是 | P0：workflow 进程内 `LocalThunkRunner`（Native）；后续：Scheduler + Node Daemon Runner | `step.idempotent && function.is_pure` 才缓存 | 已落地（本地 Native 子集） |
 | OPTask | `optask::<pkg>@<device>` | `Apply` | 是 | 指定 Node Daemon | 窄幂等 | 后续 / break-glass |
 
 ### 实际定义与语义链接
@@ -91,6 +91,7 @@ BuckyOS 的标准服务指系统内置、有稳定 RPC schema、整个 Zone 内�
 - 编排器：识别 `service::` 前缀，直接通过 buckyos-api RPC client 调用对应服务。
 - 输出：RPC response 作为该 Step 的输出回填。
 - Cache：若 Step 声明 `idempotent: true`，编排器可用 `executor + input hash` 做结果缓存。
+- `service::aicc.*`：输入是 buckyos-api 的 typed request。`vision.*`、`image.*` 等要 `exact_model`，只有 `helper.*` 接受 `logical_model`，需要逻辑模型时可以先走一步 `route.resolve`。provider 异步的方法返回 `running` 时，adapter 等 AICC 任务结束（最长 30 分钟），步骤输出是任务的最终结果，失败或超时都是步骤失败。等待在 tick 内进行，占着该 Run 的锁，这期间对这个 Run 的 `get_run_graph`、`cancel_run` 会等待，其他 Run 不受影响。
 
 标准服务原则上应具备幂等能力。若服务内部不是天然幂等，服务实现者应通过 `task_id`、request id 或业务唯一键保证重复请求得到一致结果。
 
@@ -196,7 +197,7 @@ schema 解析）以及具体的 HTTP/kRPC adapter 实现。
 
 ### 实现状态
 
-🟡 **部分设计，缺 registry**。当前 `compile_step` 只对 `executor` 字符串做 hash，没有真正把 `/agent/`、`/skill/`、`/tool/` 展开为实际 executor 定义。第一期需要先补 executor registry，而不是直接补 Thunk。
+🟡 **`/tool/` 已接 FunctionRegistry，`/agent/` / `/skill/` 仍缺 registry**。`compile_workflow_with(definition, registry)`（`src/kernel/workflow/src/compiler.rs`）把 `/tool/<name>@<version>` 解析为已注册 FunctionObject 的 `func::<obj_id>` 并写入 `fun_id`；未注册即 `unresolved_function` 编译错误，不再对 executor 字符串做 hash。`/agent/`、`/skill/` 仍保持 `SemanticPath`，运行时报 `unresolved_semantic_executor`。
 
 ## 5. 人工输入 Executor @ workflow
 
@@ -379,72 +380,79 @@ Reference 语法或外部 service。主 DSL 中 Reference 保持“只读不算�
 建议先实现最小 operator table 和 `OperatorAdapter`，否则大量 `pluck` / `len` /
 `sort` / `topk` 逻辑会被迫包装成低价值 service。
 
-## 7. FunctionObject Executor @ scheduler
+## 7. FunctionObject Executor @ workflow (Native) / scheduler
 
 ### 语义
 
-FunctionObject 是后续阶段的 executor 定义对象。编排器执行某个 `Apply` 时，会用 `FunctionObject` 和已经解析好的参数构造 `ThunkObject`，再交给 Scheduler + Node Daemon Runner 执行。
-
-两者关系是：
+FunctionObject 是 executor 的定义对象；ThunkObject 是一次具体计算。关系仍是：
 
 ```text
 FunctionObject + params = ThunkObject
 ```
 
-其中 `FunctionObject` 属于定义层，回答“这个 executor 是什么、怎么运行、需要什么资源、参数和结果是什么”；`ThunkObject` 属于执行层，回答“这一次用这组参数执行哪个 FunctionObject”。
+2026-11-05 起（[notepads/llm-media-pipeline-workflow-todo.md](../../notepads/llm-media-pipeline-workflow-todo.md) P5 / P9），对象 hash 只覆盖决定结果的字段，描述与调度信息拆到不进 hash 的注册记录：
 
-推荐长期入口：
+| 对象 | 字段 | 身份 |
+|------|------|------|
+| `FunctionObject`（Named Object `func:<hex>`） | `func_type`（`exec_pkg` / `script` / `op_task` / `operator` / `native`）、`content`（Native 为 `<name>/impl-<n>`）、`is_pure`、`params_type`、`params_schema`、`result_type`、`result_schema` | JCS 规范化后 sha256（`FunctionObject::calc_obj_id`） |
+| `FunctionRegistration`（不是 Named Object） | `name`、`version`、`fun_id`、`description`、`timeout`（秒）、`requirements`、`best_run_weight`、`affinity_type` | 只是查找入口与准入条件；修改不改变 `fun_id` 和已有缓存 |
+| `ThunkObject`（`thunk:<hex>`） | `fun_id`、`params` | 相同函数 + 规范化参数跨 Run、跨重试同一 ID；不再含 `metadata` |
+| `ThunkExecution`（run meta） | `execution_id = <run_id>/<node_id>/<attempt>`、`run_id`、`node_id`、`attempt`、`execution_epoch`、`source_obj_id`、`requested_by`、`deadline_at`、`registration` 快照、`fingerprint`、`cache_key` | 一次执行的事实，回执按 `execution_id` 关联 |
+
+类型在 [src/kernel/buckyos-api/src/thunk_object.rs](../../src/kernel/buckyos-api/src/thunk_object.rs)。`params_schema` 是参数结构的权威（注册时拒绝 `description` / `title` / `examples` / `default`），`params_type` 只补充 `ObjId` / `CheckByRunner("file_content")` 这类对象引用语义。
+
+DSL 入口：
 
 ```json
 {
-  "id": "embed_batch",
+  "id": "render_pdf_pages",
   "type": "autonomous",
-  "executor": "func::<function_object_id>",
-  "input": {
-    "batch": "${plan.output.batch_obj_id}"
-  },
-  "idempotent": true
+  "executor": "/tool/media.render_pdf_pages@1",
+  "input": { "content_id": "${trigger.output.content_id}", "dpi": "${trigger.output.dpi}", "max_long_edge": 2048, "page_range": [], "max_pages": 50 },
+  "idempotent": true,
+  "guards": { "retry": { "max_attempts": 1, "fallback": "abort" } }
 }
 ```
 
-`/agent/`、`/skill/`、`/tool/` 未来也可以通过 registry 展开到 `FunctionObject`，但它们不是底层原语。
+编译后 `executor` 变为 `func::<obj_id>`、`fun_id = "func:<hex>"`；`func::<obj_id>` 也可直接写，但必须已注册。
 
-### FunctionObject 类型
+### 意图化函数
 
-当前代码里的 `FunctionType` 包括：
+FunctionObject 必须表达业务意图（“把 PDF 页渲染成页图”），不能是命令行包装（“运行 pdftoppm 参数 …”）；命令及参数拼接只在 Native 实现内。首批 9 个 `media.*` 函数见 [src/kernel/workflow/src/functions/media/mod.rs](../../src/kernel/workflow/src/functions/media/mod.rs)：capabilities、probe、fit_image、extract_pdf_text、render_pdf_pages、extract_frames、extract_audio、to_pdf、build_catalog。外部工具只出现在 `requirements`（`cmd/<tool>`）与诊断里。
 
-| FunctionType | 含义 | Runner hint |
-|--------------|------|-------------|
-| `ExecPkg` | 可执行包 | `package-runner` |
-| `Script(<lang>)` | 脚本 | `script-runner:<lang>` |
-| `OPTask(<lang>)` | 运维脚本 | `op-task-runner:<lang>` |
-| `Operator` | 算子 | `operator-runner` |
+### 执行方式（P0：workflow 进程内）
+
+1. 编排器解析 Reference，构造 `ThunkObject`，计算 `thunk_obj_id` 并把规范化 JSON 写入 Named Store。
+2. 取函数指纹（该函数依赖的工具版本），`cacheable = step.idempotent && function.is_pure`，`step_cache_key = hash(thunk_obj_id, fingerprint)`；命中且结果对象、产物都可用则 `step.completed{source: cache}`，不投递。
+3. 构造 `ThunkExecution`，记录 pending（按 `execution_id`）、创建 `workflow/thunk` Task，调用 `ThunkDispatcher::schedule_thunk(execution, thunk)`。
+4. `LocalThunkRunner`（[src/kernel/workflow/src/local_thunk_runner.rs](../../src/kernel/workflow/src/local_thunk_runner.rs)）只做有界入队即返回；执行任务取 lane 槽（Light / Image / Pdf / Video / Office），校验环境指纹、工具存在、参数 schema、内容可读，执行 Native，结果通过 `result_schema` 后写结果对象，发 `ThunkExecutionResult` 回执（含 `fingerprint`、`artifact_refs`、`cacheable`、结构化 `error`）。
+5. `RunDriver` 消费回执：重复、迟到、终态后的回执被拒绝；成功且 `cacheable` 的写缓存索引；失败按 Step 的 retry / fallback 处理，错误 `{code, message, details, retryable}` 落到 Run `node_errors`、Step / Thunk Task 与 RPC。
+
+错误码：`tools_missing`、`timeout`、`cancelled`、`interrupted`、`permission_denied`、`resource_limit`、`environment_changed`、`invalid_params`、`invalid_result`、`input_unavailable`、`tool_failed`、`function_not_found`、`queue_full`、`internal`（`buckyos_api::error_codes`）。
 
 ### 当前代码位置
 
 | 组件 | 文件 |
 |------|------|
-| FunctionObject / ThunkObject | `src/kernel/buckyos-api/src/thunk_object.rs` |
-| Apply + params → ThunkObject 构造 | `src/kernel/workflow/src/orchestrator.rs::build_thunk` |
-| Scheduler thunk runner | `src/kernel/scheduler/src/thunk_runner.rs` |
-| Node 执行器 | `src/kernel/node_daemon/src/node_Executor.rs` |
+| FunctionObject / FunctionRegistration / ThunkObject / ThunkExecution / ThunkExecutionResult | `src/kernel/buckyos-api/src/thunk_object.rs` |
+| FunctionRegistry（进程内，发布到 Named Store，解析 `/tool/` 与 `func::`） | `src/kernel/workflow/src/function_registry.rs` |
+| Native 契约（NativeFunction / NativeContext / ToolEnvironment / ExecutionLimits） | `src/kernel/workflow/src/native.rs` |
+| LocalThunkRunner | `src/kernel/workflow/src/local_thunk_runner.rs` |
+| Apply → Thunk 构造、缓存门禁、回执处理 | `src/kernel/workflow/src/orchestrator.rs` |
+| 缓存索引 / epoch / 执行账本（SQLite） | `src/kernel/workflow/src/cache_index.rs`、`persistence.rs` |
+| 内置函数 | `src/kernel/workflow/src/functions/` |
+| Scheduler thunk runner（读 `FunctionRegistration` 的 requirements / weight / affinity，`ThunkObject::calc_obj_id`） | `src/kernel/scheduler/src/thunk_runner.rs` |
 
 ### 实现状态
 
-🟡 **基础链路已有，但不作为一期主路径**。
+🟢 **本地 Native 子集已落地**：registry、编译期绑定、真实 ID、LocalThunkRunner、缓存、结构化错误、任务树接通。
 
-已存在：
+未完成（后置）：
 
-- `FunctionType` 枚举。
-- Scheduler runner hint。
-- NodeExecutor 对 `ExecPkg` / `Script` / `OPTask` 的执行计划。
-
-未完成：
-
-- executor registry：语义链接到实际 executor 定义 / FunctionObject 的解析。
-- named_store 参数存在性检查。
-- `Operator` 在 NodeExecutor 中仍未支持。
-- 一期编排器侧的直接 adapter 还没有补齐。
+- Scheduler / Node Daemon Runner 执行 `ExecPkg` / `Script` / `OPTask`：节点指纹、数据访问、身份交接与取消，不能据本地子集宣称已解决（[node_exector.md §6](../arch/node_exector.md)）。
+- Zone 级 registry、Agent / pikg 发布 FunctionObject。
+- `/agent/`、`/skill/` 的 registry 展开。
+- 跨主体 single-flight（同一 thunk 在多个 Run 同时执行允许重复计算）。
 
 ## 8. OPTask Executor @ node_daemon
 
@@ -497,7 +505,7 @@ exec(hash("deploy.sh"), node_state("node3", 3701))
 | P0 | `/agent/` / `/skill/` / `/tool/` | 定义 executor registry，先展开到实际 executor 定义 |
 | P0 | `human_confirm` / `human_required` | 桥接 Msg Center 推送与响应 |
 | P1 | `operator::` | 增加编排器内置 operator table |
-| 后续 | `func::<objid>` | 接入 FunctionObject registry；运行时由 Apply 参数构造 ThunkObject，再投递 Scheduler / Node Daemon Runner |
+| 已落地 | `/tool/<name>@<version>` / `func::<objid>` | FunctionRegistry 编译期绑定；Native 由 workflow 进程内 LocalThunkRunner 执行；Scheduler / Node Daemon Runner 后续 |
 | 后续 | `optask::` | 仅按 break-glass 能力推进，避免成为常规 workflow executor |
 
 ## 10. 选择建议
@@ -521,8 +529,9 @@ exec(hash("deploy.sh"), node_state("node3", 3701))
 只是做轻量数据转换？
 └── operator::<name>
 
-需要调度到具体节点、利用数据亲和性、跑重计算？
-└── 后续使用 func::<objid> 引用 FunctionObject；运行时生成 ThunkObject
+需要确定性、可缓存的转换 / 计算（如媒体转换）？
+└── 注册 FunctionObject，DSL 写 /tool/<name>@<version>（或 func::<objid>）
+    └── P0 在 workflow 进程内以 Native 执行；调度到其它节点后续
 
 需要低频运维修复？
 └── 后续 optask::<pkg>@<device>，并标记为 break-glass

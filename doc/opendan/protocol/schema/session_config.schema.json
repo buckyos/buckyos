@@ -89,6 +89,39 @@
       ],
       "type": "object"
     },
+    "BaselineCheck": {
+      "description": "The last check of a runtime's standard tools ([`crate::baseline`]): only a hint, the declaration decides (Q5).",
+      "properties": {
+        "checked_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "error": {
+          "description": "Why the check could not run (the runtime was not reachable).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "missing": {
+          "default": [],
+          "description": "Standard commands not found on the runtime's PATH.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "checked_at_ms",
+        "ok"
+      ],
+      "type": "object"
+    },
     "BehaviorBudget": {
       "additionalProperties": false,
       "properties": {
@@ -901,6 +934,54 @@
       ],
       "type": "object"
     },
+    "ExecutorOp": {
+      "oneOf": [
+        {
+          "enum": [
+            "open_stream",
+            "describe",
+            "exec",
+            "read",
+            "write",
+            "edit",
+            "computer_inspect",
+            "computer_observe",
+            "computer_act",
+            "query",
+            "cancel"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Create a directory (and missing parents inside the roots).",
+          "enum": [
+            "mkdir"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Whether a path is a file, a directory or missing.",
+          "enum": [
+            "stat"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Move a regular file inside the roots (atomic commit of a transfer).",
+          "enum": [
+            "rename"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Delete a regular file inside the roots.",
+          "enum": [
+            "remove"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "FrozenPrompt": {
       "description": "`prompt.frozen`: what the session took from the behavior catalog when it was constructed. Later catalog changes never reach the session; a behavior used for the first time afterwards is added once (`control_applied{behavior_frozen}` in the worklog).",
       "properties": {
@@ -951,43 +1032,40 @@
       "type": "object"
     },
     "FrozenRuntime": {
-      "description": "The session-runtime a session was frozen to at creation: the registration it resolved to and how that runtime is reached, so a restart or a changed default never moves the session to another target.",
+      "description": "The working runtime a session was frozen to at creation (where `shell` runs): the registration it resolved to and how that runtime is reached, so a restart or a changed default never moves the session to another target.",
       "properties": {
-        "baseline": {
+        "caps": {
           "allOf": [
             {
-              "$ref": "#/definitions/RuntimeBaseline"
-            }
-          ],
-          "description": "The registration's declared baseline: which cmd_skills the session takes."
-        },
-        "computer": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ComputerAccess"
-            }
-          ],
-          "default": "none"
-        },
-        "exec": {
-          "default": null,
-          "description": "The registration's `exec` (`agent_tool` RuntimeConfig) at selection."
-        },
-        "kind": {
-          "$ref": "#/definitions/RuntimeKind"
-        },
-        "platform": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/RuntimePlatform"
+              "$ref": "#/definitions/RuntimeCaps"
             }
           ],
           "default": {
             "arch": "",
+            "baseline": "standard",
+            "desktop": false,
             "os": "",
             "shell": ""
           },
-          "description": "What is known of its platform at selection (empty fields: not yet learned from the runtime)."
+          "description": "What the runtime can do at selection (declared baseline, platform as far as learned): decides the session's cmd_skills."
+        },
+        "connector": {
+          "$ref": "#/definitions/RuntimeConnector"
+        },
+        "grant": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RuntimeGrant"
+            }
+          ],
+          "default": {
+            "computer": "none",
+            "install": "none",
+            "ops": [],
+            "roots": [],
+            "workspace": false
+          },
+          "description": "What the agent may do there at selection."
         },
         "revision": {
           "description": "`RuntimeRecord.revision` the selection was read from.",
@@ -1003,8 +1081,7 @@
         }
       },
       "required": [
-        "baseline",
-        "kind",
+        "connector",
         "revision",
         "runtime_id",
         "selected_by"
@@ -1259,6 +1336,31 @@
             "subscriber"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "InstallGrant": {
+      "description": "What an Agent may install on a runtime.",
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Commands a skill brings, into the Agent's own bin.",
+          "enum": [
+            "agent_bin"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "System-wide packages (ExtTools, package managers).",
+          "enum": [
+            "system"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -1646,37 +1748,43 @@
       ],
       "type": "string"
     },
-    "RuntimeKind": {
-      "oneOf": [
-        {
-          "enum": [
-            "container",
-            "remote_ssh"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "The owner's desktop host (`host`): a node's embedded executor.",
-          "enum": [
-            "host_native"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Another node's embedded executor.",
-          "enum": [
-            "remote_node"
-          ],
-          "type": "string"
-        }
-      ]
-    },
-    "RuntimePlatform": {
-      "description": "The platform of a runtime: `os` is `linux | macos | windows`, `shell` the program name commands are written for (`bash`, `pwsh`, …).",
+    "RuntimeCaps": {
+      "description": "What the machine can do: learned when the runtime is checked, except `baseline`, which its registrar declares.",
       "properties": {
         "arch": {
           "default": "",
           "type": "string"
+        },
+        "baseline": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RuntimeBaseline"
+            }
+          ],
+          "default": "standard",
+          "description": "Declared (Q5): decides the sessions' cmd_skills and what their prompts say."
+        },
+        "baseline_check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BaselineCheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "desktop": {
+          "default": false,
+          "description": "A desktop session the executor can observe or control.",
+          "type": "boolean"
+        },
+        "identity_mode": {
+          "description": "`current_user` / `switch_user`: how a node executes.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "os": {
           "default": "",
@@ -1685,6 +1793,155 @@
         "shell": {
           "default": "",
           "type": "string"
+        },
+        "tools_check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ToolsCheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RuntimeConnector": {
+      "description": "How a runtime is reached: the only type tag of a record.",
+      "oneOf": [
+        {
+          "description": "This process's own environment.",
+          "properties": {
+            "type": {
+              "enum": [
+                "native"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A Node Executor: a node's embedded one (`node_did`) or a standalone executor (`executor_id`, form B), logged in under `profile_id`.",
+          "properties": {
+            "executor_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "node_did": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "profile_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "node_executor"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "profile_id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "identity_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "port": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "ssh"
+              ],
+              "type": "string"
+            },
+            "user": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "host",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RuntimeGrant": {
+      "description": "What this agent may do on the runtime: the node policy narrowed by the owner, with the daemon URL's term. `roots` is the executor's boundary (empty: unlimited); the agent's directories follow the directory convention (`<owner home>/agents/<agent_id>` on the private runtime, `<account home>/.opendan/<agent_id>` on a node) and are not recorded.",
+      "properties": {
+        "computer": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ComputerAccess"
+            }
+          ],
+          "default": "none"
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "install": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InstallGrant"
+            }
+          ],
+          "default": "none"
+        },
+        "ops": {
+          "default": [],
+          "description": "Executor operations granted; empty before the executor was asked.",
+          "items": {
+            "$ref": "#/definitions/ExecutorOp"
+          },
+          "type": "array"
+        },
+        "roots": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspace": {
+          "default": false,
+          "description": "Long-lived workspaces may be created there.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -1751,7 +2008,7 @@
       "type": "object"
     },
     "RuntimeSelection": {
-      "description": "How a session's session-runtime was chosen (primary-runtime TODO §3): the workspace never chooses it.",
+      "description": "How a session's working runtime was chosen (runtime lifecycle TODO §0.3): the workspace never chooses it.",
       "oneOf": [
         {
           "description": "Named by the creator (`--runtime`, a Todo's runtime).",
@@ -1768,13 +2025,29 @@
           "type": "string"
         },
         {
-          "description": "The agent's default runtime.",
+          "description": "Where the commands of a named cmd_skill are installed.",
           "enum": [
-            "default"
+            "skill"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The agent's private runtime: every chat, and any session nobody placed elsewhere.",
+          "enum": [
+            "private"
           ],
           "type": "string"
         }
       ]
+    },
+    "RuntimeView": {
+      "description": "What a session is told about the agent's runtimes: a chat knows two (its private runtime and the owner's default), work knows its working runtime and the private one, a plan sees the whole table.",
+      "enum": [
+        "chat",
+        "work",
+        "all"
+      ],
+      "type": "string"
     },
     "Scope": {
       "description": "Initial activity declaration: what this session plans to modify (§6.7).",
@@ -1871,6 +2144,15 @@
             }
           ],
           "default": "events_and_active"
+        },
+        "runtime_view": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RuntimeView"
+            }
+          ],
+          "default": "work",
+          "description": "Which runtimes the session's prompt knows (runtime lifecycle TODO §0.3, three levels)."
         },
         "tick_secs": {
           "default": 30,
@@ -2182,6 +2464,40 @@
           "type": "object"
         }
       ]
+    },
+    "ToolsCheck": {
+      "description": "Commands beyond the standard tools verified to exist on a runtime (`check --commands`, skill installation).",
+      "properties": {
+        "checked_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "missing": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "present": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "checked_at_ms"
+      ],
+      "type": "object"
     },
     "Touching": {
       "properties": {

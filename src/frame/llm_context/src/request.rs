@@ -127,7 +127,8 @@ pub enum OutputSpec {
     /// Free-form text, caller parses it themselves.
     Text,
     /// Force JSON. `schema` is forwarded to the provider adapter, which
-    /// enforces it natively where the provider supports structured output.
+    /// enforces it natively where the provider supports structured output;
+    /// without one the provider is asked for any JSON object.
     ///
     /// Without `max_repairs` the waist only parses: `strict = true` makes a
     /// parse failure an LLM-correctable `OutputParse` error (bounded by

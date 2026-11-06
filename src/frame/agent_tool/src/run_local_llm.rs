@@ -503,8 +503,8 @@ impl CliOpts {
             runs_dir: self.runs_dir.clone(),
             json: self.json,
             json_schema: None,
-            // JSON mode excludes web search (OpenAI: "Web Search cannot be
-            // used with JSON mode"), which AICC turns on for llm.chat.
+            // A machine-read result has no use for the web search AICC turns
+            // on for llm.chat, which also costs thousands of input tokens.
             disable_capabilities: if self.json { vec!["web_search".to_string()] } else { Vec::new() },
         }
     }

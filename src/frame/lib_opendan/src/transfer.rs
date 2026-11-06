@@ -235,28 +235,21 @@ fn below(base: &str, path: &str, what: &str) -> Result<String> {
 async fn open_runtime(
     sd: &SessionDir,
     runtime_id: &str,
-    kind: RuntimeKind,
-    exec: Option<&serde_json::Value>,
+    connector: &RuntimeConnector,
+    enabled: bool,
 ) -> Result<(Box<dyn RuntimeFiles>, bool)> {
-    if kind == RuntimeKind::Container {
+    if connector.is_native() {
         return Ok((Box::new(LocalFileBackend), false));
     }
-    if !kind.is_node() {
-        return Err(OpenDanError::Bind(format!("runtime `{runtime_id}` cannot take part in a copy ({kind:?})")));
+    if !connector.is_node() {
+        return Err(OpenDanError::Bind(format!("runtime `{runtime_id}` cannot take part in a copy ({})", connector.as_str())));
     }
-    let exec = exec.ok_or_else(|| OpenDanError::Bind(format!("runtime `{runtime_id}` is not enabled")))?;
-    let config = crate::runtime::node_config_of(runtime_id, exec)?;
-    let node = config.remote_node.clone().unwrap_or_default();
-    let target = agent_tool::runtime::node::RemoteNodeTarget::open(
-        crate::runtime::node_connector(),
-        node.node_did.as_deref().unwrap_or_default(),
-        node.profile_id.as_deref().unwrap_or_default(),
-        runtime_id,
-        sd.state_dir().join("runtime_ops"),
-    )
-    .await
-    .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: {e}")))?;
-    Ok((Box::new(target), true))
+    if !enabled {
+        return Err(OpenDanError::Bind(format!("runtime `{runtime_id}` is not enabled")));
+    }
+    let config = crate::runtime::node_config_of(runtime_id, &connector.exec())?;
+    let target = crate::runtime::open_node_target_of(runtime_id, &config, &sd.state_dir().join("runtime_ops")).await?;
+    Ok((target.into_files(), true))
 }
 
 /// Resolve and open `ep` in the session `cfg`; `write`: the copy writes
@@ -268,19 +261,19 @@ async fn open_side(
     ep: &Endpoint,
     write: bool,
 ) -> Result<Side> {
-    let (runtime_id, path, kind, exec) = match ep.runtime.as_str() {
+    let (runtime_id, path, connector, enabled) = match ep.runtime.as_str() {
         ROLE_SESSION => {
             let runtime_id = cfg.runtime.runtime_id().to_string();
             let frozen = cfg.runtime.frozen.as_ref();
-            let kind = frozen.map(|f| f.kind).unwrap_or(RuntimeKind::Container);
-            let base = if kind.is_node() {
+            let connector = frozen.map(|f| f.connector.clone()).unwrap_or(RuntimeConnector::Native);
+            let base = if connector.is_node() {
                 crate::runtime::target_workdir(sd)?.ok_or_else(|| {
                     OpenDanError::Bind("the session has no working directory on its runtime yet (it binds at its first drive)".into())
                 })?
             } else {
                 crate::runtime::resolve_workdir(sd)?.display().to_string()
             };
-            (runtime_id, below(&base, &ep.path, "session")?, kind, frozen.and_then(|f| f.exec.clone()))
+            (runtime_id, below(&base, &ep.path, "session")?, connector, true)
         }
         ROLE_WORKSPACE => {
             let b = cfg.workspace_binding.as_ref().ok_or_else(|| {
@@ -294,24 +287,24 @@ async fn open_side(
             }
             let runtime_id = canonical_runtime(&b.location.runtime_id).to_string();
             let record = agent.runtimes().lookup(&runtime_id).await?;
-            let kind = record.as_ref().map(|r| r.kind).unwrap_or(RuntimeKind::Container);
+            let connector = record.as_ref().map(|r| r.connector.clone()).unwrap_or(RuntimeConnector::Native);
             let base = b.location.directory.display().to_string();
-            (runtime_id, below(&base, &ep.path, "workspace")?, kind, record.and_then(|r| r.exec))
+            (runtime_id, below(&base, &ep.path, "workspace")?, connector, record.is_none_or(|r| r.enabled))
         }
         id => {
-            let (runtime_id, kind, exec) = match agent.runtimes().lookup(id).await? {
+            let (runtime_id, connector, enabled) = match agent.runtimes().lookup(id).await? {
                 Some(record) => {
-                    if record.availability != RuntimeAvailability::Available {
+                    if !record.usable() {
                         return Err(OpenDanError::Bind(format!(
                             "runtime `{id}` is not available: {}",
                             record.last_error.clone().unwrap_or_else(|| format!("{:?}", record.availability))
                         )));
                     }
-                    (record.runtime_id, record.kind, record.exec)
+                    (record.runtime_id, record.connector, record.enabled)
                 }
                 // A host that registered no runtimes: only the agent's own
                 // environment exists (as `freeze_runtime` takes it).
-                None if is_native_runtime(id) => (CONTAINER_RUNTIME.to_string(), RuntimeKind::Container, None),
+                None if is_private_runtime(id) => (PRIVATE_RUNTIME.to_string(), RuntimeConnector::Native, true),
                 None => {
                     return Err(OpenDanError::NotFound(format!(
                         "runtime {id} (see `agent-session runtime list`)"
@@ -324,10 +317,10 @@ async fn open_side(
                     ep.path
                 )));
             }
-            (runtime_id, ep.path.clone(), kind, exec)
+            (runtime_id, ep.path.clone(), connector, enabled)
         }
     };
-    let (files, node) = open_runtime(sd, &runtime_id, kind, exec.as_ref()).await?;
+    let (files, node) = open_runtime(sd, &runtime_id, &connector, enabled).await?;
     Ok(Side {
         end: TransferEnd {
             name: ep.runtime.clone(),

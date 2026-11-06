@@ -131,7 +131,7 @@ async fn a_finished_user_task_is_shared_once_as_the_agents_post() {
             assert!(prompt.contains("answer.txt"), "{prompt}");
             assert!(!prompt.contains(".opendan_agent_session"), "{prompt}");
             assert!(prompt.contains("Never include names of people"), "{prompt}");
-            assert!(req.force_json);
+            assert!(req.force_json && req.json_schema.is_some());
             return composed(true, "Sorted a photo archive by year: read EXIF dates, moved files into year folders, verified counts per folder.");
         }
         final_report("renamed 300 files into year folders")

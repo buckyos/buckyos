@@ -380,9 +380,9 @@ async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path(
         }
     }
     let h = response.headers_mut();
-    if let Ok(v) = HeaderValue::from_str(&mime) {
-        h.insert(header::CONTENT_TYPE, v);
-    }
+    // The user's home is served on the Desktop origin: posted files never run here (D24).
+    let name = file.body.get("name").and_then(Value::as_str).map(str::to_string);
+    ndn_lib::apply_content_policy(h, &mime, name.as_deref(), false);
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(count));
     h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=86400, immutable"));
@@ -397,6 +397,10 @@ async fn object_ref(State(state): State<AppState>, headers: HeaderMap, Path((use
         return (StatusCode::BAD_REQUEST, "not a file object").into_response();
     }
     match find_object(&state, &user, &headers, &q, &id).await {
+        // A token is one bearer link for every reader, which only a public entry
+        // can afford; a restricted entry's readers go through `/content`, where
+        // each read is judged against its audience (bucket design G3).
+        Ok(Some((station, reader, _))) if reader != Reader::Owner && !matches!(station.object_restricted(&id).await, Ok(false)) => (StatusCode::NOT_FOUND, "not bound").into_response(),
         Ok(Some((station, _, _))) => match station.content_ref(&id).await {
             Ok(Some(found)) => no_store(Json(found).into_response()),
             Ok(None) => (StatusCode::NOT_FOUND, "not bound").into_response(),
@@ -557,12 +561,26 @@ async fn inbox_status(State(state): State<AppState>, Path(user): Path<String>, h
         Err(r) => return r,
     };
     let target = station.home().inbox();
+    // The query is authenticated and answers only the party that delivered the
+    // object, so it is not a way to probe what someone received (CYFS Protocol
+    // "投递结果查询", bucket design G7); everyone else sees "unknown".
+    let token = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    let caller = match token {
+        Some(token) => state.host.auth.authenticate(token.trim()).await.ok(),
+        None => None,
+    };
+    let Some(caller) = caller else {
+        return dispatch_response(crate::ingress::DispatchReply {
+            http_status: 401,
+            result: ndn_lib::CyfsDispatchResult::rejected(None, target, "unauthenticated", false),
+            admission: None,
+        });
+    };
     let query = q.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&");
     let Ok(id) = ndn_lib::parse_cyfs_dispatch_status_query(&query) else {
         return (StatusCode::BAD_REQUEST, "dispatch-status=<ObjId> required").into_response();
     };
-    let _ = headers;
-    match station.inbox_receipt(&id.to_string()).await {
+    match station.inbox_receipt(&id.to_string(), &caller.did).await {
         Ok(Some(admission)) => {
             let mut result = ndn_lib::CyfsDispatchResult::new(Some(id), target, ndn_lib::CyfsDispatchStatus::Accepted);
             result.source = Some(ndn_lib::CyfsDispatchSource::Upstream);
@@ -578,17 +596,20 @@ async fn inbox_status(State(state): State<AppState>, Path(user): Path<String>, h
 }
 
 impl Station {
-    pub async fn inbox_receipt(&self, obj_id: &str) -> crate::error::HsResult<Option<Option<String>>> {
+    /// The receipt of `obj_id` as `asker` may see it: its sender or the home's owner.
+    pub async fn inbox_receipt(&self, obj_id: &str, asker: &str) -> crate::error::HsResult<Option<Option<String>>> {
         let id = obj_id.to_string();
-        self.db
+        let found = self
+            .db
             .call(move |c| {
                 Ok(rusqlite::OptionalExtension::optional(c.query_row(
-                    "SELECT admission FROM inbox_receipts WHERE obj_id=?1 AND owner=?2",
+                    "SELECT sender, admission FROM inbox_receipts WHERE obj_id=?1 AND owner=?2",
                     rusqlite::params![id, c.owner],
-                    |r| r.get::<_, Option<String>>(0),
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
                 ))?)
             })
-            .await
+            .await?;
+        Ok(found.filter(|(sender, _)| sender == asker || asker == self.owner()).map(|(_, admission)| admission))
     }
 
     pub async fn object_restricted(&self, obj_id: &str) -> crate::error::HsResult<bool> {

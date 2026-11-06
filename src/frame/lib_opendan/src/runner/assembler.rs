@@ -540,10 +540,29 @@ impl Blocks {
         let active = render_active_sessions(&m.active)
             .map(|a| format!("{a}\n"))
             .unwrap_or_default();
+        // `<runtime>`: this session's working runtime (and what it knows of
+        // the private one); a plan also gets the whole table as `<runtimes>`
+        // lines (runtime lifecycle TODO M6).
         let runtime = if m.runtime_status.is_null() {
             String::new()
         } else {
-            format!("<runtime>{}</runtime>\n", m.runtime_status)
+            let mut status = m.runtime_status.clone();
+            let lines = status
+                .get_mut("runtimes")
+                .and_then(Value::as_object_mut)
+                .and_then(|r| r.remove("lines"))
+                .and_then(|l| l.as_array().cloned())
+                .unwrap_or_default();
+            let mut s = format!("<runtime>{status}</runtime>\n");
+            if !lines.is_empty() {
+                s.push_str("<runtimes>\n");
+                for l in lines {
+                    s.push_str(l.as_str().unwrap_or_default());
+                    s.push('\n');
+                }
+                s.push_str("</runtimes>\n");
+            }
+            s
         };
         Self {
             handover,

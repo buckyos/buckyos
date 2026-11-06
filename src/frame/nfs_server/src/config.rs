@@ -110,6 +110,10 @@ pub struct ServerConfig {
     pub preview_cache_mib: u64,
     /// Where to look for ffmpeg/ffprobe instead of the standard search (tests).
     pub preview_tool_dirs: Option<Vec<PathBuf>>,
+    /// All anonymous `/ndn/` responses together; 0 turns the limit off.
+    pub ndn_anonymous_bytes_per_sec: u64,
+    /// What one app may keep in the `public-cache` bucket.
+    pub public_cache_app_bytes: u64,
 }
 
 impl ServerConfig {
@@ -133,6 +137,8 @@ impl ServerConfig {
             gc_evict: false,
             preview_cache_mib: buckyos_api::NfsServerSettings::default().preview_cache_mib,
             preview_tool_dirs: None,
+            ndn_anonymous_bytes_per_sec: buckyos_api::NfsServerSettings::default().ndn_anonymous_bytes_per_sec,
+            public_cache_app_bytes: buckyos_api::NfsServerSettings::default().public_cache_app_mib * 1024 * 1024,
         }
     }
 

@@ -25,6 +25,7 @@ pub mod mutate;
 pub mod namespace;
 pub mod obj_provider;
 pub mod ndm;
+pub mod ndn;
 pub mod preview;
 pub mod reconciler;
 pub mod search;

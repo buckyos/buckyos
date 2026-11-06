@@ -35,11 +35,41 @@ fn tokens() -> &'static Mutex<HashMap<String, (String, i64)>> {
     TOKENS.get_or_init(Default::default)
 }
 
+fn token_slot(bucket: &BucketId, key: &str) -> String {
+    format!("{bucket}/{key}")
+}
+
 fn bucket_err(e: impl std::fmt::Display) -> HsError {
     HsError::Unavailable(format!("bucket: {e}"))
 }
 
 impl Station {
+    /// Revokes every token a reader may hold for these files: narrowing an audience
+    /// must not leave yesterday's public link working (bucket design G3). The
+    /// bucket's own token list is the record, so this also covers tokens issued
+    /// before a restart. Another public entry showing the file issues a new one.
+    pub(crate) async fn revoke_media_tokens(&self, files: &[String]) -> HsResult<()> {
+        let files: Vec<String> = files.iter().map(|f| normalize_obj_id(f)).collect();
+        let client = self.store.buckets().await?;
+        for name in [HOMESTATION_BUCKET_PUBLISHED, HOMESTATION_BUCKET_FOLLOWING, HOMESTATION_BUCKET_SCRATCH] {
+            let bucket = self.bucket(name)?;
+            let now = buckyos_api::bucket_client::now_ms();
+            for token in client.list_access_tokens(&bucket).await.map_err(bucket_err)? {
+                let Some(key) = token.key.as_deref().filter(|_| token.revoked_at.is_none() && token.expires_at > now) else { continue };
+                let bound = match client.get(&bucket, key, None).await {
+                    Ok(b) => b.obj_id.as_deref().map(normalize_obj_id),
+                    Err(e) if buckyos_api::is_no_such_key(&e) => None,
+                    Err(e) => return Err(bucket_err(e)),
+                };
+                if bound.is_some_and(|id| files.contains(&id)) {
+                    client.revoke_access_token(&token.token_id).await.map_err(bucket_err)?;
+                    tokens().lock().unwrap().remove(&token_slot(&bucket, key));
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn media_bindings(&self) -> HsResult<HashMap<String, (BucketId, String)>> {
         let client = self.store.buckets().await?;
         let mut files = HashMap::new();
@@ -74,7 +104,7 @@ impl Station {
                 match client.head(&bucket, &key, None).await {
                     Ok((b, Availability::Local)) if !b.is_delete_marker && b.obj_id.as_deref().map(normalize_obj_id).as_deref() == Some(id.as_str()) => {
                         let now = buckyos_api::bucket_client::now_ms();
-                        let slot = format!("{bucket}/{key}");
+                        let slot = token_slot(&bucket, &key);
                         let cached = tokens().lock().unwrap().get(&slot).filter(|(_, exp)| exp - now > TOKEN_TTL_MS / 2).map(|(t, _)| t.clone());
                         let token = match cached {
                             Some(t) => t,

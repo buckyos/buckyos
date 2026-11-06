@@ -27,6 +27,29 @@ export function GroupDisplaySection({ display, session, nameOf, testId = 'group-
   </div>
 }
 
+/** A Blob URL inherits this origin and no response header protects it, so only types that cannot run content open in a tab. */
+function blobMayOpenInTab(type: string): boolean {
+  const essence = type.split(';')[0].trim().toLowerCase()
+  const major = essence.split('/')[0]
+  if (essence === 'image/svg+xml') return false
+  return major === 'image' || major === 'video' || major === 'audio' || essence === 'application/pdf' || essence === 'text/plain'
+}
+
+async function openBlobSafely(url: string, name: string): Promise<void> {
+  const blob = await fetch(url).then(response => response.blob())
+  if (blobMayOpenInTab(blob.type)) {
+    window.open(url, '_blank', 'noopener')
+    return
+  }
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = name
+  anchor.rel = 'noopener'
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
 function DisplayFile({ title, objId, context }: { title: string; objId: string; context: string }) {
   const { t } = useI18n()
   const [state, setState] = useState<'idle' | 'opening' | 'failed'>('idle')
@@ -36,7 +59,7 @@ function DisplayFile({ title, objId, context }: { title: string; objId: string; 
     setState('opening')
     try {
       const url = await access.contentUrl(objId, context)
-      window.open(url, '_blank', 'noopener')
+      await openBlobSafely(url, title)
       setState('idle')
     } catch {
       setState('failed')

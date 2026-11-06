@@ -97,8 +97,14 @@ and an admin raises it with `bucket.set_pool_quota`. The two zone buckets set
   messages it redacts (those no mailbox record still references).
 - A local message whose attachment is not in this Zone fails the send
   (`content_not_available`). A message from another Zone (signed ingress, or a
-  remote member of a hosted group) binds what this Zone has and skips the
-  rest with a warning: its sender's Zone keeps it.
+  remote member of a hosted group) binds nothing, even when the object is already
+  here: a signature does not prove its author holds what it names. A private
+  message's attachment is bound when a recipient first reads it: this Zone asks the
+  sender's Zone for a read token (`msg.attachment_ticket`, recipients only), pulls
+  `/ndn/<file>` and verifies every part. Until then, or while the sender's Zone does
+  not answer, the read gets 503 + `Retry-After`. An attachment over the 64 MiB a
+  read can hand over is not fetched: the read gets 413. A group's attachments stay
+  unreadable for now (`notepads/issue-689-cross-zone-attachments-protocol-todo.md`).
 - Uploads from MessageHub go through the NDM gateway, whose finalize holds the
   file 24h for the uploader (`ndm-hold:<user>|<app>`); `post_send` binds it
   into `attachments` within that window or fails. Telegram ingress puts the
