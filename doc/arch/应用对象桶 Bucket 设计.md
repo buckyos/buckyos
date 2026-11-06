@@ -1345,13 +1345,9 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 
 **未验证项汇总（2026-11-05）**
 
-代码和单测全部完成，已部署到本机 dev Zone（`test.buckyos.io`，二进制来自未提交的工作树）并跑过 N9、N17 的 DV。剩下：
+代码和单测全部完成，二进制都来自未提交的工作树。N9、N17 的 DV 跑在本机 dev Zone（`test.buckyos.io`），N18 的 DV 跑在 PVE 上的 `ssotest` 三 Zone 环境。
 
-| 项 | 差什么 | 怎么跑 |
-| --- | --- | --- |
-| N18 | 双 Zone DV，需要两个 Zone。进程内两 Zone 的端到端测试已通过 | 两个 Zone 互发带附件的私聊，收件人读取，非收件人读不到 |
-
-各项里单独标了"未验证"的范围（Firefox、Safari，部分路由没进浏览器等）也没有覆盖。
+各项里单独标了"未验证"的范围（Firefox、Safari，部分路由没进浏览器，N18 没有经过 Desktop UI 等）没有覆盖。
 
 ### P0：修复现有入口（不依赖 `/ndn/`）
 
@@ -1408,9 +1404,18 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 - [x] **N17 workflow 视频输入。** `NativeIo::open_tool_input` / `release_tool_input`；FileObject 取 `ThunkExecution.source_obj_id`，它的 `content` 和本步 `content_id` 不符时（派生输入、分片）用一个确定性的 FileObject；runner 在执行结束后统一撤销并解绑，崩溃时靠 `expires_at` 兜底。`-format_whitelist` 不含 hls、dash、concat。thunk params 没变，`step_cache_key` 不受影响。
   - 顺带修复：`ZoneNativeIo::bind` 的 `expires_at` 和 `deliver` 的令牌过期时间传的是秒，桶层要毫秒，产物绑定会被当成已过期、`deliver` 的令牌会签发失败。
   - 验证：`cargo test -p workflow -- --test-threads=1` 通过（66）；`--include-ignored` 跑真实 ffmpeg 7.1 通过：Range 读 moov 在尾的文件、不留临时副本、m3u8 和 ffconcat 指向的地址收不到请求、失败输出没有令牌。真实 Zone：新增 `WF-DV-014`（原有用例都没有走到 `media.video`），`WORKFLOW_DV_CASES=WF-DV-014` 通过：网关看到 ffmpeg / ffprobe（Lavf）经 `/ndn/` 的请求，`inputs/` 令牌全部撤销、key 已解绑，run 数据和日志没有令牌，再跑一次 `extract_frames` 命中 Step cache。全量 DV 里 WF-DV-009～013 通过；001、002、007（AICC 夹具字段与当前协议不符）和 006（TaskMgr 旧写法）失败，失败原因和这次改动无关，与 `notepads/llm-media-pipeline-workflow-todo.md` 记录的既有阻塞一致。
-- [ ] **N18 #689 跨 Zone 附件。** `frame/msg_center/src/remote_attachment.rs`，新增 `msg.attachment_ticket`（只对这条私聊消息的收件人签发）。第一次读取时拉取，读取最多等 20 秒，之后 503 + `Retry-After`，Desktop 现有的 Retry 可以用。持久状态只有消息和绑定，重启后下一次读取继续；没有另建表和后台任务。
+- [x] **N18 #689 跨 Zone 附件。** `frame/msg_center/src/remote_attachment.rs`，新增 `msg.attachment_ticket`（只对这条私聊消息的收件人签发）。第一次读取时拉取，读取最多等 20 秒，之后 503 + `Retry-After`，Desktop 现有的 Retry 可以用。超过读取路由上限（64 MiB，与 Desktop 上传上限相同）的附件不拉取内容，直接 413。持久状态只有消息和绑定，重启后下一次读取继续；没有另建表和后台任务。
   - 范围：只做 #689 P1 的私聊和 FileObject。没有做：群（host 授权是 P2，附件暂时 404）、目录、后台预取、`msg.collect_attachment` 触发拉取、UI 的专门状态。
-  - 验证：`test_remote_attachment.rs`，两个进程内 Zone、真实跨 Zone 登录和真实 nfs-server：从零副本读到内容并绑定；非收件人、未引用的对象、不存在的消息都拿不到令牌；发送方没有的对象（哪怕接收方本地有）不绑定；本地消息不外连。**双 Zone DV 未跑**，所以保持未勾选。
+  - 验证：`test_remote_attachment.rs`，两个进程内 Zone、真实跨 Zone 登录和真实 nfs-server：从零副本读到内容并绑定；非收件人、未引用的对象、不存在的消息都拿不到令牌；发送方没有的对象（哪怕接收方本地有）不绑定；本地消息不外连；超限的附件 413，不请求任何 chunk。`cargo test -p msg_center`：214 通过，1 忽略。
+  - DV（2026-11-05）：PVE 上 `ssotest`（alice 在 NAT 后经 SN 中继、bob 为 `wan_dyn`、charlie 为 `portmap`），`cd test/nfs_server_test && BUCKYOS_TEST_DNS=<sn ip> BUCKYOS_TEST_DEVICE_DIR=<dir> node remote_attachment_dv.mjs`，40 项全部通过：
+    - alice→bob（139 KiB 和跨 chunk 的 37 MiB）、alice→charlie、bob→alice，收件方从零副本读到，逐字节一致；第二次读取来自本地绑定。
+    - 拿不到票据：无会话、发送者本人、charlie（用其节点设备密钥走真实跨 Zone 登录）；对 charlie 的拒绝与消息不存在时完全相同。bob 走同样的登录能拿到票据，这张票据只能读对应的 key，读同一条消息的另一个附件是 404。
+    - charlie 在自己的 Zone 和 bob 的 Zone 都读不到；拉取后接收方的匿名 `/ndn/` 仍是 404。
+    - 超过 64 MiB 的真实文件 413，发送方网关日志只有对象请求，chunk 请求为 0。
+    - 日志核对：alice 收到的 `/ndn/` 来源是 `127.0.0.1`（隧道），SN 在 11 ms 前记录了 alice 的 SNI，确认走中继。四台 VM 的日志和三个 OOD 的 `data/`、`storage/` 没有令牌。
+    - 第一轮没有走中继：SN 对 NAT Zone 也回答 AAAA，而 `ssotest` 当时只拒绝 IPv4，bob 经 IPv6 直连了 alice。`ssotest.json` 已补 `ip6tables`，上面是补规则后的结果。
+    - 同一环境另跑了 `test_native_routes_dv.mjs`、`homestation_cross_zone_dv.mjs`、`test_hybrid_sso_federation_dv.ts`，全部通过（SSO 的 canonical-down 步骤因未配置启停命令而跳过）。
+    - 未运行：Desktop UI、并发读取、短时断网恢复、发送方 Zone 离线（失败退避只有进程内测试）。
 - [x] **N19 `ambient` 拉取与 `cyfs://` resolver。** `object_endpoint` / `objectEndpoint` 按此解析。`src/ndn/ambient.rs`：`202 + Retry-After`、`bucket.head` 的 `fetching`、`bucket.prefetch`。范围和限制见 §20 第 2 条。
   - 验证：`ambient_content_comes_back_from_its_origin`、`an_origin_is_pulled_only_from_ndn`、两端 resolver 用例。**成功路径同 N11，走的是测试入口。**
 

@@ -102,7 +102,8 @@ and an admin raises it with `bucket.set_pool_quota`. The two zone buckets set
   message's attachment is bound when a recipient first reads it: this Zone asks the
   sender's Zone for a read token (`msg.attachment_ticket`, recipients only), pulls
   `/ndn/<file>` and verifies every part. Until then, or while the sender's Zone does
-  not answer, the read gets 503 + `Retry-After`. A group's attachments stay
+  not answer, the read gets 503 + `Retry-After`. An attachment over the 64 MiB a
+  read can hand over is not fetched: the read gets 413. A group's attachments stay
   unreadable for now (`notepads/issue-689-cross-zone-attachments-protocol-todo.md`).
 - Uploads from MessageHub go through the NDM gateway, whose finalize holds the
   file 24h for the uploader (`ndm-hold:<user>|<app>`); `post_send` binds it

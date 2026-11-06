@@ -37,8 +37,8 @@ type Result<T> = std::result::Result<T, RPCErrors>;
 
 /// One pull may take many requests; the token outlives it comfortably.
 const TICKET_TTL_MS: i64 = 3600 * 1000;
-/// A single attachment this Zone agrees to fetch on a reader's behalf.
-const MAX_REMOTE_ATTACHMENT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// What a read can hand over: anything bigger is not fetched only to end in 413.
+const MAX_REMOTE_ATTACHMENT_BYTES: u64 = crate::object_access::MAX_CONTENT_BYTES;
 const PULL_TIMEOUT: Duration = Duration::from_secs(1800);
 /// How long a read waits for the pull before answering "try again".
 const READ_WAIT: Duration = Duration::from_secs(20);
@@ -46,10 +46,12 @@ const READ_WAIT: Duration = Duration::from_secs(20);
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(30);
 
 /// What a read gets from [`MessageCenter::ensure_remote_attachment`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoteAttachment {
     /// The key holds the attachment now.
     Bound,
+    /// More than a read can hand over; no bytes were fetched.
+    TooLarge,
     /// Not a remote attachment: the plain "not found" stands.
     NotRemote,
     /// Being fetched, or the sender's Zone did not answer; the reader may retry.
@@ -58,7 +60,7 @@ pub(crate) enum RemoteAttachment {
 
 #[derive(Default)]
 pub(crate) struct RemoteFetches {
-    running: Mutex<HashMap<String, watch::Receiver<Option<bool>>>>,
+    running: Mutex<HashMap<String, watch::Receiver<Option<RemoteAttachment>>>>,
     failed: Mutex<HashMap<String, Instant>>,
 }
 
@@ -127,33 +129,37 @@ impl MessageCenter {
         };
         let finished = tokio::time::timeout(READ_WAIT, progress.wait_for(Option::is_some)).await;
         match finished {
-            Ok(Ok(outcome)) if *outcome == Some(true) => RemoteAttachment::Bound,
+            Ok(Ok(outcome)) => outcome.unwrap_or(RemoteAttachment::Unavailable),
             _ => RemoteAttachment::Unavailable,
         }
     }
 
     /// The pull client's futures are not Send; a blocking slot runs them to the end,
     /// whether or not the read that started it is still waiting.
-    fn spawn_fetch(&self, buckets: Buckets, msg: MsgObject, id: ObjId, key: String, done: watch::Sender<Option<bool>>) {
+    fn spawn_fetch(&self, buckets: Buckets, msg: MsgObject, id: ObjId, key: String, done: watch::Sender<Option<RemoteAttachment>>) {
         let center = self.clone();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             runtime.block_on(async move {
-                let outcome = center.pull_attachment(&buckets, &msg, &id, &key).await;
-                if let Err(e) = &outcome {
-                    log::warn!("attachment {} from {}: {e}", id.to_string(), msg.from.to_string());
-                    center.remote_fetches.failed.lock().unwrap().insert(key.clone(), Instant::now());
-                } else {
-                    log::info!("attachment {} from {} verified and bound at {key}", id.to_string(), msg.from.to_string());
-                    center.remote_fetches.failed.lock().unwrap().remove(&key);
-                }
+                let answer = match center.pull_attachment(&buckets, &msg, &id, &key).await {
+                    Ok(answer) => {
+                        log::info!("attachment {} from {}: {answer:?} at {key}", id.to_string(), msg.from.to_string());
+                        center.remote_fetches.failed.lock().unwrap().remove(&key);
+                        answer
+                    }
+                    Err(e) => {
+                        log::warn!("attachment {} from {}: {e}", id.to_string(), msg.from.to_string());
+                        center.remote_fetches.failed.lock().unwrap().insert(key.clone(), Instant::now());
+                        RemoteAttachment::Unavailable
+                    }
+                };
                 center.remote_fetches.running.lock().unwrap().remove(&key);
-                let _ = done.send(Some(outcome.is_ok()));
+                let _ = done.send(Some(answer));
             })
         });
     }
 
-    async fn pull_attachment(&self, buckets: &Buckets, msg: &MsgObject, id: &ObjId, key: &str) -> std::result::Result<(), String> {
+    async fn pull_attachment(&self, buckets: &Buckets, msg: &MsgObject, id: &ObjId, key: &str) -> std::result::Result<RemoteAttachment, String> {
         let client = self.cross_zone.get().ok_or("no cross-zone client")?;
         let requester = msg.to.iter().find(|to| self.is_local_recipient(to)).ok_or("no recipient of this message lives here")?;
         let zone = canonical_zone_of(self.custody.get().as_ref(), &msg.from, None)
@@ -179,11 +185,11 @@ impl MessageCenter {
         }
         let size = body["size"].as_u64().ok_or("the file object has no size")?;
         if size > MAX_REMOTE_ATTACHMENT_BYTES {
-            return Err(format!("{size} bytes is more than this zone fetches for a reader"));
+            return Ok(RemoteAttachment::TooLarge);
         }
         ndn.get(&url).pull_to_named_store(&buckets.store).await.map_err(|e| e.to_string())?;
         let put = PutRequest { key: key.to_string(), obj_id: id.to_string(), ..Default::default() };
         buckets.client.put(&zone_bucket(MSG_CENTER_ATTACHMENTS_BUCKET), &put).await.map_err(|e| e.to_string())?;
-        Ok(())
+        Ok(RemoteAttachment::Bound)
     }
 }

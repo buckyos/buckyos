@@ -285,6 +285,32 @@ async fn a_message_naming_what_its_sender_lacks_stays_unreadable() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_attachment_a_read_could_not_hand_over_is_not_fetched() {
+    let s = scene().await;
+    // The decision is on the verified object's size, before any chunk.
+    let data = b"its object declares far more than this";
+    let chunk = ndn_lib::ChunkHasher::new(None).unwrap().calc_mix_chunk_id_from_bytes(data).unwrap();
+    s.a.buckets.store.put_chunk(&chunk, data).await.unwrap();
+    let (file, body) = ndn_lib::FileObject::new("big.bin".to_string(), crate::object_access::MAX_CONTENT_BYTES + 1, chunk.to_string()).gen_obj_id();
+    s.a.buckets.store.put_object(&file, &body).await.unwrap();
+    let msg = message(&alice(), &bob(), &file, 1);
+    let msg_id = msg.gen_obj_id().0;
+    sent(&s.a, &msg).await;
+    assert!(s.b.center.dispatch_to_receiver(msg.clone(), None, bob(), "https://b.example/inbox".into()).await.unwrap().ok);
+
+    let bob_ctx = context(&bob(), ZONE_B.key);
+    // Not "try again": the answer will not change, and a second read says the same.
+    assert_eq!(read(&s.b.center, &bob_ctx, &file, &msg_id).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(read(&s.b.center, &bob_ctx, &file, &msg_id).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(!s.b.buckets.store.is_object_stored(&file, None).await.unwrap());
+    let key = format!("{}0", MessageCenter::attachment_prefix(&msg_id, &msg));
+    assert!(s.b.buckets.client.get(&attachments(), &key, None).await.is_err(), "nothing was bound");
+    let hits = s.hits.lock().unwrap();
+    assert!(hits.iter().any(|path| path.starts_with("/ndn/cyfile")), "the object was asked for: {hits:?}");
+    assert!(!hits.iter().any(|path| path.contains("mix256")), "and no chunk: {hits:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_local_message_never_reaches_out() {
     let s = scene().await;
     let file = stored_file(&s.b.buckets.store, "a.txt", b"local").await;

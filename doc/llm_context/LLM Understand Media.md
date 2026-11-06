@@ -815,11 +815,19 @@ G1–G6 不解决就过不了 §8 的验收，其中 G1、G2 影响真实 Sessio
 | # | 问题 | 推荐 | 其他选择与代价 |
 |---|---|---|---|
 | Q1 | 长转换怎么等？TODO D8 定的是"短等待后 Pending"，但这条路不通（G1） | **helper 阻塞到 Run 终态再做模型分析，不再返回 Pending。** `shell` 超过 25 秒自动转任务，结束时完整报告回到 Agent，模型不用管 run_id，正好是 D8 要的"LLM 无需管理"。shell 默认 30 分钟超时；被停后 Run 还在，再调用靠账本接回。删除 `resume`、`--resume`、Pending 结果，保留账本和恢复逻辑。这是对 D8 的修改 | Pending 的 `task_id` 改成 Run 根任务的 TaskMgr id（`t-…`）：`create_run` 要返回 `root_task_id`；任务结束后模型还要再调一次才拿到报告，多一轮推理 |
+> 同意你的建议，llm_understand_meida本质上是取代多模态推理，是卡推理的。不过run_id 从原理上应该是task_id吧？ l
+
 | Q2 | 真实 Session 没有父 history 和父预算，设计里的继承要接通吗？ | **不接。** 明确"goal 必须自带上下文"，§4.2 的提纯逻辑留给 `--history-file`，预算靠 `--max-completion-tokens` 与 `TEXT_CHARS` / `MAX_IMAGES`。Agent 写 goal 时本来就知道上下文，接通的收益不明显 | runtime 把会话快照路径和剩余预算经环境变量传给 helper：要改 libopendan 的 helper 装配，旁路多一次压缩调用的成本 |
+> 同意你的建议
 | Q3 | 模型输入继续用 Base64，还是改 NamedObject？ | **改 `ResourceRef::NamedObject`。** AICC 已支持，并用调用者 session 校验读权限；快照不再含字节，agent 进程也不用读图。音频和文档同样处理。要先确认：配置了 `public_named_object_base_url` 的 Zone 里，Claude / OpenAI Chat 这类协议会拿到对象 URL，私有产物在 `/ndn/` 上没有 hint 读不到，需要 AICC 对这种情况退回内联 | 保留 Base64，只做工作目录清理：改动最小，但不满足 §8 第 2 项，快照在运行期间仍然很大 |
+> 改NamedObject
 | Q4 | 长 PDF 怎么覆盖后部页面？ | **文本先行，分两轮 Run。** 定义增加 `render_page_range`（`render_pdf_pages` 函数本身不变）。第一轮取全部文本（上限 200 页），页图只渲染很少几页；工具选页后第二轮只渲染选中的页，文本步骤命中缓存。超过 200 页用 `page_range` 开窗。同时解决 G4 的白渲染 | 不改定义，按 50 页窗口多跑几轮：每轮渲染 50 张 PNG，一份 200 页 PDF 渲染全部页面，慢很多。只报告 `unprocessed`：不满足 §8 第 18 项 |
+> 长的PDF要转成目录（怎么定义长是一个需要拍脑门的事情），这个目录模型就是为pdf / pptx 这种图文混排的结构设计的
+
 | Q5 | `to_pdf` 怎么进缓存？ | **改为 `is_pure: true`，语义是"结果可复用"，不要求字节相同。** 第一次的输出写入缓存，之后 `pdf_content_id` 稳定，后续步骤全部命中。指纹加入字体集摘要，实现版本升到 `impl-2`。这放宽了 TODO §2.3"通过确定性验证后才声明 pure"的规则，需要你确认 | 规范化 PDF 元数据后再判 pure：要引入 qpdf 之类的新依赖或做字节改写。维持现状：每次提问都重跑 soffice 和后续所有步骤 |
+> 同意
 | Q6 | Agent 的全局对象读权限（`agent, obj://ndm/objects, read`）和不完整的 `delivery` 怎么处理？ | **本期维持 Agent 经 NDM 读取，文档如实记录，TODO 的 T1h / 验收 17 改为部分完成。** 补全 `delivery` 等出现非 Agent 消费方时再做。只读 Agent 的上传权限、收紧 Agent 读权限另作安全任务，不并入本次改造 | 现在补全 `delivery`：manifest 绑 bucket key，`get_run_output` 展开引用并逐个签 token（50 页 PDF 约 100 个），当前没有消费方。收紧 Agent 读权限、改走 `delivery`：`read_tool` 读消息附件等现有路径都受影响，范围远超本任务 |
+> 同意，按原则应该不会超过agent owner的权限
 
 ### 10.4 动手顺序
 

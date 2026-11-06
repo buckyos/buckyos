@@ -484,7 +484,7 @@ uv run buckyos-devtest sntest create_vms
 ### 6.3 与 Multipass 的差异
 
 - **VM 名称**：PVE 里的 VM 名就是 node id（`sn`、`alice-ood1`），VMID 自动分配。同名 VM 必须唯一，已有同名 VM 时 `create_vms` 会跳过创建。
-- **网络**：VM 和宿主机在同一个局域网里，SN 的 53/80/443/2980 端口对整个局域网可见；alice 只对 80/443/2980 做了拒绝。group 配置里的 `network`（`lan_id`/`type`）两种后端都不使用。
+- **网络**：VM 和宿主机在同一个局域网里，SN 的 53/80/443/2980 端口对整个局域网可见；alice 只对 80/443/2980 做了拒绝。group 配置里的 `network`（`lan_id`/`type`）两种后端都不使用。局域网有全局 IPv6 时，VM 也会拿到全局地址，SN 对 NAT Zone 同样回答 AAAA：`ssotest` 同时用 `ip6tables` 拒绝，`sntest`、`full` 只拒绝 IPv4，这两组的 alice 在这种网络上会被 IPv6 直连，不走中继。
 - **镜像**：用 noble 云镜像时 VM 是 Ubuntu 24.04，`/tmp` 不是 tmpfs。
 - **创建**：`create_vms` 会等待 cloud-init 完成；init 命令失败时直接报错并删除该 VM（Multipass 后端不检查 init 命令的退出码）。
 - **快照**：`qm snapshot` 是在线快照，几秒完成，不重启 VM。`restore` 回滚后启动 VM，等到 guest agent 可用并且 VM 拿到地址才返回。DHCP 按 MAC 分配，restore 后 IP 不变；重建 VM 后 IP 会变，需要重新 `install`。

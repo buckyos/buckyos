@@ -36,7 +36,7 @@ type Body = BoxBody<Bytes, ServerError>;
 pub(crate) const OBJECTS_PATH: &str = "/kapi/msg-center/objects/";
 /// Attachments are chat-sized; larger objects are refused instead of being
 /// buffered in memory.
-const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
 /// How many of the newest messages of each of the caller's mailboxes a read
 /// without `context_path` looks through; older ones are read by naming them.
 const OWN_MESSAGES_SEARCHED: usize = 1000;
@@ -316,6 +316,7 @@ pub(crate) async fn bound_attachment_response(
         Ok(None) => match center.ensure_remote_attachment(&buckets, msg_id, id).await {
             RemoteAttachment::Bound => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
             RemoteAttachment::NotRemote => text_response(StatusCode::NOT_FOUND, "not-found"),
+            RemoteAttachment::TooLarge => text_response(StatusCode::PAYLOAD_TOO_LARGE, "file is too large for inline download"),
             RemoteAttachment::Unavailable => retry_later("attachment is being fetched from the sender's zone"),
         },
         Err(error) => {
