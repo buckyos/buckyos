@@ -108,6 +108,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   run --runtime <runtime_id|workspace> [--cwd <abs dir on it>] [--timeout <secs>] -- <command...>
         one command on another runtime of this agent (only from a session whose working runtime is the private one);
         `workspace` runs in the session's workspace directory, a runtime id needs --cwd inside its granted roots;
+        several words are a command and its arguments (-- sh -c 'a; b'), one word is a line for that shell (-- 'a | b');
         the target's own PATH and shell; output and exit code come back as they are (exit 124: timed out)
   task state|cancel <task_id>   (a task of the run this command runs in, e.g. a shell command that continued as a task;
         its end comes back to the session as input on its own — nothing waits for it; exit 0 running/finished, 1 failed, 2 unknown)
@@ -2137,14 +2138,24 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
     Ok(0)
 }
 
+fn run_command_line(words: &[String], windows: bool) -> String {
+    let quoted = |quote: fn(&str) -> String| words.iter().map(|word| quote(word)).collect::<Vec<_>>().join(" ");
+    match words {
+        [line] => line.clone(),
+        _ if windows => format!("& {}", quoted(crate::baseline::powershell_quote)),
+        _ => quoted(shell_quote),
+    }
+}
+
 /// `run --runtime <id|workspace> [--cwd <dir>] [--timeout <secs>] -- <command...>`:
 /// one command on another runtime of this agent, from a session whose
-/// working runtime is the private one (R-W5). The command words after `--`
-/// are joined for the target's shell.
+/// working runtime is the private one (R-W5). Several words after `--` are a
+/// command and its arguments, which reach it as they are; one word is a line
+/// for the target's shell.
 async fn cmd_runtime_run(argv: Vec<String>) -> R<i32> {
     let split = argv.iter().position(|x| x == "--").ok_or_else(|| bad("run takes `-- <command...>` after its options"))?;
-    let command = argv[split + 1..].join(" ");
-    if command.trim().is_empty() {
+    let words = &argv[split + 1..];
+    if words.iter().all(|word| word.trim().is_empty()) {
         return Err(bad("run: no command after `--`"));
     }
     let a = Args::parse(argv[..split].to_vec(), &[]);
@@ -2181,6 +2192,8 @@ async fn cmd_runtime_run(argv: Vec<String>) -> R<i32> {
         .num::<u64>("timeout")?
         .map(|s| s * 1000)
         .unwrap_or(crate::runtime::RUNTIME_EXEC_DEFAULT_TIMEOUT_MS);
+    let windows = c.agent.runtimes().lookup(&runtime_id).await?.is_some_and(|r| r.caps.platform.os == "windows");
+    let command = run_command_line(words, windows);
     let op = crate::runtime::runtime_exec(c.agent.as_ref(), &runtime_id, &command, cwd.as_deref(), timeout_ms, Some(&format!("session:{sid}"))).await?;
     let record = crate::runtime::session_run_record(&sd, &op, env_call_id())?;
     print(&record);
@@ -2954,6 +2967,18 @@ pub fn main() -> ! {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+
+    #[test]
+    fn a_powershell_target_calls_the_command_with_its_words_quoted() {
+        let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        assert_eq!(run_command_line(&words(&["my prog", "it's", "$x"]), true), "& 'my prog' 'it''s' '$x'");
+        assert_eq!(run_command_line(&words(&["Get-Process | Select -First 1"]), true), "Get-Process | Select -First 1");
+    }
 }
 
 #[cfg(test)]

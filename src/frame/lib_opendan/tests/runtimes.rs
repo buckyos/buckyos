@@ -334,8 +334,8 @@ impl agent_tool::runtime::node::NodeExecutorConnector for LateNode {
 
 /// A node runtime whose executor was not up yet when the agent checked it
 /// (node_daemon opens it after the agent's container starts) is asked again
-/// by the next session that needs it, at most every RUNTIME_RECHECK_MS:
-/// sessions are not refused forever after a transient failure.
+/// by the next session or command that needs it, at most every
+/// RUNTIME_RECHECK_MS: nothing is refused forever after a transient failure.
 #[tokio::test]
 async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -376,6 +376,8 @@ async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
         .await
         .unwrap_err();
     assert!(refused.to_string().contains("not available"), "{refused}");
+    let refused = libopendan::runtime::usable_runtime(agent.as_ref(), "host").await.unwrap_err();
+    assert!(refused.to_string().contains("not available"), "{refused}");
     assert_eq!(connects.load(Ordering::SeqCst), tries, "not asked again right away");
     // The executor comes up; after the interval the next session asks again.
     up.store(true, Ordering::SeqCst);
@@ -386,6 +388,15 @@ async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
     let record = agent.runtimes().lookup("host").await.unwrap().unwrap();
     assert_eq!(record.availability, RuntimeAvailability::Available);
     assert!(connects.load(Ordering::SeqCst) > tries);
+
+    // `agent-session run` and `copy` get the same second chance.
+    up.store(false, Ordering::SeqCst);
+    let checked = agent.runtimes().check("host", &[], false).await.unwrap();
+    assert_eq!(checked.availability, RuntimeAvailability::RuntimeUnavailable);
+    up.store(true, Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(libopendan::api::RUNTIME_RECHECK_MS + 200)).await;
+    let usable = libopendan::runtime::usable_runtime(agent.as_ref(), "host").await.unwrap();
+    assert_eq!(usable.availability, RuntimeAvailability::Available);
 }
 
 /// An Agent Service run natively on its host (Desktop Lite) still has its

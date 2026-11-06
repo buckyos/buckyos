@@ -361,7 +361,7 @@ impl CommandOrigin {
     }
 }
 
-fn powershell_quote(s: &str) -> String {
+pub(crate) fn powershell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 

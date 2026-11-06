@@ -640,7 +640,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
       version: 4, runtime_id: 'private', name: 'Private runtime',
       desc: "Your own environment: the agent's container. Commands run directly; paths here are not the owner's host paths.",
       runtime_host: 'mock-host', connector: { type: 'native' }, enabled: true,
-      caps: { os: 'linux', arch: 'x86_64', shell: 'bash', desktop: false, baseline: 'extended', baseline_check: { checked_at_ms: ago(60), level: 'extended', missing: [], ok: true, ext: { status: 'system', missing: [], system: ['ffmpeg', 'python3'] } } },
+      caps: { os: 'linux', arch: 'x86_64', shell: 'bash', desktop: false, baseline: 'extended', baseline_check: { checked_at_ms: ago(60), level: 'extended', missing: ['pandoc'], ok: false, ext: { status: 'partial', missing: ['pandoc'], system: ['ffmpeg', 'python3'] } } },
       grant: { ops: allOps, roots: [], computer: 'none', install: 'system', workspace: true },
       availability: 'available', builtin: true, default: false, lifecycle: 'active',
       usage: { sessions_total: 12, last_used_at_ms: ago(300), last_session_id: UI, workspaces: 2, skill_commands: [] },
@@ -834,6 +834,9 @@ export const createMockDataModel = (): OpenDanDataModel => {
       const runtime = runtimes.find((r) => r.runtime_id === runtimeId)
       if (!runtime) throw new OpenDanError('not_found', `runtime ${runtimeId} is not registered`)
       runtime.checked_at_ms = Date.now()
+      if (runtime.runtime_id === 'private') {
+        runtime.caps.baseline_check = { checked_at_ms: Date.now(), level: 'extended', missing: [], ok: true, ext: { status: 'system', missing: [], system: ['ffmpeg', 'python3'] } }
+      }
       return structuredClone(runtime)
     },
 

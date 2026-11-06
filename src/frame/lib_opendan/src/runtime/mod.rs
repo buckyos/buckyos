@@ -1240,12 +1240,34 @@ fn runtime_ops_dir(agent: &dyn crate::state::AgentStateClient) -> Result<PathBuf
     Ok(root.join("state").join(RUNTIME_OPS_DIR))
 }
 
+/// A runtime's record for something about to use it. A node runtime found
+/// unreachable earlier is asked again first: its executor may have come up
+/// since (node_daemon opens it after loading the node's settings, the agent
+/// may have checked first).
+pub async fn lookup_rechecked(agent: &dyn crate::state::AgentStateClient, runtime_id: &str) -> Result<Option<RuntimeRecord>> {
+    let record = agent.runtimes().lookup(runtime_id).await?;
+    let Some(r) = record.as_ref().filter(|r| {
+        r.availability != RuntimeAvailability::Available
+            && r.lifecycle == RuntimeLifecycle::Active
+            && r.connector.is_node()
+            && r.enabled
+            && r.checked_at_ms.is_none_or(|t| crate::now_ms().saturating_sub(t) >= crate::api::RUNTIME_RECHECK_MS)
+    }) else {
+        return Ok(record);
+    };
+    match agent.runtimes().check(&r.runtime_id, &[], false).await {
+        Ok(checked) => Ok(Some(checked)),
+        Err(e) => {
+            log::warn!("runtime {runtime_id} not checked again: {e}");
+            Ok(record)
+        }
+    }
+}
+
 /// A runtime record usable for an agent-level operation now, else why not
 /// (R-U5: refused, never replaced).
 pub async fn usable_runtime(agent: &dyn crate::state::AgentStateClient, runtime_id: &str) -> Result<RuntimeRecord> {
-    let record = agent
-        .runtimes()
-        .lookup(runtime_id)
+    let record = lookup_rechecked(agent, runtime_id)
         .await?
         .ok_or_else(|| OpenDanError::NotFound(format!("runtime {runtime_id} (see `agent-session runtime list`)")))?;
     if record.lifecycle == RuntimeLifecycle::Retired {

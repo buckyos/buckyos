@@ -681,6 +681,41 @@ fn workspace_commands_preserve_identity_and_create_fixed_session_bindings() {
 }
 
 #[test]
+fn run_keeps_the_words_of_a_command_apart() {
+    use libopendan::state::{AgentStateClient, FsAgentStateClient};
+    let cli = Cli::new();
+    let state = FsAgentStateClient::open(cli.root.join("agent_root"), AGENT, None, None).unwrap();
+    let builtin = builtin_runtimes(&Default::default(), AGENT, &PrivateRuntimeInfo::default());
+    tokio::runtime::Runtime::new().unwrap().block_on(state.runtimes().ensure_builtin(&builtin, WHO)).unwrap();
+    let directory = cli.root.join("project");
+    let (code, created, err) = cli.run(&[
+        "workspace", "create", "--directory", directory.to_str().unwrap(), "--name", "Project", "--key", "project-1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let sd = cli.create(&["--objective", "work in project", "--workspace", created["workspace_id"].as_str().unwrap()]);
+    let run = |words: &[&str]| {
+        let mut args = vec!["run", "--runtime", "workspace", "--"];
+        args.extend_from_slice(words);
+        parse(cli.command(&args).env("OPENDAN_SESSION_ID", sd.sid()).output().unwrap())
+    };
+
+    // Several words are a command and its arguments.
+    let (code, op, err) = run(&["sh", "-c", "printf '[%s]' \"$0\"; echo second", "it's a $word"]);
+    assert_eq!(code, 0, "{op} {err}");
+    assert_eq!(op["stdout"], "[it's a $word]second\n");
+    let (_, op, _) = run(&["printf", "[%s]", "a b", ""]);
+    assert_eq!(op["stdout"], "[a b][]");
+
+    // One word is a command line of that shell.
+    let (code, op, err) = run(&["echo first | tr a-z A-Z; echo second"]);
+    assert_eq!(code, 0, "{op} {err}");
+    assert_eq!(op["stdout"], "FIRST\nsecond\n");
+
+    let (code, _, err) = run(&[" "]);
+    assert_eq!(code, 2, "{err}");
+}
+
+#[test]
 fn workspace_import_and_unregister_never_delete_project_files() {
     let cli = Cli::new();
     let directory = cli.root.join("existing");
