@@ -124,6 +124,8 @@ export function readSvg(v: unknown): SvgBody | null {
   return { viewBox: s.viewBox.trim(), body: s.body, aspect: s.aspect === 'fixed' ? 'fixed' : 'stretch' }
 }
 
+export const clampShapeFontSize = (size: number) => Math.min(400, Math.max(4, size))
+
 export function readLook(config: Config, title?: string | null): ShapeLook {
   const c = config ?? {}
   const kind = (typeof c.shape === 'string' && KINDS.has(c.shape) ? c.shape : 'rect') as ShapeKind
@@ -141,7 +143,7 @@ export function readLook(config: Config, title?: string | null): ShapeLook {
     flipV: c.flip_v === true,
     size: finite(c.shape_size) ? Math.max(0, c.shape_size) : null,
     text: typeof c.text === 'string' ? c.text : (title ?? ''),
-    fontSize: finite(c.font_size) ? Math.min(400, Math.max(4, c.font_size)) : DEFAULT_FONT_SIZE,
+    fontSize: finite(c.font_size) ? clampShapeFontSize(c.font_size) : DEFAULT_FONT_SIZE,
     fontColor: colorOf(c.font_color, '', false),
     bold: c.bold === true,
     italic: c.italic === true,

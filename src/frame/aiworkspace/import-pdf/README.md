@@ -39,14 +39,18 @@ e2e suite (`tests/aiworkspace/pdf-import.spec.ts`) drives the importer through t
 
 PDF text objects keep `config.pdf_source.text_layout`: the original text, paragraph box width/height,
 font size, alignment, line height, and `spans` with `text`, `x`, `y` (baseline), `width`, and `size`.
-The layout also stores its base style and optional per-span overrides for colour, alpha, weight, italic and family.
+The layout stores its base style and per-span overrides for colour, alpha, weight, italic and family.
+Repeated overrides are stored once in `styles` and referenced by `styleIndex`. A one-off style can stay inline,
+and the reader accepts previously saved inline overrides.
 The Desktop validates these fields and renders each override without multiplying source alpha twice.
 Span coordinates are relative to the unrotated paragraph box; rotation stays on the native canvas object.
 The Desktop draws positioned SVG text with each source advance as `textLength`, so font substitution and
 inferred spaces do not move neighbouring fragments. The normal text/config remains editable.
 
-Changing the text removes this source layout. A text, font-size, colour, weight, italic, family, opacity, alignment, line-height, wrapping, vertical-alignment, label-position, or label-background
-mismatch disables it, as does malformed metadata. Ordinary text objects use their normal renderer.
+Changing the text removes this source layout. Geometry edits such as font size, alignment or wrapping
+switch to the normal layout. Paint edits update just the changed style attributes across the spans and preserve
+their source positions and advances. A clamped inspector size still renders the original span sizes. Draw.io
+export uses editable HTML fragments with the resolved styles and source text and line breaks.
 PDF.js explicit line-end markers prevent adjacent lines from being joined again. Existing imports need
 reimporting to acquire the geometry; this does not reconstruct missing metadata from saved canvases.
 
@@ -71,9 +75,10 @@ raster in the original paint order. Optimized repeated images and inline image g
 objects. Their shared operator is filtered out only after all its members can be extracted.
 
 Import render tasks preserve PDF.js display intent and disable its animation-frame scheduler for the pinned
-PDF.js 6.4.299 release. Each import render is cancellable and bounded to 30 seconds.
-The browser and Deno reader configure PDF.js's WASM resources. Vite serves and emits WASM, JS fallbacks and licences
-under `aiworkspace/pdfjs/wasm/`, outside the service-worker precache.
+PDF.js 6.4.299 release. A message task yields between rendering slices so cancellation and the 30-second watchdog can run.
+The browser and Deno reader configure the same PDF.js WASM and ICC resources. The Deno reader uses a local
+worker for the two synchronous qcms resource reads. Vite serves and emits WASM, JS fallbacks and licences
+under `aiworkspace/pdfjs/wasm/` and the DeviceCMYK profile and licence under `aiworkspace/pdfjs/iccs/`, outside the service-worker precache.
 
 The synthetic fixture, browser fidelity checks and result evidence are described in
 [PDF fidelity testing](../../../../doc/testing/pdf-import-fidelity.md). No user document is needed.

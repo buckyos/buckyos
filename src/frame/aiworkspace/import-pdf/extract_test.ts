@@ -24,13 +24,15 @@ Deno.test({ name: 'op codes are pdf.js 6.4’s', ignore, fn: async () => {
 
 for (const name of ['slides', 'doc', 'latex', 'scan']) {
   Deno.test({ name: `recorded pages are current: ${name}`, ignore, sanitizeOps: false, sanitizeResources: false, fn: async () => {
-    const { doc, oc } = await openPdf(await Deno.readFile(new URL(`${name}.pdf`, FIXTURES)))
-    const bookmarks = await readBookmarks(doc)
-    const pages = []
-    for (let n = 1; n <= doc.numPages; n++) pages.push((await extractPage(doc, await doc.getPage(n), bookmarks, oc)).page)
-    const recorded = JSON.parse(await Deno.readTextFile(new URL(`${name}.pages.json`, FIXTURES))).pages
-    // font ids carry the number of the document in this process (`g_d3_f1`)
-    const same = (v: unknown) => JSON.parse(JSON.stringify(v).replace(/g_d\d+_/g, 'g_d0_'))
-    assertEquals(same(pages), same(recorded))
+    const { doc, oc, close } = await openPdf(await Deno.readFile(new URL(`${name}.pdf`, FIXTURES)))
+    try {
+      const bookmarks = await readBookmarks(doc)
+      const pages = []
+      for (let n = 1; n <= doc.numPages; n++) pages.push((await extractPage(doc, await doc.getPage(n), bookmarks, oc)).page)
+      const recorded = JSON.parse(await Deno.readTextFile(new URL(`${name}.pages.json`, FIXTURES))).pages
+      // font ids carry the number of the document in this process (`g_d3_f1`)
+      const same = (v: unknown) => JSON.parse(JSON.stringify(v).replace(/g_d\d+_/g, 'g_d0_'))
+      assertEquals(same(pages), same(recorded))
+    } finally { await close() }
   } })
 }

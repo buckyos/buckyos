@@ -26,7 +26,7 @@ export async function openPdfDocument(bytes: Uint8Array, signal?: AbortSignal): 
   // the worker fetches the data files itself: absolute URLs
   const base = new URL(`${import.meta.env.BASE_URL}${ASSETS}`, window.location.href).href
   const task: PDFDocumentLoadingTask = pdfjs.getDocument({
-    data: bytes.slice(), cMapUrl: `${base}cmaps/`, cMapPacked: true, standardFontDataUrl: `${base}standard_fonts/`, wasmUrl: `${base}wasm/`,
+    data: bytes.slice(), cMapUrl: `${base}cmaps/`, cMapPacked: true, standardFontDataUrl: `${base}standard_fonts/`, wasmUrl: `${base}wasm/`, iccUrl: `${base}iccs/`,
     // font names, serif and monospace flags for the importer (PDF 导入方案 §5.1)
     fontExtraProperties: true,
   })
@@ -65,6 +65,17 @@ export async function renderPage(page: PDFPageProxy, maxEdge: number, options: {
   }
   const scheduler = (task as unknown as { _internalRenderTask?: { _useRequestAnimationFrame?: boolean } })._internalRenderTask
   if (typeof scheduler?._useRequestAnimationFrame === 'boolean') scheduler._useRequestAnimationFrame = false
+  const channel = new MessageChannel()
+  let resume: (() => void) | null = null
+  channel.port1.onmessage = () => {
+    const next = resume
+    resume = null
+    next?.()
+  }
+  task.onContinue = (next: () => void) => {
+    resume = next
+    channel.port2.postMessage(null)
+  }
   const cancel = () => task.cancel()
   let timedOut = false
   const timeout = window.setTimeout(() => { timedOut = true; cancel() }, 30_000)
@@ -77,6 +88,8 @@ export async function renderPage(page: PDFPageProxy, maxEdge: number, options: {
     throw error
   } finally {
     window.clearTimeout(timeout)
+    channel.port1.close()
+    channel.port2.close()
     options.signal?.removeEventListener('abort', cancel)
   }
 

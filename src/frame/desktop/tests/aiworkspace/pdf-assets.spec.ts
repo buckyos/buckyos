@@ -22,7 +22,13 @@ test('PDF decoder resources are served by the production build', async ({ reques
     const response = await request.get(`${base}/aiworkspace/pdfjs/wasm/${name}`)
     expect(digest(await response.body()), name).not.toBe(digest(readFileSync(new URL(name, dir))))
   }
+  for (const name of ['CGATS001Compat-v2-micro.icc', 'LICENSE']) {
+    const response = await request.get(`${base}/aiworkspace/pdfjs/iccs/${name}`)
+    expect(response.status(), name).toBe(200)
+    const local = readFileSync(new URL(`../../node_modules/pdfjs-dist/iccs/${name}`, import.meta.url))
+    expect(digest(await response.body()), name).toBe(digest(local))
+  }
   const worker = await request.get(`${base}/sw.js`)
   expect(worker.status()).toBe(200)
-  expect(await worker.text()).not.toContain('aiworkspace/pdfjs/wasm/')
+  expect(await worker.text()).not.toMatch(/aiworkspace\/pdfjs\/(wasm|iccs)\//)
 })

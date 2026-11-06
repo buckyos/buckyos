@@ -23,7 +23,7 @@ Deno.test('synthetic PDF is deterministic and contains only declared fixture res
 })
 
 Deno.test({ name: 'synthetic PDF extracts its four intended regression triggers', ignore: !(await available()), sanitizeOps: false, sanitizeResources: false, fn: async () => {
-  const { doc } = await openPdf(await Deno.readFile(fixture))
+  const { doc, close } = await openPdf(await Deno.readFile(fixture))
   try {
     assert(doc.numPages === 4, 'Exactly four synthetic pages')
     const pages: PdfPage[] = []
@@ -46,5 +46,5 @@ Deno.test({ name: 'synthetic PDF extracts its four intended regression triggers'
     const result = groupText(pages[3], world, marks.runs, readStruct(pages[3].struct), { unit: 'paragraph' })
     assert(result.paragraphs.some(p => p.mixed), 'Mixed styles must remain a regression trigger')
     assert(result.paragraphs.some(p => p.layout.spans.some(span => span.style?.color === '#d90d0d' && span.style.bold && !span.style.italic)), 'Red bold fragment retains its own style')
-  } finally { await (doc as unknown as { loadingTask: { destroy(): Promise<void> } }).loadingTask.destroy() }
+  } finally { await close() }
 } })

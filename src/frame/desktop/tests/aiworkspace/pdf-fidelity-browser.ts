@@ -115,19 +115,35 @@ export async function abortActivePdfRender(base64: string) {
   const { doc, close } = await openPdfDocument(decode(base64))
   const controller = new AbortController()
   const reason = new Error('Cancelled synthetic import')
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const page = await doc.getPage(1)
-    const render = page.render.bind(page)
-    page.render = (options) => {
-      const task = render(options)
-      task.onContinue = () => controller.abort(reason)
-      return task
-    }
     try {
-      await renderPage(page, 720, { importWork: true, signal: controller.signal })
+      await renderPage(page, 2560, {
+        importWork: true, signal: controller.signal, filter: () => {
+          timer ??= setTimeout(() => controller.abort(reason), 0)
+          return true
+        },
+      })
       return false
     } catch (error) {
       return error === reason
     }
+  } finally {
+    clearTimeout(timer)
+    close()
+  }
+}
+
+export async function syntheticColorControl(base64: string) {
+  const { doc, close } = await openPdfDocument(decode(base64))
+  try {
+    const proxy = await doc.getPage(1)
+    const ops = await renderOperators(proxy)
+    const { page } = await extractPage(doc as unknown as PdfjsDocument, proxy as unknown as PdfjsPage, new Map(), null, ops ?? undefined)
+    const fills = interpret(page, worldOf(page).world).paths.map(path => path.fill)
+    const canvas = await renderPage(proxy, 200, { importWork: true })
+    const context = canvas.getContext('2d')!
+    return { fills, pixels: [50, 150].map(x => [...context.getImageData(x, 50, 1, 1).data]) }
   } finally { close() }
 }

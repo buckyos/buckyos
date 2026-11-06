@@ -319,12 +319,28 @@ export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: St
     raw.push({ item, origin: apply(m, 0, 0), dir, len: item.width * s, size: Math.hypot(m[2], m[3]), angle: Math.round((Math.atan2(m[1], m[0]) * 180) / Math.PI * 100) / 100, order, hasEOL: item.hasEOL })
   }
   const paired = pairRuns(raw, runs)
-  const unreadableRuns = new Set(runs.filter(run => {
+  const glyphText = new Map<number, string>()
+  const unreadableRuns = new Set<number>()
+  const comparable = (text: string) => text.normalize('NFKC').replace(/\s/g, '')
+  for (const run of runs) {
     const args = page.argsArray[run.index]
     const glyphs = Array.isArray(args) ? args[0] : null
-    return Array.isArray(glyphs) && glyphs.some(glyph => Array.isArray(glyph) && typeof glyph[2] === 'string' && (glyph[2].match(BAD) ?? []).length > 0)
-  }).map(run => run.index))
+    if (!Array.isArray(glyphs)) continue
+    const text = glyphs.flatMap(glyph => Array.isArray(glyph) && typeof glyph[2] === 'string' ? [glyph[2]] : []).join('')
+    glyphText.set(run.index, comparable(text))
+    if ((text.match(BAD) ?? []).length) unreadableRuns.add(run.index)
+  }
+  const hiddenItems = paired.map((matched, k) => {
+    const item = raw[k].item
+    const sameFont = matched.filter(run => run.font === item.fontName)
+    const candidates = sameFont.length ? sameFont : matched
+    const text = comparable(item.str)
+    const exact = candidates.filter(run => glyphText.get(run.index) === text)
+    const attributed = exact.length ? exact : candidates
+    return attributed.length > 0 && attributed.every(run => (run.mode & 3) === 3)
+  })
   const visibleRuns = paired.map((matched, k) => {
+    if (hiddenItems[k]) return []
     const visible = matched.filter(run => (run.mode & 3) !== 3)
     const item = raw[k].item
     const sameFont = visible.filter(run => run.font === item.fontName)
@@ -343,7 +359,7 @@ export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: St
   const pending: number[] = []
   for (const [k, { item }] of raw.entries()) {
     const matched = visibleRuns[k]
-    if (paired[k].length && !matched.length) continue
+    if (hiddenItems[k]) continue
     if ((item.str.match(BAD) ?? []).length || matched.some(run => unreadableRuns.has(run.index))) {
       rasterPieces.add(k)
       pending.push(k)
@@ -373,7 +389,7 @@ export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: St
     result.total += chars.length
     result.unreadable += bad
     if (font?.vertical) { result.vertical += 1; continue }
-    if (paired[k].length && paired[k].every(run => (run.mode & 3) === 3)) { if (chars) result.invisible += 1; continue }
+    if (hiddenItems[k]) { if (chars) result.invisible += 1; continue }
     if (rasterPieces.has(k) || covering.some(run => run.complex !== null || (run.fill && run.fill.kind !== 'color'))) continue
     const color = run?.fill?.kind === 'color' ? run.fill.color : '#000000'
     pieces.push({

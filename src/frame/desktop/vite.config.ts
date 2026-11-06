@@ -37,13 +37,18 @@ function desktopServiceWorker(): Plugin {
 
 // pdf.js's CMaps (CJK text of older PDFs) and standard font data (PDFs that do not embed the 14 base fonts), served
 // next to the app under aiworkspace/pdfjs/ and fetched only by pages that need them (PDF 导入方案 §2): never precached.
-const PDFJS_ASSET_DIRS = ['cmaps', 'standard_fonts', 'wasm']
+const PDFJS_ASSET_DIRS = ['cmaps', 'standard_fonts', 'wasm', 'iccs']
 const PDFJS_PREFIX = 'aiworkspace/pdfjs/'
 const PDFJS_DECODERS = new Set(['jbig2.wasm', 'jbig2_nowasm_fallback.js', 'openjpeg.wasm', 'openjpeg_nowasm_fallback.js', 'qcms_bg.wasm'])
-const pdfjsAsset = (dir: string, name: string) => /^LICENSE/.test(name) || (dir === 'wasm' ? PDFJS_DECODERS.has(name) : /\.(bcmap|pfb|ttf)$/.test(name))
+function pdfjsAsset(dir: string, name: string) {
+  if (name.startsWith('LICENSE')) return true
+  if (dir === 'wasm') return PDFJS_DECODERS.has(name)
+  if (dir === 'iccs') return name === 'CGATS001Compat-v2-micro.icc'
+  return /\.(bcmap|pfb|ttf)$/.test(name)
+}
 function pdfjsAssets(): Plugin {
   const root = resolve(import.meta.dirname, 'node_modules/pdfjs-dist')
-  const types: Record<string, string> = { '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf', '.wasm': 'application/wasm', '.js': 'text/javascript' }
+  const types: Record<string, string> = { '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf', '.icc': 'application/vnd.iccprofile', '.wasm': 'application/wasm', '.js': 'text/javascript' }
   return {
     name: 'aiworkspace-pdfjs-assets',
     configureServer(server) {

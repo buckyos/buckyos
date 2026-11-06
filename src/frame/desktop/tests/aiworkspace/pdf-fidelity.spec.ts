@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { test, expect, openWorkspacePage, mainMenu } from './fixtures'
+import { test, expect, openWorkspacePage, workspacePage, mainMenu } from './fixtures'
 import type { Page } from '@playwright/test'
 import { reviewPdf } from '../../../aiworkspace/fixtures/pdf/src/review'
+import { reviewFollowupPdf, syntheticCmykPdf, syntheticLongRenderPdf } from '../../../aiworkspace/fixtures/pdf/src/review-followup'
 import type { compare, inventory } from './pdf-fidelity-browser'
 
 type Inventory = Awaited<ReturnType<typeof inventory>>
@@ -162,6 +163,7 @@ for (const { pageNumber, end } of cases) {
     for (const image of comparison.regions.filter((region: { name: string }) => region.name.startsWith('image-') || region.name.startsWith('glyph-'))) {
       if (image.sourceDarkCoverage > 0.001) expect.soft(image.actualDarkCoverage / image.sourceDarkCoverage, `${image.name} must retain its visible ink`).toBeGreaterThan(0.5)
     }
+    await page.goto(workspacePage(ws.workspace_id, surface.entity_id))
     await page.reload()
     await framePage(page, group.entity_id, multiPage)
     await page.evaluate(() => document.fonts.ready)
@@ -286,12 +288,81 @@ test('PDF review glyphs, paint order and optimized images', async ({ page, api }
 test('PDF import rendering continues without animation frames', async ({ page }, info) => {
   test.skip(info.project.name !== 'editable', 'The two import modes share the same display renderer')
   await page.goto('/')
-  const result = await page.evaluate(async base64 => {
+  const result = await page.evaluate(async ({ small, large }) => {
     const modulePath = '/tests/aiworkspace/pdf-fidelity-browser.ts'
     const { renderWithoutAnimationFrames, abortActivePdfRender } = await import(modulePath)
-    return { ...(await renderWithoutAnimationFrames(base64)), aborted: await abortActivePdfRender(base64) }
-  }, Buffer.from(reviewPdf()).toString('base64'))
+    return { ...(await renderWithoutAnimationFrames(small)), aborted: await abortActivePdfRender(large) }
+  }, { small: Buffer.from(reviewPdf()).toString('base64'), large: Buffer.from(syntheticLongRenderPdf()).toString('base64') })
   expect(result.operators).toBeGreaterThan(0)
   expect(result.pixel[2]).toBeGreaterThan(result.pixel[0])
   expect(result.aborted).toBe(true)
+})
+
+
+test('PDF style edits preserve positioned spans and dense mixed text', async ({ page, api }, info) => {
+  test.skip(info.project.name !== 'editable', 'This case exercises editable import')
+  const ws = await api.freeCanvas('tok-alice', 'pdf-style-followup')
+  await openWorkspacePage(page, 'tok-alice', ws.workspace_id, 'free')
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')])
+  await chooser.setFiles({ name: 'synthetic-pdf-followup.pdf', mimeType: 'application/pdf', buffer: Buffer.from(reviewFollowupPdf()) })
+  const dialog = page.getByTestId('aiws-pdf-dialog')
+  await expect(dialog.getByTestId('aiws-pdf-pages')).toBeVisible()
+  await dialog.getByTestId('aiws-pdf-columns').fill('1')
+  await dialog.getByTestId('aiws-pdf-start').click()
+  await expect(dialog).toHaveCount(0, { timeout: 60_000 })
+  const report = page.getByTestId('aiws-import-report')
+  await expect(report.locator('[data-kind="pdf_paint_order"]')).toBeVisible()
+  await expect(report.locator('[data-kind="pdf_invisible_text"]')).toBeVisible()
+  await expect(report.locator('[data-kind="pdf_text_layout_limit"]')).toHaveCount(0)
+  await report.getByTestId('aiws-import-report-close').click()
+  const outline = await api.outline('tok-alice', ws.workspace_id)
+  const surface = outline.find(e => e.kind === 'surface' && e.entity_id !== 'free' && !e.deleted)!
+  const groups = outline.filter(e => e.parent_id === surface.entity_id && e.kind === 'group' && !e.deleted)
+  expect(groups).toHaveLength(3)
+  const objects = await Promise.all(outline.filter(e => groups.some(g => g.entity_id === e.parent_id) && !e.deleted).map(async entity => ({
+    id: entity.entity_id, content: (await api.read('tok-alice', ws.workspace_id, entity.entity_id)).content,
+  })))
+  const configOf = (o: typeof objects[number]) => o.content.payload.config
+  const tiny = objects.find(o => configOf(o)?.text === 'TINY RED BLUE')!
+  const dense = objects.find(o => configOf(o)?.pdf_source?.page === 2 && configOf(o)?.pdf_source?.kind === 'text')!
+  expect(configOf(dense).pdf_source.text_layout.spans).toHaveLength(768)
+  expect(configOf(dense).pdf_source.text_layout.styles).toHaveLength(1)
+  expect(objects.some(o => configOf(o)?.text === 'VISIBLE')).toBe(true)
+  expect(objects.some(o => configOf(o)?.text?.includes('HIDDEN OCR'))).toBe(false)
+  expect(objects.filter(o => configOf(o)?.pdf_source?.page === 3).map(o => configOf(o)?.pdf_source?.kind).sort()).toEqual(['page', 'raster'])
+  const group = await framePage(page, groups[0].entity_id, true)
+  const spans = page.getByTestId(`aiws-shape-${tiny.id}`).locator('svg.aiws-pdf-text text')
+  await expect(spans).toHaveCount(3)
+  const geometry = () => spans.evaluateAll(nodes => nodes.map(node => ['x', 'y', 'textLength', 'font-size'].map(attr => node.getAttribute(attr))))
+  const initial = await geometry()
+  expect(initial.every(values => Number(values[3]) < 4)).toBe(true)
+  await expect(spans.nth(1)).toHaveAttribute('fill', '#d90d0d')
+  await expect(spans.nth(2)).toHaveAttribute('font-style', 'italic')
+  const props = { font_color: '#226644', opacity: 0.6 }
+  const expectRevs = Object.fromEntries(Object.keys(props).map(name => [name, tiny.content.key_revs?.[`p:config.${name}`] ?? 0]))
+  const saved = await api.commit('tok-alice', ws, [{ op: 'entity.set_props', entity_id: tiny.id, key: 'config', props, expect: expectRevs }])
+  expect(saved.status, JSON.stringify(saved)).toBe('accepted')
+  await page.goto(workspacePage(ws.workspace_id, surface.entity_id))
+  await page.reload()
+  await expect(group).toBeVisible()
+  await expect(spans).toHaveCount(3)
+  expect(await geometry()).toEqual(initial)
+  for (const span of await spans.all()) {
+    await expect(span).toHaveCSS('fill', 'rgb(34, 102, 68)')
+    await expect(span).toHaveAttribute('opacity', '0.6')
+  }
+  await expect(spans.nth(1)).toHaveAttribute('font-weight', '700')
+  await expect(spans.nth(2)).toHaveAttribute('font-style', 'italic')
+})
+
+test('PDF CMYK matches the embedded profile in extracted objects and the raster', async ({ page }, info) => {
+  test.skip(info.project.name !== 'editable', 'Both modes are checked in this case')
+  const profile = readFileSync(new URL('../../node_modules/pdfjs-dist/iccs/CGATS001Compat-v2-micro.icc', import.meta.url))
+  await page.goto('/')
+  const result = await page.evaluate(async base64 => {
+    const modulePath = '/tests/aiworkspace/pdf-fidelity-browser.ts'
+    return (await import(modulePath)).syntheticColorControl(base64)
+  }, Buffer.from(syntheticCmykPdf(profile)).toString('base64'))
+  expect(result.fills).toEqual([{ kind: 'color', color: '#9e557e' }, { kind: 'color', color: '#9e557e' }])
+  expect(result.pixels).toEqual([[158, 85, 126, 255], [158, 85, 126, 255]])
 })
