@@ -235,10 +235,10 @@ Agent 容器要补的依赖：`pdfjs-dist`（含 `standard_fonts`、`cmaps`）�
 1. **转换器分两段**：`extract.ts` 把 pdf.js 的页（鸭子类型，不 import pdf.js）读成纯 JSON（文字项带所在 marked content、精简后的算子列表、字体、渐变、结构树、链接、书签）；`convert.ts` 只读这份 JSON。图片像素与底图渲染由宿主回调 `encodeImage` / `renderRaster` 完成，所以 Deno 单测用录制的 `*.pages.json` 即可。
 2. **文字盒对位**：`shape: text` 的标签有 4 × 6 内边距、行高默认 1.25，浏览器字体的行盒把基线放在 `(行高 − 上下伸)/2 + 上伸` 处；盒子按此反推，使每行基线落在 PDF 的位置；宽度留 6 % 给替代字体。为此 `shape` 新增 **`line_height`**（字号倍数，0.8–3）键，与 `font_family` 一起进了 `@drawio/shapes` 的 `readLook` 和属性面板（Q9 提前到 P0）。首行缩进写成 em / en 空格。
 3. **段落**：结构树里取**最外层**块角色（P / H1–H6 / LI / TD / Caption / Code…；Chromium 把文字包在 NonStruct 里，NonStruct 透明）；同一结构块内再按"同栏、字号、行距"切分。无结构树时按 §4.1 几何聚类，另允许首行缩进与短末行。行内宽间隙（pdf.js 把大空白写成一个空格项）不再连成一行，超过 1.6 × 字号即分开（页眉左右两端、无结构表格的列）。
-4. **文字项与 showText 的配对是多对多**：一个文字项可由多个 showText 画出（Chromium 逐字切字体），所有覆盖它的 run 都从底图过滤掉，颜色 / 渲染模式取重叠最多的那个。
+4. **文字项与 showText 的配对是多对多**：一个文字项可由多个 showText 画出（Chromium 逐字切字体），仅在对应文字成为原生对象时过滤相关 run。含不可读字形的关联 run 一起留在栅格中。早先绘制的原生形状或图片会遮挡它时，保留整页原始绘制顺序。
 5. **图形**：先填充矩形、紧接同框描边矩形（CSS 边框、Ghostscript 输出）合并为一个带填充和描边的 `rect`；小于 48 pt 的标准形状（图标的零件）可并入相邻 SVG，细线（表格线、下划线）永不并入；渐变以 `gradientTransform` 写在页面坐标里；SVG 元素 id 加每次导入的随机前缀。
-6. **图片按绘制比例重采样**：PDF 常把位图非等比拉伸到放置矩形，而 asset Block 按自身比例 contain，所以编码时输出成放置矩形的比例（`ImageRequest.aspect`）；镜像绘制在编码时左右翻转；被矩形裁剪且未旋转的图片按裁剪区编码；被非矩形裁剪、半透明、倾斜过大或解码失败的图片留在底图。长边上限 4096。
-7. **底图**：`render({ operationsFilter, background: 'rgba(0,0,0,0)' })` 后扫描 alpha 取包围盒。pdf.js 6.4 给 `canvas` 参数时自己以 `alpha: false` 取 2D 上下文（未画处是不透明黑），所以透明渲染前先以 `alpha: true` 取一次上下文（`getContext` 返回最先创建的那个）——DV 上发现：混合模式的色块曾变成整页黑底图；过滤器在算子列表长度与转换时不一致时放弃（报告 `pdf_raster_failed`），不会画重。整页底图（高保真、文字不可读）不透明时存 JPEG。完全落在页外的残留（排版溢出的字形）不触发底图。
+6. **图片按绘制比例重采样**：PDF 常把位图非等比拉伸到放置矩形，而 asset Block 按自身比例 contain，所以编码时输出成放置矩形的比例（`ImageRequest.aspect`）；镜像绘制在编码时左右翻转；被矩形裁剪且未旋转的图片按裁剪区编码；被非矩形裁剪、半透明、倾斜过大或解码失败的图片留在底图。长边上限 4096。合并的重复图片与内联图按各自位置拆分，全部成员成功提取后才过滤共享算子。
+7. **底图**：`render({ operationsFilter, background: 'rgba(0,0,0,0)' })` 后扫描 alpha 取包围盒。pdf.js 6.4 给 `canvas` 参数时自己以 `alpha: false` 取 2D 上下文（未画处是不透明黑），所以透明渲染前先以 `alpha: true` 取一次上下文（`getContext` 返回最先创建的那个）——DV 上发现：混合模式的色块曾变成整页黑底图；过滤器要求与提取时使用同一份显示算子列表。列表不同时回退到整页图片，并报告 `pdf_page_failed`。整页底图（高保真、文字不可读）不透明时存 JPEG。完全落在页外的残留（排版溢出的字形）不触发底图。
 8. **页面组**：页矩形取整数世界单位（与舞台比例严格一致）；Frame 的 `config` 带 `fill`（页底色）、`stroke_width: 1`、`radius: 0`，Desktop 的无标题栏 Frame 现在绘制这三个键，画布上能看到白纸；`PagePlan` 条目新增 `payload`（Frame 的 `presentation.background`），由 `buildOperations` 合并。
 9. **页名**：结构树第一个 H / Title → 书签 → "第 n 页"（同时是 Frame 标题和步骤标题）。
 10. **原件**：随第一次提交写入新画布的内容文件夹（`page_count` + 首页 poster）；从 PDF 文件 Block "展开为可编辑页面…" 时直接引用已有对象，不再上传。
