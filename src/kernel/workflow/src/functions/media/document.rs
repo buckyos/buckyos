@@ -1,17 +1,19 @@
 use super::{function, parse_pdfinfo, tool_output_error, tools, STDOUT_LIMIT, TO_PDF};
-use crate::native::{param_str, ExecutionLane, NativeContext, NativeFunction, NativeOutcome};
+use crate::native::{param_str, ExecutionLane, NativeContext, NativeFunction, NativeOutcome, ToolEnvironment};
 use async_trait::async_trait;
 use buckyos_api::{error_codes, FunctionObject, ThunkExecutionError};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 pub const FORMATS: [&str; 8] = ["docx", "pptx", "odt", "odp", "doc", "ppt", "rtf", "txt"];
 
-/// `is_pure: false` until repeated conversions are shown to produce identical
-/// bytes (TODO D9); results are delivered but never reused from the cache.
+/// `is_pure` here means the result is reusable, not byte-identical: LibreOffice
+/// stamps `CreationDate`, `/ID` and `DocChecksum` into every PDF. The first
+/// conversion is cached, which keeps `pdf_content_id` stable for the page steps.
 pub fn function_object() -> FunctionObject {
     function(
         TO_PDF,
-        false,
+        true,
         &["content_id"],
         json!({
             "type": "object",
@@ -49,6 +51,16 @@ impl NativeFunction for ToPdf {
 
     fn lane(&self) -> ExecutionLane {
         ExecutionLane::Office
+    }
+
+    /// The rendered pages depend on the installed fonts; the page count on pdfinfo.
+    fn fingerprint(&self, env: &ToolEnvironment) -> BTreeMap<String, String> {
+        let mut fingerprint = env.fingerprint_for(&[tools::SOFFICE, tools::PDFINFO]);
+        fingerprint.insert(
+            "env/fonts".to_string(),
+            env.fonts.clone().unwrap_or_else(|| "unknown".to_string()),
+        );
+        fingerprint
     }
 
     async fn invoke(&self, ctx: &NativeContext, params: &Value) -> Result<NativeOutcome, ThunkExecutionError> {
@@ -105,7 +117,6 @@ impl NativeFunction for ToPdf {
             "pdf_obj_id": artifact.obj_id,
             "pages": pages,
         }))
-        .with_artifacts(vec![artifact.obj_id])
-        .not_cacheable())
+        .with_artifacts(vec![artifact.obj_id]))
     }
 }

@@ -554,6 +554,9 @@ pub struct WorkflowRunTransition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowRunGraph {
     pub run_id: String,
+    /// The Run's root task in TaskMgr, once it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     pub workflow_id: String,
     #[serde(default)]
     pub workflow_name: String,

@@ -595,6 +595,16 @@ impl WorkflowTaskTracker for ServiceTracker {
         }
     }
 
+    async fn run_task_id(&self, run_id: &str) -> Option<String> {
+        match &self.inner {
+            #[cfg(test)]
+            TrackerKind::Noop(t) => t.run_task_id(run_id).await,
+            #[cfg(test)]
+            TrackerKind::Dyn(t) => t.run_task_id(run_id).await,
+            TrackerKind::TaskManager(t) => t.run_task_id(run_id).await,
+        }
+    }
+
     async fn sync_step(&self, run: &WorkflowRun, step: &crate::StepTaskView) -> WorkflowResult<()> {
         match &self.inner {
             #[cfg(test)]

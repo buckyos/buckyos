@@ -361,16 +361,25 @@ impl ResourceInputForm {
 ///
 /// Returning `None` means this zone does not expose named objects over HTTP;
 /// the object then has to be inlined as bytes.
+#[async_trait]
 pub(crate) trait NamedObjectUrlProvider: Send + Sync {
     fn object_url(&self, obj_id: &ObjId) -> Option<String>;
+
+    /// Whether a Provider could read `url` without this zone's credentials.
+    async fn is_public(&self, url: &str) -> bool;
 }
 
 /// This zone does not serve named objects over HTTP.
 pub(crate) struct DisabledNamedObjectUrlProvider;
 
+#[async_trait]
 impl NamedObjectUrlProvider for DisabledNamedObjectUrlProvider {
     fn object_url(&self, _obj_id: &ObjId) -> Option<String> {
         None
+    }
+
+    async fn is_public(&self, _url: &str) -> bool {
+        false
     }
 }
 
@@ -389,6 +398,7 @@ impl ZoneNamedObjectUrlProvider {
     }
 }
 
+#[async_trait]
 impl NamedObjectUrlProvider for ZoneNamedObjectUrlProvider {
     fn object_url(&self, obj_id: &ObjId) -> Option<String> {
         let base = self.base_url.trim_end_matches('/');
@@ -400,6 +410,24 @@ impl NamedObjectUrlProvider for ZoneNamedObjectUrlProvider {
         // expects (the same form `Serialize` emits and `ObjId::new` round-trips).
         // Its `Display` impl would instead emit base32, a different spelling.
         Some(format!("{base}/{}", obj_id.to_string()))
+    }
+
+    /// `/ndn/` answers an anonymous request only for what the zone published.
+    async fn is_public(&self, url: &str) -> bool {
+        let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+        else {
+            return false;
+        };
+        client
+            .get(url)
+            .header(reqwest::header::RANGE, "bytes=0-0")
+            .send()
+            .await
+            .map(|response| response.status().is_success())
+            .unwrap_or(false)
     }
 }
 
@@ -1311,12 +1339,21 @@ impl ResourceManager {
                     self.authorizer
                         .authorize(context, &target, ResourceAccessOperation::ReadContent)
                         .await?;
-                    match self
+                    let object_url = self
                         .input_form
                         .accepts_url()
                         .then(|| self.object_urls.object_url(&obj_id))
-                        .flatten()
-                    {
+                        .flatten();
+                    let object_url = match object_url {
+                        Some(url)
+                            if self.input_form.requires_url()
+                                || self.object_urls.is_public(&url).await =>
+                        {
+                            Some(url)
+                        }
+                        _ => None,
+                    };
+                    match object_url {
                         // A URL-accepting protocol prefers the object's own URL
                         // over inlining its payload: the Provider fetches the
                         // object from this zone, and the bytes never have to be
@@ -2286,7 +2323,45 @@ mod tests {
         store: Arc<FakeStore>,
     ) -> ResourceManager {
         manager(authorizer, store, ResourceLimits::default())
-            .with_object_url_provider(Arc::new(ZoneNamedObjectUrlProvider::new(ZONE_BASE_URL)))
+            .with_object_url_provider(Arc::new(StubObjectUrls { public: true }))
+    }
+
+    struct StubObjectUrls {
+        public: bool,
+    }
+
+    #[async_trait]
+    impl NamedObjectUrlProvider for StubObjectUrls {
+        fn object_url(&self, obj_id: &ObjId) -> Option<String> {
+            ZoneNamedObjectUrlProvider::new(ZONE_BASE_URL).object_url(obj_id)
+        }
+
+        async fn is_public(&self, _url: &str) -> bool {
+            self.public
+        }
+    }
+
+    #[tokio::test]
+    async fn url_or_bytes_form_inlines_an_object_a_provider_could_not_fetch() {
+        let store = Arc::new(FakeStore::default());
+        let bytes = b"private-artifact".to_vec();
+        let stored = stored_named(&bytes, "image/png");
+        let obj_id = stored.obj_id.clone();
+        store.insert(stored, bytes.clone());
+        let manager = manager(Arc::new(RecordingAuthorizer::default()), store, ResourceLimits::default())
+            .with_object_url_provider(Arc::new(StubObjectUrls { public: false }))
+            .with_input_form(ResourceInputForm::UrlOrBytes);
+        let source = ResourceRef::NamedObject { obj_id };
+        let inspected = manager
+            .inspect(&context(), std::slice::from_ref(&source))
+            .await
+            .unwrap();
+        let materialized = manager
+            .materialize_after_provider_selected(&context(), "provider-call", inspected)
+            .await
+            .unwrap();
+        assert_eq!(materialized[0].url(), None);
+        assert_eq!(materialized[0].bytes(), bytes.as_slice());
     }
 
     #[tokio::test]

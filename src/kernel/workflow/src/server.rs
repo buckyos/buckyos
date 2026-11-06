@@ -29,6 +29,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::task_tracker::WorkflowTaskTracker;
 use crate::analysis::{trigger_input_schema, trigger_output_schema};
 use crate::driver::RunDriver;
 use crate::object_store::WorkflowObjectStore;
@@ -934,10 +935,12 @@ impl WorkflowRpcHandler {
             Err(payload) => return Ok(payload),
         };
         self.require_run_access(&caller, &handle)?;
+        let task_id = self.orchestrator.tracker().run_task_id(&run_id).await;
         let record = handle.state.lock().await;
         Ok(json!({
             "ok": true,
             "run_id": record.run.run_id,
+            "task_id": task_id,
             "workflow_id": handle.workflow_id,
             "workflow_name": record.run.workflow_name,
             "status": record.run.status,

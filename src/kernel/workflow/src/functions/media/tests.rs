@@ -88,7 +88,7 @@ fn registry_publishes_nine_functions_and_baseline_lists_their_tools() {
     assert!(render.registration.requirements.contains_key("cmd/pdftoppm"));
     assert!(render.registration.requirements.contains_key("cmd/pdfinfo"));
     assert!(!registry.resolve(CAPABILITIES, "1").unwrap().object.is_pure);
-    assert!(!registry.resolve(TO_PDF, "1").unwrap().object.is_pure);
+    assert!(registry.resolve(TO_PDF, "1").unwrap().object.is_pure);
     assert!(registry.resolve(FIT_IMAGE, "1").unwrap().object.is_pure);
 
     let baseline = media_tool_baseline();
@@ -476,7 +476,7 @@ async fn soffice_converts_documents_to_pdf() {
     }
     let (_, id) = e.io.add_file("note.txt", b"Hello from a text document\nANSWER-42\n").await;
     let out = invoke(&document::ToPdf, &e, json!({"content_id": id, "format": "txt"})).await.unwrap();
-    assert!(!out.cacheable);
+    assert!(out.cacheable);
     let pdf = e.io.artifact_bytes(out.result["pdf_obj_id"].as_str().unwrap()).unwrap();
     assert!(pdf.starts_with(b"%PDF"));
     assert!(out.result["pdf_content_id"].as_str().unwrap().contains(':'));

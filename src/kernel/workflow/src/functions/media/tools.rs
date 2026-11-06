@@ -142,7 +142,23 @@ pub fn probe(dirs: &[PathBuf]) -> ToolEnvironment {
     let mut env = ToolEnvironment::with_tools(tools);
     env.missing = missing;
     env.searched = dirs.to_vec();
+    env.fonts = font_set_digest(dirs);
+    env.revision = env.compute_revision();
     env
+}
+
+/// Digest of the fonts fontconfig sees; `None` where `fc-list` is not available.
+fn font_set_digest(dirs: &[PathBuf]) -> Option<String> {
+    let fc_list = find("fc-list", dirs)?;
+    let listed = output_of(&fc_list, &["--format", "%{file}|%{family}|%{style}\n"])?;
+    Some(digest_of_font_list(&listed))
+}
+
+fn digest_of_font_list(listed: &str) -> String {
+    let mut fonts: Vec<&str> = listed.lines().filter(|l| !l.trim().is_empty()).collect();
+    fonts.sort_unstable();
+    let (id, _) = ndn_lib::build_named_object_by_json("fontset", &serde_json::json!(fonts));
+    hex::encode(&id.obj_hash)
 }
 
 pub fn probe_default() -> ToolEnvironment {
@@ -162,6 +178,25 @@ mod tests {
         assert_eq!(parse_poppler_version("pdfinfo version 24.02.0\nCopyright").as_deref(), Some("24.02.0"));
         assert_eq!(parse_soffice_version("LibreOffice 25.2.3.2 520(Build:2)\n").as_deref(), Some("25.2.3.2"));
         assert!(parse_soffice_version("usage: soffice [options]").is_none());
+    }
+
+    #[test]
+    fn the_font_digest_ignores_order_and_follows_the_set() {
+        let a = digest_of_font_list("/f/a.ttf|A|Regular\n/f/b.ttf|B|Bold\n");
+        assert_eq!(a, digest_of_font_list("/f/b.ttf|B|Bold\n/f/a.ttf|A|Regular\n"));
+        assert_ne!(a, digest_of_font_list("/f/a.ttf|A|Regular\n"));
+    }
+
+    #[test]
+    fn to_pdf_is_fingerprinted_by_its_fonts() {
+        use crate::functions::media::document::ToPdf;
+        use crate::native::NativeFunction;
+        let mut env = ToolEnvironment::default();
+        env.fonts = Some("set-a".to_string());
+        let first = ToPdf.fingerprint(&env);
+        env.fonts = Some("set-b".to_string());
+        assert_ne!(first, ToPdf.fingerprint(&env));
+        assert!(first.contains_key("cmd/soffice") && first.contains_key("cmd/pdfinfo"));
     }
 
     #[test]

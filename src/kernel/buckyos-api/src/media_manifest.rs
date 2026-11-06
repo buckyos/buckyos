@@ -110,7 +110,9 @@ pub struct MediaManifest {
     pub probe: Value,
     pub range: MediaRange,
     pub entries: Vec<MediaEntry>,
-    /// `true` when every requested item has an `Ok` / `NoText` / `Absent` entry.
+    /// `true` when the whole source is covered: no entry is `Failed` or
+    /// `Unprocessed` and every requested item has an `Ok` / `NoText` / `Absent`
+    /// entry. A request for part of a source is therefore never complete.
     pub complete: bool,
 }
 
@@ -159,6 +161,31 @@ impl MediaManifest {
                 .requested
                 .iter()
                 .all(|r| self.range.processed.contains(r));
+    }
+
+    /// Folds the manifest of another page range of the same source into this
+    /// one: what `other` processed replaces the `Unprocessed` entry at the same
+    /// coordinate.
+    pub fn merge_range(&mut self, other: MediaManifest) {
+        for entry in other.entries {
+            if entry.status == MediaEntryStatus::Unprocessed {
+                continue;
+            }
+            let coordinate = entry_coordinate(&entry);
+            match self
+                .entries
+                .iter_mut()
+                .find(|e| e.kind == entry.kind && entry_coordinate(e) == coordinate)
+            {
+                Some(slot) => *slot = entry,
+                None => self.entries.push(entry),
+            }
+        }
+        self.range.requested.extend(other.range.requested);
+        self.range.requested.sort_unstable();
+        self.range.requested.dedup();
+        self.range.total = self.range.total.max(other.range.total);
+        self.recompute_coverage();
     }
 
     /// `true` when any failed entry is retryable: the result is deliverable
@@ -290,5 +317,30 @@ mod tests {
         assert_eq!(json["entries"][0]["where"]["page"], 1);
         let back: MediaManifest = serde_json::from_value(json).unwrap();
         assert_eq!(back, manifest);
+    }
+
+    #[test]
+    fn page_ranges_of_one_source_merge_into_one_catalog() {
+        let window = |requested: Vec<u64>, statuses: [MediaEntryStatus; 4]| {
+            let mut manifest = MediaManifest::new("pdf", "sha256:abc");
+            manifest.range.total = Some(4);
+            manifest.range.requested = requested;
+            manifest.entries = statuses
+                .iter()
+                .enumerate()
+                .map(|(i, status)| page(i as u32 + 1, *status, false))
+                .collect();
+            manifest.recompute_coverage();
+            manifest
+        };
+        use MediaEntryStatus::{Ok, Unprocessed};
+        let mut first = window(vec![1, 2], [Ok, Ok, Unprocessed, Unprocessed]);
+        assert!(!first.complete);
+        first.merge_range(window(vec![3, 4], [Unprocessed, Unprocessed, Ok, Ok]));
+        assert_eq!(first.entries.len(), 4);
+        assert!(first.entries.iter().all(|e| e.status == Ok));
+        assert_eq!(first.range.requested, vec![1, 2, 3, 4]);
+        assert_eq!(first.range.processed, vec![1, 2, 3, 4]);
+        assert!(first.complete);
     }
 }

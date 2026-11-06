@@ -68,6 +68,9 @@ pub struct ToolEnvironment {
     pub tools: BTreeMap<String, ToolInfo>,
     pub missing: Vec<String>,
     pub searched: Vec<PathBuf>,
+    /// Digest of the installed font set, when this host can list its fonts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fonts: Option<String>,
     pub revision: String,
     pub probed_at: i64,
 }
@@ -88,6 +91,7 @@ impl ToolEnvironment {
             "tools": self.tools.iter().map(|(name, info)| {
                 (name.clone(), json!({"path": info.path, "version": info.version}))
             }).collect::<BTreeMap<_, _>>(),
+            "fonts": self.fonts,
         });
         let (id, _) = ndn_lib::build_named_object_by_json("toolenv", &value);
         hex::encode(&id.obj_hash)

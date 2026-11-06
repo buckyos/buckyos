@@ -32,6 +32,7 @@ type HistoryResponse = {
 type GraphResponse = {
   ok: true;
   run_id: string;
+  task_id?: string | null;
   workflow_id: string;
   workflow_name?: string;
   status: string;
@@ -146,6 +147,7 @@ const DEFAULT_CASES = [
   "WF-DV-012",
   "WF-DV-013",
   "WF-DV-014",
+  "WF-DV-015",
 ];
 const WORKFLOW_DV_CASES = getEnv("WORKFLOW_DV_CASES");
 const WORKFLOW_REPORT_DIR = getEnv("WORKFLOW_REPORT_DIR") ??
@@ -1163,6 +1165,34 @@ async function uploadInput(
 }
 
 /**
+ * LibreOffice stamps every PDF differently, so a document is only reusable if
+ * the first conversion is what later runs get: every step of the second run,
+ * to_pdf included, comes from the step cache.
+ */
+async function runDocumentCacheCase(args: {
+  workflowRpc: RpcClient;
+  reportDir: string;
+  note: UploadedInput;
+}): Promise<void> {
+  const { workflowRpc, reportDir, note } = args;
+  const input: JsonObject = { obj_id: note.obj_id, format: "txt", dpi: 72, limits: { max_pages: 2 } };
+  const first = await createSystemRun(workflowRpc, "media.document", input);
+  const doneA = await waitTerminal(workflowRpc, first.run_id, "media.document run A");
+  await writeJsonFile(joinPath(reportDir, "run-a.json"), doneA.graph);
+  assert.equal(doneA.graph.status, "completed", JSON.stringify(doneA.graph.node_errors));
+  const second = await createSystemRun(workflowRpc, "media.document", input);
+  const doneB = await waitTerminal(workflowRpc, second.run_id, "media.document run B");
+  await writeJsonFile(joinPath(reportDir, "run-b.json"), doneB.graph);
+  assert.equal(doneB.graph.status, "completed", JSON.stringify(doneB.graph.node_errors));
+  assert.equal(doneB.graph.node_sources?.capabilities, "executed");
+  for (const step of ["probe", "to_pdf", "extract_pdf_text", "render_pdf_pages", "build_catalog"]) {
+    assert.equal(doneB.graph.node_sources?.[step], "cache", `${step} of the second run comes from the cache`);
+  }
+  const catalog = (graph: typeof doneA.graph) => (graph.output?.build_catalog as JsonObject)?.manifest_obj_id;
+  assert.equal(catalog(doneB.graph), catalog(doneA.graph), "both runs read the same catalog");
+}
+
+/**
  * media.video reads its input through `/ndn/` with a read token bound to one key,
  * not a temp copy (bucket design §21 N17): the token and key records prove which path
  * ran, and both are gone when the step ends.
@@ -1434,6 +1464,8 @@ async function runObservabilityCase(args: {
   const created = await createSystemRun(workflowRpc, "media.image", { obj_id: image.obj_id });
   const done = await waitTerminal(workflowRpc, created.run_id, "observability run");
   assert.equal(done.graph.revision, created.revision);
+  const runTaskId = done.graph.task_id;
+  assert.ok(String(runTaskId).startsWith("t-"), `the run names its root task, got ${runTaskId}`);
   assert.ok(String(done.graph.requested_by).startsWith(`${owner.user_id}/`), `requested_by ${done.graph.requested_by} belongs to ${owner.user_id}`);
   assert.equal(done.graph.executor, "workflow");
   assert.ok(done.graph.node_sources && Object.keys(done.graph.node_sources).length >= 3);
@@ -1444,6 +1476,7 @@ async function runObservabilityCase(args: {
   });
   const root = (roots.tasks ?? []).find((t) => t.schema_id === "workflow.run_tree/v1");
   assert.ok(root, `TaskMgr has the run root task: ${JSON.stringify(roots)}`);
+  assert.equal(root!.task_id, runTaskId, "graph.task_id is the root task");
   const tree = await rpcCall<{ tasks?: TaskSummary[] }>(taskMgrRpc, "get_task_tree", {
     root_id: root!.root_id,
     depth: 4,
@@ -1610,11 +1643,12 @@ type DvInputs = {
   image: () => Promise<UploadedInput>;
   pdf: () => Promise<UploadedInput>;
   video: () => Promise<UploadedInput>;
+  note: () => Promise<UploadedInput>;
 };
 
 function lazyInputs(zoneHost: string, sessionToken: string, runTag: string): DvInputs {
-  const cache: Partial<Record<"image" | "pdf" | "video", Promise<UploadedInput>>> = {};
-  const get = (key: "image" | "pdf" | "video", fixture: string) => () => {
+  const cache: Partial<Record<"image" | "pdf" | "video" | "note", Promise<UploadedInput>>> = {};
+  const get = (key: "image" | "pdf" | "video" | "note", fixture: string) => () => {
     cache[key] ??= uploadInput(zoneHost, sessionToken, runTag, fixture);
     return cache[key]!;
   };
@@ -1622,6 +1656,7 @@ function lazyInputs(zoneHost: string, sessionToken: string, runTag: string): DvI
     image: get("image", "dv-image.png"),
     pdf: get("pdf", "dv-doc.pdf"),
     video: get("video", "dv-video.mp4"),
+    note: get("note", "dv-note.txt"),
   };
 }
 
@@ -1709,6 +1744,8 @@ async function runOneCase(args: {
         reportDir,
         image: await inputs.image(),
       });
+    } else if (caseId === "WF-DV-015") {
+      await runDocumentCacheCase({ workflowRpc, reportDir, note: await inputs.note() });
     } else if (caseId === "WF-DV-014") {
       await runMediaVideoNdnCase({
         workflowRpc,

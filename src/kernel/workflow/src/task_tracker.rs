@@ -89,6 +89,13 @@ pub trait WorkflowTaskTracker: Send + Sync {
     /// Run 整体状态同步到 root task。
     async fn sync_run(&self, run: &WorkflowRun) -> WorkflowResult<()>;
 
+    /// The Run's root task id, once it has one. A Run and its root task are the
+    /// same thing seen from two services (workflow service §0.1).
+    async fn run_task_id(&self, run_id: &str) -> Option<String> {
+        let _ = run_id;
+        None
+    }
+
     /// Step / control-node 状态同步到 Run task 下的 step 子任务。
     async fn sync_step(&self, run: &WorkflowRun, step: &StepTaskView) -> WorkflowResult<()> {
         let _ = (run, step);
@@ -789,6 +796,10 @@ fn runner_envelope(task: &Task) -> buckyos_api::RunnerWriteEnvelope {
 
 #[async_trait]
 impl WorkflowTaskTracker for TaskManagerTaskTracker {
+    async fn run_task_id(&self, run_id: &str) -> Option<String> {
+        self.state.lock().await.run_tasks.get(run_id).cloned()
+    }
+
     async fn sync_run(&self, run: &WorkflowRun) -> WorkflowResult<()> {
         let task_id = self.ensure_run_task(run).await?;
         self.mirror_state(

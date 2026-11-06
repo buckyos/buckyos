@@ -46,13 +46,16 @@ pub fn chunk_bytes(bytes: &[u8]) -> Result<(String, Vec<(ChunkId, Vec<u8>)>, Opt
 }
 
 /// Deterministic artifact FileObject: zero time fields, stable name, no owner.
-pub fn artifact_file_object(name: &str, size: u64, content_id: &str) -> FileObject {
+pub fn artifact_file_object(name: &str, size: u64, content_id: &str, content_type: Option<&str>) -> FileObject {
     let mut file = FileObject::default();
     file.content_obj.name = name.to_string();
     file.content_obj.create_time = 0;
     file.content_obj.last_update_time = 0;
     file.size = size;
     file.content = content_id.to_string();
+    if let Some(mime) = content_type.and_then(|t| t.split(';').next()).map(str::trim).filter(|m| !m.is_empty()) {
+        file.meta.insert("mime_type".to_string(), Value::String(mime.to_string()));
+    }
     file
 }
 
@@ -103,7 +106,7 @@ impl MemoryNativeIo {
             .lock()
             .unwrap()
             .insert(content_id.clone(), bytes.to_vec());
-        let mut file = artifact_file_object(name, bytes.len() as u64, &content_id);
+        let mut file = artifact_file_object(name, bytes.len() as u64, &content_id, None);
         file.content_obj.create_time = 1;
         let (obj_id, obj_str) = file.gen_obj_id();
         let value: Value = serde_json::from_str(&obj_str).unwrap();
@@ -138,6 +141,7 @@ impl MemoryNativeIo {
         &self,
         key: &str,
         name: &str,
+        content_type: &str,
         bytes: Vec<u8>,
     ) -> Result<ArtifactRef, ThunkExecutionError> {
         let (content_id, _, _) = chunk_bytes(&bytes)?;
@@ -146,7 +150,7 @@ impl MemoryNativeIo {
             .lock()
             .unwrap()
             .insert(content_id.clone(), bytes);
-        let file = artifact_file_object(name, size, &content_id);
+        let file = artifact_file_object(name, size, &content_id, Some(content_type));
         let (obj_id, obj_str) = file.gen_obj_id();
         let value: Value = serde_json::from_str(&obj_str).map_err(|e| internal(e.to_string()))?;
         self.objects
@@ -213,8 +217,8 @@ impl NativeIo for MemoryNativeIo {
 
     async fn release_tool_input(&self, _lease: &ToolInputLease) {}
 
-    async fn put_artifact(&self, key: &str, name: &str, _content_type: &str, bytes: Vec<u8>) -> Result<ArtifactRef, ThunkExecutionError> {
-        self.store_bytes(key, name, bytes).await
+    async fn put_artifact(&self, key: &str, name: &str, content_type: &str, bytes: Vec<u8>) -> Result<ArtifactRef, ThunkExecutionError> {
+        self.store_bytes(key, name, content_type, bytes).await
     }
 
     async fn put_artifact_file(&self, key: &str, name: &str, content_type: &str, path: &Path) -> Result<ArtifactRef, ThunkExecutionError> {
@@ -320,7 +324,7 @@ impl ZoneNativeIo {
                 return Ok(id);
             }
         }
-        let (id, body) = artifact_file_object("input", size, content_id).gen_obj_id();
+        let (id, body) = artifact_file_object("input", size, content_id, None).gen_obj_id();
         self.store.put_object(&id, &body).await.map_err(|e| internal(format!("put input object: {e}")))?;
         Ok(id)
     }
@@ -359,7 +363,7 @@ impl ZoneNativeIo {
                 .await
                 .map_err(|e| internal(format!("put chunk list: {e}")))?;
         }
-        let file = artifact_file_object(name, size, &content_id);
+        let file = artifact_file_object(name, size, &content_id, Some(content_type));
         let (obj_id, obj_str) = file.gen_obj_id();
         self.store
             .put_object(&obj_id, &obj_str)

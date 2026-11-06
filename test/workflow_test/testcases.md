@@ -1058,8 +1058,9 @@ WaitingHuman；工具齐全时产出 manifest。
 - `list_functions {prefix:"media."}` 返回 9 个；`get_function media.probe@1` 的 `published:true`。
 - 一个 `media.image` Run 的 `get_run_graph` 含 `revision`（等于 create_run 返回值）、
   `requested_by == "<user_id>/<app_id>"`、`executor == "workflow"`、`node_sources`。
+- `get_run_graph.task_id` 是 Run 的根任务 id（`t-…`）。
 - task_manager：`list_tasks {idempotency_key:"wf-run-<run_id>"}` 找到 `workflow.run_tree/v1`
-  根任务；`get_task_tree` 中存在 `workflow.step/v1` 与 `workflow.thunk/v1`，thunk 任务全部
+  根任务，其 id 等于 `task_id`；`get_task_tree` 中存在 `workflow.step/v1` 与 `workflow.thunk/v1`，thunk 任务全部
   `phase == terminal`。
 
 ## WF-DV-014: media.video 经 `/ndn/` 读取输入
@@ -1074,6 +1075,19 @@ WaitingHuman；工具齐全时产出 manifest。
 - `zone/workflow/_/scratch` 有 `inputs/<run_id>/...` 的令牌记录，证明走的是令牌路径；全部已撤销，key 已解绑。
 - run graph 和 history 里没有 `bkt_`、`hint=`。
 - 相同输入再跑一次，`extract_frames` 来自 Step cache，结果相同。
+
+## WF-DV-015: media.document 的跨 Run 缓存
+
+### 目标
+
+LibreOffice 每次转出的 PDF 字节不同（`CreationDate`、`/ID`、`DocChecksum`），文档只有复用第一次的
+转换结果才可能命中后续步骤。
+
+### 关键断言
+
+- 上传 `dv-note.txt`，`create_run media.document {obj_id, format:"txt", dpi:72, limits:{max_pages:2}}` 跑两次，都完成。
+- 第二次 `capabilities` 为 `executed`；`probe`、`to_pdf`、`extract_pdf_text`、`render_pdf_pages`、`build_catalog` 都是 `cache`。
+- 两次 `build_catalog.manifest_obj_id` 相同。
 
 ## WF-DV-013: 系统定义只读与身份校验
 
@@ -1126,6 +1140,7 @@ test/workflow_test/
 │   ├── wf-dv-echo-cache.json
 │   ├── wf-dv-ensure-sleep.json
 │   ├── dv-image.png
+│   ├── dv-note.txt
 │   └── dv-doc.pdf
 └── testcases.md
 ```
@@ -1158,6 +1173,7 @@ WORKFLOW_DV_CASES=WF-DV-001,WF-DV-002,WF-DV-006 \
 | WF-DV-011 | PASS（tools_present 分支） | 真实 pdfinfo / pdftotext / pdftoppm 跑通 media.pdf，manifest complete=true，2 页文本 + 2 页图 |
 | WF-DV-012 | PASS | 4 条系统定义只读、9 个 media 函数已发布可读回；Run root task 通过 `list_tasks{idempotency_key:"wf-run-<run_id>"}` 可见（请求者在 run 树上有 ReadMeta/ReadInput/ReadResult 的 WholeTree grant），`get_task_tree` 含 step / thunk 任务且 thunk 终态 |
 | WF-DV-013 | PASS | 保留 id / `source:system` / 归档系统定义 / 伪造 owner 均被拒；`content_id` 被服务端覆盖；第二主体（make_config 种子用户 `bob`，`WORKFLOW_DV_SECOND_USER=user:password` 可覆盖，经 control-panel `auth.login`）对 devtest 的 Run 调 get_run_graph / get_run_output / get_history / cancel_run 均 NoPermission，list_runs 为空，按他人 owner 过滤被拒，拿 devtest 的 obj_id 调 create_run 被输入授权拒绝（NDM `query_object_by_id` 读类检查） |
+| WF-DV-015 | PASS | `media.document` 第二次 Run 的 `probe`、`to_pdf`、`extract_pdf_text`、`render_pdf_pages`、`build_catalog` 全部 `cache`，manifest 相同 |
 | WF-DV-001 / 002 / 007 | FAIL（既有阻塞） | fixture 的 `service::aicc.vision.*` 步骤用 `input_json` 字段，当前 AICC 协议拒收（`Failed to parse VisionCaptionRequest: unknown field input_json`），步骤落到 waiting_human；与 workflow 改动无关，需随 AICC 协议更新 fixture |
 | WF-DV-006 | FAIL（既有阻塞） | Run 正确进入 waiting_human，但脚本用 TaskMgr 1.x 的 `list_tasks{root_id: run_id}` / `update_task{id,data}` 写 TaskData，与 2.0 任务树（root_id 为 task id，`report_progress` 写入）不符；与 WF-DV-003 同类阻塞 |
 

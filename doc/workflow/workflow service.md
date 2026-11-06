@@ -188,7 +188,7 @@ API 命名沿用 buckyos-api 风格，并与 [wokflow engine.md §4.10] 对齐�
 | `workflow.start_run` | 入表后后台 tick，立即返回 `accepted`；可选 `wait_ms` |
 | `workflow.tick_run` | 同 `start_run`，运维入口 |
 | `workflow.cancel_run` | 取消待回执执行并将 Run 置 `Aborted`（节点错误 `cancelled`）；终态返回 `run_terminal` |
-| `workflow.get_run_graph` | 当前展开后的 Graph、`node_states` / `node_outputs` / `node_errors` / `node_sources` / `node_attempts` / `pending_thunks` / `output` / `revision` / `requested_by`，给 UI 可视化 |
+| `workflow.get_run_graph` | 当前展开后的 Graph、`node_states` / `node_outputs` / `node_errors` / `node_sources` / `node_attempts` / `pending_thunks` / `output` / `revision` / `requested_by`，给 UI 可视化；`task_id` 是 Run 在 task_manager 的根任务 id（Run 与根任务一对一，目前是两个 id）。 |
 | `workflow.get_run_output` | 终端节点输出 + `node_errors` / `run_error` + `delivery`（`artifacts`：引用到的 obj_id；`grants`：每个产物的 bucket key / locator / 绑定 principal 的精确 key 只读 token / `expires_at`；`principal`、`expires_at`） |
 | `workflow.list_runs` | 按 owner / definition / status 筛选，只返回调用者可见的；其它 Run 状态查询请走 `task_manager.get_task` |
 

@@ -39,6 +39,11 @@ pub const BUILD_CATALOG: &str = "media.build_catalog";
 
 pub const STDOUT_LIMIT: usize = 16 * 1024 * 1024;
 
+/// Bump when what any media function produces changes: the revision is part of
+/// `fun_id`, so results of the old implementation stop matching. impl-2: artifact
+/// FileObjects carry `mime_type`; `to_pdf` results are reusable.
+const IMPLEMENTATION_REVISION: &str = "impl-2";
+
 pub fn content_param() -> FunctionParamType {
     FunctionParamType::CheckByRunner("file_content".to_string())
 }
@@ -53,7 +58,7 @@ pub fn function(
 ) -> FunctionObject {
     FunctionObject {
         func_type: FunctionType::Native,
-        content: format!("{name}/impl-1"),
+        content: format!("{name}/{IMPLEMENTATION_REVISION}"),
         is_pure,
         params_type: content_params
             .iter()

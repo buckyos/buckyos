@@ -11,12 +11,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use tokio::io::{AsyncRead, AsyncReadExt};
+
 use buckyos_api::{
     get_buckyos_api_runtime, MediaEntry, MediaEntryKind, MediaEntryStatus, MediaManifest,
     RunStatus, ThunkExecutionError, WorkflowCreateRunReq, WorkflowRpcError, WorkflowRunGraph,
     WorkflowRunOutput, WorkflowServiceClient,
 };
-use ndn_lib::{ChunkHasher, ChunkId, ChunkList, FileObject, NamedObject, ObjId};
+use ndn_lib::{ChunkHasher, ChunkId, ChunkList, FileObject, NamedObject, NdnError, ObjId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -25,11 +27,17 @@ pub const FAMILY_PDF: &str = "media.pdf";
 pub const FAMILY_VIDEO: &str = "media.video";
 pub const FAMILY_DOCUMENT: &str = "media.document";
 
-const DEFAULT_WAIT_MS: u64 = 2_000;
-const POLL_INTERVAL_MS: u64 = 400;
-const TOTAL_DEADLINE_SECS: u64 = 1_800;
+const CREATE_WAIT_MS: u64 = 2_000;
+const POLL_MIN_MS: u64 = 400;
+const POLL_MAX_MS: u64 = 3_000;
+/// Longer than the longest `guards.max_duration` of the system definitions.
+const TOTAL_DEADLINE_SECS: u64 = 3_600;
 const MAX_RECOVERIES: u32 = 3;
-const PENDING_CHECK_AFTER_SECS: u64 = 5;
+/// Most pages `media.pdf` / `media.document` take in one run.
+pub const CATALOG_WINDOW_PAGES: u32 = 200;
+/// Most bytes workflow takes as one input (`ExecutionLimits::max_input_bytes`).
+pub const MAX_INPUT_BYTES: u64 = 512 * 1024 * 1024;
+const INDEX_CHARS: usize = 6_000;
 
 /// Limits the image pipeline is asked to fit to and the direct-pass check
 /// uses; env overrides are clamped to the definition's schema maxima.
@@ -86,7 +94,10 @@ impl ImageLimits {
 pub struct DocumentLimits {
     pub dpi: u32,
     pub max_long_edge: u32,
+    /// Pages of one document that become catalog entries.
     pub max_pages: u32,
+    /// A document with more pages is long: never direct, always a catalog.
+    pub long_doc_pages: u32,
     /// Direct pass-through ceiling for protocols that accept documents.
     pub direct_max_bytes: u64,
 }
@@ -100,26 +111,49 @@ impl DocumentLimits {
             max_long_edge: env_positive("LLM_UNDERSTAND_MEDIA_PAGE_MAX_EDGE")
                 .unwrap_or(2048)
                 .clamp(256, 4096),
-            max_pages: env_positive("LLM_UNDERSTAND_MEDIA_MAX_PAGES")
-                .unwrap_or(50)
-                .clamp(1, 200),
+            max_pages: env_positive("LLM_UNDERSTAND_MEDIA_MAX_PAGES").unwrap_or(2000),
+            long_doc_pages: env_positive("LLM_UNDERSTAND_MEDIA_LONG_DOC_PAGES").unwrap_or(30),
             direct_max_bytes: env_positive("LLM_UNDERSTAND_MEDIA_DOCUMENT_MAX_BYTES")
                 .unwrap_or(20 * 1024 * 1024),
         }
     }
 
-    pub fn pipeline_input(&self, obj_id: &str, format: Option<&str>) -> Value {
+    pub fn pipeline_input(
+        &self,
+        obj_id: &str,
+        format: Option<&str>,
+        page_range: &[u32],
+        max_pages: u32,
+    ) -> Value {
         let mut input = json!({
             "obj_id": obj_id,
             "dpi": self.dpi,
             "max_long_edge": self.max_long_edge,
-            "page_range": [],
-            "limits": {"max_pages": self.max_pages},
+            "page_range": page_range,
+            "limits": {"max_pages": max_pages},
         });
         if let Some(format) = format {
             input["format"] = Value::String(format.to_string());
         }
         input
+    }
+
+    /// The first window takes every page from the start, so it is the same run
+    /// for documents of any length and also reports the total.
+    pub fn first_window_pages(&self) -> u32 {
+        self.max_pages.min(CATALOG_WINDOW_PAGES)
+    }
+
+    pub fn later_windows(&self, total_pages: u64) -> Vec<Vec<u32>> {
+        let last = total_pages.min(u64::from(self.max_pages)) as u32;
+        let mut windows = Vec::new();
+        let mut first = self.first_window_pages() + 1;
+        while first <= last {
+            let end = first.saturating_add(CATALOG_WINDOW_PAGES - 1).min(last);
+            windows.push((first..=end).collect());
+            first = end + 1;
+        }
+        windows
     }
 }
 
@@ -279,35 +313,54 @@ pub fn document_format_from_mime(mime: &str) -> Option<&'static str> {
 
 // ----- input freezing ------------------------------------------------------
 
-/// Stores bytes in the Named Store as a FileObject (same chunking as
+/// Stores content in the Named Store as a FileObject (same chunking as
 /// `BucketClient::put_reader`, so identical bytes get identical content ids)
-/// and returns its id.
-pub async fn freeze_bytes(name: &str, mime: &str, bytes: &[u8]) -> Result<ObjId, String> {
+/// and returns its id. Time fields stay 0: the same file freezes to the same
+/// id, so a repeated request finds its run again.
+pub async fn freeze_reader<R: AsyncRead + Unpin>(
+    name: &str,
+    mime: &str,
+    size: u64,
+    mut reader: R,
+) -> Result<ObjId, String> {
     let runtime = get_buckyos_api_runtime().map_err(|e| format!("no buckyos runtime: {e}"))?;
     let store = runtime
         .get_named_store()
         .await
         .map_err(|e| format!("named store: {e}"))?;
     let chunk_size = ndn_lib::CHUNK_DEFAULT_SIZE as usize;
+    let mut buffer = vec![0u8; chunk_size.min(size.max(1) as usize)];
     let mut chunks = Vec::new();
-    let mut offset = 0usize;
+    let mut total = 0u64;
     loop {
-        let end = (offset + chunk_size).min(bytes.len());
-        let piece = &bytes[offset..end];
+        let mut filled = 0usize;
+        while filled < buffer.len() {
+            let read = reader
+                .read(&mut buffer[filled..])
+                .await
+                .map_err(|e| format!("read media: {e}"))?;
+            if read == 0 {
+                break;
+            }
+            filled += read;
+        }
+        if filled == 0 && !chunks.is_empty() {
+            break;
+        }
+        let piece = &buffer[..filled];
         let hasher = ChunkHasher::new(None).map_err(|e| format!("chunk hasher: {e}"))?;
         let method = hasher.hash_method;
         let hash = hasher.calc_from_bytes(piece);
         let chunk_id = ChunkId::from_mix_hash_result_by_hash_method(piece.len() as u64, &hash, method)
             .map_err(|e| format!("chunk id: {e}"))?;
-        if !store.have_chunk(&chunk_id).await {
-            store
-                .put_chunk(&chunk_id, piece)
-                .await
-                .map_err(|e| format!("store chunk: {e}"))?;
-        }
+        // Also when the store has it: only what this session uploaded may be referenced.
+        store
+            .put_chunk(&chunk_id, piece)
+            .await
+            .map_err(|e| format!("store chunk: {e}"))?;
         chunks.push(chunk_id);
-        offset = end;
-        if offset >= bytes.len() {
+        total += filled as u64;
+        if filled < buffer.len() {
             break;
         }
     }
@@ -322,15 +375,11 @@ pub async fn freeze_bytes(name: &str, mime: &str, bytes: &[u8]) -> Result<ObjId,
             .map_err(|e| format!("store chunk list: {e}"))?;
         list_id.to_string()
     };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
     let mut file = FileObject::default();
     file.content_obj.name = name.to_string();
-    file.content_obj.create_time = now;
-    file.content_obj.last_update_time = now;
-    file.size = bytes.len() as u64;
+    file.content_obj.create_time = 0;
+    file.content_obj.last_update_time = 0;
+    file.size = total;
     file.content = content;
     file.meta
         .insert("mime_type".to_string(), Value::String(mime.to_string()));
@@ -350,24 +399,26 @@ pub struct ObjectHead {
     pub head: Vec<u8>,
 }
 
-/// Reads the FileObject and at most `head_bytes` of its content.
-pub async fn object_head(obj_id: &ObjId, head_bytes: usize) -> Result<ObjectHead, String> {
-    use tokio::io::AsyncReadExt;
+/// Reads the FileObject and at most `head_bytes` of its content; `None` when
+/// the store refuses this identity.
+pub async fn object_head(obj_id: &ObjId, head_bytes: usize) -> Result<Option<ObjectHead>, String> {
     let runtime = get_buckyos_api_runtime().map_err(|e| format!("no buckyos runtime: {e}"))?;
     let store = runtime
         .get_named_store()
         .await
         .map_err(|e| format!("named store: {e}"))?;
-    let body = store
-        .get_object(obj_id)
-        .await
-        .map_err(|e| format!("read {obj_id}: {e}"))?;
+    let body = match store.get_object(obj_id).await {
+        Ok(body) => body,
+        Err(NdnError::PermissionDenied(_)) => return Ok(None),
+        Err(e) => return Err(format!("read {obj_id}: {e}")),
+    };
     let file: FileObject = serde_json::from_str(&body)
         .map_err(|e| format!("{obj_id} is not a file object: {e}"))?;
-    let (mut reader, total) = store
-        .open_reader(obj_id, None)
-        .await
-        .map_err(|e| format!("open {obj_id}: {e}"))?;
+    let (mut reader, total) = match store.open_reader(obj_id, None).await {
+        Ok(opened) => opened,
+        Err(NdnError::PermissionDenied(_)) => return Ok(None),
+        Err(e) => return Err(format!("open {obj_id}: {e}")),
+    };
     let mut head = Vec::with_capacity(head_bytes.min(total as usize));
     (&mut reader)
         .take(head_bytes as u64)
@@ -381,12 +432,12 @@ pub async fn object_head(obj_id: &ObjId, head_bytes: usize) -> Result<ObjectHead
         .or_else(|| file.meta.get("mime"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    Ok(ObjectHead {
+    Ok(Some(ObjectHead {
         size: if file.size > 0 { file.size } else { total },
         name,
         mime,
         head,
-    })
+    }))
 }
 
 pub async fn read_object_bytes(obj_id: &str) -> Result<Vec<u8>, String> {
@@ -421,9 +472,9 @@ struct LedgerEntry {
     recoveries: u32,
 }
 
-/// Where a session remembers the run it is waiting for, keyed by the request
-/// identity (`family + obj_id + effective params`), so a later call with the
-/// same media polls the same run instead of ensuring again.
+/// Where the run being waited for is remembered, keyed by the request identity
+/// (`family + obj_id + effective params`), so a later call with the same media
+/// (the shell stopped the last one, the agent asked again) follows the same run.
 pub struct RunLedger {
     dir: PathBuf,
 }
@@ -494,6 +545,9 @@ pub struct StepTrace {
 pub struct PipelineTrace {
     pub workflow_id: String,
     pub run_id: String,
+    /// The run's root task in TaskMgr.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     pub revision: String,
     pub status: String,
     #[serde(default)]
@@ -504,17 +558,15 @@ pub struct PipelineTrace {
     pub steps: BTreeMap<String, StepTrace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_error: Option<ThunkExecutionError>,
+    /// Runs of the later page windows of a long document.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more_runs: Vec<PipelineTrace>,
 }
 
 pub enum PipelineOutcome {
     Completed {
         output: BTreeMap<String, Value>,
         trace: PipelineTrace,
-    },
-    Pending {
-        trace: PipelineTrace,
-        resume: Value,
-        check_after_secs: u64,
     },
     Failed {
         error: ThunkExecutionError,
@@ -526,9 +578,7 @@ pub struct PipelineRequest {
     pub workflow_id: &'static str,
     pub obj_id: String,
     pub input: Value,
-    pub resume_run_id: Option<String>,
     pub session_id: Option<String>,
-    pub wait_ms: u64,
 }
 
 impl PipelineRequest {
@@ -537,9 +587,7 @@ impl PipelineRequest {
             workflow_id,
             obj_id: obj_id.to_string(),
             input,
-            resume_run_id: None,
             session_id: None,
-            wait_ms: DEFAULT_WAIT_MS,
         }
     }
 }
@@ -585,8 +633,7 @@ async fn trace_of(
         status: status_label(status),
         reused,
         recoveries,
-        steps: BTreeMap::new(),
-        run_error: None,
+        ..Default::default()
     };
     if let Ok(graph) = client.get_run_graph(run_id).await {
         fill_trace(&mut trace, &graph);
@@ -596,6 +643,7 @@ async fn trace_of(
 
 fn fill_trace(trace: &mut PipelineTrace, graph: &WorkflowRunGraph) {
     trace.status = status_label(graph.status);
+    trace.task_id = graph.task_id.clone();
     if trace.revision.is_empty() {
         trace.revision = graph.revision.clone();
     }
@@ -628,11 +676,70 @@ fn failure_of(output: &WorkflowRunOutput) -> ThunkExecutionError {
     })
 }
 
-/// Drives one conversion request to a terminal state, a pending answer or a
-/// diagnosed failure. The run is ensured once; later calls with the same
-/// request poll the recorded run. A lost run (`run_not_found`) or an
-/// explicitly retryable failure is re-ensured at most `MAX_RECOVERIES` times
-/// inside `TOTAL_DEADLINE_SECS`.
+async fn ensure_run(
+    client: &WorkflowServiceClient,
+    request: &PipelineRequest,
+    first_requested_at: u64,
+    recoveries: u32,
+) -> Result<(LedgerEntry, bool), String> {
+    let created = client
+        .create_run(
+            WorkflowCreateRunReq::new(request.workflow_id, request.input.clone())
+                .ensure(CREATE_WAIT_MS),
+        )
+        .await
+        .map_err(|e| kernel_error("create_run", &e))?;
+    let reused = created.reused;
+    Ok((
+        LedgerEntry {
+            run_id: created.run_id,
+            workflow_id: request.workflow_id.to_string(),
+            revision: created.revision,
+            obj_id: request.obj_id.clone(),
+            input: request.input.clone(),
+            first_requested_at,
+            recoveries,
+        },
+        reused,
+    ))
+}
+
+/// `None`: the service no longer knows the run.
+async fn wait_terminal(
+    client: &WorkflowServiceClient,
+    run_id: &str,
+    deadline: Instant,
+) -> Result<Option<Result<WorkflowRunOutput, RunStatus>>, String> {
+    let mut poll = Duration::from_millis(POLL_MIN_MS);
+    loop {
+        match client.get_run_output(run_id).await {
+            Ok(output) if output.terminal || is_terminal(output.status) => {
+                return Ok(Some(Ok(output)));
+            }
+            Ok(output) => {
+                if Instant::now() >= deadline {
+                    return Ok(Some(Err(output.status)));
+                }
+            }
+            Err(err) => {
+                let lost = WorkflowRpcError::from_rpc_error(&err)
+                    .map(|e| e.is_not_found())
+                    .unwrap_or(false);
+                if lost {
+                    return Ok(None);
+                }
+                return Err(kernel_error("get_run_output", &err));
+            }
+        }
+        tokio::time::sleep(poll).await;
+        poll = (poll * 2).min(Duration::from_millis(POLL_MAX_MS));
+    }
+}
+
+/// Waits for one conversion request to end. The run is ensured once; a later
+/// call with the same request follows the recorded run. A lost run
+/// (`run_not_found`) or an explicitly retryable failure is re-ensured at most
+/// `MAX_RECOVERIES` times inside `TOTAL_DEADLINE_SECS`.
 pub async fn run_pipeline(request: PipelineRequest) -> Result<PipelineOutcome, String> {
     let runtime = get_buckyos_api_runtime().map_err(|e| format!("no buckyos runtime: {e}"))?;
     let client = runtime
@@ -641,157 +748,87 @@ pub async fn run_pipeline(request: PipelineRequest) -> Result<PipelineOutcome, S
         .map_err(|e| format!("workflow service (kernel) client unavailable: {e}"))?;
     let ledger = RunLedger::for_session(request.session_id.as_deref());
     let key = RunLedger::request_key(request.workflow_id, &request.obj_id, &request.input);
-    let mut entry = ledger.load(&key);
-    if let Some(run_id) = request.resume_run_id.as_ref() {
-        if entry.as_ref().map(|e| &e.run_id) != Some(run_id) {
-            entry = Some(LedgerEntry {
-                run_id: run_id.clone(),
-                workflow_id: request.workflow_id.to_string(),
-                revision: String::new(),
-                obj_id: request.obj_id.clone(),
-                input: request.input.clone(),
-                first_requested_at: now_secs(),
-                recoveries: 0,
-            });
-        }
-    }
-    let started = Instant::now();
-    let wait = Duration::from_millis(request.wait_ms);
-    let mut attempts = 0u32;
+    let deadline = Instant::now() + Duration::from_secs(TOTAL_DEADLINE_SECS);
+    let mut entry = ledger
+        .load(&key)
+        .filter(|e| now_secs().saturating_sub(e.first_requested_at) <= TOTAL_DEADLINE_SECS);
+    let mut reused = entry.is_some();
     loop {
-        attempts += 1;
-        if attempts > MAX_RECOVERIES + 1 {
-            return Err("media pipeline recovery limit exceeded".to_string());
-        }
-        let (run_id, revision, reused, recoveries, first_requested_at) = match entry.clone() {
-            Some(existing) => {
-                if now_secs().saturating_sub(existing.first_requested_at) > TOTAL_DEADLINE_SECS {
-                    ledger.remove(&key);
-                    return Ok(PipelineOutcome::Failed {
-                        error: ThunkExecutionError::new(
-                            "deadline_exceeded",
-                            format!(
-                                "media pipeline run {} did not finish within {} seconds",
-                                existing.run_id, TOTAL_DEADLINE_SECS
-                            ),
-                        ),
-                        trace: PipelineTrace {
-                            workflow_id: existing.workflow_id,
-                            run_id: existing.run_id,
-                            revision: existing.revision,
-                            status: "unknown".to_string(),
-                            recoveries: existing.recoveries,
-                            ..Default::default()
-                        },
-                    });
-                }
-                (
-                    existing.run_id,
-                    existing.revision,
-                    true,
-                    existing.recoveries,
-                    existing.first_requested_at,
-                )
-            }
+        let current = match entry.take() {
+            Some(existing) => existing,
             None => {
-                let created = client
-                    .create_run(
-                        WorkflowCreateRunReq::new(request.workflow_id, request.input.clone())
-                            .ensure(request.wait_ms),
-                    )
-                    .await
-                    .map_err(|e| kernel_error("create_run", &e))?;
-                let new_entry = LedgerEntry {
-                    run_id: created.run_id.clone(),
-                    workflow_id: request.workflow_id.to_string(),
-                    revision: created.revision.clone(),
-                    obj_id: request.obj_id.clone(),
-                    input: request.input.clone(),
-                    first_requested_at: now_secs(),
-                    recoveries: 0,
-                };
-                ledger.save(&key, &new_entry);
-                (created.run_id, created.revision, created.reused, 0, now_secs())
+                let (created, was_reused) = ensure_run(&client, &request, now_secs(), 0).await?;
+                reused = was_reused;
+                ledger.save(&key, &created);
+                created
             }
         };
-
-        // Poll until terminal or the short wait is spent.
-        let output = loop {
-            match client.get_run_output(&run_id).await {
-                Ok(output) => {
-                    if output.terminal || is_terminal(output.status) {
-                        break Some(output);
-                    }
-                    if started.elapsed() >= wait {
-                        let trace = trace_of(&client, &run_id, request.workflow_id, &revision, output.status, reused, recoveries).await;
-                        return Ok(PipelineOutcome::Pending {
-                            trace,
-                            resume: json!({
-                                "run_id": run_id,
-                                "workflow_id": request.workflow_id,
-                                "obj_id": request.obj_id,
-                                "input": request.input,
-                                "revision": revision,
-                                "first_requested_at": first_requested_at,
-                            }),
-                            check_after_secs: PENDING_CHECK_AFTER_SECS,
-                        });
-                    }
-                    tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
-                }
-                Err(err) => {
-                    let lost = WorkflowRpcError::from_rpc_error(&err)
-                        .map(|e| e.is_not_found())
-                        .unwrap_or(false);
-                    if !lost {
-                        return Err(kernel_error("get_run_output", &err));
-                    }
-                    break None;
-                }
-            }
+        let trace_for = |status: &str| PipelineTrace {
+            workflow_id: request.workflow_id.to_string(),
+            run_id: current.run_id.clone(),
+            revision: current.revision.clone(),
+            status: status.to_string(),
+            reused,
+            recoveries: current.recoveries,
+            ..Default::default()
         };
-
-        let Some(output) = output else {
-            // The service forgot the run (restart): re-ensure within budget.
-            if recoveries >= MAX_RECOVERIES {
+        let waited = wait_terminal(&client, &current.run_id, deadline).await?;
+        let output = match waited {
+            Some(Ok(output)) => output,
+            Some(Err(status)) => {
+                return Ok(PipelineOutcome::Failed {
+                    error: ThunkExecutionError::new(
+                        "deadline_exceeded",
+                        format!(
+                            "media pipeline run {} did not finish within {TOTAL_DEADLINE_SECS} seconds",
+                            current.run_id
+                        ),
+                    ),
+                    trace: trace_for(&status_label(status)),
+                });
+            }
+            None if current.recoveries >= MAX_RECOVERIES => {
                 ledger.remove(&key);
                 return Ok(PipelineOutcome::Failed {
                     error: ThunkExecutionError::new(
                         "run_lost",
-                        format!("media pipeline run {run_id} was lost {recoveries} times; giving up"),
+                        format!(
+                            "media pipeline run {} was lost {} times; giving up",
+                            current.run_id, current.recoveries
+                        ),
                     ),
-                    trace: PipelineTrace {
-                        workflow_id: request.workflow_id.to_string(),
-                        run_id,
-                        revision,
-                        status: "not_found".to_string(),
-                        recoveries,
-                        ..Default::default()
-                    },
+                    trace: trace_for("not_found"),
                 });
             }
-            let created = client
-                .create_run(
-                    WorkflowCreateRunReq::new(request.workflow_id, request.input.clone())
-                        .ensure(request.wait_ms),
+            None => {
+                let (created, was_reused) = ensure_run(
+                    &client,
+                    &request,
+                    current.first_requested_at,
+                    current.recoveries + 1,
                 )
-                .await
-                .map_err(|e| kernel_error("create_run", &e))?;
-            entry = Some(LedgerEntry {
-                run_id: created.run_id,
-                workflow_id: request.workflow_id.to_string(),
-                revision: created.revision,
-                obj_id: request.obj_id.clone(),
-                input: request.input.clone(),
-                first_requested_at,
-                recoveries: recoveries + 1,
-            });
-            ledger.save(&key, entry.as_ref().unwrap());
-            continue;
+                .await?;
+                reused = was_reused;
+                ledger.save(&key, &created);
+                entry = Some(created);
+                continue;
+            }
         };
-
-        let revision = if revision.is_empty() { output.revision.clone() } else { revision };
-        let trace = trace_of(&client, &run_id, request.workflow_id, &revision, output.status, reused, recoveries).await;
+        let revision = if current.revision.is_empty() {
+            output.revision.clone()
+        } else {
+            current.revision.clone()
+        };
+        let trace = trace_of(
+            &client,
+            &current.run_id,
+            request.workflow_id,
+            &revision,
+            output.status,
+            reused,
+            current.recoveries,
+        )
+        .await;
         if output.status == RunStatus::Completed {
             ledger.remove(&key);
             return Ok(PipelineOutcome::Completed {
@@ -800,24 +837,17 @@ pub async fn run_pipeline(request: PipelineRequest) -> Result<PipelineOutcome, S
             });
         }
         let error = failure_of(&output);
-        if error.retryable && recoveries < MAX_RECOVERIES {
-            let created = client
-                .create_run(
-                    WorkflowCreateRunReq::new(request.workflow_id, request.input.clone())
-                        .ensure(request.wait_ms),
-                )
-                .await
-                .map_err(|e| kernel_error("create_run", &e))?;
-            entry = Some(LedgerEntry {
-                run_id: created.run_id,
-                workflow_id: request.workflow_id.to_string(),
-                revision: created.revision,
-                obj_id: request.obj_id.clone(),
-                input: request.input.clone(),
-                first_requested_at,
-                recoveries: recoveries + 1,
-            });
-            ledger.save(&key, entry.as_ref().unwrap());
+        if error.retryable && current.recoveries < MAX_RECOVERIES {
+            let (created, was_reused) = ensure_run(
+                &client,
+                &request,
+                current.first_requested_at,
+                current.recoveries + 1,
+            )
+            .await?;
+            reused = was_reused;
+            ledger.save(&key, &created);
+            entry = Some(created);
             continue;
         }
         ledger.remove(&key);
@@ -861,6 +891,51 @@ pub struct Uncovered {
     pub reason: String,
 }
 
+impl Coverage {
+    /// The line the calling agent reads: what the model did not see, by reason.
+    pub fn uncovered_note(&self) -> Option<String> {
+        if self.uncovered.is_empty() {
+            return None;
+        }
+        let mut by_reason: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
+        for item in &self.uncovered {
+            by_reason.entry(item.reason.as_str()).or_default().push(item.location);
+        }
+        let parts = by_reason
+            .iter()
+            .map(|(reason, places)| format!("{reason}: {}", format_ranges(places)))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let (unit, hint) = if self.family == "video" {
+            ("frames (by ms)", "")
+        } else {
+            ("pages", " Name a page in the goal (\"page 12\") to read it.")
+        };
+        let of = self.total.filter(|_| self.family != "video").unwrap_or(self.requested.len() as u64);
+        Some(format!(
+            "Note: {} of {of} {unit} were not shown to the model ({parts}).{hint}",
+            self.uncovered.len()
+        ))
+    }
+}
+
+/// `[1, 2, 3, 7]` -> `1-3, 7`.
+fn format_ranges(places: &[u64]) -> String {
+    let mut sorted = places.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut parts: Vec<String> = Vec::new();
+    let mut iter = sorted.into_iter().peekable();
+    while let Some(start) = iter.next() {
+        let mut end = start;
+        while iter.peek() == Some(&(end + 1)) {
+            end = iter.next().unwrap_or(end);
+        }
+        parts.push(if start == end { start.to_string() } else { format!("{start}-{end}") });
+    }
+    parts.join(", ")
+}
+
 pub struct PagePlan {
     pub page: u64,
     pub text: Option<String>,
@@ -868,6 +943,8 @@ pub struct PagePlan {
 }
 
 pub struct ContentPlan {
+    /// Every page of the document, when the model will not see them all.
+    pub index: Option<String>,
     pub texts: Vec<(u64, String)>,
     pub images: Vec<(u64, String)>,
     pub coverage: Coverage,
@@ -882,35 +959,144 @@ fn entry_coordinate(entry: &MediaEntry) -> Option<u64> {
         .or(entry.location.index.map(u64::from))
 }
 
-/// Terms of the goal that drive lexical page selection.
+fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}'
+        | '\u{f900}'..='\u{faff}' | '\u{ac00}'..='\u{d7af}')
+}
+
+/// Terms of the goal that drive lexical page selection: words of other scripts,
+/// and overlapping character pairs of CJK text, which has no spaces to split on.
 fn goal_terms(goal: &str) -> Vec<String> {
-    let mut terms: Vec<String> = goal
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| t.chars().count() >= 3)
-        .map(|t| t.to_lowercase())
-        .collect();
+    let mut terms: Vec<String> = Vec::new();
+    for word in goal.split(|c: char| !c.is_alphanumeric()) {
+        let chars: Vec<char> = word.to_lowercase().chars().collect();
+        let mut start = 0;
+        while start < chars.len() {
+            let cjk = is_cjk(chars[start]);
+            let end = (start..chars.len())
+                .find(|i| is_cjk(chars[*i]) != cjk)
+                .unwrap_or(chars.len());
+            let piece = &chars[start..end];
+            if cjk {
+                terms.extend(piece.windows(2).map(|pair| pair.iter().collect::<String>()));
+            } else if piece.len() >= 3 || (piece.len() == 2 && piece.iter().any(char::is_ascii_digit)) {
+                terms.push(piece.iter().collect());
+            }
+            start = end;
+        }
+    }
     terms.sort();
     terms.dedup();
     terms
 }
 
 fn lexical_score(text: &str, terms: &[String]) -> usize {
-    let lower = text.to_lowercase();
-    terms.iter().filter(|t| lower.contains(t.as_str())).count()
+    let compact: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    terms.iter().filter(|t| compact.contains(t.as_str())).count()
 }
 
-/// Chooses what the model sees from a page manifest: every page text while
-/// it fits `text_char_budget`, otherwise the pages that lexically match the
-/// goal; page images for pages without text first (visual coverage), then
-/// for the selected pages, up to `max_images`.
+fn leading_number(text: &str) -> Option<(u64, &str)> {
+    let text = text.trim_start();
+    let digits = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
+    if digits == 0 {
+        return None;
+    }
+    Some((text[..digits].parse().ok()?, &text[digits..]))
+}
+
+/// Pages the goal names: `page 12`, `p. 12`, `pages 3-5`, `第12页`, `第3到5页`.
+fn goal_pages(goal: &str) -> BTreeSet<u64> {
+    let lower = goal.to_lowercase();
+    let mut pages = BTreeSet::new();
+    for marker in ["pages", "page", "p.", "第"] {
+        let mut rest = lower.as_str();
+        while let Some(at) = rest.find(marker) {
+            rest = &rest[at + marker.len()..];
+            let Some((first, after)) = leading_number(rest) else {
+                continue;
+            };
+            let range_end = after
+                .trim_start()
+                .strip_prefix(['-', '–', '~', '到', '至'])
+                .and_then(leading_number);
+            let (last, after) = range_end.unwrap_or((first, after));
+            if marker == "第" && !after.trim_start().starts_with('页') {
+                continue;
+            }
+            pages.extend(first..=last.min(first.saturating_add(u64::from(CATALOG_WINDOW_PAGES))));
+        }
+    }
+    pages
+}
+
+/// `pages` reordered so that any prefix of about `fits` entries spreads over the
+/// whole list instead of covering only its start.
+fn spread(pages: &[u64], fits: usize) -> Vec<u64> {
+    let fits = fits.clamp(1, pages.len().max(1));
+    let mut order: Vec<u64> = (0..fits)
+        .filter_map(|i| pages.get(i * pages.len() / fits).copied())
+        .collect();
+    let picked: BTreeSet<u64> = order.iter().copied().collect();
+    order.extend(pages.iter().copied().filter(|p| !picked.contains(p)));
+    order
+}
+
+/// The list of every page: one line each with the start of its text when that
+/// fits `budget`, ranges of the same kind otherwise.
+fn render_index(pages: &BTreeMap<u64, PagePlan>, budget: usize) -> String {
+    let kind = |plan: &PagePlan| match (plan.text.is_some(), plan.image_obj_id.is_some()) {
+        (true, true) => "text+image",
+        (true, false) => "text",
+        (false, true) => "image",
+        (false, false) => "nothing",
+    };
+    let snippet_chars = (budget / pages.len().max(1)).saturating_sub(16).min(60);
+    let mut out = String::from("Index of the whole document (what the pipeline has for each page):\n");
+    if snippet_chars >= 16 {
+        for plan in pages.values() {
+            let snippet: String = plan
+                .text
+                .as_deref()
+                .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
+                .unwrap_or("")
+                .chars()
+                .take(snippet_chars)
+                .collect();
+            out.push_str(&format!("{} [{}] {}\n", plan.page, kind(plan), snippet));
+        }
+        return out;
+    }
+    let mut by_kind: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
+    for plan in pages.values() {
+        by_kind.entry(kind(plan)).or_default().push(plan.page);
+    }
+    for (name, places) in by_kind {
+        out.push_str(&format!("{name}: {}\n", format_ranges(&places)));
+    }
+    out
+}
+
+/// Chooses what the model sees from a page manifest. Text: every page while it
+/// fits `text_char_budget`, otherwise the pages the goal names, then those that
+/// lexically match it; with no match at all, pages spread over the document.
+/// Images: named pages, up to half the budget for matching pages (their figures
+/// are what text search cannot show), pages that only have an image, then the
+/// other selected pages.
 pub fn plan_pages(
     goal: &str,
     manifest: &MediaManifest,
     texts: &BTreeMap<u64, String>,
+    unreadable: &BTreeMap<u64, String>,
     text_char_budget: usize,
     max_images: usize,
 ) -> ContentPlan {
     let terms = goal_terms(goal);
+    let named = goal_pages(goal);
     let mut coverage = Coverage {
         family: manifest.family.clone(),
         total: manifest.range.total,
@@ -945,7 +1131,7 @@ pub fn plan_pages(
             MediaEntryStatus::Unprocessed => {
                 failed_reasons
                     .entry(coord)
-                    .or_insert_with(|| "not processed (outside the requested range)".to_string());
+                    .or_insert_with(|| "not processed (outside the page limit)".to_string());
             }
             _ => {}
         }
@@ -962,55 +1148,63 @@ pub fn plan_pages(
     }
 
     // Text selection.
-    let total_chars: usize = pages.values().filter_map(|p| p.text.as_ref()).map(|t| t.chars().count()).sum();
-    let mut selected_text: BTreeSet<u64> = BTreeSet::new();
-    if total_chars <= text_char_budget {
-        selected_text.extend(pages.values().filter(|p| p.text.is_some()).map(|p| p.page));
+    let text_pages: Vec<u64> = pages.values().filter(|p| p.text.is_some()).map(|p| p.page).collect();
+    let text_len = |page: u64| pages[&page].text.as_ref().map(|t| t.chars().count()).unwrap_or(0);
+    let total_chars: usize = text_pages.iter().map(|p| text_len(*p)).sum();
+    let mut scored: Vec<(usize, u64)> = text_pages
+        .iter()
+        .map(|p| {
+            let score = if named.contains(p) {
+                usize::MAX
+            } else {
+                pages[p].text.as_deref().map(|t| lexical_score(t, &terms)).unwrap_or(0)
+            };
+            (score, *p)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let matching: Vec<u64> = scored.iter().filter(|(s, _)| *s > 0).map(|(_, p)| *p).collect();
+    let ranked: Vec<u64> = if matching.is_empty() {
+        let average = total_chars / text_pages.len().max(1);
+        spread(&text_pages, text_char_budget / average.max(1))
     } else {
-        let mut ranked: Vec<(usize, u64)> = pages
-            .values()
-            .filter_map(|p| p.text.as_ref().map(|t| (lexical_score(t, &terms), p.page)))
-            .collect();
-        ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        let mut used = 0usize;
-        for (_, page) in ranked {
-            let len = pages[&page].text.as_ref().map(|t| t.chars().count()).unwrap_or(0);
-            if used + len > text_char_budget {
-                continue;
-            }
-            used += len;
-            selected_text.insert(page);
+        scored.iter().map(|(_, p)| *p).collect()
+    };
+    let mut selected_text: BTreeSet<u64> = BTreeSet::new();
+    let mut used = 0usize;
+    for page in &ranked {
+        let len = text_len(*page);
+        if used + len > text_char_budget {
+            continue;
         }
+        used += len;
+        selected_text.insert(*page);
     }
 
-    // Image selection: pages without text first, then selected text pages.
+    // Image selection.
+    let has_image = |page: &u64| pages.get(page).is_some_and(|p| p.image_obj_id.is_some());
     let mut selected_images: Vec<u64> = Vec::new();
-    let mut no_text: Vec<u64> = pages
+    let take = |page: u64, limit: usize, chosen: &mut Vec<u64>| {
+        if chosen.len() < limit && !chosen.contains(&page) {
+            chosen.push(page);
+        }
+    };
+    for page in named.iter().filter(|p| has_image(p)) {
+        take(*page, max_images, &mut selected_images);
+    }
+    for page in matching.iter().filter(|p| selected_text.contains(*p) && has_image(p)) {
+        take(*page, (max_images / 2).max(selected_images.len()), &mut selected_images);
+    }
+    let image_only: Vec<u64> = pages
         .values()
         .filter(|p| p.text.is_none() && p.image_obj_id.is_some())
         .map(|p| p.page)
         .collect();
-    if no_text.len() > max_images {
-        let mut ranked: Vec<(usize, u64)> = no_text
-            .iter()
-            .map(|p| (lexical_score(&format!("page {p}"), &terms), *p))
-            .collect();
-        ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        no_text = ranked.into_iter().map(|(_, p)| p).collect();
+    for page in spread(&image_only, max_images.saturating_sub(selected_images.len())) {
+        take(page, max_images, &mut selected_images);
     }
-    for page in no_text {
-        if selected_images.len() >= max_images {
-            break;
-        }
-        selected_images.push(page);
-    }
-    for page in &selected_text {
-        if selected_images.len() >= max_images {
-            break;
-        }
-        if pages[page].image_obj_id.is_some() && !selected_images.contains(page) {
-            selected_images.push(*page);
-        }
+    for page in ranked.iter().filter(|p| selected_text.contains(*p) && has_image(p)) {
+        take(*page, max_images, &mut selected_images);
     }
     selected_images.sort_unstable();
 
@@ -1024,6 +1218,12 @@ pub fn plan_pages(
         .collect();
     coverage.text_delivered = selected_text.iter().copied().collect();
     coverage.image_delivered = selected_images.clone();
+    for (coord, reason) in unreadable {
+        coverage.uncovered.push(Uncovered {
+            location: *coord,
+            reason: format!("text unreadable: {reason}"),
+        });
+    }
     for (coord, plan) in &pages {
         let seen = selected_text.contains(coord) || selected_images.contains(coord);
         if seen {
@@ -1031,7 +1231,7 @@ pub fn plan_pages(
         }
         let reason = failed_reasons.get(coord).cloned().unwrap_or_else(|| {
             if plan.text.is_some() || plan.image_obj_id.is_some() {
-                "omitted by the token budget".to_string()
+                "omitted by the budget".to_string()
             } else {
                 "no representation produced".to_string()
             }
@@ -1051,7 +1251,9 @@ pub fn plan_pages(
     }
     coverage.uncovered.sort_by_key(|u| u.location);
     coverage.uncovered.dedup_by_key(|u| u.location);
+    let index = (!coverage.uncovered.is_empty()).then(|| render_index(&pages, INDEX_CHARS));
     ContentPlan {
+        index,
         texts: texts_out,
         images: images_out,
         coverage,
@@ -1068,17 +1270,6 @@ pub fn frame_entries(manifest: &MediaManifest) -> Vec<&MediaEntry> {
 
 pub fn audio_entry(manifest: &MediaManifest) -> Option<&MediaEntry> {
     manifest.entries.iter().find(|e| e.kind == MediaEntryKind::Audio)
-}
-
-pub fn audio_mime(codec: Option<&str>) -> &'static str {
-    match codec.map(|c| c.to_ascii_lowercase()).as_deref() {
-        Some("mp3") | Some("mp3float") => "audio/mpeg",
-        Some("aac") => "audio/aac",
-        Some("opus") | Some("vorbis") => "audio/ogg",
-        Some("flac") => "audio/flac",
-        Some("pcm_s16le") | Some("wav") => "audio/wav",
-        _ => "audio/mpeg",
-    }
 }
 
 #[cfg(test)]
@@ -1133,22 +1324,106 @@ mod tests {
             (2u64, "the answer is on the last page".to_string()),
             (5u64, "final answer: forty-two".to_string()),
         ]);
-        let plan = plan_pages("what is the final answer", &manifest, &texts, 25, 2);
+        let none = BTreeMap::new();
+        let plan = plan_pages("what is the final answer", &manifest, &texts, &none, 25, 2);
         let text_pages: Vec<u64> = plan.texts.iter().map(|(p, _)| *p).collect();
         assert!(text_pages.contains(&5), "{text_pages:?}");
         assert!(!text_pages.contains(&1), "{text_pages:?}");
         let image_pages: Vec<u64> = plan.images.iter().map(|(p, _)| *p).collect();
         assert!(image_pages.contains(&3), "scanned page gets visual coverage: {image_pages:?}");
+        assert!(image_pages.contains(&5), "the matching page gets its image: {image_pages:?}");
         assert_eq!(image_pages.len(), 2);
         assert!(plan.coverage.uncovered.iter().any(|u| u.location == 4 && u.reason.starts_with("tool_failed")));
         assert!(plan.coverage.uncovered.iter().any(|u| u.location == 1));
         assert!(!plan.coverage.complete);
         assert_eq!(plan.coverage.failed, vec![4]);
+        assert!(plan.index.as_deref().unwrap().contains("Index of the whole document"));
 
-        let all = plan_pages("anything", &manifest, &texts, 10_000, 16);
+        let all = plan_pages("anything", &manifest, &texts, &none, 10_000, 16);
         assert_eq!(all.texts.len(), 3);
         assert_eq!(all.images.len(), 4);
         assert_eq!(all.coverage.uncovered.len(), 1);
+    }
+
+    fn long_document(pages: u32) -> (MediaManifest, BTreeMap<u64, String>) {
+        let mut manifest = MediaManifest::new("pdf", "sha256:x");
+        manifest.range.total = Some(u64::from(pages));
+        manifest.range.requested = (1..=u64::from(pages)).collect();
+        manifest.entries = (1..=pages).map(|p| entry(p, MediaEntryStatus::Ok, true, true)).collect();
+        manifest.recompute_coverage();
+        let texts = (1..=u64::from(pages)).map(|p| (p, format!("ordinary filler {p:04}"))).collect();
+        (manifest, texts)
+    }
+
+    #[test]
+    fn a_chinese_goal_finds_the_page_that_answers_it() {
+        let (manifest, mut texts) = long_document(120);
+        texts.insert(97, "第三季度 营收 为 四十二 亿元".to_string());
+        let plan = plan_pages("第三季度的营收是多少", &manifest, &texts, &BTreeMap::new(), 20, 4);
+        assert_eq!(plan.coverage.text_delivered, vec![97]);
+        assert!(plan.images.iter().any(|(p, _)| *p == 97));
+    }
+
+    #[test]
+    fn a_named_page_is_read_and_a_goal_without_matches_spreads_over_the_document() {
+        let (manifest, texts) = long_document(100);
+        let plan = plan_pages("translate 第88页", &manifest, &texts, &BTreeMap::new(), 100, 2);
+        assert!(plan.coverage.text_delivered.contains(&88));
+        assert!(plan.coverage.image_delivered.contains(&88));
+
+        let plan = plan_pages("zzz", &manifest, &texts, &BTreeMap::new(), 200, 0);
+        let delivered = &plan.coverage.text_delivered;
+        assert!(delivered.len() >= 5);
+        assert!(delivered.iter().any(|p| *p > 80), "{delivered:?}");
+        assert!(delivered.iter().any(|p| *p < 20), "{delivered:?}");
+    }
+
+    #[test]
+    fn unread_text_is_reported_and_the_note_names_ranges() {
+        let (manifest, texts) = long_document(30);
+        let unreadable = BTreeMap::from([(7u64, "gone".to_string())]);
+        let plan = plan_pages("zzz", &manifest, &texts, &unreadable, 60, 0);
+        assert!(plan.coverage.uncovered.iter().any(|u| u.location == 7 && u.reason.contains("gone")));
+        let note = plan.coverage.uncovered_note().unwrap();
+        assert!(note.contains("were not shown to the model"), "{note}");
+        assert!(note.contains("omitted by the budget"), "{note}");
+        assert_eq!(format_ranges(&[7, 1, 2, 3, 9, 10]), "1-3, 7, 9-10");
+    }
+
+    #[test]
+    fn goal_terms_and_pages() {
+        assert!(goal_terms("Q3 revenue").contains(&"q3".to_string()));
+        assert!(goal_terms("Q3 revenue").contains(&"revenue".to_string()));
+        assert!(!goal_terms("is a 3").contains(&"3".to_string()));
+        assert_eq!(goal_terms("营收多少"), vec!["多少", "收多", "营收"]);
+        assert_eq!(goal_pages("see page 12 and pages 3-5"), BTreeSet::from([3, 4, 5, 12]));
+        assert_eq!(goal_pages("第12页和第3到5页"), BTreeSet::from([3, 4, 5, 12]));
+        assert_eq!(goal_pages("第三季度 第2季度"), BTreeSet::new());
+    }
+
+    #[test]
+    fn a_long_document_is_read_in_windows_up_to_the_page_limit() {
+        let limits = DocumentLimits {
+            dpi: 144,
+            max_long_edge: 2048,
+            max_pages: 1000,
+            long_doc_pages: 20,
+            direct_max_bytes: 1,
+        };
+        assert_eq!(limits.first_window_pages(), 200);
+        assert!(limits.later_windows(200).is_empty());
+        let windows = limits.later_windows(450);
+        assert_eq!(windows.len(), 2);
+        assert_eq!((windows[0][0], *windows[0].last().unwrap()), (201, 400));
+        assert_eq!((windows[1][0], *windows[1].last().unwrap()), (401, 450));
+        let capped = DocumentLimits { max_pages: 250, ..limits }.later_windows(450);
+        assert_eq!(capped.len(), 1);
+        assert_eq!(*capped[0].last().unwrap(), 250);
+        assert!(DocumentLimits { max_pages: 50, ..limits }.later_windows(450).is_empty());
+        let input = limits.pipeline_input("cyfile:a", Some("docx"), &[1], 1);
+        assert_eq!(input["page_range"], json!([1]));
+        assert_eq!(input["limits"]["max_pages"], 1);
+        assert_eq!(input["format"], "docx");
     }
 
     #[test]
@@ -1162,6 +1437,5 @@ mod tests {
         assert_eq!(document_format_from_mime("application/vnd.openxmlformats-officedocument.presentationml.presentation"), Some("pptx"));
         assert!(protocol_accepts_documents("claude-messages"));
         assert!(!protocol_accepts_documents("openai-chat-completions"));
-        assert_eq!(audio_mime(Some("aac")), "audio/aac");
     }
 }

@@ -1,8 +1,7 @@
-//! `media.fit_image`: the preprocessing algorithm of
-//! `src/frame/agent_tool/src/llm_understand_media/image_fit.rs` (LLM Understand
-//! Media §4.5.3) rehosted as a pure native function: header-only passthrough
-//! when the image already fits, otherwise EXIF orientation, proportional
-//! downscale and PNG / JPEG re-encoding within the byte limit.
+//! `media.fit_image` (LLM Understand Media §4.5.3), a pure native function:
+//! header-only passthrough when the image already fits, otherwise EXIF
+//! orientation, proportional downscale and PNG / JPEG re-encoding within the
+//! byte limit.
 
 use super::{function, tools, FIT_IMAGE};
 use crate::native::{

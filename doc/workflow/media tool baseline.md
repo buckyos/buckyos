@@ -23,7 +23,7 @@
 | `ffprobe` | ffmpeg ≥ 6.0 | `media.probe`（video）、`media.extract_frames`、`media.extract_audio` | 时长、流信息（有无音轨） | `ffprobe -hide_banner -version`，取 `ffprobe version <x>` |
 | `ffmpeg` | ≥ 6.0，带 `libmp3lame`（音轨输出）、PNG 编码 | `media.extract_frames`、`media.extract_audio`；`media.fit_image` 的可选依赖（`image` crate 解不了的格式先转 PNG） | 均匀抽帧、提取音轨、非常见图片格式解码 | `ffmpeg -hide_banner -version` |
 | `soffice`（LibreOffice headless：core、writer、impress、calc） | ≥ 7.0 | `media.to_pdf` | DOCX / PPTX / ODT / ODP / DOC / PPT / RTF / TXT → PDF；每次调用独立 `-env:UserInstallation` profile，Office lane 并发 1 | `soffice --version`（Windows 上 `soffice.com`），取第一个数字 token |
-| 字体：DejaVu、Liberation、Noto（含 CJK） | — | `media.to_pdf`（经 soffice） | 中西文文档的字形与度量；缺字体会改变页图内容 | 不单独探测；属于宿主 / 镜像预置项 |
+| 字体：DejaVu、Liberation、Noto（含 CJK） | — | `media.to_pdf`（经 soffice） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf` 指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
 | locale：`C.UTF-8` 可用，建议生成 `en_US.UTF-8` | — | `media.to_pdf` | soffice 的文件名、编码处理 | 不单独探测 |
 
 不在基线内：ImageMagick、tesseract（服务于其它场景，workflow 本期不依赖）；`media.capabilities` / `media.build_catalog` / `media.fit_image`（常规格式）只需要 workflow 自身与 `image` crate（编译依赖，随 workflow 发布）。
@@ -35,7 +35,8 @@
 - 服务启动时 `probe_default()` 对上表每个命令定位并取版本，得到 `ToolEnvironment { tools, missing, searched, revision }`；`revision` 是全部工具 (path, version) 的 hash，`get_capabilities` RPC 与 `media.capabilities` 步骤都返回它。
 - 每个函数只把**自己依赖**的工具放进指纹：`fingerprint = { "cmd/<tool>": <version> | "missing" }`；`step_cache_key = hash(thunk_obj_id, fingerprint)`。因此升级 poppler 使 PDF 步骤不命中旧缓存，但不影响 `fit_image`（验收 6）。
 - `create_run(ensure=true)` 的合并键包含 `environment_revision`；执行前 runner 再核对指纹，不一致返回 `environment_changed`（retryable），不以旧 key 缓存新环境结果。
-- 字体 / locale 目前**不**进指纹：它们由宿主预置固定；若宿主字体变化影响 `to_pdf` 输出，`to_pdf` 本期按 `is_pure: false` 注册（不进可复用缓存），所以不会错用旧结果。把字体集纳入指纹是把 `to_pdf` 升为 pure 的前置条件。
+- `to_pdf` 的 `is_pure: true` 表示结果可复用，不表示字节相同：LibreOffice 每次写入不同的 `CreationDate`、`/ID`、`DocChecksum`。第一次的结果写入缓存，之后 `pdf_content_id` 稳定，后续页面步骤全部命中（WF-DV-015）。它的指纹是 soffice、pdfinfo 版本加字体集摘要，字体变化使旧结果失效。
+- locale 目前不进指纹，由宿主预置固定。
 
 ## 3. 宿主预置与检查
 
@@ -67,4 +68,3 @@
 
 - 宿主安装脚本 / 安装文档未加入 LibreOffice 与字体包；本轮只改了镜像清单与文档。
 - macOS / Windows 宿主的字体与 locale 要求未实测。
-- `to_pdf` 的确定性验证（重复转换内容身份是否相同）未做，因此仍 `is_pure: false`。
