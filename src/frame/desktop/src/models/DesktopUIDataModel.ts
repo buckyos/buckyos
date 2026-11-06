@@ -27,6 +27,7 @@ import { fetchCurrentAccount } from '../api/account'
 import { userTypeCanCreateAgents } from '../api/user_type'
 import { fetchAppList } from '../api/app_mgr'
 import { deleteDesktopItem, listDesktopFolder, writeDesktopItem, type DesktopFolderListing, type DesktopSeedItem } from '../api/desktop_items'
+import { readDesktopState, writeDesktopState } from '../api/desktop_state'
 import { translateNow } from '../i18n/translate'
 import { currentZoneHost } from '../presentation/zone'
 import { AGENT_GUIDE_APP_ID } from '../app/agent-setup/model'
@@ -62,6 +63,7 @@ import {
   shortcutRefForApp,
   shortcutText,
   uniqueFileName,
+  WIDGET_EXTENSION,
   widgetText,
   type DesktopEntry,
 } from './desktopFolder'
@@ -734,7 +736,8 @@ export class DesktopUIStore {
   private async listFolder(): Promise<DesktopFolderListing & { unavailable?: boolean }> {
     const seed = desktopSeed(translateNow)
     try {
-      return await listDesktopFolder(seed)
+      const folder = await listDesktopFolder(seed)
+      return await this.ensureDefaultSystemInfo(folder, seed)
     } catch (error) {
       console.warn('desktop: the Desktop folder is unavailable, showing the default items', error)
       return {
@@ -744,6 +747,29 @@ export class DesktopUIStore {
         items: seed.map((item) => ({ name: item.name, kind: 'file' as const, size: item.text.length, mtime: 0, text: item.text })),
       }
     }
+  }
+
+  private async ensureDefaultSystemInfo(folder: DesktopFolderListing, seed: DesktopSeedItem[]): Promise<DesktopFolderListing> {
+    const hasInfo = (listing: DesktopFolderListing) => listing.items.some((item) => desktopEntryTarget(parseDesktopEntry(item)) === 'widget:system-info')
+    try {
+      const { value } = await readDesktopState<{ initialized?: boolean }>('system-info-widget')
+      if (value?.initialized === true) return folder
+      if (!hasInfo(folder)) {
+        const name = uniqueFileName('System Info', WIDGET_EXTENSION, new Set(folder.items.map((item) => item.name)))
+        let writeError: unknown
+        try {
+          await writeDesktopItem(name, widgetText({ widget: 'system-info' }), { create: true })
+        } catch (error) {
+          writeError = error
+        }
+        folder = { ...await listDesktopFolder(seed), created: folder.created }
+        if (!hasInfo(folder)) throw writeError ?? new Error('System info widget was not saved')
+      }
+      await writeDesktopState('system-info-widget', { initialized: true })
+    } catch (error) {
+      console.warn('desktop: default system info could not be initialized', error)
+    }
+    return folder
   }
 
   /** Takes a listing in; null means no folder (the empty mock scenario). */
@@ -860,6 +886,17 @@ export class DesktopUIStore {
     await this.writeFolder(() => writeDesktopItem(name, shortcutText(ref), { create: true }))
   }
 
+  async addSystemInfoToDesktop(): Promise<void> {
+    if (!this.canEditDesktop() || this.desktopEntries.some((entry) => entry.kind === 'widget' && entry.widget === 'system-info')) return
+    const label = translateNow('widgets.systemInfo', 'System Info')
+    const taken = new Set(this.desktopEntries.map((entry) => entry.name))
+    const name = uniqueFileName(fileNameStem(label, 'System Info'), WIDGET_EXTENSION, taken)
+    const raw = { widget: 'system-info' }
+    this.desktopEntries = [...this.desktopEntries, { name, kind: 'widget', widget: raw.widget, raw }]
+    this.relayoutFromFolder()
+    await this.writeFolder(() => writeDesktopItem(name, widgetText(raw), { create: true }))
+  }
+
   /** Removes a shortcut or widget from the desktop (deletes its file). Documents and folders stay. */
   async removeDesktopItem(itemId: string): Promise<void> {
     const entry = this.getDesktopEntry(itemId)
@@ -867,7 +904,12 @@ export class DesktopUIStore {
     this.desktopEntries = this.desktopEntries.filter((other) => other !== entry)
     this.update({ runtime: { contextMenu: null, selectedItemId: null } })
     this.relayoutFromFolder()
-    await this.writeFolder(() => deleteDesktopItem(entry.name))
+    await this.writeFolder(async () => {
+      if (entry.kind === 'widget' && entry.widget === 'system-info') {
+        await writeDesktopState('system-info-widget', { initialized: true })
+      }
+      await deleteDesktopItem(entry.name)
+    })
   }
 
   // ========================================================================

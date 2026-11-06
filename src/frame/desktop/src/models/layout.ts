@@ -525,6 +525,21 @@ export function resolveLayout(
     const preferredPage = item.preferredPage ?? 0
     let placed = false
 
+    if (layout.formFactor === 'desktop' && item.type === 'widget' && item.widgetType === 'system-info' && item.h <= rows && item.w <= cols) {
+      for (let pi = preferredPage; pi <= resolvedPages.length; pi++) {
+        const page = resolvedPages[pi] ?? { id: `${layout.formFactor}-page-${pi + 1}`, items: [] }
+        const bottom = Math.max(0, ...page.items.filter((other) => other.type === 'widget' && other.x === 0 && other.y !== undefined).map((other) => other.y! + other.h))
+        const y = Array.from({ length: Math.max(0, rows - item.h - bottom + 1) }, (_, offset) => bottom + offset)
+          .find((row) => fits(page, 0, row, item.w, item.h, cols, rows))
+        if (y === undefined) continue
+        if (!resolvedPages[pi]) resolvedPages.push(page)
+        page.items.push({ ...item, x: 0, y, slotIndex: coordToSlot(0, y, cols, rows, scanOrder), preferredPage: pi, placementType: item.placementType ?? 'auto' })
+        placed = true
+        break
+      }
+      if (placed) continue
+    }
+
     // Try from preferredPage onward
     for (let pi = preferredPage; pi < resolvedPages.length; pi++) {
       const slot = findTailSlot(resolvedPages[pi], item.w, item.h, cols, rows, scanOrder)
