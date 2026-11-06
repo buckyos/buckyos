@@ -68,7 +68,7 @@ jobs:
         working-directory: ./src
         env:
           CARGO_PROFILE_TEST_DEBUG: '0'
-        run: cargo test -- --test-threads=1
+        run: cargo test --no-fail-fast -- --test-threads=1
 
       - name: Report Cargo disk usage
         if: ${{ always() }}

@@ -292,7 +292,15 @@ async fn forwarded_helpers_work_in_a_long_windows_session_directory() {
         agent.as_ref(),
         cli,
         sd.sid(),
-        &run(vec!["todo".into(), "add".into(), "relative file".into(), "--content-file".into(), "任务.txt".into()]),
+        &run(vec![
+            "todo".into(),
+            "add".into(),
+            "relative file".into(),
+            "--content-file".into(),
+            "任务.txt".into(),
+            "--queue-dir".into(),
+            env.queue_dir.to_str().unwrap().into(),
+        ]),
     )
     .await
     .unwrap();
@@ -333,7 +341,12 @@ async fn a_session_token_reaches_only_its_own_session_methods() {
             agent.as_ref(),
             &claims,
             "session.helper",
-            &json!({ "request": { "argv": ["todo", "add", "first", "--content", "-"], "stdin": "from stdin" } }),
+            &json!({
+                "request": {
+                    "argv": ["todo", "add", "first", "--content", "-", "--queue-dir", env.queue_dir],
+                    "stdin": "from stdin"
+                }
+            }),
         )
         .await
         .unwrap(),
@@ -342,6 +355,7 @@ async fn a_session_token_reaches_only_its_own_session_methods() {
     assert_eq!(out.exit_code, 0, "{out:?}");
     let list = libopendan::todos::store_of(&sd).load().unwrap();
     assert!(list.render_view().contains("first"));
+    assert_eq!(list.todos[0].content, "from stdin");
 
     let other = svc
         .call(agent.as_ref(), &claims, "session.helper", &json!({ "sid": "another", "request": { "argv": ["sessions"] } }))
