@@ -18,6 +18,7 @@
 //! or `?token=`).
 
 use crate::msg_center::MessageCenter;
+use crate::remote_attachment::RemoteAttachment;
 use buckyos_api::{
     AccessDenial, DenyReason, SessionScope, ACCESS_DENIED_ERROR_CODE, MSG_CENTER_SERVICE_NAME,
 };
@@ -51,6 +52,12 @@ fn text_response(status: StatusCode, message: &str) -> Response<Body> {
                 .boxed(),
         )
         .unwrap()
+}
+
+fn retry_later(message: &str) -> Response<Body> {
+    let mut response = text_response(StatusCode::SERVICE_UNAVAILABLE, message);
+    response.headers_mut().insert("retry-after", http::HeaderValue::from_static("5"));
+    response
 }
 
 fn bytes_response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response<Body> {
@@ -99,19 +106,6 @@ fn percent_decode(value: &str) -> Option<String> {
         }
     }
     String::from_utf8(out).ok()
-}
-
-fn percent_encode_filename(name: &str) -> String {
-    let mut out = String::new();
-    for byte in name.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
-            }
-            _ => out.push_str(&format!("%{:02X}", byte)),
-        }
-    }
-    out
 }
 
 pub(crate) fn guess_mime(name: &str) -> &'static str {
@@ -319,7 +313,11 @@ pub(crate) async fn bound_attachment_response(
     };
     match center.bound_attachment(&buckets, msg_id, id).await {
         Ok(Some(_)) => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
-        Ok(None) => text_response(StatusCode::NOT_FOUND, "not-found"),
+        Ok(None) => match center.ensure_remote_attachment(&buckets, msg_id, id).await {
+            RemoteAttachment::Bound => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
+            RemoteAttachment::NotRemote => text_response(StatusCode::NOT_FOUND, "not-found"),
+            RemoteAttachment::Unavailable => retry_later("attachment is being fetched from the sender's zone"),
+        },
         Err(error) => {
             log::warn!("attachment {} of {} not checked: {}", id.to_string(), msg_id.to_string(), error);
             text_response(StatusCode::SERVICE_UNAVAILABLE, "bucket service unavailable")
@@ -419,11 +417,7 @@ async fn fetch_object_path(named_store: &NamedDataMgr, root: &ObjId, want_conten
         name
     };
     let mut response = bytes_response(StatusCode::OK, &mime, data);
-    if let Ok(value) = http::HeaderValue::from_str(&format!(
-        "inline; filename*=UTF-8''{}",
-        percent_encode_filename(&disposition_name)
-    )) {
-        response.headers_mut().insert("content-disposition", value);
-    }
+    // The attachment route shares the Desktop origin: an attachment never runs here (D24).
+    ndn_lib::apply_content_policy(response.headers_mut(), &mime, Some(&disposition_name), false);
     response
 }

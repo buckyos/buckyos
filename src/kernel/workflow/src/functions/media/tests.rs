@@ -39,6 +39,7 @@ fn env_with(tool_env: ToolEnvironment) -> Env {
         io: io.clone(),
         limits: ExecutionLimits::default(),
         artifact_prefix: "media/test".into(),
+        tool_inputs: Default::default(),
     };
     Env { io, _tmp: tmp, ctx }
 }
@@ -483,4 +484,238 @@ async fn soffice_converts_documents_to_pdf() {
         assert_eq!(out.result["pages"], 1);
     }
     document::function_object().validate_result(&out.result).unwrap();
+}
+
+/// N17: what a tool sees of an `/ndn/` input, against a real HTTP server.
+mod ndn_input {
+    use super::*;
+    use crate::native::{
+        ArtifactDelivery, ArtifactRef, NativeIo, ToolInput, ToolInputLease, ToolInputRequest, NDN_PROTOCOL_WHITELIST,
+    };
+    use async_trait::async_trait;
+    use buckyos_api::error_codes;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const TOKEN: &str = "bkt_SecretOfTheTest-123";
+
+    /// `/ndn/`-shaped: wants the token in the hint, serves Range, remembers what it was asked.
+    struct Origin {
+        port: u16,
+        ranges: Arc<Mutex<Vec<String>>>,
+        hits: Arc<AtomicUsize>,
+    }
+
+    async fn serve(bytes: Vec<u8>) -> Origin {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (seen, counted) = (ranges.clone(), hits.clone());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let bytes = bytes.clone();
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let first = head.lines().next().unwrap_or("");
+                    if !first.contains(TOKEN) {
+                        let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                        return;
+                    }
+                    let range = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("range: bytes=").map(str::to_string));
+                    let len = bytes.len() as u64;
+                    let (start, end, status) = match range {
+                        Some(r) => {
+                            seen.lock().unwrap().push(r.clone());
+                            let (a, b) = r.trim().split_once('-').unwrap();
+                            let start: u64 = a.parse().unwrap_or(0);
+                            let end: u64 = b.parse().unwrap_or(len - 1).min(len - 1);
+                            if start >= len {
+                                let msg = format!("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{len}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                                let _ = socket.write_all(msg.as_bytes()).await;
+                                return;
+                            }
+                            (start, end, "206 Partial Content")
+                        }
+                        None => (0, len - 1, "200 OK"),
+                    };
+                    let header = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\nContent-Range: bytes {start}-{end}/{len}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        end - start + 1
+                    );
+                    let _ = socket.write_all(header.as_bytes()).await;
+                    if !first.starts_with("HEAD") {
+                        let _ = socket.write_all(&bytes[start as usize..=end as usize]).await;
+                    }
+                });
+            }
+        });
+        Origin { port, ranges, hits }
+    }
+
+    /// The memory IO, except that a tool's input is a URL with a token, as in a Zone.
+    struct UrlIo {
+        inner: Arc<MemoryNativeIo>,
+        location: String,
+        released: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl NativeIo for UrlIo {
+        async fn content_size(&self, id: &str) -> Result<Option<u64>, ThunkExecutionError> {
+            self.inner.content_size(id).await
+        }
+        async fn read_content(&self, id: &str, max: u64) -> Result<Vec<u8>, ThunkExecutionError> {
+            self.inner.read_content(id, max).await
+        }
+        async fn materialize(&self, _: &str, _: &Path, _: u64) -> Result<u64, ThunkExecutionError> {
+            panic!("a tool input is not copied to a temp file");
+        }
+        async fn open_tool_input(&self, request: &ToolInputRequest<'_>) -> Result<ToolInput, ThunkExecutionError> {
+            let size = self.inner.content_size(request.content_id).await?.unwrap_or(0);
+            Ok(ToolInput {
+                location: self.location.clone(),
+                size,
+                protocols: NDN_PROTOCOL_WHITELIST,
+                secrets: vec![self.location.clone(), TOKEN.to_string()],
+                lease: Some(ToolInputLease { key: format!("inputs/{}", request.execution_id), token_id: "t_1".into() }),
+            })
+        }
+        async fn release_tool_input(&self, lease: &ToolInputLease) {
+            self.released.lock().unwrap().push(lease.key.clone());
+        }
+        async fn put_artifact(&self, key: &str, name: &str, content_type: &str, bytes: Vec<u8>) -> Result<ArtifactRef, ThunkExecutionError> {
+            self.inner.put_artifact(key, name, content_type, bytes).await
+        }
+        async fn put_artifact_file(&self, key: &str, name: &str, content_type: &str, path: &Path) -> Result<ArtifactRef, ThunkExecutionError> {
+            self.inner.put_artifact_file(key, name, content_type, path).await
+        }
+        async fn put_object(&self, obj_type: &str, value: &Value) -> Result<String, ThunkExecutionError> {
+            self.inner.put_object(obj_type, value).await
+        }
+        async fn get_object(&self, obj_id: &str) -> Result<Option<Value>, ThunkExecutionError> {
+            self.inner.get_object(obj_id).await
+        }
+        async fn artifact_available(&self, obj_id: &str) -> bool {
+            self.inner.artifact_available(obj_id).await
+        }
+        async fn deliver(&self, principal: &str, obj_ids: &[String], expires_at: i64) -> Vec<ArtifactDelivery> {
+            self.inner.deliver(principal, obj_ids, expires_at).await
+        }
+    }
+
+    fn url_of(port: u16) -> String {
+        let hint = ndn_lib::NdnHint { path: None, token: Some(TOKEN.to_string()) }.to_query().unwrap();
+        format!("http://127.0.0.1:{port}/ndn/cyfile:input?{hint}")
+    }
+
+    fn with_url(e: &mut Env, location: String) -> Arc<UrlIo> {
+        let io = Arc::new(UrlIo { inner: e.io.clone(), location, released: Mutex::new(Vec::new()) });
+        e.ctx.io = io.clone();
+        io
+    }
+
+    #[test]
+    fn tokens_are_scrubbed_however_they_got_there() {
+        let text = format!("[http] {} failed: bkt_abc-_9 then %22{TOKEN}%22 end", url_of(1));
+        let out = crate::native::scrub_tokens(&text);
+        assert!(!out.contains("abc-_9") && !out.contains(TOKEN), "{out}");
+        assert!(out.ends_with("%22bkt_***%22 end"), "{out}");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ffmpeg_reads_a_token_url_with_range_and_leaves_no_temp_copy() {
+        let Some(mut e) = real_env() else { return };
+        if !has(&e, &[tools::FFPROBE, tools::FFMPEG]) {
+            return;
+        }
+        // Large enough that a reader has to seek to the index at the end of the file.
+        let tail = e.ctx.temp_dir.join("tail.mp4");
+        let ffmpeg = e.ctx.env.tool(tools::FFMPEG).unwrap().path.clone();
+        let args: Vec<String> = [
+            "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=duration=4:size=640x480:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+            "-c:a", "aac", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "1", "-t", "4", tail.to_str().unwrap(),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(e.ctx.run_tool(&ffmpeg, &args, 1024).await.unwrap().success);
+        let bytes = std::fs::read(&tail).unwrap();
+        let at = |tag: &[u8]| bytes.windows(4).position(|w| w == tag).unwrap();
+        assert!(at(b"moov") > bytes.len() / 2, "the index follows the media");
+        assert!(bytes.len() > 1024 * 1024, "{} bytes", bytes.len());
+        let (_, id) = e.io.add_file("tail.mp4", &bytes).await;
+        std::fs::remove_file(&tail).unwrap();
+        let origin = serve(bytes.clone()).await;
+        let io = with_url(&mut e, url_of(origin.port));
+
+        let out = invoke(&probe::Probe, &e, json!({"content_id": id, "family": "video"})).await.unwrap();
+        assert_eq!(out.result["has_audio"], true);
+        assert_eq!(out.result["size"], bytes.len());
+        assert_eq!(out.result["width"], 640);
+        assert!(!origin.ranges.lock().unwrap().is_empty(), "it read by Range");
+        assert!(origin.ranges.lock().unwrap().iter().any(|r| r.split('-').next().unwrap().parse::<usize>().unwrap() > 0), "and seeked");
+
+        let out = invoke(&video::ExtractFrames, &e, json!({"content_id": id, "strategy": "uniform", "max_frames": 2, "frame_max_edge": 32, "max_duration_ms": 60000})).await.unwrap();
+        assert_eq!(out.result["frames"].as_array().unwrap().iter().filter(|f| f["status"] == "ok").count(), 2);
+        let out = invoke(&video::ExtractAudio, &e, json!({"content_id": id, "max_duration_ms": 60000})).await.unwrap();
+        assert_eq!(out.result["status"], "ok");
+        assert!(!e.ctx.temp_dir.join("input.video").exists());
+
+        e.ctx.release_tool_inputs().await;
+        assert_eq!(io.released.lock().unwrap().len(), 3, "each open is released");
+        e.ctx.release_tool_inputs().await;
+        assert_eq!(io.released.lock().unwrap().len(), 3, "once");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn a_playlist_cannot_make_the_tool_reach_anything_else() {
+        let Some(mut e) = real_env() else { return };
+        if !has(&e, &[tools::FFPROBE, tools::FFMPEG]) {
+            return;
+        }
+        let internal = serve(b"not media".to_vec()).await;
+        let playlist = format!("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nhttp://127.0.0.1:{}/ndn/x?secret=internal\n#EXT-X-ENDLIST\n", internal.port);
+        let (_, id) = e.io.add_file("list.m3u8", playlist.as_bytes()).await;
+        let origin = serve(playlist.into_bytes()).await;
+        with_url(&mut e, url_of(origin.port));
+        let err = invoke(&probe::Probe, &e, json!({"content_id": id, "family": "video"})).await.unwrap_err();
+        assert_eq!(err.code, error_codes::TOOL_FAILED);
+        assert_eq!(internal.hits.load(Ordering::SeqCst), 0, "no request left for the address in the file");
+        let concat = format!("ffconcat version 1.0\nfile 'http://127.0.0.1:{}/ndn/x'\n", internal.port);
+        let (_, id) = e.io.add_file("list.ffconcat", concat.as_bytes()).await;
+        let origin = serve(concat.into_bytes()).await;
+        with_url(&mut e, url_of(origin.port));
+        assert!(invoke(&probe::Probe, &e, json!({"content_id": id, "family": "video"})).await.is_err());
+        assert_eq!(internal.hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn a_failed_tool_shows_no_token() {
+        let Some(mut e) = real_env() else { return };
+        if !has(&e, &[tools::FFPROBE]) {
+            return;
+        }
+        let (_, id) = e.io.add_file("garbage.bin", b"this is not media at all, not even close").await;
+        let origin = serve(b"this is not media at all, not even close".to_vec()).await;
+        with_url(&mut e, url_of(origin.port));
+        let err = invoke(&probe::Probe, &e, json!({"content_id": id, "family": "video"})).await.unwrap_err();
+        let shown = format!("{} {} {}", err.code, err.message, err.details);
+        assert!(!shown.contains(TOKEN) && !shown.contains("hint"), "{shown}");
+        // And one that names the URL itself in its error.
+        with_url(&mut e, url_of(1));
+        let err = invoke(&probe::Probe, &e, json!({"content_id": id, "family": "video"})).await.unwrap_err();
+        let shown = format!("{} {} {}", err.code, err.message, err.details);
+        assert!(!shown.contains(TOKEN), "{shown}");
+        assert!(shown.contains("<input>") || !shown.contains("127.0.0.1"), "{shown}");
+    }
 }

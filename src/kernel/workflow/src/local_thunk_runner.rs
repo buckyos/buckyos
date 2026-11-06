@@ -305,6 +305,7 @@ impl RunnerInner {
             io: self.io.clone(),
             limits: self.limits.clone(),
             artifact_prefix: cacheable_prefix,
+            tool_inputs: Default::default(),
         };
         let params = Value::Object(thunk.params.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         let outcome = async {
@@ -368,6 +369,7 @@ impl RunnerInner {
             Ok((outcome, result_obj_id))
         }
         .await;
+        ctx.release_tool_inputs().await;
         let duration_ms = started.elapsed().as_millis() as u64;
         let result = match outcome {
             Ok((outcome, result_obj_id)) => {

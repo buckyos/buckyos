@@ -3022,16 +3022,17 @@ mod attachment_buckets {
         assert_eq!(bound(&b, &attachments(), &att_key(&dm, 0)).await, Some(shared.to_string()));
         assert_eq!(keys(&b).await, 2);
 
-        // Content this Zone does not have fails a local send; a remote
-        // member's attachment kept in its own Zone is skipped. Only files and
-        // directories are attachments; a message not accepted gives its keys up.
+        // Content this Zone does not have fails a local send; a remote member's
+        // attachment binds nothing whether or not the bytes happen to be here.
+        // Only files and directories are attachments; a message not accepted
+        // gives its keys up.
         let missing = absent("elsewhere.txt");
         assert!(c.post_send_internal(with_refs(direct(&owner(), &member(), "lost", 6), &[&missing]), None).await.is_err());
         let remote = GroupActor { did: member(), client: None, remote: true };
         let from_afar = with_refs(message(&member(), None, "from afar", 7), &[&missing, &inbound]);
         assert!(c.accept_group_message(&remote, from_afar.clone(), None).await.unwrap().ok);
         assert_eq!(bound(&b, &attachments(), &att_key(&from_afar, 0)).await, None);
-        assert_eq!(bound(&b, &attachments(), &att_key(&from_afar, 1)).await, Some(inbound.to_string()));
+        assert_eq!(bound(&b, &attachments(), &att_key(&from_afar, 1)).await, None);
         let quoted = with_refs(direct(&owner(), &member(), "a message ref", 8), &[&dm_id]);
         c.post_send_internal(quoted.clone(), None).await.unwrap();
         assert_eq!(bound(&b, &attachments(), &att_key(&quoted, 0)).await, None);
@@ -3059,6 +3060,74 @@ mod attachment_buckets {
         let response = crate::object_access::serve(c, &req).await.unwrap();
         let status = response.status();
         (status, response.into_body().collect().await.unwrap().to_bytes().to_vec())
+    }
+
+    /// D24: this route shares the Desktop origin; an attachment never runs on it.
+    #[tokio::test]
+    async fn attachment_content_never_runs_on_the_origin() {
+        let (c, _tmp, b) = bound_center().await;
+        for (name, expected, disposition) in [
+            ("page.html", "application/octet-stream", "attachment"),
+            ("logo.svg", "image/svg+xml", "inline"),
+            ("photo.png", "image/png", "inline"),
+        ] {
+            let id = file(&b.store, name, b"<script>alert(1)</script>").await;
+            let dm = with_refs(direct(&owner(), &member(), name, 1), &[&id]);
+            let msg_id = dm.gen_obj_id().0;
+            assert!(c.handle_dispatch(dm, None, None, context(&owner())).await.unwrap().ok);
+            let uri = format!("{}{}/content?context_path={}", crate::object_access::OBJECTS_PATH, id.to_string(), msg_id.to_string());
+            let req: Request<TestBody> = Request::builder()
+                .uri(uri)
+                .header("authorization", format!("Bearer {}", context(&member()).token.as_deref().unwrap()))
+                .body(http_body(""))
+                .unwrap();
+            let response = crate::object_access::serve(&c, &req).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{name}");
+            let h = response.headers();
+            assert_eq!(h["content-type"], expected, "{name}");
+            assert!(h["content-disposition"].to_str().unwrap().starts_with(disposition), "{name}");
+            assert_eq!(h["x-content-type-options"], "nosniff");
+            assert_eq!(h["referrer-policy"], "no-referrer");
+            assert!(h["content-security-policy"].to_str().unwrap().starts_with("sandbox"), "{name}");
+        }
+    }
+
+    /// G2: a remote sender names an object that happens to be in this Zone. The
+    /// message is received; nothing it references becomes readable through it.
+    #[tokio::test]
+    async fn a_remote_message_cannot_open_a_local_object() {
+        let (c, _tmp, b) = bound_center().await;
+        create(&c, json!({})).await;
+        join(&c, &member()).await;
+        let secret = file(&b.store, "secret.txt", b"someone's private bytes").await;
+
+        // (1) An outside DID sends a Zone user a signed message referencing it.
+        c.register_local_recipients([member()]);
+        let incoming = with_refs(direct(&guest(), &member(), "read this", 1), &[&secret]);
+        let incoming_id = incoming.gen_obj_id().0;
+        let target = "https://local/inbox".to_string();
+        assert!(c.dispatch_to_receiver(incoming.clone(), None, member(), target).await.unwrap().ok);
+        assert_eq!(bound(&b, &attachments(), &att_key(&incoming, 0)).await, None);
+        assert_eq!(read(&c, &context(&member()), &secret, Some(&incoming_id.to_string())).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(read(&c, &context(&member()), &secret, None).await.0, StatusCode::NOT_FOUND);
+        let params = json!({"obj_id": secret.to_string(), "context_path": incoming_id.to_string()});
+        assert!(c.collect_attachment(params, &account(MEMBER_ACCOUNT)).await.is_err());
+
+        // (2) A remote member of a hosted group sends one and reads it back as an External.
+        let remote = GroupActor { did: member(), client: None, remote: true };
+        let post = with_refs(message(&member(), None, "see attached", 2), &[&secret]);
+        let post_id = post.gen_obj_id().0;
+        assert!(c.accept_group_message(&remote, post.clone(), None).await.unwrap().ok);
+        assert_eq!(bound(&b, &attachments(), &att_key(&post, 0)).await, None);
+        let session = session_key(&group(), None).unwrap();
+        let through = format!("{session}/{}", post_id.to_string());
+        assert_eq!(read(&c, &context(&member()), &secret, Some(&through)).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(read(&c, &context(&owner()), &secret, Some(&through)).await.0, StatusCode::NOT_FOUND);
+
+        // A local send of what the sender really holds is unchanged.
+        let dm = with_refs(direct(&owner(), &member(), "mine", 3), &[&secret]);
+        c.post_send_internal(dm.clone(), None).await.unwrap();
+        assert_eq!(bound(&b, &attachments(), &att_key(&dm, 0)).await, Some(secret.to_string()));
     }
 
     #[tokio::test]

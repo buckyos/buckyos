@@ -32,6 +32,8 @@ pub struct AppState {
     pub ndm: crate::ndm::NdmMgr,
     pub buckets: crate::bucket::BucketHost,
     pub preview: crate::preview::PreviewMgr,
+    pub ndn_egress: Arc<crate::ndn::EgressLimit>,
+    pub ambient: crate::ndn::ambient::AmbientFetches,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -81,6 +83,8 @@ impl AppState {
             ndm,
             buckets: Default::default(),
             preview,
+            ndn_egress: crate::ndn::EgressLimit::new(config.ndn_anonymous_bytes_per_sec),
+            ambient: Default::default(),
             db,
             config,
         }))

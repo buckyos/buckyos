@@ -15,7 +15,7 @@ use crate::group_types::{missing, session_key, GroupState};
 use crate::msg_center::MessageCenter;
 use buckyos_api::bucket_client::{BucketId, Conditions, ListRequest, Origin, PutRequest};
 use buckyos_api::{
-    bucket_error_code, get_buckyos_api_runtime, is_no_such_key, is_precondition_failed,
+    get_buckyos_api_runtime, is_no_such_key, is_precondition_failed,
     BucketClient, MailboxAddress, MailboxKind, TokenPrincipalKind, MSG_CENTER_ATTACHMENTS_BUCKET,
     MSG_CENTER_COLLECTED_BUCKET, MSG_CENTER_MESSAGES_BUCKET, MSG_CENTER_SERVICE_NAME,
 };
@@ -91,8 +91,11 @@ impl std::fmt::Debug for BucketSlot {
     }
 }
 
-/// Where a message comes from. A remote sender's attachments may exist only
-/// in its own Zone; a local message's must be here.
+/// Where a message comes from. A local sender was checked by
+/// `authorize_outgoing_attachments`, so its attachments are bound here. A remote
+/// sender proved nothing about what it references: finding the object in this
+/// Zone is no reason to let this message read it, so nothing is bound until its
+/// bytes came from the sender's side and verified (bucket design Z7, G2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Arrival {
     Local,
@@ -250,6 +253,9 @@ impl MessageCenter {
         msg: &MsgObject,
         arrival: Arrival,
     ) -> Result<()> {
+        if arrival == Arrival::Remote {
+            return Ok(());
+        }
         let bucket = zone_bucket(MSG_CENTER_ATTACHMENTS_BUCKET);
         let prefix = Self::attachment_prefix(msg_id, msg);
         for (n, id) in attachment_ids(msg).iter().enumerate() {
@@ -261,20 +267,7 @@ impl MessageCenter {
                 obj_id: id.to_string(),
                 ..Default::default()
             };
-            match buckets.client.put(&bucket, &req).await {
-                Ok(_) => {}
-                Err(e)
-                    if arrival == Arrival::Remote
-                        && bucket_error_code(&e) == Some("content_not_available") =>
-                {
-                    warn!(
-                        "attachment {} of remote message {} is not in this zone; nothing to keep",
-                        id.to_string(),
-                        msg_id.to_string()
-                    );
-                }
-                Err(e) => return Err(e),
-            }
+            buckets.client.put(&bucket, &req).await?;
         }
         Ok(())
     }

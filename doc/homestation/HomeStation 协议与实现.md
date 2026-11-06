@@ -136,13 +136,14 @@ Zone 级：
 | `GET /home/<user>/feed?mode=changes&since=<cursor>[&limit=&objects=1]` | 变化读取：`since` 之后的 Head 变化（含受众变化，`kind=audience`）；游标早于压缩点时 `resync: true` |
 | `GET /home/<user>/<feed\|reactions\|follows>/@/<key>` | 条目当前 Head（JWT）；不存在与无权读取同为 404 |
 | `GET /home/<user>/objects/<ObjId>` | 对象（JWT 或 canonical JSON）；受限条目附 `hs-audience: restricted` |
-| `GET /home/<user>/objects/<cyfile ObjId>/content` | 单 chunk 文件的内容，供媒体元素使用 |
+| `GET /home/<user>/objects/<cyfile ObjId>/content` | 文件内容（Range），供媒体元素使用。这个路由和 Desktop 同源，活动类型不会在这里执行：只有图片、音视频、PDF、纯文本内联，其余 `application/octet-stream` 加下载，都带 `nosniff`、CSP、`no-referrer` |
+| `GET /home/<user>/objects/<cyfile ObjId>/ref` | 文件在 nfs-server 数据面上的绑定和只读令牌。令牌是持有即可读的链接，所以只对公开条目和 owner 发放；受限条目的读者走 `/content`，每次按受众判定 |
 | `GET /home/<user>/chunks/<ChunkId>` | chunk 数据，接收方按 ChunkId 校验 |
 | `GET /home/<user>/comments?target=<ObjId>[&type=]` | 作者视图（目标是该用户的版本）或收录者视图（收录模式） |
 | `GET /home/<user>/profile` | 门户资料：DID、用户名、名称、简介、`avatar`（Message Center 中本人联系人的公开头像，可无）、发表流 / 投递入口、关注者数、作品精选（按读者过滤） |
 | `GET /home/<user>/index/recent?since=&limit=` | 收录者最近收到的公开发表（冷启动） |
 | `PUT /home/<user>/inbox` | CYFS dispatch 投递（§3.4） |
-| `GET /home/<user>/inbox?dispatch-status=<ObjId>` | dispatch 状态查询 |
+| `GET /home/<user>/inbox?dispatch-status=<ObjId>` | dispatch 状态查询：要求认证，只回答投递方和 owner，其他人一律 `unknown-dispatch` |
 
 列表响应不签名，条目是签名的 Head。展示 / 变化读取的 `objects` 是“随附”：读者有权读的对象及其部件（ObjId → JWT/JSON），接收方逐个按 ObjId 校验（§5.5）。条目的 `restricted` 与 `tier`（`public`/`followers`/`friends`/`group`/`dids`）是不签名的附带信息。
 
@@ -231,7 +232,9 @@ Push 对象（§13.1）：
 
 ### 5.1 受众（§4.5）
 
-受众只存在于 `published.audience`。判定：匿名只看公开；关注者受众给已收到有效关注声明的人（好友也算，好友默认互相关注）；好友（`friend_state = friend`）与分组（用户 tag）按读取时的 Message Center 关系（缓存 30 秒，联系人变更事件到达时作废）；指定 DID 按名单；owner 看全部。点赞默认公开；目标受限时，评论、点赞、公开收藏的受众固定为原作者，且不投递收录者；受限对象不能普通转发或引用转发（`repost_blocked:restricted`）。受众调整不签发 Head，只追加 `audience` 变化；扩大后新读者在变化读取里看到该条目，并收到一次 Push。
+受众只存在于 `published.audience`。判定：匿名只看公开；关注者受众给已收到有效关注声明的人（好友也算，好友默认互相关注）；好友（`friend_state = friend`）与分组（用户 tag）按读取时的 Message Center 关系（缓存 30 秒，联系人变更事件到达时作废）；指定 DID 按名单；owner 看全部。点赞默认公开；目标受限时，评论、点赞、公开收藏的受众固定为原作者，且不投递收录者；受限对象不能普通转发或引用转发（`repost_blocked:restricted`）。受众调整不签发 Head，只追加 `audience` 变化；扩大后新读者在变化读取里看到该条目，并收到一次 Push。公开收窄为受限时，撤销已发给读者的 `/ref` 令牌。
+
+公开条目的文件附件同时在 `https://<zone>/ndn/<file_id>` 匿名可读（应用对象桶设计 §4.6.5）：`publish_version` 时经 `bucket.provide_public` 提供（`requested_by` 是 owner，要求 owner 持有整棵对象树；Station 自己产生的字节如长文正文、网页快照没有这个证明，只留在 `/objects/<id>/content`），条目撤回或受众收窄时 `bucket.withdraw_public`，启动时 `reconcile_public_provision` 对账。
 
 ### 5.2 待读管线（§8）
 

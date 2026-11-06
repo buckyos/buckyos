@@ -145,6 +145,7 @@ const DEFAULT_CASES = [
   "WF-DV-011",
   "WF-DV-012",
   "WF-DV-013",
+  "WF-DV-014",
 ];
 const WORKFLOW_DV_CASES = getEnv("WORKFLOW_DV_CASES");
 const WORKFLOW_REPORT_DIR = getEnv("WORKFLOW_REPORT_DIR") ??
@@ -1161,6 +1162,57 @@ async function uploadInput(
   return { obj_id: objId.toString(), node_id: chunkId, path: `${runTag}/${fixture}` };
 }
 
+/**
+ * media.video reads its input through `/ndn/` with a read token bound to one key,
+ * not a temp copy (bucket design §21 N17): the token and key records prove which path
+ * ran, and both are gone when the step ends.
+ */
+async function runMediaVideoNdnCase(args: {
+  workflowRpc: RpcClient;
+  bucketRpc: RpcClient;
+  owner: Owner;
+  runTag: string;
+  reportDir: string;
+  video: UploadedInput;
+}): Promise<void> {
+  const { workflowRpc, bucketRpc, runTag, reportDir, video } = args;
+  // The step cache outlives a Zone restart: a new edge makes extract_frames really run.
+  const edge = 128 + (parseInt(runTag.slice(-6), 36) % 1000);
+  const input: JsonObject = { obj_id: video.obj_id, max_frames: 2, frame_max_edge: edge };
+  const first = await createSystemRun(workflowRpc, "media.video", input);
+  const doneA = await waitTerminal(workflowRpc, first.run_id, "media.video run A");
+  await writeJsonFile(joinPath(reportDir, "run-a.json"), doneA.graph);
+  assert.equal(doneA.graph.status, "completed", JSON.stringify(doneA.graph.node_errors));
+  assert.equal(doneA.graph.node_sources?.extract_frames, "executed");
+  const output = doneA.graph.node_outputs as Record<string, JsonObject>;
+  const frames = output.extract_frames.frames as JsonObject[];
+  assert.equal(frames.length, 2);
+  assert.ok(frames.every((frame) => frame.status === "ok"), JSON.stringify(frames));
+  assert.equal(output.extract_audio.status, "ok", JSON.stringify(output.extract_audio));
+  assert.equal(output.probe.has_audio, true);
+  assert.equal((doneA.graph.output as Record<string, JsonObject>).build_catalog.complete, true);
+
+  const scratch = "zone/workflow/_/scratch";
+  const prefix = `inputs/${first.run_id}/`;
+  const tokens = await rpcCall<JsonObject[]>(bucketRpc, "bucket.list_access_tokens", { bucket_id: scratch });
+  const ours = tokens.filter((token) => String(token.key ?? "").startsWith(prefix));
+  await writeJsonFile(joinPath(reportDir, "tokens.json"), ours);
+  assert.ok(ours.length >= 1, "the step read through a token, so it did not fall back to a temp copy");
+  assert.ok(ours.every((token) => token.revoked_at), `every token is revoked: ${JSON.stringify(ours)}`);
+  const listed = await rpcCall<{ items: JsonObject[] }>(bucketRpc, "bucket.list_objects", { bucket_id: scratch, prefix });
+  assert.deepEqual(listed.items, [], "the input key is unbound when the step ends");
+
+  const shown = JSON.stringify([doneA.graph, doneA.history]);
+  assert.ok(!shown.includes("bkt_") && !shown.includes("hint="), "no token in run data");
+
+  // Same thunk, same cache key as ever: the URL input changed nothing about it.
+  const second = await createSystemRun(workflowRpc, "media.video", input);
+  const doneB = await waitTerminal(workflowRpc, second.run_id, "media.video run B");
+  assert.equal(doneB.graph.status, "completed", JSON.stringify(doneB.graph.node_errors));
+  assert.equal(doneB.graph.node_sources?.extract_frames, "cache");
+  assert.deepEqual(doneB.graph.node_outputs.extract_frames, output.extract_frames);
+}
+
 async function createSystemRun(
   workflowRpc: RpcClient,
   workflowId: string,
@@ -1557,17 +1609,19 @@ function selectedCaseIds(): string[] {
 type DvInputs = {
   image: () => Promise<UploadedInput>;
   pdf: () => Promise<UploadedInput>;
+  video: () => Promise<UploadedInput>;
 };
 
 function lazyInputs(zoneHost: string, sessionToken: string, runTag: string): DvInputs {
-  const cache: Partial<Record<"image" | "pdf", Promise<UploadedInput>>> = {};
-  const get = (key: "image" | "pdf", fixture: string) => () => {
+  const cache: Partial<Record<"image" | "pdf" | "video", Promise<UploadedInput>>> = {};
+  const get = (key: "image" | "pdf" | "video", fixture: string) => () => {
     cache[key] ??= uploadInput(zoneHost, sessionToken, runTag, fixture);
     return cache[key]!;
   };
   return {
     image: get("image", "dv-image.png"),
     pdf: get("pdf", "dv-doc.pdf"),
+    video: get("video", "dv-video.mp4"),
   };
 }
 
@@ -1575,13 +1629,14 @@ async function runOneCase(args: {
   caseId: string;
   workflowRpc: RpcClient;
   taskMgrRpc: RpcClient;
+  bucketRpc: RpcClient;
   owner: Owner;
   runTag: string;
   reportRoot: string;
   inputs: DvInputs;
   zoneHost: string;
 }): Promise<CaseResult> {
-  const { caseId, workflowRpc, taskMgrRpc, owner, runTag, reportRoot, inputs, zoneHost } = args;
+  const { caseId, workflowRpc, taskMgrRpc, bucketRpc, owner, runTag, reportRoot, inputs, zoneHost } = args;
   const reportDir = joinPath(reportRoot, safeFileSegment(caseId));
   await Deno.mkdir(reportDir, { recursive: true });
   try {
@@ -1654,6 +1709,15 @@ async function runOneCase(args: {
         reportDir,
         image: await inputs.image(),
       });
+    } else if (caseId === "WF-DV-014") {
+      await runMediaVideoNdnCase({
+        workflowRpc,
+        bucketRpc,
+        owner,
+        runTag,
+        reportDir,
+        video: await inputs.video(),
+      });
     } else if (caseId === "WF-DV-013") {
       await runReadOnlyCase({
         workflowRpc,
@@ -1701,6 +1765,7 @@ async function main(): Promise<void> {
   };
   const workflowRpc = buckyos.getServiceRpcClient("workflow") as RpcClient;
   const taskMgrRpc = buckyos.getServiceRpcClient("task-manager") as RpcClient;
+  const bucketRpc = buckyos.getServiceRpcClient("nfs-server") as RpcClient;
   const sessionToken = (await buckyos.getAccountInfo())?.session_token ?? "";
   const inputs = lazyInputs(zoneHost, sessionToken, runTag);
   const cases = selectedCaseIds();
@@ -1719,6 +1784,7 @@ async function main(): Promise<void> {
       caseId,
       workflowRpc,
       taskMgrRpc,
+      bucketRpc,
       owner,
       runTag,
       reportRoot,

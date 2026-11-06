@@ -396,6 +396,7 @@ impl Station {
                 return Err(e);
             }
         };
+        self.settle_public(&result.entry).await;
         self.bump(&["published", "profile"]);
         self.zone_touch(&result.entry, "head").await;
         Ok(result)
@@ -425,6 +426,7 @@ impl Station {
             .await?;
         // A withdrawn entry stops holding its versions and files; withdrawing again retries.
         self.settle_bindings(&result.entry).await;
+        self.settle_public(&result.entry).await;
         self.bump(&["published", "profile", "comments", "saved"]);
         self.zone_touch(&result.entry, "head").await;
         Ok(result)
@@ -437,7 +439,7 @@ impl Station {
         let entry2 = entry.clone();
         let now = now_ms();
         let audience2 = audience.clone();
-        let (seq, versions) = self
+        let (seq, versions, narrowed) = self
             .db
             .call(move |conn| {
                 let tx = conn.transaction()?;
@@ -445,6 +447,7 @@ impl Station {
                 if row.kind.is_reaction() || row.kind == EntryKind::Follow || row.kind == EntryKind::Repost {
                     return Err(bad("the audience of interactions follows their target"));
                 }
+                let narrowed = row.audience.is_public() && !audience2.is_public();
                 tx.execute(
                     "UPDATE published SET audience=?2, updated_at=?3 WHERE entry=?1 AND owner=?4",
                     params![entry2, serde_json::to_string(&audience2)?, now, tx.owner],
@@ -454,11 +457,18 @@ impl Station {
                 append_change(&tx, &entry2, "audience", head.seq, now)?;
                 let versions = entry_versions(&tx, &entry2)?;
                 tx.commit()?;
-                Ok((head, versions))
+                Ok((head, versions, narrowed))
             })
             .await?;
+        self.settle_public(&entry).await;
         self.bump(&["published", "profile"]);
         self.zone_touch(&entry, "audience").await;
+        if narrowed {
+            let files = self.entry_files(&entry).await?;
+            if let Err(e) = self.revoke_media_tokens(&files).await {
+                log::warn!("media tokens of {entry} not revoked: {e}");
+            }
+        }
         if seq.state == HeadState::Active {
             let recipients = self.audience_recipients(&audience).await;
             let mut objects = versions.last().cloned().into_iter().collect::<Vec<_>>();
@@ -531,6 +541,7 @@ impl Station {
         }
         if head.state == HeadState::Withdrawn {
             self.settle_bindings(entry).await;
+            self.settle_public(entry).await;
             return Ok(None);
         }
         let published = self.set_entry_state(entry, HeadState::Withdrawn, None).await?;
@@ -1224,6 +1235,78 @@ impl Station {
         }
         for key in bound_files.iter().filter(|k| !wanted.values().flatten().any(|f| f == *k)) {
             client.delete(&published, key, None).await.map_err(bucket_err)?;
+        }
+        Ok(())
+    }
+
+    /// Every file of every version of an own entry.
+    pub(crate) async fn entry_files(&self, entry: &str) -> HsResult<Vec<String>> {
+        let entry_s = entry.to_string();
+        self.db
+            .call(move |c| {
+                let mut files = Vec::new();
+                for version in entry_versions(c, &entry_s)? {
+                    files.extend(get_object(c, &version)?.iter().flat_map(version_files));
+                }
+                Ok(files)
+            })
+            .await
+    }
+
+    /// Brings an own entry's public provision to its Head and audience: the files of an active
+    /// public entry are readable by anyone on `/ndn/` (bucket design §4.6.5), nothing else is.
+    /// A file the owner cannot be shown to hold (bytes this station produced, say) stays
+    /// on `/home/<user>/objects/<id>/content` only.
+    pub async fn sync_public_provision(&self, entry: &str) -> HsResult<()> {
+        let entry_s = entry.to_string();
+        let public = self
+            .db
+            .call(move |c| {
+                let active = get_head(c, &entry_s)?.is_some_and(|h| h.state == HeadState::Active);
+                Ok(active && get_entry(c, &entry_s)?.is_some_and(|row| row.audience.is_public()))
+            })
+            .await?;
+        let files = self.entry_files(entry).await?;
+        if files.is_empty() {
+            return Ok(());
+        }
+        let client = self.store.buckets().await?;
+        if !public {
+            client.withdraw_public(entry, None).await.map_err(bucket_err)?;
+            return Ok(());
+        }
+        for file in files {
+            match client.provide_public(entry, &file, &self.cfg.user).await {
+                Ok(_) => {}
+                Err(e) if matches!(buckyos_api::bucket_error_code(&e), Some("not_held" | "content_not_available")) => {
+                    log::info!("{file} of {entry} is not provided on /ndn/: {e}");
+                }
+                Err(e) => return Err(bucket_err(e)),
+            }
+        }
+        Ok(())
+    }
+
+    async fn settle_public(&self, entry: &str) {
+        if let Err(e) = self.sync_public_provision(entry).await {
+            log::warn!("public provision of {entry} not settled: {e}");
+        }
+    }
+
+    /// At startup: a crash may have left a provision behind its entry.
+    pub async fn reconcile_public_provision(&self) -> HsResult<()> {
+        let mut entries: std::collections::BTreeSet<String> = self
+            .db
+            .call(|c| {
+                let mut stmt = c.prepare("SELECT entry, audience FROM published WHERE owner=?1")?;
+                let rows = stmt.query_map([c.owner], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+                Ok(rows.into_iter().filter(|(_, audience)| audience.contains("\"public\"")).map(|(entry, _)| entry).collect())
+            })
+            .await?;
+        let listed = self.store.buckets().await?.list_public().await.map_err(bucket_err)?;
+        entries.extend(listed.into_iter().map(|(entry, _)| entry).filter(|entry| self.entry_key(entry).is_ok()));
+        for entry in entries {
+            self.settle_public(&entry).await;
         }
         Ok(())
     }

@@ -1,9 +1,8 @@
 use super::{function, resource_limit, tool_output_error, tools, EXTRACT_AUDIO, EXTRACT_FRAMES, STDOUT_LIMIT};
-use crate::native::{param_str, param_u64, ExecutionLane, NativeContext, NativeFunction, NativeOutcome};
+use crate::native::{param_str, param_u64, ExecutionLane, NativeContext, NativeFunction, NativeOutcome, ToolInput, MEDIA_FORMAT_WHITELIST};
 use async_trait::async_trait;
 use buckyos_api::{error_codes, FunctionObject, ThunkExecutionError};
 use serde_json::{json, Value};
-use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VideoInfo {
@@ -68,17 +67,30 @@ pub fn parse_ffprobe(text: &str) -> Result<VideoInfo, ThunkExecutionError> {
     Ok(info)
 }
 
-pub async fn ffprobe(ctx: &NativeContext, path: &Path) -> Result<VideoInfo, ThunkExecutionError> {
+/// How ffmpeg and ffprobe open an input: only the demuxers and protocols the media
+/// functions need, so what a file says cannot make the tool reach anything else.
+fn input_args(input: &ToolInput) -> Vec<String> {
+    vec![
+        "-format_whitelist".to_string(),
+        MEDIA_FORMAT_WHITELIST.to_string(),
+        "-protocol_whitelist".to_string(),
+        input.protocols.to_string(),
+        "-i".to_string(),
+        input.location.clone(),
+    ]
+}
+
+pub async fn ffprobe(ctx: &NativeContext, input: &ToolInput) -> Result<VideoInfo, ThunkExecutionError> {
     let ffprobe = ctx.tool_path(tools::FFPROBE)?;
-    let args = vec![
+    let mut args = vec![
         "-v".to_string(),
         "error".to_string(),
         "-print_format".to_string(),
         "json".to_string(),
         "-show_streams".to_string(),
         "-show_format".to_string(),
-        path.to_string_lossy().into_owned(),
     ];
+    args.extend(input_args(input));
     let out = ctx.run_tool(&ffprobe, &args, STDOUT_LIMIT).await?;
     if !out.success {
         return Err(tool_output_error(&out, "probe failed"));
@@ -163,8 +175,8 @@ impl NativeFunction for ExtractFrames {
         let max_frames = u32::try_from(param_u64(params, "max_frames")?).unwrap_or(u32::MAX).min(ctx.limits.max_frames);
         let frame_max_edge = u32::try_from(param_u64(params, "frame_max_edge")?).unwrap_or(u32::MAX);
         let max_duration_ms = param_u64(params, "max_duration_ms")?;
-        let (path, _) = ctx.materialize_input(content_id, "input.video").await?;
-        let info = ffprobe(ctx, &path).await?;
+        let input = ctx.open_tool_input(content_id, "input.video").await?;
+        let info = ffprobe(ctx, &input).await?;
         if info.width.is_none() {
             return Err(ThunkExecutionError::new(error_codes::TOOL_FAILED, "input has no video stream").with_details(json!({"tool": "ffprobe"})));
         }
@@ -181,14 +193,15 @@ impl NativeFunction for ExtractFrames {
         for (index, time_ms) in uniform_timestamps(info.duration_ms, max_frames).into_iter().enumerate() {
             ctx.check_cancelled()?;
             let output = ctx.temp_dir.join(format!("frame-{index}.jpg"));
-            let args = vec![
+            let mut args = vec![
                 "-v".to_string(),
                 "error".to_string(),
                 "-y".to_string(),
                 "-ss".to_string(),
                 format!("{:.3}", time_ms as f64 / 1000.0),
-                "-i".to_string(),
-                path.to_string_lossy().into_owned(),
+            ];
+            args.extend(input_args(&input));
+            args.extend([
                 "-frames:v".to_string(),
                 "1".to_string(),
                 "-vf".to_string(),
@@ -196,7 +209,7 @@ impl NativeFunction for ExtractFrames {
                 "-q:v".to_string(),
                 "3".to_string(),
                 output.to_string_lossy().into_owned(),
-            ];
+            ]);
             let out = ctx.run_tool(&ffmpeg, &args, 64 * 1024).await?;
             let result = if out.success && output.is_file() {
                 let dims = image::ImageReader::open(&output)
@@ -284,8 +297,8 @@ impl NativeFunction for ExtractAudio {
         ctx.require_tools(Self::TOOLS)?;
         let content_id = param_str(params, "content_id")?;
         let max_duration_ms = param_u64(params, "max_duration_ms")?;
-        let (path, _) = ctx.materialize_input(content_id, "input.video").await?;
-        let info = ffprobe(ctx, &path).await?;
+        let input = ctx.open_tool_input(content_id, "input.video").await?;
+        let info = ffprobe(ctx, &input).await?;
         let Some(codec) = info.audio_codec.clone() else {
             return Ok(NativeOutcome::new(json!({"status": "absent", "duration_ms": info.duration_ms})));
         };
@@ -297,19 +310,16 @@ impl NativeFunction for ExtractAudio {
         }
         let ffmpeg = ctx.tool_path(tools::FFMPEG)?;
         let output = ctx.temp_dir.join("audio.mp3");
-        let args = vec![
-            "-v".to_string(),
-            "error".to_string(),
-            "-y".to_string(),
-            "-i".to_string(),
-            path.to_string_lossy().into_owned(),
+        let mut args = vec!["-v".to_string(), "error".to_string(), "-y".to_string()];
+        args.extend(input_args(&input));
+        args.extend([
             "-vn".to_string(),
             "-acodec".to_string(),
             "libmp3lame".to_string(),
             "-q:a".to_string(),
             "5".to_string(),
             output.to_string_lossy().into_owned(),
-        ];
+        ]);
         ctx.run_tool(&ffmpeg, &args, 64 * 1024).await?.ok()?;
         let artifact = ctx
             .io

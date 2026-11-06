@@ -262,6 +262,13 @@ p, admin, obj://ndm/manage, write, allow
 p, users, obj://ndm/uploads, write, allow
 p, app, obj://ndm/uploads, write, allow
 p, agent, obj://ndm/objects, read, allow
+# Public /ndn/ entries (bucket design §4.6.5): only a system service may publish,
+# on behalf of someone it names; apps may ask to cache what is already public.
+p, frame, obj://ndm/public, write, allow
+p, frame, obj://ndm/public_cache, write, allow
+p, app, obj://ndm/public_cache, write, allow
+p, users, obj://ndm/public_cache, write, allow
+p, admin, obj://ndm/public_cache, write, allow
 
 g, system:node-daemon, kernel
 g, system:scheduler, kernel

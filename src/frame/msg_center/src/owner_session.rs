@@ -331,6 +331,9 @@ const OWN_CONTACT_METHODS: &[&str] = &[
 fn method_scope(method: &str) -> Option<SessionScope> {
     if method.starts_with("group.") || method == "msg.post_send" {
         Some(SessionScope::MsgGroup)
+    } else if method == buckyos_api::METHOD_MSG_ATTACHMENT_TICKET {
+        // Asked from another Zone for a recipient of a message sent from here.
+        Some(SessionScope::MsgInbox)
     } else if OWN_CONTACT_METHODS.contains(&method) {
         Some(SessionScope::AccountSelf)
     } else {

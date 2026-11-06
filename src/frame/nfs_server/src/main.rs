@@ -240,6 +240,8 @@ async fn buckyos_service_main(matches: &clap::ArgMatches) {
     config.scan_interval_secs = settings.scan_interval_secs;
     config.gc_evict = settings.named_store_gc_evict;
     config.preview_cache_mib = settings.preview_cache_mib;
+    config.ndn_anonymous_bytes_per_sec = settings.ndn_anonymous_bytes_per_sec;
+    config.public_cache_app_bytes = settings.public_cache_app_mib * 1024 * 1024;
     // CLI --debug-api / --scan-interval-secs still win over settings (dev use).
     config.debug_api = settings.debug_api || matches.get_flag("debug-api");
     if let Some(secs) = parse_scan_interval(matches) {

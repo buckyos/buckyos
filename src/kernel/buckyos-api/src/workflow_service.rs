@@ -50,6 +50,11 @@ pub fn workflow_artifacts_bucket() -> crate::bucket_client::BucketId {
         .expect("valid workflow bucket id")
 }
 
+pub fn workflow_scratch_bucket() -> crate::bucket_client::BucketId {
+    crate::bucket_client::BucketId::zone(WORKFLOW_SERVICE_UNIQUE_ID, WORKFLOW_BUCKET_SCRATCH)
+        .expect("valid workflow bucket id")
+}
+
 pub fn generate_workflow_service_doc() -> AppDoc {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     let owner_did = DID::from_str("did:bns:buckyos").unwrap();

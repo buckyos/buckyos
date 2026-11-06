@@ -31,6 +31,9 @@ ndn-lib = { workspace = true }
 named_store = { workspace = true }
 bucket_store = { workspace = true }
 s3_gateway = { workspace = true }
+ndn-toolkit = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
 async-trait = { workspace = true }
 rbac = { workspace = true }
 kRPC = { workspace = true }

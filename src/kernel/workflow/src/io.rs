@@ -1,7 +1,9 @@
 //! [`NativeIo`] implementations: an in-memory one for unit tests and the zone
 //! one backed by the local Named Store and the workflow artifacts bucket.
 
-use crate::native::{ArtifactDelivery, ArtifactRef, NativeIo};
+use crate::native::{
+    ArtifactDelivery, ArtifactRef, NativeIo, ToolInput, ToolInputLease, ToolInputRequest, FILE_PROTOCOL_WHITELIST, NDN_PROTOCOL_WHITELIST,
+};
 use crate::object_store::{InMemoryObjectStore, WorkflowObjectStore};
 use crate::persistence::ArtifactIndex;
 use async_trait::async_trait;
@@ -198,6 +200,19 @@ impl NativeIo for MemoryNativeIo {
         Ok(bytes.len() as u64)
     }
 
+    async fn open_tool_input(&self, request: &ToolInputRequest<'_>) -> Result<ToolInput, ThunkExecutionError> {
+        let size = self.materialize(request.content_id, request.temp_path, request.max_bytes).await?;
+        Ok(ToolInput {
+            location: request.temp_path.to_string_lossy().into_owned(),
+            size,
+            protocols: FILE_PROTOCOL_WHITELIST,
+            secrets: Vec::new(),
+            lease: None,
+        })
+    }
+
+    async fn release_tool_input(&self, _lease: &ToolInputLease) {}
+
     async fn put_artifact(&self, key: &str, name: &str, _content_type: &str, bytes: Vec<u8>) -> Result<ArtifactRef, ThunkExecutionError> {
         self.store_bytes(key, name, bytes).await
     }
@@ -296,6 +311,20 @@ impl ZoneNativeIo {
             .map_err(|e| internal(format!("bucket client: {e}")))
     }
 
+    /// The FileObject a tool reads `content_id` through: the run's input when that is
+    /// what this step works on, else a plain one over the content (a derived input).
+    async fn tool_input_file(&self, source_obj_id: Option<&str>, content_id: &str, size: u64) -> Result<ObjId, ThunkExecutionError> {
+        if let Some(id) = source_obj_id.and_then(|s| ObjId::new(s).ok()) {
+            let file = self.store.get_object(&id).await.ok().and_then(|body| ndn_lib::load_named_obj::<FileObject>(&body).ok());
+            if file.is_some_and(|f| f.content == content_id) {
+                return Ok(id);
+            }
+        }
+        let (id, body) = artifact_file_object("input", size, content_id).gen_obj_id();
+        self.store.put_object(&id, &body).await.map_err(|e| internal(format!("put input object: {e}")))?;
+        Ok(id)
+    }
+
     async fn open(&self, content_id: &str) -> Result<(ndn_lib::ChunkReader, u64), ThunkExecutionError> {
         let obj_id = ObjId::new(content_id).map_err(|e| input_unavailable(content_id, e))?;
         if !obj_id.is_chunk() && !obj_id.is_chunk_list() {
@@ -338,7 +367,7 @@ impl ZoneNativeIo {
             .map_err(|e| internal(format!("put file object: {e}")))?;
         self.pin_artifact(&obj_id).await?;
         let client = self.bucket_client().await?;
-        let expires_at = chrono::Utc::now().timestamp() + i64::from(self.artifact_ttl_days) * 86_400;
+        let expires_at = chrono::Utc::now().timestamp_millis() + i64::from(self.artifact_ttl_days) * 86_400_000;
         let req = bucket_store::types::PutRequest {
             key: key.to_string(),
             obj_id: obj_id.to_string(),
@@ -403,6 +432,72 @@ impl NativeIo for ZoneNativeIo {
             return Err(too_large(content_id, copied, max_bytes));
         }
         Ok(copied)
+    }
+
+    /// `/ndn/<file_id>?hint={"token":...}` (bucket design §21 N17). The FileObject is
+    /// bound at `inputs/<execution_id>`, which also holds it while the step runs, and
+    /// the token reads that one key until the deadline.
+    async fn open_tool_input(&self, request: &ToolInputRequest<'_>) -> Result<ToolInput, ThunkExecutionError> {
+        let (_, size) = self.open(request.content_id).await?;
+        if size > request.max_bytes {
+            return Err(too_large(request.content_id, size, request.max_bytes));
+        }
+        let file_id = self.tool_input_file(request.source_obj_id, request.content_id, size).await?;
+        let client = self.bucket_client().await?;
+        let scratch = buckyos_api::workflow_scratch_bucket();
+        let key = format!("inputs/{}", request.execution_id);
+        let now = chrono::Utc::now().timestamp_millis();
+        // Tokens live at most 7 days; a step's deadline is far shorter.
+        let expires_at = request.expires_at_ms.clamp(now + 60_000, now + 7 * 86_400_000 - 60_000);
+        let put = bucket_store::types::PutRequest {
+            key: key.clone(),
+            obj_id: file_id.to_string(),
+            expires_at: Some(expires_at),
+            ..Default::default()
+        };
+        client.put(&scratch, &put).await.map_err(|e| input_unavailable(request.content_id, format!("bind input: {e}")))?;
+        let token = bucket_store::TokenRequest {
+            prefix: None,
+            key: Some(key.clone()),
+            actions: [bucket_store::Action::Read].into_iter().collect(),
+            expires_at,
+            max_uses: None,
+            bind_user_id: None,
+            bind_app_id: None,
+        };
+        let issued = match client.create_access_token(&scratch, &token).await {
+            Ok(issued) => issued,
+            Err(e) => {
+                let _ = client.delete(&scratch, &key, None).await;
+                return Err(input_unavailable(request.content_id, format!("input token: {e}")));
+            }
+        };
+        let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| internal(format!("runtime: {e}")))?;
+        let hint = ndn_lib::NdnHint { path: None, token: Some(issued.token.clone()) };
+        let url = runtime.ndn_read_url(None, &file_id, Some(&hint));
+        Ok(ToolInput {
+            secrets: vec![url.clone(), issued.token],
+            location: url,
+            size,
+            protocols: NDN_PROTOCOL_WHITELIST,
+            lease: Some(ToolInputLease { key, token_id: issued.token_id }),
+        })
+    }
+
+    async fn release_tool_input(&self, lease: &ToolInputLease) {
+        let client = match self.bucket_client().await {
+            Ok(client) => client,
+            Err(e) => {
+                log::warn!("release input {}: {}", lease.key, e.message);
+                return;
+            }
+        };
+        if let Err(e) = client.revoke_access_token(&lease.token_id).await {
+            log::warn!("revoke input token of {}: {e}", lease.key);
+        }
+        if let Err(e) = client.delete(&buckyos_api::workflow_scratch_bucket(), &lease.key, None).await {
+            log::warn!("unbind input {}: {e}", lease.key);
+        }
     }
 
     async fn put_artifact(&self, key: &str, name: &str, content_type: &str, bytes: Vec<u8>) -> Result<ArtifactRef, ThunkExecutionError> {
@@ -491,7 +586,7 @@ impl NativeIo for ZoneNativeIo {
                         prefix: None,
                         key: Some(key),
                         actions: [bucket_store::Action::Read].into_iter().collect(),
-                        expires_at,
+                        expires_at: expires_at.saturating_mul(1000),
                         max_uses: None,
                         bind_user_id: Some(user_id.to_string()),
                         bind_app_id: (!app_id.is_empty()).then(|| app_id.to_string()),
@@ -500,7 +595,7 @@ impl NativeIo for ZoneNativeIo {
                         Ok(issued) => {
                             delivery.path = Some(issued.path);
                             delivery.token = Some(issued.token);
-                            delivery.expires_at = issued.expires_at;
+                            delivery.expires_at = issued.expires_at / 1000;
                         }
                         Err(err) => delivery.error = Some(err.to_string()),
                     }

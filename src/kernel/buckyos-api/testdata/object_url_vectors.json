@@ -204,5 +204,30 @@
   {
     "input": "file:///tmp/a",
     "no_endpoint": true
+  },
+  {
+    "input": "https://zone-a.example/ndn/cyfile:abc",
+    "ndn_read": {"origin": "https://zone-a.example", "obj_id": "cyfile:abc"},
+    "ndn_read_url": "https://zone-a.example/ndn/cyfile:abc"
+  },
+  {
+    "input": "http://gw:3180/ndn/cyfile:abc",
+    "ndn_read": {"origin": "http://gw:3180/", "obj_id": "cyfile:abc", "hint": {"token": "bkt_a-b_c"}},
+    "ndn_read_url": "http://gw:3180/ndn/cyfile:abc?hint=%7B%22token%22%3A%22bkt_a-b_c%22%7D"
+  },
+  {
+    "input": "https://zone-a.example/ndn/chunk:abc",
+    "ndn_read": {"origin": "https://zone-a.example", "obj_id": "chunk:abc", "hint": {"token": "bkt_x", "path": "cyfile:abc/@/content/@/3"}},
+    "ndn_read_url": "https://zone-a.example/ndn/chunk:abc?hint=%7B%22path%22%3A%22cyfile%3Aabc%2F%40%2Fcontent%2F%40%2F3%22%2C%22token%22%3A%22bkt_x%22%7D"
+  },
+  {
+    "input": "https://zone-a.example/ndn/cydir:abc",
+    "ndn_read": {"origin": "https://zone-a.example", "obj_id": "cydir:abc", "hint": {"path": "cydir:abc/@/a b's (1).txt"}},
+    "ndn_read_url": "https://zone-a.example/ndn/cydir:abc?hint=%7B%22path%22%3A%22cydir%3Aabc%2F%40%2Fa%20b's%20(1).txt%22%7D"
+  },
+  {
+    "input": "https://zone-a.example/ndn/cyfile:abc",
+    "ndn_read": {"origin": "https://zone-a.example", "obj_id": "cyfile:abc", "hint": {}},
+    "ndn_read_url": "https://zone-a.example/ndn/cyfile:abc"
   }
 ]

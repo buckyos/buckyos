@@ -25,6 +25,11 @@ pub struct NfsServerSettings {
     /// Size limit of the Preview Pipeline cache (`preview-cache` bucket); least
     /// recently used results go first.
     pub preview_cache_mib: u64,
+    /// Bytes per second all anonymous `/ndn/` responses of this server may send;
+    /// token reads are not limited; 0 turns the limit off (bucket design D25).
+    pub ndn_anonymous_bytes_per_sec: u64,
+    /// What one app may keep in the `public-cache` bucket (bucket design D25).
+    pub public_cache_app_mib: u64,
 }
 
 impl Default for NfsServerSettings {
@@ -34,6 +39,8 @@ impl Default for NfsServerSettings {
             debug_api: false,
             named_store_gc_evict: true,
             preview_cache_mib: 20 * 1024,
+            ndn_anonymous_bytes_per_sec: 32 * 1024 * 1024,
+            public_cache_app_mib: 4 * 1024,
         }
     }
 }

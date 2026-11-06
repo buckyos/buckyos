@@ -117,12 +117,12 @@ impl NativeFunction for Probe {
             }
             "video" => {
                 ctx.require_tools(&[tools::FFPROBE])?;
-                let (path, size) = ctx.materialize_input(content_id, "input.video").await?;
-                let info: VideoInfo = ffprobe(ctx, &path).await?;
+                let input = ctx.open_tool_input(content_id, "input.video").await?;
+                let info: VideoInfo = ffprobe(ctx, &input).await?;
                 let mut out = json!({
                     "kind": "video",
                     "mime": info.mime(),
-                    "size": size,
+                    "size": input.size,
                     "duration_ms": info.duration_ms,
                     "has_audio": info.audio_codec.is_some(),
                     "has_video": info.width.is_some(),

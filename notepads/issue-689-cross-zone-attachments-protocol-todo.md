@@ -4,6 +4,8 @@
 
 2026-10-29 补充：按“Agent 本质是特殊 appid、权限上限为 Owner、调度器按配置生成授权”的方向，重新核对 `buckyos@688df1577`，结果与后续 TODO 见 §15；§1–14 的源码现状仍对应原基线。
 
+2026-11-05 补充：私聊 + FileObject 的最小闭环已按 [Bucket 设计 §21 N18](../doc/arch/应用对象桶%20Bucket%20设计.md) 实现（`msg.attachment_ticket` + `/ndn/` + 首次读取时拉取），§9 的本地命中绑定缺口已由 N1 修复；双 Zone DV 未跑。下文 P1 其余项（持久状态表、UI 新状态）按该实现简化，P2、P3 未做。
+
 本文用于讨论整体框架调整。**现状来自源码；推荐方案、协议字段草案和未勾选 TODO 均未实现，也不表示已经作出产品决定。** 本轮只写分析文档，没有修改服务、SDK 或部署环境，没有执行双 Zone 实测。
 
 核对基线：`buckyos@1156ff598`、`cyfs-ndn@0eee9ccc`、`cyfs-gateway@245a3780`、`buckyos-websdk@02be8616`。兄弟仓库链接按当前并排 checkout 布局书写。

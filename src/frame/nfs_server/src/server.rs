@@ -55,6 +55,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/s/{token}/unlock", post(crate::share::serving::unlock))
         .route("/s/{token}/d", get(crate::share::serving::download_root))
         .route("/s/{token}/d/{*inner}", get(crate::share::serving::download_inner))
+        .route("/ndn/{*path}", axum::routing::any(crate::ndn::handle))
         .route("/ndm/v1/uploads", options(crate::ndm::uploads::options).post(crate::ndm::uploads::create))
         .route(
             "/ndm/v1/uploads/{id}",
@@ -605,7 +606,6 @@ async fn read_handler(
     let body = Body::from_stream(file_stream(file, content_len));
     let mut builder = Response::builder()
         .status(status)
-        .header(header::CONTENT_TYPE, content_type_for(&name))
         .header(header::CONTENT_LENGTH, content_len)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::ETAG, etag)
@@ -616,17 +616,12 @@ async fn read_handler(
             format!("bytes {}-{}/{}", start, end, len),
         );
     }
-    if q.contains_key("download") {
-        let fname = q.get("name").cloned().unwrap_or(name);
-        let encoded: String =
-            percent_encoding::utf8_percent_encode(&fname, percent_encoding::NON_ALPHANUMERIC)
-                .to_string();
-        builder = builder.header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename*=UTF-8''{}", encoded),
-        );
-    }
-    builder.body(body).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    let want_download = q.contains_key("download");
+    let file_name = q.get("name").filter(|_| want_download).unwrap_or(&name);
+    let mut response = builder.body(body).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    // This route shares the Desktop origin: what is in a file never runs here (D24).
+    ndn_lib::apply_content_policy(response.headers_mut(), content_type_for(&name), Some(file_name), want_download);
+    response
 }
 
 fn file_stream(

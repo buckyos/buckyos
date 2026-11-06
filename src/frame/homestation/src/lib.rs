@@ -238,6 +238,9 @@ impl Station {
         if let Err(e) = self.reconcile_following().await {
             log::warn!("following tag reconciliation failed: {e}");
         }
+        if let Err(e) = self.reconcile_public_provision().await {
+            log::warn!("public provision reconciliation failed: {e}");
+        }
         loop {
             if let Err(e) = self.purge_behavior().await {
                 log::warn!("behavior purge failed: {e}");

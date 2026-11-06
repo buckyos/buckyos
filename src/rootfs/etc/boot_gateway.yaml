@@ -336,6 +336,10 @@ servers:
                 # 应用对象桶数据面（/bucket/v1/<bucket_id>/<key>）：nfs-server 承接，
                 # 鉴权在服务内（SSO cookie、Bearer 或 bkt_ 能力令牌）。
                 global SERVICE_ID="nfs-server";
+              elif match $REQ.path "/ndn/*" then
+                # 跨 Zone 按 ObjId 读取的统一协议（/ndn/<obj_id>[/@/<inner>][?hint=...]）：只读，
+                # 判定在服务内（公开桶或 hint 里的 bkt_ 令牌），网关只路由。
+                global SERVICE_ID="nfs-server";
               elif match $REQ.path "/nfs/v1/*" then
                 # NFSP v0（NamedFileSystem_Protocol_v0）：zone 级通用协议入口，
                 # 与 /ndn 同级，不走 /kapi/<service> 形态；路径原样转发到 nfs-server。

@@ -19,8 +19,8 @@ KernelService 身份 login(含心跳),读取 `services/nfs-server/settings`
   成为一个 export root;`.` 开头目录不导出。导出列表为启动时快照。
 - filedb + 上传暂存放在 `$BUCKYOS_ROOT/data/.fsdb/`。
 - 监听 `127.0.0.1:4110`(`NFS_SERVER_SERVICE_PORT`)。NFSP 是跨 zone 通用协议,
-  网关把 zone 级根路径 `/nfs/v1/*` 原样转发到本服务(boot_gateway.yaml,
-  与 /ndn 同级),不使用 `/kapi/<service>` 形态。
+  网关把 zone 级根路径 `/nfs/v1/*`、`/ndn/*` 原样转发到本服务(boot_gateway.yaml),
+  不使用 `/kapi/<service>` 形态。
 - 每个请求验证调用者的 Verify Hub session token（Bearer 或 SSO cookie），再按路径 ACL 授权；
   Zone owner 全权限，用户管理自己的 `home/<user_id>`，其余靠 ACL 记录授予，匿名只到 `public`。
   详见下文“鉴权与权限”及产品文档 §11。
@@ -205,7 +205,8 @@ manifest 可带 `auto_bind: { bucket_id, key, content_type?, metadata?, tags?, e
 - 索引：`bucket-index` RDB 实例（scheduler 在 `services/nfs-server/spec` 登记，sqlite，`$BUCKYOS_ROOT/data/nfs-server/bucket-index.db`）；独立模式在 `--data-dir/bucket-index.db`。
 - 桶只来自声明：`users/<user>/apps/<appid>/spec` 或 `services/<appid>/spec` 的 `spec_config.buckets` 与 `storage_quota_mib`，访问时懒建、每分钟同步声明值，不再声明的桶标记 `orphaned_at` 保留。独立模式用 `--bucket-specs <json>`（`{appid: {buckets, storage_quota_mib}}`）。
 - kRPC `bucket.*`：`POST /kapi/nfs-server`（方法表见设计 §12.1，另有 `bucket.set_versioning`）；`params.access_token` 可带 `bkt_` 能力令牌。
-- 数据面：`GET | HEAD | PUT | DELETE /bucket/v1/<scope>/<appid>/<owner>/<name>/<key>`（网关 `/bucket/*` 转发到本服务），会话来自 Bearer 或 SSO cookie，能力令牌来自 `?token=` 或 `Bearer bkt_…`；PUT 单请求上限 32 MiB。
+- 数据面：`GET | HEAD | PUT | DELETE /bucket/v1/<scope>/<appid>/<owner>/<name>/<key>`（网关 `/bucket/*` 转发到本服务），会话来自 Bearer 或 SSO cookie，能力令牌来自 `?token=` 或 `Bearer bkt_…`；PUT 单请求上限 32 MiB。匿名且无令牌的请求不读配置也不建桶，直接拒绝；带令牌时会话校验失败按匿名继续。这个路由和 Desktop 同源，文件字节按 D24 处理：只有图片、音视频、PDF、纯文本内联，其余 `application/octet-stream` 加下载，都带 `nosniff`、CSP、`no-referrer`（`/nfs/v1/read` 同样）。
+- `/ndn/<obj_id>[/@/<inner>][?hint=<hint>]`（`src/ndn/`，设计 §4.6.5）：跨 Zone 按 ObjId 只读，标准 HTTP + Range。授权根在 `zone/nfs-server/_/public-objects` 或 `public-cache` 里就放行（`public, immutable`，受 `ndn_anonymous_bytes_per_sec` 限速），否则看 `hint.token`（只认单 key、只读、未绑定主体的 `bkt_`，当前绑定必须等于授权根，响应 `private`）；不读 cookie 和 Bearer，拒绝一律 404。写入进公开桶走 `bucket.provide_public` / `withdraw_public` / `list_public`（`obj://ndm/public`，`requested_by` 本人要持有整棵对象树）和 `bucket.cache_public`（`obj://ndm/public_cache`，真实匿名下载并校验后才绑定，单 App 上限 `public_cache_app_mib`）。`ambient` 绑定的内容不在本地时，读返回 `202 + Retry-After` 并按 `origin` 经 `/ndn/` 拉取，拉不到 `404 origin_unavailable`；`bucket.prefetch` 主动触发。
 - 授权：第一层 RBAC `obj://bucket/<bucket_id>/<key>`（默认策略在 `buckyos-api` `rbac_config.rs`）；Agent（DID 会话）只在 owner 的 user 桶上 list/read，读写模式再加 create/write；服务会话对自己 appid 的桶全权；之后由 lib 判 grant、令牌与档位规则。
 - 后台：本服务是 Zone named store 的 GC 宿主，每 30 秒投递级联边、刷 LRU、过期 pin；并驱逐无 pin、无入边的 class 0 对象和 24 小时未访问的无主 chunk（`services/nfs-server/settings.named_store_gc_evict`，默认开；每个写入方都把要留的内容绑进桶或持有 Lease，关掉只用于排查）。桶 reconcile 每 10 分钟（启动一次、每日深度对账与用量重算），生命周期每小时。对象事件发 kevent `/bucket/<bucket_id>`。
 

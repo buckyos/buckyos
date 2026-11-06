@@ -120,6 +120,8 @@ pub struct MessageCenter {
     pub(crate) ingress_budget: Arc<std::sync::Mutex<HashMap<String, (u64, u32)>>>,
     /// Where stored messages and their attachments are bound (`buckets.rs`).
     pub(crate) buckets: Arc<crate::buckets::BucketSlot>,
+    /// Attachments being fetched from senders' Zones (`remote_attachment.rs`).
+    pub(crate) remote_fetches: Arc<crate::remote_attachment::RemoteFetches>,
 }
 
 impl MessageCenter {
@@ -165,6 +167,7 @@ impl MessageCenter {
             friend_lock: Arc::new(tokio::sync::Mutex::new(())),
             ingress_budget: Arc::new(std::sync::Mutex::new(HashMap::new())),
             buckets: Arc::new(Default::default()),
+            remote_fetches: Arc::new(Default::default()),
         })
     }
 

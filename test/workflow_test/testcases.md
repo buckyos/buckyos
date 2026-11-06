@@ -1062,6 +1062,19 @@ WaitingHuman；工具齐全时产出 manifest。
   根任务；`get_task_tree` 中存在 `workflow.step/v1` 与 `workflow.thunk/v1`，thunk 任务全部
   `phase == terminal`。
 
+## WF-DV-014: media.video 经 `/ndn/` 读取输入
+
+### 目标
+
+验收 Bucket 设计 §21 N17（T2d）：ffprobe / ffmpeg 不落临时文件，改读 `/ndn/<file_id>?hint={"token":...}`。
+
+### 关键断言
+
+- `media.video` 完成，帧和音轨都有结果；`extract_frames` 确实执行（`frame_max_edge` 每轮不同，不走缓存）。
+- `zone/workflow/_/scratch` 有 `inputs/<run_id>/...` 的令牌记录，证明走的是令牌路径；全部已撤销，key 已解绑。
+- run graph 和 history 里没有 `bkt_`、`hint=`。
+- 相同输入再跑一次，`extract_frames` 来自 Step cache，结果相同。
+
 ## WF-DV-013: 系统定义只读与身份校验
 
 ### 目标

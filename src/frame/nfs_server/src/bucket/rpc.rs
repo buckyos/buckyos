@@ -161,6 +161,7 @@ pub async fn dispatch(state: &SharedState, session: &Session, method: &str, p: &
         "bucket.head" => {
             let id = bucket_arg(state, p).await?;
             let (binding, availability) = store.head(&id, c, &arg::<String>(p, "key")?, opt(p, "version")?).await?;
+            let availability = crate::ndn::ambient::availability(state, availability, &binding);
             Ok(json!({"binding": binding, "availability": availability}))
         }
         "bucket.delete" => {
@@ -320,7 +321,19 @@ pub async fn dispatch(state: &SharedState, session: &Session, method: &str, p: &
             let owner: String = arg(p, "owner")?;
             to_value(release_app(state, &store, &appid, &owner, opt(p, "keep_app_data")?.unwrap_or(false)).await?)
         }
-        "bucket.prefetch" => Err(BucketError::InvalidArgument("bucket.prefetch is not available yet (P2)".into())),
+        "bucket.provide_public" => {
+            crate::ndn::public::provide(state, session, &arg::<String>(p, "entry")?, &arg::<String>(p, "root_obj_id")?, &arg::<String>(p, "requested_by")?).await
+        }
+        "bucket.withdraw_public" => {
+            let root: Option<String> = opt(p, "root_obj_id")?;
+            crate::ndn::public::withdraw(state, session, &arg::<String>(p, "entry")?, root.as_deref()).await
+        }
+        "bucket.list_public" => crate::ndn::public::list(state, session).await,
+        "bucket.cache_public" => crate::ndn::public::cache(state, session, &arg::<String>(p, "root_obj_id")?, &arg::<String>(p, "source")?).await,
+        "bucket.prefetch" => {
+            let id = bucket_arg(state, p).await?;
+            crate::ndn::ambient::prefetch(state, &store, &id, c, opt::<String>(p, "prefix")?.unwrap_or_default()).await
+        }
         other => Err(BucketError::InvalidArgument(format!("unknown method {other}"))),
     }
 }

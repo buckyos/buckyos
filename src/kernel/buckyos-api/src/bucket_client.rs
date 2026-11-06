@@ -276,6 +276,46 @@ impl BucketClient {
         self.call_as("bucket.create_access_token", params).await
     }
 
+    pub async fn list_access_tokens(&self, bucket_id: &BucketId) -> Result<Vec<AccessToken>, RPCErrors> {
+        let listed = self.call("bucket.list_access_tokens", json!({"bucket_id": bucket_id})).await?;
+        serde_json::from_value(listed).map_err(|e| RPCErrors::ReasonError(e.to_string()))
+    }
+
+    pub async fn revoke_access_token(&self, token_id: &str) -> Result<(), RPCErrors> {
+        self.call("bucket.revoke_access_token", json!({"token_id": token_id})).await?;
+        Ok(())
+    }
+
+    /// Publishes `root_obj_id` on `/ndn/` for `entry` (system services only); the
+    /// person named by `requested_by` must hold or be able to read the whole tree.
+    pub async fn provide_public(&self, entry: &str, root_obj_id: &str, requested_by: &str) -> Result<Value, RPCErrors> {
+        self.call("bucket.provide_public", json!({"entry": entry, "root_obj_id": root_obj_id, "requested_by": requested_by})).await
+    }
+
+    /// Withdraws `entry`'s objects, or only `root_obj_id` of them.
+    pub async fn withdraw_public(&self, entry: &str, root_obj_id: Option<&str>) -> Result<Value, RPCErrors> {
+        self.call("bucket.withdraw_public", json!({"entry": entry, "root_obj_id": root_obj_id})).await
+    }
+
+    /// `[(entry, root_obj_id)]` this service has provided.
+    pub async fn list_public(&self) -> Result<Vec<(String, String)>, RPCErrors> {
+        let listed = self.call("bucket.list_public", json!({})).await?;
+        Ok(listed["items"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| Some((i["entry"].as_str()?.to_string(), i["root_obj_id"].as_str()?.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Asks nfs-server to download `source` anonymously and re-serve it on `/ndn/`.
+    pub async fn cache_public(&self, root_obj_id: &str, source: &str) -> Result<Value, RPCErrors> {
+        self.call("bucket.cache_public", json!({"root_obj_id": root_obj_id, "source": source})).await
+    }
+
     pub async fn check_access(&self, bucket_id: &BucketId, action: Action, key: Option<&str>, prefix: Option<&str>) -> Result<AccessCheck, RPCErrors> {
         self.call_as("bucket.check_access", json!({"bucket_id": bucket_id, "action": action, "key": key, "prefix": prefix})).await
     }

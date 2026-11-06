@@ -5,7 +5,8 @@
   "scripts": {
     "smoke": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors nfs_server_dv.ts",
     "ndm": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors ndm_dv.ts",
-    "test": "pnpm run smoke && pnpm run ndm"
+    "ndn": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run --allow-sys --unsafely-ignore-certificate-errors ndn_dv.ts",
+    "test": "pnpm run smoke && pnpm run ndm && pnpm run ndn"
   },
   "dependencies": {
     "buckyos": "latest"

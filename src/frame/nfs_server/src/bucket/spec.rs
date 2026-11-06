@@ -68,10 +68,20 @@ async fn load_runtime(appid: &str, owner: &str) -> BucketResult<Option<AppBucket
 }
 
 async fn load(state: &AppState, appid: &str, owner: &str) -> BucketResult<Option<AppBuckets>> {
-    match state.config.auth {
-        AuthMode::Runtime => load_runtime(appid, owner).await,
-        _ => Ok(state.config.bucket_specs.get(appid).cloned()),
+    let declared = match state.config.auth {
+        AuthMode::Runtime => load_runtime(appid, owner).await?,
+        _ => state.config.bucket_specs.get(appid).cloned(),
+    };
+    if appid != buckyos_api::NFS_SERVER_SERVICE_NAME || owner != ZONE_OWNER {
+        return Ok(declared);
     }
+    // Its own buckets need no spec, so a Zone older than one of them still gets it.
+    let mut own = declared.unwrap_or_default();
+    for (name, decl) in buckyos_api::nfs_server_bucket_decls() {
+        own.buckets.entry(name).or_insert(decl);
+    }
+    own.storage_quota_mib.get_or_insert(buckyos_api::NFS_SERVER_STORAGE_QUOTA_MIB);
+    Ok(Some(own))
 }
 
 /// Creates / updates the buckets `appid` declares for `owner` (`_` = zone).

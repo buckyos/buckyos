@@ -229,6 +229,13 @@ pub trait NativeIo: Send + Sync {
         max_bytes: u64,
     ) -> Result<u64, ThunkExecutionError>;
 
+    /// Where an external tool reads `content_id` without a temp copy, valid until
+    /// the deadline; the caller releases it when the execution ends.
+    async fn open_tool_input(&self, request: &ToolInputRequest<'_>) -> Result<ToolInput, ThunkExecutionError>;
+
+    /// Ends what [`Self::open_tool_input`] set up; a crash is covered by its expiry.
+    async fn release_tool_input(&self, lease: &ToolInputLease);
+
     /// Stores bytes as a deterministic artifact FileObject (fixed time fields,
     /// stable name) bound under `key`; returns the FileObject id.
     async fn put_artifact(
@@ -267,6 +274,57 @@ pub trait NativeIo: Send + Sync {
     ) -> Vec<ArtifactDelivery>;
 }
 
+pub struct ToolInputRequest<'a> {
+    pub content_id: &'a str,
+    /// The run's input FileObject (`ThunkExecution::source_obj_id`), when it has one.
+    pub source_obj_id: Option<&'a str>,
+    pub execution_id: &'a str,
+    /// Milliseconds; what the execution's deadline requires.
+    pub expires_at_ms: i64,
+    pub max_bytes: u64,
+    /// A temp path for IO that has no URL to offer.
+    pub temp_path: &'a Path,
+}
+
+/// What must be undone when an execution ends. Holds a capability: never logged.
+pub struct ToolInputLease {
+    pub key: String,
+    pub token_id: String,
+}
+
+pub struct ToolInput {
+    /// The path or URL handed to the tool. A URL carries a read token: it stays in
+    /// process arguments and never reaches logs, errors, Task data or manifests.
+    pub location: String,
+    pub size: u64,
+    /// `-protocol_whitelist` of this input.
+    pub protocols: &'static str,
+    /// Text to scrub from tool output.
+    pub secrets: Vec<String>,
+    pub lease: Option<ToolInputLease>,
+}
+
+/// Demuxers the media functions read. HLS, DASH and concat are deliberately out:
+/// a file in those formats names other URLs, which an input URL would let it fetch.
+pub const MEDIA_FORMAT_WHITELIST: &str = "mov,matroska,avi,mpegts,flv,ogg,mp3,aac,wav,flac,asf,mpeg,mpegvideo,h264,hevc";
+pub const NDN_PROTOCOL_WHITELIST: &str = "http,https,tcp,tls";
+pub const FILE_PROTOCOL_WHITELIST: &str = "file";
+
+/// `bkt_...` read tokens anywhere in a text, however it got there.
+pub fn scrub_tokens(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("bkt_") {
+        out.push_str(&rest[..at]);
+        out.push_str("bkt_***");
+        let after = &rest[at + 4..];
+        let end = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')).unwrap_or(after.len());
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactDelivery {
     pub obj_id: String,
@@ -303,9 +361,54 @@ pub struct NativeContext {
     /// `media/<cache_key>` when the step result is reusable, else
     /// `exec/<execution_id>`.
     pub artifact_prefix: String,
+    /// Tool inputs opened by this execution.
+    pub tool_inputs: ToolInputs,
+}
+
+#[derive(Default)]
+pub struct ToolInputs {
+    leases: std::sync::Mutex<Vec<ToolInputLease>>,
+    secrets: std::sync::Mutex<Vec<String>>,
 }
 
 impl NativeContext {
+    /// `content_id` for ffmpeg and ffprobe: opened once per execution, released when it ends.
+    pub async fn open_tool_input(&self, content_id: &str, temp_name: &str) -> Result<ToolInput, ThunkExecutionError> {
+        self.check_cancelled()?;
+        let now = chrono::Utc::now().timestamp();
+        let expires_at = self.execution.deadline_at.unwrap_or(now + self.limits.max_exec_secs as i64) + 60;
+        let request = ToolInputRequest {
+            content_id,
+            source_obj_id: self.execution.source_obj_id.as_deref(),
+            execution_id: &self.execution.execution_id,
+            expires_at_ms: expires_at.saturating_mul(1000),
+            max_bytes: self.limits.max_input_bytes,
+            temp_path: &self.temp_dir.join(temp_name),
+        };
+        let mut input = self.io.open_tool_input(&request).await?;
+        self.tool_inputs.secrets.lock().unwrap().extend(input.secrets.iter().cloned());
+        if let Some(lease) = input.lease.take() {
+            self.tool_inputs.leases.lock().unwrap().push(lease);
+        }
+        Ok(input)
+    }
+
+    /// Revokes and unbinds whatever this execution opened. Runs however it ended.
+    pub async fn release_tool_inputs(&self) {
+        let leases = std::mem::take(&mut *self.tool_inputs.leases.lock().unwrap());
+        for lease in &leases {
+            self.io.release_tool_input(lease).await;
+        }
+    }
+
+    fn scrub(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for secret in self.tool_inputs.secrets.lock().unwrap().iter() {
+            out = out.replace(secret.as_str(), "<input>");
+        }
+        scrub_tokens(&out)
+    }
+
     pub fn artifact_key(&self, name: &str) -> String {
         format!("{}/{}", self.artifact_prefix, name)
     }
@@ -451,9 +554,12 @@ impl NativeContext {
         let status = status.map_err(|err| {
             ThunkExecutionError::new(error_codes::TOOL_FAILED, format!("wait {tool} failed: {err}"))
         })?;
-        let stdout = stdout_task.await.unwrap_or_default();
+        let mut stdout = stdout_task.await.unwrap_or_default();
         let stderr = stderr_task.await.unwrap_or_default();
-        let stderr_tail = String::from_utf8_lossy(&stderr)
+        if !self.tool_inputs.secrets.lock().unwrap().is_empty() {
+            stdout = self.scrub(&String::from_utf8_lossy(&stdout)).into_bytes();
+        }
+        let stderr_tail = self.scrub(&String::from_utf8_lossy(&stderr))
             .chars()
             .rev()
             .take(2048)
