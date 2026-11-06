@@ -699,27 +699,17 @@ async fn the_live_line_is_the_call_intent_in_the_task_and_the_state() {
     libopendan::post_input(env.agent().as_ref(), sd.sid(), &from_bob("build it"))
         .await
         .unwrap();
-    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
-    let poll = {
-        let (sd, seen) = (sd.clone(), seen.clone());
-        tokio::spawn(async move {
-            loop {
-                if let Ok(st) = sd.state() {
-                    let mut v = seen.lock().unwrap();
-                    if v.last() != Some(&st.one_line_status) {
-                        v.push(st.one_line_status.clone());
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-    };
     let dir = sd.clone();
+    let build = concat!(
+        "tries=0; until test -f release-build; do ",
+        "tries=$((tries + 1)); test $tries -lt 600 || exit 1; sleep 0.05; ",
+        "done; echo built"
+    );
     let llm = ScriptedLlm::new(move |_, n| match n {
         0 => tool_call(
             "c1",
             "shell",
-            json!({ "command": "sleep 1.5; echo built", "intent": "  build the crate " }),
+            json!({ "command": build, "intent": "  build the crate " }),
         ),
         1 => {
             assert_eq!(dir.state().unwrap().one_line_status, "build the crate");
@@ -734,21 +724,24 @@ async fn the_live_line_is_the_call_intent_in_the_task_and_the_state() {
     });
     let tasks = Arc::new(Tasks::default());
     let deps = deps_with(&env, llm.clone(), &Arc::new(Sink::default()), &tasks, Duration::from_secs(60));
+    let waiting = tokio::time::timeout(
+        Duration::from_secs(15),
+        drive(&sd, &deps, StopWhen::Idle),
+    )
+    .await;
+    let waiting_line = sd.state().unwrap().one_line_status;
+    std::fs::write(sd.path().join("release-build"), "").unwrap();
+    waiting.expect("drive must yield while the shell task is pending");
+    assert_eq!(waiting_line, "waiting for 1 task(s)");
     let started = std::time::Instant::now();
-    drive(&sd, &deps, StopWhen::Idle).await;
     while llm.count() < 4 && started.elapsed() < Duration::from_secs(15) {
         tokio::time::sleep(Duration::from_millis(200)).await;
         drive(&sd, &deps, StopWhen::Idle).await;
     }
-    poll.abort();
     assert_eq!(llm.count(), 4);
     let st = sd.state().unwrap();
     assert_eq!(st.turns_completed, 1);
     assert!(st.one_line_status.contains("built: done"), "{}", st.one_line_status);
-    let seen = seen.lock().unwrap().clone();
-    for line in ["build the crate", "running shell", "waiting for 1 task(s)"] {
-        assert!(seen.iter().any(|s| s == line), "{line} not in {seen:?}");
-    }
     let messages: Vec<String> = tasks.updates.lock().unwrap().iter().map(|(_, u)| u.message.clone()).collect();
     for line in ["build the crate", "running shell", "waiting for 1 task(s)"] {
         assert!(messages.iter().any(|m| m == line), "{line} not in {messages:?}");
