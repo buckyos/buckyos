@@ -703,6 +703,13 @@ mod tests {
     }
 
     #[test]
+    fn an_ext_tools_payload_matches_its_own_platform() {
+        let selector = SubPkgList::effective_selector("ext_tools_darwin_arm64", &package(None)).expect("a platform key derives its selector");
+        assert!(package_matches_target(&selector, &package(None), &macos_target("aarch64")));
+        assert!(!package_matches_target(&selector, &package(None), &macos_target("x86_64")));
+    }
+
+    #[test]
     fn native_package_uses_target_os() {
         let selector = PackageSelector::for_platform("linux", "aarch64");
         let native = package(None);

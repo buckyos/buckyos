@@ -68,7 +68,7 @@ xllm 等 runtime 层能力保留 Rust 实现。Agent 派生的脚本写到 `$OPE
 
 cmd_skill 是一类事的命令手册（`cmd_skills/<name>.md`，front matter 写 `name` / `description` / `requires` / `baseline` / `platforms`）加可选的命令（`tools/<name>/bin`）。它是捷径不是规定：手册写“可以这样做、这样做更快更稳”，Agent 有更合适的做法时可以不用。
 
-- 适用环境：`baseline: standard | extended`（缺省 standard）说明手册在哪种 session-runtime 上有效——standard 只用标准环境的命令（清单见 `xagent runtime baseline`：`agent-session`、`llm_understand_media`、`agent_tool xllm`、`xagent`、`buckyos`、`aicc-tool` 及其媒体命令），用到 ffmpeg、ImageMagick、构建工具链等第三方工具的写 `extended`；`platforms: linux, macos, windows`（逗号分隔，缺省全部）。`requires` 仍是给人读的说明，具体工具名写在正文，由 Agent 运行时自查。这两个字段不是这几个固定词时安装被拒。
+- 适用环境：`baseline: standard | extended`（缺省 standard）说明手册在哪种 session-runtime 上有效——standard 只用标准环境的命令（清单见 `xagent runtime baseline`：`agent-session`、`llm_understand_media`、`agent_tool xllm`、`xagent`、`buckyos`、`aicc-tool` 及其媒体命令），用到 ffmpeg、ImageMagick 等扩展工具（`xagent runtime baseline --level extended`）的写 `extended`，构建工具链等清单外的依赖也写 `extended` 并在正文说明；`platforms: linux, macos, windows`（逗号分隔，缺省全部）。`requires` 仍是给人读的说明，具体工具名写在正文，由 Agent 运行时自查。这两个字段不是这几个固定词时安装被拒。
 - 生效：Session 创建冻结 cmd_skills 时按其 session-runtime 声明的基线与平台过滤（Workspace 的 runtime 不参与）；不满足的手册不注入，在 `## Commands` 末尾列出原因。Work / Todo 显式点名的手册不满足时直接拒绝创建（Todo 留在 pending 并记下原因）；继承来的在子 Session 的 runtime 上重新解析。容器声明为 extended，节点 runtime 由 owner 在 Agent 设置里声明（缺省 standard）。
 
 - 选择：Work 在创建时选定，最多 8 个（`agent-session create-worksession --cmd-skill <name>`，可重复），由意图分析、Goal、plan session（Todo 的 `--skill`）从 `agent-session skill list` 中挑选；未指定时子 Work 继承父 Work 的选择，UI 的 `ui_core` 与 Goal 的 goal_skills 不会自动注入 Work。UI Session 用 `agent.toml [session.<class>] default_cmd_skills`。

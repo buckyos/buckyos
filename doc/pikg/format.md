@@ -81,13 +81,64 @@ AppDoc.pkg_list[key].pkg_objid
 | CLI build/pack/info | 完整、自包含 PIKG；普通 App、Agent 模板和独立 `agent_skills` 包 |
 | Rust 普通 App Installer | 受控 immutable staging 文件，重新验证普通 App/Agent 模板；上层执行信任、目标和权限校验 |
 | Agent skill CLI | TypeScript 验证后，仅将 `agent_skills` 中认可目录的文件提交到 Agent `skills.install` |
+| 扩展工具包（`app_type=ext_tools`） | Rust `AppType::ExtTools` 与 TypeScript 两端都只接受按平台的子包（下文 §5.1），不得有其它子包。`buckyos pikg build` / `pack` / `info` 校验每个 payload；`app publish` 经 control-panel 写入 Repo；`apps.submit`（`app install`）一律拒绝，不建 AppSpec、不起服务。安装由节点 reconciler 按 Zone 期望状态做（未实现，见 [扩展包 TODO](../../notepads/opendan-exttools-cross-platform-todo.md) X2 / X3） |
 | AI Workspace 控件库（`app_type=aiws`） | Rust `AppType::Aiws` 与 TypeScript 两端都只接受唯一子包 `pkg_list.aiws`（不得有 docker / script / web / native / Agent 子包）；payload `aiws.tar.gz` 是 AIWS bundle：`aiws-manifest.json` + `controls/<dir>/<file>`。`buckyos app install`（Installer `apps.submit`，仅 Rpc 来源）验证后由 control-panel 调 aiworkspace `ext.install`（mode `installer`），开发态由客户端直接调 `ext.install`（mode `dev`）；两条路都不建 AppSpec、不起服务，记录只在 aiworkspace 本机控件库。CLI `pikg build` / `pack` / `info` 与 aiworkspace 服务各自按 manifest 重算每个控件的 digest、校验 `component.json`。清单与库的协议见 [aiworkspace README “Extension controls”](../../src/frame/aiworkspace/README.md) |
 
-独立 `app_type=agent_skills` 是 TypeScript/Agent 路径支持的包类型，不是 Rust `AppType` 的新增枚举值；`app_type=aiws` 则两端都是正式类型（Rust `AppType::Aiws`）。Agent 模板的 `app_type=agent` 与之不同，公共 App submit 为模板注册。内部 Rust builder 的部分包用例不代表 CLI 提供部分打包或普通 App 第三方依赖安装能力。
+独立 `app_type=agent_skills` 是 TypeScript/Agent 路径支持的包类型，不是 Rust `AppType` 的新增枚举值；`app_type=aiws`、`app_type=ext_tools` 则两端都是正式类型（Rust `AppType::Aiws`、`AppType::ExtTools`）。Agent 模板的 `app_type=agent` 与之不同，公共 App submit 为模板注册。内部 Rust builder 的部分包用例不代表 CLI 提供部分打包或普通 App 第三方依赖安装能力。
+
+### 5.1 扩展工具包
+
+一台机器上所有 Agent 共用的本地工具（ffmpeg、pandoc……）。`pkg_list` 是 map，所以每个平台一个键，selector 由键派生：
+
+| `ext-manifest.json` 的 `platforms` | `pkg_list` 键 | selector |
+| --- | --- | --- |
+| `linux-x86_64` | `ext_tools_linux_x86_64` | linux / x86_64 |
+| `linux-aarch64` | `ext_tools_linux_aarch64` | linux / aarch64 |
+| `darwin-arm64` | `ext_tools_darwin_arm64` | macos / aarch64 |
+| `darwin-x86_64` | `ext_tools_darwin_x86_64` | macos / x86_64 |
+| `windows-x86_64` | `ext_tools_windows_x86_64` | windows / x86_64 |
+
+缺一个键就是该平台不支持；`platforms` 必须和子包一一对应。
+
+payload 解到 `$BUCKYOS_ROOT/tools/` 下，只能有：
+
+```text
+ext-manifest.json     # 根上一份；工程根的同名文件是唯一来源，payload 里是副本
+bin/<command>         # provides 的每个命令一个 launcher，且只能是 provides 里的（Windows 可带 .exe/.cmd/.bat/.ps1）
+smoke/...             # provides 引用的无网络检查脚本
+store/<id>/...        # 工具本体，只写自己的 id
+```
+
+`bin/` 下的文件必须可执行（Windows 除外），不得出现构建机绝对路径（`/home/`、`/Users/`、`/root/`、`/tmp/`、`/opt/buckyos/` 或工程目录）；launcher 从自身位置定位 `store/<id>`。符号链接打包时读穿，指出 payload 的会被拒绝。
+
+`ext-manifest.json`（schema `buckyos.ext_tools/1`，未知字段报错）：
+
+```json
+{
+  "schema": "buckyos.ext_tools/1",
+  "id": "ext-media",
+  "version": "1.2.0",
+  "requires": [{"id": "ext-core", "version": ">=1.0"}],
+  "conflicts": [],
+  "provides": [
+    {"command": "ffmpeg", "version_probe": "ffmpeg -version", "smoke": "smoke/ffmpeg.sh"},
+    {"command": "ffprobe", "version_probe": "ffprobe -version"}
+  ],
+  "platforms": ["linux-x86_64", "darwin-arm64"],
+  "size_bytes": {"linux-x86_64": 123456789},
+  "license": "LGPL-2.1",
+  "desc": "音视频加工"
+}
+```
+
+`id`、`version` 必须等于 AppDoc 的 `name`、`version`。`provides` 是系统对“哪个包提供哪个命令”的全部知识；同一命令被两个包提供时，至少一方要在 `conflicts` 里列出另一方，两者不能同时启用。`ext-core`（[publish/exttool/ext-core](../../publish/exttool/ext-core)）是第一个包，它的 `provides` 由单测与 `baseline::EXTENDED_TOOLS` 绑定。
+
+工程布局、`pikg init --kind ext-tools` 与 `pikg doctor [--catalog]` 见 [WebSDK PIKG CLI](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md)。
 
 ## 6. 回归入口
 
 - [PIKG CLI tests](https://github.com/buckyos/buckyos-websdk/blob/main/cli/tests/pikg_test.ts)：离线闭环、篡改、Docker image 固定与命令 schema。
 - [Rust `pikg.rs`](../../src/frame/control_panel/src/pikg.rs) 的 `pikg::tests`：容器拒绝、对象/hash/digest、staging 和解包安全。
+- [Rust `ext_tools.rs`](../../src/kernel/buckyos-api/src/ext_tools.rs) 与 `app_installer` 的 `publish_ext_tools_*`：扩展包清单、payload 布局与发布扫描。
 - [AppDoc golden fixtures](../fixtures/) 及 `buckyos-api` / TypeScript 的 golden identity tests：canonical identity。
 - [Installer DV](../../test/app_installer_test/README.md)：真实安装与运行证据，不能用离线 info 代替。

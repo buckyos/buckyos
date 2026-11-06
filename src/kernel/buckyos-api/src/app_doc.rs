@@ -45,6 +45,8 @@ pub enum AppType {
     Agent,   // AI Agent
     /// AI Workspace 扩展控件包（`pkg_list.aiws`）：安装进 aiworkspace 服务的本机控件库，不建 AppSpec、不起服务。
     Aiws,
+    /// 扩展工具包（`pkg_list.ext_tools_<os>_<arch>`，见 `ext_tools.rs`）：发布到 Repo，由节点 reconciler 安装，不建 AppSpec、不起服务。
+    ExtTools,
 }
 
 impl TryFrom<&str> for AppType {
@@ -57,6 +59,7 @@ impl TryFrom<&str> for AppType {
             "web" => AppType::Web,
             "agent" => AppType::Agent,
             "aiws" => AppType::Aiws,
+            "ext_tools" => AppType::ExtTools,
             _ => return Err("Invalid app doc type"),
         })
     }
@@ -70,6 +73,7 @@ impl fmt::Display for AppType {
             AppType::Web => "web",
             AppType::Agent => "agent",
             AppType::Aiws => "aiws",
+            AppType::ExtTools => "ext_tools",
         };
         write!(f, "{}", value)
     }
@@ -323,10 +327,10 @@ pub fn derived_selector_for_key(key: &str) -> Option<PackageSelector> {
         "amd64_apple_app" => Some(PackageSelector::for_platform("macos", "x86_64")),
         "aarch64_apple_app" => Some(PackageSelector::for_platform("macos", "aarch64")),
         // 平台无关内容：空 selector 匹配所有目标。
-        "web" | "agent" | "agent_skills" | "agent_tools" | "script" | AIWS_SUB_PKG => {
+        "web" | "agent" | "agent_skills" | "script" | AIWS_SUB_PKG => {
             Some(PackageSelector::default())
         }
-        _ => None,
+        _ => crate::ext_tools_platform_of_key(key).map(|p| PackageSelector::for_platform(p.os, p.arch)),
     }
 }
 
@@ -356,8 +360,6 @@ pub struct SubPkgList {
     pub agent: Option<SubPkgDesc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_skills: Option<SubPkgDesc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_tools: Option<SubPkgDesc>,
     #[serde(flatten)]
     pub others: HashMap<String, SubPkgDesc>,
 }
@@ -440,7 +442,6 @@ impl SubPkgList {
             "web" => self.web.as_ref(),
             "agent" => self.agent.as_ref(),
             "agent_skills" => self.agent_skills.as_ref(),
-            "agent_tools" => self.agent_tools.as_ref(),
             _ => self.others.get(key),
         }
     }
@@ -482,9 +483,6 @@ impl SubPkgList {
         }
         if let Some(pkg) = &self.agent_skills {
             list.push(("agent_skills".to_string(), pkg));
-        }
-        if let Some(pkg) = &self.agent_tools {
-            list.push(("agent_tools".to_string(), pkg));
         }
         for (k, v) in self.others.iter() {
             list.push((k.clone(), v));
@@ -1245,8 +1243,9 @@ impl AppDocBuilder {
         self
     }
 
-    pub fn agent_tools_pkg(mut self, desc: SubPkgDesc) -> Self {
-        self.pkg_list.agent_tools = Some(desc);
+    /// The payload of an `ext_tools` package for one platform (`EXT_TOOLS_PLATFORMS`).
+    pub fn ext_tools_pkg(mut self, platform: &crate::ExtToolsPlatform, desc: SubPkgDesc) -> Self {
+        self.pkg_list.others.insert(platform.key.to_string(), desc);
         self
     }
 
@@ -1293,12 +1292,14 @@ impl AppDocBuilder {
             || self.pkg_list.aarch64_apple_app.is_some();
         let has_agent = self.pkg_list.agent.is_some();
         let has_agent_skills = self.pkg_list.agent_skills.is_some();
-        let has_agent_tools = self.pkg_list.agent_tools.is_some();
         let has_aiws = self.pkg_list.others.contains_key(AIWS_SUB_PKG);
 
         let mut errors: Vec<String> = vec![];
         if has_aiws && self.app_type != AppType::Aiws {
             errors.push("`pkg_list.aiws` belongs to an `aiws` package (change AppType)".to_string());
+        }
+        if self.app_type != AppType::ExtTools && self.pkg_list.others.keys().any(|k| crate::is_ext_tools_sub_pkg(k)) {
+            errors.push("`pkg_list.ext_tools_*` belongs to an `ext_tools` package (change AppType)".to_string());
         }
         match self.app_type {
             AppType::Service => {
@@ -1311,9 +1312,9 @@ impl AppDocBuilder {
                 if has_docker {
                     errors.push("Service app must not include docker images (remove `amd64_docker_image`/`aarch64_docker_image` or change AppType)".to_string());
                 }
-                if has_agent || has_agent_skills || has_agent_tools {
+                if has_agent || has_agent_skills {
                     errors.push(
-                        "Service app must not include Agent packages (remove `pkg_list.agent`, `pkg_list.agent_skills`, and `pkg_list.agent_tools` or change AppType)"
+                        "Service app must not include Agent packages (remove `pkg_list.agent` and `pkg_list.agent_skills` or change AppType)"
                             .to_string(),
                     );
                 }
@@ -1331,9 +1332,9 @@ impl AppDocBuilder {
                 if has_native_app {
                     errors.push("AppService app must not include `*_win_app`/`*_apple_app` packages (remove them or change AppType)".to_string());
                 }
-                if has_agent || has_agent_skills || has_agent_tools {
+                if has_agent || has_agent_skills {
                     errors.push(
-                        "AppService app must not include Agent packages (remove `pkg_list.agent`, `pkg_list.agent_skills`, and `pkg_list.agent_tools` or change AppType)"
+                        "AppService app must not include Agent packages (remove `pkg_list.agent` and `pkg_list.agent_skills` or change AppType)"
                             .to_string(),
                     );
                 }
@@ -1355,9 +1356,9 @@ impl AppDocBuilder {
                             .to_string(),
                     );
                 }
-                if has_agent || has_agent_skills || has_agent_tools {
+                if has_agent || has_agent_skills {
                     errors.push(
-                        "Web app must not include Agent packages (remove `pkg_list.agent`, `pkg_list.agent_skills`, and `pkg_list.agent_tools` or change AppType)"
+                        "Web app must not include Agent packages (remove `pkg_list.agent` and `pkg_list.agent_skills` or change AppType)"
                             .to_string(),
                     );
                 }
@@ -1371,8 +1372,20 @@ impl AppDocBuilder {
                 if !has_aiws {
                     errors.push("aiws package must include `pkg_list.aiws`".to_string());
                 }
-                if has_docker || has_script || has_web || has_native_app || has_agent || has_agent_skills || has_agent_tools || other_keys {
+                if has_docker || has_script || has_web || has_native_app || has_agent || has_agent_skills || other_keys {
                     errors.push("aiws package must contain only `pkg_list.aiws` (no docker, script, web, native or Agent packages)".to_string());
+                }
+            }
+            // one payload per platform and nothing that runs (doc/pikg/format.md §5)
+            AppType::ExtTools => {
+                if has_docker || has_script || has_web || has_native_app || has_agent || has_agent_skills || has_aiws {
+                    errors.push("ext_tools package must contain only `pkg_list.ext_tools_<os>_<arch>` (no docker, script, web, native, Agent or aiws packages)".to_string());
+                }
+                if self.pkg_list.others.is_empty() {
+                    errors.push("ext_tools package must include a payload for at least one platform".to_string());
+                }
+                if let Some(key) = self.pkg_list.others.keys().find(|k| crate::ext_tools_platform_of_key(k).is_none()) {
+                    errors.push(format!("ext_tools package has an unknown sub package `{key}` (one of `ext_tools_<os>_<arch>`)"));
                 }
             }
             AppType::Agent => {
@@ -1828,7 +1841,6 @@ mod tests {
             web: Some(SubPkgDesc::new("demo-web#0.1.0")),
             agent: Some(SubPkgDesc::new("demo-agent#0.1.0")),
             agent_skills: Some(SubPkgDesc::new("demo-agent-skills#0.1.0")),
-            agent_tools: Some(SubPkgDesc::new("demo-agent-tools#0.1.0")),
             ..Default::default()
         };
         pkg_list
@@ -1861,10 +1873,6 @@ mod tests {
             pkg_list.get("agent_skills").map(|pkg| pkg.pkg_id.as_str()),
             Some("demo-agent-skills#0.1.0")
         );
-        assert_eq!(
-            pkg_list.get("agent_tools").map(|pkg| pkg.pkg_id.as_str()),
-            Some("demo-agent-tools#0.1.0")
-        );
 
         let keys: Vec<String> = pkg_list.iter().into_iter().map(|(key, _)| key).collect();
         assert!(keys.iter().any(|key| key == "amd64_linux_app"));
@@ -1872,8 +1880,46 @@ mod tests {
         assert!(keys.iter().any(|key| key == "amd64_apple_app"));
         assert!(keys.iter().any(|key| key == "agent"));
         assert!(keys.iter().any(|key| key == "agent_skills"));
-        assert!(keys.iter().any(|key| key == "agent_tools"));
         assert!(keys.iter().any(|key| key == "custom"));
+    }
+
+    #[test]
+    fn ext_tools_packages_carry_one_payload_per_platform_and_nothing_else() {
+        let owner = DID::from_str("did:bns:tester").unwrap();
+        let linux = crate::ext_tools_platform("linux-x86_64").unwrap();
+        let mac = crate::ext_tools_platform("darwin-arm64").unwrap();
+        let desc = |key: &str| {
+            SubPkgDesc::new(format!("{key}.ext-core.tester.bns.did#1.0.0"))
+                .package_meta_object_id(ObjId::new_by_raw("pkg".to_string(), vec![7; 32]))
+        };
+        let builder = || AppDoc::builder(AppType::ExtTools, "ext-core", "1.0.0", "tester", &owner);
+        let doc = builder()
+            .ext_tools_pkg(linux, desc(linux.key))
+            .ext_tools_pkg(mac, desc(mac.key))
+            .build()
+            .unwrap();
+        assert_eq!(doc.get_app_type(), AppType::ExtTools);
+        assert_eq!(AppType::try_from("ext_tools"), Ok(AppType::ExtTools));
+        assert_eq!(AppType::ExtTools.to_string(), "ext_tools");
+        let value = serde_json::to_value(&doc).unwrap();
+        assert_eq!(value["app_type"], "ext_tools");
+        let back: AppDoc = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            SubPkgList::effective_selector(mac.key, back.pkg_list.get(mac.key).unwrap()).unwrap(),
+            PackageSelector::for_platform("macos", "aarch64")
+        );
+
+        assert!(builder().build().is_err(), "no payload");
+        assert!(builder().ext_tools_pkg(linux, desc(linux.key)).web_pkg(desc("web")).build().is_err());
+        assert!(builder().ext_tools_pkg(linux, desc(linux.key)).other_pkg("custom", desc("custom")).build().is_err());
+        assert!(builder().other_pkg("ext_tools_windows_aarch64", desc("x")).build().is_err(), "not a platform");
+        assert!(
+            AppDoc::builder(AppType::Web, "demo", "1.0.0", "tester", &owner)
+                .web_pkg(desc("web"))
+                .ext_tools_pkg(linux, desc(linux.key))
+                .build()
+                .is_err()
+        );
     }
 
     #[test]

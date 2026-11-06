@@ -65,6 +65,7 @@ src/rootfs/bin/sys_test/
 publish/*
 !publish/aios/
 !publish/aios/Dockerfile
+!publish/exttool/
 src/rootfs/bin/buckyos_systest/
 src/rootfs/bin/aicc/aicc
 src/rootfs/bin/kmsg/kmsg

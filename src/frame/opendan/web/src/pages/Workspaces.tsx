@@ -7,6 +7,7 @@ import {
   dataModel,
   type ArtifactHead,
   type ComputerAccess,
+  type ExtCheck,
   type InstallGrant,
   type KnownRuntime,
   type KnownWorkspace,
@@ -361,6 +362,15 @@ const runtimeAvailability: Record<KnownRuntime['availability'], TextKey> = {
   permission_denied: 'runtimePermissionDenied',
 }
 
+function extToolsLine(ext: ExtCheck): string {
+  switch (ext.status) {
+    case 'ok': return t('runtimeExtOk')
+    case 'partial': return t('runtimeExtPartial', { tools: ext.missing.join(', ') })
+    case 'none': return t('runtimeExtNone')
+    case 'system': return t('runtimeExtSystem', { tools: ext.system.join(', ') })
+  }
+}
+
 function RuntimeCard({ runtime, chosen, refresh }: {
   runtime: KnownRuntime
   /** The owner's setting for this runtime on the agent, when there is one. */
@@ -385,6 +395,7 @@ function RuntimeCard({ runtime, chosen, refresh }: {
   const isPrivate = runtime.connector.type === 'native'
   const retired = runtime.lifecycle === 'retired'
   const { caps, grant, usage } = runtime
+  const devHelpers = Object.entries(caps.baseline_check?.resolved ?? {}).filter(([, command]) => command.provided_by === 'dev').map(([name]) => name)
   return (
     <li className={clsx('min-w-0 py-3 first:pt-1 last:pb-0', retired && 'opacity-60')} data-testid={`runtime-${runtime.runtime_id}`}>
       <div className="flex items-start gap-2">
@@ -429,8 +440,15 @@ function RuntimeCard({ runtime, chosen, refresh }: {
         <p className="mt-2 break-words text-xs text-warn" data-testid="runtime-tool-check">
           {caps.baseline_check.error
             ? t('runtimeToolCheckFailed', { error: caps.baseline_check.error })
-            : t('runtimeToolsMissing', { tools: caps.baseline_check.missing.join(', ') })}
+            : [
+                caps.baseline_check.missing.length > 0 && t('runtimeToolsMissing', { tools: caps.baseline_check.missing.join(', ') }),
+                caps.baseline_check.unmanaged?.length && t('runtimeToolsUnmanaged', { tools: caps.baseline_check.unmanaged.join(', ') }),
+              ].filter(Boolean).join(' · ')}
         </p>}
+      {caps.baseline_check?.ext &&
+        <p className="mt-1 break-words text-xs text-mute" data-testid="runtime-ext">{extToolsLine(caps.baseline_check.ext)}</p>}
+      {devHelpers.length > 0 &&
+        <p className="mt-1 break-words text-xs text-mute" data-testid="runtime-dev-helpers">{t('runtimeDevHelpers', { tools: devHelpers.join(', ') })}</p>}
       {caps.tools_check && caps.tools_check.present.length > 0 &&
         <p className="mt-1 break-words text-xs text-mute">{t('runtimeCommandsVerified', { tools: caps.tools_check.present.join(', ') })}</p>}
       <ErrorBox error={error} />

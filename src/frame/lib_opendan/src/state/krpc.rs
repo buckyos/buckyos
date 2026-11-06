@@ -333,7 +333,8 @@ pub async fn serve_call(
                     .map_err(|e| OpenDanError::InvalidArgument(format!("param `commands`: {e}")))
                     .unwrap_or_default()
                     .unwrap_or_default();
-                agent.runtimes().check(&id, &commands).await.and_then(out)
+                let full = params.get("full").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                agent.runtimes().check(&id, &commands, full).await.and_then(out)
             }
             Err(e) => Err(e),
         },
@@ -935,8 +936,8 @@ impl RuntimeRegistry for KrpcAgentStateClient {
     async fn update(&self, runtime_id: &str, request: &RuntimeUpdate, _who: &str) -> Result<RuntimeRecord> {
         self.call("runtimes.update", json!({ "runtime_id": runtime_id, "request": request })).await
     }
-    async fn check(&self, runtime_id: &str, commands: &[String]) -> Result<RuntimeRecord> {
-        self.call("runtimes.check", json!({ "runtime_id": runtime_id, "commands": commands })).await
+    async fn check(&self, runtime_id: &str, commands: &[String], full: bool) -> Result<RuntimeRecord> {
+        self.call("runtimes.check", json!({ "runtime_id": runtime_id, "commands": commands, "full": full })).await
     }
     async fn unregister(&self, runtime_id: &str, expected_revision: u64, _who: &str) -> Result<RuntimeRecord> {
         self.call(

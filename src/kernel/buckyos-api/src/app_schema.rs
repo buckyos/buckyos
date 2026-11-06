@@ -539,7 +539,8 @@ pub enum InstallGrant {
     None,
     /// Commands a skill brings, into the Agent's own bin.
     AgentBin,
-    /// System-wide packages (ExtTools, package managers).
+    /// A skill's `install.toml` may also write outside the Agent's own directory.
+    /// Never `$BUCKYOS_ROOT/tools`: extension packages are installed by node_daemon.
     System,
 }
 

@@ -139,7 +139,7 @@ agent-session skill install ./dapp_dist/<pkg>-<ver>.pikg     # or a skills/ dir;
 buckyos skill install <pikg> --agent <agent_id>               # same from outside (owner), also list|remove
 agent-session skill remove <name> [--kind cmd|goal]
 ```
-Installed files go to `cmd_skills/`, `goal_skills/`, `tools/<name>/` and `.meta/skills.json` (package, version, digest); a `tools/<name>` without a matching manual is refused. Sessions created afterwards see the change; running ones keep their frozen text. A template can also ship skills as its own `agent_skills` sub package. `app publish` rejects `agent_tools` sub packages: ship commands inside a skill package.
+Installed files go to `cmd_skills/`, `goal_skills/`, `tools/<name>/` and `.meta/skills.json` (package, version, digest); a `tools/<name>` without a matching manual is refused. Sessions created afterwards see the change; running ones keep their frozen text. A template can also ship skills as its own `agent_skills` sub package; ship commands inside a skill package.
 
 #### Debug
 - Inside: `agent-session sessions --children --active`, `read-session`, your logs under `/opt/buckyos/logs/`.

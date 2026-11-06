@@ -205,7 +205,8 @@ fn open_executor(
         } else {
             ExecutorIdentityMode::SwitchUser
         },
-        path_prefix: agent_tools_dir().into_iter().collect(),
+        path_prefix: host_path_prefix(&buckyos_kit::get_buckyos_root_dir(), agent_tools_dir()),
+        buckyos_root: Some(buckyos_kit::get_buckyos_root_dir()),
         ..ExecutorOptions::default()
     };
     #[cfg(any(target_os = "macos", windows))]
@@ -214,6 +215,14 @@ fn open_executor(
             .map_err(|e| e.to_string());
     }
     NodeExecutor::open_with_options(host, options).map_err(|e| e.to_string())
+}
+
+/// What a BuckyOS host puts first on the PATH of an Agent's commands: its
+/// extension tools, then the standard ones. `tools/bin` is named even before
+/// an extension package has created it: a package installed later needs no
+/// executor restart.
+fn host_path_prefix(root: &std::path::Path, agent_tools: Option<PathBuf>) -> Vec<PathBuf> {
+    std::iter::once(root.join("tools").join("bin")).chain(agent_tools).collect()
 }
 
 /// The host's agent tool directory (`bin/agent-tools`), laid out now by the
@@ -393,4 +402,19 @@ pub fn spawn_node_executor(node_host_name: String, node_did: String, desktop_bui
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extension_tools_come_before_the_standard_entries() {
+        let root = std::path::Path::new("/opt/buckyos");
+        assert_eq!(
+            host_path_prefix(root, Some(root.join("bin/agent-tools"))),
+            vec![root.join("tools/bin"), root.join("bin/agent-tools")]
+        );
+        assert_eq!(host_path_prefix(root, None), vec![root.join("tools/bin")], "a node without OpenDAN still has its extension tools");
+    }
 }

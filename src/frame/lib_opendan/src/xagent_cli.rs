@@ -55,7 +55,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent workspace list|get|create|import|discover|check|archive|restore|unregister|set-url|runtime-impact|set-runtime ...
         (list: [--active] [--runtime <id>] [--text <text>] [--json])
         (create/import: --runtime <id> --directory <abs path on that runtime> [--url <https://project>])
-  xagent runtime list [--available] [--json] | get <id> | check <id> [--commands <a,b>] | baseline [--json] [--check [--overlay]]
+  xagent runtime list [--available] [--json] | get <id> | check <id> [--commands <a,b>] [--full] | baseline [--level standard|extended] [--json] [--check [--overlay]]
                  | register <id> --connector ssh --host <h> [--user <u>] [--port <p>] [--identity-file <f>] --name <n> [--desc <t>]
                    --root <dir>... [--baseline standard|extended] [--expires-at-ms <t>]   (development; owners add runtimes in the directory)
                  | update <id> --expected-revision <n> [--name <n>] [--desc <t>] [--root <dir>]... | unregister <id> --expected-revision <n>
@@ -111,7 +111,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         the target's own PATH and shell; output and exit code come back as they are (exit 124: timed out)
   task state|cancel <task_id>   (a task of the run this command runs in, e.g. a shell command that continued as a task;
         its end comes back to the session as input on its own — nothing waits for it; exit 0 running/finished, 1 failed, 2 unknown)
-  runtime list [--available] [--json] | get <id> | check <id> | baseline [--json] | workspace ...
+  runtime list [--available] [--json] | get <id> | check <id> | baseline [--level standard|extended] [--json] | workspace ...
         (workspace list, runtime list and sessions: readable text by default; --json for structured output)
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
             goal sessions: show / skills add|remove / achieved --evidence / archive --reason)
@@ -1928,24 +1928,65 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
     Ok(0)
 }
 
-/// `runtime baseline [--json] [--check [--overlay]]`: the standard
-/// environment's commands; `--check` looks for them on this machine's PATH
-/// (`--overlay`: session helpers come from a session bin overlay, so their
-/// providing executables are looked for instead). Exit 1 when any is
-/// missing.
+/// `runtime baseline [--level standard|extended] [--json] [--check
+/// [--overlay]]`: the commands of a baseline (default `standard`); `--check`
+/// looks for them on this machine's PATH and says where each is (`--overlay`:
+/// session helpers come from a session bin overlay, so their providing
+/// executables are looked for instead). Exit 1 when one is missing, or a
+/// standard one is not from `$BUCKYOS_ROOT`.
 fn cmd_runtime_baseline(a: &Args) -> R<i32> {
-    use crate::baseline::{missing_locally, required_commands, STANDARD_TOOLS};
+    use crate::baseline::{beside_current_exe, buckyos_root, checked_commands, evaluate, required_commands, resolve_locally, CommandOrigin, EXTENDED_TOOLS, STANDARD_TOOLS};
+    let level = match a.get("level").as_deref() {
+        None | Some("standard") => buckyos_api::RuntimeBaseline::Standard,
+        Some("extended") => buckyos_api::RuntimeBaseline::Extended,
+        Some(other) => return Err(bad(format!("--level takes standard | extended, not `{other}`"))),
+    };
+    let extended = level == buckyos_api::RuntimeBaseline::Extended;
     if a.has("check") {
-        let names = required_commands(a.has("overlay"));
-        let missing = missing_locally(&names, None, &[]);
-        print(&json!({ "baseline": "standard", "checked": names, "missing": missing, "ok": missing.is_empty() }));
-        return Ok(if missing.is_empty() { 0 } else { 1 });
+        let overlay = a.has("overlay");
+        let beside: Vec<PathBuf> = beside_current_exe().into_iter().collect();
+        let origin = CommandOrigin {
+            root: buckyos_root().map(|r| r.display().to_string()),
+            agent_root: None,
+            beside: beside.first().map(|d| d.display().to_string()),
+            windows: cfg!(windows),
+        };
+        let resolved: std::collections::BTreeMap<String, ResolvedCommand> = resolve_locally(&checked_commands(overlay), &[], None, &beside)
+            .into_iter()
+            .map(|(name, path)| {
+                let provided_by = origin.of(&path);
+                (name, ResolvedCommand { path, version: None, provided_by, stub: false })
+            })
+            .collect();
+        let findings = evaluate(level, overlay, &resolved);
+        print(&json!({
+            "baseline": level.as_str(),
+            "checked": required_commands(level, overlay),
+            "missing": findings.missing,
+            "unmanaged": findings.unmanaged,
+            "resolved": resolved,
+            "ext": findings.ext,
+            "ok": findings.ok(),
+        }));
+        return Ok(if findings.ok() { 0 } else { 1 });
     }
     if a.has("json") {
-        print(&STANDARD_TOOLS);
+        if extended {
+            print(&json!({ "standard": STANDARD_TOOLS, "extended": EXTENDED_TOOLS }));
+        } else {
+            print(&STANDARD_TOOLS);
+        }
     } else {
+        let label = |v: serde_json::Result<serde_json::Value>| v.ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         for t in STANDARD_TOOLS {
-            println!("{:<22} {:<16} {}", t.name, serde_json::to_value(t.category).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), t.source);
+            println!("{:<22} {:<16} {}", t.name, label(serde_json::to_value(t.category)), t.source);
+        }
+        if extended {
+            for t in EXTENDED_TOOLS {
+                for c in t.commands {
+                    println!("{:<22} {:<16} {} ({}){}", c.name, label(serde_json::to_value(t.category)), t.id, label(serde_json::to_value(t.tier)), if t.alternative.is_empty() { String::new() } else { format!(", or {}", t.alternative.join(", ")) });
+                }
+            }
         }
     }
     Ok(0)
@@ -1971,14 +2012,15 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                 for r in &all {
                     println!("{}", crate::runtime::runtime_line(r));
                     match &r.caps.baseline_check {
+                        Some(check) if check.error.is_some() => {
+                            println!("  Tool check: failed");
+                            println!("  Tool check error: {}", inline_text(check.error.as_deref().unwrap_or_default()));
+                        }
                         Some(check) => {
-                            if !check.missing.is_empty() {
-                                println!("  Tool check: missing {}", check.missing.join(", "));
-                            } else {
-                                println!("  Tool check: {}", if check.ok { "ok" } else { "failed" });
-                            }
-                            if let Some(error) = &check.error {
-                                println!("  Tool check error: {}", inline_text(error));
+                            println!("  Tool check: {}", check.problem().unwrap_or_else(|| "ok".to_string()));
+                            let dev = check.dev_helpers();
+                            if !dev.is_empty() {
+                                println!("  Development helpers: {}", dev.join(", "));
                             }
                         }
                         None => println!("  Tool check: not checked"),
@@ -2012,7 +2054,7 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                 .flat_map(|v| v.split(',').map(|x| x.trim().to_string()))
                 .filter(|x| !x.is_empty())
                 .collect();
-            print(&registry.check(&id, &commands).await?);
+            print(&registry.check(&id, &commands, a.has("full")).await?);
         }
         "op" => {
             let id = a.next("op id")?;
@@ -2847,6 +2889,7 @@ async fn real_main() -> R<i32> {
         ("todo", _) => &["json", "clear-accept"],
         ("skill", _) => &["json", "replace"],
         ("runtime", Some("baseline")) => &["json", "check", "overlay"],
+        ("runtime", Some("check")) => &["full"],
         ("workspace" | "runtime", Some("list")) | ("sessions", _) => &["json"],
         ("copy", _) => &["replace"],
         _ => &[],

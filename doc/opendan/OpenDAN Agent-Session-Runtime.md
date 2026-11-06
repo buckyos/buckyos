@@ -120,10 +120,12 @@ Deno 是当前标准 TS 工具的运行依赖，但 `deno` 这个命令名不在
 | --- | --- | --- |
 | Agent 核心程序 | `/opt/buckyos/bin/opendan/` 下的程序及多入口；Session helper 由 `.runtime/bin` 装配 | `$BUCKYOS_ROOT/bin/agent-tools/` 下指向 `opendan` 的多入口；节点执行器将该目录前置到 PATH |
 | buckyos-agent 源码 | `/opt/buckyos/bin/opendan/buckyos-agent/` | `$BUCKYOS_ROOT/libexec/buckyos-agent/` |
-| AICC 命令入口 | `/usr/local/bin/aicc-tool` 及各命令链接 | `bin/agent-tools/` 内的同名入口，启动 buckyos-agent |
+| AICC 命令入口 | `/opt/buckyos/bin/agent-tools/aicc-tool` 及各命令链接 | `bin/agent-tools/` 内的同名入口，启动 buckyos-agent |
 | BuckyOS Tool/SDK | 宿主只读挂载到 `/opt/buckyos/libexec/buckyos-tool/`，由容器 launcher 调用 | `$BUCKYOS_ROOT/libexec/buckyos-tool/`，系统 CLI 为 `bin/buckyos` 或 `bin/buckyos.cmd` |
 | Deno | 镜像内 Deno | `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno`，Windows 为 `deno.exe` |
 | Session 上下文 | 通过 Session 环境和 AgentRoot 访问 | libopendan 在 Session 工作目录写入 `.opendan/session.json` 与 `.opendan/session.token`，helper 经 kRPC 访问 AgentService |
+
+核心层的检查看命中路径：标准命令必须来自 `$BUCKYOS_ROOT`（或开发态程序旁，记 `provided_by: dev`）。用户 PATH 里同名的 `xagent` 记 `provided_by: system`，算标准层不完整（`baseline_check.unmanaged`），因为它的依赖不是钉死的那一份。
 
 host 入口由 `opendan install-agent-tools` 布置：Unix 使用符号链接，Windows 使用硬链接或复制。Node Executor 不依靠复制控制侧的 `OPENDAN_*` 环境来获得 Session 身份。机制见 [Agent State Protocol](<protocol/Agent State Protocol.md>) 和 [OpenDAN README](../../src/frame/opendan/README.md)。
 
@@ -131,13 +133,21 @@ host 入口由 `opendan install-agent-tools` 布置：Unix 使用符号链接，
 
 ### 3.1 扩展工具按实际能力准备
 
-`extended` 必须保留 §2 的全部能力，然后为目标任务准备额外工具。当前实现没有与 `STANDARD_TOOLS` 对应的统一 `EXTENDED_TOOLS` 清单，也没有“声明 extended 即安装工具”的流程。
+`extended` = §2 的全部能力 + `EXTENDED_TOOLS`（[`baseline.rs`](../../src/frame/lib_opendan/src/baseline.rs)，就是扩展包 `ext-core` 的 `provides`，单测绑定）。工具分三档：
 
-准备扩展环境时，应明确提供哪些工具、版本、执行路径和任务能力；cmd_skill 用 `baseline: extended` 表示需要扩展环境，并在 `requires` 或正文中列出具体依赖。运行任务前仍需核验这些依赖。音频环境可以有 `ffmpeg` 而没有 Rust；开发环境可以有 Rust 而没有 ImageMagick，这两者都不能只凭 `extended` 声明运行对方的任务。
+| 档 | 内容 | 判定 |
+| --- | --- | --- |
+| 核心 | `EXTENDED_TOOLS` 里标 `core` 的工具：`ffmpeg ffprobe`、`convert identify compare`（或 `magick`）、`pdftotext pdftoppm pdfinfo`、`tesseract`、`pandoc`、`python3 uv`、`node npm npx deno`、`git curl jq tree unzip xz` | 声明 `extended` 时缺任何一个，`baseline_check` 失败 |
+| 推荐 | `EXTENDED_TOOLS` 里标 `recommended` 的工具（首版没有，T0 决定） | 缺了只在 `ext` 状态里报，不否定 `extended` |
+| 可选 | FreeCAD、编译工具链、Docker、pnpm、字体、额外 OCR 数据等，各自成扩展包 | 不改变 baseline，skill 自己核验 |
+
+检查按声明选集合，但总是一起查扩展层，所以声明 `standard` 的 runtime 也能看到它实际有什么：`caps.baseline_check.ext` 的 `status` 是 `ok`（全部来自扩展包）、`system`（齐全，部分是机器自己的）、`partial`（缺一些）、`none`。扩展层的检查是宽的：机器碰巧有 ffmpeg 也算有，只是 `resolved` 里记 `provided_by: system`。后台检查只记路径；`xagent runtime check <id> --full` 才运行工具，记版本，并把退出 126 / 127 的占位入口计为缺失。
+
+检查不改声明。安装（node_daemon reconciler）未实现，声明 `extended` 前仍由 owner 自己把机器准备好，见 [扩展包 TODO](../../notepads/opendan-exttools-cross-platform-todo.md)。音频环境可以有 `ffmpeg` 而没有 Rust，这类差异在可选档：cmd_skill 用 `baseline: extended` 表示需要核心扩展工具，其它依赖在 `requires` 或正文中列出并在运行前核验。
 
 ### 3.2 当前 aios 提供的附加工具
 
-下面是当前 [`build_aios`](../../build_aios) 明确安装的软件及常用入口。它描述默认 aios 的附加能力，不是对所有 Windows、macOS、Linux 扩展环境强制要求同一套软件。
+下面是当前 [`build_aios`](../../build_aios) 明确安装的软件及常用入口，是核心档的首版来源。其中 `bash`、`rsync` 是 Linux 特有，不在 `EXTENDED_TOOLS` 里。
 
 | 能力 | 常用命令 | 当前 aios 的来源与边界 |
 | --- | --- | --- |
@@ -157,7 +167,9 @@ host 入口由 `opendan install-agent-tools` 布置：Unix 使用符号链接，
 
 ### 3.3 ExtTool 提供的工具
 
-ExtTool 是额外工具的分发方式之一。容器通过只读卷获得 `/opt/buckyos/tools/`，入口脚本将其 `bin/` 加入 PATH；它不改变 `extended ⊇ standard` 的关系，也不代替标准 Agent 命令的安装。
+ExtTool 卷是扩展层今天在容器上的落点。容器通过只读卷获得 `/opt/buckyos/tools/`，入口脚本将其 `bin/` 加入 PATH；host 上 Node Executor 把 `$BUCKYOS_ROOT/tools/bin` 排在 `bin/agent-tools` 之前。它不改变 `extended ⊇ standard` 的关系，也不代替标准 Agent 命令的安装。扩展包格式（`app_type=ext_tools`）见 [PIKG 格式 §5.1](../pikg/format.md)，`publish/exttool/ext-core` 是第一个包：pandoc 随包，其余命令目前的 Linux launcher 转到机器上的同名命令，真正随包要等 T2。
+
+下表的 `pandoc-lua`、`pandoc-server` 只在 seed 镜像里有，`ext-core` 不保证。
 
 | 工具 | 常用入口 | 可用条件 |
 | --- | --- | --- |
@@ -248,12 +260,14 @@ Session 创建时按自己的 runtime 声明过滤并冻结手册；Workspace �
 以下命令只查看或检查环境：
 
 ```sh
-# 查看当前程序版本的标准清单，不要求 Agent State 上下文
+# 查看当前程序版本的清单，不要求 Agent State 上下文
 xagent runtime baseline
 xagent runtime baseline --json
+xagent runtime baseline --level extended
 
-# 检查当前执行端 PATH；缺少命令时退出码为 1
+# 检查当前执行端 PATH，输出每个命令的路径与来源；缺命令或标准命令不来自 $BUCKYOS_ROOT 时退出码为 1
 xagent runtime baseline --check
+xagent runtime baseline --check --level extended
 
 # 在 Session 中检查自己所在的执行端；节点上此命令也在本地检查
 agent-session runtime baseline --check
@@ -262,9 +276,12 @@ agent-session runtime baseline --check
 agent-session runtime list --available
 agent-session runtime check host
 agent-session runtime get host
+
+# 运行扩展工具和点名的命令：记版本，占位入口（退出 126 / 127）计为缺失
+xagent runtime check host --commands ffmpeg,pandoc --full
 ```
 
-最后两条的 `host` 应替换为实际登记的 runtime ID。`runtime baseline --check` 检查命令所在机器；`runtime check <id>` 通过登记信息检查目标，两者不能混用。
+最后三条的 `host` 应替换为实际登记的 runtime ID。`runtime baseline --check` 检查命令所在机器；`runtime check <id>` 通过登记信息检查目标，两者不能混用。plan 全表每行多一段 `ext: ok | partial(missing …) | none | system`。
 
 镜像构建或 Session helper 尚未装配的同机环境可使用 `xagent runtime baseline --check --overlay`：它以 `xagent`、`agent_tool` 的存在替代检查后续由 Session overlay 提供的 `agent-session`、`llm_understand_media`。这只适用于会提供该 overlay 的环境；独立节点需要实际部署完整入口。
 

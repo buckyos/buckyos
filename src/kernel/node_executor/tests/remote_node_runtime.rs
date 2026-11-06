@@ -525,7 +525,7 @@ async fn a_node_session_runtime_is_checked_copied_to_and_given_its_context() {
         )
         .await
         .unwrap();
-    let lab = agent.runtimes().check("lab", &["sh".into(), "no-such-command-xyz".into()]).await.unwrap();
+    let lab = agent.runtimes().check("lab", &["sh".into(), "no-such-command-xyz".into()], false).await.unwrap();
     assert_eq!(lab.availability, RuntimeAvailability::Available);
     assert_eq!(lab.grant.roots, vec![work.clone()]);
     assert!(lab.grant.ops.contains(&ExecutorOp::Exec) && !lab.grant.read_only());

@@ -202,7 +202,7 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
                 .checked_at_ms
                 .is_none_or(|t| crate::now_ms().saturating_sub(t) >= RUNTIME_RECHECK_MS)
     }) {
-        match agent.runtimes().check(&r.runtime_id, &[]).await {
+        match agent.runtimes().check(&r.runtime_id, &[], false).await {
             Ok(checked) => record = Some(checked),
             Err(e) => log::warn!("runtime {runtime_id} not checked again: {e}"),
         }

@@ -180,9 +180,10 @@ pub trait RuntimeRegistry: Send + Sync {
     async fn register(&self, request: &RuntimeRegister, who: &str) -> Result<RuntimeRecord>;
     async fn update(&self, runtime_id: &str, request: &RuntimeUpdate, who: &str) -> Result<RuntimeRecord>;
     /// Whether this host can use it now (writes the observation), whether
-    /// its standard tools are there, and whether `commands` exist on it
-    /// (`caps.tools_check`).
-    async fn check(&self, runtime_id: &str, commands: &[String]) -> Result<RuntimeRecord>;
+    /// the tools of its declared baseline are there, and whether `commands`
+    /// exist on it (`caps.tools_check`). `full` also runs the extended tools
+    /// and `commands`, for their versions and to find stubs.
+    async fn check(&self, runtime_id: &str, commands: &[String], full: bool) -> Result<RuntimeRecord>;
     /// Retire a registration: it stays with its usage, never a candidate
     /// again. Built-in runtimes are refused.
     async fn unregister(&self, runtime_id: &str, expected_revision: u64, who: &str) -> Result<RuntimeRecord>;

@@ -431,6 +431,10 @@ pub struct ExecutorRuntimeInfo {
     /// A-system): how the host executes.
     #[serde(default)]
     pub identity_mode: Option<String>,
+    /// `$BUCKYOS_ROOT` of a BuckyOS node: where its managed commands are.
+    /// Absent on a host without a managed install (form B/C).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buckyos_root: Option<String>,
     /// The desktop Driver's capabilities (`ui`, `capture`, `input`,
     /// `accessibility`, each `{supported, ready, reason?}`) when one is
     /// injected; absent on hosts without ComputerUse.

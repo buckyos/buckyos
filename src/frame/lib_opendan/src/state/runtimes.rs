@@ -175,6 +175,7 @@ impl FsRuntimes {
                 let info = &target.described().info;
                 record.caps.platform = RuntimePlatform::reported(&info.os, &info.arch, &info.shell);
                 record.caps.identity_mode = info.identity_mode.clone();
+                record.caps.buckyos_root = info.buckyos_root.clone();
                 record.caps.desktop = info
                     .desktop
                     .as_ref()
@@ -227,9 +228,9 @@ impl FsRuntimes {
         record
     }
 
-    /// Reachability, standard tools and `commands` of one record; writes
-    /// it when anything changed.
-    async fn check_record(&self, mut record: RuntimeRecord, commands: &[String]) -> Result<RuntimeRecord> {
+    /// Reachability, the declared baseline's tools and `commands` of one
+    /// record (`full`: also their versions); writes it when anything changed.
+    async fn check_record(&self, mut record: RuntimeRecord, commands: &[String], full: bool) -> Result<RuntimeRecord> {
         let identity = |r: &RuntimeRecord| {
             (r.availability, r.last_error.clone(), r.grant.clone(), r.caps.clone())
         };
@@ -240,9 +241,10 @@ impl FsRuntimes {
         }
         if record.availability == RuntimeAvailability::Available {
             let ops_dir = self.layout.runtimes_dir().join(".probe");
-            record.caps.baseline_check = Some(crate::runtime::check_baseline(&record, &ops_dir).await);
+            let agent_root = self.layout.root.as_path();
+            record.caps.baseline_check = Some(crate::runtime::check_baseline(&record, &ops_dir, Some(agent_root), full).await);
             if !commands.is_empty() {
-                record.caps.tools_check = Some(crate::runtime::check_commands(&record, &ops_dir, commands).await);
+                record.caps.tools_check = Some(crate::runtime::check_commands(&record, &ops_dir, commands, Some(agent_root), full).await);
             }
         }
         if before != identity(&record) {
@@ -305,7 +307,7 @@ impl RuntimeRegistry for FsRuntimes {
         };
         // Checked at once (R-C2): the record says whether it answers.
         let _lock = self.lock().await?;
-        self.check_record(record, &[]).await
+        self.check_record(record, &[], false).await
     }
 
     async fn update(&self, runtime_id: &str, req: &RuntimeUpdate, _who: &str) -> Result<RuntimeRecord> {
@@ -335,10 +337,10 @@ impl RuntimeRegistry for FsRuntimes {
         Ok(record)
     }
 
-    async fn check(&self, runtime_id: &str, commands: &[String]) -> Result<RuntimeRecord> {
+    async fn check(&self, runtime_id: &str, commands: &[String], full: bool) -> Result<RuntimeRecord> {
         let _lock = self.lock().await?;
         let record = self.require(canonical_runtime(runtime_id))?;
-        self.check_record(record, commands).await
+        self.check_record(record, commands, full).await
     }
 
     async fn unregister(&self, runtime_id: &str, expected_revision: u64, who: &str) -> Result<RuntimeRecord> {

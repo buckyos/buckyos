@@ -267,11 +267,39 @@ export type RuntimeConnector =
   | { type: 'node_executor'; node_did?: string | null; executor_id?: string | null; profile_id: string }
   | { type: 'ssh'; host: string; user?: string | null; port?: number | null; identity_file?: string | null }
 
+/** Where a check found a command and who provides it; `version` comes from a full check only. */
+export interface ResolvedCommand {
+  path: string
+  version?: string | null
+  provided_by: 'buckyos_root' | 'exttools' | 'agent' | 'dev' | 'system'
+  stub?: boolean
+}
+
 /** A check of commands on the runtime (`check --commands`, skill installation). */
 export interface ToolsCheck {
   checked_at_ms: number
   present: string[]
   missing: string[]
+  resolved?: Record<string, ResolvedCommand>
+  error?: string | null
+}
+
+/** The extended layer of a runtime, whatever it declares. */
+export interface ExtCheck {
+  status: 'ok' | 'partial' | 'none' | 'system'
+  missing: string[]
+  system: string[]
+}
+
+/** The last check of a runtime's tools against its declaration: a hint, never the declaration. */
+export interface BaselineCheck {
+  checked_at_ms: number
+  level?: RuntimeBaseline
+  missing: string[]
+  unmanaged?: string[]
+  resolved?: Record<string, ResolvedCommand>
+  ext?: ExtCheck | null
+  ok: boolean
   error?: string | null
 }
 
@@ -283,8 +311,9 @@ export interface RuntimeCaps {
   desktop: boolean
   identity_mode?: string | null
   baseline: RuntimeBaseline
-  /** The last check of its standard tools: a hint, never the declaration. */
-  baseline_check?: { checked_at_ms: number; missing: string[]; ok: boolean; error?: string | null } | null
+  /** `$BUCKYOS_ROOT` of that machine as its executor reports it. */
+  buckyos_root?: string | null
+  baseline_check?: BaselineCheck | null
   tools_check?: ToolsCheck | null
 }
 

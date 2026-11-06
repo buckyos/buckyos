@@ -135,6 +135,8 @@ pub enum AppExecutionForm {
     Container,
     /// AI Workspace controls (`pkg_list.aiws`): a library entry of the aiworkspace service, never a running App.
     AiwsControls,
+    /// Extension tools (`pkg_list.ext_tools_<os>_<arch>`): installed on a node by its reconciler, never a running App.
+    ExtTools,
     /// A package key the product cannot classify.
     Unknown,
 }
@@ -150,9 +152,10 @@ pub fn app_execution_forms(app_doc: &AppDoc) -> BTreeSet<AppExecutionForm> {
             } else {
                 match key.as_str() {
                     "web" => AppExecutionForm::StaticWeb,
-                    "agent" | "agent_skills" | "agent_tools" => AppExecutionForm::Agent,
+                    "agent" | "agent_skills" => AppExecutionForm::Agent,
                     "script" => AppExecutionForm::Script,
                     crate::AIWS_SUB_PKG => AppExecutionForm::AiwsControls,
+                    _ if crate::is_ext_tools_sub_pkg(&key) => AppExecutionForm::ExtTools,
                     _ if key.ends_with("_app") => AppExecutionForm::NativeBinary,
                     _ => AppExecutionForm::Unknown,
                 }
@@ -206,6 +209,8 @@ pub enum AdmissionDenied {
     StaticWebDisabled,
     /// An `aiws` package is installed by a user into the AI Workspace library, never preinstalled or deployed.
     AiwsOrigin,
+    /// An `ext_tools` package is published to the Repo and enabled for the Zone, never installed as an App.
+    ExtToolsPackage,
 }
 
 impl AdmissionDenied {
@@ -219,6 +224,7 @@ impl AdmissionDenied {
             AdmissionDenied::AgentOrigin => "product_agent_origin",
             AdmissionDenied::StaticWebDisabled => "product_static_web_disabled",
             AdmissionDenied::AiwsOrigin => "product_aiws_origin",
+            AdmissionDenied::ExtToolsPackage => "product_ext_tools_package",
         }
     }
 }
@@ -248,6 +254,9 @@ impl fmt::Display for AdmissionDenied {
             }
             AdmissionDenied::AiwsOrigin => f.write_str(
                 "AI Workspace control packages are installed by a user into the AI Workspace library, not deployed as Apps",
+            ),
+            AdmissionDenied::ExtToolsPackage => f.write_str(
+                "extension tool packages are not installed as Apps: publish them to the Repo with `buckyos app publish` and enable them for the Zone on the management page",
             ),
         }
     }
@@ -390,6 +399,13 @@ impl ProductProfile {
                 AdmissionOrigin::User => Ok(AppAdmission::AiwsLibrary),
                 _ => Err(AdmissionDenied::AiwsOrigin),
             };
+        }
+        // tools for the machines of a Zone, in every edition: nothing runs them as an App
+        if forms.contains(&AppExecutionForm::ExtTools) || app_doc.app_type == AppType::ExtTools {
+            if forms.len() != 1 || app_doc.app_type != AppType::ExtTools {
+                return Err(AdmissionDenied::MixedPackages(forms.into_iter().collect()));
+            }
+            return Err(AdmissionDenied::ExtToolsPackage);
         }
         if caps == &ProductCapabilities::full() {
             return Ok(AppAdmission::Unrestricted);
@@ -598,6 +614,26 @@ mod tests {
             full.admit_app(&docker, AdmissionOrigin::User),
             Ok(AppAdmission::Unrestricted)
         );
+    }
+
+    #[test]
+    fn ext_tools_packages_are_never_apps() {
+        let tools = app_doc(
+            "ext-core",
+            "ext_tools",
+            "1.0.0",
+            json!({ "ext_tools_linux_x86_64": {
+                "pkg_id": "nightly-linux-amd64.ext_tools_linux_x86_64.ext-core.buckyos.bns.did#1.0.0",
+                "pkg_objid": "pkg:d0e3ae4d030ef2ad25d0c9b37af6b095e04cd389ef4c0226f41a00ca5450da9b"
+            }}),
+        );
+        assert_eq!(app_execution_forms(&tools).into_iter().collect::<Vec<_>>(), vec![AppExecutionForm::ExtTools]);
+        for profile in [ProductProfile::full(), lite()] {
+            for origin in [AdmissionOrigin::User, AdmissionOrigin::Preinstall, AdmissionOrigin::AgentRuntime, AdmissionOrigin::Deployed] {
+                assert_eq!(profile.admit_app(&tools, origin), Err(AdmissionDenied::ExtToolsPackage));
+            }
+        }
+        assert!(AdmissionDenied::ExtToolsPackage.to_string().contains("management page"));
     }
 
     #[test]

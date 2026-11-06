@@ -186,6 +186,7 @@ impl Fixture {
                 identity_mode: ExecutorIdentityMode::CurrentUser,
                 admission: ExecutorAdmission::Wss,
                 path_prefix: Vec::new(),
+                buckyos_root: None,
             },
             driver.clone(),
         )

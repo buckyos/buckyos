@@ -205,9 +205,9 @@ runtime 对 Agent 来说分三层，每层的写入方不同：
 
 | # | 需求 | 现状 |
 | --- | --- | --- |
-| R-S1 | **ExtTools 全平台包 + 安装器**：`runtime ext-tools install <id>`（owner 在 Agent Home / CLI 触发，经 R-U3 的 `runtime_put` / `runtime_exec` 到目标 runtime），Linux / macOS / Windows 各一份清单、同一组命令名；装完自动 `check`，`baseline_check` 反映实际；owner 声明 `extended` 的规则不变（声明与探测分离），安装器只是让声明成立的手段。落点：私有与跑了 node-daemon 的节点装到各自 `$BUCKYOS_ROOT/tools/`（容器上即持久卷，R-U9）；form B 设备没有 `$BUCKYOS_ROOT`，首期不支持安装，baseline 只能声明 | ❌ |
+| R-S1 | **ExtTools 全平台包 + 安装器**（2026-11-06 改写，方案见 [扩展包 TODO](opendan-exttools-cross-platform-todo.md) §3.3）：扩展包是 `app_type=ext_tools` 的 pikg（格式已落地），**安装器是 node_daemon 的 reconciler**，对照 Zone 级期望状态写 `$BUCKYOS_ROOT/tools/`（容器节点写 `buckyos-tools` 卷）；管理员在管理页勾选，Agent 侧只读，不再有 `runtime ext-tools install`，也不经 `runtime_put` / `runtime_exec`（后者没有写安装根的权限，也没有持久 task）。owner 声明 `extended` 的规则不变（声明与探测分离）。form B 设备不参与，baseline 只能声明 | 🚧 格式已做（P1-6）；期望状态与 reconciler 未做（X2 / X3） |
 | R-S2 | 官方 skill 只用 `standard` / `extended` 清单里的命令，手册 `requires` 写具体命令、`platforms` 写适配平台；第三方 skill 自带 `install.toml` 脚本的路径保留为例外（§3.6.1 C），不是主路径 | ⚠️（手册已这样写，清单未固化） |
-| R-S3 | `extended` 清单机器可读（`EXTENDED_TOOLS`，对应 R-S1 的包内容），`check` 用它核验，plan 全表显示 | ❌（只有 `STANDARD_TOOLS`） |
+| R-S3 | `extended` 清单机器可读（`EXTENDED_TOOLS`，对应 R-S1 的包内容），`check` 用它核验，plan 全表显示 | ✅ `baseline::EXTENDED_TOOLS`（与 `ext-core` 的 `ext-manifest.json` 单测绑定）、`check_baseline` 按声明选集合、`runtime_line` 的 `ext:` 段 |
 
 冻结规则**不变**：按 session default runtime 的 `baseline` / `platforms` 过滤（`unmet_on`），不满足的不注入并说明。`agent-session` 的特殊性（§0 第 2 点：只在私有 session 里使用）不靠 skill 字段表达：用到它的官方手册只有 `ui_core`（`scope: ui`，UI session 恒私有）与 `opendan_agent_dev`；它在 `STANDARD_TOOLS` 里且被布到 host 这件事怎么处理见待裁决 22。
 
@@ -439,7 +439,7 @@ runtime 对 Agent 来说分三层，每层的写入方不同：
 
 skills：
 
-22. **方向已定，排期待安装包改造**（owner 2026-11-04）：Desktop Lite 会是主流，私有 runtime 就是 host，所以 **host 要满足 Agent runtime 的 baseline**，`agent-session` 留在标准清单并照常布到 host（它在 Lite 下本来就是私有侧的命令）。不是私有的 host 上它装着但手册不引导。整个构建 / 安装包的修改目标还没定（aiws 那边还有不少“有则用”的逻辑），本轮改造完后综合各基础服务的需求统一调整安装包；R-S1 的 ExtTools 全平台包并入那次调整。难点：ffmpeg 一类命令的全平台化比 Docker 镜像打包麻烦。
+22. **方向已定，排期待安装包改造**（owner 2026-11-04；2026-11-06 补：[扩展包 TODO](opendan-exttools-cross-platform-todo.md) 的三期（standard 分发）就是这里说的安装包改造中 Agent 工具的部分，其它服务的安装包重构另起，R-S1 的扩展包不再等它）：Desktop Lite 会是主流，私有 runtime 就是 host，所以 **host 要满足 Agent runtime 的 baseline**，`agent-session` 留在标准清单并照常布到 host（它在 Lite 下本来就是私有侧的命令）。不是私有的 host 上它装着但手册不引导。整个构建 / 安装包的修改目标还没定（aiws 那边还有不少“有则用”的逻辑），本轮改造完后综合各基础服务的需求统一调整安装包；R-S1 的 ExtTools 全平台包并入那次调整。难点：ffmpeg 一类命令的全平台化比 Docker 镜像打包麻烦。
 
 ## 8. 实施记录（2026-11-04，未提交）
 

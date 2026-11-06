@@ -227,6 +227,18 @@ fn parse_sha256_digest(digest: &str) -> PikgResult<String> {
     Ok(hex.to_ascii_lowercase())
 }
 
+/// The `PackageMeta.content` of a payload: the chunk id of the whole file. The named store keeps a payload above the
+/// chunk size as a chunk list, but a package's identity is one digest.
+pub(crate) fn payload_chunk_id(path: &Path, size: u64) -> PikgResult<String> {
+    let digest = sha256_file_hex(path)?;
+    let bytes = (0..digest.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&digest[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|err| invalid(format!("sha256 of a payload is not hex: {err}")))?;
+    Ok(ChunkId::from_mix_hash_result(size, &bytes, ChunkType::Mix256).to_string())
+}
+
 /// 校验 PackageMeta.content（chunk id）与实测 (size, sha256) 一致。
 /// 支持 sha256 与 mix256（varint(len) || sha256）两种 chunk 类型；
 /// 其它类型显式判为不支持（而不是静默跳过）。
@@ -1508,6 +1520,49 @@ mod tests {
                 );
             }
             Err(other) => panic!("expected InvalidPackage, got: {other}"),
+        }
+    }
+
+    /// A payload of any size has one chunk id, and the reader accepts it.
+    #[test]
+    fn a_payload_chunk_id_names_the_whole_file() {
+        let dir = temp_dir("payload-chunk-id");
+        let path = dir.join("payload.tar.gz");
+        std::fs::write(&path, vec![7u8; 1024]).unwrap();
+        let digest = sha256_file_hex(&path).unwrap();
+        let id = payload_chunk_id(&path, 1024).unwrap();
+        assert!(id.starts_with("mix256:"), "{id}");
+        let bytes: Vec<u8> = (0..digest.len()).step_by(2).map(|i| u8::from_str_radix(&digest[i..i + 2], 16).unwrap()).collect();
+        assert!(chunk_id_matches_content(&id, 1024, &bytes).unwrap());
+    }
+
+    /// An `ext_tools` package: one sub-package per platform; the reader verifies it like any other, and the product
+    /// refuses to run it, whoever asks.
+    #[tokio::test]
+    async fn ext_tools_package_reads_and_is_never_admitted() {
+        let dir = temp_dir("ext-tools");
+        let payload_path = make_tar_gz(&dir, "ext_tools_linux_x86_64.tar.gz", &[("ext-manifest.json", b"{}"), ("bin/demo", b"#!/bin/sh\n")]);
+        let owner = DID::from_str("did:bns:tester").unwrap();
+        let mut meta = PackageMeta::new("nightly-linux-amd64.ext_tools_linux_x86_64.ext-demo.tester.bns.did", "1.0.0", "tester", &owner, None);
+        meta.size = std::fs::metadata(&payload_path).unwrap().len();
+        meta.content = format!("sha256:{}", sha256_file_hex(&payload_path).unwrap());
+        let meta_value = serde_json::to_value(&meta).unwrap();
+        let (meta_obj_id, _) = build_named_object_by_json(ndn_lib::OBJ_TYPE_PKG, &meta_value);
+        let mut desc = SubPkgDesc::new("nightly-linux-amd64.ext_tools_linux_x86_64.ext-demo.tester.bns.did#1.0.0");
+        desc.pkg_objid = Some(meta_obj_id);
+        let platform = buckyos_api::ext_tools_platform("linux-x86_64").unwrap();
+        let app_doc = AppDoc::builder(AppType::ExtTools, "ext-demo", "1.0.0", "tester", &owner).ext_tools_pkg(platform, desc).build().unwrap();
+
+        let dest = dir.join("ext-demo.pikg");
+        let builder = PikgBuilder::new().app_doc(&app_doc).unwrap();
+        let (builder, _) = builder.add_package_meta_value(meta_value).unwrap();
+        builder.add_payload_file(platform.key, payload_path).unwrap().write_to(&dest).await.unwrap();
+        let reader = PikgReader::open(&dest, None).await.unwrap();
+        let read = reader.inspection().app_doc.clone();
+        assert_eq!(read.get_app_type(), AppType::ExtTools);
+        reader.verify_all_contents().await.unwrap();
+        for origin in [buckyos_api::AdmissionOrigin::User, buckyos_api::AdmissionOrigin::Preinstall, buckyos_api::AdmissionOrigin::AgentRuntime, buckyos_api::AdmissionOrigin::Deployed] {
+            assert_eq!(buckyos_api::ProductProfile::full().admit_app(&read, origin), Err(buckyos_api::AdmissionDenied::ExtToolsPackage));
         }
     }
 

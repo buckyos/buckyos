@@ -323,6 +323,7 @@ pub async fn run(options: DaemonOptions, mut stop: watch::Receiver<bool>) -> Res
         identity_mode: ExecutorIdentityMode::CurrentUser,
         admission: ExecutorAdmission::Wss,
         path_prefix: Vec::new(),
+        buckyos_root: None,
     };
     #[cfg(any(target_os = "macos", windows))]
     let opened =

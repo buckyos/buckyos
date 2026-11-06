@@ -62,6 +62,7 @@ Agent 容器另有两组只读 bind mount(普通 script 容器没有):
 
 /opt/buckyos/tools 是 ExtTool 共享只读卷,常见结构:
 
+- `/opt/buckyos/tools/bin`: 工具入口,BuckyOS 发起的进程排在标准入口之前(host 上由 Node Executor 前置 `$BUCKYOS_ROOT/tools/bin`,容器由 `entrypoint.sh` 前置)
 - `/opt/buckyos/tools/store`: 系统/平台提供的可执行工具集合
 - `/opt/buckyos/tools/deno-cache`: 预热 deno cache lower
 - `/opt/buckyos/tools/uv-cache`: 预热 uv cache lower

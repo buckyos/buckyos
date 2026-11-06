@@ -777,6 +777,93 @@ fn runtime_lists_are_readable_and_json_preserves_records_and_filters() {
     assert_eq!(available, json!([]));
 }
 
+/// `runtime baseline`: what a level lists, and what a check says of this
+/// machine: where each command is, who provides it, and exit 1 when the level
+/// is not met.
+#[cfg(unix)]
+#[test]
+fn runtime_baseline_checks_a_level_against_this_machine() {
+    use std::os::unix::fs::PermissionsExt;
+    let cli = Cli::new();
+    let (code, listed, err) = cli.run(&["runtime", "baseline", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(listed.as_array().unwrap().iter().any(|t| t["name"] == "xagent"));
+    let (code, listed, err) = cli.run(&["runtime", "baseline", "--json", "--level", "extended"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(listed["standard"].as_array().unwrap().iter().any(|t| t["name"] == "xagent"));
+    assert!(listed["extended"].as_array().unwrap().iter().any(|t| t["id"] == "imagemagick" && t["alternative"] == json!(["magick"])));
+    assert!(cli.text(&["runtime", "baseline", "--level", "extended"]).contains("ffmpeg"));
+    assert!(!cli.text(&["runtime", "baseline"]).contains("ffmpeg"));
+    let (code, _, err) = cli.run(&["runtime", "baseline", "--level", "huge"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--level"), "{err}");
+
+    let root = cli.root.join("buckyos");
+    let entries = root.join("bin/agent-tools");
+    let tools_bin = root.join("tools/bin");
+    let system = cli.root.join("system");
+    let tool = |dir: &Path, name: &str| {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(name), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let standard = cli.run(&["runtime", "baseline", "--json"]).1;
+    for t in standard.as_array().unwrap() {
+        tool(&entries, t["name"].as_str().unwrap());
+    }
+    tool(&tools_bin, "ffmpeg");
+    let extended = cli.run(&["runtime", "baseline", "--json", "--level", "extended"]).1;
+    for t in extended["extended"].as_array().unwrap() {
+        for c in t["commands"].as_array().unwrap() {
+            if !["ffmpeg", "pandoc"].contains(&c["name"].as_str().unwrap()) {
+                tool(&system, c["name"].as_str().unwrap());
+            }
+        }
+    }
+    let path = std::env::join_paths([&tools_bin, &entries, &system]).unwrap();
+    let check = |level: &str| {
+        let out = cli
+            .command(&["runtime", "baseline", "--check", "--level", level])
+            .env("PATH", &path)
+            .env("BUCKYOS_ROOT", &root)
+            .output()
+            .unwrap();
+        parse(out)
+    };
+
+    let (code, report, _) = check("standard");
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["baseline"], "standard");
+    assert_eq!(report["resolved"]["xagent"]["provided_by"], "buckyos_root");
+    assert_eq!(report["resolved"]["ffmpeg"]["provided_by"], "exttools");
+    assert_eq!(report["resolved"]["python3"]["provided_by"], "system");
+    assert_eq!(report["ext"]["status"], "partial");
+
+    let (code, report, _) = check("extended");
+    assert_eq!(code, 1, "pandoc is missing: {report}");
+    assert_eq!(report["missing"], json!(["pandoc"]));
+    assert_eq!(report["ok"], false);
+
+    tool(&system, "pandoc");
+    let (code, report, _) = check("extended");
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["ext"]["status"], "system", "the machine provides them: still extended");
+
+    // The user's `xagent` is on PATH and the installed entry is gone.
+    std::fs::remove_file(entries.join("xagent")).unwrap();
+    tool(&system, "xagent");
+    let (code, report, _) = check("standard");
+    assert_eq!(code, 1, "{report}");
+    assert_eq!(report["unmanaged"], json!(["xagent"]));
+    assert_eq!(report["resolved"]["xagent"]["provided_by"], "system");
+
+    // A development build's helpers beside the program serve, and say so.
+    std::fs::remove_file(system.join("xagent")).unwrap();
+    let (code, report, _) = check("standard");
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["resolved"]["xagent"]["provided_by"], "dev");
+}
+
 fn call_report(id: &str, args: Value) -> Result<Value, u16> {
     Ok(json!({ "role": "assistant", "content": null, "tool_calls": [{
         "id": id, "type": "function",

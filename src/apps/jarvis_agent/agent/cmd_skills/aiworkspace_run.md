@@ -1,7 +1,7 @@
 ---
 name: aiworkspace_run
 description: Execute a wish run of an AI Workspace that was handed to you (a Goal naming a run and its claim token) — claim it, read the task and its data snapshot, produce the results with a program, hand them in, keep the lease alive — and read a workspace's tables and documents.
-requires: the buckyos command (agent container: /usr/local/bin/buckyos; host: $BUCKYOS_ROOT/bin/buckyos) signed in as this Agent; Deno for running the program host (the buckyos tool runtime ships one); the workspace owner configured hosted execution with this Agent (ws.set_hosted_exec)
+requires: the buckyos command (agent container: /opt/buckyos/bin/agent-tools/buckyos; host: $BUCKYOS_ROOT/bin/buckyos) signed in as this Agent; Deno for running the program host (the buckyos tool runtime ships one); the workspace owner configured hosted execution with this Agent (ws.set_hosted_exec)
 baseline: standard
 ---
 #### When to use

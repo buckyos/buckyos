@@ -107,6 +107,45 @@ async fn builtin_runtimes_are_created_once_and_kept() {
     assert!(kept.last_error.as_deref().unwrap().contains("retired"));
 }
 
+/// The private runtime's check: the Agent's own commands come first, a named
+/// command only reports its path until a full check runs it, and the
+/// declaration stays what the host declared.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_private_runtime_says_who_provides_a_command() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(temp.path());
+    state.runtimes().ensure_builtin(&builtin(temp.path()), "host").await.unwrap();
+    let skill_bin = temp.path().join("agent/tools/lint/bin");
+    std::fs::create_dir_all(&skill_bin).unwrap();
+    for (name, body) in [("real-tool", "echo 'real-tool 9.9'"), ("stub-tool", "echo 'not bundled' >&2; exit 127")] {
+        let path = skill_bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let asked: Vec<String> = ["real-tool", "stub-tool", "sh", "no-such-tool-xyz"].iter().map(|c| c.to_string()).collect();
+
+    let quick = state.runtimes().check("private", &asked, false).await.unwrap();
+    let tools = quick.caps.tools_check.unwrap();
+    assert_eq!(tools.present, ["real-tool", "stub-tool", "sh"], "{:?}", tools.error);
+    assert_eq!(tools.missing, ["no-such-tool-xyz"]);
+    assert_eq!(tools.resolved["real-tool"].provided_by, ProvidedBy::Agent);
+    assert_eq!(tools.resolved["real-tool"].version, None);
+    assert_eq!(tools.resolved["sh"].provided_by, ProvidedBy::System);
+    let check = quick.caps.baseline_check.unwrap();
+    assert_eq!(check.level, buckyos_api::RuntimeBaseline::Extended, "the container's private runtime is declared extended");
+    assert!(check.ext.is_some() && check.error.is_none(), "{check:?}");
+
+    let full = state.runtimes().check("private", &asked, true).await.unwrap();
+    let tools = full.caps.tools_check.unwrap();
+    assert_eq!(tools.present, ["real-tool", "sh"], "{:?}", tools.error);
+    assert_eq!(tools.missing, ["stub-tool", "no-such-tool-xyz"], "a stub is not the tool");
+    assert_eq!(tools.resolved["real-tool"].version.as_deref(), Some("real-tool 9.9"));
+    assert!(tools.resolved["stub-tool"].stub);
+    assert_eq!(full.caps.baseline, buckyos_api::RuntimeBaseline::Extended, "a check never changes the declaration");
+}
+
 struct Loopback(Arc<FsAgentStateClient>);
 
 #[async_trait]
@@ -129,7 +168,7 @@ async fn runtimes_over_krpc() {
     let all = client.runtimes().list().await.unwrap();
     assert_eq!(all.len(), 2);
     assert_eq!(client.runtimes().lookup("host").await.unwrap().unwrap(), all[1]);
-    let checked = client.runtimes().check("container", &[]).await.unwrap();
+    let checked = client.runtimes().check("container", &[], false).await.unwrap();
     assert_eq!((checked.runtime_id.as_str(), checked.availability), ("private", RuntimeAvailability::Available));
     mock_node(&["/lab"], "/lab/home");
     let added = client
@@ -155,7 +194,7 @@ async fn runtimes_over_krpc() {
     assert_eq!(added.caps.platform.os, "linux");
     // `check --commands` verifies named commands (`tools_check`); the mock
     // node runs nothing, so the check says why.
-    let verified = client.runtimes().check("lab", &["ffmpeg".into()]).await.unwrap();
+    let verified = client.runtimes().check("lab", &["ffmpeg".into()], false).await.unwrap();
     assert!(verified.caps.tools_check.unwrap().error.is_some());
     client
         .runtimes()
@@ -322,7 +361,7 @@ async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
     settings.default_runtime_id = Some("host".into());
     let registers = builtin_runtimes(&settings, AGENT, &PrivateRuntimeInfo::default());
     agent.runtimes().ensure_builtin(&registers, APP).await.unwrap();
-    let checked = agent.runtimes().check("host", &[]).await.unwrap();
+    let checked = agent.runtimes().check("host", &[], false).await.unwrap();
     assert_eq!(checked.availability, RuntimeAvailability::RuntimeUnavailable);
     assert!(checked.last_error.unwrap_or_default().contains("early eof"));
     let tries = connects.load(Ordering::SeqCst);
