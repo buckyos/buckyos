@@ -1,57 +1,37 @@
 use ::kRPC::*;
-use buckyos_kit::*;
-use name_lib::*;
+use buckyos_api::{AuthTarget, VerifyHubClient, generate_user_login_assertion};
+use buckyos_kit::get_buckyos_system_etc_dir;
+use name_lib::{OwnerDocument, load_private_key};
 use serde_json::json;
 
 async fn test() -> std::result::Result<(), String> {
-    let app_id = "buckyos-filebrowser.buckyos.bns.did";
-    let other_app_id = "buckyos-systest.buckyos.bns.did";
+    let app_id = "buckyos-systest.buckyos.bns.did";
+    let other_app_id = "buckyos-filebrowser.buckyos.bns.did";
+    let user_config_file = get_buckyos_system_etc_dir().join(".buckycli/user_config.json");
+    let owner_config =
+        OwnerDocument::load_owner_document(&user_config_file).map_err(|e| e.to_string())?;
+    let key_path = std::env::home_dir()
+        .ok_or("cannot locate the dev seed home directory")?
+        .join("buckycli/test.buckyos.io/user_private_key.pem");
+    let private_key = load_private_key(&key_path)
+        .map_err(|e| format!("cannot load the dev owner seed at {}: {e}", key_path.display()))?;
+    let user_name = owner_config.name;
+    let verify_hub = VerifyHubClient::new(kRPC::new("http://127.0.0.1:3300/kapi/verify-hub", None));
+    let login = async |target: AuthTarget| {
+        let (jwt, _) = generate_user_login_assertion(&user_name, target.appid_claim(), &private_key)
+            .map_err(|e| e.to_string())?;
+        verify_hub
+            .login_by_jwt(&jwt, target)
+            .await
+            .map(|pair| pair.session_token)
+            .map_err(|e| e.to_string())
+    };
 
-    //读取etc下的私钥和用户信息
-    let etc_dir = get_buckyos_system_etc_dir();
-    let bucky_cli_dir = etc_dir.join(".buckycli");
-    println!("buckycli dir {:?}", bucky_cli_dir);
-
-    if !bucky_cli_dir.exists() {
-        println!("bucky_cli_dir not exists");
-        return Err("bucky_cli_dir not exists".to_string());
-    }
-
-    let user_config_file = bucky_cli_dir.join("user_config.json");
-    let user_private_key_file = bucky_cli_dir.join("user_private_key.pem");
-    if !user_config_file.exists() {
-        println!("user config file not exists");
-        return Err("user config file not exists".to_string());
-    }
-    if !user_private_key_file.exists() {
-        println!("user private key file not exists");
-        return Err("user private key file not exists".to_string());
-    }
-
-    let owner_config = OwnerDocument::load_owner_document(&user_config_file).map_err(|e| {
-        println!("Failed to load owner config: {}", e);
-        e.to_string()
-    })?;
-
-    let private_key = load_private_key(&user_private_key_file).map_err(|e| {
-        println!("Failed to load private key: {}", e);
-        e.to_string()
-    })?;
-
-    let user_name = owner_config.name.clone();
-    println!("owner user name: {:?}", user_name);
-
-    // admin(owner) + kernel(buckycli)
+    // admin(owner) + kernel
     println!("*************************");
     println!("Begin admin + kernel test");
     println!("*************************");
-    let (session_token_str, _real_session_token) =
-        RPCSessionToken::generate_jwt_token(&user_name, "buckycli", None, &private_key).map_err(
-            |e| {
-                println!("Failed to generate session token for admin + kernel: {}", e);
-                e.to_string()
-            },
-        )?;
+    let session_token_str = login(AuthTarget::system("system-config".parse()?)).await?;
 
     println!("generate session token for admin + kernel success");
 
@@ -181,16 +161,7 @@ async fn test() -> std::result::Result<(), String> {
     println!("**********************");
     println!("Begin admin + app test");
     println!("**********************");
-    let (session_token_str, _real_session_token) =
-        RPCSessionToken::generate_jwt_token(&user_name, app_id, None, &private_key).map_err(
-            |e| {
-                println!(
-                    "Failed to generate session token: for admin + {} {}",
-                    app_id, e
-                );
-                e.to_string()
-            },
-        )?;
+    let session_token_str = login(AuthTarget::app(format!("{app_id}@{user_name}").parse()?)).await?;
     println!("generate session token for admin + {} success", app_id);
     let client = kRPC::new(
         "http://127.0.0.1:3200/kapi/system_config",

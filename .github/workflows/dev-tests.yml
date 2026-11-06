@@ -313,16 +313,10 @@ jobs:
         if: ${{ matrix.needs_tauri }}
         run: git clone --depth 1 --branch main https://github.com/buckyos/BuckyOSApp.git ../BuckyOSApp
 
-      - name: Install BuckyOSApp dependencies (Unix)
-        if: ${{ matrix.needs_tauri && runner.os != 'Windows' }}
+      - name: Install BuckyOSApp dependencies
+        if: ${{ matrix.needs_tauri }}
         working-directory: ${{ github.workspace }}/../BuckyOSApp
-        run: pnpm install --frozen-lockfile
-
-      - name: Install BuckyOSApp dependencies (Windows)
-        if: ${{ matrix.needs_tauri && runner.os == 'Windows' }}
-        shell: pwsh
-        working-directory: ${{ github.workspace }}/../BuckyOSApp
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Show package target (Unix)
         if: ${{ runner.os != 'Windows' }}
@@ -367,6 +361,7 @@ jobs:
           sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" "$PYTHON_BIN" start.py --all
           wait_for_port "node gateway" 127.0.0.1 3180
           wait_for_port "system_config" 127.0.0.1 3200
+          wait_for_port "verify_hub" 127.0.0.1 3300
           cargo run -p test_rbac
           popd
 
@@ -477,6 +472,7 @@ jobs:
           python .\start.py --all
           Wait-ForPort -Name "node gateway" -TargetHost "127.0.0.1" -Port 3180
           Wait-ForPort -Name "system_config" -TargetHost "127.0.0.1" -Port 3200
+          Wait-ForPort -Name "verify_hub" -TargetHost "127.0.0.1" -Port 3300
           cargo run -p test_rbac
           Pop-Location
 
@@ -685,10 +681,12 @@ jobs:
           echo "=== process list ==="
           ps -ef | grep -E "node_daemon|node-daemon|system_config|verify_hub|control_panel|scheduler|repo_service|task_manager" | grep -v grep || true
           echo "=== recent logs ==="
-          find "$BUCKYOS_LOGS_PATH" -maxdepth 2 -type f 2>/dev/null | sort | while read -r file; do
-            echo "--- ${file} ---"
-            tail -n 200 "${file}" || true
-          done
+          if [[ -d "$BUCKYOS_LOGS_PATH" ]]; then
+            find "$BUCKYOS_LOGS_PATH" -maxdepth 2 -type f | sort | while read -r file; do
+              echo "--- ${file} ---"
+              tail -n 200 "${file}" || true
+            done
+          fi
 
       - name: Show diagnostics on failure (Windows)
         if: ${{ failure() && runner.os == 'Windows' }}
@@ -730,8 +728,6 @@ jobs:
           name: dev-tests-logs-${{ matrix.platform_key }}-${{ matrix.arch }}
           path: |
             ${{ env.BUCKYOS_LOGS_PATH }}
-            ${{ env.BUCKYOS_ROOT }}/etc
-            ${{ env.WEB3_GATEWAY_ROOT }}
             ${{ env.LOCAL_PKG_DIR }}
           if-no-files-found: warn
 
