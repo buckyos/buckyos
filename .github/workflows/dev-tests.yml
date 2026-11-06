@@ -182,6 +182,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Free Linux runner disk space
         if: ${{ runner.os == 'Linux' }}
@@ -470,6 +472,9 @@ jobs:
           }
           buckyos-install --all
           python .\start.py --all
+          if ($LASTEXITCODE -ne 0) {
+            throw "BuckyOS startup failed with exit code $LASTEXITCODE"
+          }
           Wait-ForPort -Name "node gateway" -TargetHost "127.0.0.1" -Port 3180
           Wait-ForPort -Name "system_config" -TargetHost "127.0.0.1" -Port 3200
           Wait-ForPort -Name "verify_hub" -TargetHost "127.0.0.1" -Port 3300
@@ -503,7 +508,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$LOCAL_PKG_DIR"
-          python3 ./make_local_pkg.py build-pkg --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir "$LOCAL_PKG_DIR"
+          python3 ./make_local_pkg.py build-pkg --skip-cargo-update --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir "$LOCAL_PKG_DIR"
 
       - name: Build local package (Windows)
         if: ${{ runner.os == 'Windows' }}
@@ -511,7 +516,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Path $env:LOCAL_PKG_DIR -Force | Out-Null
-          python .\make_local_pkg.py build-pkg --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir $env:LOCAL_PKG_DIR
+          python .\make_local_pkg.py build-pkg --skip-cargo-update --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir $env:LOCAL_PKG_DIR
 
       - name: Capture package path (Unix)
         id: package_unix
@@ -736,7 +741,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dev-tests-logs-${{ matrix.platform_key }}-${{ matrix.arch }}
-          path: |
-            ${{ env.BUCKYOS_LOGS_PATH }}
-            ${{ env.LOCAL_PKG_DIR }}
+          path: ${{ env.BUCKYOS_LOGS_PATH }}
           if-no-files-found: warn

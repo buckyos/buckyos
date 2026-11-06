@@ -255,11 +255,12 @@ def _root_access_ready() -> bool:
 
 
 def take_back_install_tree(buckyos_root: Path, install_all: bool) -> None:
-    import pwd
     import stop
 
     if not stop.needs_root():
         return
+    import pwd
+
     names = (".",) if install_all else ("bin", "libexec", "etc", "data/cache")
     paths = [str(buckyos_root / name) for name in names if (buckyos_root / name).exists()]
     if paths:
