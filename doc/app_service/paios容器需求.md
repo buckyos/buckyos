@@ -309,6 +309,8 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `unzip` | `conda-lock.yml`（核：win-64 是否有包；没有则用 Info-ZIP 官方归档） | conda-forge | conda-forge | conda-forge / 官方 | 归档解压 |
 | `xz` | `conda-lock.yml` | conda-forge | conda-forge | conda-forge | 归档压缩 / 解压 |
 
+`git`、`curl`、`tree`、`unzip`、`xz` 这组辅助命令在五个平台都随 `ext-core` 带，launcher 不依赖系统同名命令（owner 2026-11-06 确认；macOS 的系统 `git` 是 Xcode CLT 垫片，会弹安装对话框）。锁定清单与构建脚本都在 `publish/exttool/ext-core/`：`build.sh` 管官方归档，`conda-lock.yml` 管 conda-forge 那组。
+
 `bash`、`rsync` 是 Linux 特有，仍由 `build_aios` 的 `RUNTIME_PACKAGES` 进工作镜像，不在 `ext-core`，也不要求 macOS / Windows 提供。
 
 **表 C：其它官方扩展包与非包内容**
