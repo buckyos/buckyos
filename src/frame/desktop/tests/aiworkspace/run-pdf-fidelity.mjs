@@ -10,19 +10,20 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     help: { type: 'boolean' },
-    pages: { type: 'string', default: '1,2,3,4' },
+    pages: { type: 'string' },
     output: { type: 'string' },
     'reference-dir': { type: 'string' },
     'scratch-dir': { type: 'string' },
     'analyze-all': { type: 'boolean' },
     'decoder-control': { type: 'boolean' },
-    'decoder-page': { type: 'string', default: '2' },
+    'decoder-page': { type: 'string' },
     'control-only': { type: 'boolean' },
     project: { type: 'string', default: 'both' },
   },
 })
 if (values.help) {
   console.log(`Usage: pnpm test:pdf [synthetic-default.pdf | /absolute/source.pdf] [--pages 1,2,3,4] [--output DIR]
+  --pages LIST        Compare the first four available pages by default
   --reference-dir DIR  Use trusted page-N.png references instead of Poppler
   --scratch-dir DIR   Short temporary path for browser profiles (or TMPDIR)
   --analyze-all        Record operator/text inventory for every source page
@@ -36,12 +37,28 @@ Requires prebuilt AIWS_BIN/NFS_BIN, existing Playwright Chromium and pdftoppm.`)
 if (positionals.length > 1) throw new Error('Provide at most one local PDF path; see --help')
 const input = resolve(positionals[0] ?? join(repo, 'src/frame/aiworkspace/fixtures/pdf/synthetic-pdf-import.pdf'))
 if (!existsSync(input)) throw new Error(`PDF does not exist: ${input}`)
-const decoderPage = Number(values['decoder-page'])
+const decoderPage = Number(values['decoder-page'] ?? 2)
 if (!Number.isSafeInteger(decoderPage) || decoderPage < 1) throw new Error('Decoder page must be a positive integer')
-const pages = (values['control-only'] ? String(decoderPage) : values.pages).split(',').map(Number)
-if (!pages.length || pages.some(n => !Number.isSafeInteger(n) || n < 1)) throw new Error('Pages must be positive integers')
 if (!['editable', 'raster', 'both'].includes(values.project)) throw new Error('Project must be editable, raster, or both')
+const decoderRequested = values['decoder-control'] || values['control-only'] || values['decoder-page'] !== undefined
+if (decoderRequested && values.project === 'raster') throw new Error('Decoder control requires the editable project')
 const env = { ...process.env }
+let pages
+if (values['control-only']) pages = [decoderPage]
+else if (values.pages) pages = values.pages.split(',').map(Number)
+else if (!positionals.length) pages = [1, 2, 3, 4]
+else {
+  const result = spawnSync('pdfinfo', [input], { env: { ...env, LC_ALL: 'C' }, encoding: 'utf8' })
+  const count = Number(/^Pages:\s+(\d+)/m.exec(result.stdout ?? '')?.[1])
+  if (result.error || result.status !== 0 || !Number.isSafeInteger(count) || count < 1) {
+    throw new Error(`Cannot read page count (use --pages to select pages explicitly): ${result.error?.message ?? result.stderr}`)
+  }
+  pages = Array.from({ length: Math.min(count, 4) }, (_, index) => index + 1)
+}
+if (!pages.length || pages.some(n => !Number.isSafeInteger(n) || n < 1)) throw new Error('Pages must be positive integers')
+if (decoderRequested && !pages.includes(decoderPage)) pages.push(decoderPage)
+const decoderControl = decoderRequested || (!positionals.length && values.project !== 'raster' && pages.includes(decoderPage))
+if (!positionals.length && pages.some(n => n > 4)) throw new Error('The built-in synthetic PDF has four pages')
 for (const [name, fallback] of [
   ['AIWS_BIN', 'src/rootfs/bin/aiworkspace/aiworkspace'],
   ['NFS_BIN', 'src/rootfs/bin/nfs-server/nfs_server'],
@@ -62,7 +79,7 @@ Object.assign(env, {
   AIWS_PDF_PROFILE: positionals.length ? '' : join(repo, 'src/frame/aiworkspace/fixtures/pdf/fidelity.manifest.json'),
   AIWS_PDF_PAGES: [...new Set(pages)].join(','),
   AIWS_PDF_ANALYZE_ALL: values['analyze-all'] ? '1' : '0',
-  AIWS_PDF_DECODER_CONTROL: !positionals.length || values['decoder-control'] || values['control-only'] ? '1' : '0',
+  AIWS_PDF_DECODER_CONTROL: decoderControl ? '1' : '0',
   AIWS_PDF_DECODER_PAGE: String(decoderPage),
   AIWS_PDF_REFERENCE_DIR: reference,
   AIWS_PDF_OUTPUT: join(output, 'browser'),

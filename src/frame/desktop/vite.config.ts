@@ -39,6 +39,8 @@ function desktopServiceWorker(): Plugin {
 // next to the app under aiworkspace/pdfjs/ and fetched only by pages that need them (PDF 导入方案 §2): never precached.
 const PDFJS_ASSET_DIRS = ['cmaps', 'standard_fonts', 'wasm']
 const PDFJS_PREFIX = 'aiworkspace/pdfjs/'
+const PDFJS_DECODERS = new Set(['jbig2.wasm', 'jbig2_nowasm_fallback.js', 'openjpeg.wasm', 'openjpeg_nowasm_fallback.js', 'qcms_bg.wasm'])
+const pdfjsAsset = (dir: string, name: string) => /^LICENSE/.test(name) || (dir === 'wasm' ? PDFJS_DECODERS.has(name) : /\.(bcmap|pfb|ttf)$/.test(name))
 function pdfjsAssets(): Plugin {
   const root = resolve(import.meta.dirname, 'node_modules/pdfjs-dist')
   const types: Record<string, string> = { '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf', '.wasm': 'application/wasm', '.js': 'text/javascript' }
@@ -49,6 +51,7 @@ function pdfjsAssets(): Plugin {
         const path = (req.url ?? '').split('?')[0]
         const m = new RegExp(`^/${PDFJS_PREFIX}(${PDFJS_ASSET_DIRS.join('|')})/([\\w.-]+)$`).exec(path)
         if (!m) return next()
+        if (!pdfjsAsset(m[1], m[2])) { res.statusCode = 404; res.end(); return }
         try {
           const body = readFileSync(join(root, m[1], m[2]))
           res.setHeader('Content-Type', m[2].startsWith('LICENSE') ? 'text/plain' : types[m[2].slice(m[2].lastIndexOf('.'))] ?? 'application/octet-stream')
@@ -60,7 +63,7 @@ function pdfjsAssets(): Plugin {
       for (const dir of PDFJS_ASSET_DIRS) {
         for (const name of readdirSync(join(root, dir))) {
           // the data files and their licences (Adobe's CMaps, Foxit's and Liberation fonts)
-          if (!/\.(bcmap|pfb|ttf|wasm|js)$|^LICENSE/.test(name)) continue
+          if (!pdfjsAsset(dir, name)) continue
           this.emitFile({ type: 'asset', fileName: `${PDFJS_PREFIX}${dir}/${name}`, source: readFileSync(join(root, dir, name)) })
         }
       }

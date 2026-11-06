@@ -14,7 +14,7 @@ export async function inventory(base64: string, pages?: number[]) {
       const proxy = await doc.getPage(n)
       const sourceOperators = await proxy.getOperatorList()
       const operators = await renderOperators(proxy)
-      const { page } = await extractPage(doc as unknown as PdfjsDocument, proxy as unknown as PdfjsPage, new Map(), null, operators)
+      const { page } = await extractPage(doc as unknown as PdfjsDocument, proxy as unknown as PdfjsPage, new Map(), null, operators ?? { fnArray: [], argsArray: [] })
       const { world } = worldOf(page)
       const marks = interpret(page, world)
       const text = groupText(page, world, marks.runs, readStruct(page.struct), { unit: 'paragraph' })
@@ -72,4 +72,62 @@ export async function compare(referenceBase64: string, importedBase64: string, r
   for (let i = 0; i < a.length; i += 4) { const v = Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]), Math.abs(a[i + 2] - b[i + 2])); diff.data[i] = 255; diff.data[i + 1] = diff.data[i + 2] = 255 - Math.min(255, v * 4); diff.data[i + 3] = 255 }
   ctx.putImageData(diff, 0, 0); source.close(); actual.close()
   return { width, height, colorCoverage, regions: [measure({ name: 'page', x: 0, y: 0, w: 1, h: 1 }), ...regions.map(measure)], heatmap: heat.toDataURL('image/png') }
+}
+
+export async function reviewTriggers(base64: string) {
+  const { doc, close } = await openPdfDocument(decode(base64))
+  try {
+    const page = await doc.getPage(2)
+    const text = (await page.getTextContent()).items.flatMap(item => 'str' in item ? [item.str] : [])
+    const imagePage = await doc.getPage(3)
+    const operators = await renderOperators(imagePage)
+    const { OPS } = await loadPdfjs()
+    return {
+      text,
+      repeat: operators?.fnArray.includes(OPS.paintImageXObjectRepeat) ?? false,
+      inlineGroup: operators?.fnArray.includes(OPS.paintInlineImageXObjectGroup) ?? false,
+    }
+  } finally { close() }
+}
+
+export async function renderWithoutAnimationFrames(base64: string) {
+  const controller = new AbortController()
+  const { doc, close } = await openPdfDocument(decode(base64), controller.signal)
+  const raf = window.requestAnimationFrame
+  const timer = setTimeout(() => controller.abort(new Error('PDF import waited for animation frames')), 3000)
+  window.requestAnimationFrame = () => 0
+  try {
+    const page = await doc.getPage(1)
+    const operators = await renderOperators(page, controller.signal)
+    if (!operators?.fnArray.length) throw new Error('No display operators captured')
+    const canvas = await renderPage(page, 720, { importWork: true, signal: controller.signal, filter: (_i, list) => list === operators })
+    const pixel = [...canvas.getContext('2d')!.getImageData(60, 190, 1, 1).data]
+    return { operators: operators.fnArray.length, pixel }
+  } finally {
+    window.requestAnimationFrame = raf
+    clearTimeout(timer)
+    close()
+  }
+}
+
+
+export async function abortActivePdfRender(base64: string) {
+  const { doc, close } = await openPdfDocument(decode(base64))
+  const controller = new AbortController()
+  const reason = new Error('Cancelled synthetic import')
+  try {
+    const page = await doc.getPage(1)
+    const render = page.render.bind(page)
+    page.render = (options) => {
+      const task = render(options)
+      task.onContinue = () => controller.abort(reason)
+      return task
+    }
+    try {
+      await renderPage(page, 720, { importWork: true, signal: controller.signal })
+      return false
+    } catch (error) {
+      return error === reason
+    }
+  } finally { close() }
 }

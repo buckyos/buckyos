@@ -59,13 +59,19 @@ background cannot cover the fallback text. Mixed colours/weights are preserved b
 
 The browser captures the complete normal render operator list with `renderOperators` before extracting a page,
 then passes that exact list into `extractPage`. The list used by `getOperatorList` can differ because PDF.js disables
-its queue optimizer for extraction. A mismatch during filtered raster rendering falls back to the complete page;
+its queue optimizer for extraction. Filtered rendering requires the same operator list instance. A mismatch falls back to the complete page;
 it must never silently drop the background. Inspection extracts before drawing its preview because CanvasGraphics
 may replace raw path buffers with cached Path2D objects while rendering. Deno recording still defaults to
 `getOperatorList`, since it does not apply a browser raster filter.
 
 Private-use/replacement glyphs do not become editable text. Their drawing operators must remain in the raster,
-including an operator containing both readable and unreadable glyphs; overlapping readable text cannot claim them.
+including an operator containing both readable and unreadable glyphs. Text items sharing those operators are
+retained together. When an extracted shape or picture would cover retained content, the page falls back to one
+raster in the original paint order. Optimized repeated images and inline image groups are expanded into separate
+objects. Their shared operator is filtered out only after all its members can be extracted.
+
+Import render tasks preserve PDF.js display intent and disable its animation-frame scheduler for the pinned
+PDF.js 6.4.299 release. Each import render is cancellable and bounded to 30 seconds.
 The browser and Deno reader configure PDF.js's WASM resources. Vite serves and emits WASM, JS fallbacks and licences
 under `aiworkspace/pdfjs/wasm/`, outside the service-worker precache.
 

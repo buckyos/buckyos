@@ -95,6 +95,7 @@ export interface TextResult {
   paragraphs: Paragraph[]
   /** `showText` operators drawn by the objects (filtered out of the raster). */
   converted: Set<number>
+  rasterRuns: Set<number>
   /** Characters that cannot be read vs. all (non-space) characters. */
   unreadable: number
   total: number
@@ -303,7 +304,7 @@ export interface TextOptions { unit: 'paragraph' | 'line' }
 
 /** Group a page's text into paragraphs (world coordinates through `world`). */
 export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: StructInfo, options: TextOptions): TextResult {
-  const result: TextResult = { paragraphs: [], converted: new Set(), unreadable: 0, total: 0, invisible: 0, vertical: 0 }
+  const result: TextResult = { paragraphs: [], converted: new Set(), rasterRuns: new Set(), unreadable: 0, total: 0, invisible: 0, vertical: 0 }
   const s = scaleOf(world)
   const raw: { item: PdfPage['text'][number]; origin: Point; dir: Point; len: number; size: number; angle: number; order: number; hasEOL: boolean }[] = []
   for (const [order, item] of page.text.entries()) {
@@ -317,26 +318,63 @@ export function groupText(page: PdfPage, world: Mat, runs: TextRun[], struct: St
     const dir = { x: m[0] / len0, y: m[1] / len0 }
     raw.push({ item, origin: apply(m, 0, 0), dir, len: item.width * s, size: Math.hypot(m[2], m[3]), angle: Math.round((Math.atan2(m[1], m[0]) * 180) / Math.PI * 100) / 100, order, hasEOL: item.hasEOL })
   }
-  const paired = pairRuns(raw, runs.filter((r) => r.complex === null || r.complex === 'text_clip'))
+  const paired = pairRuns(raw, runs)
   const unreadableRuns = new Set(runs.filter(run => {
     const args = page.argsArray[run.index]
     const glyphs = Array.isArray(args) ? args[0] : null
     return Array.isArray(glyphs) && glyphs.some(glyph => Array.isArray(glyph) && typeof glyph[2] === 'string' && (glyph[2].match(BAD) ?? []).length > 0)
   }).map(run => run.index))
+  const visibleRuns = paired.map((matched, k) => {
+    const visible = matched.filter(run => (run.mode & 3) !== 3)
+    const item = raw[k].item
+    const sameFont = visible.filter(run => run.font === item.fontName)
+    if ((item.str.match(BAD) ?? []).length && sameFont.length) return sameFont
+    return visible.filter(run => !unreadableRuns.has(run.index) || run.font === item.fontName)
+  })
+  const piecesByRun = new Map<number, number[]>()
+  for (const [piece, matched] of visibleRuns.entries()) {
+    for (const run of matched) {
+      const owners = piecesByRun.get(run.index) ?? []
+      owners.push(piece)
+      piecesByRun.set(run.index, owners)
+    }
+  }
+  const rasterPieces = new Set<number>()
+  const pending: number[] = []
+  for (const [k, { item }] of raw.entries()) {
+    const matched = visibleRuns[k]
+    if (paired[k].length && !matched.length) continue
+    if ((item.str.match(BAD) ?? []).length || matched.some(run => unreadableRuns.has(run.index))) {
+      rasterPieces.add(k)
+      pending.push(k)
+    }
+  }
+  for (let i = 0; i < pending.length; i++) {
+    for (const run of visibleRuns[pending[i]]) {
+      if (result.rasterRuns.has(run.index)) continue
+      result.rasterRuns.add(run.index)
+      for (const piece of piecesByRun.get(run.index) ?? []) {
+        if (rasterPieces.has(piece)) continue
+        rasterPieces.add(piece)
+        pending.push(piece)
+      }
+    }
+  }
+  for (const run of runs) {
+    if (unreadableRuns.has(run.index) && (run.mode & 3) !== 3) result.rasterRuns.add(run.index)
+  }
   const pieces: Piece[] = []
   for (const [k, r] of raw.entries()) {
     const font = page.fonts[r.item.fontName]
-    const matched = paired[k]
-    const covering = matched.filter(run => !unreadableRuns.has(run.index))
+    const covering = visibleRuns[k]
     const run = covering[0] ?? null
     const chars = r.item.str.replace(/\s/g, '')
     const bad = (chars.match(BAD) ?? []).length
     result.total += chars.length
     result.unreadable += bad
     if (font?.vertical) { result.vertical += 1; continue }
-    if (run && (run.mode & 3) === 3) { if (chars) result.invisible += 1; continue }
-    if (run && (run.complex !== null || (run.fill && run.fill.kind !== 'color'))) continue
-    if ((chars && bad === chars.length) || (matched[0] && unreadableRuns.has(matched[0].index))) continue
+    if (paired[k].length && paired[k].every(run => (run.mode & 3) === 3)) { if (chars) result.invisible += 1; continue }
+    if (rasterPieces.has(k) || covering.some(run => run.complex !== null || (run.fill && run.fill.kind !== 'color'))) continue
     const color = run?.fill?.kind === 'color' ? run.fill.color : '#000000'
     pieces.push({
       str: r.item.str.replace(BAD, ''), order: r.order, hasEOL: r.hasEOL, origin: r.origin, dir: r.dir, len: r.len, size: r.size, angle: r.angle,
