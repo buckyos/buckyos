@@ -23,8 +23,9 @@ gate。** 当前 executor adapter 注册情况（见
 | `service::msg_center.*` | ⚠️ 未注册 adapter | 用例里如需通知，先跳过或换成 aicc 步骤 |
 | `http::*` | ❌ 未注册 | 仅有占位 trait，没有具名 HTTP adapter |
 | `appservice::*` | ❌ 未注册 | 同上 |
-| `/skill/*` `/agent/*` `/tool/*` | ⚠️ 编译保留 | `ExecutorRef::SemanticPath`，`fun_id` 为 null，运行时无 registry 解析 |
-| `func::*` | ⚠️ in-memory dispatcher | `InMemoryThunkDispatcher`，没接 Scheduler |
+| `/skill/*` `/agent/*` | ⚠️ 编译保留 | `ExecutorRef::SemanticPath`，`fun_id` 为 null，运行时报 unresolved |
+| `/tool/<name>@<version>` | ✅ FunctionRegistry 解析 | 编译期绑定到真实 FunctionObject（`func:<hex>`）；未注册报 `unresolved_function` |
+| `func::<obj_id>` | ✅ LocalThunkRunner | 进程内 Native runner 执行，回执按 `execution_id` 关联；内置 `test.echo/test.sleep/test.fail@1` 与 9 个 `media.*@1` |
 
 凡是依赖 ❌ / ⚠️ 行的用例都明确标 `Blocked: <原因>`，不要按 ✅ 标准跑断言。
 
@@ -38,30 +39,46 @@ gate。** 当前 executor adapter 注册情况（见
 - AICC 至少有以下能力中的若干（一期主路径用到）：
   `vision.caption`、`vision.ocr`、`vision.detect`、`llm.chat`、`image.upscale`、
   `image.bg_remove`。
-- task_manager 在线时 ServiceTracker 会镜像 run / step（不在线则 noop，不致命）。
+- task_manager 在线时 ServiceTracker 会镜像 run / step / thunk（不在线则 noop，不致命）。
+- WF-DV-009 / 011 / 012 / 013 通过 NFSP（`/nfs/v1`，同文件浏览器路径）上传 `fixtures/dv-image.png`
+  与 `fixtures/dv-doc.pdf`，取 `ident.obj_id` 作为系统管线的 `obj_id` 输入；需要调用者在 NFSP
+  上有可写导出根（默认 `home`）。
+- WF-DV-011 按宿主是否安装 poppler（`get_capabilities.environment.missing`）走不同分支，报告目录
+  `branch.json` 记录实际分支；两条分支都算通过。
 
 ## API 速查
 
 所有 method 都接受 `service.<name>` 与裸 `<name>` 两种形式。响应统一是
 `{ "ok": true|false, ... }`，**不是抛异常**——脚本必须先断言 `ok == true` 再读字段。
+例外：身份校验失败（无 token、`owner` 与已认证 principal 不符、越权读取他人 Run、客户端自报
+`source: system`）由 kRPC 抛 `NoPermission` 错误，`rpc.call` 会 reject。
+`ok:false` 的结构化错误为 `{error:<code>, message, detail:{details, retryable}}`，执行错误码见
+`buckyos-api::error_codes`（tools_missing / timeout / cancelled / interrupted / permission_denied /
+resource_limit / environment_changed / invalid_params / invalid_result / input_unavailable /
+tool_failed / function_not_found / queue_full / internal）。
 
 | RPC | 必填参数 | 关键返回字段 |
 | --- | --- | --- |
-| `submit_definition` | `owner: {user_id, app_id}`、`definition` | `workflow_id`、`version`、`analysis`、`definition` |
-| `dry_run` | `definition` | `analysis`、`graph` |
-| `get_definition` | `workflow_id` | `definition` |
-| `list_definitions` | （可选 `owner`、`status`、`tag`） | `definitions[]` |
-| `archive_definition` | `workflow_id` | `status` |
-| `create_run` | `workflow_id`、`owner`，可选 `input` / `auto_start` / `callback_url` | `run_id`、`status`、`events`、`seq` |
-| `start_run` / `tick_run` | `run_id` | `status`、`events`、`from_seq`、`to_seq` |
-| `get_run_graph` | `run_id` | `graph`、`nodes`、`node_states`、`node_outputs`、`human_waiting_nodes`、`pending_thunks`、`metrics`、`seq` |
-| `list_runs` | （可选 `owner`、`workflow_id`、`status`） | `runs[]` |
+| `submit_definition` | `definition`，可选 `owner`（须等于已认证 principal）、`tags`、`source`（`user_imported` / `app_registered` / `agent_generated`；`system` 拒绝；id 以 `media.` / `sys.` 开头拒绝） | `workflow_id`、`version`、`revision`、`source`、`analysis`、`definition` |
+| `dry_run` | `definition` | `analysis`、`graph`、`revision`、`resolved_functions` |
+| `get_definition` | `workflow_id`（记录 id 或系统定义逻辑 id 如 `media.pdf`） | `definition`（含 `source`、`read_only`、`revision`、`resolved_functions`、`compiled`） |
+| `list_definitions` | （可选 `owner`、`status`、`tag`、`source`） | `definitions[]`（含 `source`、`read_only`、`revision`） |
+| `archive_definition` | `workflow_id` | `status`；系统定义返回 `error: system_definition_read_only` |
+| `list_functions` | （可选 `prefix`） | `functions[]`：`{fun_id, registration, object}` |
+| `get_function` | `fun_id` 或 `name` + `version` | `function`（含 `published`） |
+| `get_capabilities` | — | `execution_epoch`、`environment: {revision, tools, missing, searched}`、`functions` |
+| `create_run` | `workflow_id`，可选 `owner` / `input` / `auto_start` / `ensure` / `wait_ms`(≤5000) / `callback_url` | `run_id`、`workflow_id`、`status`、`revision`、`reused`、`output`、`events`、`seq` |
+| `start_run` / `tick_run` | `run_id`，可选 `wait_ms` | `accepted`、`status`、`events`、`from_seq`、`to_seq`（后台驱动，立即返回） |
+| `cancel_run` | `run_id`，可选 `reason` | `status`（`aborted`）、`events` |
+| `get_run_graph` | `run_id` | 旧字段 + `workflow_name`、`revision`、`requested_by`、`executor`、`owner`、`node_errors`、`node_sources`、`node_attempts`、`output`、`deadline_at`、`execution_epoch`、`created_at`、`updated_at` |
+| `get_run_output` | `run_id` | `status`、`terminal`、`revision`、`output`、`node_errors`、`run_error`、`delivery: {artifacts, principal, expires_at}` |
+| `list_runs` | （可选 `owner`、`workflow_id`、`status`） | `runs[]`（含 `revision`、`requested_by`） |
 | `submit_step_output` | `run_id`、`node_id`、`output`，可选 `actor` | `events`、`status`、`from_seq`、`to_seq` |
 | `report_step_progress` | `run_id`、`node_id`、`progress` | `events` |
 | `request_human` | `run_id`、`node_id`，可选 `prompt`、`subject` | `events` |
 | `submit_amendment` | `run_id`、`patch` | `amendment` |
 | `approve_amendment` / `reject_amendment` | `run_id`、`amendment_id`，可选 `reason` | `amendment`、`plan_version` |
-| `get_history` | `run_id`，可选 `since_seq`、`limit` | `events[]`、`next_seq`、`current_seq` |
+| `get_history` | `run_id`，可选 `since_seq`、`limit` | `status`、`events[]`、`next_seq`、`current_seq` |
 | `subscribe_events` | `run_id` | `channel`、`transport`、`history` |
 
 `Owner` 序列化形态 = `{ "user_id": "...", "app_id": "..." }`（见
@@ -973,6 +990,96 @@ ExecutorRegistry 找不到 adapter，对应 step 会落到通用错误路径。
 
 ---
 
+## WF-DV-009: 系统管线与 test.echo 的 Step cache 复用
+
+### 目标
+
+验收 TODO §5 条目 1 / 22：同一输入、同一执行规格的第二个 Run，具备缓存资格的纯转换步骤
+`node_sources == "cache"`，`capabilities`（`is_pure:false`）每次重新执行；改变有效参数后不命中。
+
+### 用例设计
+
+1. 提交 `fixtures/wf-dv-echo-cache.json`（两步 `/tool/test.echo@1`），连续 `create_run`
+   两次（`auto_start`），第二次 `node_sources.a == node_sources.b == "cache"`，`output` 相同，
+   history 中没有 `step.started`。
+2. 上传 `dv-image.png`，对 `media.image` 以 `{obj_id, max_long_edge: 512}` 连续创建两个 Run：
+   第二个 Run `probe` / `fit_image` 为 `cache`，`capabilities` 为 `executed`，
+   `output.fit_image.model_media_obj_id` 与第一个 Run 相同。
+3. `max_long_edge: 256` 的第三个 Run `fit_image` 重新执行。
+
+### 关键断言
+
+- 已完成的 Run 不被复用（run_id 不同），复用的是 Step cache。
+- 相同产物 obj_id 说明 FileObject 身份确定（§2.3 产物身份）。
+
+## WF-DV-010: 同范围并发 ensure
+
+### 目标
+
+验收 TODO §5 条目 2：相同 principal、definition_revision、规范化输入与环境 revision 的并发
+`create_run(ensure=true)` 只建一个活动 Run；终态后不再占用索引。
+
+### 用例设计
+
+- 提交 `fixtures/wf-dv-ensure-sleep.json`（`/tool/test.sleep@1`，默认 4000ms，`idempotent:false`）。
+- 并发 4 次 `create_run {ensure:true, wait_ms:0, input:{ms:4000}}`：run_id 唯一，`reused` 为
+  true 的恰好 3 个。
+- `input: {}`（由 `trigger.input_schema` 默认值补齐）仍命中同一 Run；`{ms:4500}` 得到另一个 Run。
+- 等待完成后再次 `ensure` 得到新 run_id、`reused:false`。
+
+## WF-DV-011: 缺工具诊断 / media.pdf 垂直
+
+### 目标
+
+验收 TODO §5 条目 3 / 11 / 19：宿主缺 poppler 时 `media.pdf` 以 `tools_missing` 失败且不进入
+WaitingHuman；工具齐全时产出 manifest。
+
+### 用例设计
+
+- `get_capabilities` 读取 `environment.missing`，决定分支并写入 `branch.json`。
+- 上传 `dv-doc.pdf`（2 页，答案在尾页），`create_run media.pdf {obj_id, dpi:72, limits:{max_pages:2}}`。
+- `tools_missing` 分支：`status == failed`，某个 step 的 `node_errors.<step>.code == tools_missing`，
+  `details.tools_missing` 含 poppler 命令，`step.failed` 事件携带结构化错误，`human_waiting_nodes` 为空。
+- `tools_present` 分支：`status == completed`，`output.build_catalog.manifest_obj_id` 为字符串，
+  `summary.family == pdf`、`summary.total == 2`、`summary.complete == true`、
+  `text_entries >= 1`、`image_entries >= 1`；`get_run_output.delivery.artifacts` 含 manifest id。
+
+## WF-DV-012: RPC 与 TaskMgr 可观察性
+
+### 目标
+
+验收 TODO §5 条目 4（Phase A 的 RPC / TaskMgr 部分）、13、14。
+
+### 关键断言
+
+- `list_definitions {source:"system"}` 恰为 `media.image/pdf/video/document`，均 `read_only:true`、
+  带 `revision`。
+- `get_definition media.pdf` 的 `resolved_functions` 每项都是 `func:<hex>`。
+- `list_functions {prefix:"media."}` 返回 9 个；`get_function media.probe@1` 的 `published:true`。
+- 一个 `media.image` Run 的 `get_run_graph` 含 `revision`（等于 create_run 返回值）、
+  `requested_by == "<user_id>/<app_id>"`、`executor == "workflow"`、`node_sources`。
+- task_manager：`list_tasks {idempotency_key:"wf-run-<run_id>"}` 找到 `workflow.run_tree/v1`
+  根任务；`get_task_tree` 中存在 `workflow.step/v1` 与 `workflow.thunk/v1`，thunk 任务全部
+  `phase == terminal`。
+
+## WF-DV-013: 系统定义只读与身份校验
+
+### 目标
+
+验收 TODO §5 条目 13：保留 id、`source:system`、归档系统定义、伪造 owner 均被拒；调用者
+无法指定 `content_id`。
+
+### 关键断言
+
+- `submit_definition` id `media.x` → `error: system_definition_read_only`。
+- `submit_definition {source:"system"}` → kRPC `NoPermission`（reject）。
+- `archive_definition media.pdf` → `system_definition_read_only`。
+- `create_run` / `list_runs` 带与已认证 principal 不同的 `owner` → `NoPermission`。
+- `create_run media.image` 输入里的 `content_id` 被服务端覆盖（`node_outputs.trigger.content_id`
+  不等于伪造值）。
+- **Blocked 部分**：读取他人 Run 被拒需要第二个登录身份；本 harness 只有一个 principal，用例
+  在验证完上述断言后标记 Blocked 并写入 `results.json`。
+
 ## 建议执行顺序
 
 1. **WF-DV-001**：主路径，先打通 submit→start→人工 RPC→并行→完成的整条流。
@@ -983,6 +1090,11 @@ ExecutorRegistry 找不到 adapter，对应 step 会落到通用错误路径。
 6. **WF-DV-008**：失败 / 重试 / 人工接管。
 7. **WF-DV-005**：语义链接编译保留 + 执行降级。
 8. **WF-DV-004**：标 Blocked，等 appservice adapter 注册后启用。
+9. **WF-DV-012**：系统定义 / 函数 / TaskMgr 树可观察性（先于媒体用例，确认 4 条系统定义已播种）。
+10. **WF-DV-009**：Step cache 复用（test.echo + media.image）。
+11. **WF-DV-010**：并发 ensure。
+12. **WF-DV-011**：缺工具诊断 / media.pdf。
+13. **WF-DV-013**：只读与身份校验（含一个 Blocked 子项）。
 
 ## DV 脚本落地建议
 
@@ -997,7 +1109,11 @@ test/workflow_test/
 │   ├── wf-dv-agent-callback.json
 │   ├── wf-dv-idempotent-cache.json
 │   ├── wf-dv-failure-human-retry.json
-│   └── wf-dv-semantic-skill-review.json
+│   ├── wf-dv-semantic-skill-review.json
+│   ├── wf-dv-echo-cache.json
+│   ├── wf-dv-ensure-sleep.json
+│   ├── dv-image.png
+│   └── dv-doc.pdf
 └── testcases.md
 ```
 
@@ -1019,3 +1135,19 @@ WORKFLOW_DV_CASES=WF-DV-001,WF-DV-002,WF-DV-006 \
 - `get_history` 轮询用 `since_seq` 断点续拉，避免重复消费历史事件造成日志放大。
 - `aicc` 不可用时（`main.rs` 会打 warn），把所有 `service::aicc.*` 用例标 Blocked
   而不是 fail，并提示用户先启动 aicc。
+
+## 2026-11-05 运行记录（宿主已装 poppler / ffmpeg / LibreOffice，`start.py --all` 重建的 dev Zone）
+
+| 用例 | 结果 | 说明 |
+| --- | --- | --- |
+| WF-DV-009 | PASS | test.echo 两步第二次 Run 全部 `cache`；media.image 第二次 `probe` / `fit_image` 命中，`capabilities` 重跑；改 `max_long_edge` 后重算。输入按 run tag 唯一化：缓存索引跨服务重启持久，旧值会直接命中 |
+| WF-DV-010 | PASS | 4 个并发 `ensure` 只建一个 Run，其余 `reused:true`；终态后新建 |
+| WF-DV-011 | PASS（tools_present 分支） | 真实 pdfinfo / pdftotext / pdftoppm 跑通 media.pdf，manifest complete=true，2 页文本 + 2 页图 |
+| WF-DV-012 | PASS | 4 条系统定义只读、9 个 media 函数已发布可读回；Run root task 通过 `list_tasks{idempotency_key:"wf-run-<run_id>"}` 可见（请求者在 run 树上有 ReadMeta/ReadInput/ReadResult 的 WholeTree grant），`get_task_tree` 含 step / thunk 任务且 thunk 终态 |
+| WF-DV-013 | BLOCKED（断言全部通过） | 保留 id / `source:system` / 归档系统定义 / 伪造 owner 均被拒；`content_id` 被服务端覆盖；跨主体读取需要第二个登录身份 |
+| WF-DV-001 / 002 / 007 | FAIL（既有阻塞） | fixture 的 `service::aicc.vision.*` 步骤用 `input_json` 字段，当前 AICC 协议拒收（`Failed to parse VisionCaptionRequest: unknown field input_json`），步骤落到 waiting_human；与 workflow 改动无关，需随 AICC 协议更新 fixture |
+| WF-DV-006 | FAIL（既有阻塞） | Run 正确进入 waiting_human，但脚本用 TaskMgr 1.x 的 `list_tasks{root_id: run_id}` / `update_task{id,data}` 写 TaskData，与 2.0 任务树（root_id 为 task id，`report_progress` 写入）不符；与 WF-DV-003 同类阻塞 |
+
+运行方式：`deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors workflow_dv.ts`（`deno.json` 把 `buckyos` 映射到本地 websdk 构建；`uv run test/run.py -p workflow_test` 需要 `deno` 在 PATH 且会用 npm 发布版 SDK 覆盖 node_modules）。
+
+实测得到的两个服务端修正：workflow 写入 Named Store 的对象必须 pin（nfs-server 维护周期会回收未 pin 对象），产物 FileObject 递归 pin 30 天；dev Zone 升级后 `services/workflow/spec` 没有 buckets 声明时 `bucket.put` 报 `bucket_not_found`，需重新生成系统配置（`start.py --all`）。

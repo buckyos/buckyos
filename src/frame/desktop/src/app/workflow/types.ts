@@ -1,11 +1,13 @@
-/* ── Workflow WebUI mock types ── */
+/* ── Workflow WebUI view types (mapped from workflow service RPC records) ── */
+
+import type {
+  WorkflowDefinitionSource as SdkDefinitionSource,
+  WorkflowExecutionError,
+  WorkflowNodeSource,
+} from 'buckyos'
 
 export type DefinitionStatus = 'draft' | 'active' | 'archived'
-export type DefinitionSource =
-  | 'system'
-  | 'user_imported'
-  | 'app_registered'
-  | 'agent_generated'
+export type DefinitionSource = SdkDefinitionSource
 
 export type IssueSeverity = 'error' | 'warn' | 'info'
 
@@ -130,39 +132,17 @@ export interface WorkflowDefinition {
   name: string
   description?: string
   version: number
+  revision: string
   source: DefinitionSource
+  readOnly: boolean
   status: DefinitionStatus
+  owner: { userId: string; appId: string }
   analysis: AnalysisReport
   graph: WorkflowGraphView
+  resolvedFunctions: Record<string, string>
   createdAt: string
   updatedAt: string
   tags?: string[]
-}
-
-export interface AppWorkflowMountPoint {
-  id: string
-  appId: string
-  name: string
-  description?: string
-  required: boolean
-  allowEmpty: boolean
-  defaultDefinitionId?: string
-  currentBinding?: {
-    definitionId: string
-    definitionVersion: number
-    boundAt: string
-    boundBy: string
-  }
-}
-
-export type AppKind = 'app' | 'script_app'
-
-export interface WorkflowApp {
-  id: string
-  name: string
-  kind: AppKind
-  description?: string
-  mountPoints: AppWorkflowMountPoint[]
 }
 
 export type RunStatus =
@@ -175,32 +155,64 @@ export type RunStatus =
   | 'aborted'
   | 'budget_exhausted'
 
+export type NodeRunState =
+  | 'pending'
+  | 'ready'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'retrying'
+  | 'waiting_human'
+  | 'skipped'
+  | 'aborted'
+  | 'cancelled'
+
+export type StepSource = WorkflowNodeSource
+export type StepError = WorkflowExecutionError
+
 export interface WorkflowRunSummary {
   runId: string
-  rootTaskId: string
   definitionId: string
-  definitionVersion: number
-  planVersion: number
+  definitionName: string
+  revision: string
   status: RunStatus
-  triggerSource: 'app' | 'manual' | 'agent' | 'system'
-  appId?: string
-  mountPointId?: string
-  humanWaitingNodes: string[]
+  requestedBy?: string
+  owner: { userId: string; appId: string }
   startedAt: string
-  finishedAt?: string
-  durationMs?: number
-  errorSummary?: string
-  taskmgrUrl: string
+  updatedAt: string
+  progress: number
 }
 
-export interface AmendmentSummary {
+export interface RunStepView {
+  nodeId: string
+  name: string
+  state: NodeRunState
+  attempt: number
+  source?: StepSource
+  error?: StepError
+  output?: unknown
+  pendingExecutionIds: string[]
+}
+
+export interface WorkflowRunDetail {
   runId: string
-  planVersion: number
-  submittedBy: string
-  submittedAtStep: string
-  approvalStatus: 'pending' | 'approved' | 'rejected'
-  reason?: string
-  operations: Array<{ op: string; target?: string; description?: string }>
+  definitionId: string
+  definitionName: string
+  revision: string
+  status: RunStatus
+  terminal: boolean
+  requestedBy?: string
+  executor: string
+  owner: { userId: string; appId: string }
+  steps: RunStepView[]
+  humanWaitingNodes: string[]
+  output: Record<string, unknown>
+  runError?: StepError
+  deadlineAt?: number
+  executionEpoch: number
+  createdAt: string
+  updatedAt: string
+  seq: number
 }
 
 export interface ExecutorEntry {
@@ -216,5 +228,5 @@ export interface ExecutorEntry {
 export type WorkflowSelection =
   | { kind: 'home' }
   | { kind: 'definition'; definitionId: string }
-  | { kind: 'mount'; appId: string; mountPointId: string }
+  | { kind: 'run'; runId: string }
   | { kind: 'ai_prompt' }

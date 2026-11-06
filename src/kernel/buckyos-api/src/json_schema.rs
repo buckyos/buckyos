@@ -81,7 +81,61 @@ fn validate_at(schema: &Value, value: &Value, path: &str) -> Result<(), String> 
         }
     }
 
+    if let Some(number) = value.as_f64() {
+        if let Some(min) = schema_obj.get("minimum").and_then(Value::as_f64) {
+            if number < min {
+                return Err(format!("{}: {} is below minimum {}", path, number, min));
+            }
+        }
+        if let Some(max) = schema_obj.get("maximum").and_then(Value::as_f64) {
+            if number > max {
+                return Err(format!("{}: {} exceeds maximum {}", path, number, max));
+            }
+        }
+    }
+    if let (Value::Array(items), Some(max)) = (value, schema_obj.get("maxItems").and_then(Value::as_u64)) {
+        if items.len() as u64 > max {
+            return Err(format!("{}: {} items exceed maxItems {}", path, items.len(), max));
+        }
+    }
+
     Ok(())
+}
+
+/// Fills missing object properties from `default` keywords, recursively, so a
+/// request is normalized before validation and hashing.
+pub fn apply_schema_defaults(schema: &Value, value: &mut Value) {
+    let Some(schema_obj) = schema.as_object() else {
+        return;
+    };
+    let Some(properties) = schema_obj.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+    if value.is_null() {
+        *value = Value::Object(Default::default());
+    }
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    for (key, prop_schema) in properties {
+        if !map.contains_key(key) {
+            if let Some(default) = prop_schema.get("default") {
+                map.insert(key.clone(), default.clone());
+            } else if prop_schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .map(|props| props.values().any(|p| p.get("default").is_some()))
+                .unwrap_or(false)
+            {
+                map.insert(key.clone(), Value::Object(Default::default()));
+            }
+        }
+        if let Some(child) = map.get_mut(key) {
+            if child.is_object() {
+                apply_schema_defaults(prop_schema, child);
+            }
+        }
+    }
 }
 
 fn type_matches(type_name: &str, value: &Value) -> bool {
@@ -133,6 +187,26 @@ mod tests {
         assert!(validate_json_schema(&schema, &json!({})).is_err());
         assert!(validate_json_schema(&schema, &json!({"url": 5})).is_err());
         assert!(validate_json_schema(&schema, &json!({"url": "x", "count": "no"})).is_err());
+    }
+
+    #[test]
+    fn bounds_and_defaults() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "dpi": {"type": "integer", "minimum": 1, "maximum": 300, "default": 144},
+                "limits": {"type": "object", "properties": {"max_pages": {"type": "integer", "default": 50}}}
+            }
+        });
+        assert!(validate_json_schema(&schema, &json!({"dpi": 301})).is_err());
+        assert!(validate_json_schema(&schema, &json!({"dpi": 0})).is_err());
+        let mut value = json!({});
+        apply_schema_defaults(&schema, &mut value);
+        assert_eq!(value, json!({"dpi": 144, "limits": {"max_pages": 50}}));
+        let mut value = json!({"dpi": 72, "limits": {"max_pages": 3}});
+        apply_schema_defaults(&schema, &mut value);
+        assert_eq!(value["dpi"], 72);
+        assert_eq!(value["limits"]["max_pages"], 3);
     }
 
     #[test]

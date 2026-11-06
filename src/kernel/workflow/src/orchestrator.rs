@@ -1,8 +1,12 @@
+use crate::analysis::TRIGGER_NODE_ID;
+use crate::cache_index::{step_cache_key, CacheEntry, CacheIndex, MemoryCacheIndex};
 use crate::compiler::{CompiledNode, CompiledWorkflow};
 use crate::dispatcher::ThunkDispatcher;
 use crate::dsl::RetryFallback;
 use crate::error::{WorkflowError, WorkflowResult};
 use crate::executor_adapter::{ExecutorAdapter, ExecutorRegistry};
+use crate::function_registry::FunctionRegistry;
+use crate::native::{EnvironmentProvider, NativeIo, StaticEnvironment, ToolEnvironment};
 use crate::object_store::{deterministic_object_id, WorkflowObjectStore};
 use crate::runtime::{
     EventEnvelope, HumanAction, HumanActionKind, HumanWait, MapState, NodeRunState, ParJoin,
@@ -11,26 +15,46 @@ use crate::runtime::{
 use crate::task_tracker::{MapShardTaskView, StepTaskView, ThunkTaskView, WorkflowTaskTracker};
 use crate::types::{AwaitKind, ExecutorRef, Expr, JoinStrategy, RetryPolicy, ValueTemplate};
 use buckyos_api::{
-    TaskHumanAction, ThunkExecutionResult, ThunkExecutionStatus, ThunkObject, WorkflowStepTaskData,
+    error_codes, execution_id, TaskHumanAction, ThunkExecution, ThunkExecutionError,
+    ThunkExecutionResult, ThunkExecutionStatus, ThunkObject, WorkflowStepTaskData,
 };
 use chrono::Utc;
 use ndn_lib::ObjId;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub struct WorkflowOrchestrator<D, O, T> {
+/// Default reuse window of a cached step result (TODO D7: artifacts default
+/// to 30 days).
+pub const DEFAULT_CACHE_TTL_SECS: i64 = 30 * 86_400;
+
+/// Per-run creation facts that are not part of the compiled definition.
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    pub requested_by: Option<String>,
+    pub execution_epoch: u64,
+    /// Server-resolved run input, exposed as `${trigger.output.*}`.
+    pub trigger_output: Option<Value>,
+    pub deadline_at: Option<i64>,
+}
+
+pub struct WorkflowOrchestrator<D: ?Sized, O: ?Sized, T> {
     dispatcher: Arc<D>,
     object_store: Arc<O>,
     tracker: Arc<T>,
     executor_registry: Arc<ExecutorRegistry>,
+    functions: Arc<FunctionRegistry>,
+    cache: Arc<dyn CacheIndex>,
+    environment: Arc<dyn EnvironmentProvider>,
+    io: Option<Arc<dyn NativeIo>>,
+    cache_ttl_secs: i64,
 }
 
 impl<D, O, T> WorkflowOrchestrator<D, O, T>
 where
-    D: ThunkDispatcher + 'static,
-    O: WorkflowObjectStore + 'static,
+    D: ThunkDispatcher + ?Sized + 'static,
+    O: WorkflowObjectStore + ?Sized + 'static,
     T: WorkflowTaskTracker + 'static,
 {
     pub fn new(dispatcher: Arc<D>, object_store: Arc<O>, tracker: Arc<T>) -> Self {
@@ -39,7 +63,53 @@ where
             object_store,
             tracker,
             executor_registry: Arc::new(ExecutorRegistry::new()),
+            functions: Arc::new(FunctionRegistry::new()),
+            cache: Arc::new(MemoryCacheIndex::new()),
+            environment: Arc::new(StaticEnvironment(Arc::new(ToolEnvironment::default()))),
+            io: None,
+            cache_ttl_secs: DEFAULT_CACHE_TTL_SECS,
         }
+    }
+
+    pub fn with_functions(mut self, functions: Arc<FunctionRegistry>) -> Self {
+        self.functions = functions;
+        self
+    }
+
+    pub fn with_cache(mut self, cache: Arc<dyn CacheIndex>) -> Self {
+        self.cache = cache;
+        self
+    }
+
+    pub fn with_environment(mut self, environment: Arc<dyn EnvironmentProvider>) -> Self {
+        self.environment = environment;
+        self
+    }
+
+    pub fn with_io(mut self, io: Arc<dyn NativeIo>) -> Self {
+        self.io = Some(io);
+        self
+    }
+
+    pub fn with_cache_ttl(mut self, secs: i64) -> Self {
+        self.cache_ttl_secs = secs;
+        self
+    }
+
+    pub fn functions(&self) -> &Arc<FunctionRegistry> {
+        &self.functions
+    }
+
+    pub fn environment(&self) -> Arc<ToolEnvironment> {
+        self.environment.current()
+    }
+
+    pub fn tracker(&self) -> &Arc<T> {
+        &self.tracker
+    }
+
+    pub fn io(&self) -> Option<&Arc<dyn NativeIo>> {
+        self.io.as_ref()
     }
 
     /// 注入编排器侧 Apply 直执行通道。命中 registry 的 executor（一期主要是
@@ -63,11 +133,34 @@ where
         workflow: &CompiledWorkflow,
         metrics: BTreeMap<String, Value>,
     ) -> WorkflowResult<(WorkflowRun, Vec<EventEnvelope>)> {
+        self.create_run_with_options(workflow, metrics, RunOptions::default())
+            .await
+    }
+
+    pub async fn create_run_with_options(
+        &self,
+        workflow: &CompiledWorkflow,
+        metrics: BTreeMap<String, Value>,
+        options: RunOptions,
+    ) -> WorkflowResult<(WorkflowRun, Vec<EventEnvelope>)> {
         let now = Utc::now().timestamp();
         let mut node_states = BTreeMap::new();
         for node_id in workflow.nodes.keys() {
             node_states.insert(node_id.clone(), NodeRunState::Pending);
         }
+        let mut node_outputs = BTreeMap::new();
+        if let Some(trigger) = options.trigger_output {
+            node_outputs.insert(TRIGGER_NODE_ID.to_string(), trigger);
+        }
+        let deadline_at = options.deadline_at.or_else(|| {
+            workflow
+                .definition
+                .guards
+                .as_ref()
+                .and_then(|g| g.max_duration.as_deref().or(g.timeout.as_deref()))
+                .and_then(parse_duration_secs)
+                .map(|secs| now + secs as i64)
+        });
 
         let mut run = WorkflowRun {
             run_id: format!("run-{}", Uuid::new_v4()),
@@ -76,7 +169,7 @@ where
             plan_version: 1,
             status: RunStatus::Created,
             node_states,
-            node_outputs: BTreeMap::new(),
+            node_outputs,
             node_attempts: BTreeMap::new(),
             branch_iterations: BTreeMap::new(),
             pending_thunks: BTreeMap::new(),
@@ -86,6 +179,13 @@ where
             map_states: BTreeMap::new(),
             par_states: BTreeMap::new(),
             seq: 0,
+            output: BTreeMap::new(),
+            node_errors: BTreeMap::new(),
+            node_sources: BTreeMap::new(),
+            definition_revision: workflow.revision.clone(),
+            requested_by: options.requested_by,
+            execution_epoch: options.execution_epoch,
+            deadline_at,
             created_at: now,
             updated_at: now,
         };
@@ -102,9 +202,26 @@ where
         run: &mut WorkflowRun,
     ) -> WorkflowResult<Vec<EventEnvelope>> {
         let mut events = Vec::new();
+        if run.is_terminal() {
+            return Ok(events);
+        }
         if run.status == RunStatus::Created {
             run.status = RunStatus::Running;
             events.push(self.emit_event(run, "run.started", None, "engine", None));
+        }
+        if let Some(deadline) = run.deadline_at {
+            if Utc::now().timestamp() >= deadline {
+                self.abort_run(
+                    workflow,
+                    run,
+                    ThunkExecutionError::new(error_codes::TIMEOUT, "run deadline passed")
+                        .with_details(json!({"deadline_at": deadline})),
+                    &mut events,
+                )
+                .await?;
+                self.tracker.sync_run(run).await?;
+                return Ok(events);
+            }
         }
 
         loop {
@@ -152,6 +269,9 @@ where
         Ok(events)
     }
 
+    /// Applies one execution receipt. Receipts for executions the run is no
+    /// longer waiting for (late, duplicate, after a terminal state) are
+    /// rejected with [`WorkflowError::StaleThunkResult`] and change nothing.
     pub async fn handle_thunk_result(
         &self,
         workflow: &CompiledWorkflow,
@@ -159,11 +279,16 @@ where
         result: ThunkExecutionResult,
     ) -> WorkflowResult<Vec<EventEnvelope>> {
         let mut events = Vec::new();
-        let pending = run
-            .pending_thunks
-            .remove(result.thunk_obj_id.to_string().as_str())
-            .ok_or_else(|| WorkflowError::MissingPendingThunk(result.thunk_obj_id.to_string()))?;
-        let node_id = pending.node_id;
+        if run.is_terminal() {
+            return Err(WorkflowError::StaleThunkResult(result.execution_id));
+        }
+        let Some(pending) = run.pending_thunks.get(&result.execution_id).cloned() else {
+            return Err(WorkflowError::StaleThunkResult(result.execution_id));
+        };
+        if pending.thunk_obj_id != result.thunk_obj_id.to_string() {
+            return Err(WorkflowError::StaleThunkResult(result.execution_id));
+        }
+        let node_id = pending.node_id.clone();
         let compiled = workflow
             .nodes
             .get(&node_id)
@@ -171,15 +296,6 @@ where
 
         match result.status {
             ThunkExecutionStatus::Waiting | ThunkExecutionStatus::Dispatched => {
-                run.pending_thunks.insert(
-                    result.thunk_obj_id.to_string(),
-                    PendingThunk {
-                        node_id: node_id.clone(),
-                        thunk_obj_id: result.thunk_obj_id.to_string(),
-                        attempt: pending.attempt,
-                        shard_index: pending.shard_index,
-                    },
-                );
                 events.push(self.emit_event(
                     run,
                     match result.status {
@@ -190,12 +306,15 @@ where
                     Some(node_id),
                     "engine",
                     Some(json!({
+                        "execution_id": result.execution_id,
                         "task_id": result.task_id,
                         "status": result.status,
                     })),
                 ));
+                return Ok(events);
             }
             ThunkExecutionStatus::Success => {
+                run.pending_thunks.remove(&result.execution_id);
                 let output = if let Some(value) = result.result.clone() {
                     value
                 } else if let Some(result_obj_id) = result.result_obj_id.clone() {
@@ -216,9 +335,7 @@ where
                 let output_id = if let Some(result_obj_id) = result.result_obj_id.clone() {
                     result_obj_id.to_string()
                 } else {
-                    self.object_store
-                        .put_json("workflow_result", &output)
-                        .await?
+                    self.object_store.put_json("wfresult", &output).await?
                 };
 
                 if let Some(shard_index) = pending.shard_index {
@@ -237,20 +354,36 @@ where
                     run.node_states
                         .insert(node_id.clone(), NodeRunState::Completed);
                     run.node_outputs.insert(node_id.clone(), output.clone());
-                    run.metrics.insert(node_id.clone(), result.metrics.clone());
-                    if is_idempotent(compiled) {
-                        let cache_key =
-                            cache_key(compiled, &self.resolve_apply_input(run, compiled)?);
-                        self.object_store
-                            .put_json_with_id(
-                                &cache_key,
-                                &json!({
-                                    "result_obj_id": output_id,
-                                    "result": output,
-                                    "metrics": result.metrics,
-                                }),
-                            )
-                            .await?;
+                    run.node_errors.remove(&node_id);
+                    run.node_sources
+                        .insert(node_id.clone(), "executed".to_string());
+                    run.metrics.insert(
+                        node_id.clone(),
+                        json!({
+                            "execution_id": result.execution_id,
+                            "metrics": result.metrics,
+                            "fingerprint": result.fingerprint,
+                            "cacheable": result.cacheable,
+                        }),
+                    );
+                    let mut cached = false;
+                    if let Some(cache_key) = pending.cache_key.as_ref() {
+                        if result.cacheable {
+                            let now = Utc::now().timestamp();
+                            self.cache
+                                .put(
+                                    cache_key,
+                                    &CacheEntry {
+                                        result_obj_id: output_id.clone(),
+                                        artifact_refs: result.artifact_refs.clone(),
+                                        expires_at: Some(now + self.cache_ttl_secs),
+                                        created_at: now,
+                                        fingerprint: result.fingerprint.clone(),
+                                    },
+                                )
+                                .await?;
+                            cached = true;
+                        }
                     }
                     self.activate_successors(workflow, run, &node_id);
                     self.notify_par_branch_completed(workflow, run, &node_id, &mut events)
@@ -260,80 +393,211 @@ where
                         "step.completed",
                         Some(node_id.clone()),
                         "engine",
-                        Some(json!({ "result_obj_id": output_id })),
+                        Some(json!({
+                            "execution_id": result.execution_id,
+                            "result_obj_id": output_id,
+                            "source": "executed",
+                            "cached": cached,
+                            "cacheable": result.cacheable,
+                        })),
                     ));
                     self.sync_step_basic(run, compiled).await?;
                 }
             }
             ThunkExecutionStatus::Failed | ThunkExecutionStatus::Cancelled => {
+                run.pending_thunks.remove(&result.execution_id);
+                let error = result.error.clone().unwrap_or_else(|| {
+                    ThunkExecutionError::new(
+                        if result.status == ThunkExecutionStatus::Cancelled {
+                            error_codes::CANCELLED
+                        } else {
+                            error_codes::INTERNAL
+                        },
+                        "execution failed without an error payload",
+                    )
+                });
                 if let Some(shard_index) = pending.shard_index {
                     self.handle_shard_failed(
                         workflow,
                         run,
                         &node_id,
                         shard_index,
-                        result.error.clone(),
+                        Some(error.to_string()),
                         &mut events,
                     )
                     .await?;
+                    run.node_errors.insert(node_id.clone(), error.to_value());
                     self.refresh_run_status(workflow, run, &mut events);
                     self.tracker.sync_run(run).await?;
                     return Ok(events);
                 }
-                let policy = retry_policy(compiled);
                 let attempt = run.node_attempts.get(&node_id).copied().unwrap_or(1);
-                let mut waiting_since = None;
-                if attempt < policy.max_attempts && result.status == ThunkExecutionStatus::Failed {
-                    run.node_states
-                        .insert(node_id.clone(), NodeRunState::Retrying);
-                    run.node_states
-                        .insert(node_id.clone(), NodeRunState::Pending);
-                    events.push(self.emit_event(
-                        run,
-                        "step.retrying",
-                        Some(node_id.clone()),
-                        "engine",
-                        Some(json!({ "attempt": attempt + 1, "error": result.error })),
-                    ));
-                } else if policy.fallback == RetryFallback::Human {
-                    run.node_states
-                        .insert(node_id.clone(), NodeRunState::WaitingHuman);
-                    run.human_waiting_nodes.insert(node_id.clone());
-                    waiting_since = Some(Utc::now().timestamp());
-                    events.push(self.emit_event(
-                        run,
-                        "step.waiting_human",
-                        Some(node_id.clone()),
-                        "engine",
-                        Some(json!({ "reason": "retries_exhausted", "error": result.error })),
-                    ));
-                } else {
-                    run.node_states
-                        .insert(node_id.clone(), NodeRunState::Failed);
-                    events.push(self.emit_event(
-                        run,
-                        "step.failed",
-                        Some(node_id.clone()),
-                        "engine",
-                        Some(json!({ "error": result.error })),
-                    ));
-                }
-                self.sync_step(
-                    run,
-                    compiled,
-                    SyncStepOpts {
-                        error: result.error.clone(),
-                        waiting_since,
-                        ..Default::default()
-                    },
-                )
-                .await?;
+                let allow_retry = result.status == ThunkExecutionStatus::Failed;
+                self.fail_apply_node(run, compiled, attempt, error, allow_retry, &mut events)
+                    .await?;
             }
         }
 
         self.refresh_run_status(workflow, run, &mut events);
         self.tracker.sync_run(run).await?;
         Ok(events)
+    }
+
+    /// Aborts every non-terminal node, cancels pending executions and marks
+    /// the run `Failed` with `error` (deadline / caller cancel paths).
+    async fn abort_run(
+        &self,
+        workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        error: ThunkExecutionError,
+        events: &mut Vec<EventEnvelope>,
+    ) -> WorkflowResult<()> {
+        self.cancel_pending_executions(run, None).await;
+        let touched: Vec<String> = run
+            .node_states
+            .iter()
+            .filter(|(_, state)| {
+                matches!(
+                    state,
+                    NodeRunState::Pending
+                        | NodeRunState::Ready
+                        | NodeRunState::Running
+                        | NodeRunState::Retrying
+                        | NodeRunState::WaitingHuman
+                )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for node_id in &touched {
+            run.node_states
+                .insert(node_id.clone(), NodeRunState::Aborted);
+            run.human_waiting_nodes.remove(node_id);
+            run.node_errors.insert(node_id.clone(), error.to_value());
+        }
+        run.metrics
+            .insert("run_error".to_string(), error.to_value());
+        run.status = if error.code == error_codes::CANCELLED {
+            RunStatus::Aborted
+        } else {
+            RunStatus::Failed
+        };
+        events.push(self.emit_event(
+            run,
+            if run.status == RunStatus::Aborted {
+                "run.aborted"
+            } else {
+                "run.failed"
+            },
+            None,
+            "engine",
+            Some(json!({ "error": error })),
+        ));
+        for node_id in touched {
+            if let Some(node) = workflow.nodes.get(&node_id) {
+                self.sync_step_basic(run, node).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Caller-driven cancel of a whole run (RPC `cancel_run`).
+    pub async fn cancel_run(
+        &self,
+        workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        actor: &str,
+        reason: Option<String>,
+    ) -> WorkflowResult<Vec<EventEnvelope>> {
+        if run.is_terminal() {
+            return Err(WorkflowError::RunTerminal(run.run_id.clone()));
+        }
+        let mut events = Vec::new();
+        let error = ThunkExecutionError::new(
+            error_codes::CANCELLED,
+            reason.unwrap_or_else(|| format!("cancelled by {actor}")),
+        )
+        .with_details(json!({"actor": actor}));
+        self.abort_run(workflow, run, error, &mut events).await?;
+        self.tracker.sync_run(run).await?;
+        Ok(events)
+    }
+
+    /// Cancels pending executions of `node_id` (or of every node when `None`).
+    async fn cancel_pending_executions(&self, run: &mut WorkflowRun, node_id: Option<&str>) {
+        let ids: Vec<String> = run
+            .pending_thunks
+            .iter()
+            .filter(|(_, info)| node_id.map(|n| info.node_id == n).unwrap_or(true))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for execution_id in ids {
+            let _ = self.dispatcher.cancel_thunk(&execution_id).await;
+            run.pending_thunks.remove(&execution_id);
+        }
+    }
+
+    /// Shared failure path of a non-shard Apply node: retry, human fallback or
+    /// Failed, with the structured error kept on the run and the task tree.
+    async fn fail_apply_node(
+        &self,
+        run: &mut WorkflowRun,
+        compiled: &CompiledNode,
+        attempt: u32,
+        error: ThunkExecutionError,
+        allow_retry: bool,
+        events: &mut Vec<EventEnvelope>,
+    ) -> WorkflowResult<()> {
+        let policy = retry_policy(compiled);
+        let node_id = compiled.id.clone();
+        let mut waiting_since = None;
+        run.node_errors.insert(node_id.clone(), error.to_value());
+        if allow_retry && attempt < policy.max_attempts {
+            run.node_states
+                .insert(node_id.clone(), NodeRunState::Pending);
+            events.push(self.emit_event(
+                run,
+                "step.retrying",
+                Some(node_id.clone()),
+                "engine",
+                Some(json!({ "attempt": attempt + 1, "error": error })),
+            ));
+        } else if policy.fallback == RetryFallback::Human {
+            run.node_states
+                .insert(node_id.clone(), NodeRunState::WaitingHuman);
+            run.human_waiting_nodes.insert(node_id.clone());
+            waiting_since = Some(Utc::now().timestamp());
+            events.push(self.emit_event(
+                run,
+                "step.waiting_human",
+                Some(node_id.clone()),
+                "engine",
+                Some(json!({ "reason": "retries_exhausted", "error": error })),
+            ));
+        } else {
+            let state = if error.code == error_codes::CANCELLED {
+                NodeRunState::Cancelled
+            } else {
+                NodeRunState::Failed
+            };
+            run.node_states.insert(node_id.clone(), state);
+            events.push(self.emit_event(
+                run,
+                "step.failed",
+                Some(node_id.clone()),
+                "engine",
+                Some(json!({ "error": error })),
+            ));
+        }
+        self.sync_step(
+            run,
+            compiled,
+            SyncStepOpts {
+                error: Some(error.to_string()),
+                waiting_since,
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     pub async fn handle_human_action(
@@ -443,6 +707,7 @@ where
                 ));
             }
             HumanActionKind::Abort => {
+                self.cancel_pending_executions(run, None).await;
                 for state in run.node_states.values_mut() {
                     if matches!(
                         state,
@@ -553,36 +818,17 @@ where
         events: &mut Vec<EventEnvelope>,
     ) -> WorkflowResult<()> {
         let resolved_input = self.resolve_apply_input(run, compiled)?;
-        if compiled.idempotent {
-            if let Some(cached) = self.lookup_cache(compiled, &resolved_input).await? {
-                run.node_states
-                    .insert(compiled.id.clone(), NodeRunState::Completed);
-                run.node_outputs.insert(compiled.id.clone(), cached.clone());
-                self.activate_successors(workflow, run, &compiled.id);
-                self.notify_par_branch_completed(workflow, run, &compiled.id, events)
-                    .await?;
-                events.push(self.emit_event(
-                    run,
-                    "step.completed",
-                    Some(compiled.id.clone()),
-                    "engine",
-                    Some(json!({ "source": "cache" })),
-                ));
-                self.sync_step_basic(run, compiled).await?;
-                return Ok(());
-            }
-        }
 
-        let next_attempt = {
-            let attempt = run.node_attempts.entry(compiled.id.clone()).or_insert(0);
-            *attempt += 1;
-            *attempt
-        };
-
-        // 编排器侧 Apply 直执行通道：命中 registry 的 executor（一期主要是
-        // service:: / http:: / appservice::）跳过 Thunk 调度器，由编排器同步
-        // 调用 adapter 并把结果直接回填到 node_outputs。
+        // Orchestrator-side direct channel (service:: / http:: / appservice::).
         if let Some(adapter) = self.adapter_for(compiled) {
+            if compiled.idempotent {
+                if let Some(cached) = self.lookup_adapter_cache(compiled, &resolved_input).await? {
+                    self.complete_from_cache(workflow, run, compiled, cached, events)
+                        .await?;
+                    return Ok(());
+                }
+            }
+            let next_attempt = bump_attempt(run, &compiled.id);
             return self
                 .schedule_apply_direct(
                     workflow,
@@ -596,24 +842,81 @@ where
                 .await;
         }
 
-        let (thunk_obj_id, thunk) = build_thunk(run, compiled, resolved_input, next_attempt)?;
+        // FunctionObject / thunk channel.
+        let (thunk, thunk_obj_id, canonical) = self.build_thunk(compiled, resolved_input)?;
+        let function = self
+            .functions
+            .get(&thunk.fun_id.to_string())
+            .ok_or_else(|| WorkflowError::UnresolvedFunction {
+                node_id: compiled.id.clone(),
+                executor: thunk.fun_id.to_string(),
+            })?;
+        let env = self.environment.current();
+        let fingerprint = function
+            .native
+            .as_ref()
+            .map(|native| native.fingerprint(&env))
+            .unwrap_or_default();
+        let cacheable = compiled.idempotent && function.object.is_pure;
+        let cache_key = cacheable.then(|| step_cache_key(&thunk_obj_id, &fingerprint));
+        if let Some(key) = cache_key.as_ref() {
+            if let Some(cached) = self.lookup_step_cache(key).await? {
+                run.metrics.insert(
+                    compiled.id.clone(),
+                    json!({ "cache_key": key, "thunk_obj_id": thunk_obj_id, "fingerprint": fingerprint }),
+                );
+                self.complete_from_cache(workflow, run, compiled, cached, events)
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        let next_attempt = bump_attempt(run, &compiled.id);
+        let execution_id = execution_id(&run.run_id, &compiled.id, next_attempt);
+        let now = Utc::now().timestamp();
+        let mut deadline_at = run.deadline_at;
+        for secs in [
+            step_timeout_secs(compiled),
+            function.registration.timeout,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let candidate = now + secs as i64;
+            deadline_at = Some(deadline_at.map_or(candidate, |d| d.min(candidate)));
+        }
+        let execution = ThunkExecution {
+            execution_id: execution_id.clone(),
+            thunk_obj_id: ObjId::new(&thunk_obj_id)
+                .map_err(|err| WorkflowError::Serialization(err.to_string()))?,
+            run_id: run.run_id.clone(),
+            node_id: compiled.id.clone(),
+            attempt: next_attempt,
+            execution_epoch: run.execution_epoch,
+            source_obj_id: run
+                .node_outputs
+                .get(TRIGGER_NODE_ID)
+                .and_then(|t| t.get("obj_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            requested_by: run.requested_by.clone(),
+            deadline_at,
+            registration: Some(function.registration.clone()),
+            fingerprint: fingerprint.clone(),
+            cache_key: cache_key.clone(),
+        };
         self.object_store
-            .put_json(
-                "workflow_thunk",
-                &serde_json::to_value(&thunk)
-                    .map_err(|err| WorkflowError::Serialization(err.to_string()))?,
-            )
-            .await?;
-        self.dispatcher
-            .schedule_thunk(&thunk_obj_id, &thunk)
+            .put_json_with_id(&thunk_obj_id, &canonical)
             .await?;
         run.pending_thunks.insert(
-            thunk_obj_id.clone(),
+            execution_id.clone(),
             PendingThunk {
+                execution_id: execution_id.clone(),
                 node_id: compiled.id.clone(),
                 thunk_obj_id: thunk_obj_id.clone(),
                 attempt: next_attempt,
                 shard_index: None,
+                cache_key: cache_key.clone(),
             },
         );
         run.node_states
@@ -623,12 +926,132 @@ where
             "step.started",
             Some(compiled.id.clone()),
             "engine",
-            None,
+            Some(json!({
+                "execution_id": execution_id,
+                "thunk_obj_id": thunk_obj_id,
+                "fun_id": thunk.fun_id,
+                "function": format!("{}@{}", function.registration.name, function.registration.version),
+                "cache_key": cache_key,
+                "deadline_at": deadline_at,
+            })),
         ));
         self.sync_step_basic(run, compiled).await?;
-        self.sync_thunk_dispatch(run, &compiled.id, &thunk_obj_id, next_attempt, None)
+        self.sync_thunk_dispatch(run, &compiled.id, &execution_id, &thunk_obj_id, next_attempt, None)
             .await?;
+        if let Err(err) = self.dispatcher.schedule_thunk(&execution, &thunk).await {
+            run.pending_thunks.remove(&execution_id);
+            let error = match err {
+                WorkflowError::Execution(error) => error,
+                other => ThunkExecutionError::new(error_codes::INTERNAL, other.to_string()),
+            };
+            self.fail_apply_node(run, compiled, next_attempt, error, true, events)
+                .await?;
+        }
         Ok(())
+    }
+
+    fn build_thunk(
+        &self,
+        compiled: &CompiledNode,
+        resolved_input: Value,
+    ) -> WorkflowResult<(ThunkObject, String, Value)> {
+        let Expr::Apply {
+            executor, fun_id, ..
+        } = &compiled.expr
+        else {
+            return Err(WorkflowError::UnsupportedNode(compiled.id.clone()));
+        };
+        let fun_id = require_function_object(&compiled.id, executor, fun_id.as_deref())?;
+        let params = match resolved_input {
+            Value::Object(map) => map.into_iter().collect::<BTreeMap<_, _>>(),
+            other => {
+                return Err(WorkflowError::Serialization(format!(
+                    "resolved thunk params for node `{}` must be a JSON object, got {}",
+                    compiled.id, other
+                )));
+            }
+        };
+        let thunk = ThunkObject::new(
+            ObjId::new(fun_id).map_err(|err| {
+                WorkflowError::Serialization(format!("invalid fun_id `{}`: {}", fun_id, err))
+            })?,
+            params,
+        );
+        let (thunk_obj_id, canonical) = thunk
+            .calc_obj_id()
+            .map_err(|err| WorkflowError::Serialization(err.to_string()))?;
+        let canonical: Value = serde_json::from_str(&canonical)
+            .map_err(|err| WorkflowError::Serialization(err.to_string()))?;
+        Ok((thunk, thunk_obj_id.to_string(), canonical))
+    }
+
+    async fn complete_from_cache(
+        &self,
+        workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        compiled: &CompiledNode,
+        cached: Value,
+        events: &mut Vec<EventEnvelope>,
+    ) -> WorkflowResult<()> {
+        run.node_states
+            .insert(compiled.id.clone(), NodeRunState::Completed);
+        run.node_outputs.insert(compiled.id.clone(), cached);
+        run.node_errors.remove(&compiled.id);
+        run.node_sources
+            .insert(compiled.id.clone(), "cache".to_string());
+        self.activate_successors(workflow, run, &compiled.id);
+        self.notify_par_branch_completed(workflow, run, &compiled.id, events)
+            .await?;
+        events.push(self.emit_event(
+            run,
+            "step.completed",
+            Some(compiled.id.clone()),
+            "engine",
+            Some(json!({ "source": "cache" })),
+        ));
+        self.sync_step_basic(run, compiled).await
+    }
+
+    /// Validated step cache hit: the result object must be readable and every
+    /// referenced artifact still available; otherwise the entry is dropped and
+    /// the step recomputed.
+    async fn lookup_step_cache(&self, key: &str) -> WorkflowResult<Option<Value>> {
+        let Some(entry) = self.cache.get(key).await? else {
+            return Ok(None);
+        };
+        let now = Utc::now().timestamp();
+        let mut valid = entry.expires_at.map(|exp| exp > now).unwrap_or(true);
+        let mut result = None;
+        if valid {
+            result = crate::object_store::get_verified_json(
+                self.object_store.as_ref(),
+                &entry.result_obj_id,
+            )
+            .await?;
+            valid = result.is_some();
+        }
+        if valid {
+            if let Some(io) = self.io.as_ref() {
+                for artifact in &entry.artifact_refs {
+                    if !io.artifact_available(artifact).await {
+                        valid = false;
+                        break;
+                    }
+                }
+            } else {
+                for artifact in &entry.artifact_refs {
+                    if !self.object_store.exists(artifact).await? {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if !valid {
+            self.cache.remove(key).await?;
+            return Ok(None);
+        }
+        Ok(result)
     }
 
     fn adapter_for(&self, compiled: &CompiledNode) -> Option<Arc<dyn ExecutorAdapter>> {
@@ -697,24 +1120,27 @@ where
         metrics: Value,
         events: &mut Vec<EventEnvelope>,
     ) -> WorkflowResult<()> {
-        let output_id = self
-            .object_store
-            .put_json("workflow_result", &output)
-            .await?;
+        let output_id = self.object_store.put_json("wfresult", &output).await?;
         run.node_states
             .insert(compiled.id.clone(), NodeRunState::Completed);
         run.node_outputs.insert(compiled.id.clone(), output.clone());
+        run.node_errors.remove(&compiled.id);
+        run.node_sources
+            .insert(compiled.id.clone(), "direct".to_string());
         run.metrics.insert(compiled.id.clone(), metrics.clone());
-        if is_idempotent(compiled) {
-            let key = cache_key(compiled, resolved_input);
-            self.object_store
-                .put_json_with_id(
+        if compiled.idempotent {
+            let key = adapter_cache_key(compiled, resolved_input);
+            let now = Utc::now().timestamp();
+            self.cache
+                .put(
                     &key,
-                    &json!({
-                        "result_obj_id": output_id,
-                        "result": output,
-                        "metrics": metrics,
-                    }),
+                    &CacheEntry {
+                        result_obj_id: output_id.clone(),
+                        artifact_refs: Vec::new(),
+                        expires_at: Some(now + self.cache_ttl_secs),
+                        created_at: now,
+                        fingerprint: BTreeMap::new(),
+                    },
                 )
                 .await?;
         }
@@ -740,55 +1166,12 @@ where
         err: WorkflowError,
         events: &mut Vec<EventEnvelope>,
     ) -> WorkflowResult<()> {
-        let policy = retry_policy(compiled);
-        let error_message = err.to_string();
-        let node_id = compiled.id.clone();
-        let mut waiting_since = None;
-        if attempt < policy.max_attempts {
-            // 重新置为 Pending 让下一轮 tick 再次进入 schedule_apply（attempt 已自增过）。
-            run.node_states
-                .insert(node_id.clone(), NodeRunState::Pending);
-            events.push(self.emit_event(
-                run,
-                "step.retrying",
-                Some(node_id.clone()),
-                "engine",
-                Some(json!({ "attempt": attempt + 1, "error": error_message })),
-            ));
-        } else if policy.fallback == RetryFallback::Human {
-            run.node_states
-                .insert(node_id.clone(), NodeRunState::WaitingHuman);
-            run.human_waiting_nodes.insert(node_id.clone());
-            waiting_since = Some(Utc::now().timestamp());
-            events.push(self.emit_event(
-                run,
-                "step.waiting_human",
-                Some(node_id.clone()),
-                "engine",
-                Some(json!({ "reason": "retries_exhausted", "error": error_message })),
-            ));
-        } else {
-            run.node_states
-                .insert(node_id.clone(), NodeRunState::Failed);
-            events.push(self.emit_event(
-                run,
-                "step.failed",
-                Some(node_id.clone()),
-                "engine",
-                Some(json!({ "error": error_message })),
-            ));
-        }
-        self.sync_step(
-            run,
-            compiled,
-            SyncStepOpts {
-                error: Some(error_message),
-                waiting_since,
-                ..Default::default()
-            },
-        )
-        .await?;
-        Ok(())
+        let error = match err {
+            WorkflowError::Execution(error) => error,
+            other => ThunkExecutionError::new("executor_error", other.to_string()),
+        };
+        self.fail_apply_node(run, compiled, attempt, error, true, events)
+            .await
     }
 
     async fn advance_match(
@@ -991,6 +1374,16 @@ where
 
         if run.status != RunStatus::Completed {
             run.status = RunStatus::Completed;
+            run.output = workflow
+                .graph
+                .terminal_from
+                .iter()
+                .filter_map(|node_id| {
+                    run.node_outputs
+                        .get(node_id)
+                        .map(|value| (node_id.clone(), value.clone()))
+                })
+                .collect();
             events.push(self.emit_event(run, "run.completed", None, "engine", Some(json!({
                 "terminal_nodes": workflow.graph.terminal_from.iter().cloned().collect::<Vec<_>>()
             }))));
@@ -1023,16 +1416,13 @@ where
         Ok(Value::Object(resolved))
     }
 
-    async fn lookup_cache(
+    async fn lookup_adapter_cache(
         &self,
         compiled: &CompiledNode,
         resolved_input: &Value,
     ) -> WorkflowResult<Option<Value>> {
-        let cache_key = cache_key(compiled, resolved_input);
-        let Some(value) = self.object_store.get_json(&cache_key).await? else {
-            return Ok(None);
-        };
-        Ok(value.get("result").cloned())
+        let key = adapter_cache_key(compiled, resolved_input);
+        self.lookup_step_cache(&key).await
     }
 
     fn subject_for_node(
@@ -1232,18 +1622,7 @@ where
                         | NodeRunState::WaitingHuman
                 ) {
                     if branch_state == NodeRunState::Running {
-                        let pending_for_branch: Vec<String> = run
-                            .pending_thunks
-                            .iter()
-                            .filter(|(_, info)| {
-                                info.node_id == *branch_id && info.shard_index.is_none()
-                            })
-                            .map(|(id, _)| id.clone())
-                            .collect();
-                        for thunk_id in pending_for_branch {
-                            let _ = self.dispatcher.cancel_thunk(&thunk_id).await;
-                            run.pending_thunks.remove(&thunk_id);
-                        }
+                        self.cancel_pending_executions(run, Some(branch_id)).await;
                     }
                     run.node_states
                         .insert(branch_id.clone(), NodeRunState::Cancelled);
@@ -1371,7 +1750,7 @@ where
         body_node: &CompiledNode,
         events: &mut Vec<EventEnvelope>,
     ) -> WorkflowResult<()> {
-        let (max_concurrency, total, body_step_id) = {
+        let (max_concurrency, total, _body_step_id) = {
             let state = run
                 .map_states
                 .get(for_each_id)
@@ -1492,32 +1871,58 @@ where
                 continue;
             }
 
-            let (thunk_obj_id, thunk) = build_shard_thunk(
-                run,
-                body_node,
-                for_each_id,
-                &body_step_id,
-                index as u32,
-                resolved_input,
+            let (thunk, thunk_obj_id, canonical) = self.build_thunk(body_node, resolved_input)?;
+            let function = self
+                .functions
+                .get(&thunk.fun_id.to_string())
+                .ok_or_else(|| WorkflowError::UnresolvedFunction {
+                    node_id: body_node.id.clone(),
+                    executor: thunk.fun_id.to_string(),
+                })?;
+            let shard_node_id = format!("{}[{}]", for_each_id, index);
+            let execution_id = execution_id(&run.run_id, &shard_node_id, attempt);
+            let env = self.environment.current();
+            let fingerprint = function
+                .native
+                .as_ref()
+                .map(|native| native.fingerprint(&env))
+                .unwrap_or_default();
+            let now = Utc::now().timestamp();
+            let mut deadline_at = run.deadline_at;
+            for secs in [step_timeout_secs(body_node), function.registration.timeout]
+                .into_iter()
+                .flatten()
+            {
+                let candidate = now + secs as i64;
+                deadline_at = Some(deadline_at.map_or(candidate, |d| d.min(candidate)));
+            }
+            let execution = ThunkExecution {
+                execution_id: execution_id.clone(),
+                thunk_obj_id: ObjId::new(&thunk_obj_id)
+                    .map_err(|err| WorkflowError::Serialization(err.to_string()))?,
+                run_id: run.run_id.clone(),
+                node_id: shard_node_id,
                 attempt,
-            )?;
+                execution_epoch: run.execution_epoch,
+                source_obj_id: None,
+                requested_by: run.requested_by.clone(),
+                deadline_at,
+                registration: Some(function.registration.clone()),
+                fingerprint,
+                cache_key: None,
+            };
             self.object_store
-                .put_json(
-                    "workflow_thunk",
-                    &serde_json::to_value(&thunk)
-                        .map_err(|err| WorkflowError::Serialization(err.to_string()))?,
-                )
-                .await?;
-            self.dispatcher
-                .schedule_thunk(&thunk_obj_id, &thunk)
+                .put_json_with_id(&thunk_obj_id, &canonical)
                 .await?;
             run.pending_thunks.insert(
-                thunk_obj_id.clone(),
+                execution_id.clone(),
                 PendingThunk {
+                    execution_id: execution_id.clone(),
                     node_id: for_each_id.to_string(),
-                    thunk_obj_id,
+                    thunk_obj_id: thunk_obj_id.clone(),
                     attempt,
                     shard_index: Some(index as u32),
+                    cache_key: None,
                 },
             );
             if let Some(state) = run.map_states.get_mut(for_each_id) {
@@ -1528,17 +1933,31 @@ where
             self.sync_thunk_dispatch(
                 run,
                 for_each_id,
-                run.pending_thunks
-                    .iter()
-                    .find(|(_, info)| {
-                        info.node_id == for_each_id && info.shard_index == Some(index as u32)
-                    })
-                    .map(|(id, _)| id.as_str())
-                    .unwrap_or(""),
+                &execution_id,
+                &thunk_obj_id,
                 attempt,
                 Some(index as u32),
             )
             .await?;
+            if let Err(err) = self.dispatcher.schedule_thunk(&execution, &thunk).await {
+                run.pending_thunks.remove(&execution_id);
+                let error = match err {
+                    WorkflowError::Execution(error) => error,
+                    other => ThunkExecutionError::new(error_codes::INTERNAL, other.to_string()),
+                };
+                self.handle_shard_failed(
+                    workflow,
+                    run,
+                    for_each_id,
+                    index as u32,
+                    Some(error.to_string()),
+                    events,
+                )
+                .await?;
+                run.node_errors
+                    .insert(for_each_id.to_string(), error.to_value());
+                return Ok(());
+            }
             running_count += 1;
         }
 
@@ -1754,15 +2173,18 @@ where
         &self,
         run: &WorkflowRun,
         node_id: &str,
+        execution_id: &str,
         thunk_obj_id: &str,
         attempt: u32,
         shard_index: Option<u32>,
     ) -> WorkflowResult<()> {
         let view = ThunkTaskView {
             node_id: node_id.to_string(),
+            execution_id: execution_id.to_string(),
             thunk_obj_id: thunk_obj_id.to_string(),
             attempt,
             shard_index,
+            requested_by: run.requested_by.clone(),
         };
         self.tracker.sync_thunk(run, &view).await
     }
@@ -1800,21 +2222,14 @@ where
             });
         }
 
-        // 取消任何还挂着的 thunk（agent 直接给结果就不再等调度器）。
-        let pending_for_node: Vec<String> = run
-            .pending_thunks
-            .iter()
-            .filter(|(_, info)| info.node_id == node_id && info.shard_index.is_none())
-            .map(|(id, _)| id.clone())
-            .collect();
-        for thunk_id in pending_for_node {
-            let _ = self.dispatcher.cancel_thunk(&thunk_id).await;
-            run.pending_thunks.remove(&thunk_id);
-        }
+        self.cancel_pending_executions(run, Some(node_id)).await;
 
         run.node_states
             .insert(node_id.to_string(), NodeRunState::Completed);
         run.node_outputs.insert(node_id.to_string(), output.clone());
+        run.node_errors.remove(node_id);
+        run.node_sources
+            .insert(node_id.to_string(), "submitted".to_string());
         run.human_waiting_nodes.remove(node_id);
         self.activate_successors(workflow, run, node_id);
 
@@ -1887,17 +2302,7 @@ where
             .get(node_id)
             .ok_or_else(|| WorkflowError::NodeNotFound(node_id.to_string()))?;
 
-        // 取消任何还挂着的 thunk。
-        let pending_for_node: Vec<String> = run
-            .pending_thunks
-            .iter()
-            .filter(|(_, info)| info.node_id == node_id && info.shard_index.is_none())
-            .map(|(id, _)| id.clone())
-            .collect();
-        for thunk_id in pending_for_node {
-            let _ = self.dispatcher.cancel_thunk(&thunk_id).await;
-            run.pending_thunks.remove(&thunk_id);
-        }
+        self.cancel_pending_executions(run, Some(node_id)).await;
 
         run.node_states
             .insert(node_id.to_string(), NodeRunState::WaitingHuman);
@@ -2079,6 +2484,15 @@ fn build_step_view(run: &WorkflowRun, compiled: &CompiledNode, opts: SyncStepOpt
     } else {
         None
     };
+    let error_detail = run.node_errors.get(&compiled.id).cloned();
+    let error = opts.error.or_else(|| {
+        error_detail
+            .as_ref()
+            .filter(|_| matches!(state, NodeRunState::Failed | NodeRunState::Aborted | NodeRunState::Cancelled))
+            .and_then(|detail| detail.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
     StepTaskView {
         node_id: compiled.id.clone(),
         name: compiled.name.clone(),
@@ -2091,10 +2505,42 @@ fn build_step_view(run: &WorkflowRun, compiled: &CompiledNode, opts: SyncStepOpt
         output_schema: compiled.output_schema.clone(),
         stakeholders: Vec::new(),
         progress_message: opts.progress_message,
-        error: opts.error,
+        error,
+        error_detail,
         output,
+        source: run.node_sources.get(&compiled.id).cloned(),
         waiting_human_since: opts.waiting_since,
     }
+}
+
+fn bump_attempt(run: &mut WorkflowRun, node_id: &str) -> u32 {
+    let attempt = run.node_attempts.entry(node_id.to_string()).or_insert(0);
+    *attempt += 1;
+    *attempt
+}
+
+fn step_timeout_secs(compiled: &CompiledNode) -> Option<u64> {
+    match &compiled.expr {
+        Expr::Apply { guards, .. } => guards.timeout.as_deref().and_then(parse_duration_secs),
+        _ => None,
+    }
+}
+
+/// `30s` / `5m` / `2h` / bare seconds.
+pub fn parse_duration_secs(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let (digits, unit) = raw.split_at(raw.trim_end_matches(|c: char| c.is_ascii_alphabetic()).len());
+    let value: u64 = digits.trim().parse().ok()?;
+    let multiplier = match unit.trim() {
+        "" | "s" | "sec" | "secs" => 1,
+        "m" | "min" | "mins" => 60,
+        "h" | "hr" | "hours" => 3600,
+        _ => return None,
+    };
+    Some(value * multiplier)
 }
 
 fn build_shard_view(
@@ -2130,111 +2576,6 @@ fn build_shard_view(
         output,
         error,
     }
-}
-
-fn build_thunk(
-    run: &WorkflowRun,
-    compiled: &CompiledNode,
-    resolved_input: Value,
-    attempt: u32,
-) -> WorkflowResult<(String, ThunkObject)> {
-    let Expr::Apply {
-        executor,
-        fun_id,
-        idempotent: _,
-        guards: _,
-        ..
-    } = &compiled.expr
-    else {
-        return Err(WorkflowError::UnsupportedNode(compiled.id.clone()));
-    };
-    let fun_id = require_function_object(&compiled.id, executor, fun_id.as_deref())?;
-    let params = match resolved_input {
-        Value::Object(map) => map.into_iter().collect(),
-        other => {
-            return Err(WorkflowError::Serialization(format!(
-                "resolved thunk params for node `{}` must be a JSON object, got {}",
-                compiled.id, other
-            )));
-        }
-    };
-    let metadata = json!({
-        "run_id": run.run_id.clone(),
-        "node_id": compiled.id.clone(),
-        "attempt": attempt,
-    });
-    let thunk_without_id = json!({
-        "fun_id": fun_id,
-        "params": params,
-        "metadata": metadata,
-    });
-    let thunk_obj_id = deterministic_object_id("thunk", &thunk_without_id)?;
-
-    Ok((
-        thunk_obj_id,
-        ThunkObject {
-            fun_id: ObjId::new(format!("func:{}", fun_id).as_str()).map_err(|err| {
-                WorkflowError::Serialization(format!("invalid fun_id `{}`: {}", fun_id, err))
-            })?,
-            params,
-            metadata,
-        },
-    ))
-}
-
-fn build_shard_thunk(
-    run: &WorkflowRun,
-    body_node: &CompiledNode,
-    for_each_id: &str,
-    body_step_id: &str,
-    shard_index: u32,
-    resolved_input: Value,
-    attempt: u32,
-) -> WorkflowResult<(String, ThunkObject)> {
-    let Expr::Apply {
-        executor, fun_id, ..
-    } = &body_node.expr
-    else {
-        return Err(WorkflowError::ForEachBodyNotApply(
-            for_each_id.to_string(),
-            body_step_id.to_string(),
-        ));
-    };
-    let fun_id = require_function_object(&body_node.id, executor, fun_id.as_deref())?;
-    let params = match resolved_input {
-        Value::Object(map) => map.into_iter().collect::<HashMap<_, _>>(),
-        other => {
-            return Err(WorkflowError::Serialization(format!(
-                "resolved shard params for `{}[{}]` must be a JSON object, got {}",
-                for_each_id, shard_index, other
-            )));
-        }
-    };
-    let shard_node_id = format!("{}[{}]", for_each_id, shard_index);
-    let metadata = json!({
-        "run_id": run.run_id.clone(),
-        "node_id": shard_node_id,
-        "for_each_id": for_each_id,
-        "body_step_id": body_step_id,
-        "shard": { "index": shard_index },
-        "attempt": attempt,
-    });
-    let thunk_without_id = json!({
-        "fun_id": fun_id,
-        "params": params,
-        "metadata": metadata,
-    });
-    let thunk_obj_id = deterministic_object_id("thunk", &thunk_without_id)?;
-    Ok((
-        thunk_obj_id,
-        ThunkObject {
-            fun_id: ObjId::new(format!("func:{}", fun_id).as_str()).map_err(|err| {
-                WorkflowError::Serialization(format!("invalid fun_id `{}`: {}", fun_id, err))
-            })?,
-            params,
-            metadata,
-        },
-    ))
 }
 
 fn extract_items(value: &Value) -> Option<Vec<Value>> {
@@ -2320,36 +2661,20 @@ fn retry_policy(compiled: &CompiledNode) -> RetryPolicy {
     }
 }
 
-fn is_idempotent(compiled: &CompiledNode) -> bool {
-    matches!(
-        &compiled.expr,
-        Expr::Apply {
-            idempotent: true,
-            ..
-        }
-    ) || compiled.idempotent
-}
-
-fn cache_key(compiled: &CompiledNode, resolved_input: &Value) -> String {
-    let Expr::Apply {
-        executor, fun_id, ..
-    } = &compiled.expr
-    else {
+/// Cache key of an orchestrator-side adapter step: the executor string is
+/// its only identity (no FunctionObject, no fingerprint).
+fn adapter_cache_key(compiled: &CompiledNode, resolved_input: &Value) -> String {
+    let Expr::Apply { executor, .. } = &compiled.expr else {
         return String::new();
-    };
-    // 缓存 key 必须能跨 Run 命中同一段函数。优先使用 FunctionObject 的 fun_id；
-    // 对于 service:: / http:: / appservice:: / operator:: 这类编排器侧 adapter
-    // 直接执行的 executor，没有 fun_id，用 executor 字符串本身做内容标识。
-    let identity = match fun_id.as_deref() {
-        Some(id) => id.to_string(),
-        None => format!("ref:{}", executor.as_str()),
     };
     let payload = json!({
         "executor": executor.as_str(),
-        "identity": identity,
         "input": resolved_input,
     });
-    deterministic_object_id("workflow_cache", &payload).unwrap_or_default()
+    deterministic_object_id("adaptercache", &payload)
+        .unwrap_or_default()
+        .trim_start_matches("adaptercache:")
+        .to_string()
 }
 
 /// 从 `Apply` 节点取出可用于构造 ThunkObject 的 `fun_id`。一期只有
@@ -2385,1142 +2710,4 @@ fn require_function_object<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::compiler::compile_workflow;
-    use crate::dispatcher::InMemoryThunkDispatcher;
-    use crate::dsl::{
-        ControlNodeDefinition, EdgeDefinition, OutputMode, StepDefinition, StepType,
-        WorkflowDefinition,
-    };
-    use crate::object_store::InMemoryObjectStore;
-    use crate::task_tracker::NoopTaskTracker;
-    use buckyos_api::{ThunkExecutionResult, ThunkExecutionStatus, WorkflowStepTaskRequest};
-    use ndn_lib::ObjId;
-    use serde_json::json;
-
-    fn human_action_task_data(
-        run_id: &str,
-        node_id: &str,
-        kind: &str,
-        actor: Option<&str>,
-    ) -> WorkflowStepTaskData {
-        WorkflowStepTaskData {
-            request: WorkflowStepTaskRequest {
-                run_id: run_id.to_string(),
-                node_id: node_id.to_string(),
-                ..Default::default()
-            },
-            progress: None,
-            result: None,
-            human_action: Some(TaskHumanAction {
-                kind: kind.to_string(),
-                payload: None,
-                actor: actor.map(str::to_string),
-                submitted_at: None,
-            }),
-            last_error: None,
-        }
-    }
-
-    fn sample_workflow() -> WorkflowDefinition {
-        WorkflowDefinition {
-            schema_version: "0.2.0".to_string(),
-            id: "wf-demo".to_string(),
-            name: "Demo".to_string(),
-            description: None,
-            trigger: json!({"type":"manual"}),
-            steps: vec![
-                StepDefinition {
-                    id: "plan".to_string(),
-                    name: "Plan".to_string(),
-                    executor: Some("func::agent.mia".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: None,
-                    input_schema: None,
-                    output_schema: json!({
-                        "type": "object",
-                        "properties": {
-                            "decision": { "type": "string", "enum": ["approved", "rejected"] }
-                        },
-                        "required": ["decision"]
-                    }),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "review".to_string(),
-                    name: "Review".to_string(),
-                    executor: None,
-                    step_type: StepType::HumanConfirm,
-                    input: None,
-                    input_schema: None,
-                    output_schema: json!({
-                        "type": "object",
-                        "properties": {
-                            "decision": { "type": "string", "enum": ["approved", "rejected"] },
-                            "final_subject": {
-                                "type": "object",
-                                "properties": {
-                                    "decision": { "type": "string", "enum": ["approved", "rejected"] }
-                                },
-                                "required": ["decision"]
-                            }
-                        },
-                        "required": ["decision", "final_subject"]
-                    }),
-                    subject_ref: Some("${plan.output}".to_string()),
-                    prompt: Some("review".to_string()),
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "approved_step".to_string(),
-                    name: "Approved".to_string(),
-                    executor: Some("func::skill.finalize".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: Some(json!({
-                        "source": "${review.output.final_subject}"
-                    })),
-                    input_schema: Some(json!({
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": ["object", "null"]
-                            }
-                        }
-                    })),
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: true,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-            ],
-            nodes: vec![ControlNodeDefinition::Branch(
-                crate::dsl::BranchNodeDefinition {
-                    id: "decision_branch".to_string(),
-                    on: "${review.output.decision}".to_string(),
-                    paths: [
-                        ("approved".to_string(), "approved_step".to_string()),
-                        ("rejected".to_string(), "approved_step".to_string()),
-                    ]
-                    .into_iter()
-                    .collect(),
-                    max_iterations: 3,
-                },
-            )],
-            edges: vec![
-                EdgeDefinition {
-                    from: "plan".to_string(),
-                    to: Some("review".to_string()),
-                },
-                EdgeDefinition {
-                    from: "review".to_string(),
-                    to: Some("decision_branch".to_string()),
-                },
-                EdgeDefinition {
-                    from: "approved_step".to_string(),
-                    to: None,
-                },
-            ],
-            guards: None,
-            defs: BTreeMap::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn orchestrator_runs_apply_await_match() {
-        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(NoopTaskTracker);
-        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker);
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        let events = orchestrator.tick(&compiled, &mut run).await.unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == "step.started"));
-
-        let scheduled = dispatcher.scheduled().await;
-        assert_eq!(scheduled.len(), 1);
-        let thunk_id = scheduled[0].thunk_obj_id.clone();
-        orchestrator
-            .handle_thunk_result(
-                &compiled,
-                &mut run,
-                ThunkExecutionResult {
-                    thunk_obj_id: ObjId::new(thunk_id.as_str()).unwrap(),
-                    task_id: "task-1".to_string(),
-                    status: ThunkExecutionStatus::Success,
-                    result_obj_id: None,
-                    result: Some(json!({"decision":"approved"})),
-                    error: None,
-                    result_url: None,
-                    metrics: Value::Null,
-                },
-            )
-            .await
-            .unwrap();
-        let events = orchestrator.tick(&compiled, &mut run).await.unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == "step.waiting_human"));
-
-        orchestrator
-            .handle_human_action(
-                &compiled,
-                &mut run,
-                HumanAction {
-                    node_id: "review".to_string(),
-                    action: HumanActionKind::Approve,
-                    payload: None,
-                    actor: "human/test".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-        let events = orchestrator.tick(&compiled, &mut run).await.unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == "step.started"));
-    }
-
-    fn parallel_workflow() -> WorkflowDefinition {
-        WorkflowDefinition {
-            schema_version: "0.2.0".to_string(),
-            id: "wf-par".to_string(),
-            name: "Par".to_string(),
-            description: None,
-            trigger: json!({"type":"manual"}),
-            steps: vec![
-                StepDefinition {
-                    id: "seed".to_string(),
-                    name: "Seed".to_string(),
-                    executor: Some("func::skill.seed".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: None,
-                    input_schema: None,
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "branch_a".to_string(),
-                    name: "A".to_string(),
-                    executor: Some("func::skill.a".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: None,
-                    input_schema: None,
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "branch_b".to_string(),
-                    name: "B".to_string(),
-                    executor: Some("func::skill.b".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: None,
-                    input_schema: None,
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "join".to_string(),
-                    name: "Join".to_string(),
-                    executor: Some("func::skill.join".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: Some(json!({
-                        "all": "${par.output}"
-                    })),
-                    input_schema: None,
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-            ],
-            nodes: vec![ControlNodeDefinition::Parallel(
-                crate::dsl::ParallelNodeDefinition {
-                    id: "par".to_string(),
-                    branches: vec!["branch_a".to_string(), "branch_b".to_string()],
-                    join: crate::dsl::JoinMode::All,
-                    n: None,
-                },
-            )],
-            edges: vec![
-                EdgeDefinition {
-                    from: "seed".to_string(),
-                    to: Some("par".to_string()),
-                },
-                EdgeDefinition {
-                    from: "par".to_string(),
-                    to: Some("join".to_string()),
-                },
-                EdgeDefinition {
-                    from: "join".to_string(),
-                    to: None,
-                },
-            ],
-            guards: None,
-            defs: BTreeMap::new(),
-        }
-    }
-
-    async fn finish_thunk<T>(
-        orchestrator: &WorkflowOrchestrator<InMemoryThunkDispatcher, InMemoryObjectStore, T>,
-        compiled: &CompiledWorkflow,
-        run: &mut WorkflowRun,
-        thunk_id: &str,
-        result: serde_json::Value,
-    ) where
-        T: crate::task_tracker::WorkflowTaskTracker + 'static,
-    {
-        orchestrator
-            .handle_thunk_result(
-                compiled,
-                run,
-                ThunkExecutionResult {
-                    thunk_obj_id: ObjId::new(thunk_id).unwrap(),
-                    task_id: "task".to_string(),
-                    status: ThunkExecutionStatus::Success,
-                    result_obj_id: None,
-                    result: Some(result),
-                    error: None,
-                    result_url: None,
-                    metrics: Value::Null,
-                },
-            )
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn orchestrator_runs_parallel_join_all() {
-        let compiled = compile_workflow(parallel_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(NoopTaskTracker);
-        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker);
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-
-        let scheduled = dispatcher.scheduled().await;
-        assert_eq!(scheduled.len(), 1);
-        let seed_thunk = scheduled[0].thunk_obj_id.clone();
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &seed_thunk,
-            json!({"ok": true}),
-        )
-        .await;
-
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        let scheduled = dispatcher.scheduled().await;
-        assert_eq!(
-            scheduled.len(),
-            3,
-            "branch_a + branch_b should be dispatched"
-        );
-
-        let branch_thunks = scheduled[1..3].to_vec();
-        for sched in &branch_thunks {
-            finish_thunk(
-                &orchestrator,
-                &compiled,
-                &mut run,
-                &sched.thunk_obj_id,
-                json!({"value": 1}),
-            )
-            .await;
-        }
-
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        assert_eq!(
-            run.node_states.get("par"),
-            Some(&NodeRunState::Completed),
-            "par should be completed after all branches finished"
-        );
-        let par_output = run.node_outputs.get("par").cloned().unwrap_or(Value::Null);
-        assert!(par_output.get("branch_a").is_some());
-        assert!(par_output.get("branch_b").is_some());
-
-        let scheduled_after = dispatcher.scheduled().await;
-        assert_eq!(scheduled_after.len(), 4, "join step should be scheduled");
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &scheduled_after[3].thunk_obj_id,
-            json!({"done": true}),
-        )
-        .await;
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        assert_eq!(run.status, RunStatus::Completed);
-    }
-
-    fn for_each_workflow() -> WorkflowDefinition {
-        WorkflowDefinition {
-            schema_version: "0.2.0".to_string(),
-            id: "wf-map".to_string(),
-            name: "Map".to_string(),
-            description: None,
-            trigger: json!({"type":"manual"}),
-            steps: vec![
-                StepDefinition {
-                    id: "scan".to_string(),
-                    name: "Scan".to_string(),
-                    executor: Some("func::skill.fs".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: None,
-                    input_schema: None,
-                    output_schema: json!({
-                        "type": "object",
-                        "properties": {
-                            "element_schema": {"type":"object"},
-                            "total_count": {"type":"integer"},
-                            "items": {"type":"array"}
-                        }
-                    }),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::FiniteSeekable,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "ingest".to_string(),
-                    name: "Ingest".to_string(),
-                    executor: Some("func::skill.ingest".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: None,
-                    input_schema: None,
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "summary".to_string(),
-                    name: "Summary".to_string(),
-                    executor: Some("func::skill.summary".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: Some(json!({
-                        "results": "${loop.output}"
-                    })),
-                    input_schema: None,
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-            ],
-            nodes: vec![ControlNodeDefinition::ForEach(
-                crate::dsl::ForEachNodeDefinition {
-                    id: "loop".to_string(),
-                    items: "${scan.output}".to_string(),
-                    steps: vec!["ingest".to_string()],
-                    max_items: 10,
-                    concurrency: 2,
-                },
-            )],
-            edges: vec![
-                EdgeDefinition {
-                    from: "scan".to_string(),
-                    to: Some("loop".to_string()),
-                },
-                EdgeDefinition {
-                    from: "loop".to_string(),
-                    to: Some("summary".to_string()),
-                },
-                EdgeDefinition {
-                    from: "summary".to_string(),
-                    to: None,
-                },
-            ],
-            guards: None,
-            defs: BTreeMap::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn orchestrator_runs_for_each_with_concurrency() {
-        let compiled = compile_workflow(for_each_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(NoopTaskTracker);
-        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker);
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-
-        let scheduled = dispatcher.scheduled().await;
-        assert_eq!(scheduled.len(), 1, "scan should be scheduled first");
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &scheduled[0].thunk_obj_id,
-            json!({"items": [1, 2, 3]}),
-        )
-        .await;
-
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        let scheduled = dispatcher.scheduled().await;
-        assert_eq!(
-            scheduled.len(),
-            1 + 2,
-            "for_each should schedule first 2 shards (concurrency=2)"
-        );
-
-        let shard_a = scheduled[1].thunk_obj_id.clone();
-        let shard_b = scheduled[2].thunk_obj_id.clone();
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &shard_a,
-            json!({"index": 0}),
-        )
-        .await;
-
-        let scheduled = dispatcher.scheduled().await;
-        assert_eq!(
-            scheduled.len(),
-            1 + 3,
-            "third shard should be dispatched after the first one completes"
-        );
-
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &shard_b,
-            json!({"index": 1}),
-        )
-        .await;
-        let shard_c = scheduled[3].thunk_obj_id.clone();
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &shard_c,
-            json!({"index": 2}),
-        )
-        .await;
-
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        let loop_output = run.node_outputs.get("loop").cloned().unwrap_or(Value::Null);
-        let loop_array = loop_output.as_array().expect("loop output should be array");
-        assert_eq!(loop_array.len(), 3);
-        assert_eq!(loop_array[0]["index"], 0);
-        assert_eq!(loop_array[2]["index"], 2);
-
-        let scheduled = dispatcher.scheduled().await;
-        assert_eq!(scheduled.len(), 1 + 3 + 1, "summary should be scheduled");
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &scheduled[4].thunk_obj_id,
-            json!({"done": true}),
-        )
-        .await;
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        assert_eq!(run.status, RunStatus::Completed);
-    }
-
-    fn service_only_workflow() -> WorkflowDefinition {
-        WorkflowDefinition {
-            schema_version: "0.2.0".to_string(),
-            id: "wf-service-only".to_string(),
-            name: "ServiceOnly".to_string(),
-            description: None,
-            trigger: json!({"type":"manual"}),
-            steps: vec![
-                StepDefinition {
-                    id: "fetch".to_string(),
-                    name: "Fetch".to_string(),
-                    executor: Some("service::aicc.helper.llm_chat".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: Some(json!({"prompt": "hello"})),
-                    input_schema: None,
-                    output_schema: json!({
-                        "type":"object",
-                        "properties": {
-                            "answer": {"type":"string"}
-                        },
-                        "required": ["answer"]
-                    }),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: false,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "notify".to_string(),
-                    name: "Notify".to_string(),
-                    executor: Some("http::msg-center.notify".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: Some(json!({
-                        "answer": "${fetch.output.answer}"
-                    })),
-                    input_schema: None,
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: false,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-            ],
-            nodes: vec![],
-            edges: vec![
-                EdgeDefinition {
-                    from: "fetch".to_string(),
-                    to: Some("notify".to_string()),
-                },
-                EdgeDefinition {
-                    from: "notify".to_string(),
-                    to: None,
-                },
-            ],
-            guards: None,
-            defs: BTreeMap::new(),
-        }
-    }
-
-    fn echo_registry() -> Arc<crate::executor_adapter::ExecutorRegistry> {
-        let adapter = crate::executor_adapter::NamespaceAdapter::new(
-            ["service", "http", "appservice"],
-            |executor, input| {
-                let executor = executor.clone();
-                let input = input.clone();
-                Box::pin(async move {
-                    if executor.as_str() == "service::aicc.helper.llm_chat" {
-                        Ok(json!({ "answer": "ok", "echo": input }))
-                    } else {
-                        Ok(json!({ "delivered": true, "echo": input }))
-                    }
-                })
-            },
-        );
-        Arc::new(crate::executor_adapter::ExecutorRegistry::new().with(Arc::new(adapter)))
-    }
-
-    #[tokio::test]
-    async fn orchestrator_runs_service_and_http_directly() {
-        let compiled = compile_workflow(service_only_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(NoopTaskTracker);
-        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker)
-            .with_executor_registry(echo_registry());
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        let _events = orchestrator.tick(&compiled, &mut run).await.unwrap();
-
-        // 一次 tick 即可全程跑完，不应有任何 Thunk 投递到调度器。
-        let scheduled = dispatcher.scheduled().await;
-        assert!(
-            scheduled.is_empty(),
-            "service::/http:: should not go through dispatcher, got {:?}",
-            scheduled
-        );
-        assert!(run.pending_thunks.is_empty());
-        assert_eq!(run.status, RunStatus::Completed);
-        assert_eq!(run.node_states.get("fetch"), Some(&NodeRunState::Completed));
-        assert_eq!(
-            run.node_states.get("notify"),
-            Some(&NodeRunState::Completed)
-        );
-        let fetch_out = run
-            .node_outputs
-            .get("fetch")
-            .cloned()
-            .unwrap_or(Value::Null);
-        assert_eq!(fetch_out["answer"], "ok");
-        let notify_out = run
-            .node_outputs
-            .get("notify")
-            .cloned()
-            .unwrap_or(Value::Null);
-        assert_eq!(notify_out["delivered"], true);
-        assert_eq!(notify_out["echo"]["answer"], "ok");
-    }
-
-    #[tokio::test]
-    async fn orchestrator_direct_apply_falls_back_when_no_adapter() {
-        // 没有 registry 时仍应走 Thunk 路径——保持原行为。
-        let compiled = compile_workflow(service_only_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(NoopTaskTracker);
-        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker);
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        let res = orchestrator.tick(&compiled, &mut run).await;
-        // service:: 没有 fun_id 也没有 adapter，build_thunk 应明确报 namespace 未实现，
-        // 而不是静默落到调度器。
-        assert!(matches!(
-            res,
-            Err(WorkflowError::ExecutorNamespaceNotImplemented { .. })
-        ));
-    }
-
-    fn http_for_each_workflow() -> WorkflowDefinition {
-        WorkflowDefinition {
-            schema_version: "0.2.0".to_string(),
-            id: "wf-map-http".to_string(),
-            name: "MapHttp".to_string(),
-            description: None,
-            trigger: json!({"type":"manual"}),
-            steps: vec![
-                StepDefinition {
-                    id: "scan".to_string(),
-                    name: "Scan".to_string(),
-                    executor: Some("service::fs_index.scan".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: None,
-                    input_schema: None,
-                    output_schema: json!({
-                        "type":"object",
-                        "properties": {
-                            "element_schema": {"type":"object"},
-                            "total_count": {"type":"integer"},
-                            "items": {"type":"array"}
-                        }
-                    }),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::FiniteSeekable,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "classify".to_string(),
-                    name: "Classify".to_string(),
-                    executor: Some("http::file-classifier.classify".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: None,
-                    input_schema: None,
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-                StepDefinition {
-                    id: "report".to_string(),
-                    name: "Report".to_string(),
-                    executor: Some("service::msg_center.notify_user".to_string()),
-                    step_type: StepType::Autonomous,
-                    input: Some(json!({"shards": "${loop.output}"})),
-                    input_schema: None,
-                    output_schema: json!({"type":"object"}),
-                    subject_ref: None,
-                    prompt: None,
-                    idempotent: true,
-                    skippable: false,
-                    output_mode: OutputMode::Single,
-                    guards: None,
-                },
-            ],
-            nodes: vec![ControlNodeDefinition::ForEach(
-                crate::dsl::ForEachNodeDefinition {
-                    id: "loop".to_string(),
-                    items: "${scan.output}".to_string(),
-                    steps: vec!["classify".to_string()],
-                    max_items: 10,
-                    concurrency: 2,
-                },
-            )],
-            edges: vec![
-                EdgeDefinition {
-                    from: "scan".to_string(),
-                    to: Some("loop".to_string()),
-                },
-                EdgeDefinition {
-                    from: "loop".to_string(),
-                    to: Some("report".to_string()),
-                },
-                EdgeDefinition {
-                    from: "report".to_string(),
-                    to: None,
-                },
-            ],
-            guards: None,
-            defs: BTreeMap::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn orchestrator_direct_apply_runs_for_each_via_adapter() {
-        let compiled = compile_workflow(http_for_each_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(NoopTaskTracker);
-
-        let adapter = crate::executor_adapter::NamespaceAdapter::new(
-            ["service", "http"],
-            |executor, input| {
-                let executor = executor.clone();
-                let input = input.clone();
-                Box::pin(async move {
-                    match executor.as_str() {
-                        "service::fs_index.scan" => Ok(json!({"items": [
-                            {"path": "/a"}, {"path": "/b"}, {"path": "/c"}
-                        ]})),
-                        "http::file-classifier.classify" => {
-                            let item = input.get("_item").cloned().unwrap_or(Value::Null);
-                            let index = input.get("_index").cloned().unwrap_or(Value::Null);
-                            Ok(json!({"index": index, "kind": "doc", "item": item}))
-                        }
-                        "service::msg_center.notify_user" => Ok(json!({"sent": true})),
-                        other => Err(WorkflowError::Dispatcher(format!(
-                            "unexpected executor `{}`",
-                            other
-                        ))),
-                    }
-                })
-            },
-        );
-        let registry =
-            Arc::new(crate::executor_adapter::ExecutorRegistry::new().with(Arc::new(adapter)));
-        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker)
-            .with_executor_registry(registry);
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-
-        let scheduled = dispatcher.scheduled().await;
-        assert!(
-            scheduled.is_empty(),
-            "no thunk should be dispatched, got {:?}",
-            scheduled
-        );
-        assert!(run.pending_thunks.is_empty());
-        assert_eq!(run.status, RunStatus::Completed);
-
-        let loop_output = run.node_outputs.get("loop").cloned().unwrap_or(Value::Null);
-        let arr = loop_output.as_array().expect("loop output should be array");
-        assert_eq!(arr.len(), 3);
-        assert_eq!(arr[0]["index"], 0);
-        assert_eq!(arr[2]["index"], 2);
-        assert_eq!(arr[1]["kind"], "doc");
-
-        assert_eq!(
-            run.node_states.get("report"),
-            Some(&NodeRunState::Completed)
-        );
-    }
-
-    #[tokio::test]
-    async fn orchestrator_direct_apply_failure_falls_back_to_human() {
-        let compiled = compile_workflow(service_only_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(NoopTaskTracker);
-
-        let failing = crate::executor_adapter::NamespaceAdapter::new(
-            ["service", "http"],
-            |_executor, _input| {
-                Box::pin(async move { Err(WorkflowError::Dispatcher("boom".to_string())) })
-            },
-        );
-        let registry =
-            Arc::new(crate::executor_adapter::ExecutorRegistry::new().with(Arc::new(failing)));
-        let orchestrator = WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker)
-            .with_executor_registry(registry);
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-
-        // 第一步默认 retry 1 次 + Human fallback，所以应该停在 WaitingHuman。
-        assert_eq!(run.status, RunStatus::WaitingHuman);
-        assert_eq!(
-            run.node_states.get("fetch"),
-            Some(&NodeRunState::WaitingHuman)
-        );
-        assert!(dispatcher.scheduled().await.is_empty());
-    }
-
-    // -------- §6.3 / §3.3 任务树 + TaskData 路径 --------
-
-    #[tokio::test]
-    async fn tracker_records_step_thunk_and_human_wait_views() {
-        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator =
-            WorkflowOrchestrator::new(dispatcher.clone(), object_store.clone(), tracker.clone());
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-
-        // 第一个 Apply 节点应当至少产生过一次 Running 视图，并被 dispatcher 投递了一个 thunk
-        let plan_view = tracker
-            .step(&run.run_id, "plan")
-            .await
-            .expect("plan step view should exist");
-        assert_eq!(plan_view.attempt, 1);
-        assert_eq!(plan_view.executor.as_deref(), Some("func::agent.mia"));
-
-        let scheduled = dispatcher.scheduled().await;
-        assert_eq!(scheduled.len(), 1);
-        let plan_thunk_id = scheduled[0].thunk_obj_id.clone();
-        let thunk_view = tracker
-            .thunk(&run.run_id, &plan_thunk_id)
-            .await
-            .expect("thunk task view should exist for dispatched thunk");
-        assert_eq!(thunk_view.node_id, "plan");
-        assert!(thunk_view.shard_index.is_none());
-
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &plan_thunk_id,
-            json!({"decision":"approved"}),
-        )
-        .await;
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-
-        // review 是 human_confirm 节点，应进入 WaitingHuman 并带上 subject_obj_id / waiting_since
-        let review_view = tracker
-            .step(&run.run_id, "review")
-            .await
-            .expect("review step view should exist after entering human wait");
-        assert!(matches!(review_view.state, NodeRunState::WaitingHuman));
-        assert!(review_view.waiting_human_since.is_some());
-        assert!(review_view.subject_obj_id.is_some());
-        // 其值应当确实存在于 object_store，而不是凭空构造
-        let stored = object_store
-            .get_json(review_view.subject_obj_id.as_ref().unwrap())
-            .await
-            .unwrap();
-        assert!(stored.is_some());
-    }
-
-    #[tokio::test]
-    async fn apply_task_data_translates_human_action_into_state_machine() {
-        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator =
-            WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker.clone());
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        let plan_thunk = dispatcher.scheduled().await[0].thunk_obj_id.clone();
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &plan_thunk,
-            json!({"decision":"approved"}),
-        )
-        .await;
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        assert_eq!(
-            run.node_states.get("review"),
-            Some(&NodeRunState::WaitingHuman)
-        );
-
-        // 模拟 TaskMgr UI 的 TaskData 写入：用户点了 "approve"
-        let task_data = human_action_task_data(&run.run_id, "review", "approve", Some("user-A"));
-        let events = orchestrator
-            .apply_task_data(&compiled, &mut run, &task_data)
-            .await
-            .unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == "human.action"));
-        assert_eq!(
-            run.node_states.get("review"),
-            Some(&NodeRunState::Completed)
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_task_data_validation_failure_records_last_error() {
-        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator = WorkflowOrchestrator::new(dispatcher, object_store, tracker.clone());
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-
-        // plan 节点根本还没进入 WaitingHuman，approve 应当报错并写回 last_error
-        let task_data = human_action_task_data(&run.run_id, "plan", "approve", Some("user-A"));
-        let result = orchestrator
-            .apply_task_data(&compiled, &mut run, &task_data)
-            .await;
-        assert!(result.is_err());
-        let errors = tracker.validation_errors("plan").await;
-        assert!(!errors.is_empty(), "tracker should record validation error");
-    }
-
-    #[tokio::test]
-    async fn apply_task_data_rejects_run_id_mismatch() {
-        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator = WorkflowOrchestrator::new(dispatcher, object_store, tracker.clone());
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-
-        let task_data = human_action_task_data("run-other", "plan", "approve", None);
-        let result = orchestrator
-            .apply_task_data(&compiled, &mut run, &task_data)
-            .await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn submit_step_output_completes_running_node_via_agent() {
-        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator =
-            WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker.clone());
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        assert_eq!(run.node_states.get("plan"), Some(&NodeRunState::Running));
-        assert_eq!(dispatcher.scheduled().await.len(), 1);
-
-        orchestrator
-            .submit_step_output(
-                &compiled,
-                &mut run,
-                "plan",
-                "agent/mia",
-                json!({"decision": "approved"}),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(run.node_states.get("plan"), Some(&NodeRunState::Completed));
-        // 应当取消挂起的 thunk
-        assert!(run.pending_thunks.is_empty());
-        assert_eq!(
-            run.node_outputs.get("plan").and_then(|v| v.get("decision")),
-            Some(&Value::String("approved".to_string()))
-        );
-    }
-
-    #[tokio::test]
-    async fn request_human_writes_subject_to_object_store() {
-        let compiled = compile_workflow(sample_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator =
-            WorkflowOrchestrator::new(dispatcher, object_store.clone(), tracker.clone());
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-
-        orchestrator
-            .request_human(
-                &compiled,
-                &mut run,
-                "plan",
-                "agent/mia",
-                Some("please review".to_string()),
-                Some(json!({"key": "value"})),
-            )
-            .await
-            .unwrap();
-
-        let view = tracker
-            .step(&run.run_id, "plan")
-            .await
-            .expect("step view should exist");
-        assert!(matches!(view.state, NodeRunState::WaitingHuman));
-        assert!(view.waiting_human_since.is_some());
-        let obj_id = view.subject_obj_id.expect("subject_obj_id should be set");
-        let stored = object_store.get_json(&obj_id).await.unwrap();
-        assert_eq!(stored, Some(json!({"key": "value"})));
-        assert_eq!(run.status, RunStatus::WaitingHuman);
-    }
-
-    #[tokio::test]
-    async fn for_each_records_map_shard_views() {
-        let compiled = compile_workflow(for_each_workflow()).unwrap().workflow;
-        let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-        let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(crate::task_tracker::RecordingTaskTracker::new());
-        let orchestrator =
-            WorkflowOrchestrator::new(dispatcher.clone(), object_store, tracker.clone());
-
-        let (mut run, _) = orchestrator.create_run(&compiled).await.unwrap();
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-        let scan_thunk = dispatcher.scheduled().await[0].thunk_obj_id.clone();
-        finish_thunk(
-            &orchestrator,
-            &compiled,
-            &mut run,
-            &scan_thunk,
-            json!({"items": [1, 2, 3]}),
-        )
-        .await;
-        orchestrator.tick(&compiled, &mut run).await.unwrap();
-
-        // for_each concurrency=2，前两个 shard 应已派发到 dispatcher 并写入 tracker.
-        let shard0 = tracker.map_shard(&run.run_id, "loop", 0).await;
-        let shard1 = tracker.map_shard(&run.run_id, "loop", 1).await;
-        assert!(shard0.is_some(), "shard 0 view should be recorded");
-        assert!(shard1.is_some(), "shard 1 view should be recorded");
-        let shard0 = shard0.unwrap();
-        assert_eq!(shard0.for_each_id, "loop");
-        assert!(matches!(shard0.state, NodeRunState::Running));
-    }
-}
+mod tests;

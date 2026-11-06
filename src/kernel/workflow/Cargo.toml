@@ -7,6 +7,11 @@ authors = ["BuckyOS DAO", "Codex"]
 
 [dependencies]
 async-trait = { workspace = true }
+bucket_store = { workspace = true }
+image = { version = "0.25.5", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+ndn-toolkit = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }

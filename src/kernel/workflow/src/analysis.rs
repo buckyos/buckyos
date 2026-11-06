@@ -86,6 +86,23 @@ enum NodeEntry<'a> {
     Control(&'a ControlNodeDefinition),
 }
 
+/// Implicit node holding the run input: `${trigger.output.<field>}`.
+pub const TRIGGER_NODE_ID: &str = "trigger";
+
+/// Schema of what steps may read from `trigger`: `trigger.output_schema`,
+/// else `trigger.input_schema`.
+pub fn trigger_output_schema(workflow: &WorkflowDefinition) -> Option<Value> {
+    workflow
+        .trigger
+        .get("output_schema")
+        .or_else(|| workflow.trigger.get("input_schema"))
+        .cloned()
+}
+
+pub fn trigger_input_schema(workflow: &WorkflowDefinition) -> Option<Value> {
+    workflow.trigger.get("input_schema").cloned()
+}
+
 pub fn analyze_workflow(workflow: &WorkflowDefinition) -> (AnalysisReport, AnalysisContext) {
     let mut report = AnalysisReport::default();
 
@@ -385,9 +402,34 @@ fn validate_references(
     output_schemas: &mut BTreeMap<String, Value>,
     report: &mut AnalysisReport,
 ) {
+    let trigger_schema = trigger_output_schema(workflow);
     for (owner_id, refs) in parsed_refs {
         for parsed in refs {
             let reference = &parsed.reference;
+            if reference.node_id == TRIGGER_NODE_ID {
+                match trigger_schema.as_ref() {
+                    Some(schema) => {
+                        if schema_at_path(schema, &reference.field_path, &workflow.defs).is_none() {
+                            report.push(
+                                AnalysisSeverity::Error,
+                                "reference_unknown_field",
+                                format!(
+                                    "reference path `{}` does not exist in the trigger schema",
+                                    reference.field_path.join(".")
+                                ),
+                                Some(owner_id.clone()),
+                            );
+                        }
+                    }
+                    None => report.push(
+                        AnalysisSeverity::Error,
+                        "reference_unknown_node",
+                        "reference points to `trigger` but the trigger declares no input_schema",
+                        Some(owner_id.clone()),
+                    ),
+                }
+                continue;
+            }
             if !node_map.contains_key(&reference.node_id) {
                 report.push(
                     AnalysisSeverity::Error,
@@ -438,13 +480,18 @@ fn validate_references(
             .into_iter()
             .filter(|parsed| parsed.json_path.first().map(String::as_str) != Some("subject_ref"))
         {
-            let Some(source_schema) =
+            let source_schema = if parsed.reference.node_id == TRIGGER_NODE_ID {
+                trigger_schema.as_ref().and_then(|schema| {
+                    schema_at_path(schema, &parsed.reference.field_path, &workflow.defs)
+                })
+            } else {
                 output_schemas
                     .get(&parsed.reference.node_id)
                     .and_then(|schema| {
                         schema_at_path(schema, &parsed.reference.field_path, &workflow.defs)
                     })
-            else {
+            };
+            let Some(source_schema) = source_schema else {
                 continue;
             };
 

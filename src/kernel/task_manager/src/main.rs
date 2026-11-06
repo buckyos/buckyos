@@ -1,6 +1,5 @@
 mod acl;
 mod dispatcher;
-mod json_schema;
 mod server;
 mod task_store;
 

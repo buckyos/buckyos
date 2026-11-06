@@ -224,7 +224,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
             ▼
 [Worker Image]（默认运行镜像，paios/aios）
     └─ 预置 CLI 工具集：§6.4 表 B 的清单（ffmpeg、ImageMagick、
-       poppler、tesseract、git、jq …；不含 libreoffice）
+       poppler、tesseract、LibreOffice headless、字体、git、jq …）
     └─ Python 3.12 + uv、Node LTS、Deno：胶水与 ScriptHost 依赖，
        不在镜像内装系统包
             │（仅当用户显式启用工匠能力时继续向上）
@@ -285,12 +285,16 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 
 **表 B：工作镜像预置的 CLI 工具集（`build_aios` `RUNTIME_PACKAGES` 等；扩展包体系落地后 = `ext-core`，即 `extended` 基线）** 今天只在 Linux 容器里有；Desktop Lite / host 上 `extended` 只是 owner 的声明，直到 `ext-core` 的原生包发布。
 
+其中 poppler-utils、ffmpeg / ffprobe、LibreOffice、字体 / locale 四项同时是 **workflow 媒体工具基线**（需求由 workflow 的 `FunctionRegistration.requirements` 推导，清单与检测规则见 [doc/workflow/media tool baseline.md](../workflow/media%20tool%20baseline.md)）。媒体转换在 P0 由 workflow 内核服务在**宿主机**执行，所以宿主与本镜像要分别满足该基线：镜像里装了不代表宿主 runner 可用，宿主缺项时转换步骤以 `tools_missing` 失败并指出缺项。
+
 | 工具 | 来源 / 版本 | 支持的场景（为什么要装） |
 | --- | --- | --- |
 | `ffmpeg`、`ffprobe` | apt | `aigc_audio` / `aigc_video` 的转码、剪辑、拼接、抽帧、媒体信息检查 |
 | ImageMagick（`convert`、`identify`、`compare`；IM6，没有 `magick`） | apt | `aigc_image` / `aigc_video` 的本地图像检查与加工；统一到 `magick` 入口待 ExtTools TODO T0 |
-| poppler-utils（`pdftotext`、`pdftoppm`、`pdfinfo`） | apt | 文档理解与导入的 PDF 文本 / 页图提取（`llm_understand_media` 前处理、`import_office` 后加工） |
-| `tesseract`（eng、osd） | apt | 本地 OCR 回退；主路径是 `ocr_image` |
+| poppler-utils（`pdftotext`、`pdftoppm`、`pdfinfo`） | apt，≥ 22.0 | 媒体工具基线（[doc/workflow/media tool baseline.md](../workflow/media%20tool%20baseline.md)）：workflow `media.pdf` / `media.document` 的 PDF 文本 / 页图提取；`import_office` 后加工 |
+| `tesseract`（eng、osd） | apt | 本地 OCR 回退；主路径是 `ocr_image`。不是 workflow 媒体基线的必需项 |
+| LibreOffice headless（`soffice`；`libreoffice-core-nogui`、`-writer-nogui`、`-impress-nogui`、`-calc-nogui`） | apt，≥ 7.0 | 媒体工具基线：workflow `media.document` 的 DOCX / PPTX / ODT → PDF；`import_office` 的版式转换 |
+| 字体与 locale（`fonts-dejavu-core`、`fonts-liberation`、`fonts-noto-core`、`fonts-noto-cjk`；`locales` 生成 `en_US.UTF-8`，`LANG=C.UTF-8`） | apt | soffice 转换中西文文档时的字形与度量；影响页图内容，因而属于执行环境指纹的一部分 |
 | `python3`（系统 3.12）+ `uv` | apt + astral 安装脚本 | ScriptHost Python App 的依赖安装；Agent 临时脚本；项目解释器由 uv 管 |
 | `node`、`npm`、`npx` | 官方 tarball，`NODE_VERSION` | ScriptHost / aiws 项目构建；`buckyos_app_dev` 的 web 包 |
 | `deno` | 官方安装脚本，`DENO_VERSION` | ScriptHost TS、aiworkspace 程序宿主、`aiworkspace_run` 的 JSON 处理。核心命令用的是自己钉死的那份 Deno，不是它 |

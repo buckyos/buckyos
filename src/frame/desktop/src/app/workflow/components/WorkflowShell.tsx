@@ -8,8 +8,9 @@ import { WorkflowSidebar } from './Sidebar'
 import { ImportDialog } from './ImportDialog'
 import { HomePage } from '../pages/HomePage'
 import { DetailPage } from '../pages/DetailPage'
+import { RunPage } from '../pages/RunPage'
 import { AIPromptPage } from '../pages/AIPromptPage'
-import type { WorkflowSelection } from '../mock/types'
+import type { WorkflowSelection } from '../types'
 
 export function WorkflowShell() {
   const [selection, setSelection] = useState<WorkflowSelection>({ kind: 'home' })
@@ -47,8 +48,9 @@ export function WorkflowShell() {
           </div>
         )
       case 'definition':
-      case 'mount':
-        return <DetailPage selection={selection} onSelect={navigate} />
+        return <DetailPage definitionId={selection.definitionId} onSelect={navigate} />
+      case 'run':
+        return <RunPage runId={selection.runId} onSelect={navigate} />
     }
   }
 

@@ -1,11 +1,11 @@
 /* ── Workflow store context ── */
 
 import { createContext, useContext, useSyncExternalStore } from 'react'
-import { WorkflowMockStore } from '../mock/store'
+import { WorkflowStore } from '../api/store'
 
-export const WorkflowStoreContext = createContext<WorkflowMockStore | null>(null)
+export const WorkflowStoreContext = createContext<WorkflowStore | null>(null)
 
-export function useWorkflowStore(): WorkflowMockStore {
+export function useWorkflowStore(): WorkflowStore {
   const store = useContext(WorkflowStoreContext)
   if (!store) throw new Error('useWorkflowStore must be used inside WorkflowStoreContext')
   useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -6,17 +7,23 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
     get_buckyos_api_runtime, AiContent, AiMessage, AiMethodStatus, AiRole, ApiType,
-    AudioSpeechRecognitionRequest, ResourceRef, RouteResolveRequest,
+    AudioSpeechRecognitionRequest, ResourceRef, RouteResolveRequest, ThunkExecutionError,
 };
 use llm_context::deps::{LLMContextDeps, ToolManager};
 use llm_context::{ContextOutput, LlmClient};
+use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::process::Command;
 
-mod image_fit;
+mod pipeline;
 
-use image_fit::{fit_image_for_vision, ImageLimits, ImagePreprocess};
+use pipeline::{
+    audio_entry, audio_mime, document_format_from_mime, document_format_from_name,
+    frame_entries, freeze_bytes, image_dimensions, object_head, plan_pages,
+    protocol_accepts_documents, read_manifest, read_object_bytes, run_pipeline, Coverage,
+    DocumentLimits, ImageLimits, PipelineOutcome, PipelineRequest, PipelineTrace, VideoLimits,
+    FAMILY_DOCUMENT, FAMILY_IMAGE, FAMILY_PDF, FAMILY_VIDEO,
+};
 
 use crate::xllm::{
     ensure_buckyos_runtime, AiccLlmClient, LoopModel, RunOutcome, TaskInput, TaskOverrides,
@@ -38,8 +45,11 @@ const DEFAULT_SUMMARY_MODEL_ALIAS: &str = llm_compress::SUMMARIZE_MODEL_ALIAS;
 const DEFAULT_TARGET_TOKENS: u32 = 24_000;
 const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
 const RAW_OUTPUT_LOG_PREVIEW_CHARS: usize = 2_000;
-const DEFAULT_VIDEO_FRAME_COUNT: usize = 8;
-const MAX_VIDEO_FRAME_COUNT: usize = 16;
+const PROBE_HEAD_BYTES: usize = 4096;
+const DEFAULT_TEXT_CHAR_BUDGET: usize = 60_000;
+const DEFAULT_MAX_IMAGES: usize = 16;
+const MAX_INLINE_TEXT_BYTES: u64 = 2 * 1024 * 1024;
+const PIPELINE_WAIT_MS: u64 = 2_000;
 
 const SYSTEM_PROMPT: &str = r#"You are OpenDAN's controlled media-understanding side context.
 
@@ -98,7 +108,7 @@ impl AgentTool for LlmUnderstandMediaTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LLM_UNDERSTAND_MEDIA.to_string(),
-            description: "Understand a media resource through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a URL, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier shell produced.".to_string(),
+            description: "Understand a media resource through a controlled LLM side context. Images, PDFs, office documents (docx/pptx/odt/...) and videos the model cannot take directly are converted by the system media pipeline first; a long conversion returns a pending result with `resume` — call again with the same media and that `resume` to continue. Archives must be extracted first. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a URL, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier shell produced.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -116,6 +126,10 @@ impl AgentTool for LlmUnderstandMediaTool {
                         "type": "integer",
                         "minimum": 1,
                         "description": "Token budget for the media model to complete this task."
+                    },
+                    "resume": {
+                        "type": "object",
+                        "description": "The `resume` object of an earlier pending result of this tool for the same media: continues that conversion run instead of starting another."
                     }
                 }
             }),
@@ -198,6 +212,8 @@ struct RunOpts {
     summary_model: String,
     target_tokens: u32,
     max_completion_tokens: u32,
+    /// `resume.run_id` of an earlier pending result: poll that pipeline run.
+    resume_run_id: Option<String>,
 }
 
 impl RunOpts {
@@ -264,6 +280,13 @@ impl RunOpts {
             ));
         }
         let max_completion_tokens = normalize_completion_tokens(max_completion_tokens);
+        let resume_run_id = map
+            .get("resume")
+            .and_then(|resume| resume.get("run_id").or(Some(resume)))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
         Ok(Self {
             media_value,
             session_id: None,
@@ -274,6 +297,7 @@ impl RunOpts {
             summary_model,
             target_tokens,
             max_completion_tokens,
+            resume_run_id,
         })
     }
 }
@@ -284,7 +308,10 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         Err(err) => return (build_error_result(&opts, err), CLI_EXIT_USAGE),
     };
     let input_source_kind = media.source.kind();
-    let media_id = media.source.display_id();
+    log::debug!(
+        "llm_understand_media: input media {} ({input_source_kind})",
+        media.source.display_id()
+    );
 
     if let Err(err) = ensure_buckyos_runtime().await {
         return (
@@ -298,29 +325,8 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         Err(err) => return (build_error_result(&opts, err), CLI_EXIT_ERROR),
     };
     let mime = resolved_media.mime.clone();
-    let resolved_source_kind = resource_source_kind(&resolved_media.source);
-    let PreparedMedia {
-        content: media_content,
-        image_preprocess,
-    } = match prepare_media_content(resolved_media, opts.session_id.as_deref()).await {
-        Ok(prepared) => prepared,
-        Err(err) => return (build_error_result(&opts, err), CLI_EXIT_ERROR),
-    };
-    if let Some(preprocess) = &image_preprocess {
-        log::info!(
-            "llm_understand_media: image preprocess; media_id={} actions={:?} original={}x{} {} {}B sent={}x{} {} {}B",
-            media_id,
-            preprocess.actions,
-            preprocess.original.width,
-            preprocess.original.height,
-            preprocess.original.mime,
-            preprocess.original.bytes,
-            preprocess.sent.width,
-            preprocess.sent.height,
-            preprocess.sent.mime,
-            preprocess.sent.bytes
-        );
-    }
+    let resolved_source_kind = "named_object";
+    let media_id = resolved_media.obj_id.to_string();
 
     let model_alias = match opts.model.clone().or_else(|| route_model(&mime)) {
         Some(model) => model,
@@ -331,6 +337,31 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
             );
         }
     };
+
+    let PreparedMedia {
+        content: media_content,
+        decision,
+        trace,
+        coverage,
+        preprocess,
+        caller_note,
+    } = match prepare_media_content(resolved_media, &opts, &model_alias).await {
+        Ok(Prepared::Ready(prepared)) => prepared,
+        Ok(Prepared::Pending(pending)) => return (build_pending_result(&opts, pending), CLI_EXIT_SUCCESS),
+        Err(err) => {
+            let mut result = build_error_result(&opts, err.message);
+            attach_pipeline_details(&mut result, Some(&err.decision), err.trace.as_ref(), None, None, None);
+            return (result, CLI_EXIT_ERROR);
+        }
+    };
+    log::info!(
+        "llm_understand_media: media decision; media_id={} mime={} decision={} reason={} run_id={:?}",
+        media_id,
+        mime,
+        decision.kind,
+        decision.reason,
+        trace.as_ref().map(|t| t.run_id.as_str())
+    );
 
     let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new());
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(NoopToolManager));
@@ -416,32 +447,107 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
             );
             let mut result = build_error_result(&opts, message);
             add_run_context(&mut result, &work_dir, &run_id, Some(&mime));
-            attach_image_preprocess(&mut result, image_preprocess.as_ref());
+            attach_pipeline_details(&mut result, Some(&decision), trace.as_ref(), coverage.as_ref(), preprocess.as_ref(), None);
             return (result, CLI_EXIT_ERROR);
         }
     };
 
     let (mut result, code) =
         build_outcome_result(outcome, &mime, &work_dir, &run_id, &opts.goal, &media_id);
-    attach_image_preprocess(&mut result, image_preprocess.as_ref());
+    attach_pipeline_details(
+        &mut result,
+        Some(&decision),
+        trace.as_ref(),
+        coverage.as_ref(),
+        preprocess.as_ref(),
+        caller_note.as_deref(),
+    );
     (result, code)
 }
 
-/// 图片原始/实际送出的尺寸写进 details；缩过图时在 output 末尾提醒主干 agent。
-fn attach_image_preprocess(result: &mut AgentToolResult, preprocess: Option<&ImagePreprocess>) {
-    let Some(preprocess) = preprocess else {
-        return;
-    };
+/// `details.media_decision` / `pipeline_trace` / `coverage` /
+/// `media_preprocess` (doc/llm_context/LLM Understand Media.md §4.7); a
+/// downscale or uncovered pages are also appended to the output for the
+/// calling agent.
+fn attach_pipeline_details(
+    result: &mut AgentToolResult,
+    decision: Option<&MediaDecision>,
+    trace: Option<&PipelineTrace>,
+    coverage: Option<&Coverage>,
+    preprocess: Option<&Value>,
+    caller_note: Option<&str>,
+) {
     if let Value::Object(map) = &mut result.details {
-        map.insert(
-            "media_preprocess".to_string(),
-            serde_json::to_value(preprocess).unwrap_or(Value::Null),
-        );
+        if let Some(decision) = decision {
+            map.insert("media_decision".to_string(), decision.to_value());
+        }
+        if let Some(trace) = trace {
+            map.insert(
+                "pipeline_trace".to_string(),
+                serde_json::to_value(trace).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(coverage) = coverage {
+            map.insert(
+                "coverage".to_string(),
+                serde_json::to_value(coverage).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(preprocess) = preprocess {
+            map.insert("media_preprocess".to_string(), preprocess.clone());
+        }
     }
-    if let (Some(output), Some(note)) = (result.output.as_mut(), preprocess.caller_note()) {
-        output.push('\n');
-        output.push_str(&note);
+    let mut notes = Vec::new();
+    if let Some(note) = caller_note {
+        notes.push(note.to_string());
     }
+    if let Some(coverage) = coverage {
+        if !coverage.uncovered.is_empty() {
+            notes.push(format!(
+                "Note: {} of {} requested parts were not shown to the model ({}); ask again with a narrower goal for those.",
+                coverage.uncovered.len(),
+                coverage.requested.len().max(coverage.uncovered.len()),
+                coverage
+                    .uncovered
+                    .iter()
+                    .take(8)
+                    .map(|u| format!("{}: {}", u.location, u.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+    }
+    if let (Some(output), false) = (result.output.as_mut(), notes.is_empty()) {
+        for note in notes {
+            output.push('\n');
+            output.push_str(&note);
+        }
+    }
+}
+
+fn build_pending_result(opts: &RunOpts, pending: PendingConversion) -> AgentToolResult {
+    let run_id = pending.trace.run_id.clone();
+    let summary = format!(
+        "media conversion run {run_id} ({}) is still {}; call llm_understand_media again with the same media and `resume` to continue",
+        pending.trace.workflow_id, pending.trace.status
+    );
+    let mut result = AgentToolResult::from_details(json!({
+        "goal": opts.goal,
+        "resume": pending.resume,
+    }))
+    .with_status(AgentToolStatus::Pending)
+    .with_title(format!("{TOOL_LLM_UNDERSTAND_MEDIA} => pending"))
+    .with_task_id(run_id)
+    .with_pending_reason(crate::AgentToolPendingReason::LongRunning)
+    .with_check_after(pending.check_after_secs)
+    .with_hint(
+        "The conversion runs in the workflow service; re-call with the same `media` plus the returned `resume` object. The run is not restarted.",
+        Some("llm_understand_media.pending:1"),
+    );
+    result.tool = Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string());
+    result.summary = summary;
+    attach_pipeline_details(&mut result, Some(&pending.decision), Some(&pending.trace), None, None, None);
+    result
 }
 
 /// 媒体侧 context 的执行配置：无工具、JSON 报告、关闭 web_search。
@@ -740,10 +846,72 @@ impl MediaSource {
     }
 }
 
+/// A media input frozen into the Named Store: its object id, what a light
+/// probe says about it, and the bytes when the caller already had them.
 #[derive(Clone, Debug)]
 struct ResolvedMedia {
-    source: ResourceRef,
+    obj_id: ObjId,
     mime: String,
+    size: u64,
+    name: Option<String>,
+    head: Vec<u8>,
+    bytes: Option<Vec<u8>>,
+}
+
+impl ResolvedMedia {
+    async fn full_bytes(&self) -> Result<Vec<u8>, String> {
+        match &self.bytes {
+            Some(bytes) => Ok(bytes.clone()),
+            None => read_object_bytes(&self.obj_id.to_string()).await,
+        }
+    }
+}
+
+/// `details.media_decision`.
+#[derive(Clone, Debug)]
+struct MediaDecision {
+    kind: &'static str,
+    reason: String,
+    family: Option<&'static str>,
+    obj_id: String,
+    mime: String,
+}
+
+impl MediaDecision {
+    fn direct(media: &ResolvedMedia, reason: impl Into<String>) -> Self {
+        Self {
+            kind: "direct",
+            reason: reason.into(),
+            family: None,
+            obj_id: media.obj_id.to_string(),
+            mime: media.mime.clone(),
+        }
+    }
+
+    fn converted(media: &ResolvedMedia, family: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            kind: "converted",
+            reason: reason.into(),
+            family: Some(family),
+            obj_id: media.obj_id.to_string(),
+            mime: media.mime.clone(),
+        }
+    }
+
+    fn with_kind(mut self, kind: &'static str) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    fn to_value(&self) -> Value {
+        json!({
+            "kind": self.kind,
+            "reason": self.reason,
+            "family": self.family,
+            "obj_id": self.obj_id,
+            "mime": self.mime,
+        })
+    }
 }
 
 /// Parse the `media` argument.
@@ -1043,8 +1211,8 @@ async fn resolve_media(
     media: &MediaArg,
     session_id: Option<&str>,
 ) -> Result<ResolvedMedia, String> {
-    let source: &ResourceRef = match &media.source {
-        MediaSource::Resource(source) => source,
+    let hint = media.mime_hint.as_deref().and_then(normalize_mime);
+    let (name, mime, bytes) = match &media.source {
         MediaSource::LocalFile(raw) => {
             let path = resolve_local_file_path(raw, session_id)?;
             let bytes = tokio::fs::read(&path)
@@ -1053,91 +1221,115 @@ async fn resolve_media(
             if bytes.is_empty() {
                 return Err(format!("local media `{}` is empty", path.display()));
             }
-            let mime = media
-                .mime_hint
-                .as_deref()
-                .and_then(normalize_mime)
+            let mime = hint
+                .clone()
                 .or_else(|| mime_from_path_extension(&path))
-                .or_else(|| sniff_archive_mime(&bytes).map(str::to_string))
-                .or_else(|| sniff_image_mime(&bytes).map(str::to_string))
-                .or_else(|| sniff_video_mime(&bytes).map(str::to_string))
-                .or_else(|| sniff_document_mime(&bytes).map(str::to_string))
+                .or_else(|| sniff_mime(&bytes))
                 .ok_or_else(|| {
                     format!(
                         "cannot determine MIME for local media `{}`; pass mime_hint",
                         path.display()
                     )
                 })?;
-            return Ok(ResolvedMedia {
-                source: ResourceRef::Base64 {
-                    mime: mime.clone(),
-                    data_base64: general_purpose::STANDARD.encode(bytes),
-                },
-                mime,
-            });
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "media".to_string());
+            (name, mime, bytes)
         }
-    };
-
-    match source {
-        ResourceRef::Base64 { mime, data_base64 } => {
+        MediaSource::Resource(ResourceRef::Base64 { mime, data_base64 }) => {
             let mime =
                 normalize_mime(mime).ok_or_else(|| "base64 media has empty mime".to_string())?;
             if data_base64.trim().is_empty() {
                 return Err("base64 media has empty data_base64".to_string());
             }
-            Ok(ResolvedMedia {
-                source: source.clone(),
-                mime,
-            })
+            let bytes = general_purpose::STANDARD
+                .decode(data_base64.trim())
+                .map_err(|err| format!("decode base64 media failed: {err}"))?;
+            let name = format!("inline.{}", mime.rsplit('/').next().unwrap_or("bin"));
+            (name, mime, bytes)
         }
-        ResourceRef::Url { url, mime_hint } => {
-            if let Some(mime) = mime_hint.as_deref().and_then(normalize_mime) {
-                return Ok(ResolvedMedia {
-                    source: source.clone(),
-                    mime,
-                });
-            }
-            if let Some(mime) = media.mime_hint.as_deref().and_then(normalize_mime) {
-                return Ok(ResolvedMedia {
-                    source: source.clone(),
-                    mime,
-                });
-            }
-            Ok(ResolvedMedia {
-                source: source.clone(),
-                mime: resolve_url_mime(url).await?,
-            })
+        MediaSource::Resource(ResourceRef::Url { url, mime_hint }) => {
+            let bytes = download_url(url).await?;
+            let mime = mime_hint
+                .as_deref()
+                .and_then(normalize_mime)
+                .or_else(|| hint.clone())
+                .or_else(|| sniff_mime(&bytes))
+                .or_else(|| url_file_name(url).and_then(|n| mime_from_path_extension(Path::new(&n))))
+                .ok_or_else(|| "cannot determine MIME for URL media; pass mime_hint".to_string())?;
+            let name = url_file_name(url).unwrap_or_else(|| "download".to_string());
+            (name, mime, bytes)
         }
-        ResourceRef::NamedObject { obj_id } => {
-            let content = crate::read_tool::read_named_object(obj_id)
-                .await
-                .map_err(|err| format!("read named_object failed: {err}"))?;
-            let bytes = content.bytes;
-            if bytes.is_empty() {
+        MediaSource::Resource(ResourceRef::NamedObject { obj_id }) => {
+            let head = object_head(obj_id, PROBE_HEAD_BYTES).await?;
+            if head.size == 0 {
                 return Err(format!("named_object {obj_id} has empty content"));
             }
-
-            let object_mime = content.mime.as_deref().and_then(normalize_mime);
-            let mime = object_mime
-                .clone()
-                .filter(|mime| mime != "application/octet-stream")
-                .or_else(|| sniff_archive_mime(&bytes).map(str::to_string))
-                .or_else(|| sniff_image_mime(&bytes).map(str::to_string))
-                .or_else(|| sniff_video_mime(&bytes).map(str::to_string))
-                .or_else(|| sniff_document_mime(&bytes).map(str::to_string))
+            let object_mime = head.mime.as_deref().and_then(normalize_mime);
+            let by_name = head
+                .name
+                .as_deref()
+                .and_then(|n| mime_from_path_extension(Path::new(n)));
+            let mime = sniff_mime(&head.head)
+                .filter(|m| !is_archive_mime(m) || by_name.is_none())
+                .or_else(|| by_name.clone())
+                .or_else(|| object_mime.clone().filter(|m| m != "application/octet-stream"))
+                .or_else(|| hint.clone())
                 .or(object_mime)
-                .or_else(|| media.mime_hint.as_deref().and_then(normalize_mime))
                 .ok_or_else(|| format!("cannot determine MIME for named_object {obj_id}"))?;
-            let data_base64 = general_purpose::STANDARD.encode(bytes);
-            Ok(ResolvedMedia {
-                source: ResourceRef::Base64 {
-                    mime: mime.clone(),
-                    data_base64,
-                },
+            return Ok(ResolvedMedia {
+                obj_id: obj_id.clone(),
                 mime,
-            })
+                size: head.size,
+                name: head.name,
+                head: head.head,
+                bytes: None,
+            });
         }
+    };
+    let obj_id = freeze_bytes(&name, &mime, &bytes).await?;
+    let head = bytes[..bytes.len().min(PROBE_HEAD_BYTES)].to_vec();
+    Ok(ResolvedMedia {
+        obj_id,
+        mime,
+        size: bytes.len() as u64,
+        name: Some(name),
+        head,
+        bytes: Some(bytes),
+    })
+}
+
+fn sniff_mime(bytes: &[u8]) -> Option<String> {
+    sniff_archive_mime(bytes)
+        .or_else(|| sniff_image_mime(bytes))
+        .or_else(|| sniff_video_mime(bytes))
+        .or_else(|| sniff_document_mime(bytes))
+        .map(str::to_string)
+}
+
+fn url_file_name(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next()?;
+    let name = path.rsplit('/').next()?.trim();
+    (!name.is_empty() && name.contains('.')).then(|| name.to_string())
+}
+
+async fn download_url(url: &str) -> Result<Vec<u8>, String> {
+    let bytes = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| format!("download media failed: {err}"))?
+        .error_for_status()
+        .map_err(|err| format!("download media failed: {err}"))?
+        .bytes()
+        .await
+        .map_err(|err| format!("read downloaded media failed: {err}"))?
+        .to_vec();
+    if bytes.is_empty() {
+        return Err("downloaded media is empty".to_string());
     }
+    Ok(bytes)
 }
 
 fn resource_source_kind(source: &ResourceRef) -> &'static str {
@@ -1173,19 +1365,6 @@ fn masked_resource_id(source: &ResourceRef) -> String {
     }
 }
 
-async fn resolve_url_mime(url: &str) -> Result<String, String> {
-    let resp = reqwest::Client::new()
-        .head(url)
-        .send()
-        .await
-        .map_err(|err| format!("fetch URL headers failed: {err}"))?;
-    resp.headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(normalize_mime)
-        .ok_or_else(|| "URL media has no usable Content-Type; pass mime_hint".to_string())
-}
-
 fn normalize_mime(value: &str) -> Option<String> {
     value
         .split(';')
@@ -1219,6 +1398,13 @@ fn mime_from_path_extension(path: &Path) -> Option<String> {
         "ogg" | "oga" => "audio/ogg",
         "flac" => "audio/flac",
         "pdf" => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
+        "doc" => "application/msword",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "rtf" => "application/rtf",
         "json" => "application/json",
         "txt" | "md" | "log" | "csv" | "tsv" => "text/plain",
         "zip" => "application/zip",
@@ -1352,113 +1538,553 @@ fn default_model_alias(mime: &str) -> &'static str {
     }
 }
 
-#[derive(Debug)]
 struct PreparedMedia {
     content: Vec<AiContent>,
-    image_preprocess: Option<ImagePreprocess>,
+    decision: MediaDecision,
+    trace: Option<PipelineTrace>,
+    coverage: Option<Coverage>,
+    preprocess: Option<Value>,
+    caller_note: Option<String>,
 }
 
-impl From<Vec<AiContent>> for PreparedMedia {
-    fn from(content: Vec<AiContent>) -> Self {
+struct PendingConversion {
+    decision: MediaDecision,
+    trace: PipelineTrace,
+    resume: Value,
+    check_after_secs: u64,
+}
+
+enum Prepared {
+    Ready(PreparedMedia),
+    Pending(PendingConversion),
+}
+
+struct PrepareError {
+    message: String,
+    decision: MediaDecision,
+    trace: Option<PipelineTrace>,
+}
+
+impl PrepareError {
+    fn new(decision: MediaDecision, message: impl Into<String>) -> Self {
         Self {
-            content,
-            image_preprocess: None,
+            message: message.into(),
+            decision,
+            trace: None,
+        }
+    }
+
+    fn pipeline(decision: MediaDecision, error: &ThunkExecutionError, trace: PipelineTrace) -> Self {
+        let deployment = matches!(
+            error.code.as_str(),
+            "tools_missing" | "environment_changed" | "function_not_found" | "interrupted"
+        );
+        let message = format!(
+            "media pipeline {} (run {}) failed{}: {}: {}{}",
+            trace.workflow_id,
+            trace.run_id,
+            if deployment { " (deployment / kernel diagnosis)" } else { "" },
+            error.code,
+            error.message,
+            if error.details.is_null() { String::new() } else { format!(" details={}", error.details) }
+        );
+        Self {
+            message,
+            decision: decision.with_kind("failed"),
+            trace: Some(trace),
         }
     }
 }
 
+fn text_char_budget() -> usize {
+    std::env::var("LLM_UNDERSTAND_MEDIA_TEXT_CHARS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_TEXT_CHAR_BUDGET)
+}
+
+fn max_images() -> usize {
+    std::env::var("LLM_UNDERSTAND_MEDIA_MAX_IMAGES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_MAX_IMAGES)
+}
+
+const PASSTHROUGH_IMAGE_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/// Picks between direct pass-through and the system pipeline (TODO §2 step
+/// 1–5): direct when the model takes the format within budget, otherwise one
+/// `media.<family>` run whose products become the model input.
 async fn prepare_media_content(
     media: ResolvedMedia,
-    session_id: Option<&str>,
-) -> Result<PreparedMedia, String> {
-    if is_image_mime(&media.mime) {
-        return prepare_image_content(media).await;
-    }
-    if is_audio_mime(&media.mime) {
-        let transcript = transcribe_audio(media.source, session_id).await?;
-        return Ok(audio_transcript_content(&transcript).into());
-    }
+    opts: &RunOpts,
+    model_alias: &str,
+) -> Result<Prepared, PrepareError> {
+    let session_id = opts.session_id.as_deref();
     if is_archive_mime(&media.mime) {
-        return Err(format!(
-            "archive media mime `{}` must be extracted first",
-            media.mime
+        return Err(PrepareError::new(
+            MediaDecision::direct(&media, "archive"),
+            format!("archive media mime `{}` must be extracted first", media.mime),
         ));
     }
-    if !is_video_mime(&media.mime) {
-        return Ok(vec![AiContent::Document {
-            source: media.source,
-            title: Some("media input".to_string()),
-        }]
-        .into());
+    if is_audio_mime(&media.mime) {
+        let decision = MediaDecision::direct(&media, "audio goes through AICC speech recognition");
+        let bytes = media.full_bytes().await.map_err(|e| PrepareError::new(decision.clone(), e))?;
+        let source = ResourceRef::Base64 {
+            mime: media.mime.clone(),
+            data_base64: general_purpose::STANDARD.encode(bytes),
+        };
+        let transcript = transcribe_audio(source, session_id)
+            .await
+            .map_err(|e| PrepareError::new(decision.clone(), e))?;
+        return Ok(Prepared::Ready(PreparedMedia {
+            content: audio_transcript_content(&transcript),
+            decision,
+            trace: None,
+            coverage: Some(Coverage {
+                family: "audio".to_string(),
+                audio: Some("transcribed".to_string()),
+                complete: true,
+                ..Default::default()
+            }),
+            preprocess: None,
+            caller_note: None,
+        }));
     }
-
-    let frames = extract_video_frames(&media).await?;
-    let mut content = Vec::with_capacity(frames.len() * 2 + 1);
-    content.push(AiContent::text(format!(
-        "The following {} images are representative video frames in chronological order.",
-        frames.len()
-    )));
-    for (timestamp, frame) in frames {
-        content.push(AiContent::text(format!("Frame at {timestamp:.3} seconds:")));
-        content.push(AiContent::image(frame));
+    if is_image_mime(&media.mime) {
+        return prepare_image(media, opts).await;
     }
-    Ok(content.into())
+    if is_video_mime(&media.mime) {
+        return prepare_video(media, opts).await;
+    }
+    let office_format = document_format_from_mime(&media.mime)
+        .or_else(|| media.name.as_deref().and_then(document_format_from_name));
+    if let Some(format) = office_format {
+        return prepare_document(media, opts, Some(format)).await;
+    }
+    if media.mime == "application/pdf" {
+        let limits = DocumentLimits::from_env();
+        let protocol = resolve_protocol(model_alias, session_id).await;
+        let accepts = protocol.as_deref().map(protocol_accepts_documents).unwrap_or(false);
+        if accepts && media.size <= limits.direct_max_bytes {
+            let decision = MediaDecision::direct(
+                &media,
+                format!(
+                    "protocol `{}` accepts documents and {} bytes is within the direct budget",
+                    protocol.unwrap_or_default(),
+                    media.size
+                ),
+            );
+            let bytes = media.full_bytes().await.map_err(|e| PrepareError::new(decision.clone(), e))?;
+            return Ok(Prepared::Ready(PreparedMedia {
+                content: vec![AiContent::Document {
+                    source: ResourceRef::Base64 {
+                        mime: media.mime.clone(),
+                        data_base64: general_purpose::STANDARD.encode(bytes),
+                    },
+                    title: media.name.clone().or_else(|| Some("media input".to_string())),
+                }],
+                decision,
+                trace: None,
+                coverage: None,
+                preprocess: None,
+                caller_note: None,
+            }));
+        }
+        return prepare_document(media, opts, None).await;
+    }
+    if media.mime.starts_with("text/") || media.mime == "application/json" {
+        let decision = MediaDecision::direct(&media, "text content is inlined");
+        if media.size > MAX_INLINE_TEXT_BYTES {
+            return Err(PrepareError::new(
+                decision,
+                format!("text media of {} bytes exceeds the {} byte inline limit; read it with `read` instead", media.size, MAX_INLINE_TEXT_BYTES),
+            ));
+        }
+        let bytes = media.full_bytes().await.map_err(|e| PrepareError::new(decision.clone(), e))?;
+        return Ok(Prepared::Ready(PreparedMedia {
+            content: vec![AiContent::text(format!(
+                "Text media input ({}):\n{}",
+                media.mime,
+                String::from_utf8_lossy(&bytes)
+            ))],
+            decision,
+            trace: None,
+            coverage: None,
+            preprocess: None,
+            caller_note: None,
+        }));
+    }
+    let protocol = resolve_protocol(model_alias, session_id).await;
+    if protocol.as_deref().map(protocol_accepts_documents).unwrap_or(false)
+        && media.size <= DocumentLimits::from_env().direct_max_bytes
+    {
+        let decision = MediaDecision::direct(&media, "protocol accepts documents");
+        let bytes = media.full_bytes().await.map_err(|e| PrepareError::new(decision.clone(), e))?;
+        return Ok(Prepared::Ready(PreparedMedia {
+            content: vec![AiContent::Document {
+                source: ResourceRef::Base64 {
+                    mime: media.mime.clone(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                },
+                title: media.name.clone().or_else(|| Some("media input".to_string())),
+            }],
+            decision,
+            trace: None,
+            coverage: None,
+            preprocess: None,
+            caller_note: None,
+        }));
+    }
+    Err(PrepareError::new(
+        MediaDecision::direct(&media, "unsupported"),
+        format!(
+            "media mime `{}` is not accepted by model protocol `{}` and no system pipeline converts it",
+            media.mime,
+            protocol.unwrap_or_else(|| "unknown".to_string())
+        ),
+    ))
 }
 
-/// 过大、格式不被 vision 模型接受或带 EXIF 旋转的图片先在本地处理（见 image_fit）；
-/// URL 图片也先下载，否则看不到尺寸。
-async fn prepare_image_content(media: ResolvedMedia) -> Result<PreparedMedia, String> {
-    let bytes = media_bytes(&media.source, "image").await?;
-    let fitted = fit_image_for_vision(bytes, &media.mime, ImageLimits::from_env()).await?;
+/// The protocol adapter the chosen model routes to (`claude-messages`,
+/// `openai-chat-completions`, ...); `None` when routing is unavailable.
+async fn resolve_protocol(model_alias: &str, session_id: Option<&str>) -> Option<String> {
+    let runtime = get_buckyos_api_runtime().ok()?;
+    let client = runtime.get_aicc_client().await.ok()?;
+    let mut request = RouteResolveRequest::new(ApiType::Llm, model_alias);
+    request.session_id = session_id.map(str::to_string);
+    client
+        .route_resolve(request)
+        .await
+        .ok()
+        .map(|route| route.protocol_adapter_id)
+}
+
+async fn drive(
+    family: &'static str,
+    media: &ResolvedMedia,
+    input: Value,
+    opts: &RunOpts,
+    decision: &MediaDecision,
+) -> Result<Result<(BTreeMap<String, Value>, PipelineTrace), PendingConversion>, PrepareError> {
+    let mut request = PipelineRequest::new(family, &media.obj_id.to_string(), input);
+    request.resume_run_id = opts.resume_run_id.clone();
+    request.session_id = opts.session_id.clone();
+    request.wait_ms = PIPELINE_WAIT_MS;
+    match run_pipeline(request).await {
+        Ok(PipelineOutcome::Completed { output, trace }) => Ok(Ok((output, trace))),
+        Ok(PipelineOutcome::Pending { trace, resume, check_after_secs }) => Ok(Err(PendingConversion {
+            decision: decision.clone().with_kind("pending"),
+            trace,
+            resume,
+            check_after_secs,
+        })),
+        Ok(PipelineOutcome::Failed { error, trace }) => {
+            Err(PrepareError::pipeline(decision.clone(), &error, trace))
+        }
+        Err(message) => Err(PrepareError::new(decision.clone().with_kind("failed"), message)),
+    }
+}
+
+async fn prepare_image(media: ResolvedMedia, opts: &RunOpts) -> Result<Prepared, PrepareError> {
+    let limits = ImageLimits::from_env();
+    let dims = image_dimensions(&media.head);
+    let passthrough = PASSTHROUGH_IMAGE_MIMES.contains(&media.mime.as_str());
+    if let (true, Some((width, height))) = (passthrough, dims) {
+        if limits.allows(width, height, media.size) {
+            let decision = MediaDecision::direct(
+                &media,
+                format!("{}x{} {} within the vision limits", width, height, media.mime),
+            );
+            let bytes = media.full_bytes().await.map_err(|e| PrepareError::new(decision.clone(), e))?;
+            let info = json!({"mime": media.mime, "width": width, "height": height, "bytes": media.size});
+            return Ok(Prepared::Ready(PreparedMedia {
+                content: vec![AiContent::image(ResourceRef::Base64 {
+                    mime: media.mime.clone(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                })],
+                decision,
+                trace: None,
+                coverage: None,
+                preprocess: Some(json!({"original": info, "sent": info, "actions": []})),
+                caller_note: None,
+            }));
+        }
+    }
+    let reason = match dims {
+        Some((w, h)) if passthrough => format!("{w}x{h} / {} bytes exceeds the vision limits", media.size),
+        _ => format!("`{}` must be decoded and re-encoded for the vision model", media.mime),
+    };
+    let decision = MediaDecision::converted(&media, FAMILY_IMAGE, reason);
+    let input = limits.pipeline_input(&media.obj_id.to_string());
+    let (output, trace) = match drive(FAMILY_IMAGE, &media, input, opts, &decision).await? {
+        Ok(done) => done,
+        Err(pending) => return Ok(Prepared::Pending(pending)),
+    };
+    let fit = output
+        .get("fit_image")
+        .cloned()
+        .ok_or_else(|| PrepareError::new(decision.clone(), "media.image run has no fit_image output"))?;
+    let model_obj = fit
+        .get("model_media_obj_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| PrepareError::new(decision.clone(), "fit_image output has no model_media_obj_id"))?
+        .to_string();
+    let bytes = read_object_bytes(&model_obj)
+        .await
+        .map_err(|e| PrepareError::new(decision.clone(), e))?;
+    let sent_mime = fit
+        .get("mime")
+        .and_then(Value::as_str)
+        .unwrap_or("image/png")
+        .to_string();
+    let downscaled = fit
+        .get("actions")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().any(|v| v == "downscaled"))
+        .unwrap_or(false);
+    let dims_of = |key: &str| {
+        let v = fit.get(key);
+        (
+            v.and_then(|v| v.get("width")).and_then(Value::as_u64).unwrap_or(0),
+            v.and_then(|v| v.get("height")).and_then(Value::as_u64).unwrap_or(0),
+        )
+    };
+    let (ow, oh) = dims_of("original");
+    let (sw, sh) = dims_of("sent");
     let mut content = Vec::with_capacity(2);
-    if let Some(note) = fitted.preprocess.model_note() {
-        content.push(AiContent::text(note));
+    let mut caller_note = None;
+    if downscaled {
+        content.push(AiContent::text(format!(
+            "Image preprocessing note: this image was downscaled from {ow}x{oh} to {sw}x{sh} pixels before analysis, so very small text or fine detail may be lost and any pixel coordinates refer to the downscaled image."
+        )));
+        caller_note = Some(format!(
+            "Note: analyzed a downscaled copy ({ow}x{oh} -> {sw}x{sh}); for fine detail, crop the region of interest and analyze the crop."
+        ));
     }
     content.push(AiContent::image(ResourceRef::Base64 {
-        mime: fitted.mime,
-        data_base64: general_purpose::STANDARD.encode(fitted.bytes),
+        mime: sent_mime,
+        data_base64: general_purpose::STANDARD.encode(bytes),
     }));
-    Ok(PreparedMedia {
+    Ok(Prepared::Ready(PreparedMedia {
         content,
-        image_preprocess: Some(fitted.preprocess),
-    })
+        decision,
+        trace: Some(trace),
+        coverage: None,
+        preprocess: Some(json!({
+            "original": fit.get("original"),
+            "sent": fit.get("sent"),
+            "actions": fit.get("actions"),
+            "model_media_obj_id": model_obj,
+        })),
+        caller_note,
+    }))
 }
 
-async fn media_bytes(source: &ResourceRef, kind: &str) -> Result<Vec<u8>, String> {
-    let bytes = match source {
-        ResourceRef::Base64 { data_base64, .. } => general_purpose::STANDARD
-            .decode(data_base64)
-            .map_err(|err| format!("decode {kind} base64 failed: {err}"))?,
-        ResourceRef::Url { url, .. } => reqwest::Client::new()
-            .get(url)
-            .send()
-            .await
-            .map_err(|err| format!("download {kind} failed: {err}"))?
-            .error_for_status()
-            .map_err(|err| format!("download {kind} failed: {err}"))?
-            .bytes()
-            .await
-            .map_err(|err| format!("read downloaded {kind} failed: {err}"))?
-            .to_vec(),
-        ResourceRef::NamedObject { .. } => {
-            return Err(format!("named_object {kind} was not resolved to bytes"))
-        }
+async fn prepare_document(
+    media: ResolvedMedia,
+    opts: &RunOpts,
+    format: Option<&'static str>,
+) -> Result<Prepared, PrepareError> {
+    let family = if format.is_some() { FAMILY_DOCUMENT } else { FAMILY_PDF };
+    let decision = MediaDecision::converted(
+        &media,
+        family,
+        match format {
+            Some(f) => format!("{f} is converted to PDF pages and text"),
+            None => "PDF pages are rendered and their text extracted".to_string(),
+        },
+    );
+    let input = DocumentLimits::from_env().pipeline_input(&media.obj_id.to_string(), format);
+    let (output, trace) = match drive(family, &media, input, opts, &decision).await? {
+        Ok(done) => done,
+        Err(pending) => return Ok(Prepared::Pending(pending)),
     };
-    if bytes.is_empty() {
-        return Err(format!("{kind} has empty content"));
+    let manifest_id = output
+        .get("build_catalog")
+        .and_then(|c| c.get("manifest_obj_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| PrepareError::new(decision.clone(), "run output has no manifest_obj_id"))?
+        .to_string();
+    let manifest = read_manifest(&manifest_id)
+        .await
+        .map_err(|e| PrepareError::new(decision.clone(), e))?;
+    let mut texts = BTreeMap::new();
+    for entry in &manifest.entries {
+        let (Some(page), Some(text_id)) = (entry.location.page, entry.text_obj_id.as_ref()) else {
+            continue;
+        };
+        match read_object_bytes(text_id).await {
+            Ok(bytes) => {
+                texts.insert(u64::from(page), String::from_utf8_lossy(&bytes).into_owned());
+            }
+            Err(err) => log::warn!("llm_understand_media: read page {page} text {text_id} failed: {err}"),
+        }
     }
-    Ok(bytes)
+    let plan = plan_pages(&opts.goal, &manifest, &texts, text_char_budget(), max_images());
+    let mut content = Vec::with_capacity(plan.texts.len() + plan.images.len() * 2 + 1);
+    content.push(AiContent::text(format!(
+        "Document representation from the media pipeline ({}): {} pages in the source{}; page texts shown for pages {:?}; page images shown for pages {:?}; pages not shown: {:?}. Page numbers refer to {}.",
+        manifest.family,
+        manifest.range.total.map(|t| t.to_string()).unwrap_or_else(|| "?".to_string()),
+        manifest.derived_content_id.as_ref().map(|_| " (converted to PDF first)").unwrap_or(""),
+        plan.texts.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+        plan.images.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+        plan.coverage.uncovered.iter().map(|u| u.location).collect::<Vec<_>>(),
+        if manifest.derived_content_id.is_some() { "the derived PDF" } else { "the original document" },
+    )));
+    for (page, text) in &plan.texts {
+        content.push(AiContent::text(format!("Page {page} text:\n{text}")));
+    }
+    for (page, image_id) in &plan.images {
+        match read_object_bytes(image_id).await {
+            Ok(bytes) => {
+                content.push(AiContent::text(format!("Page {page} image:")));
+                content.push(AiContent::image(ResourceRef::Base64 {
+                    mime: sniff_image_mime(&bytes).unwrap_or("image/png").to_string(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                }));
+            }
+            Err(err) => log::warn!("llm_understand_media: read page {page} image {image_id} failed: {err}"),
+        }
+    }
+    Ok(Prepared::Ready(PreparedMedia {
+        content,
+        decision,
+        trace: Some(trace),
+        coverage: Some(plan.coverage),
+        preprocess: Some(json!({"manifest_obj_id": manifest_id, "summary": output.get("build_catalog").and_then(|c| c.get("summary"))})),
+        caller_note: None,
+    }))
 }
 
-fn media_temp_dir(prefix: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "{prefix}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ))
+async fn prepare_video(media: ResolvedMedia, opts: &RunOpts) -> Result<Prepared, PrepareError> {
+    let decision = MediaDecision::converted(
+        &media,
+        FAMILY_VIDEO,
+        "video frames are sampled and the audio track transcribed",
+    );
+    let input = VideoLimits::from_env().pipeline_input(&media.obj_id.to_string());
+    let (output, trace) = match drive(FAMILY_VIDEO, &media, input, opts, &decision).await? {
+        Ok(done) => done,
+        Err(pending) => return Ok(Prepared::Pending(pending)),
+    };
+    let manifest_id = output
+        .get("build_catalog")
+        .and_then(|c| c.get("manifest_obj_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| PrepareError::new(decision.clone(), "run output has no manifest_obj_id"))?
+        .to_string();
+    let manifest = read_manifest(&manifest_id)
+        .await
+        .map_err(|e| PrepareError::new(decision.clone(), e))?;
+    let frames = frame_entries(&manifest);
+    let mut coverage = Coverage {
+        family: manifest.family.clone(),
+        total: manifest.range.total,
+        requested: manifest.range.requested.clone(),
+        processed: manifest.range.processed.clone(),
+        failed: manifest.range.failed.clone(),
+        complete: manifest.complete,
+        ..Default::default()
+    };
+    let limit = max_images();
+    let mut content = Vec::with_capacity(frames.len() * 2 + 2);
+    let mut shown = 0usize;
+    for entry in &frames {
+        let coord = entry.location.time_ms.or(entry.location.index.map(u64::from)).unwrap_or(0);
+        let Some(image_id) = entry.image_obj_id.as_ref() else {
+            coverage.uncovered.push(pipeline::Uncovered {
+                location: coord,
+                reason: entry
+                    .error
+                    .as_ref()
+                    .map(|e| format!("{}: {}", e.code, e.message))
+                    .unwrap_or_else(|| "no frame produced".to_string()),
+            });
+            continue;
+        };
+        if shown >= limit {
+            coverage.uncovered.push(pipeline::Uncovered { location: coord, reason: "omitted by the image budget".to_string() });
+            continue;
+        }
+        match read_object_bytes(image_id).await {
+            Ok(bytes) => {
+                content.push(AiContent::text(format!("Frame at {:.3} seconds:", coord as f64 / 1000.0)));
+                content.push(AiContent::image(ResourceRef::Base64 {
+                    mime: sniff_image_mime(&bytes).unwrap_or("image/jpeg").to_string(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                }));
+                coverage.image_delivered.push(coord);
+                shown += 1;
+            }
+            Err(err) => coverage.uncovered.push(pipeline::Uncovered { location: coord, reason: format!("frame unreadable: {err}") }),
+        }
+    }
+    content.insert(
+        0,
+        AiContent::text(format!(
+            "The following {shown} images are uniformly sampled video frames in chronological order (video duration {} ms).",
+            manifest.range.total.map(|t| t.to_string()).unwrap_or_else(|| "?".to_string())
+        )),
+    );
+    match audio_entry(&manifest) {
+        Some(entry) if entry.status == buckyos_api::MediaEntryStatus::Absent => {
+            coverage.audio = Some("absent".to_string());
+            content.push(AiContent::text("The video has no audio track.".to_string()));
+        }
+        Some(entry) => match entry.audio_obj_id.as_ref() {
+            Some(audio_id) => {
+                let codec = output
+                    .get("build_catalog")
+                    .and_then(|c| c.get("summary"))
+                    .and_then(|s| s.get("audio_codec"))
+                    .and_then(Value::as_str);
+                let result = async {
+                    let bytes = read_object_bytes(audio_id).await?;
+                    transcribe_audio(
+                        ResourceRef::Base64 {
+                            mime: audio_mime(codec).to_string(),
+                            data_base64: general_purpose::STANDARD.encode(bytes),
+                        },
+                        opts.session_id.as_deref(),
+                    )
+                    .await
+                }
+                .await;
+                match result {
+                    Ok(transcript) => {
+                        coverage.audio = Some("transcribed".to_string());
+                        content.extend(audio_transcript_content(&transcript));
+                    }
+                    Err(err) => {
+                        log::warn!("llm_understand_media: video audio transcription failed: {err}");
+                        coverage.audio = Some(format!("failed: {err}"));
+                        content.push(AiContent::text(format!(
+                            "The audio track could not be transcribed ({err}); the analysis covers the frames only."
+                        )));
+                    }
+                }
+            }
+            None => {
+                coverage.audio = Some(format!(
+                    "failed: {}",
+                    entry.error.as_ref().map(|e| e.message.clone()).unwrap_or_default()
+                ));
+            }
+        },
+        None => coverage.audio = Some("not_requested".to_string()),
+    }
+    Ok(Prepared::Ready(PreparedMedia {
+        content,
+        decision,
+        trace: Some(trace),
+        coverage: Some(coverage),
+        preprocess: Some(json!({"manifest_obj_id": manifest_id})),
+        caller_note: None,
+    }))
 }
 
 async fn transcribe_audio(source: ResourceRef, session_id: Option<&str>) -> Result<String, String> {
@@ -1528,95 +2154,6 @@ fn audio_transcript_content(transcript: &str) -> Vec<AiContent> {
     ))]
 }
 
-async fn extract_video_frames(media: &ResolvedMedia) -> Result<Vec<(f64, ResourceRef)>, String> {
-    let bytes = media_bytes(&media.source, "video").await?;
-    let temp_dir = media_temp_dir("llm-understand-video");
-    tokio::fs::create_dir_all(&temp_dir)
-        .await
-        .map_err(|err| format!("create video frame temp dir failed: {err}"))?;
-    let input_path = temp_dir.join(if media.mime == "video/webm" {
-        "input.webm"
-    } else {
-        "input.mp4"
-    });
-    let result = async {
-        tokio::fs::write(&input_path, bytes)
-            .await
-            .map_err(|err| format!("write temporary video failed: {err}"))?;
-        let probe = buckyos_api::hide_child_console_async(&mut Command::new("ffprobe"))
-            .args([
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-            ])
-            .arg(&input_path)
-            .output()
-            .await
-            .map_err(|err| format!("start ffprobe failed: {err}"))?;
-        if !probe.status.success() {
-            return Err(format!(
-                "ffprobe failed: {}",
-                String::from_utf8_lossy(&probe.stderr).trim()
-            ));
-        }
-        let duration = String::from_utf8_lossy(&probe.stdout)
-            .trim()
-            .parse::<f64>()
-            .map_err(|err| format!("parse video duration failed: {err}"))?;
-        if !duration.is_finite() || duration <= 0.0 {
-            return Err(format!("invalid video duration `{duration}`"));
-        }
-        let configured_count = std::env::var("LLM_UNDERSTAND_MEDIA_VIDEO_FRAMES")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_VIDEO_FRAME_COUNT)
-            .clamp(1, MAX_VIDEO_FRAME_COUNT);
-        let frame_count = configured_count
-            .min((duration * 2.0).ceil() as usize)
-            .max(1);
-        let max_edge = image_fit::video_frame_max_long_edge();
-        let scale_filter = format!(
-            "scale='min(iw,{max_edge})':'min(ih,{max_edge})':force_original_aspect_ratio=decrease"
-        );
-        let mut frames = Vec::with_capacity(frame_count);
-        for index in 0..frame_count {
-            let timestamp = duration * (index as f64 + 0.5) / frame_count as f64;
-            let frame_path = temp_dir.join(format!("frame-{index:02}.jpg"));
-            let output = buckyos_api::hide_child_console_async(&mut Command::new("ffmpeg"))
-                .args(["-v", "error", "-y", "-ss", &format!("{timestamp:.6}")])
-                .arg("-i")
-                .arg(&input_path)
-                .args(["-frames:v", "1", "-vf", &scale_filter, "-q:v", "2"])
-                .arg(&frame_path)
-                .output()
-                .await
-                .map_err(|err| format!("start ffmpeg failed: {err}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "extract video frame at {timestamp:.3}s failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
-            let frame_bytes = tokio::fs::read(&frame_path)
-                .await
-                .map_err(|err| format!("read extracted video frame failed: {err}"))?;
-            frames.push((
-                timestamp,
-                ResourceRef::Base64 {
-                    mime: "image/jpeg".to_string(),
-                    data_base64: general_purpose::STANDARD.encode(frame_bytes),
-                },
-            ));
-        }
-        Ok(frames)
-    }
-    .await;
-    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-    result
-}
 
 fn purify_history(history: &[AiMessage]) -> Vec<AiMessage> {
     history
@@ -1950,6 +2487,7 @@ Options:
   --work-dir <path>       LocalLLMContext working directory.
   --model <alias>         AICC logical model alias; default image route is llm.vision.
   --max-completion-tokens <n>  Positive output budget; default 2048, rounded up to 2048/4096/8192 tiers.
+  --resume <run_id>       Continue the media pipeline run of an earlier pending result.
   -h, --help              Show this help.
 "#;
 
@@ -1964,6 +2502,7 @@ struct CliOpts {
     work_dir: Option<PathBuf>,
     model: Option<String>,
     max_completion_tokens: Option<u32>,
+    resume_run_id: Option<String>,
 }
 
 impl CliOpts {
@@ -1992,6 +2531,7 @@ impl CliOpts {
                 self.max_completion_tokens
                     .unwrap_or(DEFAULT_MAX_COMPLETION_TOKENS),
             ),
+            resume_run_id: self.resume_run_id,
         })
     }
 
@@ -2002,6 +2542,7 @@ impl CliOpts {
         let mut work_dir: Option<PathBuf> = None;
         let mut model: Option<String> = None;
         let mut max_completion_tokens = None;
+        let mut resume_run_id = None;
 
         let mut idx = 0;
         fn set_media(value: Value, media: &mut Option<Value>) -> Result<(), ParseError> {
@@ -2031,6 +2572,7 @@ impl CliOpts {
                     work_dir = Some(PathBuf::from(next_value(args, &mut idx, "--work-dir")?));
                 }
                 "--model" => model = Some(next_value(args, &mut idx, "--model")?),
+                "--resume" => resume_run_id = Some(next_value(args, &mut idx, "--resume")?),
                 "--max-completion-tokens" => {
                     max_completion_tokens = Some(parse_positive_u32(
                         &next_value(args, &mut idx, "--max-completion-tokens")?,
@@ -2058,6 +2600,7 @@ impl CliOpts {
             work_dir,
             model,
             max_completion_tokens,
+            resume_run_id,
         })
     }
 }
@@ -2214,6 +2757,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL_ALIAS.to_string(),
             target_tokens: DEFAULT_TARGET_TOKENS,
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
+            resume_run_id: None,
         };
 
         let input = build_input(
@@ -2312,97 +2856,118 @@ mod tests {
         assert_eq!(default_model_alias("image/png"), "llm.vision");
     }
 
-    #[tokio::test]
-    async fn document_resources_are_forwarded_inline() {
-        for mime in ["application/pdf", "text/plain", "application/octet-stream"] {
-            let content = prepare_media_content(
-                ResolvedMedia {
-                    source: ResourceRef::Base64 {
-                        mime: mime.to_string(),
-                        data_base64: "AAAA".to_string(),
-                    },
-                    mime: mime.to_string(),
-                },
-                None,
-            )
-            .await
-            .expect("non-archive media should be forwarded")
-            .content;
-            assert!(matches!(
-                &content[0],
-                AiContent::Document {
-                    source: ResourceRef::Base64 { mime: actual, .. },
-                    ..
-                } if actual == mime
-            ));
+    fn resolved(mime: &str, size: u64, head: &[u8], name: Option<&str>) -> ResolvedMedia {
+        ResolvedMedia {
+            obj_id: ObjId::new("cyfile:d05ec9f1d9ff3713fda374c2ad1e1a9ff1b168c941772df29769935fbbb49fdd").unwrap(),
+            mime: mime.to_string(),
+            size,
+            name: name.map(str::to_string),
+            head: head.to_vec(),
+            bytes: None,
         }
-
-        let err = prepare_media_content(
-            ResolvedMedia {
-                source: ResourceRef::Base64 {
-                    mime: "application/zip".to_string(),
-                    data_base64: "AAAA".to_string(),
-                },
-                mime: "application/zip".to_string(),
-            },
-            None,
-        )
-        .await
-        .expect_err("archives must be extracted before understanding");
-        assert!(err.contains("must be extracted first"));
     }
 
-    #[tokio::test]
-    async fn oversized_images_are_downscaled_with_a_note_for_the_model() {
-        fn png_base64(width: u32, height: u32) -> String {
-            let mut bytes = Vec::new();
-            image::RgbImage::new(width, height)
-                .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
-                .unwrap();
-            general_purpose::STANDARD.encode(bytes)
-        }
-        let prepare = |data_base64: String| {
-            prepare_media_content(
-                ResolvedMedia {
-                    source: ResourceRef::Base64 {
-                        mime: "image/png".to_string(),
-                        data_base64,
-                    },
-                    mime: "image/png".to_string(),
-                },
-                None,
-            )
-        };
+    #[test]
+    fn media_decisions_name_the_family_and_reason() {
+        let media = resolved("application/pdf", 10, b"%PDF-1.7", Some("a.pdf"));
+        let converted = MediaDecision::converted(&media, FAMILY_PDF, "no document support");
+        let value = converted.to_value();
+        assert_eq!(value["kind"], "converted");
+        assert_eq!(value["family"], "media.pdf");
+        assert_eq!(value["obj_id"], media.obj_id.to_string());
+        let pending = converted.clone().with_kind("pending").to_value();
+        assert_eq!(pending["kind"], "pending");
+        let direct = MediaDecision::direct(&media, "within budget").to_value();
+        assert_eq!(direct["family"], Value::Null);
 
-        let small = png_base64(32, 32);
-        let prepared = prepare(small.clone()).await.expect("small image");
-        assert_eq!(prepared.content.len(), 1);
-        assert!(matches!(
-            &prepared.content[0],
-            AiContent::Image { source: ResourceRef::Base64 { data_base64, .. } } if *data_base64 == small
-        ));
-        assert!(prepared.image_preprocess.expect("probe info").actions.is_empty());
-
-        let prepared = prepare(png_base64(4096, 1024)).await.expect("large image");
-        assert!(matches!(
-            &prepared.content[0],
-            AiContent::Text { text } if text.contains("downscaled from 4096x1024 to 2048x512")
-        ));
-        assert!(matches!(&prepared.content[1], AiContent::Image { .. }));
-
-        let mut result = build_error_result(
-            &RunOpts::from_tool_args(json!({
-                "media": { "kind": "url", "url": "https://example.test/image.png" },
-                "goal": "describe the image"
-            }))
-            .unwrap(),
-            "boom",
+        let docx = resolved("application/zip", 10, b"PK\x03\x04", Some("slides.pptx"));
+        assert_eq!(
+            document_format_from_mime(&docx.mime).or_else(|| docx.name.as_deref().and_then(document_format_from_name)),
+            Some("pptx")
         );
+    }
+
+    #[test]
+    fn image_pass_through_needs_known_dimensions_within_limits() {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
+        png.extend_from_slice(&4096u32.to_be_bytes());
+        png.extend_from_slice(&1024u32.to_be_bytes());
+        let limits = ImageLimits::default();
+        let (w, h) = image_dimensions(&png).unwrap();
+        assert!(!limits.allows(w, h, 1000), "4096x1024 exceeds the long edge");
+        let mut small = png.clone();
+        small[16..20].copy_from_slice(&32u32.to_be_bytes());
+        small[20..24].copy_from_slice(&32u32.to_be_bytes());
+        let (w, h) = image_dimensions(&small).unwrap();
+        assert!(limits.allows(w, h, 1000));
+        assert!(!limits.allows(w, h, limits.max_bytes + 1));
+        assert!(PASSTHROUGH_IMAGE_MIMES.contains(&"image/png"));
+        assert!(!PASSTHROUGH_IMAGE_MIMES.contains(&"image/tiff"));
+        assert_eq!(image_dimensions(b"II*\x00"), None);
+        let input = limits.pipeline_input("cyfile:ab");
+        assert_eq!(input["max_long_edge"], 2048);
+        assert_eq!(input["obj_id"], "cyfile:ab");
+    }
+
+    #[test]
+    fn pipeline_details_and_pending_results_carry_decision_trace_and_coverage() {
+        let opts = RunOpts::from_tool_args(json!({
+            "media": { "kind": "named_object", "obj_id": "cyfile:d05ec9f1d9ff3713fda374c2ad1e1a9ff1b168c941772df29769935fbbb49fdd" },
+            "goal": "describe",
+            "max_completion_tokens": 100,
+            "resume": { "run_id": "run-9", "workflow_id": "media.pdf" }
+        }))
+        .unwrap();
+        assert_eq!(opts.resume_run_id.as_deref(), Some("run-9"));
+        let media = resolved("application/pdf", 10, b"%PDF-1.7", Some("a.pdf"));
+        let decision = MediaDecision::converted(&media, FAMILY_PDF, "convert");
+        let trace = PipelineTrace {
+            workflow_id: "media.pdf".to_string(),
+            run_id: "run-9".to_string(),
+            revision: "rev".to_string(),
+            status: "running".to_string(),
+            ..Default::default()
+        };
+        let pending = build_pending_result(
+            &opts,
+            PendingConversion {
+                decision: decision.clone().with_kind("pending"),
+                trace: trace.clone(),
+                resume: json!({"run_id": "run-9"}),
+                check_after_secs: 5,
+            },
+        );
+        assert_eq!(pending.status, AgentToolStatus::Pending);
+        assert_eq!(pending.task_id.as_deref(), Some("run-9"));
+        assert_eq!(pending.check_after, Some(5));
+        assert_eq!(pending.details["resume"]["run_id"], "run-9");
+        assert_eq!(pending.details["media_decision"]["kind"], "pending");
+        assert_eq!(pending.details["pipeline_trace"]["run_id"], "run-9");
+
+        let mut result = build_error_result(&opts, "boom");
         result.output = Some("Conclusion:\nok".to_string());
-        attach_image_preprocess(&mut result, prepared.image_preprocess.as_ref());
+        let coverage = Coverage {
+            family: "pdf".to_string(),
+            requested: vec![1, 2, 3],
+            uncovered: vec![pipeline::Uncovered { location: 3, reason: "tool_failed: render".to_string() }],
+            ..Default::default()
+        };
+        attach_pipeline_details(
+            &mut result,
+            Some(&decision),
+            Some(&trace),
+            Some(&coverage),
+            Some(&json!({"original": {"width": 4096}, "sent": {"width": 2048}})),
+            Some("Note: analyzed a downscaled copy (4096x1024 -> 2048x512); for fine detail, crop the region of interest and analyze the crop."),
+        );
+        assert_eq!(result.details["media_decision"]["family"], "media.pdf");
+        assert_eq!(result.details["pipeline_trace"]["revision"], "rev");
+        assert_eq!(result.details["coverage"]["uncovered"][0]["where"], 3);
         assert_eq!(result.details["media_preprocess"]["sent"]["width"], 2048);
-        assert_eq!(result.details["media_preprocess"]["original"]["width"], 4096);
-        assert!(result.output.unwrap().ends_with("analyze the crop."));
+        let output = result.output.unwrap();
+        assert!(output.contains("analyze the crop."));
+        assert!(output.contains("were not shown to the model"));
+        assert!(!serde_json::to_string(&result.details).unwrap().contains("data_base64"));
     }
 
     #[test]
@@ -2428,6 +2993,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL_ALIAS.to_string(),
             target_tokens: DEFAULT_TARGET_TOKENS,
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
+            resume_run_id: None,
         };
         let media_content = vec![
             AiContent::text("Frame at 1.250 seconds:"),

@@ -1,4 +1,5 @@
 import { initTestRuntime } from "../test_helpers/buckyos_client.ts";
+import { ndm_proxy, ndn } from "buckyos";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -32,15 +33,50 @@ type GraphResponse = {
   ok: true;
   run_id: string;
   workflow_id: string;
+  workflow_name?: string;
   status: string;
+  revision?: string;
+  requested_by?: string | null;
+  executor?: string;
   graph: JsonObject;
   nodes: JsonObject;
   node_states: Record<string, string>;
   node_outputs: Record<string, JsonValue>;
+  node_errors?: Record<string, JsonObject>;
+  node_sources?: Record<string, string>;
   human_waiting_nodes: string[];
   pending_thunks: JsonObject;
   metrics: JsonObject;
+  output?: Record<string, JsonValue>;
   seq: number;
+};
+
+type CreateRunResponse = {
+  ok: true;
+  run_id: string;
+  workflow_id: string;
+  status: string;
+  revision: string;
+  reused: boolean;
+  output: Record<string, JsonValue>;
+  events: EventEnvelope[];
+  seq: number;
+};
+
+type TaskSummary = {
+  task_id: string;
+  name: string;
+  parent_id?: string | null;
+  root_id: string;
+  schema_id: string;
+  phase: string;
+  outcome?: string | null;
+};
+
+type UploadedInput = {
+  obj_id: string;
+  node_id: string;
+  path: string;
 };
 
 type CaseResult =
@@ -99,7 +135,17 @@ const assert = {
   },
 };
 
-const DEFAULT_CASES = ["WF-DV-001", "WF-DV-002", "WF-DV-006", "WF-DV-007"];
+const DEFAULT_CASES = [
+  "WF-DV-001",
+  "WF-DV-002",
+  "WF-DV-006",
+  "WF-DV-007",
+  "WF-DV-009",
+  "WF-DV-010",
+  "WF-DV-011",
+  "WF-DV-012",
+  "WF-DV-013",
+];
 const WORKFLOW_DV_CASES = getEnv("WORKFLOW_DV_CASES");
 const WORKFLOW_REPORT_DIR = getEnv("WORKFLOW_REPORT_DIR") ??
   "reports/workflow_dv";
@@ -109,6 +155,14 @@ const WORKFLOW_WAIT_TIMEOUT_MS = Number(
   getEnv("WORKFLOW_WAIT_TIMEOUT_MS") ?? "180000",
 );
 const TASKDATA_CASE_ID = "WF-DV-003";
+const SYSTEM_DEFINITION_IDS = [
+  "media.image",
+  "media.pdf",
+  "media.video",
+  "media.document",
+];
+const POPPLER_TOOLS = ["pdfinfo", "pdftotext", "pdftoppm"];
+const TERMINAL_STATUSES = ["completed", "failed", "aborted", "budget_exhausted"];
 
 function getEnv(name: string): string | null {
   const value = Deno.env.get(name);
@@ -355,7 +409,6 @@ function eventsFor(
 
 async function submitDefinitionPair(
   workflowRpc: RpcClient,
-  owner: Owner,
   definition: JsonObject,
 ): Promise<
   { workflowId: string; version: number; first: JsonObject; second: JsonObject }
@@ -366,7 +419,6 @@ async function submitDefinitionPair(
   assertNoAnalysisErrors(dryRun, "dry_run");
 
   const first = await rpcOk<JsonObject>(workflowRpc, "submit_definition", {
-    owner,
     definition,
     tags: ["dv", "workflow"],
   });
@@ -374,7 +426,6 @@ async function submitDefinitionPair(
   assert.equal(typeof first.workflow_id, "string");
 
   const second = await rpcOk<JsonObject>(workflowRpc, "submit_definition", {
-    owner,
     definition,
     tags: ["dv", "workflow"],
   });
@@ -398,12 +449,10 @@ async function submitDefinitionPair(
 
 async function createAndStartRun(
   workflowRpc: RpcClient,
-  owner: Owner,
   workflowId: string,
 ): Promise<{ runId: string; start: JsonObject }> {
   const created = await rpcOk<JsonObject>(workflowRpc, "create_run", {
     workflow_id: workflowId,
-    owner,
     input: {
       image_url: WORKFLOW_TEST_IMAGE_URL,
       mime_hint: "image/jpeg",
@@ -413,9 +462,17 @@ async function createAndStartRun(
   assert.equal(typeof created.run_id, "string");
 
   const runId = String(created.run_id);
-  const start = await rpcOk<JsonObject>(workflowRpc, "start_run", {
+  // start_run only admits the run; the driver advances it in the background.
+  let start = await rpcOk<JsonObject>(workflowRpc, "start_run", {
     run_id: runId,
+    wait_ms: 2000,
   });
+  assert.equal(start.accepted, true, "start_run must report acceptance");
+  const deadline = Date.now() + 15_000;
+  while (String(start.status) === "created" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    start = await rpcOk<JsonObject>(workflowRpc, "get_run_graph", { run_id: runId });
+  }
   assert.ok(
     ["running", "waiting_human", "completed", "failed"].includes(
       String(start.status),
@@ -485,7 +542,6 @@ function assertArtifacts(output: JsonValue, label: string): void {
 
 async function assertRunListed(
   workflowRpc: RpcClient,
-  owner: Owner,
   workflowId: string,
   runId: string,
   status: string,
@@ -494,7 +550,6 @@ async function assertRunListed(
     workflowRpc,
     "list_runs",
     {
-      owner,
       workflow_id: workflowId,
       status,
     },
@@ -581,12 +636,11 @@ async function runImageReviewCase(args: {
     await loadFixture("wf-dv-image-review-enhance.json"),
     `${runTag}-${decision}`,
   );
-  const submitted = await submitDefinitionPair(workflowRpc, owner, definition);
+  const submitted = await submitDefinitionPair(workflowRpc, definition);
   await writeJsonFile(joinPath(reportDir, "definition.json"), submitted.second);
 
   const { runId, start } = await createAndStartRun(
     workflowRpc,
-    owner,
     submitted.workflowId,
   );
   await writeJsonFile(joinPath(reportDir, "start.json"), start);
@@ -688,7 +742,6 @@ async function runImageReviewCase(args: {
   await assertHistoryResume(workflowRpc, runId, done.history);
   await assertRunListed(
     workflowRpc,
-    owner,
     submitted.workflowId,
     runId,
     "completed",
@@ -707,10 +760,9 @@ async function runAgentCallbackCase(args: {
     await loadFixture("wf-dv-agent-callback.json"),
     runTag,
   );
-  const submitted = await submitDefinitionPair(workflowRpc, owner, definition);
+  const submitted = await submitDefinitionPair(workflowRpc, definition);
   const { runId, start } = await createAndStartRun(
     workflowRpc,
-    owner,
     submitted.workflowId,
   );
   await writeJsonFile(joinPath(reportDir, "start.json"), start);
@@ -768,7 +820,6 @@ async function runAgentCallbackCase(args: {
   await writeJsonFile(joinPath(reportDir, "history.json"), done.history);
   await assertRunListed(
     workflowRpc,
-    owner,
     submitted.workflowId,
     runId,
     "completed",
@@ -776,7 +827,6 @@ async function runAgentCallbackCase(args: {
 
   const defaultActorRun = await createAndStartRun(
     workflowRpc,
-    owner,
     submitted.workflowId,
   );
   await waitForGraph(
@@ -826,11 +876,10 @@ async function runCacheCase(args: {
     await loadFixture("wf-dv-idempotent-cache.json"),
     runTag,
   );
-  const submitted = await submitDefinitionPair(workflowRpc, owner, definition);
+  const submitted = await submitDefinitionPair(workflowRpc, definition);
 
   const runA = await createAndStartRun(
     workflowRpc,
-    owner,
     submitted.workflowId,
   );
   const doneA = await waitForGraph(
@@ -847,7 +896,6 @@ async function runCacheCase(args: {
 
   const runB = await createAndStartRun(
     workflowRpc,
-    owner,
     submitted.workflowId,
   );
   const doneB = await waitForGraph(
@@ -887,12 +935,10 @@ async function runCacheCase(args: {
   );
   const submittedChanged = await submitDefinitionPair(
     workflowRpc,
-    owner,
     changed,
   );
   const runC = await createAndStartRun(
     workflowRpc,
-    owner,
     submittedChanged.workflowId,
   );
   const doneC = await waitForGraph(
@@ -945,13 +991,11 @@ async function runSemanticCase(args: {
   );
 
   const submitted = await rpcOk<JsonObject>(workflowRpc, "submit_definition", {
-    owner,
     definition,
     tags: ["dv", "workflow", "semantic"],
   });
   const created = await rpcOk<JsonObject>(workflowRpc, "create_run", {
     workflow_id: submitted.workflow_id,
-    owner,
   });
 
   const raw = await workflowRpc.call("start_run", { run_id: created.run_id });
@@ -983,10 +1027,9 @@ async function runFailureHumanRetryCase(args: {
     await loadFixture("wf-dv-failure-human-retry.json"),
     runTag,
   );
-  const submitted = await submitDefinitionPair(workflowRpc, owner, definition);
+  const submitted = await submitDefinitionPair(workflowRpc, definition);
   const { runId } = await createAndStartRun(
     workflowRpc,
-    owner,
     submitted.workflowId,
   );
   const waiting = await waitForGraph(
@@ -1037,6 +1080,395 @@ async function runFailureHumanRetryCase(args: {
   await writeJsonFile(joinPath(reportDir, "history.json"), done.history);
 }
 
+
+function isTerminal(status: string): boolean {
+  return TERMINAL_STATUSES.includes(status);
+}
+
+async function waitTerminal(
+  workflowRpc: RpcClient,
+  runId: string,
+  label: string,
+): Promise<{ graph: GraphResponse; history: HistoryResponse }> {
+  return await waitForGraph(
+    workflowRpc,
+    runId,
+    label,
+    (graph) => isTerminal(graph.status),
+  );
+}
+
+/** Expects `{ok:false, error:<code>}`; a thrown RPC error (NoPermission) counts as `rpc_error`. */
+async function expectRejected(
+  rpc: RpcClient,
+  method: string,
+  params: Record<string, unknown>,
+  expectedCodes: string[],
+): Promise<string> {
+  let raw: unknown;
+  try {
+    raw = await rpc.call(method, params);
+  } catch (err) {
+    if (!expectedCodes.includes("rpc_error")) {
+      throw new Error(
+        `${method} threw instead of returning a coded error: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    return "rpc_error";
+  }
+  const body = raw as Record<string, unknown>;
+  assert.equal(body.ok, false, `${method} must be rejected: ${JSON.stringify(body)}`);
+  const code = String(body.error);
+  assert.ok(
+    expectedCodes.includes(code),
+    `${method} rejected with ${code}, expected one of ${expectedCodes.join("|")}`,
+  );
+  return code;
+}
+
+/**
+ * Uploads a fixture through NFSP (the same path the file browser uses) and
+ * returns the FileObject id the workflow service accepts as `obj_id`; the
+ * caller principal therefore has a real read right on the object.
+ */
+async function uploadInput(
+  zoneHost: string,
+  sessionToken: string,
+  runTag: string,
+  fixture: string,
+): Promise<UploadedInput> {
+  const bytes = await Deno.readFile(new URL(`./fixtures/${fixture}`, import.meta.url));
+  const chunkId = ndn.ChunkId.fromMix256Result(bytes.byteLength, ndn.sha256Bytes(bytes)).toString();
+  const proxy = ndm_proxy.createNdmProxyClient({
+    endpoint: `https://${zoneHost}`,
+    sessionToken,
+    fetcher: (request: RequestInfo | URL, init?: RequestInit) => {
+      const target = typeof request === "string"
+        ? request.replaceAll("%3A", ":").replaceAll("%3a", ":")
+        : request instanceof URL
+        ? new URL(request.toString().replaceAll("%3A", ":").replaceAll("%3a", ":"))
+        : request;
+      return fetch(target, init);
+    },
+  });
+  await proxy.putChunk(chunkId, bytes);
+  const file = new ndn.FileObject(`${runTag}-${fixture}`, bytes.byteLength, chunkId);
+  file.content_obj.create_time = Date.now();
+  const [objId, objStr] = file.genObjId();
+  await proxy.putObject({ obj_id: objId.toString(), obj_data: objStr });
+  return { obj_id: objId.toString(), node_id: chunkId, path: `${runTag}/${fixture}` };
+}
+
+async function createSystemRun(
+  workflowRpc: RpcClient,
+  workflowId: string,
+  input: JsonObject,
+  extra: Record<string, unknown> = {},
+): Promise<CreateRunResponse> {
+  return await rpcOk<CreateRunResponse>(workflowRpc, "create_run", {
+    workflow_id: workflowId,
+    input,
+    auto_start: true,
+    wait_ms: 1000,
+    ...extra,
+  });
+}
+
+async function runStepCacheCase(args: {
+  workflowRpc: RpcClient;
+  owner: Owner;
+  runTag: string;
+  reportDir: string;
+  image: UploadedInput;
+}): Promise<void> {
+  const { workflowRpc, owner, runTag, reportDir, image } = args;
+
+  // (a) user definition on test.echo: no media tools involved.
+  const definition = prepareDefinition(await loadFixture("wf-dv-echo-cache.json"), runTag);
+  // The step cache is persistent across service restarts, so the first run
+  // must carry a value no earlier DV run has computed.
+  ((definition.steps as JsonObject[])[0].input as JsonObject).value = `dv-echo-${runTag}`;
+  const submitted = await submitDefinitionPair(workflowRpc, definition);
+  const first = await createSystemRun(workflowRpc, submitted.workflowId, {});
+  const doneA = await waitTerminal(workflowRpc, first.run_id, "echo run A");
+  assert.equal(doneA.graph.status, "completed", JSON.stringify(doneA.graph.node_errors));
+  assert.equal(doneA.graph.node_sources?.a, "executed");
+  assert.equal(doneA.graph.node_sources?.b, "executed");
+  const second = await createSystemRun(workflowRpc, submitted.workflowId, {});
+  assert.notEqual(second.run_id, first.run_id, "completed runs are never reused");
+  const doneB = await waitTerminal(workflowRpc, second.run_id, "echo run B");
+  assert.equal(doneB.graph.status, "completed");
+  assert.equal(doneB.graph.node_sources?.a, "cache", "echo A must come from the step cache");
+  assert.equal(doneB.graph.node_sources?.b, "cache", "echo B must come from the step cache");
+  assert.deepEqual(doneB.graph.output, doneA.graph.output);
+  assert.equal(eventsFor(doneB.history, "a", "step.started").length, 0);
+
+  // (b) system media.image on an uploaded image.
+  const uniqueEdge = 300 + (parseInt(runTag.slice(-6), 36) % 900);
+  const imageInput: JsonObject = { obj_id: image.obj_id, max_long_edge: uniqueEdge };
+  const runA = await createSystemRun(workflowRpc, "media.image", imageInput);
+  assert.equal(runA.workflow_id, "media.image");
+  const imgA = await waitTerminal(workflowRpc, runA.run_id, "media.image run A");
+  assert.equal(imgA.graph.status, "completed", JSON.stringify(imgA.graph.node_errors));
+  assert.equal(imgA.graph.node_sources?.capabilities, "executed");
+  assert.equal(imgA.graph.node_sources?.fit_image, "executed");
+  const fitA = imgA.graph.output?.fit_image as JsonObject;
+  assert.equal(typeof fitA?.model_media_obj_id, "string", "fit_image output carries model_media_obj_id");
+  const runB = await createSystemRun(workflowRpc, "media.image", imageInput);
+  const imgB = await waitTerminal(workflowRpc, runB.run_id, "media.image run B");
+  assert.equal(imgB.graph.status, "completed", JSON.stringify(imgB.graph.node_errors));
+  assert.equal(imgB.graph.node_sources?.capabilities, "executed", "capabilities is impure and re-executes");
+  assert.equal(imgB.graph.node_sources?.probe, "cache");
+  assert.equal(imgB.graph.node_sources?.fit_image, "cache", "fit_image must hit the step cache");
+  const fitB = imgB.graph.output?.fit_image as JsonObject;
+  assert.equal(fitB?.model_media_obj_id, fitA?.model_media_obj_id, "cached fit_image returns the same artifact");
+
+  // A different effective spec misses the cache.
+  const runC = await createSystemRun(workflowRpc, "media.image", { obj_id: image.obj_id, max_long_edge: uniqueEdge + 1 });
+  const imgC = await waitTerminal(workflowRpc, runC.run_id, "media.image run C");
+  assert.equal(imgC.graph.status, "completed", JSON.stringify(imgC.graph.node_errors));
+  assert.equal(imgC.graph.node_sources?.fit_image, "executed", "changed max_long_edge must recompute");
+
+  await writeJsonFile(joinPath(reportDir, "echo_a.json"), doneA.graph);
+  await writeJsonFile(joinPath(reportDir, "echo_b.json"), doneB.graph);
+  await writeJsonFile(joinPath(reportDir, "image_a.json"), imgA.graph);
+  await writeJsonFile(joinPath(reportDir, "image_b.json"), imgB.graph);
+  await writeJsonFile(joinPath(reportDir, "image_c.json"), imgC.graph);
+}
+
+async function runEnsureCase(args: {
+  workflowRpc: RpcClient;
+  owner: Owner;
+  runTag: string;
+  reportDir: string;
+}): Promise<void> {
+  const { workflowRpc, owner, runTag, reportDir } = args;
+  const definition = prepareDefinition(await loadFixture("wf-dv-ensure-sleep.json"), runTag);
+  const submitted = await submitDefinitionPair(workflowRpc, definition);
+  const input: JsonObject = { ms: 4000 };
+  const parallel = await Promise.all(
+    Array.from({ length: 4 }, () =>
+      createSystemRun(workflowRpc, submitted.workflowId, input, { ensure: true, wait_ms: 0 })),
+  );
+  const runIds = new Set(parallel.map((r) => r.run_id));
+  assert.equal(runIds.size, 1, `concurrent ensure requests must share one run, got ${[...runIds].join(",")}`);
+  const reused = parallel.filter((r) => r.reused).length;
+  assert.equal(reused, 3, `exactly one request creates the run, ${reused} reused`);
+  const runId = parallel[0].run_id;
+
+  // Same input, different normalization form (defaults applied server-side) still merges.
+  const defaulted = await createSystemRun(workflowRpc, submitted.workflowId, {}, { ensure: true, wait_ms: 0 });
+  assert.equal(defaulted.run_id, runId, "schema defaults normalize into the same ensure key");
+  assert.equal(defaulted.reused, true);
+
+  // A different input is a different ensure scope.
+  const other = await createSystemRun(workflowRpc, submitted.workflowId, { ms: 4500 }, { ensure: true, wait_ms: 0 });
+  assert.notEqual(other.run_id, runId);
+
+  const done = await waitTerminal(workflowRpc, runId, "ensure run completed");
+  assert.equal(done.graph.status, "completed", JSON.stringify(done.graph.node_errors));
+  await waitTerminal(workflowRpc, other.run_id, "other ensure run completed");
+  const after = await createSystemRun(workflowRpc, submitted.workflowId, input, { ensure: true, wait_ms: 0 });
+  assert.notEqual(after.run_id, runId, "terminal runs leave the ensure index");
+  assert.equal(after.reused, false);
+  await waitTerminal(workflowRpc, after.run_id, "post-terminal ensure run");
+
+  await writeJsonFile(joinPath(reportDir, "parallel.json"), parallel);
+  await writeJsonFile(joinPath(reportDir, "after.json"), after);
+}
+
+async function runMissingToolsCase(args: {
+  workflowRpc: RpcClient;
+  owner: Owner;
+  reportDir: string;
+  pdf: UploadedInput;
+}): Promise<void> {
+  const { workflowRpc, owner, reportDir, pdf } = args;
+  const caps = await rpcOk<{ ok: true; environment: { missing: string[]; tools: JsonObject; revision: string } }>(
+    workflowRpc,
+    "get_capabilities",
+    {},
+  );
+  const missingPoppler = POPPLER_TOOLS.filter((t) => caps.environment.missing.includes(t));
+  const created = await createSystemRun(workflowRpc, "media.pdf", {
+    obj_id: pdf.obj_id,
+    dpi: 72,
+    limits: { max_pages: 2 },
+  });
+  const done = await waitTerminal(workflowRpc, created.run_id, "media.pdf run");
+  const branch = missingPoppler.length > 0 ? "tools_missing" : "tools_present";
+  if (branch === "tools_missing") {
+    assert.equal(done.graph.status, "failed", "missing poppler must fail the run");
+    const failed = Object.entries(done.graph.node_errors ?? {}).find(([, err]) => err.code === "tools_missing");
+    assert.ok(failed, `a step must fail with tools_missing: ${JSON.stringify(done.graph.node_errors)}`);
+    const details = (failed![1].details as JsonObject | undefined) ?? {};
+    const listed = (details.tools_missing as string[] | undefined) ?? [];
+    assert.ok(
+      listed.some((t) => POPPLER_TOOLS.includes(t)),
+      `tools_missing details must name a poppler tool: ${JSON.stringify(details)}`,
+    );
+    assert.equal(done.graph.human_waiting_nodes.length, 0, "media runs never wait for a human");
+    assert.ok(
+      done.history.events.some((e) => e.type === "step.failed" && JSON.stringify(e.payload).includes("tools_missing")),
+      "step.failed event carries the structured error",
+    );
+  } else {
+    assert.equal(done.graph.status, "completed", JSON.stringify(done.graph.node_errors));
+    const catalog = done.graph.output?.build_catalog as JsonObject;
+    assert.equal(typeof catalog?.manifest_obj_id, "string", "build_catalog output has manifest_obj_id");
+    const summary = catalog.summary as JsonObject;
+    assert.equal(summary.family, "pdf");
+    assert.equal(summary.total, 2);
+    assert.equal(summary.complete, true);
+    assert.ok(Number(summary.text_entries) >= 1, "text entries extracted");
+    assert.ok(Number(summary.image_entries) >= 1, "page images rendered");
+    const output = await rpcOk<{ ok: true; terminal: boolean; delivery: { artifacts: string[] } }>(
+      workflowRpc,
+      "get_run_output",
+      { run_id: created.run_id },
+    );
+    assert.equal(output.terminal, true);
+    assert.ok(output.delivery.artifacts.includes(String(catalog.manifest_obj_id)));
+  }
+  await writeJsonFile(joinPath(reportDir, "branch.json"), {
+    branch,
+    missing: caps.environment.missing,
+    revision: caps.environment.revision,
+  });
+  await writeJsonFile(joinPath(reportDir, "graph.json"), done.graph);
+  await writeJsonFile(joinPath(reportDir, "history.json"), done.history);
+}
+
+async function runObservabilityCase(args: {
+  workflowRpc: RpcClient;
+  taskMgrRpc: RpcClient;
+  owner: Owner;
+  reportDir: string;
+  image: UploadedInput;
+}): Promise<void> {
+  const { workflowRpc, taskMgrRpc, owner, reportDir, image } = args;
+  const listed = await rpcOk<{ ok: true; definitions: JsonObject[] }>(workflowRpc, "list_definitions", {
+    source: "system",
+  });
+  const systemIds = listed.definitions.map((d) => String(d.id)).sort();
+  assert.deepEqual(systemIds, [...SYSTEM_DEFINITION_IDS].sort());
+  for (const def of listed.definitions) {
+    assert.equal(def.read_only, true, `${def.id} is read-only`);
+    assert.equal(def.source, "system");
+    assert.equal(typeof def.revision, "string");
+  }
+  const pdfDef = await rpcOk<{ ok: true; definition: JsonObject }>(workflowRpc, "get_definition", {
+    workflow_id: "media.pdf",
+  });
+  const resolved = pdfDef.definition.resolved_functions as Record<string, string>;
+  assert.ok(Object.keys(resolved).length >= 5, "every media.pdf step binds a function");
+  for (const [node, funId] of Object.entries(resolved)) {
+    assert.ok(funId.startsWith("func:"), `${node} bound to a real fun_id, got ${funId}`);
+  }
+  const functions = await rpcOk<{ ok: true; functions: JsonObject[] }>(workflowRpc, "list_functions", {
+    prefix: "media.",
+  });
+  const names = functions.functions.map((f) => (f.registration as JsonObject).name).sort();
+  assert.equal(names.length, 9, `9 media functions, got ${names.join(",")}`);
+  const probe = await rpcOk<{ ok: true; function: JsonObject }>(workflowRpc, "get_function", {
+    name: "media.probe",
+    version: "1",
+  });
+  assert.equal(probe.function.published, true, "FunctionObject is readable from the object store");
+  assert.ok(String(probe.function.fun_id).startsWith("func:"));
+
+  const created = await createSystemRun(workflowRpc, "media.image", { obj_id: image.obj_id });
+  const done = await waitTerminal(workflowRpc, created.run_id, "observability run");
+  assert.equal(done.graph.revision, created.revision);
+  assert.ok(String(done.graph.requested_by).startsWith(`${owner.user_id}/`), `requested_by ${done.graph.requested_by} belongs to ${owner.user_id}`);
+  assert.equal(done.graph.executor, "workflow");
+  assert.ok(done.graph.node_sources && Object.keys(done.graph.node_sources).length >= 3);
+  await assertRunListed(workflowRpc, "media.image", created.run_id, done.graph.status);
+
+  const roots = await rpcCall<{ tasks?: TaskSummary[] }>(taskMgrRpc, "list_tasks", {
+    idempotency_key: `wf-run-${created.run_id}`,
+  });
+  const root = (roots.tasks ?? []).find((t) => t.schema_id === "workflow.run_tree/v1");
+  assert.ok(root, `TaskMgr has the run root task: ${JSON.stringify(roots)}`);
+  const tree = await rpcCall<{ tasks?: TaskSummary[] }>(taskMgrRpc, "get_task_tree", {
+    root_id: root!.root_id,
+    depth: 4,
+  });
+  const schemas = new Set((tree.tasks ?? []).map((t) => t.schema_id));
+  assert.ok(schemas.has("workflow.step/v1"), `step tasks under the run: ${[...schemas].join(",")}`);
+  assert.ok(schemas.has("workflow.thunk/v1"), `thunk tasks under the steps: ${[...schemas].join(",")}`);
+  const thunks = (tree.tasks ?? []).filter((t) => t.schema_id === "workflow.thunk/v1");
+  assert.ok(
+    thunks.every((t) => String(t.phase).toLowerCase() === "terminal"),
+    `thunk tasks reach a terminal phase: ${JSON.stringify(thunks.map((t) => [t.name, t.phase]))}`,
+  );
+
+  await writeJsonFile(joinPath(reportDir, "definitions.json"), listed);
+  await writeJsonFile(joinPath(reportDir, "functions.json"), functions);
+  await writeJsonFile(joinPath(reportDir, "graph.json"), done.graph);
+  await writeJsonFile(joinPath(reportDir, "task_tree.json"), tree);
+}
+
+async function runReadOnlyCase(args: {
+  workflowRpc: RpcClient;
+  owner: Owner;
+  runTag: string;
+  reportDir: string;
+  image: UploadedInput;
+}): Promise<void> {
+  const { workflowRpc, owner, runTag, reportDir, image } = args;
+  const definition = prepareDefinition(await loadFixture("wf-dv-echo-cache.json"), runTag);
+  const reserved = cloneJson(definition);
+  reserved.id = "media.x";
+  reserved.name = "media.x";
+  const results: Record<string, string> = {};
+  results.reserved_id = await expectRejected(workflowRpc, "submit_definition", {
+    definition: reserved,
+  }, ["system_definition_read_only"]);
+  results.system_source = await expectRejected(workflowRpc, "submit_definition", {
+    definition,
+    source: "system",
+  }, ["rpc_error"]);
+  results.archive_system = await expectRejected(workflowRpc, "archive_definition", {
+    workflow_id: "media.pdf",
+  }, ["system_definition_read_only"]);
+  results.forged_owner_create = await expectRejected(workflowRpc, "create_run", {
+    workflow_id: "media.image",
+    owner: { user_id: `${owner.user_id}-other`, app_id: owner.app_id },
+    input: { obj_id: image.obj_id },
+  }, ["rpc_error"]);
+  // An admin session may filter by any owner; a plain session is rejected.
+  // Either way no run of another owner may leak.
+  results.forged_owner_list = await (async () => {
+    try {
+      const listed = await rpcOk<{ runs: JsonObject[] }>(workflowRpc, "list_runs", {
+        owner: { user_id: `${owner.user_id}-other`, app_id: owner.app_id },
+      });
+      assert.equal(listed.runs.length, 0, "no runs of another owner may be listed");
+      return "allowed_empty(admin)";
+    } catch (err) {
+      const text = err instanceof Error ? err.message : String(err);
+      assert.ok(/permission/i.test(text), `unexpected list_runs failure: ${text}`);
+      return "rejected";
+    }
+  })();
+  results.content_id_stripped = "n/a";
+  const created = await createSystemRun(workflowRpc, "media.image", {
+    obj_id: image.obj_id,
+    content_id: "sha256:0000",
+  } as JsonObject);
+  const graph = await getGraph(workflowRpc, created.run_id);
+  const trigger = graph.node_outputs.trigger as JsonObject;
+  assert.notEqual(trigger.content_id, "sha256:0000", "callers cannot set content_id");
+  results.content_id_stripped = "ok";
+  await writeJsonFile(joinPath(reportDir, "results.json"), results);
+  throw new BlockedError(
+    `rejections verified (${JSON.stringify(results)}); foreign-principal get_run_graph needs a second login identity, not available in this harness`,
+  );
+}
+
 async function runTaskDataCase(): Promise<void> {
   throw new BlockedError(
     "WF-DV-003 is blocked in the current service: apply_task_data exists in orchestrator, but workflow service has no exposed RPC/listener path for TaskData updates.",
@@ -1050,6 +1482,23 @@ function selectedCaseIds(): string[] {
   );
 }
 
+type DvInputs = {
+  image: () => Promise<UploadedInput>;
+  pdf: () => Promise<UploadedInput>;
+};
+
+function lazyInputs(zoneHost: string, sessionToken: string, runTag: string): DvInputs {
+  const cache: Partial<Record<"image" | "pdf", Promise<UploadedInput>>> = {};
+  const get = (key: "image" | "pdf", fixture: string) => () => {
+    cache[key] ??= uploadInput(zoneHost, sessionToken, runTag, fixture);
+    return cache[key]!;
+  };
+  return {
+    image: get("image", "dv-image.png"),
+    pdf: get("pdf", "dv-doc.pdf"),
+  };
+}
+
 async function runOneCase(args: {
   caseId: string;
   workflowRpc: RpcClient;
@@ -1057,8 +1506,9 @@ async function runOneCase(args: {
   owner: Owner;
   runTag: string;
   reportRoot: string;
+  inputs: DvInputs;
 }): Promise<CaseResult> {
-  const { caseId, workflowRpc, taskMgrRpc, owner, runTag, reportRoot } = args;
+  const { caseId, workflowRpc, taskMgrRpc, owner, runTag, reportRoot, inputs } = args;
   const reportDir = joinPath(reportRoot, safeFileSegment(caseId));
   await Deno.mkdir(reportDir, { recursive: true });
   try {
@@ -1106,6 +1556,39 @@ async function runOneCase(args: {
       throw new BlockedError(
         "WF-DV-004 is blocked: appservice adapter is not registered.",
       );
+    } else if (caseId === "WF-DV-009") {
+      await runStepCacheCase({
+        workflowRpc,
+        owner,
+        runTag,
+        reportDir,
+        image: await inputs.image(),
+      });
+    } else if (caseId === "WF-DV-010") {
+      await runEnsureCase({ workflowRpc, owner, runTag, reportDir });
+    } else if (caseId === "WF-DV-011") {
+      await runMissingToolsCase({
+        workflowRpc,
+        owner,
+        reportDir,
+        pdf: await inputs.pdf(),
+      });
+    } else if (caseId === "WF-DV-012") {
+      await runObservabilityCase({
+        workflowRpc,
+        taskMgrRpc,
+        owner,
+        reportDir,
+        image: await inputs.image(),
+      });
+    } else if (caseId === "WF-DV-013") {
+      await runReadOnlyCase({
+        workflowRpc,
+        owner,
+        runTag,
+        reportDir,
+        image: await inputs.image(),
+      });
     } else {
       throw new Error(`unknown workflow DV case ${caseId}`);
     }
@@ -1144,6 +1627,8 @@ async function main(): Promise<void> {
   };
   const workflowRpc = buckyos.getServiceRpcClient("workflow") as RpcClient;
   const taskMgrRpc = buckyos.getServiceRpcClient("task-manager") as RpcClient;
+  const sessionToken = (await buckyos.getAccountInfo())?.session_token ?? "";
+  const inputs = lazyInputs(zoneHost, sessionToken, runTag);
   const cases = selectedCaseIds();
 
   console.log("=== Workflow DV Smoke Test ===");
@@ -1163,6 +1648,7 @@ async function main(): Promise<void> {
       owner,
       runTag,
       reportRoot,
+      inputs,
     });
     results.push(result);
     if (result.status === "passed") {

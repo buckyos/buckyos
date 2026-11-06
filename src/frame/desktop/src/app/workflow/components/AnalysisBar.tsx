@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronUp, Info } from 'lucide-react'
-import type { AnalysisReport, AnalysisIssue } from '../mock/types'
+import type { AnalysisReport, AnalysisIssue } from '../types'
 
 function severityColor(s: AnalysisIssue['severity']) {
   if (s === 'error') return 'var(--cp-danger)'

@@ -2,13 +2,13 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
     get_service_session_token_env_key, AffinityType, FunctionObject, FunctionParamType,
-    FunctionType, SchedulerDispatchReceipt, SchedulerRunThunkResponse, SchedulerRunThunkStatus,
-    SystemConfigClient, ThunkObject, RESOURCE_TYPE_CPU, RESOURCE_TYPE_DISK_CACHE,
-    RESOURCE_TYPE_DOWNLOAD, RESOURCE_TYPE_GPU, RESOURCE_TYPE_GPU_CORES, RESOURCE_TYPE_GPU_MEMORY,
-    RESOURCE_TYPE_MEMORY, RESOURCE_TYPE_UPLOAD, SCHEDULER_SERVICE_SERVICE_NAME,
+    FunctionRegistration, FunctionType, SchedulerDispatchReceipt, SchedulerRunThunkResponse,
+    SchedulerRunThunkStatus, SystemConfigClient, ThunkObject, RESOURCE_TYPE_CPU,
+    RESOURCE_TYPE_DISK_CACHE, RESOURCE_TYPE_DOWNLOAD, RESOURCE_TYPE_GPU, RESOURCE_TYPE_GPU_CORES,
+    RESOURCE_TYPE_GPU_MEMORY, RESOURCE_TYPE_MEMORY, RESOURCE_TYPE_UPLOAD,
+    SCHEDULER_SERVICE_SERVICE_NAME,
 };
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Arc;
@@ -63,6 +63,7 @@ pub trait ThunkDispatchBackend: Send + Sync {
         thunk_obj_id: &str,
         thunk: &ThunkObject,
         function_object: &FunctionObject,
+        registration: &FunctionRegistration,
         hint: &FunctionObjectSchedulingHint,
     ) -> Result<SchedulerDispatchReceipt>;
 }
@@ -131,6 +132,7 @@ impl ThunkDispatchBackend for ExternalTaskThunkDispatchBackend {
         thunk_obj_id: &str,
         thunk: &ThunkObject,
         function_object: &FunctionObject,
+        registration: &FunctionRegistration,
         hint: &FunctionObjectSchedulingHint,
     ) -> Result<SchedulerDispatchReceipt> {
         Ok(SchedulerDispatchReceipt {
@@ -143,7 +145,8 @@ impl ThunkDispatchBackend for ExternalTaskThunkDispatchBackend {
                 "task_id": task_id,
                 "thunk_obj_id": thunk_obj_id,
                 "fun_id": thunk.fun_id.to_string(),
-                "function_type": function_type_name(&function_object.func_type),
+                "function": format!("{}@{}", registration.name, registration.version),
+                "function_type": function_object.func_type.name(),
                 "node_id": node.node_id.clone(),
                 "runner": node.runner.clone(),
                 "network_zone": node.network_zone.clone(),
@@ -191,8 +194,13 @@ impl DefaultThunkRunner {
         task_id: i64,
         thunk: ThunkObject,
         function_object: FunctionObject,
+        registration: FunctionRegistration,
     ) -> Result<SchedulerRunThunkResponse> {
-        let thunk_obj_id = calc_thunk_obj_id(&thunk)?;
+        let thunk_obj_id = thunk
+            .calc_obj_id()
+            .context("calc thunk obj id failed")?
+            .0
+            .to_string();
         if !self.check_param_is_ready(&thunk, &function_object).await? {
             return Ok(SchedulerRunThunkResponse {
                 thunk_obj_id,
@@ -202,12 +210,12 @@ impl DefaultThunkRunner {
             });
         }
 
-        let function_hint = build_scheduling_hint(&function_object);
+        let function_hint = build_scheduling_hint(&function_object, &registration);
         let candidates = self
             .node_catalog
             .list_candidates(&thunk, &function_hint)
             .await?;
-        let Some(node) = select_best_node(&function_object, &function_hint, &candidates) else {
+        let Some(node) = select_best_node(&registration, &function_hint, &candidates) else {
             return Ok(SchedulerRunThunkResponse {
                 thunk_obj_id,
                 status: SchedulerRunThunkStatus::Rejected,
@@ -224,6 +232,7 @@ impl DefaultThunkRunner {
                 &thunk_obj_id,
                 &thunk,
                 &function_object,
+                &registration,
                 &function_hint,
             )
             .await?;
@@ -263,15 +272,19 @@ impl DefaultThunkRunner {
     }
 }
 
-fn build_scheduling_hint(function_object: &FunctionObject) -> FunctionObjectSchedulingHint {
+fn build_scheduling_hint(
+    function_object: &FunctionObject,
+    registration: &FunctionRegistration,
+) -> FunctionObjectSchedulingHint {
     let preferred_runner = match &function_object.func_type {
         FunctionType::ExecPkg => Some("package-runner".to_string()),
         FunctionType::Script(language) => Some(format!("script-runner:{language}")),
         FunctionType::OPTask(language) => Some(format!("op-task-runner:{language}")),
         FunctionType::Operator => Some("operator-runner".to_string()),
+        FunctionType::Native => Some("native-runner".to_string()),
     };
 
-    let affinity_selectors = match &function_object.affinity_type {
+    let affinity_selectors = match &registration.affinity_type {
         AffinityType::Custom(selectors) => selectors.clone(),
         _ => Vec::new(),
     };
@@ -280,25 +293,25 @@ fn build_scheduling_hint(function_object: &FunctionObject) -> FunctionObjectSche
         source: "provided_function_object".to_string(),
         preferred_runner,
         affinity_selectors,
-        affinity_type: affinity_type_name(&function_object.affinity_type).to_string(),
-        requires_gpu: function_requires_gpu(function_object),
+        affinity_type: registration.affinity_type.name().to_string(),
+        requires_gpu: function_requires_gpu(registration),
     }
 }
 
 fn select_best_node<'a>(
-    function_object: &FunctionObject,
+    registration: &FunctionRegistration,
     hint: &FunctionObjectSchedulingHint,
     candidates: &'a [ThunkNodeCandidate],
 ) -> Option<&'a ThunkNodeCandidate> {
     candidates
         .iter()
-        .filter(|node| node_satisfies_requirements(node, function_object, hint))
-        .max_by_key(|node| score_node(node, function_object, hint))
+        .filter(|node| node_satisfies_requirements(node, registration, hint))
+        .max_by_key(|node| score_node(node, registration, hint))
 }
 
 fn node_satisfies_requirements(
     node: &ThunkNodeCandidate,
-    function_object: &FunctionObject,
+    function_object: &FunctionRegistration,
     hint: &FunctionObjectSchedulingHint,
 ) -> bool {
     if hint.requires_gpu && !node.has_gpu {
@@ -331,7 +344,7 @@ fn node_satisfies_requirements(
 
 fn score_node(
     node: &ThunkNodeCandidate,
-    function_object: &FunctionObject,
+    function_object: &FunctionRegistration,
     hint: &FunctionObjectSchedulingHint,
 ) -> i64 {
     let mut score = node.score;
@@ -389,7 +402,7 @@ fn score_weighted_resource(
     normalized as i64 * weight
 }
 
-fn function_requires_gpu(function_object: &FunctionObject) -> bool {
+fn function_requires_gpu(function_object: &FunctionRegistration) -> bool {
     function_object.requirements.contains_key(RESOURCE_TYPE_GPU)
         || function_object
             .requirements
@@ -592,29 +605,6 @@ fn load_scheduler_session_token() -> Option<String> {
         .or_else(|| env::var("SCHEDULER_SESSION_TOKEN").ok())
 }
 
-fn calc_thunk_obj_id(thunk: &ThunkObject) -> Result<String> {
-    let bytes = serde_json::to_vec(thunk)?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(format!("thunk:{}", hex::encode(hasher.finalize())))
-}
-
-fn function_type_name(func_type: &FunctionType) -> &'static str {
-    match func_type {
-        FunctionType::ExecPkg => "exec_pkg",
-        FunctionType::Script(_) => "script",
-        FunctionType::OPTask(_) => "op_task",
-        FunctionType::Operator => "operator",
-    }
-}
-
-fn affinity_type_name(affinity_type: &AffinityType) -> &'static str {
-    match affinity_type {
-        AffinityType::Input => "input",
-        AffinityType::Result => "result",
-        AffinityType::Custom(_) => "custom",
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -625,6 +615,7 @@ mod tests {
     };
     use ndn_lib::ObjId;
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     struct MockNodeCatalog {
         nodes: Vec<ThunkNodeCandidate>,
@@ -653,6 +644,7 @@ mod tests {
             thunk_obj_id: &str,
             _thunk: &ThunkObject,
             _function_object: &FunctionObject,
+            _registration: &FunctionRegistration,
             hint: &FunctionObjectSchedulingHint,
         ) -> Result<SchedulerDispatchReceipt> {
             Ok(SchedulerDispatchReceipt {
@@ -670,14 +662,10 @@ mod tests {
     }
 
     fn sample_thunk() -> ThunkObject {
-        ThunkObject {
-            fun_id: ObjId::new("func:1234567890").unwrap(),
-            params: HashMap::from([("input".to_string(), json!("obj:1234567890"))]),
-            metadata: json!({
-                "run_id": "run-1",
-                "attempt": 1
-            }),
-        }
+        ThunkObject::new(
+            ObjId::new("func:1234567890").unwrap(),
+            BTreeMap::from([("input".to_string(), json!("obj:1234567890"))]),
+        )
     }
 
     fn sample_function_object() -> FunctionObject {
@@ -685,18 +673,29 @@ mod tests {
             func_type: FunctionType::ExecPkg,
             content: "pkg:test".to_string(),
             is_pure: true,
-            timeout: None,
-            requirements: HashMap::from([
-                (RESOURCE_TYPE_CPU.to_string(), 100),
-                (RESOURCE_TYPE_MEMORY.to_string(), 256),
-            ]),
-            best_run_weight: HashMap::from([(RESOURCE_TYPE_CPU.to_string(), 2)]),
-            affinity_type: AffinityType::Input,
-            params_type: HashMap::from([(
+            params_type: BTreeMap::from([(
                 "input".to_string(),
                 FunctionParamType::ObjId("named_object".to_string()),
             )]),
+            params_schema: json!({"type": "object", "properties": {"input": {"type": "string"}}}),
             result_type: FunctionResultType::Object("named_object".to_string()),
+            result_schema: json!({"type": "object"}),
+        }
+    }
+
+    fn sample_registration() -> FunctionRegistration {
+        FunctionRegistration {
+            name: "test.sample".to_string(),
+            version: "1".to_string(),
+            fun_id: ObjId::new("func:1234567890").unwrap(),
+            description: String::new(),
+            timeout: None,
+            requirements: BTreeMap::from([
+                (RESOURCE_TYPE_CPU.to_string(), 100),
+                (RESOURCE_TYPE_MEMORY.to_string(), 256),
+            ]),
+            best_run_weight: BTreeMap::from([(RESOURCE_TYPE_CPU.to_string(), 2)]),
+            affinity_type: AffinityType::Input,
         }
     }
 
@@ -741,7 +740,7 @@ mod tests {
     async fn run_thunk_returns_dispatch_receipt() {
         let runner = mock_runner(vec![sample_node("node-a", 600, 1024)]);
         let response = runner
-            .run_thunk(42, sample_thunk(), sample_function_object())
+            .run_thunk(42, sample_thunk(), sample_function_object(), sample_registration())
             .await
             .unwrap();
 
@@ -753,7 +752,7 @@ mod tests {
     async fn run_thunk_rejects_when_no_node_meets_requirements() {
         let runner = mock_runner(vec![sample_node("node-a", 50, 128)]);
         let response = runner
-            .run_thunk(7, sample_thunk(), sample_function_object())
+            .run_thunk(7, sample_thunk(), sample_function_object(), sample_registration())
             .await
             .unwrap();
 

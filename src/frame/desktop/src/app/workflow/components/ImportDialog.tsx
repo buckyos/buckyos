@@ -1,16 +1,19 @@
-/* ── Workflow Import dialog (file / URL / text) ─ purely simulated dry_run ── */
+/* ── Workflow Import dialog (file / URL / text): dry_run then submit_definition ── */
 
 import { useState } from 'react'
 import { CheckCircle2, FileUp, Link2, Sparkles, X, XCircle } from 'lucide-react'
+import type { WorkflowDefinition as DslDefinition } from 'buckyos'
 import { useWorkflowStore } from '../hooks/use-workflow-store'
-import type { AnalysisIssue } from '../mock/types'
+import type { AnalysisIssue } from '../types'
 
 type Mode = 'text' | 'file' | 'url'
 
 interface DryRunResult {
   ok: boolean
   issues: AnalysisIssue[]
-  imported?: { id: string; name: string }
+  message?: string
+  revision?: string
+  definition?: DslDefinition
 }
 
 interface ImportDialogProps {
@@ -19,76 +22,20 @@ interface ImportDialogProps {
   onImported: (definitionId: string) => void
 }
 
-function fakeDryRun(text: string): DryRunResult {
-  const issues: AnalysisIssue[] = []
+function parseDefinition(text: string): { definition?: DslDefinition; issue?: AnalysisIssue } {
   if (!text.trim()) {
-    return {
-      ok: false,
-      issues: [
-        {
-          severity: 'error',
-          code: 'empty_input',
-          message: 'No definition supplied.',
-        },
-      ],
-    }
+    return { issue: { severity: 'error', code: 'empty_input', message: 'No definition supplied.' } }
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
-    return {
-      ok: false,
-      issues: [
-        {
-          severity: 'error',
-          code: 'invalid_json',
-          message: 'Definition is not valid JSON.',
-        },
-      ],
-    }
+    return { issue: { severity: 'error', code: 'invalid_json', message: 'Definition is not valid JSON.' } }
   }
-  if (!parsed || typeof parsed !== 'object') {
-    return {
-      ok: false,
-      issues: [
-        {
-          severity: 'error',
-          code: 'invalid_root',
-          message: 'Definition root must be a JSON object.',
-        },
-      ],
-    }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { issue: { severity: 'error', code: 'invalid_root', message: 'Definition root must be a JSON object.' } }
   }
-  const obj = parsed as Record<string, unknown>
-  if (!obj.name || typeof obj.name !== 'string') {
-    issues.push({
-      severity: 'error',
-      code: 'missing_name',
-      message: 'Top-level "name" is required.',
-    })
-  }
-  if (!obj.schema_version) {
-    issues.push({
-      severity: 'warn',
-      code: 'missing_schema_version',
-      message: 'schema_version not specified; defaulting to current.',
-    })
-  }
-  if (!obj.nodes || !Array.isArray(obj.nodes) || obj.nodes.length === 0) {
-    issues.push({
-      severity: 'error',
-      code: 'no_nodes',
-      message: '"nodes" must be a non-empty array.',
-    })
-  }
-
-  const ok = !issues.some((i) => i.severity === 'error')
-  return {
-    ok,
-    issues,
-    imported: ok ? { id: `wf-imported-${Date.now()}`, name: String(obj.name) } : undefined,
-  }
+  return { definition: parsed as DslDefinition }
 }
 
 export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDialogProps) {
@@ -96,42 +43,57 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
   const [mode, setMode] = useState<Mode>('text')
   const [text, setText] = useState('')
   const [url, setUrl] = useState('')
+  const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<DryRunResult | null>(null)
 
   function loadFile(file: File) {
     file.text().then(setText).catch(() => undefined)
   }
 
-  function runDryRun() {
-    let payload = text
-    if (mode === 'url') {
-      payload = `{"name":"fetched_from_url","schema_version":"${store.schemaVersion}","nodes":[{"id":"a","type":"autonomous"}]}`
-    }
-    setResult(fakeDryRun(payload))
+  async function sourceText(): Promise<string> {
+    if (mode !== 'url') return text
+    const resp = await fetch(url)
+    if (!resp.ok) throw new Error(`fetch ${url}: HTTP ${resp.status}`)
+    return await resp.text()
   }
 
-  function submit() {
-    if (!result?.ok || !result.imported) return
-    // simulate addition by inserting a draft definition with the same shape as user-imported example
-    const def = store.getDefinition('wf-imported-001')
-    if (def) {
-      const cloned = {
-        ...def,
-        id: result.imported.id,
-        name: result.imported.name,
-        version: 1,
-        status: 'draft' as const,
-        source: 'user_imported' as const,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        graph: {
-          ...def.graph,
-          definitionId: result.imported.id,
-        },
+  async function runDryRun() {
+    setBusy(true)
+    try {
+      const payload = await sourceText()
+      const parsed = parseDefinition(payload)
+      if (!parsed.definition) {
+        setResult({ ok: false, issues: parsed.issue ? [parsed.issue] : [] })
+        return
       }
-      store.addDefinition(cloned)
-      onImported(cloned.id)
+      const outcome = await store.dryRun(parsed.definition)
+      setResult({
+        ok: outcome.ok,
+        issues: outcome.analysis.issues,
+        message: outcome.message,
+        revision: outcome.revision,
+        definition: parsed.definition,
+      })
+    } catch (err) {
+      setResult({
+        ok: false,
+        issues: [{ severity: 'error', code: 'load_failed', message: err instanceof Error ? err.message : String(err) }],
+      })
+    } finally {
+      setBusy(false)
     }
+  }
+
+  async function submit() {
+    if (!result?.ok || !result.definition) return
+    setBusy(true)
+    const outcome = await store.submitDefinition(result.definition)
+    setBusy(false)
+    if ('error' in outcome) {
+      setResult({ ...result, ok: false, message: outcome.error })
+      return
+    }
+    onImported(outcome.definitionId)
   }
 
   return (
@@ -213,7 +175,7 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder='{"name": "my_pipeline", "schema_version": "0.4", "nodes": [...]}'
+              placeholder='{"schema_version": "0.2.0", "id": "my_pipeline", "name": "my_pipeline", "trigger": {"type": "manual"}, "steps": [...], "edges": [...]}'
               className="block h-44 w-full resize-none rounded-lg p-3 font-mono text-[11px]"
               style={{
                 background: 'var(--cp-surface-2)',
@@ -282,7 +244,15 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
               >
                 {result.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
                 {result.ok ? 'dry_run passed' : 'dry_run failed'}
+                {result.revision && (
+                  <span className="ml-2 font-mono normal-case" style={{ color: 'var(--cp-muted)' }}>
+                    revision {result.revision.slice(0, 12)}
+                  </span>
+                )}
               </div>
+              {result.message && (
+                <div className="mb-1" style={{ color: 'var(--cp-danger)' }}>{result.message}</div>
+              )}
               {result.issues.length === 0 ? (
                 <div style={{ color: 'var(--cp-muted)' }}>No issues reported.</div>
               ) : (
@@ -328,7 +298,8 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
             </button>
             <button
               type="button"
-              onClick={runDryRun}
+              onClick={() => void runDryRun()}
+              disabled={busy}
               className="rounded-lg px-3 py-1.5 text-xs"
               style={{
                 background: 'var(--cp-surface-2)',
@@ -340,8 +311,8 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
             </button>
             <button
               type="button"
-              onClick={submit}
-              disabled={!result?.ok}
+              onClick={() => void submit()}
+              disabled={!result?.ok || busy}
               className="rounded-lg px-3 py-1.5 text-xs"
               style={{
                 background: result?.ok ? 'var(--cp-accent)' : 'var(--cp-surface-2)',
@@ -350,7 +321,7 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
                 opacity: result?.ok ? 1 : 0.6,
               }}
             >
-              Submit as draft
+              Submit definition
             </button>
           </div>
         </div>

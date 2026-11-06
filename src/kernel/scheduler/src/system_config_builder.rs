@@ -475,13 +475,14 @@ impl SystemConfigBuilder {
 
     pub async fn add_workflow(&mut self) -> Result<&mut Self> {
         let service_doc = generate_workflow_service_doc();
-        let config = build_kernel_service_spec(
+        let mut config = build_kernel_service_spec(
             WORKFLOW_SERVICE_UNIQUE_ID,
             WORKFLOW_SERVICE_PORT,
             1,
             service_doc,
         )
         .await?;
+        config.spec_config.buckets = buckyos_api::workflow_bucket_decls();
         self.insert_json("services/workflow/spec", &config)?;
         Ok(self)
     }

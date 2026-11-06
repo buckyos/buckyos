@@ -3,8 +3,6 @@
 mod acl;
 #[path = "../src/dispatcher/mod.rs"]
 mod dispatcher;
-#[path = "../src/json_schema.rs"]
-mod json_schema;
 #[path = "../src/server.rs"]
 mod server;
 #[path = "../src/task_store.rs"]

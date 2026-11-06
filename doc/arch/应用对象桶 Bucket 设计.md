@@ -1,10 +1,10 @@
 # BuckyOS 应用对象桶（Bucket）设计
 
-> 版本：v0.7，D1–D20 全部定案（修订记录见 §19；v0.7 改判 D18 并记录迁移落地；v0.6 按内容网络视角把数据策略重排为"自己创作 / 别人创作但认真收集 / 别人创作最好能有"三档，新增 `collected` 与 `ambient`，并入原 `archive`）  
-> 日期：2026-10-26  
+> 版本：v0.8，D1–D25 全部定案（修订记录见 §19；v0.8 新增 §4.6 Public Zone 视角的权限与 §21 实施 TODO；v0.7 改判 D18 并记录迁移落地；v0.6 按内容网络视角把数据策略重排为"自己创作 / 别人创作但认真收集 / 别人创作最好能有"三档，新增 `collected` 与 `ambient`，并入原 `archive`）  
+> 日期：2026-11-05  
 > 上游文档：[buckyos 数据落盘架构方向](./buckyos%20数据落盘架构方向.md) §6.3–§6.6、§9.3、§10.4  
 > 底层契约：cyfs-ndn `doc/GC/named_store_gc.md`（三档存活、pins、outbox）、`doc/NDM Protocol/*`（tus 上传、store JSON API）、`doc/CYFS Protocol/CYFS 标准对象.md`（FileObject / DirObject / ChunkList）  
-> 实施：M0–M4 与系统服务、默认应用的迁移已实现，差异与未完成项见 §20。  
+> 实施：M0–M4 与系统服务、默认应用的迁移已实现，差异与未完成项见 §20；Public Zone 与 `/ndn/` 尚未实现，任务见 §21。  
 > 性质：本文把落盘方向文档里"待设计"的 Bucket 收敛成可实施的中间件设计。标注 **【已定】** 的是已拍板的判断（全部裁决见 §18）；标注 **【现状】** 的是当前代码事实。
 
 ## 0. 一句话
@@ -215,7 +215,7 @@ obj://bucket/<scope>/<appid>/<owner>/<name>/avatar.png   单 key
 | 服务（`scope=zone` 桶所属 appid） | 对自己的 zone 桶全部动作 |
 | zone 用户（`scope=zone` 桶） | **默认无**。zone 只表达服务级归属，不表达"全 Zone 共享"；服务要开放共享，用 grant 显式给 `zone_users` 授权（§4.4.4），要做 `/srv/library/` 那种"人人可放、只动自己的"就授 `list` `read` `create`，配合 §4.4.6 的创建者规则 |
 | 其他 App / 其他用户 | 无；靠第二层显式授权 |
-| 匿名 / 分享链接 / 外部用户 | 无桶级身份权限；只能持能力令牌（§4.4.5）或经 ShareContentMgr / HomeStation |
+| 匿名 / 分享链接 / 外部用户 | 无桶级身份权限；只能持能力令牌（§4.4.5）或经 ShareContentMgr / HomeStation，完整规则见 §4.6 |
 
 Casbin policy 片段示例（占位符语义同 `doc/key url.md`）：
 
@@ -287,7 +287,7 @@ bucket.list_access_tokens { bucket_id }
 #### 4.4.8 要点
 
 - **知道 ObjId 不构成读取权**（沿用 NDM 网关现有规则）。通过桶 key 读取时，权限判在桶与前缀上，不再判对象。
-- "公开桶"不存在，等价于 S3 Block Public Access 默认开且不可关。
+- "公开桶"不存在，等价于 S3 Block Public Access 默认开且不可关。桶内容要对 Zone 外可见，只能经 §4.6.4 的入口。
 - S3 兼容面的访问密钥（§12.3）映射到 `(user, app)` 主体，权限仍由本节决定；密钥可附带 `scope`（桶列表 + 前缀 + 动作）进一步收窄，即 MinIO service account 的 inline policy 形态。
 
 #### 4.4.9 业界对照
@@ -415,6 +415,217 @@ cyfs:///home/<user>/Apps/<App 显示名>/<桶名>/<key 按 / 展开>
 | `cache` | `cache` | `data/cache/...` | 可丢弃 |
 
 备份工具、卸载器、存储空间页、GC 都只读 `data_policy` 做决定，不读桶名，不猜。
+
+### 4.6 Public Zone 视角的权限
+
+§4.4 站在桶的内部，回答"谁能动这个桶"。本节站在 Zone 外面，回答"一个没有本 Zone 账号的人，拿到 Zone 的一条标准 URL（`doc/key url.md`），能读到什么，由谁决定"。
+
+Public Zone 不是新的资源类型，也不只是 `public.<zone>` 这个主机名，而是从 Zone 外看到的全部标准 URL。本节不改变 D10：桶仍然不可公开。
+
+> 本节的【现状】来自 2026-11-05 对源码的静态阅读，没有在运行中的 Zone 上实测。裁决见 §18 的 D21–D25，实施任务见 §21。
+
+#### 4.6.1 Zone 外的访问者
+
+| 访问者 | 如何认定 | 【现状】 | 规则 |
+| --- | --- | --- | --- |
+| **匿名访问者** | 没有凭据，或只有失效的 cookie | RBAC 没有匿名主体；桶层是 `Caller::anonymous` + `DenyAll` | 只能读已公开的入口 |
+| **能力持有者** | 持 `bkt_` 令牌或分享链接 token | 不需要身份，范围由令牌决定 | 只在令牌范围内有效，不能换取身份 |
+| **External** | 已认证的 DID，本 Zone 没有账号记录，由 verify-hub 签发受限会话 | nfs-server 拒绝受限会话的 Bearer，cookie 里的受限会话按匿名处理；只有 HomeStation、msg-center 群路径、AI Workspace 接受 | 不进桶层，由入口服务裁决（D23） |
+| **远端 Zone 的服务** | 用 `login_by_cross_zone_assertion` 取得目标 Zone 的会话，目标仅限 msg-center 与 homestation | 权限范围同 External | 同 External。按 ObjId 校验只证明内容正确，不证明有权读取 |
+
+#### 4.6.2 标准 URL 的现状
+
+| 标准 URL | 裁决者 | 匿名 | External | 说明 |
+| --- | --- | --- | --- | --- |
+| `https://public.<zone>/<path>` | 网关目录服务（`data/srv/publish`） | 可读，不能列目录 | 同匿名 | 不查 nfs-server 的路径 ACL |
+| `https://share.<zone>/s/<token>` | ShareContentMgr | 持 token 可读，可加密码 | 同匿名 | 不看会话；已停止、已过期和未知的 token 都是 404 |
+| `https://<zone>/home/<user>/...` | HomeStation（受众 + `object_grants`） | 只读公开条目 | 按 DID 关系判受众 | 无权与不存在都是 404 |
+| `https://<zone>/nfs/v1/read/<node_id>` | nfs-server 路径 ACL | 只读 `public` ACL 的路径 | Bearer 被拒，cookie 按匿名 | 没有稳定的公开 URL，要先 `list` / `resolve` 拿 `node_id` |
+| `https://<zone>/bucket/v1/<bucket_id>/<key>` | 桶权限（§4.4） | 只能带 `bkt_` 读 | 只能用未绑定主体的 `bkt_`，且不能带 Bearer | 见 G6 |
+| `https://<zone>/kapi/msg-center/objects/<id>` | msg-center（调用者能读的消息 + 该消息的绑定） | 401 | 群成员持宿主 Zone 会话，带 `context_path` 可读 | 本 Zone 用户和 Agent 可以只带 ObjId，见下文和 G2 |
+| `https://<zone>/s3/...`、`s3.<zone>` | SigV4 | 拒绝 | 无通路 | 无匿名 S3 |
+| `https://<zone>/ndm/...` | nfs-server NDM 网关 | 401 | 401 | 上传与内部读取，不是公开面 |
+| `https://<zone>/ndn/<obj_id>`、`cyfs://<objid>.<zone>` | 无 | 不提供 | 不提供 | 见 §4.6.5 |
+| `https://<app>.<zone>/` | App 自身 | 取决于 App 的 `guest` 规则 | 取决于 App | 不在本节范围 |
+
+结论：**匿名方在以上入口都不能只凭 ObjId 读到对象**。但持有会话的调用者在消息附件入口可以只带 ObjId，这条路径的安全性取决于绑定环节，目前有缺口（G2）。AI Workspace 的访客入口（`gt_`）是另一个公开面，这次没有核查。
+
+**消息附件是按 ObjId 定位的入口。** `MsgObject` 的附件只有 `DataObj { obj_id, uri_hint? }`，`uri_hint` 不参与读取。【现状】：
+
+| 环节 | 行为 |
+| --- | --- |
+| 本 Zone 用户发出 | `authorize_outgoing_attachments` 要求发送者已能读这个对象，通过后才绑定进 `zone/msg-center/_/attachments` |
+| 收到远端签名消息（含远端群成员发言） | 不做上面的检查，以 msg-center 的服务身份绑定。内容不在本 Zone 时跳过绑定，消息照常接收，读附件 404，字节不会跨 Zone 传输（#689）；内容已在本 Zone 时绑定成功 |
+| 读取 | `GET /kapi/msg-center/objects/<obj_id>/content`。本 Zone 用户和 Agent 可以不带 `context_path`，msg-center 在调用者邮箱最新 1000 条消息里找引用该对象的消息；受限会话（External）必须用 `context_path` 指明消息。放行条件是调用者能读这条消息，且它的绑定持有该对象 |
+
+读取环节判的是"这条消息引用了它"，所以"哪条消息可以引用哪个对象"必须在绑定环节把关。
+
+#### 4.6.3 不变量【已定 D21】
+
+| # | 不变量 | 【现状】 |
+| --- | --- | --- |
+| Z1 | **默认不可达。** 没有公开入口的内容，Zone 外读不到。ObjId、`bucket_id`、key、`node_id` 都只是名字，不授权（`doc/key url.md` §1） | 成立 |
+| Z2 | **一条 URL 只有一个裁决者。** 由 URL 所属的服务判权；网关只路由，named store 不做策略。`public.<zone>` 是例外：放进目录就是公开 | 成立 |
+| Z3 | **公开属于入口，不属于桶或对象。** 同一 ObjId 可以同时在私有桶和公开入口里。撤销只撤这一个入口；别的入口还在，已经被取走的字节也收不回来 | 成立 |
+| Z4 | **授权沿对象图向下。** 对 root 的授权只延伸到它的依赖（FileObject → ChunkList → Chunk，DirObject → 子项），不能横向读别的 ObjId。入口可以只公开描述、不公开内容（如付费视频） | HomeStation 的 `object_grants` 和分享的快照解析已按此实现 |
+| Z5 | **匿名不能枚举。** 匿名不能写桶，只能看入口已公开的列表（公开 Feed、`public` ACL 目录），不能枚举桶、key 或对象。拒绝响应不泄露目标是否存在 | 部分成立，见 G4、G7 |
+| Z6 | **令牌不是公开，也不依赖身份。** `bkt_` 仍是点对点能力（§4.4.5）。未绑定主体的令牌只看令牌本身，不因请求同时带了别的会话而失败 | 部分成立，见 G6 |
+| Z7 | **服务的权限不替访问者授权。** 服务对 `obj://ndm/objects` 的读权限只用来取字节。建立公开入口或绑定之前，要检查发起者本人的持有或读权（§6.4） | 部分成立，见 G2 |
+| Z8 | **响应不扩大授权。** 活动内容不在持有 SSO 凭据的 origin 上执行；凭身份或令牌放行的响应不进共享缓存；URL 里的令牌不经 Referer 外泄 | 活动内容和 Referer 只有 `share.<zone>` 做了防护，见 G1、G5 |
+
+#### 4.6.4 桶内容如何对外可见
+
+桶的内容要让 Zone 外看到，只能经下面这些入口。保留由桶负责，读取权由入口负责，两者互不替代。
+
+| 需求 | 标准 URL | 裁决者 | 保留落点 | 撤销 |
+| --- | --- | --- | --- | --- |
+| 任何人按路径访问 | `https://public.<zone>/<path>` | 网关目录 | 文件副本，不在桶里；可用 `bucket.export` 物化到 `cyfs:///srv/publish/...`，需要用户自己的会话和该目录的写权限 | 删除或移走文件 |
+| 知道链接的人访问，可加密码、到期 | `https://share.<zone>/s/<token>` | ShareContentMgr | `zone/nfs-server/_/shares` | 停止分享后 404 |
+| 按受众发表 | `https://<zone>/home/<user>/...` | HomeStation | `user/homestation/<user>/published`、`entries` | 撤回 = 解绑；收窄受众见 G3 |
+| 给指定的人一个短期链接 | `https://<zone>/bucket/v1/<id>/<key>?token=bkt_...` | 桶（§4.4.5） | 原桶 | `bucket.revoke_access_token`，最长 7 天 |
+| 任何人按 ObjId 读取（未实现） | `https://<zone>/ndn/<obj_id>` | nfs-server（§4.6.5） | `zone/nfs-server/_/public-objects` 或 `public-cache` | 撤回或逐出后 404 |
+| 跨 Zone 业务（消息附件、群文件） | 现状是业务服务的入口 + 目标 Zone 会话；目标是 `/ndn/` + `hint` 里的令牌（§4.6.5） | 业务服务 | 服务的 zone 桶，如 `zone/msg-center/_/attachments` | 按业务规则 |
+
+各档能否进入公开入口【已定 D21】：
+
+| data_policy | 规则 |
+| --- | --- |
+| `documents` | 可以，但必须是用户明确操作（分享、发表）。App 不能替用户把它变成公开 |
+| `app_data` | 可以，由所属 App 的业务决定；对用户可见的公开行为同样要用户确认 |
+| `collected` | 可以转发，作者和 `origin` 不变，不能当作本人创作列出（§4.5.2） |
+| `ambient` | 不能，内容不保证在本地。先 `bucket.copy` 到 `collected` |
+| `temp` | 只发令牌，不做长期入口。key 到期后令牌读到 404 |
+| `cache` | 不做入口，内容可能随时被逐出 |
+
+#### 4.6.5 按 ObjId 读取：`/ndn/`
+
+【现状】`doc/key url.md` 把 `/ndn/$chunkid` 列在可匿名访问的 URL 里，还写了 `PUT/PATCH`，但 Zone 里没有服务提供它：
+
+- `boot_gateway.yaml` 没有 `/ndn/*` 路由。按配置推断，`https://<zone>/ndn/x` 会落到 Desktop 并返回 `index.html`（未实测）。
+- `https://<objid>.<zone>/` 被网关拒绝；`cyfs://<objid>.<zone>` 只有解析和格式化代码，没有取内容的 resolver。
+- `runtime.get_zone_ndn_base_url()` 没有调用方。
+- cyfs-ndn 的 `NdnDirServer` 和 `NamedStoreMgrHttpGateway` 不判权，但都没有部署在 Zone 里。
+
+所以今天不存在这个泄露面，NFSP §7.3.1"知道 ObjId 即可读"描述的也不是当前部署。风险在将来：**把这些不判权的处理器直接接到网关，ObjId 就成了读取权。**
+
+【已定 D22，2026-11-05】`/ndn/` 是跨 Zone 按 ObjId 读取对象的统一协议：#689 的附件拉取、`ambient` 按 `origin` 拉取、`cyfs://<objid>.<zone>` 的 resolver 都走它。尚未实现，任务见 §21。G2 要先修，否则公开缓存和令牌都会放大这个缺口。
+
+**设计目标：标准 HTTP 工具能直接读。** ffmpeg、ffprobe、curl 和浏览器的 `<video>` 拿到一条 URL 就能读 FileObject，不需要 CYFS 客户端，也不需要设置自定义 Header。workflow 的媒体函数是第一个这样的调用方：把文件对象的 URL 交给 ffmpeg，靠 Range 按需读取，不用先落临时文件。凭据放在 URL 里也是为了这一点。
+
+```text
+GET | HEAD https://$zone/ndn/<obj_id>[/@/<inner_path>][?hint=<hint>]
+```
+
+`hint` 是 URL 编码后的规范化 JSON（`doc/key url.md` §6），字段都可选，总长不超过 2 KiB：
+
+```json
+{ "path": "<root_obj_id>/@/content/@/3", "token": "bkt_..." }
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `path` | 授权根和从根到目标的路径，语法同 `inner_path`。走完必须等于 URL 里的 `obj_id`，此时 URL 不能再带 `inner_path`。不带 `path` 时，授权根就是 URL 里的 `obj_id` |
+| `token` | `bkt_` 读令牌，只接受 key 级、未绑定主体的令牌。桶和 key 由令牌记录确定，所以 `hint` 不需要 `appid` |
+
+判定顺序：
+
+1. 授权根命中 `public-objects`：放行。
+2. 授权根命中 `public-cache`：放行；内容已逐出时返回 404。
+3. `token` 有效，且它的 `(bucket_id, key)` 当前绑定等于授权根：放行，响应 `private`。
+4. 其余一律 404，未命中不回源。
+
+示例（`hint` 未做 URL 编码）：
+
+```text
+公开文件的第 3 个 chunk   GET /ndn/<chunk_id>?hint={"path":"<file_id>/@/content/@/3"}
+凭令牌读消息附件的根对象  GET /ndn/<file_id>?hint={"token":"bkt_..."}
+凭令牌读附件的第 3 个 chunk GET /ndn/<chunk_id>?hint={"path":"<file_id>/@/content/@/3","token":"bkt_..."}
+把文件交给 ffmpeg         ffmpeg -ss 30 -i 'https://$zone/ndn/<file_id>?hint={"token":"bkt_..."}' ...
+```
+
+响应约定：
+
+| 目标 | 响应 |
+| --- | --- |
+| FileObject | 文件字节，等同 `/@/content`，内容是 chunk 还是 chunklist 都一样；空文件返回 200 和长度 0。这是 CYFS 协议和 `NdnDirServer` 的既有行为。带 `resp=raw` 时返回对象 JSON，协议要求必须支持 |
+| ChunkList | 全部 chunk 拼接后的字节 |
+| Chunk | chunk 字节 |
+| 其他对象（如 DirObject） | 规范 JSON，不支持 Range |
+
+- **Range：** 支持 `bytes=a-b`、`bytes=a-`、`bytes=-n`，可以跨 chunk 边界，返回 206、`Content-Range`、`Content-Length` 和 `Accept-Ranges: bytes`。多段 Range 返回完整内容，无法满足时返回 416。`HEAD` 返回相同的头。
+- **校验头：** `ETag` 是 ObjId，支持 `If-None-Match` 和 `If-Range`。`cyfs-obj-id`、`cyfs-parents-N` 是给 CYFS 客户端的附加信息，普通工具可以忽略。
+- **【现状】** `bucket_store::http` 的 `parse_range` 和 `serve_inner` 已满足这套 Range 约定；`NdnDirServer` 的 `parse_range_offset` 只解析起始位置、忽略结束位置，不能复用。
+
+读取规则：
+
+- **路径只走包含关系。** 只走 `File.content`、`ChunkList[i]` 和 `Dir` 子项。`NdnDirServer` 的 `walk_segment` 会跟随任何能解析成 ObjId 的字段，`get_child_objs` 还把消息附件算作子项，都不能直接用来判权，否则公开对象里写一个私有 ObjId 就能读到它。
+- **先判权再读取。** 网关把 `/ndn/*` 转给 nfs-server，判权通过后才调 cyfs-ndn 的读取逻辑，不把不判权的处理器直接挂到网关。不实现 NFSP D8 的"知道 ObjId 即可读"开关。
+- **只读。** 去掉 `PUT/PATCH`，写入走 `/ndm/*`。
+- **不读 cookie。** 只认 `hint` 里的令牌，避免页面借访问者的登录态读取对象。
+- **不执行。** 文件字节按 D24 处理：只有图片、音视频、PDF 和纯文本才带声明的类型，其余一律 `application/octet-stream` 并强制下载，都带 `nosniff` 和 CSP。chunk 和 ChunkList 固定 `application/octet-stream`。ffmpeg 不依赖 Content-Type，不受影响。
+- **缓存跟随判定结果。** 公开命中用 `Cache-Control: public, max-age=31536000, immutable`，撤销后缓存里的残留按 Z3 接受；令牌放行用 `private`。
+
+**令牌放在 URL 里**，`<img src>`、复制的链接和 ffmpeg 都能直接用，但它也会进入日志、浏览器历史、分享记录和进程参数。所以：
+
+- 令牌短期有效，只读、单 key，有效期覆盖本次读取即可。过期后重新申请；跨 Zone 时按 #689 §6.1 的第 5–6 步，由源 Zone 校验收件关系后签发。
+- 不设 `max_uses`。一次拉取要发很多请求，HEAD、Range 和重试都会计数。
+- 响应带 `Referrer-Policy: no-referrer`，网关和服务的日志不记录 `hint`。
+- 带令牌的 URL 只在请求时拼接，不写进 `MsgObject`、`uri_hint`、`origin` 等持久内容。写进 `MsgObject` 还会改变它的 ObjId。
+- 外部工具的错误输出可能带完整 URL。调用方把输出脱敏后，才能写入日志、错误详情和 Task 数据。
+
+**把 `/ndn/` URL 交给 ffmpeg 时**，还要防止输入内容让 ffmpeg 去访问别的地址。HLS、DASH、concat 这类格式可以在文件里写其他 URL，从本地文件改成 URL 输入后，它们就能访问网络。调用方要用 `-format_whitelist` 限定解封装格式，用 `-protocol_whitelist` 限定协议。
+
+两个公开桶都是系统桶，不另建表，第一版只放 `cyfile` / `cydir` 根对象（kind 为 `data`）：
+
+| | `zone/nfs-server/_/public-objects` | `zone/nfs-server/_/public-cache` |
+| --- | --- | --- |
+| 放什么 | 本 Zone 明确公开的内容 | 别处已匿名可得的内容，如转发的公开内容 |
+| 档位 | `app_data`，绑定即保留 | `cache`，不 pin，可随时逐出或清空 |
+| 谁能放 | 系统服务调用 `bucket.provide_public`，第一个提供方是 HomeStation 的公开条目 | App 调用 `bucket.cache_public { root_obj_id, source }` |
+| 准入校验 | 检查发起者本人（不是服务）对整棵对象树的持有或读权（Z7） | nfs-server 不带任何凭据从 `source` 拉取，真实下载并校验字节后才绑定 |
+| key | `<provider>/<entry>/<root_obj_id>`，同一对象多处公开时撤一处不影响其他 | `<appid>/<root_obj_id>` |
+| 撤销 | `bucket.withdraw_public { entry }`，受众收窄或撤回时同步 | 逐出；来源撤销后，本地副本可能留到逐出（Z3） |
+
+公开缓存的准入规则：
+
+- **不看 `author`。** `author`、`owner` 由对象创建者自己填写，造一个 FileObject 就能冒充外部作者，同时把 `content` 指向别人的私有 chunk。
+- **本地副本不能代替拉取。** 否则攻击者只要在自己的 Zone 放一个引用私有 chunk 的 FileObject，就能靠本地命中通过校验。`pull_chunk_list_by_object` 现在不跳过本地已有的 chunk，要保持。
+- **`source` 只能是其他 Zone 的 `/ndn/` URL。** 不跟随重定向，不访问内网地址。
+- **私聊和群附件不进公开缓存，转发走令牌。** 进了缓存，任何知道 ObjId 的人都能读，撤回和退群也拦不住。
+
+这样不违反已有规则：
+
+- **D10：** 这两个桶没有 grant，`/bucket/v1` 仍然拒绝匿名，key 也不能被枚举。公开来自提供记录，不来自桶权限。
+- **NFSP 的反查禁令：** 判断在入口层，不在 named store；只回答"是否公开"，不返回路径；集合里只有本来就公开的内容。在 `/ndn/` 上，`hint` 取代 NFSP §7.3.1 的 `context`。
+
+落地后 §6.4 增加第 (d) 条：根对象在这两个公开桶里的对象可以直接绑定。任何人都读得到它，不存在 Dropship 问题。
+
+【已定 D25】第一版命中根对象后可读全部依赖，不做"只公开描述"（如付费视频），这类场景要等绑定增加 scope。`public-cache` 按 App 限额，匿名出口要限速。
+
+#### 4.6.6 现状与本节的差距
+
+按严重程度排序。全部来自静态阅读，都没有做 PoC；G2 在 #689 §9 的分析基础上核对过代码。修复任务见 §21。
+
+| # | 差距 | 依据 | 建议 |
+| --- | --- | --- | --- |
+| G1 | `/bucket/v1`、`/home/<user>/objects/<id>/content`、`/nfs/v1/read/<node_id>` 按声明的类型或扩展名返回内容，没有 `nosniff` 和 CSP，也不强制下载。`text/html` 会在 `<zone>` 上渲染执行，而 `<zone>` 就是 Desktop 的 origin。普通用户发一个带 `bkt_` 的链接或一条公开动态，管理员点开后，脚本就在 Desktop 的 origin 里带着管理员的 SSO 凭据运行 | cyfs-ndn `bucket_store/src/http.rs` 的 `serve_inner`；homestation `http.rs` 的 `object_content`；nfs-server `server.rs` 的 `read_handler`、`fsutil.rs` 的 `content_type_for`。网关不补安全头。对照：`share/serving.rs` 已有防护。Desktop 的群展示文件用 `window.open` 打开 Blob URL（`GroupDisplaySection.tsx`），Blob 类型来自文件声明的 mime，也继承 Desktop 的 origin | D24 |
+| G2 | **知道 ObjId 再加一条消息就能读。** 收到的消息不校验发送者是否拥有被引用的对象：`dispatch_to_receiver` 以 msg-center 的服务身份绑定，`ServicePolicy::holds` 因 `frame` 组有 `obj://ndm/objects` read 而放行，内容已在本 Zone 就绑定成功。由此有两条路径：① 任意外部 DID 给本 Zone 用户发一条引用 X 的签名消息，该用户就能读 X，还能用 `msg.collect_attachment` 存进自己的桶；② 托管群的外部成员发一条引用 X 的签名消息，再用宿主 Zone 的 External 会话带 `context_path` 读回 X（单文件上限 64 MiB）。前提是知道 X 的 ObjId，且 X 已在本 Zone | msg-center `msg_center.rs` 的 `dispatch_to_receiver`、`buckets.rs` 的 `bind_attachments_with`、`object_access.rs`；nfs-server `bucket/mod.rs` 的 `ServicePolicy`；`test_group_service.rs` 的 `messages_and_attachments_are_bound_where_they_are_stored` 断言了远端成员引用本地对象时绑定成功；另见 `notepads/issue-689-cross-zone-attachments-protocol-todo.md` §9 | 按 Z7，`Arrival::Remote` 不因本地命中而绑定，字节实际从发送方一侧取得并校验后才绑定（#689 的拉取路径）。拉取还没实现，所以短期影响只限于对象碰巧已在接收 Zone 的跨 Zone 消息，这些附件要等拉取落地后才可读 |
+| G3 | `/home/<user>/objects/<id>/ref` 给同一 key 的所有读者返回同一个未绑定主体的 `bkt_`（6 小时、不限次），受限条目也一样。收窄受众后不撤销，令牌被转发后在到期前都能读。撤回条目会解绑，令牌随之失效 | homestation `media_ref.rs` 的 `content_ref`；homestation 里没有撤销令牌的调用 | 受限条目不发 `/ref`，改走 `/objects/<id>/content`；受众收窄时撤销已发令牌 |
+| G4 | `/bucket/v1` 在判权前先跑 `spec::ensure`（可能懒建桶）并查桶。桶不存在返回 404，存在但无权返回 403，匿名方可以探测用户和 App 是否存在，也能触发 system-config 读取和建桶 | nfs-server `bucket/http.rs` 的 `handle`、`bucket/spec.rs` 的 `ensure`；cyfs-ndn `bucket_store/src/error.rs` | 没有身份也没有令牌的请求直接拒绝，不走 `ensure`，错误统一 |
+| G5 | Binding 的 `http_headers` 原样覆盖 `Cache-Control`，写入 `public` 会让受保护的内容进入共享缓存 | cyfs-ndn `bucket_store/src/http.rs` 的 `serve_inner` | 凭身份或令牌放行的响应强制 `private` |
+| G6 | 请求同时带受限会话的 Bearer 和有效的 `?token=` 时直接 403，因为先解析会话 | nfs-server `bucket/http.rs` 的 `handle`、`bucket/mod.rs` 的 `session_of` | 带令牌时，会话解析失败按匿名继续；`bind_to` 的令牌除外 |
+| G7 | `GET /home/<user>/inbox?dispatch-status=<ObjId>` 不验身份，知道 ObjId 的人能确认对方是否收到过这个对象 | homestation `http.rs` 的 `inbox_status` | 只对投递方返回，或改用投递时发放的回执凭据 |
+| G8 | `srv/publish` 的路径 ACL 可以改，但 `public.<zone>` 不看 ACL：收窄后 nfs-server 上不可读，公开主机上仍然可读 | `boot_gateway.yaml` 的 `buckyos_public`；nfs-server `access.rs` 的 `op_set_acl` | `op_set_acl` 拒绝收窄 `srv/publish` 子树 |
+| G9 | 分享的 `allow_download=false` 只拒绝 `?download`，不带这个参数仍然取得到全部字节。它是界面选项，不是权限 | nfs-server `share/serving.rs` | 界面和文档不要把它说成禁止获取 |
+| G10 | `boot_gateway.yaml` 的注释和 nfs-server README 里的"与 /ndn 同级"要等 `/ndn/` 落地才成立 | 见 §4.6.5 | 随 N8 更新。其他相关文档已于 2026-11-05 按 D22 同步 |
+
+#### 4.6.7 业界对照
+
+| 系统 | 对应本节 |
+| --- | --- |
+| S3 Block Public Access + CloudFront 分发 | 存储桶不公开，公开由前面的分发入口负责（Z3、D10） |
+| GitHub `raw.githubusercontent.com`、Google `googleusercontent.com` | 用户内容放到独立域名，与带登录态的主站隔离（Z8） |
+| IPFS 子域网关 | 按 CID 隔离 origin，同样是为了防止内容寻址的数据在共用 origin 上执行（Z8） |
 
 ## 5. 对象与键
 
@@ -1055,7 +1266,7 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | **cyfs-ndn 并行项** | §14.4：GC 宿主唯一化并真正运行、chunk 回收、`touch`、`list_pins_by_owner`、结构化对象子项遍历 | 隔离 store 下解绑 → 收敛 → `gc_round` 后 `owned_bytes` 下降 |
 | **P2** | prefetch、`ambient` 的按 `origin` 自动拉取（v1 的 ambient 只锁描述，内容有则用、无则 404）、evicted 感知、Postgres 后端验证、大容器快照 | — |
 
-## 18. 裁决清单（D1–D18 定于 2026-10-25，D19–D20 定于 2026-10-26）
+## 18. 裁决清单（D1–D18 定于 2026-10-25，D19–D20 定于 2026-10-26，D21–D25 定于 2026-11-05）
 
 | # | 事项 | 裁决 | 落点 |
 | --- | --- | --- | --- |
@@ -1079,6 +1290,11 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | D18 | 令牌模块 | （2026-10-26 修订）`bkt_`、`gt_` 访客令牌与群 48h 链接只共用令牌格式与校验代码 `name_lib::bearer_token`，不并表：访客令牌是浏览器自造的身份、48h 链接是 verify-hub 的登录凭据，都不是桶内容能力，并入会让内核登录依赖 nfs-server | §4.4.5 |
 | D19 | 第二、三档的落法 | 新增 `collected`（Recursive、必带 `origin`、与 documents 同级备份）与 `ambient`（Skeleton 锁描述、内容按 origin 再拉），原 `archive` 并入 ambient | §4.5 |
 | D20 | ambient 的 v1 范围 | v1 只做 Skeleton 保留与"有则用、无则 404"，按 `origin` 自动拉取放 P2（依赖 NDM 下载路径） | §17 |
+| D21 | Public Zone 的基本规则 | 采纳不变量 Z1–Z8 与各档进入公开入口的规则，现有入口的差距按 §4.6.6 逐项修 | §4.6.3、§4.6.4 |
+| D22 | `/ndn/` 读取协议 | `/ndn/<obj_id>` 是跨 Zone 按 ObjId 读取的统一协议，只读，尚未实现。FileObject 的 URL 返回文件字节并支持单段 Range，标准 HTTP 工具（如 ffmpeg）能直接读。授权根命中 `public-objects` 或 `public-cache` 就放行，否则看 URL 参数 `hint` 里的 `bkt_` 令牌，其绑定须等于授权根；`hint` 还可带从根到目标的路径。公开缓存只收从别处匿名拉取成功的内容，私聊和群附件走令牌 | §4.6.5 |
+| D23 | External 与桶层 | 不给桶加 DID 类 grantee，External 经入口服务代读或用短期令牌，与 §20 第 5 条一致 | §4.6.1 |
+| D24 | 同源活动内容（G1） | `/bucket/v1`、`/home/.../content`、`/nfs/v1/read` 与 `share.<zone>` 用同一策略：活动类型强制下载，加 `nosniff`、CSP `sandbox`、`no-referrer`。要渲染 HTML 走 `public.<zone>`、`share.<zone>` 或 App 子域 | §4.6.6 |
+| D25 | `/ndn/` 的细则 | 第一版命中根对象即可读全部依赖，不做"只公开描述"；`public-cache` 按 App 限额；补匿名出口限速 | §4.6.5 |
 
 ## 19. 修订记录
 
@@ -1091,6 +1307,7 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | v0.6 | 2026-10-26 | 内容网络视角：数据策略按"我创作 / 别人创作我认真收集 / 别人创作最好能有"三档重排，新增 `collected`、`ambient`，并入 `archive`；Binding 增 `origin`；Files 投影增 `Collected/`；D19–D20 定案 |
 | v0.7 | 2026-10-26 | D18 改判：`bkt_` / `gt_` / 群 48h 链接不并表，只共用令牌格式与校验代码（`name_lib::bearer_token`）；§14.3 改写为迁移后的处置表；§20 记录迁移落地（`notepads/bucket-migration-todo.md`） |
 | v0.5 | 2026-10-26 | 按 review：zone 只表达服务级归属、默认不共享，新增 `create` 动作与创建者覆盖规则；PUT 成功 = 持久保存三条件，状态机去掉 pending；`Expires` 保持 HTTP 缓存含义，删除 TTL 用 `x-bucky-expires-at`；预签名 URL 无状态，与 `bkt_` 令牌区分；快照 manifest 权威 + tree 派生、冲突改名、快照计费、备份时间点契约；版本成本措辞收窄；`storage_class` 改名 `data_policy`；新增 §3.4 三概念 |
+| v0.8 | 2026-11-05 | 新增 §4.6 Public Zone 视角的权限：按标准 URL 梳理 Zone 外访问者能读到什么，不变量 Z1–Z8，差距清单 G1–G10；D21–D25 定案，其中 D22 把 `/ndn/` 定为跨 Zone 按 ObjId 读取的统一协议（标准 HTTP + Range，`hint` 在 URL 里、可带令牌，公开缓存只收匿名可得的内容）；新增 §21 实施 TODO |
 
 ## 20. 实施状态（2026-10-26）
 
@@ -1118,6 +1335,84 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 6. 未做：配额告警的 System Notify、`bucket.prefetch`（P2）。AIWorkspace 每 Workspace 一个 SQLite 文件夹不在本次范围（TODO P3-6）。
 7. 主机 `buckyos` CLI 以设备身份登录（目标 `system:buckycli`）时在桶层是管理员，与 nfs-server 文件命名空间和 system-config 对设备的处理一致；设备上运行的系统服务（设备令牌、目标为该服务）和其它系统服务一样，只能操作自己 appid 的桶。
 8. 桶声明的序列化省略默认值（`scope: user`、空 `lifecycle`），PIKG 工具写 AppDoc 时同样去掉，否则安装时按 Rust 重新序列化算出的 AppDoc ObjectId 与包内不一致、安装被拒。
+9. §4.6（v0.8）尚未实现，任务见 §21；现有入口与它的差距见 §4.6.6。
+
+## 21. Public Zone 与 `/ndn/` 实施 TODO
+
+这是 §4.6 的主 TODO，给后续实施的 Code Agent。D21–D25 已定，不要重新讨论；实现中发现裁决行不通时，停下来问用户。
+
+**工作约定**
+
+- 先读 §4.6。路径开头的 `cyfs-ndn/`、`buckyos/` 表示仓库。先改 cyfs-ndn，本地用 `[patch]` 联调，发布顺序见 §14.1。
+- 依赖顺序：P0 和 P1 可以并行；N6 → N7 → N8 → N9；P2 依赖 N8；N1 必须先于 N10、N11、N18 合入。workflow 正在等 `/ndn/`，优先做 P1，它不依赖公开桶的准入。
+- 完成一项就勾选，并写明验证命令和结果。没运行的测试如实写未运行，不能用 mock 通过代替真实 Zone 的验收。
+- 改协议和用户可见行为时，同时检查 `buckyos-api` 共享类型、SDK、cmd_skills 和文档（`buckyos/AGENTS.md`）。
+- 令牌和 `hint` 不得进入日志、错误详情、Task 数据、manifest、缓存键和 `MsgObject`。
+
+### P0：修复现有入口（不依赖 `/ndn/`）
+
+- [ ] **N1 G2：远端消息不因本地命中而绑定。** `Arrival::Remote` 时，`bind_attachments_with` 不再调用 `bucket.put`；消息照收，附件读取 404，等 N18 拉取并校验后才绑定。
+  - 改动：`buckyos/src/frame/msg_center/src/buckets.rs`；调整 `test_group_service.rs` 的 `messages_and_attachments_are_bound_where_they_are_stored`，它现在断言了旧行为。
+  - 验收：补回归测试，覆盖 G2 的两条路径，读 X 都是 404，`msg.collect_attachment` 也失败；本地发送不变。`cargo test -p msg_center -- --test-threads=1`。
+- [ ] **N2 G1 / D24：活动内容不在 Desktop origin 上执行。** 把 `share/serving.rs` 的 `inline_type` 和安全头收敛成共用函数，放进 `cyfs-ndn/src/ndn-lib`，再用于下面四处。Binding 的 `http_headers` 不能绕过它。
+  - 改动：`cyfs-ndn/src/bucket_store/src/http.rs` 的 `serve_inner`；`buckyos/src/frame/homestation/src/http.rs` 的 `object_content`；`buckyos/src/frame/nfs_server/src/server.rs` 的 `read_handler`；`buckyos/src/frame/msg_center/src/object_access.rs` 的 `fetch_object_path`。`image/svg+xml` 的 major 是 `image`，必须靠 CSP `sandbox` 兜住。
+  - Desktop：`app/messagehub/extensions/GroupDisplaySection.tsx` 用 `window.open` 打开 Blob URL，活动类型要改成下载。动手前先查 `components/preview`（有 `html` 渲染器）和现有 App 是否依赖这些路由直出 HTML，有依赖就先改调用方。
+  - 验收：在真实浏览器里，`text/html` 和含脚本的 SVG 经这四条路径都不会在 `<zone>` 上执行；图片、音视频、PDF 预览和 Range 正常。
+- [ ] **N3 G3：收紧 `/ref` 令牌。** 受限条目不再发 `/ref`，调用方回退到 `/objects/<id>/content`；`set_audience` 收窄受众时撤销已发令牌（`tokens()` 目前只存令牌文本，要加存 `token_id`）。
+  - 改动：`buckyos/src/frame/homestation/src/media_ref.rs`、`publish.rs`，以及 `src/frame/desktop/src/app/homestation/media.ts`。
+  - 验收：`cargo test -p homestation -- --test-threads=1`，覆盖收窄后旧令牌失效。
+- [ ] **N4 G4、G5、G6：桶数据面。** 没有身份也没有令牌的请求在 `spec::ensure` 之前直接拒绝，桶是否存在都返回同样的结果；带令牌时会话解析失败按匿名继续（`bind_to` 的令牌除外）；凭身份或令牌放行的响应不能被 Binding 改成 `public`。
+  - 改动：`buckyos/src/frame/nfs_server/src/bucket/http.rs`、`bucket/mod.rs`；`cyfs-ndn/src/bucket_store/src/http.rs`。
+  - 验收：匿名请求不产生 system-config 读取和建桶；受限会话 Bearer 带有效 `?token=` 能读。
+- [ ] **N5 G7、G8、G9。** `inbox_status` 要求已认证的投递方（CYFS Protocol 已这样规定）；`op_set_acl` 拒绝收窄 `srv/publish` 子树；分享的 `allow_download=false` 在界面和文档上不说成禁止获取。
+  - 改动：`buckyos/src/frame/homestation/src/http.rs`、`buckyos/src/frame/nfs_server/src/access.rs`、分享界面文案。
+
+### P1：`/ndn/` 读取
+
+- [ ] **N6 读取核心。** 新增 `cyfs-ndn/src/bucket_store/src/ndn_read.rs`，实现 §4.6.5 的响应约定。放这里是因为 nfs-server 已依赖 `bucket_store`，也不用引入 `NdnDirServer` 的语义路径和本地文件模式。
+  - 解析 `hint`：规范化 JSON，总长不超过 2 KiB，语法错误返回 400；同时带 `hint.path` 和 URL 的 `inner_path` 也是 400。
+  - 路径校验用类型化的遍历，只走 `File.content`、`ChunkList[i]`、`Dir` 子项，走完要等于 URL 里的 `obj_id`。不复用 `walk_segment` 和 `get_child_objs`。
+  - 响应复用 `http.rs` 的 `parse_range`、`open_chunklist_reader`、`open_chunk_reader`、`chunk_reader_to_body`；CYFS 头用 `ndn_lib` 的 `CYFSHttpRespHeaders`；安全头用 N2 的共用函数（N2 未合入时先按 §4.6.5 实现，合入后收敛）。
+  - 单测：meta 字段里写私有 ObjId 走不通；MsgObject 附件走不通；路径和目标不符为 404；三种 Range、跨 chunk、多段、416、HEAD、`If-Range`、空文件、`resp=raw` 返回对象 JSON。`cd cyfs-ndn/src && cargo test -p bucket_store`。
+- [ ] **N7 令牌判定。** 在 `cyfs-ndn/src/bucket_store/src/access.rs` 增加按令牌查 `(bucket_id, key)` 的入口：只接受 `read`、key 级、未绑定主体、未撤销、未过期的令牌，再核对当前绑定等于授权根。失败一律按无权处理。
+  - 单测：同 key 重绑后旧 root 为 404；撤销、过期、prefix 令牌、写令牌、绑定主体的令牌都是 404。
+- [ ] **N8 接入 nfs-server 和网关。** 新增 `buckyos/src/frame/nfs_server/src/ndn/` 模块和 `/ndn/{*path}` 路由，按 §4.6.5 的顺序判定。只接受 `GET` / `HEAD`；不读 cookie 和 Bearer；不走 `spec::ensure`；拒绝统一 404；带 `Cache-Control`、`nosniff`、`no-referrer`。
+  - 公开桶声明进 `buckyos/src/kernel/buckyos-api/src/nfs_share.rs` 的 `nfs_server_bucket_decls`。网关在 `buckyos/src/rootfs/etc/boot_gateway.yaml` 的 `get_service_info_from_req` 加 `/ndn/*` → nfs-server。
+  - 核对网关和 nfs-server 的日志不记录 query，记录的话要脱敏。
+  - 文档：去掉 `doc/key url.md` 的"尚未实现"，更新 `src/frame/nfs_server/README.md`、`cyfs-ndn/doc/bucket_store.md` 和 §4.6.2。
+  - 验收：`cargo test -p nfs_server -- --test-threads=1`；未公开的 ObjId 匿名读取为 404。
+- [ ] **N9 标准工具验收（真实 Zone）。** 用例放 `buckyos/test/nfs_server_test/`，经公网网关和 NodeGateway 各跑一次。需要的工具环境没有时如实标为未验证。
+  - `curl -r 0-1`、`curl -r -100`、`curl -I`；跨 32 MiB 边界的 Range 和原文件逐字节一致。
+  - `ffprobe`；`ffmpeg -ss` 读 moov 在文件尾、大于一个 chunk 的 MP4。
+  - 浏览器 `<video>` 拖动进度。
+  - 运行：`uv run test/run.py -p nfs_server_test`。
+
+### P2：公开桶准入
+
+- [ ] **N10 `bucket.provide_public` / `withdraw_public`。** RBAC 资源 `obj://ndm/public` 的 `write` 只给 `frame`。校验 `requested_by` 本人对整棵对象树的持有或读权，复用 `buckyos/src/frame/nfs_server/src/ndm/import.rs` 的递归校验，服务自身的权限不算。
+  - 同步：`rbac_config.rs`、`doc/key url.md` §4.1 的 `ndm` 行、`doc/arch/verify-hub/BuckyOS RBAC权限设计.md`。
+  - 验收：伪造 `content` 指向别人 chunk 的 FileObject 被拒绝；同一对象两处公开，撤一处仍可读。
+- [ ] **N11 `bucket.cache_public`。** RBAC 资源 `obj://ndm/public_cache` 的 `write` 给 `app` 和 `frame`。nfs-server 在后台任务里不带凭据拉取，完整校验后才绑定；用工作区已有的 `ndn-toolkit`（control-panel 在用），保持不跳过本地已有 chunk。
+  - `source` 只能是其他 Zone 的 HTTPS `/ndn/<root_obj_id>`，不跟随重定向，拒绝本 Zone、IP 字面量和内网地址。
+  - 按 App 限额（D25），超限淘汰该 App 最旧的 key。
+  - 验收：`source` 只提供 FileObject、不提供 chunk 时，即使本地已有 chunk 也不绑定；`source` 要求凭据时不绑定。
+- [ ] **N12 匿名出口限速（D25）。** nfs-server 对匿名放行的 `/ndn/` 响应限速，凭令牌的不限。默认值和设置项实施时确定并写回本节。
+- [ ] **N13 HomeStation 接入。** 公开条目的文件附件在 `publish_version` 时提供，`withdraw` 和 `set_audience` 收窄时撤回，启动时对账。改 `buckyos/src/frame/homestation/src/publish.rs`，同步 `doc/homestation/HomeStation 协议与实现.md`。
+  - 验收：公开条目附件可经 `/ndn/` 匿名读取；撤回或收窄后 404。
+- [ ] **N14 §6.4 第 (d) 条。** 根对象在两个公开桶里的对象可以直接绑定。改 `buckyos/src/frame/nfs_server/src/bucket/mod.rs` 的持有判定，并更新 §6.4。
+
+### P3：调用方
+
+- [ ] **N15 URL 构造。** `runtime.rs` 的 `get_zone_ndn_base_url` 没有调用方，也只拼 Zone 主机名。改成 `ndn_read_url(obj_id, hint)`：本机进程走 NodeGateway，跨 Zone 走 `https://<zone>`；`hint` 做规范化和 URL 编码。websdk `objectUrl` 提供同名能力，两端共用 `src/kernel/buckyos-api/testdata/object_url_vectors.json` 的测试向量。
+- [ ] **N16 `CyfsNdnClient`。** `replace_obj_id` 会丢 query，子请求也不继承访问码。改成按授权根和目标主机携带上下文，`pull_chunk_list_by_object` 给每个 chunk 带 `path=<file_id>/@/content/@/<i>`；令牌不跟随重定向，不发给其他主机。改 `cyfs-ndn/src/ndn-toolkit/src/cyfs_ndn_client.rs`，验收 `cargo test -p ndn-toolkit`。目录拉取另列（#689 §7.2）。
+- [ ] **N17 workflow 视频输入。** 依赖 N8、N15。ffprobe 和 ffmpeg 不再落临时文件，改读 `/ndn/<file_id>?hint={"token":"bkt_..."}`。N8 之前继续用 `materialize_input`，不接过渡 URL。poppler 和 soffice 读不了 HTTP，继续用 `materialize_input`。
+  - 改动：`buckyos/src/kernel/workflow/src/native.rs`（`NativeIo`、`NativeContext`、`run_tool`）、`io.rs`、`functions/media/video.rs`、`functions/media/probe.rs`。
+  - 流程：thunk params 仍只有 `content_id`，FileObject ID 从 run meta 取。输入授权通过后，把 FileObject 绑进 `zone/workflow/_/scratch` 的 `inputs/<execution_id>`，同时作为运行期保留；签单 key 只读令牌，有效期覆盖 Step deadline；终态时撤销令牌并解绑。
+  - 安全：`stderr_tail` 和错误 `details` 里的 URL 要脱敏；用 `-format_whitelist` 和 `-protocol_whitelist` 限定输入。
+  - 验收：`step_cache_key` 与落临时文件时一致；真实 ffmpeg 的 `#[ignore]` 用例通过；引用内网地址的 m3u8 输入不产生请求；失败输出里没有令牌。`cargo test -p workflow -- --test-threads=1`，再按 `notepads/llm-media-pipeline-workflow-todo.md` 的 T2d 跑 DV。
+- [ ] **N18 #689 跨 Zone 附件。** 依赖 N1、N8、N16。按 `notepads/issue-689-cross-zone-attachments-protocol-todo.md` 的 P1 实施，对象读取统一用 `/ndn/`：源 Zone 的 msg-center 校验收件关系后，签发 `attachments` key 的令牌；接收方拉取、校验，再绑定。私聊和群附件不进 `public-cache`。
+  - 验收：双 Zone DV，私聊附件端到端可读；非收件人拿不到令牌。
+- [ ] **N19 `ambient` 拉取与 `cyfs://` resolver。** 依赖 N16。`cyfs://<objid>.<zone>/<inner>` 解析到 `https://<zone>/ndn/<objid>/@/<inner>`；`ambient` 按 `origin` 拉取（D20 的 P2），公开内容匿名拉取。
 
 ## 附录 A：与落盘方向文档待定清单的对应
 

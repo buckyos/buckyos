@@ -734,27 +734,36 @@ Thunk Object 是编排器投递给调度器的最小执行单元。它是 Expr T
 
 **调度器只认识 Thunk Object，不认识 Expr Tree、DSL、Workflow、Run。**
 
+2026-11-05 起对象 hash 只覆盖决定结果的字段（[notepads/llm-media-pipeline-workflow-todo.md](../../notepads/llm-media-pipeline-workflow-todo.md) P9，类型在 `src/kernel/buckyos-api/src/thunk_object.rs`）：
+
 ```json
 {
-  "thunk_obj_id": "thunk-hash-xxx",
-  "fun_id": "sha256-of-executor-code",
+  "fun_id": "func:<hex>",
   "params": {
-    "type": "fixed | normal | check_by_runner",
-    "values": { ... },
-    "obj_refs": ["named-obj-id-1", "named-obj-id-2"]
-  },
-  "idempotent": true,
-  "resource_requirements": {
-    "max_tokens": 50000,
-    "max_duration": "10m",
-    "gpu_required": false
-  },
-  "metadata": {
-    "run_id": "run-abc-123",
-    "node_id": "process_videos",
-    "attempt": 1,
-    "shard": { "index": 37 }
+    "content_id": "<chunk 或 chunklist ID>",
+    "dpi": 144,
+    "max_long_edge": 2048,
+    "page_range": [1, 2, 3]
   }
+}
+```
+
+`thunk_obj_id = thunk:<sha256(JCS(ThunkObject))>` 由 `ThunkObject::calc_obj_id` 生成；相同函数 + 规范化参数跨 Run、跨重试得到同一 ID。run_id / node_id / attempt 不再放进 ThunkObject，而是一次执行的 run meta：
+
+```json
+{
+  "execution_id": "<run_id>/<node_id>/<attempt>",
+  "thunk_obj_id": "thunk:<hex>",
+  "run_id": "run-abc-123",
+  "node_id": "process_videos[37]",
+  "attempt": 1,
+  "execution_epoch": 3,
+  "source_obj_id": "cyfile:<hex>",
+  "requested_by": "<user_id/app_id>",
+  "deadline_at": 1762300000,
+  "registration": { "name": "media.render_pdf_pages", "version": "1", "fun_id": "func:<hex>", "timeout": 600, "requirements": { "cmd/pdftoppm": 0 } },
+  "fingerprint": { "cmd/pdftoppm": "24.02.0" },
+  "cache_key": "<hex>"
 }
 ```
 
@@ -762,37 +771,23 @@ Thunk Object 是编排器投递给调度器的最小执行单元。它是 Expr T
 
 | 字段 | 说明 |
 |------|------|
-| `thunk_obj_id` | Thunk 的唯一标识（content hash of fun_id + params） |
-| `fun_id` | 要执行的 FunctionObject 的内容寻址标识 |
-| `params.type` | 参数就绪类型（见下文 check_param_is_ready） |
-| `params.values` | 已内联的参数值（当 type 为 `fixed` 时，所有值已就绪） |
-| `params.obj_refs` | 引用的 Named Object ID 列表（当 type 为 `normal` 时，需要查 Named Store） |
-| `idempotent` | 是否幂等。影响调度器的缓存和重试策略 |
-| `resource_requirements` | 资源需求声明，供调度器做节点选择 |
-| `metadata` | 编排器附加的元信息。调度器不解析，原样回传。编排器用于关联 Thunk 结果和 Expr Tree 节点 |
+| `fun_id` | 要执行的 FunctionObject 的内容寻址标识（`func:<hex>`，由 `func_type` / `content` / `is_pure` / `params_type` / `params_schema` / `result_type` / `result_schema` 决定） |
+| `params` | 已内联的规范化参数；对象引用以 ID 字符串出现，`FunctionObject.params_type` 标出哪些是 `ObjId` / `CheckByRunner` 引用 |
+| `execution_id` | 回执、pending 表、Thunk Task、取消的关联键；for_each 分片的 `node_id` 已含下标 |
+| `registration` | `FunctionRegistration` 快照：`name@version`、`timeout`（秒）、`requirements`、`best_run_weight`、`affinity_type`。不进 hash，决定能否 / 在哪运行，不决定结果 |
+| `fingerprint` / `cache_key` | 该函数依赖的工具版本；`step_cache_key = hash(thunk_obj_id, fingerprint)`，只有 `step.idempotent && function.is_pure` 时才有 |
 
-**params.type 的三种取值与 check_param_is_ready**：
+幂等与纯度分开：`idempotent` 是 Step 的重试安全声明，`is_pure` 是 FunctionObject 的结果可复用声明；缓存读写要求两者都成立（`capabilities` 幂等但非 pure，永不缓存）。
 
-调度器收到 ThunkObject 后执行参数就绪检查。检查逻辑极其简单：
+**参数类型与 check_param_is_ready**：
 
-```python
-def check_param_is_ready(thunk):
-    if thunk.params.type == "check_by_runner":
-        return True   # executor 自己在运行时展开参数
-    if thunk.params.type == "fixed":
-        return True   # 编排器已内联所有参数值
-    if thunk.params.type == "normal":
-        return all(
-            exists_in_named_store(ref)
-            for ref in thunk.params.obj_refs
-        )
-```
+`FunctionObject.params_type` 按参数名声明 `Fixed` / `ObjId` / `CheckByRunner`。调度器 / runner 收到 ThunkObject 后只做防御性校验：`params_schema` 校验，`ObjId` / `CheckByRunner` 引用的内容必须可读（LocalThunkRunner 按 `content_id` 查 Named Store；scheduler 的 `check_param_is_ready` 查 Named Object 存在性）。
 
 | type | 语义 | 典型场景 |
 |------|------|---------|
-| `check_by_runner` | 参数由 executor 运行时自行获取 | executor 需要读取实时状态（如当前磁盘用量） |
-| `fixed` | 所有参数已内联为值 | 编排器已完成 Reference 解析，参数完全确定 |
-| `normal` | 参数包含 Named Object 引用 | 大型中间结果不适合内联，通过引用传递 |
+| `CheckByRunner(kind)` | 对象引用，由 runner 在执行时按 `kind`（如 `file_content`）检查并读取 | 媒体函数的 `content_id` |
+| `Fixed(type)` | 已内联的普通值 | 编排器已完成 Reference 解析 |
+| `ObjId(type)` | Named Object 引用，投递前检查存在 | 大型中间结果通过引用传递 |
 
 **设计理由**：调度器的 check 是纯同步的（或最多一次 Named Store 存在性查询）。不阻塞、不等待、不回调。编排器在投递前已确认依赖满足，调度器的检查只是防御性校验。
 
@@ -802,16 +797,20 @@ def check_param_is_ready(thunk):
 
 ```json
 {
-  "thunk_obj_id": "thunk-hash-xxx",
+  "execution_id": "run-abc-123/render_pdf_pages/1",
+  "thunk_obj_id": "thunk:<hex>",
   "status": "success | failed | cancelled",
-  "result_obj_id": "named-obj-result-yyy",
-  "error": null,
-  "metrics": { "tokens_used": 1200, "duration_ms": 3400, "cost_usdb": 0.003 },
-  "side_effect_receipt": null
+  "result_obj_id": "wfresult:<hex>",
+  "result": { "pages": [ … ] },
+  "error": { "code": "tools_missing", "message": "…", "details": { "tools_missing": ["pdftoppm"] }, "retryable": false },
+  "metrics": { "duration_ms": 3400, "queued_ms": 12, "lane": "pdf" },
+  "fingerprint": { "cmd/pdftoppm": "24.02.0" },
+  "artifact_refs": ["cyfile:<hex>"],
+  "cacheable": true
 }
 ```
 
-编排器监听 Thunk 完成事件，通过 `metadata.run_id + metadata.node_id` 关联回 Expr Tree 中的对应节点。
+编排器通过 `execution_id` 关联回 Run 中的 pending 执行；不在 pending 表里的（重复、迟到、终态后）回执被拒绝。`metrics` 只写 run meta，不进结果对象和缓存；`cacheable: false`（被预算截断、含可重试条目错误的 partial）的结果可交付但不写缓存。
 
 **调度器的核心循环**：
 
@@ -823,12 +822,8 @@ def schedule_thunk(thunk_obj_id, shard_range=None):
         reject(thunk_obj_id, reason="params_not_ready")
         return
 
-    # 幂等 Thunk 查 cache
-    if thunk.idempotent:
-        cached = lookup_named_object(thunk.fun_id, hash(thunk.params))
-        if cached is not None:
-            notify_completed(thunk_obj_id, cached)
-            return
+    # cache 由编排器在投递前查（step.idempotent && function.is_pure）；
+    # 调度器 / runner 不再自行查 cache
 
     # 选择执行节点并分发
     executor_node = find_best_node(thunk.resource_requirements)
@@ -960,29 +955,30 @@ pending → ready → running → completed
 
 当编排器判断某个 `Apply` 节点的所有依赖已满足，且该节点的 executor 已解析到 FunctionObject 时：
 
-1. **解析 Reference**：将 Expr Tree 节点的 `params` 中所有 `Reference` 替换为实际值（从 `node_outputs` 中取）。
-2. **解析 FunctionObject**：将 `func::...` 或语义链接展开后的结果解析为 FunctionObject，得到 `fun_id`、资源需求、参数类型、结果类型等定义层信息。
-3. **查 Cache**（仅 `idempotent: true`）：用 `fun_id + hash(resolved_params)` 查询 Named Object。命中则直接将结果写入 `node_outputs`，不投递给调度器。
-4. **构造 Thunk Object**：按 `FunctionObject + resolved_params = ThunkObject`，将 `fun_id`、解析后的参数、资源需求、元信息（run_id、node_id、attempt）打包为 ThunkObject。
-5. **写入 Named Store**：将 ThunkObject 写入 Named Store，获得 `thunk_obj_id`。
-6. **投递**：调用 `schedule_thunk(thunk_obj_id)`。
+1. **解析 Reference**：将 Expr Tree 节点的 `params` 中所有 `Reference` 替换为实际值（从 `node_outputs` 中取，`${trigger.output.*}` 来自服务端解析的运行输入）。
+2. **解析 FunctionObject**：编译期已把 `/tool/<name>@<version>` / `func::<obj_id>` 绑定为 `fun_id`；运行时从 FunctionRegistry 取 FunctionObject 与 FunctionRegistration。
+3. **构造 Thunk Object**：`ThunkObject { fun_id, params }`，`thunk_obj_id = calc_obj_id()`；规范化 JSON 写入 Named Store。
+4. **查 Cache**（仅 `step.idempotent && function.is_pure`）：`step_cache_key = hash(thunk_obj_id, 函数当前指纹)` 查缓存索引；命中且结果对象按 ID 验证、全部 `artifact_refs` 可用且未过期，则 `step.completed{source: cache}`，不投递；否则删索引重算。
+5. **构造 ThunkExecution**：`execution_id`、epoch、请求者、deadline（Run / Step / Function 最早者）、registration 快照、fingerprint、cache_key；写 pending 表、创建 Thunk Task。
+6. **投递**：`schedule_thunk(execution, thunk)` 只做有界入队，不在 Run 锁内等待槽或执行；投递失败即该 attempt 失败。
 
 #### 4.7.2 结果接收（调度器 → 编排器）
 
-调度器执行完成后通知编排器。编排器通过 `metadata.run_id + metadata.node_id` 关联回 Expr Tree 节点，更新状态。
+runner 执行完成后发回 `ThunkExecutionResult`。编排器通过 `execution_id` 关联 pending 执行，更新状态；成功且 `cacheable` 时写缓存索引；失败按 Step retry / fallback 处理，结构化错误落 `node_errors` 与 Task。
 
-调度器返回的错误分类：
+错误 `{code, message, details, retryable}` 的 code（`buckyos_api::error_codes`）：
 
-| 错误类型 | 含义 | 编排器的处理 |
-|----------|------|-------------|
-| `node_failure` | 执行节点宕机/网络故障 | 换节点重试（有意义） |
-| `execution_error` | 函数执行逻辑错误 | 重试可能无意义，按 retry 策略决定 |
-| `timeout` | 超时 | 可能需要更多资源或更长时限 |
-| `cancelled` | 被编排器取消 | 不重试 |
+| code | 含义 | 编排器的处理 |
+|------|------|-------------|
+| `tools_missing` | 基线工具缺失（details 列出缺项与搜索路径） | 部署缺陷；不重试 |
+| `timeout` / `cancelled` / `interrupted` | 期限到、被取消、服务重启中断 | cancelled 不重试；media 定义 `max_attempts=1` 直接 Failed |
+| `environment_changed` | 排队期间工具环境改变（retryable） | 新请求以新环境 revision 重建 |
+| `resource_limit` / `input_unavailable` / `invalid_params` / `invalid_result` | 超限、输入不可读、参数 / 结果 schema 不符 | 按 retry 策略；结果未通过 schema 不进入成功结果或缓存 |
+| `tool_failed` / `function_not_found` / `queue_full` / `internal` | 外部命令失败（`tool` / `exit_code` / `stderr_tail`）、函数未注册、队列满（retryable）、内部错误 | 按 retry 策略 |
 
 #### 4.7.3 取消协议
 
-编排器可以向调度器发送 `cancel_thunk(thunk_obj_id)` 请求（如 parallel join:any 某分支已完成、人类执行 abort）。调度器尽力取消，但不保证——Thunk 可能已经执行完毕。编排器必须处理"取消请求发出后仍收到成功结果"的情况（忽略该结果即可）。
+编排器可以向调度器发送 `cancel_thunk(execution_id)` 请求（parallel join:any 某分支已完成、人类 abort、`cancel_run`、Run deadline、agent `submit_step_output`）。runner 尽力取消（LocalThunkRunner 置取消标志、kill 并 wait 外部进程、清理临时目录），但不保证。编排器已把该 execution 从 pending 表移除，迟到的成功结果按 `stale_thunk_result` 忽略，不复活 Run、不写缓存。
 
 ### 4.8 编排器主循环（run_workflow_expr）
 
@@ -1040,7 +1036,7 @@ def run_workflow_expr(expr_tree, run_id):
                         emit_event("step.completed", node.id, source="adapter")
                         continue
 
-                    # 只有 FunctionObject 路径会继续构造 ThunkObject
+                    # 只有 FunctionObject 路径会继续构造 ThunkObject（run_id / node_id / attempt 进 ThunkExecution，不进 ThunkObject）
                     function_object = resolve_function_object(actual_executor)
                     fun_id = function_object.fun_id
 
@@ -1054,18 +1050,18 @@ def run_workflow_expr(expr_tree, run_id):
                             continue
 
                     # FunctionObject + params = ThunkObject，然后投递
-                    thunk = build_thunk(
-                        fun_id     = fun_id,
-                        params     = resolved_input,
-                        param_type = "fixed",
-                        metadata   = { "run_id": run_id,
-                                       "node_id": node.id,
-                                       "attempt": get_attempt(run_id, node.id) }
+                    thunk = ThunkObject(fun_id=fun_id, params=resolved_input)
+                    thunk_obj_id = put_named_object(thunk)        # thunk:<hex>, 跨 Run 相同
+                    execution = ThunkExecution(
+                        execution_id = f"{run_id}/{node.id}/{get_attempt(run_id, node.id)}",
+                        thunk_obj_id = thunk_obj_id,
+                        fingerprint  = function.fingerprint(env),
+                        cache_key    = step_cache_key(thunk_obj_id, fingerprint) if cacheable else None,
                     )
-                    thunk_obj_id = put_named_object(thunk)
+                    pending[execution.execution_id] = execution
                     node_states[node.id] = "running"
                     emit_event("step.started", node.id)
-                    schedule_thunk(thunk_obj_id)
+                    schedule_thunk(execution, thunk)             # 只入队，不等待
 
                 case Match(on_expr, field, cases, max_iterations):
                     # 纯编排逻辑，不投递 ThunkObject
@@ -1112,16 +1108,9 @@ def run_workflow_expr(expr_tree, run_id):
 
                     # 为每个 item 构造子 ThunkObject（仅当 body 解析到 FunctionObject）
                     for i, item in enumerate(items):
-                        shard_thunk = build_thunk(
-                            fun_id     = body.fun_id,
-                            params     = inject_item(body, item, index=i),
-                            param_type = "fixed",
-                            metadata   = { "run_id": run_id,
-                                           "node_id": f"{node.id}[{i}]",
-                                           "attempt": 1,
-                                           "shard": {"index": i} }
-                        )
+                        shard_thunk = ThunkObject(fun_id=body.fun_id, params=inject_item(body, item, index=i))
                         put_named_object(shard_thunk)
+                        # 投递时的 execution_id = f"{run_id}/{node.id}[{i}]/1"
 
                     node_states[node.id] = "running"
                     emit_event("step.started", node.id, total=len(items))

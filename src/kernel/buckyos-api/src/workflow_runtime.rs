@@ -51,11 +51,15 @@ pub enum NodeRunState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingThunk {
+    pub execution_id: String,
     pub node_id: String,
     pub thunk_obj_id: String,
     pub attempt: u32,
     #[serde(default)]
     pub shard_index: Option<u32>,
+    /// Step cache key the result will be written under when it is cacheable.
+    #[serde(default)]
+    pub cache_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,11 +117,39 @@ pub struct WorkflowRun {
     pub par_states: BTreeMap<String, ParState>,
     #[serde(default)]
     pub seq: u64,
+    /// Terminal node id -> result, filled when the run completes.
+    #[serde(default)]
+    pub output: BTreeMap<String, Value>,
+    /// node id -> structured error (`{code, message, details, retryable}`).
+    #[serde(default)]
+    pub node_errors: BTreeMap<String, Value>,
+    /// node id -> `cache` / `executed` / `direct` / `submitted`.
+    #[serde(default)]
+    pub node_sources: BTreeMap<String, String>,
+    /// Immutable definition revision this run is bound to.
+    #[serde(default)]
+    pub definition_revision: String,
+    /// Verified caller principal (`user_id/app_id`).
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    /// Service process epoch that owns the run's local executions.
+    #[serde(default)]
+    pub execution_epoch: u64,
+    /// Unix seconds after which the whole run must stop.
+    #[serde(default)]
+    pub deadline_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 impl WorkflowRun {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self.status,
+            RunStatus::Completed | RunStatus::Failed | RunStatus::Aborted | RunStatus::BudgetExhausted
+        )
+    }
+
     pub fn progress_percent(&self) -> f32 {
         if self.node_states.is_empty() {
             return 0.0;

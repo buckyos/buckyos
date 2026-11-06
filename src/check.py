@@ -62,6 +62,7 @@ PROCESS_ALIASES = {
     "aicc": ("aicc",),
     "repo_service": ("repo-service", "repo_service"),
     "task_manager": ("task-manager", "task_manager"),
+    "workflow": ("workflow",),
     "opendan": ("opendan",),
 }
 
@@ -72,6 +73,7 @@ ACTIVE_PORTS = {
     "system_config": 3200,
     "verify_hub": 3300,
     "control_panel": 4020,
+    "workflow": 4070,
 }
 
 
@@ -86,6 +88,7 @@ LOG_DIR_CANDIDATES = {
     "aicc": ("aicc",),
     "repo_service": ("repo_service", "repo-service"),
     "task_manager": ("task_manager", "task-manager"),
+    "workflow": ("workflow",),
     "opendan": ("opendan",),
 }
 
@@ -513,6 +516,7 @@ def analyze_logs(log_root: Path) -> list[Diagnostic]:
         ("aicc", "aicc"),
         ("repo_service", "repo_service"),
         ("task_manager", "task_manager"),
+        ("workflow", "workflow"),
         ("opendan", "opendan"),
     ):
         log_dir = find_log_dir(log_root, service_key)
@@ -661,6 +665,7 @@ def main() -> int:
             ("scheduler Process", "scheduler"),
             ("verify_hub Process", "verify_hub"),
             ("control_panel Process", "control_panel"),
+            ("workflow Process", "workflow"),
         )
         process_presence: dict[str, bool] = {"node_daemon": bool(node_daemon_procs)}
         for label, key in core_proc_specs:
@@ -670,7 +675,7 @@ def main() -> int:
                 pids = ", ".join(str(proc.pid) for proc in procs[:5])
                 checks.append(build_check(label, "ok", f"Found {len(procs)} process(es)", f"PID: {pids}"))
             else:
-                severity = "warn" if key == "control_panel" else "fail"
+                severity = "warn" if key in ("control_panel", "workflow") else "fail"
                 checks.append(build_check(label, severity, f"No {key} process found"))
 
         port_results: dict[int, bool] = {}
@@ -685,7 +690,7 @@ def main() -> int:
                 status = "ok" if not listener or expected_ok else "warn"
                 checks.append(build_check(f"Port {port}", status, f"{port_name} is reachable", *details))
             else:
-                severity = "warn" if port_name == "control_panel" else "fail"
+                severity = "warn" if port_name in ("control_panel", "workflow") else "fail"
                 checks.append(build_check(f"Port {port}", severity, f"{port_name} is not reachable", *details))
 
         cyfs_bin_exists, cyfs_bin_candidates = cyfs_gateway_binary_exists(bin_dir)

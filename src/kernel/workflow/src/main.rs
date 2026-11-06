@@ -1,22 +1,29 @@
 //! Workflow Service 入口。
 //!
 //! 负责"服务化"那一层：注册 buckyos-api runtime、装配 [`DefinitionStore`] /
-//! [`RunStore`] / orchestrator / executor registry / task tracker，把 kRPC
-//! 请求路由到 [`WorkflowRpcHandler`]。Definition / Run / Amendment / 事件等
-//! 具体业务逻辑由 [`workflow`] crate 中已有的编排器、object store、task tracker
-//! 承担。
+//! [`RunStore`] / orchestrator / function registry / local thunk runner /
+//! task tracker，把 kRPC 请求路由到 [`WorkflowRpcHandler`]。
 //!
-//! 设计参考 [doc/workflow/workflow service.md](../../../../doc/workflow/workflow%20service.md)。
+//! 设计参考 [doc/workflow/workflow service.md](../../../../doc/workflow/workflow%20service.md)
+//! 与 notepads/llm-media-pipeline-workflow-todo.md。
 
 mod adapters;
 mod analysis;
+mod cache_index;
 mod compiler;
 mod dispatcher;
+mod driver;
 mod dsl;
 mod error;
 mod executor_adapter;
+mod function_registry;
+mod functions;
+mod io;
+mod local_thunk_runner;
+mod native;
 mod object_store;
 mod orchestrator;
+mod persistence;
 mod runtime;
 mod scheduled_task_manager;
 mod schema;
@@ -24,6 +31,7 @@ mod send_message_executor;
 mod server;
 mod state;
 mod subscriptions;
+mod system_defs;
 mod task_tracker;
 mod types;
 
@@ -40,22 +48,32 @@ pub mod service_schemas {
 
 pub use analysis::{analyze_workflow, AnalysisReport, AnalysisSeverity};
 pub use buckyos_api::{
-    FunctionObject, FunctionParamType, FunctionResultType, FunctionType, ResourceRequirements,
-    ThunkExecutionResult, ThunkExecutionStatus, ThunkObject,
+    FunctionObject, FunctionParamType, FunctionRegistration, FunctionResultType, FunctionType,
+    ResourceRequirements, ThunkExecution, ThunkExecutionError, ThunkExecutionResult,
+    ThunkExecutionStatus, ThunkObject,
 };
+pub use cache_index::{CacheEntry, CacheIndex, MemoryCacheIndex};
 pub use compiler::{
-    compile_workflow, CompileOutput, CompiledNode, CompiledWorkflow, WorkflowGraph,
+    compile_workflow, compile_workflow_with, CompileOutput, CompiledNode, CompiledWorkflow,
+    WorkflowGraph,
 };
 pub use dispatcher::{InMemoryThunkDispatcher, ScheduledThunk, ThunkDispatcher};
+pub use driver::RunDriver;
 pub use dsl::*;
 pub use error::{WorkflowError, WorkflowResult};
 pub use executor_adapter::{ExecutorAdapter, ExecutorRegistry, NamespaceAdapter};
+pub use function_registry::{FunctionRegistry, RegisteredFunction, RegistrationSpec};
+pub use io::{MemoryNativeIo, ZoneNativeIo};
+pub use local_thunk_runner::LocalThunkRunner;
+pub use native::*;
 pub use object_store::{InMemoryObjectStore, NamedStoreObjectStore, WorkflowObjectStore};
-pub use orchestrator::WorkflowOrchestrator;
+pub use orchestrator::{RunOptions, WorkflowOrchestrator};
+pub use persistence::{ArtifactIndex, ExecutionLedger, MemoryExecutionLedger, WorkflowDb};
 pub use runtime::*;
+pub use server::ServiceOrchestrator;
 pub use task_tracker::{
     MapShardTaskView, NoopTaskTracker, RecordingTaskTracker, StepTaskView, TaskManagerTaskTracker,
-    ThunkTaskView, WorkflowTaskTracker,
+    ThunkTaskPhase, ThunkTaskView, WorkflowTaskTracker,
 };
 pub use types::*;
 
@@ -74,12 +92,12 @@ use buckyos_kit::init_logging;
 use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
-use log::{error, info};
+use log::{error, info, warn};
 use std::sync::Arc;
 
 use crate::scheduled_task_manager::{ScheduleStore, ScheduleTaskMirrorClient};
 use crate::send_message_executor::SendMessageTaskExecutor;
-use crate::server::WorkflowRpcHandler;
+use crate::server::{NdmInputAuthorizer, WorkflowRpcHandler};
 use crate::service_schemas::aicc::AiccAdapter;
 use crate::state::{DefinitionStore, RunStore, ServiceTracker};
 use crate::subscriptions::RunSubscriptionManager;
@@ -148,46 +166,127 @@ pub async fn start_workflow_service() -> Result<()> {
     runtime.set_main_service_port(WORKFLOW_SERVICE_PORT).await;
     let buckyos_root = runtime.buckyos_root_dir.clone();
     let app_id = runtime.app_id.clone();
+    let named_store = runtime
+        .get_local_named_store()
+        .await
+        .map_err(|err| anyhow::anyhow!("workflow local named store unavailable: {:?}", err))?;
 
     set_buckyos_api_runtime(runtime)
         .map_err(|err| anyhow::anyhow!("register workflow runtime failed: {}", err))?;
 
-    // §6.3：Run / Step / Map shard / Thunk 同步到 task_manager。每次操作从
-    // runtime 获取短 session client，task_manager 暂时不可用时由调用路径降级。
-    let tracker = ServiceTracker::from_runtime(app_id.clone());
+    // Service-local persistent state: cache index, execution epoch, ledger.
+    let data_dir = buckyos_root.join("data").join("srv").join("workflow");
+    let db = WorkflowDb::open(&data_dir.join("workflow.db"))
+        .map_err(|err| anyhow::anyhow!("open workflow db failed: {}", err))?;
+    let epoch = db
+        .next_epoch()
+        .map_err(|err| anyhow::anyhow!("advance workflow epoch failed: {}", err))?;
+    match db.purge_expired_cache(chrono::Utc::now().timestamp()) {
+        Ok(purged) if purged > 0 => info!("workflow cache index: purged {} expired entries", purged),
+        Ok(_) => {}
+        Err(err) => warn!("workflow cache index purge failed: {}", err),
+    }
+    info!("workflow service epoch {}", epoch);
+
+    let tracker = Arc::new(ServiceTracker::from_runtime(app_id.clone()));
     info!("workflow tracker bound to task_manager runtime client");
 
-    // §1.2 / §9：一期 P0 必须有的 service:: adapter。aicc 暂时不可用不影响
-    // 其他 adapter；涉及 aicc 的 step 会落到通用错误路径。
     let mut registry = ExecutorRegistry::new();
     registry.register(Arc::new(AiccAdapter::from_runtime()));
     info!("workflow registered service::aicc.* runtime adapter");
     let registry = Arc::new(registry);
 
+    // Built-in FunctionObjects, published into the Named Store under their
+    // real ids so every bound fun_id can be read back.
+    let object_store: Arc<dyn WorkflowObjectStore> = Arc::new(NamedStoreObjectStore::new(
+        named_store.clone(),
+        std::time::Duration::from_secs(u64::from(buckyos_api::WORKFLOW_ARTIFACTS_TTL_DAYS) * 86_400),
+    ));
+    let mut functions = FunctionRegistry::new();
+    functions::register_builtin_functions(&mut functions)
+        .map_err(|err| anyhow::anyhow!("register builtin functions failed: {}", err))?;
+    functions
+        .publish(object_store.as_ref())
+        .await
+        .map_err(|err| anyhow::anyhow!("publish builtin functions failed: {}", err))?;
+    let functions = Arc::new(functions);
+    info!("workflow published {} builtin functions", functions.list().len());
+
+    // Tool environment of this host; media function fingerprints derive from it.
+    let environment = Arc::new(
+        tokio::task::spawn_blocking(functions::media::tools::probe_default)
+            .await
+            .map_err(|err| anyhow::anyhow!("probe media tools failed: {}", err))?,
+    );
+    info!(
+        "workflow media tools revision={} present={:?} missing={:?}",
+        environment.revision,
+        environment.tools.keys().collect::<Vec<_>>(),
+        environment.missing
+    );
+    let environment_provider: Arc<dyn EnvironmentProvider> =
+        Arc::new(StaticEnvironment(environment.clone()));
+
+    let artifacts_bucket = buckyos_api::workflow_artifacts_bucket();
+    let io: Arc<dyn NativeIo> = Arc::new(ZoneNativeIo::new(
+        named_store,
+        object_store.clone(),
+        artifacts_bucket,
+        buckyos_api::WORKFLOW_ARTIFACTS_TTL_DAYS,
+        db.clone(),
+    ));
+
+    let (result_tx, result_rx) = tokio::sync::mpsc::channel(256);
+    let temp_root = buckyos_root
+        .join("data")
+        .join("cache")
+        .join("workflow")
+        .join("exec");
+    let runner = Arc::new(LocalThunkRunner::new(
+        functions.clone(),
+        io.clone(),
+        environment_provider.clone(),
+        tracker.clone(),
+        db.clone(),
+        result_tx,
+        temp_root,
+        epoch,
+        ExecutionLimits::default(),
+    ));
+    match runner.cleanup_stale().await {
+        Ok(stale) if !stale.is_empty() => {
+            info!("workflow runner: {} interrupted executions cleaned", stale.len())
+        }
+        Ok(_) => {}
+        Err(err) => warn!("workflow runner: stale execution cleanup failed: {}", err),
+    }
+
     let definitions = Arc::new(DefinitionStore::new());
     let runs = Arc::new(RunStore::new());
-    // schedule 的唯一真相源是 Task DB（task_type=workflow/schedule 的 root task）。
-    // 这里只持有内存运行投影，启动时从 Task DB 重建；自身不落盘。
     let schedule_mirror = Arc::new(ScheduleTaskMirrorClient::from_runtime(app_id.clone()));
-    // hydrate 不在 boot 时一次性做（task_mgr 可能尚未就绪）；交给 scan 循环
-    // 首个 tick 起持续重试直到成功，见 WorkflowRpcHandler::ensure_schedules_hydrated。
     let schedules = Arc::new(ScheduleStore::new_memory());
     SendMessageTaskExecutor::from_runtime(schedules.clone(), buckyos_root).start();
     info!("workflow.send_message executor started");
-    // 一期使用进程内 dispatcher / object store；§5.1 提到的 sled / Named Object
-    // Store 持久化是后续提交的工作。`func::*` 调度路径暂时不接 Scheduler，命中
-    // 时会按 §6.2 落到 require_function_object 的明确错误。
-    let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
-    let object_store = Arc::new(InMemoryObjectStore::new());
+
+    let dispatcher: Arc<dyn ThunkDispatcher> = runner.clone();
     let orchestrator = Arc::new(
-        WorkflowOrchestrator::new(dispatcher, object_store, Arc::new(tracker))
-            .with_executor_registry(registry),
+        WorkflowOrchestrator::new(dispatcher, object_store.clone(), tracker)
+            .with_executor_registry(registry)
+            .with_functions(functions.clone())
+            .with_cache(db.clone())
+            .with_environment(environment_provider)
+            .with_io(io),
     );
 
-    // §3.3：用户在 TaskMgr UI 上点按钮 = 写一次 TaskData，task_manager 把
-    // TaskData 变更扇出到 `/obj/taskmgr/{run_id}/changed` 子树 channel。订阅管理器把这些
-    // 事件回灌到 orchestrator.apply_task_data，把 human_action 翻译成内部状态机
-    // 动作。每个 run 对应一条动态加进来的 pattern，run 终态后摘掉。
+    let seeded = system_defs::seed_system_definitions(&definitions, &functions)
+        .await
+        .map_err(|err| anyhow::anyhow!("seed system definitions failed: {}", err))?;
+    info!(
+        "workflow seeded {} system definitions: {:?}",
+        seeded.len(),
+        seeded.iter().map(|d| (d.id.clone(), d.compiled.revision.clone())).collect::<Vec<_>>()
+    );
+
     let kevent_client = get_buckyos_api_runtime()
         .map_err(|err| anyhow::anyhow!("workflow api runtime unavailable: {:?}", err))?
         .get_kevent_client()
@@ -202,10 +301,13 @@ pub async fn start_workflow_service() -> Result<()> {
     );
     subscriptions.start().await;
 
-    let mut rpc_handler = WorkflowRpcHandler::new(definitions, runs, orchestrator)
+    let rpc_handler = WorkflowRpcHandler::new(definitions, runs, orchestrator, object_store)
         .with_schedules(schedules)
-        .with_subscriptions(subscriptions);
-    rpc_handler = rpc_handler.with_schedule_mirror(schedule_mirror);
+        .with_subscriptions(subscriptions)
+        .with_schedule_mirror(schedule_mirror)
+        .with_input_authorizer(Arc::new(NdmInputAuthorizer))
+        .with_execution_epoch(epoch);
+    rpc_handler.driver().start_result_loop(result_rx);
     let rpc = Arc::new(rpc_handler);
     start_schedule_loop(rpc.clone());
     let server = Arc::new(WorkflowHttpServer::new(rpc));

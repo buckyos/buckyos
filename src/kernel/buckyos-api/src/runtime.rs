@@ -361,7 +361,7 @@ impl BuckyOSRuntime {
         }
     }
 
-    pub(crate) fn named_store_base_url(&self) -> String {
+    pub fn named_store_base_url(&self) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
                 let url = self.get_appclient_service_url(NFS_SERVER_SERVICE_NAME, self.force_https);

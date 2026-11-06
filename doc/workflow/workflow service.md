@@ -18,7 +18,7 @@
 它**不**实现：
 
 - 具体的 executor 能力（`service::aicc.*`、`service::msg_center.*` 等都是各自的服务，由 adapter 桥接）。
-- Thunk 在节点上的真正执行（`func::*` / `optask::*` 由 Scheduler + Node Daemon Runner 完成）。
+- Thunk 在其它节点上的执行（Scheduler + Node Daemon Runner，后续）；P0 的 `FunctionType::Native` 由本服务进程内的 `LocalThunkRunner` 执行。
 - 用户通知通道与 IM/邮件投递（由 Msg Center 完成）。
 - 全局任务总账（由 Task Manager 完成；workflow service 把每个 Run 同步成 task_manager 的一条 task）。
 
@@ -111,6 +111,10 @@ task_manager task tree
   "schema_version": "0.4",
   "name": "kb_import_pipeline",
   "owner": { "user_id": "...", "app_id": "..." },
+  "source": "system" | "user_imported" | "app_registered" | "agent_generated",
+  "read_only": true,                     // source == system
+  "revision": "<hex>",                   // hash(canonical(definition + resolved fun_ids))，无时间戳
+  "resolved_functions": { "<node_id>": "func:<hex>" },
   "definition": { ...DSL JSON... },      // 原始 DSL
   "compiled": { ...CompiledWorkflow... },// 编译产物（Expr Tree + 节点表）
   "analysis": { ...AnalysisReport... },  // 静态分析报告
@@ -126,6 +130,10 @@ task_manager task tree
 - DSL 入库前必须通过 `compile_workflow` + `analyze_workflow`，分析报告中存在 `Error` 级别 issue 时拒绝写入。
 - 同名 Definition 的多次更新形成只增不减的 version 链；运行中的 Run 永远绑定到创建时的 version。
 - Definition 的修改不会影响已存在的 Run（与 Amendment 区分：Amendment 修改的是 Run 内嵌的计划，不修改 Definition）。
+- `source` 由服务端分配：客户端 `submit_definition` 不得自报 `system`；`id` / `name` 以 `media.` / `sys.` 开头的提交被拒。
+- **系统内置 Definition**（`source: system`）：随服务发布的 JSON（`src/kernel/workflow/defs/media.*.json`）在启动时播种，`id` 固定为 DSL id（如 `media.pdf`），owner 为内建标记 `system/workflow`（不是可登录用户），只读（`archive_definition` 拒绝），播种前检查本批约束（显式 `idempotent`、`max_attempts = 1`、`fallback = abort`、`/tool/media.*` executor、`trigger.input_schema` 不含 `content_id`），编译或分析失败则服务启动失败。
+- `revision` 是不可变的定义身份：Run 固定绑定创建时的 `revision`（`WorkflowRun.definition_revision`）和 compiled 快照；`plan_version` 只是 Run 内 amendment 版本。
+- `trigger.input_schema` 声明 `create_run` 输入及默认值，`trigger.output_schema`（缺省同 input）是步骤可引用的 `${trigger.output.*}`。
 
 ### 2.2 Workflow Run（Workflow-Task）
 
@@ -134,11 +142,15 @@ task_manager task tree
 | 字段 | 说明 |
 |------|------|
 | `run_id` | 主键 |
-| `workflow_id` / `workflow_name` / `plan_version` | 绑定到具体 Definition 版本 |
+| `workflow_id` / `workflow_name` / `definition_revision` / `plan_version` | 绑定到具体 Definition 修订；`plan_version` 仅 Run 内 amendment 计数 |
+| `requested_by` | 已验证的调用 principal `user_id/app_id`；Task creator 如实记 workflow，请求者随 TaskData 展示审计 |
+| `output` | 终端节点 id → 结果，Run `Completed` 时填充 |
+| `node_errors` / `node_sources` | 每节点结构化错误 `{code, message, details, retryable}`；每节点来源 `cache` / `executed` / `direct` / `submitted` |
+| `execution_epoch` / `deadline_at` | 本服务进程 epoch；Run 级 deadline（`guards.max_duration`） |
 | `status` | `RunStatus` 枚举（`Created` / `Running` / `WaitingHuman` / `Completed` / `Failed` / `Paused` / `Aborted` / `BudgetExhausted`） |
 | `node_states` | 每个节点的 `NodeRunState` |
 | `node_outputs` | 节点输出，供下游 Reference 解析 |
-| `pending_thunks` | 当前已投递、等待调度器回执的 ThunkObject |
+| `pending_thunks` | 按 `execution_id` 键控的待回执执行（`thunk_obj_id`、attempt、shard、cache_key） |
 | `human_waiting_nodes` | 当前需要人类介入的节点集合 |
 | `map_states` / `par_states` | for_each 与 parallel 的运行时分片状态 |
 | `metrics` | budget / token 用量等度量 |
@@ -160,25 +172,37 @@ API 命名沿用 buckyos-api 风格，并与 [wokflow engine.md §4.10] 对齐�
 
 | 方法 | 说明 | 幂等 |
 |------|------|------|
-| `workflow.submit_definition` | 提交 / 升级一个 Workflow 定义。服务编译并做静态分析，返回 `workflow_id` + `analysis` | 以 (`owner`, `name`, hash(definition)) 为键幂等 |
-| `workflow.get_definition` | 按 id 或 name 拉取定义、编译产物、分析报告 | 是 |
-| `workflow.list_definitions` | 列表 + 过滤（owner / tag / status） | 是 |
-| `workflow.archive_definition` | 软删除，不允许新建 Run，对已有 Run 无影响 | 是 |
-| `workflow.dry_run` | 仅做编译 + 静态分析，不建 Run；用于 Agent 提交前的自检 | 是 |
+| `workflow.submit_definition` | 提交 / 升级一个 Workflow 定义。服务编译并做静态分析，返回 `workflow_id` + `revision` + `analysis`；`owner` 须等于已验证调用者；`source` 可为 user_imported / app_registered / agent_generated | 以 (`owner`, `name`, hash(definition)) 为键幂等 |
+| `workflow.get_definition` | 按 id 拉取定义、编译产物、分析报告；系统定义对所有已验证调用者可读 | 是 |
+| `workflow.list_definitions` | 列表 + 过滤（owner / tag / status / `source`），只返回调用者可见的 | 是 |
+| `workflow.archive_definition` | 软删除，不允许新建 Run，对已有 Run 无影响；系统定义返回 `system_definition_read_only` | 是 |
+| `workflow.dry_run` | 仅做编译 + 静态分析，不建 Run；返回 `revision` 与 `resolved_functions` | 是 |
+| `workflow.list_functions` / `workflow.get_function` | 列出 / 读取已注册 FunctionObject（`fun_id`、`registration`、`object`、`published`） | 是 |
+| `workflow.get_capabilities` | 本服务的执行 epoch 与工具环境（revision、各工具版本、缺失项） | 是 |
 
 ### 3.2 Workflow Run 生命周期
 
 | 方法 | 说明 |
 |------|------|
-| `workflow.create_run` | 用某个 Definition + 触发输入创建 Run（不自动启动）。返回 `run_id` |
-| `workflow.start_run` | 进入主循环；首次进入会发出 `run.started` |
-| `workflow.tick_run` | 由内部调度器调用；外部无须直接使用，但保留作为运维入口 |
-| `workflow.get_run_graph` | 返回当前展开后的 Workflow Graph（task_manager 不理解的 DSL 拓扑），给 UI 可视化 |
-| `workflow.list_runs` | 按 owner / definition / status / 时间范围筛选；其它 Run 状态查询请走 `task_manager.get_task` |
+| `workflow.create_run` | 用某个 Definition（记录 id 或系统逻辑名如 `media.pdf`）+ 触发输入创建 Run。服务端按 `trigger.input_schema` 补默认值并校验，用调用者身份检查输入 `obj_id` 的读取权，解析 FileObject.content 为 `content_id`（调用者不能直接指定）。`ensure: true` 时按 `hash(principal, revision, 规范化输入, environment_revision)` 合并活动 Run（返回 `reused: true`），终态不复用。`auto_start: true` 时后台驱动并最多等 `wait_ms`（默认 200，上限 5000）。返回 `run_id`、`status`、`revision`、`reused`、`output`、`events` |
+| `workflow.start_run` | 入表后后台 tick，立即返回 `accepted`；可选 `wait_ms` |
+| `workflow.tick_run` | 同 `start_run`，运维入口 |
+| `workflow.cancel_run` | 取消待回执执行并将 Run 置 `Aborted`（节点错误 `cancelled`）；终态返回 `run_terminal` |
+| `workflow.get_run_graph` | 当前展开后的 Graph、`node_states` / `node_outputs` / `node_errors` / `node_sources` / `node_attempts` / `pending_thunks` / `output` / `revision` / `requested_by`，给 UI 可视化 |
+| `workflow.get_run_output` | 终端节点输出 + `node_errors` / `run_error` + `delivery`（`artifacts`：引用到的 obj_id；`grants`：每个产物的 bucket key / locator / 绑定 principal 的精确 key 只读 token / `expires_at`；`principal`、`expires_at`） |
+| `workflow.list_runs` | 按 owner / definition / status 筛选，只返回调用者可见的；其它 Run 状态查询请走 `task_manager.get_task` |
 
 > `create_run` 与 `start_run` 拆开，是为了给 Agent 留“提交计划但等人类启动”的工作流。一期默认实现中，`create_run` 后立刻调一次 `start_run` 也是合法路径。
 >
-> Run 整体级的 pause / resume / cancel / 状态读取都退化为 task_manager 在 Run task 上的标准操作（用户写 TaskData 或 status，workflow 订阅后级联到子任务），不再单独提供 `workflow.pause_run` / `workflow.abort_run` 这类 RPC。
+> Run 整体级的 pause / resume / 状态读取退化为 task_manager 在 Run task 上的标准操作（用户写 TaskData 或 status，workflow 订阅后级联到子任务）；取消另有 `workflow.cancel_run` 明确入口（媒体 Run 不订阅 human-action，需要可直接取消）。
+
+#### 3.2.1 身份与授权
+
+每个方法都先验证 session token 得到 `WorkflowCaller { owner: (user_id, app_id), is_admin }`（`user_type` 为 Admin / Root 或 token `sudo`）。`params.owner` 只作一致性声明，不等于已验证调用者则 `NoPermission`。Definition / Run 的读写都按 owner 校验，管理员可见全部。
+
+#### 3.2.2 错误契约
+
+RPC 级失败 `{ok: false, error: <code>, message, detail?}`；执行级错误统一为 `{code, message, details, retryable}`（`buckyos_api::ThunkExecutionError`），从 Native 实现经 `ThunkExecutionResult.error` 原样到 Run `node_errors`、Step Task `last_error`（`code` / `detail`）、Thunk Task 终态与 `get_run_graph` / `get_run_output`。code 清单见 [executor list.md §7](executor%20list.md)；RPC 级新增 `unresolved_function`、`system_definition_read_only`、`invalid_system_definition`、`invalid_input`、`not_authorized`、`run_terminal`、`stale_thunk_result`、`persistence_error`。
 
 ### 3.3 用户操作 = 写 TaskData（不是 workflow RPC）
 
@@ -333,7 +357,9 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 | Run 编译态视图 + 节点输出 + Reference 解析 + Amendment 版本链 | service-local | task_manager 不理解 workflow 语义，必须自己存（不重复 task_manager 已有的 status / progress / error 等通用字段） |
 | Run / Step / Thunk / Map shard 的执行状态、progress、error_message、payload | task_manager（任务树形式，见 §6.3） | 单一总账，避免与本地状态出现分歧 |
 | Run 事件流（`EventEnvelope`） | service-local，按 `run_id` 分段，按 `seq` 索引 | 支撑 history、subscribe、断点重放 |
-| ThunkObject、Apply 输入输出大对象 | Named Object Store | 内容寻址、与调度器共享、cache 复用 |
+| FunctionObject、ThunkObject（规范化 JSON）、结果对象、manifest、Apply 输入输出大对象 | Named Object Store（`runtime.get_local_named_store()`） | 内容寻址、读回按 ID 验证、与调度器共享 |
+| Step cache 索引 `cache_key → result_obj_id / artifact_refs / fingerprint / expires_at`、服务 epoch、活动执行账本 | service-local SQLite `$BUCKYOS_ROOT/data/srv/workflow/workflow.db` | 索引不是内容寻址对象，不能以输入 hash 冒充结果 ID；重启后新 Run 继续命中；旧 epoch 的本地执行被置 `interrupted` 并清理临时目录 |
+| 产物文件（页图、文本、帧、音轨） | workflow zone 桶 `artifacts`（temp，30 天），key `media/<step_cache_key>/<name>` 或 `exec/<execution_id>/<name>`；FileObject 时间字段为 0、名称稳定 | 相同转换产物 ID 相同；命中前检查产物可用性 |
 | 副作用回执 (`side_effect_receipt`) | service-local + Named Object Store | rollback 决策依据 |
 | 人类介入记录 (`HumanAction`) | service-local | 审计与回放 |
 
@@ -364,11 +390,12 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 
 ### 6.2 与 Scheduler（Thunk 路径）
 
-- 仅 `Apply` 解析为 FunctionObject (`func::*` / 后续 `optask::*`) 时使用。
-- 投递时：workflow 在 task_manager 创建 Thunk 任务（挂在对应 Step 任务下），把 `thunk_obj_id` 与执行参数写入 task payload，再调用 `schedule_thunk(thunk_obj_id)`。
-- 取结果时：**不**额外调用 workflow 的回执接口；scheduler 把 Thunk 任务的 status / progress / payload / error 写回 task_manager，workflow 通过订阅 / 轮询 task_manager 来推进主循环。
-- 错误分类（`node_failure` / `execution_error` / `timeout` / `cancelled`）由 scheduler 写入 Thunk 任务的 error 字段；workflow 按 [wokflow engine.md §4.7] 的语义解释。
-- 一期范围内 `func::*` 不作为 P0；服务必须保留这条通道但允许它处于“尚未接入具体 runner”的状态。
+- 仅 `Apply` 解析为 FunctionObject（`/tool/<name>@<version>` 或 `func::<obj_id>`，编译期经 FunctionRegistry 绑定）时使用。
+- 投递时：workflow 在 task_manager 创建 `workflow/thunk` 任务（挂在对应 Step 任务下，`request.execution_id` / `thunk_obj_id` / `requested_by`），把规范化 ThunkObject 写入 Named Store，再调用 `ThunkDispatcher::schedule_thunk(execution, thunk)`。
+- P0 dispatcher 是进程内 `LocalThunkRunner`：执行 `FunctionType::Native`，领取并更新 Thunk 任务（queued → running → 终态），结果经结果队列回灌给 `RunDriver`（`handle_thunk_result` + `tick`），不经 task_manager 轮询。
+- 回执按 `execution_id = <run_id>/<node_id>/<attempt>` 关联；同一 thunk 可在多个 Run 同时执行；重复 / 迟到 / 终态后的回执被拒绝（`stale_thunk_result`），不写缓存。
+- 错误为结构化 `{code, message, details, retryable}`，由 runner 写入 Thunk 任务与回执；workflow 按 Step 的 retry / fallback 处理。
+- 远端执行（Scheduler + Node Daemon Runner）后续通过同一 `ThunkDispatcher` 接缝接入，届时还需处理执行节点指纹、数据访问、身份交接与取消。
 
 ### 6.3 与 Task Manager（状态总账）
 
@@ -420,7 +447,8 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 | 维度 | 要求 |
 |------|------|
 | 身份 | 复用 buckyos-api 的 zone-internal kRPC 身份；外部入口经过 cyfs gateway 鉴权 |
-| Owner | 每个 Definition / Run 带 `(user_id, app_id)`；list / get / mutate 一律按 owner 过滤。计划任务及其派生任务的 TaskMgr `creator` 始终是创建 schedule 的已认证调用者，不是 Workflow service |
+| Owner | 每个 Definition / Run 带 `(user_id, app_id)`；每个 RPC 先验证 session token，`params.owner` 必须与之一致；list / get / mutate 一律按 owner 过滤，管理员可见全部。系统定义 owner 是内建标记，对所有调用者可读、不可改。媒体 Run 的 Task creator 如实记 workflow（实际执行主体），`requested_by` 记已验证调用者。计划任务及其派生任务的 TaskMgr `creator` 始终是创建 schedule 的已认证调用者 |
+| 输入授权 | `create_run` 以调用者的 Bearer 经 NDM proxy 检查输入 `obj_id` 可读（`NdmInputAuthorizer`）；知道 obj_id 不等于有读权。缓存命中不跳过授权；请求者凭据不进缓存 / manifest / trace |
 | ACL | Step / Run task 的 TaskData 写权限由 task_manager 校验；workflow 把 DSL 中声明的 stakeholders 同步到对应子任务的 ACL 上，不再在 workflow 自己实现一套 step-level ACL |
 | 调度器身份 | scheduler 不直接调 workflow 的 RPC，但写 task_manager 中归属于本 Run 任务树的 Thunk task；ACL 由 task_manager 校验“写者必须是 owner 该子任务的服务身份” |
 | Secrets | DSL 中不能出现明文 secret；`http::` adapter 的认证信息必须存放在 endpoint registry，按 endpoint id 引用 |
@@ -445,7 +473,8 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 | `/agent/` / `/skill/` / `/tool/` | 通过 executor registry 展开到 P0 实际 executor，不要求展开到 FunctionObject |
 | `human_confirm` / `human_required` | 全量交付：写到 Step task 的 TaskData，由 TaskMgr UI 渲染交互、Msg Center 经 task_manager 推 URL；workflow 仅负责解释 TaskData 中的 `human_action` |
 | `operator::` | 提供 `OperatorAdapter` 与最小 operator 表（`json.pick` / `list.sort` / `list.pluck` / `list.len` / `rank.topk` / `gen.ulid`），P1 |
-| `func::*` / `optask::*` | 仅保留通道，不作为一期主路径 |
+| `func::*`（Native） | 已落地：FunctionRegistry + LocalThunkRunner + 持久 Step cache，承载系统内置 `media.*` 管线 |
+| `optask::*` / 远端 Thunk | 仅保留通道 |
 | Amendment | 接口与状态机就位；UI 协作可在 v0.2 完善 |
 | 持久化与恢复 | 必须支持进程重启后从持久化恢复非终止态 Run |
 

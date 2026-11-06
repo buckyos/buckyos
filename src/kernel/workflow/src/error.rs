@@ -1,4 +1,5 @@
 use crate::analysis::AnalysisReport;
+use buckyos_api::ThunkExecutionError;
 use thiserror::Error;
 
 pub type WorkflowResult<T> = Result<T, WorkflowError>;
@@ -33,6 +34,26 @@ pub enum WorkflowError {
     ObjectStore(String),
     #[error("dispatcher error: {0}")]
     Dispatcher(String),
+    #[error("execution failed: {0}")]
+    Execution(ThunkExecutionError),
+    #[error("function registration failed: {0}")]
+    FunctionRegistration(String),
+    #[error("persistence error: {0}")]
+    Persistence(String),
+    #[error("node `{node_id}` references function `{executor}` which is not registered")]
+    UnresolvedFunction { node_id: String, executor: String },
+    #[error("receipt for execution `{0}` does not match a pending execution of this run")]
+    StaleThunkResult(String),
+    #[error("run `{0}` is already in a terminal state")]
+    RunTerminal(String),
+    #[error("invalid run input: {0}")]
+    InvalidInput(String),
+    #[error("not authorized: {0}")]
+    NotAuthorized(String),
+    #[error("system definition `{0}` is read-only")]
+    SystemDefinitionReadOnly(String),
+    #[error("invalid system definition `{id}`: {reason}")]
+    InvalidSystemDefinition { id: String, reason: String },
     #[error("task tracker error: {0}")]
     TaskTracker(String),
     #[error("for_each `{node_id}` items must resolve to an array, got {actual}")]

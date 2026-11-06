@@ -263,9 +263,19 @@ Executor 是系统服务时可具有被授予的系统能力；嵌入普通 App 
 
 ---
 
-## 6. 来源①：ThunkObject（整体后置，待 FunctionObject 定义）
+## 6. 来源①：ThunkObject（分布式执行后置；本地 Native 子集已落地）
 
-本节保留后续设计输入。FunctionObject 的 Rust 类型已存在，但代码/包的解析、运行环境、权限、输入输出及副作用语义尚未形成完整契约。Thunk 的 schema 接线、scheduler 派发、节点 runner、TaskMgr 回报与端到端验收整体后置，完成 §6.2 后再单独排期；不列入 P0/P1/P2 的交付要求。这与 `doc/workflow/executor list.md` 将 `func::` / `optask::` 列为后续阶段的方向一致。
+本节保留后续设计输入。2026-11-05 起 FunctionObject / Thunk 通道在 **workflow 进程内的本地 Native 子集**上首次真实落地（[notepads/llm-media-pipeline-workflow-todo.md](../../notepads/llm-media-pipeline-workflow-todo.md)，`src/kernel/workflow/src/{function_registry,native,local_thunk_runner}.rs`）。该子集对 §6.2 五项条件的回答只对“同进程、同宿主、Native 实现”成立，不能据此标成通用分布式执行已解决：
+
+| §6.2 条件 | 本地 Native 子集的回答 | 分布式（Scheduler + Node Executor）仍待定 |
+| --- | --- | --- |
+| 定义与代码绑定 | `FunctionObject.content = "<name>/impl-<n>"` 指向进程内注册的 Rust 实现；`fun_id` 由 JCS hash 得到，registry 在编译期把 `/tool/<name>@<version>` 绑定为 `func::<obj_id>`，并把 FunctionObject 发布到 Named Store | `ExecPkg` / `Script` / `OPTask` 的 `content` 格式、包解析与入口；Zone 级 registry |
+| 运行环境与权限 | 宿主上的 workflow 服务身份执行；工具由启动时探测的 `ToolEnvironment` 提供，版本进指纹；请求者授权只用于输入读取与结果交付，不传给执行 | 解释器 / 依赖 / cwd / env / 容器选择 / OS 身份；提交者对目标节点的授权；OPTask 宿主权限 |
+| 输入输出契约 | `params_schema` / `result_schema` 在执行前后强制校验；`CheckByRunner("file_content")` 引用由 runner 按 content id 读 Named Store；结果为 `Fixed` / `Object`（Named Object + 产物 FileObject）；超时单位秒；错误 `{code, message, details, retryable}` | `Stream` / `Iterator` 结果的传输；跨节点数据访问 |
+| 副作用与实例语义 | `is_pure` 进 hash 决定缓存资格（与 Step `idempotent` 分离）；thunk ID 只由 `fun_id + params` 决定；一次执行以 `execution_id = <run_id>/<node_id>/<attempt>` 标识，回执按它去重；同一 thunk 允许在多个 Run 同时执行（不做 single-flight）；取消 = 置标志 + kill/wait 子进程 + 清理临时目录 | 跨节点唯一派发记录、丢回执后的重试不在另一节点再次执行 |
+| 任务归属与回报 | workflow 既是 Task creator 也是 runner：创建 `workflow/thunk` Task，runner 更新 queued / running / 终态；`requested_by` 随 TaskData 展示 | scheduler 与 workflow 谁绑定 TaskMgr runner、TaskId 类型统一 |
+
+以下候选方案仍是分布式路径的设计输入，与 `doc/workflow/executor list.md §7` 的“后续”范围一致。
 
 ### 6.1 三条路径的脚本执行能力对比
 

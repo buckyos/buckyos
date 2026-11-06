@@ -18,7 +18,7 @@ import '@xyflow/react/dist/style.css'
 import type {
   AnalysisIssue,
   WorkflowGraphView,
-} from '../mock/types'
+} from '../types'
 import { layoutGraph } from './graph/layout'
 import {
   ControlNode,

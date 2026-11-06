@@ -30,7 +30,6 @@ fs2 = { workspace = true }
 percent-encoding = { workspace = true }
 upon = { workspace = true }
 serde_yaml = "0.9"
-image = { version = "0.25.5", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

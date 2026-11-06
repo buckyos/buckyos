@@ -8,7 +8,7 @@ import type {
   ControlNodeView,
   TaskNodeView,
   WorkflowGraphNode,
-} from '../../mock/types'
+} from '../../types'
 
 export interface WorkflowNodeData extends Record<string, unknown> {
   node: WorkflowGraphNode

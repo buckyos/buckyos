@@ -10,7 +10,7 @@ use crate::acl::{
     compute_permission, summarize_task, trim_task, Principal, TaskPermission,
     SYSTEM_ROLE_ZONE_TRUSTED,
 };
-use crate::json_schema::validate_json_schema;
+use buckyos_api::validate_json_schema;
 use crate::task_store::{now_ms, CreateTaskArgs, MutationOutcome, TaskStore};
 use ::kRPC::*;
 use async_trait::async_trait;

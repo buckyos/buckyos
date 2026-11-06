@@ -861,7 +861,7 @@ impl SchedulerHandler for SchedulerServer {
         _ctx: RPCContext,
     ) -> Result<SchedulerRunThunkResponse> {
         self.thunk_runner
-            .run_thunk(request.task_id, request.thunk, request.function_object)
+            .run_thunk(request.task_id, request.thunk, request.function_object, request.registration)
             .await
             .map_err(rpc_error)
     }

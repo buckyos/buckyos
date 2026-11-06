@@ -26,10 +26,38 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use crate::NoopTaskTracker;
+use crate::task_tracker::ThunkTaskPhase;
 use crate::{
     AnalysisReport, CompiledWorkflow, EventEnvelope, TaskManagerTaskTracker, WorkflowError,
     WorkflowResult, WorkflowRun, WorkflowTaskTracker,
 };
+
+/// Who published a definition. `System` is assigned by the service to the
+/// definitions it ships; clients cannot claim it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DefinitionSource {
+    System,
+    UserImported,
+    AppRegistered,
+    AgentGenerated,
+}
+
+impl DefinitionSource {
+    pub fn parse(raw: &str) -> Option<Self> {
+        serde_json::from_value(Value::String(raw.to_string())).ok()
+    }
+}
+
+/// Owner marker of system definitions; not a loginable user.
+pub const SYSTEM_OWNER_USER_ID: &str = "system";
+pub const SYSTEM_OWNER_APP_ID: &str = "workflow";
+/// Logical id prefixes reserved for system definitions.
+pub const SYSTEM_ID_PREFIXES: [&str; 2] = ["media.", "sys."];
+
+pub fn is_reserved_definition_id(id: &str) -> bool {
+    SYSTEM_ID_PREFIXES.iter().any(|p| id.starts_with(p))
+}
 
 /// Workflow Definition / Run 的所有者三元组。映射到 task_manager / ACL 上的
 /// `(user_id, app_id)`。
@@ -40,6 +68,17 @@ pub struct Owner {
 }
 
 impl Owner {
+    pub fn system() -> Self {
+        Self {
+            user_id: SYSTEM_OWNER_USER_ID.to_string(),
+            app_id: SYSTEM_OWNER_APP_ID.to_string(),
+        }
+    }
+
+    /// `user_id/app_id`: the principal string recorded on runs and tasks.
+    pub fn principal(&self) -> String {
+        format!("{}/{}", self.user_id, self.app_id)
+    }
 
     pub fn from_value(value: &Value) -> Option<Self> {
         let map = value.as_object()?;
@@ -82,6 +121,7 @@ pub struct DefinitionRecord {
     pub schema_version: String,
     pub name: String,
     pub owner: Owner,
+    pub source: DefinitionSource,
     pub definition: WorkflowDefinition,
     pub compiled: CompiledWorkflow,
     pub analysis: AnalysisReport,
@@ -93,6 +133,14 @@ pub struct DefinitionRecord {
 }
 
 impl DefinitionRecord {
+    pub fn is_system(&self) -> bool {
+        self.source == DefinitionSource::System
+    }
+
+    pub fn revision(&self) -> &str {
+        &self.compiled.revision
+    }
+
     /// 给 RPC 响应用：把 record 投影成 §2.1 描述的 wire JSON。
     pub fn to_value(&self) -> Value {
         serde_json::json!({
@@ -100,6 +148,10 @@ impl DefinitionRecord {
             "schema_version": self.schema_version,
             "name": self.name,
             "owner": self.owner.to_value(),
+            "source": self.source,
+            "read_only": self.is_system(),
+            "revision": self.compiled.revision,
+            "resolved_functions": self.compiled.resolved_functions,
             "definition": self.definition,
             "compiled": self.compiled,
             "analysis": self.analysis,
@@ -118,6 +170,9 @@ impl DefinitionRecord {
             "schema_version": self.schema_version,
             "name": self.name,
             "owner": self.owner.to_value(),
+            "source": self.source,
+            "read_only": self.is_system(),
+            "revision": self.compiled.revision,
             "status": self.status,
             "version": self.version,
             "tags": self.tags,
@@ -159,6 +214,31 @@ impl DefinitionStore {
         analysis: AnalysisReport,
         tags: Vec<String>,
     ) -> Arc<DefinitionRecord> {
+        self.upsert_with_source(
+            owner,
+            DefinitionSource::UserImported,
+            None,
+            definition,
+            compiled,
+            analysis,
+            tags,
+        )
+        .await
+    }
+
+    /// `fixed_id` pins the record id (system definitions use the DSL id);
+    /// otherwise a fresh `wf-<uuid>` is minted.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_with_source(
+        &self,
+        owner: Owner,
+        source: DefinitionSource,
+        fixed_id: Option<String>,
+        definition: WorkflowDefinition,
+        compiled: CompiledWorkflow,
+        analysis: AnalysisReport,
+        tags: Vec<String>,
+    ) -> Arc<DefinitionRecord> {
         let now = Utc::now().timestamp();
         let hash = definition_hash(&definition);
         let mut guard = self.inner.write().await;
@@ -178,12 +258,13 @@ impl DefinitionStore {
             .copied()
             .unwrap_or(0)
             + 1;
-        let id = format!("wf-{}", Uuid::new_v4());
+        let id = fixed_id.unwrap_or_else(|| format!("wf-{}", Uuid::new_v4()));
         let record = Arc::new(DefinitionRecord {
             id: id.clone(),
             schema_version: definition.schema_version.clone(),
             name: definition.name.clone(),
             owner: owner.clone(),
+            source,
             definition,
             compiled,
             analysis,
@@ -213,12 +294,23 @@ impl DefinitionStore {
         status: Option<DefinitionStatus>,
         tag: Option<&str>,
     ) -> Vec<Arc<DefinitionRecord>> {
+        self.list_filtered(owner, status, tag, None).await
+    }
+
+    pub async fn list_filtered(
+        &self,
+        owner: Option<&Owner>,
+        status: Option<DefinitionStatus>,
+        tag: Option<&str>,
+        source: Option<DefinitionSource>,
+    ) -> Vec<Arc<DefinitionRecord>> {
         let guard = self.inner.read().await;
         let mut out: Vec<_> = guard
             .by_id
             .values()
             .filter(|record| owner.map(|o| record.owner == *o).unwrap_or(true))
             .filter(|record| status.map(|s| record.status == s).unwrap_or(true))
+            .filter(|record| source.map(|s| record.source == s).unwrap_or(true))
             .filter(|record| {
                 tag.map(|t| record.tags.iter().any(|x| x == t))
                     .unwrap_or(true)
@@ -295,12 +387,12 @@ pub struct RunRecord {
     pub run: WorkflowRun,
     pub workflow_id: String,
     pub owner: Owner,
+    /// Active-run ensure key (D6); cleared when the run reaches a terminal
+    /// state.
+    pub ensure_key: Option<String>,
     pub events: Vec<EventEnvelope>,
     pub amendments: Vec<AmendmentRecord>,
-    #[expect(
-        dead_code,
-        reason = "doc/workflow/workflow service.md: POST callback_url when a run terminates; not implemented yet"
-    )]
+    #[allow(dead_code)]
     pub callback_url: Option<String>,
 }
 
@@ -329,6 +421,15 @@ pub struct RunHandle {
 #[derive(Default)]
 pub struct RunStore {
     runs: RwLock<HashMap<String, Arc<RunHandle>>>,
+    /// ensure key -> active run id (TODO D6). Lookup and registration happen
+    /// under the same write lock as the run insertion.
+    ensure: RwLock<HashMap<String, String>>,
+}
+
+/// Outcome of [`RunStore::insert_or_ensure`].
+pub enum EnsureOutcome {
+    Created(Arc<RunHandle>),
+    Reused(Arc<RunHandle>),
 }
 
 impl RunStore {
@@ -337,16 +438,80 @@ impl RunStore {
     }
 
     pub async fn insert(&self, record: RunRecord) -> Arc<RunHandle> {
+        match self.insert_or_ensure(record).await {
+            EnsureOutcome::Created(handle) | EnsureOutcome::Reused(handle) => handle,
+        }
+    }
+
+    /// Inserts the run; when `record.ensure_key` names an active run, that
+    /// run is returned instead and the new record is dropped.
+    pub async fn insert_or_ensure(&self, record: RunRecord) -> EnsureOutcome {
+        let mut runs = self.runs.write().await;
+        let mut ensure = self.ensure.write().await;
+        if let Some(key) = record.ensure_key.as_ref() {
+            if let Some(existing) = ensure.get(key).and_then(|id| runs.get(id)).cloned() {
+                return EnsureOutcome::Reused(existing);
+            }
+        }
         let run_id = record.run.run_id.clone();
         let workflow_id = record.workflow_id.clone();
         let owner = record.owner.clone();
+        if let Some(key) = record.ensure_key.clone() {
+            ensure.insert(key, run_id.clone());
+        }
         let handle = Arc::new(RunHandle {
             workflow_id,
             owner,
             state: Mutex::new(record),
         });
-        self.runs.write().await.insert(run_id, handle.clone());
-        handle
+        runs.insert(run_id, handle.clone());
+        EnsureOutcome::Created(handle)
+    }
+
+    /// Releases the ensure slot of a run that reached a terminal state.
+    pub async fn release_ensure(&self, run_id: &str, ensure_key: &str) {
+        let mut ensure = self.ensure.write().await;
+        if ensure.get(ensure_key).map(String::as_str) == Some(run_id) {
+            ensure.remove(ensure_key);
+        }
+    }
+
+    pub async fn active_ensure_count(&self) -> usize {
+        self.ensure.read().await.len()
+    }
+
+    /// Drops terminal runs beyond `max_terminal` (oldest first) or older than
+    /// `max_age_secs`; active runs are never pruned (TODO D7).
+    pub async fn prune_terminal(&self, max_terminal: usize, max_age_secs: i64) -> usize {
+        let now = Utc::now().timestamp();
+        let mut terminal = Vec::new();
+        {
+            let runs = self.runs.read().await;
+            for (run_id, handle) in runs.iter() {
+                let record = handle.state.lock().await;
+                if record.run.is_terminal() {
+                    terminal.push((run_id.clone(), record.run.updated_at));
+                }
+            }
+        }
+        terminal.sort_by_key(|(_, updated)| *updated);
+        let mut drop_ids: Vec<String> = terminal
+            .iter()
+            .filter(|(_, updated)| now - *updated > max_age_secs)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if terminal.len() > max_terminal {
+            for (id, _) in terminal.iter().take(terminal.len() - max_terminal) {
+                if !drop_ids.contains(id) {
+                    drop_ids.push(id.clone());
+                }
+            }
+        }
+        let mut runs = self.runs.write().await;
+        for id in &drop_ids {
+            runs.remove(id);
+        }
+        drop_ids.len()
     }
 
     pub async fn get(&self, run_id: &str) -> Option<Arc<RunHandle>> {
@@ -384,6 +549,8 @@ pub struct ServiceTracker {
 enum TrackerKind {
     #[cfg(test)]
     Noop(NoopTaskTracker),
+    #[cfg(test)]
+    Dyn(Arc<dyn WorkflowTaskTracker>),
     TaskManager(TaskManagerTaskTracker),
 }
 
@@ -393,6 +560,13 @@ impl ServiceTracker {
         Self {
             inner: TrackerKind::Noop(NoopTaskTracker::default()),
         }
+    }
+
+    #[cfg(test)]
+    pub fn from_dyn(tracker: Arc<dyn WorkflowTaskTracker>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: TrackerKind::Dyn(tracker),
+        })
     }
 
     #[cfg(test)]
@@ -415,6 +589,8 @@ impl WorkflowTaskTracker for ServiceTracker {
         match &self.inner {
             #[cfg(test)]
             TrackerKind::Noop(t) => t.sync_run(run).await,
+            #[cfg(test)]
+            TrackerKind::Dyn(t) => t.sync_run(run).await,
             TrackerKind::TaskManager(t) => t.sync_run(run).await,
         }
     }
@@ -423,6 +599,8 @@ impl WorkflowTaskTracker for ServiceTracker {
         match &self.inner {
             #[cfg(test)]
             TrackerKind::Noop(t) => t.sync_step(run, step).await,
+            #[cfg(test)]
+            TrackerKind::Dyn(t) => t.sync_step(run, step).await,
             TrackerKind::TaskManager(t) => t.sync_step(run, step).await,
         }
     }
@@ -435,6 +613,8 @@ impl WorkflowTaskTracker for ServiceTracker {
         match &self.inner {
             #[cfg(test)]
             TrackerKind::Noop(t) => t.sync_map_shard(run, shard).await,
+            #[cfg(test)]
+            TrackerKind::Dyn(t) => t.sync_map_shard(run, shard).await,
             TrackerKind::TaskManager(t) => t.sync_map_shard(run, shard).await,
         }
     }
@@ -447,7 +627,24 @@ impl WorkflowTaskTracker for ServiceTracker {
         match &self.inner {
             #[cfg(test)]
             TrackerKind::Noop(t) => t.sync_thunk(run, thunk).await,
+            #[cfg(test)]
+            TrackerKind::Dyn(t) => t.sync_thunk(run, thunk).await,
             TrackerKind::TaskManager(t) => t.sync_thunk(run, thunk).await,
+        }
+    }
+
+    async fn update_thunk(
+        &self,
+        run_id: &str,
+        execution_id: &str,
+        phase: ThunkTaskPhase,
+    ) -> WorkflowResult<()> {
+        match &self.inner {
+            #[cfg(test)]
+            TrackerKind::Noop(t) => t.update_thunk(run_id, execution_id, phase).await,
+            #[cfg(test)]
+            TrackerKind::Dyn(t) => t.update_thunk(run_id, execution_id, phase).await,
+            TrackerKind::TaskManager(t) => t.update_thunk(run_id, execution_id, phase).await,
         }
     }
 
@@ -460,6 +657,8 @@ impl WorkflowTaskTracker for ServiceTracker {
         match &self.inner {
             #[cfg(test)]
             TrackerKind::Noop(t) => t.report_step_validation_error(run, node_id, message).await,
+            #[cfg(test)]
+            TrackerKind::Dyn(t) => t.report_step_validation_error(run, node_id, message).await,
             TrackerKind::TaskManager(t) => {
                 t.report_step_validation_error(run, node_id, message).await
             }
@@ -518,6 +717,54 @@ pub fn workflow_error_payload(err: &WorkflowError) -> (String, String, Option<Va
                 "executor": executor,
                 "namespace": namespace,
             })),
+        ),
+        WorkflowError::UnresolvedFunction { node_id, executor } => (
+            "unresolved_function".to_string(),
+            err.to_string(),
+            Some(serde_json::json!({ "node_id": node_id, "executor": executor })),
+        ),
+        WorkflowError::Execution(error) => (
+            error.code.clone(),
+            error.message.clone(),
+            Some(serde_json::json!({
+                "details": error.details,
+                "retryable": error.retryable,
+            })),
+        ),
+        WorkflowError::StaleThunkResult(id) => (
+            "stale_thunk_result".to_string(),
+            err.to_string(),
+            Some(serde_json::json!({ "execution_id": id })),
+        ),
+        WorkflowError::RunTerminal(run_id) => (
+            "run_terminal".to_string(),
+            err.to_string(),
+            Some(serde_json::json!({ "run_id": run_id })),
+        ),
+        WorkflowError::InvalidInput(message) => (
+            "invalid_input".to_string(),
+            message.clone(),
+            None,
+        ),
+        WorkflowError::NotAuthorized(message) => (
+            "not_authorized".to_string(),
+            message.clone(),
+            None,
+        ),
+        WorkflowError::SystemDefinitionReadOnly(id) => (
+            "system_definition_read_only".to_string(),
+            err.to_string(),
+            Some(serde_json::json!({ "workflow_id": id })),
+        ),
+        WorkflowError::InvalidSystemDefinition { id, reason } => (
+            "invalid_system_definition".to_string(),
+            err.to_string(),
+            Some(serde_json::json!({ "workflow_id": id, "reason": reason })),
+        ),
+        WorkflowError::Persistence(message) => (
+            "persistence_error".to_string(),
+            message.clone(),
+            None,
         ),
         _ => ("workflow_error".to_string(), err.to_string(), None),
     }

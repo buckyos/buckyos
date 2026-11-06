@@ -224,19 +224,24 @@ pub struct ThunkTaskData {
 
 ```rust
 pub struct ThunkTaskRequest {
-    pub runner: Option<String>,
+    pub runner: Option<String>,          // workflow P0: "workflow/local"
     pub node_id: Option<String>,
-    pub thunk_obj_id: Option<String>,
-    pub thunk: Option<ThunkObject>,
+    pub execution_id: Option<String>,    // "<run_id>/<node_id>/<attempt>"：回执关联键
+    pub thunk_obj_id: Option<String>,    // "thunk:<hex>" = hash(fun_id + params)，不含 run 元信息
+    pub thunk: Option<ThunkObject>,      // { fun_id, params }
     pub function_object: Option<FunctionObject>,
+    pub registration: Option<FunctionRegistration>, // name@version / timeout / requirements，不进 hash
+    pub requested_by: Option<String>,    // 已验证调用 principal；Task creator 仍是 workflow
     pub dispatch: Option<ThunkDispatch>,
     pub extra: BTreeMap<String, Value>,
 }
 ```
 
+`workflow/thunk` 的幂等键是 `wf-thunk-<execution_id>`；同一 thunk 在多个 Run 或多次 attempt 中各有一个 Task。runner（workflow 的 `LocalThunkRunner`）领取后依次写 queued → running → 终态：成功 `result = {execution_id, result_obj_id, metrics}`；失败 `error = {code, message, detail: {execution_id, error: ThunkExecutionError}}`；取消按 `cancel` 控制走。服务重启时旧 epoch 的本地执行被置 `interrupted`。
+
 结果区：
 
-- `result` 使用 `ThunkExecutionResult`。
+- `result` 使用 `ThunkExecutionResult`：按 `execution_id` + `thunk_obj_id` 关联，`error` 是结构化 `ThunkExecutionError {code, message, details, retryable}`，另有 `fingerprint`、`artifact_refs`、`cacheable`。
 - node executor 的运行状态放在 `executor: Option<NodeExecutorTaskState>`，包含 `status`、`task_id`、`work_dir`、`result_path`。
 
 legacy 兼容：
@@ -245,6 +250,7 @@ legacy 兼容：
 - 旧 `executor` 转为 `executor`。
 - `workflow/thunk` 旧 schema 中的 `workflow.run_id`、`attempt`、`shard_index` 会转入 `extra` 的 `workflow_run_id`、`workflow_attempt`、`workflow_shard_index`。
 - `workflow.node_id` / `workflow.thunk_obj_id` 会作为 request 中缺省的 `node_id` / `thunk_obj_id`。
+- 旧的 `ThunkObject.metadata`（run_id / node_id / attempt）已删除；这些事实只在 `request.execution_id` 与 `extra.workflow_*` 中。
 
 ## `workflow/run`
 
@@ -327,6 +333,8 @@ pub struct WorkflowStepTaskData {
 
 - legacy `human_action` 保持为 `human_action`。
 - 支持 `approve`、`modify`、`reject`、`retry`、`skip`、`abort`、`rollback`、`submit_output` 等业务动作。
+
+执行失败时 `last_error.message` 是 `"<code>: <message>"`，`last_error.extra.code` 与 `last_error.extra.detail`（完整 `ThunkExecutionError`）、`last_error.extra.source`（`cache` / `executed` / `direct` / `submitted`）随之写入，让 TaskMgr UI 能显示 `tools_missing` 这类稳定错误码。
 
 ## `workflow/map_shard`
 
