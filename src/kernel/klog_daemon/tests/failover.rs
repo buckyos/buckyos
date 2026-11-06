@@ -26,14 +26,29 @@ async fn test_three_node_cluster_and_failover() -> Result<(), String> {
     nodes.push(spawn_node(2, port2, &cluster_name, false, &join_seed, "voter").await?);
     let _ = wait_cluster_voters(&[port1, port2], &[1, 2], Duration::from_secs(40)).await?;
 
-    nodes.push(spawn_node(3, port3, &cluster_name, false, &join_seed, "voter").await?);
-
-    let states =
-        wait_cluster_voters(&[port1, port2, port3], &[1, 2, 3], Duration::from_secs(40)).await?;
-    let leader = states
+    nodes.push(spawn_node(3, port3, &cluster_name, false, &join_seed, "learner").await?);
+    wait_cluster_membership(&[port1, port2, port3], &[1, 2], &[3], Duration::from_secs(40))
+        .await?;
+    let leader = wait_consistent_leader_on_ports(&[port1, port2], Duration::from_secs(40)).await?;
+    let leader_admin_port = nodes
         .iter()
-        .find_map(|s| s.current_leader)
-        .ok_or_else(|| "cluster has no leader after convergence".to_string())?;
+        .find(|node| node.node_id == leader)
+        .ok_or_else(|| format!("cannot find leader node process for id={leader}"))?
+        .admin_port;
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| err.to_string())?
+        .post(format!("http://127.0.0.1:{leader_admin_port}/klog/admin/change-membership"))
+        .query(&[("voters", "1,2,3")])
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|err| format!("could not commit three voters: {err}"))?;
+
+    wait_cluster_voters(&[port1, port2, port3], &[1, 2, 3], Duration::from_secs(40)).await?;
+    let leader =
+        wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40)).await?;
     if ![1_u64, 2_u64, 3_u64].contains(&leader) {
         for n in &mut nodes {
             n.stop().await;
