@@ -88,6 +88,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
          --cmd-skill: up to 8 manuals from `skill list`, fixed for the session's life; none given: a work
          session inherits its parent work's, a conversation's or a goal's are not inherited; its end comes back as input)
   skill list [--kind cmd|goal] [--json] | skill install <x.pikg | dir> [--replace] | skill remove <name> [--kind cmd|goal]
+  skill status [--runtime <id>] [--json]   the commands each manual relies on, on that runtime, and the extension package that would bring what is missing
   post <sid> --msg <t>
   todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <cmd_skill>]...
            [--after <todo_id>|none]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>] [--behavior <b>]
@@ -1385,10 +1386,38 @@ fn skill_kind(a: &Args) -> R<Option<SkillKind>> {
 /// / `skill remove <name> [--kind cmd|goal]`: the agent's skills. A new
 /// session takes the manuals installed when it is created; running sessions
 /// keep theirs.
+async fn cmd_skill_status(c: &Ctx, a: &Args) -> R<i32> {
+    let report = c.agent.behaviors().skills_status(a.get("runtime").as_deref()).await?;
+    if a.has("json") {
+        print(&report);
+        return Ok(0);
+    }
+    println!("runtime {}", report["runtime_id"].as_str().unwrap_or(""));
+    for skill in report["skills"].as_array().cloned().unwrap_or_default() {
+        let status = &skill["status"];
+        let state = match status["state"].as_str() {
+            Some("ready") => "ready".to_string(),
+            Some("ready_system") => "ready (system)".to_string(),
+            _ => {
+                let missing: Vec<String> = status["commands"]
+                    .as_object()
+                    .map(|c| c.iter().filter(|(_, v)| v["present"] == false).map(|(k, _)| k.clone()).collect())
+                    .unwrap_or_default();
+                let packages: Vec<&str> = status["recommended_packages"].as_array().map(|p| p.iter().filter_map(|x| x["id"].as_str()).collect()).unwrap_or_default();
+                let advice = if packages.is_empty() { String::new() } else { format!("; extension package: {}", packages.join(", ")) };
+                format!("partial (missing {}{advice})", missing.join(", "))
+            }
+        };
+        println!("{:<24} {state}", skill["name"].as_str().unwrap_or(""));
+    }
+    Ok(0)
+}
+
 async fn cmd_skill(mut a: Args) -> R<i32> {
-    let sub = a.next("list | install | remove")?;
+    let sub = a.next("list | status | install | remove")?;
     let c = ctx(&a, None, false).await?;
     match sub.as_str() {
+        "status" => return cmd_skill_status(&c, &a).await,
         "list" => {
             let skills = c.agent.behaviors().skills(skill_kind(&a)?).await?;
             if a.has("json") {
@@ -1985,7 +2014,7 @@ fn cmd_runtime_baseline(a: &Args) -> R<i32> {
         if extended {
             for t in EXTENDED_TOOLS {
                 for c in t.commands {
-                    println!("{:<22} {:<16} {} ({}){}", c.name, label(serde_json::to_value(t.category)), t.id, label(serde_json::to_value(t.tier)), if t.alternative.is_empty() { String::new() } else { format!(", or {}", t.alternative.join(", ")) });
+                    println!("{:<22} {:<16} {} ({})", c.name, label(serde_json::to_value(t.category)), t.id, label(serde_json::to_value(t.tier)));
                 }
             }
         }
@@ -2056,6 +2085,36 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                 .filter(|x| !x.is_empty())
                 .collect();
             print(&registry.check(&id, &commands, a.has("full")).await?);
+        }
+        "ext-tools" => {
+            let verb = a.next("ext-tools command")?;
+            let id = a.next("runtime id")?;
+            let smoke = match verb.as_str() {
+                "status" => false,
+                "check" => a.has("full"),
+                other => return Err(bad(format!("ext-tools takes status | check, not `{other}`"))),
+            };
+            let record = if verb == "check" { Some(registry.check(&id, &[], smoke).await?) } else { None };
+            let report = registry.ext_tools(&id, smoke).await?;
+            if a.has("json") {
+                print(&serde_json::json!({ "report": report, "baseline_check": record.and_then(|r| r.caps.baseline_check) }));
+                return Ok(0);
+            }
+            println!("{} ({}, {})", report["runtime_id"].as_str().unwrap_or(&id), report["tools_root"].as_str().unwrap_or(""), report["managed_by"].as_str().unwrap_or(""));
+            let packages = report["packages"].as_object().cloned().unwrap_or_default();
+            if packages.is_empty() {
+                println!("no extension packages installed");
+            }
+            for (package, install) in &packages {
+                let commands = install["commands"].as_object().map(|c| c.len()).unwrap_or(0);
+                println!("{package} {} ({}): {commands} commands, smoke {}", install["version"].as_str().unwrap_or(""), install["origin"].as_str().unwrap_or(""), install["smoke"].as_str().unwrap_or(""));
+                if let Some(result) = report.get("smoke").and_then(|s| s.get(package)) {
+                    println!("  now: {}", if result["ok"] == true { "passed".to_string() } else { format!("FAILED: {}", result["error"].as_str().unwrap_or("")) });
+                }
+            }
+            if let Some(ext) = record.as_ref().and_then(|r| r.caps.baseline_check.as_ref()).and_then(|b| b.ext.as_ref()) {
+                println!("ext: {}", ext.summary());
+            }
         }
         "op" => {
             let id = a.next("op id")?;

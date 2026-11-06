@@ -203,6 +203,8 @@ pub async fn open_node_target_of(runtime_id: &str, config: &RuntimeConfig, ops_d
     Ok(NodeTarget { target, expires_at_ms })
 }
 
+const NODE_SESSIONS_DIR: &str = "sessions";
+
 /// The directory of this agent on a node: `<account home>/.opendan/<agent_id>`
 /// (directory convention). The executor's account home must lie inside
 /// the granted roots.
@@ -599,7 +601,7 @@ async fn node_workdir(
     }
     let target = open_node_target_of(runtime_id, config, &sd.state_dir().join("runtime_ops")).await?;
     let base = node_agent_dir(&target, runtime_id, agent.agent_id())?;
-    let dir = target_join(&base, &["sessions", sd.sid()]);
+    let dir = target_join(&base, &[NODE_SESSIONS_DIR, sd.sid()]);
     target
         .mkdir(&dir)
         .await
@@ -982,6 +984,20 @@ pub async fn run_probe(
     command: String,
     timeout_ms: u64,
 ) -> Result<agent_tool::llm_bash::BashRunOutput> {
+    run_with_env(rt, workdir, path_prefix, session_id, ops_dir, command, timeout_ms, Vec::new()).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_with_env(
+    rt: &dyn AgentRuntime,
+    workdir: &Path,
+    path_prefix: Vec<PathBuf>,
+    session_id: &str,
+    ops_dir: &Path,
+    command: String,
+    timeout_ms: u64,
+    env: Vec<(String, String)>,
+) -> Result<agent_tool::llm_bash::BashRunOutput> {
     let mut open = RuntimeOpenCtx::new(workdir, session_id, LoopModel::FunctionCall);
     open.path_prefix = path_prefix;
     let (_, mut sandbox) = rt
@@ -1004,7 +1020,7 @@ pub async fn run_probe(
             cwd: workdir.to_path_buf(),
             timeout_ms,
             max_output_bytes: 16 * 1024,
-            env: Vec::new(),
+            env,
             target: agent_tool::llm_bash::BashTarget::Local,
             // A node runs a command only for an identified call.
             call_id: Some(format!("probe-{}", uuid::Uuid::new_v4().simple())),
@@ -1194,6 +1210,97 @@ pub async fn check_commands(record: &RuntimeRecord, ops_dir: &Path, commands: &[
     }
 }
 
+/// `<account home>/.opendan/<agent>` on the node of `record`.
+async fn node_agent_dir_of(record: &RuntimeRecord, agent_id: &str, ops_dir: &Path) -> Option<String> {
+    let config = node_config_of(&record.runtime_id, &record.exec()?).ok()?;
+    let target = open_node_target_of(&record.runtime_id, &config, ops_dir).await.ok()?;
+    node_agent_dir(&target, &record.runtime_id, agent_id).ok()
+}
+
+fn shell_quote(windows: bool, value: &str) -> String {
+    if windows {
+        format!("'{}'", value.replace('\'', "''"))
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+/// What is installed under a runtime's `tools/`, as the reconciler recorded it (`xagent runtime ext-tools status`), and with
+/// `smoke` what each package's smoke says now (`check --full`). Read-only: nothing an Agent does installs anything.
+pub async fn ext_tools_report(record: &RuntimeRecord, ops_dir: &Path, smoke: bool) -> Result<serde_json::Value> {
+    use buckyos_api::ext_tools_install::{ExtToolsInstall, ToolsRoot};
+    let mut smoke_results = serde_json::Map::new();
+    let (root_text, managed_by, installed): (String, &str, BTreeMap<String, ExtToolsInstall>) = if record.is_private() {
+        let root = crate::baseline::buckyos_root().ok_or_else(|| OpenDanError::Bind("cannot tell $BUCKYOS_ROOT".to_string()))?;
+        let tools = ToolsRoot::new(root.join("tools"));
+        let installed = tools.installed();
+        if smoke {
+            for id in installed.keys() {
+                let root = ToolsRoot::new(tools.path());
+                let package = id.clone();
+                let result = tokio::task::spawn_blocking(move || root.check(&package)).await.map_err(|e| OpenDanError::Other(e.to_string()))?;
+                smoke_results.insert(id.clone(), json_result(result));
+            }
+        }
+        let in_container = std::env::var_os("BUCKYOS_EXTTOOL_DIR").is_some();
+        (tools.path().display().to_string(), if in_container { "node_volume" } else { "node" }, installed)
+    } else {
+        let windows = record.caps.platform.os == "windows";
+        let root = record.caps.buckyos_root.clone().ok_or_else(|| OpenDanError::Bind(format!("runtime `{}` has no BuckyOS root: it takes no extension packages", record.runtime_id)))?;
+        let separator = if windows { "\\" } else { "/" };
+        let tools = format!("{root}{separator}tools");
+        let probe = if windows {
+            format!("Get-ChildItem -Path {} -ErrorAction SilentlyContinue | ForEach-Object {{ Get-Content -Raw $_.FullName }}", shell_quote(true, &format!("{tools}\\installs\\*.json")))
+        } else {
+            format!("for f in {}/installs/*.json; do [ -f \"$f\" ] && cat \"$f\"; done; true", shell_quote(false, &tools))
+        };
+        let dir = node_check_dir(record)?;
+        let rt = node_runtime_of(record, &dir).await?;
+        let out = run_probe(rt.as_ref(), Path::new(&dir), Vec::new(), "ext-tools", ops_dir, probe, 30_000).await?;
+        if out.exit_code != 0 {
+            return Err(OpenDanError::Bind(format!("reading {tools}/installs exited {}: {}", out.exit_code, out.stderr.trim())));
+        }
+        let installed: BTreeMap<String, ExtToolsInstall> = serde_json::Deserializer::from_str(&out.stdout)
+            .into_iter::<ExtToolsInstall>()
+            .flatten()
+            .map(|install| (install.id.clone(), install))
+            .collect();
+        if smoke {
+            let program = if windows { format!("{root}\\bin\\opendan\\opendan.exe") } else { format!("{root}/bin/opendan/opendan") };
+            for id in installed.keys() {
+                let command = format!(
+                    "{}{} ext-tools check --root {} --id {}",
+                    if windows { "& " } else { "" },
+                    shell_quote(windows, &program),
+                    shell_quote(windows, &tools),
+                    shell_quote(windows, id)
+                );
+                let out = run_probe(rt.as_ref(), Path::new(&dir), Vec::new(), "ext-tools", ops_dir, command, CHECK_FULL_TIMEOUT_MS).await?;
+                let parsed: Option<serde_json::Value> = out.stdout.lines().rev().find_map(|line| serde_json::from_str(line).ok());
+                let result = match parsed {
+                    Some(v) if v["ok"] == true => Ok(()),
+                    Some(v) => Err(v["error"].as_str().unwrap_or("the check failed").to_string()),
+                    None => Err(format!("exit {}: {}", out.exit_code, out.stderr.trim())),
+                };
+                smoke_results.insert(id.clone(), json_result(result));
+            }
+        }
+        (tools, "node", installed)
+    };
+    let mut report = serde_json::json!({ "runtime_id": record.runtime_id, "tools_root": root_text, "managed_by": managed_by, "packages": installed });
+    if smoke {
+        report["smoke"] = serde_json::Value::Object(smoke_results);
+    }
+    Ok(report)
+}
+
+fn json_result(result: std::result::Result<(), String>) -> serde_json::Value {
+    match result {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(error) => serde_json::json!({ "ok": false, "error": error }),
+    }
+}
+
 /// What one agent-level command on a runtime did (`runtime_exec`), kept
 /// under `<agent_root>/state/runtime_ops/<op_id>.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1312,6 +1419,7 @@ pub async fn runtime_exec(
     let op_id = format!("op-{}", uuid::Uuid::new_v4().simple());
     let timeout_ms = timeout_ms.clamp(1_000, RUNTIME_EXEC_MAX_TIMEOUT_MS);
     let started_at_ms = crate::now_ms();
+    let on_node = !record.is_private();
     let (rt, workdir, layers): (Arc<dyn AgentRuntime>, String, Vec<PathBuf>) = if record.is_private() {
         let dir = match cwd {
             Some(c) => PathBuf::from(c),
@@ -1343,7 +1451,12 @@ pub async fn runtime_exec(
         }
         (node_runtime_of(&record, dir).await?, dir.to_string(), Vec::new())
     };
-    let out = run_probe(rt.as_ref(), Path::new(&workdir), layers, &op_id, &ops_dir, command.to_string(), timeout_ms).await;
+    let env = if on_node {
+        node_agent_dir_of(&record, agent.agent_id(), &ops_dir).await.map(|dir| crate::baseline::tool_cache_env(&Path::new(&dir).join("cache"))).unwrap_or_default()
+    } else {
+        agent_cache_env(false, &workdir, agent.agent_root())
+    };
+    let out = run_with_env(rt.as_ref(), Path::new(&workdir), layers, &op_id, &ops_dir, command.to_string(), timeout_ms, env).await;
     let finished_at_ms = crate::now_ms();
     let op = match out {
         Ok(out) => RuntimeOpRecord {
@@ -1449,6 +1562,21 @@ pub async fn runtime_put(
     Ok(written)
 }
 
+/// Tool caches of a session (ExtTools TODO §3.6). On a node they go next to the sessions in the Agent's directory there. On
+/// the machine of the Agent Service they go under its AgentRoot, unless the process already has them: a worker's entrypoint
+/// points them at the instance volume.
+fn agent_cache_env(on_node: bool, workdir: &str, agent_root: Option<&Path>) -> Vec<(String, String)> {
+    if on_node {
+        // A node's path, which may be another OS's.
+        let cut = [format!("/{NODE_SESSIONS_DIR}/"), format!("\\{NODE_SESSIONS_DIR}\\")].iter().filter_map(|marker| workdir.rfind(marker.as_str())).max();
+        return cut.map(|at| crate::baseline::tool_cache_env(&Path::new(&workdir[..at]).join("cache"))).unwrap_or_default();
+    }
+    let Some(root) = agent_root else {
+        return Vec::new();
+    };
+    crate::baseline::tool_cache_env(&root.join(".cache")).into_iter().filter(|(name, _)| std::env::var_os(name).is_none()).collect()
+}
+
 /// The session's PATH layers live on this machine: a node runtime gets none
 /// and finds its commands on the node's own PATH (TODO §6.1).
 pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<SessionEnv> {
@@ -1462,7 +1590,8 @@ pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<
             }
         }
     }
-    let env = session_env_vars(ctx, &binding.runtime_id).await?;
+    let mut env = session_env_vars(ctx, &binding.runtime_id).await?;
+    env.extend(agent_cache_env(binding.connector == "node_executor", &binding.workdir, ctx.agent_root.as_deref()));
     Ok(SessionEnv {
         runtime_id: binding.runtime_id.clone(),
         kind: binding.connector.clone(),
@@ -1562,6 +1691,15 @@ pub async fn session_env_vars(ctx: &SessionEnvCtx, runtime_id: &str) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caches_of_a_node_session_go_next_to_its_sessions() {
+        let env = agent_cache_env(true, "/home/alice/.opendan/jarvis/sessions/s1", None);
+        assert!(env.iter().any(|(k, v)| k == "DENO_DIR" && v == "/home/alice/.opendan/jarvis/cache/deno-cache"), "{env:?}");
+        assert!(agent_cache_env(true, "/somewhere/else", None).is_empty(), "no agent directory, no opinion");
+        let windows = agent_cache_env(true, "C:\\Users\\a\\.opendan\\j\\sessions\\s1", None);
+        assert!(windows.iter().any(|(k, v)| k == "UV_CACHE_DIR" && v.starts_with("C:\\Users\\a\\.opendan\\j")), "{windows:?}");
+    }
 
     #[test]
     fn node_exec_must_be_a_complete_remote_node_config() {

@@ -13,7 +13,7 @@
 //! Packer（`PikgBuilder`）与 Verifier（`PikgReader`）共用同一套常量与
 //! 命名规则，发布侧写完必须用同一个 Reader 自校验，禁止两套规则漂移。
 
-use buckyos_api::{AppDoc, OBJ_TYPE_APP_DOC};
+use crate::{AppDoc, OBJ_TYPE_APP_DOC};
 use named_store::NamedDataMgr;
 use ndn_lib::{
     build_named_object_by_json, load_named_obj_and_verify, ChunkId, ChunkReader, ChunkType,
@@ -229,7 +229,7 @@ fn parse_sha256_digest(digest: &str) -> PikgResult<String> {
 
 /// The `PackageMeta.content` of a payload: the chunk id of the whole file. The named store keeps a payload above the
 /// chunk size as a chunk list, but a package's identity is one digest.
-pub(crate) fn payload_chunk_id(path: &Path, size: u64) -> PikgResult<String> {
+pub fn payload_chunk_id(path: &Path, size: u64) -> PikgResult<String> {
     let digest = sha256_file_hex(path)?;
     let bytes = (0..digest.len())
         .step_by(2)
@@ -538,6 +538,39 @@ impl PikgReader {
         tokio::task::spawn_blocking(move || copy_content_blocking(&source, index, &entry, &dest))
             .await
             .map_err(|err| io_err("join copy_content_to_file", err))?
+    }
+
+    /// One file from inside a sub package's tar.gz payload, without unpacking the payload anywhere.
+    pub async fn read_payload_file(&self, sub_pkg: &str, name: &str) -> PikgResult<Option<Vec<u8>>> {
+        let entry = self
+            .inspection
+            .package_meta
+            .content_index
+            .values()
+            .find(|entry| entry.sub_pkg_name == sub_pkg)
+            .cloned()
+            .ok_or_else(|| PikgError::ContentMissing(sub_pkg.to_string()))?;
+        let index = self.entry_index_of(&entry.path)?;
+        let source = self.source.clone();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut archive = open_archive(&source)?;
+            let zentry = archive.by_index(index).map_err(|err| io_err("open payload", err))?;
+            let mut payload = tar::Archive::new(flate2::read::GzDecoder::new(zentry));
+            let entries = payload.entries().map_err(|err| io_err("read payload", err))?;
+            for entry in entries {
+                let mut entry = entry.map_err(|err| io_err("read payload", err))?;
+                let path = entry.path().map_err(|err| io_err("read payload", err))?.into_owned();
+                if path.components().filter(|c| !matches!(c, Component::CurDir)).collect::<PathBuf>() == Path::new(&name) {
+                    let mut bytes = Vec::new();
+                    entry.read_to_end(&mut bytes).map_err(|err| io_err("read payload", err))?;
+                    return Ok(Some(bytes));
+                }
+            }
+            Ok(None)
+        })
+        .await
+        .map_err(|err| io_err("join read_payload_file", err))?
     }
 
     pub async fn verify_package_archive(&self, digest: &str) -> PikgResult<()> {
@@ -1388,7 +1421,7 @@ impl PikgBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{AppType, SubPkgDesc};
+    use crate::{AppType, SubPkgDesc};
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use name_lib::DID;
@@ -1550,7 +1583,7 @@ mod tests {
         let (meta_obj_id, _) = build_named_object_by_json(ndn_lib::OBJ_TYPE_PKG, &meta_value);
         let mut desc = SubPkgDesc::new("nightly-linux-amd64.ext_tools_linux_x86_64.ext-demo.tester.bns.did#1.0.0");
         desc.pkg_objid = Some(meta_obj_id);
-        let platform = buckyos_api::ext_tools_platform("linux-x86_64").unwrap();
+        let platform = crate::ext_tools_platform("linux-x86_64").unwrap();
         let app_doc = AppDoc::builder(AppType::ExtTools, "ext-demo", "1.0.0", "tester", &owner).ext_tools_pkg(platform, desc).build().unwrap();
 
         let dest = dir.join("ext-demo.pikg");
@@ -1561,8 +1594,8 @@ mod tests {
         let read = reader.inspection().app_doc.clone();
         assert_eq!(read.get_app_type(), AppType::ExtTools);
         reader.verify_all_contents().await.unwrap();
-        for origin in [buckyos_api::AdmissionOrigin::User, buckyos_api::AdmissionOrigin::Preinstall, buckyos_api::AdmissionOrigin::AgentRuntime, buckyos_api::AdmissionOrigin::Deployed] {
-            assert_eq!(buckyos_api::ProductProfile::full().admit_app(&read, origin), Err(buckyos_api::AdmissionDenied::ExtToolsPackage));
+        for origin in [crate::AdmissionOrigin::User, crate::AdmissionOrigin::Preinstall, crate::AdmissionOrigin::AgentRuntime, crate::AdmissionOrigin::Deployed] {
+            assert_eq!(crate::ProductProfile::full().admit_app(&read, origin), Err(crate::AdmissionDenied::ExtToolsPackage));
         }
     }
 

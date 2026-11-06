@@ -6,6 +6,7 @@ import type { SettingsPage } from './components/layout/navigation'
 import { GeneralPage } from './pages/GeneralPage'
 import { AppearancePage } from './pages/AppearancePage'
 import { ClusterManagerPage } from './pages/ClusterManagerPage'
+import { ExtToolsPage } from './pages/ExtToolsPage'
 import { PrivacyPage } from './pages/PrivacyPage'
 import { FilePermissionsPage } from './pages/FilePermissionsPage'
 import { DeveloperModePage } from './pages/DeveloperModePage'
@@ -25,6 +26,8 @@ function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppConte
       return <ZonePage />
     case 'cluster':
       return <ClusterManagerPage />
+    case 'ext-tools':
+      return <ExtToolsPage />
     case 'privacy':
       return <PrivacyPage />
     case 'file-permissions':

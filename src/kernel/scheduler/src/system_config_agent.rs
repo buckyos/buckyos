@@ -2855,6 +2855,10 @@ pub(crate) async fn build_schedule_plan(
         if executor_changed {
             need_update_rbac = true;
         }
+        extend_kv_action_map(
+            &mut tx_actions,
+            &crate::ext_tools_projection::update_ext_tools_projection(input_system_config),
+        );
     }
 
     if need_update_rbac {

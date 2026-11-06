@@ -4,6 +4,8 @@ set -eu
 tool_root="${BUCKYOS_AICC_TOOL_ROOT:-/opt/buckyos/bin/opendan/buckyos-agent}"
 launcher="$(basename "$0")"
 sdk=/opt/buckyos/libexec/buckyos-tool/dist/node.mjs
+# The image's own Deno, never the PATH's: an extension package may bring another one.
+deno=/opt/buckyos/bin/opendan/deno
 
 if [ ! -f "$sdk" ]; then
   echo "$launcher: $sdk not found. node_daemon mounts the buckyos SDK read-only from the host's \$BUCKYOS_ROOT/libexec/buckyos-tool/dist into agent containers; this container has no such mount." >&2
@@ -11,7 +13,7 @@ if [ ! -f "$sdk" ]; then
 fi
 
 if [ "$launcher" = "aicc-tool" ]; then
-  exec deno run \
+  exec "$deno" run \
     --config "$tool_root/deno.json" \
     --allow-net \
     --allow-read \
@@ -21,7 +23,7 @@ if [ "$launcher" = "aicc-tool" ]; then
     "$tool_root/aicc-tool.ts" "$@"
 fi
 
-exec deno run \
+exec "$deno" run \
   --config "$tool_root/deno.json" \
   --allow-net \
   --allow-read \

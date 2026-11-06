@@ -2,11 +2,13 @@
   "schema_version": 1,
   "did": "did:bns:ext-core.buckyos",
   "name": "ext-core",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "owner": "did:bns:buckyos",
   "author": "did:bns:buckyos",
   "show_name": "BuckyOS core extension tools",
-  "categories": ["ext_tools"],
+  "categories": [
+    "ext_tools"
+  ],
   "permissions": [],
   "selector_type": "single",
   "service_config_tips": {}

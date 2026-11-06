@@ -43,6 +43,10 @@ export const settingsSearchTerms: Record<SettingsPage, ReadonlyArray<readonly [s
     ["settings.zone.did", "Zone DID"],
     ["settings.zone.domain", "Domain"],
   ],
+  'ext-tools': [
+    ["settings.extTools.title", "Extension tools"],
+    ["settings.extTools.provides", "Commands"],
+  ],
   'cluster': [
     ["settings.cluster.thisNode", "This node"],
     ["settings.cluster.deviceDid", "Device DID"],

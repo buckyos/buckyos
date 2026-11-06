@@ -49,6 +49,8 @@ mod aicc_video;
 mod app_availability;
 mod app_doc;
 mod ext_tools;
+pub mod ext_tools_install;
+pub mod pikg;
 mod app_identity;
 pub mod app_install;
 mod app_mgr;

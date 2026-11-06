@@ -19,11 +19,11 @@ SUPPORTED_ARCHES=("amd64" "aarch64")
 # ffmpeg / poppler-utils / LibreOffice headless / fonts / locales are the
 # workflow media tool baseline (doc/workflow/media tool baseline.md); the
 # workflow host must carry the same set, the image alone does not satisfy it.
+# Only what is not an extension package's: the tools of ext-core come from the node's
+# tools volume (doc/app_service/paios容器需求.md §6.4 table B). The second group is the
+# planned ext-office (table C).
 RUNTIME_PACKAGES=(
-  "bash" "ca-certificates" "curl" "git" "jq" "rsync"
-  "tree" "unzip" "xz-utils"
-  "python3"
-  "ffmpeg" "imagemagick" "poppler-utils" "tesseract-ocr"
+  "bash" "ca-certificates" "rsync"
   "libreoffice-core-nogui" "libreoffice-writer-nogui" "libreoffice-impress-nogui" "libreoffice-calc-nogui"
   "fonts-dejavu-core" "fonts-liberation" "fonts-noto-core" "fonts-noto-cjk"
   "locales"
@@ -573,18 +573,23 @@ render_dockerfile() {
 
   {
     cat <<'EOF'
+# The standard layer's own Deno: what the Agent commands run on, pinned here and
+# found by absolute path, so that no extension package can take its place.
+FROM ubuntu:24.04 AS core-deno
+ARG DENO_VERSION=v2.9.2
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip && \
+    curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/core sh -s -- "${DENO_VERSION}"
+
 FROM ubuntu:24.04
 
 ARG TARGET_ARCH
 ARG OPENDAN_SHA256
-ARG DENO_VERSION=v2.9.2
-ARG NODE_VERSION=v24.21.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Runtime + predefined worker CLI tools (see container spec §6.3). The GPU /
-# LLVM stack that ffmpeg's SDL/GL dependencies drag in is never linked by the
-# headless tools, so it is dropped in the same layer (~190 MB).
+# What the worker needs that is no extension tool (see container spec §6.4). The
+# GPU / LLVM stack that LibreOffice's dependencies drag in is never linked by the
+# headless tools, so it is dropped in the same layer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
 EOF
 
@@ -603,23 +608,8 @@ EOF
 RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen en_US.UTF-8
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-# Node.js LTS (official build; npm/npx/corepack included).
-RUN case "${TARGET_ARCH}" in amd64) node_arch=x64 ;; aarch64) node_arch=arm64 ;; *) exit 1 ;; esac && \
-    node_tar="node-${NODE_VERSION}-linux-${node_arch}.tar.xz" && \
-    curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/${node_tar}" && \
-    curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt" | grep " ${node_tar}\$" | sha256sum -c - && \
-    tar -xJf "${node_tar}" -C /usr/local --strip-components=1 --no-same-owner \
-      --exclude='*/include' --exclude='*/share/doc' --exclude='*/CHANGELOG.md' --exclude='*/README.md' && \
-    rm -f "${node_tar}" && \
-    node --version && npm --version
-
-# uv — dependency installer used by Script apps, on the system Python 3.12.
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:${PATH}"
-
-# Deno — TypeScript runtime used by Script apps and Worker-layer Agents.
-RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- "${DENO_VERSION}" && \
-    deno --version
+COPY --from=core-deno /core/bin/deno /opt/buckyos/bin/opendan/deno
+ENV PATH="/opt/buckyos/bin/opendan:${PATH}"
 
 ENV BUCKYOS_ROOT=/opt/buckyos
 WORKDIR /opt/buckyos
@@ -663,10 +653,9 @@ RUN --mount=type=bind,source=buckyos-tool-check-dist,target=/opt/buckyos/libexec
     edit_image --help >/dev/null && \
     rm -rf /root/.cache/deno
 
-# ExtTool Volume mount point — kept empty in the Worker image. The real
-# payload (pre-warmed uv/deno caches, optional tool packages) ships in the
-# separate paios/exttool image and lands in the buckyos-exttool-<image id>
-# named volume, which node_daemon mounts here ro at run time (§6.3 of paios容器需求.md).
+# The node's tools volume mounts here read-only at run time, kept empty in the
+# image (§6.4 of paios容器需求.md): extension packages, and the pre-warmed uv/deno
+# caches of the paios/exttool seed image.
 RUN mkdir -p \
     /opt/buckyos/bin/opendan \
     /opt/buckyos/data \
@@ -686,6 +675,7 @@ RUN printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha
 # Unified entrypoint: instance-volume bootstrap + file-level upstream sync +
 # agent/script/custom dispatch.
 COPY --chmod=755 entrypoint.sh /opt/buckyos/entrypoint.sh
+COPY sync_tree.ts /opt/buckyos/sync_tree.ts
 
 ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     BUCKYOS_INSTANCE_VOLUME=/opt/buckyos/instance \
@@ -693,7 +683,9 @@ ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools \
     DENO_DIR=/opt/buckyos/instance/deno-cache \
     UV_CACHE_DIR=/opt/buckyos/instance/uv-cache \
+    UV_PYTHON_INSTALL_DIR=/opt/buckyos/instance/uv-python \
     NPM_CONFIG_CACHE=/opt/buckyos/instance/npm-cache \
+    NPM_CONFIG_PREFIX=/opt/buckyos/instance/npm-prefix \
     PIP_CACHE_DIR=/opt/buckyos/instance/pip-cache \
     PATH="/opt/buckyos/tools/bin:/opt/buckyos/bin/opendan:${PATH}"
 
@@ -1227,6 +1219,7 @@ build_runtime_binaries() {
   fi
   cp "$ENTRYPOINT_SOURCE" "$context_dir/entrypoint.sh"
   chmod 755 "$context_dir/entrypoint.sh"
+  cp "$ROOT_DIR/publish/aios/sync_tree.ts" "$context_dir/sync_tree.ts"
 }
 
 docker_platform_for_arch() {

@@ -233,6 +233,13 @@ def _prepare_agent_tools(source: Path | None = None, target: Path | None = None,
     return 0
 
 
+def _prepare_ext_tools(env: dict[str, str]) -> int:
+    return subprocess.run(
+        [sys.executable, str(Path(__file__).resolve().parent / "tools" / "prepare_ext_tools.py")],
+        env=env,
+    ).returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     if any(arg in ("-h", "--help") for arg in args):
@@ -260,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
         result = _prepare_agent_tools()
         if result != 0:
             return result
+        # A machine without it runs fine, only without the extension tools: not a build failure.
+        _prepare_ext_tools(env)
 
     env["BUCKYOS_PIKG_COMMAND"] = json.dumps([
         _find_command("node") or "node",

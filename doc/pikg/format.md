@@ -81,7 +81,7 @@ AppDoc.pkg_list[key].pkg_objid
 | CLI build/pack/info | 完整、自包含 PIKG；普通 App、Agent 模板和独立 `agent_skills` 包 |
 | Rust 普通 App Installer | 受控 immutable staging 文件，重新验证普通 App/Agent 模板；上层执行信任、目标和权限校验 |
 | Agent skill CLI | TypeScript 验证后，仅将 `agent_skills` 中认可目录的文件提交到 Agent `skills.install` |
-| 扩展工具包（`app_type=ext_tools`） | Rust `AppType::ExtTools` 与 TypeScript 两端都只接受按平台的子包（下文 §5.1），不得有其它子包。`buckyos pikg build` / `pack` / `info` 校验每个 payload；`app publish` 经 control-panel 写入 Repo；`apps.submit`（`app install`）一律拒绝，不建 AppSpec、不起服务。安装由节点 reconciler 按 Zone 期望状态做（未实现，见 [扩展包 TODO](../../notepads/opendan-exttools-cross-platform-todo.md) X2 / X3） |
+| 扩展工具包（`app_type=ext_tools`） | Rust `AppType::ExtTools` 与 TypeScript 两端都只接受按平台的子包（下文 §5.1），不得有其它子包。`buckyos pikg build` / `pack` / `info` 校验每个 payload；`app publish` 经 control-panel 写入 Repo，`ext-tools import` 把现成的 `.pikg` 原样写入（摘要不变）；`apps.submit`（`app install`）一律拒绝，不建 AppSpec、不起服务。系统管理员用 `ext-tools enable|disable` 或 Desktop 改 Zone 期望状态（`system/ext_tools/desired/<id>`），scheduler 投影到每个节点的 `NodeConfig.ext_tools`，node_daemon 的 reconciler 安装并把状态写回 `nodes/<node>/ext_tools/<id>`（见 [扩展包 TODO](../../notepads/opendan-exttools-cross-platform-todo.md)） |
 | AI Workspace 控件库（`app_type=aiws`） | Rust `AppType::Aiws` 与 TypeScript 两端都只接受唯一子包 `pkg_list.aiws`（不得有 docker / script / web / native / Agent 子包）；payload `aiws.tar.gz` 是 AIWS bundle：`aiws-manifest.json` + `controls/<dir>/<file>`。`buckyos app install`（Installer `apps.submit`，仅 Rpc 来源）验证后由 control-panel 调 aiworkspace `ext.install`（mode `installer`），开发态由客户端直接调 `ext.install`（mode `dev`）；两条路都不建 AppSpec、不起服务，记录只在 aiworkspace 本机控件库。CLI `pikg build` / `pack` / `info` 与 aiworkspace 服务各自按 manifest 重算每个控件的 digest、校验 `component.json`。清单与库的协议见 [aiworkspace README “Extension controls”](../../src/frame/aiworkspace/README.md) |
 
 独立 `app_type=agent_skills` 是 TypeScript/Agent 路径支持的包类型，不是 Rust `AppType` 的新增枚举值；`app_type=aiws`、`app_type=ext_tools` 则两端都是正式类型（Rust `AppType::Aiws`、`AppType::ExtTools`）。Agent 模板的 `app_type=agent` 与之不同，公共 App submit 为模板注册。内部 Rust builder 的部分包用例不代表 CLI 提供部分打包或普通 App 第三方依赖安装能力。
@@ -105,7 +105,7 @@ payload 解到 `$BUCKYOS_ROOT/tools/` 下，只能有：
 ```text
 ext-manifest.json     # 根上一份；工程根的同名文件是唯一来源，payload 里是副本
 bin/<command>         # provides 的每个命令一个 launcher，且只能是 provides 里的（Windows 可带 .exe/.cmd/.bat/.ps1）
-smoke/...             # provides 引用的无网络检查脚本
+smoke/...             # provides 引用的无网络检查脚本；Windows payload 里是同名的 .ps1
 store/<id>/...        # 工具本体，只写自己的 id
 ```
 
@@ -131,7 +131,7 @@ store/<id>/...        # 工具本体，只写自己的 id
 }
 ```
 
-`id`、`version` 必须等于 AppDoc 的 `name`、`version`。`provides` 是系统对“哪个包提供哪个命令”的全部知识；同一命令被两个包提供时，至少一方要在 `conflicts` 里列出另一方，两者不能同时启用。`ext-core`（[publish/exttool/ext-core](../../publish/exttool/ext-core)）是第一个包，它的 `provides` 由单测与 `baseline::EXTENDED_TOOLS` 绑定。
+`id`、`version` 必须等于 AppDoc 的 `name`、`version`。标准层的命令（`baseline::STANDARD_TOOLS`）不能被任何包提供：`tools/bin` 在 PATH 上排在 `bin/agent-tools` 之前，会遮蔽 Agent 的身份与控制命令。`provides` 是系统对“哪个包提供哪个命令”的全部知识；同一命令被两个包提供时，至少一方要在 `conflicts` 里列出另一方，两者不能同时启用。`ext-core`（[publish/exttool/ext-core](../../publish/exttool/ext-core)）是第一个包，它的 `provides` 由单测与 `baseline::EXTENDED_TOOLS` 绑定。
 
 工程布局、`pikg init --kind ext-tools` 与 `pikg doctor [--catalog]` 见 [WebSDK PIKG CLI](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md)。
 

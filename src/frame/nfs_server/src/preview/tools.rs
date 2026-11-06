@@ -2,7 +2,8 @@
 //! §5.1): ffmpeg + ffprobe and LibreOffice `soffice`, each optional (Q7) —
 //! "有则使用，没有就失败". Lookup order is `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/`,
 //! then `PATH`, then fixed locations a service PATH lacks (macOS Homebrew
-//! prefixes; LibreOffice's install directories on all three platforms); Windows
+//! prefixes; LibreOffice's install directories on all three platforms), then
+//! the extension packages in `$BUCKYOS_ROOT/tools/bin/`; Windows
 //! names carry `.exe` and spawn without a console. Nothing is downloaded or
 //! installed. The probe result is cached per binary identity (path, size,
 //! mtime) and shown in `hello` so a DV run can tell which path ran.
@@ -130,7 +131,8 @@ pub fn exe_name(name: &str) -> String {
 
 /// Directories searched, in order.
 pub fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![buckyos_kit::get_buckyos_root_dir().join("libexec").join("buckyos-tool").join("bin")];
+    let root = buckyos_kit::get_buckyos_root_dir();
+    let mut dirs = vec![root.join("libexec").join("buckyos-tool").join("bin")];
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path).filter(|p| !p.as_os_str().is_empty()));
     }
@@ -159,12 +161,18 @@ pub fn search_dirs() -> Vec<PathBuf> {
             dirs.push(extra);
         }
     }
+    // Last: a machine keeps the converter it had. ext-core's ffmpeg has no `zscale`, so taking it over a system one would lose HDR tone mapping.
+    dirs.push(root.join("tools").join("bin"));
     dirs
 }
 
 pub fn find(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let exe = exe_name(name);
-    dirs.iter().map(|d| d.join(&exe)).find(|p| p.is_file())
+    // On Windows an extension package's launcher is a `.cmd`.
+    let launcher = cfg!(windows).then(|| format!("{name}.cmd"));
+    dirs.iter()
+        .flat_map(|d| std::iter::once(d.join(&exe)).chain(launcher.as_ref().map(|l| d.join(l))))
+        .find(|p| p.is_file())
 }
 
 /// `(path, size, mtime)` of the binaries found: a changed install re-probes.
@@ -279,6 +287,11 @@ pub fn probe(dirs: &[PathBuf]) -> Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_installed_tool_wins_over_the_extension_package() {
+        assert!(search_dirs().last().unwrap().ends_with("tools/bin"));
+    }
 
     #[test]
     fn versions() {

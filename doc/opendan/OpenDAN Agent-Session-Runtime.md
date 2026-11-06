@@ -137,47 +137,27 @@ host 入口由 `opendan install-agent-tools` 布置：Unix 使用符号链接，
 
 | 档 | 内容 | 判定 |
 | --- | --- | --- |
-| 核心 | `EXTENDED_TOOLS` 里标 `core` 的工具：`ffmpeg ffprobe`、`convert identify compare`（或 `magick`）、`pdftotext pdftoppm pdfinfo`、`tesseract`、`pandoc`、`python3 uv`、`node npm npx deno`、`git curl jq tree unzip xz` | 声明 `extended` 时缺任何一个，`baseline_check` 失败 |
+| 核心 | `EXTENDED_TOOLS` 里标 `core` 的工具：`ffmpeg ffprobe`、`magick convert identify compare`、`pdftotext pdftoppm pdfinfo`、`tesseract`、`pandoc`、`python3 uv`、`node npm npx deno`、`git curl jq tree unzip xz` | 声明 `extended` 时缺任何一个，`baseline_check` 失败 |
 | 推荐 | `EXTENDED_TOOLS` 里标 `recommended` 的工具（首版没有，T0 决定） | 缺了只在 `ext` 状态里报，不否定 `extended` |
 | 可选 | FreeCAD、编译工具链、Docker、pnpm、字体、额外 OCR 数据等，各自成扩展包 | 不改变 baseline，skill 自己核验 |
 
 检查按声明选集合，但总是一起查扩展层，所以声明 `standard` 的 runtime 也能看到它实际有什么：`caps.baseline_check.ext` 的 `status` 是 `ok`（全部来自扩展包）、`system`（齐全，部分是机器自己的）、`partial`（缺一些）、`none`。扩展层的检查是宽的：机器碰巧有 ffmpeg 也算有，只是 `resolved` 里记 `provided_by: system`。后台检查只记路径；`xagent runtime check <id> --full` 才运行工具，记版本，并把退出 126 / 127 的占位入口计为缺失。
 
-检查不改声明。安装（node_daemon reconciler）未实现，声明 `extended` 前仍由 owner 自己把机器准备好，见 [扩展包 TODO](../../notepads/opendan-exttools-cross-platform-todo.md)。音频环境可以有 `ffmpeg` 而没有 Rust，这类差异在可选档：cmd_skill 用 `baseline: extended` 表示需要核心扩展工具，其它依赖在 `requires` 或正文中列出并在运行前核验。
+检查不改声明，安装也不改声明：扩展包是系统管理员在 Zone 级启用、由每个节点的 node_daemon 安装的（`buckyos ext-tools`，Desktop “设置 > 扩展工具”），`extended` 仍是 owner 对某个 runtime 的声明。Agent 只读安装事实：`xagent runtime ext-tools status|check <id>`。音频环境可以有 `ffmpeg` 而没有 Rust，这类差异在可选档：cmd_skill 用 `baseline: extended` 表示需要核心扩展工具，其它依赖在 `requires` 或正文中列出并在运行前核验。
 
-### 3.2 当前 aios 提供的附加工具
+### 3.2 aios 镜像自带的软件
 
-下面是当前 [`build_aios`](../../build_aios) 明确安装的软件及常用入口，是核心档的首版来源。其中 `bash`、`rsync` 是 Linux 特有，不在 `EXTENDED_TOOLS` 里。
+工作镜像只带不属于扩展包的东西（[`build_aios`](../../build_aios)）：`bash`、`rsync`（Linux 特有，不在 `EXTENDED_TOOLS` 里）、`ca-certificates`，规划中 `ext-office` 那组（LibreOffice headless、字体、locale），以及标准层自己的 Deno（`/opt/buckyos/bin/opendan/deno`，标准命令和入口脚本按绝对路径用它，排在 PATH 上扩展层之后）。其它命令都来自 §3.3。
 
-| 能力 | 常用命令 | 当前 aios 的来源与边界 |
-| --- | --- | --- |
-| Shell | `bash` | 镜像安装；host 使用其目标平台的 shell。 |
-| 网络与版本管理 | `curl`、`git` | 镜像安装；远端服务身份和仓库访问权限另行检查。 |
-| JSON、目录与文件传输 | `jq`、`tree`、`rsync` | 镜像安装。 |
-| 解包、压缩 | `unzip`、`xz` | 镜像安装 `unzip`、`xz-utils`。 |
-| Python | `python3`、`uv` | Python 解释器及依赖管理；项目依赖仍需按项目安装，不保证 `python` 或 `pip` 别名。 |
-| JavaScript | `node`、`npm`、`npx` | Node 分发包；不因此保证 `pnpm` 或任意 npm 工具已安装。 |
-| TypeScript | `deno` | 镜像安装，并用于标准 AICC 工具和脚本；项目模块及权限按脚本声明。 |
-| 音视频加工 | `ffmpeg`、`ffprobe` | 镜像安装 ffmpeg；用于转码、裁剪、拼接、合成和媒体信息检查。 |
-| 图像加工 | ImageMagick：`convert`、`identify`、`compare` | 镜像安装 ImageMagick；其它平台可能使用 `magick` 入口，应按实际版本调整调用。 |
-| PDF 处理 | Poppler：`pdftotext`、`pdftoppm`、`pdfinfo` 等 | 镜像安装 `poppler-utils`；这些是包的常用入口，标准基线检查不逐项验证它们。 |
-| 本地 OCR | `tesseract` | 镜像安装 `tesseract-ocr`；任务语言所需的数据包须单独确认。 |
+### 3.3 扩展包提供的工具
 
-以上是构建配置提供的软件范围，不是所有编解码器、字体、语言包或插件均已具备的保证。例如中文字幕需要可用的中文字库，Python 项目需要自己的依赖环境。软件版本以 `build_aios` 和实际运行端的版本输出为准。
+容器通过只读卷 `buckyos-tools` 获得 `/opt/buckyos/tools/`，入口脚本将其 `bin/` 排到 PATH 最前；host 上 Node Executor 把 `$BUCKYOS_ROOT/tools/bin` 排在 `bin/agent-tools` 之前。Linux 上卷就是 `$BUCKYOS_ROOT/tools`，宿主与容器用同一份文件。它不改变 `extended ⊇ standard` 的关系，也不代替标准 Agent 命令的安装：没有包可以提供标准层的同名命令。
 
-### 3.3 ExtTool 提供的工具
+`ext-core`（[`publish/exttool/ext-core`](../../publish/exttool/ext-core)）是第一个包，五个平台各一个自包含 payload，launcher 只指 `store/` 内的文件，不回退 PATH。命令、来源与场景的唯一事实来源是 [paios容器需求.md §6.4](../app_service/paios容器需求.md) 表 B。包格式（`app_type=ext_tools`）见 [PIKG 格式 §5.1](../pikg/format.md)。
 
-ExtTool 卷是扩展层今天在容器上的落点。容器通过只读卷获得 `/opt/buckyos/tools/`，入口脚本将其 `bin/` 加入 PATH；host 上 Node Executor 把 `$BUCKYOS_ROOT/tools/bin` 排在 `bin/agent-tools` 之前。它不改变 `extended ⊇ standard` 的关系，也不代替标准 Agent 命令的安装。扩展包格式（`app_type=ext_tools`）见 [PIKG 格式 §5.1](../pikg/format.md)，`publish/exttool/ext-core` 是第一个包：pandoc 随包，其余命令目前的 Linux launcher 转到机器上的同名命令，真正随包要等 T2。
+软件版本以 `xagent runtime ext-tools status` 和实际运行端的版本输出为准。保证的是命令存在、无网络 smoke 通过，不是所有编解码器、字体、语言包都具备：`tesseract` 只带 `eng`、`osd`；中文字幕需要可用的中文字库；Python 项目需要自己的依赖环境（`uv` 管理，解释器落到 Agent 的缓存，见 [path_usage.md](../path_usage.md)）。Windows PowerShell 5.1 里 `curl`、`compare` 是别名，要写 `curl.cmd`、`magick compare`。
 
-下表的 `pandoc-lua`、`pandoc-server` 只在 seed 镜像里有，`ext-core` 不保证。
-
-| 工具 | 常用入口 | 可用条件 |
-| --- | --- | --- |
-| Pandoc | `pandoc`、`pandoc-lua`、`pandoc-server` | 当前默认 ExtTool 构建安装这些入口；需要实际挂载对应版本的工具卷。Pandoc 不直接装在 aios 基础镜像内。 |
-| FreeCAD CLI | `freecadcmd` | 构建 ExtTool 时提供 FreeCAD AppImage 才有真实程序。默认只有返回错误的占位入口，不能因 `command -v freecadcmd` 成功就认为 FreeCAD 可用。 |
-| Python/Deno 依赖缓存 | 没有统一的业务命令入口 | ExtTool 预热下载缓存，不能据此认定依赖已安装进每个 Session 的解释器或项目环境。 |
-
-来源：[ExtTool Dockerfile](../../publish/exttool/Dockerfile)、[Pandoc 安装脚本](../../publish/exttool/install_pandoc.sh)、[FreeCAD 安装脚本](../../publish/exttool/install_freecad.sh)、[容器入口脚本](../../publish/aios/entrypoint.sh)。
+种子镜像（`paios/exttool`）另外带预热的 `uv-cache`、`deno-cache`：不能据此认定依赖已装进每个 Session 的项目环境。FreeCAD 不在默认镜像里，要用 `FREECAD_APPIMAGE_URL_*` 单独构建，之后成为 `ext-cad` 包（§6.4 表 C）。
 
 ### 3.4 开发与构建任务的额外要求
 

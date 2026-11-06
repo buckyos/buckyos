@@ -78,6 +78,8 @@ test('runtimes show their declared environment and what their tool check found',
   await container.getByRole('button', { name: 'Check', exact: true }).click()
   await expect(container.getByTestId('runtime-ext')).toHaveText('Extension tools: complete, some from this machine (ffmpeg, python3)')
   await expect(container.getByTestId('runtime-ext')).toHaveClass(/text-mute/)
+  await expect(container.getByTestId('runtime-ext-packages')).toContainText('ext-core 1.1.0')
+  await expect(container.getByTestId('runtime-ext-packages')).toContainText('Extension Tools')
   await expect(container.getByTestId('runtime-usage')).toContainText('12 sessions')
   const host = runtimes.getByTestId('runtime-host')
   await expect(host).toContainText("Owner's desktop")

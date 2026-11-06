@@ -14,6 +14,7 @@ import type {
   Hint,
   IdentityText,
   KnownRuntime,
+  RuntimeExtTools,
   KnownWorkspace,
   LoaderStatus,
   ProfilePatch,
@@ -60,6 +61,7 @@ export interface OpenDanDataModel {
   /** `''` clears the project URL. */
   setWorkspaceUrl(workspace: KnownWorkspace, url: string): Promise<KnownWorkspace>
   checkRuntime(runtimeId: string): Promise<KnownRuntime>
+  runtimeExtTools(runtimeId: string): Promise<RuntimeExtTools>
   runtimeSettings(): Promise<RuntimeSettings>
   setRuntimeSetting(patch: RuntimeSettingPatch): Promise<RuntimeSettings>
 

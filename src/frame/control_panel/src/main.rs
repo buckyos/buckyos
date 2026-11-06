@@ -14,6 +14,7 @@ mod app_mutation;
 mod app_package_namespace;
 mod app_servcie_mgr;
 mod app_staging;
+mod ext_tools_mgr;
 mod buckets;
 mod cluster_mgr;
 mod dashboard;
@@ -24,7 +25,7 @@ mod exclusive_invite;
 mod federation;
 mod image_data_url;
 mod ndn_download;
-mod pikg;
+use buckyos_api::pikg;
 mod pre_install_reconciler;
 mod product;
 mod redaction;
@@ -183,6 +184,9 @@ impl RpcAuthPrincipal {
                     | "apps.staging.status"
                     | "apps.install.status"
                     | "apps.upgrade.check"
+                    | "ext_tools.catalog"
+                    | "ext_tools.status"
+                    | "ext_tools.plan"
                     | "zone.overview"
                     | "zone.devices.list"
                     | "zone.certificates.list"
@@ -1377,6 +1381,11 @@ impl ControlPanelServer {
             "system.update.apply" => Box::pin(self.handle_unimplemented(req, "Apply update")),
 
             //AppMgr
+            "ext_tools.catalog" => Box::pin(self.handle_ext_tools_catalog(req)),
+            "ext_tools.status" => Box::pin(self.handle_ext_tools_status(req)),
+            "ext_tools.plan" => Box::pin(self.handle_ext_tools_plan(req)),
+            "ext_tools.set_desired" => Box::pin(self.handle_ext_tools_set_desired(req, principal)),
+            "ext_tools.import" => Box::pin(self.handle_ext_tools_import(req, principal)),
             "apps.list" => Box::pin(self.handle_apps_list(req, principal)),
             "apps.details" => Box::pin(self.handle_app_detials(req, principal)),
             "apps.status" => Box::pin(self.handle_apps_status(req, principal)),

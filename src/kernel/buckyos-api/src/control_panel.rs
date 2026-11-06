@@ -402,6 +402,9 @@ pub struct NodeConfig {
     pub state: NodeState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executor: Option<crate::ExecutorConfig>,
+    /// The Zone's extension packages for this node (scheduler: `system/ext_tools/desired` × the node's platform).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub ext_tools: std::collections::BTreeMap<String, crate::NodeExtTools>,
 }
 
 impl NodeConfig {

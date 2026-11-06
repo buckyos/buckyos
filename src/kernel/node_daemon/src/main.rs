@@ -4,6 +4,7 @@ mod app_loader;
 mod app_mgr; // support manager app service (run in docker,run for one user)
 mod boot;
 mod desktop_runtime;
+mod ext_tools;
 mod finder;
 mod gateway_name_provider;
 mod gateway_tunnel_probe;

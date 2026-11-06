@@ -184,6 +184,9 @@ pub trait RuntimeRegistry: Send + Sync {
     /// exist on it (`caps.tools_check`). `full` also runs the extended tools
     /// and `commands`, for their versions and to find stubs.
     async fn check(&self, runtime_id: &str, commands: &[String], full: bool) -> Result<RuntimeRecord>;
+    /// What is installed under the runtime's `tools/` as its node's reconciler recorded it; `smoke`: and what each
+    /// package's smoke says now.
+    async fn ext_tools(&self, runtime_id: &str, smoke: bool) -> Result<serde_json::Value>;
     /// Retire a registration: it stays with its usage, never a candidate
     /// again. Built-in runtimes are refused.
     async fn unregister(&self, runtime_id: &str, expected_revision: u64, who: &str) -> Result<RuntimeRecord>;

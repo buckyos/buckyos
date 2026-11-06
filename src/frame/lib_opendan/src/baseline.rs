@@ -143,10 +143,6 @@ pub struct ExtendedTool {
     pub category: ExtToolCategory,
     pub tier: ExtToolTier,
     pub commands: &'static [ExtCommand],
-    /// Commands that serve instead of `commands` when all of them are there
-    /// (`magick` for ImageMagick 6's `convert`, `identify`, `compare`).
-    #[serde(skip_serializing_if = "<[_]>::is_empty")]
-    pub alternative: &'static [&'static str],
 }
 
 const fn ext_cmd(name: &'static str, version_probe: &'static str, smoke: Option<&'static str>) -> ExtCommand {
@@ -154,7 +150,7 @@ const fn ext_cmd(name: &'static str, version_probe: &'static str, smoke: Option<
 }
 
 const fn core_tool(id: &'static str, category: ExtToolCategory, commands: &'static [ExtCommand]) -> ExtendedTool {
-    ExtendedTool { id, category, tier: ExtToolTier::Core, commands, alternative: &[] }
+    ExtendedTool { id, category, tier: ExtToolTier::Core, commands }
 }
 
 /// The tools of an `extended` runtime: what `ext-core` provides.
@@ -163,17 +159,12 @@ pub const EXTENDED_TOOLS: &[ExtendedTool] = &[
         ext_cmd("ffmpeg", "ffmpeg -version", Some("smoke/ffmpeg.sh")),
         ext_cmd("ffprobe", "ffprobe -version", None),
     ]),
-    ExtendedTool {
-        id: "imagemagick",
-        category: ExtToolCategory::Image,
-        tier: ExtToolTier::Core,
-        commands: &[
-            ext_cmd("convert", "convert -version", Some("smoke/imagemagick.sh")),
-            ext_cmd("identify", "identify -version", None),
-            ext_cmd("compare", "compare -version", None),
-        ],
-        alternative: &["magick"],
-    },
+    core_tool("imagemagick", ExtToolCategory::Image, &[
+        ext_cmd("magick", "magick -version", Some("smoke/imagemagick.sh")),
+        ext_cmd("convert", "convert -version", None),
+        ext_cmd("identify", "identify -version", None),
+        ext_cmd("compare", "compare -version", None),
+    ]),
     core_tool("poppler", ExtToolCategory::Pdf, &[
         ext_cmd("pdftotext", "pdftotext -v", Some("smoke/poppler.sh")),
         ext_cmd("pdftoppm", "pdftoppm -v", None),
@@ -192,7 +183,7 @@ pub const EXTENDED_TOOLS: &[ExtendedTool] = &[
     ]),
     core_tool("deno", ExtToolCategory::JavaScript, &[ext_cmd("deno", "deno --version", Some("smoke/deno.sh"))]),
     core_tool("helpers", ExtToolCategory::Utility, &[
-        ext_cmd("git", "git --version", None),
+        ext_cmd("git", "git --version", Some("smoke/helpers.sh")),
         ext_cmd("curl", "curl --version", None),
         ext_cmd("jq", "jq --version", None),
         ext_cmd("tree", "tree --version", None),
@@ -221,13 +212,25 @@ pub fn required_commands(level: RuntimeBaseline, overlay: bool) -> Vec<&'static 
     out
 }
 
-/// Every extended command a check looks for: the guaranteed ones and their
-/// alternatives.
+/// Where the tools of an Agent keep what they download (ExtTools TODO §3.6): its own directory, so that nothing lands in the
+/// account's global caches, npm prefix or interpreters. `HOME` stays; the Agent runs as the account it was given.
+pub fn tool_cache_env(cache: &Path) -> Vec<(String, String)> {
+    [
+        ("DENO_DIR", "deno-cache"),
+        ("UV_CACHE_DIR", "uv-cache"),
+        ("UV_PYTHON_INSTALL_DIR", "uv-python"),
+        ("NPM_CONFIG_CACHE", "npm-cache"),
+        ("NPM_CONFIG_PREFIX", "npm-prefix"),
+        ("PIP_CACHE_DIR", "pip-cache"),
+    ]
+    .into_iter()
+    .map(|(name, dir)| (name.to_string(), cache.join(dir).display().to_string()))
+    .collect()
+}
+
+/// Every extended command a check looks for.
 pub fn extended_commands() -> Vec<&'static str> {
-    EXTENDED_TOOLS
-        .iter()
-        .flat_map(|t| t.commands.iter().map(|c| c.name).chain(t.alternative.iter().copied()))
-        .collect()
+    EXTENDED_TOOLS.iter().flat_map(|t| t.commands.iter().map(|c| c.name)).collect()
 }
 
 /// The commands a check of any declaration looks for: the extended ones are
@@ -277,13 +280,7 @@ pub fn evaluate(level: RuntimeBaseline, overlay: bool, resolved: &BTreeMap<Strin
     let mut system = Vec::new();
     let mut found = 0usize;
     for tool in EXTENDED_TOOLS {
-        let by_alternative = !tool.alternative.is_empty() && tool.alternative.iter().all(|n| present(n).is_some());
-        let names: Vec<&str> = if by_alternative {
-            tool.alternative.to_vec()
-        } else {
-            tool.commands.iter().map(|c| c.name).collect()
-        };
-        for name in names {
+        for name in tool.commands.iter().map(|c| c.name) {
             match present(name) {
                 Some(c) => {
                     found += 1;
@@ -719,6 +716,25 @@ mod tests {
     }
 
     #[test]
+    fn caches_stay_in_the_agents_directory_and_home_is_left_alone() {
+        let env = tool_cache_env(Path::new("/a/.cache"));
+        assert!(env.iter().all(|(_, value)| value.starts_with("/a/.cache/")), "{env:?}");
+        assert!(env.iter().all(|(name, _)| name != "HOME" && name != "USERPROFILE" && name != "PATH"));
+        for wanted in ["DENO_DIR", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "NPM_CONFIG_CACHE", "NPM_CONFIG_PREFIX", "PIP_CACHE_DIR"] {
+            assert!(env.iter().any(|(name, _)| name == wanted), "{wanted}");
+        }
+    }
+
+    #[test]
+    fn no_package_can_provide_a_standard_command() {
+        let mut standard: Vec<&str> = STANDARD_TOOLS.iter().map(|t| t.name).collect();
+        standard.sort();
+        let mut reserved = buckyos_api::EXT_TOOLS_RESERVED_COMMANDS.to_vec();
+        reserved.sort();
+        assert_eq!(reserved, standard, "EXT_TOOLS_RESERVED_COMMANDS and STANDARD_TOOLS differ");
+    }
+
+    #[test]
     fn extended_tools_are_what_the_core_extension_package_provides() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../publish/exttool/ext-core/ext-manifest.json");
         let manifest = buckyos_api::ExtToolsManifest::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -752,8 +768,8 @@ mod tests {
         let extended = required_commands(RuntimeBaseline::Extended, false);
         assert!(!standard.contains(&"ffmpeg") && extended.contains(&"ffmpeg"), "{extended:?}");
         assert!(standard.iter().all(|c| extended.contains(c)), "extended holds standard");
-        assert!(!extended.contains(&"magick"), "an alternative is not required");
-        assert!(checked_commands(false).contains(&"magick"), "but it is looked for");
+        assert!(extended.contains(&"magick"), "ImageMagick 7's own entry is what a package guarantees");
+        assert!(checked_commands(false).contains(&"magick"));
     }
 
     fn found(entries: &[(&str, ProvidedBy)]) -> BTreeMap<String, ResolvedCommand> {
@@ -833,13 +849,6 @@ mod tests {
         assert_eq!(stub.missing, vec!["ffmpeg".to_string()]);
         assert!(stub.ext.summary().contains("missing ffmpeg"));
 
-        // `magick` serves for the ImageMagick 6 commands
-        let mut magick = all_standard();
-        magick.extend(all_extended(ProvidedBy::Exttools));
-        magick.retain(|(n, _)| !["convert", "identify", "compare"].contains(n));
-        assert!(!evaluate(RuntimeBaseline::Extended, false, &found(&magick)).ok());
-        magick.push(("magick", ProvidedBy::Exttools));
-        assert!(evaluate(RuntimeBaseline::Extended, false, &found(&magick)).ok());
     }
 
     #[test]

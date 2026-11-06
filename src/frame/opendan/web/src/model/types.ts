@@ -398,6 +398,15 @@ export interface WorkspaceImportRequest {
   location: WorkspaceLocation
 }
 
+/** `runtimes.ext_tools`: what the node's reconciler installed under a runtime's `tools/`. An Agent only ever reads this. */
+export interface RuntimeExtTools {
+  runtime_id: string
+  tools_root: string
+  /** `node_volume`: a worker's view of its node's tools volume. */
+  managed_by: 'node' | 'node_volume'
+  packages: Record<string, { version: string; origin: 'seed' | 'desired'; commands: Record<string, string> }>
+}
+
 /** `AgentSettings.runtimes` as the owner chose them for this agent. */
 export type RuntimeBaseline = 'standard' | 'extended'
 

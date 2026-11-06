@@ -655,6 +655,7 @@ impl SystemConfigBuilder {
             frame_services: HashMap::new(),
             state: NodeState::Running,
             executor: None,
+            ext_tools: Default::default(),
         };
         self.insert_json(&format!("nodes/{}/config", ood_name), &config)?;
 

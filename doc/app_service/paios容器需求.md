@@ -263,7 +263,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 - **机制优先于清单（owner 2026-11-06）**：扩展包体系与 `ext-core` 的发行、钉版、种子流程先建好（ExtTools TODO §3.10）；首版 `ext-core` 的清单可以宽，实现需要的工具都可以先放进 `ext-core`，但**每一条都必须先写进表 B**。后续调整清单走 `ext-core` 升版与 pikg 更新，不走代码特例。
 - 代码与构建脚本必须与本表一致，由测试守：`baseline::STANDARD_TOOLS` ↔ `src/tools/buckyos-agent/commands/*.ts`（已有）；`baseline::EXTENDED_TOOLS` ↔ `ext-core` 的 `ext-manifest.json`（已有）；表 B ↔ `ext-manifest.json` 的 `provides`、表 B 的来源列 ↔ `publish/exttool/ext-core/build.sh` 的锁定清单（ExtTools TODO T2b 加脚本检查）。改任一处先改本表。
 - 新场景需要的新命令走扩展包（ExtTools TODO §3.9），不往核心层加，也不单独往工作镜像加；工作镜像里的 Agent 可用命令只随 `ext-core` 与表 C 的包变。
-- 版本锁在各自构建脚本顶部：`build_aios` 的 `NODE_VERSION`、`DENO_VERSION`（核心层自己钉死的 Deno）；`publish/exttool/ext-core/build.sh` 的官方归档版本与 SHA256（今天是 `install_pandoc.sh` 的 `PANDOC_VERSION`）；conda-forge 那组锁在 `publish/exttool/ext-core/conda-lock.yml`。
+- 版本锁在各自构建脚本顶部：`build_aios` 的 `NODE_VERSION`、`DENO_VERSION`（核心层自己钉死的 Deno）；`publish/exttool/ext-core/build.sh` 顶部的官方归档版本，SHA256 在同目录 `sources.sha256`；conda-forge 那组由同目录 `conda-env.yml` 声明、`conda-lock.yml` 锁定。
 - 非官方来源（Agent 自装、用户在 host 上自备、第三方扩展包）不在本表；它们由 runtime 的 `tools_check` 按实际探测记录（`provided_by: agent | system`）。
 
 **表 A：核心层（standard，`baseline::STANDARD_TOOLS`，31 条）** 随系统发布，三种形态（容器、Desktop Lite、node-daemon host）都必须有；依赖的 Deno、TS 源码与 SDK 由 launcher 钉在 `$BUCKYOS_ROOT` 下的绝对路径，不走 PATH。
@@ -285,19 +285,19 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `gen_video`、`edit_video`、`extend_video`、`upscale_video` | 视频生成与编辑（走 Zone 模型） | `aigc_video`；本地剪辑 / 合成另需表 B 的 ffmpeg |
 | `gen_music`、`text_to_speech`、`speech_to_text`、`enhance_audio` | 音频生成、TTS、ASR、增强（走 Zone 模型） | `aigc_audio`；本地转码 / 拼接另需表 B 的 ffmpeg |
 
-**表 B：`ext-core` 扩展包（`extended` 基线，`baseline::EXTENDED_TOOLS` ↔ `publish/exttool/ext-core/ext-manifest.json`；今天 22 条命令，`magick` 随 T2 的 IM7 加入后 23 条）**
+**表 B：`ext-core` 扩展包（`extended` 基线，`baseline::EXTENDED_TOOLS` ↔ `publish/exttool/ext-core/ext-manifest.json`，23 条命令）**
 
-`ext-core` 是扩展包目录里的第一个包，五个平台（`linux-x86_64`、`linux-aarch64`、`darwin-arm64`、`darwin-x86_64`、`windows-x86_64`）各一个自包含 payload；装到 `$BUCKYOS_ROOT/tools/`，三种形态一套（容器节点是 `buckyos-tools` 卷）。发行、钉版与种子见 ExtTools TODO §3.10。**今天**（T2 之前）这组命令只在 Linux 容器里有：ffmpeg 等来自 `build_aios` 的 `RUNTIME_PACKAGES`，pandoc 来自 ExtTool 卷；Desktop Lite / host 上 `extended` 只是 owner 的声明。T2 落地后工作镜像不再 apt 装这组命令，容器与原生一样从 `ext-core` payload 得到它们。
+`ext-core` 是扩展包目录里的第一个包，五个平台（`linux-x86_64`、`linux-aarch64`、`darwin-arm64`、`darwin-x86_64`、`windows-x86_64`）各一个自包含 payload；装到 `$BUCKYOS_ROOT/tools/`，三种形态一套（容器节点是 `buckyos-tools` 卷）。发行、钉版与种子见 ExtTools TODO §3.10。工作镜像不再 apt 装这组命令，容器与原生一样从 `ext-core` payload 得到它们。
 
-来源列的含义（owner 2026-11-06 裁决）：**官方** = 上游官方发布的归档，`build.sh` 逐工具下载并固定版本与 SHA256，落 `store/ext-core/<tool>/`；**conda-forge** = 没有官方二进制（或某个平台没有）的工具，统一装进一个 conda-forge 前缀 `store/ext-core/conda/`，由 `conda-lock.yml` 锁版本与来源，conda-pack 重定位；自己编译只留给重定位失败的平台。`bin/` 里的 launcher 只指向 `store/` 内的文件，**不回退到 PATH**（缺就退 127），这样 `extended` 的检查结果不受机器环境影响。标“核”的格子是 T0 要确认的上游事实。
+来源列的含义（owner 2026-11-06 裁决）：**官方** = 上游官方发布的归档，`build.sh` 逐工具下载并固定版本与 SHA256，落 `store/ext-core/<tool>/`；**conda-forge** = 没有官方二进制（或某个平台没有）的工具，统一装进一个 conda-forge 前缀 `store/ext-core/conda/`，由 `conda-lock.yml` 锁版本与来源；ELF / Mach-O 的 rpath 本来就相对于自身，数据目录由 launcher 用环境变量指过去（T0 实测，不需要 conda-pack 的安装后重写，见 ExtTools TODO §4.2）。`bin/` 里的 launcher 只指向 `store/` 内的文件，**不回退到 PATH**（缺就退 127），这样 `extended` 的检查结果不受机器环境影响。
 
 | 命令 | 工具 / 版本锁 | linux x86_64 / aarch64 | macOS arm64 / x86_64 | windows x86_64 | 支持的场景（为什么要装） |
 | --- | --- | --- | --- | --- | --- |
-| `ffmpeg`、`ffprobe` | ffmpeg，`conda-lock.yml` | conda-forge | conda-forge | conda-forge | `aigc_audio` / `aigc_video` 的转码、剪辑、拼接、抽帧、媒体信息检查；workflow 媒体工具基线 |
+| `ffmpeg`、`ffprobe` | ffmpeg，`conda-lock.yml`（conda-forge 的构建没有 libzimg，没有 `zscale` 滤镜） | conda-forge | conda-forge | conda-forge | `aigc_audio` / `aigc_video` 的转码、剪辑、拼接、抽帧、媒体信息检查；workflow 媒体工具基线 |
 | `magick`、`convert`、`identify`、`compare` | ImageMagick 7，`conda-lock.yml`。`convert / identify / compare` 是兼容入口：IM7 自带旧名时直接用，否则 launcher 映射到 `magick <子命令>` | conda-forge | conda-forge | conda-forge | `aigc_image` / `aigc_video` 的本地图像检查与加工。随本表统一到 IM7（原 ExtTools TODO T0 的 IM6 / IM7 待决项按此关闭） |
 | `pdftotext`、`pdftoppm`、`pdfinfo` | poppler ≥ 22.0，`conda-lock.yml` | conda-forge | conda-forge | conda-forge | 媒体工具基线（[doc/workflow/media tool baseline.md](../workflow/media%20tool%20baseline.md)）：workflow `media.pdf` / `media.document` 的 PDF 文本 / 页图提取；`import_office` 后加工 |
-| `tesseract`（含 `eng`、`osd` 数据） | tesseract，`conda-lock.yml`；中文数据包不在 `ext-core`（核：conda-forge 包是否自带 eng / osd） | conda-forge | conda-forge | conda-forge | 本地 OCR 回退；主路径是 `ocr_image`。不是 workflow 媒体基线的必需项 |
-| `pandoc` | 3.12.1，SHA256 在 `install_pandoc.sh` | 官方 | 官方 | 官方 | 文档格式转换（docx / md / html / pdf 互转）：`import_office` 的后加工、文档类产出 |
+| `tesseract`（含 `eng`、`osd` 数据） | tesseract，`conda-lock.yml`（conda-forge 带全部 126 种语言，构建时只留 `eng`、`osd`）；中文数据包不在 `ext-core` | conda-forge | conda-forge | conda-forge | 本地 OCR 回退；主路径是 `ocr_image`。不是 workflow 媒体基线的必需项 |
+| `pandoc` | 3.12.1，`build.sh` | 官方 | 官方 | 官方 | 文档格式转换（docx / md / html / pdf 互转）：`import_office` 的后加工、文档类产出 |
 | `python3` | python-build-standalone `install_only` 3.12.x，`build.sh` | 官方（astral） | 官方（astral） | 官方（astral） | ScriptHost Python App 的依赖安装；Agent 临时脚本。项目解释器由 uv 管，这份只是保证 `python3` 存在 |
 | `uv` | `build.sh` | 官方 | 官方 | 官方 | Python 项目与解释器管理；`UV_CACHE_DIR` 等指到 Agent 缓存（ExtTools TODO §3.6） |
 | `node`、`npm`、`npx` | Node LTS，`build.sh`（与 `build_aios` 的 `NODE_VERSION` 同一个数） | 官方 | 官方 | 官方 | ScriptHost / aiws 项目构建；`buckyos_app_dev` 的 web 包 |
@@ -305,8 +305,8 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `git` | `conda-lock.yml`；Windows 用 MinGit | conda-forge | conda-forge（**不回退** `/usr/bin/git`：它是 Xcode CLT 垫片，会弹安装对话框） | 官方 MinGit | `buckyos_app_dev`、`opendan_agent_dev`、`buckyos_dev_release` 的源码操作 |
 | `curl` | `conda-lock.yml` | conda-forge | conda-forge | conda-forge | 下载；Agent 脚本的 HTTP 调用 |
 | `jq` | `build.sh` | 官方 | 官方 | 官方 | JSON 提取（`aiworkspace_run` 示例、skill 脚本） |
-| `tree` | `conda-lock.yml`（核：win-64 是否有包） | conda-forge | conda-forge | conda-forge | 目录查看 |
-| `unzip` | `conda-lock.yml`（核：win-64 是否有包；没有则用 Info-ZIP 官方归档） | conda-forge | conda-forge | conda-forge / 官方 | 归档解压 |
+| `tree` | `conda-lock.yml`；win-64 没有包，也没有官方二进制，用随包的 `windows/tree.py`（`-a -d -L`，同样的输出格式） | conda-forge | conda-forge | 随包脚本（跑在 ext-core 的 python 上） | 目录查看 |
+| `unzip` | `conda-lock.yml`；win-64 没有包，用 busybox-w32 官方单文件（`build.sh`） | conda-forge | conda-forge | 官方（busybox-w32） | 归档解压 |
 | `xz` | `conda-lock.yml` | conda-forge | conda-forge | conda-forge | 归档压缩 / 解压 |
 
 `git`、`curl`、`tree`、`unzip`、`xz` 这组辅助命令在五个平台都随 `ext-core` 带，launcher 不依赖系统同名命令（owner 2026-11-06 确认；macOS 的系统 `git` 是 Xcode CLT 垫片，会弹安装对话框）。锁定清单与构建脚本都在 `publish/exttool/ext-core/`：`build.sh` 管官方归档，`conda-lock.yml` 管 conda-forge 那组。
@@ -320,8 +320,8 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | 包 / 内容 | 命令 | 状态 | 来源 / 版本 | 支持的场景（为什么要装） |
 | --- | --- | --- | --- | --- |
 | `ext-office`（规划） | `soffice`（LibreOffice headless）+ 字体（`fonts-dejavu-core`、`fonts-liberation`、`fonts-noto-core`、`fonts-noto-cjk`）+ locale（`en_US.UTF-8`，`LANG=C.UTF-8`） | 规划中。今天只在 Linux 容器：`build_aios` 的 apt 包 `libreoffice-*-nogui` + 字体 + `locales`；原生包要 T0 另核（LibreOffice 三平台有官方安装包但不是 portable，体积约数百 MB） | apt ≥ 7.0；原生待定 | 媒体工具基线：workflow `media.document` 的 DOCX / PPTX / ODT → PDF；`import_office` 的版式转换。字体影响页图内容，属于执行环境指纹 |
-| `ext-cad`（规划） | `freecadcmd` | 规划中，默认不装。今天是 exttool 镜像的可选项：`FREECAD_APPIMAGE_URL_*` 为空时 `freecadcmd` 是 `exit 127` 的 stub，stub 不算能力成立 | FreeCAD 官方 AppImage（Linux x86_64；aarch64 核）、dmg、7z | CAD 脚本化 |
-| ExtTool 卷的 `uv-cache`、`deno-cache` | 不是命令 | 随 `publish/exttool` seed 镜像预热，X3 之前保持；格式不允许包携带缓存，去向在 X3 定 | 随镜像 | ScriptHost 首启离线装依赖 |
+| `ext-cad`（规划） | `freecadcmd` | 规划中，默认不装。今天是 exttool 镜像的可选项：`FREECAD_APPIMAGE_URL_*` 为空时没有这个命令 | FreeCAD 官方 AppImage（Linux x86_64；aarch64 核）、dmg、7z | CAD 脚本化 |
+| 工具卷的 `uv-cache`、`deno-cache` | 不是命令 | 随 `publish/exttool` seed 镜像预热，卷新建时复制一次；格式不允许包携带缓存（X3 定：留在 seed 镜像） | 随镜像 | ScriptHost 首启离线装依赖 |
 
 **不在官方清单里、手册可能提到的**：`cargo`、`pnpm`、`docker`、`sha256sum`、编译工具链（`buckyos_dev_release`、`buckyos_app_dev` 的 Docker App）——属于工匠层或 Agent 自装，`extended` 不保证。
 

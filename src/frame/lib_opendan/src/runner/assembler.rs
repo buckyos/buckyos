@@ -680,6 +680,12 @@ fn commands_section(cfg: &SessionConfig, ui: bool) -> String {
         }
         s.push_str(k.text.trim());
         s.push_str("\n\n");
+        if !k.missing_commands.is_empty() {
+            s.push_str(&format!(
+                "This runtime has no `{}`: the steps that need them cannot run here. The owner can enable an extension package that provides them (`buckyos ext-tools list`), or they can be installed on this runtime some other way.\n\n",
+                k.missing_commands.join("`, `")
+            ));
+        }
     }
     if !unavailable.is_empty() {
         s.push_str("Not available on this session's runtime (work that needs them goes to a session on a runtime that has them):\n");

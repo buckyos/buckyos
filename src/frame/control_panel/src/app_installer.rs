@@ -1425,6 +1425,14 @@ impl AppInstaller {
             RPCErrors::ReasonError(format!("Read `{}` failed: {error}", manifest_path.display()))
         })?;
         let manifest = buckyos_api::ExtToolsManifest::parse(&raw).map_err(RPCErrors::ReasonError)?;
+        let reserved = buckyos_api::ext_tools_reserved_provides(&manifest);
+        if !reserved.is_empty() {
+            return Err(RPCErrors::ReasonError(format!(
+                "{} provides standard commands: {}",
+                manifest.id,
+                reserved.join(", ")
+            )));
+        }
         if manifest.id != app_doc_template._base.name || manifest.version != app_doc_template.version {
             return Err(RPCErrors::ReasonError(format!(
                 "`{}` is {} {}, the AppDoc is {} {}",
@@ -1954,12 +1962,16 @@ impl AppInstaller {
     /// it again by name and tell what it is without opening it.
     fn published_pikg_template(final_doc: &AppDoc, app_doc_object_id: &ObjId) -> FileObject {
         let mut template = FileObject::default();
-        template.content_obj.author = final_doc.author.to_string();
-        template.content_obj.owner = final_doc.owner.clone();
-        template.meta.insert("version".to_string(), json!(final_doc.version));
-        template.meta.insert("app_type".to_string(), json!(final_doc.get_app_type().to_string()));
-        template.meta.insert("app_doc_id".to_string(), json!(app_doc_object_id.to_string()));
+        Self::published_pikg_meta(&mut template, final_doc, app_doc_object_id);
         template
+    }
+
+    pub(crate) fn published_pikg_meta(file: &mut FileObject, final_doc: &AppDoc, app_doc_object_id: &ObjId) {
+        file.content_obj.author = final_doc.author.to_string();
+        file.content_obj.owner = final_doc.owner.clone();
+        file.meta.insert("version".to_string(), json!(final_doc.version));
+        file.meta.insert("app_type".to_string(), json!(final_doc.get_app_type().to_string()));
+        file.meta.insert("app_doc_id".to_string(), json!(app_doc_object_id.to_string()));
     }
 
     async fn store_pikg_in_repo(
@@ -1971,7 +1983,14 @@ impl AppInstaller {
         let store = get_buckyos_api_runtime()?.get_local_named_store().await.map_err(|error| {
             RPCErrors::ReasonError(format!("Open named store for publish failed: {error}"))
         })?;
-        let template = Self::published_pikg_template(final_doc, app_doc_object_id);
+        let mut template = Self::published_pikg_template(final_doc, app_doc_object_id);
+        if final_doc.get_app_type() == AppType::ExtTools {
+            let reader = crate::pikg::PikgReader::open(pikg, None)
+                .await
+                .map_err(|error| RPCErrors::ReasonError(format!("read published pikg failed: {error}")))?;
+            let manifest = crate::ext_tools_mgr::ext_manifest_of_pikg(&reader).await?;
+            crate::ext_tools_mgr::ext_tools_file_meta(&mut template, &manifest, reader.pikg_digest());
+        }
         let (_, file_id, _) = cacl_file_object(
             Some(&store),
             pikg,

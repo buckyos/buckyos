@@ -829,6 +829,12 @@ export const createMockDataModel = (): OpenDanDataModel => {
       return structuredClone(workspace)
     },
 
+    runtimeExtTools: async (runtimeId) => ({
+      runtime_id: runtimeId,
+      tools_root: '/opt/buckyos/tools',
+      managed_by: runtimeId === 'private' ? 'node_volume' : 'node',
+      packages: { 'ext-core': { version: '1.1.0', origin: 'seed', commands: { ffmpeg: 'ffmpeg version 9.0.2' } } },
+    }),
     checkRuntime: async (runtimeId) => {
       await delay()
       const runtime = runtimes.find((r) => r.runtime_id === runtimeId)

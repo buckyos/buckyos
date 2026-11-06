@@ -238,6 +238,18 @@ buckyos system info                                 # BuckyOS version, build_ver
   `append` example), `system/app_registry`, `system/scheduler/*`, installed apps' `spec` (use `app` verbs).
   `*/instances/*` and `devices/*/info` are runtime reports; `*/doc` and `boot/config` are signed identity documents.
 
+#### Extension tool packages
+Local tools every Agent of the Zone shares (ffmpeg, pandoc, python3… live in `ext-core`) are chosen for the whole Zone by an administrator and installed by each node on its own; no Agent installs them.
+```bash
+buckyos ext-tools list                                 # what the Repo has, and the commands each package provides
+buckyos ext-tools status                               # package by node: what is asked for, stage, error
+buckyos ext-tools enable <id> [--version v] [--dry-run]    # brings what it requires; also how to upgrade or go back
+buckyos ext-tools disable <id>                         # refused while an enabled package requires it
+buckyos ext-tools import <file.pikg>                   # an official release asset, unchanged
+buckyos skill status --agent <agent_id> [--runtime id] # the commands each skill relies on there, and which package would bring what is missing
+```
+A node's reconciler retries a failed package with growing delays, and a failed upgrade leaves the old version running: read `error` under `nodes` in `ext-tools status`, then `log` for `node_daemon` (`ext_tools`). A package that came with the installer shows up with no `latest`: it needs `ext-tools import` before it can be upgraded.
+
 #### Change loop
 
 For AICC or `llm_understand_media` failures with `HTTP 504 Gateway Timeout` / `response head timeout`,

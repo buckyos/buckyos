@@ -9,7 +9,7 @@
 | 环境 | 谁用 | 为什么 |
 | --- | --- | --- |
 | **workflow 宿主**（运行 `workflow` 内核服务的 OOD / 节点，Linux / macOS / Windows） | `LocalThunkRunner` 在**宿主进程内**执行全部 `media.*` Native 函数（TODO D1） | 媒体转换 P0 不在 Agent 容器里跑；镜像里装了工具不等于宿主 runner 可用 |
-| **paios 工作镜像**（Agent 容器，`build_aios` 的 `RUNTIME_PACKAGES`） | Agent 自己的 shell 步骤、`import_office` 等手册命令；未来 Scheduler / Node Runner 把 Native 执行调度到容器时也用它 | 保持 Agent 侧命令可用，并为后续分布式执行预置相同能力 |
+| **paios 工作镜像**（Agent 容器：`soffice` 与字体在镜像的 `RUNTIME_PACKAGES`，其余命令来自节点的扩展包 `ext-core`） | Agent 自己的 shell 步骤、`import_office` 等手册命令；未来 Scheduler / Node Runner 把 Native 执行调度到容器时也用它 | 保持 Agent 侧命令可用，并为后续分布式执行预置相同能力 |
 
 缺基线项是**部署缺陷**，不是正常降级：对应转换步骤以 `tools_missing` 失败并列出缺项，Run `Failed`，不启用本地备用转换（裁决 R2 / R3）。镜像齐全、宿主缺工具的故障注入必须准确定位到宿主缺项（验收 21）。
 
@@ -28,7 +28,7 @@
 
 不在基线内：ImageMagick、tesseract（服务于其它场景，workflow 本期不依赖）；`media.capabilities` / `media.build_catalog` / `media.fit_image`（常规格式）只需要 workflow 自身与 `image` crate（编译依赖，随 workflow 发布）。
 
-查找顺序（三平台相同，与 nfs_server preview 的 `tools.rs` 一致）：`$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` → `PATH` → 固定位置（macOS Homebrew prefix、`/Applications/LibreOffice.app/Contents/MacOS`；Linux `/usr/lib/libreoffice/program`、`/opt/libreoffice*/program`；Windows `%ProgramFiles%\LibreOffice\program`）。
+查找顺序（三平台相同，与 nfs_server preview 的 `tools.rs` 一致）：`$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` → `PATH` → 固定位置（macOS Homebrew prefix、`/Applications/LibreOffice.app/Contents/MacOS`；Linux `/usr/lib/libreoffice/program`、`/opt/libreoffice*/program`；Windows `%ProgramFiles%\LibreOffice\program`）→ `$BUCKYOS_ROOT/tools/bin/`（扩展包，Windows 上是 `.cmd`）。扩展包排最后：机器上已有的工具不被替换。`ext-core` 的 ffmpeg（conda-forge）没有 libzimg，也就没有 `zscale`，只靠它的机器上 nfs_server 预览的 HDR 视频和 HEIF 不做色调映射，结果带“颜色可能失真”的说明。
 
 ## 2. 版本如何进入执行指纹
 

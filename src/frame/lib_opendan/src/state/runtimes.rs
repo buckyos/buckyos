@@ -343,6 +343,11 @@ impl RuntimeRegistry for FsRuntimes {
         self.check_record(record, commands, full).await
     }
 
+    async fn ext_tools(&self, runtime_id: &str, smoke: bool) -> Result<serde_json::Value> {
+        let record = self.require(canonical_runtime(runtime_id))?;
+        crate::runtime::ext_tools_report(&record, &self.layout.runtimes_dir().join(".probe"), smoke).await
+    }
+
     async fn unregister(&self, runtime_id: &str, expected_revision: u64, who: &str) -> Result<RuntimeRecord> {
         let _lock = self.lock().await?;
         let mut record = self.require(canonical_runtime(runtime_id))?;

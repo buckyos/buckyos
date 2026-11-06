@@ -25,14 +25,19 @@ for entry in cli/system_bootstrap.ts distribution.json; do
   [ -f "$TOOL/$entry" ] || fail "$TOOL/$entry not found. The BuckyOS Tool scripts are mounted read-only from the host's \$BUCKYOS_ROOT/libexec/buckyos-tool by node_daemon for agent containers; this container has no such mount, or the host distribution is incomplete."
 done
 
-DENO=$(command -v deno) || fail "deno not found in PATH"
+# The image's own Deno, never the PATH's: an extension package may bring another one.
+DENO=/opt/buckyos/bin/opendan/deno
 
-protocol=$(jq -r '.protocol_version // empty' "$TOOL/distribution.json") ||
+distribution_field() {
+  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\).*/\1/p" "$TOOL/distribution.json" | head -n 1
+}
+
+protocol=$(distribution_field protocol_version) ||
   fail "cannot read $TOOL/distribution.json"
 [ "$protocol" = "$SUPPORTED_PROTOCOL" ] ||
   fail "host Tool protocol_version '${protocol}' is not supported by this image (supports ${SUPPORTED_PROTOCOL}); update the aios image or the BuckyOS host so they match"
 
-wanted_deno=$(jq -r '.deno_version // empty' "$TOOL/distribution.json")
+wanted_deno=$(distribution_field deno_version)
 wanted_deno=${wanted_deno#v}
 [ -n "$wanted_deno" ] || fail "$TOOL/distribution.json has no deno_version"
 image_deno=$("$DENO" --version | awk 'NR == 1 { print $2 }')

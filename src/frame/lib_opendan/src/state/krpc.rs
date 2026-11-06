@@ -127,6 +127,7 @@ pub fn is_write(method: &str) -> bool {
             | "runtimes.register"
             | "runtimes.update"
             | "runtimes.check"
+            | "runtimes.ext_tools_check"
             | "runtimes.unregister"
             | "runtimes.note_usage"
             | "goals.create"
@@ -336,6 +337,10 @@ pub async fn serve_call(
                 let full = params.get("full").and_then(serde_json::Value::as_bool).unwrap_or(false);
                 agent.runtimes().check(&id, &commands, full).await.and_then(out)
             }
+            Err(e) => Err(e),
+        },
+        "runtimes.ext_tools" | "runtimes.ext_tools_check" => match arg::<String>(params, "runtime_id") {
+            Ok(id) => agent.runtimes().ext_tools(&id, method == "runtimes.ext_tools_check").await.and_then(out),
             Err(e) => Err(e),
         },
         "runtimes.unregister" => match (arg::<String>(params, "runtime_id"), arg::<u64>(params, "expected_revision")) {
@@ -750,6 +755,9 @@ impl BehaviorCatalog for KrpcAgentStateClient {
     async fn skills(&self, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
         self.call("skills.list", json!({ "kind": kind })).await
     }
+    async fn skills_status(&self, runtime_id: Option<&str>) -> Result<serde_json::Value> {
+        self.call("skills.status", json!({ "runtime_id": runtime_id })).await
+    }
     async fn install_skills(
         &self,
         pkg: &crate::skills::SkillPackage,
@@ -938,6 +946,9 @@ impl RuntimeRegistry for KrpcAgentStateClient {
     }
     async fn check(&self, runtime_id: &str, commands: &[String], full: bool) -> Result<RuntimeRecord> {
         self.call("runtimes.check", json!({ "runtime_id": runtime_id, "commands": commands, "full": full })).await
+    }
+    async fn ext_tools(&self, runtime_id: &str, smoke: bool) -> Result<serde_json::Value> {
+        self.call(if smoke { "runtimes.ext_tools_check" } else { "runtimes.ext_tools" }, json!({ "runtime_id": runtime_id })).await
     }
     async fn unregister(&self, runtime_id: &str, expected_revision: u64, _who: &str) -> Result<RuntimeRecord> {
         self.call(

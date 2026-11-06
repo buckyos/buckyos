@@ -210,7 +210,7 @@ impl RepoService {
                     Ok(false)
                 } else {
                     Err(RPCErrors::ReasonError(format!(
-                        "{key} is already pinned with other content ({}); unpin it first",
+                        "{key} is already published with other content ({}): a version does not change, publish the next one or unpin it first",
                         bound.obj_id.unwrap_or_default()
                     )))
                 }

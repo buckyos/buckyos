@@ -10,6 +10,11 @@ on:
         required: false
         type: boolean
         default: false
+      ext_tools:
+        description: Pin ext-core with the ext-tools-manifest artifact of this run
+        required: false
+        type: boolean
+        default: false
       paios_images:
         description: Pin paios images with the paios-images-manifest artifact of this run
         required: false
@@ -123,6 +128,20 @@ jobs:
         set -euo pipefail
         cp "$RUNNER_TEMP/paios-images-manifest/paios_images.json" "$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json"
         python3 .github/scripts/paios_images.py validate "$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json"
+    - name: Download ext_tools.json
+      if: ${{ inputs.ext_tools }}
+      uses: actions/download-artifact@v6
+      with:
+        name: ext-tools-manifest
+        path: ${{ runner.temp }}/ext-tools-manifest
+    - name: Pin ext-core
+      if: ${{ inputs.ext_tools }}
+      env:
+        STAGE_ROOT: ${{ runner.temp }}/staged
+      run: |
+        set -euo pipefail
+        mkdir -p "$STAGE_ROOT/buckyos/bin/ext-tools"
+        cp "$RUNNER_TEMP/ext-tools-manifest/ext_tools.json" "$STAGE_ROOT/buckyos/bin/ext-tools/ext_tools.json"
     - name: Get staged BuckyOS version
       id: version
       env:

@@ -371,6 +371,19 @@ function extToolsLine(ext: ExtCheck): string {
   }
 }
 
+/** What the node installed for this runtime. Read-only: packages are chosen for the whole Zone, not per Agent. */
+function RuntimeExtPackages({ runtimeId }: { runtimeId: string }) {
+  const report = useQuery(['runtimes.ext_tools', runtimeId], () => dataModel.runtimeExtTools(runtimeId))
+  const packages = Object.entries(report.data?.packages ?? {})
+  if (packages.length === 0) return null
+  const names = packages.map(([id, install]) => `${id} ${install.version}`).join(', ')
+  return (
+    <p className="mt-1 break-words text-xs text-mute" data-testid="runtime-ext-packages">
+      {t('runtimeExtPackages', { packages: names })} · {t('runtimeExtManagedByNode')}
+    </p>
+  )
+}
+
 function RuntimeCard({ runtime, chosen, refresh }: {
   runtime: KnownRuntime
   /** The owner's setting for this runtime on the agent, when there is one. */
@@ -449,6 +462,7 @@ function RuntimeCard({ runtime, chosen, refresh }: {
         <p className="mt-2 break-words text-xs text-warn" data-testid="runtime-tool-check">{toolProblem}</p>}
       {check?.ext &&
         <p className={clsx('mt-1 break-words text-xs', check.missing.some((tool) => extMissing.includes(tool)) ? 'text-warn' : 'text-mute')} data-testid="runtime-ext">{extToolsLine(check.ext)}</p>}
+      {!retired && runtime.availability === 'available' && <RuntimeExtPackages runtimeId={runtime.runtime_id} />}
       {devHelpers.length > 0 &&
         <p className="mt-1 break-words text-xs text-mute" data-testid="runtime-dev-helpers">{t('runtimeDevHelpers', { tools: devHelpers.join(', ') })}</p>}
       {caps.tools_check && caps.tools_check.present.length > 0 &&

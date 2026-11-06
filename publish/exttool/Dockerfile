@@ -54,28 +54,28 @@ RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh && \
     deno cache /tmp/warm.ts && \
     rm /tmp/warm.ts
 
-# --- pandoc tool package --------------------------------------------------
-# The official static release (pinned version + sha256 in the script); the
-# aios worker image no longer installs pandoc itself.
-COPY install_pandoc.sh /tmp/install_pandoc.sh
-RUN chmod 755 /tmp/install_pandoc.sh && \
-    TARGET_ARCH="${TARGET_ARCH}" /tmp/install_pandoc.sh && \
-    rm -f /tmp/install_pandoc.sh
+# --- ext-core ---------------------------------------------------------------
+# The payload for this architecture, as the release publishes it: node_daemon
+# unpacks seed/ into the volume with the one engine every package goes through,
+# then deletes it. On Linux the installer also carries it in bin/ext-tools; this
+# copy is for the machines whose Docker runs in a VM, which carry their own OS's.
+COPY seed/ /opt/buckyos/tools/seed/
 
 # --- FreeCAD CLI tool package (optional) -----------------------------------
 # FreeCAD is not part of the default image (it was ~90% of its size). With
 # FREECAD_APPIMAGE_URL set, build_exttool bakes the AppImage under
-# tools/store/freecad/ with a launcher in tools/bin/; otherwise a stub
-# freecadcmd explains how to build an image that includes it.
+# tools/store/freecad/ with a launcher in tools/bin/; otherwise nothing: a
+# command that is not there is a truer answer than a stub. It becomes the ext-cad
+# package (§6.4 table C).
 COPY install_freecad.sh /tmp/install_freecad.sh
 RUN chmod 755 /tmp/install_freecad.sh && \
     FREECAD_APPIMAGE_URL="${FREECAD_APPIMAGE_URL}" /tmp/install_freecad.sh && \
     rm -f /tmp/install_freecad.sh
 
 # Seed image: only the volume payload plus busybox, whose sh/true/touch the
-# node_daemon seeder needs. node_daemon runs it once per image id as
-#   docker run --rm -v buckyos-exttool-<id12>:/opt/buckyos/tools --entrypoint /bin/sh \
-#     <image> -c 'touch /opt/buckyos/tools/.buckyos-seeded-<id12>'
+# node_daemon seeder needs. node_daemon runs it once, when the volume is new, as
+#   docker run --rm -v buckyos-tools:/opt/buckyos/tools --entrypoint /bin/sh \
+#     <image> -c 'touch /opt/buckyos/tools/.buckyos-seeded'
 # Docker copies /opt/buckyos/tools into the empty named volume before the
 # command runs, so the marker proves the copy completed.
 FROM busybox:1.36.1
@@ -86,7 +86,7 @@ ARG IMAGE_VERSION
 ARG SOURCE_REVISION
 ARG BUILD_CREATED
 LABEL org.opencontainers.image.title="paios/exttool (BuckyOS ExtTool Volume seed)" \
-      org.opencontainers.image.description="Seed image for the buckyos-exttool-<id> named volume: pre-warmed uv/deno caches + pandoc + optional baked tool packages. Content at /opt/buckyos/tools/ is auto-copied into the empty named volume on first mount." \
+      org.opencontainers.image.description="Seed image for the buckyos-tools volume of a node: pre-warmed uv/deno caches, the ext-core payload and optional baked tool packages. Content at /opt/buckyos/tools/ is auto-copied into the empty named volume on first mount." \
       org.opencontainers.image.vendor="BuckyOS DAO" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \

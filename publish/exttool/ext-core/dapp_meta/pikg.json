@@ -1,17 +1,62 @@
 {
   "schema_version": 1,
   "output_dir": "../dapp_dist",
-  "pikg_file": "ext-core-1.0.0.pikg",
+  "pikg_file": "ext-core-1.1.0.pikg",
   "sub_pkgs": {
     "ext_tools_linux_x86_64": {
-      "selector": {"os": "linux", "arch": "x86_64"},
+      "selector": {
+        "os": "linux",
+        "arch": "x86_64"
+      },
       "required": true,
-      "source": {"type": "path", "path": "../payload/linux-x86_64"}
+      "source": {
+        "type": "path",
+        "path": "../payload/linux-x86_64"
+      }
     },
     "ext_tools_linux_aarch64": {
-      "selector": {"os": "linux", "arch": "aarch64"},
+      "selector": {
+        "os": "linux",
+        "arch": "aarch64"
+      },
       "required": true,
-      "source": {"type": "path", "path": "../payload/linux-aarch64"}
+      "source": {
+        "type": "path",
+        "path": "../payload/linux-aarch64"
+      }
+    },
+    "ext_tools_darwin_arm64": {
+      "selector": {
+        "os": "macos",
+        "arch": "aarch64"
+      },
+      "required": true,
+      "source": {
+        "type": "path",
+        "path": "../payload/darwin-arm64"
+      }
+    },
+    "ext_tools_darwin_x86_64": {
+      "selector": {
+        "os": "macos",
+        "arch": "x86_64"
+      },
+      "required": true,
+      "source": {
+        "type": "path",
+        "path": "../payload/darwin-x86_64"
+      }
+    },
+    "ext_tools_windows_x86_64": {
+      "selector": {
+        "os": "windows",
+        "arch": "x86_64"
+      },
+      "required": true,
+      "source": {
+        "type": "path",
+        "path": "../payload/windows-x86_64"
+      }
     }
   }
 }

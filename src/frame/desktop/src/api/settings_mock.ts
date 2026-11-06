@@ -312,6 +312,13 @@ function handle(method: string, params: Record<string, unknown>): unknown {
     case 'system.dev_mode.set':
       devConfig = { ...devConfig, enabled: params.enabled === true, ...(params.enabled === true ? { enabled_at: nowSecs(), enabled_by: 'alice' } : {}) }
       return { ...devConfig }
+    case 'ext_tools.status':
+      return extToolsStatus()
+    case 'ext_tools.plan':
+      return extToolsPlan(String(params.id), params.enabled === true)
+    case 'ext_tools.set_desired':
+      extToolsDesired[String(params.id)] = { version: extToolsCatalog[String(params.id)]?.manifest.version ?? '', enabled: params.enabled === true }
+      return { ok: true, plan: extToolsPlan(String(params.id), params.enabled === true) }
     case 'zone.devices.list':
       return devicesResponse()
     case 'zone.certificates.list':
@@ -343,5 +350,36 @@ export async function callMockSettings<T>(
     return { data: handle(method, params) as T, error: null }
   } catch (error) {
     return { data: null, error }
+  }
+}
+
+const extToolsCatalog: Record<string, { manifest: { id: string; version: string; desc: string; requires: Array<{ id: string; version: string }>; provides: Array<{ command: string }>; platforms: string[] }; pikg_digest: string; content_id: string }> = {
+  'ext-media': {
+    manifest: { id: 'ext-media', version: '1.2.0', desc: 'Audio and video editing', requires: [{ id: 'ext-core', version: '>=1.0' }], provides: [{ command: 'ffmpeg' }, { command: 'ffprobe' }], platforms: ['linux-x86_64'] },
+    pikg_digest: 'sha256:0',
+    content_id: 'file:0',
+  },
+}
+const extToolsDesired: Record<string, { version: string; enabled: boolean }> = {}
+
+function extToolsPlan(id: string, enabled: boolean) {
+  if (!enabled) return { enable: [], disable: [id], errors: [] }
+  return { enable: extToolsCatalog[id] ? [extToolsCatalog[id]] : [], disable: [], errors: extToolsCatalog[id] ? [] : [`${id} is not in the Repo`] }
+}
+
+function extToolsStatus() {
+  const active = (version: string) => ({ version, stage: 'active' as const })
+  return {
+    nodes: [{ id: 'ood1', platform: 'linux-x86_64', containers: true }],
+    packages: [
+      { id: 'ext-core', latest: null, versions: null, desired: null, nodes: { ood1: active('1.1.0') }, skills: { ffmpeg: ['aigc_video'] } },
+      {
+        id: 'ext-media',
+        latest: extToolsCatalog['ext-media'],
+        versions: ['1.2.0'],
+        desired: extToolsDesired['ext-media'] ?? null,
+        nodes: extToolsDesired['ext-media']?.enabled ? { ood1: active('1.2.0') } : null,
+      },
+    ],
   }
 }

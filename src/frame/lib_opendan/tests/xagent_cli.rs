@@ -826,7 +826,7 @@ fn runtime_baseline_checks_a_level_against_this_machine() {
     let (code, listed, err) = cli.run(&["runtime", "baseline", "--json", "--level", "extended"]);
     assert_eq!(code, 0, "{err}");
     assert!(listed["standard"].as_array().unwrap().iter().any(|t| t["name"] == "xagent"));
-    assert!(listed["extended"].as_array().unwrap().iter().any(|t| t["id"] == "imagemagick" && t["alternative"] == json!(["magick"])));
+    assert!(listed["extended"].as_array().unwrap().iter().any(|t| t["id"] == "imagemagick" && t["commands"][0]["name"] == "magick"));
     assert!(cli.text(&["runtime", "baseline", "--level", "extended"]).contains("ffmpeg"));
     assert!(!cli.text(&["runtime", "baseline"]).contains("ffmpeg"));
     let (code, _, err) = cli.run(&["runtime", "baseline", "--level", "huge"]);

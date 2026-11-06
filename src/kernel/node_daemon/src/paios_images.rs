@@ -26,8 +26,17 @@ pub(crate) const PAIOS_IMAGES_SCHEMA: &str = "buckyos.paios-images/v1";
 pub(crate) const IMAGE_REVISION_LABEL: &str = "org.opencontainers.image.revision";
 const DEVENV_JSON_RELATIVE_PATH: &str = "etc/devenv.json";
 const LOADED_STATE_RELATIVE_PATH: &str = "local/node_daemon/paios_images_state.json";
+/// The volumes of the time when every ExtTool image had one; collected on sight.
 pub(crate) const EXTTOOL_VOLUME_PREFIX: &str = "buckyos-exttool";
-const EXTTOOL_MOUNT_ROOT: &str = "/opt/buckyos/tools";
+/// One per node: workers mount it read-only at `/opt/buckyos/tools`. On Linux it is `$BUCKYOS_ROOT/tools` itself, so
+/// the machine and its containers share one copy of the same version. Where Docker runs in a VM it is a real volume of its
+/// own, with the Linux payloads the machine itself cannot run.
+pub(crate) const TOOLS_VOLUME: &str = "buckyos-tools";
+/// Present once the volume has its first content, from the seed image if there is one.
+pub(crate) const TOOLS_VOLUME_MARKER: &str = ".buckyos-seeded";
+pub(crate) const EXTTOOL_MOUNT_ROOT: &str = "/opt/buckyos/tools";
+/// Where the tools volume is mounted while a seed image copies its `/opt/buckyos/tools` in.
+pub(crate) const TOOLS_SEED_TARGET: &str = "/mnt/buckyos-tools";
 const EXPECTATION_TTL: Duration = Duration::from_secs(30);
 const PRELOAD_MAX_BACKOFF: Duration = Duration::from_secs(300);
 
@@ -528,14 +537,13 @@ pub(crate) fn short_id(image_id: &str) -> &str {
     hex.get(..12).unwrap_or(hex)
 }
 
-/// ExtTool volumes are named after the image id they were seeded from, so a
-/// new ExtTool image always gets a fresh volume.
-pub(crate) fn exttool_volume_name(image_id: &str) -> String {
-    format!("{}-{}", EXTTOOL_VOLUME_PREFIX, short_id(image_id))
-}
-
-fn seed_marker(image_id: &str) -> String {
-    format!(".buckyos-seeded-{}", short_id(image_id))
+/// Where the tools volume lives when it is a directory of this machine: on Linux, unless told to keep them apart
+/// (`BUCKYOS_TOOLS_VOLUME=plain`, which is how a Linux machine exercises the path of a machine whose Docker runs in a VM).
+pub(crate) fn tools_volume_device() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") || std::env::var("BUCKYOS_TOOLS_VOLUME").is_ok_and(|mode| mode == "plain") {
+        return None;
+    }
+    Some(get_buckyos_root_dir().join("tools"))
 }
 
 /// What a correctly deployed worker container looks like right now.
@@ -674,22 +682,6 @@ impl<'a> PaiosDocker<'a> {
         Ok(output.stdout.lines().any(|name| name.trim() == volume))
     }
 
-    /// The ExtTool volume this image seeds. Pinned images are named from the
-    /// manifest (the image itself may already be gone, D8); local images need
-    /// to be present.
-    pub(crate) async fn exttool_volume(
-        &self,
-        exttool: &ResolvedImage,
-    ) -> RunResult<Option<String>> {
-        if let Some(pinned) = exttool.pinned.as_ref() {
-            return Ok(Some(exttool_volume_name(pinned.platform.image_id.as_str())));
-        }
-        Ok(self
-            .inspect(exttool.reference.as_str())
-            .await?
-            .map(|identity| exttool_volume_name(identity.id.as_str())))
-    }
-
     async fn volume_seeded(&self, volume: &str, marker: &str, worker_ref: &str) -> RunResult<bool> {
         let cache = SEEDED_VOLUMES.get_or_init(Default::default);
         if self.runner.is_none() && cache.lock().unwrap().contains(volume) {
@@ -717,114 +709,103 @@ impl<'a> PaiosDocker<'a> {
         Ok(seeded)
     }
 
-    /// Make sure the ExtTool volume of `exttool` exists and is completely
-    /// seeded, and return its name. `Ok(None)` means ExtTool is unavailable
-    /// (D6): the reason is logged as an error and workers start without it.
+    /// Make sure this node's tools volume exists and has its first content, and return its name: the seed image's
+    /// `/opt/buckyos/tools`, i.e. the pre-warmed caches and the seed payload of `ext-core`. Without a seed image the volume starts empty and only extension packages fill it, which is what a development node without
+    /// `paios/exttool` gets. A newer seed image does not touch an existing volume: from then on the desired state decides.
     pub(crate) async fn prepare_exttool(
         &self,
         exttool: Option<&ResolvedImage>,
         worker_ref: &str,
     ) -> RunResult<Option<String>> {
         let _guard = exttool_prepare_lock().lock().await;
-        let Some(exttool) = exttool else {
-            error!(
-                "{}/{} pins no exttool image; workers start without the ExtTool mount (incomplete release package)",
-                PAIOS_IMAGES_DIR, PAIOS_IMAGES_MANIFEST
-            );
-            return Ok(None);
-        };
-        let image_id = match exttool.pinned.as_ref() {
-            Some(pinned) => pinned.platform.image_id.clone(),
-            None => match self.inspect(exttool.reference.as_str()).await? {
-                Some(identity) => identity.id,
-                None => {
-                    error!(
-                        "{}; workers start without the ExtTool mount",
-                        local_image_missing_hint(exttool)
-                    );
-                    return Ok(None);
-                }
-            },
-        };
-        let volume = exttool_volume_name(image_id.as_str());
-        let marker = seed_marker(image_id.as_str());
-        if self.volume_exists(volume.as_str()).await? {
-            if self
-                .volume_seeded(volume.as_str(), marker.as_str(), worker_ref)
-                .await?
-            {
-                return Ok(Some(volume));
+        let volume = TOOLS_VOLUME;
+        if self.volume_exists(volume).await? {
+            if self.volume_seeded(volume, TOOLS_VOLUME_MARKER, worker_ref).await? {
+                return Ok(Some(volume.to_string()));
             }
-            warn!(
-                "{} has no seed marker (interrupted seeding?); recreating it",
-                volume
-            );
-            let output = self.docker(&["volume", "rm", volume.as_str()]).await?;
+            warn!("{volume} has no seed marker (interrupted seeding?); recreating it");
+            let output = self.docker(&["volume", "rm", volume]).await?;
             ensure_success("docker volume rm", &output)?;
         }
-        if exttool.pinned.is_some() {
-            if let Err(error) = self.ensure_image(exttool).await {
-                error!(
-                    "exttool image {} unavailable: {}; workers start without the ExtTool mount",
+        let mut seed_image = None;
+        match exttool {
+            None => warn!(
+                "{}/{} pins no exttool image; {volume} starts without pre-warmed caches",
+                PAIOS_IMAGES_DIR, PAIOS_IMAGES_MANIFEST
+            ),
+            Some(exttool) if exttool.pinned.is_some() => match self.ensure_image(exttool).await {
+                Ok(_) => seed_image = Some(exttool),
+                Err(error) => warn!(
+                    "exttool image {} unavailable: {}; {volume} starts without pre-warmed caches",
                     exttool.reference, error
-                );
-                return Ok(None);
-            }
+                ),
+            },
+            Some(exttool) => match self.inspect(exttool.reference.as_str()).await? {
+                Some(_) => seed_image = Some(exttool),
+                None => warn!(
+                    "{}; {volume} starts without pre-warmed caches",
+                    local_image_missing_hint(exttool)
+                ),
+            },
         }
-        let output = self.docker(&["volume", "create", volume.as_str()]).await?;
+        let output = match tools_volume_device() {
+            Some(device) => {
+                std::fs::create_dir_all(&device).map_err(|error| {
+                    ControlRuntItemErrors::ExecuteError("create tools root".to_string(), format!("{}: {error}", device.display()))
+                })?;
+                let bind = format!("device={}", device.display());
+                self.docker(&["volume", "create", "--driver", "local", "--opt", "type=none", "--opt", "o=bind", "--opt", bind.as_str(), volume]).await?
+            }
+            None => self.docker(&["volume", "create", volume]).await?,
+        };
         ensure_success("docker volume create", &output)?;
-        info!(
-            "seeding {} from {} (copies the image payload into the volume)",
-            volume, exttool.reference
-        );
+        let source = seed_image.map(|image| image.reference.as_str()).unwrap_or(worker_ref);
+        info!("seeding {volume} from {source}");
         let started = Instant::now();
-        let mount = format!("{volume}:{EXTTOOL_MOUNT_ROOT}");
-        let touch = format!("touch {EXTTOOL_MOUNT_ROOT}/{marker}");
+        // Copied by hand: Docker only copies an image's path into a volume that is empty, and on Linux this one is a
+        // directory the node may have already put a package in.
+        let mount = format!("{volume}:{TOOLS_SEED_TARGET}");
+        let copy = format!("cp -a {EXTTOOL_MOUNT_ROOT}/. {TOOLS_SEED_TARGET}/ && touch {TOOLS_SEED_TARGET}/{TOOLS_VOLUME_MARKER}");
         let output = self
-            .docker(&[
-                "run",
-                "--rm",
-                "-v",
-                mount.as_str(),
-                "--entrypoint",
-                "/bin/sh",
-                exttool.reference.as_str(),
-                "-c",
-                touch.as_str(),
-            ])
+            .docker(&["run", "--rm", "-v", mount.as_str(), "--entrypoint", "/bin/sh", source, "-c", copy.as_str()])
             .await?;
-        if let Err(error) = ensure_success("docker run (exttool seed)", &output) {
-            let _ = self.docker(&["volume", "rm", volume.as_str()]).await;
+        if let Err(error) = ensure_success("docker run (tools volume seed)", &output) {
+            let _ = self.docker(&["volume", "rm", volume]).await;
             return Err(error);
         }
         if self.runner.is_none() {
-            SEEDED_VOLUMES
-                .get_or_init(Default::default)
-                .lock()
-                .unwrap()
-                .insert(volume.clone());
+            SEEDED_VOLUMES.get_or_init(Default::default).lock().unwrap().insert(volume.to_string());
         }
         invalidate_expectations();
-        info!(
-            "seeded {} in {:.1}s",
-            volume,
-            started.elapsed().as_secs_f64()
-        );
-        if exttool.pinned.is_some() {
+        info!("seeded {volume} in {:.1}s", started.elapsed().as_secs_f64());
+        if let Some(image) = seed_image.filter(|image| image.pinned.is_some()) {
             // D8: the volume now holds the payload and the bundled tarball can
             // recreate the image, so the (large) seed image is not kept.
-            let output = self
-                .docker(&["image", "rm", exttool.reference.as_str()])
-                .await?;
+            let output = self.docker(&["image", "rm", image.reference.as_str()]).await?;
             if !output.status.success() {
-                warn!(
-                    "remove seeded exttool image {} failed: {}",
-                    exttool.reference,
-                    output.stderr.trim()
-                );
+                warn!("remove seeded exttool image {} failed: {}", image.reference, output.stderr.trim());
             }
         }
-        Ok(Some(volume))
+        Ok(Some(volume.to_string()))
+    }
+
+    /// Run `opendan ext-tools <args>` of the worker image against the tools volume, with `mount` (host path, container
+    /// path) read-only. The engine is one program, and this is how it reaches a volume on any Docker, without network.
+    pub(crate) async fn run_tools_engine(
+        &self,
+        worker_ref: &str,
+        mount: Option<(&str, &str)>,
+        args: &[String],
+    ) -> RunResult<CommandOutput> {
+        let mut command = vec!["run".to_string(), "--rm".to_string(), "--network".to_string(), "none".to_string()];
+        command.extend(["-v".to_string(), format!("{TOOLS_VOLUME}:{EXTTOOL_MOUNT_ROOT}")]);
+        if let Some((host, container)) = mount {
+            command.extend(["-v".to_string(), format!("{host}:{container}:ro")]);
+        }
+        command.extend(["--entrypoint".to_string(), "/opt/buckyos/bin/opendan/opendan".to_string(), worker_ref.to_string()]);
+        command.extend(["ext-tools".to_string()]);
+        command.extend(args.iter().cloned());
+        run_docker_with(self.runner, &command).await
     }
 
     /// D9, pinned mode: remove images node_daemon loaded for older releases
@@ -917,13 +898,7 @@ impl<'a> PaiosDocker<'a> {
             .inspect(worker.reference.as_str())
             .await?
             .map(|identity| identity.id);
-        let exttool_volume = match exttool {
-            Some(exttool) => match self.exttool_volume(exttool).await? {
-                Some(volume) if self.volume_exists(volume.as_str()).await? => Some(volume),
-                _ => None,
-            },
-            None => None,
-        };
+        let exttool_volume = self.volume_exists(TOOLS_VOLUME).await?.then(|| TOOLS_VOLUME.to_string());
         let expectation = WorkerExpectation {
             image_id,
             exttool_volume,
@@ -1299,7 +1274,7 @@ mod tests {
                         None => missing(reference),
                     },
                     ["volume", "ls", ..] => ok(store.volumes.join("\n")),
-                    ["volume", "create", name] => {
+                    ["volume", "create", .., name] => {
                         store.volumes.push(name.to_string());
                         ok(String::new())
                     }
@@ -1315,7 +1290,7 @@ mod tests {
                             fail("")
                         }
                     }
-                    ["run", .., command] if command.starts_with("touch") => {
+                    ["run", .., command] if command.starts_with("cp -a") => {
                         store.seeded = true;
                         ok(String::new())
                     }
@@ -1547,12 +1522,12 @@ mod tests {
         let worker = aios.platform.reference.as_str();
 
         let volume = docker.prepare_exttool(Some(&image), worker).await.unwrap();
-        assert_eq!(volume.as_deref(), Some("buckyos-exttool-444444444444"));
+        assert_eq!(volume.as_deref(), Some("buckyos-tools"));
         assert_eq!(log_has(&store, "load -i"), 1);
         assert_eq!(
             log_has(
                 &store,
-                "touch /opt/buckyos/tools/.buckyos-seeded-444444444444"
+                "touch /mnt/buckyos-tools/.buckyos-seeded"
             ),
             1
         );
@@ -1565,19 +1540,19 @@ mod tests {
         // Seeded volume: no image needed, only the marker check with the worker image.
         store.lock().unwrap().log.clear();
         let volume = docker.prepare_exttool(Some(&image), worker).await.unwrap();
-        assert_eq!(volume.as_deref(), Some("buckyos-exttool-444444444444"));
+        assert_eq!(volume.as_deref(), Some("buckyos-tools"));
         let log = store.lock().unwrap().log.clone();
         assert_eq!(log.len(), 2, "{log:?}");
         assert!(
             log[1].contains(worker)
-                && log[1].contains("test -f /seed/.buckyos-seeded-444444444444")
+                && log[1].contains("test -f /seed/.buckyos-seeded")
         );
 
         // Interrupted seeding: the volume exists without its marker and is rebuilt.
         store.lock().unwrap().seeded = false;
         let volume = docker.prepare_exttool(Some(&image), worker).await.unwrap();
         assert!(volume.is_some());
-        assert_eq!(log_has(&store, "volume rm buckyos-exttool-444444444444"), 1);
+        assert_eq!(log_has(&store, "volume rm buckyos-tools"), 1);
         assert_eq!(
             log_has(&store, "load -i"),
             1,
@@ -1586,30 +1561,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_exttool_degrades_without_failing() {
+    async fn unavailable_exttool_still_gives_workers_their_tools_volume() {
         let (_root, aios, exttool) = pinned_root();
         let store = Arc::new(Mutex::new(FakeStore::default()));
+        store.lock().unwrap().images.insert(aios.platform.reference.clone(), identity_of(&aios));
         let runner = fake_runner(store.clone());
         let docker = PaiosDocker::new(Some(&runner));
         assert_eq!(
-            docker
-                .prepare_exttool(None, &aios.platform.reference)
-                .await
-                .unwrap(),
-            None
+            docker.prepare_exttool(None, &aios.platform.reference).await.unwrap().as_deref(),
+            Some(TOOLS_VOLUME),
+            "extension packages fill it, only the pre-warmed caches are missing"
         );
-        assert!(store.lock().unwrap().log.is_empty());
+        assert_eq!(log_has(&store, "volume create"), 1);
 
-        std::fs::remove_file(&exttool.tar_path).unwrap();
-        let image = pinned_image(PaiosImageKind::Exttool, &exttool);
-        assert_eq!(
-            docker
-                .prepare_exttool(Some(&image), &aios.platform.reference)
-                .await
-                .unwrap(),
-            None
-        );
-        assert_eq!(log_has(&store, "volume create"), 0);
+        let (_root, aios, exttool_two) = pinned_root();
+        let _ = exttool;
+        let store = Arc::new(Mutex::new(FakeStore::default()));
+        store.lock().unwrap().images.insert(aios.platform.reference.clone(), identity_of(&aios));
+        let runner = fake_runner(store.clone());
+        let docker = PaiosDocker::new(Some(&runner));
+        std::fs::remove_file(&exttool_two.tar_path).unwrap();
+        let image = pinned_image(PaiosImageKind::Exttool, &exttool_two);
+        assert_eq!(docker.prepare_exttool(Some(&image), &aios.platform.reference).await.unwrap().as_deref(), Some(TOOLS_VOLUME));
+        assert_eq!(log_has(&store, "volume create"), 1);
     }
 
     #[tokio::test]
@@ -1636,7 +1610,7 @@ mod tests {
             .lock()
             .unwrap()
             .volumes
-            .push("buckyos-exttool-444444444444".to_string());
+            .push("buckyos-tools".to_string());
         assert_eq!(
             docker
                 .worker_expectation(&worker, Some(&exttool))
@@ -1644,7 +1618,7 @@ mod tests {
                 .unwrap(),
             WorkerExpectation {
                 image_id: Some(aios.platform.image_id.clone()),
-                exttool_volume: Some("buckyos-exttool-444444444444".to_string()),
+                exttool_volume: Some("buckyos-tools".to_string()),
             }
         );
     }
@@ -1672,7 +1646,7 @@ mod tests {
             [
                 "buckyos-exttool",
                 "buckyos-exttool-111111111111",
-                "buckyos-exttool-444444444444",
+                "buckyos-tools",
                 "other",
             ]
             .map(String::from),
@@ -1682,7 +1656,7 @@ mod tests {
             .collect_garbage(
                 root.path(),
                 &[&worker, &exttool],
-                Some("buckyos-exttool-444444444444"),
+                Some("buckyos-tools"),
             )
             .await
             .unwrap();
@@ -1698,7 +1672,7 @@ mod tests {
         assert_eq!(
             store.lock().unwrap().volumes,
             vec![
-                "buckyos-exttool-444444444444".to_string(),
+                "buckyos-tools".to_string(),
                 "other".to_string()
             ]
         );

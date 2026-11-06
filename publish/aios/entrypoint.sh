@@ -55,15 +55,19 @@ AGENT_SYNC_META_DIR="${BUCKYOS_DATA_DIR}/.sync"
 AGENT_SYNC_META_FILE="${AGENT_SYNC_META_DIR}/upstream.json"
 AGENT_SYNC_LOG_FILE="${AGENT_SYNC_META_DIR}/last-sync.log"
 EXTTOOL_SEED_MARK="${SYNC_META_DIR}/exttool-seeded"
+# What the entrypoint itself runs on: the image's Deno, never an extension package's.
+CORE_DENO=/opt/buckyos/bin/opendan/deno
 
 export DENO_DIR="${DENO_DIR:-$DENO_DIR_DEFAULT}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$UV_CACHE_DEFAULT}"
 export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$NPM_CACHE_DEFAULT}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$PIP_CACHE_DEFAULT}"
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-${BUCKYOS_INSTANCE_VOLUME}/uv-python}"
+export NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-${BUCKYOS_INSTANCE_VOLUME}/npm-prefix}"
 
-# ExtTool Volume bin dir comes before the instance/system PATH so baked-in
-# tool packages (FreeCADCmd etc.) are discoverable by scripts and agents.
-if [[ -d "${BUCKYOS_EXTTOOL_DIR}/bin" ]] && [[ ":$PATH:" != *":${BUCKYOS_EXTTOOL_DIR}/bin:"* ]]; then
+# Extension packages come before the instance/system PATH. Always named: the
+# node's reconciler may fill the volume after this container started.
+if [[ ":$PATH:" != *":${BUCKYOS_EXTTOOL_DIR}/bin:"* ]]; then
   export PATH="${BUCKYOS_EXTTOOL_DIR}/bin:${PATH}"
 fi
 
@@ -138,109 +142,7 @@ sync_tree_with_upstream_policy() {
   fi
 
   log "syncing ${label} $src -> $dst"
-  python3 - "$src" "$dst" "$meta_path" "$log_path" <<'PY'
-import hashlib
-import json
-import os
-import shutil
-import sys
-import time
-from pathlib import Path
-
-src = Path(sys.argv[1])
-dst = Path(sys.argv[2])
-meta_path = Path(sys.argv[3])
-log_path = Path(sys.argv[4])
-
-dst.mkdir(parents=True, exist_ok=True)
-meta_path.parent.mkdir(parents=True, exist_ok=True)
-
-try:
-    meta = json.loads(meta_path.read_text("utf-8"))
-    upstream_snapshot = meta.get("upstream", {})
-except FileNotFoundError:
-    upstream_snapshot = {}
-except json.JSONDecodeError:
-    upstream_snapshot = {}
-
-def sha256_of(path):
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-stats = {"copied": 0, "updated": 0, "kept_local": 0, "removed_from_upstream": 0}
-events = []
-new_snapshot = {}
-
-for src_file in src.rglob("*"):
-    if src_file.is_dir():
-        continue
-    rel = src_file.relative_to(src).as_posix()
-    dst_file = dst / rel
-    upstream_hash = sha256_of(src_file)
-    new_snapshot[rel] = upstream_hash
-
-    if not dst_file.exists():
-        dst_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_file, dst_file)
-        stats["copied"] += 1
-        continue
-
-    remembered = upstream_snapshot.get(rel)
-    if remembered is None:
-        # File existed locally before we started tracking it. Treat as locally
-        # owned unless it happens to be byte-identical to upstream.
-        local_hash = sha256_of(dst_file)
-        if local_hash == upstream_hash:
-            continue
-        events.append({"path": rel, "reason": "local_unknown_kept"})
-        stats["kept_local"] += 1
-        continue
-
-    if remembered == upstream_hash:
-        # Upstream unchanged since last sync; nothing to do.
-        continue
-
-    local_hash = sha256_of(dst_file)
-    if local_hash == remembered:
-        # Local file identical to the snapshot we seeded => not modified locally
-        # => safe to update from upstream (R-15 rule 2).
-        shutil.copy2(src_file, dst_file)
-        stats["updated"] += 1
-        continue
-
-    # Local file has diverged (R-15 rule 3). Keep local, record the skip.
-    events.append({
-        "path": rel,
-        "reason": "local_divergence_kept",
-        "local_sha256": local_hash,
-        "upstream_sha256": upstream_hash,
-        "snapshot_sha256": remembered,
-    })
-    stats["kept_local"] += 1
-
-# Detect files that disappeared upstream, but never delete anything in the
-# instance volume — that belongs to the R-20 "reset volume" operation.
-for rel in upstream_snapshot:
-    if rel not in new_snapshot and (dst / rel).exists():
-        stats["removed_from_upstream"] += 1
-        events.append({"path": rel, "reason": "upstream_removed_local_kept"})
-
-meta_path.write_text(json.dumps({
-    "updated_at": time.time(),
-    "upstream": new_snapshot,
-}, indent=2), encoding="utf-8")
-
-log_path.write_text(json.dumps({
-    "updated_at": time.time(),
-    "stats": stats,
-    "events": events,
-}, indent=2), encoding="utf-8")
-
-print(json.dumps(stats))
-PY
+  "$CORE_DENO" run --no-config --no-prompt --allow-read --allow-write /opt/buckyos/sync_tree.ts "$src" "$dst" "$meta_path" "$log_path"
 }
 
 sync_upstream_into_instance() {
@@ -295,7 +197,7 @@ script_find_entry() {
   local root="$1" lang="$2"
   if [[ -f "$root/buckyos_script.json" ]]; then
     local entry
-    entry="$(python3 -c "import json,sys; print(json.load(open('$root/buckyos_script.json')).get('entry',''))" 2>/dev/null || true)"
+    entry="$("$CORE_DENO" eval --no-config 'console.log(JSON.parse(Deno.readTextFileSync(Deno.args[0])).entry ?? "")' "$root/buckyos_script.json" 2>/dev/null || true)"
     if [[ -n "$entry" && -f "$root/$entry" ]]; then
       echo "$root/$entry"; return
     fi

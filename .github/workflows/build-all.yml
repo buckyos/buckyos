@@ -201,51 +201,88 @@ jobs:
         name: paios-images-manifest
         path: ${{ runner.temp }}/paios-images-manifest/paios_images.json
         if-no-files-found: error
+  resolve-ext-tools:
+    # Release payloads carry bin/ext-tools/ext_tools.json pinning the ext-core version
+    # ext-manifest.json names. A version without a release fails the main build: publish
+    # ext-core first (ext-core.yml), then raise the version. Forks stay without a pin.
+    runs-on: ubuntu-24.04
+    outputs:
+      pinned: ${{ steps.resolve.outputs.pinned }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+    - name: Table, manifest and pins agree
+      run: |
+        python3 -m unittest discover -s .github/scripts -p 'test_ext_tools.py'
+        python3 .github/scripts/ext_tools.py check-table
+    - name: Resolve ext_tools.json
+      id: resolve
+      env:
+        PINNED: ${{ github.ref == 'refs/heads/main' && github.repository == 'buckyos/buckyos' }}
+      run: |
+        set -euo pipefail
+        if [[ "$PINNED" != true ]]; then
+          echo "Not a buckyos/buckyos main build; payloads carry no ext-core pin."
+          echo "pinned=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        python3 .github/scripts/ext_tools.py resolve --output "$RUNNER_TEMP/ext-tools-manifest/ext_tools.json"
+        echo "pinned=true" >> "$GITHUB_OUTPUT"
+    - name: Upload ext_tools.json
+      if: ${{ steps.resolve.outputs.pinned == 'true' }}
+      uses: actions/upload-artifact@v6
+      with:
+        name: ext-tools-manifest
+        path: ${{ runner.temp }}/ext-tools-manifest/ext_tools.json
+        if-no-files-found: error
   build-windows:
     strategy:
       fail-fast: false
       matrix:
         arch: ["x86_64"]
-    needs: resolve-paios-images
-    if: ${{ !cancelled() && needs.resolve-paios-images.result == 'success' }}
+    needs: [resolve-paios-images, resolve-ext-tools]
+    if: ${{ !cancelled() && needs.resolve-paios-images.result == 'success' && needs.resolve-ext-tools.result == 'success' }}
     uses: ./.github/workflows/build-windows.yml
     with:
       arch: ${{ matrix.arch }}
       enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}
       paios_images: ${{ needs.resolve-paios-images.outputs.pinned == 'true' }}
+      ext_tools: ${{ needs.resolve-ext-tools.outputs.pinned == 'true' }}
   build-linux:
     strategy:
       fail-fast: false
       matrix:
         arch: ["x86_64", "aarch64"]
-    needs: resolve-paios-images
-    if: ${{ !cancelled() && needs.resolve-paios-images.result == 'success' }}
+    needs: [resolve-paios-images, resolve-ext-tools]
+    if: ${{ !cancelled() && needs.resolve-paios-images.result == 'success' && needs.resolve-ext-tools.result == 'success' }}
     uses: ./.github/workflows/build-linux.yml
     with:
       arch: ${{ matrix.arch }}
       enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}
       paios_images: ${{ needs.resolve-paios-images.outputs.pinned == 'true' }}
+      ext_tools: ${{ needs.resolve-ext-tools.outputs.pinned == 'true' }}
   build-macos:
     strategy:
       fail-fast: false
       matrix:
         arch: ["x86_64", "aarch64"]
-    needs: resolve-paios-images
-    if: ${{ !cancelled() && needs.resolve-paios-images.result == 'success' }}
+    needs: [resolve-paios-images, resolve-ext-tools]
+    if: ${{ !cancelled() && needs.resolve-paios-images.result == 'success' && needs.resolve-ext-tools.result == 'success' }}
     uses: ./.github/workflows/build-macos.yml
     with:
       arch: ${{ matrix.arch }}
       enable_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_tests }}
       paios_images: ${{ needs.resolve-paios-images.outputs.pinned == 'true' }}
+      ext_tools: ${{ needs.resolve-ext-tools.outputs.pinned == 'true' }}
 
   upload-payloads:
     name: Upload component payloads to R2
-    needs: [resolve-paios-images, build-windows, build-linux, build-macos]
+    needs: [resolve-paios-images, resolve-ext-tools, build-windows, build-linux, build-macos]
     # Explicit results: the implicit success() would also see image builds that
     # were skipped because the images did not change, and skip the upload.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main' && github.repository == 'buckyos/buckyos'
-      && needs.resolve-paios-images.result == 'success' && needs.build-windows.result == 'success'
+      && needs.resolve-paios-images.result == 'success' && needs.resolve-ext-tools.result == 'success' && needs.build-windows.result == 'success'
       && needs.build-linux.result == 'success' && needs.build-macos.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -277,6 +314,20 @@ jobs:
             cp "$RUNNER_TEMP/paios-images-manifest/paios_images.json" "${payload%.tar.gz}.paios_images.json"
           done
           ls -l "$RUNNER_TEMP/payloads"
+      - name: Download ext_tools.json
+        if: ${{ needs.resolve-ext-tools.outputs.pinned == 'true' }}
+        uses: actions/download-artifact@v6
+        with:
+          name: ext-tools-manifest
+          path: ${{ runner.temp }}/ext-tools-manifest
+      - name: Add ext_tools.json next to each payload
+        # Lets onlinepack check the pinned ext-core tar without downloading the payload.
+        if: ${{ needs.resolve-ext-tools.outputs.pinned == 'true' }}
+        run: |
+          set -euo pipefail
+          for payload in "$RUNNER_TEMP"/payloads/buckyos-*.tar.gz; do
+            cp "$RUNNER_TEMP/ext-tools-manifest/ext_tools.json" "${payload%.tar.gz}.ext_tools.json"
+          done
       - name: Upload component payloads to R2
         uses: ryand56/r2-upload-action@latest
         with:
