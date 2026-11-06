@@ -507,6 +507,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          umask 022
           mkdir -p "$LOCAL_PKG_DIR"
           python3 ./make_local_pkg.py build-pkg --skip-cargo-update --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir "$LOCAL_PKG_DIR"
 

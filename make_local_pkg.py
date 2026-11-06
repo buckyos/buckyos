@@ -1128,6 +1128,12 @@ def _prepare_common_build_root(
         cwd=SRC_DIR,
         dry_run=dry_run,
     )
+    if target.platform_key in ("macos", "windows"):
+        profiles = buckyos_root / "etc" / "product-profiles"
+        print(f"[stage] desktop product profiles => {profiles}")
+        if not dry_run:
+            shutil.copytree(SRC_DIR / "product", profiles, dirs_exist_ok=True)
+
     if edition == "lite":
         # BuckyOS Desktop Lite runs no container: the paios_images module keeps
         # only its README, never an image manifest or tarballs.
