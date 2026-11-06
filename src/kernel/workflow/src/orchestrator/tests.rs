@@ -7,7 +7,7 @@ use crate::functions::test_functions::{self, Echo};
 use crate::native::{ToolEnvironment, ToolInfo};
 use crate::object_store::InMemoryObjectStore;
 use crate::task_tracker::{NoopTaskTracker, RecordingTaskTracker};
-use buckyos_api::{ThunkExecutionResult, WorkflowStepTaskRequest};
+use buckyos_api::ThunkExecutionResult;
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -647,14 +647,10 @@ async fn human_confirm_and_branch_flow_still_work() {
     assert!(events.iter().any(|e| e.event_type == "step.waiting_human"));
     assert_eq!(run.status, RunStatus::WaitingHuman);
 
-    let task_data = WorkflowStepTaskData {
-        request: WorkflowStepTaskRequest { run_id: run.run_id.clone(), node_id: "review".into(), ..Default::default() },
-        progress: None,
-        result: None,
-        human_action: Some(TaskHumanAction { kind: "approve".into(), payload: None, actor: Some("human/test".into()), submitted_at: None }),
-        last_error: None,
-    };
-    h.orchestrator.apply_task_data(&compiled, &mut run, &task_data).await.unwrap();
+    h.orchestrator
+        .handle_human_action(&compiled, &mut run, HumanAction { node_id: "review".into(), action: HumanActionKind::Approve, payload: None, actor: "human/test".into() })
+        .await
+        .unwrap();
     h.orchestrator.tick(&compiled, &mut run).await.unwrap();
     assert_eq!(run.node_outputs["decision"]["branch"], "approved");
     assert_eq!(run.node_states["publish"], NodeRunState::Running);

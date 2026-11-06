@@ -14,7 +14,8 @@
 //!
 //! Workflow 输入直接使用 buckyos-api 定义的 canonical typed request；输出保留
 //! 对应 typed response，并为 chat message 补充便于 DSL 引用的 `text` 和
-//! `tool_calls` 派生字段。
+//! `tool_calls` 派生字段。Provider 异步的方法（upscale、视频等）返回 `running`
+//! 时，这里等 AICC 任务结束，步骤的输出是任务的最终结果。
 //!
 //! ## 不在 buckyos-api
 //!
@@ -27,9 +28,11 @@ use crate::types::ExecutorRef;
 use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, AiccCall, AiccClient, CancelRequest, Capability,
+    TaskOutcome,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// 编排器在 `executor` 字段里识别 aicc 服务的命名空间前缀。
 pub const AICC_EXECUTOR_PREFIX: &str = "service::aicc.";
@@ -372,20 +375,99 @@ pub fn aicc_method_schema(method: &str) -> Option<AiccMethodSchema> {
 
 // ---------- adapter ----------
 
+/// How long a step waits for an AICC task that outlives the call starting it.
+const AICC_TASK_WAIT: Duration = Duration::from_secs(30 * 60);
+
+/// How an AICC task that outlived its call ended.
+pub enum AiccTaskEnd {
+    Succeeded(Value),
+    Failed(String),
+}
+
+#[async_trait]
+pub trait AiccTaskWaiter: Send + Sync {
+    async fn wait(&self, task_id: &str) -> WorkflowResult<AiccTaskEnd>;
+}
+
+struct RuntimeTaskWaiter;
+
+#[async_trait]
+impl AiccTaskWaiter for RuntimeTaskWaiter {
+    async fn wait(&self, task_id: &str) -> WorkflowResult<AiccTaskEnd> {
+        let task = get_buckyos_api_runtime()
+            .map_err(|err| WorkflowError::Dispatcher(err.to_string()))?
+            .wait_for_task_end_kevent(task_id)
+            .await
+            .map_err(|err| WorkflowError::Dispatcher(err.to_string()))?;
+        if task.outcome != Some(TaskOutcome::Succeeded) {
+            let reason = task.error.map(|error| error.message);
+            return Ok(AiccTaskEnd::Failed(reason.unwrap_or_else(|| format!("ended as {:?}", task.outcome))));
+        }
+        let output = task
+            .result
+            .as_ref()
+            .and_then(|result| result.pointer("/result/output").or_else(|| result.get("output")))
+            .cloned();
+        Ok(match output {
+            Some(output) => AiccTaskEnd::Succeeded(output),
+            None => AiccTaskEnd::Failed("succeeded without an output".to_string()),
+        })
+    }
+}
+
 /// 调用 aicc 服务的编排器侧 adapter。匹配所有 `service::aicc.<method>` executor。
 pub struct AiccAdapter {
     client: Option<Arc<AiccClient>>,
+    waiter: Arc<dyn AiccTaskWaiter>,
 }
 
 impl AiccAdapter {
     pub fn new(client: Arc<AiccClient>) -> Self {
         Self {
             client: Some(client),
+            waiter: Arc::new(RuntimeTaskWaiter),
         }
     }
 
     pub fn from_runtime() -> Self {
-        Self { client: None }
+        Self {
+            client: None,
+            waiter: Arc::new(RuntimeTaskWaiter),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_task_waiter(mut self, waiter: Arc<dyn AiccTaskWaiter>) -> Self {
+        self.waiter = waiter;
+        self
+    }
+
+    /// The step's output is the task's result: a `running` envelope has none, and
+    /// passing it on would complete the step empty and put that in the step cache.
+    async fn finish_running_task(&self, method: &str, response: &Value) -> WorkflowResult<Value> {
+        let task_id = response.get("task_id").and_then(Value::as_str).ok_or_else(|| {
+            WorkflowError::Dispatcher(format!("aicc {method} is running without a task_id"))
+        })?;
+        let end = tokio::time::timeout(AICC_TASK_WAIT, self.waiter.wait(task_id))
+            .await
+            .map_err(|_| {
+                WorkflowError::Dispatcher(format!(
+                    "aicc {method} task {task_id} did not finish within {}s; it keeps running",
+                    AICC_TASK_WAIT.as_secs()
+                ))
+            })??;
+        match end {
+            AiccTaskEnd::Succeeded(mut output) => {
+                if let Some(fields) = output.as_object_mut() {
+                    fields.insert("task_id".to_string(), Value::String(task_id.to_string()));
+                    fields.insert("status".to_string(), Value::String("succeeded".to_string()));
+                }
+                Ok(output)
+            }
+            AiccTaskEnd::Failed(reason) => Err(WorkflowError::Dispatcher(format!(
+                "aicc {method} task {task_id} failed: {reason}"
+            ))),
+        }
     }
 
     async fn client(&self) -> WorkflowResult<Arc<AiccClient>> {
@@ -444,6 +526,10 @@ impl ExecutorAdapter for AiccAdapter {
                 "aicc {} returned failed status: task_id={}, event_ref={}",
                 method, task_id, event_ref,
             )));
+        }
+        if response.get("status").and_then(Value::as_str) == Some("running") {
+            let output = self.finish_running_task(method, &response).await?;
+            return Ok(flatten_typed_response(output));
         }
         Ok(flatten_typed_response(response))
     }
@@ -613,15 +699,30 @@ mod tests {
         }
     }
 
-    fn adapter() -> (AiccAdapter, Arc<Mutex<Vec<SeenCall>>>) {
+    struct EndsAs(Mutex<Option<AiccTaskEnd>>);
+
+    #[async_trait]
+    impl AiccTaskWaiter for EndsAs {
+        async fn wait(&self, task_id: &str) -> WorkflowResult<AiccTaskEnd> {
+            assert_eq!(task_id, "image-task");
+            Ok(self.0.lock().unwrap().take().unwrap())
+        }
+    }
+
+    fn adapter_ending_as(end: AiccTaskEnd) -> (AiccAdapter, Arc<Mutex<Vec<SeenCall>>>) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let handler = RecordingHandler {
             calls: calls.clone(),
         };
         (
-            AiccAdapter::new(Arc::new(AiccClient::new_in_process(Box::new(handler)))),
+            AiccAdapter::new(Arc::new(AiccClient::new_in_process(Box::new(handler))))
+                .with_task_waiter(Arc::new(EndsAs(Mutex::new(Some(end))))),
             calls,
         )
+    }
+
+    fn adapter() -> (AiccAdapter, Arc<Mutex<Vec<SeenCall>>>) {
+        adapter_ending_as(AiccTaskEnd::Failed("not expected to wait".to_string()))
     }
 
     #[test]
@@ -685,8 +786,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn helpers_keep_logical_models_and_running_task_envelopes() {
-        let (adapter, calls) = adapter();
+    async fn helpers_keep_logical_models_and_a_running_task_ends_in_its_result() {
+        let (adapter, calls) = adapter_ending_as(AiccTaskEnd::Succeeded(json!({"artifacts": [{"name": "image"}]})));
         let chat = adapter
             .invoke(
                 &ExecutorRef::parse("service::aicc.helper.llm_chat").unwrap(),
@@ -710,8 +811,8 @@ mod tests {
 
         assert_eq!(chat["text"], "helper result");
         assert_eq!(image["task_id"], "image-task");
-        assert_eq!(image["status"], "running");
-        assert_eq!(image["event_ref"], "task://image-task/events");
+        assert_eq!(image["status"], "succeeded");
+        assert_eq!(image["artifacts"][0]["name"], "image");
         let calls = calls.lock().unwrap();
         assert!(matches!(
             &calls[0],
@@ -721,6 +822,19 @@ mod tests {
             &calls[1],
             SeenCall::HelperImage(request) if request.logical_model == "image.txt2img"
         ));
+    }
+
+    #[tokio::test]
+    async fn a_running_task_that_fails_fails_the_step() {
+        let (adapter, _) = adapter_ending_as(AiccTaskEnd::Failed("provider said no".to_string()));
+        let err = adapter
+            .invoke(
+                &ExecutorRef::parse("service::aicc.helper.text_to_image").unwrap(),
+                &json!({"logical_model": "image.txt2img", "prompt": "a lighthouse"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("provider said no"), "{err}");
     }
 
     #[tokio::test]

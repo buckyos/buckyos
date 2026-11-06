@@ -72,9 +72,10 @@ The Zone's `llm.chat` lands on an OpenAI strict route: every property listed in 
   `unavailable_presets` before changing routing. `missing_channel_mapping` means the preset lacks a channel
   conversion; an empty LLM `logical_mounts` alone is normal because family/spec membership is generated.
 - Here `llm.chat`/`llm.plan` add provider web search: a trivial call bills ~4.7k input tokens (mostly cached)
-  against ~0.3k on `llm.swift`. `--json` turns web search off for that run (JSON mode excludes it).
-- `--json` (or `json: true`) constrains the model result: JSON mode at the provider, the schema when
-  `json_schema` is set, and a JSON check on the extracted result (exit 6 if not JSON). xllm itself does not
+  against ~0.3k on `llm.swift`. `--json` turns web search off for that run.
+- `--json` (or `json: true`) constrains the model result: at the provider, the schema when
+  `json_schema` is set, otherwise any JSON object (never a bare array or value); and a JSON check on the
+  extracted result (exit 6 if not JSON). xllm itself does not
   check the reply against the schema; the provider enforces it.
 - `--format json` wraps the CLI result in an envelope (run_id, status, is_terminal, resumable, answer, usage,
   error, response_model, resume_command). It does not constrain the model; scripts can combine both.
@@ -174,4 +175,4 @@ extraction or JSON check failed (raw reply saved).
   `lib/runtime.ts`). A derived TS script goes to `$OPENDAN_AGENT_ROOT/tools/` and runs with
   `deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json`; not yet exercised for LLM calls.
 
-Checked against: BuckyOS 0.7.0, xllm 0.7.0 (aios image 2026-10-12 in the agent container; host build 2026-10-17 for json_schema, `--json` without web search and the resume hint), DV Zone routes via codex-proxy, 2026-10-17.
+Checked against: BuckyOS 0.7.0, xllm 0.7.0 (aios image 2026-10-12 in the agent container; host build 2026-10-17 for json_schema, `--json` without web search and the resume hint; host build 2026-11-05 for `--json` as a provider JSON Schema on OpenAI Responses and Gemini), DV Zone routes via codex-proxy, 2026-10-17.

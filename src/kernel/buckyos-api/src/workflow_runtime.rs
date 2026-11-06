@@ -1,7 +1,7 @@
 //! Workflow Run / Step / 事件 / 人类介入相关的运行时类型。
 //!
 //! 这些类型对应 Workflow Service 对外暴露的 wire schema（`workflow.get_run_graph`、
-//! `workflow.get_history`、Step task 的 TaskData 中的 `human_action` 等），所以
+//! `workflow.get_history`、`workflow.submit_human_action` 等），所以
 //! 必须放在 buckyos-api 里给所有“看 / 写 workflow 运行状态”的组件共享：
 //!
 //! - TaskMgr UI / task_manager 订阅方需要 `RunStatus` / `NodeRunState` 来渲染

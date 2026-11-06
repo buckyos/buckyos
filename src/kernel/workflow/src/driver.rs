@@ -1,9 +1,8 @@
 //! Background run driver (TODO T1c): RPC handlers only enqueue work; this
 //! component ticks runs off the request path, consumes execution receipts
-//! from the runner and finalizes terminal runs (ensure slot, subscriptions).
+//! from the runner and finalizes terminal runs (ensure slot).
 
-use crate::state::{DefinitionStore, RunHandle, RunStore};
-use crate::subscriptions::RunSubscriptionManager;
+use crate::state::{DefinitionRecord, DefinitionStore, RunHandle, RunRecord, RunStore};
 use crate::{EventEnvelope, RunStatus, ServiceOrchestrator, WorkflowError, WorkflowResult};
 use buckyos_api::ThunkExecutionResult;
 use log::{debug, warn};
@@ -15,7 +14,6 @@ pub struct RunDriver {
     definitions: Arc<DefinitionStore>,
     runs: Arc<RunStore>,
     orchestrator: Arc<ServiceOrchestrator>,
-    subscriptions: Option<Arc<RunSubscriptionManager>>,
     changed: Notify,
 }
 
@@ -24,13 +22,11 @@ impl RunDriver {
         definitions: Arc<DefinitionStore>,
         runs: Arc<RunStore>,
         orchestrator: Arc<ServiceOrchestrator>,
-        subscriptions: Option<Arc<RunSubscriptionManager>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             definitions,
             runs,
             orchestrator,
-            subscriptions,
             changed: Notify::new(),
         })
     }
@@ -44,9 +40,7 @@ impl RunDriver {
     pub fn spawn_tick(self: &Arc<Self>, run_id: String) {
         let me = self.clone();
         tokio::spawn(async move {
-            if let Err(err) = me.tick_now(&run_id).await {
-                warn!("workflow driver: tick run {} failed: {}", run_id, err);
-            }
+            let _ = me.tick_now(&run_id).await;
         });
     }
 
@@ -56,17 +50,32 @@ impl RunDriver {
         let events = {
             let mut record = handle.state.lock().await;
             if record.run.is_terminal() {
-                return Ok(Vec::new());
+                Ok(Vec::new())
+            } else {
+                self.tick_or_fail(&definition, &mut record).await
             }
-            let events = self
-                .orchestrator
-                .tick(&definition.compiled, &mut record.run)
-                .await?;
-            record.append_events(&events);
-            events
         };
         self.finalize_if_terminal(&handle).await;
-        Ok(events)
+        events
+    }
+
+    async fn tick_or_fail(
+        &self,
+        definition: &DefinitionRecord,
+        record: &mut RunRecord,
+    ) -> WorkflowResult<Vec<EventEnvelope>> {
+        match self.orchestrator.tick(&definition.compiled, &mut record.run).await {
+            Ok(events) => {
+                record.append_events(&events);
+                Ok(events)
+            }
+            Err(err) => {
+                warn!("workflow driver: tick run {} failed: {}", record.run.run_id, err);
+                let events = self.orchestrator.fail_run(&definition.compiled, &mut record.run, &err).await;
+                record.append_events(&events);
+                Err(err)
+            }
+        }
     }
 
     /// Applies one receipt: stale / duplicate / late receipts are logged and
@@ -110,14 +119,7 @@ impl RunDriver {
                 }
             }
             if !record.run.is_terminal() {
-                match self
-                    .orchestrator
-                    .tick(&definition.compiled, &mut record.run)
-                    .await
-                {
-                    Ok(events) => record.append_events(&events),
-                    Err(err) => warn!("workflow driver: tick after receipt failed: {}", err),
-                }
+                let _ = self.tick_or_fail(&definition, &mut record).await;
             }
         }
         self.finalize_if_terminal(&handle).await;
@@ -148,9 +150,6 @@ impl RunDriver {
         }
         if let Some(key) = ensure_key {
             self.runs.release_ensure(&run_id, &key).await;
-        }
-        if let Some(subs) = self.subscriptions.as_ref() {
-            subs.unwatch_run(&run_id).await;
         }
         self.changed.notify_waiters();
     }

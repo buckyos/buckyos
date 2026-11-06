@@ -190,6 +190,8 @@ loopback 监听且显式开启 `--debug-api`。测试仍执行 JWT 签名及标�
 `product/bucky_file/nfs_server.md` §13。回归：`cargo test -p nfs_server --test ndm`（真实 RBAC 模型 + 默认策略，
 覆盖归属、续传、终止、过期、登记校验、未授权读取与权限分离）。
 
+`bucket.grant_holdings { user_id, app_id, obj_ids }`（`obj://ndm/manage`）让某个用户经某个 App 能读这些对象，给生成对象的可信服务用：workflow 在 `get_run_output` 时把系统管线的产物交给已授权的请求者。只覆盖列出的对象本身，不含其下的 chunk，也不为这些对象加 lease，保留由登记方负责。
+
 浏览器使用 WebSDK `ndm.importFiles` / `ndm.importDirectory`，再等待 `ndm.ensureUploaded`；稳定 ObjId 与 `objectStatus: ready` 分开。`POST /ndm/v1/import/finalize` 接收 `{ objects: [{ obj_id, obj_data }], roots: [ObjId], qcid_links?: [{ qcid, content_id, size }] }`，在原上传用户和 canonical App/System target 下按依赖顺序登记 FileObject、ChunkList、DirObject，校验 ID、子对象读取权限及递归完整性。请求体上限 8 MiB、对象和根各最多 10000 个；根只能是 FileObject 或 DirObject。
 
 成功返回 `{ ready: true, roots: [{ obj_id, ready: true }], warnings: [] }`。缺失/无权访问依赖、登记或临时保留失败均不返回 ready，重试相同 manifest 不重复创建内容。QCID 是可选优化：服务端从已完成内容采样验证，失败只写 warnings；索引按上传主体隔离，并保存原 chunk/ChunkList 标识，避免复用改变 FileObject ID。lookup 的 `scope` 为 `app` 或 `global`；只有 `reusable: true` 才允许跳过上传，存在性查询本身不授予读取或登记权限。

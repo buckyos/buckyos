@@ -32,7 +32,6 @@ type HistoryResponse = {
 type GraphResponse = {
   ok: true;
   run_id: string;
-  task_id?: string | null;
   workflow_id: string;
   workflow_name?: string;
   status: string;
@@ -85,16 +84,6 @@ type CaseResult =
   | { status: "blocked"; caseId: string; reason: string; reportDir: string }
   | { status: "failed"; caseId: string; error: string; reportDir: string };
 
-type TaskRecord = {
-  id: number;
-  name: string;
-  task_type: string;
-  status: string;
-  data: JsonValue;
-  root_id?: string | null;
-  parent_id?: number | null;
-};
-
 class BlockedError extends Error {
   constructor(message: string) {
     super(message);
@@ -139,8 +128,11 @@ const assert = {
 const DEFAULT_CASES = [
   "WF-DV-001",
   "WF-DV-002",
+  "WF-DV-003",
+  "WF-DV-005",
   "WF-DV-006",
   "WF-DV-007",
+  "WF-DV-008",
   "WF-DV-009",
   "WF-DV-010",
   "WF-DV-011",
@@ -148,6 +140,7 @@ const DEFAULT_CASES = [
   "WF-DV-013",
   "WF-DV-014",
   "WF-DV-015",
+  "WF-DV-016",
 ];
 const WORKFLOW_DV_CASES = getEnv("WORKFLOW_DV_CASES");
 const WORKFLOW_REPORT_DIR = getEnv("WORKFLOW_REPORT_DIR") ??
@@ -157,7 +150,6 @@ const WORKFLOW_TEST_IMAGE_URL = getEnv("WORKFLOW_TEST_IMAGE_URL") ??
 const WORKFLOW_WAIT_TIMEOUT_MS = Number(
   getEnv("WORKFLOW_WAIT_TIMEOUT_MS") ?? "180000",
 );
-const TASKDATA_CASE_ID = "WF-DV-003";
 const SYSTEM_DEFINITION_IDS = [
   "media.image",
   "media.pdf",
@@ -200,9 +192,27 @@ async function writeJsonFile(path: string, value: unknown): Promise<void> {
   await Deno.writeTextFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+let aiccRpc: RpcClient;
+
 async function loadFixture(name: string): Promise<JsonObject> {
   const url = new URL(`./fixtures/${name}`, import.meta.url);
-  return JSON.parse(await Deno.readTextFile(url)) as JsonObject;
+  const fixture = JSON.parse(await Deno.readTextFile(url)) as JsonObject;
+  await resolveFixtureModels(fixture);
+  return fixture;
+}
+
+/** AICC's typed methods take an exact model, which differs per Zone: a fixture says `route:<api_type>`. */
+async function resolveFixtureModels(value: JsonValue): Promise<void> {
+  if (!value || typeof value !== "object") return;
+  for (const item of Object.values(value)) await resolveFixtureModels(item);
+  if (Array.isArray(value) || typeof value.exact_model !== "string") return;
+  const apiType = value.exact_model.startsWith("route:") ? value.exact_model.slice(6) : null;
+  if (!apiType) return;
+  const route = await rpcCall<{ selected_exact_model: string }>(aiccRpc, "route.resolve", {
+    api_type: apiType,
+    logical_model: apiType,
+  });
+  value.exact_model = route.selected_exact_model;
 }
 
 function cloneJson<T extends JsonValue>(value: T): T {
@@ -563,78 +573,14 @@ async function assertRunListed(
   );
 }
 
-/**
- * Drive a human_confirm node by writing TaskData via task_manager RPC,
- * mirroring the production flow (TaskMgr UI writes TaskData, workflow service
- * subscribes to the event and calls apply_task_data). The legacy path used
- * workflow.submit_step_output directly; switching here lets the smoke test
- * exercise the task_mgr → workflow event pipe end-to-end.
- */
-async function submitHumanActionViaTaskData(args: {
-  taskMgrRpc: RpcClient;
-  runId: string;
-  nodeId: string;
-  actor: string;
-  payload: JsonValue;
-}): Promise<{ taskId: number }> {
-  const { taskMgrRpc, runId, nodeId, actor, payload } = args;
-  const task = await waitForStepTask(taskMgrRpc, runId, nodeId);
-  await rpcCall<unknown>(taskMgrRpc, "update_task", {
-    id: task.id,
-    data: {
-      human_action: {
-        kind: "submit_output",
-        actor,
-        payload,
-      },
-    },
-  });
-  return { taskId: task.id };
-}
-
-async function waitForStepTask(
-  taskMgrRpc: RpcClient,
-  runId: string,
-  nodeId: string,
-): Promise<TaskRecord> {
-  // The workflow tracker creates the step task lazily — give it a few seconds
-  // after the run lands in waiting_human. list_tasks filters by root_id =
-  // run_id (the tracker pins root_id to run.run_id for every step task).
-  const deadline = Date.now() + 10_000;
-  let lastSnapshot: TaskRecord[] = [];
-  while (Date.now() < deadline) {
-    const listed = await rpcCall<{ tasks?: TaskRecord[] }>(
-      taskMgrRpc,
-      "list_tasks",
-      { root_id: runId },
-    );
-    lastSnapshot = listed.tasks ?? [];
-    const match = lastSnapshot.find((task) => {
-      const data = task.data as JsonObject | null;
-      const workflow = data && typeof data === "object" && !Array.isArray(data)
-        ? (data.workflow as JsonObject | undefined)
-        : undefined;
-      return workflow?.node_id === nodeId;
-    });
-    if (match) return match;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  throw new Error(
-    `task_mgr.list_tasks did not surface step task for run=${runId} node=${nodeId}; saw=${
-      JSON.stringify(lastSnapshot.map((t) => ({ id: t.id, name: t.name })))
-    }`,
-  );
-}
-
 async function runImageReviewCase(args: {
   workflowRpc: RpcClient;
-  taskMgrRpc: RpcClient;
   owner: Owner;
   runTag: string;
   decision: "approved" | "rejected";
   reportDir: string;
 }): Promise<void> {
-  const { workflowRpc, taskMgrRpc, owner, runTag, decision, reportDir } = args;
+  const { workflowRpc, owner, runTag, decision, reportDir } = args;
   const definition = prepareDefinition(
     await loadFixture("wf-dv-image-review-enhance.json"),
     `${runTag}-${decision}`,
@@ -688,12 +634,11 @@ async function runImageReviewCase(args: {
       },
     };
 
-  const submittedHuman = await submitHumanActionViaTaskData({
-    taskMgrRpc,
-    runId,
-    nodeId: "human_review",
+  const submittedHuman = await rpcOk<JsonObject>(workflowRpc, "submit_step_output", {
+    run_id: runId,
+    node_id: "human_review",
     actor: "devtest",
-    payload: humanOutput as unknown as JsonValue,
+    output: humanOutput as unknown as JsonValue,
   });
   await writeJsonFile(
     joinPath(reportDir, "submit_step_output.json"),
@@ -753,12 +698,11 @@ async function runImageReviewCase(args: {
 
 async function runAgentCallbackCase(args: {
   workflowRpc: RpcClient;
-  taskMgrRpc: RpcClient;
   owner: Owner;
   runTag: string;
   reportDir: string;
 }): Promise<void> {
-  const { workflowRpc, taskMgrRpc, owner, runTag, reportDir } = args;
+  const { workflowRpc, owner, runTag, reportDir } = args;
   const definition = prepareDefinition(
     await loadFixture("wf-dv-agent-callback.json"),
     runTag,
@@ -784,12 +728,11 @@ async function runAgentCallbackCase(args: {
     tags: ["sample", "product", "needs-review"],
     source: "agent_callback",
   };
-  const submittedOutput = await submitHumanActionViaTaskData({
-    taskMgrRpc,
-    runId,
-    nodeId: "request_manual_tag",
+  const submittedOutput = await rpcOk<JsonObject>(workflowRpc, "submit_step_output", {
+    run_id: runId,
+    node_id: "request_manual_tag",
     actor: "agent/dv-callback",
-    payload: output,
+    output,
   });
   await writeJsonFile(
     joinPath(reportDir, "submit_step_output.json"),
@@ -840,9 +783,7 @@ async function runAgentCallbackCase(args: {
       graph.status === "waiting_human" &&
       graph.node_states.request_manual_tag === "waiting_human",
   );
-  // This sub-case specifically pins down the workflow RPC's default-actor
-  // behavior ("agent" when actor omitted). The apply_task_data path defaults
-  // to "human" instead, so the test stays on submit_step_output here.
+  // Without an actor, submit_step_output records "agent".
   await rpcOk<JsonObject>(workflowRpc, "submit_step_output", {
     run_id: defaultActorRun.runId,
     node_id: "request_manual_tag",
@@ -879,6 +820,8 @@ async function runCacheCase(args: {
     await loadFixture("wf-dv-idempotent-cache.json"),
     runTag,
   );
+  // The step cache outlives this DV: a new key makes the first run really execute.
+  ((definition.steps as JsonObject[])[0].input as JsonObject).idempotency_key = runTag;
   const submitted = await submitDefinitionPair(workflowRpc, definition);
 
   const runA = await createAndStartRun(
@@ -936,6 +879,7 @@ async function runCacheCase(args: {
     definition,
     "https://www.gstatic.com/webp/gallery/2.jpg",
   );
+  ((changed.steps as JsonObject[])[0].input as JsonObject).idempotency_key = `${runTag}-changed`;
   const submittedChanged = await submitDefinitionPair(
     workflowRpc,
     changed,
@@ -987,11 +931,6 @@ async function runSemanticCase(args: {
     definition,
   });
   assertNoAnalysisErrors(dryRun, "semantic dry_run");
-  const graphText = JSON.stringify(dryRun.graph);
-  assert.ok(
-    graphText.includes("SemanticPath") ||
-      graphText.includes("/skill/image-quality-review"),
-  );
 
   const submitted = await rpcOk<JsonObject>(workflowRpc, "submit_definition", {
     definition,
@@ -1001,31 +940,40 @@ async function runSemanticCase(args: {
     workflow_id: submitted.workflow_id,
   });
 
-  const raw = await workflowRpc.call("start_run", { run_id: created.run_id });
-  await writeJsonFile(joinPath(reportDir, "start_raw.json"), raw);
-  const text = JSON.stringify(raw);
+  await rpcOk<JsonObject>(workflowRpc, "start_run", { run_id: created.run_id });
+  const runId = String(created.run_id);
+  // start_run returns at once; the step fails when the run gets to it.
+  const settled = await waitForGraph(
+    workflowRpc,
+    runId,
+    "semantic step failed",
+    (graph) => Boolean(graph.node_errors?.semantic_review) || Boolean(graph.node_errors?.caption) || isTerminal(graph.status),
+  );
+  await writeJsonFile(joinPath(reportDir, "graph.json"), settled.graph);
+  assert.ok(
+    JSON.stringify((settled.graph as unknown as JsonObject).nodes).includes("/skill/image-quality-review"),
+    "the compiled graph keeps the semantic path",
+  );
+  const text = JSON.stringify(settled.graph.node_errors ?? {});
   if (isAiccUnavailableText(text)) {
     throw new BlockedError(
       `AICC unavailable before semantic executor check: ${text}`,
     );
   }
   assert.ok(
-    text.includes("image-quality-review") ||
-      text.includes("unresolved") ||
-      text.includes("semantic") ||
-      text.includes("require_function_object"),
-    "semantic executor should be preserved and fail explicitly at execution time",
+    /image-quality-review|unresolved|semantic|require_function_object/.test(text),
+    `the semantic executor should fail explicitly at execution time: ${text}`,
   );
+  assert.equal(settled.graph.status, "failed", "a step that cannot be scheduled ends the run");
 }
 
 async function runFailureHumanRetryCase(args: {
   workflowRpc: RpcClient;
-  taskMgrRpc: RpcClient;
   owner: Owner;
   runTag: string;
   reportDir: string;
 }): Promise<void> {
-  const { workflowRpc, taskMgrRpc, owner, runTag, reportDir } = args;
+  const { workflowRpc, owner, runTag, reportDir } = args;
   const definition = prepareDefinition(
     await loadFixture("wf-dv-failure-human-retry.json"),
     runTag,
@@ -1050,12 +998,11 @@ async function runFailureHumanRetryCase(args: {
     eventsFor(waiting.history, "caption_bad", "step.waiting_human").length >= 1,
   );
 
-  await submitHumanActionViaTaskData({
-    taskMgrRpc,
-    runId,
-    nodeId: "caption_bad",
+  await rpcOk<JsonObject>(workflowRpc, "submit_step_output", {
+    run_id: runId,
+    node_id: "caption_bad",
     actor: "devtest",
-    payload: { text: "manually-supplied caption text" },
+    output: { text: "manually-supplied caption text" },
   });
   const done = await waitForGraph(
     workflowRpc,
@@ -1464,21 +1411,17 @@ async function runObservabilityCase(args: {
   const created = await createSystemRun(workflowRpc, "media.image", { obj_id: image.obj_id });
   const done = await waitTerminal(workflowRpc, created.run_id, "observability run");
   assert.equal(done.graph.revision, created.revision);
-  const runTaskId = done.graph.task_id;
-  assert.ok(String(runTaskId).startsWith("t-"), `the run names its root task, got ${runTaskId}`);
   assert.ok(String(done.graph.requested_by).startsWith(`${owner.user_id}/`), `requested_by ${done.graph.requested_by} belongs to ${owner.user_id}`);
   assert.equal(done.graph.executor, "workflow");
   assert.ok(done.graph.node_sources && Object.keys(done.graph.node_sources).length >= 3);
   await assertRunListed(workflowRpc, "media.image", created.run_id, done.graph.status);
 
-  const roots = await rpcCall<{ tasks?: TaskSummary[] }>(taskMgrRpc, "list_tasks", {
-    idempotency_key: `wf-run-${created.run_id}`,
-  });
-  const root = (roots.tasks ?? []).find((t) => t.schema_id === "workflow.run_tree/v1");
-  assert.ok(root, `TaskMgr has the run root task: ${JSON.stringify(roots)}`);
-  assert.equal(root!.task_id, runTaskId, "graph.task_id is the root task");
+  // A run has one id: it is its root task's id.
+  const { task: root } = await rpcCall<{ task: TaskSummary }>(taskMgrRpc, "get_task", { task_id: created.run_id });
+  assert.equal(root.task_id, created.run_id, "the run id is the root task id");
+  assert.equal(root.schema_id, "workflow.run_tree/v1");
   const tree = await rpcCall<{ tasks?: TaskSummary[] }>(taskMgrRpc, "get_task_tree", {
-    root_id: root!.root_id,
+    root_id: root.root_id,
     depth: 4,
   });
   const schemas = new Set((tree.tasks ?? []).map((t) => t.schema_id));
@@ -1626,10 +1569,194 @@ async function runReadOnlyCase(args: {
   await writeJsonFile(joinPath(reportDir, "results.json"), results);
 }
 
-async function runTaskDataCase(): Promise<void> {
-  throw new BlockedError(
-    "WF-DV-003 is blocked in the current service: apply_task_data exists in orchestrator, but workflow service has no exposed RPC/listener path for TaskData updates.",
+/**
+ * What a system pipeline produced becomes readable to whoever asked for it, by the
+ * path Agents and AICC read (`get_object`, `object/open`), and to nobody else. An
+ * object id alone stays worthless, whichever workflow surface it is shown to.
+ */
+async function runDeliveredHoldingsCase(args: {
+  workflowRpc: RpcClient;
+  owner: Owner;
+  runTag: string;
+  reportDir: string;
+  pdf: UploadedInput;
+  zoneHost: string;
+}): Promise<void> {
+  const { workflowRpc, owner, runTag, reportDir, pdf, zoneHost } = args;
+  const second = await secondPrincipal(zoneHost);
+  if (!second) {
+    throw new BlockedError("needs a non-admin principal: WORKFLOW_DV_SECOND_USER=user:password");
+  }
+  assert.notEqual(second.userId, owner.user_id, "second principal must be a different user");
+  const post = async (path: string, body: JsonObject, token: string) => {
+    const response = await fetch(`https://${zoneHost}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    await response.body?.cancel();
+    return response.status;
+  };
+  const getObject = (objId: string) => post("/ndm/v1/store/get_object", { obj_id: objId }, second.token);
+  const openObject = (objId: string) => post("/ndm/proxy/v1/read/object/open", { obj_id: objId }, second.token);
+
+  // Holdings outlive the run: a new dpi gives this round a catalog nobody holds yet.
+  const dpi = 72 + (parseInt(runTag.slice(-6), 36) % 72);
+  const input: JsonObject = { obj_id: pdf.obj_id, dpi };
+  const first = await createSystemRun(workflowRpc, "media.pdf", input);
+  const doneA = await waitTerminal(workflowRpc, first.run_id, "media.pdf of the first principal");
+  assert.equal(doneA.graph.status, "completed", JSON.stringify(doneA.graph.node_errors));
+  const manifestId = String((doneA.graph.output?.build_catalog as JsonObject).manifest_obj_id);
+  const results: Record<string, unknown> = {};
+
+  // Knowing the ids reads nothing; another principal's run hands nothing over.
+  assert.equal(await getObject(manifestId), 403, "the manifest id alone is no read right");
+  results.foreign_output = await expectRejected(second.rpc, "get_run_output", { run_id: first.run_id }, ["rpc_error"]);
+  assert.equal(await getObject(manifestId), 403, "a refused get_run_output grants nothing");
+
+  // Naming an object in the output of one's own workflow grants nothing either.
+  const naming = prepareDefinition(await loadFixture("wf-dv-echo-cache.json"), `${runTag}-naming`);
+  ((naming.steps as JsonObject[])[0].input as JsonObject).value = manifestId;
+  const submitted = await rpcOk<{ workflow_id: string }>(second.rpc, "submit_definition", { definition: naming });
+  const namingRun = await rpcOk<CreateRunResponse>(second.rpc, "create_run", {
+    workflow_id: submitted.workflow_id,
+    auto_start: true,
+    wait_ms: 1000,
+  });
+  const namingDone = await waitTerminal(second.rpc, namingRun.run_id, "echo naming a foreign object");
+  assert.equal(namingDone.graph.status, "completed", JSON.stringify(namingDone.graph.node_errors));
+  const namingOutput = await rpcOk<{ delivery: { artifacts: string[]; held: number } }>(
+    second.rpc,
+    "get_run_output",
+    { run_id: namingRun.run_id },
   );
+  assert.ok(JSON.stringify(namingOutput).includes(manifestId), "the run does name the manifest");
+  assert.equal(namingOutput.delivery.held, 0, "a user definition's output grants nothing");
+  assert.equal(await getObject(manifestId), 403, "naming the manifest is no read right");
+
+  // Nor can a run of a system pipeline be made to say something else.
+  const bobPdf = await uploadInput(zoneHost, second.token, `${runTag}-second`, "dv-doc.pdf");
+  const idle = await rpcOk<CreateRunResponse>(second.rpc, "create_run", {
+    workflow_id: "media.pdf",
+    input: { obj_id: bobPdf.obj_id, dpi },
+    auto_start: false,
+  });
+  results.forged_step_output = await expectRejected(second.rpc, "submit_step_output", {
+    run_id: idle.run_id,
+    node_id: "build_catalog",
+    output: { manifest_obj_id: manifestId },
+  }, ["system_definition_read_only"]);
+  await rpcOk(second.rpc, "cancel_run", { run_id: idle.run_id });
+
+  // A schedule has no caller to authorize its input against, so it cannot start one at all.
+  const scheduled = await second.rpc.call("create_scheduled_task", {
+    name: `${runTag}-schedule`,
+    owner: (await rpcOk<{ owner: Owner }>(second.rpc, "get_run_graph", { run_id: idle.run_id })).owner,
+    schedule: { kind: "cron", expr: "0 0 * * *" },
+    target: {
+      task_type: "workflow.run",
+      name_template: "convert",
+      data_template: { request: { workflow_id: "media.pdf", input: { obj_id: bobPdf.obj_id, content_id: pdf.node_id } } },
+    },
+  }).then((value) => JSON.stringify(value), (err) => String(err));
+  assert.ok(/cannot be scheduled/.test(scheduled), `a system pipeline cannot be scheduled: ${scheduled}`);
+  results.scheduled_system_pipeline = "rejected";
+
+  // Their own request for the same content is served from the shared cache and delivered.
+  const own = await createSystemRun(second.rpc, "media.pdf", { obj_id: bobPdf.obj_id, dpi });
+  const doneB = await waitTerminal(second.rpc, own.run_id, "media.pdf of the second principal");
+  assert.equal(doneB.graph.status, "completed", JSON.stringify(doneB.graph.node_errors));
+  assert.equal(doneB.graph.node_sources?.build_catalog, "cache", "the same catalog comes from the shared cache");
+  assert.equal((doneB.graph.output?.build_catalog as JsonObject).manifest_obj_id, manifestId);
+  assert.equal(await getObject(manifestId), 403, "a run alone grants nothing before its output is delivered");
+  const delivered = await rpcOk<{ delivery: { held: number; hold_error?: string | null } }>(
+    second.rpc,
+    "get_run_output",
+    { run_id: own.run_id },
+  );
+  assert.equal(delivered.delivery.hold_error ?? null, null, "the grant succeeded");
+  assert.ok(delivered.delivery.held > 1, `manifest and its artifacts, got ${delivered.delivery.held}`);
+  assert.equal(await getObject(manifestId), 200, "the requester reads the manifest");
+
+  const manifest = await ndmManifest(zoneHost, second.token, manifestId);
+  const entries = manifest.entries as JsonObject[];
+  const artifacts = entries.flatMap((entry) =>
+    [entry.text_obj_id, entry.image_obj_id, entry.audio_obj_id].filter((id): id is string => typeof id === "string")
+  );
+  assert.ok(artifacts.length >= 2, `artifacts of the manifest: ${JSON.stringify(entries)}`);
+  for (const artifact of artifacts) {
+    assert.equal(await getObject(artifact), 200, `the requester reads ${artifact}`);
+    assert.equal(await openObject(artifact), 200, `the requester opens ${artifact}`);
+  }
+  results.delivered = { held: delivered.delivery.held, artifacts: artifacts.length };
+  await writeJsonFile(joinPath(reportDir, "results.json"), results);
+}
+
+async function ndmManifest(zoneHost: string, token: string, manifestId: string): Promise<JsonObject> {
+  const response = await fetch(`https://${zoneHost}/ndm/v1/store/get_object`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ obj_id: manifestId }),
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json() as { obj_data?: string };
+  return JSON.parse(String(body.obj_data)) as JsonObject;
+}
+
+/** A person's decision goes through `submit_human_action`: the run moves on, and the actor is who really called. */
+async function runHumanActionCase(args: {
+  workflowRpc: RpcClient;
+  owner: Owner;
+  runTag: string;
+  reportDir: string;
+  zoneHost: string;
+}): Promise<void> {
+  const { workflowRpc, owner, runTag, reportDir, zoneHost } = args;
+  const definition = prepareDefinition(await loadFixture("wf-dv-human-actions.json"), runTag);
+  const submitted = await submitDefinitionPair(workflowRpc, definition);
+  const waitingRun = async (label: string) => {
+    const { runId } = await createAndStartRun(workflowRpc, submitted.workflowId);
+    await waitForGraph(workflowRpc, runId, label, (graph) =>
+      graph.status === "waiting_human" && graph.node_states.review === "waiting_human");
+    return runId;
+  };
+  const decide = (runId: string, kind: string, payload?: JsonObject) =>
+    rpcOk<JsonObject>(workflowRpc, "submit_human_action", { run_id: runId, node_id: "review", kind, payload });
+
+  const approved = await waitingRun("run to approve");
+  await decide(approved, "approve");
+  const approvedDone = await waitForGraph(workflowRpc, approved, "approved run", (graph) => graph.status === "completed");
+  assert.equal(approvedDone.graph.node_states.publish, "completed");
+  assert.equal(approvedDone.graph.node_states.discard, "pending");
+  const action = approvedDone.history.events.find((event) => event.type === "human.action");
+  assert.ok(String(action?.actor).startsWith(`${owner.user_id}/`), `the actor is the verified caller, got ${action?.actor}`);
+  await writeJsonFile(joinPath(reportDir, "approved_history.json"), approvedDone.history);
+
+  const modified = await waitingRun("run to modify");
+  await decide(modified, "modify", { modified_subject: { echo: "edited" } });
+  const modifiedDone = await waitForGraph(workflowRpc, modified, "modified run", (graph) => graph.status === "completed");
+  assert.deepEqual((modifiedDone.graph.node_outputs.publish as JsonObject).echo, { echo: "edited" });
+
+  const rejected = await waitingRun("run to reject");
+  await decide(rejected, "reject", { feedback: "not this one" });
+  const rejectedDone = await waitForGraph(workflowRpc, rejected, "rejected run", (graph) => graph.status === "completed");
+  assert.equal(rejectedDone.graph.node_states.discard, "completed");
+  assert.equal(rejectedDone.graph.node_states.publish, "pending");
+
+  const refused = await waitingRun("run that refuses");
+  const results: Record<string, string> = {};
+  results.unknown_kind = await expectRejected(workflowRpc, "submit_human_action", { run_id: refused, node_id: "review", kind: "sign" }, ["invalid_human_action"]);
+  results.not_skippable = await expectRejected(workflowRpc, "submit_human_action", { run_id: refused, node_id: "review", kind: "skip" }, ["node_not_skippable"]);
+  const second = await secondPrincipal(zoneHost);
+  if (second) {
+    results.foreign_caller = await expectRejected(second.rpc, "submit_human_action", { run_id: refused, node_id: "review", kind: "approve" }, ["rpc_error"]);
+  }
+  const untouched = await getGraph(workflowRpc, refused);
+  assert.equal(untouched.status, "waiting_human", "refused actions change nothing");
+  const aborted = await decide(refused, "abort");
+  assert.equal(aborted.status, "aborted");
+  results.after_abort = await expectRejected(workflowRpc, "submit_human_action", { run_id: refused, node_id: "review", kind: "approve" }, ["run_terminal"]);
+  await writeJsonFile(joinPath(reportDir, "results.json"), results);
 }
 
 function selectedCaseIds(): string[] {
@@ -1678,7 +1805,6 @@ async function runOneCase(args: {
     if (caseId === "WF-DV-001") {
       await runImageReviewCase({
         workflowRpc,
-        taskMgrRpc,
         owner,
         runTag,
         decision: "approved",
@@ -1687,18 +1813,16 @@ async function runOneCase(args: {
     } else if (caseId === "WF-DV-002") {
       await runImageReviewCase({
         workflowRpc,
-        taskMgrRpc,
         owner,
         runTag,
         decision: "rejected",
         reportDir,
       });
-    } else if (caseId === TASKDATA_CASE_ID) {
-      await runTaskDataCase();
+    } else if (caseId === "WF-DV-003") {
+      await runHumanActionCase({ workflowRpc, owner, runTag, reportDir, zoneHost });
     } else if (caseId === "WF-DV-006") {
       await runAgentCallbackCase({
         workflowRpc,
-        taskMgrRpc,
         owner,
         runTag,
         reportDir,
@@ -1710,7 +1834,6 @@ async function runOneCase(args: {
     } else if (caseId === "WF-DV-008") {
       await runFailureHumanRetryCase({
         workflowRpc,
-        taskMgrRpc,
         owner,
         runTag,
         reportDir,
@@ -1743,6 +1866,15 @@ async function runOneCase(args: {
         owner,
         reportDir,
         image: await inputs.image(),
+      });
+    } else if (caseId === "WF-DV-016") {
+      await runDeliveredHoldingsCase({
+        workflowRpc,
+        owner,
+        runTag,
+        reportDir,
+        pdf: await inputs.pdf(),
+        zoneHost,
       });
     } else if (caseId === "WF-DV-015") {
       await runDocumentCacheCase({ workflowRpc, reportDir, note: await inputs.note() });
@@ -1803,6 +1935,7 @@ async function main(): Promise<void> {
   const workflowRpc = buckyos.getServiceRpcClient("workflow") as RpcClient;
   const taskMgrRpc = buckyos.getServiceRpcClient("task-manager") as RpcClient;
   const bucketRpc = buckyos.getServiceRpcClient("nfs-server") as RpcClient;
+  aiccRpc = buckyos.getServiceRpcClient("aicc") as RpcClient;
   const sessionToken = (await buckyos.getAccountInfo())?.session_token ?? "";
   const inputs = lazyInputs(zoneHost, sessionToken, runTag);
   const cases = selectedCaseIds();

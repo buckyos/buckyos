@@ -3,7 +3,9 @@
   "id": "wf-dv-image-review-enhance",
   "name": "DV Image Review Enhance",
   "description": "从公网图片 URL 提取内容，人工确认后生成增强图。",
-  "trigger": { "type": "manual" },
+  "trigger": {
+    "type": "manual"
+  },
   "steps": [
     {
       "id": "caption_image",
@@ -13,26 +15,26 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "resources": [
-          {
-            "kind": "url",
-            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
-            "mime_hint": "image/jpeg"
-          }
-        ],
-        "input_json": {
-          "instruction": "Describe the image for a product quality review."
-        },
-        "model": "vision.caption"
+        "exact_model": "route:vision.caption",
+        "image": {
+          "kind": "url",
+          "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+          "mime_hint": "image/jpeg"
+        }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "text": { "type": "string" },
-          "artifacts": { "type": "array" },
-          "usage": { "type": "object" }
+          "captions": {
+            "type": "array"
+          },
+          "usage": {
+            "type": "object"
+          }
         },
-        "required": ["text"]
+        "required": [
+          "captions"
+        ]
       }
     },
     {
@@ -43,21 +45,25 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "resources": [
-          {
-            "kind": "url",
-            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
-            "mime_hint": "image/jpeg"
-          }
-        ],
-        "input_json": { "language_hint": "auto" },
-        "model": "vision.ocr"
+        "exact_model": "route:vision.ocr",
+        "document": {
+          "kind": "url",
+          "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+          "mime_hint": "image/jpeg"
+        }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "text": { "type": ["string", "null"] },
-          "extra": { "type": ["object", "null"] }
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pages": {
+            "type": "array"
+          }
         }
       }
     },
@@ -69,22 +75,23 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "resources": [
-          {
-            "kind": "url",
-            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
-            "mime_hint": "image/jpeg"
-          }
-        ],
-        "input_json": { "max_objects": 20 },
-        "model": "vision.detect"
+        "exact_model": "route:vision.detect",
+        "image": {
+          "kind": "url",
+          "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+          "mime_hint": "image/jpeg"
+        }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "text": { "type": ["string", "null"] },
-          "extra": { "type": ["object", "null"] }
-        }
+          "detections": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "detections"
+        ]
       }
     },
     {
@@ -95,28 +102,44 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "model": "llm.chat",
+        "logical_model": "llm.chat",
         "messages": [
           {
             "role": "system",
-            "content": "You are a product image QA assistant. Return strict JSON."
+            "content": [
+              {
+                "type": "text",
+                "text": "You are a product image QA assistant. Reply with one short sentence."
+              }
+            ]
           },
           {
             "role": "user",
-            "content": "${caption_image.output.text}"
+            "content": [
+              {
+                "type": "text",
+                "text": "The caption, OCR and object detection steps of an image review have finished. Say that the review is ready."
+              }
+            ]
           }
-        ],
-        "input_json": {
-          "response_format": { "type": "json_object" }
-        }
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "text": { "type": "string" },
-          "extra": { "type": ["object", "null"] }
+          "text": {
+            "type": "string"
+          },
+          "extra": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
         },
-        "required": ["text"]
+        "required": [
+          "text"
+        ]
       }
     },
     {
@@ -129,18 +152,41 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "decision": { "type": "string", "enum": ["approved", "rejected"] },
-          "comment": { "type": ["string", "null"] },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected"
+            ]
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "final_subject": {
             "type": "object",
             "properties": {
-              "text": { "type": "string" },
-              "extra": { "type": ["object", "null"] }
+              "text": {
+                "type": "string"
+              },
+              "extra": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
             },
-            "required": ["text"]
+            "required": [
+              "text"
+            ]
           }
         },
-        "required": ["decision", "final_subject"]
+        "required": [
+          "decision",
+          "final_subject"
+        ]
       }
     },
     {
@@ -151,27 +197,24 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "resources": [
-          {
-            "kind": "url",
-            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
-            "mime_hint": "image/jpeg"
-          }
-        ],
-        "input_json": {
-          "scale": 2,
-          "response_format": "object_id",
-          "output": { "resource_format": "named_object" }
+        "exact_model": "route:image.upscale",
+        "image": {
+          "kind": "url",
+          "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+          "mime_hint": "image/jpeg"
         },
-        "model": "image.upscale"
+        "scale": 2
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "artifacts": { "type": "array" },
-          "text": { "type": ["string", "null"] }
+          "artifacts": {
+            "type": "array"
+          }
         },
-        "required": ["artifacts"]
+        "required": [
+          "artifacts"
+        ]
       }
     },
     {
@@ -182,26 +225,23 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "resources": [
-          {
-            "kind": "url",
-            "url": "https://www.gstatic.com/webp/gallery/1.jpg",
-            "mime_hint": "image/jpeg"
-          }
-        ],
-        "input_json": {
-          "response_format": "object_id",
-          "output": { "resource_format": "named_object" }
-        },
-        "model": "image.bg_remove"
+        "exact_model": "route:image.bg_remove",
+        "image": {
+          "kind": "url",
+          "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+          "mime_hint": "image/jpeg"
+        }
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "artifacts": { "type": "array" },
-          "text": { "type": ["string", "null"] }
+          "artifacts": {
+            "type": "array"
+          }
         },
-        "required": ["artifacts"]
+        "required": [
+          "artifacts"
+        ]
       }
     },
     {
@@ -212,25 +252,38 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "model": "llm.chat",
+        "logical_model": "llm.chat",
         "messages": [
           {
             "role": "system",
-            "content": "Echo the rejection record as JSON."
+            "content": [
+              {
+                "type": "text",
+                "text": "Repeat what the user says."
+              }
+            ]
           },
           {
             "role": "user",
-            "content": "${human_review.output.comment}"
+            "content": [
+              {
+                "type": "text",
+                "text": "${human_review.output.comment}"
+              }
+            ]
           }
-        ],
-        "input_json": {
-          "response_format": { "type": "json_object" }
-        }
+        ]
       },
       "output_schema": {
         "type": "object",
-        "properties": { "text": { "type": "string" } },
-        "required": ["text"]
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
       }
     },
     {
@@ -241,25 +294,38 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "model": "llm.chat",
+        "logical_model": "llm.chat",
         "messages": [
           {
             "role": "system",
-            "content": "Echo the enhancement summary as JSON."
+            "content": [
+              {
+                "type": "text",
+                "text": "Repeat what the user says."
+              }
+            ]
           },
           {
             "role": "user",
-            "content": "enhancement complete"
+            "content": [
+              {
+                "type": "text",
+                "text": "enhancement complete"
+              }
+            ]
           }
-        ],
-        "input_json": {
-          "response_format": { "type": "json_object" }
-        }
+        ]
       },
       "output_schema": {
         "type": "object",
-        "properties": { "text": { "type": "string" } },
-        "required": ["text"]
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
       }
     }
   ],
@@ -267,7 +333,11 @@
     {
       "type": "parallel",
       "id": "inspect_fork",
-      "branches": ["caption_image", "ocr_image", "detect_objects"],
+      "branches": [
+        "caption_image",
+        "ocr_image",
+        "detect_objects"
+      ],
       "join": "all"
     },
     {
@@ -283,16 +353,35 @@
     {
       "type": "parallel",
       "id": "enhance_fork",
-      "branches": ["upscale_image", "remove_background"],
+      "branches": [
+        "upscale_image",
+        "remove_background"
+      ],
       "join": "all"
     }
   ],
   "edges": [
-    { "from": "inspect_fork", "to": "summarize_review" },
-    { "from": "summarize_review", "to": "human_review" },
-    { "from": "human_review", "to": "approval_branch" },
-    { "from": "enhance_fork", "to": "completed_marker" },
-    { "from": "completed_marker" },
-    { "from": "rejected_marker" }
+    {
+      "from": "inspect_fork",
+      "to": "summarize_review"
+    },
+    {
+      "from": "summarize_review",
+      "to": "human_review"
+    },
+    {
+      "from": "human_review",
+      "to": "approval_branch"
+    },
+    {
+      "from": "enhance_fork",
+      "to": "completed_marker"
+    },
+    {
+      "from": "completed_marker"
+    },
+    {
+      "from": "rejected_marker"
+    }
   ]
 }

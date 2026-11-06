@@ -710,14 +710,6 @@ fn encode_llm(
 fn encode_text_response_format(format: &LlmResponseFormat) -> ProtocolResultValue<Value> {
     match format.format_type {
         LlmResponseFormatType::Text => Ok(json!({"type":"text", "mime_type":"text/plain"})),
-        LlmResponseFormatType::Json | LlmResponseFormatType::JsonObject => {
-            if format.json_schema.is_some() {
-                return Err(ProtocolError::invalid_request(
-                    "Gemini JSON response format must not include json_schema",
-                ));
-            }
-            Ok(json!({"type":"text", "mime_type":"application/json"}))
-        }
         LlmResponseFormatType::JsonSchema => {
             let schema = format.json_schema.as_ref().ok_or_else(|| {
                 ProtocolError::invalid_request(

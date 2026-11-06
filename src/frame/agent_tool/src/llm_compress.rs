@@ -639,7 +639,7 @@ async fn summarize_once(
         temperature: None,
         max_completion_tokens: Some(SUMMARY_MAX_TOKENS),
         force_json: true,
-        json_schema: None,
+        json_schema: Some(summary_schema()),
         provider_options: None,
         disable_capabilities: Vec::new(),
         tool_specs: Vec::new(),
@@ -656,6 +656,19 @@ async fn summarize_once(
         ));
     }
     Ok(out)
+}
+
+fn summary_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["summary", "verbatim", "memory_candidates"],
+        "properties": {
+            "summary": {"type": "string"},
+            "verbatim": {"type": "array", "items": {"type": "string"}},
+            "memory_candidates": {"type": "array", "items": {"type": "string"}}
+        }
+    })
 }
 
 fn parse_summary_output(text: &str) -> SummaryOutput {

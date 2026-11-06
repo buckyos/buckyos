@@ -33,8 +33,6 @@ export class WorkflowStore {
   runs: WorkflowRunSummary[] = []
   executors: ExecutorEntry[] = []
   runDetails = new Map<string, WorkflowRunDetail>()
-  /** run id -> TaskMgr root task id (`wf-run-<run_id>` idempotency key). */
-  rootTaskIds = new Map<string, string>()
   schemaVersion = SCHEMA_VERSION
   loading = false
   error: string | null = null
@@ -143,26 +141,7 @@ export class WorkflowStore {
     this.pollers.delete(runId)
   }
 
-  getRootTaskId(runId: string): string | undefined {
-    return this.rootTaskIds.get(runId)
-  }
-
-  private async resolveRootTask(runId: string): Promise<void> {
-    if (this.rootTaskIds.has(runId)) return
-    try {
-      const page = await buckyos.getTaskManagerClient().listTasks({ idempotency_key: `wf-run-${runId}` })
-      const root = page.tasks.find((t) => t.schema_id === 'workflow.run_tree/v1') ?? page.tasks[0]
-      if (root) {
-        this.rootTaskIds.set(runId, root.task_id)
-        this.emitChange()
-      }
-    } catch {
-      // TaskMgr unavailable: the run page falls back to a plain Task Center link.
-    }
-  }
-
   async loadRunDetail(runId: string): Promise<WorkflowRunDetail | undefined> {
-    void this.resolveRootTask(runId)
     try {
       const graph = await this.rpc().getRunGraph(runId)
       const detail = mapRunDetail(graph)

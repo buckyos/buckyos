@@ -330,6 +330,9 @@ pub async fn dispatch(state: &SharedState, session: &Session, method: &str, p: &
         }
         "bucket.list_public" => crate::ndn::public::list(state, session).await,
         "bucket.cache_public" => crate::ndn::public::cache(state, session, &arg::<String>(p, "root_obj_id")?, &arg::<String>(p, "source")?).await,
+        "bucket.grant_holdings" => {
+            crate::ndm::grant_holdings(state, session, &arg::<String>(p, "user_id")?, &arg::<String>(p, "app_id")?, &arg::<Vec<String>>(p, "obj_ids")?).await
+        }
         "bucket.prefetch" => {
             let id = bucket_arg(state, p).await?;
             crate::ndn::ambient::prefetch(state, &store, &id, c, opt::<String>(p, "prefix")?.unwrap_or_default()).await

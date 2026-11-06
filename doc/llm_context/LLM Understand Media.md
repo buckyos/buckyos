@@ -8,7 +8,7 @@
 | 实现位置 | agent 旁路：[src/frame/agent_tool/src/llm_understand_media.rs](src/frame/agent_tool/src/llm_understand_media.rs)、[llm_understand_media/pipeline.rs](src/frame/agent_tool/src/llm_understand_media/pipeline.rs)；系统内置管线：[src/kernel/workflow/src/functions/media/](src/kernel/workflow/src/functions/media/) 与 [src/kernel/workflow/defs/](src/kernel/workflow/defs/) |
 | 依赖前置 | `LLMContext` waist、xllm run（`XllmTask` / `XllmRun`）、`AiContent`、`ResourceRef::NamedObject`、`ndn_lib::ObjId`；workflow service（内核服务，与 scheduler 同级，不可达视为系统故障）及其 `media.*` 系统定义；`buckyos_api::MediaManifest` |
 | 需求来源 | 本文档 v0.3 的设计，加上开发者对 Agent runtime baseline 应携带哪些工具的思考（2026-11-05 Review）；[paios 容器需求 §6.4](doc/app_service/paios容器需求.md) 是当前 baseline 清单，作为可用性约束引用 |
-| 状态 | 代码已完成，未提交。Workflow 侧（§4.5）：真实 Zone 上 DV WF-DV-009~015 通过。Agent 侧（§4.6–§4.8）：以真实 Agent 身份在宿主机运行新版 helper，图片、PDF、DOCX、视频通路通过；容器内的完整 Session 未跑（镜像未重建）；非管理员 owner 的 Agent 读不到转换结果，待决定（§10.2 G13）。 |
+| 状态 | 代码已完成，未提交。Workflow 侧（§4.5）：真实 Zone 上 DV WF-DV-009~015 通过。Agent 侧（§4.6–§4.8）：以真实 Agent 身份在宿主机运行新版 helper，图片、PDF、DOCX、视频通路通过；容器内的完整 Session 未跑（镜像未重建）。 |
 
 ---
 
@@ -329,7 +329,7 @@ model = "llm.video"
 - **一次转换 = 一个 Run**：`llm_understand_media` 调 `workflow.create_run` 创建 Run；输入是内容寻址对象，产物是 NDN 对象。
 - **stage = `autonomous` Step**，executor 是 `/tool/media.<fn>@1` 语义链接，编译期经 FunctionRegistry 绑定到真实 FunctionObject（`func:<hex>`）。这是 FunctionObject / Thunk 通道的第一次真实落地：九个 `media.*` Native 函数在 workflow 进程内的 `LocalThunkRunner` 执行。
 - **跨 Run 复用 = Orchestrator 的 Step cache**：`step_cache_key = hash(thunk_obj_id, 执行指纹)`，持久化在 workflow 的 SQLite 索引里，命中前校验结果对象与全部产物仍可读。
-- **可观测**：Run / Step / Thunk 进 task_manager 任务树，请求者获得 Run 根任务的 WholeTree 读 grant，`get_run_graph.task_id` 给出根任务 id（WF-DV-012 已验证）；Desktop `app/workflow` 已改接真实 RPC，未在 Zone 上验证（§10）。
+- **可观测**：Run / Step / Thunk 进 task_manager 任务树，请求者获得 Run 根任务的 WholeTree 读 grant，`run_id` 就是根任务 id（WF-DV-012 已验证）；Desktop `app/workflow` 已改接真实 RPC，未在 Zone 上验证（§10）。
 
 已验证（dev Zone）：WF-DV-009~015 通过；`cargo test -p workflow -- --ignored` 的 poppler / ffmpeg / soffice 用例在第八轮通过。验收明细见 TODO §5。
 
@@ -506,8 +506,7 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
   },
   "pipeline_trace": {               // 没建 Run 时不存在
     "workflow_id": "media.pdf",
-    "run_id": "run-…",
-    "task_id": "t-…",               // Run 在 TaskMgr 的根任务
+    "run_id": "t-…",                // 也是 Run 在 TaskMgr 的根任务 id
     "revision": "<definition_revision>",
     "status": "completed",
     "reused": false,                // 加入了已有活动 Run，或接回账本里的 Run
@@ -591,13 +590,15 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
 
 - 请求者凭 session token 验证；`create_run` 用请求者身份调 NDM 的读类接口 `query_object_by_id` 检查其可读输入 `obj_id`（[server.rs:137](src/kernel/workflow/src/server.rs#L137)；存在性探测 `is_object_stored` 对任何上传者开放，不能用于授权）。DV WF-DV-013 验证了种子用户 bob 只知道他人 obj_id 时被拒绝。
 - Run / 定义的读取、启动、取消、输出获取都按 owner 校验，管理员可观察全部；Task 树 creator 是 workflow，`requested_by` 记录已验证调用者。
-- `get_run_output` 返回稳定 obj_id 与单独的 `delivery` 块：`artifacts`（Run output 里直接出现的 obj_id）、`grants`（对其中绑定了 bucket key 的产物给出 bucket key / locator / 绑定 principal 的只读 token / `expires_at`，6 小时）、`principal`、`expires_at`；凭据不进 manifest、cache、trace。
+- `get_run_output` 返回稳定 obj_id 与单独的 `delivery` 块：`artifacts`（Run output 里直接出现的 obj_id）、`held` / `hold_error`（见下）。不发放凭据，读权限只靠持有记录。
+- **交付即授权（D3）**：系统定义的 Run 到终态后，`get_run_output` 经 `bucket.grant_holdings`（受 `obj://ndm/manage` 保护）为通过 Run 访问校验的调用者登记 NDM 持有记录，范围是 output 里的对象和 manifest 引用的每个产物，只到这些对象本身，不含其下的 chunk；`held` 是登记的个数，登记失败写入 `hold_error`，不影响 output 本身。Agent 和 AICC 的读取路径不变：Agent 用 `get_object` / `object/open`，AICC 用调用者 token 调 `get_object` 校验。
+- **只有系统定义才登记**：用户定义的 output 是步骤任意写出的内容，在其中写一个 obj_id 不能变成读权限（`held` 为 0）。系统定义的 Run 也只有一个入口：`submit_step_output` 对它返回 `system_definition_read_only`，定时任务不能以它为目标（定时触发不走输入授权，没有调用者可校验）。DV WF-DV-016 覆盖这些路径。
 - 缓存命中也不跳过授权；请求者凭据不写共享缓存。
 
 两个与直觉不同的事实：
 
 - **Agent 能读什么取决于 owner。** `rbac::enforce` 要求 App 和用户两个主体都放行，Agent 的 session 是 `sub = owner`、`target = Agent 的 App`，所以 Agent 的权限不超过 owner。`obj://ndm/objects read` 只有 `admin` 和 `agent` 组有：owner 是管理员时，Agent 只要知道 obj_id 就能读，`create_run` 的输入校验总是通过；owner 是普通用户时，Agent 只能读自己上传或登记过的对象。
-- **`delivery` 只覆盖 `media.image`，非管理员 owner 的 Agent 因此读不到转换结果（§10.2 G13）。** `media.image` 的 output 里是 `model_media_obj_id`，有 token；另外三条只有 `manifest_obj_id`，它不绑定 bucket key，没有 token，manifest 引用的页图和文本也不在 `delivery` 里。普通用户的 Run 能成功完成，但 manifest 读不回来，AICC 也拒绝读页图（已用 bob 的 session 实测）。经 token 的数据面读取没有 DV 覆盖。
+- **持有记录按 `用户 + App` 登记。** 同一用户换一个 App 不能读；读取时用的 session 必须和调 `get_run_output` 的是同一身份。转换结果的持有记录没有期限，产物是否还在由 workflow 的保留策略决定（默认 30 天）。
 
 #### 4.8.3 内容身份
 
@@ -760,7 +761,7 @@ workflow 侧的验收以 TODO §5 为准，这里只列整个工具的验收。�
 | 16 | 正常选路 | 适合直传的按能力与预算直传，确需转换的经 workflow；workflow 不可达按内核故障返回；缺基线工具报告 `tools_missing` | 实测（选路）；故障路径单测 |
 | 17 | 目录表示 | PDF / DOCX / 视频可生成 manifest；空白页、无文本页、转换失败页在 manifest 中有记录 | 实测 |
 | 18 | 目录检索与覆盖 | 答案能命中 PDF 后部页面；observations 带页码 / 时间戳；`details.coverage` 准确报告已检查范围、未覆盖部分和转换缺失项 | 实测（56 页中文 goal 命中第 43 页；240 页命中第 230 页）；扫描件和部分失败只有单测 |
-| 19 | 共享缓存 | 同一 principal 并发合并到一个活动 Run；不同 principal 各有 Run 但复用有效 Step cache；变化会失效；无权限调用者不能读取输入或产物；docx 的中间产物在缓存有效期内只生成一次 | 实测、DV（WF-DV-009 / 010 / 015）。普通用户读不到产物，过严，见 G13 |
+| 19 | 共享缓存 | 同一 principal 并发合并到一个活动 Run；不同 principal 各有 Run 但复用有效 Step cache；变化会失效；无权限调用者不能读取输入或产物；docx 的中间产物在缓存有效期内只生成一次 | 实测、DV（WF-DV-009 / 010 / 015 / 016）。普通用户实测见 §10.1 |
 | 20 | 集成验证 | 四类格式覆盖不能直传、超预算、扫描件、长文件、部分转换失败和工具缺失六种情形，标明实际测试的 provider / 模型 / 平台 | 部分：见 §10.1；扫描件、部分失败、工具缺失未在真实模型上跑 |
 
 ---
@@ -771,7 +772,6 @@ workflow 侧的验收以 TODO §5 为准，这里只列整个工具的验收。�
 |---|---|---|
 | 父 history 目的导向裁剪 | §4.2.4，长 session 下控制旁路重喂 token 量 | 真实入口不传父 history（Q2），有需要再做 |
 | 全篇总结分批汇总 | §4.7，目前只读预算内的页并如实说明 | 多次模型调用的成本明显，有真实需求再做 |
-| run_id 与 task_id 合并 | Run 与根任务一对一，目前是两个 id，`get_run_graph.task_id` 给映射 | 合并要让 Run 的创建同步依赖 TaskMgr，见 §10.3 Q1 |
 | 收紧 Agent 的对象读权限 | §4.8.2，owner 为管理员时 Agent 可读任意对象 | 另作安全任务（Q6） |
 | 报告粒度调优 | §3.5，`observations` 完整度 vs 重 fork 频率的平衡点 | 依据真实重复 fork 频率数据调内置 prompt |
 | 管线执行位置 | §4.5，P0 在 workflow 进程内 `LocalThunkRunner` 执行 Native | Scheduler / Node Runner 的分布式执行（节点指纹、数据访问、任务交接）后置，保留 `ThunkDispatcher` 接缝 |
@@ -810,8 +810,9 @@ workflow 侧（Phase A）的任务与验收以 [notepads/llm-media-pipeline-work
 | DOCX 问两次 | 第二次 `to_pdf` 及后续全部 `cache`，全程 4 秒 |
 | 视频 | `/ndn/` 读取、抽帧，帧分析正确；ASR 见下 |
 | 转换中杀掉 helper 再调用 | 接回同一个 Run（`reused: true`），账本和工作目录已清理 |
+| 60 页 PDF，普通用户 bob 的 session（G13） | 建目录，读回 manifest 和全部文本，AICC 读到页图，命中第 45 页 |
 
-DV：WF-DV-009~015 全部通过（新增 WF-DV-015，WF-DV-012 增加 `task_id` 断言）。单测：`agent_tool` 媒体 35 个、`workflow` 68 个（6 个 `#[ignore]` 未跑）、`buckyos-api` 359 个、`aicc` 779 个通过。
+DV：WF-DV-009~016 全部通过（WF-DV-016 为 G13 新增）。单测：`agent_tool` 媒体 35 个、`workflow` 68 个（6 个 `#[ignore]` 未跑）、`buckyos-api` 359 个、`aicc` 779 个通过。
 
 未验证或有问题：
 
@@ -833,10 +834,10 @@ DV：WF-DV-009~015 全部通过（新增 WF-DV-015，WF-DV-012 增加 `task_id` 
 | G7 | `ObservationItem` 没有 `where` | 已解决 |
 | G8 | 直传只看字节数，被拒后没有退路 | 已解决：先取页数，失败退到转换一次（退回路径未实跑） |
 | G9 | `to_pdf` 每次重跑 | 已解决（Q5） |
-| G10 | `delivery` 不完整 | 未解决，并入 G13 |
+| G10 | `delivery` 不完整 | 已解决，见 G13 |
 | G11 | 手册过时 | 已解决：`ui_core.md`、`aigc_video.md` |
 | G12 | 小清理 | 已解决 |
-| G13 | **非管理员 owner 的 Agent 读不到转换结果。** Run 能完成，但读 manifest 被 NDM 拒绝，AICC 也拒绝读页图（用 bob 的 session 实测）。根因见 §4.8.2。冻结路径上的同类问题（chunk 已存在就跳过上传，导致不能注册对象）已修复 | **待决定**，见 §10.4 |
+| G13 | **非管理员 owner 的 Agent 读不到转换结果。** Run 能完成，但读 manifest 被 NDM 拒绝，AICC 也拒绝读页图（用 bob 的 session 实测）。根因见 §4.8.2。冻结路径上的同类问题（chunk 已存在就跳过上传，导致不能注册对象）已修复 | 已解决，见 §10.4 |
 
 ### 10.3 决策记录
 
@@ -846,7 +847,7 @@ DV：WF-DV-009~015 全部通过（新增 WF-DV-015，WF-DV-012 增加 `task_id` 
 
 > 同意你的建议，llm_understand_meida本质上是取代多模态推理，是卡推理的。不过run_id 从原理上应该是task_id吧？
 
-关于 run_id：原理上是的，Run 与它的根任务一对一（workflow service §0.1）。目前是两个 id：Run 先在 workflow 内存里生成（`run-<uuid>`），tracker 再创建任务（TaskMgr 生成 `t-<uuid>`，幂等键 `wf-run-<run_id>`）。旧的 Pending 查不到任务就是因为把 run_id 当 task_id。本次只暴露映射：`get_run_graph.task_id` 和 `pipeline_trace.task_id`。真正合并要让 Run 的创建同步依赖 TaskMgr，并调整 `execution_id` 和幂等键，现在没有消费方需要，未做。
+关于 run_id：原理上是的，Run 与它的根任务一对一（workflow service §0.1）。目前是两个 id：Run 先在 workflow 内存里生成（`run-<uuid>`），tracker 再创建任务（TaskMgr 生成 `t-<uuid>`，幂等键 `wf-run-<run_id>`）。旧的 Pending 查不到任务就是因为把 run_id 当 task_id。当时只暴露了映射。后续已合并（2026-11-05）：`run_id` 就是根任务的 `task_id`，`get_run_graph.task_id` 和 `pipeline_trace.task_id` 删除。Run 的创建本来就同步依赖 TaskMgr（建 Run 时 `sync_run` 失败即失败），合并没有增加依赖；`execution_id` 格式不变。ensure 合并改为先查活动 Run 再建任务，避免竞争失败的请求留下孤儿根任务。
 
 **Q2 父 history 和父预算要接通吗？** 采用：不接，goal 自带上下文。
 
@@ -870,20 +871,28 @@ DV：WF-DV-009~015 全部通过（新增 WF-DV-015，WF-DV-012 增加 `task_id` 
 
 这个原则是成立的（`rbac::enforce` 取 App 和用户的交集），但当时的推荐基于一个错误判断：“Agent 靠 NDM 读权限不受影响”。这只对管理员 owner 成立，普通用户 owner 的 Agent 恰恰因此读不到结果，见 G13。
 
-### 10.4 待决定：G13 的修法
+### 10.4 G13 的修法
 
-D3 的要求是“交付时授予精确产物的读取权”，现在没有兑现。
+D3 的要求是“交付时授予精确产物的读取权”。采用交付时登记持有（§4.8.2），没有采用的方案：
 
-| 方案 | 做法 | 代价 |
-|---|---|---|
-| **推荐：交付时登记持有** | NDM 的读权限本来就有“持有”这一路（`ndm_holdings`）。workflow 在 `get_run_output` 时为已授权的请求者登记 manifest 和它引用的产物。Agent 和 AICC 的读取路径都不用改，NamedObject 继续可用 | nfs-server 要加一个受 `obj://ndm/manage` 保护的登记方法，这是新增的特权接口；workflow 要展开 manifest 引用 |
-| 补全 `delivery` token | manifest 绑 bucket key，按步骤前缀签 token，普通用户走 bucket 读取 | 工具多一条读取路径；AICC 没法用 token，页图只能退回内联 Base64，每张不超过 4 MiB |
-| 本期不修 | 只有管理员 owner 的 Agent 能用转换；普通用户的 Agent 得到明确的权限错误 | 功能缺口留着 |
+| 方案 | 不采用的原因 |
+|---|---|
+| 补全 `delivery` token | 工具多一条读取路径；AICC 没法用 token，页图只能退回内联 Base64，每张不超过 4 MiB |
+| 本期不修 | 只有管理员 owner 的 Agent 能用转换 |
+
+后续决定（2026-11-05）：
+
+- `delivery.grants` 已删除。它的 token 一直读不通：签发时绑定 canonical key（`system:control-panel`），校验比较短名（`control-panel`），也没有消费方。
+- **已知风险，用户决定暂不处理：用户定义以 workflow 服务的身份执行，可以绕过读权限。** 已用 bob 实测，他自己读不到 devtest 的对象（NDM 403），直接调 AICC 也被拒（`input object is not readable by the authenticated caller`），但用自己提交的定义：
+  - `service::aicc.vision.caption` 配 `named_object` 输入：Run 完成，output 里是那张图的内容描述；
+  - `/tool/media.fit_image` 配任意 `content_id`：Run 完成，output 里有尺寸和字节数，产物字节读不到（这条路径不登记持有）。
+
+  前提是知道 obj_id 或 content_id。系统内置管线不受影响，它走输入授权。可选的修法：提交时拒绝绑定 `/tool/media.*` 并在运行时拒绝 `named_object`（改动小，用户定义失去这个能力）；执行前按请求者校验；或透传请求者身份（语义最正确，要解决长 Run 的 session 过期和委托签发）。
 
 ### 10.5 相关任务状态
 
-- [x] 管线定义与执行（workflow 侧 T1–T3）、T2d：WF-DV-009~015 通过。WF-DV-011 走的是工具齐全的分支，`tools_missing` 由单测覆盖。
-- [x] T4：`llm_understand_media` 接入：代码完成，实测见 §10.1；容器内 Session 与 G13 未完成。
+- [x] 管线定义与执行（workflow 侧 T1–T3）、T2d：WF-DV-009~016 通过。WF-DV-011 走的是工具齐全的分支，`tools_missing` 由单测覆盖。
+- [x] T4：`llm_understand_media` 接入：代码完成，实测见 §10.1；容器内 Session 未跑。
 - [ ] T4b：paios / agent-runtime 工具基线：`build_aios` 与 paios 文档已改；镜像未重建，amd64 / aarch64 未探测；宿主安装脚本未加 LibreOffice 与字体；`baseline.rs` 未按媒体基线探测。
 - [ ] T5：Desktop Workflow WebUI 只读观测：已改接真实 RPC（`app/workflow/api/store.ts`），有只读态；未在 Zone 上验证。
 - [ ] T6b：完整验收（§8），标明实际测试过的 provider / 模型 / 平台。

@@ -22,13 +22,6 @@ pub struct ActiveExecutionRecord {
     pub started_at: i64,
 }
 
-/// `artifact obj_id -> bucket key`, so deliveries can issue exact-key tokens.
-#[async_trait]
-pub trait ArtifactIndex: Send + Sync {
-    async fn record_artifact(&self, obj_id: &str, key: &str) -> WorkflowResult<()>;
-    async fn artifact_key(&self, obj_id: &str) -> WorkflowResult<Option<String>>;
-}
-
 /// Records which executions this process owns, so a successor can mark them
 /// `interrupted` and remove their temp dirs.
 #[async_trait]
@@ -108,11 +101,6 @@ impl WorkflowDb {
                  id INTEGER PRIMARY KEY CHECK (id = 1),
                  epoch INTEGER NOT NULL,
                  started_at INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS artifacts (
-                 obj_id TEXT PRIMARY KEY,
-                 bucket_key TEXT NOT NULL,
-                 created_at INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS active_executions (
                  execution_id TEXT PRIMARY KEY,
@@ -226,31 +214,6 @@ impl CacheIndex for WorkflowDb {
 }
 
 #[async_trait]
-impl ArtifactIndex for WorkflowDb {
-    async fn record_artifact(&self, obj_id: &str, key: &str) -> WorkflowResult<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO artifacts(obj_id, bucket_key, created_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(obj_id) DO UPDATE SET bucket_key = excluded.bucket_key",
-            params![obj_id, key, chrono::Utc::now().timestamp()],
-        )
-        .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn artifact_key(&self, obj_id: &str) -> WorkflowResult<Option<String>> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT bucket_key FROM artifacts WHERE obj_id = ?1",
-            params![obj_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(db_err)
-    }
-}
-
-#[async_trait]
 impl ExecutionLedger for WorkflowDb {
     async fn record_started(&self, record: &ActiveExecutionRecord) -> WorkflowResult<()> {
         let conn = self.conn.lock().unwrap();
@@ -348,9 +311,5 @@ mod tests {
         assert!(db.stale_executions(1).await.unwrap().is_empty());
         db.record_finished(&record.execution_id).await.unwrap();
         assert!(db.stale_executions(2).await.unwrap().is_empty());
-
-        db.record_artifact("cyfile:1", "media/k/page-1.png").await.unwrap();
-        assert_eq!(db.artifact_key("cyfile:1").await.unwrap().as_deref(), Some("media/k/page-1.png"));
-        assert_eq!(db.artifact_key("cyfile:2").await.unwrap(), None);
     }
 }

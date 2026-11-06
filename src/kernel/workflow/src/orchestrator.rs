@@ -15,8 +15,8 @@ use crate::runtime::{
 use crate::task_tracker::{MapShardTaskView, StepTaskView, ThunkTaskView, WorkflowTaskTracker};
 use crate::types::{AwaitKind, ExecutorRef, Expr, JoinStrategy, RetryPolicy, ValueTemplate};
 use buckyos_api::{
-    error_codes, execution_id, TaskHumanAction, ThunkExecution, ThunkExecutionError,
-    ThunkExecutionResult, ThunkExecutionStatus, ThunkObject, WorkflowStepTaskData,
+    error_codes, execution_id, ThunkExecution, ThunkExecutionError,
+    ThunkExecutionResult, ThunkExecutionStatus, ThunkObject,
 };
 use chrono::Utc;
 use ndn_lib::ObjId;
@@ -104,10 +104,6 @@ where
         self.environment.current()
     }
 
-    pub fn tracker(&self) -> &Arc<T> {
-        &self.tracker
-    }
-
     pub fn io(&self) -> Option<&Arc<dyn NativeIo>> {
         self.io.as_ref()
     }
@@ -163,7 +159,7 @@ where
         });
 
         let mut run = WorkflowRun {
-            run_id: format!("run-{}", Uuid::new_v4()),
+            run_id: String::new(),
             workflow_id: workflow.workflow_id.clone(),
             workflow_name: workflow.workflow_name.clone(),
             plan_version: 1,
@@ -190,6 +186,7 @@ where
             updated_at: now,
         };
 
+        run.run_id = self.tracker.create_run_task(&run).await?;
         let mut events = Vec::new();
         events.push(self.emit_event(&mut run, "run.created", None, "engine", None));
         self.tracker.sync_run(&run).await?;
@@ -500,6 +497,30 @@ where
         Ok(())
     }
 
+    /// Ends a run whose tick could not proceed. Nothing would tick it again, so
+    /// it would stay `running` and its caller would wait for it forever.
+    pub async fn fail_run(
+        &self,
+        workflow: &CompiledWorkflow,
+        run: &mut WorkflowRun,
+        err: &WorkflowError,
+    ) -> Vec<EventEnvelope> {
+        let (code, message, details) = crate::state::workflow_error_payload(err);
+        let mut error = ThunkExecutionError::new(code, message);
+        if let Some(details) = details {
+            error = error.with_details(details);
+        }
+        error.retryable = matches!(err, WorkflowError::TaskTracker(_));
+        let mut events = Vec::new();
+        if let Err(sync) = self.abort_run(workflow, run, error, &mut events).await {
+            log::warn!("workflow: mirror failed run {} failed: {}", run.run_id, sync);
+        }
+        if let Err(sync) = self.tracker.sync_run(run).await {
+            log::warn!("workflow: mirror failed run {} failed: {}", run.run_id, sync);
+        }
+        events
+    }
+
     /// Caller-driven cancel of a whole run (RPC `cancel_run`).
     pub async fn cancel_run(
         &self,
@@ -750,6 +771,13 @@ where
             }
         }
 
+        if matches!(
+            action.action,
+            HumanActionKind::Approve | HumanActionKind::Modify | HumanActionKind::Reject
+        ) {
+            run.node_sources
+                .insert(action.node_id.clone(), "submitted".to_string());
+        }
         events.push(self.emit_event(
             run,
             "human.action",
@@ -2191,7 +2219,7 @@ where
 
     /// Agent 直接写入步骤输出，等价于 §3.4 `workflow.submit_step_output` 的语义：
     /// 若节点处于 WaitingHuman / Running / Failed 都接受，作为该节点的最终输出
-    /// 推进状态机。在 TaskData 渠道中对应 `human_action.kind == "submit_output"`。
+    /// 推进状态机。
     pub async fn submit_step_output(
         &self,
         workflow: &CompiledWorkflow,
@@ -2249,7 +2277,7 @@ where
         Ok(events)
     }
 
-    /// Agent 上报进度，仅落事件 + 把 progress_message 写到 Step task 的 TaskData。
+    /// Agent 上报进度，仅落事件 + 把 progress_message 写到 Step task。
     /// 不修改节点状态。
     pub async fn report_step_progress(
         &self,
@@ -2287,7 +2315,7 @@ where
         Ok(events)
     }
 
-    /// Agent 主动把当前 Step 切到 WaitingHuman，由 workflow 写 TaskData 等待用户操作。
+    /// Agent 主动把当前 Step 切到 WaitingHuman，等待 `submit_human_action`。
     pub async fn request_human(
         &self,
         workflow: &CompiledWorkflow,
@@ -2347,108 +2375,6 @@ where
         self.refresh_run_status(workflow, run, &mut events);
         self.tracker.sync_run(run).await?;
         Ok(events)
-    }
-
-    /// 解释 §3.3 中 TaskData 上的 `human_action`，把它翻译成内部状态机动作。
-    /// 用户在 TaskMgr UI 中点按钮 = 写一次 TaskData，service 监听 task_manager 的
-    /// TaskData 变更后把整个 task_data JSON 喂给这个方法。
-    pub async fn apply_task_data(
-        &self,
-        workflow: &CompiledWorkflow,
-        run: &mut WorkflowRun,
-        task_data: &WorkflowStepTaskData,
-    ) -> WorkflowResult<Vec<EventEnvelope>> {
-        let node_id = task_data.request.node_id.trim();
-        if node_id.is_empty() {
-            return Err(WorkflowError::Serialization(
-                "task_data.request.node_id missing".to_string(),
-            ));
-        }
-        if !task_data.request.run_id.is_empty() && task_data.request.run_id != run.run_id {
-            return Err(WorkflowError::Serialization(format!(
-                "task_data.request.run_id `{}` does not match run `{}`",
-                task_data.request.run_id, run.run_id
-            )));
-        }
-
-        let action = match task_data.human_action.as_ref() {
-            Some(value) => value,
-            None => return Ok(Vec::new()),
-        };
-        let TaskHumanAction {
-            kind,
-            payload,
-            actor,
-            ..
-        } = action;
-        let kind = kind.trim();
-        if kind.is_empty() {
-            return Err(WorkflowError::Serialization(
-                "task_data.human_action.kind missing".to_string(),
-            ));
-        }
-        let actor = actor.as_deref().unwrap_or("human").to_string();
-
-        if kind == "submit_output" {
-            let output = payload.clone().unwrap_or(Value::Null);
-            return match self
-                .submit_step_output(workflow, run, node_id, &actor, output)
-                .await
-            {
-                Ok(events) => Ok(events),
-                Err(err) => {
-                    let _ = self
-                        .tracker
-                        .report_step_validation_error(run, node_id, &err.to_string())
-                        .await;
-                    Err(err)
-                }
-            };
-        }
-
-        let action_kind = match kind {
-            "approve" => HumanActionKind::Approve,
-            "modify" => HumanActionKind::Modify,
-            "reject" => HumanActionKind::Reject,
-            "retry" => HumanActionKind::Retry,
-            "skip" => HumanActionKind::Skip,
-            "abort" => HumanActionKind::Abort,
-            "rollback" => HumanActionKind::Rollback,
-            other => {
-                let msg = format!("unknown human_action kind `{}`", other);
-                let _ = self
-                    .tracker
-                    .report_step_validation_error(run, node_id, &msg)
-                    .await;
-                return Err(WorkflowError::InvalidHumanAction {
-                    node_id: node_id.to_string(),
-                    action: other.to_string(),
-                });
-            }
-        };
-
-        match self
-            .handle_human_action(
-                workflow,
-                run,
-                HumanAction {
-                    node_id: node_id.to_string(),
-                    action: action_kind,
-                    payload: payload.clone(),
-                    actor,
-                },
-            )
-            .await
-        {
-            Ok(events) => Ok(events),
-            Err(err) => {
-                let _ = self
-                    .tracker
-                    .report_step_validation_error(run, node_id, &err.to_string())
-                    .await;
-                Err(err)
-            }
-        }
     }
 }
 

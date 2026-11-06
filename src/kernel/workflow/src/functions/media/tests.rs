@@ -490,7 +490,7 @@ async fn soffice_converts_documents_to_pdf() {
 mod ndn_input {
     use super::*;
     use crate::native::{
-        ArtifactDelivery, ArtifactRef, NativeIo, ToolInput, ToolInputLease, ToolInputRequest, NDN_PROTOCOL_WHITELIST,
+        ArtifactRef, NativeIo, ToolInput, ToolInputLease, ToolInputRequest, NDN_PROTOCOL_WHITELIST,
     };
     use async_trait::async_trait;
     use buckyos_api::error_codes;
@@ -605,8 +605,8 @@ mod ndn_input {
         async fn artifact_available(&self, obj_id: &str) -> bool {
             self.inner.artifact_available(obj_id).await
         }
-        async fn deliver(&self, principal: &str, obj_ids: &[String], expires_at: i64) -> Vec<ArtifactDelivery> {
-            self.inner.deliver(principal, obj_ids, expires_at).await
+        async fn grant_holdings(&self, user_id: &str, app_id: &str, obj_ids: &[String]) -> Result<(), String> {
+            self.inner.grant_holdings(user_id, app_id, obj_ids).await
         }
     }
 

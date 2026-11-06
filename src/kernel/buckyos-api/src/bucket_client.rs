@@ -316,6 +316,12 @@ impl BucketClient {
         self.call("bucket.cache_public", json!({"root_obj_id": root_obj_id, "source": source})).await
     }
 
+    /// Makes exactly `obj_ids` readable to `user_id` through `app_id` (`obj://ndm/manage`).
+    pub async fn grant_holdings(&self, user_id: &str, app_id: &str, obj_ids: &[String]) -> Result<(), RPCErrors> {
+        self.call("bucket.grant_holdings", json!({"user_id": user_id, "app_id": app_id, "obj_ids": obj_ids})).await?;
+        Ok(())
+    }
+
     pub async fn check_access(&self, bucket_id: &BucketId, action: Action, key: Option<&str>, prefix: Option<&str>) -> Result<AccessCheck, RPCErrors> {
         self.call_as("bucket.check_access", json!({"bucket_id": bucket_id, "action": action, "key": key, "prefix": prefix})).await
     }

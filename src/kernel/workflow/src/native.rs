@@ -268,14 +268,9 @@ pub trait NativeIo: Send + Sync {
     /// readable now (object present, bucket binding local).
     async fn artifact_available(&self, obj_id: &str) -> bool;
 
-    /// Grants the caller read access to exactly these artifacts (TODO D3 /
-    /// D15): stable object ids plus a separate, expiring access fact.
-    async fn deliver(
-        &self,
-        principal: &str,
-        obj_ids: &[String],
-        expires_at: i64,
-    ) -> Vec<ArtifactDelivery>;
+    /// Makes exactly these objects readable through NDM to `user_id` via
+    /// `app_id` (TODO D3), the path Agents and AICC read by.
+    async fn grant_holdings(&self, user_id: &str, app_id: &str, obj_ids: &[String]) -> Result<(), String>;
 }
 
 pub struct ToolInputRequest<'a> {
@@ -327,23 +322,6 @@ pub fn scrub_tokens(text: &str) -> String {
     }
     out.push_str(rest);
     out
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ArtifactDelivery {
-    pub obj_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub locator: Option<String>,
-    /// Bucket data-plane path with a read token, when the store issues one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-    pub expires_at: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

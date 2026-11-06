@@ -3174,7 +3174,6 @@ mod tests {
         let trace = PipelineTrace {
             workflow_id: "media.pdf".to_string(),
             run_id: "run-9".to_string(),
-            task_id: Some("t-1".to_string()),
             revision: "rev".to_string(),
             status: "completed".to_string(),
             ..Default::default()
@@ -3197,7 +3196,6 @@ mod tests {
         );
         assert_eq!(result.details["media_decision"]["family"], "media.pdf");
         assert_eq!(result.details["pipeline_trace"]["revision"], "rev");
-        assert_eq!(result.details["pipeline_trace"]["task_id"], "t-1");
         assert_eq!(result.details["coverage"]["uncovered"][0]["where"], 3);
         assert_eq!(result.details["media_preprocess"]["sent"]["width"], 2048);
         let output = result.output.unwrap();

@@ -775,15 +775,11 @@ pub struct WorkflowRunTaskData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<WorkflowRunTaskResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub human_action: Option<TaskHumanAction>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<TaskDataErrorInfo>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowRunTaskRequest {
-    #[serde(default)]
-    pub run_id: String,
     #[serde(default)]
     pub workflow_id: String,
     #[serde(default)]
@@ -803,17 +799,6 @@ pub struct WorkflowRunTaskResult {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct TaskHumanAction {
-    pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub actor: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submitted_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskDataErrorInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -830,8 +815,6 @@ pub struct WorkflowStepTaskData {
     pub progress: Option<TaskDataProgress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub human_action: Option<TaskHumanAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<TaskDataErrorInfo>,
 }

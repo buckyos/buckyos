@@ -657,38 +657,6 @@ impl ScheduleTaskMirrorClient {
             .count() as u32)
     }
 
-    pub async fn find_fire_subtask_by_run_id(
-        &self,
-        schedule: &WorkflowSchedule,
-        run_id: &str,
-    ) -> Result<Option<String>, String> {
-        let Some(parent_id) = schedule.task_mirror.root_task_id.clone() else {
-            return Ok(None);
-        };
-        let client = self.client().await?;
-        let page = client
-            .get_subtasks(GetSubtasksReq {
-                task_id: parent_id,
-                cursor: None,
-                limit: None,
-            })
-            .await
-            .map_err(|err| err.to_string())?;
-        for summary in page.tasks {
-            let Ok(task) = client.get_task(&summary.task_id).await else {
-                continue;
-            };
-            let payload = schedule_task_payload(&task);
-            if matches!(
-                parse_typed_task_data("workflow/run", payload),
-                Ok(TypedTaskData::WorkflowRun(data)) if data.request.run_id == run_id
-            ) {
-                return Ok(Some(task.task_id));
-            }
-        }
-        Ok(None)
-    }
-
     /// 启动时从 Task DB 把全部 `workflow/schedule` root task 读回并解析成
     /// WorkflowSchedule。这是「Task DB 是唯一真相源、内存只是投影」的入口：
     /// 解析失败的脏行被跳过（不让一条坏数据挡住整批 hydrate）。

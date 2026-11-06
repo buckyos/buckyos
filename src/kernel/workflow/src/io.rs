@@ -2,10 +2,9 @@
 //! one backed by the local Named Store and the workflow artifacts bucket.
 
 use crate::native::{
-    ArtifactDelivery, ArtifactRef, NativeIo, ToolInput, ToolInputLease, ToolInputRequest, FILE_PROTOCOL_WHITELIST, NDN_PROTOCOL_WHITELIST,
+    ArtifactRef, NativeIo, ToolInput, ToolInputLease, ToolInputRequest, FILE_PROTOCOL_WHITELIST, NDN_PROTOCOL_WHITELIST,
 };
 use crate::object_store::{InMemoryObjectStore, WorkflowObjectStore};
-use crate::persistence::ArtifactIndex;
 use async_trait::async_trait;
 use buckyos_api::{error_codes, ThunkExecutionError};
 use ndn_lib::{ChunkHasher, ChunkId, ChunkList, FileObject, NamedObject, ObjId};
@@ -86,6 +85,7 @@ pub struct MemoryNativeIo {
     contents: Mutex<HashMap<String, Vec<u8>>>,
     artifacts: Mutex<HashMap<String, ArtifactRef>>,
     deleted: Mutex<Vec<String>>,
+    holdings: Mutex<Vec<(String, String)>>,
 }
 
 impl MemoryNativeIo {
@@ -95,6 +95,7 @@ impl MemoryNativeIo {
             contents: Mutex::new(HashMap::new()),
             artifacts: Mutex::new(HashMap::new()),
             deleted: Mutex::new(Vec::new()),
+            holdings: Mutex::new(Vec::new()),
         }
     }
 
@@ -131,6 +132,17 @@ impl MemoryNativeIo {
     /// Simulates an artifact expiring from the bucket.
     pub fn delete_artifact(&self, obj_id: &str) {
         self.deleted.lock().unwrap().push(obj_id.to_string());
+    }
+
+    /// The objects granted to `user_id/app_id`.
+    pub fn holdings_of(&self, principal: &str) -> Vec<String> {
+        self.holdings
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(holder, _)| holder == principal)
+            .map(|(_, obj_id)| obj_id.clone())
+            .collect()
     }
 
     pub fn objects(&self) -> Arc<InMemoryObjectStore> {
@@ -252,20 +264,11 @@ impl NativeIo for MemoryNativeIo {
         self.objects.exists(obj_id).await.unwrap_or(false)
     }
 
-    async fn deliver(&self, _principal: &str, obj_ids: &[String], expires_at: i64) -> Vec<ArtifactDelivery> {
-        let artifacts = self.artifacts.lock().unwrap();
-        obj_ids
-            .iter()
-            .map(|obj_id| ArtifactDelivery {
-                obj_id: obj_id.clone(),
-                key: artifacts.get(obj_id).map(|a| a.key.clone()),
-                locator: None,
-                path: None,
-                token: None,
-                expires_at,
-                error: None,
-            })
-            .collect()
+    async fn grant_holdings(&self, user_id: &str, app_id: &str, obj_ids: &[String]) -> Result<(), String> {
+        let principal = format!("{user_id}/{app_id}");
+        let mut holdings = self.holdings.lock().unwrap();
+        holdings.extend(obj_ids.iter().map(|id| (principal.clone(), id.clone())));
+        Ok(())
     }
 }
 
@@ -276,7 +279,6 @@ pub struct ZoneNativeIo {
     objects: Arc<dyn WorkflowObjectStore>,
     bucket: bucket_store::types::BucketId,
     artifact_ttl_days: u32,
-    index: Arc<dyn ArtifactIndex>,
 }
 
 impl ZoneNativeIo {
@@ -285,14 +287,12 @@ impl ZoneNativeIo {
         objects: Arc<dyn WorkflowObjectStore>,
         bucket: bucket_store::types::BucketId,
         artifact_ttl_days: u32,
-        index: Arc<dyn ArtifactIndex>,
     ) -> Self {
         Self {
             store,
             objects,
             bucket,
             artifact_ttl_days,
-            index,
         }
     }
 
@@ -383,10 +383,6 @@ impl ZoneNativeIo {
             .put(&self.bucket, &req)
             .await
             .map_err(|e| internal(format!("bind artifact {key}: {e}")))?;
-        self.index
-            .record_artifact(&obj_id.to_string(), key)
-            .await
-            .map_err(|e| internal(format!("index artifact {key}: {e}")))?;
         Ok(ArtifactRef {
             obj_id: obj_id.to_string(),
             content_id,
@@ -556,58 +552,8 @@ impl NativeIo for ZoneNativeIo {
         available
     }
 
-    async fn deliver(&self, principal: &str, obj_ids: &[String], expires_at: i64) -> Vec<ArtifactDelivery> {
-        let (user_id, app_id) = principal.split_once('/').unwrap_or((principal, ""));
-        let client = self.bucket_client().await;
-        let mut out = Vec::with_capacity(obj_ids.len());
-        for obj_id in obj_ids {
-            let mut delivery = ArtifactDelivery {
-                obj_id: obj_id.clone(),
-                key: None,
-                locator: None,
-                path: None,
-                token: None,
-                expires_at,
-                error: None,
-            };
-            let key = match self.index.artifact_key(obj_id).await {
-                Ok(Some(key)) => key,
-                Ok(None) => {
-                    out.push(delivery);
-                    continue;
-                }
-                Err(err) => {
-                    delivery.error = Some(err.to_string());
-                    out.push(delivery);
-                    continue;
-                }
-            };
-            delivery.locator = Some(buckyos_api::bucket_obj_url(&self.bucket, &key));
-            delivery.key = Some(key.clone());
-            match &client {
-                Ok(client) => {
-                    let request = bucket_store::TokenRequest {
-                        prefix: None,
-                        key: Some(key),
-                        actions: [bucket_store::Action::Read].into_iter().collect(),
-                        expires_at: expires_at.saturating_mul(1000),
-                        max_uses: None,
-                        bind_user_id: Some(user_id.to_string()),
-                        bind_app_id: (!app_id.is_empty()).then(|| app_id.to_string()),
-                    };
-                    match client.create_access_token(&self.bucket, &request).await {
-                        Ok(issued) => {
-                            delivery.path = Some(issued.path);
-                            delivery.token = Some(issued.token);
-                            delivery.expires_at = issued.expires_at / 1000;
-                        }
-                        Err(err) => delivery.error = Some(err.to_string()),
-                    }
-                }
-                Err(err) => delivery.error = Some(err.to_string()),
-            }
-            out.push(delivery);
-        }
-        out
+    async fn grant_holdings(&self, user_id: &str, app_id: &str, obj_ids: &[String]) -> Result<(), String> {
+        let client = self.bucket_client().await.map_err(|e| e.message)?;
+        client.grant_holdings(user_id, app_id, obj_ids).await.map_err(|e| e.to_string())
     }
 }

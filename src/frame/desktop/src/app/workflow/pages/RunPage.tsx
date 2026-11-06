@@ -31,8 +31,8 @@ const sourceLabel: Record<string, string> = {
   submitted: 'agent submitted',
 }
 
-function taskCenterHref(rootTaskId: string | undefined): string {
-  return rootTaskId ? `/taskcenter?taskid=${encodeURIComponent(rootTaskId)}` : '/taskcenter'
+function taskCenterHref(runId: string): string {
+  return `/taskcenter?taskid=${encodeURIComponent(runId)}`
 }
 
 export function RunPage({ runId, onSelect }: Props) {
@@ -101,8 +101,8 @@ export function RunPage({ runId, onSelect }: Props) {
           <RefreshCw size={12} /> Refresh
         </button>
         <a
-          href={taskCenterHref(store.getRootTaskId(run.runId))}
-          title={store.getRootTaskId(run.runId) ? `TaskMgr task ${store.getRootTaskId(run.runId)}` : 'Task Center'}
+          href={taskCenterHref(run.runId)}
+          title={`TaskMgr task ${run.runId}`}
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px]"

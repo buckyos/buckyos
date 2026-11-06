@@ -30,7 +30,6 @@ mod schema;
 mod send_message_executor;
 mod server;
 mod state;
-mod subscriptions;
 mod system_defs;
 mod task_tracker;
 mod types;
@@ -68,7 +67,7 @@ pub use local_thunk_runner::LocalThunkRunner;
 pub use native::*;
 pub use object_store::{InMemoryObjectStore, NamedStoreObjectStore, WorkflowObjectStore};
 pub use orchestrator::{RunOptions, WorkflowOrchestrator};
-pub use persistence::{ArtifactIndex, ExecutionLedger, MemoryExecutionLedger, WorkflowDb};
+pub use persistence::{ExecutionLedger, MemoryExecutionLedger, WorkflowDb};
 pub use runtime::*;
 pub use server::ServiceOrchestrator;
 pub use task_tracker::{
@@ -80,7 +79,7 @@ pub use types::*;
 use ::kRPC::*;
 use anyhow::Result;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
+    init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
     WORKFLOW_SERVICE_HTTP_PATH, WORKFLOW_SERVICE_NAME, WORKFLOW_SERVICE_PORT,
 };
 use buckyos_http_server::Runner;
@@ -100,7 +99,6 @@ use crate::send_message_executor::SendMessageTaskExecutor;
 use crate::server::{NdmInputAuthorizer, WorkflowRpcHandler};
 use crate::service_schemas::aicc::AiccAdapter;
 use crate::state::{DefinitionStore, RunStore, ServiceTracker};
-use crate::subscriptions::RunSubscriptionManager;
 
 struct WorkflowHttpServer {
     rpc: Arc<WorkflowRpcHandler>,
@@ -233,7 +231,6 @@ pub async fn start_workflow_service() -> Result<()> {
         object_store.clone(),
         artifacts_bucket,
         buckyos_api::WORKFLOW_ARTIFACTS_TTL_DAYS,
-        db.clone(),
     ));
 
     let (result_tx, result_rx) = tokio::sync::mpsc::channel(256);
@@ -287,23 +284,8 @@ pub async fn start_workflow_service() -> Result<()> {
         seeded.iter().map(|d| (d.id.clone(), d.compiled.revision.clone())).collect::<Vec<_>>()
     );
 
-    let kevent_client = get_buckyos_api_runtime()
-        .map_err(|err| anyhow::anyhow!("workflow api runtime unavailable: {:?}", err))?
-        .get_kevent_client()
-        .await
-        .map_err(|err| anyhow::anyhow!("workflow kevent client unavailable: {:?}", err))?;
-    let subscriptions = RunSubscriptionManager::new(
-        kevent_client,
-        runs.clone(),
-        definitions.clone(),
-        orchestrator.clone(),
-        None,
-    );
-    subscriptions.start().await;
-
     let rpc_handler = WorkflowRpcHandler::new(definitions, runs, orchestrator, object_store)
         .with_schedules(schedules)
-        .with_subscriptions(subscriptions)
         .with_schedule_mirror(schedule_mirror)
         .with_input_authorizer(Arc::new(NdmInputAuthorizer))
         .with_execution_epoch(epoch);

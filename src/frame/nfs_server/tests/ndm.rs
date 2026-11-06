@@ -25,7 +25,7 @@ static RBAC: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 async fn init_rbac() {
     RBAC.get_or_init(|| async {
         let groups = format!(
-            "g, owner, admin\ng, alice, users\ng, bob, users\ng, app:testapp, app\ng, app:otherapp, app\ng, aicc, frame\ng, {AGENT}, agent\ng, app:helper, agent_read_write\ng, app:helper, agent_runtime\ng, app:helper, agent\ng, system:control-panel, system\n"
+            "g, owner, admin\ng, alice, users\ng, bob, users\ng, app:testapp, app\ng, app:otherapp, app\ng, aicc, frame\ng, {AGENT}, agent\ng, app:helper, agent_read_write\ng, app:helper, agent_runtime\ng, app:helper, agent\ng, system:control-panel, system\ng, ood1, ood\ng, system:workflow, kernel\n"
         );
         let policy = overlap_rbac_policy(DEFAULT_RBAC_POLICY, &groups);
         rbac::create_enforcer(DEFAULT_RBAC_MODEL.trim(), policy.trim()).await.unwrap();
@@ -501,6 +501,52 @@ async fn proxy_permissions_separate_uploads_reads_retention_and_management() {
     assert_eq!(srv.proxy_call(&owner, "outbox_count", json!({})).await.0, StatusCode::OK);
     assert_eq!(srv.proxy_call(&owner, "unpin", json!({"obj_id": file_id.to_string(), "owner": own})).await.0, StatusCode::NO_CONTENT);
     assert_eq!(srv.proxy_call(&owner, "remove_object", json!({"obj_id": other_id.to_string()})).await.0, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_service_grants_a_principal_exactly_the_objects_it_names() {
+    let srv = start(3600).await;
+    let (alice, bob) = (user("alice"), user("bob"));
+    let bob_app = Some(token("bob", TokenPrincipalKind::App, "app:testapp@bob"));
+    let workflow = token("ood1", TokenPrincipalKind::System, "system:workflow");
+    let data = vec![6u8; 4000];
+    let (file_id, file_body) = file_of("artifact.bin", &data);
+    assert!(srv.write_chunk(&alice, &data).await.is_success());
+    assert_eq!(srv.proxy_call(&alice, "put_object", json!({"obj_id": file_id.to_string(), "obj_data": file_body})).await.0, StatusCode::NO_CONTENT);
+    let read = json!({"obj_id": file_id.to_string()});
+    assert_eq!(srv.proxy_call(&bob, "get_object", read.clone()).await.0, StatusCode::FORBIDDEN);
+
+    let bob_key = "system:control-panel";
+    let grant = |auth: String, app: &str| {
+        let body = json!({"method": "bucket.grant_holdings", "params": {"user_id": "bob", "app_id": app, "obj_ids": [file_id.to_string()]}, "sys": [1, auth]});
+        srv.http.post(format!("{}/kapi/nfs-server", srv.base)).json(&body).send()
+    };
+
+    // Only `obj://ndm/manage` may do this: not the holder, not another frame service.
+    let frame = token("aicc", TokenPrincipalKind::System, "system:aicc");
+    for auth in [alice.clone().unwrap(), bob.clone().unwrap(), frame] {
+        let refused: Value = grant(auth, bob_key).await.unwrap().json().await.unwrap();
+        assert_eq!(refused["code"], "permission_denied", "{refused}");
+    }
+    assert_eq!(srv.proxy_call(&bob, "get_object", read.clone()).await.0, StatusCode::FORBIDDEN);
+
+    let granted: Value = grant(workflow.clone(), bob_key).await.unwrap().json().await.unwrap();
+    assert_eq!(granted["result"]["granted"], 1, "{granted}");
+
+    // Bob reads the object and its content through it, nothing else and nowhere else.
+    assert_eq!(srv.proxy_call(&bob, "get_object", read.clone()).await.0, StatusCode::OK);
+    assert_eq!(open(&srv, &bob, &file_id).await, StatusCode::OK);
+    let chunk = srv.rpc(&bob, "/ndm/proxy/v1/read/chunk/data", json!({"chunk_id": chunk_of(&data).to_string()})).await.0;
+    assert_eq!(chunk, StatusCode::FORBIDDEN);
+    assert_eq!(srv.proxy_call(&bob_app, "get_object", read.clone()).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(open(&srv, &bob_app, &file_id).await, StatusCode::FORBIDDEN);
+    assert_eq!(srv.proxy_call(&user("mallory"), "get_object", read).await.0, StatusCode::FORBIDDEN);
+
+    let bad: Value = {
+        let body = json!({"method": "bucket.grant_holdings", "params": {"user_id": "bob", "app_id": bob_key, "obj_ids": ["not an id"]}, "sys": [1, workflow]});
+        srv.http.post(format!("{}/kapi/nfs-server", srv.base)).json(&body).send().await.unwrap().json().await.unwrap()
+    };
+    assert_eq!(bad["code"], "invalid_argument", "{bad}");
 }
 
 #[tokio::test]

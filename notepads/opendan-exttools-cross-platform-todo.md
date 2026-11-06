@@ -1,6 +1,6 @@
-# Agent Runtime 基线工具全平台统一分发 TODO（三层模型，待 Review）
+# Agent Runtime 基线工具全平台统一分发 TODO（三层模型，已 Review）
 
-> 2026-11-05，v2.1。v2.1 加 §0.3 与 §3.9：owner 从场景出发把 ExtTools 升级成**扩展包体系**（系统管理员为全 Zone 的 Agent 管理共用扩展包，包之间有依赖，勾选即装，长期运维），并据此把安装器定为 node_daemon 的 reconciler（§3.3）、skill 改为只声明依赖的命令（§3.9.3）。v1 针对 [runtime 生命周期 TODO R16](opendan-agent-runtime-lifecycle-todo.md#6-实施任务分期) 细化 R-S1 / R-S3，把 standard 分发、Zone 共享可选包、Desktop Lite 隔离、macOS VM 自初始化都装了进来。v2 按 owner 的**三层模型**（§0）与**隔离讨论**（§0.2）重排：三层是骨架；隔离只有“核心路径钉死”和“Agent 不污染用户环境”两件事，对容器、Desktop Lite、bare Linux host 一套约定；范围拆成三期加两份分出去的 TODO，第一期只改 Rust、现在可开工。尚未实施；以当前仓库源码为依据（§2 的事实已逐条核过）。相关：[skills 体系 TODO §3.6.1 C](opendan-skills-system-todo.md)（S19 等本文第一期）、[path_usage.md](../doc/path_usage.md)、[Session Runtime](<../doc/opendan/OpenDAN Agent-Session-Runtime.md>) §2.1 / §3.2 / §3.3、[Desktop Lite TODO](buckyos-desktop-lite-todo.md)、[native Agent Service TODO](opendan-native-agent-service-todo.md)。
+> 2026-11-05，v2.2。v2.2 按 owner 对 §6 的答复改：一期扩到 pikg 结构支持（决策 4 的读法：这次开工至少完成到扩展包的 pikg 结构，P1-6）、macOS x86_64 进首版平台（7）、§3.2 / §3.7 / 决策 8 清掉 v2 残留、补上源码核对出来的四个决策 15–18（期望状态投影、目录归属、`InstallGrant::System`、AppType 与子包键）与两个一期口径 19–20。v2.1 加 §0.3 与 §3.9：owner 从场景出发把 ExtTools 升级成**扩展包体系**（系统管理员为全 Zone 的 Agent 管理共用扩展包，包之间有依赖，勾选即装，长期运维），并据此把安装器定为 node_daemon 的 reconciler（§3.3）、skill 改为只声明依赖的命令（§3.9.3）。v1 针对 [runtime 生命周期 TODO R16](opendan-agent-runtime-lifecycle-todo.md#6-实施任务分期) 细化 R-S1 / R-S3，把 standard 分发、Zone 共享可选包、Desktop Lite 隔离、macOS VM 自初始化都装了进来。v2 按 owner 的**三层模型**（§0）与**隔离讨论**（§0.2）重排：三层是骨架；隔离只有“核心路径钉死”和“Agent 不污染用户环境”两件事，对容器、Desktop Lite、bare Linux host 一套约定；范围拆成三期加两份分出去的 TODO（v2 时第一期只改 Rust，v2.2 扩到 pikg 结构）。尚未实施；以当前仓库源码为依据（§2 的事实已逐条核过）。相关：[skills 体系 TODO §3.6.1 C](opendan-skills-system-todo.md)（S19 等本文第一期）、[path_usage.md](../doc/path_usage.md)、[Session Runtime](<../doc/opendan/OpenDAN Agent-Session-Runtime.md>) §2.1 / §3.2 / §3.3、[Desktop Lite TODO](buckyos-desktop-lite-todo.md)、[native Agent Service TODO](opendan-native-agent-service-todo.md)。
 
 ## 0. 三层模型与隔离（owner 2026-11-05 原话要点，本文骨架）
 
@@ -47,8 +47,8 @@ owner 允许 Linux 下不用容器、把自己的 host 完整给自己的 Agent 
 
 | 期 | 交付 | 依赖 |
 | --- | --- | --- |
-| **一期（只改 Rust，现在可开工）** | `EXTENDED_TOOLS` 清单；`check_baseline` 按声明选集合；`tools_check` 记命中路径与版本；`xagent runtime baseline --level`；plan 全表显示扩展层状态；回写 runtime TODO R-S1 / R-S3 | 无。解除 skills S19（ExtTools 命令拒装）与 plan 全表的依赖 |
-| **二期：扩展包体系 + 安装器** | 扩展包格式（pikg 子类）、Zone 级目录与期望状态、node_daemon reconciler 在容器节点 / bare Linux / macOS / Windows 上安装、升级、修复到 `$BUCKYOS_ROOT/tools/`；管理页勾选即装；skill 的命令依赖 → 推荐包；BuckyOS 发起的进程环境约定（§3.6）落到三种形态 | 一期；T0 可行性 |
+| **一期（Rust + pikg 结构，现在可开工）** | Rust：`EXTENDED_TOOLS` 清单；`check_baseline` 按声明选集合；`tools_check` 记命中路径与版本；`xagent runtime baseline --level`；plan 全表显示扩展层状态；host 执行器前置 `tools/bin`；回写 runtime TODO R-S1 / R-S3。pikg 结构（决策 4）：`AppType::ExtTools` 与 `ext-manifest.json` 进 buckyos-api 与 websdk `pikg init / doctor`，`ext-core` 按此格式重打并能 `app publish` 到 Repo，control panel 对 `ext_tools` 的提交路由只收发布、拒绝当 App 装 | 无。解除 skills S19（ExtTools 命令拒装）与 plan 全表的依赖；二期的包体系直接在此格式上建 |
+| **二期：期望状态 + 安装器** | Zone 级期望状态与节点投影（§3.3）、node_daemon reconciler 在容器节点 / bare Linux / macOS / Windows 上安装、升级、修复到 `$BUCKYOS_ROOT/tools/`；管理页勾选即装；skill 的命令依赖 → 推荐包；BuckyOS 发起的进程环境约定（§3.6）落到三种形态 | 一期；T0 可行性 |
 | **三期：standard 分发（= runtime 裁决 22 的“安装包改造”）** | Agent 标准工具的产物、安装、升级、修复三平台统一；host / aios 共用组装器 | 二期的安装器与环境约定 |
 | 分出去 | Zone 共享可选包（v1 §3.6 / E1）→ 新 TODO；macOS VM 由 Agent 自初始化（v1 §3.8 / E3）→ 新 TODO。两者与 R16 没有实现依赖 | — |
 
@@ -61,14 +61,18 @@ owner 允许 Linux 下不用容器、把自己的 host 完整给自己的 Agent 
 | 位置 | 已有 | 本文要补 |
 | --- | --- | --- |
 | `lib_opendan/src/baseline.rs` | `STANDARD_TOOLS`（31 条，含 `session_helper_of`）、`required_commands(overlay)`、`missing_probe` / `missing_locally`、host 入口 `install_entries` 硬链接或复制、`run_deno_command(root, …)` 钉死 Deno、`session_identity_env`、`AGENT_TOOLS_BIN = bin/agent-tools`、`AGENT_TOOLS_LIBEXEC = libexec/buckyos-agent` | `EXTENDED_TOOLS`；探测返回命中路径与版本 |
-| `lib_opendan/src/runtime/mod.rs` | `check_baseline` 只查 standard（`required_commands(record.is_private())`）；`check_commands` → `ToolsCheck {present, missing}` 只记名字；`runtime_exec / runtime_put / runtime_op`，私有侧前置 `<agent_root>/tools`；`runtimes_view` 已渲染 `tools_check.present` 与 `usage.skill_commands` | 按声明选集合；`ToolsCheck` 加 `resolved: {name: {path, version, provided_by}}`；安装编排不复用 `runtime_exec` 的短超时 |
+| `lib_opendan/src/runtime/mod.rs` | `check_baseline` 只查 standard（`required_commands(record.is_private())`）；`check_commands` → `ToolsCheck {present, missing}` 只记名字；`runtime_exec / runtime_put / runtime_op`，私有侧前置 `<agent_root>/tools`；`runtimes_view` 已渲染 `tools_check.present` 与 `usage.skill_commands` | 按声明选集合；`ToolsCheck` 加 `resolved: {name: {path, version, provided_by}}`；安装不经 `runtime_exec`（§3.3） |
 | `lib_opendan/src/xagent_cli.rs` | `runtime baseline` / `check --commands` / `op`；`task state\|cancel` | `baseline --level`；`ext-tools status\|install\|check` |
 | `build_aios` | Ubuntu 24.04；`RUNTIME_PACKAGES`（apt）：`bash curl git jq rsync tree unzip xz-utils python3`（系统 3.12，uv 用它）、`ffmpeg`、`imagemagick`（**IM6**，入口 `convert / identify / compare`，没有 `magick`）、`poppler-utils`、`tesseract-ocr`；Node 官方 tarball（`NODE_VERSION`）；Deno `v2.9.2` 在镜像里；pandoc 不在镜像。官方清单与场景的事实来源是 [paios容器需求.md §6.4](../doc/app_service/paios容器需求.md) | 扩展层版本来源与 `EXTENDED_TOOLS` 一致性测试 |
 | `publish/exttool/`（`build_exttool`） | ubuntu builder → busybox seed；`deno-cache` / `uv-cache` 预热（只带缓存不带 deno 二进制）；pandoc 3.12.1 固定 SHA（amd64 / arm64）；FreeCAD 可选，缺省 `exit 127` 的 stub；卷 `buckyos-exttool-<id12>` 首次挂载时复制 | macOS / Windows / Linux 原生包；锁文件 |
 | `publish/aios/entrypoint.sh` | `BUCKYOS_EXTTOOL_DIR=$BUCKYOS_ROOT/tools`，`tools/bin` 前置 PATH | 与 §3.6 的顺序表对齐 |
 | `node_executor/src/ops.rs`、`node_daemon/src/node_executor_host.rs` | 执行器构造 PATH / env；启动时 `opendan install-agent-tools` 物化 `bin/agent-tools` 入口 | host 前置 `tools/bin`；环境变量约定；`describe` 报安装根 |
 | `src/buckyos-build.py::_prepare_agent_tools`、`src/tools/prepare_sdk_tool_distribution.py` / `build_sdk_tool_distribution.py` | 复制 TS 命令与 vendor 到 `libexec/buckyos-agent`，重写 import；SDK / CLI 分发 | 三期：host / aios 共用组装器 |
-| `opendan/src/home.rs`、`service.rs`、`web/src/pages/Workspaces.tsx` | runtime 设置与卡片 | owner 安装 API；卡片显示扩展层状态 |
+| `opendan/src/home.rs`、`service.rs`、`web/src/pages/Workspaces.tsx` | runtime 设置与卡片 | owner 只读 status / check API；卡片显示扩展层状态与管理页链接 |
+| `buckyos-api/src/app_doc.rs` | `AppType` 有 `Service / dapp / Web / Agent / Aiws`，按类型校验子包；`Aiws` 是“只装包、不建 AppSpec、不起服务”的先例；`SubPkgList` 有闲置的 `agent_tools` 键（没有消费者） | `AppType::ExtTools` 与校验；`agent_tools` 键删除或归三期（决策 18） |
+| `control_panel/src/app_installer.rs`、`aiws_pkg.rs` | `app_submit_route` 按 `(AppType, origin)` 分派，`Aiws` 走 `RegisterAiwsPackage`（控制面板直接交给 aiworkspace 服务，没有节点级收敛） | `ExtTools` 的路由：Rpc 发布到 Repo，Preinstall / AgentRuntime 拒绝 |
+| `buckyos-websdk/cli/modules/pikg.ts` | `APP_KINDS = static-web / script / docker / agent-skills / aiws-controls`，`doctor` 已有 | 加 `ext-tools` kind 与 doctor 规则（跨仓库） |
+| `node_daemon/src/node_daemon.rs`、`paios_images.rs`、`app_loader.rs` | node_daemon 只读 `nodes/<n>/config \| gateway_config \| gateway_info`，节点目标状态全由 scheduler 推进 `NodeConfig`；paios / exttool 镜像按 manifest pin 校验，`prepare_exttool` 播种卷 | 期望状态经 scheduler 投影成 `NodeConfig.ext_tools`（决策 15）；reconciler 沿 `paios_images.rs` 拆 `ext_tools.rs` |
 | `doc/path_usage.md` | `/opt/buckyos/tools/{store,deno-cache,uv-cache}` 只读；`/opt/buckyos/instance/{pkg,cache,tools/bin,tools/<agent_id>/<sid>}` 可写 | 原生落点与容器稳定路径一致（§3.2） |
 | Session Runtime 文档 §3.2 / §3.3 | 列了 aios 附加工具与 ExtTool 工具；“`extended` 是任意额外环境”的旧描述 | 改为 `EXTENDED_TOOLS` 核心清单 + 可选 |
 
@@ -113,16 +117,18 @@ $BUCKYOS_ROOT/tools/
   current.json                  # 原生：已激活版本与摘要
 ```
 
-原生先写 `staging/`，校验通过后切换；失败不覆盖旧版。POSIX 可原子切目录；Windows 用版本指针并处理文件占用，不假定 symlink 权限。保留上一版本供恢复。只读包目录与可写缓存分离，缓存走 instance 约定。容器继续按镜像 id 播种只读卷，新包随 exttool 镜像发布并重建卷，不套原生的 `current.json`。
+原生先写 `staging/`，校验通过后切换；失败不覆盖旧版。POSIX 可原子切目录；Windows 用版本指针并处理文件占用，不假定 symlink 权限。保留上一版本供恢复。只读包目录与可写缓存分离，缓存走 instance 约定。容器节点同一套：reconciler 在节点级 `buckyos-tools` 卷内做 staging 切换，`ext-core` seed 镜像只在卷为空时播种一次（§3.3），不再按 exttool 镜像 id 一个卷。
 
 ### 3.3 安装权限与执行通路
 
 **安装器 = node_daemon 的 reconciler**（v2.1 修正，取代 v2 的“Agent Service 里的串行任务”）。理由：node_daemon 今天已经拥有 `$BUCKYOS_ROOT`（paios 镜像与 exttool 卷的播种、`install-agent-tools` 的入口物化都在它手里），在每种形态里都是安装根的所有者：容器节点上它管 docker 卷；bare Linux host、Desktop Lite（macOS / Windows）上它以安装 BuckyOS 的账户跑；node-daemon 作为系统服务跑的 host 上它就是管理身份。于是 v2 担心的“执行器身份与安装根所有者不同”的权限缺口不存在：**安装从来不经执行器身份**，Agent Service 与 Agent 子进程只读安装事实。
 
-- **入口**：系统管理员在管理页 / CLI 写 Zone 级期望状态（§3.9.2）；每个节点的 node_daemon 对照期望状态与本机 `tools/installs/`，缺的下载安装、多的（被取消勾选且无依赖者）卸载、版本不符的升级。owner 的 Agent Home / runtime 卡片只显示本机状态与“去管理页勾选”的链接，不直接触发安装。session helper 不开放安装。
+- **入口**：系统管理员在管理页 / CLI 写 Zone 级期望状态（§3.9.2）；每个节点的 node_daemon 对照投影到本机 `NodeConfig.ext_tools` 的期望状态（决策 15）与本机 `tools/installs/`，缺的下载安装、多的（被取消勾选且无依赖者）卸载、版本不符的升级。owner 的 Agent Home / runtime 卡片只显示本机状态与“去管理页勾选”的链接，不直接触发安装。session helper 不开放安装。
 - **容器节点**：node_daemon 把包解进节点级卷 `buckyos-tools`（首次由 `ext-core` seed 镜像播种，保留今天的离线首启）；容器只读挂到 `/opt/buckyos/tools`。不再按 exttool 镜像 id 一个卷，不在只读卷内原地更新：reconciler 写卷、容器重启后看到新内容（§3.2 的 staging 切换在卷内做）。
 - **原生（bare Linux host、Desktop Lite、node-daemon 服务 host）**：同一套 reconciler 写 `$BUCKYOS_ROOT/tools/`；不可写时在节点状态里报具体权限问题，禁止静默 sudo。
 - **form B、普通 SSH 目标**：没有 node_daemon，没有受管安装根，**不参与扩展包**；仍可探测，`tools_check` 报 `provided_by: system`。
+- **期望状态到节点的通路（决策 15）**：node_daemon 今天只读本机 `nodes/<n>/config | gateway_config | gateway_info`，节点目标状态一律由 scheduler 推导。扩展包不例外：scheduler 把 `system/ext_tools/desired` 与节点平台相乘，投影成 `NodeConfig.ext_tools: {pkg_id: {version, pikg_digest, payload | unsupported}}`；node_daemon 对照它与本机 `tools/installs/` 收敛，不直读 Zone 级键，RBAC 不加规则；`unsupported` 在 scheduler 侧判定。
+- **目录归属（决策 16）**：不持久化 `system/ext_tools/catalog`。control panel 的 Resolve 直接问 Repo 已发布的 `ext_tools` AppDoc（`app install` 的来源解析已有），期望状态记 `{version, pikg_digest}`，reconciler 按 digest 经 Repo / NDM 取包；skill 反推（§3.9.3）要的 `provides` 由同一 Resolve 读 `ext-manifest.json`。Lite 档位有完整 system-config / scheduler / control_panel / Repo（`make_config.ts` 只是 `support_container: false`），这条通路在 Lite 上成立。
 
 reconciler 只接受 Repo 已发布、签名校验过的 pikg（§3.9.1），防路径穿越与符号链接逃逸；离线导入的包验证同一摘要。runtime TODO R-S1 原文“经 `runtime_put / runtime_exec` 装到目标”据此改为“node_daemon reconciler”；R-U3 原语只用于 Agent 自装层（第三层）。
 
@@ -155,20 +161,21 @@ $BUCKYOS_ROOT/bin/agent-tools                      # 核心入口（其依赖已
 
 同名冲突：Agent 自装的命令与核心命令同名时安装拒绝（防遮蔽身份 / 控制入口）；与扩展层同名允许，`tools_check` 报 `provided_by: agent`。
 
+`InstallGrant::System`（`app_schema.rs` 注释“System-wide packages (ExtTools, package managers)”）随本节重定义（决策 17）：Agent 从不装扩展包，`System` 只表示 skill 的 `install.toml` 允许写到 `<agent_root>/tools` 之外、仍不写 `$BUCKYOS_ROOT/tools`（skills S19 的 `writes`）；grant UI 文案与 runtime TODO R-U9 随之改。
+
 “环境不冲突”是目录与进程环境约定，不是 OS 权限隔离；owner 把整台机器给 Agent 时，Agent 在授权内仍可访问用户文件。文档与 UI 文案不得暗示已做到强隔离。
 
-### 3.7 安装编排、API、CLI
+### 3.7 Agent 侧 API、CLI（只读）
 
 ```text
 xagent runtime ext-tools status <id> [--json]
-xagent runtime ext-tools install <id> [--version <v>] [--package <local-file>] [--json]
 xagent runtime ext-tools check <id> [--full] [--json]
 xagent runtime baseline [--level standard|extended] [--json] [--check]
 ```
 
-- `install` 返回一个 **Agent task**（复用 `agent-session task state|cancel` 与 task 通知通路，不另造状态机）；阶段 downloading / verifying / staging / checking / activating / succeeded / failed 写进机器级 `tools/installs/<install_id>.json`，Agent 侧 `runtime_ops` 只存引用。服务重启后按 journal 判定，不盲目重放；每目标一把安装锁；同版本同摘要已验证时幂等成功。
-- owner API（opendan `home.rs` / `service.rs`）加 status / install / check；CLI 与 UI 共用；`xagent` 直连模式也校验 owner 身份；`agent-session` 不加 install。用户级 `buckyos runtime` 命令归 runtime TODO E7。
-- UI：runtime 卡片加扩展层版本 / 状态 / 安装按钮；容器显示“随镜像管理”；owner 默认与私有同机时共享安装事实。E6 搬 Home 后复用。
+- Agent 侧没有 install：安装由 node_daemon reconciler 做（§3.3），Agent Service、session helper、owner API 都不触发；`status` 读本机 `tools/installs/` 与节点状态，`check --full` 跑完整 smoke。安装状态不进 Agent task（决策 8 作废）。
+- owner API（opendan `home.rs` / `service.rs`）加 status / check；CLI 与 UI 共用；`agent-session` 不加。用户级 `buckyos runtime` 命令归 runtime TODO E7；管理动作 `buckyos ext-tools list|enable|disable|status` 在 X4。
+- UI：runtime 卡片显示本机扩展层版本 / 状态与“去管理页勾选”的链接；容器显示“随节点卷管理”。E6 搬 Home 后复用。
 
 ### 3.9 扩展包体系（回答 §0.3 的四个问题）
 
@@ -176,7 +183,7 @@ xagent runtime baseline [--level standard|extended] [--json] [--check]
 
 用 pikg，不另造格式。理由：签名、DID、Repo 发布、`app install` 的来源解析（本地 `.pikg` / URL / Catalog DID）、按 os / arch 选子包、`docker-image` 子包来源、InstallPlan 的幂等与状态都是现成的；`agent-skills` 已经是这样一个子类。
 
-- **AppDoc**：`app_type = ext_tools`（新类型，约束同 aiws 那样“只接受本类子包”）；`sub_pkgs` 按 selector 一个平台一个 payload（`linux-x86_64`、`linux-aarch64`、`darwin-arm64`、`windows-x86_64`，缺的平台就是“该平台不支持”）；payload 是 `tar.gz`，内容就是解到 `tools/store/<pkg_id>/` 下的树加 `bin/` 里的 launcher。Linux 容器节点不再需要 `docker-image` 子包：reconciler 解 tar 进卷。
+- **AppDoc**：`AppType::ExtTools`（`app_type = ext_tools`，新值，校验同 `Aiws`：只接受本类子包、不建 AppSpec、不起服务；决策 18）；子包键 `ext_tools`，不复用闲置的 `agent_tools`（那个名字归三期的 standard 包，一期决定删除或留用）；`sub_pkgs` 按 selector 一个平台一个 payload（`linux-x86_64`、`linux-aarch64`、`darwin-arm64`、`darwin-x86_64`、`windows-x86_64`，缺的平台就是“该平台不支持”）；payload 是 `tar.gz`，内容就是解到 `tools/store/<pkg_id>/` 下的树加 `bin/` 里的 launcher。Linux 容器节点不再需要 `docker-image` 子包：reconciler 解 tar 进卷。
 - **`ext-manifest.json`**（payload 根，`pikg doctor` 校验，Repo 投影进目录）：
 
   ```json
@@ -189,7 +196,7 @@ xagent runtime baseline [--level standard|extended] [--json] [--check]
       {"command": "ffmpeg",  "version_probe": "ffmpeg -version", "smoke": "smoke/ffmpeg.sh"},
       {"command": "ffprobe", "version_probe": "ffprobe -version"}
     ],
-    "platforms": ["linux-x86_64", "linux-aarch64", "darwin-arm64", "windows-x86_64"],
+    "platforms": ["linux-x86_64", "linux-aarch64", "darwin-arm64", "darwin-x86_64", "windows-x86_64"],
     "size_bytes": {"linux-x86_64": 123456789},
     "license": "LGPL-2.1", "desc": "音视频加工：ffmpeg / ffprobe"
   }
@@ -201,9 +208,9 @@ xagent runtime baseline [--level standard|extended] [--json] [--check]
 
 #### 3.9.2 列表、期望状态与构建发布
 
-**扩展包目录（Zone 级）**：Repo 里 `app_type = ext_tools` 的发布投影成 `system/ext_tools/catalog/<pkg_id>`（最新版本、平台、`provides`、`requires`、大小、desc）；官方包随 release 预置，Zone owner 也能 `app publish` 自己构建的包（“行业专用环境”就是这样来的）。
+**扩展包目录（Zone 级）**：就是 Repo 里已发布的 `ext_tools` AppDoc，不另投影 `system/ext_tools/catalog`（决策 16）；管理页列表与 Resolve 直接查 Repo，取最新版本、平台、`provides`、`requires`、大小、desc；官方包随 release 预置，Zone owner 也能 `app publish` 自己构建的包（“行业专用环境”就是这样来的）。
 
-**期望状态（管理员勾选的结果）**：`system/ext_tools/desired/<pkg_id> = {version, enabled, by, at_ms}`。写入规则：勾选 B 时 resolver 做拓扑排序，`requires` 链上没勾的一起写 enabled 并在确认页列出；取消 A 时有启用中的依赖者则拒绝并列出；升级就是改 `version`。写入由 control panel 做（RBAC：zone owner / 系统管理员），走和 App 安装一样的 Resolve → Inspect → 确认 → 提交，但不建 AppSpec、不起服务，提交的是期望状态而不是 InstallPlan。
+**期望状态（管理员勾选的结果）**：`system/ext_tools/desired/<pkg_id> = {version, pikg_digest, enabled, by, at_ms}`。写入规则：勾选 B 时 resolver 做拓扑排序，`requires` 链上没勾的一起写 enabled 并在确认页列出；取消 A 时有启用中的依赖者则拒绝并列出；升级就是改 `version`。写入由 control panel 做（RBAC：zone owner / 系统管理员），走和 App 安装一样的 Resolve → Inspect → 确认 → 提交，但不建 AppSpec、不起服务，提交的是期望状态而不是 InstallPlan；scheduler 再把它投影到每个节点的 `NodeConfig.ext_tools`（决策 15）。
 
 **每节点状态**：`nodes/<n>/ext_tools/<pkg_id> = {version, digest, stage: queued | downloading | verifying | staging | checking | active | failed | unsupported, error, at_ms}` 由 node_daemon reconciler 写；本机 `tools/installs/<pkg_id>.json` 是同一内容的本地副本（§3.2）。`unsupported` = 该节点平台没有 payload。管理页按包 × 节点显示；Agent 的 runtime 卡片显示本机那一列。
 
@@ -220,7 +227,7 @@ xagent runtime baseline [--level standard|extended] [--json] [--check]
 #### 3.9.3 skill 与扩展包：skill 只声明命令，系统反推包
 
 - **skill 声明**：front matter 加机器可读的 `commands: ffmpeg, ffprobe, magick`（只写命令名，逗号分隔）；`requires` 继续给人读；`baseline / platforms` 不变。这改掉 skills TODO 待裁决 14 的答案（原建议“只放 `install.toml`”）：owner 明确 skill 应说明自己依赖的命令，而 runtime R-W6 的“不加字段”针对的是运行位置（`runs_on`），不是依赖声明。官方手册 `aigc_*`、`aiworkspace_run`（`jq`）等补上。
-- **系统知识**：`system/ext_tools/catalog/*.provides` 给出 command → 包 的映射；`tools_check.resolved` 给出本机每个命令的实际来源（`exttools | system | agent | 缺`）。
+- **系统知识**：Repo 里 `ext_tools` 包的 `provides`（经 control panel 的 Resolve 读取）给出 command → 包 的映射；`tools_check.resolved` 给出本机每个命令的实际来源（`exttools | system | agent | 缺`）。
 - **反推**：`skills.install_plan`（skills S18）对每个 `commands` 条目查目标 runtime 的 `tools_check.resolved`；缺的查目录 `provides` → 得到 `recommended_packages: [{id, version, requires_chain, provides: [缺的命令]}]`；命中多个包时按“已启用的依赖最少”排序；没有任何包提供的命令报“无扩展包提供，需自备”。推荐同时出现在 CLI 的 install plan、WebUI Skills 页与 `skill list --all` 的状态列。
 - **skill 状态**（skills_state 的 `install.runtimes[id]` 扩展）：`commands: {ffmpeg: {present: true, provided_by: exttools}, magick: {present: false}}`、`recommended_packages`。三种可见状态：`ready`（命令齐）、`partial(缺 x, y；建议 ext-media)`、`ready(system)`（命令齐但来自用户自备）。扩展包 active / 卸载 → node 状态变 → runtime `tools_check` 重跑 → skills 状态重算（runtime R6 / skills S21 的事件路径，这就是它的第一个真实触发源）。plan 全表与 `## Commands` 末尾说明用同一数据。
 - **方向反过来也成立**：管理页勾选一个包时，可以列出“Zone 内哪些 Agent 的哪些 skill 会因此从 partial 变 ready”（扫各 Agent 的 skills_state），这是运维看得见收益的地方；首版可只做包 → 命令 → skill 名的静态反查。
@@ -243,32 +250,34 @@ xagent runtime baseline [--level standard|extended] [--json] [--check]
 
 ## 4. 任务
 
-### 一期（只改 Rust，现在可开工）
+### 一期（Rust + pikg 结构，现在可开工）
 
-- [ ] **P1-1 `EXTENDED_TOOLS`**：`baseline.rs` 加常量（§3.1 核心 + 推荐标记）、`publish/exttool/tools.json` 与一致性单测；`required_commands` 加 level 参数。验收：常量与 json 不一致时测试失败。
+- [ ] **P1-1 `EXTENDED_TOOLS`**：`baseline.rs` 加常量（§3.1 核心 + 推荐标记）、`publish/exttool/ext-core/ext-manifest.json`（§3.9.1 格式，就是 `ext-core` 的 manifest，P1-6 同一份）与一致性单测；`required_commands` 加 level 参数。验收：常量与 json 不一致时测试失败。
 - [ ] **P1-2 按声明检查**：`check_baseline` 按 `caps.baseline` 选集合；`BaselineCheck` / `ToolsCheck` 加 `resolved {path, version, provided_by}`；探测脚本（POSIX / PowerShell）输出路径与版本；核心命中路径不在 `$BUCKYOS_ROOT` 下记 `provided_by: system` 且 standard 不算就绪。验收：`runtimes.rs` 与 `remote_node_runtime` 用例覆盖 standard / extended、system 命中、stub 127。
 - [ ] **P1-3 CLI 与视图**：`xagent runtime baseline --level`、`check --commands` 输出路径版本；`runtimes_view` 的 plan 全表加 ext 状态段；WebUI 卡片显示 `baseline_check` 的 ext 部分（只读）。
 - [ ] **P1-4 回写**：runtime TODO R-S1（安装通路改 §3.3）、R-S3（已做）、裁决 22（三期 = 安装包改造）；Session Runtime 文档 §3.2 / §3.3 改为核心 + 推荐 + 可选；skills TODO S19 的依赖标“已解除”。
 - [ ] **P1-5 host 执行器前置 `tools/bin`**（§3.6 的 PATH 顺序，先只做顺序，不做环境变量）：`node_executor ops.rs`；验收：host 上 `check_baseline(extended)` 与真实 session shell 看到同一 ffmpeg。
+- [ ] **P1-6 pikg 结构支持（原 X1，决策 4）**：`AppType::ExtTools` 与按类型校验、子包键 `ext_tools`、`agent_tools` 键的去留（buckyos-api `app_doc.rs`）；`ext-manifest.json` schema 进 [PIKG 格式规范](../doc/pikg/)；websdk `pikg init --kind ext-tools` 骨架与 `doctor` 规则（§3.9.2 第 3 条，跨仓库同步）；control panel `app_submit_route`：`(ExtTools, Rpc)` 发布到 Repo，其余拒绝；`publish/exttool/ext-core/` 按此格式重打（Linux payload 复用今天的 seed 构建，含 `install_pandoc.sh`），`app publish` 到开发 Zone 的 Repo 回读通过。验收：`pikg doctor` 对缺 launcher、同名命令无 `conflicts` 报错；`app install` 一个 `ext_tools` 包被拒并说明走管理页；`cargo test -p buckyos-api`、`-p control_panel` 与 websdk 测试通过。
+- [ ] **P1-7 一期口径**：后台 `check_baseline / tools_check` 只记命中路径，版本在 `check --full` 与安装后记（决策 19）；开发态 helper 来自可执行文件旁（`missing_on` 的 `beside`）记 `provided_by: dev`，算 standard 就绪但在视图里标出（决策 20）。
 
 ### 二期：扩展包体系、安装器与环境约定
 
-- [ ] **X1 扩展包格式**：`app_type = ext_tools` 的 AppDoc 约束、`ext-manifest.json` schema（`provides / requires / conflicts / platforms`）、`pikg init --kind ext-tools` 骨架、`pikg doctor` 规则（§3.9.1 / §3.9.2 第 3 条）；`ext-core` 按此格式重打，`EXTENDED_TOOLS` 与其 `provides` 的一致性测试接上。落点：`buckyos-websdk/cli/modules/pikg.ts`、App 安装协议 §2.2、`publish/exttool/ext-core/`。
-- [ ] **X2 目录与期望状态**：Repo 投影 `system/ext_tools/catalog`；control panel `ext_tools.set_desired`（拓扑排序、依赖自动勾选、卸载拒绝、RBAC）；`nodes/<n>/ext_tools/<pkg>` 状态 schema。落点：`control_panel/`、system config 键与 RBAC、`buckyos-api`。
+- [x] **X1 扩展包格式**：并入一期 P1-6。
+- [ ] **X2 期望状态与投影**：control panel `ext_tools.set_desired`（Resolve 查 Repo、拓扑排序、依赖自动勾选、卸载拒绝、RBAC，记 `pikg_digest`）；scheduler 投影 `NodeConfig.ext_tools`（决策 15）；`nodes/<n>/ext_tools/<pkg>` 状态 schema。落点：`control_panel/`、`scheduler/`、`buckyos-api` 的 `NodeConfig` 与 system config 键 / RBAC。
 - [ ] **X3 node_daemon reconciler**：对照期望状态下载（经 Repo / NDM）、校验、staging、激活、卸载、升级、回滚，写节点状态与 `tools/installs/`；容器节点写 `buckyos-tools` 卷、`ext-core` seed 镜像只做首启播种；三平台原生同一代码。取代 v2 的 T3。落点：`node_daemon/src/paios_images.rs` 拆出 `ext_tools.rs`。
 - [ ] **X4 管理页与 CLI**：Desktop / control panel 的“扩展包”页（包 × 节点状态、勾选、升级、依赖提示、受益 skill 静态反查）；`buckyos ext-tools list|enable|disable|status`。Agent runtime 卡片只显示本机状态与链接。
 - [ ] **X5 skill 命令依赖**：`SkillMeta.commands` 解析；`skills.install_plan` 的 `recommended_packages`；skills_state 的 `commands / recommended_packages`；扩展包状态变化 → `tools_check` → skills 重算（与 runtime R6 / skills S21 同一条路）；官方手册补 `commands`。落点：`protocol/behavior.rs`、`skills.rs`、skills TODO S18 / S20 / S21。
 
-- [ ] **T0 可行性**：逐工具核三个平台的发行源、许可证、动态依赖、签名；决定 IM7 还是 `magick / convert` 二选一、推荐项是否升核心；产出锁文件草案与支持矩阵（首版：Linux x86_64 / aarch64 容器 + bare host，macOS arm64 Lite，Windows x86_64 Lite；macOS x86_64 随 CI 顺带，Windows arm64 不支持）。缺资产的平台明确阻塞，不输出 stub。
+- [ ] **T0 可行性**：逐工具核三个平台的发行源、许可证、动态依赖、签名；决定 IM7 还是 `magick / convert` 二选一、推荐项是否升核心；产出锁文件草案与支持矩阵（首版：Linux x86_64 / aarch64 容器 + bare host，macOS arm64 与 x86_64 Lite（决策 7，x86_64 是开发 VM），Windows x86_64 Lite；Windows arm64 不支持）。缺资产的平台明确阻塞，不输出 stub。
 - [ ] **E0 目录与映射定稿**：容器 / 原生的 `tools/`、instance、Agent 缓存目录逐项列出；path_usage.md 更新；验收容器重建后自装工具仍在、rootfs 非持久写入不被误报成功。
 - [ ] **T2 构建发行**：`publish/exttool/` 与 `build_exttool` 加 macOS / Windows / Linux 原生打包与 CI；保留 Docker prepare-context 接口；包带库、数据、launcher、许可证。验收：干净环境离线解包跑最小 smoke，不借构建机 PATH。
 - [ ] **T3 安装器细节（并入 X3）**：staging、校验、锁、journal、激活、失败恢复、版本保留；Windows 文件占用。验收：不可写根不走 sudo 而是报状态；同节点并发 reconcile 不损坏公共目录；旧版本可运行。
 - [ ] **T4 环境约定落地**：§3.6 的 PATH 顺序与环境变量在 `node_executor ops.rs`、`entrypoint.sh`、`runtime_exec`、session overlay 四处一致；同名冲突检查；用户预装不同版本 python / node / deno 时 Agent 用受管版本、用户终端不变。验收：安装前后比较用户 PATH、shell profile、全局包配置无变化。
-- [ ] **T5 Agent 侧 API / CLI**：§3.7 缩为只读：`ext-tools status | check`，install 入口改为指向管理页（X4）；`xagent runtime ext-tools install` 只保留开发态直连；安装不改声明。验收：节点状态变化后 Agent 侧 `status` 与 `tools_check` 一致。
+- [ ] **T5 Agent 侧 API / CLI**：§3.7 的 `ext-tools status | check` 与 owner API；没有 install，安装不改声明。验收：节点状态变化后 Agent 侧 `status` 与 `tools_check` 一致。
 - [ ] **T6 UI**：卡片状态、安装、完整检查；容器 image-managed；同机共享安装事实。
 - [ ] **T7 文档**：Session Runtime §3、Jarvis 手册中 ImageMagick 旧命令与额外依赖、path_usage.md、本文 §2。
 
-依赖：T0 与 E0 并行 → X1 → T2（按 X1 格式打包）→ X2 → X3（含 T3）→ X4 / T5 / T6；X5 依赖 X2 的目录与一期的 `tools_check.resolved`，可与 X3 并行；T4 依赖 E0，可与 T2 并行；T7 最后。T0 若证实某平台成本过高，带具体缺项回 Review 改清单，不自行降标准。
+依赖：一期 P1-6 定格式 → T0 与 E0 并行 → T2（按 P1-6 格式打三平台包）与 X2 并行 → X3（含 T3）→ X4 / T5 / T6；X5 依赖 X2 的 Resolve 与一期的 `tools_check.resolved`，可与 X3 并行；T4 依赖 E0，可与 T2 并行；T7 最后。T0 若证实某平台成本过高，带具体缺项回 Review 改清单，不自行降标准。
 
 ### 三期：standard 分发
 
@@ -286,7 +295,7 @@ xagent runtime baseline [--level standard|extended] [--json] [--check]
 
 按期分开，做完一期就能宣称一期：
 
-**一期**：`cargo test -p libopendan baseline`、`--test xagent_cli`、`runtimes.rs` 用例通过；声明 `extended` 而缺一个核心工具时检查失败；stub 不计成功；用户 PATH 里的同名核心命令记 `system` 且 standard 不就绪；检查不改声明与已冻结 Session；plan 全表能看到 ext 状态。
+**一期**：`cargo test -p libopendan baseline`、`--test xagent_cli`、`runtimes.rs` 用例通过；声明 `extended` 而缺一个核心工具时检查失败；stub 不计成功；用户 PATH 里的同名核心命令记 `system` 且 standard 不就绪；检查不改声明与已冻结 Session；plan 全表能看到 ext 状态；pikg 结构按 P1-6 的验收项。
 
 **二期**：三个平台在无预装扩展工具的干净环境离线安装并跑媒体、图像、PDF、OCR、Pandoc、Python、JS smoke；Windows 覆盖空格与中文路径、不依赖 Developer Mode；过期 / 只读 / form B / SSH / node-daemon 服务 host 拒绝并给原因；摘要错误、错误架构、磁盘不足、中途退出、文件占用、并发安装都保持旧版可运行；重启后查询一致；真实 work shell、`agent-session run --runtime` 与 probe 看到同一版本，私有 PATH 不带到目标机；用户 PATH、profile、全局配置安装前后无差；预装不同版本工具的机器上 Agent 用受管版本、用户终端不变。
 
@@ -300,27 +309,25 @@ xagent runtime baseline [--level standard|extended] [--json] [--check]
 | --- | --- | --- | --- |
 | 1 | 三层模型（核心随系统 / 扩展 owner 独立升级且全 Agent 生效 / Agent 自装在持久卷）作为骨架 | 是 | ✅ owner 2026-11-05 |
 | 2 | 隔离 = 核心路径钉死 + Agent 不污染用户环境，三种形态一套；不宣称 OS 级隔离 | 是 | ✅ owner 2026-11-05（讨论结论） |
-| 3 | bare Linux host 作私有允许；安装统一由 node_daemon 做，没有特权 worker，也没有“node-daemon 服务 host 不支持”的例外（见 12） | 是 | 待确认 |
-> 按建议
-| 4 | 范围拆三期 + 两份分出去的 TODO；一期只改 Rust 先开工 | 是 | 待确认 |
-> 一次把机制建立好，后面可以专注于研究 baseline/ext-tools里带哪些cmd，cmd是什么版本，并通过pikg更新
-
-| 5 | `EXTENDED_TOOLS` 首版 = aios 现有集合（含 `git / curl / jq / tree / unzip / xz`，它们本来就在镜像里）；ImageMagick 首版 `magick` 优先 `convert` 回退，IM7 由 T0 定 | 是 | 待确认 |
-> 先按现状吧，这个后面肯定要用正式的文档确认一下的
-
-| 6 | 单一来源 = Rust 常量 + json 一致性测试，不做生成器 | 是 | 待确认 |
-> 按建议
-
-| 7 | 首版平台：Linux x86_64 / aarch64（容器 + bare host）、macOS arm64 Lite、Windows x86_64 Lite | 是 | 待确认 |
-> 按建议,macos要支持x86 (我们的虚拟机开发环境只有x86)
-
-| 8 | 安装编排复用 Agent task，机器级 `tools/installs/` 记安装事实 | 是 | 待确认 |
-
+| 3 | bare Linux host 作私有允许；安装统一由 node_daemon 做，没有特权 worker，也没有“node-daemon 服务 host 不支持”的例外（见 12） | 是 | ✅ owner 2026-11-05：按建议 |
+| 4 | 范围拆三期 + 两份分出去的 TODO；**一期 = Rust + pikg 结构支持**，先开工 | 是 | ✅ owner 2026-11-05：一次把机制建立好，后面专注研究 baseline / ext-tools 带哪些 cmd、什么版本，并通过 pikg 更新；读法：这次开工至少完成到扩展包的 pikg 结构（P1-6） |
+| 5 | `EXTENDED_TOOLS` 首版 = aios 现有集合（含 `git / curl / jq / tree / unzip / xz`，它们本来就在镜像里）；ImageMagick 首版 `magick` 优先 `convert` 回退，IM7 由 T0 定 | 是 | ✅ owner 2026-11-05：先按现状；正式清单后面要用正式文档确认（T0 的产出之一） |
+| 6 | 单一来源 = Rust 常量 + json 一致性测试，不做生成器 | 是 | ✅ owner 2026-11-05：按建议 |
+| 7 | 首版平台：Linux x86_64 / aarch64（容器 + bare host）、macOS arm64 **与 x86_64** Lite、Windows x86_64 Lite | 是 | ✅ owner 2026-11-05：按建议，macOS 要支持 x86（开发 VM 只有 x86） |
+| 8 | ~~安装编排复用 Agent task，机器级 `tools/installs/` 记安装事实~~ | — | ❌ 作废（随 12）：安装状态记在 `nodes/<n>/ext_tools` 与本机 `tools/installs/`，不走 Agent task；§3.7 只读 |
 | 9 | baseline 声明与探测分离；安装完成由 owner 单独决定是否声明 `extended` | 是 | ✅ 沿用 runtime TODO |
 | 10 | 三期 = runtime 裁决 22 的安装包改造的 Agent 工具部分；其它服务的安装包重构另起 | 是 | 待确认 |
-| 11 | 扩展包 = pikg 子类 `app_type = ext_tools`，payload 为按平台的 tar.gz + `ext-manifest.json`（`provides / requires / conflicts`）；`ext-core` 是第一个包 | 是 | 待确认 |
-| 12 | 安装器 = node_daemon reconciler，对照 Zone 级期望状态 `system/ext_tools/desired`；容器节点写 `buckyos-tools` 卷，seed 镜像只做首启播种；Agent Service 不触发安装 | 是 | 待确认（v2 第 3 条据此作废） |
+| 11 | 扩展包 = pikg 子类 `app_type = ext_tools`，payload 为按平台的 tar.gz + `ext-manifest.json`（`provides / requires / conflicts`）；`ext-core` 是第一个包 | 是 | ✅ owner 2026-11-05 |
+| 12 | 安装器 = node_daemon reconciler，对照 Zone 级期望状态 `system/ext_tools/desired`；容器节点写 `buckyos-tools` 卷，seed 镜像只做首启播种；Agent Service 不触发安装 | 是 | ✅ owner 2026-11-05（v2 第 3 条据此作废） |
 | 13 | skill 加机器可读 `commands` front matter；系统凭目录 `provides` 反推推荐包；推荐不 block，自备命令按 `provided_by: system` 计可用 | 是 | ✅ owner 2026-11-05（§0.3 第 3、4 点） |
-| 14 | 扩展包首版对所有 Agent 生效，不做 Agent 级绑定；`tools/bin` 按授权渲染留作将来 | 是 | 待确认 |
+| 14 | 扩展包首版对所有 Agent 生效，不做 Agent 级绑定；`tools/bin` 按授权渲染留作将来 | 是 | ✅ owner 2026-11-05：后续才会有 Agent 可以用哪些 cmd / skills 的配置，目前全生效 |
+| 15 | 期望状态经 scheduler 投影成 `NodeConfig.ext_tools`，node_daemon 不直读 Zone 级键（§3.3） | 是 | ✅ owner 2026-11-05：按建议 |
+| 16 | 不持久化 `system/ext_tools/catalog`；Resolve 直接查 Repo，期望状态记 `pikg_digest`（§3.3 / §3.9.2） | 是 | ✅ owner 2026-11-05：按建议 |
+| 17 | `InstallGrant::System` 重定义为“skill 自装可写 Agent 目录之外”，不再指 ExtTools（§3.6） | 是 | ✅ owner 2026-11-05：按建议 |
+| 18 | 新 `AppType::ExtTools` + 子包键 `ext_tools`；闲置的 `agent_tools` 子包键一期删除（§3.9.1） | 是 | ✅ owner 2026-11-05：按建议 |
+| 19 | 后台检查只记命中路径，版本在 `check --full` 与安装后记（P1-7） | 是 | ✅ owner 2026-11-05：按建议 |
+| 20 | 开发态 helper 来自可执行文件旁记 `provided_by: dev`，算 standard 就绪（P1-7） | 是 | ✅ owner 2026-11-05：按建议 |
 
-Review 通过后：一期立即执行；二期在 T0 / E0 后；三期与安装包 TODO 对齐后再排。runtime 生命周期 TODO 的其它 P2 / P3 / P4 任务不随之启动。
+15–20 已按建议值闭合（owner 2026-11-05）；只剩 10 待确认，不影响一期与二期排期。
+
+Review 已通过（2026-11-05，除 10 外全部闭合）：一期立即执行；二期在 T0 / E0 后；三期与安装包 TODO 对齐后再排。runtime 生命周期 TODO 的其它 P2 / P3 / P4 任务不随之启动。

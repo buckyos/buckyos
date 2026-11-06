@@ -43,7 +43,7 @@ pub(crate) fn principal_of(session: &Session) -> Option<ndm::Principal> {
     }
 }
 
-async fn require(state: &SharedState, session: &Session, resource: &str) -> BucketResult<()> {
+pub(crate) async fn require(state: &SharedState, session: &Session, resource: &str) -> BucketResult<()> {
     let Some(principal) = principal_of(session) else { return Err(BucketError::PermissionDenied(format!("write on {resource}"))) };
     if ndm::allowed(state, &principal, resource, "write").await {
         Ok(())

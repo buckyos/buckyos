@@ -554,9 +554,6 @@ pub struct WorkflowRunTransition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowRunGraph {
     pub run_id: String,
-    /// The Run's root task in TaskMgr, once it has one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
     pub workflow_id: String,
     #[serde(default)]
     pub workflow_name: String,
@@ -616,10 +613,11 @@ impl WorkflowRunGraph {
 pub struct WorkflowRunDelivery {
     #[serde(default)]
     pub artifacts: Vec<String>,
+    /// How many objects the requester may now read through NDM.
     #[serde(default)]
-    pub principal: String,
-    #[serde(default)]
-    pub expires_at: i64,
+    pub held: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1030,7 +1028,7 @@ mod tests {
             "output": {},
             "node_errors": {"render_pdf_pages": {"code": "tools_missing", "message": "pdftoppm missing", "details": {"tools_missing": ["pdftoppm"]}, "retryable": false}},
             "run_error": null,
-            "delivery": {"artifacts": [], "principal": "u/app", "expires_at": 10}
+            "delivery": {"artifacts": []}
         });
         let output: WorkflowRunOutput = parse_response(value).unwrap();
         assert_eq!(output.status, RunStatus::Failed);

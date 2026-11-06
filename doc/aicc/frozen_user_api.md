@@ -183,7 +183,11 @@ typed response 共同字段为：`task_id`、`status`、业务结果、`usage?`�
 `ModelRequirement` 用于硬需求，例如 `tool_call`、`json_schema`、`web_search`、
 `vision`、`image_generation`、`min_context_tokens`、视频生成需求 `video` 和 canonical field 要求。`ModelDisable` 用于显式禁用能力。
 
-逻辑路由中只有以 `llm.chat`、`llm.plan`、`llm.vision` 为入口的 LLM 请求可以启用云端联网搜索；这三个入口不把联网搜索作为硬性选模条件。本次路由的模型、Adapter 和 Provider discovery 均支持 `web_search` 且未被目录或请求禁用时，AICC 默认向云端开放搜索，由模型决定是否调用。其他逻辑入口（含 `llm.code`、规格、家族和自定义路径）会强制禁用 `web_search`，并在 route trace 中记录；入口限制在 fallback / failover 后仍生效。OpenAI Responses（含 SN）追加 `web_search`，Gemini Interactions 追加 `google_search`，OpenRouter Responses 转换为 `openrouter:web_search`，Claude Messages 追加 `{ "type": "web_search_20250305", "name": "web_search" }`；这些服务端工具与调用方的函数工具共存。不支持搜索的模型仍可使用 Agent 提供的工具；`disable.web_search = true` 关闭云端搜索。仅使用 Responses 格式的其他 Adapter 不会因此继承搜索能力。
+逻辑路由中只有以 `llm.chat`、`llm.plan`、`llm.vision` 为入口的 LLM 请求可以启用云端联网搜索；这三个入口不把联网搜索作为硬性选模条件。本次路由的模型、Adapter 和 Provider discovery 均支持 `web_search` 且未被目录或请求禁用时，AICC 默认向云端开放搜索，由模型决定是否调用。其他逻辑入口（含 `llm.code`、规格、家族和自定义路径）会强制禁用 `web_search`，并在 route trace 中记录；入口限制在 fallback / failover 后仍生效。OpenAI Responses（含 SN）追加 `web_search`，Gemini Interactions 追加 `google_search`，OpenRouter Responses 转换为 `openrouter:web_search`，Claude Messages 追加 `{ "type": "web_search_20250305", "name": "web_search" }`；这些服务端工具与调用方的函数工具共存。不支持搜索的模型仍可使用 Agent 提供的工具；`disable.web_search = true` 关闭云端搜索。
+
+`response_format` 只有 `text` 和 `json_schema`，不提供 JSON mode（`json_object`）：它和 OpenAI Responses 的搜索互斥，Claude Messages 也不接受。`json_schema` 和搜索可以共存，OpenAI Responses 与 Gemini Interactions 已实测；Claude 未实测，它的搜索始终带 citations，而 citations 与 `output_config.format` 同用时返回 400。
+
+仅使用 Responses 格式的其他 Adapter 不会因此继承搜索能力。
 
 `chat.completions.create` 精确模型请求接受可选布尔字段 `web_search`，默认 `false`。显式设置 `true`（Playground 的“启用联网搜索”复选框）要求目标模型、Adapter 和 Provider 支持搜索，不支持时路由报错；启用只开放搜索能力，是否实际搜索由模型决定。该开关不改变上述逻辑入口限制。Claude 返回的 `server_tool_use` 和 `web_search_tool_result` 通过 `provider_state` 保存在响应及任务记录中，可用于核实是否实际发起搜索。MiniMax 等兼容 Messages 格式的 Adapter 不继承 Claude 搜索能力。
 

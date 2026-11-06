@@ -91,6 +91,7 @@ BuckyOS 的标准服务指系统内置、有稳定 RPC schema、整个 Zone 内�
 - 编排器：识别 `service::` 前缀，直接通过 buckyos-api RPC client 调用对应服务。
 - 输出：RPC response 作为该 Step 的输出回填。
 - Cache：若 Step 声明 `idempotent: true`，编排器可用 `executor + input hash` 做结果缓存。
+- `service::aicc.*`：输入是 buckyos-api 的 typed request。`vision.*`、`image.*` 等要 `exact_model`，只有 `helper.*` 接受 `logical_model`，需要逻辑模型时可以先走一步 `route.resolve`。provider 异步的方法返回 `running` 时，adapter 等 AICC 任务结束（最长 30 分钟），步骤输出是任务的最终结果，失败或超时都是步骤失败。等待在 tick 内进行，占着该 Run 的锁，这期间对这个 Run 的 `get_run_graph`、`cancel_run` 会等待，其他 Run 不受影响。
 
 标准服务原则上应具备幂等能力。若服务内部不是天然幂等，服务实现者应通过 `task_id`、request id 或业务唯一键保证重复请求得到一致结果。
 

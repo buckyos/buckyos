@@ -659,3 +659,295 @@ async fn persistent_cache_index_survives_a_service_restart() {
     assert_eq!(graph["output"]["a"]["echo"], "persist");
     assert_eq!(f.echo.calls(), 0);
 }
+
+#[tokio::test]
+async fn the_run_id_is_the_root_task_id_and_a_joining_ensure_creates_no_task() {
+    let f = fixture().await;
+    let definition = user_definition("wf-one-id", vec![step("a", "/tool/test.sleep@1", json!({"ms": 300}), true)]);
+    let submitted = ok(&f, "submit_definition", json!({"definition": definition}), ALICE).await;
+    let request = json!({"workflow_id": submitted["workflow_id"], "auto_start": true, "ensure": true, "wait_ms": 0});
+    let (a, b, c, d) = tokio::join!(
+        ok(&f, "create_run", request.clone(), ALICE),
+        ok(&f, "create_run", request.clone(), ALICE),
+        ok(&f, "create_run", request.clone(), ALICE),
+        ok(&f, "create_run", request.clone(), ALICE),
+    );
+    let created = [a, b, c, d];
+    let tasks = f.tracker.created_run_tasks().await;
+    assert_eq!(tasks.len(), 1, "one active run, one root task");
+    for run in &created {
+        assert_eq!(run["run_id"], tasks[0].as_str());
+    }
+    assert_eq!(created.iter().filter(|run| run["reused"] == false).count(), 1);
+    let graph = wait_status(&f, &tasks[0], ALICE, 5).await;
+    assert_eq!(graph["run_id"], tasks[0].as_str());
+    assert!(graph.get("task_id").is_none());
+}
+
+#[tokio::test]
+async fn delivery_grants_exactly_the_produced_objects_to_the_authorized_requester() {
+    let f = fixture().await;
+    let png = {
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_rgb8(400, 200)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        bytes
+    };
+    let (obj_id, _) = f.io.add_file("a.png", &png).await;
+    let created = ok(&f, "create_run", json!({"workflow_id": "media.image", "auto_start": true, "wait_ms": 0, "input": {"obj_id": obj_id}}), ALICE).await;
+    let run_id = created["run_id"].as_str().unwrap().to_string();
+    wait_status(&f, &run_id, ALICE, 10).await;
+
+    assert!(call(&f, "get_run_output", json!({"run_id": run_id}), BOB).await.is_err());
+    assert!(f.io.holdings_of("bob/agent-a").is_empty());
+
+    let output = ok(&f, "get_run_output", json!({"run_id": run_id}), ALICE).await;
+    let model = output["output"]["fit_image"]["model_media_obj_id"].as_str().unwrap().to_string();
+    assert_eq!(output["delivery"]["held"], 1);
+    assert_eq!(f.io.holdings_of("alice/agent-a"), vec![model]);
+    assert!(f.io.holdings_of("alice/agent-b").is_empty());
+}
+
+#[tokio::test]
+async fn a_manifest_hands_over_every_object_it_names() {
+    let f = fixture().await;
+    let mut manifest = buckyos_api::MediaManifest::new("pdf", "chunk:source");
+    for (page, text, image) in [(1, "cyfile:aa01", "cyfile:bb01"), (2, "cyfile:aa02", "cyfile:bb02")] {
+        manifest.entries.push(buckyos_api::MediaEntry {
+            kind: buckyos_api::MediaEntryKind::Page,
+            location: buckyos_api::MediaWhere {
+                source: buckyos_api::MediaSourceRef::Original,
+                page: Some(page),
+                time_ms: None,
+                index: None,
+            },
+            text_obj_id: Some(text.to_string()),
+            image_obj_id: Some(image.to_string()),
+            audio_obj_id: None,
+            status: buckyos_api::MediaEntryStatus::Ok,
+            error: None,
+        });
+    }
+    let manifest_id = f
+        .io
+        .objects()
+        .put_json(buckyos_api::MEDIA_MANIFEST_OBJ_TYPE, &serde_json::to_value(&manifest).unwrap())
+        .await
+        .unwrap();
+    let owner = Owner { user_id: "alice".into(), app_id: "agent-a".into() };
+    let held = f.handler.grant_output_holdings(&owner, &[manifest_id.clone()]).await.unwrap();
+    assert_eq!(held, 5);
+    let mut holdings = f.io.holdings_of("alice/agent-a");
+    holdings.sort();
+    let mut expected = vec![manifest_id, "cyfile:aa01".into(), "cyfile:aa02".into(), "cyfile:bb01".into(), "cyfile:bb02".into()];
+    expected.sort();
+    assert_eq!(holdings, expected);
+}
+
+#[tokio::test]
+async fn naming_an_object_in_a_run_output_grants_nothing() {
+    let f = fixture().await;
+    let secret = "cyfile:deadbeef";
+
+    // A user definition may emit any object id.
+    let definition = user_definition("wf-name-it", vec![step("a", "/tool/test.echo@1", json!({"value": secret}), true)]);
+    let submitted = ok(&f, "submit_definition", json!({"definition": definition}), BOB).await;
+    let created = ok(&f, "create_run", json!({"workflow_id": submitted["workflow_id"], "auto_start": true, "wait_ms": 0}), BOB).await;
+    let run_id = created["run_id"].as_str().unwrap().to_string();
+    let graph = wait_status(&f, &run_id, BOB, 5).await;
+    assert_eq!(graph["status"], "completed");
+    let output = ok(&f, "get_run_output", json!({"run_id": run_id}), BOB).await;
+    assert_eq!(output["delivery"]["artifacts"], json!([secret]));
+    assert_eq!(output["delivery"]["held"], 0);
+    assert!(f.io.holdings_of("bob/agent-a").is_empty());
+
+    // Nobody writes the steps of a system pipeline from outside.
+    let (obj_id, _) = f.io.add_file("a.png", b"not an image").await;
+    let created = ok(&f, "create_run", json!({"workflow_id": "media.image", "auto_start": false, "input": {"obj_id": obj_id}}), BOB).await;
+    let refused = call(&f, "submit_step_output", json!({"run_id": created["run_id"], "node_id": "fit_image", "output": {"model_media_obj_id": secret}}), BOB).await.unwrap();
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["error"], "system_definition_read_only");
+    let graph = ok(&f, "get_run_graph", json!({"run_id": created["run_id"]}), BOB).await;
+    assert!(graph["node_outputs"].get("fit_image").is_none());
+}
+
+#[tokio::test]
+async fn system_pipelines_cannot_be_scheduled() {
+    let f = fixture().await;
+    let target = crate::scheduled_task_manager::ScheduleSubtaskTemplate {
+        task_type: "workflow.run".into(),
+        name_template: "convert".into(),
+        data_template: json!({"request": {"workflow_id": "media.image", "input": {"obj_id": "cyfile:aa", "content_id": "mix256:someone-elses"}}}),
+    };
+    let refused = f.handler.validate_target_exists(&target).await.unwrap_err();
+    assert!(refused.to_string().contains("cannot be scheduled"), "{refused}");
+
+    // One stored before this rule does not get past the fire either: a fire has no
+    // caller to authorize the input against.
+    let stored = WorkflowSchedule {
+        schedule_id: "sch-old".into(),
+        owner: Owner { user_id: "bob".into(), app_id: "agent-a".into() },
+        name: "convert".into(),
+        description: None,
+        status: ScheduleStatus::Running,
+        schedule: schedule_spec_from_value(&json!({"kind": "cron", "expr": "0 0 * * *"})).unwrap(),
+        target,
+        state: Default::default(),
+        policy: schedule_policy_from_value(None).unwrap(),
+        task_mirror: ScheduleTaskMirror { root_task_id: Some("t-root".into()), root_id: Some("t-root".into()) },
+        created_at: 0,
+        updated_at: 0,
+    };
+    f.handler.schedules.insert(stored).await;
+    let failed = f.handler.fire_schedule("sch-old", 1, true).await.unwrap_err();
+    assert_eq!(failed["ok"], false, "{failed}");
+    assert!(failed.to_string().contains("system_workflow_not_schedulable"), "{failed}");
+    assert!(f.tracker.created_run_tasks().await.is_empty());
+}
+
+#[tokio::test]
+async fn list_runs_filters_by_the_status_runs_report() {
+    let f = fixture().await;
+    let mut human = step("ask", "", json!({}), true);
+    human["type"] = json!("human_required");
+    human.as_object_mut().unwrap().remove("executor");
+    human.as_object_mut().unwrap().remove("input");
+    human.as_object_mut().unwrap().remove("guards");
+    human["prompt"] = json!("?");
+    let submitted = ok(&f, "submit_definition", json!({"definition": user_definition("wf-ask", vec![human])}), ALICE).await;
+    let created = ok(&f, "create_run", json!({"workflow_id": submitted["workflow_id"], "auto_start": true, "wait_ms": 1000}), ALICE).await;
+    assert_eq!(created["status"], "waiting_human");
+    let listed = ok(&f, "list_runs", json!({"status": "waiting_human"}), ALICE).await;
+    assert_eq!(listed["runs"].as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed["runs"][0]["run_id"], created["run_id"]);
+    assert_eq!(ok(&f, "list_runs", json!({"status": "completed"}), ALICE).await["runs"], json!([]));
+}
+
+#[tokio::test]
+async fn a_step_that_cannot_be_scheduled_fails_the_run_instead_of_leaving_it_running() {
+    let f = fixture().await;
+    let definition = user_definition("wf-semantic", vec![step("a", "/skill/not-resolved", json!({}), true)]);
+    let submitted = ok(&f, "submit_definition", json!({"definition": definition}), ALICE).await;
+    let created = ok(&f, "create_run", json!({"workflow_id": submitted["workflow_id"], "auto_start": true, "wait_ms": 1000}), ALICE).await;
+    let graph = wait_status(&f, created["run_id"].as_str().unwrap(), ALICE, 5).await;
+    assert_eq!(graph["status"], "failed", "{graph}");
+    assert!(graph["node_errors"]["a"]["message"].as_str().unwrap().contains("/skill/not-resolved"), "{graph}");
+    assert_eq!(graph["metrics"]["run_error"]["code"], graph["node_errors"]["a"]["code"]);
+}
+
+fn review_definition() -> Value {
+    serde_json::from_str(include_str!("../../../../../test/workflow_test/fixtures/wf-dv-human-actions.json")).unwrap()
+}
+
+async fn waiting_for_review(f: &Fixture, workflow_id: &Value) -> String {
+    let created = ok(f, "create_run", json!({"workflow_id": workflow_id, "auto_start": true, "wait_ms": 2000}), ALICE).await;
+    let run_id = created["run_id"].as_str().unwrap().to_string();
+    let graph = ok(f, "get_run_graph", json!({"run_id": run_id}), ALICE).await;
+    assert_eq!(graph["status"], "waiting_human", "{graph}");
+    run_id
+}
+
+async fn act(f: &Fixture, run_id: &str, kind: &str, payload: Value, token: &str) -> Value {
+    call(f, "submit_human_action", json!({"run_id": run_id, "node_id": "review", "kind": kind, "payload": payload}), token).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_person_decides_a_step_through_the_rpc() {
+    let f = fixture().await;
+    let submitted = ok(&f, "submit_definition", json!({"definition": review_definition()}), ALICE).await;
+    let workflow_id = submitted["workflow_id"].clone();
+
+    let run_id = waiting_for_review(&f, &workflow_id).await;
+    assert_eq!(act(&f, &run_id, "approve", Value::Null, ALICE).await["ok"], true);
+    let graph = wait_status(&f, &run_id, ALICE, 5).await;
+    assert_eq!(graph["status"], "completed", "{graph}");
+    assert_eq!(graph["node_outputs"]["publish"]["echo"]["echo"], "draft");
+    assert_eq!(graph["node_states"]["discard"], "pending");
+    assert_eq!(graph["node_sources"]["review"], "submitted");
+    let history = ok(&f, "get_history", json!({"run_id": run_id}), ALICE).await;
+    let action = history["events"].as_array().unwrap().iter().find(|e| e["type"] == "human.action").unwrap();
+    assert_eq!(action["actor"], "alice/agent-a", "the actor is the verified caller");
+    assert_eq!(action["payload"]["action"], "approve");
+
+    let run_id = waiting_for_review(&f, &workflow_id).await;
+    act(&f, &run_id, "modify", json!({"modified_subject": {"echo": "edited"}}), ALICE).await;
+    let graph = wait_status(&f, &run_id, ALICE, 5).await;
+    assert_eq!(graph["node_outputs"]["publish"]["echo"]["echo"], "edited");
+
+    let run_id = waiting_for_review(&f, &workflow_id).await;
+    act(&f, &run_id, "reject", json!({"feedback": "no"}), ALICE).await;
+    let graph = wait_status(&f, &run_id, ALICE, 5).await;
+    assert_eq!(graph["status"], "completed");
+    assert_eq!(graph["node_outputs"]["review"]["feedback"], "no");
+    assert_eq!(graph["node_states"]["publish"], "pending");
+    assert_eq!(graph["node_states"]["discard"], "completed");
+
+    // A run that ended takes no more actions.
+    assert_eq!(act(&f, &run_id, "retry", Value::Null, ALICE).await["error"], "run_terminal");
+
+    let run_id = waiting_for_review(&f, &workflow_id).await;
+    assert!(call(&f, "submit_human_action", json!({"run_id": run_id, "node_id": "review", "kind": "approve"}), BOB).await.is_err());
+    assert_eq!(act(&f, &run_id, "sign", Value::Null, ALICE).await["error"], "invalid_human_action");
+    assert_eq!(act(&f, &run_id, "modify", Value::Null, ALICE).await["error"], "invalid_human_action");
+    assert_eq!(act(&f, &run_id, "skip", Value::Null, ALICE).await["error"], "node_not_skippable");
+    let graph = ok(&f, "get_run_graph", json!({"run_id": run_id}), ALICE).await;
+    assert_eq!(graph["status"], "waiting_human", "refused actions change nothing");
+
+    assert_eq!(act(&f, &run_id, "abort", Value::Null, ALICE).await["status"], "aborted");
+}
+
+#[tokio::test]
+async fn retry_runs_the_step_again_and_skip_moves_past_it() {
+    let f = fixture().await;
+    let mut failing = step("flaky", "/tool/test.fail@1", json!({}), false);
+    failing["guards"]["retry"]["fallback"] = json!("human");
+    failing["skippable"] = json!(true);
+    let after = step("after", "/tool/test.echo@1", json!({"value": "after"}), false);
+    let submitted = ok(&f, "submit_definition", json!({"definition": user_definition("wf-flaky", vec![failing, after])}), ALICE).await;
+    let created = ok(&f, "create_run", json!({"workflow_id": submitted["workflow_id"], "auto_start": true, "wait_ms": 2000}), ALICE).await;
+    let run_id = created["run_id"].as_str().unwrap();
+    assert_eq!(created["status"], "waiting_human", "{created}");
+
+    let action = |kind: &'static str| json!({"run_id": run_id, "node_id": "flaky", "kind": kind});
+    ok(&f, "submit_human_action", action("retry"), ALICE).await;
+    let mut graph = Value::Null;
+    for _ in 0..100 {
+        graph = ok(&f, "get_run_graph", json!({"run_id": run_id}), ALICE).await;
+        if graph["node_attempts"]["flaky"] == 2 && graph["status"] == "waiting_human" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(graph["node_attempts"]["flaky"], 2, "{graph}");
+    assert_eq!(graph["status"], "waiting_human", "{graph}");
+
+    ok(&f, "submit_human_action", action("skip"), ALICE).await;
+    let graph = wait_status(&f, run_id, ALICE, 5).await;
+    assert_eq!(graph["status"], "completed", "{graph}");
+    assert_eq!(graph["node_states"]["flaky"], "skipped");
+    assert_eq!(graph["node_outputs"]["after"]["echo"], "after");
+}
+
+#[tokio::test]
+async fn nobody_decides_a_step_of_a_system_pipeline() {
+    let f = fixture().await;
+    let (obj_id, _) = f.io.add_file("a.png", b"not an image").await;
+    let created = ok(&f, "create_run", json!({"workflow_id": "media.image", "auto_start": false, "input": {"obj_id": obj_id}}), ALICE).await;
+    let refused = call(&f, "submit_human_action", json!({"run_id": created["run_id"], "node_id": "fit_image", "kind": "skip"}), ALICE).await.unwrap();
+    assert_eq!(refused["error"], "system_definition_read_only");
+}
+
+#[tokio::test]
+async fn a_cancelled_run_gives_its_ensure_slot_back() {
+    let f = fixture().await;
+    let definition = user_definition("wf-cancel-ensure", vec![step("a", "/tool/test.sleep@1", json!({"ms": 5000}), false)]);
+    let submitted = ok(&f, "submit_definition", json!({"definition": definition}), ALICE).await;
+    let request = json!({"workflow_id": submitted["workflow_id"], "auto_start": true, "ensure": true, "wait_ms": 0});
+    let first = ok(&f, "create_run", request.clone(), ALICE).await;
+    ok(&f, "cancel_run", json!({"run_id": first["run_id"]}), ALICE).await;
+    let second = ok(&f, "create_run", request.clone(), ALICE).await;
+    assert_eq!(second["reused"], false, "{second}");
+    assert_ne!(second["run_id"], first["run_id"]);
+    ok(&f, "cancel_run", json!({"run_id": second["run_id"]}), ALICE).await;
+}

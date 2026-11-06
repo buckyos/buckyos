@@ -261,14 +261,12 @@ pub struct WorkflowRunTaskData {
     pub request: WorkflowRunTaskRequest,
     pub progress: Option<TaskDataProgress>,
     pub result: Option<WorkflowRunTaskResult>,
-    pub human_action: Option<TaskHumanAction>,
     pub last_error: Option<TaskDataErrorInfo>,
 }
 ```
 
-请求区：
+请求区（`run_id` 不在这里：Run 的根任务 id 就是 `run_id`）：
 
-- `run_id`
 - `workflow_id`
 - `workflow_name`
 - `plan_version`
@@ -307,7 +305,6 @@ pub struct WorkflowStepTaskData {
     pub request: WorkflowStepTaskRequest,
     pub progress: Option<TaskDataProgress>,
     pub result: Option<Value>,
-    pub human_action: Option<TaskHumanAction>,
     pub last_error: Option<TaskDataErrorInfo>,
 }
 ```

@@ -2,7 +2,9 @@
   "schema_version": "0.2.0",
   "id": "wf-dv-failure-human-retry",
   "name": "DV Failure Human Retry",
-  "trigger": { "type": "manual" },
+  "trigger": {
+    "type": "manual"
+  },
   "steps": [
     {
       "id": "caption_bad",
@@ -12,22 +14,29 @@
       "idempotent": true,
       "skippable": false,
       "input": {
-        "resources": [
-          {
-            "kind": "url",
-            "url": "https://test.buckyos.io/dv/not-found-on-purpose.jpg",
-            "mime_hint": "image/jpeg"
-          }
-        ],
-        "model": "vision.caption"
+        "exact_model": "route:vision.caption",
+        "image": {
+          "kind": "url",
+          "url": "https://test.buckyos.io/dv/not-found-on-purpose.jpg",
+          "mime_hint": "image/jpeg"
+        }
       },
       "output_schema": {
         "type": "object",
-        "properties": { "text": { "type": "string" } },
-        "required": ["text"]
+        "properties": {
+          "captions": {
+            "type": "array"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
       },
       "guards": {
-        "retry": { "max_attempts": 2, "fallback": "human" }
+        "retry": {
+          "max_attempts": 2,
+          "fallback": "human"
+        }
       }
     },
     {
@@ -37,24 +46,48 @@
       "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "input": {
-        "model": "llm.chat",
+        "logical_model": "llm.chat",
         "messages": [
-          { "role": "system", "content": "Echo the caption text." },
-          { "role": "user", "content": "${caption_bad.output.text}" }
-        ],
-        "input_json": {
-          "response_format": { "type": "json_object" }
-        }
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "Repeat what the user says."
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "${caption_bad.output.text}"
+              }
+            ]
+          }
+        ]
       },
       "output_schema": {
         "type": "object",
-        "properties": { "text": { "type": "string" } },
-        "required": ["text"]
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
       }
     }
   ],
   "edges": [
-    { "from": "caption_bad", "to": "echo_caption" },
-    { "from": "echo_caption" }
+    {
+      "from": "caption_bad",
+      "to": "echo_caption"
+    },
+    {
+      "from": "echo_caption"
+    }
   ]
 }

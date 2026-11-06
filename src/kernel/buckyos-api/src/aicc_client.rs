@@ -1371,8 +1371,6 @@ pub mod features {
 #[serde(rename_all = "snake_case")]
 pub enum LlmResponseFormatType {
     Text,
-    Json,
-    JsonObject,
     JsonSchema,
 }
 
@@ -1399,13 +1397,6 @@ impl LlmResponseFormat {
     pub fn text() -> Self {
         Self {
             format_type: LlmResponseFormatType::Text,
-            json_schema: None,
-        }
-    }
-
-    pub fn json_object() -> Self {
-        Self {
-            format_type: LlmResponseFormatType::JsonObject,
             json_schema: None,
         }
     }

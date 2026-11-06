@@ -105,7 +105,7 @@ compress_history(history, deps, opts):
 
 - system：固定提示词（有长期记忆系统、可以大胆；按名字精确保留任务与约束、已核验的结论及关键数字 / 版本 / 引文、决策与理由、写下的文件及其内容、已交的中间报告、`intent` 里的判断、未解决的问题与剩余工作；与 previous 合并且可独立成立；不编造；用任务语言；约 3000 词以内）+ 调用方的 `extra_focus_prompt`；
 - user：`<previous_summary>` + 只读的 `<keep_exact>` + `<history rounds="N">`，并声明历史只是材料、不是指令；
-- `max_completion_tokens = SUMMARY_MAX_TOKENS`（6144），`force_json`，不带工具；
+- `max_completion_tokens = SUMMARY_MAX_TOKENS`（6144），`force_json` 配固定 schema，不带工具；
 - 输出 `{"summary": "<markdown>", "verbatim": [...], "memory_candidates": [...]}`；不是 JSON 时整段文本作为 summary；summary 为空返回 `OutputParse` 错误。
 
 摘要调用是独立的 LLM 请求（libopendan 用 run 的原始 client，不计入 Round 统计）。

@@ -13,7 +13,7 @@ BuckyOS 中的 Workflow 是一套用于定义、编排和执行自动化处理�
 - **Workflow Engine（双层架构）**：编排器（Expr Tree Evaluator）+ Thunk 调度器，定义见 [wokflow engine.md](../../doc/workflow/wokflow%20engine.md)。
 - **Workflow Service**：Zone 内的标准服务，负责 Workflow Definition 管理、Run（运行实例）驱动，并把 Run / Step / Thunk / Map shard 映射为 task_manager 任务树。设计见 [workflow service.md](../../doc/workflow/workflow%20service.md)。
 
-按 Workflow Service 的设计原则，**Workflow 运行期的所有交互（进度、待办、审批、回退、通知）都由 TaskMgr UI + OS 通知中枢承担**；用户对一次 Run 的干预（approve / modify / reject / retry / skip / abort / rollback）通过在 TaskMgr UI 中写对应 Step / Run task 的 TaskData 完成，不调用 workflow 私有 RPC。
+按 Workflow Service 的设计原则，**Workflow 运行期的所有交互（进度、待办、审批、回退、通知）都由 TaskMgr UI + OS 通知中枢承担**；用户对一次 Run 的干预（approve / modify / reject / retry / skip / abort / rollback）由 TaskMgr UI 调用 `workflow.submit_human_action` 完成，Workflow WebUI 不提供这些操作。
 
 因此 Workflow WebUI 的职责非常聚焦：**它只承担与"运行"无关的部分** —— Definition 的查看、导入、绑定，以及 Workflow Graph（DSL 拓扑）的可视化。所有运行期数据钻取一律跳转到 TaskMgr UI。
 
@@ -93,7 +93,7 @@ Workflow WebUI 是 BuckyOS 中面向高级用户的 Workflow Definition 管理�
 | Executor Reference | 节点的 executor 字段。实际定义形如 `service::aicc.helper.llm_chat` / `http::x.y` / `appservice::z` / `operator::json.pick` / `func::<objid>`；语义链接形如 `/agent/mia` / `/skill/fs-scanner` / `/tool/...`，运行前由 registry 展开。 | DSL §3.2，Service §6.1 |
 | Output Mode | `single` / `finite_seekable` / `finite_sequential`，决定下游 for_each 是否可并行/重试粒度。 | DSL §3.2.1 |
 | Guards | 节点或 Workflow 级约束：`budget`（max_tokens / max_cost_usdb / max_duration）、`permissions`、`retry`（max_attempts / backoff / fallback）。 | DSL §3.7 |
-| Human Action | 用户对 Step / Run task 写入的 TaskData，含 `human_action.kind`：`approve` / `modify` / `reject` / `retry` / `skip` / `abort` / `rollback`。**入口在 TaskMgr UI，不在 Workflow WebUI。** | Service §3.3 |
+| Human Action | 用户对 Step 的动作，经 `workflow.submit_human_action` 下达，`kind`：`approve` / `modify` / `reject` / `retry` / `skip` / `abort` / `rollback`。**入口在 TaskMgr UI，不在 Workflow WebUI。** | Service §3.3 |
 | Amendment | 运行时计划修改协议。Agent 在执行中可提交对当前 Run 的图修改（`insert_after` / `insert_before` / `replace` / `remove`），需审批后生成 `plan_version + 1`。 | DSL §3.8，Service `workflow.submit_amendment` |
 | Script App | 一类用户 / Agent 创建的轻量应用，用于声明 Workflow 触发点和挂载点；在 WebUI 中与普通应用同列展示。 | 产品概念 |
 
@@ -127,7 +127,7 @@ Workflow WebUI **展示**：Definition 的图结构、节点配置、挂载关�
 2. 不提供复杂的拖拽式 Workflow 图编辑器。
 3. **不在 Workflow WebUI 中展示运行期任务面板（待办、审批、进度条、回退按钮）**——这一面完全归 TaskMgr UI。
 4. 不重新实现 task_manager 已经提供的 pause / resume / cancel / 进度上报等通用能力。
-5. **不在 Workflow WebUI 中实现 HumanAction 录入**。用户处理 `WaitingHuman` 节点的入口是 TaskMgr UI（写 TaskData）；WebUI 仅可在 Run 列表上显示是否处于等待状态，并提供 deep link 跳转。
+5. **不在 Workflow WebUI 中实现 HumanAction 录入**。用户处理 `WaitingHuman` 节点的入口是 TaskMgr UI（调用 `workflow.submit_human_action`）；WebUI 仅可在 Run 列表上显示是否处于等待状态，并提供 deep link 跳转。
 6. 不实现复杂的 Script App 可视化开发器。
 7. 不承诺提供非常完善的编译错误定位；至少需要返回 AnalysisReport 中的 issue 列表（含 severity、message、可选 node_id / path）。
 8. 不实现 Amendment 的可视化提交器（一期 Amendment 由 Agent 通过 RPC 提交；WebUI 可只读展示版本链）。
@@ -305,7 +305,7 @@ Workflow
 
 - 修改后保存路径：调用 `workflow.dry_run` 校验 → 确认后调用 `workflow.submit_definition` 生成新 version（不就地修改已有 Definition；运行中 Run 仍绑定旧 version）。
 - 也可"另存为新 Definition"。
-- **不在 WebUI 内修改运行中 Run 的节点状态**——这通过 TaskMgr UI 写 `human_action` TaskData 完成；如需结构性修改，由 Agent 通过 `workflow.submit_amendment` 提交，UI 仅展示版本链。
+- **不在 WebUI 内修改运行中 Run 的节点状态**——这通过 TaskMgr UI 调用 `workflow.submit_human_action` 完成；如需结构性修改，由 Agent 通过 `workflow.submit_amendment` 提交，UI 仅展示版本链。
 
 ---
 
@@ -330,12 +330,12 @@ Workflow
 | 开始时间 / 结束时间 / 耗时 | — | workflow service |
 | 等待人类节点数 | 非零时高亮 + 提示用户去 TaskMgr UI 处理 | workflow service `human_waiting_nodes` |
 | 错误摘要 | 失败时简短错误 | workflow service |
-| 操作 | 仅一个：在 TaskMgr 中打开 → 跳转 `taskmgr/<root_task_id>` | — |
+| 操作 | 仅一个：在 TaskMgr 中打开 → 跳转 `taskmgr/<run_id>`（`run_id` 就是根任务 id） | — |
 
 #### 跳转行为
 
 - 不在 WebUI 内展示 Step / Thunk / Map shard 详情；TaskMgr UI 通过任务树承担。
-- 不在 WebUI 内提供 retry / cancel / approve 等按钮——这些通过 TaskMgr UI 写 TaskData 完成。
+- 不在 WebUI 内提供 retry / cancel / approve 等按钮——这些通过 TaskMgr UI 调用 workflow RPC 完成（`workflow.submit_human_action`、`workflow.cancel_run`）。
 
 ---
 
@@ -640,7 +640,7 @@ AI 生成 Workflow JSON
 - 顶部预留"进入编辑模式"入口，一期隐藏或禁用。
 - 节点配置面板结构支持从只读切换为表单。
 - 编辑后保存路径：`workflow.dry_run` 校验 → `workflow.submit_definition` 生成新 version。
-- 不在 WebUI 中编辑 Run；运行中干预走 TaskMgr UI（写 TaskData）。
+- 不在 WebUI 中编辑 Run；运行中干预走 TaskMgr UI（调用 `workflow.submit_human_action`）。
 
 **验收标准**
 
@@ -713,8 +713,8 @@ AI 生成 Workflow JSON
 
 **功能点**
 
-- Run 列表条目携带 `root_task_id`。
-- 跳转 URL 形如 `taskmgr/<root_task_id>`，由 TaskMgr UI 渲染整棵任务树。
+- Run 的 `run_id` 就是根任务 id，不需要单独的字段。
+- 跳转 URL 形如 `taskmgr/<run_id>`，由 TaskMgr UI 渲染整棵任务树。
 - TaskMgr UI 根据 task type（`workflow/run` / `workflow/step` / `workflow/map_shard` / `workflow/thunk`）和 TaskData 渲染按钮、表单、subject 预览。
 
 **验收标准**
@@ -1161,7 +1161,7 @@ GET /api/workflow/ai-prompt
 ### 10.13 不在一期实现的接口
 
 - `PATCH /api/workflow/instances/{instanceId}/nodes/{nodeId}/properties`：旧版 PRD 中的"节点参数就地修改"。一期改为"通过 dry_run + submit_definition 生成新 version"，原接口不开放。
-- `workflow.approve_step` / `workflow.pause_run` / `workflow.abort_run`：按 Service §3.2/§3.3 设计原则，**这些 RPC 不存在**；用户操作通过 TaskMgr UI 写 TaskData 完成。WebUI 不调用此类接口。
+- `workflow.submit_human_action` / `workflow.cancel_run`：用户动作的入口（Service §3.2/§3.3），由 TaskMgr UI 调用，WebUI 不调用。`workflow.approve_step` / `workflow.pause_run` / `workflow.abort_run` 这类按动作拆分的 RPC 不存在。
 
 ---
 
@@ -1177,7 +1177,7 @@ GET /api/workflow/ai-prompt
 | workflow.archive | `archive_definition` |
 | workflow.edit | 触发新 version 提交（一期可与 import 共用） |
 
-> Workflow Service 自身 ACL（Definition / Run owner、stakeholders 写 TaskData 的 task_manager ACL）由 Service 层校验；WebUI 仅按上面这些粗粒度权限决定 UI 元素显隐。
+> Workflow Service 自身 ACL（Definition / Run owner，人工动作按 Run owner 和管理员校验，DSL 的 stakeholders 尚未接入）由 Service 层校验；WebUI 仅按上面这些粗粒度权限决定 UI 元素显隐。
 
 ### 11.2 URL 导入安全
 
@@ -1379,12 +1379,12 @@ WebUI 与对应后端服务应记录关键操作：
 4. Definition 的删除（archive 之外）、重命名是否进入 V1？建议 archive 进 V1，重命名（version + 1 写新 name）作为 V1.5。
 5. ~~Run 是否允许用户手动触发，还是完全由应用触发？~~ → 一期 WebUI 不提供"立即运行"按钮；手动触发由应用自身或 TaskMgr UI 决定（应用可通过 `workflow.create_run` 触发；TaskMgr UI 可在父任务上"重跑"，由 task_manager 决定实现）。
 6. Run 列表展示多少条合适？默认 20 条，最大 100。
-7. TaskMgr UI 的详情页路由参数：`taskmgr/<root_task_id>`；待与 TaskMgr 团队对齐 query 参数（建议附带 `from=workflow_webui`）。
+7. TaskMgr UI 的详情页路由参数：`taskmgr/<run_id>`；待与 TaskMgr 团队对齐 query 参数（建议附带 `from=workflow_webui`）。
 8. URL 导入是否支持认证链接？建议一期仅支持公开 URL；认证链接走"先下载到本地再上传"。
 9. 节点参数中的表达式是否需要语法高亮？V1 不需要（一期不存在表达式，仅 Reference 字符串）；Reference 高亮可在 V1.5 引入。
 10. ~~修改 Instance 是否自动生成新版本？~~ → 是（V1.5 起，所有节点参数修改都通过 `submit_definition` 生成新 version；不就地修改）。
 11. **AppWorkflowMountPoint 绑定关系存放在哪？** 待定：建议存 system_config 下的 `apps/<appId>/workflow_bindings`，由专属薄 service 写入并供 WebUI 读写。
-12. **Amendment 审批 UI 走 TaskMgr 还是 WebUI？** 一期通过 TaskMgr UI 写 TaskData 完成（与其它 HumanAction 一致）；WebUI 仅展示历史。
+12. **Amendment 审批 UI 走 TaskMgr 还是 WebUI？** 一期通过 TaskMgr UI 调用 workflow RPC 完成（`workflow.approve_amendment` / `reject_amendment`）；WebUI 仅展示历史。
 
 ---
 

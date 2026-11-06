@@ -504,9 +504,6 @@ fn encode_responses_llm(
     if let Some(format) = &request.response_format {
         let format = match format.format_type {
             LlmResponseFormatType::Text => json!({"type": "text"}),
-            LlmResponseFormatType::Json | LlmResponseFormatType::JsonObject => {
-                json!({"type": "json_object"})
-            }
             LlmResponseFormatType::JsonSchema => {
                 let schema = format.json_schema.as_ref().ok_or_else(|| {
                     ProtocolError::invalid_request(

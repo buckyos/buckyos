@@ -545,9 +545,6 @@ pub struct StepTrace {
 pub struct PipelineTrace {
     pub workflow_id: String,
     pub run_id: String,
-    /// The run's root task in TaskMgr.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
     pub revision: String,
     pub status: String,
     #[serde(default)]
@@ -643,7 +640,6 @@ async fn trace_of(
 
 fn fill_trace(trace: &mut PipelineTrace, graph: &WorkflowRunGraph) {
     trace.status = status_label(graph.status);
-    trace.task_id = graph.task_id.clone();
     if trace.revision.is_empty() {
         trace.revision = graph.revision.clone();
     }

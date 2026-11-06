@@ -421,15 +421,9 @@ pub struct RunHandle {
 #[derive(Default)]
 pub struct RunStore {
     runs: RwLock<HashMap<String, Arc<RunHandle>>>,
-    /// ensure key -> active run id (TODO D6). Lookup and registration happen
-    /// under the same write lock as the run insertion.
+    /// ensure key -> active run id (TODO D6).
     ensure: RwLock<HashMap<String, String>>,
-}
-
-/// Outcome of [`RunStore::insert_or_ensure`].
-pub enum EnsureOutcome {
-    Created(Arc<RunHandle>),
-    Reused(Arc<RunHandle>),
+    ensure_gate: Mutex<()>,
 }
 
 impl RunStore {
@@ -438,34 +432,31 @@ impl RunStore {
     }
 
     pub async fn insert(&self, record: RunRecord) -> Arc<RunHandle> {
-        match self.insert_or_ensure(record).await {
-            EnsureOutcome::Created(handle) | EnsureOutcome::Reused(handle) => handle,
-        }
-    }
-
-    /// Inserts the run; when `record.ensure_key` names an active run, that
-    /// run is returned instead and the new record is dropped.
-    pub async fn insert_or_ensure(&self, record: RunRecord) -> EnsureOutcome {
         let mut runs = self.runs.write().await;
-        let mut ensure = self.ensure.write().await;
-        if let Some(key) = record.ensure_key.as_ref() {
-            if let Some(existing) = ensure.get(key).and_then(|id| runs.get(id)).cloned() {
-                return EnsureOutcome::Reused(existing);
-            }
-        }
         let run_id = record.run.run_id.clone();
-        let workflow_id = record.workflow_id.clone();
-        let owner = record.owner.clone();
         if let Some(key) = record.ensure_key.clone() {
-            ensure.insert(key, run_id.clone());
+            self.ensure.write().await.insert(key, run_id.clone());
         }
         let handle = Arc::new(RunHandle {
-            workflow_id,
-            owner,
+            workflow_id: record.workflow_id.clone(),
+            owner: record.owner.clone(),
             state: Mutex::new(record),
         });
         runs.insert(run_id, handle.clone());
-        EnsureOutcome::Created(handle)
+        handle
+    }
+
+    /// Held from the ensure lookup until the new run is inserted. The run id is
+    /// its root task's id, so a run that would lose the race must not be created.
+    pub async fn ensure_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.ensure_gate.lock().await
+    }
+
+    /// The active run registered under `key`.
+    pub async fn active_ensure(&self, key: &str) -> Option<Arc<RunHandle>> {
+        let runs = self.runs.read().await;
+        let ensure = self.ensure.read().await;
+        ensure.get(key).and_then(|id| runs.get(id)).cloned()
     }
 
     /// Releases the ensure slot of a run that reached a terminal state.
@@ -595,13 +586,13 @@ impl WorkflowTaskTracker for ServiceTracker {
         }
     }
 
-    async fn run_task_id(&self, run_id: &str) -> Option<String> {
+    async fn create_run_task(&self, run: &WorkflowRun) -> WorkflowResult<String> {
         match &self.inner {
             #[cfg(test)]
-            TrackerKind::Noop(t) => t.run_task_id(run_id).await,
+            TrackerKind::Noop(t) => t.create_run_task(run).await,
             #[cfg(test)]
-            TrackerKind::Dyn(t) => t.run_task_id(run_id).await,
-            TrackerKind::TaskManager(t) => t.run_task_id(run_id).await,
+            TrackerKind::Dyn(t) => t.create_run_task(run).await,
+            TrackerKind::TaskManager(t) => t.create_run_task(run).await,
         }
     }
 
@@ -655,23 +646,6 @@ impl WorkflowTaskTracker for ServiceTracker {
             #[cfg(test)]
             TrackerKind::Dyn(t) => t.update_thunk(run_id, execution_id, phase).await,
             TrackerKind::TaskManager(t) => t.update_thunk(run_id, execution_id, phase).await,
-        }
-    }
-
-    async fn report_step_validation_error(
-        &self,
-        run: &WorkflowRun,
-        node_id: &str,
-        message: &str,
-    ) -> WorkflowResult<()> {
-        match &self.inner {
-            #[cfg(test)]
-            TrackerKind::Noop(t) => t.report_step_validation_error(run, node_id, message).await,
-            #[cfg(test)]
-            TrackerKind::Dyn(t) => t.report_step_validation_error(run, node_id, message).await,
-            TrackerKind::TaskManager(t) => {
-                t.report_step_validation_error(run, node_id, message).await
-            }
         }
     }
 }
