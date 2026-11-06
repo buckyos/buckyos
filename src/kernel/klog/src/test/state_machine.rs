@@ -130,6 +130,30 @@ async fn test_state_store_manager_request_id_dedup() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn delayed_snapshot_cleanup_preserves_newer_snapshots() -> anyhow::Result<()> {
+    let root = unique_test_path("delayed_snapshot_cleanup");
+    let manager = SnapshotManager::new(root.clone());
+    let snapshots = root.join("snapshots");
+    let obsolete = snapshots.join("snapshot_100_T1-N1_1");
+    let retained = snapshots.join("snapshot_100_T1-N1_2");
+    let newer = snapshots.join("snapshot_100_T2-N1_3");
+    for path in [&obsolete, &retained, &newer] {
+        tokio::fs::write(path, b"snapshot").await?;
+    }
+
+    manager.clean_old_snapshots("100_T1-N1_2").await?;
+    assert!(!obsolete.exists());
+    assert!(retained.exists());
+    assert!(newer.exists());
+
+    manager.clean_old_snapshots("100_T2-N1_3").await?;
+    assert!(!retained.exists());
+    assert!(newer.exists());
+    tokio::fs::remove_dir_all(root).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_state_machine_recovers_persisted_meta_after_restart() -> anyhow::Result<()> {
     let state_store_path = unique_test_path("state_machine_meta_restart.rocks");
     let snapshot_dir = unique_test_path("state_machine_meta_restart_snapshots");
