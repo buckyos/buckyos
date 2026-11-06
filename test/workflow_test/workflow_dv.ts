@@ -1411,14 +1411,59 @@ async function runObservabilityCase(args: {
   await writeJsonFile(joinPath(reportDir, "task_tree.json"), tree);
 }
 
+
+/** A second, non-admin principal (`WORKFLOW_DV_SECOND_USER=user:password`,
+ * default the make_config seed user `bob`) logged in through control-panel. */
+async function secondPrincipal(
+  zoneHost: string,
+): Promise<{ userId: string; rpc: RpcClient; token: string } | null> {
+  const spec = getEnv("WORKFLOW_DV_SECOND_USER") ?? "bob:buckyos2026";
+  const sep = spec.indexOf(":");
+  if (sep <= 0) return null;
+  const username = spec.slice(0, sep);
+  const password = spec.slice(sep + 1);
+  const sha256b64 = async (text: string) => {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return btoa(String.fromCharCode(...new Uint8Array(digest)));
+  };
+  const nonce = Date.now();
+  const base = await sha256b64(`${password}${username}.buckyos`);
+  const hashed = await sha256b64(`${base}${nonce}`);
+  const response = await fetch(`https://${zoneHost}/kapi/control-panel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      method: "auth.login",
+      params: {
+        username,
+        password: hashed,
+        target: { kind: "system", service_id: "control-panel" },
+        login_nonce: nonce,
+      },
+      sys: [nonce],
+    }),
+  });
+  if (!response.ok) return null;
+  const body = await response.json() as { result?: { session_token?: string }; error?: unknown };
+  const token = body.result?.session_token;
+  if (typeof token !== "string") {
+    console.warn(`[second-principal] login(${username}) failed: ${JSON.stringify(body.error ?? body)}`);
+    return null;
+  }
+  const { buckyos } = await import("buckyos");
+  const rpc = new buckyos.kRPCClient(`https://${zoneHost}/kapi/workflow`, token) as RpcClient;
+  return { userId: username, rpc, token };
+}
+
 async function runReadOnlyCase(args: {
   workflowRpc: RpcClient;
   owner: Owner;
   runTag: string;
   reportDir: string;
   image: UploadedInput;
+  zoneHost: string;
 }): Promise<void> {
-  const { workflowRpc, owner, runTag, reportDir, image } = args;
+  const { workflowRpc, owner, runTag, reportDir, image, zoneHost } = args;
   const definition = prepareDefinition(await loadFixture("wf-dv-echo-cache.json"), runTag);
   const reserved = cloneJson(definition);
   reserved.id = "media.x";
@@ -1463,10 +1508,37 @@ async function runReadOnlyCase(args: {
   const trigger = graph.node_outputs.trigger as JsonObject;
   assert.notEqual(trigger.content_id, "sha256:0000", "callers cannot set content_id");
   results.content_id_stripped = "ok";
-  await writeJsonFile(joinPath(reportDir, "results.json"), results);
-  throw new BlockedError(
-    `rejections verified (${JSON.stringify(results)}); foreign-principal get_run_graph needs a second login identity, not available in this harness`,
+
+  const second = await secondPrincipal(zoneHost);
+  if (!second) {
+    await writeJsonFile(joinPath(reportDir, "results.json"), results);
+    throw new BlockedError(
+      `rejections verified (${JSON.stringify(results)}); foreign-principal checks need WORKFLOW_DV_SECOND_USER=user:password`,
+    );
+  }
+  assert.notEqual(second.userId, owner.user_id, "second principal must be a different user");
+  const foreign = second.rpc;
+  for (const method of ["get_run_graph", "get_run_output", "get_history", "cancel_run"]) {
+    results[`foreign_${method}`] = await expectRejected(foreign, method, { run_id: created.run_id }, ["rpc_error"]);
+  }
+  const foreignList = await rpcOk<{ runs: JsonObject[] }>(foreign, "list_runs", {});
+  assert.ok(
+    foreignList.runs.every((run) => (run.owner as JsonObject)?.user_id !== owner.user_id),
+    `another principal must not list ${owner.user_id}'s runs: ${JSON.stringify(foreignList.runs)}`,
   );
+  results.foreign_list_runs = `ok(${foreignList.runs.length})`;
+  results.foreign_list_owner_filter = await expectRejected(foreign, "list_runs", {
+    owner: { user_id: owner.user_id, app_id: owner.app_id },
+  }, ["rpc_error"]);
+  // Knowing an obj_id is not a read right: the second principal cannot start a
+  // conversion on the first principal's object.
+  results.foreign_input_obj_id = await expectRejected(foreign, "create_run", {
+    workflow_id: "media.image",
+    input: { obj_id: image.obj_id },
+  }, ["rpc_error"]);
+  const stillOwn = await getGraph(workflowRpc, created.run_id);
+  assert.notEqual(stillOwn.status, "aborted", "foreign cancel_run must not touch the run");
+  await writeJsonFile(joinPath(reportDir, "results.json"), results);
 }
 
 async function runTaskDataCase(): Promise<void> {
@@ -1507,8 +1579,9 @@ async function runOneCase(args: {
   runTag: string;
   reportRoot: string;
   inputs: DvInputs;
+  zoneHost: string;
 }): Promise<CaseResult> {
-  const { caseId, workflowRpc, taskMgrRpc, owner, runTag, reportRoot, inputs } = args;
+  const { caseId, workflowRpc, taskMgrRpc, owner, runTag, reportRoot, inputs, zoneHost } = args;
   const reportDir = joinPath(reportRoot, safeFileSegment(caseId));
   await Deno.mkdir(reportDir, { recursive: true });
   try {
@@ -1588,6 +1661,7 @@ async function runOneCase(args: {
         runTag,
         reportDir,
         image: await inputs.image(),
+        zoneHost,
       });
     } else {
       throw new Error(`unknown workflow DV case ${caseId}`);
@@ -1649,6 +1723,7 @@ async function main(): Promise<void> {
       runTag,
       reportRoot,
       inputs,
+      zoneHost,
     });
     results.push(result);
     if (result.status === "passed") {

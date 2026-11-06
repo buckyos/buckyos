@@ -133,12 +133,16 @@ impl InputAuthorizer for NdmInputAuthorizer {
         );
         let id = ndn_lib::ObjId::new(obj_id)
             .map_err(|e| RPCErrors::ParseRequestError(format!("invalid obj_id: {e}")))?;
-        match ndm.is_object_stored(&id, None).await {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(RPCErrors::NoPermission(format!(
+        // `query_object_by_id` is a read-class NDM call: it succeeds only for a
+        // holder of the object or a principal with `obj://ndm/objects` read.
+        // Existence probes (`is_object_stored`) are open to any uploader and
+        // must not be used here.
+        match ndm.query_object_by_id(&id).await {
+            Ok(named_store::ObjectState::NotExist) => Err(RPCErrors::NoPermission(format!(
                 "{} cannot read `{obj_id}`",
                 caller.principal()
             ))),
+            Ok(_) => Ok(()),
             Err(err) => Err(RPCErrors::NoPermission(format!(
                 "{} cannot read `{obj_id}`: {err}",
                 caller.principal()

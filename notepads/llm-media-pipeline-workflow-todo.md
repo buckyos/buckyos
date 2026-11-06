@@ -336,10 +336,13 @@ Phase A 以 `src/kernel/workflow`、`src/kernel/buckyos-api`、同级 `buckyos-w
 以下为验收标准；每项下的“状态（第七轮）”说明 2026-11-05 第七轮的实现 / 验证情况，“已实现”指代码与单测存在，不等于在真实 Zone 验收通过。
 
 1. **顺序复用**：同一输入在相同执行规格下连续调用产生两个 Run；第二个 Run 的所有具备缓存资格且产物有效的转换步骤 source:cache，capabilities 重新执行。trace 区分两者，不要求全部 cache_hit:true。对已验证 pure 且命中缓存的步骤不产生重复媒体产物；非 pure 步骤允许重算 / 新产物，Run / 执行记录 / 事件元数据可新增。
+    - 状态（第八轮 DV）：DV WF-DV-009 在真实 Zone 通过（test.echo 与 media.image 第二次 Run 的纯步骤 source:cache，capabilities 重跑）
     - 状态（第七轮）：已实现（单测 echo / image 用例）；真实工具链与 DV 未验证
 2. **并发 ensure**：相同授权范围、definition_revision、有效输入和环境 revision 下并发请求只建一个活动 Run；终态不再占用 ensure 索引。不同 principal 即使同 owner 也各有 Run；已完成有效结果可跨 Run 复用，首次并发允许重复计算。
+    - 状态（第八轮 DV）：DV WF-DV-010 通过（4 并发 ensure 只建一个 Run，终态后新建）
     - 状态（第七轮）：已实现（server 单测）；DV WF-DV-010 未运行
 3. **缺工具诊断**：故障注入移除 poppler 时，对应转换 Failed，tools_missing 贯穿回执 / Run / Task，并指明基线未满足；正常交付要求工具齐全，不以本地备用转换掩盖部署错误。
+    - 状态（第八轮 DV）：DV WF-DV-011 走 tools_present 分支（宿主已装 poppler / ffmpeg / soffice），tools_missing 分支由单测 `media_pipeline_without_tools_fails_with_tools_missing_and_validates_input` 覆盖
     - 状态（第七轮）：已实现（`media_pipeline_without_tools_fails_with_tools_missing_and_validates_input`）；真实故障注入 WF-DV-011 未运行
 4. **真实 UI**：Phase B 后管理员可见四条只读系统定义、活动 / 终态 Run、各 Step cache 来源与结构化错误、TaskMgr 树；普通调用者看不到未授权 Run。
     - 状态（第七轮）：未实现（T5 进行中，未验证）
@@ -350,8 +353,10 @@ Phase A 以 `src/kernel/workflow`、`src/kernel/buckyos-api`、同级 `buckyos-w
 7. **history**：主干 history 只保存文本结果、摘要与对象引用，不内联媒体字节；manifest 的未覆盖范围和 partial 状态如实传递。
     - 状态（第七轮）：未实现（agent 侧）
 8. **独立性**：cargo test -p workflow -- --test-threads=1 不依赖 Zone；uv run test/run.py -p workflow_test 在无 OpenDAN 容器的 Zone 上通过 Phase A 用例。分别记录真实工具与需要在线服务的测试结果。
+    - 状态（第八轮 DV）：DV WF-DV-009~013 在无 OpenDAN 容器的 dev Zone 通过；`cargo test -p workflow -- --ignored` 3 个真实工具用例通过
     - 状态（第七轮）：`cargo test -p workflow -- --test-threads=1` 通过；`uv run test/run.py -p workflow_test` 未运行
 9. **重启后缓存**：已完成转换的产物仍有效时，重启 workflow 后新 Run 的纯转换步骤继续命中持久缓存；对象读回通过 NDN 内容身份验证。
+    - 状态（第八轮 DV）：真实 Zone 跨 `start.py` 重启后首轮 Run 直接命中（DV 因此把输入按 run tag 唯一化）；发现并修复 Named Store 未 pin 对象被 nfs-server GC 回收的问题
     - 状态（第七轮）：已实现（`persistent_cache_index_survives_a_service_restart` 单测）；跨真实重启未验证
 10. **异步与超时**：一次长转换中 start_run 在 1s 内返回已接受状态，get_run_graph 能及时读取进度；较短的 Step / Function / Run deadline 生效，超时后受管进程退出并回收、临时文件和槽释放，迟到回执不能复活 Run。
     - 状态（第七轮）：已实现（后台 tick、step timeout 单测）；1s 返回在真实 Zone 未计时
@@ -360,14 +365,17 @@ Phase A 以 `src/kernel/workflow`、`src/kernel/buckyos-api`、同级 `buckyos-w
 12. **依赖方向**：检查 cargo tree -p workflow 的依赖图，不得包含 agent_tool、llm_context、libopendan、opendan、nfs_server、aicc crate；不将 cargo tree -i 查询失败误当作依赖检查通过。
     - 状态（第七轮）：已核对：`cargo tree -p workflow -e normal`（1732 行）不含 agent_tool / llm_context / libopendan / opendan / nfs_server / aicc
 13. **身份与只读**：A session 声明 owner:B 被拒；普通客户端提交保留 id / source:system 或归档系统定义被拒；读取 / 取消 / 修改他人 Run 被拒；Task creator 如实记录 workflow，requested_by 来自已验证 caller。
+    - 状态（第八轮 DV）：DV WF-DV-013 用种子用户 bob 作第二主体通过：他人 Run 的 get_run_graph / get_run_output / get_history / cancel_run 均拒绝，list_runs 不泄露
     - 状态（第七轮）：已实现（`identity_is_verified_on_every_run_operation`、`system_definitions_are_seeded_bound_and_read_only`）
 14. **真实 FunctionObject**：list_functions 列出 9 个 media 函数；完整 fun_id 可读到匹配的对象，编译 / Run / thunk 使用同一 ID；投递 thunk 可按其 ID 读回；thunk Task 能从创建走到执行和终态。
+    - 状态（第八轮 DV）：DV WF-DV-012 通过：9 个 media 函数 published=true，TaskMgr 三层树可见（请求者获 WholeTree 读 grant），thunk 任务终态
     - 状态（第七轮）：已实现（`registry_publishes_nine_functions_and_baseline_lists_their_tools`、thunk 读回单测）
 15. **意图化与绑定**：DSL / 对象不包含可执行命令模板；requirements 和诊断允许工具名称，不能用 grep pdftoppm 零命中作为标准。schema 或 implementation revision 改变后 fun_id 改变，老 Run 保持原绑定。只改 name@version、description、timeout、requirements、best_run_weight 或 affinity_type 时，fun_id 和已有缓存都不变。
     - 状态（第七轮）：已实现（buckyos-api `function_id_ignores_registration_fields`；DSL 无命令模板）
 16. **幂等与纯度**：capabilities 的 idempotent:true / is_pure:false 合法且永不读写 cache；未满足纯度的函数同样禁用缓存；schema 校验失败的输出不进入成功结果或缓存。
     - 状态（第七轮）：已实现（capabilities 永不缓存、非 pure / 非幂等不缓存、result schema 失败不缓存单测）
 17. **过期与授权**：删掉任一必需产物或使其过期后，后续新 Run 对失效步骤重算；命中到交付期间内容有保留保障。授权调用者可读 manifest 及所有交付条目；另一主体仅知道 obj_id / locator 无法读取；凭据过期可重新授权，不触发转换重算。
+    - 状态（第八轮 DV）：DV WF-DV-013：bob 拿 devtest 的 obj_id 调 create_run 被拒（输入授权改用 NDM 读类调用 `query_object_by_id`，`is_object_stored` 是任何上传者可用的存在性探测）；产物交付 token 的数据面读取未在 DV 中验证
     - 状态（第七轮）：部分：过期 / 产物缺失重算已实现；交付经 `delivery.grants` 签发绑定 principal 的精确 key 读 token（`ZoneNativeIo::deliver`）；仅单测了内存 IO 的 grant 形状，真实 bucket token 未在 Zone 上验证；跨主体读取拒绝单测覆盖输入侧
 18. **执行中重启**：杀死 workflow 后重启，旧实例本地 Native 媒体 Task 以 interrupted 错误结束，不永久 Running；其他 workflow / schedule 任务不被误终止，临时目录仅在旧受管进程停止后清理。runtime 对原 run_id 的 not_found 在总预算内恢复，新 Run 复用已落盘的有效步骤；不承诺原 Run 续跑或完整历史恢复。
     - 状态（第七轮）：已实现（`stale_executions_of_a_previous_epoch_are_failed_as_interrupted_and_cleaned`）；runtime 预算内重建为 agent 侧，未实现
@@ -394,6 +402,8 @@ Phase A 以 `src/kernel/workflow`、`src/kernel/buckyos-api`、同级 `buckyos-w
 - 2026-11-05（第七轮）：按本文实施 Phase A。落地：buckyos-api `thunk_object.rs` 拆分 FunctionObject / FunctionRegistration / ThunkObject / ThunkExecution / 结构化 ThunkExecutionResult，`media_manifest.rs`，`json_schema.rs` 从 task_manager 移入；workflow 新增 function_registry / native / local_thunk_runner / cache_index / persistence（SQLite）/ driver / system_defs / io / functions/{test_functions, media/*}，defs/media.*.json 四条系统定义；orchestrator 改为 execution_id 回执、真实 thunk ID、`idempotent && is_pure` 缓存门禁与命中校验、Run output / node_errors / node_sources、cancel_run、deadline；server 每方法验证 caller、ensure、`list_functions` / `get_function` / `get_capabilities` / `cancel_run` / `get_run_output`；scheduler thunk_runner 改读 FunctionRegistration 并用 `ThunkObject::calc_obj_id`（F22 / F24）；workflow 桶声明与 scheduler `add_workflow`；Rust / TS 客户端同步；check.py 加 workflow / 4070；DV 用例 WF-DV-009~013 与 fixtures；T0 文档回写与 media tool baseline；build_aios 加 LibreOffice / 字体 / locale。验证：`cargo test -p workflow -- --test-threads=1` 通过（workflow 单测 + server 集成测试）；依赖方向 `cargo tree -p workflow` 未含 agent_tool / llm_context / libopendan / opendan / nfs_server / aicc（第七轮核对，见 §5 第 12 项）。未做 / 未验证：DV 在 Zone 上运行、带真实 poppler / ffmpeg / soffice 的 `--ignored` 测试、paios 镜像重建与干净镜像探测、宿主安装脚本、产物精确 token 交付、T4 agent 接入（进行中）、T5 WebUI（进行中）、T6b。
 
 - 2026-11-05（用户补充）：Bucket 设计 D22 把 `/ndn/` 定为跨 Zone 按 ObjId 读取的统一协议，标准 HTTP + Range，让 ffmpeg 能直接读文件对象。本文新增 §2.4 的目标形态和 T2d，只改了文档，workflow 代码未动，仍在用 `materialize_input`。
+
+- 2026-11-05（第八轮）：宿主安装 poppler / ffmpeg / LibreOffice，`start.py --all` 重建 dev Zone 后跑 DV：WF-DV-009~013 全部通过（013 用种子用户 bob 作第二主体）。DV 暴露并修复三处：workflow 写入 Named Store 的对象未 pin 被 nfs-server 维护 GC 回收（现每次写 / 读续 30 天 lease，产物递归 pin）；请求者看不到 TaskMgr 任务树（run 根任务给请求者 WholeTree 读 grant）；输入授权误用存在性探测（改为 `query_object_by_id`）。旧 Zone 的 `services/workflow/spec` 缺 buckets 声明需重建配置，升级路径未做。WF-DV-001/002/007（AICC fixture `input_json` 与当前协议不符）与 WF-DV-006（TaskMgr 1.x TaskData 写法）为既有阻塞。
 
 ## 7. 用户设计 Review 答复（已收敛）
 

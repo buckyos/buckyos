@@ -1144,10 +1144,10 @@ WORKFLOW_DV_CASES=WF-DV-001,WF-DV-002,WF-DV-006 \
 | WF-DV-010 | PASS | 4 个并发 `ensure` 只建一个 Run，其余 `reused:true`；终态后新建 |
 | WF-DV-011 | PASS（tools_present 分支） | 真实 pdfinfo / pdftotext / pdftoppm 跑通 media.pdf，manifest complete=true，2 页文本 + 2 页图 |
 | WF-DV-012 | PASS | 4 条系统定义只读、9 个 media 函数已发布可读回；Run root task 通过 `list_tasks{idempotency_key:"wf-run-<run_id>"}` 可见（请求者在 run 树上有 ReadMeta/ReadInput/ReadResult 的 WholeTree grant），`get_task_tree` 含 step / thunk 任务且 thunk 终态 |
-| WF-DV-013 | BLOCKED（断言全部通过） | 保留 id / `source:system` / 归档系统定义 / 伪造 owner 均被拒；`content_id` 被服务端覆盖；跨主体读取需要第二个登录身份 |
+| WF-DV-013 | PASS | 保留 id / `source:system` / 归档系统定义 / 伪造 owner 均被拒；`content_id` 被服务端覆盖；第二主体（make_config 种子用户 `bob`，`WORKFLOW_DV_SECOND_USER=user:password` 可覆盖，经 control-panel `auth.login`）对 devtest 的 Run 调 get_run_graph / get_run_output / get_history / cancel_run 均 NoPermission，list_runs 为空，按他人 owner 过滤被拒，拿 devtest 的 obj_id 调 create_run 被输入授权拒绝（NDM `query_object_by_id` 读类检查） |
 | WF-DV-001 / 002 / 007 | FAIL（既有阻塞） | fixture 的 `service::aicc.vision.*` 步骤用 `input_json` 字段，当前 AICC 协议拒收（`Failed to parse VisionCaptionRequest: unknown field input_json`），步骤落到 waiting_human；与 workflow 改动无关，需随 AICC 协议更新 fixture |
 | WF-DV-006 | FAIL（既有阻塞） | Run 正确进入 waiting_human，但脚本用 TaskMgr 1.x 的 `list_tasks{root_id: run_id}` / `update_task{id,data}` 写 TaskData，与 2.0 任务树（root_id 为 task id，`report_progress` 写入）不符；与 WF-DV-003 同类阻塞 |
 
 运行方式：`deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors workflow_dv.ts`（`deno.json` 把 `buckyos` 映射到本地 websdk 构建；`uv run test/run.py -p workflow_test` 需要 `deno` 在 PATH 且会用 npm 发布版 SDK 覆盖 node_modules）。
 
-实测得到的两个服务端修正：workflow 写入 Named Store 的对象必须 pin（nfs-server 维护周期会回收未 pin 对象），产物 FileObject 递归 pin 30 天；dev Zone 升级后 `services/workflow/spec` 没有 buckets 声明时 `bucket.put` 报 `bucket_not_found`，需重新生成系统配置（`start.py --all`）。
+实测得到的服务端修正：输入授权必须用 NDM 的读类调用（`query_object_by_id`），`is_object_stored` 是任何上传者都允许的存在性探测，不能当作读权限；workflow 写入 Named Store 的对象必须 pin（nfs-server 维护周期会回收未 pin 对象），产物 FileObject 递归 pin 30 天；dev Zone 升级后 `services/workflow/spec` 没有 buckets 声明时 `bucket.put` 报 `bucket_not_found`，需重新生成系统配置（`start.py --all`）。
