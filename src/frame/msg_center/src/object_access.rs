@@ -408,7 +408,7 @@ async fn fetch_object_path(named_store: &NamedDataMgr, root: &ObjId, want_conten
     let name = file_obj.content_obj.name.clone();
     let mime = file_obj
         .meta
-        .get("mime_type")
+        .get("mime")
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
         .unwrap_or_else(|| guess_mime(&name).to_string());

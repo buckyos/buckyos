@@ -6,7 +6,7 @@
  * cannot call (D-4). Failures keep their kRPC error: callers branch on
  * `denialOf`, never on the text.
  */
-import type { CurrentIdentity, EntryMethods } from 'buckyos'
+import { ndn, type CurrentIdentity, type EntryMethods } from 'buckyos'
 import { loadCurrentIdentity } from '../../../sso/identity'
 import { endSessionInPlace } from '../../../auth/signOut'
 import { isMessageHubMock } from '../store'
@@ -14,8 +14,7 @@ import { describeEntry } from '../../../api/sso'
 import type { ObjectAccess } from '../conversation/history/objectAccess'
 import { acceptGroupSessionInvitation, getGroupDoc, listGroupsByMember, listGroupMessages, listGroupSessionMembers, listGroupSessions, postSendMessage, submitGuestRequest, updateGroupReadMarker, type GroupSessionMemberRecord } from '../datamodel/sessionApi'
 import { apiObjectAccess, authorizedFetch, objectUrl } from '../api/objects'
-import type { MsgObject } from '../protocol/msgobj'
-import { decodeNamedObject, guestSessions, objectContextPath, type GuestMessageRef, type GuestSession } from './model'
+import { guestSessions, objectContextPath, type GuestMessageRef, type GuestSession } from './model'
 
 export interface GuestMessagePage {
   items: GuestMessageRef[]
@@ -37,11 +36,11 @@ export interface GuestApi {
   members(groupDid: string, sessionId: string): Promise<GroupSessionMemberRecord[]>
   messages(groupDid: string, sessionId: string, afterSeq: number, limit: number): Promise<GuestMessagePage>
   /** One stored message of the Session at `sessionAddress`. */
-  message(sessionAddress: string, objId: string): Promise<MsgObject>
+  message(sessionAddress: string, objId: string): Promise<ndn.MsgObject>
   accept(groupDid: string, sessionId: string, idempotencyKey: string): Promise<void>
   /** `group.submit_guest_request`; resolves to the new Session id. */
   request(groupDid: string, requestId: string): Promise<string>
-  send(message: MsgObject, idempotencyKey: string): Promise<{ ok: boolean; msgId: string; reason?: string }>
+  send(message: ndn.MsgObject, idempotencyKey: string): Promise<{ ok: boolean; msgId: string; reason?: string }>
   markRead(groupDid: string, sessionId: string, seq: number): Promise<void>
   readonly objects: ObjectAccess
   /** Ends the browser session and drops what this page holds. */
@@ -81,7 +80,7 @@ export const msgCenterGuestApi: GuestApi = {
   },
   async message(sessionAddress, objId) {
     const response = await authorizedFetch(objectUrl(objId, false, objectContextPath(sessionAddress, objId)))
-    return decodeNamedObject(response.headers.get('content-type') ?? '', await response.text()) as MsgObject
+    return ndn.loadNamedObjectFromObjStr(await response.text()) as ndn.MsgObject
   },
   async accept(groupDid, sessionId, idempotencyKey) {
     await acceptGroupSessionInvitation(groupDid, sessionId, idempotencyKey)

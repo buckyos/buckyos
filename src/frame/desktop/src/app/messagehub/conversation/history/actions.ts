@@ -1,5 +1,6 @@
 import { createContext } from 'react'
-import type { DID, MessageObject } from '../../protocol/msgobj'
+import type { DID } from 'buckyos'
+import type { MessageObject } from '../../protocol/msgobj'
 import type { GroupInvitationView, ReadReceipt } from '../../types'
 import type { WorklogDestination } from '../worklog/model'
 

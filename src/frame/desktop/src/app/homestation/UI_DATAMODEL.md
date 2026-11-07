@@ -17,7 +17,7 @@
 
 | 层 | 文件 | 内容 | 边界 |
 | --- | --- | --- | --- |
-| 协议层 | `protocol/feed.ts` | `FeedObject`、`FeedHead`、`FollowDeclaration`、`FileObject` | 跨节点对象的镜像，字段取自架构 §5.8–§5.11 示例，**不是冻结线格式**；UI 不得往里加私有字段 |
+| 协议层 | `protocol/feed.ts` | `FeedObject`、`FeedHead`、`FollowDeclaration`（文件是 SDK 的 `ndn.FileObjectJson`） | 跨节点对象的镜像，字段取自架构 §5.8–§5.11 示例，**不是冻结线格式**；UI 不得往里加私有字段 |
 | UI 投影 | `datamodel/types.ts` | `FeedItemView`、`EntryState`、`ReadingEntry`、`PersonalState`、`InteractionStats`、`CandidateEntry` 等 | 由不可变对象 + 本地私有状态组合而成，可随时重算 |
 | 输入模型 | `datamodel/inputs.ts` | zod schema：发布、评论、受众、来源输入、过滤规则 | 表单的唯一校验来源，错误消息是 i18n key |
 | Store 接口 | `store/types.ts`（`HomeStationStore`） | 异步 API + 同步 peek + 按领域通知 | 组件只依赖这个接口 |
@@ -68,10 +68,9 @@ interface FeedObject {
   base_on?: ObjId
 }
 interface FeedHead { kind: 'feed_head'; entry: EntryUrl; seq: number; state: 'active' | 'withdrawn'; current?: ObjId; updated_at_ms: number }
-interface FileObject { kind: 'file'; name: string; meta: { mime; size; width?; height?; duration_ms? } }
 ```
 
-- 媒体只以 ObjId 引用；mime、尺寸、时长在 `FileObject.meta`。UI 通过 `media.ts` 把 ObjId 解析成地址：服务 store 下是同源 `/home/<user>/objects/<ObjId>/content?access=<session token>`，Mock 下是 `mock/media.ts` 生成的 SVG 占位图；图片详情把 `homestation-file` 源注册给 `ContentPreview`（服务 store 下取回该地址的 blob）。
+- 媒体只以 ObjId 引用；mime、尺寸、时长是 `cyfile` 的常用 meta，在 `ndn.FileObjectJson` 的顶层。UI 通过 `media.ts` 把 ObjId 解析成地址：服务 store 下是同源 `/home/<user>/objects/<ObjId>/content?access=<session token>`，Mock 下是 `mock/media.ts` 生成的 SVG 占位图；图片详情把 `homestation-file` 源注册给 `ContentPreview`（服务 store 下取回该地址的 blob）。
 - URL 只出现在 `link` 与 `source.original_url`。
 - `commentTarget(object)`：转发／引用转发的目标是 `wraps`，其他评论是 `references` 中的 `comment_on`。
 - 入口：正文与评论 `https://<zone>/home/<user>/feed/@/<key>`，公开互动 `https://<zone>/home/<user>/reactions/@/<互动键摘要>`，商品可用内容 DID（seed：`did:bns:echoes-of-the-void`）。
@@ -106,7 +105,7 @@ interface FeedItemView {
   verification: 'verified' | 'unverified' | 'wrapper_only'
   entry?: EntryState
   audience: { spec: AudienceSpec; restricted: boolean }
-  media: ResolvedMedia[]; cover?: ResolvedMedia; wrappedFile?: FileObject
+  media: ResolvedMedia[]; cover?: ResolvedMedia; wrappedFile?: ndn.FileObjectJson
   embedded?: { relation: 'repost' | 'quote' | 'comment_on' | 'wraps'; visibility: 'visible' | 'not_visible' | 'withdrawn' | 'missing'; item?: FeedItemView }
   category?: 'work' | 'product'
   createdAt: number               // iat * 1000
@@ -348,7 +347,7 @@ Store 的选择（`store/createStore.ts`）：设置了开发覆盖（见 §11�
 | `quote`、`comment` | `interact.quote {objId, text, audience}`、`interact.comment {objId, text}` | |
 | `withdraw`、`editPost`、`setAudience`、`retryDelivery` | `entry.withdraw {entry}`、`entry.edit {entry, text}`、`entry.set_audience {entry, audience}`、`entry.retry_delivery {entry}` | |
 | `publish`、`retryPublish`、`shareCapture` | `publish.create {key, input}`、`publish.retry {key}`、`publish.share_capture {objId}` | |
-| `uploadAttachment(fileOrFolder, kind, {signal, onProgress})` | `object.upload_target {name}` → SDK `importFiles` → `ensureUploaded({ bind })`（finalize 时绑进本人 `scratch` 桶的该 key）→ `object.register {objId, key, metadata}` | 文件/目录均以就绪 ObjId 交付；图片尺寸、音视频时长在浏览器读出，保存为业务元数据，不修改 canonical 对象 |
+| `uploadAttachment(fileOrFolder, kind, {signal, onProgress})` | `object.upload_target {name}` → SDK `importFiles` → `ensureUploaded({ bind })`（finalize 时绑进本人 `scratch` 桶的该 key）→ `object.register {objId, key}` | 文件/目录均以就绪 ObjId 交付；SDK 的 `probeFileMeta` 读出 mime、尺寸、时长和拍摄信息，写进 `cyfile`，随内容分发 |
 | `fetchLinkPreview` | `publish.link_preview {url}` | |
 | `resolveSourceInput`、`follow`、`unfollow`、`pauseSource`、`listSources` | `sources.resolve {kind, text}`、`sources.follow {resolution}`、`sources.unfollow {sourceId}`、`sources.pause {sourceId, paused}`、`sources.list` | |
 | `setMuteRule`、`setFilterRule`、`setTagOverride`、`markLessLike`、`setDefaultAudience` | `prefs.set_mute_rule {rule, on}`、`prefs.set_filter_rule {rule}`、`prefs.set_tag_override {objId, tag, override}`、`prefs.mark_less_like {objId}`、`prefs.set_default_audience {audience}` | 设置先在本地生效，写完后重取 bootstrap |
@@ -379,4 +378,4 @@ HS_BACKEND=http://127.0.0.1:4131 pnpm run dev
 
 通用附件支持 `kind: file | dir`，与 image/video/audio 分开选择；目录引用作为 `content.type: files` 的部件发布，包含通用附件的批次保持全部附件的 ObjId。目录浏览和逐项下载遵守发布受众；支持 File System Access 的浏览器还可保存真实目录。文件夹 picker 基于 FileList，保留根和层级，但不能枚举空子目录；不支持目录选择的浏览器禁用该入口。每个文件最大 64 MiB，与服务端有界内容下载一致。
 
-上传状态为 uploading/uploaded/failed/cancelled，保留具体 error、真实字节 progress；移除中断该任务，失败项可单独重试同一导入 session，成功登记后释放客户端 session。媒体入口校验 MIME、非空和浏览器解码，通用目录不压缩其中的图片。上传在 finalize 时绑定到服务给的 `scratch` key（7 天），`object.register` 读这个绑定确认它绑的正是该 ObjId，然后检查全部依赖并登记本用户对象与展示元数据；发布仍由 `publish.create` 的 key 保证幂等，正式发布时服务把每个附件绑进本人的 `published` 桶，撤回即解绑。
+上传状态为 uploading/uploaded/failed/cancelled，保留具体 error、真实字节 progress；移除中断该任务，失败项可单独重试同一导入 session，成功登记后释放客户端 session。媒体入口按字节探测校验类型和非空，通用目录不压缩其中的图片。上传在 finalize 时绑定到服务给的 `scratch` key（7 天），`object.register` 读这个绑定确认它绑的正是该 ObjId，然后检查全部依赖并登记本用户对象与展示元数据；发布仍由 `publish.create` 的 key 保证幂等，正式发布时服务把每个附件绑进本人的 `published` 桶，撤回即解绑。

@@ -1,5 +1,6 @@
 import { localObjectIdFor } from '../conversation/history/objectAccess'
-import type { MessageObject, MsgObject, RefItem } from '../protocol/msgobj'
+import type { ndn } from 'buckyos'
+import type { MessageObject } from '../protocol/msgobj'
 import type { OutgoingPayload, OutgoingUpload } from './types'
 
 export const pendingBubbleId = (localId: string) => `pending:${localId}`
@@ -10,7 +11,7 @@ export function canStage(payload: OutgoingPayload): payload is OutgoingPayload &
   return !!payload.localId && !(payload.relatesTo && STAGED_RELATIONS.has(payload.relatesTo.rel))
 }
 
-export function localAttachmentRefs(payload: OutgoingPayload): RefItem[] {
+export function localAttachmentRefs(payload: OutgoingPayload): ndn.RefItem[] {
   return payload.attachments.map(item => {
     const label = item.relativePath || item.file.name
     return { role: 'input', target: { type: 'data_obj', obj_id: localObjectIdFor(item.file, label) }, label }
@@ -19,7 +20,7 @@ export function localAttachmentRefs(payload: OutgoingPayload): RefItem[] {
 
 export function pendingBubble(
   payload: OutgoingPayload & { localId: string },
-  base: Pick<MsgObject, 'from' | 'to' | 'kind' | 'to_session'> & { sessionId: string; senderName: string; now: number },
+  base: Pick<ndn.MsgObject, 'from' | 'to' | 'kind' | 'to_session'> & { sessionId: string; senderName: string; now: number },
   upload: OutgoingUpload | undefined,
   staged: boolean,
 ): MessageObject {

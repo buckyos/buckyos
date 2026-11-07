@@ -1,14 +1,15 @@
 import { useContext } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
-import { agentAskQuestionText, type DID, type MessageObject, type MsgContent } from '../../protocol/msgobj'
+import type { DID, ndn } from 'buckyos'
+import { agentAskQuestionText, type MessageObject } from '../../protocol/msgobj'
 import { useQaExpanded } from '../tasks'
 import { ConversationMessageActionsContext } from './actions'
 import { LinkifiedText } from './MessageMarkdown'
 import { messageObjId, messageRelations, type MessageThreadEntry } from './relations'
 
 function entryText(entry: MessageThreadEntry): string {
-  const content: MsgContent = entry.content
+  const content: ndn.MsgContent = entry.content
   const text = (content.content ?? '').trim()
   if (entry.agent_ask) return agentAskQuestionText(text, entry.agent_ask)
   const names = (content.refs ?? []).map(ref => ref.label ?? (ref.target.type === 'data_obj' ? ref.target.obj_id : ref.target.did))

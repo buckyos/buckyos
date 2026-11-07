@@ -1,5 +1,6 @@
 import { displayedContent, editsOf, effectiveContent, foldMessageRelations, messageObjId, messageRelations, messageSummaryText, threadMessagesOf } from '../../src/app/messagehub/conversation/history/relations.ts'
-import { agentAskQuestionText, buildAgentAskAnswer, messageAgentAsk, messageAgentAskAnswer, messageAgentTaskId, type AgentAsk, type MessageObject, type MsgContent } from '../../src/app/messagehub/protocol/msgobj.ts'
+import type { ndn } from 'buckyos'
+import { agentAskQuestionText, buildAgentAskAnswer, messageAgentAsk, messageAgentAskAnswer, messageAgentTaskId, type AgentAsk, type MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
 import { conversationInputState, isStopCommand, mergeMentions } from '../../src/app/messagehub/conversation/input/inputState.ts'
 import { taskAreaView, taskNodeState } from '../../src/app/messagehub/conversation/tasks/taskView.ts'
 import { TaskWatch, type TaskChildren, type TaskSnapshot } from '../../src/app/messagehub/conversation/tasks/taskWatch.ts'
@@ -14,11 +15,11 @@ async function until(check: () => boolean, label: string) {
   throw Error(`Timed out waiting for ${label}`)
 }
 
-function msg(id: string, from: string, content: MsgContent | string, extra: Partial<MessageObject> = {}, at = now): MessageObject {
+function msg(id: string, from: string, content: ndn.MsgContent | string, extra: Partial<MessageObject> = {}, at = now): MessageObject {
   return { from, to: [ME], kind: 'chat', created_at_ms: at, ui_message_id: id, ui_record: { msgId: `obj-${id}`, recordId: id }, content: typeof content === 'string' ? { format: 'text/plain', content } : content, ...extra }
 }
 
-const finalContent: MsgContent = {
+const finalContent: ndn.MsgContent = {
   title: 'Report',
   format: 'text/markdown',
   content: '## Done\n\n- **3** failures',

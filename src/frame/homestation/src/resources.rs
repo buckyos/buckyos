@@ -406,7 +406,7 @@ impl Station {
         }
         let file = crate::objects::load_local(&self.db, &self.store, &wrapped).await?;
         match (self.text_of(&wrapped).await?, file) {
-            (Some(text), Some(file)) => Ok(serde_json::json!({ "state": "ready", "markdown": text, "file": crate::projection::file_view(&file.body) })),
+            (Some(text), Some(file)) => Ok(serde_json::json!({ "state": "ready", "markdown": text, "file": file.body })),
             (None, Some(_)) => Ok(serde_json::json!({ "state": "unavailable", "reason": "not_text" })),
             _ => Ok(serde_json::json!({ "state": "unavailable", "reason": "no_known_source" })),
         }

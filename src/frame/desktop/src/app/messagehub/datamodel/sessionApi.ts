@@ -1,6 +1,5 @@
-import { accessDenialOf, buckyos, type AccessDenial, type EntryDescriptor } from 'buckyos'
+import { accessDenialOf, buckyos, type AccessDenial, type EntryDescriptor, type DID, type NotifyCategory, type NotifyKind, type NotifyStatus, type ndn } from 'buckyos'
 import { fetchUserDetail } from '../../../api/user_mgr'
-import type { DID, MsgObject, NotifyCategory, NotifyKind, NotifyStatus } from '../protocol/msgobj'
 import type { NotifyView } from '../notify/model'
 import { groupErrorCode } from '../groupModel'
 
@@ -53,7 +52,7 @@ export interface IngressContext {
   contact_mgr_owner?: DID
 }
 
-/** A mailbox owner's reference to one immutable MsgObject. */
+/** A mailbox owner's reference to one immutable ndn.MsgObject. */
 export interface MailboxRecord {
   mailbox: string
   record_id: string
@@ -75,7 +74,7 @@ export interface MailboxRecord {
 
 export interface MailboxRecordWithObject {
   record: MailboxRecord
-  msg?: MsgObject | null
+  msg?: ndn.MsgObject | null
 }
 
 /** Owner-scoped session metadata (`msg.get_session_state`). */
@@ -125,7 +124,7 @@ export interface SessionMessageItem {
   to: DID
   recipient_state?: RecipientState
   delivery?: SessionDeliveryView
-  msg?: MsgObject | null
+  msg?: ndn.MsgObject | null
 }
 
 export interface SessionMessagePage {
@@ -306,7 +305,7 @@ export const listBoxByTime = (input: { mailbox: string; box_kind: MailboxKind; l
 
 /* ── Send ── */
 
-export async function postSendMessage(msg: MsgObject, idempotencyKey?: string): Promise<PostSendResult> {
+export async function postSendMessage(msg: ndn.MsgObject, idempotencyKey?: string): Promise<PostSendResult> {
   const request: Record<string, unknown> = { msg }
   if (idempotencyKey) request.idempotency_key = idempotencyKey
   const result = await call<PostSendResult | null>('msg.post_send', request)

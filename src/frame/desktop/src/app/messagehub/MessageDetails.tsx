@@ -10,13 +10,14 @@ import { CopyValue, TaskDetailsSection } from './conversation/tasks/MessageTask'
 import { AgentWorklog } from './conversation/worklog/AgentWorklog'
 import type { WorklogDestination } from './conversation/worklog/model'
 import { messageHubMessagePath } from './launch'
-import { getMessageDeliveryStatus, messageAgentTaskId, type DID, type MessageObject, type MsgContent } from './protocol/msgobj'
+import type { DID, ndn } from 'buckyos'
+import { getMessageDeliveryStatus, messageAgentTaskId, type MessageObject } from './protocol/msgobj'
 import { useMessageHubStore } from './store'
 import type { MessageHubContext } from './types'
 
 const sectionTitleClass = 'text-xs font-semibold uppercase tracking-wide text-[color:var(--cp-muted)]'
 
-function ContentView({ content, testId }: { content: MsgContent; testId: string }) {
+function ContentView({ content, testId }: { content: ndn.MsgContent; testId: string }) {
   const refs = content.refs ?? []
   const text = content.content ?? ''
   return (

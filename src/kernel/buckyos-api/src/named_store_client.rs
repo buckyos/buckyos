@@ -56,6 +56,40 @@ macro_rules! store_call {
     };
 }
 
+/// Random access to the content of a stored file (its chunk or chunk list), for
+/// `ndn_lib::probe_media_meta`.
+pub struct RuntimeContentByteSource<'s, 'a> {
+    store: &'s RuntimeNamedStore<'a>,
+    content: ObjId,
+    size: u64,
+}
+
+impl<'s, 'a> RuntimeContentByteSource<'s, 'a> {
+    pub fn new(store: &'s RuntimeNamedStore<'a>, content: ObjId, size: u64) -> Self {
+        Self { store, content, size }
+    }
+}
+
+#[async_trait]
+impl ndn_lib::MediaByteSource for RuntimeContentByteSource<'_, '_> {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    async fn read_at(&self, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        let opened = if self.content.is_chunk() {
+            let chunk_id = ChunkId::from_obj_id(&self.content);
+            self.store.open_chunk_reader(&chunk_id, offset).await
+        } else {
+            self.store.open_chunklist_reader(&self.content, offset).await
+        };
+        let (mut reader, _) = opened.map_err(|e| std::io::Error::other(e.to_string()))?;
+        let mut out = vec![0u8; length];
+        tokio::io::AsyncReadExt::read_exact(&mut reader, &mut out).await?;
+        Ok(out)
+    }
+}
+
 impl<'a> RuntimeNamedStore<'a> {
     pub(crate) fn local(store: NamedDataMgr) -> Self {
         Self {

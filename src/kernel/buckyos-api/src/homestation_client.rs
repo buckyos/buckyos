@@ -134,8 +134,6 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS settings (owner TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (owner, key));
 
-CREATE TABLE IF NOT EXISTS import_metadata (owner TEXT NOT NULL, obj_id TEXT NOT NULL, metadata TEXT NOT NULL, PRIMARY KEY (owner, obj_id));
-
 CREATE TABLE IF NOT EXISTS objects (
   owner TEXT NOT NULL,
   obj_id TEXT NOT NULL,

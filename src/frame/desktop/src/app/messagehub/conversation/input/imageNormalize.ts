@@ -1,3 +1,5 @@
+import { ndn } from 'buckyos'
+
 const HEIF_TYPES = new Set(['image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence'])
 const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1'])
 const MAX_CANVAS_PIXELS = 16_000_000
@@ -11,6 +13,12 @@ async function isHeif(file: Blob & { name?: string }): Promise<boolean> {
   if (head.length < 12) return false
   const text = (from: number) => String.fromCharCode(...head.slice(from, from + 4))
   return text(4) === 'ftyp' && HEIF_BRANDS.has(text(8))
+}
+
+/** What a transcode loses: the facts about the shot, read from the original. Size and type belong to the new bytes. */
+export async function transcodeLostMeta(original: File): Promise<ndn.FileMediaMeta> {
+  const { captured_at, geo, camera, exposure } = await ndn.probeFileMeta(original)
+  return { ...(captured_at ? { captured_at } : {}), ...(geo ? { geo } : {}), ...(camera ? { camera } : {}), ...(exposure ? { exposure } : {}) }
 }
 
 export function jpegName(name: string): string {

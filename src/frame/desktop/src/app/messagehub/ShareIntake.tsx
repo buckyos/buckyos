@@ -10,7 +10,8 @@ import { useI18n } from '../../i18n/provider'
 import { reportShareDelivery } from '../../api/shares'
 import { ForwardMessageForm } from './ForwardDialog'
 import type { SharedLaunch } from './launch'
-import { randomMsgNonce, type MessageObject } from './protocol/msgobj'
+import { ndn } from 'buckyos'
+import type { MessageObject } from './protocol/msgobj'
 import type { MessageHubContext } from './types'
 
 function shareMessage(context: MessageHubContext, share: SharedLaunch): MessageObject {
@@ -23,7 +24,7 @@ function shareMessage(context: MessageHubContext, share: SharedLaunch): MessageO
     to: [],
     kind: 'chat',
     created_at_ms: Date.now(),
-    nonce: randomMsgNonce(),
+    nonce: ndn.randomMsgNonce(),
     content: { format: 'text/plain', content: text, ...(refs.length ? { refs } : {}) },
   }
 }

@@ -2,7 +2,7 @@
 
 日期：2026-11-02
 
-状态：**已完成（2026-11-06）**：代码随 `548e6c864` 合入 main，§6 DV 通过（记录见 §9）；§9 末尾记录了 2 个小问题：1 个已修、待重启 AICC 生效，1 个未修。裁决：Q1 32 MiB、Q2 A、Q3 维持整份 INFO。来源：[Work Session 上下文压缩与工具预算修正](../opendan-work-context-budget-fix-todo.md) 实施后的 DV：用户重建 DV 后跑一个长研究任务，3 个 `explore` 子任务失败，其中 2 个是 `413 Payload Too Large`。用户裁决：**修改 AICC 的 1 MiB 默认上限**（不靠缩小上下文窗口绕过）。
+状态：**已完成（2026-11-06）**：代码随 `548e6c864` 合入 main，§6 DV 通过（记录见 §9）；§9 末尾记录了 2 个小问题：1 个已修、待重启 AICC 生效，1 个未修。裁决：Q1 32 MiB、Q2 A、Q3 维持整份 INFO。来源：[Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) 实施后的 DV：用户重建 DV 后跑一个长研究任务，3 个 `explore` 子任务失败，其中 2 个是 `413 Payload Too Large`。用户裁决：**修改 AICC 的 1 MiB 默认上限**（不靠缩小上下文窗口绕过）。
 
 范围：AICC 服务（接收上限、写入 TaskMgr 的任务 input、`aicc.llm.input` 日志）、Desktop Task Center 的请求展示、AICC 文档。buckyos-base、cyfs-gateway、TaskMgr、llm_context / agent_tool **不改**（理由见 §2；agent_tool 侧的兜底见 §7，另起一单）。
 
@@ -120,7 +120,7 @@ Agent `jarvis.test.buckyos.io`（容器形态），plan `work-20261103-3`（`pla
 
 ## 7. 关联与后续
 
-- [Work Session 上下文压缩与工具预算修正](../opendan-work-context-budget-fix-todo.md) §8.3：窗口 1.05M 的问题。本单之后 1 MiB 不再是硬墙，84 万 token 的触发线在技术上可达，但每轮重发几十万 token 的成本与延迟仍在，是否给窗口加上限仍待那一单裁决。
+- [Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) §8.3：窗口 1.05M 的问题。本单之后 1 MiB 不再是硬墙，84 万 token 的触发线在技术上可达，但每轮重发几十万 token 的成本与延迟仍在，是否给窗口加上限仍待那一单裁决。
 - 另起 agent_tool 小单（按 llm_context / agent_tool 修改单列、先行的规则）：
   1. xllm 把 kRPC `http_error` 且 `status = 413` 归为 `ProviderFailure::ContextLimit`，让 llm_context 让出 `ContextLimitReached`、由宿主重写，而不是让会话失败（超过 32 MiB 或上游拒收时的兜底）；
   2. 同一次 DV 的另一个失败 `work-20261103-6`：codex-proxy 返回 503（上游 `server_is_overloaded`），AICC 已标 `retriable: true, retry_after_ms: 60000`，但 xllm `aicc_provider_failure` 只把 `Timeout` 与 HTTP 408 / 504 当作可重试，忽略 `retriable`（现有测试还断言 502 不可恢复），会话直接失败。是否改为读取 `retriable` 需裁决。
@@ -155,7 +155,7 @@ Agent `jarvis.test.buckyos.io`（容器形态），plan `work-20261103-3`（`pla
 
 **关联单**
 
-- §7 agent_tool 小单（413 → `ContextLimit`、读 AICC `retriable`）是 [xllm-aicc-error-mapping-todo.md](../xllm-aicc-error-mapping-todo.md)，随 `1e0de4f2e` 提交，单测过；它的 DV 随 [opendan-dv-followup-todo.md](../opendan-dv-followup-todo.md) 的 H3 做。
+- §7 agent_tool 小单（413 → `ContextLimit`、读 AICC `retriable`）是 [xllm-aicc-error-mapping-todo.md](./xllm-aicc-error-mapping-todo.md)，随 `1e0de4f2e` 提交，单测过；它的 DV 随 [opendan-dv-followup-todo.md](../opendan-dv-followup-todo.md) 的 H3 做。
 
 ## 9. DV 记录（2026-11-06）
 
@@ -174,7 +174,7 @@ Agent `jarvis.test.buckyos.io`（容器形态），plan `work-20261103-3`（`pla
 | 4. 上游接收 | 通过，仅限 HTTP 层 | 直连 codex-proxy 4,002,929 字节返回 200；经 AICC 3,845,071 字节返回 200，`input_tokens` 比基线多 1152，说明图片到达了模型 |
 | 5. Desktop | 通过 | 无头 Chromium 打开部署的 Task Center：40 KB 任务有“复制到 Playground”按钮；6 MiB 任务显示摘要、大小（6.0 MB）和 trace_id，没有按钮。截图是 `dv5_*.png` |
 
-上限边界：33 MiB 直连 4 次都是 413；33,554,389 字节（刚低于 32 MiB）通过体积检查，到达 token 校验。
+上限边界：33 MiB 用 curl 直连 4 次都是 413（真实 kRPC 客户端的结果不同，见下面第 2 个问题）；33,554,389 字节（刚低于 32 MiB）通过体积检查，到达 token 校验。
 
 **未覆盖：**
 
@@ -183,5 +183,21 @@ Agent `jarvis.test.buckyos.io`（容器形态），plan `work-20261103-3`（`pla
 
 **发现的问题：**
 
-1. **已修，未提交，待重启 AICC 生效：** `provider_state_bytes` 在真实请求里恒为 null。`task_request_summary` 只读顶层 `provider_state`，而协议里没有这个顶层字段，真实请求把它放在消息内容块里：本机 5 条 Agent 请求中顶层 0 个、内容块 6 个。单测的夹具自己造了顶层字段，所以没有发现。现在统计内容块的序列化字节数，没有时为 0，夹具也改成了真实形状。只影响摘要里这一个数，不影响上限和任务创建。修复前在真实路径上复现过（`dv_provider_state_before_old_binary.json`：300,202 字节的内容块得到 null）。新二进制已替换到 `/opt/buckyos/bin/aicc/aicc`，但旧进程还在运行，重启后要再跑一次对照。
-2. **未修：** 经网关超限时偶发 500。33 MiB 经网关 6 次里 4 次 413、2 次 500（`error writing a body to connection`）：AICC 提前回 413 时网关还在写 body。容器直连 AICC 不受影响；经网关的调用方拿到 500 时，xllm 会归为 `Unknown` 而不是 `ContextLimit`。修复在 cyfs-gateway，不在本单范围。
+1. **已修（`a98c28f9d`），待重启 AICC 生效：** `provider_state_bytes` 在真实请求里恒为 null。`task_request_summary` 只读顶层 `provider_state`，而协议里没有这个顶层字段，真实请求把它放在消息内容块里：本机 5 条 Agent 请求中顶层 0 个、内容块 6 个。单测的夹具自己造了顶层字段，所以没有发现。现在统计内容块的序列化字节数，没有时为 0，夹具也改成了真实形状。只影响摘要里这一个数，不影响上限和任务创建。修复前在真实路径上复现过（`dv_provider_state_before_old_binary.json`：300,202 字节的内容块得到 null）。新二进制已替换到 `/opt/buckyos/bin/aicc/aicc`，但旧进程还在运行，重启后要再跑一次对照。
+2. **已修（buckyos-base，未提交），待重启 AICC 验证；根因在服务端提前拒绝，不在网关：** 服务超过上限时，真实客户端大多拿不到 413。`read_body_with_limit`（buckyos-base `buckyos-http-server/src/lib.rs:550`）不读 body 就回 413 并关闭连接；客户端还在写 body 时写失败（EPIPE），hyper 客户端的 `poll_loop` 把写错误直接交给调用方。与大小上限、超时都无关：网关的 500 发生在请求到达后 1–2 ms；经网关不带 token 发 2–32 MiB 全部到达 AICC；8 MiB 慢速上传 82 秒成功；停止上传时是 60 秒后返回 408，不是 500。
+
+   | 路径（与 kRPC 同配置的 reqwest 客户端，33 MiB） | 拿到 413 | 失败 |
+   | --- | --- | --- |
+   | 经网关 | 38/40 | 2/40：`500 error writing a body to connection` |
+   | 直连 AICC（容器里的 xllm 走这条） | 0/40 | 40/40：`Broken pipe` |
+
+   - **为什么只是偶发：** 取决于单次写入多大。hyper 客户端按帧写入 33 MiB 时，16 KB 到 256 KB 的帧失败 0–11%，1 MB 失败 92%，4 MB 失败 100%。网关逐块转发，所以少见；直连一次写完，所以必现。
+   - **实际门槛约 2 MB，应该来自 socket 缓冲区（按失败率随大小的变化推断，没有抓包）：** mock 服务端同样提前拒绝，1.25 MB 失败 19%，2.3 MB 起失败 100%。11-02 的 DV 能看到 413，是因为请求体（约 1.1 MB）正好贴着 1 MiB。把上限放到 32 MiB 后，直连的超限请求就从“多数 413”变成“总是 Broken pipe”。
+   - **影响面是所有用默认读取逻辑的 kRPC 服务：** 直连发 3 MB 时，task-manager、msg-center、verify-hub、system_config、repo-service 各 20 次全部 `Broken pipe`，没有 413。control-panel 没有这个现象。
+   - **对 xllm 的影响（读代码得出，未跑端到端）：** 这个错误 `is_request=true`，kRPC 判为可重试，xllm（`agent_tool/src/xllm.rs:5522`）归为 `Transient`，会重发同一个放不下的请求直到 `retries_exhausted`，[xllm 单](./xllm-aicc-error-mapping-todo.md) P1 的 413 → 压缩不会触发。
+   - **网关的次要问题：** 上游写失败映射成 500（`buckyos-http-server/src/lib.rs:476`），502 更准确；还会 `record_failure`（`http_server.rs:1892`，`max_fails=1`），多节点时一个超大请求能让健康的 AICC 实例被隔离 10 秒。单节点无影响。
+   - **修复：** `read_body_with_limit` 超限时立刻回 413，后台把 body 读完丢弃（`reject_oversized_body`，最多 5 秒、256 MiB，超过后连接照旧关闭）。s2s RPC 和 did_obj 共用这个函数，一并生效。选这个而不是读完再回 413，是因为响应不用等上传结束。
+   - **验证：** 新增的两个端到端回归测试（真实 TCP、真实 kRPC 客户端）在旧代码上连续 3 轮都失败，修复后连续 5 轮都通过。测试必须用多线程运行时：单线程下客户端写满才让出执行权，竞态不会出现，旧代码也能通过。`cargo test -p buckyos-http-server` 75 个、`-p kRPC` 62 个全过；带本地 patch 的 `cargo test -p aicc` 780 个全过。真实服务要等 AICC 重启后验证。
+   - **上线：** buckyos-base 推到 main 后 `cargo update`，再重建各服务才会全部生效。目前只有磁盘上的 AICC 是带本地 patch 构建的（构建目录在 `/tmp`，补丁存为证据目录的 `buckyos-base-drain-fix.diff`）。
+
+   证据：`race_real_aicc.txt`、`race_mock.txt`、`race_relay_and_services.txt`、`race_timeouts.txt`，工具源码 `body_race_main.rs`。

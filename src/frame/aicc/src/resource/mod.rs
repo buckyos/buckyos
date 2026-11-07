@@ -35,7 +35,7 @@ const REJECTED_ARCHIVE_MIME_TYPES: [&str; 5] = [
     "application/vnd.rar",
 ];
 const RESERVED_ARTIFACT_META_KEYS: [&str; 7] = [
-    "mime_type",
+    "mime",
     "file_name",
     "digest",
     "rows",
@@ -884,7 +884,9 @@ impl ResourceStore for NamedDataMgrResourceStore {
             .map_err(store_error)?;
 
         let mut file = FileObject::new(spec.name.clone(), bytes.len() as u64, chunk_id.to_string());
-        file.meta.insert("mime_type".to_string(), json!(spec.mime));
+        file.apply_media_meta(
+            &ndn_lib::probe_media_meta(&ndn_lib::MemoryByteSource::new(bytes), &spec.name, Some(&spec.mime)).await,
+        );
         file.meta.insert("file_name".to_string(), json!(spec.name));
         file.meta.insert(
             "digest".to_string(),
@@ -1604,7 +1606,7 @@ impl fmt::Debug for ResourceError {
 
 fn stored_file_from_object(obj_id: ObjId, file: FileObject) -> Result<StoredFile, ResourceError> {
     let mut attributes: Map<String, Value> = file.meta.into_iter().collect();
-    let mime = take_string(&mut attributes, &["media_type", "mime_type", "mime"])
+    let mime = take_string(&mut attributes, &["mime"])
         .map(|mime| normalize_mime(&mime))
         .transpose()?;
     let file_name = take_string(&mut attributes, &["file_name", "filename"])
@@ -2240,7 +2242,9 @@ mod tests {
                 bytes.len() as u64,
                 "sha256:artifact-content".to_string(),
             );
-            file.meta.insert("mime_type".to_string(), json!(spec.mime));
+            file.apply_media_meta(
+                &ndn_lib::probe_media_meta(&ndn_lib::MemoryByteSource::new(bytes), &spec.name, Some(&spec.mime)).await,
+            );
             file.meta.insert(
                 "digest".to_string(),
                 json!(format!("sha256:{}", sha256_hex(bytes))),
@@ -2290,7 +2294,7 @@ mod tests {
             bytes.len() as u64,
             "sha256:content".to_string(),
         );
-        file.meta.insert("mime_type".to_string(), json!(mime));
+        file.meta.insert("mime".to_string(), json!(mime));
         file.meta.insert("width".to_string(), json!(640));
         stored_file_from_object(obj_id_for(&file), file).unwrap()
     }

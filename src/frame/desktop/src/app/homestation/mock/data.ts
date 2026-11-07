@@ -17,7 +17,8 @@ import type {
   TopicView,
 } from '../datamodel/types'
 import { EMPTY_PERSONAL } from '../datamodel/types'
-import type { CommentType, Did, EntryUrl, FeedContent, FeedHead, FeedObject, FeedSource, FileObject, ObjId, PublicationCategory } from '../protocol/feed'
+import type { ndn } from 'buckyos'
+import type { CommentType, Did, EntryUrl, FeedContent, FeedHead, FeedObject, FeedSource, ObjId, PublicationCategory } from '../protocol/feed'
 import type { TagOverride } from '../store/types'
 
 export interface MockIdentity {
@@ -83,7 +84,7 @@ export interface MockDb {
   collector: { id: string; name: string }
   identities: Map<Did, MockIdentity>
   objects: Map<ObjId, StoredObject>
-  files: Map<ObjId, FileObject>
+  files: Map<ObjId, ndn.FileObjectJson>
   bodies: Map<ObjId, StoredBody>
   entries: Map<EntryUrl, StoredEntry>
   reading: StoredReading[]
@@ -249,9 +250,9 @@ export function seedDatabase(now: number, options: { empty?: boolean } = {}): Mo
   db.followers.set('did:bns:sarah', new Set([OWNER_DID, ...crowdDids]))
   db.followers.set('did:bns:david', new Set([OWNER_DID, 'did:bns:bob', ...crowdDids.slice(4, 9)]))
 
-  const file = (alias: string, mime: string, meta: Partial<FileObject['meta']> = {}, name = alias) => {
+  const file = (alias: string, mime: string, meta: ndn.FileObjectJson = {}, name = alias) => {
     const objId = fid(alias)
-    db.files.set(objId, { kind: 'file', name, meta: { mime, size: meta.size ?? 240_000, ...meta } })
+    db.files.set(objId, { name, mime, size: meta.size ?? 240_000, ...meta })
     return objId
   }
 

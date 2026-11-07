@@ -180,6 +180,7 @@ impl BucketClient {
     ) -> Result<(ObjId, PutResult), RPCErrors> {
         let mut template = ndn_lib::FileObject::default();
         template.content_obj.name = key_file_name(key);
+        template.apply_media_meta(&ndn_lib::probe_local_file_media_meta(path, &template.content_obj.name, content_type.as_deref()).await);
         let (mut file, obj_id, _) = ndn_toolkit::cacl_file_object(
             Some(store),
             path,
@@ -376,11 +377,19 @@ async fn store_reader<R: tokio::io::AsyncRead + Unpin + Send>(
     let chunk_size = ndn_lib::CHUNK_DEFAULT_SIZE as usize;
     let mut chunks = Vec::new();
     let mut total = 0u64;
+    let mut media_meta = ndn_lib::MediaMeta::default();
     loop {
         let mut buf = Vec::with_capacity(chunk_size.min(1 << 20));
         (&mut reader).take(chunk_size as u64).read_to_end(&mut buf).await?;
         if buf.is_empty() && !chunks.is_empty() {
             break;
+        }
+        if chunks.is_empty() {
+            media_meta = ndn_lib::probe_media_meta(&ndn_lib::MemoryByteSource::new(&buf), name, None).await;
+        } else if chunks.len() == 1 {
+            // More than the first chunk: its fields describe a truncated view,
+            // so only what the head alone decides can stay.
+            media_meta = ndn_lib::MediaMeta { mime: media_meta.mime.take(), ..Default::default() };
         }
         let hasher = ndn_lib::ChunkHasher::new(None)?;
         let method = hasher.hash_method;
@@ -396,6 +405,7 @@ async fn store_reader<R: tokio::io::AsyncRead + Unpin + Send>(
     let mut file = ndn_lib::FileObject::default();
     file.size = total;
     file.content_obj.name = name.to_string();
+    file.apply_media_meta(&media_meta);
     file.content = if chunks.len() == 1 {
         chunks[0].to_string()
     } else {

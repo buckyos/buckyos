@@ -6,7 +6,8 @@
  * one user: a change in one tab reaches the other as a `storage` event, the
  * way a TaskMgr kevent would.
  */
-import { NOTIFY_CHOICE_CONTROL_ID, NOTIFY_INTENT, NOTIFY_TEXT_CONTROL_ID, notifySessionId, type CanonValue, type HumanTaskPrompt, type MessageObject, type NotifyCategory, type NotifyKind, type NotifyLevel, type NotifyMessageData, type NotifySource, type NotifyStatus } from '../protocol/msgobj'
+import { NOTIFY_CHOICE_CONTROL_ID, NOTIFY_INTENT, NOTIFY_TEXT_CONTROL_ID, notifyCategorySessionId, type HumanTaskPrompt, type NotifyCategory, type NotifyKind, type NotifyLevel, type NotifyMessageData, type NotifySource, type NotifyStatus, type ndn } from 'buckyos'
+import type { MessageObject } from '../protocol/msgobj'
 import { isNotifyClosed, NOTIFY_ACTION_DISMISS, TASK_ERR_ALREADY_COMPLETED, TASK_ERR_REVISION_CONFLICT, type NotifyAnswer, type NotifyResult, type NotifyView } from '../notify/model'
 import type { NotifyBackend, NotifyListQuery, NotifyTaskState } from '../notify/watch'
 import { sessionKey } from '../sessionModel'
@@ -108,7 +109,7 @@ const copyId = (id: string) => `msg-${id}-copy`
 
 function seedNotify(seed: Seed, now: number): MockNotify {
   const at = now - seed.minutesAgo * MINUTE
-  const category = notifySessionId(seed.category)
+  const category = notifyCategorySessionId(seed.category)
   const view: MockNotify['view'] = {
     notify_id: seed.id,
     url: `/messagehub?notify=${seed.id}`,
@@ -167,7 +168,7 @@ function message(notify: MockNotify, home: boolean, now: number): MessageObject 
     to_session: sessionId,
     kind: 'notify',
     created_at_ms: Math.min(view.created_at_ms, now),
-    content: { title: view.prompt.title, format: 'text/plain', content: plainText(view), machine: { intent: NOTIFY_INTENT, data: structuredClone(data) as unknown as Record<string, CanonValue> } },
+    content: { title: view.prompt.title, format: 'text/plain', content: plainText(view), machine: { intent: NOTIFY_INTENT, data: structuredClone(data) as unknown as Record<string, ndn.CanonValue> } },
     ui_message_id: home ? homeId(view.notify_id) : copyId(view.notify_id),
     ui_session_id: sessionId,
     ...(home ? {} : { ui_sender_name: 'CodeAssistant' }),
@@ -211,7 +212,7 @@ export function mockNotifySessions(now: number): Session[] {
   }
   const unread = (category: NotifyCategory) => SEEDS.filter(seed => seed.category === category && UNREAD_HOME.has(seed.id)).length
   return [
-    ...(['todo', 'agent', 'app'] as const).map(category => session(notifySessionId(category), MOCK_NOTIFY_SENDER, titles[category], unread(category))),
+    ...(['todo', 'agent', 'app'] as const).map(category => session(notifyCategorySessionId(category), MOCK_NOTIFY_SENDER, titles[category], unread(category))),
     session(MOCK_NOTIFY_AGENT_SESSION, CODER, 'Docs Preview', SEEDS.filter(seed => seed.copy).length),
   ]
 }

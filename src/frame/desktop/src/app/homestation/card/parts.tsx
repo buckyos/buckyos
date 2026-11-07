@@ -195,7 +195,7 @@ export function ResourceOverlay({ state, objId, kind }: { state: ResourceState; 
 export function VideoBlock({ item, resources, onOpen }: { item: FeedItemView; resources: ResourceState; onOpen: () => void }) {
   const { t } = useI18n()
   const ready = resources === 'local' || resources === 'reachable'
-  const duration = item.wrappedFile?.meta.duration_ms
+  const duration = item.wrappedFile?.duration_ms
   return (
     <div className="relative mt-2 w-full overflow-hidden rounded-xl" style={{ aspectRatio: '16 / 9', background: '#111' }} data-testid="hs-video-block" data-resources={resources}>
       {item.cover ? <MediaThumb objId={item.cover.object} file={item.cover.file} className="absolute inset-0 h-full w-full object-cover" style={{ opacity: ready ? 1 : 0.55 }} /> : null}
@@ -225,7 +225,7 @@ export function AudioBlock({ item, resources }: { item: FeedItemView; resources:
   const [playing, setPlaying] = useState(false)
   const part = item.media[0]
   const ready = resources === 'local' || resources === 'reachable'
-  const duration = part?.file?.meta.duration_ms
+  const duration = part?.file?.duration_ms
   return (
     <div className="mt-2 flex items-center gap-3 rounded-xl px-3 py-2.5" style={{ background: 'var(--hs-subtle-bg)' }} data-testid="hs-audio-block">
       {ready ? (

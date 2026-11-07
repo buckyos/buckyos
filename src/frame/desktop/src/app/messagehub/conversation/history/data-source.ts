@@ -1,10 +1,5 @@
 import { isActionMessage } from '../../sessionModel'
-import {
-  getMessageStableId,
-  getMessageStatusType,
-  isStatusMessageObject,
-  type MessageObject,
-} from '../../protocol/msgobj'
+import { getMessageStableId, getMessageStatusType, isStatusMessageObject, type MessageObject } from '../../protocol/msgobj'
 import type {
   AppendableConversationMessageReader,
   ConversationListIndexEntry,

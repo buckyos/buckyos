@@ -49,10 +49,17 @@ pub async fn put_artifact(
     if !meta.is_file() {
         return Err(format!("{} is not a file", path.display()));
     }
+    let delivered_name = if name.is_empty() {
+        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    } else {
+        name.to_string()
+    };
+    let mut template = FileObject::default();
+    template.apply_media_meta(&ndn_lib::probe_local_file_media_meta(path, &delivered_name, None).await);
     let (mut file, mut obj_id, _) = cacl_file_object(
         Some(store),
         path,
-        &FileObject::default(),
+        &template,
         true,
         &CheckMode::ByFullHash,
         StoreMode::StoreInNamedMgr,

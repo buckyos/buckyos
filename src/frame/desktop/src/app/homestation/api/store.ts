@@ -26,7 +26,7 @@ import type {
 } from '../datamodel/types'
 import type { Did, ObjId } from '../protocol/feed'
 import type { CommentList, EntryDebugView, HomeStationStore, ReadingSummary, StoreDomain, StoreSettings, StoreStatus } from '../store/types'
-import { attachmentKindOf, heifSizeOf, sniffFile } from './fileKind'
+import { attachmentKindOf, fileMetaOf } from './fileKind'
 import { setContentHome, type Transport, type UploadMeta } from './transport'
 import { didDisplayName } from '../../../presentation/model'
 
@@ -72,35 +72,11 @@ function hueOf(did: string) {
   return hash % 360
 }
 
-function loadMedia<T>(file: File, tag: 'img' | 'video' | 'audio', read: (element: HTMLImageElement | HTMLMediaElement) => T): Promise<T | undefined> {
-  const url = URL.createObjectURL(file)
-  return new Promise<T | undefined>(resolve => {
-    const element = document.createElement(tag)
-    const done = (value: T | undefined) => {
-      URL.revokeObjectURL(url)
-      resolve(value)
-    }
-    element.addEventListener(tag === 'img' ? 'load' : 'loadedmetadata', () => done(read(element)))
-    element.addEventListener('error', () => done(undefined))
-    if (element instanceof HTMLMediaElement) element.preload = 'metadata'
-    element.src = url
-  })
-}
-
-// Width, height and duration are best effort: a format this browser cannot decode (HEIC
-// or HEVC on Chromium) is still uploaded as media, its size read from the HEIF `ispe` box.
+// A media attachment must be what it claims to be, judged by its bytes.
 async function uploadMeta(file: File, kind: AttachmentInput['kind']): Promise<UploadMeta> {
-  const { mime, head } = await sniffFile(file)
-  const meta: UploadMeta = { name: file.name, mime }
-  if (kind === 'file' || kind === 'dir') return meta
-  if (!file.size || attachmentKindOf(mime) !== kind) throw new Error(`Expected a non-empty ${kind} file.`)
-  if (kind === 'image') {
-    const size = await loadMedia(file, 'img', element => ({ width: (element as HTMLImageElement).naturalWidth, height: (element as HTMLImageElement).naturalHeight }))
-    const known = size?.width && size.height ? size : heifSizeOf(head)
-    return known ? { ...meta, ...known } : meta
-  }
-  const duration = await loadMedia(file, kind, element => (element as HTMLMediaElement).duration)
-  return duration && Number.isFinite(duration) ? { ...meta, duration_ms: Math.round(duration * 1000) } : meta
+  const fileMeta = await fileMetaOf(file)
+  if (kind !== 'file' && kind !== 'dir' && (!file.size || attachmentKindOf(fileMeta.mime) !== kind)) throw new Error(`Expected a non-empty ${kind} file.`)
+  return { name: file.name, mime: fileMeta.mime, fileMeta }
 }
 
 let storeCounter = 0

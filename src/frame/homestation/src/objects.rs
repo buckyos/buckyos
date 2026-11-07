@@ -506,8 +506,3 @@ pub fn object_dependencies(id: &str, body: &str) -> HsResult<Vec<String>> {
     Err(bad("unsupported attachment object type"))
 }
 
-pub fn import_metadata(conn: &Conn, id: &str) -> HsResult<Value> {
-    let value: Option<String> =
-        conn.query_row("SELECT metadata FROM import_metadata WHERE obj_id=?1 AND owner=?2", [id, conn.owner], |row| row.get(0)).optional()?;
-    Ok(value.and_then(|value| serde_json::from_str(&value).ok()).unwrap_or(Value::Null))
-}

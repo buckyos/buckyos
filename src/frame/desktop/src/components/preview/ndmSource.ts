@@ -92,7 +92,7 @@ export async function resolveNdmSource(
         name = typeof file.content_obj.name === 'string' && file.content_obj.name ? file.content_obj.name : objId
         size = file.size
         contentId = content.toString()
-        mediaType = typeof file.meta.mime_type === 'string' ? stripMediaTypeParams(file.meta.mime_type) : ''
+        mediaType = typeof file.meta.mime === 'string' ? stripMediaTypeParams(file.meta.mime) : ''
       } catch {
         throw new PreviewError('CORRUPTED', 'The file object metadata is invalid')
       }

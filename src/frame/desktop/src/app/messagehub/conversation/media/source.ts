@@ -7,7 +7,8 @@ import {
   type PreviewSessionItemInput,
   type ResolvedPreviewSource,
 } from '../../../../components/preview/types'
-import { getMessageStableId, messageObjId, type MessageObject, type RefItem } from '../../protocol/msgobj'
+import type { ndn } from 'buckyos'
+import { getMessageStableId, messageObjId, type MessageObject } from '../../protocol/msgobj'
 import { effectiveContent, messageRelations } from '../history/relations'
 import type { ConversationMessageReader } from '../history/types'
 import { getObjectAccess, type ObjectInfo } from '../history/objectAccess'
@@ -109,7 +110,7 @@ export function messageAttachments(message: MessageObject, indexHint: number): M
   return out
 }
 
-export function attachmentOfRef(ref: RefItem, id: string, context?: string, hasAccess = getObjectAccess() !== null): MessageAttachment | null {
+export function attachmentOfRef(ref: ndn.RefItem, id: string, context?: string, hasAccess = getObjectAccess() !== null): MessageAttachment | null {
   const target = ref.target
   if (target.type !== 'data_obj') return null
   const hint = target.uri_hint?.trim()

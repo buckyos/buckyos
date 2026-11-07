@@ -10,7 +10,7 @@ import { getAttachmentKey } from '../conversation/input/attachmentDraft'
  * - viewer → owner isolation: caches, drafts, readers and late responses are
  *   keyed by `(viewerDid, ownerDid, sessionId)`; observers never write.
  */
-import { buckyos, identityKey, objectUrl } from 'buckyos'
+import { buckyos, identityKey, objectUrl, ndn, notifyCategoryFromSessionId } from 'buckyos'
 import type { z } from 'zod'
 import { fetchAgentList } from '../../../api/user_mgr'
 import { onAgentsChanged, onOwnProfileChanged } from '../../agent-setup/events'
@@ -24,7 +24,7 @@ import {
 } from '../datamodel/sessionApi'
 import { createGroupSchema, groupSessionId } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../conversation/history/relations'
-import { isValidMsgSessionId, messageVoice, notifySessionCategory, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
+import { messageVoice, type MessageObject } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { sessionExtensions } from '../extensions/model'
@@ -112,7 +112,7 @@ interface ReceiptState {
 const RECEIPT_PAGE = 256
 
 /** Message-level fields an outgoing message may carry besides its content. */
-type OutgoingMeta = Pick<MsgObject, 'relates_to' | 'mentions' | 'voice'>
+type OutgoingMeta = Pick<MessageObject, 'relates_to' | 'mentions' | 'voice'>
 
 function labels(): ProjectionLabels {
   return {
@@ -843,7 +843,7 @@ export class MessageHubApiStore implements MessageHubStore {
     const own = context.mode === 'self' && context.ownerDid === this.selfDid && context.viewerDid === this.selfDid
     const base: SessionAccess = { mode: 'read_only', canManage: own, canEnableWrite: false, canEditPresentation: own, canEditSharedState: false, canEditOwnMemberState: false }
     if (!own) return { ...base, canManage: false, canEditPresentation: false, readOnlyReason: 'agent_observer' }
-    if (notifySessionCategory(session.id)) return { ...base, readOnlyReason: 'system_notify' }
+    if (notifyCategoryFromSessionId(session.id)) return { ...base, readOnlyReason: 'system_notify' }
     if (session.binding.kind === 'unknown') return { ...base, readOnlyReason: 'binding_unknown' }
     if (session.binding.kind === 'tunnel') {
       if (!session.binding.connected || !session.binding.canSend) return { ...base, readOnlyReason: 'transport_unavailable' }
@@ -1046,24 +1046,24 @@ export class MessageHubApiStore implements MessageHubStore {
   }
 
   /**
-   * Native named sessions are addressed by `to_session` (MsgObject v2); the
+   * Native named sessions are addressed by `to_session` (ndn.MsgObject v2); the
    * default session (`dm:*`, or the session named after the entity) omits it.
    * `thread.topic` is a semantic hint only and never carries the session id.
    */
-  private sendTarget(session: Session): { to: string; toSession?: string; kind: MsgObject['kind'] } {
+  private sendTarget(session: Session): { to: string; toSession?: string; kind: ndn.MsgObject['kind'] } {
     const binding = session.binding as SessionBinding
     if (binding.kind === 'tunnel') return { to: binding.endpointDid, kind: 'chat' }
     if (binding.kind !== 'native') throw new Error('binding_unknown')
     const isGroup = this.projected({ viewerDid: this.selfDid, ownerDid: session.ownerDid, mode: 'self' }).entityById.get(session.entityId)?.type === 'group'
     if (isGroup) {
       const toSession = groupSessionId(binding.targetDid, session.id)
-      if (toSession !== undefined && !isValidMsgSessionId(toSession)) throw new Error('rejected: invalid-to-session')
+      if (toSession !== undefined && !ndn.isValidMsgSessionId(toSession)) throw new Error('rejected: invalid-to-session')
       return { to: binding.targetDid, kind: 'group_msg', toSession }
     }
     const isNamedSession = !session.id.startsWith('dm:') && session.id !== session.entityId
     const toSession = isNamedSession || isUuid(session.id) ? session.id : undefined
     // The backend rejects an invalid `to_session`; fail before the optimistic bubble.
-    if (toSession !== undefined && !isValidMsgSessionId(toSession)) throw new Error('rejected: invalid-to-session')
+    if (toSession !== undefined && !ndn.isValidMsgSessionId(toSession)) throw new Error('rejected: invalid-to-session')
     return { to: binding.targetDid, kind: isGroup ? 'group_msg' : 'chat', toSession }
   }
 
@@ -1106,7 +1106,7 @@ export class MessageHubApiStore implements MessageHubStore {
       }
       uploads.forEach(upload => { if (upload.file) rememberLocalObject(upload.objId, upload.file, upload.name) })
       payload.signal?.throwIfAborted()
-      const refs: RefItem[] = uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name }))
+      const refs: ndn.RefItem[] = uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name }))
       const meta: OutgoingMeta = { ...(payload.relatesTo ? { relates_to: payload.relatesTo } : {}), ...(payload.mentions && (payload.mentions.all || payload.mentions.dids?.length) ? { mentions: payload.mentions } : {}), ...(payload.voice && refs.length === 1 ? { voice: payload.voice } : {}) }
       await this.postOutgoing(context, session, { format: 'text/plain', content: text, ...(payload.machine ? { machine: payload.machine } : {}), ...(refs.length ? { refs } : {}) }, pendingKey, idempotencyKey, meta, { createdAtMs: payload.submittedAt, replaces: localId && pendingBubbleId(localId) })
       releaseAttachmentUploads(payload.attachments)
@@ -1145,7 +1145,7 @@ export class MessageHubApiStore implements MessageHubStore {
   /** A failed outgoing message is posted again as a new message with the same content and attachment refs. */
   async resend(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined) {
     const session = this.writableSession(context, sessionId, confirmation)
-    const content: MsgObject['content'] = { format: message.content.format ?? 'text/plain', content: message.content.content ?? '', ...(message.content.refs?.length ? { refs: message.content.refs } : {}) }
+    const content: ndn.MsgObject['content'] = { format: message.content.format ?? 'text/plain', content: message.content.content ?? '', ...(message.content.refs?.length ? { refs: message.content.refs } : {}) }
     const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:resend:${messageIdOf(message)}`
     const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
     this.pendingSendKeys.set(pendingKey, idempotencyKey)
@@ -1157,7 +1157,7 @@ export class MessageHubApiStore implements MessageHubStore {
     const session = this.writableSession(context, sessionId, confirmation)
     const effective = effectiveContent(message)
     const refs = (effective.refs ?? []).filter(ref => ref.target.type === 'data_obj')
-    const content: MsgObject['content'] = { format: effective.format ?? 'text/plain', content: effective.content ?? '', ...(refs.length ? { refs } : {}) }
+    const content: ndn.MsgObject['content'] = { format: effective.format ?? 'text/plain', content: effective.content ?? '', ...(refs.length ? { refs } : {}) }
     const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:forward:${messageIdOf(message)}`
     const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
     this.pendingSendKeys.set(pendingKey, idempotencyKey)
@@ -1182,20 +1182,20 @@ export class MessageHubApiStore implements MessageHubStore {
     this.bump(data)
   }
 
-  private async postOutgoing(context: MessageHubContext, session: Session, content: MsgObject['content'], pendingKey: string, idempotencyKey: string, meta: OutgoingMeta = {}, placement: { createdAtMs?: number; replaces?: string } = {}) {
+  private async postOutgoing(context: MessageHubContext, session: Session, content: ndn.MsgObject['content'], pendingKey: string, idempotencyKey: string, meta: OutgoingMeta = {}, placement: { createdAtMs?: number; replaces?: string } = {}) {
     const data = this.owner(context.ownerDid)
     const sessionId = session.id
     const target = this.sendTarget(session)
     // A resend is a new message: fresh created_at_ms and nonce. A retry of an
     // unknown outcome reuses the idempotency key, which the backend dedupes on.
-    const message: MsgObject = {
+    const message: ndn.MsgObject = {
       from: context.ownerDid,
       to: [target.to],
       kind: target.kind,
       ...(target.toSession !== undefined ? { to_session: target.toSession } : {}),
       ...meta,
       created_at_ms: placement.createdAtMs ?? this.now(),
-      nonce: randomMsgNonce(),
+      nonce: ndn.randomMsgNonce(),
       content,
     }
     const key = viewerSessionKey(context, sessionId)

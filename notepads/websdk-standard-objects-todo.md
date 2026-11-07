@@ -1,6 +1,6 @@
 # WebSDK 标准对象实现收敛 TODO
 
-> 状态：未开始，第 2 节的决定已 review，可以交给 code agent。现状核实于 2026-11-06（buckyos `070d73afb`、buckyos-websdk `b25937d`、cyfs-ndn `eafd667`），下文行号以这些提交为准。
+> 状态：开发完成，三个仓库都未提交，见第 9 节。现状核实于 2026-11-06（buckyos `070d73afb`、buckyos-websdk `b25937d`、cyfs-ndn `eafd667`），下文行号以这些提交为准。
 >
 > 背景：2026-09-30 实现 MsgObject v2（cymsg breaking change）时发现，TypeScript 侧没有统一的标准对象实现。Desktop 手写了一份 `msgobj.ts` 镜像，WebSDK 的 `MsgObject` 只是 `Record<string, unknown>`。
 >
@@ -67,9 +67,9 @@ MsgObject 收敛（3.1–3.4 和 3.7 的 `msgobj.ts` 部分）和 FileObject met
 
 ### 3.1 SDK：修正已落后的内容，重新生成 fixture
 
-- [ ] `PathObject` 改为 `iat`，增加可选的 `host`（为空时省略），同步构造函数、`fromJSON`、`toJSON` 和 `tests/ndn_types_cases.ts:670,692,825-831`。
-- [ ] `OBJ_TYPE_MSG_RECE` 改名为 `OBJ_TYPE_RECEIPT`，值为 `cyrece`，与 Rust 同名。
-- [ ] 其它 `OBJ_TYPE_*` 常量按 `cyfs-ndn/src/ndn-lib/src/lib.rs` 对齐：
+- [x] `PathObject` 改为 `iat`，增加可选的 `host`（为空时省略），同步构造函数、`fromJSON`、`toJSON` 和 `tests/ndn_types_cases.ts:670,692,825-831`。
+- [x] `OBJ_TYPE_MSG_RECE` 改名为 `OBJ_TYPE_RECEIPT`，值为 `cyrece`，与 Rust 同名。
+- [x] 其它 `OBJ_TYPE_*` 常量按 `cyfs-ndn/src/ndn-lib/src/lib.rs` 对齐：
 
   | SDK 现在（`ndn_types.ts:67-78`） | 改为 |
   | --- | --- |
@@ -79,7 +79,7 @@ MsgObject 收敛（3.1–3.4 和 3.7 的 `msgobj.ts` 部分）和 FileObject met
   | `OBJ_TYPE_TRIE`、`OBJ_TYPE_TRIE_SIMPLE`、`OBJ_TYPE_CHUNK_LIST_FIX_SIZE`、`OBJ_TYPE_CHUNK_LIST_SIMPLE_FIX_SIZE` | 删除，Rust 已注释掉 |
 
   同步 `isChunkList`、`isContainer`、`isBigContainer`，判断规则同 `object.rs:93,116,127`，并加用例。现在 `isBigContainer` 对 `clist`、`cymap`、`cylist` 返回 `false`，而 Rust 返回 `true`；TS 侧目前没有调用方，所以没有实际影响。需要改的引用只有 `ndn_types.ts:563,582-604,1568,1572,1732` 和 `tests/ndn_types_cases.ts:46,180,1005`；SDK 的 `src`、`tests`、`cli/modules` 和 Desktop、`src/tools`、`test`、`src/apps` 都已搜过，没有其它引用。
-- [ ] 重新生成 `tests/ndn_object.json`，并删除 `tests/ndn_types_cases.ts` 中关于 `cymsgr` 的注释。在 `cyfs-ndn/src/` 运行：
+- [x] 重新生成 `tests/ndn_object.json`，并删除 `tests/ndn_types_cases.ts` 中关于 `cymsgr` 的注释。在 `cyfs-ndn/src/` 运行：
 
   ```bash
   # 打印 7 项的数组（输出夹在测试日志里，需要提取）
@@ -92,25 +92,25 @@ MsgObject 收敛（3.1–3.4 和 3.7 的 `msgobj.ts` 部分）和 FileObject met
 
 ### 3.2 SDK：MsgObject v2
 
-- [ ] 在 `ndn_types.ts` 增加类型：`MsgObject`、`MsgObjKind`、`TopicThread`、`MsgRelation`、`MsgRelType`（保留未知值）、`MsgMentions`、`MsgContent`、`MsgContentFormat`、`MachineContent`、`CanonValue`、`RefItem`、`RefTarget`、`RefRole`。可以从 Desktop `protocol/msgobj.ts:23-149,211-239` 搬过来，已对照 Rust 确认字段一致。`meta` 是 flatten 字段，用索引签名表示。`created_at_ms` 沿用 Desktop 的必填写法，避免 Desktop 到处判空；校验入口仍接受缺失。
-- [ ] 增加校验：`validateMsgObject`、`msgObjectFromJsonChecked`（对应 `from_json_value_checked`）、`isValidMsgSessionId`、`MSG_OBJECT_RESERVED_KEYS`、`MSG_SESSION_ID_MAX_CHARS`、`MSG_REACTION_KEY_MAX_BYTES`、`randomMsgNonce`。规则见第 4 节。
-- [ ] `msg_center_client.ts` 的 `MsgObject` 改为 `ndn_types.ts` 的类型，并去掉 `msgMachineData` 等处多余的 `as JsonObject`。
-- [ ] 移植测试，对应关系见第 4 节末尾。
+- [x] 在 `ndn_types.ts` 增加类型：`MsgObject`、`MsgObjKind`、`TopicThread`、`MsgRelation`、`MsgRelType`（保留未知值）、`MsgMentions`、`MsgContent`、`MsgContentFormat`、`MachineContent`、`CanonValue`、`RefItem`、`RefTarget`、`RefRole`。可以从 Desktop `protocol/msgobj.ts:23-149,211-239` 搬过来，已对照 Rust 确认字段一致。`meta` 是 flatten 字段，用索引签名表示。`created_at_ms` 沿用 Desktop 的必填写法，避免 Desktop 到处判空；校验入口仍接受缺失。
+- [x] 增加校验：`validateMsgObject`、`msgObjectFromJsonChecked`（对应 `from_json_value_checked`）、`isValidMsgSessionId`、`MSG_OBJECT_RESERVED_KEYS`、`MSG_SESSION_ID_MAX_CHARS`、`MSG_REACTION_KEY_MAX_BYTES`、`randomMsgNonce`。规则见第 4 节。
+- [x] `msg_center_client.ts` 的 `MsgObject` 改为 `ndn_types.ts` 的类型，并去掉 `msgMachineData` 等处多余的 `as JsonObject`。
+- [x] 移植测试，对应关系见第 4 节末尾。
 
 ### 3.3 SDK：ReceiptObj、ActionObject、PackageMeta
 
-- [ ] 增加 `ReceiptObj`、`ReceiptStatus`（`accepted | rejected | quarantined`）。
-- [ ] 增加 `ActionObject`、`ACTION_TYPE_*` 常量。`repo_client.ts` 的 `RepoActionProof` 改为 `ActionObject`，并更新该处“保持 opaque”的注释。
-- [ ] 增加 `FileObjectJson` interface，表示 `cyfile` 的普通 JSON：`name?`、`size?`、`content?` 等基础字段，3.5 键表里的所有字段（都可选），再加索引签名。现有的 `FileObject` class 不动。
-- [ ] 增加 `PackageMeta`（`FileObjectJson` 加 `version`、`version_tag?`、`deps?`）。把 `normalizePackageMetaForObjId`、`calcPkgMetaObjId` 移到 `ndn_types.ts`，让浏览器也能用，`provision.ts` 改为引用它们。`tests/provision.test.ts:403` 必须继续通过。
-- [ ] 把 `cyact`、`cymsg`、`cyrece`、`pkg` 注册进 `tests/ndn_types_cases.ts:172` 的 `TEST_NAMED_OBJECT_DECODERS`，让它们走“解码再编码”的路径，而不是只校验哈希。
+- [x] 增加 `ReceiptObj`、`ReceiptStatus`（`accepted | rejected | quarantined`）。
+- [x] 增加 `ActionObject`、`ACTION_TYPE_*` 常量。`repo_client.ts` 的 `RepoActionProof` 改为 `ActionObject`，并更新该处“保持 opaque”的注释。
+- [x] 增加 `FileObjectJson` interface，表示 `cyfile` 的普通 JSON：`name?`、`size?`、`content?` 等基础字段，3.5 键表里的所有字段（都可选），再加索引签名。现有的 `FileObject` class 不动。
+- [x] 增加 `PackageMeta`（`FileObjectJson` 加 `version`、`version_tag?`、`deps?`）。把 `normalizePackageMetaForObjId`、`calcPkgMetaObjId` 移到 `ndn_types.ts`，让浏览器也能用，`provision.ts` 改为引用它们。`tests/provision.test.ts:403` 必须继续通过。
+- [x] 把 `cyact`、`cymsg`、`cyrece`、`pkg` 注册进 `tests/ndn_types_cases.ts:172` 的 `TEST_NAMED_OBJECT_DECODERS`，让它们走“解码再编码”的路径，而不是只校验哈希。
 
 ### 3.4 SDK：JWT 与 dispatch
 
-- [ ] `loadNamedObjectFromObjStr` 按 Rust 改写（`object.rs:433`）：去掉开头空白后以 `{` 或 `[` 开头按 JSON 解析，否则按 JWT 取 claims。现在的 `indexOf('{') >= 0` 判断不对。
-- [ ] 增加 `buildNamedObjectByJwt`、`verifyNamedObjectFromJwt`，并实现 `SimpleMapItem` 的 `objectJwt` 分支。ObjId 只由 claims 计算。
-- [ ] 增加 `decodeMsgObjectJwt`、`verifyMsgObjectJwt`、`msgJwtKidDid`。header 必须 `alg = EdDSA` 且 `kid` 非空，claims 走 `msgObjectFromJsonChecked`。
-- [ ] 增加 `CYFS_CONTENT_TYPE_NAMED_OBJECT_JSON`、`CYFS_CONTENT_TYPE_NAMED_OBJECT_JWT`、`namedObjectEncodingFromContentType`、`isCyfsNamedObjectContentType`。判断规则同 `cyfs_http.rs:167-175`：去掉 `;` 后的参数，大小写不敏感。
+- [x] `loadNamedObjectFromObjStr` 按 Rust 改写（`object.rs:433`）：去掉开头空白后以 `{` 或 `[` 开头按 JSON 解析，否则按 JWT 取 claims。现在的 `indexOf('{') >= 0` 判断不对。
+- [x] 增加 `buildNamedObjectByJwt`、`verifyNamedObjectFromJwt`，并实现 `SimpleMapItem` 的 `objectJwt` 分支。ObjId 只由 claims 计算。
+- [x] 增加 `decodeMsgObjectJwt`、`verifyMsgObjectJwt`、`msgJwtKidDid`。header 必须 `alg = EdDSA` 且 `kid` 非空，claims 走 `msgObjectFromJsonChecked`。
+- [x] 增加 `CYFS_CONTENT_TYPE_NAMED_OBJECT_JSON`、`CYFS_CONTENT_TYPE_NAMED_OBJECT_JWT`、`namedObjectEncodingFromContentType`、`isCyfsNamedObjectContentType`。判断规则同 `cyfs_http.rs:167-175`：去掉 `;` 后的参数，大小写不敏感。
 
 ### 3.5 SDK：通用 helper，上传时写入常用 meta
 
@@ -137,37 +137,37 @@ MsgObject 收敛（3.1–3.4 和 3.7 的 `msgobj.ts` 部分）和 FileObject met
 - **字节序两种都有**（Sony 小端，iPhone 大端）。
 - **对象不会明显变大。** meta 的 JSON 约 300–400 字节。
 
-- [ ] 把探测能力移进 SDK。`sniffMagic`、`stripMediaTypeParams`、`heifImageSize` 和 `isoBoxes` 从 Desktop `src/frame/desktop/src/components/preview/mediaTypes.ts` 移到 `src/content_mime.ts`，经 `buckyos/content` 导出（`extensionOf` 已是这个模式），Desktop 改为引用。
-- [ ] 增加通用 helper `src/file_meta.ts`，经 `ndn` 导出：`probeFileMeta(source, { name?, declaredMime? })` 返回上表字段，`buildFileObject(name, size, content, meta)` 返回带 meta 的 `FileObject`。`source` 是 `Blob` 或 `{ size, readAt(offset, length) }`。
-- [ ] 实现字节解析。只按需读取，不把整个文件读进内存，单个文件的总读取量要有上限（建议 8 MiB），超过就放弃这一组字段：
+- [x] 把探测能力移进 SDK。`sniffMagic`、`stripMediaTypeParams`、`heifImageSize` 和 `isoBoxes` 从 Desktop `src/frame/desktop/src/components/preview/mediaTypes.ts` 移到 `src/content_mime.ts`，经 `buckyos/content` 导出（`extensionOf` 已是这个模式），Desktop 改为引用。
+- [x] 增加通用 helper `src/file_meta.ts`，经 `ndn` 导出：`probeFileMeta(source, { name?, declaredMime? })` 返回上表字段，`buildFileObject(name, size, content, meta)` 返回带 meta 的 `FileObject`。`source` 是 `Blob` 或 `{ size, readAt(offset, length) }`。
+- [x] 实现字节解析。只按需读取，不把整个文件读进内存，单个文件的总读取量要有上限（建议 8 MiB），超过就放弃这一组字段：
   - **EXIF：** JPEG 的 APP1，HEIC、HEIF、AVIF 的 `Exif` item，PNG 的 `eXIf`，WebP 的 `EXIF`，TIFF 及基于 TIFF 的 RAW（DNG、CR2、NEF、ARW）直接读 IFD。只读上表用到的白名单标签。
   - **尺寸：** JPEG 的 SOF，PNG 的 IHDR，GIF，WebP，HEIF 的 `ispe` 加 `irot`，MP4、MOV 的 `tkhd` 加旋转矩阵。RAW 取不到就省略。
   - **视频（MP4、MOV）：** `moov` 可能在文件末尾，要按顶层 box 跳着读，并跳过 `stbl` 里的大表。时间取 `com.apple.quicktime.creationdate`，缺失时取 `mvhd`（UTC）；位置取 `com.apple.quicktime.location.ISO6709` 或 `©xyz`；相机取 `com.apple.quicktime.make`、`model`。
   - **音频：** 上表的标签和时长。
-- [ ] 字节解析不出的尺寸或时长（如 WebM、MP3）才用媒体元素补，沿用 Desktop `app/homestation/api/store.ts:76` 的 `loadMedia` 并加上超时。没有 DOM 的环境（Node、Deno、Worker）直接省略。
-- [ ] 解析的是不可信的二进制输入，要处理这些情况：
+- [x] 字节解析不出的尺寸或时长（如 WebM、MP3）才用媒体元素补，沿用 Desktop `app/homestation/api/store.ts:76` 的 `loadMedia` 并加上超时。没有 DOM 的环境（Node、Deno、Worker）直接省略。
+- [x] 解析的是不可信的二进制输入，要处理这些情况：
   - 偏移越界和循环引用。任何解析错误只丢弃这一组字段，不能让导入失败。
   - 分母为 0 的 rational、无效日期（如 `0000:00:00 00:00:00`）直接省略。
   - `lat`、`lon` 超出范围，或恰好是 `(0, 0)`，都省略。
   - 字符串去掉 NUL 和控制字符，trim 后最长 128 个字符。
   - **`NaN`、`Infinity`、`-0` 和孤立代理对会让 `genObjId` 抛错**（`ndn_types.ts:243-248`），所以写入前要过滤。
   - **取整规则必须和 Rust 一致：** 对绝对值四舍五入再恢复符号，结果是 `-0` 时归一成 `0`。`Math.round` 和 Rust 的 `round` 处理负数 `.5` 的方向不同，直接用会算出不同的 ObjId。
-- [ ] `importFiles`、`importDirectory`、`pickupAndImport` 都走 `importSelectedFiles`，在这里统一处理：QCID 查找之前探测，并把结果传给 `materializeFile`、`materializeFileViaWorker`、`buildFileObjectFromContentId`，让所有 `new NdnFileObject(...)` 都带上 meta。
-- [ ] 增加选项 `fileMeta`，接收调用方已有的探测结果。HomeStation 校验附件类型时不用探测两次，MessageHub 也靠它保留转码前的 EXIF（见 3.7）。
-- [ ] **改掉 `ndm_client.ts:1513` 的重建逻辑。** 它在 QCID 命中时按 `name/size/content` 重建对象来取 `obj_data`，不带 meta 就会和 `objectId` 对不上。
-- [ ] `ImportedFileObject.mimeType` 改取探测结果，不再用 `file.type`。
-- [ ] 更新写死 ObjId 和 mimeType 的用例：`tests/ndm_client.test.ts:211`、`tests/ndm_client_cases.ts:147,178,577,578,841,854`。在 `tests/browser/real-browser/ndm_client.spec.js` 加真实浏览器用例，验证媒体元素的回退。
-- [ ] 增加解析用例，用 3.6 生成的向量（`tests/media_meta_vectors.json`），再覆盖样本里没有的情况：EXIF Orientation 为 6 的 JPEG、南纬西经、负海拔、畸形输入。视频可以用 ffmpeg 给 `src/frame/nfs_server/tests/fixtures/preview/h264_aac.mov` 加 `location` 和 `creation_time`。
-- [ ] 增加读真实样本的用例：目录取环境变量 `BUCKYOS_MEDIA_SAMPLES`，默认是同级的 `media_samples/`，不存在就跳过。**样本含真实位置和时间，样本本身和由它得出的预期值都不能提交。**
-- [ ] `pnpm run build`，让 `dist/` 和 `cli/dist/` 包含 3.1–3.5 的改动。
+- [x] `importFiles`、`importDirectory`、`pickupAndImport` 都走 `importSelectedFiles`，在这里统一处理：QCID 查找之前探测，并把结果传给 `materializeFile`、`materializeFileViaWorker`、`buildFileObjectFromContentId`，让所有 `new NdnFileObject(...)` 都带上 meta。
+- [x] 增加选项 `fileMeta`，接收调用方已有的探测结果。HomeStation 校验附件类型时不用探测两次，MessageHub 也靠它保留转码前的 EXIF（见 3.7）。
+- [x] **改掉 `ndm_client.ts:1513` 的重建逻辑。** 它在 QCID 命中时按 `name/size/content` 重建对象来取 `obj_data`，不带 meta 就会和 `objectId` 对不上。
+- [x] `ImportedFileObject.mimeType` 改取探测结果，不再用 `file.type`。
+- [x] 更新写死 ObjId 和 mimeType 的用例：`tests/ndm_client.test.ts:211`、`tests/ndm_client_cases.ts:147,178,577,578,841,854`。在 `tests/browser/real-browser/ndm_client.spec.js` 加真实浏览器用例，验证媒体元素的回退。
+- [x] 增加解析用例，用 3.6 生成的向量（`tests/media_meta_vectors.json`），再覆盖样本里没有的情况：EXIF Orientation 为 6 的 JPEG、南纬西经、负海拔、畸形输入。视频可以用 ffmpeg 给 `src/frame/nfs_server/tests/fixtures/preview/h264_aac.mov` 加 `location` 和 `creation_time`。
+- [x] 增加读真实样本的用例：目录取环境变量 `BUCKYOS_MEDIA_SAMPLES`，默认是同级的 `media_samples/`，不存在就跳过。**样本含真实位置和时间，样本本身和由它得出的预期值都不能提交。**
+- [x] `pnpm run build`，让 `dist/` 和 `cli/dist/` 包含 3.1–3.5 的改动。
 
 ### 3.6 服务端：Rust helper，统一键名，HomeStation 改用 cyfile
 
 本节的 cyfs-ndn 路径相对 `cyfs-ndn/src/`，其余相对 buckyos 的 `src/`。cyfs-ndn 要先进入 main，buckyos 才能用上 helper（`cargo update -p ndn-lib`）；本地联调可以临时用 `[patch]`，不要提交。
 
-- [ ] `ndn-lib` 增加 `media_meta` 模块，键和规则同 3.5：`probe_media_meta(source, name, declared_mime)` 返回 `MediaMeta`，`FileObject::apply_media_meta` 写入。`source` 提供异步的 `read_at`，内置内存和本地文件两种实现。不加新依赖；扩展名映射自带一张媒体类型小表，和 SDK 的 `content_mime.ts` 保持一致。
-- [ ] 输出测试向量，和 `tests/ndn_object.json` 一样以 Rust 为参考：`ndn-lib` 增加一个用例，打印 `[{ name, input, expected }]`（`input` 是 base64 编码的合成字节），存为 SDK 的 `tests/media_meta_vectors.json`，TS 必须全部通过。
-- [ ] 所有构造点改用 helper。调用方已知的信息作为声明传入，或在 helper 之后覆盖；键统一用 `mime`：
+- [x] `ndn-lib` 增加 `media_meta` 模块，键和规则同 3.5：`probe_media_meta(source, name, declared_mime)` 返回 `MediaMeta`，`FileObject::apply_media_meta` 写入。`source` 提供异步的 `read_at`，内置内存和本地文件两种实现。不加新依赖；扩展名映射自带一张媒体类型小表，和 SDK 的 `content_mime.ts` 保持一致。
+- [x] 输出测试向量，和 `tests/ndn_object.json` 一样以 Rust 为参考：`ndn-lib` 增加一个用例，打印 `[{ name, input, expected }]`（`input` 是 base64 编码的合成字节），存为 SDK 的 `tests/media_meta_vectors.json`，TS 必须全部通过。
+- [x] 所有构造点改用 helper。调用方已知的信息作为声明传入，或在 helper 之后覆盖；键统一用 `mime`：
 
   | 位置 | 读字节的方式 | 备注 |
   | --- | --- | --- |
@@ -183,15 +183,15 @@ MsgObject 收敛（3.1–3.4 和 3.7 的 `msgobj.ts` 部分）和 FileObject met
   | `kernel/workflow/src/io.rs:48` | 调用方 `:165` 有内存字节，`:366` 按该处实际来源读 | `content_type` 作为声明，写入键改成 `mime`。结果只取决于字节，对象仍是确定性的 |
   | `frame/agent_tool/src/llm_understand_media/pipeline.rs:378` | 经 store 读已存的 chunk | `mime` 作为声明，写入键改成 `mime` |
 
-- [ ] 读取 FileObject 时只认 `mime`：`frame/agent_tool/src/read_tool.rs:118`、`frame/agent_tool/src/llm_understand_media/pipeline.rs:431`、`frame/msg_center/src/object_access.rs:411`、`frame/aicc/src/resource/mod.rs:1607`。
-- [ ] 以下的 `mime_type` 不是 FileObject 字段，**不要改**：`frame/aicc/src/protocol/` 下的第三方协议（`gemini.rs`、`fal_queue.rs`）、`frame/msg_center/src/tg_tunnel.rs:387,451` 的附件 DTO、SDK `ndm_client.ts:1755` 的 tus 元数据。
-- [ ] 这是决定 12 的例外，**不要加 meta**：`frame/control_panel/src/buckets.rs:151`、`frame/repo_service/src/service.rs:183`、SDK `cli/modules/app.ts:1111`、cyfs-ndn `package-lib/src/meta.rs:53`。这些是包内容，CLI 和服务端都按 `name/size/content` 算出同一个 ObjId，不是所有一端都有字节。
-- [ ] 给 HomeStation 加跨用户用例：在 `frame/homestation/tests/` 用 `Net::new(&["carol", "bob"], …)`，carol 发布带 `mime`、`width`、`height` 的 `cyfile` 图片，bob 看到的 `media[0].file` 要有这些字段，`/content` 的 Content-Type 要正确。bug 的根因是 SDK 不写 meta，由 3.5 的用例覆盖；这个用例防止 HomeStation 的读取路径再丢字段。
-- [ ] `frame/homestation/src/projection.rs`：删除 `file_view`，`local_file` 直接返回对象 body；`resources.rs:409` 同样处理。
-- [ ] 删除 `import_metadata`：表定义 `kernel/buckyos-api/src/homestation_client.rs:137`，以及 `frame/homestation/src/` 下的 `objects.rs:509`、`publish.rs:904-914,929-931,1142-1144`、`projection.rs:126`、`http.rs:360-361`。媒体类型校验和 Content-Type 改读对象的 `mime`。
-- [ ] `object.register` 去掉 `metadata` 参数（`frame/homestation/src/api.rs:154`、`publish.rs:876`）。
-- [ ] 加跨语言用例：带嵌套 meta 和浮点数（如 `geo.lat = 34.9949`）的 `cyfile`，Rust 反序列化成 `FileObject` 后算出的 ObjId，要等于 SDK 算出的值。
-- [ ] 更新 `frame/homestation/tests/reading.rs:11,66,130`、`sources.rs:109`、`object_import.rs:70,81,198`。
+- [x] 读取 FileObject 时只认 `mime`：`frame/agent_tool/src/read_tool.rs:118`、`frame/agent_tool/src/llm_understand_media/pipeline.rs:431`、`frame/msg_center/src/object_access.rs:411`、`frame/aicc/src/resource/mod.rs:1607`。
+- [x] 以下的 `mime_type` 不是 FileObject 字段，**不要改**：`frame/aicc/src/protocol/` 下的第三方协议（`gemini.rs`、`fal_queue.rs`）、`frame/msg_center/src/tg_tunnel.rs:387,451` 的附件 DTO、SDK `ndm_client.ts:1755` 的 tus 元数据。
+- [x] 这是决定 12 的例外，**不要加 meta**：`frame/control_panel/src/buckets.rs:151`、`frame/repo_service/src/service.rs:183`、SDK `cli/modules/app.ts:1111`、cyfs-ndn `package-lib/src/meta.rs:53`。这些是包内容，CLI 和服务端都按 `name/size/content` 算出同一个 ObjId，不是所有一端都有字节。
+- [x] 给 HomeStation 加跨用户用例：在 `frame/homestation/tests/` 用 `Net::new(&["carol", "bob"], …)`，carol 发布带 `mime`、`width`、`height` 的 `cyfile` 图片，bob 看到的 `media[0].file` 要有这些字段，`/content` 的 Content-Type 要正确。bug 的根因是 SDK 不写 meta，由 3.5 的用例覆盖；这个用例防止 HomeStation 的读取路径再丢字段。
+- [x] `frame/homestation/src/projection.rs`：删除 `file_view`，`local_file` 直接返回对象 body；`resources.rs:409` 同样处理。
+- [x] 删除 `import_metadata`：表定义 `kernel/buckyos-api/src/homestation_client.rs:137`，以及 `frame/homestation/src/` 下的 `objects.rs:509`、`publish.rs:904-914,929-931,1142-1144`、`projection.rs:126`、`http.rs:360-361`。媒体类型校验和 Content-Type 改读对象的 `mime`。
+- [x] `object.register` 去掉 `metadata` 参数（`frame/homestation/src/api.rs:154`、`publish.rs:876`）。
+- [x] 加跨语言用例：带嵌套 meta 和浮点数（如 `geo.lat = 34.9949`）的 `cyfile`，Rust 反序列化成 `FileObject` 后算出的 ObjId，要等于 SDK 算出的值。
+- [x] 更新 `frame/homestation/tests/reading.rs:11,66,130`、`sources.rs:109`、`object_import.rs:70,81,198`。
 
 ### 3.7 Desktop 及其它消费方
 
@@ -199,7 +199,7 @@ MsgObject 收敛（3.1–3.4 和 3.7 的 `msgobj.ts` 部分）和 FileObject met
 
 本节的 `protocol/`、`guest/` 相对 Desktop 的 messagehub 目录，`tests/` 相对 `src/frame/desktop/`，其余相对 buckyos 仓库根目录。
 
-- [ ] `protocol/msgobj.ts` 按下表收敛，并改写文件头（现在还指向旧的 Mac 路径）。其它文件的协议类型直接从 `buckyos` 引入，不留转发层。
+- [x] `protocol/msgobj.ts` 按下表收敛，并改写文件头（现在还指向旧的 Mac 路径）。其它文件的协议类型直接从 `buckyos` 引入，不留转发层。
 
   | 内容 | 处理 |
   | --- | --- |
@@ -214,24 +214,24 @@ MsgObject 收敛（3.1–3.4 和 3.7 的 `msgobj.ts` 部分）和 FileObject met
   | `messageNotify`、`parseHumanTaskPrompt`、`NOTIFY_CATEGORIES`、`NOTIFY_LEVELS`、`NOTIFY_STATUSES` | 保留 |
   | `MessageDeliveryStatus`、`ConversationStatusType`、`getMessage*`、`isStatusMessageObject` | 保留。`ui_*` 字段经索引签名访问，不需要声明 |
 
-- [ ] `guest/model.ts:73` 的 `decodeNamedObject` 删除，`guest/api.ts:84` 改用 `ndn.loadNamedObjectFromObjStr`。
-- [ ] 同步 `tests/datamodel/messagehub-*.test.ts` 的 import（如 `messagehub-session.test.ts:4`）和 `messagehub-guest.test.ts:53-54` 的断言。
-- [ ] 删除 `src/frame/desktop/pnpm-workspace.yaml` 中已无意义的 `minimumReleaseAgeExclude: buckyos@0.7.116`。
-- [ ] `test/jarvis_media_dv/jarvis_media_dv.ts:66-85` 的本地 `RefItem`、`MsgObject` 改用 SDK 类型。其中 `source?` 不是 v2 字段，改之前确认是否还在用。
-- [ ] 检查其它 SDK 消费方是否因类型收紧而需要调整：`src/tools/buckyos-agent/lib/ask.ts`、`test/test_msg_center/`、`test/test_sys_test/support_group_dv.ts`、`test/jarvis_media_dv/scenarios.ts`。
-- [ ] HomeStation 改用标准 `cyfile`。在 `src/frame/desktop/src/app/homestation/` 下：删除 `protocol/feed.ts:74` 的 `FileObject`，`datamodel/types.ts`、`media.ts`、`MediaThumb.tsx`、`mock/` 改用 `ndn.FileObjectJson`；读取处从 `file.meta.x` 改成 `file.x`（`media.ts:55,71`、`card/parts.tsx:198,228`、`detail/ItemDetail.tsx:81`、`mock/media.ts:15-16`、`mock/data.ts:252-254`、`mock/store.ts:1058`）。
-- [ ] 同一目录下，`api/store.ts:76,92` 的 `loadMedia`、`uploadMeta` 和 `api/fileKind.ts` 的 `sniffFile` 改用 SDK 的 `probeFileMeta`，保留附件类型校验；`api/transport.ts:17,98,110,114` 精简 `UploadMeta`，`object.register` 不再传 `metadata`。
-- [ ] `src/frame/desktop/src/components/preview/ndmSource.ts:95`、`src/frame/desktop/src/app/messagehub/api/objects.ts:79` 改读 `mime`。
-- [ ] MessageHub 保留转码前的 EXIF。`src/frame/desktop/src/app/messagehub/api/upload.ts:30` 的 `normalizeImageFile` 会把 HEIC 转成 JPEG，EXIF 随之丢失。先探测原文件，把 `captured_at`、`geo`、`camera`、`exposure` 经 `fileMeta` 传给 `importFiles`；`mime`、`width`、`height` 仍取转码后的文件。
+- [x] `guest/model.ts:73` 的 `decodeNamedObject` 删除，`guest/api.ts:84` 改用 `ndn.loadNamedObjectFromObjStr`。
+- [x] 同步 `tests/datamodel/messagehub-*.test.ts` 的 import（如 `messagehub-session.test.ts:4`）和 `messagehub-guest.test.ts:53-54` 的断言。
+- [x] 删除 `src/frame/desktop/pnpm-workspace.yaml` 中已无意义的 `minimumReleaseAgeExclude: buckyos@0.7.116`。
+- [x] `test/jarvis_media_dv/jarvis_media_dv.ts:66-85` 的本地 `RefItem`、`MsgObject` 改用 SDK 类型。其中 `source?` 不是 v2 字段，改之前确认是否还在用。
+- [x] 检查其它 SDK 消费方是否因类型收紧而需要调整：`src/tools/buckyos-agent/lib/ask.ts`、`test/test_msg_center/`、`test/test_sys_test/support_group_dv.ts`、`test/jarvis_media_dv/scenarios.ts`。
+- [x] HomeStation 改用标准 `cyfile`。在 `src/frame/desktop/src/app/homestation/` 下：删除 `protocol/feed.ts:74` 的 `FileObject`，`datamodel/types.ts`、`media.ts`、`MediaThumb.tsx`、`mock/` 改用 `ndn.FileObjectJson`；读取处从 `file.meta.x` 改成 `file.x`（`media.ts:55,71`、`card/parts.tsx:198,228`、`detail/ItemDetail.tsx:81`、`mock/media.ts:15-16`、`mock/data.ts:252-254`、`mock/store.ts:1058`）。
+- [x] 同一目录下，`api/store.ts:76,92` 的 `loadMedia`、`uploadMeta` 和 `api/fileKind.ts` 的 `sniffFile` 改用 SDK 的 `probeFileMeta`，保留附件类型校验；`api/transport.ts:17,98,110,114` 精简 `UploadMeta`，`object.register` 不再传 `metadata`。
+- [x] `src/frame/desktop/src/components/preview/ndmSource.ts:95`、`src/frame/desktop/src/app/messagehub/api/objects.ts:79` 改读 `mime`。
+- [x] MessageHub 保留转码前的 EXIF。`src/frame/desktop/src/app/messagehub/api/upload.ts:30` 的 `normalizeImageFile` 会把 HEIC 转成 JPEG，EXIF 随之丢失。先探测原文件，把 `captured_at`、`geo`、`camera`、`exposure` 经 `fileMeta` 传给 `importFiles`；`mime`、`width`、`height` 仍取转码后的文件。
 
 已扫描过 `src/`、`test/` 下的其它前端：除上述位置外，没有发现自定义的标准对象类型（只按名称匹配）。filebrowser、OpenDAN WebUI、node_active、control_panel 都没有命中。
 
 ### 3.8 文档
 
-- [ ] `cyfs-ndn/doc/CYFS Protocol/CYFS 标准对象.md` §10 增加 3.5 键表里的定义，并写明原则：谁构造 FileObject 谁写 meta，用 helper。
-- [ ] `doc/homestation/HomeStation 协议与实现.md:59` 改为常用 meta 写进 `cyfile`，并同步 `object.register` 的描述；`doc/homestation/HomeStation Durable Data Schema.md:74,124` 删除 `import_metadata`。
-- [ ] 更新 `doc/sdk/扩展self-host-group.md:399`，MsgObject 等类型的出处改为 SDK。
-- [ ] 检查 `product/message_hub/MessageHub_Current_UI_Model_Data.md:218` 的描述是否仍然成立。
+- [x] `cyfs-ndn/doc/CYFS Protocol/CYFS 标准对象.md` §10 增加 3.5 键表里的定义，并写明原则：谁构造 FileObject 谁写 meta，用 helper。
+- [x] `doc/homestation/HomeStation 协议与实现.md:59` 改为常用 meta 写进 `cyfile`，并同步 `object.register` 的描述；`doc/homestation/HomeStation Durable Data Schema.md:74,124` 删除 `import_metadata`。
+- [x] 更新 `doc/sdk/扩展self-host-group.md:399`，MsgObject 等类型的出处改为 SDK。
+- [x] 检查 `product/message_hub/MessageHub_Current_UI_Model_Data.md:218` 的描述是否仍然成立。
 
 ## 4. MsgObject 校验的移植规则
 
@@ -333,3 +333,45 @@ MsgObject 收敛（3.1–3.4 和 3.7 的 `msgobj.ts` 部分）和 FileObject met
 - HomeStation 接口的 `file` 字段是标准 `cyfile` JSON，代码里不再有 `import_metadata` 和 `file_view`。
 - `mime_type` 不再作为 FileObject 的键被读写（3.6 列出的非 FileObject 用法除外）。
 - 第 6 节的命令没有新增失败：`pnpm check` 通过，messagehub 用例的失败不超出基线那 7 个。
+
+## 9. 完成记录（2026-11-06）
+
+代码都在工作树，未提交。提交和合入顺序见第 5 节：SDK（含 `dist/`、`cli/dist/`）→ cyfs-ndn → 删除 `src/.cargo/config.toml` 后 `cargo update -p ndn-lib -p named_store -p bucket_store -p s3_gateway -p ndn-toolkit -p package-lib` → buckyos。上线前重建 paios 镜像（改了 `agent_tool`）。
+
+文档之外做的决定：
+
+- **HomeStation 放开 `cyfile` 的浮点数。** `protocol::obj_id_of` 原来拒绝对象里的所有浮点数，带 GPS 的照片因此发布不了。改为只对 HomeStation 自己的对象禁止，`cyfile` 放行，协议文档同步。
+- **表格外的三处也改用 helper：** `BucketClient::put_file`、`put_reader`（一个 chunk 以上时只保留 `mime`）、OpenDAN 的 `put_file`、aiworkspace 的 `store_file`。走 `cacl_file_object` 存包内容的位置（`pikg`、安装器、repo）属于决定 12 的例外，不动。aiworkspace 内部的 `file_object` 是物化产物，也不动。
+- **`captured_at` 用 Digitized 时，优先用 `SubSecTimeOriginal`、`OffsetTimeOriginal`，再回退到对应的 Digitized 标签。** 比第 3.5 节多一层回退。
+- **`fileMeta` 是函数** `(file) => meta`：带 `mime` 就不再探测，不带就合并到探测结果之上。
+- **m4a 这类音频不写** `captured_at`、`geo`、`camera`、尺寸和 `video_codec`，按键表的“适用”列。
+- **`canonicalizeJson` 修了 `__proto__` 键被丢弃的问题**，否则这种输入算出的 ObjId 和 Rust 不同。
+- **workflow 的 `IMPLEMENTATION_REVISION` 升到 `impl-3`**，FileObject 的 meta 变了，旧结果不应再命中。
+- 第 6 节的 `cargo test -p fs_buffer` 包名不对，实际是 `fs-buffer`。
+
+验证结果：
+
+| 位置 | 结果 |
+| --- | --- |
+| SDK `npx jest`（全量） | 872 通过，13 跳过（需要环境） |
+| SDK 向量和样本 | 209 个向量与 Rust 输出完全一致；3 个样本 TS、Rust、`exifread` 全部一致，HEIC 为 4284×5712 |
+| MsgObject 差分 | 225 个边界输入，TS 与 Rust 的结论和 ObjId 一致；`"did"` 这个值 Rust 会 panic，见下 |
+| 真实 Chromium（本地静态服务，非 Zone） | `ndn_types` 105 个（含 WebCrypto 验签）、`ndm_client` 36 个（含媒体元素回退）全过 |
+| `cyfs-ndn` `ndn-lib`、`bucket_store`、`fs-buffer`、`ndn-toolkit`、`named_store` | 全过。`concurrent_writes` 并行时失败一次，单独运行通过 |
+| `src/` homestation 全量、workflow、aicc、msg_center、nfs_server、buckyos-api、opendan、aiworkspace-store | 全过 |
+| `src/` agent_tool | 328 通过，3 失败：本机没有 `rg`，与本次无关 |
+| Desktop `pnpm check`、`tsc -b` + `vite build` | 通过 |
+| Desktop `pnpm lint` | 5 个 error，都在未改动的文件（`RequestFields.tsx`、`PublishComposer.tsx`、`AgentDevices.tsx`） |
+| Desktop messagehub 用例 | 94 通过，7 失败，失败的还是基线那 7 个（新增 2 个用例） |
+| Desktop Playwright homestation | 12 通过，1 失败。失败的 `mute choices` 查找 `person\|` 选项，HEAD 的 UI 已没有，用例早已过时。新增的上传用例跑通了浏览器到后端的全链路 |
+
+未验证：
+
+- Zone 上的 DV（`test/jarvis_media_dv`、`pnpm run test:browser:real`）。
+- 视频、音频只验证了 ffmpeg 生成的文件和合成字节，没有手机或相机拍的真实文件；照片没有 Android 样本。
+- 容器内的 agent_tool：`build_aios` 未跑。
+- `pnpm run test:cli`、`src/` 全量 `cargo test`。
+
+cmd_skills：无需修改。手册读的是 AICC 结果的 `detail.files[].mime`，字段没变；`cyfile` 上的键从 `mime_type` 改成 `mime` 由 `stored_file_from_object` 在服务内消化，手册里也没有 `mime_type`。
+
+留给以后：`name-lib` 的 `DID::from_str("did")` 会 panic（`parts[2..]` 越界），`MsgObject::from_json_value_checked` 收到 `"from": "did"` 就会触发，而它是接收不可信输入的入口，应该修。

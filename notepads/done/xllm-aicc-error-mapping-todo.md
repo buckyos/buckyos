@@ -2,7 +2,7 @@
 
 日期：2026-11-02
 
-状态：**已裁决（Q1–Q3 均按建议，2026-11-02）、已实施（未提交，单测通过，DV 随宿主单做）**，实施记录见 §7。来源：[Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) 实施后的 DV（2026-11-02，`jarvis.test.buckyos.io` 容器形态）。AICC 请求体 1 MiB 上限另有 [aicc-request-body-limit-todo.md](./done/aicc-request-body-limit-todo.md) 在处理；本单只处理调用方（agent_tool / xllm）把 AICC 错误归成什么类。按用户规则（llm_context / agent_tool 修改单独成 TODO、先于宿主），宿主侧的重试节奏与上限在 [opendan-dv-followup-todo.md](./opendan-dv-followup-todo.md)，排在本单之后。
+状态：**已裁决（Q1–Q3 均按建议，2026-11-02）、已实施（未提交，单测通过，DV 随宿主单做）**，实施记录见 §7。来源：[Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) 实施后的 DV（2026-11-02，`jarvis.test.buckyos.io` 容器形态）。AICC 请求体 1 MiB 上限另有 [aicc-request-body-limit-todo.md](./aicc-request-body-limit-todo.md) 在处理；本单只处理调用方（agent_tool / xllm）把 AICC 错误归成什么类。按用户规则（llm_context / agent_tool 修改单独成 TODO、先于宿主），宿主侧的重试节奏与上限在 [opendan-dv-followup-todo.md](./opendan-dv-followup-todo.md)，排在本单之后。
 
 范围：`agent_tool/src/xllm.rs` 的 AICC 错误归类；Q3 选 A 时连带 buckyos-api `AiccErrorCode` 与 AICC 的错误映射。不改 llm_context（`ProviderFailure` 的变体够用）。
 
@@ -43,7 +43,7 @@
 
 ### P3 “上下文放不下”的线上错误码（Q3）
 
-buckyos-api `AiccErrorCode` 加 `ContextLengthExceeded`（wire 码 `context_length_exceeded`）；AICC 把各协议适配器识别出的 provider 上下文超限（OpenAI 的 `context_length_exceeded` 等结构化码）和路由层的 `context_length_insufficient` 映射到它；xllm 把它归为 `ContextLimit`。按“错误只按枚举判断”的原则，跨 RPC 的错误类别要在 wire 上有码，两端同时加。AICC 部分与 [aicc-request-body-limit-todo.md](./done/aicc-request-body-limit-todo.md) 同属 AICC，实施时协调，避免两单同时改 `aicc/src/error/mod.rs`。
+buckyos-api `AiccErrorCode` 加 `ContextLengthExceeded`（wire 码 `context_length_exceeded`）；AICC 把各协议适配器识别出的 provider 上下文超限（OpenAI 的 `context_length_exceeded` 等结构化码）和路由层的 `context_length_insufficient` 映射到它；xllm 把它归为 `ContextLimit`。按“错误只按枚举判断”的原则，跨 RPC 的错误类别要在 wire 上有码，两端同时加。AICC 部分与 [aicc-request-body-limit-todo.md](./aicc-request-body-limit-todo.md) 同属 AICC，实施时协调，避免两单同时改 `aicc/src/error/mod.rs`。
 
 ## 4. 待裁决
 
@@ -94,3 +94,4 @@ buckyos-api `AiccErrorCode` 加 `ContextLengthExceeded`（wire 码 `context_leng
 - **部署顺序**：P2 不先于宿主单 H1 部署（§3 P2）。
 - DV 未做（§6，随宿主单）。
 - websdk `AiccErrorCode` 原本就缺 `unsupported_operation`，与本单无关，未补。
+- 2026-11-06 发现：P1 的 413 兜底对直连的大请求不生效。超过服务上限且约 2 MB 以上时，客户端拿不到 413，而是 `Broken pipe`，被归为 `Transient`。根因和修复方向见 [AICC 上限单](./aicc-request-body-limit-todo.md) §9。

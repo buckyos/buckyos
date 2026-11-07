@@ -302,6 +302,7 @@ impl ObjectStore {
         let (path, name, ndm) = (path.to_path_buf(), name.to_string(), self.ndm.clone());
         block_on(async move {
             let mut template = ndn_lib::FileObject::default();
+            template.apply_media_meta(&ndn_lib::probe_local_file_media_meta(&path, &name, None).await);
             template.content_obj.name = name;
             let store: &dyn ndn_toolkit::NamedObjectStore = &ndm;
             let (_, id, _) = ndn_toolkit::cacl_file_object(

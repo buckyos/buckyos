@@ -67,20 +67,19 @@ async fn uploads_are_published_into_buckets_and_withdrawn_from_them() {
     named(station, &dir_id, &dir_json).await;
 
     // The upload's binding in the user's own scratch bucket proves the caller holds it.
-    let meta = json!({ "mime": "application/x-directory" });
-    let missing = station.register_object(&dir_id, meta.clone(), Some("uploads/u0/folder")).await.unwrap_err();
+    let missing = station.register_object(&dir_id, Some("uploads/u0/folder")).await.unwrap_err();
     assert!(missing.to_string().contains("upload_missing"), "{missing}");
     upload_binding(station, "uploads/u1/file", &file_id).await;
-    let other = station.register_object(&dir_id, meta.clone(), Some("uploads/u1/file")).await.unwrap_err();
+    let other = station.register_object(&dir_id, Some("uploads/u1/file")).await.unwrap_err();
     assert!(other.to_string().contains("another object"), "{other}");
     let target = net.rpc("alice", "object.upload_target", json!({ "name": "资料/folder" })).await;
     assert_eq!(target["bucketId"], "user/homestation/alice/scratch");
     let key = target["key"].as_str().unwrap();
     assert!(key.starts_with("uploads/u-") && key.ends_with("/资料_folder"), "{target}");
     upload_binding(station, key, &dir_id).await;
-    let registered = net.rpc("alice", "object.register", json!({ "objId": dir_id, "metadata": meta, "key": key })).await;
+    let registered = net.rpc("alice", "object.register", json!({ "objId": dir_id, "key": key })).await;
     assert_eq!(registered["objId"], dir_id);
-    assert_eq!(station.register_object(&dir_id, meta, Some(key)).await.unwrap(), registered);
+    assert_eq!(station.register_object(&dir_id, Some(key)).await.unwrap(), registered);
 
     let input = json!({ "text": "A directory", "attachments": [{ "id": "folder", "kind": "dir", "name": "资料 folder", "status": "uploaded", "object": dir_id }], "audience": { "kind": "dids", "dids": [net.n("bob").did] } });
     let posted = publish(&net, "alice", "directory-once", input.clone()).await;
@@ -195,7 +194,7 @@ async fn a_public_entrys_files_stop_being_public_with_it() {
     let (file_id, file_json) = homestation::protocol::obj_id_of(ndn_lib::OBJ_TYPE_FILE, &body).unwrap();
     named(station, &file_id, &file_json).await;
     upload_binding(station, "uploads/p/photo", &file_id).await;
-    net.rpc("carol", "object.register", json!({ "objId": file_id, "metadata": { "mime": "image/png" }, "key": "uploads/p/photo" })).await;
+    net.rpc("carol", "object.register", json!({ "objId": file_id, "key": "uploads/p/photo" })).await;
     let ndn = format!("{}/ndn/{file_id}", carol.nfs);
     assert_eq!(net.http.get(&ndn).send().await.unwrap().status().as_u16(), 404, "not yet published");
 
@@ -236,4 +235,56 @@ async fn a_public_entrys_files_stop_being_public_with_it() {
     assert_eq!(net.http.get(&ndn).send().await.unwrap().status().as_u16(), 200);
     net.rpc("carol", "entry.withdraw", json!({ "entry": entry })).await;
     assert_eq!(net.http.get(&ndn).send().await.unwrap().status().as_u16(), 404);
+}
+
+/// The common meta travels with the object: Bob reads what Carol's upload wrote into the
+/// `cyfile`, without any table of Carol's. The root cause was the SDK not writing it (its
+/// own tests cover that); this keeps the reading path from losing it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_followers_media_carries_the_objects_own_meta() {
+    let net = Net::new(&["carol", "bob"], &[]).await;
+    let (carol, bob) = (net.n("carol"), net.n("bob"));
+    carol.add_contact(bob, true, &[]);
+    bob.add_contact(carol, true, &[]);
+    let station = carol.station.as_ref();
+    let data = b"\x89PNG\r\n\x1a\n a stored photo";
+    let content = chunk(station, data).await;
+    let mut file = FileObject::new("photo.png".into(), data.len() as u64, content);
+    file.meta.insert("mime".into(), json!("image/png"));
+    file.meta.insert("width".into(), json!(640));
+    file.meta.insert("height".into(), json!(480));
+    file.meta.insert("captured_at".into(), json!("2024-02-29T13:05:09+08:00"));
+    file.meta.insert("geo".into(), json!({ "lat": 34.9949, "lon": 135.7567 }));
+    let body = serde_json::to_value(&file).unwrap();
+    let (file_id, file_json) = homestation::protocol::obj_id_of(ndn_lib::OBJ_TYPE_FILE, &body).unwrap();
+    named(station, &file_id, &file_json).await;
+    upload_binding(station, "uploads/m/photo", &file_id).await;
+    net.rpc("carol", "object.register", json!({ "objId": file_id, "key": "uploads/m/photo" })).await;
+
+    let attachment = json!([{ "id": "photo", "kind": "image", "name": "photo.png", "status": "uploaded", "object": file_id }]);
+    let posted = publish(&net, "carol", "photo-with-meta", json!({ "text": "look", "attachments": attachment, "audience": public() })).await;
+    net.deliver_all().await;
+    net.rpc("bob", "admin.run", json!({ "task": "pull" })).await;
+    net.rpc("bob", "admin.run", json!({ "task": "selection" })).await;
+
+    let card = net.rpc("bob", "item.get", json!({ "objId": posted["objId"] })).await;
+    let seen = &card["item"]["media"][0]["file"];
+    assert_eq!(seen, &body, "the standard cyfile JSON, unchanged: {card}");
+    assert_eq!((seen["mime"].as_str(), seen["width"].as_i64(), seen["height"].as_i64()), (Some("image/png"), Some(640), Some(480)));
+
+    let read = net.http.get(format!("{}/objects/{file_id}/content", carol.home)).header("authorization", net.proof("bob", "carol").await).send().await.unwrap();
+    assert_eq!(read.status().as_u16(), 200);
+    assert_eq!(read.headers()["content-type"], "image/png");
+    assert_eq!(read.bytes().await.unwrap().as_ref(), data);
+
+    // A media attachment is judged by the object: without a matching `mime` it is refused.
+    let plain = FileObject::new("photo.png".into(), data.len() as u64, chunk(station, data).await);
+    let plain_body = serde_json::to_value(&plain).unwrap();
+    let (plain_id, plain_json) = homestation::protocol::obj_id_of(ndn_lib::OBJ_TYPE_FILE, &plain_body).unwrap();
+    named(station, &plain_id, &plain_json).await;
+    upload_binding(station, "uploads/m/plain", &plain_id).await;
+    net.rpc("carol", "object.register", json!({ "objId": plain_id, "key": "uploads/m/plain" })).await;
+    let refused = net.rpc("carol", "publish.create", json!({ "key": "plain", "input": { "text": "x", "attachments": [{ "id": "p", "kind": "image", "name": "photo.png", "status": "uploaded", "object": plain_id }], "audience": public() } })).await;
+    let refused = refused.to_string();
+    assert!(refused.contains("media type"), "{refused}");
 }

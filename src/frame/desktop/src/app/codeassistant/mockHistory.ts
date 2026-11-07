@@ -3,12 +3,8 @@ import {
   IndexedDbConversationMessageReader,
 } from '../messagehub/conversation/history/data-source'
 import type { AppendableConversationMessageReader } from '../messagehub/conversation/history/types'
-import type {
-  ConversationStatusType,
-  MessageDeliveryStatus,
-  MessageObject,
-  MsgContent,
-} from '../messagehub/protocol/msgobj'
+import type { ndn } from 'buckyos'
+import type { ConversationStatusType, MessageDeliveryStatus, MessageObject } from '../messagehub/protocol/msgobj'
 import {
   getMockEntityDid,
   MOCK_SELF_DID,
@@ -582,7 +578,7 @@ function createChatMessage({
   createdAtMs: number
   deliveryStatus?: MessageDeliveryStatus
   sessionId: string
-  contentOverride?: MsgContent
+  contentOverride?: ndn.MsgContent
 }): MessageObject {
   return {
     from,

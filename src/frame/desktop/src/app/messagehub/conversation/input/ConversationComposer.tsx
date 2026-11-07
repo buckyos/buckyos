@@ -29,7 +29,8 @@ import {
 import { useI18n } from '../../../../i18n/provider'
 import { LinkifiedText } from '../history/MessageMarkdown'
 import { displayedContent, effectiveContent, messageObjId } from '../history/relations'
-import { agentAskQuestionText, buildAgentAskAnswer, getMessageSenderName, type MachineContent, type MessageObject, type MsgMentions, type MsgRelation, type VoiceNote } from '../../protocol/msgobj'
+import type { ndn } from 'buckyos'
+import { agentAskQuestionText, buildAgentAskAnswer, getMessageSenderName, type MessageObject, type VoiceNote } from '../../protocol/msgobj'
 import { formatVoiceDuration, voiceRecordingSupported } from '../media/voice'
 import { EmojiPanel } from './EmojiPanel'
 import { VoiceRecorder } from './VoiceRecorder'
@@ -65,11 +66,11 @@ export interface ConversationComposerSubmitPayload {
   attachments: ComposerAttachmentItem[]
   content: string
   /** MsgObject v2 `relates_to` of a reply (`thread`) or an edit of an own message. */
-  relatesTo?: MsgRelation
+  relatesTo?: ndn.MsgRelation
   /** Structured mentions picked in the composer; absent when none. */
-  mentions?: MsgMentions
+  mentions?: ndn.MsgMentions
   /** `content.machine`: an answer that picked an option (`agent_ask.answer`). */
-  machine?: MachineContent
+  machine?: ndn.MachineContent
   /** The only attachment is a voice note recorded in the composer. */
   voice?: VoiceNote
   localId?: string
@@ -410,7 +411,7 @@ const ConversationComposerInner = forwardRef<
     // In the answer state everything typed answers the question, except a
     // bare `/stop`, which the Agent takes as a command on its own.
     const reply = answer && !(isStopCommand(text) && items.length === 0) ? buildAgentAskAnswer(answer.question, answer.ask, { text }) : undefined
-    const relatesTo: MsgRelation | undefined = answer ? reply?.relates_to : relation && target ? { rel: relation.kind === 'edit' ? 'edit' : 'thread', target } : undefined
+    const relatesTo: ndn.MsgRelation | undefined = answer ? reply?.relates_to : relation && target ? { rel: relation.kind === 'edit' ? 'edit' : 'thread', target } : undefined
     const mentions = mergeMentions(collectMentions(text, picked, mentionAll), answer?.mentions)
     const editing = relation?.kind === 'edit'
     const voice = !editing && items.length === 1 ? items[0].voice : undefined

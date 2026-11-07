@@ -356,9 +356,7 @@ async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path(
         Ok(None) => return (StatusCode::NOT_FOUND, "content not held here").into_response(),
         Err(e) => return error_response(e),
     };
-    let key = id.clone();
-    let metadata = station.db.call(move |c| crate::objects::import_metadata(c, &key)).await.unwrap_or(Value::Null);
-    let mime = metadata.get("mime").or_else(|| file.body.get("mime_type")).or_else(|| file.body.get("mime")).and_then(Value::as_str).unwrap_or("application/octet-stream").to_string();
+    let mime = file.body.get("mime").and_then(Value::as_str).unwrap_or("application/octet-stream").to_string();
     let (mut content, len) = opened;
     let range = match byte_range(headers.get(header::RANGE).and_then(|v| v.to_str().ok()), len) {
         Ok(r) => r,

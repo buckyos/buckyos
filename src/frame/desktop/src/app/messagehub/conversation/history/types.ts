@@ -1,7 +1,4 @@
-import type {
-  ConversationStatusType,
-  MessageObject,
-} from '../../protocol/msgobj'
+import type { ConversationStatusType, MessageObject } from '../../protocol/msgobj'
 
 export interface ConversationMessageReader {
   readonly readerKey: string

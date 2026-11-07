@@ -76,7 +76,7 @@ export const apiObjectAccess: ObjectAccess = {
           entries: isDirectory ? Object.keys(json.body as object).sort() : undefined,
           name: typeof meta.name === 'string' ? meta.name : undefined,
           size: typeof meta.size === 'number' ? meta.size : typeof meta.total_size === 'number' ? meta.total_size : undefined,
-          mimeType: typeof meta.mime_type === 'string' ? meta.mime_type : undefined,
+          mimeType: typeof meta.mime === 'string' ? meta.mime : undefined,
         } satisfies ObjectInfo
       })
       pending.catch(() => { if (infoCache.get(key) === pending) infoCache.delete(key) })

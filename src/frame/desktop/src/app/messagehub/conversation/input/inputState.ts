@@ -1,5 +1,6 @@
 import { isMessageActivity } from '../../sessionModel'
-import { agentAskTarget, messageAgentAsk, messageObjId, type AgentAsk, type MessageObject, type MsgMentions, type MsgRelation } from '../../protocol/msgobj'
+import type { ndn } from 'buckyos'
+import { agentAskTarget, messageAgentAsk, messageObjId, type AgentAsk, type MessageObject } from '../../protocol/msgobj'
 import { mentionsViewer, messageRelation } from '../history/relations'
 
 /** The composer is locked to answering `question` (see `conversationInputState`). */
@@ -8,9 +9,9 @@ export interface AnswerInputState {
   question: MessageObject
   ask: AgentAsk
   /** What every message sent in this state relates to: `thread` → the anchor, or → the question without one. */
-  relatesTo: MsgRelation
+  relatesTo: ndn.MsgRelation
   /** In a group: the asker, whose group bridge only takes messages that mention it. */
-  mentions?: MsgMentions
+  mentions?: ndn.MsgMentions
 }
 
 /**
@@ -62,7 +63,7 @@ export function conversationInputState(timeline: readonly MessageObject[], viewe
 }
 
 /** Structured mentions of both, or `undefined` when neither mentions anyone. */
-export function mergeMentions(a: MsgMentions | undefined, b: MsgMentions | undefined): MsgMentions | undefined {
+export function mergeMentions(a: ndn.MsgMentions | undefined, b: ndn.MsgMentions | undefined): ndn.MsgMentions | undefined {
   const dids = [...new Set([...(a?.dids ?? []), ...(b?.dids ?? [])])]
   const all = a?.all === true || b?.all === true
   if (!all && dids.length === 0) return undefined

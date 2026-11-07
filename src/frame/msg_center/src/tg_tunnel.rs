@@ -677,6 +677,14 @@ impl TgMessageConverter {
             attachment.size,
             chunk_id.to_string(),
         );
+        file_obj.apply_media_meta(
+            &ndn_lib::probe_media_meta(
+                &ndn_lib::MemoryByteSource::new(&attachment.data),
+                &attachment.file_name,
+                attachment.mime_type.as_deref(),
+            )
+            .await,
+        );
         file_obj.meta.insert(
             "telegram_file_id".to_string(),
             json!(attachment.telegram_file_id),
@@ -685,11 +693,6 @@ impl TgMessageConverter {
             "telegram_media_kind".to_string(),
             json!(attachment.media_kind),
         );
-        if let Some(mime_type) = attachment.mime_type.as_ref() {
-            file_obj
-                .meta
-                .insert("mime_type".to_string(), json!(mime_type));
-        }
 
         let (file_obj_id, file_obj_json) = file_obj.gen_obj_id();
         named_store

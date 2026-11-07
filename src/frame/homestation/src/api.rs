@@ -151,7 +151,7 @@ impl Station {
             "object.upload_target" => self.upload_target(p.get("name").and_then(Value::as_str).unwrap_or_default())?,
             "object.register" => {
                 let key = p.get("key").and_then(Value::as_str);
-                self.register_object(&arg::<String>(p, "objId")?, p.get("metadata").cloned().unwrap_or_else(|| json!({})), key).await?
+                self.register_object(&arg::<String>(p, "objId")?, key).await?
             }
             "publish.create" => {
                 let key: String = arg(p, "key")?;

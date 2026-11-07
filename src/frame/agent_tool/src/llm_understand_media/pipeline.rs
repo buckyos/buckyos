@@ -380,9 +380,10 @@ pub async fn freeze_reader<R: AsyncRead + Unpin>(
     file.content_obj.create_time = 0;
     file.content_obj.last_update_time = 0;
     file.size = total;
+    let content_id = ObjId::new(&content).map_err(|e| format!("content id: {e}"))?;
+    let source = buckyos_api::RuntimeContentByteSource::new(&store, content_id, total);
+    file.apply_media_meta(&ndn_lib::probe_media_meta(&source, name, Some(mime)).await);
     file.content = content;
-    file.meta
-        .insert("mime_type".to_string(), Value::String(mime.to_string()));
     let (obj_id, obj_str) = file.gen_obj_id();
     store
         .put_object(&obj_id, &obj_str)
@@ -428,8 +429,7 @@ pub async fn object_head(obj_id: &ObjId, head_bytes: usize) -> Result<Option<Obj
     let name = (!file.content_obj.name.is_empty()).then(|| file.content_obj.name.clone());
     let mime = file
         .meta
-        .get("mime_type")
-        .or_else(|| file.meta.get("mime"))
+        .get("mime")
         .and_then(Value::as_str)
         .map(str::to_string);
     Ok(Some(ObjectHead {

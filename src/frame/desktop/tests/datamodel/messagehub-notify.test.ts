@@ -1,4 +1,5 @@
-import { isStatusMessageObject, messageNotify, notifySessionCategory, NOTIFY_INTENT, type MessageObject, type NotifyMessageData } from '../../src/app/messagehub/protocol/msgobj.ts'
+import { NOTIFY_INTENT, notifyCategoryFromSessionId, type NotifyMessageData } from 'buckyos'
+import { isStatusMessageObject, messageNotify, type MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
 import { creationReason, isMessageActivity, selectDefaultSession, sessionAccess, sortSessions, defaultPreferences } from '../../src/app/messagehub/sessionModel.ts'
 import { conversationInputState } from '../../src/app/messagehub/conversation/input/inputState.ts'
 import { projectOwner, summarizeMessage, type ProjectionLabels } from '../../src/app/messagehub/api/projection.ts'
@@ -43,7 +44,7 @@ Deno.test('a buckyos.notify message is a card: parsed, counted as activity, neve
   // Unknown controls and malformed options are dropped; an unknown level reads as normal.
   const odd = messageNotify({ ...home, content: { ...home.content, machine: { intent: NOTIFY_INTENT, data: { ...data('x', true), level: 'loud', prompt: { title: 'T', controls: [{ kind: 'slider', id: 'v' }, { kind: 'choice', id: 'option', options: [{ value: 'a' }, { value: 'b', label: 'B' }] }] } } as never } } })
   equal([odd?.level, odd?.prompt.controls], ['normal', [{ kind: 'choice', id: 'option', options: [{ value: 'b', label: 'B' }], multiple: false, required: false }]])
-  equal([notifySessionCategory('sysnotify:todo'), notifySessionCategory('sysnotify:spam'), notifySessionCategory('dm:x')], ['todo', undefined, undefined])
+  equal([notifyCategoryFromSessionId('sysnotify:todo'), notifyCategoryFromSessionId('sysnotify:spam'), notifyCategoryFromSessionId('dm:x')], ['todo', null, null])
   equal(summarizeMessage(home, { previewUnavailable: '?' } as ProjectionLabels), 'Which branch?')
 })
 

@@ -106,7 +106,7 @@ async fn spider_private_captures_and_share() {
     assert_eq!(card["repostBlockedReason"], "private_capture");
     // Selection replaced the link card by a snapshot-wrapping object (§18.1 step 4).
     assert_eq!(card["item"]["contentType"], "article");
-    assert_eq!(card["item"]["wrappedFile"]["meta"]["mime"], "text/html");
+    assert_eq!(card["item"]["wrappedFile"]["mime"], "text/html");
     let body = net.rpc("bob", "item.wrapped_body", json!({ "objId": card["item"]["objId"] })).await;
     assert_eq!(body["state"], "ready");
     assert!(body["markdown"].as_str().unwrap().contains("Build four boxes"));

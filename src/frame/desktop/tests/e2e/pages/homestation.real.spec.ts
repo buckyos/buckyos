@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 
 const DEV = 'hsDevToken=tok-me'
@@ -28,6 +30,18 @@ async function scrollToCard(page: Page, target: Locator) {
   }, { timeout: 20_000, intervals: [300] }).toBe(true)
   await target.first().scrollIntoViewIfNeeded()
   return target.first()
+}
+
+// The Vite proxy only knows the HomeStation service; in a zone the gateway routes `/ndm` to the nfs-server.
+async function routeUploadsToNfsServer(page: Page) {
+  const nfs = readFileSync(join(process.env.HS_E2E_DATA_DIR ?? '', 'me', 'nfs.url'), 'utf8').trim()
+  await page.route('**/ndm/v1/**', async route => {
+    const url = new URL(route.request().url())
+    const response = await route.fetch({ url: `${nfs}${url.pathname}${url.search}` })
+    const headers = { ...response.headers() }
+    if (headers.location) headers.location = headers.location.replace(nfs, url.origin)
+    await route.fulfill({ response, headers })
+  })
 }
 
 test.describe('HomeStation on the homestation service (devnet)', () => {
@@ -127,6 +141,40 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     await expect(status).toHaveAttribute('data-delivery', 'delivered', { timeout: 45_000 })
     await expect(mine.getByTestId('hs-published-audience')).toContainText('Public')
     expect(errors).toEqual([])
+  })
+
+  test('an uploaded photo carries what its bytes say in the object itself', async ({ page }) => {
+    const errors = trackErrors(page)
+    await openHomeStation(page)
+    // A 6000x4000 JPEG header with EXIF and GPS: `jpeg_exif_little_endian` of the SDK's tests/media_meta_vectors.json.
+    const photo = Buffer.from('/9j/4AAQSkZJRgABAgAAAQABAAD/4QAraHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLwA8eDp4bXBtZXRhLz7/4QHURXhpZgAASUkqAAgAAAAEAA8BAgAFAAAAPgAAABABAgAJAAAAQwAAAGmHBAABAAAATAAAACWIBAABAAAAHgEAAAAAAABTb255AElMQ0UtN00zAAoAmoIFAAEAAADKAAAAnYIFAAEAAADSAAAAJ4gDAAEAAACQAQAAA5ACABQAAADaAAAABJACABQAAADuAAAAEZACAAcAAAACAQAAkZICAAQAAAAxMjUACpIFAAEAAAAJAQAABaQDAAEAAABLAAAANKQCAA0AAAARAQAAAAAAAAoAAACwBAAAHAAAAAoAAAAyMDI0OjAyOjI5IDEzOjA1OjA5ADIwMjA6MDE6MDEgMDA6MDA6MDAAKzA4OjAwAIgTAABkAAAARkUgNTBtbSBGMS44AAgAAQACAAIAAABOAAAAAgAFAAMAAACEAQAAAwACAAIAAABFAAAABAAFAAMAAACcAQAABQABAAEAAAAAAAAABgAFAAEAAAC0AQAAEQAFAAEAAAC8AQAAHwAFAAEAAADEAQAAAAAAACIAAAABAAAAOwAAAAEAAABEEAAAZAAAAIcAAAABAAAALQAAAAEAAABsCQAAZAAAANIEAABkAAAAWiMAAGQAAABBAAAACgAAAP/AAAsID6AXcAEBEQD/2gAC/9k=', 'base64')
+    await routeUploadsToNfsServer(page)
+    const registered = page.waitForResponse(response => response.url().endsWith('/kapi/homestation') && (response.request().postData() ?? '').includes('"object.register"'))
+    await page.getByTestId('hs-quick-file').setInputFiles({ name: 'shot.bin', mimeType: 'application/octet-stream', buffer: photo })
+    const response = await registered
+    expect(response.request().postData()).not.toContain('metadata')
+    const { result } = await response.json() as { result: { objId: string; object: Record<string, unknown> } }
+    expect(result.object).toMatchObject({
+      name: 'shot.bin',
+      mime: 'image/jpeg',
+      width: 6000,
+      height: 4000,
+      captured_at: '2024-02-29T13:05:09.125+08:00',
+      geo: { lat: 34.9949, lon: 135.7567 },
+      camera: { make: 'Sony', model: 'ILCE-7M3' },
+      exposure: { exposure_time: '1/120', f_number: 2.8 },
+    })
+    await expect(page.getByTestId('hs-quick-attachments').locator('li')).toHaveAttribute('data-status', 'uploaded')
+    const text = `A photo from the HomeStation e2e suite (${Date.now().toString(36)})`
+    await page.getByTestId('hs-quick-text').fill(text)
+    await page.getByTestId('hs-quick-submit').click()
+    await expect(page.getByTestId('hs-toast').filter({ hasText: 'Published to your feed' })).toBeVisible()
+    await page.getByTestId('hs-nav-published').click()
+    await expect(card(page, text).getByTestId('hs-publish-status')).toHaveAttribute('data-stage', 'published')
+    const content = await page.request.get(`/home/me/objects/${encodeURIComponent(result.objId)}/content?access=tok-me`)
+    expect(content.headers()['content-type']).toBe('image/jpeg')
+    // A lookup miss answers 404 by design, and this JPEG has no image data for the card to decode.
+    expect(errors.filter(error => !error.includes('Failed to load resource'))).toEqual([])
   })
 
   test('the followed-candidates view loads', async ({ page }) => {

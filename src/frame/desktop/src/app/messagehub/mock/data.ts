@@ -4,11 +4,8 @@ import type {
   EntityDetail,
 } from '../types'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
-import type {
-  MessageDeliveryStatus,
-  MessageObject,
-  MsgContent,
-} from '../protocol/msgobj'
+import type { ndn } from 'buckyos'
+import type { MessageDeliveryStatus, MessageObject } from '../protocol/msgobj'
 
 /* ── Entities ── */
 
@@ -640,8 +637,8 @@ export const MOCK_AGENT_TASKS = {
  */
 function agentTaskSeeds(sessionId: string): MessageObject[] {
   const you = (id: string, content: string, minutesAgo: number) => createChatMessage({ id, from: participantDids.you, to: [participantDids.codeAssistant], senderName: 'You', content, createdAtMs: Date.now() - minutesAgo * 60_000, deliveryStatus: 'read', sessionId })
-  const agent = (id: string, content: MsgContent, minutesAgo: number, extra: Partial<MessageObject>): MessageObject => ({ ...createChatMessage({ id, from: participantDids.codeAssistant, to: [participantDids.you], senderName: 'CodeAssistant', content: content.content ?? '', createdAtMs: Date.now() - minutesAgo * 60_000, sessionId, contentOverride: content }), ...extra })
-  const placeholder: MsgContent = { format: 'text/plain', content: 'Got it, working on it…' }
+  const agent = (id: string, content: ndn.MsgContent, minutesAgo: number, extra: Partial<MessageObject>): MessageObject => ({ ...createChatMessage({ id, from: participantDids.codeAssistant, to: [participantDids.you], senderName: 'CodeAssistant', content: content.content ?? '', createdAtMs: Date.now() - minutesAgo * 60_000, sessionId, contentOverride: content }), ...extra })
+  const placeholder: ndn.MsgContent = { format: 'text/plain', content: 'Got it, working on it…' }
   return [
     you('msg-ct-1', 'Summarize yesterday\'s build failures.', 50),
     agent('msg-ct-2', placeholder, 49, { agent_task: { task_id: MOCK_AGENT_TASKS.done } }),
@@ -690,8 +687,8 @@ function agentWorkSeeds(sessionId: string): MessageObject[] {
 function agentAskSeeds(sessionId: string, done: boolean): MessageObject[] {
   const minutes = (value: number) => Date.now() - value * 60_000
   const you = (id: string, content: string, at: number, extra: Partial<MessageObject> = {}): MessageObject => ({ ...createChatMessage({ id, from: participantDids.you, to: [participantDids.codeAssistant], senderName: 'You', content, createdAtMs: at, deliveryStatus: 'read', sessionId }), ...extra })
-  const agent = (id: string, content: MsgContent, at: number, extra: Partial<MessageObject> = {}): MessageObject => ({ ...createChatMessage({ id, from: participantDids.codeAssistant, to: [participantDids.you], senderName: 'CodeAssistant', content: content.content ?? '', createdAtMs: at, sessionId, contentOverride: content }), ...extra })
-  const text = (content: string): MsgContent => ({ format: 'text/plain', content })
+  const agent = (id: string, content: ndn.MsgContent, at: number, extra: Partial<MessageObject> = {}): MessageObject => ({ ...createChatMessage({ id, from: participantDids.codeAssistant, to: [participantDids.you], senderName: 'CodeAssistant', content: content.content ?? '', createdAtMs: at, sessionId, contentOverride: content }), ...extra })
+  const text = (content: string): ndn.MsgContent => ({ format: 'text/plain', content })
   const placeholder = text('Got it, working on it…')
   if (!done) {
     const anchor = 'msg-qa-2'
@@ -1031,7 +1028,7 @@ function createChatMessage({
   deliveryStatus?: MessageDeliveryStatus
   kind?: 'chat' | 'group_msg'
   sessionId: string
-  contentOverride?: MsgContent
+  contentOverride?: ndn.MsgContent
 }): MessageObject {
   return {
     from,

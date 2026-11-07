@@ -27,6 +27,7 @@ process.env.HS_REAL_E2E = '1'
 process.env.HS_E2E_WEB_PORT ??= freePort()
 const devnet = process.env.HS_DEVNET_BIN ?? resolve(process.env.CARGO_TARGET_DIR ?? resolve(import.meta.dirname, '../../target'), 'debug/examples/devnet')
 const dataDir = resolve(tmpdir(), 'homestation-devnet-e2e')
+process.env.HS_E2E_DATA_DIR = dataDir
 const backend = 'http://127.0.0.1:4231'
 const web = `http://127.0.0.1:${process.env.HS_E2E_WEB_PORT}`
 

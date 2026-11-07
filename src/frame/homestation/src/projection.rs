@@ -106,29 +106,9 @@ pub fn without_nulls(value: Value) -> Value {
     }
 }
 
-/// The Desktop's FileObject view: `{ kind: 'file', name, meta: { mime, size, ... } }`.
-pub fn file_view(body: &Value) -> Value {
-    let mut meta = json!({
-        "mime": body.get("mime_type").or_else(|| body.get("mime")).and_then(Value::as_str).unwrap_or("application/octet-stream"),
-        "size": body.get("size").and_then(Value::as_u64).unwrap_or(0),
-    });
-    for key in ["width", "height", "duration_ms"] {
-        if let Some(v) = body.get(key) {
-            meta[key] = v.clone();
-        }
-    }
-    json!({ "kind": "file", "name": body.get("name").and_then(Value::as_str).unwrap_or(""), "meta": meta })
-}
-
+/// The stored `cyfile` as it is: the common meta is part of the object.
 fn local_file(conn: &Conn, id: &str) -> HsResult<Option<Value>> {
-    let Some(object) = get_object(conn, id)?.filter(|o| o.obj_type == OBJ_TYPE_FILE) else { return Ok(None) };
-    let mut view = file_view(&object.body);
-    if let Value::Object(metadata) = crate::objects::import_metadata(conn, id)? {
-        for key in ["mime", "width", "height", "duration_ms"] {
-            if let Some(value) = metadata.get(key) { view["meta"][key] = value.clone(); }
-        }
-    }
-    Ok(Some(view))
+    Ok(get_object(conn, id)?.filter(|o| o.obj_type == OBJ_TYPE_FILE).map(|o| o.body))
 }
 
 pub fn entry_state(conn: &Conn, obj_id: &str, feed: &FeedObject) -> HsResult<Option<Value>> {

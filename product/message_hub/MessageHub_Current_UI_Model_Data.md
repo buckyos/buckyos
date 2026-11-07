@@ -215,7 +215,7 @@ hover、focus-within 和触屏均能访问处理入口。对话框有 Tab 焦点
 
 ## 6. Action Message 与历史投影
 
-原始 `MessageObject` 仍使用现有 `protocol/msgobj.ts`，本轮未改 Rust 协议镜像。
+原始 `MessageObject` 是 SDK 的 `ndn.MsgObject` 加 `protocol/msgobj.ts` 声明的扩展字段，本轮未改协议。
 
 类别判定只使用 `kind === 'event' && content.machine?.intent === 'buckyos.action_log'`，渲染与过滤共用同一函数。
 读取 data 前检查 schema_version；支持 title / shared state / member nickname 变化、加入、主动离开和被移除；actor 和 subject 分开，未知操作者不猜测。

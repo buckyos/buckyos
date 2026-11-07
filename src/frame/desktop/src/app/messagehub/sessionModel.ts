@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { notifySessionCategory, NOTIFY_CATEGORIES, type MessageObject } from './protocol/msgobj'
+import { notifyCategoryFromSessionId } from 'buckyos'
+import { NOTIFY_CATEGORIES, type MessageObject } from './protocol/msgobj'
 import { isHiddenRelationMessage } from './conversation/history/relations'
 import type { Entity, MessageHubContext, Session, SessionAccess, SessionBinding, SessionPreferences } from './types'
 
@@ -25,7 +26,7 @@ export function relativeActivity(time: number | undefined, now: number, justNow:
 }
 /** Rank of a notification session in the fixed category order (to-do, Agent, App); -1 for any other session. */
 function notifyRank(session: Session) {
-  const category = notifySessionCategory(session.id)
+  const category = notifyCategoryFromSessionId(session.id)
   return category ? NOTIFY_CATEGORIES.indexOf(category) : -1
 }
 /** Pinned first, then by activity; the notification sessions among them keep the category order (to-do, Agent, App). */
@@ -51,9 +52,9 @@ export function sessionTitle(session: Session, preferences: SessionPreferences) 
 }
 export function sessionAccess(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess {
   const own = context.mode === 'self' && context.viewerDid === context.ownerDid && session.ownerDid === context.ownerDid
-  const native = session.binding.kind === 'native' && !notifySessionCategory(session.id)
+  const native = session.binding.kind === 'native' && !notifyCategoryFromSessionId(session.id)
   const tunnel = session.binding.kind === 'tunnel' ? session.binding : null
-  const reason = !own ? 'agent_observer' : notifySessionCategory(session.id) ? 'system_notify' : session.binding.kind === 'unknown' ? 'binding_unknown' : tunnel && !tunnel.connected ? 'transport_unavailable' : tunnel && !tunnel.canSend ? 'platform_read_only' : tunnel && !confirmed ? 'tunnel_default' : undefined
+  const reason = !own ? 'agent_observer' : notifyCategoryFromSessionId(session.id) ? 'system_notify' : session.binding.kind === 'unknown' ? 'binding_unknown' : tunnel && !tunnel.connected ? 'transport_unavailable' : tunnel && !tunnel.canSend ? 'platform_read_only' : tunnel && !confirmed ? 'tunnel_default' : undefined
   return { mode: reason ? 'read_only' : 'read_write', canManage: own, canEnableWrite: own && !!tunnel?.connected && tunnel.canSend && !confirmed, canEditPresentation: own, canEditSharedState: own && native, canEditOwnMemberState: own && native, readOnlyReason: reason }
 }
 export function creationReason(context: MessageHubContext, entity: Entity, policy: string, binding?: SessionBinding) {

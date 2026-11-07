@@ -115,8 +115,7 @@ pub async fn read_named_object(obj_id: &ObjId) -> Result<ObjectContent, String> 
 fn file_object_mime(body: &str) -> Option<String> {
     let file: FileObject = serde_json::from_str(body).ok()?;
     file.meta
-        .get("mime_type")
-        .or_else(|| file.meta.get("mime"))
+        .get("mime")
         .and_then(Json::as_str)
         .map(str::to_string)
 }

@@ -5,7 +5,8 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess, rememberLocalObject } from '../conversation/history/objectAccess'
 import { jpegName, normalizeImageFile } from '../conversation/input/imageNormalize'
 import type { ConversationMessageReader } from '../conversation/history/types'
-import { getMessageStableId, messageNotify, messageVoice, notifySessionCategory, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
+import { notifyCategoryFromSessionId } from 'buckyos'
+import { getMessageStableId, messageNotify, messageVoice, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { createGroupSchema, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, inviteBlocked, participating, withinWindow } from '../groupModel'
@@ -826,7 +827,7 @@ export class MessageHubMockStore implements MessageHubStore {
   denyOwner = (owner: string) => { this.revokedOwners.add(owner); this.snapshot = { ...this.snapshot }; this.listeners.forEach(listener => listener()) }
   title(context: MessageHubContext, session: Session) {
     const preferences = this.preferences(context, session.id)
-    const category = notifySessionCategory(session.id)
+    const category = notifyCategoryFromSessionId(session.id)
     return category && !preferences.title ? translate(`messagehub.notify.category.${category}`, session.title) : sessionTitle(session, preferences)
   }
 

@@ -5,7 +5,7 @@
  * Everything here belongs to one subject; the page builds a new hub for
  * another group, Session or identity.
  */
-import { identityKey, type AccessDenial, type CurrentIdentity } from 'buckyos'
+import { identityKey, ndn, type AccessDenial, type CurrentIdentity } from 'buckyos'
 import { denialOf } from '../datamodel/sessionApi'
 import { ObjectRouteError, setObjectViewer } from '../api/objects'
 import { resetObjectCaches } from '../conversation/history/objectAccess'
@@ -14,7 +14,7 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { friendlyDidName } from '../api/projection'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import type { OutgoingPayload } from '../store/types'
-import { randomMsgNonce, type MessageObject, type MsgObject } from '../protocol/msgobj'
+import type { MessageObject } from '../protocol/msgobj'
 import type { GuestApi } from './api'
 import { guestEntryAllows, guestTimeline, guestTimelineMessage, type GuestMessageRef, type GuestSession } from './model'
 
@@ -371,7 +371,7 @@ export class GuestHub {
     if (step.kind !== 'session' || !this.selfDid) throw new Error('permission_denied')
     if (payload.attachments.length > 0) throw new Error('rejected: attachments-not-supported')
     const content = payload.content.trim()
-    const message: MsgObject = {
+    const message: ndn.MsgObject = {
       from: this.selfDid,
       to: [this.groupDid],
       kind: 'group_msg',
@@ -379,7 +379,7 @@ export class GuestHub {
       ...(payload.relatesTo ? { relates_to: payload.relatesTo } : {}),
       ...(payload.mentions && (payload.mentions.all || payload.mentions.dids?.length) ? { mentions: payload.mentions } : {}),
       created_at_ms: payload.submittedAt ?? Date.now(),
-      nonce: randomMsgNonce(),
+      nonce: ndn.randomMsgNonce(),
       content: { format: 'text/plain', content, ...(payload.machine ? { machine: payload.machine } : {}) },
     }
     const signature = JSON.stringify([content, payload.relatesTo ?? null, payload.mentions ?? null, payload.machine ?? null])

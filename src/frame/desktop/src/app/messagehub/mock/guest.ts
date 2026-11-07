@@ -10,13 +10,12 @@
  * (a partial object is merged over the seed), so e2e tests can seed or
  * change it; messages live in memory for the page.
  */
-import { RPCError, type CurrentIdentity } from 'buckyos'
+import { RPCError, type CurrentIdentity, type ndn } from 'buckyos'
 import { loadCurrentIdentity } from '../../../sso/identity'
 import { endSessionInPlace } from '../../../auth/signOut'
 import { waitForMockLatency } from '../../../runtime'
 import type { ObjectAccess } from '../conversation/history/objectAccess'
 import { groupSessionKey } from '../groupModel'
-import type { MsgObject } from '../protocol/msgobj'
 import { ObjectRouteError } from '../api/objects'
 import type { GroupSessionMemberRecord } from '../datamodel/sessionApi'
 import type { GuestApi } from '../guest/api'
@@ -44,7 +43,7 @@ interface MockGuestHost {
   entry: boolean
 }
 
-interface StoredMessage { seq: number; objId: string; msg: MsgObject }
+interface StoredMessage { seq: number; objId: string; msg: ndn.MsgObject }
 
 function seedHost(): MockGuestHost {
   return {
@@ -71,7 +70,7 @@ function saveHost(host: MockGuestHost) {
 }
 
 const now = Date.now()
-const groupMessage = (sessionId: string, from: string, at: number, content: MsgObject['content']): MsgObject => ({ from, to: [MOCK_SUPPORT_GROUP], kind: 'group_msg', to_session: sessionId, created_at_ms: at, content })
+const groupMessage = (sessionId: string, from: string, at: number, content: ndn.MsgObject['content']): ndn.MsgObject => ({ from, to: [MOCK_SUPPORT_GROUP], kind: 'group_msg', to_session: sessionId, created_at_ms: at, content })
 
 const messages: Record<string, StoredMessage[]> = {
   't-123': [

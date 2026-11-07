@@ -78,7 +78,7 @@ function ArticleBody({ view }: { view: CardView }) {
         {body.data?.state === 'ready' ? (
           <div className="hs-article text-[15px] leading-7">
             <MessageMarkdown text={body.data.markdown.replace(/^#\s+.*\n+/, '')} />
-            <p className="mt-6 text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.article.fileInfo', 'Body: {{name}} · {{mime}} · verified by object ID', { name: body.data.file.name, mime: body.data.file.meta.mime })}</p>
+            <p className="mt-6 text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.article.fileInfo', 'Body: {{name}} · {{mime}} · verified by object ID', { name: body.data.file.name ?? '', mime: body.data.file.mime ?? '' })}</p>
           </div>
         ) : null}
       </div>

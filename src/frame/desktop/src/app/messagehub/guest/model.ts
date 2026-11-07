@@ -3,11 +3,11 @@
  * account or External DID) reads the host group store directly through
  * `group.*` and the object route, never the owner mailbox projection.
  */
-import type { AuthMethod, EntryMethods } from 'buckyos'
+import type { AuthMethod, EntryMethods, ndn } from 'buckyos'
 import type { GroupSessionItem } from '../datamodel/sessionApi'
 import { groupSessionKey } from '../groupModel'
 import { sessionExtensions, type GroupDisplayInfo, type GroupPanelRef } from '../extensions/model'
-import type { MessageObject, MsgObject } from '../protocol/msgobj'
+import type { MessageObject } from '../protocol/msgobj'
 
 export const GUEST_PAGE_PATH = '/messagehub/guest'
 
@@ -69,16 +69,6 @@ export function objectContextPath(sessionAddress: string, msgId: string): string
   return `${sessionAddress}/${msgId}`
 }
 
-/** The named object an object-route answer carries: plain JSON, or the payload of its signed JWT form. */
-export function decodeNamedObject(contentType: string, body: string): unknown {
-  if (!contentType.includes('jwt')) return JSON.parse(body)
-  const payload = body.trim().split('.')[1]
-  if (!payload) throw new Error('malformed named object jwt')
-  const base64 = payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '=')
-  const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0))
-  return JSON.parse(new TextDecoder().decode(bytes))
-}
-
 /** `group.list_messages` item: the host's order (`seq`) and the message ObjId. */
 export interface GuestMessageRef {
   seq: number
@@ -91,7 +81,7 @@ export interface GuestMessageRef {
  * Session (`ui_group_session`) so its attachments are read with a
  * `context_path`; the Agent's task belongs to the host and is dropped.
  */
-export function guestTimelineMessage(msg: MsgObject, ref: GuestMessageRef, sessionAddress: string): MessageObject {
+export function guestTimelineMessage(msg: ndn.MsgObject, ref: GuestMessageRef, sessionAddress: string): MessageObject {
   const message: MessageObject = { ...msg, ui_message_id: ref.objId, ui_session_id: sessionAddress, ui_group_session: sessionAddress, ui_seq: ref.seq }
   delete message.agent_task
   return message

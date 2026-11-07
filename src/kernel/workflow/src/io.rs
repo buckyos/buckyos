@@ -7,7 +7,7 @@ use crate::native::{
 use crate::object_store::{InMemoryObjectStore, WorkflowObjectStore};
 use async_trait::async_trait;
 use buckyos_api::{error_codes, ThunkExecutionError};
-use ndn_lib::{ChunkHasher, ChunkId, ChunkList, FileObject, NamedObject, ObjId};
+use ndn_lib::{probe_media_meta, ChunkHasher, ChunkId, ChunkList, FileObject, MediaByteSource, MemoryByteSource, NamedObject, ObjId};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
@@ -45,16 +45,21 @@ pub fn chunk_bytes(bytes: &[u8]) -> Result<(String, Vec<(ChunkId, Vec<u8>)>, Opt
 }
 
 /// Deterministic artifact FileObject: zero time fields, stable name, no owner.
-pub fn artifact_file_object(name: &str, size: u64, content_id: &str, content_type: Option<&str>) -> FileObject {
+/// The common meta depends only on the bytes, so it stays deterministic too.
+pub async fn artifact_file_object(
+    name: &str,
+    size: u64,
+    content_id: &str,
+    content_type: Option<&str>,
+    content: &dyn MediaByteSource,
+) -> FileObject {
     let mut file = FileObject::default();
     file.content_obj.name = name.to_string();
     file.content_obj.create_time = 0;
     file.content_obj.last_update_time = 0;
     file.size = size;
     file.content = content_id.to_string();
-    if let Some(mime) = content_type.and_then(|t| t.split(';').next()).map(str::trim).filter(|m| !m.is_empty()) {
-        file.meta.insert("mime_type".to_string(), Value::String(mime.to_string()));
-    }
+    file.apply_media_meta(&probe_media_meta(content, name, content_type).await);
     file
 }
 
@@ -107,7 +112,7 @@ impl MemoryNativeIo {
             .lock()
             .unwrap()
             .insert(content_id.clone(), bytes.to_vec());
-        let mut file = artifact_file_object(name, bytes.len() as u64, &content_id, None);
+        let mut file = artifact_file_object(name, bytes.len() as u64, &content_id, None, &MemoryByteSource::new(bytes)).await;
         file.content_obj.create_time = 1;
         let (obj_id, obj_str) = file.gen_obj_id();
         let value: Value = serde_json::from_str(&obj_str).unwrap();
@@ -158,11 +163,11 @@ impl MemoryNativeIo {
     ) -> Result<ArtifactRef, ThunkExecutionError> {
         let (content_id, _, _) = chunk_bytes(&bytes)?;
         let size = bytes.len() as u64;
+        let file = artifact_file_object(name, size, &content_id, Some(content_type), &MemoryByteSource::new(&bytes)).await;
         self.contents
             .lock()
             .unwrap()
             .insert(content_id.clone(), bytes);
-        let file = artifact_file_object(name, size, &content_id, Some(content_type));
         let (obj_id, obj_str) = file.gen_obj_id();
         let value: Value = serde_json::from_str(&obj_str).map_err(|e| internal(e.to_string()))?;
         self.objects
@@ -324,7 +329,9 @@ impl ZoneNativeIo {
                 return Ok(id);
             }
         }
-        let (id, body) = artifact_file_object("input", size, content_id, None).gen_obj_id();
+        let content = ObjId::new(content_id).map_err(|e| input_unavailable(content_id, e))?;
+        let source = named_store::NamedContentByteSource::new(&self.store, content, size);
+        let (id, body) = artifact_file_object("input", size, content_id, None, &source).await.gen_obj_id();
         self.store.put_object(&id, &body).await.map_err(|e| internal(format!("put input object: {e}")))?;
         Ok(id)
     }
@@ -363,7 +370,7 @@ impl ZoneNativeIo {
                 .await
                 .map_err(|e| internal(format!("put chunk list: {e}")))?;
         }
-        let file = artifact_file_object(name, size, &content_id, Some(content_type));
+        let file = artifact_file_object(name, size, &content_id, Some(content_type), &MemoryByteSource::new(&bytes)).await;
         let (obj_id, obj_str) = file.gen_obj_id();
         self.store
             .put_object(&obj_id, &obj_str)

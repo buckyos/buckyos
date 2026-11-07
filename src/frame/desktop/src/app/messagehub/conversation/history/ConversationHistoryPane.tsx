@@ -12,7 +12,8 @@ import {
   useState,
 } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { getMessageStableId, type DID } from '../../protocol/msgobj'
+import type { DID } from 'buckyos'
+import { getMessageStableId } from '../../protocol/msgobj'
 import {
   buildConversationProjection,
   extendConversationProjection,

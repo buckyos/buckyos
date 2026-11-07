@@ -3,17 +3,7 @@
  * (`buckyos-api/src/msg_notify.rs`) and the rules a card follows. Pure, so
  * the Deno datamodel tests use it directly.
  */
-import {
-  NOTIFY_CHOICE_CONTROL_ID,
-  NOTIFY_TEXT_CONTROL_ID,
-  type HumanPromptOption,
-  type HumanTaskPrompt,
-  type NotifyCategory,
-  type NotifyKind,
-  type NotifyLevel,
-  type NotifySource,
-  type NotifyStatus,
-} from '../protocol/msgobj'
+import { NOTIFY_CHOICE_CONTROL_ID, NOTIFY_TEXT_CONTROL_ID, type HumanPromptOption, type HumanTaskPrompt, type NotifyCategory, type NotifyKind, type NotifyLevel, type NotifySource, type NotifyStatus } from 'buckyos'
 
 export const NOTIFY_ACTION_ANSWER = 'answer'
 export const NOTIFY_ACTION_DISMISS = 'dismiss'

@@ -396,7 +396,8 @@ async function postAnnouncement(senderDid: string, text: string) {
 | --- | --- |
 | [datamodel/sessionApi.ts](../../src/frame/desktop/src/app/messagehub/datamodel/sessionApi.ts) | kRPC 调用与常用 wire 类型 |
 | [api/store.ts](../../src/frame/desktop/src/app/messagehub/api/store.ts) | 用户投影、群管理、发送、幂等和本地事件刷新 |
-| [protocol/msgobj.ts](../../src/frame/desktop/src/app/messagehub/protocol/msgobj.ts) | MsgObject、Session ID、关系和提及类型 |
+| `buckyos` 的 `ndn` 命名空间（buckyos-websdk `src/ndn_types.ts`） | `ndn.MsgObject`、关系和提及类型、`ndn.isValidMsgSessionId`、`ndn.msgObjectFromJsonChecked` |
+| [protocol/msgobj.ts](../../src/frame/desktop/src/app/messagehub/protocol/msgobj.ts) | Message Hub 自己的扩展字段（`agent_task`、`agent_ask`、`voice`）和通知读取函数 |
 | [ConversationView.tsx](../../src/frame/desktop/src/app/messagehub/ConversationView.tsx) | 聊天视图，组合历史、输入及媒体能力 |
 | [GroupPanel.tsx](../../src/frame/desktop/src/app/messagehub/GroupPanel.tsx) / [SessionDetails.tsx](../../src/frame/desktop/src/app/messagehub/SessionDetails.tsx) | 群成员管理、共享状态和 Session 参与者 UI |
 

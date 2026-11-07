@@ -1,4 +1,5 @@
-import type { CommentType, ContentType, Did, EntryUrl, FeedObject, FileObject, ObjId, PublicationCategory } from '../protocol/feed'
+import type { ndn } from 'buckyos'
+import type { CommentType, ContentType, Did, EntryUrl, FeedObject, ObjId, PublicationCategory } from '../protocol/feed'
 
 export type IdentityKind = 'person' | 'site' | 'agent' | 'self'
 
@@ -42,7 +43,7 @@ export type ResourceState = 'local' | 'reachable' | 'preparing' | 'unavailable'
 export interface ResolvedMedia {
   object: ObjId
   alt?: string
-  file?: FileObject
+  file?: ndn.FileObjectJson
 }
 
 export type InnerVisibility = 'visible' | 'not_visible' | 'withdrawn' | 'missing'
@@ -67,7 +68,7 @@ export interface FeedItemView {
   audience: AudienceView
   media: ResolvedMedia[]
   cover?: ResolvedMedia
-  wrappedFile?: FileObject
+  wrappedFile?: ndn.FileObjectJson
   embedded?: EmbeddedView
   category?: PublicationCategory
   createdAt: number
@@ -377,7 +378,7 @@ export interface SavedItem {
 }
 
 export type WrappedBody =
-  | { state: 'ready'; markdown: string; file: FileObject }
+  | { state: 'ready'; markdown: string; file: ndn.FileObjectJson }
   | { state: 'preparing' }
   | { state: 'unavailable'; reason: string }
 

@@ -873,7 +873,7 @@ impl Station {
     /// An attachment for a later publication. `upload_key`: where the browser's upload bound it
     /// in the user's `scratch` bucket, which proves the caller holds it; without one the HTTP
     /// layer checks the caller's NDM read access.
-    pub async fn register_object(&self, obj_id: &str, metadata: Value, upload_key: Option<&str>) -> HsResult<Value> {
+    pub async fn register_object(&self, obj_id: &str, upload_key: Option<&str>) -> HsResult<Value> {
         let root = normalize_obj_id(obj_id);
         if !matches!(obj_type_of(&root).as_deref(), Some(OBJ_TYPE_FILE | OBJ_TYPE_DIR)) {
             return Err(bad("attachment must be a FileObject or DirObject"));
@@ -900,17 +900,6 @@ impl Station {
             if id == root { result = Some(obj.body.clone()); }
             pending.extend(crate::objects::object_dependencies(&id, &crate::objects::canonical(&obj.body))?);
         }
-        let key = root.clone();
-        let mime = metadata.get("mime").and_then(Value::as_str).unwrap_or("application/octet-stream");
-        if mime.len() > 128 || !mime.contains('/') || mime.chars().any(char::is_control) { return Err(bad("invalid attachment mime")); }
-        let metadata = serde_json::to_string(&metadata)?;
-        self.db.call(move |c| {
-            c.execute(
-                "INSERT INTO import_metadata(owner, obj_id, metadata) VALUES (?3, ?1, ?2) ON CONFLICT(owner, obj_id) DO NOTHING",
-                params![key, metadata, c.owner],
-            )?;
-            Ok(())
-        }).await?;
         Ok(json!({ "objId": root, "object": result }))
     }
 
@@ -925,9 +914,7 @@ impl Station {
             }
             if !self.store.is_complete(&id).await? { return Err(HsError::Unavailable("upload_missing".into())); }
             if matches!(attachment.kind.as_str(), "image" | "video" | "audio") {
-                let key = id.clone();
-                let metadata = self.db.call(move |c| crate::objects::import_metadata(c, &key)).await?;
-                let mime = metadata.get("mime").or_else(|| obj.body.get("mime_type")).or_else(|| obj.body.get("mime")).and_then(Value::as_str).unwrap_or_default();
+                let mime = obj.body.get("mime").and_then(Value::as_str).unwrap_or_default();
                 if !mime.starts_with(&format!("{}/", attachment.kind)) || obj.body.get("size").and_then(Value::as_u64) == Some(0) {
                     return Err(bad("attachment media type does not match object"));
                 }
@@ -1098,7 +1085,7 @@ impl Station {
         let chunk_id = crate::objects::chunk_id_of(&data)?;
         let size = data.len() as u64;
         let mut file = ndn_lib::FileObject::new(name.to_string(), size, chunk_id.clone());
-        file.meta.insert("mime".into(), json!(mime));
+        file.apply_media_meta(&ndn_lib::probe_media_meta(&ndn_lib::MemoryByteSource::new(&data), name, Some(mime)).await);
         if let Value::Object(map) = extra_meta {
             for (k, v) in map {
                 if !v.is_null() {
@@ -1139,9 +1126,8 @@ fn version_files(obj: &StoredObject) -> Vec<String> {
 }
 
 fn part_mime(conn: &Conn, id: &str) -> HsResult<Option<String>> {
-    let metadata = crate::objects::import_metadata(conn, id)?;
     let file = get_object(conn, id)?.map(|o| o.body).unwrap_or_default();
-    Ok(metadata.get("mime").or_else(|| file.get("mime_type")).or_else(|| file.get("mime")).and_then(Value::as_str).map(str::to_string))
+    Ok(file.get("mime").and_then(Value::as_str).map(str::to_string))
 }
 
 /* ── bucket bindings of the owner's entries (doc/homestation/HomeStation Durable Data Schema.md) ── */

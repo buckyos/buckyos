@@ -1,4 +1,5 @@
-import { messageAgentAsk, messageAgentAskAnswer, messageAgentTaskId, messageObjId, messageVoice, type AgentAsk, type MessageObject, type MsgContent, type MsgRelation, type VoiceNote } from '../../protocol/msgobj'
+import type { ndn } from 'buckyos'
+import { messageAgentAsk, messageAgentAskAnswer, messageAgentTaskId, messageObjId, messageVoice, type AgentAsk, type MessageObject, type VoiceNote } from '../../protocol/msgobj'
 import { formatVoiceDuration } from '../media/voice'
 
 /** Reactions to one message, grouped by key (`CYFS 标准对象` §16.3). */
@@ -13,7 +14,7 @@ export interface MessageReaction {
 export interface MessageEdit {
   id?: string
   at: number
-  content: MsgContent
+  content: ndn.MsgContent
 }
 
 /**
@@ -24,7 +25,7 @@ export interface MessageThreadEntry {
   id: string
   from: string
   senderName?: string
-  content: MsgContent
+  content: ndn.MsgContent
   at: number
   /** On a question: what it asks. */
   agent_ask?: AgentAsk
@@ -36,7 +37,7 @@ export interface MessageThreadEntry {
 /** What the relation messages of a timeline say about one target message (`ui_relations`). */
 export interface MessageRelationsView {
   /** The complete content of the latest edit by the author, plus every edit seen (oldest first). */
-  edited?: { content: MsgContent; at: number; edits: MessageEdit[] }
+  edited?: { content: ndn.MsgContent; at: number; edits: MessageEdit[] }
   redacted?: { by: string; at: number }
   reactions?: MessageReaction[]
   /** Only on a `thread` message: the quoted target, when it is in the same timeline. */
@@ -53,7 +54,7 @@ function messageIds(message: MessageObject): string[] {
   return [...new Set(ids)]
 }
 
-export function messageRelation(message: MessageObject): MsgRelation | undefined {
+export function messageRelation(message: MessageObject): ndn.MsgRelation | undefined {
   const relation = message.relates_to
   return relation && typeof relation === 'object' && typeof relation.target === 'string' && typeof relation.rel === 'string' ? relation : undefined
 }
@@ -220,7 +221,7 @@ export function ownReactionId(message: MessageObject, viewerDid: string, key: st
 }
 
 /** A voice note without text reads as a microphone and its duration. */
-function summaryOf(content: MsgContent, voice?: VoiceNote): string {
+function summaryOf(content: ndn.MsgContent, voice?: VoiceNote): string {
   const text = (content.content ?? '').trim()
   if (text) return text
   if (voice) return `🎤 ${formatVoiceDuration(voice.duration_ms)}`
@@ -232,7 +233,7 @@ function summaryOf(content: MsgContent, voice?: VoiceNote): string {
  * (format, refs and machine parts included) when there is one. The anchor
  * keeps everything else: its ObjId, its place in the timeline, its `agent_task`.
  */
-export function effectiveContent(message: MessageObject): MsgContent {
+export function effectiveContent(message: MessageObject): ndn.MsgContent {
   return messageRelations(message)?.edited?.content ?? message.content
 }
 

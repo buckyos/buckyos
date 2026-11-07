@@ -1,4 +1,4 @@
-import { buckyos, ndm } from 'buckyos'
+import { buckyos, ndm, type ndn } from 'buckyos'
 import { isMockRuntime } from '../../../runtime'
 import type { ObjId } from '../protocol/feed'
 
@@ -16,10 +16,10 @@ export class TransportError extends Error {
 
 export interface UploadMeta {
   name: string
-  mime: string
-  width?: number
-  height?: number
-  duration_ms?: number
+  /** `application/x-directory` for a folder. */
+  mime?: string
+  /** The probe of a single file, so the import does not repeat it. */
+  fileMeta?: ndn.FileMediaMeta
 }
 
 export interface UploadOptions {
@@ -95,7 +95,7 @@ async function importAttachment(transport: Transport, endpoint: string, token: s
   let imported = imports.get(first)
   if (!imported) {
     const target = await transport.call<{ bucketId: string; key: string }>('object.upload_target', { name: meta.name })
-    const snapshot = await ndm.importFiles(files, { mode: meta.mime === 'application/x-directory' ? 'single_dir' : 'single_file', endpoint, sessionToken: token, signal: options.signal, autoStartUpload: false })
+    const snapshot = await ndm.importFiles(files, { mode: meta.mime === 'application/x-directory' ? 'single_dir' : 'single_file', endpoint, sessionToken: token, signal: options.signal, autoStartUpload: false, fileMeta: () => meta.fileMeta })
     const object = snapshot.items[0]
     if (!object) throw new Error('No file or folder was selected.')
     imported = { sessionId: snapshot.sessionId, objId: object.objectId, ...target }
@@ -111,7 +111,7 @@ async function importAttachment(transport: Transport, endpoint: string, token: s
   })
   if (status.objectStatus !== 'ready' || !status.binding) throw new Error('Attachment object is not ready.')
   options.signal?.throwIfAborted()
-  const result = await transport.call<{ objId: ObjId }>('object.register', { objId: imported.objId, metadata: meta, key: imported.key })
+  const result = await transport.call<{ objId: ObjId }>('object.register', { objId: imported.objId, key: imported.key })
   options.onProgress?.(total, total)
   ndm.releaseImportSession(imported.sessionId)
   imports.delete(first)

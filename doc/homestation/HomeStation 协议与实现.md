@@ -56,7 +56,7 @@ Zone 的 Agent 也是发表者（2026-10-23）：`users/<owner>/agents/<agent_id
 | `cyfollow` | `follow` | 关注声明（E17） |
 | `cyfproof` | `consumption_proof` | 消费证明（§11.3） |
 | `cyfeval` | `evaluation` | 对外共享的评价（§6.5） |
-| `cyfile` / `cydir` / ChunkList | — | 标准文件、目录和分块依赖；SDK canonical 对象不增加展示字段，上传展示元数据保存在本用户 `import_metadata` |
+| `cyfile` / `cydir` / ChunkList | — | 标准文件、目录和分块依赖。常用 meta（`mime`、尺寸、时长、拍摄信息等，《CYFS 标准对象》§10.1）写进 `cyfile`，随内容分发；HomeStation 接口的 `file` 字段就是标准 `cyfile` JSON |
 
 ### 2.2 Feed Object（`cyfeed`）
 
@@ -94,7 +94,7 @@ Zone 的 Agent 也是发表者（2026-10-23）：`users/<owner>/agents/<agent_id
 { "kind": "consumption_proof", "publisher": "<Bob>", "iat": …, "target": "<ObjId>", "action": "video_complete", "result": { … }, "receiver": "<DID>", "agreement": "agr-…", "nonce": "…" }
 ```
 
-共享评价把置信度写成整数千分比 `confidence_permille`（对象内不允许浮点数）。
+共享评价把置信度写成整数千分比 `confidence_permille`（HomeStation 自己的对象内不允许浮点数；`cyfile` 是 CYFS 标准对象，常用 meta 里的 `geo`、`exposure` 带浮点数，不受此限）。
 
 ## 3. 跨节点协议
 
@@ -404,6 +404,6 @@ Desktop 前端：`pnpm exec playwright test tests/e2e/pages/homestation.spec.ts`
 
 ### 标准文件与目录导入
 
-浏览器先调 `object.upload_target {name}` 取得本人 `scratch` 桶里的一个新 key，再用 WebSDK `importFiles` / `ensureUploaded({ bind })` 上传，finalize 时 `auto_bind` 到该 key（7 天内有效，不再“只 put 不 pin”），然后 `object.register {objId, key, metadata}`：服务读这个绑定，确认它绑的正是该 ObjId（用户自己的上传就是持有证明），全依赖完整后登记对象树。不带 `key` 的登记（Agent 的产物）仍把调用者会话原样转发到 NDM `get_object` 检查读取权（不借用 HomeStation 服务身份）。`object.register` 只接受本用户的非 restricted session。图片、音视频保留专用类型，普通文件/目录用 `file` / `dir` 附件及 `content.type=files`。媒体展示元数据独立于 canonical 对象，发布时核对类型和非空；目录不自动转 ZIP 或图片集。
+浏览器先调 `object.upload_target {name}` 取得本人 `scratch` 桶里的一个新 key，再用 WebSDK `importFiles` / `ensureUploaded({ bind })` 上传，finalize 时 `auto_bind` 到该 key（7 天内有效，不再“只 put 不 pin”），然后 `object.register {objId, key}`：媒体附件的类型由对象自身的 `mime` 判定，`/content` 的 Content-Type 也读它。服务读这个绑定，确认它绑的正是该 ObjId（用户自己的上传就是持有证明），全依赖完整后登记对象树。不带 `key` 的登记（Agent 的产物）仍把调用者会话原样转发到 NDM `get_object` 检查读取权（不借用 HomeStation 服务身份）。`object.register` 只接受本用户的非 restricted session。图片、音视频保留专用类型，普通文件/目录用 `file` / `dir` 附件及 `content.type=files`。媒体展示元数据独立于 canonical 对象，发布时核对类型和非空；目录不自动转 ZIP 或图片集。
 
 FileObject 内容通过 NamedStore `open_reader` 支持 ChunkList，内容响应目前最多 64 MiB/文件；目录 JSON 可逐层读取，子对象与 chunks 继承同一条目的受众授权，撤回后停止访客访问。发表时在写数据库之前把版本绑进 `entries`、把每个附件按 ObjId 绑进 `published`（`<namespace>/<entry key>/<version>/<n>`）；数据库写失败就解开刚绑的 key；撤回后解绑整个条目，再撤回一次会补做没解开的绑定。普通 Zone 的浏览器授权/断网恢复仍需在部署环境验收；独立服务测试用进程内 nfs-server 预置对象与 scratch 绑定验证业务读写和权限。

@@ -29,7 +29,8 @@ import { messageObjId, messageSummaryText, ownReactionId } from './conversation/
 import { SessionPanel } from './conversation/SessionPanel'
 import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
 import { ConversationMediaScopeContext } from './conversation/media/context'
-import { notifySessionCategory, type DID, type MessageObject } from './protocol/msgobj'
+import { notifyCategoryFromSessionId, type DID } from 'buckyos'
+import type { MessageObject } from './protocol/msgobj'
 import type { WorklogDestination } from './conversation/worklog/model'
 import { useNotifyFilteredReader } from './notify'
 import { NOTIFY_FILTERS, type NotifyFilter } from './notify/model'
@@ -121,7 +122,7 @@ export function ConversationView({
   const requestCount = session?.requestCount ?? 0
   const canSend = access === undefined || access?.mode === 'read_write'
   // A notification session (`sysnotify:*`) is not a conversation: its cards are filtered, never answered by typing.
-  const notifyCategory = session ? notifySessionCategory(session.id) : undefined
+  const notifyCategory = session ? notifyCategoryFromSessionId(session.id) : undefined
   const [notifyFilter, setNotifyFilter] = useState<NotifyFilter>('all')
   const historyReader = useNotifyFilteredReader(messageReader, notifyCategory ? notifyFilter : 'all')
   const isGroup = entity.type === 'group'

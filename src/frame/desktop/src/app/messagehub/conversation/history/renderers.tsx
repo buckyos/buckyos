@@ -25,19 +25,8 @@ import {
   UserPlus,
   Users,
 } from 'lucide-react'
-import {
-  getMessageDeliveryStatus,
-  getMessageMetaString,
-  getMessageSenderName,
-  getMessageStableId,
-  messageNotify,
-  messageVoice,
-  type RefItem,
-  type DID,
-  type MessageDeliveryStatus,
-  type MessageObject,
-  type VoiceNote,
-} from '../../protocol/msgobj'
+import type { DID, ndn } from 'buckyos'
+import { getMessageDeliveryStatus, getMessageMetaString, getMessageSenderName, getMessageStableId, messageNotify, messageVoice, type MessageDeliveryStatus, type MessageObject, type VoiceNote } from '../../protocol/msgobj'
 import { MessageAttachmentView } from '../media/MediaAttachment'
 import { VoiceNoteView } from '../media/VoiceNote'
 import { emojiOnlyCount } from '../input/emoji'
@@ -639,7 +628,7 @@ function isLikelyImageUri(uri: string): boolean {
 }
 
 /** The kind a ref is expected to render as, from what is already known (resolved object, or its name). */
-function expectedKind(item: RefItem, id: string, context: string | undefined): AttachmentKind | null {
+function expectedKind(item: ndn.RefItem, id: string, context: string | undefined): AttachmentKind | null {
   const attachment = attachmentOfRef(item, id, context)
   if (!attachment) return null
   if (attachment.uri) return 'image'
@@ -721,7 +710,7 @@ function UploadProgress({ upload, alignEnd }: { upload: OutgoingUpload; alignEnd
   )
 }
 
-function MessageRef({ item, id, objectContext, isSelf, index, onKind }: { item: RefItem; id: string; objectContext: string | undefined; isSelf: boolean; index: number; onKind: (index: number, kind: AttachmentKind) => void }) {
+function MessageRef({ item, id, objectContext, isSelf, index, onKind }: { item: ndn.RefItem; id: string; objectContext: string | undefined; isSelf: boolean; index: number; onKind: (index: number, kind: AttachmentKind) => void }) {
   const target = item.target
   const report = useCallback((kind: AttachmentKind) => onKind(index, kind), [onKind, index])
   if (target.type === 'service_did') {

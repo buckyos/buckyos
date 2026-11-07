@@ -115,7 +115,7 @@ pub use msg_notify::*;
 pub use nfs_copy::*;
 pub use nfs_server_client::*;
 pub use nfs_share::*;
-pub use named_store_client::RuntimeNamedStore;
+pub use named_store_client::{RuntimeContentByteSource, RuntimeNamedStore};
 pub use repo_client::*;
 pub use scheduler_client::*;
 pub use sn_user_client::*;

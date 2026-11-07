@@ -5,7 +5,8 @@
  */
 import type { CreationPolicy, Entity, EntityDetail, MessagePreview, Session, SessionBinding } from '../types'
 import type { Contact, MailboxRecordWithObject, SessionSummary } from '../datamodel/sessionApi'
-import { messageNotify, messageVoice, notifySessionCategory, type MessageObject, type NotifyCategory } from '../protocol/msgobj'
+import { notifyCategoryFromSessionId, type NotifyCategory } from 'buckyos'
+import { messageNotify, messageVoice, type MessageObject } from '../protocol/msgobj'
 import { formatVoiceDuration } from '../conversation/media/voice'
 import { isActionMessage, isMessageActivity } from '../sessionModel'
 import { didDisplayName, usableImageUrl } from '../../../presentation/model'
@@ -312,7 +313,7 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
   const sessionsByEntity = new Map<string, Session[]>()
   for (const summary of input.summaries) {
     // A notification session without a record is not shown.
-    const notifyCategory = notifySessionCategory(summary.session_id)
+    const notifyCategory = notifyCategoryFromSessionId(summary.session_id)
     if (notifyCategory && !summary.last_record) continue
     const attribution = attributeSession(summary, ownerDid)
     const rawPeer = attribution.peerDid

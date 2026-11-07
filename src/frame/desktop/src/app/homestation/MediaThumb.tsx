@@ -2,7 +2,8 @@ import { useMemo, type CSSProperties } from 'react'
 import { usePreviewThumbnail } from '../../components/preview/thumbnail'
 import { homeStationTransport } from './api/transport'
 import { fileSourceRef, mediaUrl } from './media'
-import type { FileObject, ObjId } from './protocol/feed'
+import type { ndn } from 'buckyos'
+import type { ObjId } from './protocol/feed'
 
 const THUMB_EDGE = 640
 
@@ -13,7 +14,7 @@ const THUMB_EDGE = 640
  */
 export function MediaThumb({ objId, file, alt, className, style, loading }: {
   objId: ObjId
-  file?: FileObject
+  file?: ndn.FileObjectJson
   alt?: string
   className?: string
   style?: CSSProperties

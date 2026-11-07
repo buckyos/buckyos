@@ -192,12 +192,16 @@ async fn main() {
             users = json!([{ "user": KAI.0, "did": did(KAI.0), "name": KAI.1, "settings": kai,
                 "contacts": [{ "did": did("me"), "name": "Lin", "friend": true }] }]);
         }
+        let nfs_url = nfs::start_nfs_server(&data.join(name).join("nfs")).await;
+        // The browser's upload API lives on the nfs-server, whose port is free-picked: the
+        // end-to-end suite reads it from here.
+        std::fs::write(data.join(name).join("nfs.url"), &nfs_url).expect("write nfs.url");
         let cfg: StandaloneConfig = serde_json::from_value(json!({
             "owner": did(name),
             "owner_name": display,
             "user": name,
             "zone": format!("{name}.devnet"),
-            "nfs_server": nfs::start_nfs_server(&data.join(name).join("nfs")).await,
+            "nfs_server": nfs_url,
             "zone_name": if *name == "me" { "Lin & Kai's zone".to_string() } else { format!("{name}.devnet") },
             "private_key_pem": pem,
             "listen": format!("127.0.0.1:{}", port + i as u16),

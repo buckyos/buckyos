@@ -1055,7 +1055,7 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
       const total = Array.isArray(selected) ? selected.reduce((sum, item) => sum + item.size, 0) : file.size
       options?.onProgress?.(total, total)
       const objId = registerMockAttachment(selected, kind === 'dir')
-      db.files.set(objId, { kind: 'file', name: file.name, meta: { mime: kind === 'dir' ? 'application/x-directory' : file.type || (kind === 'image' ? 'image/png' : kind === 'video' ? 'video/mp4' : kind === 'audio' ? 'audio/mp4' : 'application/octet-stream'), size: file.size, ...(kind === 'image' ? { width: 1600, height: 1200 } : { duration_ms: 42_000 }) } })
+      db.files.set(objId, { name: file.name, mime: kind === 'dir' ? 'application/x-directory' : file.type || (kind === 'image' ? 'image/png' : kind === 'video' ? 'video/mp4' : kind === 'audio' ? 'audio/mp4' : 'application/octet-stream'), size: file.size, ...(kind === 'image' ? { width: 1600, height: 1200 } : { duration_ms: 42_000 }) })
       return objId
     },
 

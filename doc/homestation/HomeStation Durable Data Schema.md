@@ -71,7 +71,6 @@ HomeStation 一个服务进程服务 Zone 的全部用户。它持久化三类�
 | --- | --- | --- |
 | `meta` | `key` | `schema_version` |
 | `settings` | `(owner, key)` | 用户设置 JSON（`user_settings`）、评论认领标记 `claimed:<obj>`、收录游标 `collector_cursor:<did>`、`stream_compacted_through` |
-| `import_metadata` | `(owner, obj_id)` | 附件的展示元数据（name、mime、width、height、duration_ms） |
 | `objects` | `(owner, obj_id)` | 已验对象：`obj_type`、规范 JSON `body`、`jwt`、`signer`、`publisher`、`verified`、`local_only`、`origin`（self / fetch / upload / spider / named_store / push…） |
 | `feed_index` | `(owner, obj_id)` | Feed Object 可检索事实：publisher、kind、comment_type、content_type、entry、entry_valid、target、wraps、iat、category、text、tags |
 | `heads` | `(owner, entry)` | 每个入口最高 seq 的 Head、冲突、受限、档位 |
@@ -121,7 +120,7 @@ HomeStation 一个服务进程服务 Zone 的全部用户。它持久化三类�
 ## 7. Extensibility Rules
 
 - 冻结：`owner` 列及其在主键中的位置；`published.namespace` / `key`（桶 key 前缀）；桶名与 key 方案；ObjId 的计算方式。
-- 可扩展：各表新增可空列；`settings` 的 JSON；`import_metadata.metadata` 的 JSON；Binding 的 `metadata` / `tags`。
+- 可扩展：各表新增可空列；`settings` 的 JSON；Binding 的 `metadata` / `tags`。
 
 ## 8. Query Patterns
 

@@ -3,11 +3,8 @@ import {
   type SessionDeliveryOverall,
   type SessionMessageItem,
 } from '../../datamodel/sessionApi'
-import type {
-  DID,
-  MessageDeliveryStatus,
-  MessageObject,
-} from '../../protocol/msgobj'
+import type { DID } from 'buckyos'
+import type { MessageDeliveryStatus, MessageObject } from '../../protocol/msgobj'
 import type { AppendableConversationMessageReader } from './types'
 
 const SESSION_MESSAGE_PAGE_SIZE = 200

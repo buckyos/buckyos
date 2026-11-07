@@ -312,23 +312,25 @@ pub fn parse_obj_id(value: &str) -> Result<ObjId, String> {
 }
 
 pub fn obj_id_of(obj_type: &str, claims: &Value) -> Result<(String, String), String> {
-    let jcs = serde_jcs_string(claims)?;
+    let jcs = serde_jcs_string(obj_type, claims)?;
     let (id, _) = build_named_object_by_json(obj_type, claims);
     Ok((id.to_string(), jcs))
 }
 
 /// The locked ndn-lib silently hashes `{}` when canonicalization fails; refuse such values.
-fn serde_jcs_string(value: &Value) -> Result<String, String> {
-    fn check(value: &Value) -> Result<(), String> {
+/// HomeStation's own objects are integer only. A `cyfile` is a CYFS standard object whose
+/// common meta (`geo`, `exposure`) holds floats.
+fn serde_jcs_string(obj_type: &str, value: &Value) -> Result<String, String> {
+    fn check(value: &Value, floats_allowed: bool) -> Result<(), String> {
         match value {
             Value::Number(n) if n.as_f64().is_some_and(|f| !f.is_finite()) => Err("non-finite number".into()),
-            Value::Number(n) if n.is_f64() => Err("floating point numbers are not allowed in objects".into()),
-            Value::Array(items) => items.iter().try_for_each(check),
-            Value::Object(map) => map.values().try_for_each(check),
+            Value::Number(n) if n.is_f64() && !floats_allowed => Err("floating point numbers are not allowed in objects".into()),
+            Value::Array(items) => items.iter().try_for_each(|item| check(item, floats_allowed)),
+            Value::Object(map) => map.values().try_for_each(|item| check(item, floats_allowed)),
             _ => Ok(()),
         }
     }
-    check(value)?;
+    check(value, obj_type == OBJ_TYPE_FILE)?;
     let (_, jcs) = build_named_object_by_json("x", value);
     if jcs == "{}" && value.as_object().is_none_or(|m| !m.is_empty()) {
         return Err("object cannot be canonicalized".into());
@@ -762,5 +764,31 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.starts_with("cyfeed:"));
         assert!(obj_id_of(OBJ_TYPE_FEED, &json!({ "a": 0.5 })).is_err());
+        // Except the common meta of a standard `cyfile`, hashed as Rust and the SDK both do.
+        let (file, _) = obj_id_of(OBJ_TYPE_FILE, &json!({ "geo": { "lat": 34.9949 }, "create_time": 0, "last_update_time": 0 })).unwrap();
+        assert!(file.starts_with("cyfile:"));
+    }
+
+    // Written by the helper, with floats that hold whole numbers: serde_json prints `2.0`
+    // but JCS writes `2`. The ObjId is the one the SDK computes for the same object.
+    #[test]
+    fn a_cyfile_with_common_meta_has_the_sdks_object_id() {
+        let mut file = ndn_lib::FileObject::new("a.jpg".to_string(), 3, "mix256:00".to_string());
+        file.apply_media_meta(&ndn_lib::MediaMeta {
+            mime: Some("image/jpeg".to_string()),
+            width: Some(10),
+            height: Some(20),
+            geo: Some(ndn_lib::MediaGeo { lat: 34.9949, lon: -135.7567, alt: Some(-7.5), heading: Some(90.0), accuracy_m: Some(0.0) }),
+            exposure: Some(ndn_lib::MediaExposure {
+                iso: Some(100),
+                f_number: Some(2.0),
+                focal_length_mm: Some(50.0),
+                exposure_time: Some("1/120".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let (id, _) = obj_id_of(OBJ_TYPE_FILE, &serde_json::to_value(&file).unwrap()).unwrap();
+        assert_eq!(id, "cyfile:fd3c8a8b83f78d4475957c428ef6061c6d2e760ca52c28beac590dfcc3520269");
     }
 }

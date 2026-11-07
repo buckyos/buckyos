@@ -3,7 +3,8 @@ import { registerPreviewSourceResolver } from '../../components/preview/hostSour
 import { PreviewError, type ContentRef, type ResolvedPreviewSource } from '../../components/preview/types'
 import { homeStationTransport } from './api/transport'
 import { placeholderSvg } from './mock/media'
-import type { FileObject, ObjId } from './protocol/feed'
+import type { ndn } from 'buckyos'
+import type { ObjId } from './protocol/feed'
 
 export const HOMESTATION_FILE_SOURCE = 'homestation-file'
 
@@ -12,16 +13,16 @@ export interface HomeStationFileSourceValue {
   name: string
   reference: string
   alt?: string
-  file?: FileObject
+  file?: ndn.FileObjectJson
   url?: string
 }
 
-export function mediaUrl(objId: ObjId, file: FileObject | undefined, label?: string) {
+export function mediaUrl(objId: ObjId, file: ndn.FileObjectJson | undefined, label?: string) {
   const transport = homeStationTransport()
   return transport ? transport.contentUrl(objId) : `data:image/svg+xml;charset=utf-8,${encodeURIComponent(placeholderSvg(objId, file, label))}`
 }
 
-export function fileSourceRef(objId: ObjId, file: FileObject | undefined, alt?: string): ContentRef {
+export function fileSourceRef(objId: ObjId, file: ndn.FileObjectJson | undefined, alt?: string): ContentRef {
   const transport = homeStationTransport()
   const value: HomeStationFileSourceValue = transport
     ? { objId, name: file?.name ?? alt ?? objId, reference: objId, alt, file, url: transport.contentUrl(objId) }
@@ -52,7 +53,7 @@ async function resolveFile(source: ContentRef, { signal }: { signal?: AbortSigna
   } catch (error) {
     if (cancelled(error, signal)) throw new PreviewError('CANCELLED', 'Cancelled')
   }
-  const hints = [value.file?.meta.mime ?? bound?.mime ?? ''].filter(Boolean)
+  const hints = [value.file?.mime ?? bound?.mime ?? ''].filter(Boolean)
   if (bound) {
     const bucketRef = bucketObjectRef({ bucketId: bound.bucketId, key: bound.key }, { version: bound.version, token: bound.token })
     try {
@@ -68,7 +69,7 @@ async function resolveFile(source: ContentRef, { signal }: { signal?: AbortSigna
     sourceObjectId: value.objId,
     inputObjectId: value.objId,
     displayName: value.name,
-    size: value.file?.meta.size,
+    size: value.file?.size,
     objectType: 'file',
     mediaTypeHints: hints,
     readRef: { kind: 'url', url: value.url },

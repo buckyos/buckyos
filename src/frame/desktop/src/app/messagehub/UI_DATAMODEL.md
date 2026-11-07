@@ -36,7 +36,7 @@ MessageHub 原型已经收敛（Entity List / Conversation View / Details 三层
 
 ```text
 协议层（Rust 镜像，禁止按 UI 需要改形）
-  protocol/msgobj.ts        —— MsgObject / MsgContent / RefItem
+  protocol/msgobj.ts        —— MessageObject（SDK `ndn.MsgObject` 加扩展字段）和读取函数
   datamodel/sessionApi.ts   —— SessionSummary / SessionMessageItem / MailboxRecord / 分页游标
         │
         │  projection（本文档第 3 章定义的映射规则）

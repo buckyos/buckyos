@@ -71,18 +71,6 @@ export interface FollowDeclaration {
   target: { publisher: Did; stream: string }
 }
 
-export interface FileObject {
-  kind: 'file'
-  name: string
-  meta: {
-    mime: string
-    size: number
-    width?: number
-    height?: number
-    duration_ms?: number
-  }
-}
-
 export function commentTarget(object: FeedObject): ObjId | undefined {
   if (object.comment_type === 'repost' || object.comment_type === 'quote') return object.wraps
   return object.references?.find(reference => reference.relation === 'comment_on')?.object_id
