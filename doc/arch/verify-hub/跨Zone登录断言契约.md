@@ -20,7 +20,7 @@ JWT，`alg=EdDSA`。header `kid = <设备 DID>#<key id>`（如 `did:web:ood1.ali
 
 | claim | 必填 | 含义 |
 | --- | --- | --- |
-| `iss` | 是 | 请求主体 DID（用户或 Agent），custody 校验中的 author |
+| `iss` | 是 | 请求主体 DID（用户、Agent 或群），custody 校验中的 author |
 | `sub` | 是 | 等于 `iss` |
 | `dev` | 是 | 签名设备 DID，必须等于 `kid` 的 DID 部分 |
 | `aud` | 是 | Target Zone DID 字符串 |
@@ -41,7 +41,7 @@ JWT，`alg=EdDSA`。header `kid = <设备 DID>#<key id>`（如 `did:web:ood1.ali
 2. requester ＝ 签名 DID → `Signer`（主体用自己的钥签）。
 3. 调用方传入的 `local_principal_zone` 与设备 `zone_did` 一致 → `SameZone`。本地提示只增加一种通过方式，不覆盖主体文档允许的代表关系。
 4. requester 文档先按 `Owner` 类型解析，`NotFound` 再取默认类型；其 `authentication` 列出 kid（相对 id `#k` 按文档自己的 DID 展开）或签名 DID → `ListedInDoc`。
-5. 设备文档的 `zone_did` ＝ requester 文档给出的 canonical Zone → `SameZone`。OwnerDocument 取 `binded_zone_list[0]`，为空或无绑定的自托管 Owner 取 DID 自身；AgentDocument 取其 `owner` 的 canonical Zone；其他文档取 `zone_did`。
+5. 设备文档的 `zone_did` ＝ requester 文档给出的 canonical Zone → `SameZone`。OwnerDocument 取 `binded_zone_list[0]`，为空或无绑定的自托管 Owner 取 DID 自身；AgentDocument 取其 `owner` 的 canonical Zone；群文档（`entity_type = group` 或 `ns/group`）取其 `owner` 的 canonical Zone，owner 可以是用户或 Agent，不能是群；其他文档取 `zone_did`。群主的 Zone 就是 host，转让群主等于转服，当前版本不支持，所以 host 的设备可以代表群，其他 Zone 的设备不可以，群管理员不影响判定。
 6. 都不成立 → 拒绝（`NotAuthorized`）。无法取得签名钥 → `UnknownSigner`。
 
 解析三态：`NotFound` 是确定答案；`Unavailable`、`Timeout` 返回 `CustodyError::Unavailable`，调用方必须当作可重试，不得当作拒绝或通过。

@@ -156,14 +156,16 @@ const DAVE = 'did:buckyos:entity:person-dave'
 const BOOK = 'did:buckyos:group:book-club'
 const ERIN = 'did:buckyos:person:erin'
 
-test('notification cards: an auto-accepted invite shows joined, a join request is approved, an owner transfer is accepted', async ({ page }) => {
+test('notification cards: an invite comes from the inviter; a join request and an owner transfer come from the group', async ({ page }) => {
   await openHub(page, ALICE)
   const invite = page.locator('[data-testid="group-notice"][data-action="invite"]')
   await expect(invite).toHaveAttribute('data-state', 'joined')
   await expect(invite).toContainText('Joined')
   await expect(invite.getByRole('button', { name: 'Join group' })).toHaveCount(0)
   await expect(invite).toContainText('Role: Admin')
+  await expect(page.locator('[data-testid="group-notice"][data-action="owner_transfer"]')).toHaveCount(0)
 
+  await openHub(page, TEAM)
   const approval = page.locator('[data-testid="group-notice"][data-action="pending_approval"]')
   await expect(approval).toContainText('asked to join')
   await approval.getByRole('button', { name: 'Approve' }).click()
@@ -171,12 +173,11 @@ test('notification cards: an auto-accepted invite shows joined, a join request i
   expect(await page.evaluate(({ context, group, member }) => window.__messageHubMock.group(context, group)?.members?.find(item => item.did === member)?.state, { context: OWN, group: TEAM, member: ERIN })).toBe('active')
 
   const transfer = page.locator('[data-testid="group-notice"][data-action="owner_transfer"]')
-  await expect(transfer).toContainText('offers you ownership of')
+  await expect(transfer).toContainText('Alice Chen offers you ownership of')
   await page.screenshot({ path: 'test-results/messagehub-group-notices.png' })
   await transfer.getByRole('button', { name: 'Accept ownership' }).click()
   await expect(transfer).toContainText('You are now the group owner')
   expect(await page.evaluate(({ context, group }) => window.__messageHubMock.group(context, group)?.myRole, { context: OWN, group: TEAM })).toBe('owner')
-  await expect(page.getByTestId('action-message').last()).toHaveCount(0)
 })
 
 test('the owner changes roles, mutes a member, edits the profile and issues an invite link', async ({ page }) => {

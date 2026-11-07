@@ -448,14 +448,14 @@ Public Zone 不是新的资源类型，也不只是 `public.<zone>` 这个主机
 | `https://<zone>/ndn/<obj_id>`、`cyfs://<objid>.<zone>` | nfs-server（公开桶或 `hint` 里的令牌） | 只读 Zone 公开提供的对象 | 同匿名，或凭 `bkt_` | 见 §4.6.5 |
 | `https://<app>.<zone>/` | App 自身 | 取决于 App 的 `guest` 规则 | 取决于 App | 不在本节范围 |
 
-结论：**匿名方在以上入口都不能只凭 ObjId 读到对象**。持有会话的调用者在消息附件入口可以只带 ObjId，这条路径的安全性取决于绑定环节，G2 修复后远端消息不再因本地命中而绑定。AI Workspace 的访客入口（`gt_`）是另一个公开面，这次没有核查。
+结论：**匿名方在以上入口都不能只凭 ObjId 读到对象**。持有会话的调用者在消息附件入口可以只带 ObjId，这条路径的安全性取决于绑定环节，G2 修复后远端消息不再因本地命中而绑定，也不能借本地重发绑定（§21 N1）。AI Workspace 的访客入口（`gt_`）是另一个公开面，这次没有核查。
 
 **消息附件是按 ObjId 定位的入口。** `MsgObject` 的附件只有 `DataObj { obj_id, uri_hint? }`，`uri_hint` 不参与读取。【现状】：
 
 | 环节 | 行为 |
 | --- | --- |
 | 本 Zone 用户发出 | `authorize_outgoing_attachments` 要求发送者已能读这个对象，通过后才绑定进 `zone/msg-center/_/attachments` |
-| 收到远端签名消息（含远端群成员发言） | 不绑定，无论内容是否已在本 Zone（Z7）。私聊附件在收件人第一次读取时，向发送方 Zone 申请令牌、经 `/ndn/` 下载校验后才绑定（§21 N18）；群附件暂时 404（#689 P2） |
+| 收到远端签名消息（含远端群成员发言） | 不绑定，无论内容是否已在本 Zone（Z7）。私聊附件在读者第一次读取内容时，向发送方 Zone 申请令牌、经 `/ndn/` 下载校验后才绑定（§21 N18）。群附件由 host 接受后向作者 Zone 取回，成员 Zone 再向 host 取。转发和收藏先走同一流程，只引用不算持有 |
 | 读取 | `GET /kapi/msg-center/objects/<obj_id>/content`。本 Zone 用户和 Agent 可以不带 `context_path`，msg-center 在调用者邮箱最新 1000 条消息里找引用该对象的消息；受限会话（External）必须用 `context_path` 指明消息。放行条件是调用者能读这条消息，且它的绑定持有该对象 |
 
 读取环节判的是"这条消息引用了它"，所以"哪条消息可以引用哪个对象"必须在绑定环节把关。
@@ -470,7 +470,7 @@ Public Zone 不是新的资源类型，也不只是 `public.<zone>` 这个主机
 | Z4 | **授权沿对象图向下。** 对 root 的授权只延伸到它的依赖（FileObject → ChunkList → Chunk，DirObject → 子项），不能横向读别的 ObjId。入口可以只公开描述、不公开内容（如付费视频） | HomeStation 的 `object_grants` 和分享的快照解析已按此实现 |
 | Z5 | **匿名不能枚举。** 匿名不能写桶，只能看入口已公开的列表（公开 Feed、`public` ACL 目录），不能枚举桶、key 或对象。拒绝响应不泄露目标是否存在 | 部分成立，见 G4、G7 |
 | Z6 | **令牌不是公开，也不依赖身份。** `bkt_` 仍是点对点能力（§4.4.5）。未绑定主体的令牌只看令牌本身，不因请求同时带了别的会话而失败 | 部分成立，见 G6 |
-| Z7 | **服务的权限不替访问者授权。** 服务对 `obj://ndm/objects` 的读权限只用来取字节。建立公开入口或绑定之前，要检查发起者本人的持有或读权（§6.4） | 部分成立，见 G2 |
+| Z7 | **服务的权限不替访问者授权。** 服务对 `obj://ndm/objects` 的读权限只用来取字节。建立公开入口或绑定之前，要检查发起者本人的持有或读权（§6.4） | 成立。收到的消息不绑定（N1），本地重发复用引用要来源消息的绑定持有它（N18 后续） |
 | Z8 | **响应不扩大授权。** 活动内容不在持有 SSO 凭据的 origin 上执行；凭身份或令牌放行的响应不进共享缓存；URL 里的令牌不经 Referer 外泄 | 活动内容和 Referer 只有 `share.<zone>` 做了防护，见 G1、G5 |
 
 #### 4.6.4 桶内容如何对外可见
@@ -484,7 +484,7 @@ Public Zone 不是新的资源类型，也不只是 `public.<zone>` 这个主机
 | 按受众发表 | `https://<zone>/home/<user>/...` | HomeStation | `user/homestation/<user>/published`、`entries` | 撤回 = 解绑；收窄受众见 G3 |
 | 给指定的人一个短期链接 | `https://<zone>/bucket/v1/<id>/<key>?token=bkt_...` | 桶（§4.4.5） | 原桶 | `bucket.revoke_access_token`，最长 7 天 |
 | 任何人按 ObjId 读取 | `https://<zone>/ndn/<obj_id>` | nfs-server（§4.6.5） | `zone/nfs-server/_/public-objects` 或 `public-cache` | 撤回或逐出后 404 |
-| 跨 Zone 业务（消息附件、群文件） | 私聊附件是 `/ndn/` + `hint` 里的令牌（§4.6.5）；群文件仍是业务服务的入口 + 目标 Zone 会话 | 业务服务 | 服务的 zone 桶，如 `zone/msg-center/_/attachments` | 按业务规则 |
+| 跨 Zone 业务（消息附件、群文件） | 私聊和群附件都是 `/ndn/` + `hint` 里的令牌（§4.6.5），令牌由业务服务按消息和群规则签发 | 业务服务 | 服务的 zone 桶，如 `zone/msg-center/_/attachments` | 按业务规则 |
 
 各档能否进入公开入口【已定 D21】：
 
@@ -602,7 +602,7 @@ GET | HEAD https://$zone/ndn/<obj_id>[/@/<inner_path>][?hint=<hint>]
 | # | 差距 | 依据 | 建议 |
 | --- | --- | --- | --- |
 | G1 | `/bucket/v1`、`/home/<user>/objects/<id>/content`、`/nfs/v1/read/<node_id>` 按声明的类型或扩展名返回内容，没有 `nosniff` 和 CSP，也不强制下载。`text/html` 会在 `<zone>` 上渲染执行，而 `<zone>` 就是 Desktop 的 origin。普通用户发一个带 `bkt_` 的链接或一条公开动态，管理员点开后，脚本就在 Desktop 的 origin 里带着管理员的 SSO 凭据运行 | cyfs-ndn `bucket_store/src/http.rs` 的 `serve_inner`；homestation `http.rs` 的 `object_content`；nfs-server `server.rs` 的 `read_handler`、`fsutil.rs` 的 `content_type_for`。网关不补安全头。对照：`share/serving.rs` 已有防护。Desktop 的群展示文件用 `window.open` 打开 Blob URL（`GroupDisplaySection.tsx`），Blob 类型来自文件声明的 mime，也继承 Desktop 的 origin | D24 |
-| G2 | **知道 ObjId 再加一条消息就能读。** 收到的消息不校验发送者是否拥有被引用的对象：`dispatch_to_receiver` 以 msg-center 的服务身份绑定，`ServicePolicy::holds` 因 `frame` 组有 `obj://ndm/objects` read 而放行，内容已在本 Zone 就绑定成功。由此有两条路径：① 任意外部 DID 给本 Zone 用户发一条引用 X 的签名消息，该用户就能读 X，还能用 `msg.collect_attachment` 存进自己的桶；② 托管群的外部成员发一条引用 X 的签名消息，再用宿主 Zone 的 External 会话带 `context_path` 读回 X（单文件上限 64 MiB）。前提是知道 X 的 ObjId，且 X 已在本 Zone | msg-center `msg_center.rs` 的 `dispatch_to_receiver`、`buckets.rs` 的 `bind_attachments_with`、`object_access.rs`；nfs-server `bucket/mod.rs` 的 `ServicePolicy`；`test_group_service.rs` 的 `messages_and_attachments_are_bound_where_they_are_stored` 断言了远端成员引用本地对象时绑定成功；另见 `notepads/issue-689-cross-zone-attachments-protocol-todo.md` §9 | 按 Z7，`Arrival::Remote` 不因本地命中而绑定，字节实际从发送方一侧取得并校验后才绑定（#689 的拉取路径）。拉取还没实现，所以短期影响只限于对象碰巧已在接收 Zone 的跨 Zone 消息，这些附件要等拉取落地后才可读 |
+| G2 | **知道 ObjId 再加一条消息就能读。** 收到的消息不校验发送者是否拥有被引用的对象：`dispatch_to_receiver` 以 msg-center 的服务身份绑定，`ServicePolicy::holds` 因 `frame` 组有 `obj://ndm/objects` read 而放行，内容已在本 Zone 就绑定成功。由此有两条路径：① 任意外部 DID 给本 Zone 用户发一条引用 X 的签名消息，该用户就能读 X，还能用 `msg.collect_attachment` 存进自己的桶；② 托管群的外部成员发一条引用 X 的签名消息，再用宿主 Zone 的 External 会话带 `context_path` 读回 X（单文件上限 64 MiB）。前提是知道 X 的 ObjId，且 X 已在本 Zone | msg-center `msg_center.rs` 的 `dispatch_to_receiver`、`buckets.rs` 的 `bind_attachments_with`、`object_access.rs`；nfs-server `bucket/mod.rs` 的 `ServicePolicy`；`test_group_service.rs` 的 `messages_and_attachments_are_bound_where_they_are_stored` 断言了远端成员引用本地对象时绑定成功；另见 `notepads/issue-689-cross-zone-attachments-protocol-todo.md` §9 | 按 Z7，`Arrival::Remote` 不因本地命中而绑定，字节实际从发送方一侧取得并校验后才绑定（#689 的拉取路径，§21 N18）。第一版只堵了收到时的绑定，同一批人还能让本地用户重发这条引用来绑定，N18 后续改成复用引用要来源消息的绑定持有它 |
 | G3 | `/home/<user>/objects/<id>/ref` 给同一 key 的所有读者返回同一个未绑定主体的 `bkt_`（6 小时、不限次），受限条目也一样。收窄受众后不撤销，令牌被转发后在到期前都能读。撤回条目会解绑，令牌随之失效 | homestation `media_ref.rs` 的 `content_ref`；homestation 里没有撤销令牌的调用 | 受限条目不发 `/ref`，改走 `/objects/<id>/content`；受众收窄时撤销已发令牌 |
 | G4 | `/bucket/v1` 在判权前先跑 `spec::ensure`（可能懒建桶）并查桶。桶不存在返回 404，存在但无权返回 403，匿名方可以探测用户和 App 是否存在，也能触发 system-config 读取和建桶 | nfs-server `bucket/http.rs` 的 `handle`、`bucket/spec.rs` 的 `ensure`；cyfs-ndn `bucket_store/src/error.rs` | 没有身份也没有令牌的请求直接拒绝，不走 `ensure`，错误统一 |
 | G5 | Binding 的 `http_headers` 原样覆盖 `Cache-Control`，写入 `public` 会让受保护的内容进入共享缓存 | cyfs-ndn `bucket_store/src/http.rs` 的 `serve_inner` | 凭身份或令牌放行的响应强制 `private` |
@@ -1353,6 +1353,7 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 
 - [x] **N1 G2：远端消息不因本地命中而绑定。** `Arrival::Remote` 时不再调用 `bucket.put`，消息照收，读取走 N18。
   - 验证：`cargo test -p msg_center -- --test-threads=1` 通过（213）。`a_remote_message_cannot_open_a_local_object` 覆盖两条路径：读 X 都是 404，`msg.collect_attachment` 失败，本地发送不变。
+  - 第一版漏了本地重发：收到引用 X 的消息后，用户再发一条引用 X 的消息，`authorize_outgoing_attachments` 只看邮箱里有引用，放行后按本地发件绑定（2026-11-06 复现）。已修：复用引用要来源消息的绑定持有它（`buckets.rs` `reuse_of`），私聊和群两个分支相同；`a_message_that_only_names_an_object_cannot_be_reissued`、`a_message_naming_a_private_object_cannot_be_forwarded_into_it`，DV 见 N18 后续。
 - [x] **N2 G1 / D24：活动内容不在 Desktop origin 上执行。** 共用函数在 `ndn_lib::content_safety`（`apply_content_policy`），用于 `/bucket/v1`、`/home/.../content`、`/nfs/v1/read`、`/kapi/msg-center/objects/.../content`、`share.<zone>`、`/ndn/`。Binding 只能回放 PUT 允许存的头，改不了类型和缓存范围。S3 面（`/s3/` 也在 Zone origin 上）保留声明的类型以便 round-trip，同样带 `sandbox`，这一点是 §21 之外补的。
   - 调用方核对：`components/preview` 的 HTML 渲染器用 `fetch` 后放进 `sandbox=""` 的 `srcDoc`，分类把 `application/octet-stream` 当通用类型，靠扩展名和魔数判断，都不依赖直出 HTML；PDF 用 `iframe`，已例外。`GroupDisplaySection` 的 Blob URL：只有不能执行内容的类型才开新标签，其他（含 SVG）改为下载。
   - 验证：`ndn_browser.mjs`，Playwright 1.64.1 的完整版 Chromium 156（`channel: 'chromium', headless: true`）。真实 Zone（经 Zone 网关）：`text/html` 和含脚本的 SVG 经 `/bucket/v1`、`/ndn/` 没有执行（有阳性对照），PDF 在顶层导航和 Desktop 同源的 `<iframe>` 里都显示了且没有触发下载，`<video>` 能拖动。独立 nfs-server 上还覆盖了 `/nfs/v1/read` 的这几项和 `text/plain` 内联。
@@ -1404,8 +1405,8 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 - [x] **N17 workflow 视频输入。** `NativeIo::open_tool_input` / `release_tool_input`；FileObject 取 `ThunkExecution.source_obj_id`，它的 `content` 和本步 `content_id` 不符时（派生输入、分片）用一个确定性的 FileObject；runner 在执行结束后统一撤销并解绑，崩溃时靠 `expires_at` 兜底。`-format_whitelist` 不含 hls、dash、concat。thunk params 没变，`step_cache_key` 不受影响。
   - 顺带修复：`ZoneNativeIo::bind` 的 `expires_at` 和 `deliver` 的令牌过期时间传的是秒，桶层要毫秒，产物绑定会被当成已过期、`deliver` 的令牌会签发失败。
   - 验证：`cargo test -p workflow -- --test-threads=1` 通过（66）；`--include-ignored` 跑真实 ffmpeg 7.1 通过：Range 读 moov 在尾的文件、不留临时副本、m3u8 和 ffconcat 指向的地址收不到请求、失败输出没有令牌。真实 Zone：新增 `WF-DV-014`（原有用例都没有走到 `media.video`），`WORKFLOW_DV_CASES=WF-DV-014` 通过：网关看到 ffmpeg / ffprobe（Lavf）经 `/ndn/` 的请求，`inputs/` 令牌全部撤销、key 已解绑，run 数据和日志没有令牌，再跑一次 `extract_frames` 命中 Step cache。全量 DV 里 WF-DV-009～013 通过；001、002、007（AICC 夹具字段与当前协议不符）和 006（TaskMgr 旧写法）失败，失败原因和这次改动无关，与 `notepads/llm-media-pipeline-workflow-todo.md` 记录的既有阻塞一致。
-- [x] **N18 #689 跨 Zone 附件。** `frame/msg_center/src/remote_attachment.rs`，新增 `msg.attachment_ticket`（只对这条私聊消息的收件人签发）。第一次读取时拉取，读取最多等 20 秒，之后 503 + `Retry-After`，Desktop 现有的 Retry 可以用。超过读取路由上限（64 MiB，与 Desktop 上传上限相同）的附件不拉取内容，直接 413。持久状态只有消息和绑定，重启后下一次读取继续；没有另建表和后台任务。
-  - 范围：只做 #689 P1 的私聊和 FileObject。没有做：群（host 授权是 P2，附件暂时 404）、目录、后台预取、`msg.collect_attachment` 触发拉取、UI 的专门状态。
+- [x] **N18 #689 跨 Zone 附件。** `frame/msg_center/src/remote_attachment.rs`，新增 `msg.attachment_ticket`（只对这条私聊消息的收件人签发）。第一次读取内容时拉取（取描述不拉，见下面的后续），读取最多等 20 秒，之后 503 + `Retry-After`，Desktop 现有的 Retry 可以用。超过读取路由上限（64 MiB，与 Desktop 上传上限相同）的附件不拉取内容，直接 413。持久状态只有消息和绑定，重启后下一次读取继续；没有另建表和后台任务。
+  - 范围（当时）：只做私聊和 FileObject。群、取描述、触发拉取的转发和收藏、UI 状态在下面的后续里。目录和预取没有做。
   - 验证：`test_remote_attachment.rs`，两个进程内 Zone、真实跨 Zone 登录和真实 nfs-server：从零副本读到内容并绑定；非收件人、未引用的对象、不存在的消息都拿不到令牌；发送方没有的对象（哪怕接收方本地有）不绑定；本地消息不外连；超限的附件 413，不请求任何 chunk。`cargo test -p msg_center`：214 通过，1 忽略。
   - DV（2026-11-05）：PVE 上 `ssotest`（alice 在 NAT 后经 SN 中继、bob 为 `wan_dyn`、charlie 为 `portmap`），`cd test/nfs_server_test && BUCKYOS_TEST_DNS=<sn ip> BUCKYOS_TEST_DEVICE_DIR=<dir> node remote_attachment_dv.mjs`，40 项全部通过：
     - alice→bob（139 KiB 和跨 chunk 的 37 MiB）、alice→charlie、bob→alice，收件方从零副本读到，逐字节一致；第二次读取来自本地绑定。
@@ -1414,6 +1415,13 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
     - 超过 64 MiB 的真实文件 413，发送方网关日志只有对象请求，chunk 请求为 0。
     - 日志核对：alice 收到的 `/ndn/` 来源是 `127.0.0.1`（隧道），SN 在 11 ms 前记录了 alice 的 SNI，确认走中继。四台 VM 的日志和三个 OOD 的 `data/`、`storage/` 没有令牌。
     - 第一轮没有走中继：SN 对 NAT Zone 也回答 AAAA，而 `ssotest` 当时只拒绝 IPv4，bob 经 IPv6 直连了 alice。`ssotest.json` 已补 `ip6tables`，上面是补规则后的结果。
+  - **后续（2026-11-07，#689 P0–P2）：**
+    - 群：host 接受远端成员的消息后，以群 DID 登录作者 Zone 取回，按 AppData 保留；成员 Zone 以读者身份向 host 取，host 按群规则裁决，没有内容时再次触发取回并返回可重试。`canonical_zone_from_doc` 加了群文档分支：沿 `owner` 走到它的 canonical Zone，owner 是群不算。`_display` 同样走 host。转让群主限制在 host Zone 内。
+    - 跨 Zone 成员发带附件的消息原来被 `refuse_guest_attachments` 拒绝（它的 External 会话是 restricted），host 根本收不到，DV 才发现。改成：跨 Zone 断言登录且是群成员的放行，访客和 Session Guest 不变。
+    - 陌生人消息不外连，`describe` 不下载内容，非图片附件（视频缩略图也一样）点击才拉，私聊中被发送方屏蔽的收件人拿不到票据，未读转发和收藏先取回。群消息的来源是群，这些联系人规则都不参与：读者拉黑了作者也照常读取。`RemoteAttachment` 拆成 403 / 404 / 413 / 415 / 502 / 503，`Retry-After` 对齐退避。
+    - 上限：`CyfsNdnClient` 的 `max_bytes`，按 chunk 自带长度判断，`size` 不符按校验失败，不带长度的 chunk 拒绝。
+    - 验证：`test_remote_attachment.rs`（含作者、host、成员三 Zone 和撤回竞争）；`ndn_pull_tests.rs`；`cross_zone_auth` 的共用 custody 表（verify-hub、msg-center、HomeStation 都跑）；Desktop `messagehub-media.spec.ts` 的 mock 用例。DV：`remote_attachment_dv.mjs`、`group_attachment_dv.mjs`（公共部分在 `attachment_dv_common.mjs`），ssotest 三 Zone，host 分别在 bob（did:bns 群）和 charlie（did:web 群），作者 alice 经中继，作者 Zone 离线时成员照常读到。`attachment_ui_dv.mjs` 是 Desktop 经开发代理连真实 Zone：陌生人提示、接受后自动加载、卡片不下载、发送方离线时先显示获取中、再给重试、恢复后重试成功。`bobfed` 让 alice 的 Zone 把 `did:bns:bob` 当本地用户，所以私聊 DV 的收件人改成 charlie。
+    - 未验证：换账号（真实 Zone）、host 拉取途中重启或 GC 命中、超配额、Telegram 外发。
     - 同一环境另跑了 `test_native_routes_dv.mjs`、`homestation_cross_zone_dv.mjs`、`test_hybrid_sso_federation_dv.ts`，全部通过（SSO 的 canonical-down 步骤因未配置启停命令而跳过）。
     - 未运行：Desktop UI、并发读取、短时断网恢复、发送方 Zone 离线（失败退避只有进程内测试）。
 - [x] **N19 `ambient` 拉取与 `cyfs://` resolver。** `object_endpoint` / `objectEndpoint` 按此解析。`src/ndn/ambient.rs`：`202 + Retry-After`、`bucket.head` 的 `fetching`、`bucket.prefetch`。范围和限制见 §20 第 2 条。

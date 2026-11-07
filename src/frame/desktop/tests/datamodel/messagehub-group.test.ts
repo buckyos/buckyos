@@ -21,6 +21,9 @@ Deno.test('group notices carry the invitation state, the agent member, transfer 
   equal(parseGroupNotice(notice('invite', { invite_id: 'inv-3', role: 'owner', state: 'bogus' }))?.invitation?.state, undefined)
   equal(parseGroupNotice(notice('pending_approval', { member_did: BOB, invited_by: ME })), { groupDid: GROUP, action: 'pending_approval', memberDid: BOB, invitedBy: ME })
   equal(parseGroupNotice(notice('owner_transfer', { transfer_id: 'tr-1', expires_at_ms: now + 5 })), { groupDid: GROUP, action: 'owner_transfer', transferId: 'tr-1', expiresAt: now + 5 })
+  const fromGroup = notice('removed', {}, GROUP)
+  ;(fromGroup.content.machine!.data as Record<string, unknown>).by = BOB
+  equal(parseGroupNotice(fromGroup), { groupDid: GROUP, action: 'removed', by: BOB })
   equal(parseGroupNotice(notice('session_invite', { session_id: 'reading', title: 'Reading list' })), { groupDid: GROUP, action: 'session_invite', sessionId: 'reading', sessionTitle: 'Reading list' })
   equal(parseGroupNotice({ ...notice('invite', {}), content: { content: 'x' } }), null)
 })

@@ -226,16 +226,30 @@ async function readNamedObject(
   return { bytes, mime };
 }
 
+const ATTACHMENT_MAX_WAIT_SECS = 60;
+
 async function readMessageAttachment(
   objId: string,
 ): Promise<{ bytes: Uint8Array; mime?: string }> {
   const serviceUrl = buckyos.getZoneServiceURL("msg-center").replace(/\/$/, "");
   const token = buckyos.getServiceRpcClient("msg-center").getSessionToken();
   if (!token) throw new Error("msg-center session token is unavailable");
-  const response = await fetch(
-    `${serviceUrl}/objects/${encodeURIComponent(objId)}/content`,
-    { headers: { authorization: `Bearer ${token}` } },
-  );
+  let response: Response;
+  // An attachment still in another Zone: msg-center says when to ask again.
+  for (let waited = 0;;) {
+    response = await fetch(
+      `${serviceUrl}/objects/${encodeURIComponent(objId)}/content`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    const retryAfter = Number(response.headers.get("retry-after"));
+    if (
+      response.status !== 503 || !(retryAfter > 0) ||
+      waited + retryAfter > ATTACHMENT_MAX_WAIT_SECS
+    ) break;
+    await response.body?.cancel();
+    await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+    waited += retryAfter;
+  }
   if (!response.ok) {
     const detail = (await response.text()).trim().slice(0, 4096);
     throw new Error(

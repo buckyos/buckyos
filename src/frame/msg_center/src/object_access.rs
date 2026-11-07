@@ -15,7 +15,8 @@
 //! `context_path=<session address>/_display` (the caller reads that Session,
 //! its display shows the file, and `<group address>/_display/<obj_id>` holds
 //! it). The caller presents a verified session token (`Authorization: Bearer`
-//! or `?token=`).
+//! or `?token=`). What another Zone's message references is not bound yet the
+//! first time: see `remote_attachment.rs` for what a read answers then.
 
 use crate::msg_center::MessageCenter;
 use crate::remote_attachment::RemoteAttachment;
@@ -54,9 +55,38 @@ fn text_response(status: StatusCode, message: &str) -> Response<Body> {
         .unwrap()
 }
 
-fn retry_later(message: &str) -> Response<Body> {
+fn retry_later(message: &str, seconds: u64) -> Response<Body> {
     let mut response = text_response(StatusCode::SERVICE_UNAVAILABLE, message);
-    response.headers_mut().insert("retry-after", http::HeaderValue::from_static("5"));
+    response.headers_mut().insert("retry-after", http::HeaderValue::from(seconds));
+    response
+}
+
+/// A read of an attachment that is not here. Desktop tells these apart by status and body.
+fn remote_answer(outcome: RemoteAttachment) -> Response<Body> {
+    let retry_after = outcome.retry_after_secs().unwrap_or_default();
+    match outcome {
+        RemoteAttachment::Bound | RemoteAttachment::NotRemote | RemoteAttachment::Refused => text_response(StatusCode::NOT_FOUND, "not-found"),
+        RemoteAttachment::TooLarge => text_response(StatusCode::PAYLOAD_TOO_LARGE, "file is too large for inline download"),
+        RemoteAttachment::Directory => text_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "attachment-directory-unsupported"),
+        RemoteAttachment::AwaitingAcceptance => text_response(StatusCode::FORBIDDEN, "attachment-awaiting-acceptance"),
+        RemoteAttachment::Corrupt => text_response(StatusCode::BAD_GATEWAY, "attachment-verification-failed"),
+        RemoteAttachment::Fetching => retry_later("attachment-fetching", retry_after),
+        RemoteAttachment::Unreachable => retry_later("attachment-source-unreachable", retry_after),
+    }
+}
+
+/// A named object's JSON, kept here.
+fn object_response(body: String) -> Response<Body> {
+    bytes_response(StatusCode::OK, "application/json; charset=utf-8", body.into_bytes())
+}
+
+/// An object another Zone described: its bytes are not here, so a card must not ask for them,
+/// and the answer changes once they are.
+fn remote_object_response(body: String) -> Response<Body> {
+    let mut response = object_response(body);
+    let headers = response.headers_mut();
+    headers.insert("x-attachment-remote", http::HeaderValue::from_static("1"));
+    headers.insert("cache-control", http::HeaderValue::from_static("no-store"));
     response
 }
 
@@ -199,14 +229,25 @@ async fn serve_object(center: &MessageCenter, req: &Request<Body>) -> Option<Res
         {
             return Some(text_response(StatusCode::FORBIDDEN, "object access denied"));
         }
-        let Ok(key) = center.authorize_display_file(&ctx, &obj_id, session).await else {
-            return Some(if caller.restricted() {
-                grant_missing(&caller.user_id)
-            } else {
-                text_response(StatusCode::NOT_FOUND, "not-found")
-            });
+        let actor = center.group_actor(&ctx).await.ok();
+        let key = match &actor {
+            Some(actor) => center.authorize_display_file(actor, &obj_id, session).await.ok(),
+            None => None,
         };
-        return Some(bound_key_response(center, &key, &obj_id, want_content, inner_path).await);
+        if let Some(key) = key {
+            return Some(bound_key_response(center, &key, &obj_id, want_content, inner_path).await);
+        }
+        // A group joined from here: its host has the file and the say.
+        if let Some(actor) = actor.as_ref().filter(|_| !caller.restricted()) {
+            if let Some(fetch) = center.joined_display_file(actor, &obj_id, session).await {
+                return Some(joined_display_response(center, fetch, &obj_id, want_content, inner_path).await);
+            }
+        }
+        return Some(if caller.restricted() {
+            grant_missing(&caller.user_id)
+        } else {
+            text_response(StatusCode::NOT_FOUND, "not-found")
+        });
     }
 
     // A restricted session (Session Only guest) has no objects grant: it
@@ -227,7 +268,7 @@ async fn serve_object(center: &MessageCenter, req: &Request<Body>) -> Option<Res
         if let Ok(Some((_, body, jwt))) = center.groups.object(&obj_id).await {
             return Some(group_message_response(body, jwt));
         }
-        return Some(bound_attachment_response(center, &msg_id, &obj_id, want_content, inner_path).await);
+        return Some(bound_attachment_response(center, &ctx, &msg_id, &obj_id, want_content, inner_path).await);
     }
 
     if center
@@ -255,7 +296,7 @@ async fn serve_object(center: &MessageCenter, req: &Request<Body>) -> Option<Res
     let Some(msg_id) = msg_id else {
         return Some(text_response(StatusCode::NOT_FOUND, "not-found"));
     };
-    Some(bound_attachment_response(center, &msg_id, &obj_id, want_content, inner_path).await)
+    Some(bound_attachment_response(center, &ctx, &msg_id, &obj_id, want_content, inner_path).await)
 }
 
 /// A stored group message: its signed form when it has one.
@@ -300,8 +341,10 @@ fn denial_response(status: StatusCode, denial: AccessDenial) -> Response<Body> {
 
 /// Attachment `id` of message `msg_id`, the caller already authorized for
 /// that message: served once the message's binding in `attachments` holds it.
+/// Without a binding, `content` fetches it and a description asks the source only.
 pub(crate) async fn bound_attachment_response(
     center: &MessageCenter,
+    ctx: &RPCContext,
     msg_id: &ObjId,
     id: &ObjId,
     want_content: bool,
@@ -313,14 +356,50 @@ pub(crate) async fn bound_attachment_response(
     };
     match center.bound_attachment(&buckets, msg_id, id).await {
         Ok(Some(_)) => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
-        Ok(None) => match center.ensure_remote_attachment(&buckets, msg_id, id).await {
-            RemoteAttachment::Bound => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
-            RemoteAttachment::NotRemote => text_response(StatusCode::NOT_FOUND, "not-found"),
-            RemoteAttachment::TooLarge => text_response(StatusCode::PAYLOAD_TOO_LARGE, "file is too large for inline download"),
-            RemoteAttachment::Unavailable => retry_later("attachment is being fetched from the sender's zone"),
-        },
+        Ok(None) => {
+            let reader = center.message_reader(ctx, msg_id).await;
+            if !want_content {
+                return match center.describe_remote_attachment(msg_id, id, reader.as_ref()).await {
+                    Ok(body) => remote_object_response(body),
+                    Err(outcome) => remote_answer(outcome),
+                };
+            }
+            match center.ensure_remote_attachment(&buckets, msg_id, id, reader.as_ref()).await {
+                RemoteAttachment::Bound => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
+                outcome => remote_answer(outcome),
+            }
+        }
         Err(error) => {
             log::warn!("attachment {} of {} not checked: {}", id.to_string(), msg_id.to_string(), error);
+            text_response(StatusCode::SERVICE_UNAVAILABLE, "bucket service unavailable")
+        }
+    }
+}
+
+/// A display file of a group joined from here: once fetched it is read like a hosted one.
+async fn joined_display_response(
+    center: &MessageCenter,
+    fetch: crate::remote_attachment::Fetch,
+    id: &ObjId,
+    want_content: bool,
+    inner_path: Option<String>,
+) -> Response<Body> {
+    let buckets = match center.open_buckets().await {
+        Ok(Some(buckets)) => buckets,
+        _ => return text_response(StatusCode::SERVICE_UNAVAILABLE, "bucket service unavailable"),
+    };
+    match MessageCenter::key_holds(&buckets, &fetch.key, id).await {
+        Ok(true) => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
+        Ok(false) if want_content => match center.ensure_display_file(&buckets, fetch).await {
+            RemoteAttachment::Bound => fetch_object_path(&buckets.store, id, want_content, inner_path).await,
+            outcome => remote_answer(outcome),
+        },
+        Ok(false) => match center.describe_fetch(fetch).await {
+            Ok(body) => remote_object_response(body),
+            Err(outcome) => remote_answer(outcome),
+        },
+        Err(error) => {
+            log::warn!("display file {} not checked: {}", id.to_string(), error);
             text_response(StatusCode::SERVICE_UNAVAILABLE, "bucket service unavailable")
         }
     }
@@ -368,11 +447,7 @@ async fn fetch_object_path(named_store: &NamedDataMgr, root: &ObjId, want_conten
     };
 
     if !want_content {
-        return bytes_response(
-            StatusCode::OK,
-            "application/json; charset=utf-8",
-            obj_str.into_bytes(),
-        );
+        return object_response(obj_str);
     }
 
     if !obj_id.is_file_object() {

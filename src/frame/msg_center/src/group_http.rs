@@ -1,6 +1,6 @@
 use crate::group_types::*;
 use crate::msg_center::MessageCenter;
-use buckyos_api::{AccessDenial, MailboxAddress, SessionScope, ACCESS_DENIED_ERROR_CODE};
+use buckyos_api::{AccessDenial, AuthMethod, MailboxAddress, SessionScope, ACCESS_DENIED_ERROR_CODE};
 use buckyos_http_server::ServerError;
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
@@ -116,22 +116,7 @@ async fn principal(
         from_ip: Some("127.0.0.1".parse().unwrap()),
         ..Default::default()
     };
-    let caller = center
-        .caller_identity(&ctx)
-        .await?
-        .ok_or_else(|| denied("unauthenticated"))?;
-    // The actor is the session's subject: a member of another Zone signs in at
-    // this Zone's verify-hub (跨Zone登录断言契约 §5); no header names it.
-    let mut actor = center.group_actor(&ctx).await?;
-    if actor.did.method == "msgtunnel" {
-        return Err(denied("shadow-endpoint-local-only"));
-    }
-    // An account of this Zone keeps its real client: a restricted session
-    // must not pass `allowed_clients` as an unverified remote.
-    if !(caller.restricted() && !caller.external) {
-        actor.remote = true;
-        actor.client = None;
-    }
+    let actor = center.federated_group_actor(&ctx).await?;
     Ok((actor, ctx))
 }
 /// Group HTTP routes; opened to restricted sessions, whom the group and
@@ -339,10 +324,14 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                 if msg.to_session != sid || msg.to != [group.clone()] || msg.from != actor.did {
                     return Err(denied("sender-or-session-mismatch"));
                 }
-                MessageCenter::refuse_guest_attachments(
-                    center.caller_identity(&ctx).await?.as_ref(),
-                    &msg,
-                )?;
+                // Visitors post no media (SSO-12). A member's own Zone is no visitor: it signed in
+                // for the member and already checked what the member may send.
+                let caller = center.caller_identity(&ctx).await?;
+                let from_members_zone = state.role(&actor.did).is_some()
+                    && caller.as_ref().is_some_and(|caller| caller.auth_method == Some(AuthMethod::CrossZoneAssertion));
+                if !from_members_zone {
+                    MessageCenter::refuse_guest_attachments(caller.as_ref(), &msg)?;
+                }
                 let dispatch = center.accept_group_message(&actor, msg, jwt).await?;
                 let target = group_target(expected, &path)?;
                 let mut result = if dispatch.ok {
@@ -475,7 +464,7 @@ async fn serve_group(center: &MessageCenter, req: &mut Request<Body>) -> Option<
                         .await?;
                     let msg_id = crate::buckets::context_msg_id(context)?;
                     return Ok(crate::object_access::bound_attachment_response(
-                        center, &msg_id, &id, false, None,
+                        center, &ctx, &msg_id, &id, false, None,
                     )
                     .await);
                 }

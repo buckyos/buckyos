@@ -38,10 +38,12 @@ export function defaultGroupName(memberNames: string[]): string {
   return names.length > 3 ? `${head} +${names.length - 3}` : head
 }
 
-/** A personal group notification (`invite`, `pending_approval`, `rejected`, `removed`, `owner_transfer`, `session_invite`, `session_removed`). */
+/** A group notification: from the inviter for `invite`, `session_invite`; from the group for `pending_approval`, `rejected`, `removed`, `owner_transfer`, `session_removed`. */
 export interface GroupNotice {
   groupDid: string
   action: string
+  /** Who acted, when the group itself is the sender. An invitation comes from the inviter instead. */
+  by?: string
   memberDid?: string
   invitedBy?: string
   invitation?: GroupInvitation
@@ -63,6 +65,8 @@ export function parseGroupNotice(message: MessageObject): GroupNotice | null {
   if (typeof data.group_did !== 'string' || typeof data.action !== 'string') return null
   const notice: GroupNotice = { groupDid: data.group_did, action: data.action }
   const memberDid = text(detail.member_did), invitedBy = text(detail.invited_by), transferId = text(detail.transfer_id), sessionId = text(detail.session_id), sessionTitle = text(detail.title)
+  const by = text(data.by)
+  if (by) notice.by = by
   if (memberDid) notice.memberDid = memberDid
   if (invitedBy) notice.invitedBy = invitedBy
   if (transferId) notice.transferId = transferId

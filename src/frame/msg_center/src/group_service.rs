@@ -102,6 +102,27 @@ impl MessageCenter {
         })
     }
 
+    /// The actor of a request from outside the group's local kRPC surface. The actor is the
+    /// session's subject: a member of another Zone signs in at this Zone's verify-hub
+    /// (跨Zone登录断言契约 §5); no header names it.
+    pub(crate) async fn federated_group_actor(&self, ctx: &RPCContext) -> Result<GroupActor> {
+        let caller = self
+            .caller_identity(ctx)
+            .await?
+            .ok_or_else(|| denied("unauthenticated"))?;
+        let mut actor = self.group_actor(ctx).await?;
+        if actor.did.method == "msgtunnel" {
+            return Err(denied("shadow-endpoint-local-only"));
+        }
+        // An account of this Zone keeps its real client: a restricted session
+        // must not pass `allowed_clients` as an unverified remote.
+        if !(caller.restricted() && !caller.external) {
+            actor.remote = true;
+            actor.client = None;
+        }
+        Ok(actor)
+    }
+
     /// `group.*` kRPC; opened to restricted sessions (Session Only guests),
     /// whom the group and Session ACLs then decide on. A restricted visitor
     /// sees one D-4 reason for a group or Session that is missing or not
@@ -1377,6 +1398,9 @@ impl MessageCenter {
             .insert(d.to_string(), r);
         Ok(())
     }
+    /// The group itself telling someone about their place in it: a join request to approve, a
+    /// rejection, a removal, an offered ownership. It comes from the group, whoever acted, so
+    /// only a block of the group itself stops it; `by` names the one who acted.
     async fn notify_group_member(
         &self,
         tx: &mut GroupTransaction<'_>,
@@ -1385,8 +1409,35 @@ impl MessageCenter {
         action: &str,
         data: Value,
     ) -> Result<()> {
-        let msg = MsgObject {
-            from: a.did.clone(),
+        let group = tx.state.group_did.clone();
+        let mut msg = Self::group_notice(tx, &group, d, action, json!({"by":a.did,"data":data}))?;
+        msg.to_session = Some(session_key(&group, None)?);
+        self.deliver_group_notice(tx, &msg, d).await
+    }
+    /// An invitation: a person asks someone who is not in the group yet, so that someone's
+    /// policy towards the person decides.
+    async fn notify_invitee(
+        &self,
+        tx: &mut GroupTransaction<'_>,
+        a: &GroupActor,
+        d: &DID,
+        action: &str,
+        data: Value,
+    ) -> Result<()> {
+        let msg = Self::group_notice(tx, &a.did, d, action, json!({"data":data}))?;
+        self.deliver_group_notice(tx, &msg, d).await
+    }
+    fn group_notice(
+        tx: &GroupTransaction<'_>,
+        from: &DID,
+        d: &DID,
+        action: &str,
+        mut data: Value,
+    ) -> Result<MsgObject> {
+        data["group_did"] = json!(tx.state.group_did);
+        data["action"] = json!(action);
+        Ok(MsgObject {
+            from: from.clone(),
             to: vec![d.clone()],
             kind: MsgObjKind::Operation,
             created_at_ms: Self::now_ms(),
@@ -1395,45 +1446,55 @@ impl MessageCenter {
                 format: Some(MsgContentFormat::TextPlain),
                 content: action.into(),
                 machine: Some(MachineContent {
-                    intent: Some("buckyos.group_invitation".into()),
-                    data: serde_json::from_value(
-                        json!({"group_did":tx.state.group_did,"action":action,"data":data}),
-                    )
-                    .map_err(db_error)?,
+                    intent: Some(GROUP_NOTICE_INTENT.into()),
+                    data: serde_json::from_value(data).map_err(db_error)?,
                 }),
                 ..Default::default()
             },
             ..Default::default()
-        };
-        tx.object(&msg, None).await?;
+        })
+    }
+    async fn deliver_group_notice(
+        &self,
+        tx: &mut GroupTransaction<'_>,
+        msg: &MsgObject,
+        d: &DID,
+    ) -> Result<()> {
+        tx.object(msg, None).await?;
         if self.lacks_personal_inbox(d).await {
             // No personal inbox (Limited): the invitation waits in the group
             // (`group.list_by_member`), nothing is delivered.
             return Ok(());
         }
         if self.is_local_recipient(d) {
+            let from_group = msg.from == tx.state.group_did;
             let access = self
                 .contact_mgr
-                .peek_access_permission(&a.did, None, Some(d))
+                .peek_access_permission(&msg.from, None, Some(d))
                 .await?;
             if access.target_box == "DROP" {
                 return Ok(());
             }
-            let kind = if access.target_box == "REQUEST_BOX" {
+            let kind = if access.target_box == "REQUEST_BOX" && !from_group {
                 MailboxKind::RequestBox
             } else {
                 MailboxKind::Inbox
             };
+            let tags = if from_group {
+                vec![format!("group:{}", msg.from.to_string())]
+            } else {
+                vec![]
+            };
             let record = Self::build_mailbox_record(
                 d.clone(),
                 kind,
-                &msg,
+                msg,
                 RecipientState::Unread,
                 None,
-                vec![],
+                tags,
                 "group-notification",
             )?;
-            tx.mailbox(&record, &msg).await?;
+            tx.mailbox(&record, msg).await?;
         } else {
             let id = msg.gen_obj_id().0;
             let envelope = self
@@ -1533,7 +1594,7 @@ impl MessageCenter {
             if recipient != d {
                 data["member_did"] = json!(d);
             }
-            self.notify_group_member(tx, a, &recipient, "invite", data)
+            self.notify_invitee(tx, a, &recipient, "invite", data)
                 .await?;
         }
         Ok(json!({"invite_id":id,"member_did":d,"expires_at_ms":expires,"state":state}))
@@ -2003,6 +2064,10 @@ impl MessageCenter {
                 if tx.state.role(&d).is_none() || tx.state.blocked(&d) {
                     return Err(missing());
                 }
+                // The owner's Zone is the host: another Zone's member as owner would move the group.
+                if !self.is_hosted_identity(&d) {
+                    return Err(denied("owner-must-be-in-the-host-zone"));
+                }
                 let transfer = OwnerTransfer {
                     member_did: d.clone(),
                     transfer_id: revision(),
@@ -2048,6 +2113,9 @@ impl MessageCenter {
                     .ok_or_else(|| denied("transfer-mismatch"))?;
                 if tx.state.role(&a.did).is_none() || tx.state.blocked(&a.did) {
                     return Err(missing());
+                }
+                if a.remote || !self.is_hosted_identity(&a.did) {
+                    return Err(denied("owner-must-be-in-the-host-zone"));
                 }
                 tx.state.check_client(a)?;
                 let previous = tx.state.owner.clone();
@@ -2452,7 +2520,7 @@ impl MessageCenter {
                     .insert(d.to_string(), r.clone());
                 self.group_event(tx, a, Some(sid), "session.guest_invited", None, json!([]))
                     .await?;
-                self.notify_group_member(tx,a,&d,"session_invite",json!({"session_id":sid,"profile":tx.state.config()?.profile,"title":tx.state.sessions[sid].shared_state.get("title")})).await?;
+                self.notify_invitee(tx,a,&d,"session_invite",json!({"session_id":sid,"profile":tx.state.config()?.profile,"title":tx.state.sessions[sid].shared_state.get("title")})).await?;
                 encoded(r)
             }
             "group.accept_session_invitation" => {
@@ -3268,6 +3336,8 @@ impl MessageCenter {
         tx.commit().await?;
         if !result.ok {
             self.unbind_attachments(&id, &msg).await;
+        } else if a.remote {
+            self.fetch_accepted_attachments(&id, &msg);
         }
         if let Some(group) = &result.delivered_group {
             Self::publish_event(
@@ -3527,7 +3597,7 @@ impl MessageCenter {
     /// the hosted group Session at `session` and its display shows `id`.
     pub(crate) async fn authorize_display_file(
         &self,
-        ctx: &RPCContext,
+        actor: &GroupActor,
         id: &ObjId,
         session: &str,
     ) -> Result<String> {
@@ -3538,12 +3608,11 @@ impl MessageCenter {
             .await?
             .filter(|g| g.lifecycle != "deleted")
             .ok_or_else(missing)?;
-        let actor = self.group_actor(ctx).await?;
-        g.check_client(&actor)?;
+        g.check_client(actor)?;
         let sid = address.session_id();
-        g.require_session(&actor, sid, true)?;
+        g.require_session(actor, sid, true)?;
         if !self
-            .run_group_hooks(&g, &actor, sid, "read", true, None)
+            .run_group_hooks(&g, actor, sid, "read", true, None)
             .await
             .unwrap_or(false)
         {

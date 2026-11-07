@@ -140,6 +140,10 @@ pub fn device_zone(doc: &Value) -> Option<DID> {
     did_field(doc, "zone_did")
 }
 
+fn is_group_doc(doc: &Value) -> bool {
+    doc.get("entity_type").and_then(Value::as_str) == Some("group") || doc_context(doc).contains("ns/group")
+}
+
 /// Canonical Zone of a principal (contract §3 step 4). `local` is what the caller's own records
 /// say (a user or Agent this Zone hosts) and wins over the name service. `Ok(None)`: the
 /// principal has no Zone (no document, or a document that names none).
@@ -177,6 +181,21 @@ async fn canonical_zone_from_doc(
     doc: &Value,
 ) -> Result<Option<DID>, ResolveFailure> {
     let context = doc_context(doc);
+    if is_group_doc(doc) {
+        // A group lives in its owner's Zone: transferring the owner would move the
+        // group, which this version does not do. The owner is a user or an Agent,
+        // never another group.
+        let Some(owner) = did_field(doc, "owner").filter(|owner| owner != did) else {
+            return Ok(None);
+        };
+        let Some(owner_doc) = resolve_principal_document(resolver, &owner).await? else {
+            return Ok(None);
+        };
+        if is_group_doc(&owner_doc) {
+            return Ok(None);
+        }
+        return Box::pin(canonical_zone_from_doc(resolver, &owner, &owner_doc)).await;
+    }
     if let Some(zones) = doc.get("binded_zone_list").and_then(Value::as_array) {
         return Ok(Some(match zones.first() {
             Some(zone) => match zone.as_str().and_then(|raw| DID::from_str(raw).ok()) {
@@ -643,6 +662,12 @@ pub mod custody_cases {
         })
     }
 
+    /// A group document as msg-center publishes it: its host is its owner's Zone.
+    fn group(id: &str, owner: &str) -> Value {
+        json!({"@context": ["https://www.w3.org/ns/did/v1", "https://buckyos.org/ns/group/v1"], "id": id,
+            "entity_type": "group", "host": "did:web:wherever.example", "controller": owner, "owner": owner})
+    }
+
     pub fn resolver() -> StaticCustodyResolver {
         let did = |value: &str| DID::from_str(value).unwrap();
         StaticCustodyResolver::default()
@@ -655,7 +680,15 @@ pub mod custody_cases {
             .with_doc(&did("did:web:bob.example"), None,
                 json!({"@context": "https://www.buckyos.org/ns/owner", "id": "did:web:bob.example",
                     "binded_zone_list": ["did:web:alice.example"]}))
+            .with_doc(&did("did:web:jarvis.alice.example"), None,
+                json!({"@context": "https://www.buckyos.org/ns/agent", "id": "did:web:jarvis.alice.example",
+                    "owner": "did:web:alice.example"}))
+            .with_doc(&did("did:web:team.alice.example"), None, group("did:web:team.alice.example", "did:web:alice.example"))
+            .with_doc(&did("did:web:bots.alice.example"), None, group("did:web:bots.alice.example", "did:web:jarvis.alice.example"))
+            .with_doc(&did("did:web:nested.alice.example"), None, group("did:web:nested.alice.example", "did:web:team.alice.example"))
+            .with_doc(&did("did:web:loop.alice.example"), None, group("did:web:loop.alice.example", "did:web:loop.alice.example"))
             .with_unavailable(&did("did:web:down.example"))
+            .with_doc(&did("did:web:ownerdown.alice.example"), None, group("did:web:ownerdown.alice.example", "did:web:down.example"))
     }
 
     pub fn cases() -> Vec<Case> {
@@ -668,6 +701,15 @@ pub mod custody_cases {
             case("did:dev:T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8", ALICE_OOD_KEY, "did:web:alice.example", Refused),
             case("did:web:ood1.alice.example", ALICE_OOD_KEY, "did:web:nobody.example", Refused),
             case("did:web:ood1.alice.example", ALICE_OOD_KEY, "did:web:down.example", Retry),
+            // A group is spoken for by a device of its owner's Zone, whoever the owner is.
+            case("did:web:ood1.alice.example", ALICE_OOD_KEY, "did:web:team.alice.example", Allowed),
+            case("did:web:ood1.alice.example", ALICE_OOD_KEY, "did:web:bots.alice.example", Allowed),
+            case("did:web:ood1.mallory.example", MALLORY_OOD_KEY, "did:web:team.alice.example", Refused),
+            case("did:web:ood1.mallory.example", MALLORY_OOD_KEY, "did:web:bots.alice.example", Refused),
+            // A group's owner cannot be a group, nor the group itself.
+            case("did:web:ood1.alice.example", ALICE_OOD_KEY, "did:web:nested.alice.example", Refused),
+            case("did:web:ood1.alice.example", ALICE_OOD_KEY, "did:web:loop.alice.example", Refused),
+            case("did:web:ood1.alice.example", ALICE_OOD_KEY, "did:web:ownerdown.alice.example", Retry),
         ]
     }
 }

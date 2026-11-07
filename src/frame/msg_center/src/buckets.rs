@@ -13,6 +13,7 @@
 
 use crate::group_types::{missing, session_key, GroupState};
 use crate::msg_center::MessageCenter;
+use crate::remote_attachment::{attachment_not_ready, RemoteAttachment};
 use buckyos_api::bucket_client::{BucketId, Conditions, ListRequest, Origin, PutRequest};
 use buckyos_api::{
     get_buckyos_api_runtime, is_no_such_key, is_precondition_failed,
@@ -95,7 +96,7 @@ impl std::fmt::Debug for BucketSlot {
 /// `authorize_outgoing_attachments`, so its attachments are bound here. A remote
 /// sender proved nothing about what it references: finding the object in this
 /// Zone is no reason to let this message read it, so nothing is bound until its
-/// bytes came from the sender's side and verified (bucket design Z7, G2).
+/// bytes came from a side entitled to them and verified (bucket design Z7, G2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Arrival {
     Local,
@@ -384,6 +385,15 @@ impl MessageCenter {
             .open_buckets()
             .await?
             .ok_or_else(|| RPCErrors::ReasonError("bucket service unavailable".into()))?;
+        // Unread so far: it is fetched first, complete, as a read would.
+        if self.bound_attachment(&buckets, &msg_id, &req.obj_id).await?.is_none() {
+            let reader = self.message_reader(ctx, &msg_id).await;
+            match self.ensure_remote_attachment(&buckets, &msg_id, &req.obj_id, reader.as_ref()).await {
+                RemoteAttachment::Bound => {}
+                RemoteAttachment::Fetching | RemoteAttachment::Unreachable => return Err(attachment_not_ready()),
+                _ => return Err(missing()),
+            }
+        }
         let (src_key, msg, n) = self
             .bound_attachment(&buckets, &msg_id, &req.obj_id)
             .await?
@@ -425,8 +435,16 @@ impl MessageCenter {
         let Some(caller) = self.caller_identity(ctx).await? else { return Ok(()) };
         Self::refuse_guest_attachments(Some(&caller), msg)?;
         let token = ctx.token.as_deref().ok_or_else(|| RPCErrors::NoPermission("attachment token required".into()))?;
+        let buckets = self.open_buckets().await?;
         for id in ids {
-            if matches!(self.own_message_referencing(ctx, &id, usize::MAX).await, Ok(Some(_))) {
+            let mut reuse = Reuse::No;
+            for source in self.own_messages_referencing(ctx, &id, usize::MAX).await.unwrap_or_default() {
+                reuse = reuse.or(self.reuse_of(ctx, buckets.as_ref(), &source, &id).await);
+                if reuse == Reuse::Yes {
+                    break;
+                }
+            }
+            if reuse == Reuse::Yes {
                 continue;
             }
             // A group reference may be reused only while its original message
@@ -437,7 +455,6 @@ impl MessageCenter {
                 .fetch_all(self.msg_box_db.pool())
                 .await
                 .map_err(crate::group_store::db_error)?;
-            let mut readable = false;
             for row in rows {
                 let body: String = row.try_get("body_json").map_err(crate::group_store::db_error)?;
                 let source: MsgObject = serde_json::from_str(&body).map_err(crate::group_store::db_error)?;
@@ -447,30 +464,75 @@ impl MessageCenter {
                 let raw: String = row.try_get("obj_id").map_err(crate::group_store::db_error)?;
                 let source_id = ObjId::new(&raw).map_err(crate::group_store::db_error)?;
                 if self.authorize_group_message(&self.group_actor(ctx).await?, &source_id).await.is_ok() {
-                    readable = true;
-                    break;
+                    reuse = reuse.or(self.reuse_of(ctx, buckets.as_ref(), &source_id, &id).await);
+                    if reuse == Reuse::Yes {
+                        break;
+                    }
                 }
             }
-            if readable {
+            if reuse == Reuse::Yes {
                 continue;
             }
             if !self.token_verifier.get().authorize_imported_attachment(token, &id).await? {
-                return Err(RPCErrors::NoPermission("attachment is not readable by this caller".into()));
+                return Err(match reuse {
+                    Reuse::NotYet => attachment_not_ready(),
+                    _ => RPCErrors::NoPermission("attachment is not readable by this caller".into()),
+                });
             }
         }
         Ok(())
     }
 
-    /// The newest message of the caller's own mailboxes that references `id`
-    /// and that the caller may read, looking at most `limit` messages back in
-    /// each. The App an Agent runs as reads its Agent's mailboxes first, then
-    /// its owner's.
+    /// Whether a message the caller reads lets it send `id` on: only if that message's binding
+    /// holds it. Naming an object proves nothing, or a remote sender could have a local user
+    /// reissue someone's private object (bucket design Z7, G2). Sent or fetched messages hold
+    /// what they name; one not fetched yet is fetched now, under the rules of a read.
+    async fn reuse_of(&self, ctx: &RPCContext, buckets: Option<&Buckets>, source: &ObjId, id: &ObjId) -> Reuse {
+        // Without buckets nothing is bound; what is not a file or directory never is.
+        let (Some(buckets), true) = (buckets, kept(id)) else {
+            return Reuse::Yes;
+        };
+        match self.bound_attachment(buckets, source, id).await {
+            Ok(Some(_)) => return Reuse::Yes,
+            Ok(None) => {}
+            Err(e) => {
+                warn!("attachment {} of {} not checked: {}", id.to_string(), source.to_string(), e);
+                return Reuse::NotYet;
+            }
+        }
+        let reader = self.message_reader(ctx, source).await;
+        match self.ensure_remote_attachment(buckets, source, id, reader.as_ref()).await {
+            RemoteAttachment::Bound => Reuse::Yes,
+            RemoteAttachment::Fetching | RemoteAttachment::Unreachable => Reuse::NotYet,
+            _ => Reuse::No,
+        }
+    }
+
+    /// The newest message of the caller's own mailboxes that references `id`, that the caller
+    /// may read and whose binding holds it, else the newest that only references it, looking
+    /// at most `limit` messages back in each. A newly arrived message that names the object
+    /// must not take a read away from the one that has it.
     pub(crate) async fn own_message_referencing(
         &self,
         ctx: &RPCContext,
         id: &ObjId,
         limit: usize,
     ) -> Result<Option<ObjId>> {
+        let found = self.own_messages_referencing(ctx, id, limit).await?;
+        if let Some(buckets) = self.open_buckets().await? {
+            for msg_id in &found {
+                if matches!(self.bound_attachment(&buckets, msg_id, id).await, Ok(Some(_))) {
+                    return Ok(Some(msg_id.clone()));
+                }
+            }
+        }
+        Ok(found.into_iter().next())
+    }
+
+    /// The messages of the caller's own mailboxes that reference `id` and that the caller may
+    /// read, newest first in each. The App an Agent runs as reads its Agent's mailboxes first,
+    /// then its owner's.
+    async fn own_messages_referencing(&self, ctx: &RPCContext, id: &ObjId, limit: usize) -> Result<Vec<ObjId>> {
         let actor = self.group_actor(ctx).await?;
         let mut owners = vec![actor.did.clone()];
         if let Some(caller) = self.caller_identity(ctx).await? {
@@ -484,6 +546,7 @@ impl MessageCenter {
         let sql = self
             .msg_box_db
             .render_sql("SELECT msg_id FROM msg_refs WHERE owner=? ORDER BY created_at_ms DESC");
+        let mut found = Vec::new();
         for owner in owners {
             let rows = sqlx::query(&sql)
                 .bind(owner.to_string())
@@ -498,12 +561,32 @@ impl MessageCenter {
                 };
                 if Self::message_references(&message, id)
                     && self.authorize_message(ctx, &msg_id).await.is_ok()
+                    && !found.contains(&msg_id)
                 {
-                    return Ok(Some(msg_id));
+                    found.push(msg_id);
                 }
             }
         }
-        Ok(None)
+        Ok(found)
+    }
+}
+
+/// Whether a source message lets the caller send an attachment on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reuse {
+    Yes,
+    /// It may, once the attachment is here: the same send can be tried again.
+    NotYet,
+    No,
+}
+
+impl Reuse {
+    fn or(self, other: Reuse) -> Reuse {
+        match (self, other) {
+            (Reuse::Yes, _) | (_, Reuse::Yes) => Reuse::Yes,
+            (Reuse::NotYet, _) | (_, Reuse::NotYet) => Reuse::NotYet,
+            _ => Reuse::No,
+        }
     }
 }
 

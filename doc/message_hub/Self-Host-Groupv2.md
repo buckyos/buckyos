@@ -687,6 +687,8 @@ pub enum AllowedClients {
 | 其它 Zone 的原生成员 | 成员 Zone 拉取变更流 | 成员 Zone 的 Message Center 作为 Joined Group 同步器，每个群维护一个变更流 token（§5.4.1），并在本地生成投影记录。host 发送不含内容的变更提示来加速拉取 |
 | tunnel 成员（shadow DID） | 逐成员 DeliveryRecord | 外部平台无法拉取，所以由 host 推送；在创建 DeliveryRecord 时完成读取判定。关系消息（编辑、撤回、回应）也走 DeliveryRecord，由 tunnel 映射为平台操作，平台不支持时用文字说明 |
 
+- **群消息的来源是群。** 是否投影、能否读取，只看群成员资格和群规则（§4.1、§5.3），不看成员和作者之间的联系人关系：成员拉黑了 A，或者不认识 A，仍然收到 A 在群里发的消息，记录进 `INBOX`，不进 REQUEST_BOX。Contact Mgr 的屏蔽和陌生人规则只管私聊和邀请。要在群里屏蔽某人只能专门在群里设置；目前只有群管理的封禁（§2.4），成员个人的群内屏蔽还没有实现（[#724](https://github.com/buckyos/buckyos/issues/724)）。
+- **群管理通知的来源也是群。** 入群审批、拒绝、移出、转让群主的通知 `from` 是群 DID，host 以群的身份投递，操作者放在 `machine.data.by`，记录带 `group:<group_did>` tag，进成员在这个群的默认 Session，所以成员拉黑了操作者也会收到，也不会出现和操作者的私聊。只有成员屏蔽了这个群本身才丢弃。其他 Zone 收到时，要本 Zone 记录过这个成员加入或申请过这个群，否则按陌生人处理。邀请（`invite`、`session_invite`）不在此列：对方还不在群里，来源是邀请人，按 §2.4 的联系人策略处理。
 - 上表同样适用于 Session Guest：同 Zone 的 Guest 得到投影记录，其它 Zone 的原生 Guest 拉取，外部平台的 Guest 走 DeliveryRecord。客服场景中，经 Telegram 等平台咨询的客户就属于最后一种。
 - 投影记录和 DeliveryRecord 只为写入时刻的有效成员生成。成员资格后来发生变化，不回改历史投递。撤回是例外，按 §2.6 尽力传播。
 - 第一版不采用「写入时把 MsgObject 推送到原生成员 Zone」。由于读取权在获取时判定（§5.3），推送与拉取的权限语义相同，将来可以作为优化引入，推送前执行同样的判定（包括 `read` Hook）。
@@ -734,7 +736,8 @@ pub enum AllowedClients {
 - **授权通过 context_path 完成。** 读者在请求链接中携带 context_path，说明自己经由哪条消息得到这个引用，例如 `<group_did>/<session_id>/<msg_id>`。各个源依据 context_path 自行决定是否返回数据。这属于 CYFS「带上下文的访问约束」，不是强访问控制。
 - host 作为源时按 §5.3 判定：读者必须能读取 context_path 指向的消息，并且该消息确实引用了所请求的对象。知道 ObjectId 不等于有权获取。
 - 转发产生新的 context。群 B 的读者使用指向群 B 中转发消息的 context_path，不需要能读群 A。
-- host 是否主动拉取并保存附件、成为稳定的源，由 host 的存储策略和配额决定，不是协议要求。发送者删除内容或退群后，如果其它源都没有保存，附件可能取不到，这是 No-Push 的预期结果。
+- host 接受远端成员的消息后，在后台向作者 Zone 取回附件并按 AppData 保留，计入 msg-center 的桶配额：群要有自己的消息处理逻辑，host 必须持有内容。host 以群 DID 登录作者 Zone（DID 文档的 `owner` 决定 custody），调用者是 `msg.to` 里的群就签发票据。取回失败不影响接受，下一次读取或票据请求再试，所以作者在 host 取回之前就删除内容或长期离线时附件可能取不到。
+- 成员 Zone 不找作者，以读者身份向 host 申请 `msg.attachment_ticket {context_path}`，host 按 §5.3 裁决，经 host 的 `/ndn/` 拉取、校验、绑定。联系人策略不参与（§5.4），读者拉黑了作者也一样能取。host 还没有内容时返回可重试。退群或被移出后 host 不再发票据，本地已有的副本不动。超过 64 MiB 的附件不取，大文件走文件分享 URL。
 - context_path 的语法，以及非 host 源的校验方式，由 CYFS 协议定义（§14）。
 
 ---
@@ -776,14 +779,14 @@ pub enum AllowedClients {
 - **审批**：只能把 `PendingAdminApproval` 推进到 `Active`。不能复活 `Left` / `Removed` 的成员，也不能绕过 `blocked`。
 - **拒绝**：状态变为 `Rejected`，并通知申请人。
 - **调整角色**：群主用 `group.update_member_role { member_did, role }` 把成员升为 `Admin` 或降回 `Member`，不需要本人同意。
-- **转让群主**：两步。群主调用 `group.transfer_owner { member_did }` 发起，返回 `{ transfer_id, member_did, expires_at_ms }`，目标成员（必须 `Active`）收到 `owner_transfer` 通知；目标成员调用 `group.accept_owner_transfer { group_did, transfer_id }` 明确接受后才生效，不适用好友自动接受，过期或不匹配返回 `transfer-mismatch`；群主可用 `group.cancel_owner_transfer` 取消。
+- **转让群主**：两步。群主调用 `group.transfer_owner { member_did }` 发起，返回 `{ transfer_id, member_did, expires_at_ms }`，目标成员（必须 `Active`）收到 `owner_transfer` 通知；目标成员调用 `group.accept_owner_transfer { group_did, transfer_id }` 明确接受后才生效，不适用好友自动接受，过期或不匹配返回 `transfer-mismatch`；群主可用 `group.cancel_owner_transfer` 取消。群主的 Zone 就是 host（custody 按它判定），跨 Zone 转让在运维上等于转服，当前版本不支持：目标必须是 host Zone 的成员，否则发起和接受都返回 `owner-must-be-in-the-host-zone`。群管理员是 host 上的成员角色，可以在其他 Zone。
 - **Hook**：`join` Hook 在进入 `Active` 之前执行（§7.3）。
 - 每次进入 `Active`，成员周期 `epoch` 加一（§2.3.3）。
 
 ### 6.3 退出、移除与删除群
 
 - **退出群**（`group.leave`）：由成员本人发起，状态变为 `Left`，发布 `entity.member_left`。Owner 必须先转让 Owner 才能退群。
-- **移除**（`group.remove_member`）：状态变为 `Removed`，发布 `entity.member_removed`，并向被移除者的个人 INBOX 发送通知。被移除者此后不能再读群消息，但应当收到这条个人通知。
+- **移除**（`group.remove_member`）：状态变为 `Removed`，发布 `entity.member_removed`，并以群的身份向被移除者发送通知（§5.4）。被移除者此后不能再读群消息，但应当收到这条通知。
 - 以上两种情况，成员都同时失去全部 Session 的有效成员资格。已经投影到成员本地的历史不会被删除。
 - **归档群**（`group.archive`）：所有 Session 不再接受新消息，历史仍按规则可读。
 - **删除群**（`group.delete`）：只有 Owner 可以执行。host 在默认 Session 发布 `entity.group_deleted`，成员 Zone 经变更流得知后停止同步；host 随后删除群数据，为 `group_did` 保留墓碑，不再用它创建新群。
@@ -829,7 +832,7 @@ pub enum AllowedClients {
 #### 6.5.3 退出与移除
 
 - Guest 主动退出：记录变为 `Left`，发布 `session.member_left`。
-- 被具有 `session.invite_guest` 能力的操作者移除，或被群封禁：记录变为 `Removed`，发布 `session.member_removed`，并向 Guest 的个人 INBOX 发送通知。
+- 被具有 `session.invite_guest` 能力的操作者移除，或被群封禁：记录变为 `Removed`，发布 `session.member_removed`，并以群的身份向 Guest 发送通知（§5.4）。
 - Session 被归档或删除时，Guest 随之失去写入权或全部访问权，与群成员一致。
 
 ### 6.6 GroupEvent 与 Action Log

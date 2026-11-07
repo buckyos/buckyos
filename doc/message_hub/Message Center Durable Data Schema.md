@@ -98,13 +98,21 @@ and an admin raises it with `bucket.set_pool_quota`. The two zone buckets set
 - A local message whose attachment is not in this Zone fails the send
   (`content_not_available`). A message from another Zone (signed ingress, or a
   remote member of a hosted group) binds nothing, even when the object is already
-  here: a signature does not prove its author holds what it names. A private
-  message's attachment is bound when a recipient first reads it: this Zone asks the
-  sender's Zone for a read token (`msg.attachment_ticket`, recipients only), pulls
-  `/ndn/<file>` and verifies every part. Until then, or while the sender's Zone does
-  not answer, the read gets 503 + `Retry-After`. An attachment over the 64 MiB a
-  read can hand over is not fetched: the read gets 413. A group's attachments stay
-  unreadable for now (`notepads/issue-689-cross-zone-attachments-protocol-todo.md`).
+  here: a signature does not prove its author holds what it names. Its attachment
+  is bound once the bytes came from a side entitled to them: the first read of the
+  content, a forward or a collection asks the source for a read token
+  (`msg.attachment_ticket`), pulls `/ndn/<file>` and verifies every part. The source
+  of a private message is the sender's Zone; of a group this Zone hosts, the author's
+  Zone, asked as the group right after the message is accepted (the host keeps its
+  copy under `app_data`); of a group joined from here, the host, whose rules judge the
+  reader. A description reads the source's object and binds nothing. Until the bytes
+  are here, or while the source does not answer, a read gets 503 + `Retry-After`; a
+  sender the reader has not accepted gets 403 and nothing goes out; an attachment over
+  the 64 MiB a read can hand over, by its chunks' own lengths, is not fetched and gets
+  413. Directories are not pulled yet: 415. A display file of a joined group is bound
+  the same way under `<group address>/_display/<obj_id>`. A pull that finishes after
+  a recall does not keep its key. A message only naming an object never lets a user
+  send it on: that takes a message whose binding holds it.
 - Uploads from MessageHub go through the NDM gateway, whose finalize holds the
   file 24h for the uploader (`ndm-hold:<user>|<app>`); `post_send` binds it
   into `attachments` within that window or fails. Telegram ingress puts the
