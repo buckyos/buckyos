@@ -58,7 +58,7 @@
 | --- | --- | --- |
 | 上限 | `RunnerOptions.max_context_window = Some(256_000)`，`resolve_context_window` 对 AICC 查到的值取 `min`；显式 `context_window`（agent.toml / session / behavior 的 `llm_context`）不受限 | `runner/mod.rs:183,254`、`runner/window.rs`、`runner/live.rs` |
 | 模型真实窗口 | AICC `driver_metadata/models/openai.model.json`：`gpt-6.1-sol` / `gpt-6-astra` `max_context_tokens = 1_050_000`；80% 触发线 84 万 | — |
-| 请求体上限 | AICC 已改 32 MiB（[aicc-request-body-limit-todo.md](./aicc-request-body-limit-todo.md)，未提交）；今天 209k 估算（约 1 MB 请求体）没有 413，说明 DV 镜像里已带这份修改，但要确认部署镜像也带（`aicc/src/protocol/transport.rs:48`、`openai_chat_completions.rs:31`） | `buckyos/src/frame/aicc/` |
+| 请求体上限 | AICC 已改 32 MiB（[aicc-request-body-limit-todo.md](./done/aicc-request-body-limit-todo.md)，已提交，2026-11-06 DV 通过）；今天 209k 估算（约 1 MB 请求体）没有 413，说明 DV 镜像里已带这份修改，但要确认部署镜像也带（`aicc/src/protocol/transport.rs:48`、`openai_chat_completions.rs:31`） | `buckyos/src/frame/aicc/` |
 | 估算偏差 | llm_context 估算比 provider 实际高 15–20%，1.05M 下 84 万估算 ≈ 70 万实际 | — |
 | 设计文档 | §4.2：80% → 30%，Work Session 同样适用；§11.2：Work Session "可以围绕任务保留较多执行信息"，压缩时"应保留任务约束、已验证结论、当前执行状态与产物引用" | `doc/opendan/OpenDAN Agent Session架构设计.md:200-216,819` |
 

@@ -222,7 +222,7 @@ T02 里内置搜索单条消息 27 万字符，不计工具次数，worklog 里�
 
 1. **codex-proxy 模型的窗口是 1.05M。** AICC `driver_metadata/models/openai.model.json` 里 `gpt-6.1-sol` / `gpt-6-astra` 的 `max_context_tokens = 1_050_000`（Q1 要求核对的两个）。若 DV 的 codex-proxy 走 openai model driver，`llm.chat` / `llm.plan` 的窗口就是 1.05M，80% 触发线是 84 万 token——§1 那个涨到 22.6 万的 T02 仍然不会压缩，每轮重发的上下文可以涨到几十万 token。实现按裁决（窗口来自 AICC）没有加上限。可选：(a) 维持，按模型真实窗口；(b) `agent.toml [llm_context] context_window` 显式写一个值（如 200k）作为 Jarvis 的成本上限（与 B2“不写”相反）；(c) runner 加 `max_context_window` 上限（如 256k），窗口取 `min(AICC, 上限)`。建议 (c) 或 (b)，DV 时先用 `models.list` 确认实际值。**裁决（2026-11-02）：(c)，256k**（[opendan-dv-followup-todo.md](./opendan-dv-followup-todo.md) Q2 = C），同日在该单 H2 实施：`RunnerOptions.max_context_window = Some(256_000)`，查到的窗口与缺省值取 `min`，显式 `context_window` 不受限。2026-11-03 改判为跟随模型（缺省不设上限），见 [opendan-context-window-compaction-todo.md](./opendan-context-window-compaction-todo.md) W1。
 2. 内置网页搜索的大消息穿透触发线（§3.3）照旧只观察：硬上限同样让出并重写。
-3. 2026-11-02 DV 后续：1.05M 窗口叠加 AICC kRPC 1 MiB 上限导致 2 个 `explore` 以 413 失败、1 个 503 过载被当作不可恢复。拆成三单：[aicc-request-body-limit-todo.md](./aicc-request-body-limit-todo.md)（AICC 上限）、[xllm-aicc-error-mapping-todo.md](./xllm-aicc-error-mapping-todo.md)（先行：413 → 重写、`retriable` → 可重试、上下文超限错误码）、[opendan-dv-followup-todo.md](./opendan-dv-followup-todo.md)（可重试错误的退避与上限、本条第 1 项的窗口上限裁决 Q2、§6 未做的 DV）。
+3. 2026-11-02 DV 后续：1.05M 窗口叠加 AICC kRPC 1 MiB 上限导致 2 个 `explore` 以 413 失败、1 个 503 过载被当作不可恢复。拆成三单：[aicc-request-body-limit-todo.md](./done/aicc-request-body-limit-todo.md)（AICC 上限）、[xllm-aicc-error-mapping-todo.md](./xllm-aicc-error-mapping-todo.md)（先行：413 → 重写、`retriable` → 可重试、上下文超限错误码）、[opendan-dv-followup-todo.md](./opendan-dv-followup-todo.md)（可重试错误的退避与上限、本条第 1 项的窗口上限裁决 Q2、§6 未做的 DV）。
 
 ### 8.4 验证结果
 

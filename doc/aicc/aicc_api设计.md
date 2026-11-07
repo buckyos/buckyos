@@ -554,7 +554,7 @@ key 为 `<app>/<对象 id 前 16 位>/<name>`，`<app>` 是调用的业务 App�
 
 物化后执行两道公共门禁：第一道验证本次被物化的 payload 没有以其它字符串副本残留；第二道按 `runner_complete` 的实际 `{ result: { output } }` 包装计算 JSON 大小，必须低于 kRPC 1 MiB 上限并保留 64 KiB envelope 余量。大小门禁位于 usage/billing 和 staging 之前，并在 staged result recovery/commit 时重复执行。超限属于明确、不可重试的任务失败，不能让任务停留在 Accepted/running。
 
-这里的 1 MiB 是 **TaskMgr** 的 kRPC 上限。AICC 服务自己接收请求的上限是 32 MiB（`AICC_MAX_RPC_BODY_SIZE`），超过仍返回 `413 Payload Too Large`。请求侧随之约定：AICC 建任务时，序列化 ≤ 256 KiB 的 canonical 请求原样写进 `input.request.request`；更大的只写 `input.request.request_summary`（`bytes`、`fingerprint`、`messages.count/by_role`、`tools` 名、标量 `params`、`provider_state_bytes`），不存原文，`trace_id` 指向调用方保有完整上下文的 run。两种形态对同一请求都是确定性的，TaskMgr 的 `input_digest` 幂等重放与 AICC 的 `body_fingerprint` 保持一致。
+这里的 1 MiB 是 **TaskMgr** 的 kRPC 上限。AICC 服务自己接收请求的上限是 32 MiB（`AICC_MAX_RPC_BODY_SIZE`），超过仍返回 `413 Payload Too Large`。请求侧随之约定：AICC 建任务时，序列化 ≤ 256 KiB 的 canonical 请求原样写进 `input.request.request`；更大的只写 `input.request.request_summary`（`bytes`、`fingerprint`、`messages.count/by_role`、`tools` 名、标量 `params`、`provider_state_bytes`（消息内容块里 `provider_state` 的序列化字节数，没有时为 0）），不存原文，`trace_id` 指向调用方保有完整上下文的 run。两种形态对同一请求都是确定性的，TaskMgr 的 `input_digest` 幂等重放与 AICC 的 `body_fingerprint` 保持一致。
 
 当 `obj_id` 指向 FileObject 时，AICC 从 FileObject meta 获取资源属性：
 

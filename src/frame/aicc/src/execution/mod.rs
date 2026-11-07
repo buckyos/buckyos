@@ -1067,7 +1067,7 @@ fn task_request_summary(input: &Value, bytes: usize, fingerprint: &str) -> Value
     let mut params = Map::new();
     if let Value::Object(object) = input {
         for (key, value) in object {
-            if matches!(key.as_str(), "messages" | "tools" | "provider_state") {
+            if matches!(key.as_str(), "messages" | "tools") {
                 continue;
             }
             match value {
@@ -1092,16 +1092,24 @@ fn task_request_summary(input: &Value, bytes: usize, fingerprint: &str) -> Value
             }
         }
     }
+    let provider_state_bytes: usize = input
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|message| message.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("provider_state"))
+        .filter_map(|block| serde_json::to_vec(block).ok())
+        .map(|serialized| serialized.len())
+        .sum();
     serde_json::json!({
         "bytes": bytes,
         "fingerprint": fingerprint,
         "messages": { "count": messages, "by_role": by_role },
         "tools": tools,
         "params": params,
-        "provider_state_bytes": input
-            .get("provider_state")
-            .and_then(|state| serde_json::to_vec(state).ok())
-            .map(|v| v.len()),
+        "provider_state_bytes": provider_state_bytes,
     })
 }
 
@@ -3611,16 +3619,28 @@ mod tests {
             "response_format": {"type": "json_schema", "schema": {"type": "object"}},
             "stop": ["<<end>>"],
             "messages": [
-                {"role": "system", "content": "be brief"},
-                {"role": "user", "content": "x".repeat(600 * 1024)},
-                {"role": "assistant", "content": "y".repeat(600 * 1024)},
-                {"role": "user", "content": "done?"},
+                {"role": "system", "content": [{"type": "text", "text": "be brief"}]},
+                {"role": "user", "content": [{"type": "text", "text": "x".repeat(600 * 1024)}]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "y".repeat(600 * 1024)},
+                    {
+                        "type": "provider_state",
+                        "source": {
+                            "provider_profile_id": "openai",
+                            "adapter_type": "openai-responses",
+                            "origin_provider": "openai",
+                            "origin_model": "m",
+                        },
+                        "provider": "openai",
+                        "value": {"blob": "z".repeat(64 * 1024)},
+                    },
+                ]},
+                {"role": "user", "content": [{"type": "text", "text": "done?"}]},
             ],
             "tools": [
                 {"name": "read_file", "description": "r", "input_schema": {"type": "object"}},
                 {"type": "function", "function": {"name": "write_file", "parameters": {}}},
             ],
-            "provider_state": {"blob": "z".repeat(64 * 1024)},
         })
     }
 
@@ -3657,8 +3677,11 @@ mod tests {
         assert_eq!(summary["params"]["response_format"], "<object with 2 keys>");
         assert_eq!(summary["params"]["stop"], "<array of 1>");
         assert!(summary["params"].get("messages").is_none());
-        assert!(summary["params"].get("provider_state").is_none());
-        assert!(summary["provider_state_bytes"].as_u64().unwrap() > 64 * 1024);
+        let provider_state = &body["messages"][2]["content"][1];
+        assert_eq!(
+            summary["provider_state_bytes"],
+            serde_json::to_vec(provider_state).unwrap().len()
+        );
         let serialized = serde_json::to_string(&summary).unwrap();
         assert!(!serialized.contains("xxxxxxxx"));
         assert!(!serialized.contains("zzzzzzzz"));
@@ -3669,6 +3692,17 @@ mod tests {
             task_request_view(body.clone(), &fingerprint),
             task_request_view(body, &fingerprint)
         );
+    }
+
+    #[test]
+    fn task_request_summary_counts_no_provider_state_as_zero() {
+        let mut body = large_canonical_body("m@p");
+        body["messages"][2]["content"].as_array_mut().unwrap().pop();
+        let fingerprint = canonical_body_fingerprint(&body).unwrap();
+        let TaskRequestView::Summary(summary) = task_request_view(body, &fingerprint) else {
+            panic!("large request must be summarized");
+        };
+        assert_eq!(summary["provider_state_bytes"], 0);
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@
 
 日期：2026-11-02
 
-状态：**H1 / H2 / 文档已实施（2026-11-02，未提交），单测过；H3 DV 未做**（要重建容器、停 codex-proxy，等用户安排），记录见 §7。原状态：已 review、已裁决（Q1–Q3 均按建议，2026-11-02），待实施。review 补充的 R1–R7 已写回 §3。来源：[Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) 实施后的 DV（2026-11-02，`jarvis.test.buckyos.io` 容器形态，plan `work-20261103-3` 与它派发的 9 个 Todo session）。同一次 DV 拆出的另外两单：AICC 请求体 1 MiB 上限 [aicc-request-body-limit-todo.md](./aicc-request-body-limit-todo.md)（另行处理中）；xllm 的 AICC 错误归类 [xllm-aicc-error-mapping-todo.md](./xllm-aicc-error-mapping-todo.md)（先行，本单 H1 依赖它的 P2）。
+状态：**H1 / H2 / 文档已实施（2026-11-02，未提交），单测过；H3 DV 未做**（要重建容器、停 codex-proxy，等用户安排），记录见 §7。原状态：已 review、已裁决（Q1–Q3 均按建议，2026-11-02），待实施。review 补充的 R1–R7 已写回 §3。来源：[Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) 实施后的 DV（2026-11-02，`jarvis.test.buckyos.io` 容器形态，plan `work-20261103-3` 与它派发的 9 个 Todo session）。同一次 DV 拆出的另外两单：AICC 请求体 1 MiB 上限 [aicc-request-body-limit-todo.md](./done/aicc-request-body-limit-todo.md)（另行处理中）；xllm 的 AICC 错误归类 [xllm-aicc-error-mapping-todo.md](./xllm-aicc-error-mapping-todo.md)（先行，本单 H1 依赖它的 P2）。
 
 范围：libopendan 宿主（`host/mod.rs` 的驱动循环与 `ChildDriver`、`runner/outcome.rs` 的可重试错误、`runner/live.rs` 的窗口解析）、Jarvis 包配置、上一单 §6 未做的 DV。
 
@@ -99,7 +99,7 @@
 
 - 上一单：[opendan-work-context-budget-fix-todo.md](./opendan-work-context-budget-fix-todo.md)（§8.3 窗口、§6 DV）。
 - 先行：[xllm-aicc-error-mapping-todo.md](./xllm-aicc-error-mapping-todo.md)（P1 413 → 重写、P2 可重试判定、P3 上下文超限错误码）。
-- AICC：[aicc-request-body-limit-todo.md](./aicc-request-body-limit-todo.md)。
+- AICC：[aicc-request-body-limit-todo.md](./done/aicc-request-body-limit-todo.md)。
 - 后续（不在本单）：`thinking` 块在 Responses 编码时被丢弃却随 kRPC 发送（本次约占上下文的 11%），能否按目标协议在客户端裁掉，需先确认 Claude 等协议对 thinking 签名回放的要求。
 
 ## 7. 实施记录（2026-11-02，未提交）

@@ -2,7 +2,7 @@
 
 日期：2026-11-02
 
-状态：**已裁决（Q1 32 MiB、Q2 A、Q3 维持整份 INFO）并已实施，未提交、DV 未做**（§8）。来源：[Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) 实施后的 DV：用户重建 DV 后跑一个长研究任务，3 个 `explore` 子任务失败，其中 2 个是 `413 Payload Too Large`。用户裁决：**修改 AICC 的 1 MiB 默认上限**（不靠缩小上下文窗口绕过）。
+状态：**已完成（2026-11-06）**：代码随 `548e6c864` 合入 main，§6 DV 通过（记录见 §9）；§9 末尾记录了 2 个小问题：1 个已修、待重启 AICC 生效，1 个未修。裁决：Q1 32 MiB、Q2 A、Q3 维持整份 INFO。来源：[Work Session 上下文压缩与工具预算修正](../opendan-work-context-budget-fix-todo.md) 实施后的 DV：用户重建 DV 后跑一个长研究任务，3 个 `explore` 子任务失败，其中 2 个是 `413 Payload Too Large`。用户裁决：**修改 AICC 的 1 MiB 默认上限**（不靠缩小上下文窗口绕过）。
 
 范围：AICC 服务（接收上限、写入 TaskMgr 的任务 input、`aicc.llm.input` 日志）、Desktop Task Center 的请求展示、AICC 文档。buckyos-base、cyfs-gateway、TaskMgr、llm_context / agent_tool **不改**（理由见 §2；agent_tool 侧的兜底见 §7，另起一单）。
 
@@ -110,17 +110,17 @@ Agent `jarvis.test.buckyos.io`（容器形态），plan `work-20261103-3`（`pla
 ## 6. 验证与 DV
 
 - 单测：§5 A4、B1、B2。
-- DV（AICC 是宿主原生进程：`cd src && uv run buckyos-build.py --skip-web -s aicc`，替换 `/opt/buckyos/bin/aicc/aicc` 后由 node-daemon 拉起；Desktop 改动需重建 control-panel web）：
+- DV（AICC 是宿主原生进程：`cd src && uv run buckyos-build.py --skip-web -s aicc`，替换 `/opt/buckyos/bin/aicc/aicc`，再用 root 结束旧进程后由 node-daemon 拉起（只替换文件不会触发重启）；Desktop 改动需重建 control-panel web）：
   1. 复跑同类长研究任务（plan + 2～3 个 `explore`）：不再出现 `413`；上下文超过 1 MiB 的推理成功（AICC 日志 `aicc.llm.input` 的 `request_bytes` > 1,048,576 且有对应 `aicc.llm.output`）。
   2. TaskMgr：`sqlite3 -readonly /opt/buckyos/local/task-manager/task-mgr-main.db "select count(*), sum(length(input_json)), max(length(input_json)) from task where schema_id='aicc.compute/v1'"`，大请求的 input 只有摘要（单条 ≤ 几 KB），总量与同等轮数的这次 DV（79 MB）对比。
   3. AICC 日志：同样轮数下 `aicc.llm.input` 的总量（这次 85.9 MB）。
   4. 上游核对：codex-proxy（CLIProxyAPI，`/opt/cli-proxy-api/`）对几 MB 请求的接收，用一次 3–5 MB 的 `chat.completions.create` 直接测；若上游也拒，记下其上限与错误形态。
   5. Desktop Task Center：小请求仍可“复制到 Playground”；大请求显示摘要与 trace_id。
-- 证据放 `/home/lzc/project/work_context_budget_dv_runs/aicc_body_limit/`。
+- 证据放 `/home/lzc/projects/work_context_budget_dv_runs/aicc_body_limit/`。
 
 ## 7. 关联与后续
 
-- [Work Session 上下文压缩与工具预算修正](./opendan-work-context-budget-fix-todo.md) §8.3：窗口 1.05M 的问题。本单之后 1 MiB 不再是硬墙，84 万 token 的触发线在技术上可达，但每轮重发几十万 token 的成本与延迟仍在，是否给窗口加上限仍待那一单裁决。
+- [Work Session 上下文压缩与工具预算修正](../opendan-work-context-budget-fix-todo.md) §8.3：窗口 1.05M 的问题。本单之后 1 MiB 不再是硬墙，84 万 token 的触发线在技术上可达，但每轮重发几十万 token 的成本与延迟仍在，是否给窗口加上限仍待那一单裁决。
 - 另起 agent_tool 小单（按 llm_context / agent_tool 修改单列、先行的规则）：
   1. xllm 把 kRPC `http_error` 且 `status = 413` 归为 `ProviderFailure::ContextLimit`，让 llm_context 让出 `ContextLimitReached`、由宿主重写，而不是让会话失败（超过 32 MiB 或上游拒收时的兜底）；
   2. 同一次 DV 的另一个失败 `work-20261103-6`：codex-proxy 返回 503（上游 `server_is_overloaded`），AICC 已标 `retriable: true, retry_after_ms: 60000`，但 xllm `aicc_provider_failure` 只把 `Timeout` 与 HTTP 408 / 504 当作可重试，忽略 `retriable`（现有测试还断言 502 不可恢复），会话直接失败。是否改为读取 `retriable` 需裁决。
@@ -128,7 +128,7 @@ Agent `jarvis.test.buckyos.io`（容器形态），plan `work-20261103-3`（`pla
 
 ## 8. 实施记录
 
-2026-11-02 实施，三仓同日：`buckyos`（aicc、buckyos-api、desktop、doc、cmd_skills）。未提交，DV（§6）未做。
+2026-11-02 实施，三仓同日：`buckyos`（aicc、buckyos-api、desktop、doc、cmd_skills）。随 `548e6c864` 提交；DV 记录见 §9。
 
 **裁决落地**
 
@@ -153,7 +153,35 @@ Agent `jarvis.test.buckyos.io`（容器形态），plan `work-20261103-3`（`pla
 - `doc/aicc/AICC.md` §硬性原则加 3 条（32 MiB、任务 input 原样 / 摘要规则、`aicc.llm.input` INFO 有意为之）；`doc/aicc/aicc_api设计.md` 结果门禁段后加一段说明 1 MiB 是 TaskMgr 的、请求侧规则与确定性。
 - cmd_skills：只有 `xllm.md` 写了“AICC's 1 MiB RPC body”，改为 32 MiB；`aigc_*`、`buckyos_admin`、`opendan_agent_dev` 未提请求大小或任务 input 形状，无需修改。
 
-**待办**
+**关联单**
 
-- §6 DV 全部未做（AICC 原生进程需重建替换、Desktop 需重建 control-panel web；核对 codex-proxy 对 3–5 MB 请求的接收）。
-- §7 agent_tool 小单（413 → `ContextLimit`、读 AICC `retriable`）未动；工作区里另有未跟踪的 `notepads/xllm-aicc-error-mapping-todo.md`，可能已是那一单。
+- §7 agent_tool 小单（413 → `ContextLimit`、读 AICC `retriable`）是 [xllm-aicc-error-mapping-todo.md](../xllm-aicc-error-mapping-todo.md)，随 `1e0de4f2e` 提交，单测过；它的 DV 随 [opendan-dv-followup-todo.md](../opendan-dv-followup-todo.md) 的 H3 做。
+
+## 9. DV 记录（2026-11-06）
+
+环境：本机 `test.buckyos.io` Zone，部署的 AICC 和 Desktop 都带本单改动，模型路由到 `gpt-6.1-sol:reasoning-medium@codex-proxy`。证据在 `/home/lzc/projects/work_context_budget_dv_runs/aicc_body_limit/`。
+
+为了不消耗大量 Codex 额度（与本人 Codex CLI 共用），没有用纯文本撑大请求，也没有跑研究任务：
+
+- **只测 AICC 接收侧：** 用未绑定来源的 `thinking` 块撑大请求体。AICC 编码时会丢弃它，1 KB 到 6 MiB 的 `input_tokens` 都是 4461。
+- **要到达上游时：** 用内联噪声 PNG。图片按尺寸计 token，约 4 MB 的请求体只增加约 1.2k token。
+
+| §6 项 | 结果 | 依据 |
+| --- | --- | --- |
+| 1. 超过 1 MiB 的请求 | 通过 | 直连 1,259,220 和 6,292,384 字节、经网关 1,259,222 字节都成功；`aicc.llm.input` 的 `request_bytes` 超过 1,048,576，且都有对应的 `aicc.llm.output`；日志里没有 413 |
+| 2. TaskMgr 只存摘要 | 通过 | 4 个超过 256 KiB 的任务只有 `request_summary`，input 为 488–512 字节；40 KB 和 1 KB 的任务原样保留 `request` |
+| 3. 日志总量对比 | 取消 | Q3 裁决保留整份 INFO，总量本来就不会下降；6 MiB 请求的日志行约 6.29 MB，符合裁决 |
+| 4. 上游接收 | 通过，仅限 HTTP 层 | 直连 codex-proxy 4,002,929 字节返回 200；经 AICC 3,845,071 字节返回 200，`input_tokens` 比基线多 1152，说明图片到达了模型 |
+| 5. Desktop | 通过 | 无头 Chromium 打开部署的 Task Center：40 KB 任务有“复制到 Playground”按钮；6 MiB 任务显示摘要、大小（6.0 MB）和 trace_id，没有按钮。截图是 `dv5_*.png` |
+
+上限边界：33 MiB 直连 4 次都是 413；33,554,389 字节（刚低于 32 MiB）通过体积检查，到达 token 校验。
+
+**未覆盖：**
+
+- 上游只验证了能收下几 MB 的请求体，没有发过几 MB 的纯文本上下文。
+- 完整 Agent 路径（84 万 token 触发线、压缩）留给 [opendan-context-window-compaction-todo.md](../opendan-context-window-compaction-todo.md) 的 1.05M DV。
+
+**发现的问题：**
+
+1. **已修，未提交，待重启 AICC 生效：** `provider_state_bytes` 在真实请求里恒为 null。`task_request_summary` 只读顶层 `provider_state`，而协议里没有这个顶层字段，真实请求把它放在消息内容块里：本机 5 条 Agent 请求中顶层 0 个、内容块 6 个。单测的夹具自己造了顶层字段，所以没有发现。现在统计内容块的序列化字节数，没有时为 0，夹具也改成了真实形状。只影响摘要里这一个数，不影响上限和任务创建。修复前在真实路径上复现过（`dv_provider_state_before_old_binary.json`：300,202 字节的内容块得到 null）。新二进制已替换到 `/opt/buckyos/bin/aicc/aicc`，但旧进程还在运行，重启后要再跑一次对照。
+2. **未修：** 经网关超限时偶发 500。33 MiB 经网关 6 次里 4 次 413、2 次 500（`error writing a body to connection`）：AICC 提前回 413 时网关还在写 body。容器直连 AICC 不受影响；经网关的调用方拿到 500 时，xllm 会归为 `Unknown` 而不是 `ContextLimit`。修复在 cyfs-gateway，不在本单范围。
