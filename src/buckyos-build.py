@@ -234,6 +234,9 @@ def _prepare_agent_tools(source: Path | None = None, target: Path | None = None,
 
 
 def _prepare_ext_tools(env: dict[str, str]) -> int:
+    # A release payload carries only the pin CI writes into it: installers fetch the tar it names.
+    if env.get("BUCKYOS_EXT_TOOLS_SKIP"):
+        return 0
     return subprocess.run(
         [sys.executable, str(Path(__file__).resolve().parent / "tools" / "prepare_ext_tools.py")],
         env=env,

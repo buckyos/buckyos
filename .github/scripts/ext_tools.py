@@ -54,14 +54,18 @@ def check_table(table_text, manifest, conda_env_text, sources_text):
     return errors
 
 
+def request_of(url, method="GET"):
+    # The host is behind Cloudflare, which refuses urllib's default User-Agent (403, error 1010).
+    return urllib.request.Request(url, method=method, headers={"Cache-Control": "no-cache", "User-Agent": "buckyos-ext-tools/1"})
+
+
 def fetch_json(url):
-    with urllib.request.urlopen(url, timeout=60) as response:
+    with urllib.request.urlopen(request_of(url), timeout=60) as response:
         return json.loads(response.read())
 
 
 def head_size(url):
-    request = urllib.request.Request(url, method="HEAD")
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with urllib.request.urlopen(request_of(url, "HEAD"), timeout=60) as response:
         return int(response.headers.get("Content-Length", -1))
 
 

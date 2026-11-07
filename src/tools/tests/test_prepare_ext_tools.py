@@ -5,6 +5,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location("prepare_ext_tools", Path(__file__).resolve().parent.parent / "prepare_ext_tools.py")
 tool = importlib.util.module_from_spec(SPEC)
@@ -71,6 +72,22 @@ class PrepareExtToolsTest(unittest.TestCase):
         pin = json.loads((self.out / "ext_tools.json").read_text())["packages"]["ext-core"]
         self.assertEqual(list(pin["platforms"]), ["linux-x86_64"], "the pin only says what is in the directory")
         self.assertEqual(pin["pikg_digest"], "sha256:pikg")
+
+    def test_no_request_carries_the_default_user_agent(self):
+        seen = []
+
+        def urlopen(request, timeout):
+            seen.append(request)
+            raise OSError("stop")
+
+        fresh = importlib.util.module_from_spec(SPEC)
+        SPEC.loader.exec_module(fresh)
+        with tempfile.TemporaryDirectory() as temp, mock.patch("urllib.request.urlopen", urlopen):
+            with self.assertRaises(OSError):
+                fresh.fetch_json("https://r2/x")
+            with self.assertRaises(OSError):
+                fresh.download("https://r2/x", Path(temp) / "x.tar.gz", 1, "sha256:x")
+        self.assertEqual([r.get_header("User-agent") for r in seen], ["buckyos-ext-tools/1"] * 2)
 
 
 if __name__ == "__main__":

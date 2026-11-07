@@ -78,14 +78,19 @@ def write_pin(out: Path, release: dict, platform: str, tar_name: str) -> None:
     (out / PIN_FILE).write_text(json.dumps({"schema": PIN_SCHEMA, "packages": {"ext-core": package}}, indent=2) + "\n")
 
 
+def request_of(url: str) -> urllib.request.Request:
+    # The host is behind Cloudflare, which refuses urllib's default User-Agent (403, error 1010).
+    return urllib.request.Request(url, headers={"Cache-Control": "no-cache", "User-Agent": "buckyos-ext-tools/1"})
+
+
 def fetch_json(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=60) as response:
+    with urllib.request.urlopen(request_of(url), timeout=60) as response:
         return json.loads(response.read())
 
 
 def download(url: str, dest: Path, size: int, sha256: str) -> None:
     temp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(url, timeout=600) as response, temp.open("wb") as handle:
+    with urllib.request.urlopen(request_of(url), timeout=600) as response, temp.open("wb") as handle:
         while True:
             block = response.read(1024 * 1024)
             if not block:

@@ -65,6 +65,8 @@ jobs:
         python -c "import sys, yaml; print('Python:', sys.executable); print('PyYAML:', yaml.__version__)"
     - name: Build BuckyOS
       working-directory: ./src
+      env:
+        BUCKYOS_EXT_TOOLS_SKIP: '1'
       run: python buckyos-build.py --app=buckyos --target=${{ inputs.arch }}-apple-darwin
     - name: Install staged payload
       working-directory: ./src

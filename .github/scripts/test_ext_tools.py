@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import unittest
+from unittest import mock
 
 import ext_tools
 
@@ -74,6 +75,21 @@ class ResolveTest(unittest.TestCase):
             ext_tools.resolve("1.1.0", "https://r2", fetch=lambda url: release(), head=lambda url: 9)
         with self.assertRaisesRegex(ValueError, "the release says 1.0.0"):
             ext_tools.resolve("1.1.0", "https://r2", fetch=lambda url: release(version="1.0.0"), head=lambda url: 10)
+
+
+class RequestTest(unittest.TestCase):
+    def test_no_request_carries_the_default_user_agent(self):
+        seen = []
+
+        def urlopen(request, timeout):
+            seen.append(request)
+            raise OSError("stop")
+
+        with mock.patch("urllib.request.urlopen", urlopen):
+            for call in (ext_tools.fetch_json, ext_tools.head_size):
+                with self.assertRaises(OSError):
+                    call("https://r2/x")
+        self.assertEqual([r.get_header("User-agent") for r in seen], ["buckyos-ext-tools/1"] * 2)
 
 
 if __name__ == "__main__":

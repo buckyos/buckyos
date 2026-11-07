@@ -246,6 +246,14 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
 
         self.assertEqual(result, 127)
 
+    def test_a_release_build_does_not_fetch_the_ext_core_seed(self) -> None:
+        module = _load_build_script()
+        with patch.object(module.subprocess, "run") as run:
+            self.assertEqual(module._prepare_ext_tools({"BUCKYOS_EXT_TOOLS_SKIP": "1"}), 0)
+            run.assert_not_called()
+            module._prepare_ext_tools({})
+            run.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

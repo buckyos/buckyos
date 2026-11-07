@@ -427,6 +427,16 @@ websdk、Desktop、OpenDAN WebUI 的结果见上一轮（这些代码之后没�
 
 验证用的是这次 run 的真实产物：Package 这一步在本机原样跑通（Node 24、`buckyos@latest` 0.7.169，`doctor` 确实检查了 `ext_tools_manifest`）；`PikgReader` 读 3.4 GiB 的 `.pikg`，`verify_all_contents` 通过，5 个平台的清单和 payload 都读得出；R2 路径与下游地址对照一致；修改后的 Windows 步骤文本在 VM 上跑通。**没有验证**：1252 代码页下的真实 Windows smoke、真实 R2 上传和 GitHub Release 创建，要等下一次 CI。
 
+**ext-core 发布之后 build-all 的失败**（2026-11-07，run 42335100515，ext-core 1.1.0 已成功发布，`resolve-ext-tools` 和 `build-exttool` 都报 `HTTP Error 403`）：
+
+| 问题 | 后果 | 修复 |
+| --- | --- | --- |
+| R2 域名在 Cloudflare 后面，拒绝 urllib 默认 UA（`error code: 1010`）；`ext_tools.py`、`prepare_ext_tools.py` 没带 UA（`paios_images.py` 带了） | 这次的失败。文件都在，`curl` 能下。之前只用 `curl` 和 `--local` 测过，这段下载代码没对真实 R2 跑过 | 两处都带 `buckyos-ext-tools/1`，加了回归测试 |
+| `rootfs/bin/ext-tools/` 整个被 gitignore，devkit 对目录模块直接 `copytree` | 种子没下成（离线、fork、R2 不通）时 `buckyos-install` 抛 `FileNotFoundError`，“不是构建失败”的说法只对 build 这一步成立 | 像 `paios-images` 一样放占位 README |
+| UA 修好后，发布构建也会下载 tar 到 rootfs，再被装进 payload | 每个组件包多 400 M 以上，fork 的构建也带上 | `build-{linux,macos,windows}.yml` 设 `BUCKYOS_EXT_TOOLS_SKIP=1`，payload 只带 CI 写入的钉版清单。dev-tests 和开发者不设，照常下载 |
+
+验证：`ext_tools.py resolve` 对真实 R2 通过（5 个平台，目标目录不存在也可以）；干净 worktree 上跑 `build_exttool --prepare-context`，两个架构真实下载、SHA 正确；用同一 context 构建 amd64 镜像（475 MB）；节点引擎把真实发布的种子装进 tmpfs，23 个命令、smoke 通过；旁边多一个 README 不影响。**没有验证**：`Build and push`、`Export ExtTool tarballs`、三平台构建的 `Pin ext-core`、后面的 `resolve-paios-images`，这些要等下一次 build-all。
+
 **收尾回归抓到、已修**（前面的 DV 都漏了，记在这里是因为它们说明只验“命令能跑”不够）：
 
 - `skills.status` 不在 `service.rs` 任何权限分类里，只读 Agent 连自己的都调不了。归入 `is_operation`（它当场跑检查、更新检查记录），`read_only_agent_writes_only_its_own_state` 覆盖。
