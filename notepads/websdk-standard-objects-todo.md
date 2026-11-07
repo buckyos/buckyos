@@ -374,4 +374,4 @@ MsgObject 收敛（3.1–3.4 和 3.7 的 `msgobj.ts` 部分）和 FileObject met
 
 cmd_skills：无需修改。手册读的是 AICC 结果的 `detail.files[].mime`，字段没变；`cyfile` 上的键从 `mime_type` 改成 `mime` 由 `stored_file_from_object` 在服务内消化，手册里也没有 `mime_type`。
 
-留给以后：`name-lib` 的 `DID::from_str("did")` 会 panic（`parts[2..]` 越界），`MsgObject::from_json_value_checked` 收到 `"from": "did"` 就会触发，而它是接收不可信输入的入口，应该修。
+`name-lib` 的 `DID::from_str("did")` 会 panic（`parts[2..]` 越界），`MsgObject::from_json_value_checked` 收到 `"from": "did"` 就会触发。已在 buckyos-base 修复：没有 id 的 `did`、`did:`、`did:method` 都返回错误；`get_ed25519_auth_key`、`get_auth_key` 对畸形 `did:dev` 返回 `None`（修复前 RTCP 未认证的 hello 也能触发 panic）。SDK 的 `namelib` 同步。
