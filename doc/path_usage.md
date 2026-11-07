@@ -40,7 +40,7 @@ Rust 服务和备份脚本支持 `BUCKYOS_SECURITY_ROOT`；显式目标目录的
 
 ```
 /opt/buckyos/instance => 每个 app instance 私有 Docker volume,读写+可执行
-/opt/buckyos/tools    => 节点共享 ExtTool volume,只读+可执行
+/opt/buckyos/tools    => 节点共享工具卷 buckyos-tools,只读+可执行(Linux 上就是 $buckyos_root/tools)
 ```
 
 Agent 容器另有两组只读 bind mount(普通 script 容器没有):
@@ -60,11 +60,24 @@ Agent 容器另有两组只读 bind mount(普通 script 容器没有):
 - `/opt/buckyos/instance/tools/bin`: App 私有 runtime bin 视图
 - `/opt/buckyos/instance/tools/<agent_id>/<session_id>`: OpenDAN Agent Session Exec Bin
 
-/opt/buckyos/tools 是 ExtTool 共享只读卷,常见结构:
+/opt/buckyos/tools 是节点共享工具卷的只读视图,结构与宿主机 `$BUCKYOS_ROOT/tools` 相同。只有 node_daemon 的 reconciler 写它(`buckyos_api::ext_tools_install`),见 [PIKG 格式 §5.1](pikg/format.md):
 
-- `/opt/buckyos/tools/store`: 系统/平台提供的可执行工具集合
-- `/opt/buckyos/tools/deno-cache`: 预热 deno cache lower
-- `/opt/buckyos/tools/uv-cache`: 预热 uv cache lower
+- `tools/bin/<launcher>`: 已启用扩展包的工具入口,从自身位置定位 `store/`;BuckyOS 发起的进程排在标准入口之前(host 上由 Node Executor 前置,容器由 `entrypoint.sh` 前置)
+- `tools/store/<pkg_id>`: 指向 `versions/` 当前版本的指针(符号链接,Windows 上是 junction)
+- `tools/versions/<pkg_id>/<version>-<digest12>/`: 解开的 payload,一旦写好不再改动;保留当前和上一个版本,回退不用下载
+- `tools/installs/<pkg_id>.json`: 安装事实(版本、摘要、来源 seed/desired、命令版本),Agent 从这里读
+- `tools/current.json`: 已激活版本总表
+- `tools/staging/`、`tools/journal.json`、`tools/.lock`: 安装过程用,校验与 smoke 通过才会进入 `versions/`
+- `tools/deno-cache`、`tools/uv-cache`: 种子镜像预热的缓存 lower(只有带种子镜像的节点有)
+- `tools/seed/`: 种子镜像带的 ext-core payload,解包后删除
+
+Agent 自己的工具缓存(`DENO_DIR`、`UV_CACHE_DIR`、`UV_PYTHON_INSTALL_DIR`、`NPM_CONFIG_CACHE`、`NPM_CONFIG_PREFIX`、`PIP_CACHE_DIR`)不进 `tools/`,`HOME` 不改:
+
+| 形态 | 位置 |
+| --- | --- |
+| 容器 | `/opt/buckyos/instance/{deno-cache,uv-cache,uv-python,npm-cache,npm-prefix,pip-cache}` |
+| 原生私有 runtime(Desktop Lite) | `<AgentRoot>/.cache/{同上}` |
+| 节点 runtime(host) | `<账户 home>/.opendan/<agent_id>/cache/{同上}` |
 
 应用不能把运行时生成物写入 `/opt/buckyos/tools`;需要写入且可执行的内容放到 `/opt/buckyos/instance`。
 `/home/$username/.local/share/$appid` 仍是 app 的永久 user/app data,host 上对应

@@ -1,0 +1,21 @@
+# The tools of ext-core with no official binary archive (doc/app_service/paios容器需求.md §6.4 table B).
+# Regenerate the lock after changing this file:
+#   uvx conda-lock lock -f conda-env.yml --lockfile conda-lock.yml --micromamba --mamba
+channels:
+  - conda-forge
+platforms:
+  - linux-64
+  - linux-aarch64
+  - osx-arm64
+  - osx-64
+  - win-64
+dependencies:
+  - ffmpeg
+  - imagemagick
+  - poppler
+  - tesseract
+  - curl
+  - xz
+  - git    # [unix]
+  - tree   # [unix]
+  - unzip  # [unix]

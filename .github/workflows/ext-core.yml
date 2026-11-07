@@ -1,0 +1,272 @@
+name: ext-core Release
+
+# Builds the five payloads of the ext-core extension package and, on a release tag
+# or an explicit dispatch, publishes them (ExtTools TODO §3.10):
+#   ext-core-v<version>   immutable
+#   ext-core-latest       rolling, with latest.json
+# and mirrors them to R2, where installers, build-all and developers take them from.
+# The gate is every platform unpacking its tar on a clean machine and running smoke/
+# with no network and no tool of the builder on the PATH. Any failure publishes nothing.
+# Pull requests and plain dispatches only build and upload workflow artifacts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the version in ext-manifest.json
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'ext-core-v*'
+  pull_request:
+    paths:
+      - 'publish/exttool/ext-core/**'
+      - '.github/scripts/ext_tools.py'
+      - '.github/scripts/test_ext_tools.py'
+      - '.github/workflows/ext-core.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ext-core-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Table, manifest and pins agree
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 -m unittest discover -s .github/scripts -p 'test_ext_tools.py'
+      - run: python3 .github/scripts/ext_tools.py check-table
+      - id: version
+        run: echo "version=$(python3 -c 'import json; print(json.load(open("publish/exttool/ext-core/ext-manifest.json"))["version"])')" >> "$GITHUB_OUTPUT"
+      - name: The tag names the version
+        if: startsWith(github.ref, 'refs/tags/ext-core-v')
+        run: test "$GITHUB_REF_NAME" = "ext-core-v${{ steps.version.outputs.version }}"
+
+  build:
+    name: ${{ matrix.platform }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x86_64, runner: ubuntu-24.04 }
+          - { platform: linux-aarch64, runner: ubuntu-24.04-arm }
+          - { platform: darwin-arm64, runner: macos-15 }
+          - { platform: darwin-x86_64, runner: macos-15-intel }
+          - { platform: windows-x86_64, runner: ubuntu-24.04 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build the payload
+        working-directory: publish/exttool/ext-core
+        run: ./build.sh --platform '${{ matrix.platform }}' --archive --out "$RUNNER_TEMP/payload" --dist "$RUNNER_TEMP/dist"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ext-core-${{ matrix.platform }}
+          path: ${{ runner.temp }}/dist/ext-core-*.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+
+  smoke-linux:
+    name: smoke ${{ matrix.platform }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x86_64, runner: ubuntu-24.04 }
+          - { platform: linux-aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: ext-core-${{ matrix.platform }}
+          path: ${{ runner.temp }}/dist
+      - name: A bare container, no network, a path of its own
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/unpacked"
+          tar -xzf "$RUNNER_TEMP"/dist/ext-core-*.tar.gz -C "$RUNNER_TEMP/unpacked"
+          docker run --rm --network none -v "$RUNNER_TEMP/unpacked:/some/where/else:ro" \
+            -e PATH=/some/where/else/bin:/usr/bin:/bin ubuntu:24.04 \
+            sh -euc 'cd /tmp; for script in /some/where/else/smoke/*.sh; do echo "== $script"; sh "$script"; done'
+
+  smoke-macos:
+    name: smoke ${{ matrix.platform }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: darwin-arm64, runner: macos-15 }
+          - { platform: darwin-x86_64, runner: macos-15-intel }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: ext-core-${{ matrix.platform }}
+          path: ${{ runner.temp }}/dist
+      - name: Unpack as the installer does and run with the system's tools off the PATH
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/some where/else"
+          mkdir -p "$target"
+          tar -xzf "$RUNNER_TEMP"/dist/ext-core-*.tar.gz -C "$target"
+          for script in "$target"/smoke/*.sh; do
+            echo "== $script"
+            PATH="$target/bin:/usr/bin:/bin" sh "$script"
+          done
+
+  smoke-windows:
+    name: smoke windows-x86_64
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: ext-core-windows-x86_64
+          path: ${{ runner.temp }}/dist
+      - name: A path with a space and non-ASCII letters
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = Join-Path $env:RUNNER_TEMP '工具 tools'
+          New-Item -ItemType Directory -Path $target | Out-Null
+          $tar = (Get-ChildItem "$env:RUNNER_TEMP\dist\ext-core-*.tar.gz").FullName
+          tar -xzf $tar -C $target
+          $env:PATH = "$target\bin;$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          foreach ($script in Get-ChildItem "$target\smoke\*.ps1") {
+            Write-Host "== $script"
+            powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script.FullName
+            if ($LASTEXITCODE -ne 0) { throw "$script failed" }
+          }
+
+  pikg:
+    name: Package and manifest
+    needs: [check, smoke-linux, smoke-macos, smoke-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: ext-core-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/dist
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: One .pikg with every payload
+        working-directory: publish/exttool/ext-core
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          for platform in linux-x86_64 linux-aarch64 darwin-arm64 darwin-x86_64 windows-x86_64; do
+            mkdir -p "payload/$platform"
+            tar -xzf "$RUNNER_TEMP/dist/ext-core-$VERSION-$platform.tar.gz" -C "payload/$platform"
+          done
+          npx --yes buckyos@latest --non-interactive pikg doctor dapp_meta --catalog ..
+          npx --yes buckyos@latest --non-interactive pikg build dapp_meta
+          npx --yes buckyos@latest --non-interactive pikg pack dapp_dist
+          cp "dapp_dist/ext-core-$VERSION.pikg" "$RUNNER_TEMP/dist/"
+          python3 release_manifest.py --version "$VERSION" --dist "$RUNNER_TEMP/dist" --pikg "$RUNNER_TEMP/dist/ext-core-$VERSION.pikg"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/ext_tools.py" latest --version "$VERSION" --manifest "$RUNNER_TEMP/dist/manifest.json" --output "$RUNNER_TEMP/dist/latest.json"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ext-core-release
+          path: |
+            ${{ runner.temp }}/dist/ext-core-*.pikg
+            ${{ runner.temp }}/dist/manifest.json
+            ${{ runner.temp }}/dist/latest.json
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [check, pikg]
+    if: >-
+      startsWith(github.ref, 'refs/tags/ext-core-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: ext-core-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/dist
+      - name: A version does not change
+        run: |
+          set -euo pipefail
+          if gh release view "ext-core-v$VERSION" --json assets --jq '.assets | length' 2>/dev/null | grep -qv '^0$'; then
+            echo "::error::ext-core-v$VERSION already has assets; raise the version in ext-manifest.json" >&2
+            exit 1
+          fi
+      - name: Lay the files out for R2
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          dist = Path(os.environ["RUNNER_TEMP"]) / "dist"
+          r2 = Path(os.environ["RUNNER_TEMP"]) / "r2"
+          version = os.environ["VERSION"]
+          release = json.loads((dist / "manifest.json").read_text())
+          package = release["packages"]["ext-core"]
+          for entry in list(package["platforms"].values()) + [package["pikg"]]:
+              target = r2 / entry["path"]
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(dist / entry["file"], target)
+          shutil.copy2(dist / "manifest.json", r2 / "ext-tools" / "ext-core" / version / "manifest.json")
+          shutil.copy2(dist / "latest.json", r2 / "ext-tools" / "ext-core" / "latest.json")
+          PY
+      - name: Mirror to R2
+        uses: ryand56/r2-upload-action@latest
+        with:
+          r2-account-id: 87e0bdf811b13ee87fd0bcec7a4fd1e7
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: buckyos-installer
+          source-dir: ${{ runner.temp }}/r2
+          destination-dir: ''
+          keep-file-fresh: false
+          output-file-url: false
+      - name: Publish ext-core-v${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/dist"
+          if gh release view "ext-core-v$VERSION" >/dev/null 2>&1; then
+            gh release upload "ext-core-v$VERSION" ./*
+          else
+            gh release create "ext-core-v$VERSION" --target "$GITHUB_SHA" --title "ext-core $VERSION" --notes "ext-core $VERSION: see publish/exttool/ext-core" --latest=false ./*
+          fi
+      - name: Refresh ext-core-latest
+        run: |
+          set -euo pipefail
+          git push --force origin "$GITHUB_SHA:refs/tags/ext-core-latest"
+          cd "$RUNNER_TEMP/dist"
+          if gh release view ext-core-latest >/dev/null 2>&1; then
+            gh release upload ext-core-latest --clobber ./*
+            gh release edit ext-core-latest --title "ext-core (latest: $VERSION)" --prerelease --latest=false
+          else
+            gh release create ext-core-latest --title "ext-core (latest: $VERSION)" --notes "The newest ext-core; pinned versions are the ext-core-v* releases." --prerelease --latest=false ./*
+          fi

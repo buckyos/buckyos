@@ -1,8 +1,9 @@
 ---
 name: aiworkspace_template_dev
 description: Build and maintain AI Workspaces from the command line — create a workspace, add tables, documents and Blocks by committing operations, import table files and Word / PowerPoint documents, put mind maps (Block-controls) on a canvas from a Markdown outline, develop controls (component.json in a home folder, build, pull, events and handlers, upgrades with migrations, export to the library or a .pikg, import), save and create workspaces from templates, export and import packages, reference data across workspaces, run wish blocks, publish data by path and insert published links.
-requires: the buckyos command (agent container: /usr/local/bin/buckyos; host: $BUCKYOS_ROOT/bin/buckyos) signed in; Deno for scripts that use the websdk directly; the workspace must grant you the capability each step needs (structure/update to write, manage to share or publish, run to start a wish)
+requires: the buckyos command (agent container: /opt/buckyos/bin/agent-tools/buckyos; host: $BUCKYOS_ROOT/bin/buckyos) signed in; Deno for scripts that use the websdk directly; the workspace must grant you the capability each step needs (structure/update to write, manage to share or publish, run to start a wish)
 baseline: standard
+commands: deno, node
 ---
 #### When to use
 - You are asked to set up a workspace for someone: tables with fields and rows, a document, a canvas with Blocks bound to them, a wish block that computes results.

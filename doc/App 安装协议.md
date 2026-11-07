@@ -260,7 +260,7 @@ Serde/default 规则：
 - `req_capbilities/permissions` 缺省为空并省略。
 - `SubPkgDesc.required` 缺省解释为 `true`；PIKG 的 canonical 输出必须显式写出该布尔值。
 - selector 的 `os/arch/min_kernel_version` 均可省略；`amd64/x86_64/x64` 归一为 `x86_64`，`arm64/aarch64` 归一为 `aarch64`，`darwin/apple/osx` 归一为 `macos`。
-- 已知 package key 的 selector：各平台 key 派生相应 OS/arch；`web/agent/agent_skills/agent_tools/script` 匹配所有平台；未知 key 必须显式提供 selector 才参与自动选择。
+- 已知 package key 的 selector：各平台 key 派生相应 OS/arch；`web/agent/agent_skills/script` 匹配所有平台；未知 key 必须显式提供 selector 才参与自动选择。
 - 根对象不允许 schema 之外的扩展键；`service_config_tips` 的自定义键以及所有显式 BaseContentObject 元数据仍进入 AppDoc ObjectId。
 
 ### 2.2 App 类型约束
@@ -268,7 +268,8 @@ Serde/default 规则：
 - `service`：只表示 `SystemBuiltin` 的发布元数据，允许空 `pkg_list`，不得有 web、docker 或 Agent package；它不进入普通 App 安装、AppRegistry 或用户 AppSpec。
 - `dapp`：必须有 script 或 docker runtime，不得有 web/Agent package。
 - `web`：必须有 web package，不得有 runtime/Agent package，`selector_type` 固定 `static`。
-- `agent`：必须有 agent package，可含 agent_skills/agent_tools，不得有 web/native app。它仍是 runtime AppDoc，不是 AgentDocument。
+- `agent`：必须有 agent package，可含 agent_skills，不得有 web/native app。它仍是 runtime AppDoc，不是 AgentDocument。
+- `ext_tools`：只有 `ext_tools_<os>_<arch>` 子包（[PIKG 格式 §5.1](pikg/format.md)）。它不是 App：`apps.submit` 拒绝，不进入 AppRegistry。
 
 ### 2.3 权威、签名与 ObjectId
 

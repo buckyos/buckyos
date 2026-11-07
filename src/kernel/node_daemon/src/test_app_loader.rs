@@ -1185,12 +1185,12 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     );
     assert_eq!(
         deploy.commands[4].args,
-        vec!["volume", "create", "buckyos-exttool-<image id 12>"]
+        vec!["volume", "create", "buckyos-tools"]
     );
     assert!(deploy.commands[5]
         .args
         .iter()
-        .any(|arg| arg == "buckyos-exttool-<image id 12>:/opt/buckyos/tools"));
+        .any(|arg| arg == "buckyos-tools:/mnt/buckyos-tools"));
     assert!(!deploy
         .commands
         .iter()
@@ -1259,7 +1259,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert!(start.commands[1]
         .args
         .iter()
-        .any(|arg| arg == "buckyos-exttool-<image id 12>:/opt/buckyos/tools:ro"));
+        .any(|arg| arg == "buckyos-tools:/opt/buckyos/tools:ro"));
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools".to_string()));
@@ -1422,7 +1422,7 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(preview.commands[1]
         .args
         .iter()
-        .any(|a| a == "buckyos-exttool-<image id 12>:/opt/buckyos/tools:ro"));
+        .any(|a| a == "buckyos-tools:/opt/buckyos/tools:ro"));
     assert!(preview.commands[1]
         .args
         .iter()
@@ -1439,7 +1439,7 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(!preview.commands[1]
         .args
         .iter()
-        .any(|a| a.contains("buckyos-tool") || a.contains("agent_skills")));
+        .any(|a| (a.contains("buckyos-tool") && !a.contains("buckyos-tools")) || a.contains("agent_skills")));
     assert!(!preview.commands[1]
         .args
         .iter()
@@ -1519,7 +1519,7 @@ fn host_script_deploy_preview_checks_local_images_without_pulling() {
     assert_eq!(preview.commands[2].args[3], "paios/exttool:latest-amd64");
     assert_eq!(
         preview.commands[3].args,
-        vec!["volume", "create", "buckyos-exttool-<image id 12>"]
+        vec!["volume", "create", "buckyos-tools"]
     );
 }
 
@@ -1551,7 +1551,7 @@ fn pinned_deploy_preview_loads_bundled_tarballs() {
     assert_eq!(docker[1], vec!["load", "-i", exttool_tar.to_str().unwrap()]);
     assert_eq!(
         docker[2],
-        vec!["volume", "create", "buckyos-exttool-444444444444"]
+        vec!["volume", "create", "buckyos-tools"]
     );
     assert!(docker[3].contains(&"paios/exttool:0.7.0-07787a750c1e-amd64".to_string()));
 
@@ -1561,7 +1561,7 @@ fn pinned_deploy_preview_loads_bundled_tarballs() {
         .contains(&"paios/aios:0.7.0-835b5bd44125-amd64".to_string()));
     assert!(start.commands[1]
         .args
-        .contains(&"buckyos-exttool-444444444444:/opt/buckyos/tools:ro".to_string()));
+        .contains(&"buckyos-tools:/opt/buckyos/tools:ro".to_string()));
 }
 
 #[test]
@@ -1705,7 +1705,7 @@ async fn fake_docker_outcome(args: &[String], state: &FakeDockerState) -> Docker
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
     match args.as_slice() {
         ["volume", "ls", ..] => ok_outcome(state.volumes.lock().unwrap().join("\n")),
-        ["volume", "create", name] => {
+        ["volume", "create", .., name] => {
             state.volumes.lock().unwrap().push(name.to_string());
             ok_outcome(format!("{name}\n"))
         }
@@ -1762,7 +1762,7 @@ async fn concurrent_prepare_exttool_volume_seeds_exactly_once_without_pulling() 
         tokio::time::timeout(Duration::from_secs(5), prepare_both)
             .await
             .expect("both prepares should finish promptly");
-    let volume = "buckyos-exttool-4c1a2e5b6d7f";
+    let volume = "buckyos-tools";
     assert_eq!(agent_result.unwrap().as_deref(), Some(volume));
     assert_eq!(host_script_result.unwrap().as_deref(), Some(volume));
 
@@ -1773,25 +1773,25 @@ async fn concurrent_prepare_exttool_volume_seeds_exactly_once_without_pulling() 
             &entries,
             "image inspect --format={{json .}} paios/exttool:latest-amd64"
         ),
-        2,
-        "both callers must check the local ExtTool image: {entries:?}"
+        1,
+        "the second caller finds the seeded volume and needs no image: {entries:?}"
     );
     assert_eq!(count_entries(&entries, "pull"), 0, "{entries:?}");
     assert_eq!(
-        count_entries(&entries, &format!("volume create {volume}")),
+        count_entries(&entries, "volume create"),
         1,
         "the volume must be created exactly once: {entries:?}"
     );
     assert_eq!(
         count_entries(
             &entries,
-            "touch /opt/buckyos/tools/.buckyos-seeded-4c1a2e5b6d7f"
+            "touch /mnt/buckyos-tools/.buckyos-seeded"
         ),
         1,
         "the volume seeding run must happen exactly once: {entries:?}"
     );
     assert_eq!(
-        count_entries(&entries, "test -f /seed/.buckyos-seeded-4c1a2e5b6d7f"),
+        count_entries(&entries, "test -f /seed/.buckyos-seeded"),
         1,
         "the second caller only checks the seed marker: {entries:?}"
     );

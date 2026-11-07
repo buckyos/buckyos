@@ -55,7 +55,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent workspace list|get|create|import|discover|check|archive|restore|unregister|set-url|runtime-impact|set-runtime ...
         (list: [--active] [--runtime <id>] [--text <text>] [--json])
         (create/import: --runtime <id> --directory <abs path on that runtime> [--url <https://project>])
-  xagent runtime list [--available] [--json] | get <id> | check <id> [--commands <a,b>] | baseline [--json] [--check [--overlay]]
+  xagent runtime list [--available] [--json] | get <id> | check <id> [--commands <a,b>] [--full] | baseline [--level standard|extended] [--json] [--check [--overlay]]
                  | register <id> --connector ssh --host <h> [--user <u>] [--port <p>] [--identity-file <f>] --name <n> [--desc <t>]
                    --root <dir>... [--baseline standard|extended] [--expires-at-ms <t>]   (development; owners add runtimes in the directory)
                  | update <id> --expected-revision <n> [--name <n>] [--desc <t>] [--root <dir>]... | unregister <id> --expected-revision <n>
@@ -88,6 +88,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
          --cmd-skill: up to 8 manuals from `skill list`, fixed for the session's life; none given: a work
          session inherits its parent work's, a conversation's or a goal's are not inherited; its end comes back as input)
   skill list [--kind cmd|goal] [--json] | skill install <x.pikg | dir> [--replace] | skill remove <name> [--kind cmd|goal]
+  skill status [--runtime <id>] [--json]   the commands each manual relies on, on that runtime, and the extension package that would bring what is missing
   post <sid> --msg <t>
   todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <cmd_skill>]...
            [--after <todo_id>|none]... [--batch <b>] [--runtime <id>] [--workspace inherit|none|<id>] [--behavior <b>]
@@ -108,10 +109,11 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   run --runtime <runtime_id|workspace> [--cwd <abs dir on it>] [--timeout <secs>] -- <command...>
         one command on another runtime of this agent (only from a session whose working runtime is the private one);
         `workspace` runs in the session's workspace directory, a runtime id needs --cwd inside its granted roots;
+        several words are a command and its arguments (-- sh -c 'a; b'), one word is a line for that shell (-- 'a | b');
         the target's own PATH and shell; output and exit code come back as they are (exit 124: timed out)
   task state|cancel <task_id>   (a task of the run this command runs in, e.g. a shell command that continued as a task;
         its end comes back to the session as input on its own — nothing waits for it; exit 0 running/finished, 1 failed, 2 unknown)
-  runtime list [--available] [--json] | get <id> | check <id> | baseline [--json] | workspace ...
+  runtime list [--available] [--json] | get <id> | check <id> | baseline [--level standard|extended] [--json] | workspace ...
         (workspace list, runtime list and sessions: readable text by default; --json for structured output)
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
             goal sessions: show / skills add|remove / achieved --evidence / archive --reason)
@@ -1384,10 +1386,38 @@ fn skill_kind(a: &Args) -> R<Option<SkillKind>> {
 /// / `skill remove <name> [--kind cmd|goal]`: the agent's skills. A new
 /// session takes the manuals installed when it is created; running sessions
 /// keep theirs.
+async fn cmd_skill_status(c: &Ctx, a: &Args) -> R<i32> {
+    let report = c.agent.behaviors().skills_status(a.get("runtime").as_deref()).await?;
+    if a.has("json") {
+        print(&report);
+        return Ok(0);
+    }
+    println!("runtime {}", report["runtime_id"].as_str().unwrap_or(""));
+    for skill in report["skills"].as_array().cloned().unwrap_or_default() {
+        let status = &skill["status"];
+        let state = match status["state"].as_str() {
+            Some("ready") => "ready".to_string(),
+            Some("ready_system") => "ready (system)".to_string(),
+            _ => {
+                let missing: Vec<String> = status["commands"]
+                    .as_object()
+                    .map(|c| c.iter().filter(|(_, v)| v["present"] == false).map(|(k, _)| k.clone()).collect())
+                    .unwrap_or_default();
+                let packages: Vec<&str> = status["recommended_packages"].as_array().map(|p| p.iter().filter_map(|x| x["id"].as_str()).collect()).unwrap_or_default();
+                let advice = if packages.is_empty() { String::new() } else { format!("; extension package: {}", packages.join(", ")) };
+                format!("partial (missing {}{advice})", missing.join(", "))
+            }
+        };
+        println!("{:<24} {state}", skill["name"].as_str().unwrap_or(""));
+    }
+    Ok(0)
+}
+
 async fn cmd_skill(mut a: Args) -> R<i32> {
-    let sub = a.next("list | install | remove")?;
+    let sub = a.next("list | status | install | remove")?;
     let c = ctx(&a, None, false).await?;
     match sub.as_str() {
+        "status" => return cmd_skill_status(&c, &a).await,
         "list" => {
             let skills = c.agent.behaviors().skills(skill_kind(&a)?).await?;
             if a.has("json") {
@@ -1928,24 +1958,65 @@ async fn cmd_workspace(mut a: Args) -> R<i32> {
     Ok(0)
 }
 
-/// `runtime baseline [--json] [--check [--overlay]]`: the standard
-/// environment's commands; `--check` looks for them on this machine's PATH
-/// (`--overlay`: session helpers come from a session bin overlay, so their
-/// providing executables are looked for instead). Exit 1 when any is
-/// missing.
+/// `runtime baseline [--level standard|extended] [--json] [--check
+/// [--overlay]]`: the commands of a baseline (default `standard`); `--check`
+/// looks for them on this machine's PATH and says where each is (`--overlay`:
+/// session helpers come from a session bin overlay, so their providing
+/// executables are looked for instead). Exit 1 when one is missing, or a
+/// standard one is not from `$BUCKYOS_ROOT`.
 fn cmd_runtime_baseline(a: &Args) -> R<i32> {
-    use crate::baseline::{missing_locally, required_commands, STANDARD_TOOLS};
+    use crate::baseline::{beside_current_exe, buckyos_root, checked_commands, evaluate, required_commands, resolve_locally, CommandOrigin, EXTENDED_TOOLS, STANDARD_TOOLS};
+    let level = match a.get("level").as_deref() {
+        None | Some("standard") => buckyos_api::RuntimeBaseline::Standard,
+        Some("extended") => buckyos_api::RuntimeBaseline::Extended,
+        Some(other) => return Err(bad(format!("--level takes standard | extended, not `{other}`"))),
+    };
+    let extended = level == buckyos_api::RuntimeBaseline::Extended;
     if a.has("check") {
-        let names = required_commands(a.has("overlay"));
-        let missing = missing_locally(&names, None, &[]);
-        print(&json!({ "baseline": "standard", "checked": names, "missing": missing, "ok": missing.is_empty() }));
-        return Ok(if missing.is_empty() { 0 } else { 1 });
+        let overlay = a.has("overlay");
+        let beside: Vec<PathBuf> = beside_current_exe().into_iter().collect();
+        let origin = CommandOrigin {
+            root: buckyos_root().map(|r| r.display().to_string()),
+            agent_root: None,
+            beside: beside.first().map(|d| d.display().to_string()),
+            windows: cfg!(windows),
+        };
+        let resolved: std::collections::BTreeMap<String, ResolvedCommand> = resolve_locally(&checked_commands(overlay), &[], None, &beside)
+            .into_iter()
+            .map(|(name, path)| {
+                let provided_by = origin.of(&path);
+                (name, ResolvedCommand { path, version: None, provided_by, stub: false })
+            })
+            .collect();
+        let findings = evaluate(level, overlay, &resolved);
+        print(&json!({
+            "baseline": level.as_str(),
+            "checked": required_commands(level, overlay),
+            "missing": findings.missing,
+            "unmanaged": findings.unmanaged,
+            "resolved": resolved,
+            "ext": findings.ext,
+            "ok": findings.ok(),
+        }));
+        return Ok(if findings.ok() { 0 } else { 1 });
     }
     if a.has("json") {
-        print(&STANDARD_TOOLS);
+        if extended {
+            print(&json!({ "standard": STANDARD_TOOLS, "extended": EXTENDED_TOOLS }));
+        } else {
+            print(&STANDARD_TOOLS);
+        }
     } else {
+        let label = |v: serde_json::Result<serde_json::Value>| v.ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         for t in STANDARD_TOOLS {
-            println!("{:<22} {:<16} {}", t.name, serde_json::to_value(t.category).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), t.source);
+            println!("{:<22} {:<16} {}", t.name, label(serde_json::to_value(t.category)), t.source);
+        }
+        if extended {
+            for t in EXTENDED_TOOLS {
+                for c in t.commands {
+                    println!("{:<22} {:<16} {} ({})", c.name, label(serde_json::to_value(t.category)), t.id, label(serde_json::to_value(t.tier)));
+                }
+            }
         }
     }
     Ok(0)
@@ -1971,14 +2042,15 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                 for r in &all {
                     println!("{}", crate::runtime::runtime_line(r));
                     match &r.caps.baseline_check {
+                        Some(check) if check.error.is_some() => {
+                            println!("  Tool check: failed");
+                            println!("  Tool check error: {}", inline_text(check.error.as_deref().unwrap_or_default()));
+                        }
                         Some(check) => {
-                            if !check.missing.is_empty() {
-                                println!("  Tool check: missing {}", check.missing.join(", "));
-                            } else {
-                                println!("  Tool check: {}", if check.ok { "ok" } else { "failed" });
-                            }
-                            if let Some(error) = &check.error {
-                                println!("  Tool check error: {}", inline_text(error));
+                            println!("  Tool check: {}", check.problem().unwrap_or_else(|| "ok".to_string()));
+                            let dev = check.dev_helpers();
+                            if !dev.is_empty() {
+                                println!("  Development helpers: {}", dev.join(", "));
                             }
                         }
                         None => println!("  Tool check: not checked"),
@@ -2012,7 +2084,37 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                 .flat_map(|v| v.split(',').map(|x| x.trim().to_string()))
                 .filter(|x| !x.is_empty())
                 .collect();
-            print(&registry.check(&id, &commands).await?);
+            print(&registry.check(&id, &commands, a.has("full")).await?);
+        }
+        "ext-tools" => {
+            let verb = a.next("ext-tools command")?;
+            let id = a.next("runtime id")?;
+            let smoke = match verb.as_str() {
+                "status" => false,
+                "check" => a.has("full"),
+                other => return Err(bad(format!("ext-tools takes status | check, not `{other}`"))),
+            };
+            let record = if verb == "check" { Some(registry.check(&id, &[], smoke).await?) } else { None };
+            let report = registry.ext_tools(&id, smoke).await?;
+            if a.has("json") {
+                print(&serde_json::json!({ "report": report, "baseline_check": record.and_then(|r| r.caps.baseline_check) }));
+                return Ok(0);
+            }
+            println!("{} ({}, {})", report["runtime_id"].as_str().unwrap_or(&id), report["tools_root"].as_str().unwrap_or(""), report["managed_by"].as_str().unwrap_or(""));
+            let packages = report["packages"].as_object().cloned().unwrap_or_default();
+            if packages.is_empty() {
+                println!("no extension packages installed");
+            }
+            for (package, install) in &packages {
+                let commands = install["commands"].as_object().map(|c| c.len()).unwrap_or(0);
+                println!("{package} {} ({}): {commands} commands, smoke {}", install["version"].as_str().unwrap_or(""), install["origin"].as_str().unwrap_or(""), install["smoke"].as_str().unwrap_or(""));
+                if let Some(result) = report.get("smoke").and_then(|s| s.get(package)) {
+                    println!("  now: {}", if result["ok"] == true { "passed".to_string() } else { format!("FAILED: {}", result["error"].as_str().unwrap_or("")) });
+                }
+            }
+            if let Some(ext) = record.as_ref().and_then(|r| r.caps.baseline_check.as_ref()).and_then(|b| b.ext.as_ref()) {
+                println!("ext: {}", ext.summary());
+            }
         }
         "op" => {
             let id = a.next("op id")?;
@@ -2095,14 +2197,24 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
     Ok(0)
 }
 
+fn run_command_line(words: &[String], windows: bool) -> String {
+    let quoted = |quote: fn(&str) -> String| words.iter().map(|word| quote(word)).collect::<Vec<_>>().join(" ");
+    match words {
+        [line] => line.clone(),
+        _ if windows => format!("& {}", quoted(crate::baseline::powershell_quote)),
+        _ => quoted(shell_quote),
+    }
+}
+
 /// `run --runtime <id|workspace> [--cwd <dir>] [--timeout <secs>] -- <command...>`:
 /// one command on another runtime of this agent, from a session whose
-/// working runtime is the private one (R-W5). The command words after `--`
-/// are joined for the target's shell.
+/// working runtime is the private one (R-W5). Several words after `--` are a
+/// command and its arguments, which reach it as they are; one word is a line
+/// for the target's shell.
 async fn cmd_runtime_run(argv: Vec<String>) -> R<i32> {
     let split = argv.iter().position(|x| x == "--").ok_or_else(|| bad("run takes `-- <command...>` after its options"))?;
-    let command = argv[split + 1..].join(" ");
-    if command.trim().is_empty() {
+    let words = &argv[split + 1..];
+    if words.iter().all(|word| word.trim().is_empty()) {
         return Err(bad("run: no command after `--`"));
     }
     let a = Args::parse(argv[..split].to_vec(), &[]);
@@ -2139,6 +2251,8 @@ async fn cmd_runtime_run(argv: Vec<String>) -> R<i32> {
         .num::<u64>("timeout")?
         .map(|s| s * 1000)
         .unwrap_or(crate::runtime::RUNTIME_EXEC_DEFAULT_TIMEOUT_MS);
+    let windows = c.agent.runtimes().lookup(&runtime_id).await?.is_some_and(|r| r.caps.platform.os == "windows");
+    let command = run_command_line(words, windows);
     let op = crate::runtime::runtime_exec(c.agent.as_ref(), &runtime_id, &command, cwd.as_deref(), timeout_ms, Some(&format!("session:{sid}"))).await?;
     let record = crate::runtime::session_run_record(&sd, &op, env_call_id())?;
     print(&record);
@@ -2847,6 +2961,7 @@ async fn real_main() -> R<i32> {
         ("todo", _) => &["json", "clear-accept"],
         ("skill", _) => &["json", "replace"],
         ("runtime", Some("baseline")) => &["json", "check", "overlay"],
+        ("runtime", Some("check")) => &["full"],
         ("workspace" | "runtime", Some("list")) | ("sessions", _) => &["json"],
         ("copy", _) => &["replace"],
         _ => &[],
@@ -2911,6 +3026,18 @@ pub fn main() -> ! {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+
+    #[test]
+    fn a_powershell_target_calls_the_command_with_its_words_quoted() {
+        let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        assert_eq!(run_command_line(&words(&["my prog", "it's", "$x"]), true), "& 'my prog' 'it''s' '$x'");
+        assert_eq!(run_command_line(&words(&["Get-Process | Select -First 1"]), true), "Get-Process | Select -First 1");
+    }
 }
 
 #[cfg(test)]

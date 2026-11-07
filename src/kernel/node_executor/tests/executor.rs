@@ -1016,6 +1016,12 @@ async fn interrupted_upload_never_touches_the_target() {
 }
 
 async fn setup_current_user() -> Env {
+    setup_current_user_on(Vec::new(), None).await
+}
+
+/// A current-user executor on a BuckyOS host: `path_prefix` first on every
+/// command's PATH, `buckyos_root` reported by `describe`.
+async fn setup_current_user_on(path_prefix: Vec<std::path::PathBuf>, buckyos_root: Option<std::path::PathBuf>) -> Env {
     let dir = tempfile::Builder::new().prefix("nx-current-user").tempdir_in("/tmp").unwrap();
     let root = dir.path().to_path_buf();
     let work = root.join("work");
@@ -1033,7 +1039,8 @@ async fn setup_current_user() -> Env {
     }, node_executor::ExecutorOptions {
         identity_mode: node_executor::ExecutorIdentityMode::CurrentUser,
         admission: node_executor::ExecutorAdmission::Wss,
-        path_prefix: Vec::new(),
+        path_prefix,
+        buckyos_root,
     }).unwrap();
     let mut authorization = config(&work, 1, AgentPermissionMode::ReadWrite, 30_000);
     authorization.allowed_devices.clear();
@@ -1043,6 +1050,34 @@ async fn setup_current_user() -> Env {
     assert_eq!(exec.apply_config(Some(authorization)).await, node_executor::ApplyResult::Replaced);
     assert!(exec.gateway_acl().is_none());
     Env { _dir: dir, root, work, exec, rbac }
+}
+
+/// A host's extension tools come first on every command's PATH, before the
+/// standard entries and whatever the profile sets (§3.6 of the ext-tools TODO).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_host_puts_its_extension_tools_first_on_path() {
+    let host = tempfile::tempdir().unwrap();
+    let tools_bin = host.path().join("tools/bin");
+    let agent_tools = host.path().join("bin/agent-tools");
+    std::fs::create_dir_all(&tools_bin).unwrap();
+    std::fs::create_dir_all(&agent_tools).unwrap();
+    for (dir, body) in [(&tools_bin, "ext"), (&agent_tools, "standard")] {
+        let probe = dir.join("which-layer");
+        std::fs::write(&probe, format!("#!/bin/sh\necho {body}\n")).unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let env = setup_current_user_on(vec![tools_bin.clone(), agent_tools.clone()], Some(host.path().to_path_buf())).await;
+    let mut c = Client::connect(&env).await;
+    c.login().await;
+    accepted(&c.exec("layers", "layers-call", "printf '%s\\n' \"$PATH\"; which-layer", &env.work).await);
+    let (status, output) = c.wait_done("layers").await;
+    assert_eq!(status.state, ExecutorOpState::Succeeded);
+    let output = String::from_utf8(output).unwrap();
+    let mut lines = output.lines();
+    let prefix = format!("{}:{}:", tools_bin.display(), agent_tools.display());
+    let path = lines.next().unwrap();
+    assert!(path.starts_with(&prefix), "{path}");
+    assert_eq!(lines.next(), Some("ext"), "an extension tool shadows a standard entry of the same name");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

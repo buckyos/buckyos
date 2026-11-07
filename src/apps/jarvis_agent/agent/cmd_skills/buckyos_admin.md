@@ -1,7 +1,7 @@
 ---
 name: buckyos_admin
 description: Inspect and manage a BuckyOS Zone — identify runtime, identity and versions, read or change settings and apps, check tasks, query logs and diagnostic bundles, and trace a fault into the source of the running version.
-requires: the buckyos command (agent container: /usr/local/bin/buckyos with the host Tool mounted at /opt/buckyos/libexec/buckyos-tool; host: $BUCKYOS_ROOT/bin/buckyos); writes depend on the agent's and its owner's RBAC
+requires: the buckyos command (agent container: /opt/buckyos/bin/agent-tools/buckyos with the host Tool mounted at /opt/buckyos/libexec/buckyos-tool; host: $BUCKYOS_ROOT/bin/buckyos); writes depend on the agent's and its owner's RBAC
 baseline: standard
 ---
 #### When to use
@@ -25,11 +25,15 @@ buckyos system info                                 # BuckyOS version, build_ver
   your agent's identity (asked of your agent over the session token in `.opendan/`), so `whoami` shows your agent.
 - Runtimes of an Agent: `agent-session runtime list` prints a readable overview; `runtime list --json` or
   `runtime get <id>` gives the complete record, including declared `baseline` (standard | extended), `platform`
-  and its last tool check (`baseline_check.missing`). `agent-session runtime baseline` lists the standard
-  commands and `xagent runtime baseline --check [--overlay]` checks this machine. A node's agent tool directory is
+  and its last tool check (`baseline_check`: `missing`, `unmanaged`, where each command is in `resolved`, the extended
+  layer in `ext`). `agent-session runtime baseline [--level extended]` lists the commands and
+  `xagent runtime baseline --check [--level extended] [--overlay]` checks this machine; `xagent runtime check <id>
+  --commands a,b --full` also runs them, for versions and to catch stubs. A node's agent tool directory is
   `$BUCKYOS_ROOT/bin/agent-tools` (laid out by node-daemon with `opendan install-agent-tools`); missing entries mean
-  that node's install lacks OpenDAN. The owner declares a runtime extended in the Agent's runtime settings
-  (OpenDAN WebUI or control-panel `agent.update {runtimes: {"<id>": {"baseline": "extended"}}}`).
+  that node's install lacks OpenDAN, and a standard command found elsewhere (`provided_by: system`) is not the standard
+  one. `$BUCKYOS_ROOT/tools/bin` (extension tools) comes before it on PATH. The owner declares a runtime extended in the
+  Agent's runtime settings (OpenDAN WebUI or control-panel `agent.update {runtimes: {"<id>": {"baseline": "extended"}}}`);
+  a check never changes the declaration.
 - Container paths are not host paths. Your `/opt/buckyos/logs` is the host's `$BUCKYOS_ROOT/logs/apps/<instance-hash>/`;
   `/opt/buckyos/etc/` is the host's configuration directory mounted read-only. Host `security/`, `bin/`, other
   containers and processes are not visible to you. Startup credentials are in the host's `security/start_config.json`;
@@ -233,6 +237,18 @@ buckyos system info                                 # BuckyOS version, build_ver
   `nodes/<node>/{config,gateway_info,gateway_config}`, `services/<svc>/info`, `system/rbac/policy` (despite the CLI's
   `append` example), `system/app_registry`, `system/scheduler/*`, installed apps' `spec` (use `app` verbs).
   `*/instances/*` and `devices/*/info` are runtime reports; `*/doc` and `boot/config` are signed identity documents.
+
+#### Extension tool packages
+Local tools every Agent of the Zone shares (ffmpeg, pandoc, python3… live in `ext-core`) are chosen for the whole Zone by an administrator and installed by each node on its own; no Agent installs them.
+```bash
+buckyos ext-tools list                                 # what the Repo has, and the commands each package provides
+buckyos ext-tools status                               # package by node: what is asked for, stage, error
+buckyos ext-tools enable <id> [--version v] [--dry-run]    # brings what it requires; also how to upgrade or go back
+buckyos ext-tools disable <id>                         # refused while an enabled package requires it
+buckyos ext-tools import <file.pikg>                   # an official release asset, unchanged
+buckyos skill status --agent <agent_id> [--runtime id] # the commands each skill relies on there, and which package would bring what is missing
+```
+A node's reconciler retries a failed package with growing delays, and a failed upgrade leaves the old version running: read `error` under `nodes` in `ext-tools status`, then `log` for `node_daemon` (`ext_tools`). A package that came with the installer shows up with no `latest`: it needs `ext-tools import` before it can be upgraded.
 
 #### Change loop
 

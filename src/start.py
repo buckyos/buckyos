@@ -106,6 +106,20 @@ def _sdk_tool_distribution_ready() -> bool:
     return False
 
 
+def _prepare_ext_tools() -> None:
+    subprocess.run([sys.executable, str(SCRIPT_DIR / "tools" / "prepare_ext_tools.py")])
+
+
+def _ext_tools_ready() -> None:
+    """Without the seed the system runs, only without the extension tools: say so and go on."""
+    if not (SCRIPT_DIR / "rootfs" / "bin" / "ext-tools" / "ext_tools.json").is_file():
+        print(
+            "No ext-core seed in rootfs/bin/ext-tools: extended runtimes will miss ffmpeg, pandoc and the rest.\n"
+            f"Get it with `{sys.executable} tools/prepare_ext_tools.py` "
+            "(or build one with publish/exttool/ext-core/build.sh and pass it with --local)."
+        )
+
+
 def _run_command(command: str, args: list[str]) -> int:
     executable = _find_command(command)
     if executable is None:
@@ -470,9 +484,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if need_update and not _sdk_tool_distribution_ready():
         return 2
-
     if not _root_access_ready():
         return 2
+    if options.all:
+        _prepare_ext_tools()
+    if need_update:
+        _ext_tools_ready()
 
     with _preserve_devenv_config(options.all) as preserved_devenv:
         # Step 1: Kill all processes

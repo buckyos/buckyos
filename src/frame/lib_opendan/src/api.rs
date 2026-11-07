@@ -157,8 +157,8 @@ fn same_session_identity(c: &SessionConfig, agent_did: &str, spec: &SessionSpec,
         && c.runtime.runtime_id() == spec.runtime.runtime_id()
 }
 
-/// How long a node runtime found unreachable stays refused before a new
-/// session asks its executor again.
+/// How long a node runtime found unreachable stays refused before whatever
+/// needs it next asks its executor again.
 pub const RUNTIME_RECHECK_MS: u64 = 5_000;
 
 /// The one place a session's working runtime is chosen (runtime lifecycle
@@ -189,25 +189,7 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
         (None, Some(i)) if !chat => (i, RuntimeSelection::Inherited),
         _ => (PRIVATE_RUNTIME.to_string(), RuntimeSelection::Private),
     };
-    let mut record = agent.runtimes().lookup(&runtime_id).await?;
-    // A node runtime found unreachable earlier is asked again before it is
-    // refused: its executor may have come up since (node_daemon opens it
-    // after loading the node's settings, the agent may have checked first).
-    if let Some(r) = record.as_ref().filter(|r| {
-        r.availability != RuntimeAvailability::Available
-            && r.lifecycle == RuntimeLifecycle::Active
-            && r.connector.is_node()
-            && r.enabled
-            && r
-                .checked_at_ms
-                .is_none_or(|t| crate::now_ms().saturating_sub(t) >= RUNTIME_RECHECK_MS)
-    }) {
-        match agent.runtimes().check(&r.runtime_id, &[]).await {
-            Ok(checked) => record = Some(checked),
-            Err(e) => log::warn!("runtime {runtime_id} not checked again: {e}"),
-        }
-    }
-    let frozen = match record {
+    let frozen = match crate::runtime::lookup_rechecked(agent, &runtime_id).await? {
         Some(record) => {
             if record.lifecycle == RuntimeLifecycle::Retired {
                 return Err(OpenDanError::Bind(format!(

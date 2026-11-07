@@ -13,7 +13,7 @@
 //! Packer（`PikgBuilder`）与 Verifier（`PikgReader`）共用同一套常量与
 //! 命名规则，发布侧写完必须用同一个 Reader 自校验，禁止两套规则漂移。
 
-use buckyos_api::{AppDoc, OBJ_TYPE_APP_DOC};
+use crate::{AppDoc, OBJ_TYPE_APP_DOC};
 use named_store::NamedDataMgr;
 use ndn_lib::{
     build_named_object_by_json, load_named_obj_and_verify, ChunkId, ChunkReader, ChunkType,
@@ -225,6 +225,18 @@ fn parse_sha256_digest(digest: &str) -> PikgResult<String> {
         return Err(invalid(format!("digest hex is invalid: {digest:?}")));
     }
     Ok(hex.to_ascii_lowercase())
+}
+
+/// The `PackageMeta.content` of a payload: the chunk id of the whole file. The named store keeps a payload above the
+/// chunk size as a chunk list, but a package's identity is one digest.
+pub fn payload_chunk_id(path: &Path, size: u64) -> PikgResult<String> {
+    let digest = sha256_file_hex(path)?;
+    let bytes = (0..digest.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&digest[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|err| invalid(format!("sha256 of a payload is not hex: {err}")))?;
+    Ok(ChunkId::from_mix_hash_result(size, &bytes, ChunkType::Mix256).to_string())
 }
 
 /// 校验 PackageMeta.content（chunk id）与实测 (size, sha256) 一致。
@@ -526,6 +538,39 @@ impl PikgReader {
         tokio::task::spawn_blocking(move || copy_content_blocking(&source, index, &entry, &dest))
             .await
             .map_err(|err| io_err("join copy_content_to_file", err))?
+    }
+
+    /// One file from inside a sub package's tar.gz payload, without unpacking the payload anywhere.
+    pub async fn read_payload_file(&self, sub_pkg: &str, name: &str) -> PikgResult<Option<Vec<u8>>> {
+        let entry = self
+            .inspection
+            .package_meta
+            .content_index
+            .values()
+            .find(|entry| entry.sub_pkg_name == sub_pkg)
+            .cloned()
+            .ok_or_else(|| PikgError::ContentMissing(sub_pkg.to_string()))?;
+        let index = self.entry_index_of(&entry.path)?;
+        let source = self.source.clone();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut archive = open_archive(&source)?;
+            let zentry = archive.by_index(index).map_err(|err| io_err("open payload", err))?;
+            let mut payload = tar::Archive::new(flate2::read::GzDecoder::new(zentry));
+            let entries = payload.entries().map_err(|err| io_err("read payload", err))?;
+            for entry in entries {
+                let mut entry = entry.map_err(|err| io_err("read payload", err))?;
+                let path = entry.path().map_err(|err| io_err("read payload", err))?.into_owned();
+                if path.components().filter(|c| !matches!(c, Component::CurDir)).collect::<PathBuf>() == Path::new(&name) {
+                    let mut bytes = Vec::new();
+                    entry.read_to_end(&mut bytes).map_err(|err| io_err("read payload", err))?;
+                    return Ok(Some(bytes));
+                }
+            }
+            Ok(None)
+        })
+        .await
+        .map_err(|err| io_err("join read_payload_file", err))?
     }
 
     pub async fn verify_package_archive(&self, digest: &str) -> PikgResult<()> {
@@ -1376,7 +1421,7 @@ impl PikgBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{AppType, SubPkgDesc};
+    use crate::{AppType, SubPkgDesc};
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use name_lib::DID;
@@ -1508,6 +1553,49 @@ mod tests {
                 );
             }
             Err(other) => panic!("expected InvalidPackage, got: {other}"),
+        }
+    }
+
+    /// A payload of any size has one chunk id, and the reader accepts it.
+    #[test]
+    fn a_payload_chunk_id_names_the_whole_file() {
+        let dir = temp_dir("payload-chunk-id");
+        let path = dir.join("payload.tar.gz");
+        std::fs::write(&path, vec![7u8; 1024]).unwrap();
+        let digest = sha256_file_hex(&path).unwrap();
+        let id = payload_chunk_id(&path, 1024).unwrap();
+        assert!(id.starts_with("mix256:"), "{id}");
+        let bytes: Vec<u8> = (0..digest.len()).step_by(2).map(|i| u8::from_str_radix(&digest[i..i + 2], 16).unwrap()).collect();
+        assert!(chunk_id_matches_content(&id, 1024, &bytes).unwrap());
+    }
+
+    /// An `ext_tools` package: one sub-package per platform; the reader verifies it like any other, and the product
+    /// refuses to run it, whoever asks.
+    #[tokio::test]
+    async fn ext_tools_package_reads_and_is_never_admitted() {
+        let dir = temp_dir("ext-tools");
+        let payload_path = make_tar_gz(&dir, "ext_tools_linux_x86_64.tar.gz", &[("ext-manifest.json", b"{}"), ("bin/demo", b"#!/bin/sh\n")]);
+        let owner = DID::from_str("did:bns:tester").unwrap();
+        let mut meta = PackageMeta::new("nightly-linux-amd64.ext_tools_linux_x86_64.ext-demo.tester.bns.did", "1.0.0", "tester", &owner, None);
+        meta.size = std::fs::metadata(&payload_path).unwrap().len();
+        meta.content = format!("sha256:{}", sha256_file_hex(&payload_path).unwrap());
+        let meta_value = serde_json::to_value(&meta).unwrap();
+        let (meta_obj_id, _) = build_named_object_by_json(ndn_lib::OBJ_TYPE_PKG, &meta_value);
+        let mut desc = SubPkgDesc::new("nightly-linux-amd64.ext_tools_linux_x86_64.ext-demo.tester.bns.did#1.0.0");
+        desc.pkg_objid = Some(meta_obj_id);
+        let platform = crate::ext_tools_platform("linux-x86_64").unwrap();
+        let app_doc = AppDoc::builder(AppType::ExtTools, "ext-demo", "1.0.0", "tester", &owner).ext_tools_pkg(platform, desc).build().unwrap();
+
+        let dest = dir.join("ext-demo.pikg");
+        let builder = PikgBuilder::new().app_doc(&app_doc).unwrap();
+        let (builder, _) = builder.add_package_meta_value(meta_value).unwrap();
+        builder.add_payload_file(platform.key, payload_path).unwrap().write_to(&dest).await.unwrap();
+        let reader = PikgReader::open(&dest, None).await.unwrap();
+        let read = reader.inspection().app_doc.clone();
+        assert_eq!(read.get_app_type(), AppType::ExtTools);
+        reader.verify_all_contents().await.unwrap();
+        for origin in [crate::AdmissionOrigin::User, crate::AdmissionOrigin::Preinstall, crate::AdmissionOrigin::AgentRuntime, crate::AdmissionOrigin::Deployed] {
+            assert_eq!(crate::ProductProfile::full().admit_app(&read, origin), Err(crate::AdmissionDenied::ExtToolsPackage));
         }
     }
 

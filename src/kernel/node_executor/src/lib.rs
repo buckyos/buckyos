@@ -66,8 +66,11 @@ pub struct ExecutorOptions {
     pub identity_mode: ExecutorIdentityMode,
     pub admission: ExecutorAdmission,
     /// Host directories put first on every command's PATH (a BuckyOS host's
-    /// `bin/agent-tools`): what a profile's environment cannot name.
+    /// `tools/bin`, then `bin/agent-tools`): what a profile's environment
+    /// cannot name.
     pub path_prefix: Vec<PathBuf>,
+    /// `$BUCKYOS_ROOT` of a BuckyOS node, reported by `describe`.
+    pub buckyos_root: Option<PathBuf>,
 }
 
 impl Default for ExecutorOptions {
@@ -80,6 +83,7 @@ impl Default for ExecutorOptions {
             },
             admission: ExecutorAdmission::Node,
             path_prefix: Vec::new(),
+            buckyos_root: None,
         }
     }
 }
@@ -106,6 +110,7 @@ pub(crate) struct ExecutorInner {
     pub node_id: String,
     pub node_did: String,
     pub shell: PathBuf,
+    pub buckyos_root: Option<PathBuf>,
     pub verifier: Arc<dyn TokenVerifier>,
     pub rbac: Arc<dyn RbacChecker>,
     pub store: Arc<Store>,
@@ -202,6 +207,7 @@ impl NodeExecutor {
             node_id: host.node_id,
             node_did: host.node_did,
             shell: host.shell,
+            buckyos_root: options.buckyos_root.clone(),
             verifier: host.verifier,
             rbac: host.rbac,
             store,

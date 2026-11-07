@@ -236,8 +236,8 @@ skills 侧代码未动（`SkillMeta` 仍只有 `requires / baseline / platforms`
 | S13 | `buckyos skill install <source>` 来源解析对齐 `app install`（pikg / url / catalog） | `../buckyos-websdk/cli/modules/skill.ts`（复用 `app.ts` 的 source 解析） |
 | S14 | opendan WebUI `pages/Skills.tsx` + Home 卡片；浏览器内 `.pikg` 解析复用 websdk `pikg_archive.ts` | `src/frame/opendan/web/src/` |
 | S15 | `pikg doctor` skill lint；`doc/sdk/skill-dev-quickstart.md`；样例包加 `plan_skills/` | `../buckyos-websdk/cli/modules/pikg.ts`、`doc/sdk/`、`test/skills_pikg_sample/` |
-| S18 | `skills.install_plan` kRPC + 确定性风险 lint（含 `grant.install` 与 `writes` 的落点检查）；front matter `commands` 解析，缺的命令查扩展包目录给 `recommended_packages`（不 block，ExtTools TODO X5）；`skill install/import` 改为 plan → 确认 → `skills.install {plan_digest, accept_risk, runtime_id}`（`runtime_id` 缺省 `private`）；`--accept-risk` | `skills.rs`、`service.rs`、`skill.ts`、`xagent_cli.rs`（`agent-session skill install`） |
-| S19 | `tools/<name>/install.toml`（`check / install.<os> / writes / uninstall.<os>`）；经 `runtime_put / runtime_exec / runtimes.check` 在目标 runtime 装与核验（runtime R2 已有）；`volatile` 标记（= runtime R13）；ExtTools 清单命令拒装（R-U9；`EXTENDED_TOOLS` 落地前只拒 `STANDARD_TOOLS`）；`note_usage SkillCommand` 记账；`install-cmd` / `check` 子命令。节点 `tools/<name>/bin` + PATH 前置 = runtime R3（P2），**不在本计划里做** | `skills.rs`、`runtime/mod.rs`（`runtime_exec` / `runtime_put` / `check_commands` 已有）、`skill.ts`、`xagent_cli.rs` |
+| S18（命令部分已做：`skills.install_plan`、`recommended_packages`，见 ExtTools TODO §4.2；风险 lint 未做） | `skills.install_plan` kRPC + 确定性风险 lint（含 `grant.install` 与 `writes` 的落点检查）；front matter `commands` 解析，缺的命令查扩展包目录给 `recommended_packages`（不 block，ExtTools TODO X5）；`skill install/import` 改为 plan → 确认 → `skills.install {plan_digest, accept_risk, runtime_id}`（`runtime_id` 缺省 `private`）；`--accept-risk` | `skills.rs`、`service.rs`、`skill.ts`、`xagent_cli.rs`（`agent-session skill install`） |
+| S19 | `tools/<name>/install.toml`（`check / install.<os> / writes / uninstall.<os>`）；经 `runtime_put / runtime_exec / runtimes.check` 在目标 runtime 装与核验（runtime R2 已有）；`volatile` 标记（= runtime R13）；ExtTools 清单命令拒装（R-U9；`EXTENDED_TOOLS` 已落地，依赖已解除，2026-11-06）；`note_usage SkillCommand` 记账；`install-cmd` / `check` 子命令。节点 `tools/<name>/bin` + PATH 前置 = runtime R3（P2），**不在本计划里做** | `skills.rs`、`runtime/mod.rs`（`runtime_exec` / `runtime_put` / `check_commands` 已有）、`skill.ts`、`xagent_cli.rs` |
 | S20 | `.meta/skills_state.json` 的 `install` 状态机；冻结按 `runtime.frozen.runtime_id` 查安装状态；`## Commands` 末尾的落点说明；`create-worksession` 的 skill 落点级 = runtime R4（`RuntimeSelection::Skill` 枚举已有，逻辑在 runtime TODO 排期） | `api.rs`（冻结）、`runner/assembler.rs`、`skills.rs` |
 | S21 | runtime 事件 → `install.runtimes[id]` 标 `stale` / 恢复与容器重启后重核验（= runtime R6，R-M2 / R-M5）；同一个任务，在 runtime TODO 里排期，这里只记依赖 | `skills.rs`、`loader.rs` |
 
@@ -248,7 +248,7 @@ skills 侧代码未动（`SkillMeta` 仍只有 `requires / baseline / platforms`
 | S16 | `skill_crystallize` 内置 Goal（缺省关闭）：行为、预算、`skills_drafts/` 与 `revisions/` 约定、通知文案 | `agent.toml [session.goal.crystallize]`、`behaviors/skill_crystallize.toml`、Loader 的内置 Goal 种子（参照 memory_maintenance） |
 | S17 | 审计：自动改动写入 `skills_state.json`；WebUI Skills 页显示草稿与修订 | `skills.rs`、`pages/Skills.tsx` |
 
-顺序：P0 → P1 可以合并为一个里程碑（格式一旦定下就同时改选择提示词）；P2 的 S13/S15 独立，可并行；S18–S21 依赖 runtime TODO 的 R2（已有）与 R4 / R6 / R13 / R16（未做），其中 R16 的 ExtTools 全平台包并入安装包改造（runtime 裁决 22），S19 的 ExtTools 拒装在它之前只认 `STANDARD_TOOLS`；P3 依赖 S10 的信号积累，最后做。
+顺序：P0 → P1 可以合并为一个里程碑（格式一旦定下就同时改选择提示词）；P2 的 S13/S15 独立，可并行；S18–S21 依赖 runtime TODO 的 R2（已有）与 R4 / R6 / R13 / R16（未做），其中 R16 的扩展包按 [扩展包 TODO](opendan-exttools-cross-platform-todo.md) 分期，S19 的 ExtTools 拒装直接用 `baseline::EXTENDED_TOOLS`；P3 依赖 S10 的信号积累，最后做。
 
 ## 5. 验收
 

@@ -1,8 +1,9 @@
 ---
 name: buckyos_dev_release
 description: Shared BuckyOS develop-and-release loop — where to work, system build vs App build, PIKG build/pack/info, test install (first install, local new version, catalog upgrade) with versions/digests/task evidence, what App publish really does, and how system/SDK/image releases are made.
-requires: buckyos command (agent container: /usr/local/bin/buckyos with the host Tool mounted; host: $BUCKYOS_ROOT/bin/buckyos); installs need an identity the control-panel accepts; system builds, Docker images and releases need the host repo and the owner
+requires: buckyos command (agent container: /opt/buckyos/bin/agent-tools/buckyos with the host Tool mounted; host: $BUCKYOS_ROOT/bin/buckyos); installs need an identity the control-panel accepts; system builds, Docker images and releases need the host repo and the owner
 baseline: extended
+commands: git, uv, node, npm, npx, deno, python3
 ---
 #### When to use
 Building, packaging, test-installing, upgrading or publishing anything for BuckyOS, and questions on how system or image releases happen. Writing the App itself is `buckyos_app_dev`; Agent templates, behaviors and skill packages are `opendan_agent_dev`; running-zone diagnosis is `buckyos_admin`. Those manuals point here for the shared steps.
@@ -53,7 +54,7 @@ buckyos auth whoami                                 # identity + zone actually u
 
 #### Package and inspect
 ```
-buckyos --non-interactive pikg init . --name <app> --owner did:bns:<owner> --kind static-web|script|docker|agent-skills --source <dir | .tar.gz | local image>
+buckyos --non-interactive pikg init . --name <app> --owner did:bns:<owner> --kind static-web|script|docker|agent-skills|ext-tools --source <dir | .tar.gz | local image>
 buckyos pikg build ./dapp_meta && buckyos pikg pack ./dapp_dist
 buckyos pikg info ./dapp_dist/<app>-<ver>.pikg
 ```
@@ -75,7 +76,7 @@ buckyos --non-interactive --yes --timeout 10m app install <x.pikg> --plan plan.j
 - Remove: `app uninstall <app_did> --data retain|delete --yes`. On 2026-10-17 `--data delete` left `data/home/<owner>/.local/share/<app_id>/` and the script instance volume; report leftovers instead of claiming deletion.
 
 #### Publish: what exists today
-- `buckyos app publish <absolute dir on the control-panel host> --app-doc <AppDoc template> [--app-type dapp|web|agent]`: control-panel `app.publish` re-packs that dir into the Zone Repo/NamedStore and stages a PIKG. Result: `publish_status repo_stored_candidate`, `app_doc_signature not-signed`, `app_did_publication not-published`, `pikg_handle` (a control-panel staging handle owned by the caller: the PIKG lives in the named store, bound in `zone/control-panel/_/pikg_staging` until its TTL; `app install` has no flag for it — install through control-panel `apps.inspect` with `source: {kind: "local_pikg", staging_handle}`), `pikg_digest`. Template = `dapp_dist/APPDOC.json` without `pkg_objid`. The re-pack changes digests; the dir is a host path, so files in your container are not visible to it.
+- `buckyos app publish <absolute dir on the control-panel host> --app-doc <AppDoc template> [--app-type dapp|web|agent|ext_tools]`: control-panel `app.publish` re-packs that dir, stages a PIKG and pins it in the Zone Repo as the file `<AppId>.pikg` (`repo_content_id`; a version cannot be pinned to other content, so publishing the same version twice is refused). Result: `publish_status repo_stored_candidate`, `app_doc_signature not-signed`, `app_did_publication not-published`, `pikg_handle` (a control-panel staging handle owned by the caller: the PIKG lives in the named store, bound in `zone/control-panel/_/pikg_staging` until its TTL; `app install` has no flag for it — install through control-panel `apps.inspect` with `source: {kind: "local_pikg", staging_handle}`), `pikg_digest`. Template = `dapp_dist/APPDOC.json` without `pkg_objid`. The re-pack changes digests; the dir is a host path, so files in your container are not visible to it.
 - Not implemented anywhere: Owner signature (`APPDOC.jwt`), BNS/App DID update, upload to a public server, read-back. After `app publish`, `app fetch did:bns:…` still fails `TRUST_RESOLUTION_REQUIRED`. Deliver the digest, the staging handle with its install route, and say it is a candidate, not a release; a PIKG file to hand elsewhere comes from your own local build, not from `app publish`.
 
 #### System, SDK and image releases

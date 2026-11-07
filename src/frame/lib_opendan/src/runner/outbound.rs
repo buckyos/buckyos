@@ -534,22 +534,23 @@ pub(super) async fn flush_outbox(sh: &Arc<Shared>) {
     let _one = sh.flush.lock().await;
     let mut changed = false;
     loop {
-        let next = {
-            let s = sh.session.lock().await;
-            s.state
+        let entry = {
+            let mut s = sh.session.lock().await;
+            let Some(e) = s
+                .state
                 .outbox
-                .iter()
+                .iter_mut()
                 .find(|e| e.status == OutboxStatus::Pending)
-                .cloned()
+            else {
+                break;
+            };
+            if e.attempts > 0 && crate::now_ms() < e.updated_at_ms + retry_after_ms(e.attempts) {
+                break;
+            }
+            e.attempts += 1;
+            e.updated_at_ms = crate::now_ms();
+            e.clone()
         };
-        let Some(entry) = next else {
-            break;
-        };
-        if entry.attempts > 0
-            && crate::now_ms() < entry.updated_at_ms + retry_after_ms(entry.attempts)
-        {
-            break;
-        }
         let result = sink
             .send(
                 &sid,
@@ -564,7 +565,6 @@ pub(super) async fn flush_outbox(sh: &Arc<Shared>) {
         let Some(e) = s.state.outbox.iter_mut().find(|e| e.key == entry.key) else {
             break;
         };
-        e.attempts += 1;
         e.updated_at_ms = crate::now_ms();
         changed = true;
         let mut retry = false;

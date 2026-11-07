@@ -2904,9 +2904,13 @@ impl AppLoader {
     pub(crate) async fn prepare_exttool_volume(&self) -> Result<Option<String>> {
         let worker = self.worker_image()?;
         let exttool = self.paios_image(PaiosImageKind::Exttool)?;
-        self.paios_docker()
+        let volume = self
+            .paios_docker()
             .prepare_exttool(exttool.as_ref(), worker.reference.as_str())
-            .await
+            .await?;
+        // A script app starts on what the volume has: give the seed its moment. Never a reason not to start.
+        crate::ext_tools::wait_first_seed(Duration::from_secs(120)).await;
+        Ok(volume)
     }
 
     /// Worker image id + ExtTool volume for a new worker container.
@@ -3388,12 +3392,16 @@ impl AppLoader {
                     "run".to_string(),
                     "--rm".to_string(),
                     "-v".to_string(),
-                    format!("{volume}:{WORKER_CONTAINER_EXTTOOL_ROOT}"),
+                    format!("{volume}:{}", paios_images::TOOLS_SEED_TARGET),
                     "--entrypoint".to_string(),
                     "/bin/sh".to_string(),
                     exttool.reference.clone(),
                     "-c".to_string(),
-                    format!("touch {WORKER_CONTAINER_EXTTOOL_ROOT}/.buckyos-seeded-<image id 12>"),
+                    format!(
+                        "cp -a {WORKER_CONTAINER_EXTTOOL_ROOT}/. {seed}/ && touch {seed}/{marker}",
+                        seed = paios_images::TOOLS_SEED_TARGET,
+                        marker = paios_images::TOOLS_VOLUME_MARKER
+                    ),
                 ],
             ));
         }
@@ -3401,11 +3409,8 @@ impl AppLoader {
     }
 
     #[cfg(test)]
-    fn preview_exttool_volume(&self, exttool: &ResolvedImage) -> String {
-        match exttool.pinned.as_ref() {
-            Some(pinned) => paios_images::exttool_volume_name(pinned.platform.image_id.as_str()),
-            None => format!("{}-<image id 12>", paios_images::EXTTOOL_VOLUME_PREFIX),
-        }
+    fn preview_exttool_volume(&self, _exttool: &ResolvedImage) -> String {
+        paios_images::TOOLS_VOLUME.to_string()
     }
 
     #[cfg(test)]

@@ -200,6 +200,9 @@ pub const MAX_CMD_SKILLS: usize = 8;
 pub struct CmdSkill {
     pub name: String,
     pub text: String,
+    /// Commands the manual relies on that the session's runtime was found without when the session froze.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_commands: Vec<String>,
 }
 
 /// Kind of an installed skill: a command manual (`cmd_skills/`) or a
@@ -258,6 +261,11 @@ pub struct SkillMeta {
     /// `linux`, `macos`, `windows`); empty: all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<String>,
+    /// Commands the manual relies on (front matter `commands`, comma separated). A skill without them still works in
+    /// part, and is never refused for them: they are for telling the owner what is missing and which extension package
+    /// would bring it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
 }
 
 fn standard_baseline() -> buckyos_api::RuntimeBaseline {
@@ -276,6 +284,7 @@ impl Default for SkillMeta {
             tools: Vec::new(),
             baseline: standard_baseline(),
             platforms: Vec::new(),
+            commands: Vec::new(),
         }
     }
 }
@@ -395,8 +404,24 @@ pub fn skill_meta(kind: SkillKind, name: &str, text: &str) -> SkillMeta {
         requires: fields.get("requires").cloned().unwrap_or_default(),
         baseline,
         platforms,
+        commands: skill_commands_of(&fields),
         ..Default::default()
     }
+}
+
+/// `commands: ffmpeg, ffprobe` of a manual; what is no command name is left out.
+fn skill_commands_of(fields: &BTreeMap<String, String>) -> Vec<String> {
+    let mut commands: Vec<String> = fields
+        .get("commands")
+        .map(String::as_str)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && !c.starts_with('.') && c.chars().all(|x| x.is_ascii_alphanumeric() || matches!(x, '.' | '_' | '+' | '-')))
+        .map(str::to_string)
+        .collect();
+    commands.dedup();
+    commands
 }
 
 fn valid_function_name(name: &str) -> bool {

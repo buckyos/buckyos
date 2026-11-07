@@ -141,6 +141,7 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
       request: { expected_revision: workspace.revision, url },
     }),
     checkRuntime: (runtimeId) => call('runtimes.check', { runtime_id: runtimeId }),
+    runtimeExtTools: (runtimeId) => call('runtimes.ext_tools', { runtime_id: runtimeId }),
     runtimeSettings: () => call('runtimes.settings'),
     setRuntimeSetting: (patch) => call('runtimes.settings_set', { ...patch }),
     sessions: () => call('sessions.query'),

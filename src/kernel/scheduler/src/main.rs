@@ -1,5 +1,6 @@
 mod app;
 mod executor_auth;
+mod ext_tools_projection;
 mod install_plan_executor;
 mod scheduler;
 mod scheduler_server;

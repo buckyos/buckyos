@@ -11,7 +11,9 @@ use agent_tool::runtime::node::{NodeExecutorConnector, RemoteNodeTarget, REMOTE_
 use agent_tool::runtime::{RuntimeConfig, RuntimeOpenCtx};
 use agent_tool::xllm::{LoopModel, ToolsConfig, XllmDeps};
 use async_trait::async_trait;
+use crate::baseline::CommandOrigin;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -200,6 +202,8 @@ pub async fn open_node_target_of(runtime_id: &str, config: &RuntimeConfig, ops_d
     .map_err(|e| OpenDanError::Bind(format!("runtime `{runtime_id}`: {e}")))?;
     Ok(NodeTarget { target, expires_at_ms })
 }
+
+const NODE_SESSIONS_DIR: &str = "sessions";
 
 /// The directory of this agent on a node: `<account home>/.opendan/<agent_id>`
 /// (directory convention). The executor's account home must lie inside
@@ -597,7 +601,7 @@ async fn node_workdir(
     }
     let target = open_node_target_of(runtime_id, config, &sd.state_dir().join("runtime_ops")).await?;
     let base = node_agent_dir(&target, runtime_id, agent.agent_id())?;
-    let dir = target_join(&base, &["sessions", sd.sid()]);
+    let dir = target_join(&base, &[NODE_SESSIONS_DIR, sd.sid()]);
     target
         .mkdir(&dir)
         .await
@@ -685,6 +689,9 @@ pub fn runtime_entry(r: &RuntimeRecord) -> serde_json::Value {
     if let Some(t) = &r.caps.tools_check {
         v["tools"] = serde_json::json!(t.present);
     }
+    if let Some(ext) = r.caps.baseline_check.as_ref().and_then(|c| c.ext.as_ref()) {
+        v["ext"] = serde_json::json!(ext.summary());
+    }
     if let Some(t) = r.grant.expires_at_ms {
         v["expires_at_ms"] = serde_json::json!(t);
     }
@@ -727,6 +734,9 @@ pub fn runtime_line(r: &RuntimeRecord) -> String {
     if let Some(t) = r.grant.expires_at_ms {
         flags.push(format!("expires {t}"));
     }
+    if r.caps.baseline_check.as_ref().is_some_and(|c| !c.dev_helpers().is_empty()) {
+        flags.push("dev helpers".to_string());
+    }
     let availability = serde_json::to_value(r.availability)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
@@ -749,6 +759,9 @@ pub fn runtime_line(r: &RuntimeRecord) -> String {
     );
     if !r.grant.roots.is_empty() {
         line.push_str(&format!("; roots: {}", r.grant.roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")));
+    }
+    if let Some(ext) = r.caps.baseline_check.as_ref().and_then(|c| c.ext.as_ref()) {
+        line.push_str(&format!("; ext: {}", ext.summary()));
     }
     if let Some(t) = r.caps.tools_check.as_ref().filter(|t| !t.present.is_empty()) {
         line.push_str(&format!("; commands: {}", t.present.join(", ")));
@@ -971,6 +984,20 @@ pub async fn run_probe(
     command: String,
     timeout_ms: u64,
 ) -> Result<agent_tool::llm_bash::BashRunOutput> {
+    run_with_env(rt, workdir, path_prefix, session_id, ops_dir, command, timeout_ms, Vec::new()).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_with_env(
+    rt: &dyn AgentRuntime,
+    workdir: &Path,
+    path_prefix: Vec<PathBuf>,
+    session_id: &str,
+    ops_dir: &Path,
+    command: String,
+    timeout_ms: u64,
+    env: Vec<(String, String)>,
+) -> Result<agent_tool::llm_bash::BashRunOutput> {
     let mut open = RuntimeOpenCtx::new(workdir, session_id, LoopModel::FunctionCall);
     open.path_prefix = path_prefix;
     let (_, mut sandbox) = rt
@@ -993,7 +1020,7 @@ pub async fn run_probe(
             cwd: workdir.to_path_buf(),
             timeout_ms,
             max_output_bytes: 16 * 1024,
-            env: Vec::new(),
+            env,
             target: agent_tool::llm_bash::BashTarget::Local,
             // A node runs a command only for an identified call.
             call_id: Some(format!("probe-{}", uuid::Uuid::new_v4().simple())),
@@ -1051,70 +1078,226 @@ fn node_check_dir(record: &RuntimeRecord) -> Result<String> {
         .ok_or_else(|| OpenDanError::Bind(format!("runtime `{}`: no granted root is known yet (check it first)", record.runtime_id)))
 }
 
-/// Run `probe` on `record`'s runtime and return the names of `names` it
-/// printed as missing.
-async fn missing_on(record: &RuntimeRecord, ops_dir: &Path, names: &[&str], what: &str) -> Result<Vec<String>> {
-    if record.is_private() {
-        let beside: Vec<PathBuf> = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(Path::to_path_buf))
+/// Where `names` are on `record`'s runtime and who provides them; `versions`
+/// (a subset) are also run, so a stub tells itself apart. On this machine the
+/// standard helpers may come from beside the program.
+async fn resolve_on(record: &RuntimeRecord, ops_dir: &Path, names: &[&str], versions: &[&str], agent_root: Option<&Path>, what: &str) -> Result<BTreeMap<String, ResolvedCommand>> {
+    let timeout_ms = if versions.is_empty() { 30_000 } else { CHECK_FULL_TIMEOUT_MS };
+    let (origin, probed) = if record.is_private() {
+        let beside: Vec<PathBuf> = crate::baseline::beside_current_exe().into_iter().collect();
+        let agent_dirs = agent_root.map(crate::baseline::agent_tool_dirs).unwrap_or_default();
+        let origin = CommandOrigin {
+            root: crate::baseline::buckyos_root().map(|r| r.display().to_string()),
+            agent_root: agent_root.map(|r| r.display().to_string()),
+            beside: beside.first().map(|d| d.display().to_string()),
+            windows: cfg!(windows),
+        };
+        let mut probed: BTreeMap<String, crate::baseline::ProbedCommand> = crate::baseline::resolve_locally(names, &agent_dirs, None, &beside)
             .into_iter()
+            .map(|(name, path)| (name, crate::baseline::ProbedCommand { path, exit_code: None, version: None }))
             .collect();
-        return Ok(crate::baseline::missing_locally(names, None, &beside));
-    }
-    let root = node_check_dir(record)?;
-    let rt = node_runtime_of(record, &root).await?;
-    let probe = crate::baseline::missing_probe(names, record.caps.platform.os == "windows");
-    let out = run_probe(rt.as_ref(), Path::new(&root), Vec::new(), what, ops_dir, probe, 30_000).await?;
-    if out.exit_code != 0 {
-        return Err(OpenDanError::Bind(format!("the check exited {}: {}", out.exit_code, out.stderr.trim())));
-    }
-    Ok(crate::baseline::parse_missing(&out.stdout, names))
+        if !versions.is_empty() {
+            std::fs::create_dir_all(ops_dir).map_err(|e| OpenDanError::io(ops_dir, e))?;
+            let rt = private_runtime_of(ops_dir)?;
+            let probe = crate::baseline::resolve_probe(versions, versions, cfg!(windows));
+            let out = run_probe(rt.as_ref(), ops_dir, agent_dirs, what, ops_dir, probe, timeout_ms).await?;
+            if out.exit_code != 0 {
+                return Err(OpenDanError::Bind(format!("the check exited {}: {}", out.exit_code, out.stderr.trim())));
+            }
+            for (name, ran) in crate::baseline::parse_resolved(&out.stdout, versions) {
+                if let Some(found) = probed.get_mut(&name) {
+                    found.exit_code = ran.exit_code;
+                    found.version = ran.version;
+                }
+            }
+        }
+        (origin, probed)
+    } else {
+        let windows = record.caps.platform.os == "windows";
+        let root = node_check_dir(record)?;
+        let rt = node_runtime_of(record, &root).await?;
+        let probe = crate::baseline::resolve_probe(names, versions, windows);
+        let out = run_probe(rt.as_ref(), Path::new(&root), Vec::new(), what, ops_dir, probe, timeout_ms).await?;
+        if out.exit_code != 0 {
+            return Err(OpenDanError::Bind(format!("the check exited {}: {}", out.exit_code, out.stderr.trim())));
+        }
+        let origin = CommandOrigin { root: record.caps.buckyos_root.clone(), agent_root: None, beside: None, windows };
+        (origin, crate::baseline::parse_resolved(&out.stdout, names))
+    };
+    Ok(probed
+        .into_iter()
+        .map(|(name, found)| {
+            let stub = crate::baseline::is_stub_exit(found.exit_code);
+            let command = ResolvedCommand {
+                provided_by: origin.of(&found.path),
+                path: found.path,
+                version: if stub { None } else { found.version },
+                stub,
+            };
+            (name, command)
+        })
+        .collect())
 }
 
-/// The standard tools of a runtime ([`crate::baseline`]): looked for on this
-/// machine for the agent's private runtime (helpers come from the session
-/// bin), through the runtime's executor for a node. A check that cannot run
-/// says why; it never changes the declared baseline.
-pub async fn check_baseline(record: &RuntimeRecord, ops_dir: &Path) -> BaselineCheck {
-    let names = crate::baseline::required_commands(record.is_private());
-    let checked = missing_on(record, ops_dir, &names, "baseline-check").await;
+/// The tools of a runtime against its declared baseline ([`crate::baseline`]):
+/// looked for on this machine for the agent's private runtime (helpers come
+/// from the session bin), through the runtime's executor for a node. A
+/// background check records where they are and keeps what a full one learned
+/// of the same files; `full` also runs the extended ones, for their versions
+/// and to find stubs. A check that cannot run says why; it never changes the
+/// declared baseline.
+pub async fn check_baseline(record: &RuntimeRecord, ops_dir: &Path, agent_root: Option<&Path>, full: bool) -> BaselineCheck {
+    let overlay = record.is_private();
+    let level = record.caps.baseline;
+    let names = crate::baseline::checked_commands(overlay);
+    let versions = if full { crate::baseline::extended_commands() } else { Vec::new() };
+    let checked = resolve_on(record, ops_dir, &names, &versions, agent_root, "baseline-check").await;
     let checked_at_ms = crate::now_ms();
     match checked {
-        Ok(missing) => BaselineCheck {
-            checked_at_ms,
-            ok: missing.is_empty(),
-            missing,
-            error: None,
-        },
+        Ok(mut resolved) => {
+            if let Some(before) = record.caps.baseline_check.as_ref().filter(|_| !full) {
+                crate::baseline::keep_versions(&mut resolved, &before.resolved);
+            }
+            let findings = crate::baseline::evaluate(level, overlay, &resolved);
+            BaselineCheck {
+                checked_at_ms,
+                level,
+                ok: findings.ok(),
+                missing: findings.missing,
+                unmanaged: findings.unmanaged,
+                resolved,
+                ext: Some(findings.ext),
+                error: None,
+            }
+        }
         Err(e) => BaselineCheck {
             checked_at_ms,
+            level,
             ok: false,
             missing: Vec::new(),
+            unmanaged: Vec::new(),
+            resolved: BTreeMap::new(),
+            ext: None,
             error: Some(e.to_string()),
         },
     }
 }
 
 /// Whether `commands` exist on the runtime (`caps.tools_check`): skill
-/// installation, `check --commands`.
-pub async fn check_commands(record: &RuntimeRecord, ops_dir: &Path, commands: &[String]) -> ToolsCheck {
+/// installation, `check --commands`. `full` also runs them, for their versions
+/// and to find stubs; otherwise what a full check learned of the same files
+/// stays.
+pub async fn check_commands(record: &RuntimeRecord, ops_dir: &Path, commands: &[String], agent_root: Option<&Path>, full: bool) -> ToolsCheck {
     let names: Vec<&str> = commands.iter().map(String::as_str).collect();
-    let checked = missing_on(record, ops_dir, &names, "tools-check").await;
+    let versions = if full { names.clone() } else { Vec::new() };
+    let checked = resolve_on(record, ops_dir, &names, &versions, agent_root, "tools-check").await;
     let checked_at_ms = crate::now_ms();
     match checked {
-        Ok(missing) => ToolsCheck {
-            checked_at_ms,
-            present: commands.iter().filter(|c| !missing.contains(c)).cloned().collect(),
-            missing,
-            error: None,
-        },
+        Ok(mut resolved) => {
+            if let Some(before) = record.caps.tools_check.as_ref().filter(|_| !full) {
+                crate::baseline::keep_versions(&mut resolved, &before.resolved);
+            }
+            let (present, missing) = commands.iter().cloned().partition(|c| resolved.get(c).is_some_and(|r| !r.stub));
+            ToolsCheck { checked_at_ms, present, missing, resolved, error: None }
+        }
         Err(e) => ToolsCheck {
             checked_at_ms,
             present: Vec::new(),
             missing: Vec::new(),
+            resolved: BTreeMap::new(),
             error: Some(e.to_string()),
         },
+    }
+}
+
+/// `<account home>/.opendan/<agent>` on the node of `record`.
+async fn node_agent_dir_of(record: &RuntimeRecord, agent_id: &str, ops_dir: &Path) -> Option<String> {
+    let config = node_config_of(&record.runtime_id, &record.exec()?).ok()?;
+    let target = open_node_target_of(&record.runtime_id, &config, ops_dir).await.ok()?;
+    node_agent_dir(&target, &record.runtime_id, agent_id).ok()
+}
+
+fn shell_quote(windows: bool, value: &str) -> String {
+    if windows {
+        format!("'{}'", value.replace('\'', "''"))
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+/// What is installed under a runtime's `tools/`, as the reconciler recorded it (`xagent runtime ext-tools status`), and with
+/// `smoke` what each package's smoke says now (`check --full`). Read-only: nothing an Agent does installs anything.
+pub async fn ext_tools_report(record: &RuntimeRecord, ops_dir: &Path, smoke: bool) -> Result<serde_json::Value> {
+    use buckyos_api::ext_tools_install::{ExtToolsInstall, ToolsRoot};
+    let mut smoke_results = serde_json::Map::new();
+    let (root_text, managed_by, installed): (String, &str, BTreeMap<String, ExtToolsInstall>) = if record.is_private() {
+        let root = crate::baseline::buckyos_root().ok_or_else(|| OpenDanError::Bind("cannot tell $BUCKYOS_ROOT".to_string()))?;
+        let tools = ToolsRoot::new(root.join("tools"));
+        let installed = tools.installed();
+        if smoke {
+            for id in installed.keys() {
+                let root = ToolsRoot::new(tools.path());
+                let package = id.clone();
+                let result = tokio::task::spawn_blocking(move || root.check(&package)).await.map_err(|e| OpenDanError::Other(e.to_string()))?;
+                smoke_results.insert(id.clone(), json_result(result));
+            }
+        }
+        let in_container = std::env::var_os("BUCKYOS_EXTTOOL_DIR").is_some();
+        (tools.path().display().to_string(), if in_container { "node_volume" } else { "node" }, installed)
+    } else {
+        let windows = record.caps.platform.os == "windows";
+        let root = record.caps.buckyos_root.clone().ok_or_else(|| OpenDanError::Bind(format!("runtime `{}` has no BuckyOS root: it takes no extension packages", record.runtime_id)))?;
+        let separator = if windows { "\\" } else { "/" };
+        let tools = format!("{root}{separator}tools");
+        let probe = if windows {
+            format!("Get-ChildItem -Path {} -ErrorAction SilentlyContinue | ForEach-Object {{ Get-Content -Raw $_.FullName }}", shell_quote(true, &format!("{tools}\\installs\\*.json")))
+        } else {
+            format!("for f in {}/installs/*.json; do [ -f \"$f\" ] && cat \"$f\"; done; true", shell_quote(false, &tools))
+        };
+        let dir = node_check_dir(record)?;
+        let rt = node_runtime_of(record, &dir).await?;
+        let out = run_probe(rt.as_ref(), Path::new(&dir), Vec::new(), "ext-tools", ops_dir, probe, 30_000).await?;
+        if out.exit_code != 0 {
+            return Err(OpenDanError::Bind(format!("reading {tools}/installs exited {}: {}", out.exit_code, out.stderr.trim())));
+        }
+        let installed: BTreeMap<String, ExtToolsInstall> = serde_json::Deserializer::from_str(&out.stdout)
+            .into_iter::<ExtToolsInstall>()
+            .flatten()
+            .map(|install| (install.id.clone(), install))
+            .collect();
+        if smoke {
+            let program = if windows { format!("{root}\\bin\\opendan\\opendan.exe") } else { format!("{root}/bin/opendan/opendan") };
+            for id in installed.keys() {
+                let command = format!(
+                    "{}{} ext-tools check --root {} --id {}",
+                    if windows { "& " } else { "" },
+                    shell_quote(windows, &program),
+                    shell_quote(windows, &tools),
+                    shell_quote(windows, id)
+                );
+                let out = run_probe(rt.as_ref(), Path::new(&dir), Vec::new(), "ext-tools", ops_dir, command, CHECK_FULL_TIMEOUT_MS).await?;
+                let parsed: Option<serde_json::Value> = out.stdout.lines().rev().find_map(|line| serde_json::from_str(line).ok());
+                let result = match parsed {
+                    Some(v) if v["ok"] == true => Ok(()),
+                    Some(v) => Err(v["error"].as_str().unwrap_or("the check failed").to_string()),
+                    None => Err(format!("exit {}: {}", out.exit_code, out.stderr.trim())),
+                };
+                smoke_results.insert(id.clone(), json_result(result));
+            }
+        }
+        (tools, "node", installed)
+    };
+    let mut report = serde_json::json!({ "runtime_id": record.runtime_id, "tools_root": root_text, "managed_by": managed_by, "packages": installed });
+    if smoke {
+        report["smoke"] = serde_json::Value::Object(smoke_results);
+    }
+    Ok(report)
+}
+
+fn json_result(result: std::result::Result<(), String>) -> serde_json::Value {
+    match result {
+        Ok(()) => serde_json::json!({ "ok": true }),
+        Err(error) => serde_json::json!({ "ok": false, "error": error }),
     }
 }
 
@@ -1152,6 +1335,8 @@ pub fn session_run_record(sd: &SessionDir, op: &RuntimeOpRecord, call_id: Option
 }
 
 pub const RUNTIME_OPS_DIR: &str = "runtime_ops";
+/// A full check runs every extended tool once.
+const CHECK_FULL_TIMEOUT_MS: u64 = 120_000;
 pub const RUNTIME_EXEC_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub const RUNTIME_EXEC_MAX_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 
@@ -1162,12 +1347,34 @@ fn runtime_ops_dir(agent: &dyn crate::state::AgentStateClient) -> Result<PathBuf
     Ok(root.join("state").join(RUNTIME_OPS_DIR))
 }
 
+/// A runtime's record for something about to use it. A node runtime found
+/// unreachable earlier is asked again first: its executor may have come up
+/// since (node_daemon opens it after loading the node's settings, the agent
+/// may have checked first).
+pub async fn lookup_rechecked(agent: &dyn crate::state::AgentStateClient, runtime_id: &str) -> Result<Option<RuntimeRecord>> {
+    let record = agent.runtimes().lookup(runtime_id).await?;
+    let Some(r) = record.as_ref().filter(|r| {
+        r.availability != RuntimeAvailability::Available
+            && r.lifecycle == RuntimeLifecycle::Active
+            && r.connector.is_node()
+            && r.enabled
+            && r.checked_at_ms.is_none_or(|t| crate::now_ms().saturating_sub(t) >= crate::api::RUNTIME_RECHECK_MS)
+    }) else {
+        return Ok(record);
+    };
+    match agent.runtimes().check(&r.runtime_id, &[], false).await {
+        Ok(checked) => Ok(Some(checked)),
+        Err(e) => {
+            log::warn!("runtime {runtime_id} not checked again: {e}");
+            Ok(record)
+        }
+    }
+}
+
 /// A runtime record usable for an agent-level operation now, else why not
 /// (R-U5: refused, never replaced).
 pub async fn usable_runtime(agent: &dyn crate::state::AgentStateClient, runtime_id: &str) -> Result<RuntimeRecord> {
-    let record = agent
-        .runtimes()
-        .lookup(runtime_id)
+    let record = lookup_rechecked(agent, runtime_id)
         .await?
         .ok_or_else(|| OpenDanError::NotFound(format!("runtime {runtime_id} (see `agent-session runtime list`)")))?;
     if record.lifecycle == RuntimeLifecycle::Retired {
@@ -1212,6 +1419,7 @@ pub async fn runtime_exec(
     let op_id = format!("op-{}", uuid::Uuid::new_v4().simple());
     let timeout_ms = timeout_ms.clamp(1_000, RUNTIME_EXEC_MAX_TIMEOUT_MS);
     let started_at_ms = crate::now_ms();
+    let on_node = !record.is_private();
     let (rt, workdir, layers): (Arc<dyn AgentRuntime>, String, Vec<PathBuf>) = if record.is_private() {
         let dir = match cwd {
             Some(c) => PathBuf::from(c),
@@ -1243,7 +1451,12 @@ pub async fn runtime_exec(
         }
         (node_runtime_of(&record, dir).await?, dir.to_string(), Vec::new())
     };
-    let out = run_probe(rt.as_ref(), Path::new(&workdir), layers, &op_id, &ops_dir, command.to_string(), timeout_ms).await;
+    let env = if on_node {
+        node_agent_dir_of(&record, agent.agent_id(), &ops_dir).await.map(|dir| crate::baseline::tool_cache_env(&Path::new(&dir).join("cache"))).unwrap_or_default()
+    } else {
+        agent_cache_env(false, &workdir, agent.agent_root())
+    };
+    let out = run_with_env(rt.as_ref(), Path::new(&workdir), layers, &op_id, &ops_dir, command.to_string(), timeout_ms, env).await;
     let finished_at_ms = crate::now_ms();
     let op = match out {
         Ok(out) => RuntimeOpRecord {
@@ -1349,6 +1562,21 @@ pub async fn runtime_put(
     Ok(written)
 }
 
+/// Tool caches of a session (ExtTools TODO §3.6). On a node they go next to the sessions in the Agent's directory there. On
+/// the machine of the Agent Service they go under its AgentRoot, unless the process already has them: a worker's entrypoint
+/// points them at the instance volume.
+fn agent_cache_env(on_node: bool, workdir: &str, agent_root: Option<&Path>) -> Vec<(String, String)> {
+    if on_node {
+        // A node's path, which may be another OS's.
+        let cut = [format!("/{NODE_SESSIONS_DIR}/"), format!("\\{NODE_SESSIONS_DIR}\\")].iter().filter_map(|marker| workdir.rfind(marker.as_str())).max();
+        return cut.map(|at| crate::baseline::tool_cache_env(&Path::new(&workdir[..at]).join("cache"))).unwrap_or_default();
+    }
+    let Some(root) = agent_root else {
+        return Vec::new();
+    };
+    crate::baseline::tool_cache_env(&root.join(".cache")).into_iter().filter(|(name, _)| std::env::var_os(name).is_none()).collect()
+}
+
 /// The session's PATH layers live on this machine: a node runtime gets none
 /// and finds its commands on the node's own PATH (TODO §6.1).
 pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<SessionEnv> {
@@ -1362,7 +1590,8 @@ pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<
             }
         }
     }
-    let env = session_env_vars(ctx, &binding.runtime_id).await?;
+    let mut env = session_env_vars(ctx, &binding.runtime_id).await?;
+    env.extend(agent_cache_env(binding.connector == "node_executor", &binding.workdir, ctx.agent_root.as_deref()));
     Ok(SessionEnv {
         runtime_id: binding.runtime_id.clone(),
         kind: binding.connector.clone(),
@@ -1462,6 +1691,15 @@ pub async fn session_env_vars(ctx: &SessionEnvCtx, runtime_id: &str) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caches_of_a_node_session_go_next_to_its_sessions() {
+        let env = agent_cache_env(true, "/home/alice/.opendan/jarvis/sessions/s1", None);
+        assert!(env.iter().any(|(k, v)| k == "DENO_DIR" && v == "/home/alice/.opendan/jarvis/cache/deno-cache"), "{env:?}");
+        assert!(agent_cache_env(true, "/somewhere/else", None).is_empty(), "no agent directory, no opinion");
+        let windows = agent_cache_env(true, "C:\\Users\\a\\.opendan\\j\\sessions\\s1", None);
+        assert!(windows.iter().any(|(k, v)| k == "UV_CACHE_DIR" && v.starts_with("C:\\Users\\a\\.opendan\\j")), "{windows:?}");
+    }
 
     #[test]
     fn node_exec_must_be_a_complete_remote_node_config() {

@@ -806,6 +806,7 @@ async fn describe(
                 }
                 .to_string(),
             ),
+            buckyos_root: inner.buckyos_root.as_ref().map(|root| root.to_string_lossy().to_string()),
             desktop: inner.computer.as_ref().map(|driver| driver.capabilities()),
         },
     })

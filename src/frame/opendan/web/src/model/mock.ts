@@ -640,7 +640,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
       version: 4, runtime_id: 'private', name: 'Private runtime',
       desc: "Your own environment: the agent's container. Commands run directly; paths here are not the owner's host paths.",
       runtime_host: 'mock-host', connector: { type: 'native' }, enabled: true,
-      caps: { os: 'linux', arch: 'x86_64', shell: 'bash', desktop: false, baseline: 'extended', baseline_check: { checked_at_ms: ago(60), missing: [], ok: true } },
+      caps: { os: 'linux', arch: 'x86_64', shell: 'bash', desktop: false, baseline: 'extended', baseline_check: { checked_at_ms: ago(60), level: 'extended', missing: ['pandoc'], ok: false, ext: { status: 'partial', missing: ['pandoc'], system: ['ffmpeg', 'python3'] } } },
       grant: { ops: allOps, roots: [], computer: 'none', install: 'system', workspace: true },
       availability: 'available', builtin: true, default: false, lifecycle: 'active',
       usage: { sessions_total: 12, last_used_at_ms: ago(300), last_session_id: UI, workspaces: 2, skill_commands: [] },
@@ -652,7 +652,7 @@ export const createMockDataModel = (): OpenDanDataModel => {
       desc: "The owner's own machine (node `desktop`), shared with the owner: the owner's files and tools are here; commands and files go through its node executor.",
       runtime_host: 'mock-host', connector: { type: 'node_executor', node_did: 'did:dev:mock', profile_id: 'agent-0123456789ab' }, enabled: true,
       caps: { os: 'macos', arch: 'aarch64', shell: 'zsh', desktop: true, identity_mode: 'current_user', baseline: 'standard',
-        baseline_check: { checked_at_ms: ago(60), missing: ['aicc-tool', 'gen_image'], ok: false } },
+        baseline_check: { checked_at_ms: ago(60), level: 'standard', missing: ['aicc-tool', 'gen_image'], ok: false, ext: { status: 'partial', missing: ['pandoc', 'tesseract'], system: ['ffmpeg'] } } },
       grant: { ops: allOps.filter((op) => op !== 'computer_act'), roots: ['/Users/devtest'], computer: 'observe', install: 'none', workspace: true },
       availability: 'available', builtin: true, default: true, lifecycle: 'active',
       usage: { sessions_total: 1, last_used_at_ms: ago(370), last_session_id: WORK_RUNNING, workspaces: 1, skill_commands: [] },
@@ -829,11 +829,20 @@ export const createMockDataModel = (): OpenDanDataModel => {
       return structuredClone(workspace)
     },
 
+    runtimeExtTools: async (runtimeId) => ({
+      runtime_id: runtimeId,
+      tools_root: '/opt/buckyos/tools',
+      managed_by: runtimeId === 'private' ? 'node_volume' : 'node',
+      packages: { 'ext-core': { version: '1.1.0', origin: 'seed', commands: { ffmpeg: 'ffmpeg version 9.0.2' } } },
+    }),
     checkRuntime: async (runtimeId) => {
       await delay()
       const runtime = runtimes.find((r) => r.runtime_id === runtimeId)
       if (!runtime) throw new OpenDanError('not_found', `runtime ${runtimeId} is not registered`)
       runtime.checked_at_ms = Date.now()
+      if (runtime.runtime_id === 'private') {
+        runtime.caps.baseline_check = { checked_at_ms: Date.now(), level: 'extended', missing: [], ok: true, ext: { status: 'system', missing: [], system: ['ffmpeg', 'python3'] } }
+      }
       return structuredClone(runtime)
     },
 

@@ -36,6 +36,12 @@ pub trait BehaviorCatalog: Send + Sync {
         let _ = kind;
         Ok(Vec::new())
     }
+    /// The commands each cmd_skill relies on, against `runtime_id` (`None`: the private runtime), and which extension
+    /// package would bring what is missing (`skills.status`).
+    async fn skills_status(&self, runtime_id: Option<&str>) -> Result<serde_json::Value> {
+        let _ = runtime_id;
+        Err(crate::error::OpenDanError::InvalidArgument("skills.status needs the Agent Service".to_string()))
+    }
     /// Install the skills of a skill package (`skills.install`).
     async fn install_skills(
         &self,
@@ -426,9 +432,16 @@ pub async fn freeze_config(
                 continue;
             }
         }
+        let missing_commands = cfg
+            .runtime
+            .frozen
+            .as_ref()
+            .map(|f| crate::skills::known_missing_commands(&skill_meta(SkillKind::Cmd, name, &text).commands, &f.caps))
+            .unwrap_or_default();
         frozen.cmd_skills.push(CmdSkill {
             name: name.clone(),
             text: split_front_matter(&text).1.to_string(),
+            missing_commands,
         });
     }
     let mut next = cfg.clone();

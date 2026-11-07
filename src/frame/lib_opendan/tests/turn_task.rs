@@ -68,6 +68,7 @@ struct Sink {
     /// The target can be edited: a placeholder is offered.
     editable: bool,
     reject_placeholder: bool,
+    answer_placeholder_after_close: Option<std::path::PathBuf>,
     sent: Mutex<Vec<OutboundRecord>>,
 }
 
@@ -83,6 +84,17 @@ impl OutboundSink for Sink {
 
     async fn send(&self, _sid: &str, record: &OutboundRecord) -> SendResult {
         self.sent.lock().unwrap().push(record.clone());
+        if let (true, Some(path)) = (
+            record.key.ends_with(":placeholder"),
+            &self.answer_placeholder_after_close,
+        ) {
+            let sd = libopendan::SessionDir::open(path).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while sd.state().unwrap().turn_tasks.iter().all(|b| b.closed.is_none()) {
+                assert!(std::time::Instant::now() < deadline, "the Turn never closed");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
         if self.reject_placeholder && record.key.ends_with(":placeholder") {
             return SendResult::Rejected {
                 reason: "blocked".into(),
@@ -228,6 +240,57 @@ async fn a_slow_turn_sends_a_placeholder_and_edits_it() {
         vec![OutboxPurpose::Placeholder, OutboxPurpose::FinalEdit]
     );
     assert!(st.outbox.iter().all(|e| e.status == OutboxStatus::Sent));
+}
+
+async fn close_turn_while_placeholder_is_on_its_way(reject_placeholder: bool) -> (Vec<OutboundRecord>, SessionState) {
+    let env = Env::new();
+    let sd = env.create_work(ui_spec()).await;
+    libopendan::post_input(env.agent().as_ref(), sd.sid(), &from_bob("hello"))
+        .await
+        .unwrap();
+    let sink = Arc::new(Sink {
+        editable: true,
+        reject_placeholder,
+        answer_placeholder_after_close: Some(sd.path().to_path_buf()),
+        ..Default::default()
+    });
+    let tasks = Arc::new(Tasks::default());
+    let llm = ScriptedLlm::new(|_, _| {
+        std::thread::sleep(Duration::from_millis(300));
+        text("hi bob")
+    });
+    let deps = deps_with(&env, llm, &sink, &tasks, Duration::from_millis(50));
+    let r = drive(&sd, &deps, StopWhen::TurnClosed).await;
+    assert!(matches!(r, DriveResult::TurnClosed { turn: 1, .. }), "{r:?}");
+    let sent = sink.sent.lock().unwrap().clone();
+    (sent, sd.state().unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turn_closing_while_the_placeholder_is_on_its_way_edits_it() {
+    let (sent, st) = close_turn_while_placeholder_is_on_its_way(false).await;
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0].msg.content.content, "on it");
+    assert_eq!(sent[1].msg.content.content, "hi bob");
+    let rel = sent[1].msg.relates_to.as_ref().expect("the reply edits the placeholder");
+    assert_eq!(rel.rel, MsgRelType::Edit);
+    assert_eq!(rel.target.to_string(), msg_key(&sent[0].msg));
+    assert_eq!(st.turn_tasks[0].placeholder, Some(msg_key(&sent[0].msg)));
+    assert_eq!(
+        st.outbox.iter().map(|e| e.purpose).collect::<Vec<_>>(),
+        vec![OutboxPurpose::Placeholder, OutboxPurpose::FinalEdit]
+    );
+    assert!(st.outbox.iter().all(|e| e.status == OutboxStatus::Sent));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_placeholder_rejected_after_the_turn_closed_lets_the_reply_leave_on_its_own() {
+    let (sent, st) = close_turn_while_placeholder_is_on_its_way(true).await;
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[1].msg.content.content, "hi bob");
+    assert!(sent[1].msg.relates_to.is_none(), "nothing to edit at the other side");
+    assert!(task_of(&sent[1].msg).is_some());
+    assert_eq!(st.turn_tasks[0].placeholder, None);
 }
 
 #[tokio::test]

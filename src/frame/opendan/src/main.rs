@@ -551,6 +551,10 @@ fn main() {
     if args.first().and_then(|a| a.to_str()) == Some("install-agent-tools") {
         install_agent_tools(args.get(1).cloned());
     }
+    if args.first().and_then(|a| a.to_str()) == Some("ext-tools") {
+        let rest: Vec<String> = args[1..].iter().map(|a| a.to_string_lossy().to_string()).collect();
+        std::process::exit(buckyos_api::ext_tools_install::ext_tools_cli_main(&rest));
+    }
     init_logging("opendan", true);
     pin_host_identity();
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");

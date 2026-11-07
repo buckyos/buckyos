@@ -1,7 +1,7 @@
 //! Media tool discovery for the workflow host (copied from the nfs_server
 //! preview probe so the kernel does not depend on a frame crate): poppler,
 //! ffmpeg and LibreOffice looked up in `$BUCKYOS_ROOT/libexec/buckyos-tool/bin`,
-//! `PATH`, then fixed install locations. The result is a [`ToolEnvironment`]
+//! `PATH`, fixed install locations, then the extension packages in `$BUCKYOS_ROOT/tools/bin`. The result is a [`ToolEnvironment`]
 //! whose per-tool versions form function fingerprints.
 
 use crate::native::{ToolEnvironment, ToolInfo};
@@ -29,10 +29,8 @@ pub fn exe_name(name: &str) -> String {
 
 /// Directories searched, in order.
 pub fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![buckyos_kit::get_buckyos_root_dir()
-        .join("libexec")
-        .join("buckyos-tool")
-        .join("bin")];
+    let root = buckyos_kit::get_buckyos_root_dir();
+    let mut dirs = vec![root.join("libexec").join("buckyos-tool").join("bin")];
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
@@ -64,12 +62,18 @@ pub fn search_dirs() -> Vec<PathBuf> {
             dirs.push(extra);
         }
     }
+    // Last: a machine keeps the converter it had. ext-core's ffmpeg has no `zscale`, so taking it over a system one would lose HDR tone mapping.
+    dirs.push(root.join("tools").join("bin"));
     dirs
 }
 
 pub fn find(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let exe = exe_name(name);
-    dirs.iter().map(|d| d.join(&exe)).find(|p| p.is_file())
+    // On Windows an extension package's launcher is a `.cmd`.
+    let launcher = cfg!(windows).then(|| format!("{name}.cmd"));
+    dirs.iter()
+        .flat_map(|d| std::iter::once(d.join(&exe)).chain(launcher.as_ref().map(|l| d.join(l))))
+        .find(|p| p.is_file())
 }
 
 fn output_of(path: &Path, args: &[&str]) -> Option<String> {
@@ -168,6 +172,11 @@ pub fn probe_default() -> ToolEnvironment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_installed_tool_wins_over_the_extension_package() {
+        assert!(search_dirs().last().unwrap().ends_with("tools/bin"));
+    }
 
     #[test]
     fn versions() {

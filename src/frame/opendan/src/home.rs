@@ -264,6 +264,57 @@ impl Home {
         Ok(settings)
     }
 
+    /// `skills.status`: each cmd_skill's commands on a runtime, and which extension package would bring what is missing.
+    /// The check runs now, so a package that just went active or away shows at once. The package catalog is the Zone's: an
+    /// Agent that cannot reach it still knows what is missing, only not what would bring it.
+    pub async fn skills_status(&self, agent: &dyn AgentStateClient, params: &Value) -> Result<Value, OpenDanError> {
+        let runtime_id = text_param(params, "runtime_id")?.filter(|id| !id.is_empty()).unwrap_or_else(|| "private".to_string());
+        let skills = agent.behaviors().skills(Some(SkillKind::Cmd)).await?;
+        let mut wanted: Vec<String> = skills.iter().flat_map(|s| s.commands.iter().cloned()).collect();
+        wanted.sort();
+        wanted.dedup();
+        let record = agent.runtimes().check(&runtime_id, &wanted, false).await?;
+        let mut resolved = record.caps.baseline_check.as_ref().map(|b| b.resolved.clone()).unwrap_or_default();
+        if let Some(tools) = record.caps.tools_check.as_ref() {
+            resolved.extend(tools.resolved.clone());
+        }
+        let (catalog, desired) = zone_ext_tools().await;
+        let reports: Vec<Value> = skills
+            .iter()
+            .filter(|s| !s.commands.is_empty())
+            .map(|s| json!({"name": s.name, "status": libopendan::skills::commands_status(&s.commands, &resolved, &catalog, &desired)}))
+            .collect();
+        Ok(json!({"runtime_id": record.runtime_id, "skills": reports}))
+    }
+
+    /// `skills.install_plan`: before a skill package goes in, what its manuals rely on against a runtime. Advice only: an
+    /// install never fails for a missing command.
+    pub async fn skills_install_plan(&self, agent: &dyn AgentStateClient, params: &Value) -> Result<Value, OpenDanError> {
+        let package: libopendan::skills::SkillPackage = serde_json::from_value(params.get("package").cloned().unwrap_or(Value::Null))
+            .map_err(|e| OpenDanError::InvalidArgument(format!("param `package`: {e}")))?;
+        let runtime_id = text_param(params, "runtime_id")?.filter(|id| !id.is_empty()).unwrap_or_else(|| "private".to_string());
+        let mut skills = Vec::new();
+        for (path, file) in &package.files {
+            let Some(name) = path.strip_prefix("cmd_skills/").and_then(|p| p.strip_suffix(".md")) else { continue };
+            let text = String::from_utf8(file.bytes()?).map_err(|_| OpenDanError::InvalidArgument(format!("{path} is not UTF-8 text")))?;
+            skills.push(libopendan::protocol::skill_meta(SkillKind::Cmd, name, &text));
+        }
+        let mut wanted: Vec<String> = skills.iter().flat_map(|s| s.commands.iter().cloned()).collect();
+        wanted.sort();
+        wanted.dedup();
+        let record = agent.runtimes().lookup(&runtime_id).await?.ok_or_else(|| OpenDanError::InvalidArgument(format!("no runtime `{runtime_id}`")))?;
+        let mut resolved = record.caps.baseline_check.as_ref().map(|b| b.resolved.clone()).unwrap_or_default();
+        if let Some(tools) = record.caps.tools_check.as_ref() {
+            resolved.extend(tools.resolved.clone());
+        }
+        let (catalog, desired) = zone_ext_tools().await;
+        let reports: Vec<Value> = skills
+            .iter()
+            .map(|s| json!({"name": s.name, "commands": s.commands, "status": libopendan::skills::commands_status(&s.commands, &resolved, &catalog, &desired)}))
+            .collect();
+        Ok(json!({"runtime_id": record.runtime_id, "skills": reports}))
+    }
+
     pub async fn workspaces(&self, agent: &dyn AgentStateClient) -> Result<Value, OpenDanError> {
         let records = agent.workspaces().query(&WorkspaceQuery::default()).await?;
         Ok(json!(records.into_iter().map(|record| json!({
@@ -286,6 +337,35 @@ impl Home {
             "last_error": record.last_error,
         })).collect::<Vec<_>>()))
     }
+}
+
+/// The Zone's extension package catalog and desired state, from control-panel. Empty outside a Zone or when it does not
+/// answer: advice goes missing, nothing else.
+async fn zone_ext_tools() -> (Vec<buckyos_api::ExtToolsCatalogEntry>, std::collections::BTreeMap<String, buckyos_api::ExtToolsDesired>) {
+    let answer = async {
+        let runtime = buckyos_api::get_buckyos_api_runtime().map_err(|e| e.to_string())?;
+        let client = runtime.get_zone_service_krpc_client("control-panel").await.map_err(|e| e.to_string())?;
+        client.call("ext_tools.status", json!({})).await.map_err(|e| e.to_string())
+    }
+    .await;
+    let status: Value = match answer {
+        Ok(status) => status,
+        Err(error) => {
+            log::warn!("extension package catalog unavailable: {error}");
+            return Default::default();
+        }
+    };
+    let mut catalog = Vec::new();
+    let mut desired = std::collections::BTreeMap::new();
+    for package in status["packages"].as_array().into_iter().flatten() {
+        if let Ok(entry) = serde_json::from_value(package["latest"].clone()) {
+            catalog.push(entry);
+        }
+        if let Ok(state) = serde_json::from_value(package["desired"].clone()) {
+            desired.insert(package["id"].as_str().unwrap_or_default().to_string(), state);
+        }
+    }
+    (catalog, desired)
 }
 
 /// Where the home page reads its agent root from (for re-projection).

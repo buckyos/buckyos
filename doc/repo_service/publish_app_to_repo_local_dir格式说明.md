@@ -157,7 +157,11 @@ my-script-app/
 
 发布时 `local_dir` 整体会被打包成 `script` 子包。
 
-## 4. 当前发布流程
+## 4. 扩展工具包
+
+`local_dir` 是工程目录：`ext-manifest.json` + `payload/<platform>/`，模板可用 `pikg build` 生成的 `APPDOC.json`。每个 `ext_tools_<os>_<arch>` 子包取自对应的 `payload/<platform>`，发布前按 [PIKG 格式 §5.1](../pikg/format.md) 校验清单与 payload。
+
+## 5. 当前发布流程
 
 当前实现流程如下：
 
@@ -168,10 +172,11 @@ my-script-app/
 5. 将这些 `PackageMeta` 写入 `NamedStore`
 6. 构造最终 `AppDoc`（纯 meta，不承载内容 chunk）
 7. 将最终 `AppDoc` 写入 `NamedStore`
-8. 将这些对象固定到 repo
-9. 返回最终 `AppDoc` 的 `ObjId`
+8. 打成 PIKG，staging 并自校验（返回 `pikg_handle`）
+9. 把 PIKG 作为文件固定到 repo（`repo.store`，名字 `<AppId>.pikg`，bucket key `<AppId>.pikg/<version>`；repo-service 只保存文件内容，`PackageMeta` 与 `AppDoc` 在 named store 和 PIKG 里）。同一版本不能再绑定到另一份内容，要先 `unpin`
+10. 返回最终 `AppDoc` 的 `ObjId`
 
-## 5. 建议
+## 6. 建议
 
 - `Web` 和 `Agent`：直接把可运行目录作为 `local_dir`。
 - `Agent`：不要在模板里放 `agent_skills`。

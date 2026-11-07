@@ -4,6 +4,7 @@
 //! there (`grant`) and how the agent has used it (`usage`); executing in it
 //! is the runtime layer's job (`agent_tool::runtime`).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -167,18 +168,125 @@ impl RuntimePlatform {
     }
 }
 
-/// The last check of a runtime's standard tools ([`crate::baseline`]):
-/// only a hint, the declaration decides (Q5).
+/// Who provides a command found on a runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvidedBy {
+    /// The standard layer: under `$BUCKYOS_ROOT`, outside `tools/`.
+    BuckyosRoot,
+    /// An extension package: under `$BUCKYOS_ROOT/tools`.
+    Exttools,
+    /// The Agent's own (`tools/<skill>/bin`).
+    Agent,
+    /// Beside a development build of the program: serves as a standard helper,
+    /// and views say so.
+    Dev,
+    /// The machine's own PATH.
+    System,
+}
+
+/// Where a check found a command. `version` comes from a full check only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ResolvedCommand {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub provided_by: ProvidedBy,
+    /// A full check found it does not run (exit 126 / 127): it counts as
+    /// missing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stub: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtStatus {
+    /// Every extended tool, all from extension packages.
+    Ok,
+    /// Some extended tools are missing.
+    Partial,
+    /// None of them is there.
+    None,
+    /// Every extended tool, some from the machine or the Agent.
+    System,
+}
+
+/// The extended layer of a runtime, whatever it declares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ExtCheck {
+    pub status: ExtStatus,
+    #[serde(default)]
+    pub missing: Vec<String>,
+    /// Extended commands that are there but not from an extension package.
+    #[serde(default)]
+    pub system: Vec<String>,
+}
+
+impl ExtCheck {
+    /// `ok | partial(missing a, b) | none | system`: a segment of a runtime's
+    /// line in the plan table.
+    pub fn summary(&self) -> String {
+        match self.status {
+            ExtStatus::Ok => "ok".to_string(),
+            ExtStatus::Partial => format!("partial(missing {})", self.missing.join(", ")),
+            ExtStatus::None => "none".to_string(),
+            ExtStatus::System => "system".to_string(),
+        }
+    }
+}
+
+/// The last check of a runtime's tools ([`crate::baseline`]) against what it
+/// declares: only a hint, the declaration decides (Q5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BaselineCheck {
     pub checked_at_ms: u64,
-    /// Standard commands not found on the runtime's PATH.
+    /// The declaration checked against.
+    #[serde(default = "standard_baseline")]
+    pub level: RuntimeBaseline,
+    /// Commands of that level not found on the runtime's PATH.
     #[serde(default)]
     pub missing: Vec<String>,
+    /// Standard commands found outside `$BUCKYOS_ROOT`: not the standard ones.
+    #[serde(default)]
+    pub unmanaged: Vec<String>,
+    /// Where each command found is, standard and extended.
+    #[serde(default)]
+    pub resolved: BTreeMap<String, ResolvedCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<ExtCheck>,
     pub ok: bool,
     /// Why the check could not run (the runtime was not reachable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+impl BaselineCheck {
+    /// What is wrong, for a log line or a list; `None` when it passed.
+    pub fn problem(&self) -> Option<String> {
+        if self.ok {
+            return None;
+        }
+        if let Some(error) = &self.error {
+            return Some(error.clone());
+        }
+        let mut parts = Vec::new();
+        if !self.missing.is_empty() {
+            parts.push(format!("missing {}", self.missing.join(", ")));
+        }
+        if !self.unmanaged.is_empty() {
+            parts.push(format!("not from $BUCKYOS_ROOT: {}", self.unmanaged.join(", ")));
+        }
+        Some(parts.join("; "))
+    }
+
+    /// The commands that serve from beside a development build.
+    pub fn dev_helpers(&self) -> Vec<&str> {
+        self.resolved
+            .iter()
+            .filter(|(_, c)| c.provided_by == ProvidedBy::Dev)
+            .map(|(n, _)| n.as_str())
+            .collect()
+    }
 }
 
 /// Commands beyond the standard tools verified to exist on a runtime
@@ -190,6 +298,9 @@ pub struct ToolsCheck {
     pub present: Vec<String>,
     #[serde(default)]
     pub missing: Vec<String>,
+    /// Where each command found is.
+    #[serde(default)]
+    pub resolved: BTreeMap<String, ResolvedCommand>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -210,6 +321,10 @@ pub struct RuntimeCaps {
     /// prompts say.
     #[serde(default = "standard_baseline")]
     pub baseline: RuntimeBaseline,
+    /// `$BUCKYOS_ROOT` of that machine as its executor reports it; a machine
+    /// without a managed install has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buckyos_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline_check: Option<BaselineCheck>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -227,6 +342,7 @@ impl Default for RuntimeCaps {
             desktop: false,
             identity_mode: None,
             baseline: RuntimeBaseline::Standard,
+            buckyos_root: None,
             baseline_check: None,
             tools_check: None,
         }

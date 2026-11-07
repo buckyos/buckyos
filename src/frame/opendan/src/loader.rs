@@ -655,19 +655,17 @@ pub async fn check_runtimes(agent: Arc<dyn AgentStateClient>) {
         }
     };
     for r in runtimes.into_iter().filter(|r| r.usable()) {
-        match agent.runtimes().check(&r.runtime_id, &[]).await {
+        match agent.runtimes().check(&r.runtime_id, &[], false).await {
             Ok(c) => match &c.caps.baseline_check {
                 Some(b) if !b.ok => log::warn!(
-                    "loader: runtime {} ({:?} declared {}): {}",
+                    "loader: runtime {} ({:?} declared {}): {} (see `xagent runtime baseline --level {}`)",
                     c.runtime_id,
                     c.availability,
                     c.caps.baseline.as_str(),
-                    b.error.clone().unwrap_or_else(|| format!(
-                        "standard tools missing: {} (install them on that machine, see `xagent runtime baseline`)",
-                        b.missing.join(", ")
-                    ))
+                    b.problem().unwrap_or_default(),
+                    c.caps.baseline.as_str(),
                 ),
-                _ => log::info!("loader: runtime {} {:?}, standard tools complete", c.runtime_id, c.availability),
+                _ => log::info!("loader: runtime {} {:?}, {} tools complete", c.runtime_id, c.availability, c.caps.baseline.as_str()),
             },
             Err(e) => log::warn!("loader: runtime {} not checked: {e}", r.runtime_id),
         }

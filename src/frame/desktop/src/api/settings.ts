@@ -301,3 +301,59 @@ export const requestLogDownload = async (
   since: string,
 ): RpcResult<LogDownloadTicket> =>
   callSettingsRpc<LogDownloadTicket>('system.logs.download', { services, since, mode: 'filtered' })
+
+export type ExtToolsStage = 'queued' | 'downloading' | 'verifying' | 'staging' | 'checking' | 'active' | 'removing' | 'removed' | 'failed' | 'unsupported'
+
+export interface ExtToolsManifest {
+  id: string
+  version: string
+  requires?: Array<{ id: string; version: string }>
+  provides: Array<{ command: string }>
+  platforms: string[]
+  size_bytes?: Record<string, number>
+  license?: string
+  desc?: string
+}
+
+export interface ExtToolsCatalogEntry {
+  manifest: ExtToolsManifest
+  pikg_digest: string
+  content_id: string
+}
+
+export interface ExtToolsNodeStatus {
+  version: string
+  stage: ExtToolsStage
+  error?: string | null
+  targets?: Record<string, { stage: ExtToolsStage; version?: string | null; error?: string | null }>
+}
+
+export interface ExtToolsPackage {
+  id: string
+  latest: ExtToolsCatalogEntry | null
+  versions: string[] | null
+  desired: { version: string; enabled: boolean } | null
+  nodes: Record<string, ExtToolsNodeStatus> | null
+  /** command -> the installed skills that rely on it. */
+  skills?: Record<string, string[]> | null
+}
+
+export interface ExtToolsStatusResponse {
+  packages: ExtToolsPackage[]
+  nodes: Array<{ id: string; platform?: string | null; containers?: boolean }>
+}
+
+export interface ExtToolsPlan {
+  enable: ExtToolsCatalogEntry[]
+  disable: string[]
+  errors: string[]
+}
+
+export const fetchExtToolsStatus = async (): RpcResult<ExtToolsStatusResponse> =>
+  callSettingsRpc<ExtToolsStatusResponse>('ext_tools.status')
+
+export const fetchExtToolsPlan = async (id: string, enabled: boolean, version?: string): RpcResult<ExtToolsPlan> =>
+  callSettingsRpc<ExtToolsPlan>('ext_tools.plan', { id, enabled, ...(version ? { version } : {}) })
+
+export const setExtToolsDesired = async (id: string, enabled: boolean, version?: string): RpcResult<{ ok: boolean; plan: ExtToolsPlan }> =>
+  callSettingsRpc<{ ok: boolean; plan: ExtToolsPlan }>('ext_tools.set_desired', { id, enabled, ...(version ? { version } : {}) })

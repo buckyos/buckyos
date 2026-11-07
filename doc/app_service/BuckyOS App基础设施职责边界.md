@@ -56,7 +56,7 @@ Jarvis 在 `system/install_settings.agent_templates` 登记为内置 Agent 模�
 | `app_type=agent` 模板 | 公共 `apps.submit` 注册/更新模板；创建 Agent 时构造 runtime App |
 | 独立 `app_type=agent_skills` 包 | TypeScript verifier → `skill install` → Agent `skills.install`，不进入普通 App Installer |
 
-Agent 模板可包含 `agent` 与 `agent_skills`；schema 中存在 `agent_tools` 不表示所有发布路径都支持，当前 `app.publish` 拒绝该子包。skill 的目录与 Session 冻结规则由 [OpenDAN 开发指南](../sdk/OpenDAN_Agent_Dev_Guide.md) 维护。
+Agent 模板可包含 `agent` 与 `agent_skills`。skill 的目录与 Session 冻结规则由 [OpenDAN 开发指南](../sdk/OpenDAN_Agent_Dev_Guide.md) 维护。
 
 ## 6. 签名与正式发布的现状
 

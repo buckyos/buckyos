@@ -360,6 +360,8 @@ impl StateService {
             "usage.models" => self.home.usage_models(self.agent.as_ref()).await,
             "ui.bindings" => self.home.ui_bindings(self.agent.as_ref()).await,
             "home.workspaces" => self.home.workspaces(self.agent.as_ref()).await,
+            "skills.status" => self.home.skills_status(self.agent.as_ref(), params).await,
+            "skills.install_plan" => self.home.skills_install_plan(self.agent.as_ref(), params).await,
             "runtimes.settings" => self.home.runtime_settings().await,
             "runtimes.settings_set" => {
                 let settings = self.home.set_runtime_settings(params).await?;
@@ -466,6 +468,8 @@ fn is_read(method: &str) -> bool {
             | "behaviors.revision"
             | "behaviors.cmd_skill"
             | "skills.list"
+            | "skills.install_plan"
+            | "runtimes.ext_tools"
             | "goals.list"
             | "goals.get"
             | "goals.revision"
@@ -497,6 +501,7 @@ fn is_operation(method: &str) -> bool {
             | "session.post"
             | "agent.profile_set"
             | "runtimes.settings_set"
+            | "skills.status"
             | "goals.activate"
             | "goals.post"
     )
@@ -634,7 +639,7 @@ mod permission_tests {
             "artifacts.versions", "artifacts.list", "workspaces.lookup", "workspaces.query",
             "workspaces.list", "workspaces.runtime_impact", "runtimes.list", "runtimes.lookup",
             "behaviors.identity", "behaviors.get", "behaviors.list", "behaviors.revision",
-            "behaviors.cmd_skill", "skills.list", "goals.list", "goals.get", "goals.revision",
+            "behaviors.cmd_skill", "skills.list", "skills.install_plan", "runtimes.ext_tools", "goals.list", "goals.get", "goals.revision",
             "goals.changes", "goals.state", "goals.epoch_state", "goals.activations",
             "goals.schedule", "notify.state", "notify.list", "session.read", "session.worklog", "session.work_cards",
             "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status",
@@ -654,7 +659,7 @@ mod permission_tests {
             "workspaces.archive", "workspaces.unregister", "workspaces.set_runtime_available",
             "runtimes.register", "runtimes.update", "runtimes.check", "runtimes.unregister", "runtimes.note_usage",
             "goals.create", "goals.revise", "goals.set_status", "goals.reopen", "goals.restart",
-            "notify.send", "notify.cancel", "notify.answer", "skills.install", "skills.remove",
+            "notify.send", "notify.cancel", "notify.answer", "skills.install", "skills.remove", "skills.status", "runtimes.ext_tools_check",
             "session.stop", "session.decide", "session.post", "goals.activate", "goals.post",
         ] {
             assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, OWN_APP), "{method}");

@@ -7,6 +7,7 @@ import {
   dataModel,
   type ArtifactHead,
   type ComputerAccess,
+  type ExtCheck,
   type InstallGrant,
   type KnownRuntime,
   type KnownWorkspace,
@@ -361,6 +362,28 @@ const runtimeAvailability: Record<KnownRuntime['availability'], TextKey> = {
   permission_denied: 'runtimePermissionDenied',
 }
 
+function extToolsLine(ext: ExtCheck): string {
+  switch (ext.status) {
+    case 'ok': return t('runtimeExtOk')
+    case 'partial': return t('runtimeExtPartial', { tools: ext.missing.join(', ') })
+    case 'none': return t('runtimeExtNone')
+    case 'system': return t('runtimeExtSystem', { tools: ext.system.join(', ') })
+  }
+}
+
+/** What the node installed for this runtime. Read-only: packages are chosen for the whole Zone, not per Agent. */
+function RuntimeExtPackages({ runtimeId }: { runtimeId: string }) {
+  const report = useQuery(['runtimes.ext_tools', runtimeId], () => dataModel.runtimeExtTools(runtimeId))
+  const packages = Object.entries(report.data?.packages ?? {})
+  if (packages.length === 0) return null
+  const names = packages.map(([id, install]) => `${id} ${install.version}`).join(', ')
+  return (
+    <p className="mt-1 break-words text-xs text-mute" data-testid="runtime-ext-packages">
+      {t('runtimeExtPackages', { packages: names })} · {t('runtimeExtManagedByNode')}
+    </p>
+  )
+}
+
 function RuntimeCard({ runtime, chosen, refresh }: {
   runtime: KnownRuntime
   /** The owner's setting for this runtime on the agent, when there is one. */
@@ -385,6 +408,16 @@ function RuntimeCard({ runtime, chosen, refresh }: {
   const isPrivate = runtime.connector.type === 'native'
   const retired = runtime.lifecycle === 'retired'
   const { caps, grant, usage } = runtime
+  const check = caps.baseline_check
+  const devHelpers = Object.entries(check?.resolved ?? {}).filter(([, command]) => command.provided_by === 'dev').map(([name]) => name)
+  const extMissing = check?.ext?.missing ?? []
+  const standardMissing = check?.missing.filter((tool) => !extMissing.includes(tool)) ?? []
+  const toolProblem = check?.error
+    ? t('runtimeToolCheckFailed', { error: check.error })
+    : [
+        standardMissing.length > 0 && t('runtimeToolsMissing', { tools: standardMissing.join(', ') }),
+        check?.unmanaged?.length && t('runtimeToolsUnmanaged', { tools: check.unmanaged.join(', ') }),
+      ].filter(Boolean).join(' · ')
   return (
     <li className={clsx('min-w-0 py-3 first:pt-1 last:pb-0', retired && 'opacity-60')} data-testid={`runtime-${runtime.runtime_id}`}>
       <div className="flex items-start gap-2">
@@ -425,12 +458,13 @@ function RuntimeCard({ runtime, chosen, refresh }: {
         </p>}
       {runtime.last_error && runtime.availability !== 'available' &&
         <p className="mt-2 break-words text-xs text-warn">{runtime.last_error}</p>}
-      {caps.baseline_check && !caps.baseline_check.ok &&
-        <p className="mt-2 break-words text-xs text-warn" data-testid="runtime-tool-check">
-          {caps.baseline_check.error
-            ? t('runtimeToolCheckFailed', { error: caps.baseline_check.error })
-            : t('runtimeToolsMissing', { tools: caps.baseline_check.missing.join(', ') })}
-        </p>}
+      {toolProblem &&
+        <p className="mt-2 break-words text-xs text-warn" data-testid="runtime-tool-check">{toolProblem}</p>}
+      {check?.ext &&
+        <p className={clsx('mt-1 break-words text-xs', check.missing.some((tool) => extMissing.includes(tool)) ? 'text-warn' : 'text-mute')} data-testid="runtime-ext">{extToolsLine(check.ext)}</p>}
+      {!retired && runtime.availability === 'available' && <RuntimeExtPackages runtimeId={runtime.runtime_id} />}
+      {devHelpers.length > 0 &&
+        <p className="mt-1 break-words text-xs text-mute" data-testid="runtime-dev-helpers">{t('runtimeDevHelpers', { tools: devHelpers.join(', ') })}</p>}
       {caps.tools_check && caps.tools_check.present.length > 0 &&
         <p className="mt-1 break-words text-xs text-mute">{t('runtimeCommandsVerified', { tools: caps.tools_check.present.join(', ') })}</p>}
       <ErrorBox error={error} />

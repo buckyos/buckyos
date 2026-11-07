@@ -10,6 +10,11 @@ on:
         required: false
         type: boolean
         default: false
+      ext_tools:
+        description: Pin ext-core with the ext-tools-manifest artifact of this run
+        required: false
+        type: boolean
+        default: false
       paios_images:
         description: Pin paios images with the paios-images-manifest artifact of this run
         required: false
@@ -101,6 +106,19 @@ jobs:
         if ($LASTEXITCODE -ne 0) {
           throw "paios_images.json validation failed with exit code $LASTEXITCODE"
         }
+    - name: Download ext_tools.json
+      if: ${{ inputs.ext_tools }}
+      uses: actions/download-artifact@v6
+      with:
+        name: ext-tools-manifest
+        path: ${{ runner.temp }}/ext-tools-manifest
+    - name: Pin ext-core
+      if: ${{ inputs.ext_tools }}
+      shell: pwsh
+      run: |
+        $dir = Join-Path $env:RUNNER_TEMP 'staged/buckyos/bin/ext-tools'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Copy-Item (Join-Path $env:RUNNER_TEMP 'ext-tools-manifest/ext_tools.json') (Join-Path $dir 'ext_tools.json')
     - name: Get staged BuckyOS version
       id: version
       shell: pwsh

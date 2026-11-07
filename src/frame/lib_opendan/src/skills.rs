@@ -127,6 +127,131 @@ pub fn list(root: &Path, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
     Ok(out)
 }
 
+/// Of `commands`, the ones a check of this runtime found absent. A command no check has looked at is not known to be
+/// missing, and a manual does not claim it is.
+pub fn known_missing_commands(commands: &[String], caps: &RuntimeCaps) -> Vec<String> {
+    let resolved = |c: &String| -> Option<bool> {
+        let checks = [caps.baseline_check.as_ref().map(|b| &b.resolved), caps.tools_check.as_ref().map(|t| &t.resolved)];
+        let asked = caps.baseline_check.as_ref().is_some_and(|b| b.error.is_none() && crate::baseline::checked_commands(false).contains(&c.as_str()));
+        match checks.iter().flatten().find_map(|r| r.get(c)) {
+            Some(found) => Some(!found.stub),
+            None if asked => Some(false),
+            None => None,
+        }
+    };
+    commands.iter().filter(|c| resolved(c) == Some(false)).cloned().collect()
+}
+
+/// One command of a skill on one runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillCommandState {
+    pub present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provided_by: Option<ProvidedBy>,
+}
+
+/// An extension package that would bring missing commands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecommendedPackage {
+    pub id: String,
+    pub version: String,
+    /// Packages it would bring along that are not enabled yet, dependencies first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_chain: Vec<String>,
+    /// The missing commands it provides.
+    pub provides: Vec<String>,
+}
+
+/// `ready`: every command is there. `ready_system`: they are, some not from BuckyOS (the owner's own install, which counts).
+/// `partial`: some are missing; the skill still works as far as it can. Nothing here ever blocks a skill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCommandsState {
+    Ready,
+    ReadySystem,
+    Partial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillCommandsStatus {
+    pub state: SkillCommandsState,
+    pub commands: BTreeMap<String, SkillCommandState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recommended_packages: Vec<RecommendedPackage>,
+    /// Missing commands no package provides: the owner has to bring them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_package: Vec<String>,
+}
+
+/// A skill's `commands` against what a runtime has and what the Zone's extension packages provide. A command several
+/// packages provide goes to the one needing the fewest other packages. Pure.
+pub fn commands_status(
+    commands: &[String],
+    resolved: &BTreeMap<String, ResolvedCommand>,
+    catalog: &[buckyos_api::ExtToolsCatalogEntry],
+    desired: &BTreeMap<String, buckyos_api::ExtToolsDesired>,
+) -> SkillCommandsStatus {
+    let mut states = BTreeMap::new();
+    let mut missing = Vec::new();
+    let mut foreign = false;
+    for command in commands {
+        match resolved.get(command).filter(|r| !r.stub) {
+            Some(found) => {
+                foreign |= matches!(found.provided_by, ProvidedBy::System);
+                states.insert(command.clone(), SkillCommandState { present: true, provided_by: Some(found.provided_by) });
+            }
+            None => {
+                missing.push(command.clone());
+                states.insert(command.clone(), SkillCommandState { present: false, provided_by: None });
+            }
+        }
+    }
+    let mut packages: BTreeMap<String, RecommendedPackage> = BTreeMap::new();
+    let mut no_package = Vec::new();
+    for command in &missing {
+        let mut best: Option<(&buckyos_api::ExtToolsCatalogEntry, Vec<String>)> = None;
+        let mut candidates: Vec<&buckyos_api::ExtToolsCatalogEntry> = catalog.iter().filter(|e| e.manifest.provides.iter().any(|p| &p.command == command)).collect();
+        // The newest version of each package; packages in name order, so the answer does not depend on the Repo's listing.
+        candidates.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
+        candidates.dedup_by(|b, a| a.manifest.id == b.manifest.id);
+        for candidate in candidates {
+            let newest = {
+                let mut versions: Vec<buckyos_api::ExtToolsCatalogEntry> = catalog.iter().filter(|e| e.manifest.id == candidate.manifest.id).cloned().collect();
+                buckyos_api::ext_tools_sort_versions(&mut versions);
+                versions.into_iter().next()
+            };
+            let Some(newest) = newest else { continue };
+            let plan = buckyos_api::ext_tools_plan_enable(catalog, desired, &newest.manifest.id, Some(&newest.manifest.version));
+            if !plan.errors.is_empty() || !newest.manifest.provides.iter().any(|p| &p.command == command) {
+                continue;
+            }
+            let chain: Vec<String> = plan.enable.iter().map(|e| e.manifest.id.clone()).filter(|id| id != &newest.manifest.id).collect();
+            if best.as_ref().is_none_or(|(_, b)| chain.len() < b.len()) {
+                let entry = catalog.iter().find(|e| e.manifest.id == newest.manifest.id && e.manifest.version == newest.manifest.version);
+                if let Some(entry) = entry {
+                    best = Some((entry, chain));
+                }
+            }
+        }
+        match best {
+            Some((entry, chain)) => packages
+                .entry(entry.manifest.id.clone())
+                .or_insert_with(|| RecommendedPackage { id: entry.manifest.id.clone(), version: entry.manifest.version.clone(), requires_chain: chain, provides: Vec::new() })
+                .provides
+                .push(command.clone()),
+            None => no_package.push(command.clone()),
+        }
+    }
+    let state = if !missing.is_empty() {
+        SkillCommandsState::Partial
+    } else if foreign {
+        SkillCommandsState::ReadySystem
+    } else {
+        SkillCommandsState::Ready
+    };
+    SkillCommandsStatus { state, commands: states, recommended_packages: packages.into_values().collect(), no_package }
+}
+
 /// A skill package, unpacked: `cmd_skills/<name>.md`, `goal_skills/<name>.md`
 /// and `tools/<name>/…` for its cmd_skills.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -382,6 +507,15 @@ pub fn install(root: &Path, pkg: &SkillPackage, replace: bool, who: &str) -> Res
         let (kind, name) = place(path)?;
         skills.entry((kind, name)).or_default().push((path.as_str(), f));
     }
+    if let Some(path) = pkg.files.keys().find(|path| {
+        path.strip_prefix(&format!("{TOOLS_DIR}/"))
+            .and_then(|rest| rest.split_once("/bin/"))
+            .is_some_and(|(_, command)| crate::baseline::STANDARD_TOOLS.iter().any(|t| t.name == command.split('.').next().unwrap_or(command)))
+    }) {
+        return Err(OpenDanError::InvalidArgument(format!(
+            "{path}: a skill cannot bring a command of the standard layer: it would shadow the Agent's own"
+        )));
+    }
     for (kind, name) in skills.keys() {
         let manual = format!("{}/{name}.md", kind.dir());
         let Some(file) = pkg.files.get(&manual) else {
@@ -503,6 +637,110 @@ pub fn remove(root: &Path, kind: SkillKind, name: &str) -> Result<SkillMeta> {
     }
     save_record(root, &record)?;
     Ok(meta)
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    use buckyos_api::{ExtToolsCatalogEntry, ExtToolsCommand, ExtToolsManifest, ExtToolsRequire};
+
+    fn entry(id: &str, version: &str, commands: &[&str], requires: &[&str]) -> ExtToolsCatalogEntry {
+        ExtToolsCatalogEntry {
+            manifest: ExtToolsManifest {
+                schema: buckyos_api::EXT_TOOLS_MANIFEST_SCHEMA.to_string(),
+                id: id.to_string(),
+                version: version.to_string(),
+                requires: requires.iter().map(|r| ExtToolsRequire { id: r.to_string(), version: "*".to_string() }).collect(),
+                conflicts: vec![],
+                provides: commands.iter().map(|c| ExtToolsCommand { command: c.to_string(), version_probe: format!("{c} -v"), smoke: None }).collect(),
+                platforms: vec!["linux-x86_64".to_string()],
+                size_bytes: BTreeMap::new(),
+                license: String::new(),
+                desc: String::new(),
+            },
+            pikg_digest: format!("sha256:{id}{version}"),
+            content_id: format!("file:{id}{version}"),
+        }
+    }
+
+    fn found(entries: &[(&str, ProvidedBy)]) -> BTreeMap<String, ResolvedCommand> {
+        entries.iter().map(|(n, by)| (n.to_string(), ResolvedCommand { path: format!("/x/{n}"), version: None, provided_by: *by, stub: false })).collect()
+    }
+
+    fn commands(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn a_skill_is_ready_from_any_source_and_says_whose_it_is() {
+        let none = BTreeMap::new();
+        let status = commands_status(&commands(&["ffmpeg"]), &found(&[("ffmpeg", ProvidedBy::Exttools)]), &[], &none);
+        assert_eq!(status.state, SkillCommandsState::Ready);
+        assert_eq!(status.commands["ffmpeg"].provided_by, Some(ProvidedBy::Exttools));
+        let status = commands_status(&commands(&["ffmpeg", "jq"]), &found(&[("ffmpeg", ProvidedBy::System), ("jq", ProvidedBy::Exttools)]), &[], &none);
+        assert_eq!(status.state, SkillCommandsState::ReadySystem, "the owner's own ffmpeg counts");
+        let status = commands_status(&commands(&["mine"]), &found(&[("mine", ProvidedBy::Agent)]), &[], &none);
+        assert_eq!(status.state, SkillCommandsState::Ready);
+        let mut stubbed = found(&[("ffmpeg", ProvidedBy::Exttools)]);
+        stubbed.get_mut("ffmpeg").unwrap().stub = true;
+        assert_eq!(commands_status(&commands(&["ffmpeg"]), &stubbed, &[], &none).state, SkillCommandsState::Partial, "a stub is not a command");
+    }
+
+    #[test]
+    fn what_is_missing_points_at_the_package_needing_the_least() {
+        let none = BTreeMap::new();
+        let core = entry("ext-core", "1.0.0", &["python3"], &[]);
+        let media_old = entry("ext-media", "1.0.0", &["ffmpeg"], &["ext-core"]);
+        let media = entry("ext-media", "1.2.0", &["ffmpeg", "ffprobe"], &["ext-core"]);
+        let standalone = entry("ext-ffmpeg", "3.0.0", &["ffmpeg"], &[]);
+        let catalog = vec![core.clone(), media_old, media];
+        let status = commands_status(&commands(&["ffmpeg", "ffprobe", "blender"]), &BTreeMap::new(), &catalog, &none);
+        assert_eq!(status.state, SkillCommandsState::Partial);
+        assert_eq!(status.recommended_packages.len(), 1);
+        let package = &status.recommended_packages[0];
+        assert_eq!((package.id.as_str(), package.version.as_str()), ("ext-media", "1.2.0"), "the newest version");
+        assert_eq!(package.requires_chain, vec!["ext-core".to_string()]);
+        assert_eq!(package.provides, commands(&["ffmpeg", "ffprobe"]));
+        assert_eq!(status.no_package, commands(&["blender"]), "no package has it: the owner brings it");
+
+        let mut with_standalone = catalog.clone();
+        with_standalone.push(standalone);
+        let status = commands_status(&commands(&["ffmpeg"]), &BTreeMap::new(), &with_standalone, &none);
+        assert_eq!(status.recommended_packages[0].id, "ext-ffmpeg", "nothing else to enable");
+    }
+
+    #[test]
+    fn a_manual_names_its_commands_in_its_front_matter() {
+        let meta = skill_meta(SkillKind::Cmd, "x", "---\nname: x\ncommands: ffmpeg, ffprobe , ../evil, magick\n---\nbody\n");
+        assert_eq!(meta.commands, commands(&["ffmpeg", "ffprobe", "magick"]));
+        assert!(skill_meta(SkillKind::Cmd, "x", "---\nname: x\n---\nbody\n").commands.is_empty());
+    }
+
+    #[test]
+    fn only_a_command_a_check_looked_for_is_known_to_be_missing() {
+        let mut caps = RuntimeCaps::default();
+        assert!(known_missing_commands(&commands(&["ffmpeg"]), &caps).is_empty(), "no check yet");
+        caps.baseline_check = Some(BaselineCheck { checked_at_ms: 1, level: buckyos_api::RuntimeBaseline::Standard, ok: true, missing: vec![], unmanaged: vec![], resolved: found(&[("jq", ProvidedBy::System)]), ext: None, error: None });
+        assert_eq!(known_missing_commands(&commands(&["ffmpeg", "jq", "blender"]), &caps), commands(&["ffmpeg"]), "ffmpeg was looked for, blender was not");
+        caps.tools_check = Some(ToolsCheck { checked_at_ms: 1, present: vec![], missing: vec![], resolved: found(&[("blender", ProvidedBy::System)]), error: None });
+        assert_eq!(known_missing_commands(&commands(&["blender"]), &caps), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_skill_cannot_shadow_a_standard_command_but_may_shadow_an_extension_one() {
+        let root = std::env::temp_dir().join(format!("skills-shadow-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = |text: &str| SkillFile { content: { use base64::Engine; base64::engine::general_purpose::STANDARD.encode(text) }, executable: true };
+        let mut pkg = SkillPackage { package: "p".to_string(), version: "1".to_string(), ..Default::default() };
+        pkg.files.insert("cmd_skills/s.md".to_string(), file("---\nname: s\n---\nbody\n"));
+        pkg.files.insert("tools/s/bin/xagent".to_string(), file("#!/bin/sh\n"));
+        let error = install(&root, &pkg, false, "t").unwrap_err().to_string();
+        assert!(error.contains("standard layer"), "{error}");
+        pkg.files.remove("tools/s/bin/xagent");
+        pkg.files.insert("tools/s/bin/ffmpeg".to_string(), file("#!/bin/sh\n"));
+        assert!(install(&root, &pkg, false, "t").is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]

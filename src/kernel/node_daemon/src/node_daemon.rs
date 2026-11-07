@@ -1404,6 +1404,7 @@ async fn node_daemon_main_loop(
     is_ood: bool,
     is_desktop: bool,
 ) -> Result<()> {
+    crate::ext_tools::spawn_reconciler(node_host_name.to_string());
     let mut loop_step = 0;
     let mut last_register_time = 0;
     let mut node_gateway_config_id: Option<ObjId> = None;

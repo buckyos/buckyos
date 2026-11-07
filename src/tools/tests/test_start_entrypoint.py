@@ -61,6 +61,7 @@ class BuckyosStartLinuxRootTests(unittest.TestCase):
             patch.object(stop, "_buckyos_root", return_value=root),
             patch.object(os, "geteuid", return_value=1000),
             patch.object(module, "resolve_buckyos_root", return_value=root),
+            patch.object(module, "_prepare_ext_tools"),
             patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
             patch.object(module, "_run_command", side_effect=run_update),
             patch.object(module, "_run_make_config", side_effect=run_make_config),
@@ -162,6 +163,7 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
                 with (
                     tempfile.TemporaryDirectory() as temporary,
                     patch.object(module, "resolve_buckyos_root", return_value=Path(temporary)),
+                    patch.object(module, "_prepare_ext_tools"),
                     patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
                     patch.object(module, "kill_all_processes") as kill_all,
                     patch.object(module, "update_files") as update_files,
@@ -209,6 +211,7 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
 
             with (
                 patch.object(module, "resolve_buckyos_root", return_value=root),
+                patch.object(module, "_prepare_ext_tools"),
                 patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
                 patch.object(module, "kill_all_processes"),
                 patch.object(module, "update_files", side_effect=update) as update_files,
@@ -252,6 +255,7 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
 
             with (
                 patch.object(module, "resolve_buckyos_root", return_value=root),
+                patch.object(module, "_prepare_ext_tools"),
                 patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
                 patch.object(module, "kill_all_processes"),
                 patch.object(module, "_run_command", side_effect=install) as run_command,
@@ -296,6 +300,7 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
 
                 with (
                     patch.object(module, "resolve_buckyos_root", return_value=root),
+                    patch.object(module, "_prepare_ext_tools"),
                     patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
                     patch.object(module, "kill_all_processes"),
                     patch.object(module, "_run_command", side_effect=install),
@@ -319,6 +324,7 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
 
             with (
                 patch.object(module, "resolve_buckyos_root", return_value=root),
+                patch.object(module, "_prepare_ext_tools"),
                 patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
                 patch.object(module, "kill_all_processes"),
                 patch.object(module, "_run_command", return_value=0),
@@ -353,6 +359,7 @@ class BuckyosStartEntrypointTests(unittest.TestCase):
 
             with (
                 patch.object(module, "resolve_buckyos_root", return_value=root),
+                patch.object(module, "_prepare_ext_tools"),
                 patch.object(module, "_sdk_tool_distribution_ready", return_value=True),
                 patch.object(module, "kill_all_processes"),
                 patch.object(module, "_run_command", side_effect=install),

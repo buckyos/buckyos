@@ -42,6 +42,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
             patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
             patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
             patch.object(module, "_prepare_agent_tools", return_value=0) as agent_tools,
+            patch.object(module, "_prepare_ext_tools", return_value=1),
             patch.object(module.subprocess, "run", return_value=completed) as run,
         ):
             result = module.main(["--skip-web", "-s", "scheduler"])
@@ -61,6 +62,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
             patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
             patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
             patch.object(module, "_prepare_agent_tools", return_value=0),
+            patch.object(module, "_prepare_ext_tools", return_value=0),
             patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)) as run,
         ):
             self.assertEqual(module.main(["-s", "node_daemon"]), 0)
