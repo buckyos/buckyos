@@ -17,9 +17,9 @@
 | 优先级 | 内容 | 为什么要做 |
 | --- | --- | --- |
 | P0 | 堵住本地重发越权（§5.1）和伪造大小绕过上限（§5.2） | 前者已复现：知道 ObjId 的人能读到本 Zone 别人的私有对象。这是 N1 没覆盖到的路径 |
-| P1 | 私聊收尾（§6）：陌生人消息不拉取、未读收藏、UI 状态、未验证场景 | 基本流程通了，但拉取超过 20 秒时界面直接报错，要手动点重试；陌生人的消息一渲染就外连 |
+| P1 | 私聊收尾（§6）：陌生人消息不拉取、非图片点击才拉、屏蔽后不发票据、未读收藏、UI 状态、未验证场景 | 基本流程通了，但拉取超过 20 秒时界面直接报错，要手动点重试；任何附件卡片一渲染就下载完整内容，陌生人的也一样 |
 | P2 | 群（§7） | 跨 Zone 的群附件现在全部不可读，#689 的现象在群里原样存在 |
-| P3 | 目录、超过 64 MiB、预取（§8） | Desktop 能发目录，对方读到 404。大文件和预取按产品优先级决定 |
+| P3 | 目录、预取（§8） | Desktop 能发目录，对方读到 404。预取等有实际需求再做 |
 
 #689 的验收项对照：
 
@@ -29,7 +29,7 @@
 | 多附件、重复读取、并发不错绑、不重复下载 | 绑定 key 是确定的，同一进程按 key 合并并发拉取。没有并发用例。同一对象在不同消息里会各下载一次，这是有意的（§4 第 1 条） |
 | 临时故障恢复后可重试，不用重发 | 下一次读取重新拉取，失败后 30 秒内不再尝试。短时断网没有实测 |
 | 未授权用户不能凭 ObjId 读取 | 读取路径成立（DV）；§5.1 是例外 |
-| 明确文件、音视频、目录的覆盖范围 | 64 MiB 以内的文件成立，音视频走同一路径但没有单独验证；目录不支持；超过 64 MiB 返回 413 |
+| 明确文件、音视频、目录的覆盖范围 | 64 MiB 以内的文件成立，音视频走同一路径但没有单独验证；目录不支持；超过 64 MiB 不走附件，返回 413，大文件走文件分享 URL（§9 第 4 项） |
 
 建议 P0、P1、P2 完成后再关 issue，P3 拆成独立 issue。
 
@@ -37,8 +37,8 @@
 
 | 入口 | 现在的行为 | 依据 | 验证 |
 | --- | --- | --- | --- |
-| 私聊，FileObject，64 MiB 以内 | 首次 `describe` 或 `content` 触发拉取，读取最多等 20 秒，之后 503。拉取在后台继续，完成后绑定 | [remote_attachment.rs](../src/frame/msg_center/src/remote_attachment.rs)、[object_access.rs:316](../src/frame/msg_center/src/object_access.rs#L316) | 单测和三 Zone DV（40 项，含 NAT 中继、非收件人、跨 chunk）。Desktop UI、并发、短时断网、发送方离线未跑 |
-| 私聊，超过 64 MiB | 413，不取内容。本 Zone 的读取路由有同样的上限，Desktop 也发不出；Agent／API 可以发 | [remote_attachment.rs:187](../src/frame/msg_center/src/remote_attachment.rs#L187)、[object_access.rs:388](../src/frame/msg_center/src/object_access.rs#L388)、[attachmentDraft.ts:3](../src/frame/desktop/src/app/messagehub/conversation/input/attachmentDraft.ts#L3) | DV |
+| 私聊，FileObject，64 MiB 以内 | 首次 `describe` 或 `content` 触发拉取，读取最多等 20 秒，之后 503。拉取在后台继续，完成后绑定。已定 `describe` 不再拉取（§6） | [remote_attachment.rs](../src/frame/msg_center/src/remote_attachment.rs)、[object_access.rs:316](../src/frame/msg_center/src/object_access.rs#L316) | 单测和三 Zone DV（40 项，含 NAT 中继、非收件人、跨 chunk）。Desktop UI、并发、短时断网、发送方离线未跑 |
+| 私聊，超过 64 MiB | 413，不取内容。本 Zone 的读取路由有同样的上限，Desktop 也发不出；Agent／API 可以发。已定不扩展，大文件走文件分享 URL（§9 第 4 项） | [remote_attachment.rs:187](../src/frame/msg_center/src/remote_attachment.rs#L187)、[object_access.rs:388](../src/frame/msg_center/src/object_access.rs#L388)、[attachmentDraft.ts:3](../src/frame/desktop/src/app/messagehub/conversation/input/attachmentDraft.ts#L3) | DV |
 | 私聊，目录 | 判为“非远端”，404，前端显示“no longer available”。Desktop 可以发目录 | [remote_attachment.rs:110](../src/frame/msg_center/src/remote_attachment.rs#L110)、[upload.ts:33](../src/frame/desktop/src/app/messagehub/api/upload.ts#L33) | 静态 |
 | 群：host 本地作者，host 本地读者 | 绑定，可读 | [group_service.rs:3220](../src/frame/msg_center/src/group_service.rs#L3220) | 单测 |
 | 群：joined 作者，host 上的读者 | `Arrival::Remote` 不绑定；群消息不拉取，404 | 同上；`a_remote_message_cannot_open_a_local_object` | 单测 |
@@ -89,7 +89,7 @@ External 和 Session Only 访客向 host 发带附件的消息会被拒绝（[te
 | 本地命中越权 | N1：远端消息不绑定。N1 漏掉的路径见 §5.1 | §9 |
 | 已有的缺附件私聊消息 | 下一次读取自动取回，不用迁移 | §12 末节 |
 | 群两段流程、撤回竞争 | 未实现，见 §7 | §6.2、§8.2 第 6 条、§10 |
-| 目录递归 pull、Range、大文件 | `/ndn/` 已支持 Range；目录 pull 和大文件未实现，见 §8 | §7.2 第 2、3 条 |
+| 目录递归 pull、Range、大文件 | 目录 pull 未实现，见 §8。大文件不走附件，走文件分享 URL（§9 第 4 项） | §7.2 第 2、3 条 |
 
 ### 3.3 明确不再做
 
@@ -99,6 +99,7 @@ External 和 Session Only 访客向 host 发带附件的消息会被拒绝（[te
 - 来源字段进 `MsgObject` 或 sidecar，多源回源，Zone 迁移后的来源证据。迁移后解析到新 Zone，新 Zone 没有绑定就是取不到。
 - 附件取得回执。
 - 让用户逐个登录源 Zone（External SSO）作为附件入口。收件人 Zone 代为登录已经够用。
+- 超过 64 MiB 的附件和 msg-center 流式读取。大文件走文件分享，消息里带 URL。发件时怎么引导到文件分享，另开 issue。
 
 ## 4. 仍然成立的约束
 
@@ -158,16 +159,17 @@ TODO：
 
 ## 6. P1：私聊收尾
 
-- [ ] 陌生人消息不拉（§9 第 1 项）：`ensure_remote_attachment` 外连前按读者对发送方的当前访问策略判定，复用 `decide_inbox_kind`（[msg_center.rs:1225](../src/frame/msg_center/src/msg_center.rs#L1225)），不允许投递就不外连。不能看记录在哪个 box：接受（好友或 `allow`）只改联系人的 `access_level`，消息记录不会搬出 REQUEST_BOX。检查放在 `ensure` 里，转发和收藏一起受约束；群消息不走这个判定。
+- [ ] 陌生人消息不拉（§9 第 1 项）：`ensure_remote_attachment` 外连前按读者对发送方的当前访问策略判定，复用 `decide_inbox_kind`（[msg_center.rs:1225](../src/frame/msg_center/src/msg_center.rs#L1225)），不允许投递就不外连。不能看记录在哪个 box：接受（好友或 `allow`）只改联系人的 `access_level`，消息记录不会搬出 REQUEST_BOX。检查放在所有外连的共同入口（`ensure` 和下面的取描述），转发和收藏一起受约束；群消息不走这个判定。
 - [ ] 陌生人消息的前端：显示“接受后可查看附件”，不算失败；接受后失效该会话的附件缓存并重新加载。
 - [ ] `remote_attachment_dv.mjs` 没有建立联系人关系，静态看会被上面的规则挡住。先允许发送者，再加一条“陌生人不外连、允许后可读”的用例。
 - [ ] `msg.collect_attachment` 没有绑定时先 `ensure_remote_attachment`，完整取回后再复制。
 - [ ] 拆开 `RemoteAttachment::Unavailable`：获取中（503 + `Retry-After`）、暂时不可达（503）、等待接受（403）、源端拒绝或对象不存在（404）、校验失败（502）。票据错误按 `CrossZoneError::is_retryable` 分类。`Retry-After` 固定 5 秒，和失败后的 30 秒退避不一致，一并对齐。
 - [ ] Desktop 读 `Retry-After` 自动重试，有次数上限；增加“正在从对方 Zone 获取”的状态。现在拉取超过 20 秒（经中继的几十 MiB 文件就可能超过）时，用户看到的是错误，后台其实还在下载。
 - [ ] 目录在 P3 完成之前返回 415，不再是 404 加“no longer available”。
-- [ ] 按 §9 第 5、6 项的决定实现非图片附件的拉取时机和屏蔽后的票据规则。
+- [ ] 非图片附件点击才拉（§9 第 5 项）：`describe` 不再触发完整拉取。没有绑定时申请票据，用 `resp=raw` 从源端取 FileObject 并校验 ObjId（`pull_attachment` 前半段已有），直接返回，不写绑定。不能用本地 named store 的副本回答，否则引用私有对象的远端消息能读到它的文件名和大小（§4 第 1 条）。`content` 才走 `ensure_remote_attachment`。Desktop 不用改流程：它本来就先 `describe`，只有内联图片才取 `content`，下载和预览在点击时取（[MediaAttachment.tsx:60](../src/frame/desktop/src/app/messagehub/conversation/media/MediaAttachment.tsx#L60)）；语音条的播放路径要一起核对。
+- [ ] 被发送方屏蔽的收件人拿不到票据（§9 第 6 项）：`attachment_ticket` 用 `is_contact_blocked(收件人, Some(msg.from))` 判定（[msg_center.rs:1201](../src/frame/msg_center/src/msg_center.rs#L1201)），拒绝时和消息不存在的响应相同。已发的令牌最多 1 小时内还能用，不额外撤销；已取回的副本不动（§4 第 6 条）。
 - [ ] 补验证：Desktop UI 全流程（收图、重试、换账号）、并发读取、短时断网恢复、发送方 Zone 离线、Agent 作为收件人和发送方、带 refs 的 edit。
-- [ ] 同步文档：[Message Center](../doc/message_hub/Message%20Center.md) 附件一节（625–640 行）还写着“任一不满足返回 404”，没有远端拉取、503、413 和 `msg.attachment_ticket`；[UI_DATAMODEL](../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md) 的附件状态；`buckyos_admin` 手册第 306 行的附件排查补上“远端附件未取回”。实施时检查 `aigc_image`、`aigc_video` 里涉及消息附件的部分。
+- [ ] 同步文档：[Message Center](../doc/message_hub/Message%20Center.md) 附件一节（625–640 行）还写着“任一不满足返回 404”，没有远端拉取、503、413 和 `msg.attachment_ticket`；Durable Data Schema 和 Bucket §21 N18 里的“首次读取时拉取”改成“首次读取内容时拉取”；[UI_DATAMODEL](../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md) 的附件状态；`buckyos_admin` 手册第 306 行的附件排查补上“远端附件未取回”。实施时检查 `aigc_image`、`aigc_video` 里涉及消息附件的部分。
 
 ## 7. P2：群
 
@@ -191,13 +193,13 @@ host 到成员：ZB 的读者没有绑定
 
 群 DID 就是这条消息的收件人，所以作者到 host 这一段的票据规则和私聊相同，都是“请求者在 `msg.to` 里”。
 
-host 接受后就拉取，是因为按首次读取拉取时，如果作者在有人读之前离线，host 就取不到，保留副本也就失去了意义。
+host 接受后就拉取，是因为按首次读取拉取时，如果作者在有人读之前离线，host 就取不到，保留副本也就失去了意义。成员 Zone 和私聊一样，非图片附件点击才拉。
 
 ### 7.2 TODO
 
 - [ ] `canonical_zone_from_doc` 增加群文档分支（[cross_zone_auth.rs:174](../src/kernel/buckyos-api/src/cross_zone_auth.rs#L174)）。现在群文档走到末尾的 `zone_did`，得到空，custody 拒绝。改成沿文档的 `owner` 走到它的 canonical Zone。群主可能是 Agent，而 Agent 分支要求 owner 文档带 `binded_zone_list` 或 `ns/owner`，不能直接共用那段检查。这是 `check_custody` 的共用逻辑，verify-hub、msg-center 消息验签和 HomeStation 都受影响，同步[跨 Zone 登录断言契约](../doc/arch/verify-hub/跨Zone登录断言契约.md) §3，并补正反例：host 的设备可以代表群，其他 Zone 的设备不可以。
 - [ ] 守住“群主 Zone 就是 host”：`group.transfer_owner` 和 `group.accept_owner_transfer` 拒绝其他 Zone 的成员。现在只判成员身份（[group_service.rs:2003](../src/frame/msg_center/src/group_service.rs#L2003)）。Desktop 走不到跨 Zone 接受，因为 joined 成员的 Zone 上没有这个群，只有 `accept_invitation` 和 `get_doc` 会转给 host；但 External 会话直接调 host 的 kRPC，代码里没有拦（静态）。
-- [ ] `ensure_remote_attachment` 放开群消息，并接受调用者身份。host 上 requester 是群 DID，用 `groups.load` 判断群是否托管在本 Zone，不依赖 `is_local_recipient`：`register_local_recipients` 只在建群时调用（[group_service.rs:920](../src/frame/msg_center/src/group_service.rs#L920)），重启后一级 DID 的群不算本地（静态）。成员 Zone 上 `msg.to` 是群，要用实际读者的 DID。
+- [ ] `ensure_remote_attachment` 放开群消息，并接受调用者身份。host 上 requester 是群 DID，用 `groups.load` 判断群是否托管在本 Zone，不依赖 `is_local_recipient`：`register_local_recipients` 只在建群时调用（[group_service.rs:920](../src/frame/msg_center/src/group_service.rs#L920)），重启后一级 DID 的群不算本地（静态）。成员 Zone 上 `msg.to` 是群，要用实际读者的 DID。§6 的取描述用同样的身份。
 - [ ] 扩展 `msg.attachment_ticket`：调用者是 `msg.to` 里的群时走作者到 host；带 `context_path` 时走 host 到成员，用 `authorize_group_attachment` 裁决。令牌都只覆盖对应 key。joined 路由只知道 host 主机名，host 到成员这一段用 `CrossZoneClient::request_host`（[group_sync.rs:95](../src/frame/msg_center/src/group_sync.rs#L95) 已有同样的用法）。
 - [ ] host 接受消息后后台拉取，复用 `spawn_fetch` 的合并逻辑。不阻塞 accept，失败不影响消息接受，崩溃后由下一次读取补上，不新建任务表。§5.2 的上限同样适用；群附件计入 msg-center 的桶配额，超配额按不可用处理。
 - [ ] `_display`：`authorize_display_file` 支持 joined 成员在本 Zone 读，票据 key 是 `<group>/_display/<obj_id>`。展示文件移除后解绑，旧令牌随之失效，这一点 `/ndn/` 已保证。
@@ -206,16 +208,13 @@ host 接受后就拉取，是因为按首次读取拉取时，如果作者在有
 - [ ] 独立 ZA、G、ZB 三 Zone 的 DV，覆盖 §10 的群相关行。
 - [ ] 同步文档：[Self-Host-Groupv2](../doc/message_hub/Self-Host-Groupv2.md) §5.7 的保留策略和 §6.2 的转让群主（写明跨 Zone 转让等于转服，本版本不支持）、[group-v2-backend](../src/frame/msg_center/doc/group-v2-backend.md)、Durable Data Schema 里“group's attachments stay unreadable”一句。
 
-## 8. P3：目录、大文件、预取
+## 8. P3：目录、预取
 
 目录：
 
 - [ ] 票据和 `ensure` 放开 DirObject。`/ndn/` 已能沿目录子项走路径（[ndn_read.rs:238](../../cyfs-ndn/src/bucket_store/src/ndn_read.rs#L238)）。
 - [ ] `CyfsNdnClient` 增加目录 pull，现在是 Unsupported（[cyfs_ndn_client.rs:1534](../../cyfs-ndn/src/ndn-toolkit/src/cyfs_ndn_client.rs#L1534)）：递归、深度／节点数／总字节上限、去重、子项名规范化。`bucket.cache_public` 也在等这个（Bucket §4.6.5）。
-
-超过 64 MiB：
-
-- [ ] 不给 msg-center 加流式。消息权限通过后给读者签本 Zone 的短期令牌，客户端走 `/ndn/`，Range、HEAD、`<video>` 都已支持。跨 Zone 拉取的上限和配额按 §9 第 4 项决定。
+- [ ] 目录卡片同样只取描述，保存或打开时才拉（§9 第 5 项）。
 
 预取和预算：
 
@@ -223,21 +222,16 @@ host 接受后就拉取，是因为按首次读取拉取时，如果作者在有
 
 ## 9. 决定
 
-已定（2026-11-06）：
+全部已定（2026-11-06）：
 
 | # | 问题 | 决定 | 影响 |
 | --- | --- | --- | --- |
 | 1 | 陌生人消息（REQUEST_BOX）是否自动拉取 | 不拉。发送方被接受（好友或 `allow`）后，按普通消息处理。否则卡片渲染就外连，陌生人能得知读取时间和对方 Zone 的出口地址，还占用磁盘 | §6 |
 | 2 | 作者 Zone 怎么确认调用者是 G 的 host | 看群的 DID 文档：host 以群 DID 登录，custody 沿文档里的 `owner` 走到它的 canonical Zone，和 Agent 的规则同类。不比对 `JoinedGroupRoute`，作者退群后路由失效也不影响判定。前提是群主 Zone 就是 host：转让群主在运维上等于转服，本版本不支持。群管理员是 host 上的成员角色，可以在其他 Zone，不影响判定 | §7 |
 | 3 | host 是否必须保留副本 | 保留：取回后按 AppData 保留。群要有自己的消息处理逻辑，host 必须持有内容。Self-Host §5.7 现在写“不是协议要求”，要同步改 | §7 |
-
-待定：
-
-| # | 问题 | 建议 | 影响 |
-| --- | --- | --- | --- |
-| 4 | 是否支持超过 64 MiB 的跨 Zone 附件 | 先不做，拆独立 issue | §8 |
-| 5 | 非图片附件是否延后到点击再拉 | 建议延后。现在文件卡片一渲染就下载完整内容。卡片只需要 FileObject 描述，但描述和绑定要分开处理 | §6 |
-| 6 | 对方被屏蔽后是否还发票据 | 建议不发。现在只看收件关系和绑定 | §6 |
+| 4 | 是否支持超过 64 MiB 的跨 Zone 附件 | 不支持，不在本 issue 做。BuckyOS 体系希望大附件带 URL，走文件分享 | §3.3 |
+| 5 | 非图片附件是否延后到点击再拉 | 延后。图片照旧在渲染时拉取；其他附件的卡片只取 FileObject 描述，不绑定 | §6 |
+| 6 | 对方被屏蔽后是否还发票据 | 不发 | §6 |
 
 ## 10. 验收
 
@@ -248,7 +242,9 @@ host 接受后就拉取，是因为按首次读取拉取时，如果作者在有
 | 伪造大小 | 小 `size` 加大 ChunkList；不带长度的 chunk | 不下载超限内容，不绑定 | 未测 |
 | 并发 | 同一 key 多读者；同一对象在多条消息；describe 和 content 同时请求 | 只下载一次（同 key），各自鉴权 | 未测 |
 | 恢复 | 短时断网、服务重启、发送方离线后恢复、拉取中 GC 命中 | 不用重发消息，下一次读取成功 | 未测 |
-| 陌生人消息 | 陌生人发附件；接受后；屏蔽后 | 接受前发送方网关收不到任何请求；接受后可读；屏蔽后不外连 | 未实现 |
+| 陌生人消息 | 陌生人发附件；接受后；屏蔽后 | 接受前发送方网关收不到任何请求，取描述也不外连；接受后可读；屏蔽后不外连 | 未实现 |
+| 非图片附件 | 文件卡片渲染；点击预览或下载；本地已有同 ObjId 的私有对象 | 渲染时发送方网关只有对象请求，没有 chunk 请求；点击后才拉；描述只来自源端 | 未实现 |
+| 发送方屏蔽 | 发送方屏蔽收件人后读没取回的附件；已取回的附件 | 拿不到令牌，响应和消息不存在时相同；已取回的照常可读 | 未实现 |
 | 前端 | 获取中、等待接受、自动重试、源端拒绝、换账号 | 状态能看懂，不把获取中显示成不可用 | 未实现 |
 | 群三 Zone | ZA 作者、G host、ZB 成员；非成员、被移出的成员、Guest 越 Session | 两段都授权，joined 不依赖本地恰好有内容，host 的裁决贯穿 | 未实现 |
 | host 身份 | host 的设备代表群、其他 Zone 的设备冒充、群主是 Agent、其他 Zone 的管理员、向其他 Zone 的成员转让群主 | 只有真正的 host 能取到票据，跨 Zone 转让被拒绝 | 未实现 |
