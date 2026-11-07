@@ -394,7 +394,7 @@ websdk、Desktop、OpenDAN WebUI 的结果见上一轮（这些代码之后没�
 1. **落地顺序**：`build_aios` 已不带这组命令，`ext-manifest.json` 已是 1.1.0。合并前必须先发 `ext-core` 1.1.0（`ext-core.yml`）：否则 main 的 `resolve-ext-tools` 按设计失败，开发者 `start.py --all` 下不到种子，容器里没有 `git`、`curl`、`python3`。这一步要 R2 密钥和 GitHub 发布权限，我没有做。
 2. **ffmpeg 许可证**：conda-forge 默认解出 GPL 构建（`--enable-gpl --enable-libx264`），与今天 Ubuntu apt 的 ffmpeg 相同。分发安装包时要按 GPL 处理；要 LGPL 就在 `conda-env.yml` 钉 `ffmpeg=*=lgpl*`，代价是没有 libx264 / libx265。`LICENSES/conda-forge.tsv` 随包带了每个包的许可证名，不是全文。
 3. **Windows `tree`**：没有官方二进制，也没有 conda 包。我写了 60 行 Python（`-a -d -L`，同样的输出格式）。可接受就保持，否则从表 B 把 Windows 的 `tree` 降为可选。
-4. **ffmpeg 没有 `zscale`（iPhone HDR 预览）**：conda-forge 的 ffmpeg 不带 libzimg，五个平台都一样，所以 nfs_server 预览的 HDR 视频和 HEIF 做不了色调映射，只能带“颜色可能失真”的说明直接转。这是 HDR 素材的真实画质问题，不是报错。现在的处理只保证没有退化：`search_dirs` 把 `tools/bin` 放在最后，已有系统 ffmpeg 的机器继续用原来那个；**只靠 ext-core 的机器（裸装 Windows、macOS、Linux）HDR 预览就是这个降级结果**，Agent 自己写的 `zscale` 命令在容器里也不再可用。试过不用 zimg：ffmpeg 9 的 `scale=out_transfer=…:flags=unstable` 能跑通，但测试图的颜色完全错了（与 zscale 基准 PSNR 3–5 dB，不映射反而 22 dB），不可用。要彻底解决只能换 ffmpeg 来源，这改的是决策 21 和表 B：候选是 Linux / Windows 用 BtbN 静态构建（**是否带 libzimg 我没验证**；它没有 macOS 版），或者自己带 zimg 编译。相对 Ubuntu apt 版还少 rubberband、vidstab、NVENC / CUVID、libxvid、libtheora 等；仓库代码和手册都没用到它们，只有 `zscale` 影响现有功能。
+4. **已裁决（owner 2026-11-07）：不换 ffmpeg 来源，不加探测或兜底。** host 上已装的工具调用出错时，原样把错误抛出来，由用户调整 host 上的安装。BuckyOS 标准环境里不存在在 host 上装 agent tool 这回事，装了容器里的 Agent 也用不上。下面是当时的分析。**ffmpeg 没有 `zscale`（iPhone HDR 预览）**：conda-forge 的 ffmpeg 不带 libzimg，五个平台都一样，所以 nfs_server 预览的 HDR 视频和 HEIF 做不了色调映射，只能带“颜色可能失真”的说明直接转。这是 HDR 素材的真实画质问题，不是报错。现在的处理只保证没有退化：`search_dirs` 把 `tools/bin` 放在最后，已有系统 ffmpeg 的机器继续用原来那个；**只靠 ext-core 的机器（裸装 Windows、macOS、Linux）HDR 预览就是这个降级结果**，Agent 自己写的 `zscale` 命令在容器里也不再可用。试过不用 zimg：ffmpeg 9 的 `scale=out_transfer=…:flags=unstable` 能跑通，但测试图的颜色完全错了（与 zscale 基准 PSNR 3–5 dB，不映射反而 22 dB），不可用。要彻底解决只能换 ffmpeg 来源，这改的是决策 21 和表 B：候选是 Linux / Windows 用 BtbN 静态构建（**是否带 libzimg 我没验证**；它没有 macOS 版），或者自己带 zimg 编译。相对 Ubuntu apt 版还少 rubberband、vidstab、NVENC / CUVID、libxvid、libtheora 等；仓库代码和手册都没用到它们，只有 `zscale` 影响现有功能。
 
 **相对正文的偏离**：
 
@@ -411,6 +411,21 @@ websdk、Desktop、OpenDAN WebUI 的结果见上一轮（这些代码之后没�
 一期遗留的处理：§4.1“留给二期”四条都做了（`provides` 投影进文件对象 meta；uv / deno 缓存留在 seed 镜像，X3 定；FreeCAD 占位 stub 删除；拒绝遮蔽标准命令的包：Rust 发布、Rust 安装、TS doctor 三处）。“同版本重发”的报错文案改成了说版本不变。`block_inspection` 重复写 `target_issues` 没动，它不影响判定。
 
 §4.1“未验证”的两条也补了。ExtTool 卷路径：开发 Zone 上，最终 payload 在容器和 host 的命令都记 `exttools`。Windows：把 `resolve_probe` 生成的真实脚本放到 VM 113 的 Windows PowerShell 上跑，PATH 只有解开的 `ext-core` 和 System32，`parse_resolved` 读回 21 条命令，路径、版本正确（`ffmpeg.cmd`、`git version 2.56.0.windows.4`、`deno 2.9.2`、`tree (ext-core) 1.0`）；`& 'python3' '-c' '…' 'a b' 'it''s' '$x'` 收到的 argv 是 `['a b', "it's", '$x']`，`& 'cmd' '/c' 'type' '…\my dir\it''s.txt'` 读到了文件。这一步验的是脚本和引号本身，不是完整的 node_executor 链路（Windows 上没有跑 Zone）。
+
+**首次真实发布失败后的修复**（2026-11-07，run 42324349001，构建和其它四平台 smoke 都过，Windows smoke 失败，什么都没发布）。工作流此前没真跑过，这次把后面没执行到的步骤也按真实产物查了一遍：
+
+| 问题 | 后果 | 修复 |
+| --- | --- | --- |
+| `tar -C` 的目标路径带 `工具`；系统 tar 按 ANSI 读参数，runner 是 1252 | 这次的失败（`could not chdir to '…\?? tools'`） | 门禁路径改用 1252 内的 `é`；tar 失败时直接报错 |
+| 同一路径下 fontconfig、tesseract 也按 ANSI 读路径 | 只修 tar 的话，`ffmpeg`、`tesseract` 的 smoke 接着失败 | 同上。这是真实约束：**Windows 上工具路径的字符要在系统 ANSI 代码页内**。默认的 `C:\buckyos` 不受影响，中文 Windows 上的中文路径可用 |
+| R2 action 在 `destination-dir` 为空时用源目录当前缀 | 不报错，文件落到 `home/runner/work/_temp/r2/…`，安装器和 `resolve-ext-tools` 全部 404 | `source-dir: r2/ext-tools`，`destination-dir: ext-tools` |
+| `.pikg` 3.4 GiB，超过 GitHub Release 单资产 2 GiB | `gh release create` 失败，而此时 R2 已经传完 | `.pikg` 只放 R2（§3.10 原文写它也在 release 里，与此不同） |
+| R2 action 默认并发上传所有分片（10 MB 一片），重试计数不递增 | 大文件占内存，出错可能卡到超时 | `multipart-concurrent: false` |
+| Package 这一步磁盘峰值 17 G | 托管 runner 上较紧 | `pikg build` 后删 `payload`，`.pikg` 用 `mv`。已验证输出逐字节不变 |
+
+之前“中文路径 9/9”是在 ACP 936 的 VM 上测的，所以没暴露这类问题；对照实验用 936 表示不了的泰文路径复现了 runner 的报错和两个 smoke 失败。
+
+验证用的是这次 run 的真实产物：Package 这一步在本机原样跑通（Node 24、`buckyos@latest` 0.7.169，`doctor` 确实检查了 `ext_tools_manifest`）；`PikgReader` 读 3.4 GiB 的 `.pikg`，`verify_all_contents` 通过，5 个平台的清单和 payload 都读得出；R2 路径与下游地址对照一致；修改后的 Windows 步骤文本在 VM 上跑通。**没有验证**：1252 代码页下的真实 Windows smoke、真实 R2 上传和 GitHub Release 创建，要等下一次 CI。
 
 **收尾回归抓到、已修**（前面的 DV 都漏了，记在这里是因为它们说明只验“命令能跑”不够）：
 

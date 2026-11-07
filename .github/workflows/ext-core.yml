@@ -5,6 +5,7 @@ name: ext-core Release
 #   ext-core-v<version>   immutable
 #   ext-core-latest       rolling, with latest.json
 # and mirrors them to R2, where installers, build-all and developers take them from.
+# The .pikg is on R2 only: at over 3 GiB it is past the 2 GiB a GitHub release asset may have.
 # The gate is every platform unpacking its tar on a clean machine and running smoke/
 # with no network and no tool of the builder on the PATH. Any failure publishes nothing.
 # Pull requests and plain dispatches only build and upload workflow artifacts.
@@ -137,14 +138,17 @@ jobs:
         with:
           name: ext-core-windows-x86_64
           path: ${{ runner.temp }}/dist
-      - name: A path with a space and non-ASCII letters
+      # The letter has to be in the machine's ANSI code page (1252 here): tar, fontconfig and tesseract
+      # read paths through it, so a Chinese path works on a Chinese Windows and not on this runner.
+      - name: A path with a space and a non-ASCII letter
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $target = Join-Path $env:RUNNER_TEMP '工具 tools'
+          $target = Join-Path $env:RUNNER_TEMP 'outils é tools'
           New-Item -ItemType Directory -Path $target | Out-Null
           $tar = (Get-ChildItem "$env:RUNNER_TEMP\dist\ext-core-*.tar.gz").FullName
           tar -xzf $tar -C $target
+          if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
           $env:PATH = "$target\bin;$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
           foreach ($script in Get-ChildItem "$target\smoke\*.ps1") {
             Write-Host "== $script"
@@ -179,8 +183,9 @@ jobs:
           done
           npx --yes buckyos@latest --non-interactive pikg doctor dapp_meta --catalog ..
           npx --yes buckyos@latest --non-interactive pikg build dapp_meta
+          rm -rf payload
           npx --yes buckyos@latest --non-interactive pikg pack dapp_dist
-          cp "dapp_dist/ext-core-$VERSION.pikg" "$RUNNER_TEMP/dist/"
+          mv "dapp_dist/ext-core-$VERSION.pikg" "$RUNNER_TEMP/dist/"
           python3 release_manifest.py --version "$VERSION" --dist "$RUNNER_TEMP/dist" --pikg "$RUNNER_TEMP/dist/ext-core-$VERSION.pikg"
           python3 "$GITHUB_WORKSPACE/.github/scripts/ext_tools.py" latest --version "$VERSION" --manifest "$RUNNER_TEMP/dist/manifest.json" --output "$RUNNER_TEMP/dist/latest.json"
       - uses: actions/upload-artifact@v6
@@ -246,8 +251,9 @@ jobs:
           r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
           r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           r2-bucket: buckyos-installer
-          source-dir: ${{ runner.temp }}/r2
-          destination-dir: ''
+          source-dir: ${{ runner.temp }}/r2/ext-tools
+          destination-dir: ext-tools
+          multipart-concurrent: false
           keep-file-fresh: false
           output-file-url: false
       - name: Publish ext-core-v${{ needs.check.outputs.version }}
@@ -255,9 +261,9 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP/dist"
           if gh release view "ext-core-v$VERSION" >/dev/null 2>&1; then
-            gh release upload "ext-core-v$VERSION" ./*
+            gh release upload "ext-core-v$VERSION" ./*.tar.gz manifest.json latest.json
           else
-            gh release create "ext-core-v$VERSION" --target "$GITHUB_SHA" --title "ext-core $VERSION" --notes "ext-core $VERSION: see publish/exttool/ext-core" --latest=false ./*
+            gh release create "ext-core-v$VERSION" --target "$GITHUB_SHA" --title "ext-core $VERSION" --notes "ext-core $VERSION: see publish/exttool/ext-core. The .pikg is over GitHub's 2 GiB limit: it is on R2, at the path manifest.json gives." --latest=false ./*.tar.gz manifest.json latest.json
           fi
       - name: Refresh ext-core-latest
         run: |
@@ -265,8 +271,8 @@ jobs:
           git push --force origin "$GITHUB_SHA:refs/tags/ext-core-latest"
           cd "$RUNNER_TEMP/dist"
           if gh release view ext-core-latest >/dev/null 2>&1; then
-            gh release upload ext-core-latest --clobber ./*
+            gh release upload ext-core-latest --clobber ./*.tar.gz manifest.json latest.json
             gh release edit ext-core-latest --title "ext-core (latest: $VERSION)" --prerelease --latest=false
           else
-            gh release create ext-core-latest --title "ext-core (latest: $VERSION)" --notes "The newest ext-core; pinned versions are the ext-core-v* releases." --prerelease --latest=false ./*
+            gh release create ext-core-latest --title "ext-core (latest: $VERSION)" --notes "The newest ext-core; pinned versions are the ext-core-v* releases." --prerelease --latest=false ./*.tar.gz manifest.json latest.json
           fi

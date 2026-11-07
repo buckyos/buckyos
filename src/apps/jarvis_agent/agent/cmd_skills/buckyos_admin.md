@@ -245,7 +245,7 @@ buckyos ext-tools list                                 # what the Repo has, and 
 buckyos ext-tools status                               # package by node: what is asked for, stage, error
 buckyos ext-tools enable <id> [--version v] [--dry-run]    # brings what it requires; also how to upgrade or go back
 buckyos ext-tools disable <id>                         # refused while an enabled package requires it
-buckyos ext-tools import <file.pikg>                   # an official release asset, unchanged
+buckyos ext-tools import <file.pikg>                   # an official release's .pikg (on R2, `pikg.path` in its manifest.json), unchanged
 buckyos skill status --agent <agent_id> [--runtime id] # the commands each skill relies on there, and which package would bring what is missing
 ```
 A node's reconciler retries a failed package with growing delays, and a failed upgrade leaves the old version running: read `error` under `nodes` in `ext-tools status`, then `log` for `node_daemon` (`ext_tools`). A package that came with the installer shows up with no `latest`: it needs `ext-tools import` before it can be upgraded.
