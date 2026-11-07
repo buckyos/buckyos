@@ -1,5 +1,5 @@
 /**
- * Sharing on a real Zone (notepads/share-content-mgr-tech-design-todo.md §6, M5).
+ * Sharing on a real Zone (notepads/done/share-content-mgr-tech-design-todo.md §6, M5).
  *
  *   BUCKYOS_TEST_ZONE_HOST=test.buckyos.io npx playwright test --config=playwright.dv.config.ts tests/dv/share.spec.ts
  *

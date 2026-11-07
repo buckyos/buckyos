@@ -1,4 +1,4 @@
-//! System Notify on the agent side (notepads/opendan-agent-notify-todo.md
+//! System Notify on the agent side (notepads/done/opendan-agent-notify-todo.md
 //! §3.5–§3.10): the `_notify` observation of UI sessions and `agent-session
 //! notify`. Asking the user is a standard asynchronous call (`ask_user`, a
 //! `human.input/v1` task): see `input_tasks.rs`.

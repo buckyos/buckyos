@@ -1,6 +1,6 @@
 # 用户类型、系统用户组与通讯录投影
 
-本文是用户类型的权威定义：每种用户能否登录、能用哪些 App、能否改自己的 Profile / 密码 / 通讯录、会出现在谁的通讯录里，以及权限从哪里来。verify-hub、scheduler / RBAC、Control Panel、msg-center、HomeStation、Desktop、WebSDK 对同一种用户给出一致的行为。决策过程见 `notepads/user-type-definition-todo.md`（2026-10-21）。
+本文是用户类型的权威定义：每种用户能否登录、能用哪些 App、能否改自己的 Profile / 密码 / 通讯录、会出现在谁的通讯录里，以及权限从哪里来。verify-hub、scheduler / RBAC、Control Panel、msg-center、HomeStation、Desktop、WebSDK 对同一种用户给出一致的行为。决策过程见 `notepads/done/user-type-definition-todo.md`（2026-10-21）。
 
 ## 1. 主体分类
 

@@ -1,4 +1,4 @@
-//! Extension controls P0 (notepads/aiworkspace-extension-p0-todo.md M1): the definition's new keys, the
+//! Extension controls P0 (notepads/done/aiworkspace-extension-p0-todo.md M1): the definition's new keys, the
 //! `def_source` reference to its source snapshot, identities as sibling names, the build record, and old payloads.
 
 use aiworkspace_core::access::Access;

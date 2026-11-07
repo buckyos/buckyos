@@ -106,7 +106,7 @@ cmd_skill 是一类事的命令手册（`cmd_skills/<name>.md`，front matter �
 
 ### 3.3 task 能力 CLI 化的目标
 
-目标是让模型通过稳定的 shell 入口调用任务命令。**已实现**（2026-10-17，[先行 TODO](../../notepads/llm-context-chat-prompt-prereq-todo.md) P3）：在 Agent Session 中是
+目标是让模型通过稳定的 shell 入口调用任务命令。**已实现**（2026-10-17，[先行 TODO](../../notepads/done/llm-context-chat-prompt-prereq-todo.md) P3）：在 Agent Session 中是
 
 ```xml
 <actions>

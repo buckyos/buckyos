@@ -1,6 +1,6 @@
 # AI Workspace 扩展控件（P0–P3）：实施记录与验收报告
 
-> 日期：2026-10-30。对应设计：[扩展实现思路](<BuckyOS AI Workspace 扩展实现思路.md>) v0.8（D1–D8、A1–A7、Q18 / Q19），任务单 [notepads/aiworkspace-extension-p0-todo.md](<../../notepads/aiworkspace-extension-p0-todo.md>)（M0–M6）。全部改动未提交（buckyos、buckyos-websdk 两仓）。
+> 日期：2026-10-30。对应设计：[扩展实现思路](<BuckyOS AI Workspace 扩展实现思路.md>) v0.8（D1–D8、A1–A7、Q18 / Q19），任务单 [notepads/done/aiworkspace-extension-p0-todo.md](<../../notepads/done/aiworkspace-extension-p0-todo.md>)（M0–M6）。全部改动未提交（buckyos、buckyos-websdk 两仓）。
 >
 > 环境：Rust 测试用真实 SQLite 与进程内 nfs-server；Desktop e2e 是独立 `aiworkspace`（调试构建）+ 独立 nfs-server（`home` 原生导出、无鉴权）+ Vite 开发服务器（模拟运行时、`/nfs/v1` 代理到 nfs-server）+ Chromium；真实 Zone DV 在本机 `test.buckyos.io`（§7，全新安装，两例通过）。
 >
@@ -116,7 +116,7 @@ DV 中发现并已修正的问题（都已重新部署后通过）：
 
 ## 8. P1：组合控件与 P0 遗留（2026-10-30）
 
-> 对应任务单 [notepads/aiworkspace-extension-p1-todo.md](<../../notepads/aiworkspace-extension-p1-todo.md>)（M0–M6）与设计 v0.9 §8 P1 行、§7.2 Q15–Q17、§7.6 Q20–Q25。P0 已由用户提交（`63765d12d aiws support dev extensiion`），L6 不再单独做；P1 改动在 buckyos、buckyos-websdk 两仓未提交。本节同样只记已运行的事实。
+> 对应任务单 [notepads/done/aiworkspace-extension-p1-todo.md](<../../notepads/done/aiworkspace-extension-p1-todo.md>)（M0–M6）与设计 v0.9 §8 P1 行、§7.2 Q15–Q17、§7.6 Q20–Q25。P0 已由用户提交（`63765d12d aiws support dev extensiion`），L6 不再单独做；P1 改动在 buckyos、buckyos-websdk 两仓未提交。本节同样只记已运行的事实。
 
 ### 8.1 结论
 
@@ -198,7 +198,7 @@ DV 中发现并已修正的问题（都已重新部署后通过）：
 
 ## 9. P2 + P3：事件、属性级写入、升级迁移、parent、组合结果、模板（2026-10-31）
 
-> 对应任务单 [notepads/aiworkspace-extension-p2p3-todo.md](<../../notepads/aiworkspace-extension-p2p3-todo.md>)（M0–M7，Q26–Q33 用户 2026-10-30 裁决全部按建议）。改动在 buckyos、buckyos-websdk 两仓，未提交。契约以 aiworkspace README “Extension controls P2 / P3” 为准。
+> 对应任务单 [notepads/done/aiworkspace-extension-p2p3-todo.md](<../../notepads/done/aiworkspace-extension-p2p3-todo.md>)（M0–M7，Q26–Q33 用户 2026-10-30 裁决全部按建议）。改动在 buckyos、buckyos-websdk 两仓，未提交。契约以 aiworkspace README “Extension controls P2 / P3” 为准。
 
 ### 9.1 结论
 

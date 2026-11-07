@@ -1,5 +1,5 @@
 // Cross-Zone DID federation in a real browser against the `ssotest` VM group
-// (src/dev_configs/ssotest.json; notepads/hybrid-sso-implementation-todo.md SSO-09 / SSO-14): the
+// (src/dev_configs/ssotest.json; notepads/done/hybrid-sso-implementation-todo.md SSO-09 / SSO-14): the
 // owner of the canonical Zone signs in to the target Zone with its DID through the canonical consent
 // page, declines once, and reaches an AI Workspace entry on the target that allows DID login. The
 // host does not use the SN for DNS, so the browser and the Node-side kRPC calls take the Zone

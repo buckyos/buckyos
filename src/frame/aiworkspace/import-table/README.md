@@ -1,6 +1,6 @@
 # import-table — table data into a TableSource
 
-Implements [表格数据导入 TODO](../../../../notepads/aiworkspace-table-import-todo.md) §2–§6. A dependency-free
+Implements [表格数据导入 TODO](../../../../notepads/done/aiworkspace-table-import-todo.md) §2–§6. A dependency-free
 TypeScript module like `../import-drawio` and `../import-pdf` (whose `ImportReport`, `keysAfter` and XML reader it
 reuses): the Desktop (Vite alias `@table/*`) and Deno (the Agent command `import_table`, tests) run the same code.
 SQLite is reached through a query function the host hands in (sqlite-wasm in a browser Worker, `node:sqlite` in

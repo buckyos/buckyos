@@ -86,7 +86,7 @@ type AppInstallerDialogResult =
 ## sysdlg/share
 
 能被任何 App 使用的系统分享窗口（类似文件选择窗口），以弹出窗口实现。首期输入是 Zone 内的文件或文件夹，
-后台是 nfs-server 的分享模块（`share.*`，技术设计见 `notepads/share-content-mgr-tech-design-todo.md`）。
+后台是 nfs-server 的分享模块（`share.*`，技术设计见 `notepads/done/share-content-mgr-tech-design-todo.md`）。
 
 ### 拉起参数
 

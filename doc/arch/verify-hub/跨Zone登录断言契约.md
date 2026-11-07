@@ -1,6 +1,6 @@
 # 跨 Zone 登录断言契约
 
-日期：2026-10-30。状态：P0-3 冻结稿（[实施 TODO](<../../../notepads/cross-zone-comm-todo.md>) §2 规则 2、§6）；与代码冲突时以代码和本文同步修订为准。
+日期：2026-10-30。状态：P0-3 冻结稿（[实施 TODO](<../../../notepads/done/cross-zone-comm-todo.md>) §2 规则 2、§6）；与代码冲突时以代码和本文同步修订为准。
 
 依据：TODO §1 裁决 X-1～X-5、[混合 SSO 技术契约](<混合SSO技术契约.md>)（External 会话、D-4 原因码）。实现：`buckyos-api/src/cross_zone_auth.rs`（断言、custody、受保护头名）、`buckyos-api/src/cross_zone_client.rs`（调用方）、verify-hub `login_by_cross_zone_assertion`。
 

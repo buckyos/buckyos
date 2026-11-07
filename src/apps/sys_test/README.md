@@ -44,7 +44,7 @@ POST /sdk/appservice/selftest/xllm
 
 ## 客服群与客户链接（Self-host Group 扩展官方例子）
 
-对应 [应用扩展实施 TODO](../../../notepads/self-host-group-extension-todo.md) §11（EXT-10 / EXT-11）：一个真正装在 Zone 里的 App 用“L1 配置 + L2 面板 + 客户链接”服务外部客户。页面上的 `support_group` 卡片有三个按钮，源码在 `web/src/support_group.ts`（页面）与 `support_group.ts`（后台）。
+对应 [应用扩展实施 TODO](../../../notepads/done/self-host-group-extension-todo.md) §11（EXT-10 / EXT-11）：一个真正装在 Zone 里的 App 用“L1 配置 + L2 面板 + 客户链接”服务外部客户。页面上的 `support_group` 卡片有三个按钮，源码在 `web/src/support_group.ts`（页面）与 `support_group.ts`（后台）。
 
 | 步骤 | 谁的身份 | 做了什么 |
 | --- | --- | --- |

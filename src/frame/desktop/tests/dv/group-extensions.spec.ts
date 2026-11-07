@@ -1,5 +1,5 @@
 // Self-host Group extension layers in a real browser against a running Zone
-// (notepads/self-host-group-extension-todo.md EXT-08): L1 declarations, the L2 panel host
+// (notepads/done/self-host-group-extension-todo.md EXT-08): L1 declarations, the L2 panel host
 // (trusted App-subdomain panel loads, a dead App host shows "unavailable" while the chat keeps
 // working), display rendering, and the guest page beside its panels. Run:
 //   BUCKYOS_TEST_ZONE_HOST=test.buckyos.io BUCKYOS_TEST_APP_HOST=buckyos-systest \

@@ -1,5 +1,5 @@
 //! DID Object Provider over a service's existing kRPC methods
-//! (notepads/agent-object-url-todo.md §2): object kinds are declared by path
+//! (notepads/done/agent-object-url-todo.md §2): object kinds are declared by path
 //! pattern under `obj://<service>/`, properties / actions / IndexTrait queries
 //! call the service's kRPC methods with the caller's own session token, so
 //! RBAC and service ACL stay exactly those of the kRPC method. HTTP layout:

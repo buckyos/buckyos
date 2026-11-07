@@ -1,6 +1,6 @@
 /**
  * sys_test official example: a customer-service group with a customer link
- * (buckyos notepads/self-host-group-extension-todo.md §11, EXT-10).
+ * (buckyos notepads/done/self-host-group-extension-todo.md §11, EXT-10).
  *
  * The page (the installing account's session on this App's origin) creates the
  * group itself; this module is the App side that needs the App service identity:

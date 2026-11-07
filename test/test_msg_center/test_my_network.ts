@@ -1,5 +1,5 @@
 /**
- * My Network relationship RPCs against a running zone (notepads/my-network-upgrade-todo.md §6.9):
+ * My Network relationship RPCs against a running zone (notepads/done/my-network-upgrade-todo.md §6.9):
  * lookup, user tags and their write rules, Zone relations that cannot be removed, a friend
  * request to an unreachable DID, and the HomeStation `homestation.following` projection.
  * All users of one Zone are friends already, so a request round trip between two Zones is

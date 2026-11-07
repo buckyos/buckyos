@@ -1,4 +1,4 @@
-/* Extension controls on a real Zone (notepads/aiworkspace-extension-p0-todo.md M5–M6): the owner creates a control
+/* Extension controls on a real Zone (notepads/done/aiworkspace-extension-p0-todo.md M5–M6): the owner creates a control
  * in the Desktop's AI Workspace window — its source goes into the owner's home over the Zone file service, `ext.build`
  * commits it — inserts an instance bound to a table, rebuilds, and makes it
  * available in the library; a second account builds its own control from inline files into its own workspace and
@@ -212,7 +212,7 @@ test('[ext] the CLI alone: a local control built, exported, packed, installed an
   cli(token, baseURL!, work, 'aiws', 'library', 'remove', pkg)
 })
 
-// ---- P1 (notepads/aiworkspace-extension-p1-todo.md M6): composite controls on a Zone
+// ---- P1 (notepads/done/aiworkspace-extension-p1-todo.md M6): composite controls on a Zone
 
 const HELLO = resolve('../../../doc/workspace/hello-controls/controls')
 

@@ -2,7 +2,7 @@
 
 > 状态：v0.3（2026-10-28）**P0 已实施**（另含 P1 的 `font_family`、书签 / 标题作页名、"展开为页面"）；§9 全部按建议值落地，实施偏差见 §12，验证见 §13，未做见 §14。v0.1 的"整页栅格"改为降级档，主线是**尽量保留 PDF 结构、导入后可编辑**。
 > 范围：把一份 PDF 导入 AI Workspace，得到一张可编辑的 Surface（每页一个页面组，页内文字、图片、图形是独立对象）和一条演讲路径，放映效果与 PDF 阅读器的全屏演示一致（整页铺满舞台、按页序切换、无动画、黑边补齐）。
-> 依据：[多媒体对象](BuckyOS%20AI%20Workspace%20多媒体对象.md)、[第三期规划](BuckyOS%20AI%20Workspace%20第三期规划.md) §4–§10（Frame / 路径 / 舞台 / 放映）、[draw.io 导入 TODO](../../notepads/aiworkspace-drawio-import-todo.md)（`shape` 文字 / SVG 形状、共享转换模块、分批提交）。
+> 依据：[多媒体对象](BuckyOS%20AI%20Workspace%20多媒体对象.md)、[第三期规划](BuckyOS%20AI%20Workspace%20第三期规划.md) §4–§10（Frame / 路径 / 舞台 / 放映）、[draw.io 导入 TODO](../../notepads/done/aiworkspace-drawio-import-todo.md)（`shape` 文字 / SVG 形状、共享转换模块、分批提交）。
 
 ## 1. 结论
 

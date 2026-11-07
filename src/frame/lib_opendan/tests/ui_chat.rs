@@ -1,4 +1,4 @@
-//! UI Sessions after the prompt rework (notepads/jarvis-chat-prompt-todo.md):
+//! UI Sessions after the prompt rework (notepads/done/jarvis-chat-prompt-todo.md):
 //! the chat input format, the structured reply, and a long command followed
 //! through the task CLI bridge (`agent-session task wait`).
 

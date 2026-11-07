@@ -1,4 +1,4 @@
-// Hybrid SSO in a real browser against a running Zone (notepads/hybrid-sso-implementation-todo.md
+// Hybrid SSO in a real browser against a running Zone (notepads/done/hybrid-sso-implementation-todo.md
 // SSO-14): real cookies, the invite link with its fragment secret, the Message Hub guest page and the
 // share entry page. Run: BUCKYOS_TEST_ZONE_HOST=test.buckyos.io BUCKYOS_TEST_ADMIN_PASSWORD=bucky2025 \
 //   pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/hybrid-sso.spec.ts

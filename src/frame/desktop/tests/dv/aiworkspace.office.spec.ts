@@ -1,4 +1,4 @@
-/* Office import on a real Zone (notepads/aiworkspace-office-import-todo.md O7): the Desktop as the Zone serves it —
+/* Office import on a real Zone (notepads/done/aiworkspace-office-import-todo.md O7): the Desktop as the Zone serves it —
  * the converter in its Worker, pictures uploaded through NDM, sub-documents and originals turned into PDFs by the
  * node's LibreOffice through nfs_server `repr` (preview-document), commits through the gateway — for a Word document
  * (a flow page; its EMF / WMF pictures as pictures), a PowerPoint deck (pages, a chart as a picture, a path) and the

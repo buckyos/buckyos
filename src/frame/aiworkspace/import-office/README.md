@@ -1,6 +1,6 @@
 # import-office — Word and PowerPoint documents into a Workspace
 
-Implements [Office 导入 TODO](../../../../notepads/aiworkspace-office-import-todo.md) (the editable path, §3–§4, and the
+Implements [Office 导入 TODO](../../../../notepads/done/aiworkspace-office-import-todo.md) (the editable path, §3–§4, and the
 sub-documents of §5.3). A dependency-free TypeScript module like `../import-drawio`, `../import-pdf` and
 `../import-table`, whose zip reader, XML reader, page plans, `buildOperations`, keys and page layout it reuses: the
 Desktop (Vite alias `@office/*`, the parsing in a Worker) and Deno (the Agent command `import_office`, tests) run the same

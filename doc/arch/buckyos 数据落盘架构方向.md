@@ -354,7 +354,7 @@ RDB、对象本体和 Chunk 即使都分别具有备份，也不代表组合后�
 
 特别是 SQLite 实例，不能继续只表现为应用目录中一批无人统一识别的文件。这个资源清单是后续管理、备份和升级处理的基础。
 
-**2026-10-26 现状（Named Bucket 迁移后）。** 系统服务和默认应用的业务数据已收敛为“RDB instance + named store + 应用对象桶”（设计见《应用对象桶 Bucket 设计》，迁移记录见 `notepads/bucket-migration-todo.md`）。桶 ID 是 `<scope>/<appid>/<owner>/<name>`，zone 桶的 owner 写 `_`；每条绑定就是 named store 里的一个 pin（owner `bucket:<bucket_id>`），内容只存一份。各服务的表、key 与一致性规则以各自的 Durable Data Schema 文档为准：
+**2026-10-26 现状（Named Bucket 迁移后）。** 系统服务和默认应用的业务数据已收敛为“RDB instance + named store + 应用对象桶”（设计见《应用对象桶 Bucket 设计》，迁移记录见 `notepads/done/bucket-migration-todo.md`）。桶 ID 是 `<scope>/<appid>/<owner>/<name>`，zone 桶的 owner 写 `_`；每条绑定就是 named store 里的一个 pin（owner `bucket:<bucket_id>`），内容只存一份。各服务的表、key 与一致性规则以各自的 Durable Data Schema 文档为准：
 
 | 服务 / 应用 | RDB instance | 桶（kind / data_policy） | key |
 | --- | --- | --- | --- |

@@ -1,5 +1,5 @@
 // sys-test official example in a real browser against a running Zone
-// (notepads/self-host-group-extension-todo.md §11, EXT-10): the installing account clicks
+// (notepads/done/self-host-group-extension-todo.md §11, EXT-10): the installing account clicks
 // the two buttons on the sys_test page, a customer opens the 48-hour link (set-password
 // prompt, join, chat beside the App panel), sets a password, and the same link then asks
 // for the password. Run:

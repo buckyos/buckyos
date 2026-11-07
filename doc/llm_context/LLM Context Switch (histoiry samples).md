@@ -2,7 +2,7 @@
 
 说明 LLMContext + AgentSession 如何构造、切换和恢复典型的 Message List。Round / Step / Turn 的定义与 [readme](readme.md) 一致；Context 调度采用本次 review 和[提示词方式图解](<../opendan/几种典型的提示词方式图解.drawio>)确定的新语义。
 
-本文区分**已实现的行为**、**已定稿但尚未实现的设计**和**待定建议**。切换模式由目标 behavior 决定；普通切换已删除；`SWITCH_CONTEXT` 是目标自己保有 context 的切换；更换 system prompt 的子调用称为 `create-sub-context`，保留 system 与完整历史的子分支才称为 `fork`。Context 调度一节（三种进入模式、两种触发方式、hosted run 交接）已在 llm_context / xllm / libopendan 落地，配置拼写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §4.2 / §8。2026-10-10 已实现 XML 用 `<report end="true">` 显式结束且不得有 actions，两套 parser 与宿主使用同一提交语义，见下文 report 一节。Stop 后补充输入（H3）已暂缓，不适用于 Work 生命周期，强制 reopen 不在本轮范围；report 宿主策略与验收见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md) H3 / H4。END / 隐式 report-only 完成已移除；旧 opendan Runtime 的历史描述不作为当前协议。
+本文区分**已实现的行为**、**已定稿但尚未实现的设计**和**待定建议**。切换模式由目标 behavior 决定；普通切换已删除；`SWITCH_CONTEXT` 是目标自己保有 context 的切换；更换 system prompt 的子调用称为 `create-sub-context`，保留 system 与完整历史的子分支才称为 `fork`。Context 调度一节（三种进入模式、两种触发方式、hosted run 交接）已在 llm_context / xllm / libopendan 落地，配置拼写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §4.2 / §8。2026-10-10 已实现 XML 用 `<report end="true">` 显式结束且不得有 actions，两套 parser 与宿主使用同一提交语义，见下文 report 一节。Stop 后补充输入（H3）已暂缓，不适用于 Work 生命周期，强制 reopen 不在本轮范围；report 宿主策略与验收见 [Context 调度支持 TODO](../../notepads/done/llm-context-switch-support-todo.md) H3 / H4。END / 隐式 report-only 完成已移除；旧 opendan Runtime 的历史描述不作为当前协议。
 
 ## Round、Step、Turn 与 run
 

@@ -4,7 +4,7 @@
 - 实现：`src/frame/agent_tool/src/llm_compress.rs`
 - 调用方：libopendan Session（`runner/history.rs`、`runner/live.rs`）、xllm 自己的 run（`compact_context`）、`llm_understand_media`（父历史提纯）
 
-> **分工**：llm_context 冻结后（见 [llm-context-freeze-todo](../../notepads/llm-context-freeze-todo.md)），llm_context 只在估算达到触发线（`context_yield_ratio`，缺省 0.80）时让出 `ContextLimitReached`，自己不改写历史；改写由宿主执行，压缩逻辑**只有本模块一种**。宿主不再自带机械截断，本模块也没有机械压缩：压缩 = 一次（或分块的若干次）LLM 摘要。
+> **分工**：llm_context 冻结后（见 [llm-context-freeze-todo](../../notepads/done/llm-context-freeze-todo.md)），llm_context 只在估算达到触发线（`context_yield_ratio`，缺省 0.80）时让出 `ContextLimitReached`，自己不改写历史；改写由宿主执行，压缩逻辑**只有本模块一种**。宿主不再自带机械截断，本模块也没有机械压缩：压缩 = 一次（或分块的若干次）LLM 摘要。
 
 ---
 

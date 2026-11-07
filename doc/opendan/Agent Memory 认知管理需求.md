@@ -6,7 +6,7 @@
 
 **目标读者：系统架构负责人、Agent Memory / 整理 Goal 开发者、Session SDK 开发者**
 
-**关联文档：[《Agent Session SDK 化核心需求》](<Agent Session SDK化核心需求.md>)、[《OpenDAN Agent Session 架构设计》](<OpenDAN Agent Session架构设计.md>)、[多 Session 模拟 TODO](../../notepads/agent-memory-multi-session-simulation-todo.md)**
+**关联文档：[《Agent Session SDK 化核心需求》](<Agent Session SDK化核心需求.md>)、[《OpenDAN Agent Session 架构设计》](<OpenDAN Agent Session架构设计.md>)、[多 Session 模拟 TODO](../../notepads/done/agent-memory-multi-session-simulation-todo.md)**
 
 ## 1. 文档定位与核心问题
 
@@ -1261,7 +1261,7 @@ Work 结束后，用户再提修改，由 UI 基于有效产物形成新 Task、
 
 用户在修改里顺带表达长期偏好时（“这次改深灰，以后这个项目都别用亮色背景”），UI 除了追加修订，再写一条项目范围的感知。修订保证这次送达，感知供以后的任务召回，两者互不依赖。一次性调整不自动成为新任务的长期偏好（E-09）。
 
-Memory 一侧的边界场景见 [组件模拟 TODO §3.11](../../notepads/agent-memory-multi-session-simulation-todo.md#311-场景六-运行中-work-的修改不经过-memory)。
+Memory 一侧的边界场景见 [组件模拟 TODO §3.11](../../notepads/done/agent-memory-multi-session-simulation-todo.md#311-场景六-运行中-work-的修改不经过-memory)。
 
 ## 10. 可验收场景
 
@@ -1349,7 +1349,7 @@ Memory 一侧的边界场景见 [组件模拟 TODO §3.11](../../notepads/agent-
 | 阶段 | 内容 | 需求 | 验收 |
 |---|---|---|---|
 | 原则 | 所有阶段、所有使用方都遵守的边界 | M-01、M-02、M-30—M-34 | B-40—B-43，从 Session 接入阶段起验收 |
-| C 组件 | Memory 组件的数据、写入、查询、topic、半订阅、整理提交与清理；Session 用模拟客户端，整理决策预设，见[组件模拟 TODO](../../notepads/agent-memory-multi-session-simulation-todo.md) | M-04、M-05、M-07、M-10、M-15—M-17、M-19、M-20、M-23—M-25、M-29 | B-02—B-07、B-09、B-12、B-13、B-15—B-18、B-20、B-22—B-24、B-27—B-31、B-34、B-44、B-45、B-47、B-48、B-50、B-51；其中需要判断的场景用预设决策，只验证机制 |
+| C 组件 | Memory 组件的数据、写入、查询、topic、半订阅、整理提交与清理；Session 用模拟客户端，整理决策预设，见[组件模拟 TODO](../../notepads/done/agent-memory-multi-session-simulation-todo.md) | M-04、M-05、M-07、M-10、M-15—M-17、M-19、M-20、M-23—M-25、M-29 | B-02—B-07、B-09、B-12、B-13、B-15—B-18、B-20、B-22—B-24、B-27—B-31、B-34、B-44、B-45、B-47、B-48、B-50、B-51；其中需要判断的场景用预设决策，只验证机制 |
 | S Session 接入 | 默认写入入口、推理前观察、Task 修订、召回装配、整理 Goal 调度、任务失效联动、DID Object 访问 | M-03、M-08、M-09、M-12、M-13、M-18、M-21、M-22、M-26、M-27 | B-01、B-08、B-10、B-11、B-14、B-19、B-21、B-25、B-26、B-32、B-33、B-35—B-39、B-46（情境锚点由 Runtime 提供）；B-10、B-11、B-14、B-21、B-26、B-32 的组件部分先在 C 阶段用 fixture 验证 |
 | Q 模型质量 | 真实模型的写入筛选与认知综合质量，按 §10.3 的带标签样例评估 | M-06、M-11、M-14 | 用真实模型复验 B-04、B-05、B-20、B-28—B-31、B-34、B-46（按锚点解读）、B-49，以及 §10.1 的评估重点 |
 | 待决 | 依赖尚未确定的语义 | M-28 | — |
@@ -1420,7 +1420,7 @@ Memory 一侧的边界场景见 [组件模拟 TODO §3.11](../../notepads/agent-
 
 ## 附录 A：Memory 组件接口与数据模型
 
-本附录继承旧《Agent Memory Module — Memory Graph 核心组件规格 v2.10》（`Agent元能力/Agent Memory v2.md`，下称 v2.10）中仍然成立的接口设计，并按本文正文调整，读者不必再看 v2.10。“现状”按组件阶段（C）实施后的代码（2026-10-10）描述：Graph 在 `agent_tool/src/agent_memory/`（schema 3.0），两层的统一门面在 `lib_opendan/src/memory/`；仍要在 S 阶段接线的部分保留附录 B 的编号（TD-xx）。组件的可运行例子与测试见[组件模拟 TODO](../../notepads/agent-memory-multi-session-simulation-todo.md) §8。
+本附录继承旧《Agent Memory Module — Memory Graph 核心组件规格 v2.10》（`Agent元能力/Agent Memory v2.md`，下称 v2.10）中仍然成立的接口设计，并按本文正文调整，读者不必再看 v2.10。“现状”按组件阶段（C）实施后的代码（2026-10-10）描述：Graph 在 `agent_tool/src/agent_memory/`（schema 3.0），两层的统一门面在 `lib_opendan/src/memory/`；仍要在 S 阶段接线的部分保留附录 B 的编号（TD-xx）。组件的可运行例子与测试见[组件模拟 TODO](../../notepads/done/agent-memory-multi-session-simulation-todo.md) §8。
 
 ### A.1 分层与现有实现
 
@@ -1889,7 +1889,7 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 - `cli` = [agent_tool_cli_dev/src/lib.rs](../../src/frame/agent_tool_cli_dev/src/lib.rs)
 - `lo` = [lib_opendan/src/](../../src/frame/lib_opendan/src/)
 
-组件阶段的实施顺序与模拟例子见[组件模拟 TODO](../../notepads/agent-memory-multi-session-simulation-todo.md) T01—T04；本清单列出全部调整。P0 是边界和正确性问题，P1 补齐能力，P2 是性能与健壮性。每项完成时同步更新附录 A 的“现状”。
+组件阶段的实施顺序与模拟例子见[组件模拟 TODO](../../notepads/done/agent-memory-multi-session-simulation-todo.md) T01—T04；本清单列出全部调整。P0 是边界和正确性问题，P1 补齐能力，P2 是性能与健壮性。每项完成时同步更新附录 A 的“现状”。
 
 ### P0：边界与正确性
 
@@ -2001,7 +2001,7 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 - 现状：`agent_tool/src/agent_attention_signal.rs`（SQLite，Stage1 扫描与 `ListPendingAttentionSignals` 等 CLI）与 `lo` 的感知流并行；`self_improve_signals.toml`、`self_improve_set_memory.toml` 走前者。
 - 改为：以 `lo` 的感知流为唯一入口；attention signal 中仍有价值的部分（事后回扫、合法性校验、泛指类型词过滤）按 M-11、§4.5 并入；退役旧管线与两份 behavior。
 - 进度（2026-10-10，组件阶段）：组件完成：新路径只用感知流。S 待办：迁移并退役 attention signal SQLite/CLI 与 `self_improve_signals`、`self_improve_set_memory` behavior；事后回扫是否采用仍待决。
-- 进度（2026-11-01，退役）：两份 self_improve behavior 已随 TD-19（2026-10-23）删除；`agent_attention_signal.rs`（SQLite、Stage1 扫描、`Discover*` 工具）与 `agent_tool_cli_dev` 的 8 个 CLI（`BeginAttentionSignalExtraction`、`CompleteAttentionSignalExtraction`、`Discover{Event,ObjectObservation,Relationship,SkillCoverageGap}`、`ListPendingAttentionSignals`、`MarkAttentionSignalConsumed`）已删除，感知流是唯一入口。“仍有价值的部分”不搬代码：泛指类型词过滤已是 §4.5 的提示词规则；合法性校验针对旧 signal 结构，新感知流有自己的来源校验，不并入；事后回扫仍是 M-11 待决。旧数据 `<agent_root>/attention_signals/` 不迁移、不自动删除，没有新路径读它（见 `notepads/attention-signal-retirement-todo.md`）。
+- 进度（2026-11-01，退役）：两份 self_improve behavior 已随 TD-19（2026-10-23）删除；`agent_attention_signal.rs`（SQLite、Stage1 扫描、`Discover*` 工具）与 `agent_tool_cli_dev` 的 8 个 CLI（`BeginAttentionSignalExtraction`、`CompleteAttentionSignalExtraction`、`Discover{Event,ObjectObservation,Relationship,SkillCoverageGap}`、`ListPendingAttentionSignals`、`MarkAttentionSignalConsumed`）已删除，感知流是唯一入口。“仍有价值的部分”不搬代码：泛指类型词过滤已是 §4.5 的提示词规则；合法性校验针对旧 signal 结构，新感知流有自己的来源校验，不并入；事后回扫仍是 M-11 待决。旧数据 `<agent_root>/attention_signals/` 不迁移、不自动删除，没有新路径读它（见 `notepads/done/attention-signal-retirement-todo.md`）。
 
 ### P2：性能与健壮性
 
@@ -2014,7 +2014,7 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 **TD-22 增量写入，查询走索引**
 - 现状：每次写入都全量 replay、重写全部 canonical 文件与 graph 快照、`rm -rf index/` 后重建、删除 SQLite 后重建；path 索引与 SQLite 都不参与查询。
 - 改为：增量更新派生物；召回走 SQLite 或索引；保留“派生物可随时重建”的性质。
-- 进度（2026-10-10，组件阶段）：未完成（P2）：每次提交仍全量 replay 与重建派生物；基线见[组件模拟 TODO](../../notepads/agent-memory-multi-session-simulation-todo.md) §8.3。
+- 进度（2026-10-10，组件阶段）：未完成（P2）：每次提交仍全量 replay 与重建派生物；基线见[组件模拟 TODO](../../notepads/done/agent-memory-multi-session-simulation-todo.md) §8.3。
 
 **TD-23 compact 的快照要被 replay 使用**
 - 现状：`compact` 写 `.meta/state.jsonl`，但 replay 只读归档与当前日志，从不读快照；没有归档清单。

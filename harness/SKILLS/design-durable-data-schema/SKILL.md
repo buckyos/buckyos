@@ -90,7 +90,7 @@ For each durable data item, specify the storage approach:
 
 ### Object / Unstructured → Buckets
 
-Bytes and immutable objects go to the named store; **retention is expressed by binding them into an application object bucket** (`doc/arch/应用对象桶 Bucket 设计.md`; rules in `notepads/bucket-migration-todo.md` §1). For each item state:
+Bytes and immutable objects go to the named store; **retention is expressed by binding them into an application object bucket** (`doc/arch/应用对象桶 Bucket 设计.md`; rules in `notepads/done/bucket-migration-todo.md` §1). For each item state:
 
 - **Bucket**: `user/<appid>/<user>/<name>` or `zone/<appid>/_/<name>`; declared in `install_config.buckets` (apps) or `spec_config.buckets` in `scheduler/src/system_config_builder.rs` (services).
 - **kind**: `data` (FileObject / DirObject: uploads, images, artifacts) or `object` (messages, posts, app objects).

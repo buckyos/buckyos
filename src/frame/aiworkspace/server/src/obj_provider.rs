@@ -1,4 +1,4 @@
-//! DID Object Provider of AI Workspace (notepads/agent-object-url-todo.md §4.4, D7):
+//! DID Object Provider of AI Workspace (notepads/done/agent-object-url-todo.md §4.4, D7):
 //! `obj://aiworkspace/<ws_id>`, `.../entities/<entity_id>[?mode=&selector=&version=]`
 //! and `.../path/<...>`, served at `/kapi/aiworkspace/obj/...`. Reads are the kRPC
 //! methods (`ws.get_info`, `doc.outline`, `doc.read`, `doc.resolve`, ...) through the

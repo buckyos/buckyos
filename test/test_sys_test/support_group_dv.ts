@@ -1,5 +1,5 @@
 /**
- * sys-test official example, backend DV (notepads/self-host-group-extension-todo.md §11,
+ * sys-test official example, backend DV (notepads/done/self-host-group-extension-todo.md §11,
  * EXT-10 / EXT-11). Drives the installed `buckyos-systest` App the way its page does and
  * then plays the customer:
  *

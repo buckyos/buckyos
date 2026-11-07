@@ -93,13 +93,13 @@
 
 ### 任务记录与旧工作背景
 
-- [notepads/app-id-simplification-todo.md](../../notepads/app-id-simplification-todo.md)
-- [notepads/app-service-beta2.2-prototype-todo.md](../../notepads/app-service-beta2.2-prototype-todo.md)
+- [notepads/done/app-id-simplification-todo.md](../../notepads/done/app-id-simplification-todo.md)
+- [notepads/done/app-service-beta2.2-prototype-todo.md](../../notepads/done/app-service-beta2.2-prototype-todo.md)
 - [notepads/buckyos-tool-app-control-panel-todo.md](../../notepads/buckyos-tool-app-control-panel-todo.md)
 - [notepads/opendan-builtin-cmd-skills-todo.md](../../notepads/opendan-builtin-cmd-skills-todo.md)
 - [notepads/opendan-cmd-skill-todo.md](../../notepads/opendan-cmd-skill-todo.md)
-- [notepads/opendan-goal-session-todo.md](../../notepads/opendan-goal-session-todo.md)
-- [notepads/share-content-mgr-tech-design-todo.md](../../notepads/share-content-mgr-tech-design-todo.md)
+- [notepads/done/opendan-goal-session-todo.md](../../notepads/done/opendan-goal-session-todo.md)
+- [notepads/done/share-content-mgr-tech-design-todo.md](../../notepads/done/share-content-mgr-tech-design-todo.md)
 
 ### 历史参考
 

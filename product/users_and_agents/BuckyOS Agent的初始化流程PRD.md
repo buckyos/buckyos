@@ -1171,7 +1171,7 @@ p, agent, obj://config/users/{user}/agents/{agent}/profile,read|write,allow
 
 ### C.5 HomeStation 主页与自动分享成果（2026-10-23）
 
-按用户 2026-10-23 的需求增加 §3.2 的两项默认值与 §5.4 的两个社交开关；方案与进度见 `notepads/agent-homestation-auto-share-todo.md`。
+按用户 2026-10-23 的需求增加 §3.2 的两项默认值与 §5.4 的两个社交开关；方案与进度见 `notepads/done/agent-homestation-auto-share-todo.md`。
 
 | 范围 | 落点 |
 | --- | --- |

@@ -170,7 +170,7 @@ AIWS_BIN=<cargo-target>/debug/aiworkspace pnpm exec playwright test --config=pla
 
 | 问题 | 原因 | 修正 | 验证 |
 | --- | --- | --- | --- |
-| 分析失败：`aicc helper.llm_chat failed`，没有原因 | 生成的 `.llm_context` 没有输出上限，Claude 要求 `max_tokens`；xllm 的 AICC 适配丢掉了响应里的 `error` | 新设置 `wish.max_output_tokens`（默认 32,000，主流旗舰模型的输出上限都不低于它）写入 `.llm_context`；xllm 失败信息带上 AICC 错误（记录在 `notepads/llm-context-aicc-error-todo.md`） | server `wish` 测试断言请求带 32,000；DV 分析成功 |
+| 分析失败：`aicc helper.llm_chat failed`，没有原因 | 生成的 `.llm_context` 没有输出上限，Claude 要求 `max_tokens`；xllm 的 AICC 适配丢掉了响应里的 `error` | 新设置 `wish.max_output_tokens`（默认 32,000，主流旗舰模型的输出上限都不低于它）写入 `.llm_context`；xllm 失败信息带上 AICC 错误（记录在 `notepads/done/llm-context-aicc-error-todo.md`） | server `wish` 测试断言请求带 32,000；DV 分析成功 |
 | 服务重启后约 5 秒内调用 AICC 报 `ordinary session tokens must be issued by verify-hub` | aiworkspace 登录后没有像 AICC、control-panel 那样先向 verify-hub 换取会话 | 启动时 `renew_token_from_verify_hub()` 后再监听 | DV 日志：换取在 listening 之前 |
 | 结果没有放进分析指定的框 | 分析校验接受 `placement: frame:<句柄>`，规划器却只认 `right_of_wish` / `below_wish` | 规划器把结果组放进该框（同一 Surface 时） | store 测试断言组位置；DV 中组位于框内 |
 | 比率被舍入到 2 位（0.3835 → 0.38，各区域占比合计变成 1.01） | 程序声明 `decimal` 未给 `scale` 时默认 2 位并四舍五入 | 未声明时按值所需的小数位（最多 6 位）；已有字段位数不够时用 `table.migrate_field` 扩大（core 允许 decimal → decimal 迁移，缩小时逐值失败而不舍入），预览列出“增加小数位” | Q05 扩展（0 → 2 位）；DV 在副本上重跑后存为 0.3835 / 0.9211 |

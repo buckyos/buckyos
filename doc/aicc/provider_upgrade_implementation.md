@@ -1,6 +1,6 @@
 # AICC Provider upgrade 实现记录
 
-日期：2026-09-25。对应 [任务单](../../notepads/aicc-provider-upgrade-todo.md)，基于 Model Driver v2 内核继续完成 Provider 身份、库存、预设和计费链路。Beta 2.2 breaking change，不迁移旧字段或旧 inventory 缓存。
+日期：2026-09-25。对应 [任务单](../../notepads/done/aicc-provider-upgrade-todo.md)，基于 Model Driver v2 内核继续完成 Provider 身份、库存、预设和计费链路。Beta 2.2 breaking change，不迁移旧字段或旧 inventory 缓存。
 
 ## 已实现的边界
 

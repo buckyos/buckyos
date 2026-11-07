@@ -2,7 +2,7 @@
 
 日期：2026-10-25（v2，按用户设计决策重写；v1 为 2026-10-24 的 standard / target 讨论稿）
 
-状态：**设计方向（§0）与待定项（§6）均已拍板，类型草案与时序见 §6.2–6.3；T0 已提交（c3e4afb80）；T1–T7 于 2026-10-25 实施（未提交），记录、与草案的差异、验证和未完成项见 §10。§8 验收只勾选已实测的项；真实 Zone DV、Windows / macOS 实机未做。** 本文承接 [Agent Runtime 集成 Session / Workspace](agent-runtime-session-workspace-integration-todo.md)（2026-10-23 已实施并提交）之后的下一步：把“一个 Session 一个 runtime、Workspace 决定 runtime”扩展为“Session 带着自己的 session-runtime 去 Workspace 上班”。
+状态：**设计方向（§0）与待定项（§6）均已拍板，类型草案与时序见 §6.2–6.3；T0 已提交（c3e4afb80）；T1–T7 于 2026-10-25 实施（未提交），记录、与草案的差异、验证和未完成项见 §10。§8 验收只勾选已实测的项；真实 Zone DV、Windows / macOS 实机未做。** 本文承接 [Agent Runtime 集成 Session / Workspace](done/agent-runtime-session-workspace-integration-todo.md)（2026-10-23 已实施并提交）之后的下一步：把“一个 Session 一个 runtime、Workspace 决定 runtime”扩展为“Session 带着自己的 session-runtime 去 Workspace 上班”。
 
 ## 0. 设计决策（2026-10-25 用户拍板）
 
@@ -227,7 +227,7 @@ agent-session copy --from <role|runtime_id>:<path> --to <role|runtime_id>:<path>
 
 ### T0：llm_context 层先行项（agent_tool，单独 TODO 推进）
 
-2026-10-25 已实施（未提交），落点、与本节原写法的差异、验证见 [llm_context AgentRuntime TODO §11](llm-context-agent-runtime-todo.md#11-session-runtime-先行项2026-10-25-实施)。
+2026-10-25 已实施（未提交），落点、与本节原写法的差异、验证见 [llm_context AgentRuntime TODO §11](done/llm-context-agent-runtime-todo.md#11-session-runtime-先行项2026-10-25-实施)。
 
 - [x] 流式读 / 分块写原语：`RuntimeFiles { limits, stat(hash), read_range, write_chunk(mode, expected_size, expected_hash), rename, remove }`，native（`LocalFileBackend`）与 remote_node（`RemoteNodeTarget`）都实现；chunk 上限由 `limits().max_chunk_bytes` 表达。顺序保护改用 `expected_size`（理由见 §4 传输路径）。
 - [x] 移除 `ControlSide` 首词分流（Q1）；`NodeBashRunner` 不再认识 Session helper 名称。**过渡影响**：T3 完成前，remote_node Session 中的 `agent-session` 等 helper 只有节点上已安装时才可用。
@@ -298,7 +298,7 @@ agent-session copy --from <role|runtime_id>:<path> --to <role|runtime_id>:<path>
 
 未修改任何代码；未执行运行时测试。
 
-2026-10-25（T0 实施）：按 §7 T0 完成 llm_context 层先行项，记录见 [llm_context AgentRuntime TODO §11](llm-context-agent-runtime-todo.md#11-session-runtime-先行项2026-10-25-实施)。本文 §4 的“以 `expected_hash` 做顺序保护”改为 `expected_size`、T0 的“`FileBackend` 加最小方法”改为 `RuntimeFiles`，§6.2 草案补实施后的形状。未做真实 Zone / Windows / macOS 实测。
+2026-10-25（T0 实施）：按 §7 T0 完成 llm_context 层先行项，记录见 [llm_context AgentRuntime TODO §11](done/llm-context-agent-runtime-todo.md#11-session-runtime-先行项2026-10-25-实施)。本文 §4 的“以 `expected_hash` 做顺序保护”改为 `expected_size`、T0 的“`FileBackend` 加最小方法”改为 `RuntimeFiles`，§6.2 草案补实施后的形状。未做真实 Zone / Windows / macOS 实测。
 
 2026-10-25（T1–T7 实施）：按 §7 实施并在本机验证，记录见 §10。未提交；真实 Zone DV、Windows / macOS 实机未做。
 
@@ -346,7 +346,7 @@ agent-session copy --from <role|runtime_id>:<path> --to <role|runtime_id>:<path>
 - 节点上下文文件的权限（0600）未强制：由执行器以 profile 身份写入，权限取决于节点 umask。
 - 复制无断点续传；源在 verify 前被改动会在 verify 步失败；取消要等当前块完成。
 - `skill install` 在节点 Session 里不可用（包路径在节点上）。
-- 本次对 llm_context 层（agent_tool）的改动：`RuntimeBaseline` 移到 buckyos-api 后重导出、`TodoAttempt.baseline` 与 PLAN 视图属性；记在 [llm_context AgentRuntime TODO §11.1](llm-context-agent-runtime-todo.md#111-t1t7-实施时的补充改动2026-10-25)。
+- 本次对 llm_context 层（agent_tool）的改动：`RuntimeBaseline` 移到 buckyos-api 后重导出、`TodoAttempt.baseline` 与 PLAN 视图属性；记在 [llm_context AgentRuntime TODO §11.1](done/llm-context-agent-runtime-todo.md#111-t1t7-实施时的补充改动2026-10-25)。
 
 
 ### 10.5 DV 修正：启动时一次性的 runtime 不可达（2026-10-25）

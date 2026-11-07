@@ -1,4 +1,4 @@
-//! DID Object Provider of HomeStation (notepads/agent-object-url-todo.md §4.5, D10 / D11):
+//! DID Object Provider of HomeStation (notepads/done/agent-object-url-todo.md §4.5, D10 / D11):
 //! `obj://homestation/home/<user>`, `/feed`, `/feed/@/<key>`, `/inbox` and
 //! `obj://homestation/home/~zone`, served at `/kapi/homestation/obj/...`. Their default
 //! Object URL is the same path over https (`https://<zone>/home/<user>/...`), the

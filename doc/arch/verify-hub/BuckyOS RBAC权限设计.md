@@ -67,7 +67,7 @@ g, demo-app, app
 
 ## 基于 URL 的资源 key 布局（2026-10-29 定稿）
 
-> 从 Agent 的万能 read 开始考虑：Agent 看到的对象 URL 与 RBAC 的资源 key 是同一个字符串。URL 规范见 [key url.md](../../key%20url.md) 第一部分，裁决记录见 [notepads/agent-object-url-todo.md](../../../notepads/agent-object-url-todo.md) §1.5。本节是第 1 段产出：只定规则与目标 policy，现有 policy 的改动在第 2 段随各服务 Provider 落地。
+> 从 Agent 的万能 read 开始考虑：Agent 看到的对象 URL 与 RBAC 的资源 key 是同一个字符串。URL 规范见 [key url.md](../../key%20url.md) 第一部分，裁决记录见 [notepads/done/agent-object-url-todo.md](../../../notepads/done/agent-object-url-todo.md) §1.5。本节是第 1 段产出：只定规则与目标 policy，现有 policy 的改动在第 2 段随各服务 Provider 落地。
 
 ### 原则
 

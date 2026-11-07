@@ -10,7 +10,7 @@
 >
 > 术语：Round = 一次推理，Step = Behavior Loop 的一次决策记录（`StepRecord`），Turn = AgentSession 的一次逻辑 Input → result，工具迭代 = 工具预算的计量单位；定义见 [readme](readme.md)。本文的 `run()` 指一次 `LLMContext::run()` 调用。
 >
-> 核对：2026-11-01 按工作区源码逐节核对（`src/frame/llm_context`，快照 v6；`src/frame/agent_tool/src/xllm.rs`，RunRecord v7）。本文描述**现状**；设计取舍的裁决记录见 [llm_context 简化与冻结 TODO](../../notepads/llm-context-freeze-todo.md)，尚未落地的两项在 §11.6 标注"冻结 TODO Fn"。
+> 核对：2026-11-01 按工作区源码逐节核对（`src/frame/llm_context`，快照 v6；`src/frame/agent_tool/src/xllm.rs`，RunRecord v7）。本文描述**现状**；设计取舍的裁决记录见 [llm_context 简化与冻结 TODO](../../notepads/done/llm-context-freeze-todo.md)，尚未落地的两项在 §11.6 标注"冻结 TODO Fn"。
 >
 > 分层一句话：**llm_context 只跑 loop**（推理、派发工具调用、把结果配对回历史、决定在哪里停、怎么接着跑、什么时候打 checkpoint）；工具、结果信封、任务模型、调用内的等待预算、按 call_id 的恢复、XML 协议与 prompt 引擎在 Runtime 层（`agent_tool`）；Session、Turn、输入、子 context、子 session 以及在 loop 外跟进任务在宿主（libopendan）。loop 里不允许等待，任何等待都是任务。
 
@@ -1302,7 +1302,7 @@ src/frame/llm_context/src/
 | [prompt_render_engine](prompt_render_engine.md) | `agent_tool::prompt_engine` 模板引擎（§7） |
 | [Agent Actions](<Agent Actions.md>) | Behavior 模式 `<actions>` / `<report>` 的最终形态 |
 | [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) | libopendan Session 宿主：Turn、lease、历史重写、hosted run |
-| [llm_context 简化与冻结 TODO](../../notepads/llm-context-freeze-todo.md) | 分层取舍的裁决记录 F1–F24；未落地的 F6 / F11 见 §11.6 |
+| [llm_context 简化与冻结 TODO](../../notepads/done/llm-context-freeze-todo.md) | 分层取舍的裁决记录 F1–F24；未落地的 F6 / F11 见 §11.6 |
 
 早期设想的 `LLMAgentContext 设计.md` / `LLMWorkflowContext 设计.md` 没有单独成文：Agent 一侧由 libopendan 的 Session 承担，Workflow 一侧尚无实现。
 

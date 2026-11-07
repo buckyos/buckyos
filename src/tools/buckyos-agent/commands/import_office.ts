@@ -1,5 +1,5 @@
 // import_office — a .docx / .pptx file → an AI Workspace page you can edit
-// Doc: notepads/aiworkspace-office-import-todo.md §7; the converter is the one the Desktop's import dialog runs
+// Doc: notepads/done/aiworkspace-office-import-todo.md §7; the converter is the one the Desktop's import dialog runs
 // (src/frame/aiworkspace/import-office, `@office/` in deno.json): a Word document becomes a flow page of rich text
 // and picture Blocks, a PowerPoint deck a free canvas with one page per slide and a presentation path.
 // Steps: 1) argv  2) read and convert the file  3) --dry-run: print the plan  4) initRuntime(), upload the pictures

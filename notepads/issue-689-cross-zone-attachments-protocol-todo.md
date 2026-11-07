@@ -134,7 +134,7 @@ msg-center 当前对象入口只从 Bearer／query token 构造 RPCContext，不
 | B：通用 DID／委托认证 + 消息关系授权 | 私聊、群、Agent、后台请求可统一；能按当前规则重新取权 | 附件请求认证适配、请求绑定和接收者授权仍需实现 | 推荐控制面 |
 | C：源 Zone External SSO session | 可复用浏览器登录和源 Zone 验证 | 交互流程，不宜要求后台逐源登录；认证不等于附件权限 | 交互访问的一种认证入口 |
 
-已有 [群 v2 TODO §4.5](messagehub-group-v2-todo.md) 确定过复用 DID Document 跨 Zone 身份的方向，同时明确自动接入和凭据续期未完成。这里应延续该方向，不把旧文档中的计划当成已实现能力。
+已有 [群 v2 TODO §4.5](done/messagehub-group-v2-todo.md) 确定过复用 DID Document 跨 Zone 身份的方向，同时明确自动接入和凭据续期未完成。这里应延续该方向，不把旧文档中的计划当成已实现能力。
 
 ### 5.2 通用认证层需要交付的契约（提案）
 
@@ -471,7 +471,7 @@ cargo test -p nfs_server -- --test-threads=1
 - [Message Center](../doc/message_hub/Message%20Center.md)：消息 accepted、附件读、远端授权、状态与失败语义。
 - [Durable Data Schema](../doc/message_hub/Message%20Center%20Durable%20Data%20Schema.md)：获取记录、来源、任务 claim、保留责任、绑定提交／恢复和升级。
 - [Bucket 设计](../doc/arch/应用对象桶%20Bucket%20设计.md)：仅在 token scope、数据面或保留策略发生变化时更新；不要把已有规划误记为完成。
-- [Self-host Group v2](../doc/message_hub/Self-Host-Groupv2.md)、[群后端说明](../src/frame/msg_center/doc/group-v2-backend.md)、[群接入 TODO](messagehub-group-v2-todo.md)：host authority、joined 同步、身份／凭据续期与撤回。
+- [Self-host Group v2](../doc/message_hub/Self-Host-Groupv2.md)、[群后端说明](../src/frame/msg_center/doc/group-v2-backend.md)、[群接入 TODO](done/messagehub-group-v2-todo.md)：host authority、joined 同步、身份／凭据续期与撤回。
 - [UI_DATAMODEL](../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)：ObjectAccess 状态、pending、重试、来源不可用和目录覆盖。
 - Jarvis `aigc_image`、`aigc_audio`、`aigc_video`：消息附件作为输入／输出的可达性、materialize 和失败处理；`buckyos_admin`：按消息、获取状态、binding 排查。实施时实际核对涉及的命令与示例，不只修改文档里的版本文字。
 - 本轮仅新增 TODO，不改变任何 API／CLI／运行行为，因此无需现在修改上述正式协议和 cmd_skills；其联动列为实施完成条件。

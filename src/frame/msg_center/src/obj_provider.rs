@@ -1,4 +1,4 @@
-//! DID Object Provider of msg-center (notepads/agent-object-url-todo.md §4.2 / §4.3):
+//! DID Object Provider of msg-center (notepads/done/agent-object-url-todo.md §4.2 / §4.3):
 //! `obj://msg-center/owners/<owner_did>/{sessions[/<sid>],contacts[/<did>]}` and
 //! `obj://msg-center/messages/<msg_id>`, served at `/kapi/msg-center/obj/...`. Every
 //! property and query is the kRPC method with the caller's own token, so the owner

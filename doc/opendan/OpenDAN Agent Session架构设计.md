@@ -296,7 +296,7 @@ Goal 的明确性不等于一次性完成所有未来行动的规划。它需要
 
 ### 5.6 意图分析的实现形态
 
-2026-10-11 起按 [意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md) 实现。本节记录实现选择及原因；字段与命令以协议文档和源码为准。
+2026-10-11 起按 [意图分析 TODO](../../notepads/done/opendan-analyze-user-intent-todo.md) 实现。本节记录实现选择及原因；字段与命令以协议文档和源码为准。
 
 **具名函数由 behavior 声明。** UI 的模型看到的是 `try_analyze_user_intent(request)`，不是通用的 `call_behavior`。函数由 behavior `analyze_intent` 的 `[tool]` 声明生成：`name`、`description`（即路由指南）、`parameters`（JSON Schema）和 `task` 模板（只引用 `{{args.<name>}}`）。调用方 behavior 在 `tool_whitelist` 里写 `behavior:<name>` 才能看到它，目标必须在调用方的 `meta.next` 里，且进入模式为 `create_sub_context` 或 `fork`。声明随 behavior 冻结进 Session，存续期间工具定义不变。宿主不认识任何 behavior 名字；调用的内部协议仍是 `call_behavior` 的子 context 协议（xAgent §3.6），`call_behavior` 保留为可选的通用入口，不再默认提供给 UI。这是“LLM 可见的基础函数要可配置”的落点：换路由指南、换参数、换目标 behavior 都只改 Agent 包。
 
@@ -364,7 +364,7 @@ Work 创建时，由 Runtime 确定性建立对自身 Task 对象的半订阅；
 
 这里规定的是新架构的观察时机与语义；事件承载、Topic 和成本控制见 §12.7—§12.10，当前 Runtime 尚需补齐的部分见 §15.5。
 
-Work 结束后，用户再提出修改，由 UI 基于有效产物创建新 Task 和新 Work，不恢复旧 Work。Final Report 写明已观察到的最后一条修订编号；编号更大的修订就是旧 Work 没有处理的修改，由 UI 确定性地交给后续工作，不靠模型对照反馈和 Report 判断。Memory 一侧的边界场景见 [Memory 模拟 TODO §3.11](../../notepads/agent-memory-multi-session-simulation-todo.md#311-场景六-运行中-work-的修改不经过-memory)。
+Work 结束后，用户再提出修改，由 UI 基于有效产物创建新 Task 和新 Work，不恢复旧 Work。Final Report 写明已观察到的最后一条修订编号；编号更大的修订就是旧 Work 没有处理的修改，由 UI 确定性地交给后续工作，不靠模型对照反馈和 Report 判断。Memory 一侧的边界场景见 [Memory 模拟 TODO §3.11](../../notepads/done/agent-memory-multi-session-simulation-todo.md#311-场景六-运行中-work-的修改不经过-memory)。
 
 ### 6.4 有界等待与开放等待
 
@@ -1475,9 +1475,9 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | 合并与观察进度 | semi 按 `(subscription_id, source)` 分组；`latest / terminal` 分槽，槽内比较版本，终态不被非终态覆盖。仅按 receipt 清理实际展示版本。active 没有同等状态合并，当前也没有通用语义 Override。 | 复用版本与精确确认机制；区分状态维度、独立要求及显式纠正关系，再实现适用事件的 Coalesce / Override。 |
 | Topic 与成本控制 | 有 Topic 字段、显式/隐式订阅和每批变化预算，已有默认用户时区半订阅；未形成旁路 LLM 维护 Topic、自动重订阅与统一相关 Memory 观察链路。 | 实现 §12.10 的范围选择、增量观察、变化幅度与间隔控制，保证相关新感知及时可见。 |
 | 事件桥接与超时 | 已有 Timer / KEvent bridge；Timer 按 `every_secs` 生成事件，再由订阅决定路由。Session 状态拉取目前进入半订阅；在跟的 Task 也支持无通知时轮询查询。 | 补齐需要主动响应的状态来源与超时核对；不能将定时轮询或所有 Session 订阅描述成已经保证主动唤醒。 |
-| 意图分析 | 2026-10-11 起（[意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md)）：behavior `[tool]` 声明生成 `try_analyze_user_intent`；`analyze_intent` 为 fork 子 context；提问用 websdk 的 `ask_user`（通知 Task，回答以 `<<task_result>>` 交回）；Work 有 `plan` 与 `work_simple` 两种形态；Runtime 登记 `container` / `host`。见 §5.6。 | 计划任务（未来执行的 Work）；宿主机执行器；Task 修订；Anthropic `cache_control` 断点（前缀缓存命中依赖 provider 链路）。 |
-| System Notify | 2026-10-11 起（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md) 第一段）：通知是 msg-center 的 `kind = notify` 消息（`buckyos.notify`），`input` 另挂 TaskMgr HumanSet 任务；libopendan `NotifyHost`（zone：Loader 的 `ZoneNotify`；`--dev` / 测试：`LocalNotify` 文件实现）；`ask_user` 的问题是 `input` 通知，回答是它的任务结果；Goal `questions` 发成通知、回答以 `answer` Activation 回流；UI Session 以隐式半订阅 `_notify`（`system:notify:<id>`）观察在本会话呈现过的通知，并可经 `agent-session notify answer / ack` 代用户处理（审批除外、本 Session 发起的除外）。 | 第二段：`post-message` 与回复关联、机械审批、触达设置与升级、状态变化的观察事件。 |
-| Goal 的现有实现 | 2026-10-11 起（[Goal Session TODO](../../notepads/opendan-goal-session-todo.md) 第一段）：Goal 对象在 Agent State（`state/goals/`，定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度），模板 `goal`；宿主按 Goal 列表补建 Goal Session，运行机会为 epoch 开始、本地定时（`every_secs`，可替换的 `ScheduleBackend`）、手动、Work 结束、UI 转交的消息；一个 Activation = 一个 Turn，Goal 头在批次提交前冻结；结束只关闭 Turn，结果按 Goal 格式写回；Work 带 `origin.goal`，按 `goal_id` 吸收。 | 第二段：workflow 计划任务接入（cron、时区、一次性）、Memory 整理 Goal 与删除 self_improve、self_check 退役、WebUI Goals 视图、follow_up 与对象订阅驱动、通知人。 |
+| 意图分析 | 2026-10-11 起（[意图分析 TODO](../../notepads/done/opendan-analyze-user-intent-todo.md)）：behavior `[tool]` 声明生成 `try_analyze_user_intent`；`analyze_intent` 为 fork 子 context；提问用 websdk 的 `ask_user`（通知 Task，回答以 `<<task_result>>` 交回）；Work 有 `plan` 与 `work_simple` 两种形态；Runtime 登记 `container` / `host`。见 §5.6。 | 计划任务（未来执行的 Work）；宿主机执行器；Task 修订；Anthropic `cache_control` 断点（前缀缓存命中依赖 provider 链路）。 |
+| System Notify | 2026-10-11 起（[通知人 TODO](../../notepads/done/opendan-agent-notify-todo.md) 第一段）：通知是 msg-center 的 `kind = notify` 消息（`buckyos.notify`），`input` 另挂 TaskMgr HumanSet 任务；libopendan `NotifyHost`（zone：Loader 的 `ZoneNotify`；`--dev` / 测试：`LocalNotify` 文件实现）；`ask_user` 的问题是 `input` 通知，回答是它的任务结果；Goal `questions` 发成通知、回答以 `answer` Activation 回流；UI Session 以隐式半订阅 `_notify`（`system:notify:<id>`）观察在本会话呈现过的通知，并可经 `agent-session notify answer / ack` 代用户处理（审批除外、本 Session 发起的除外）。 | 第二段：`post-message` 与回复关联、机械审批、触达设置与升级、状态变化的观察事件。 |
+| Goal 的现有实现 | 2026-10-11 起（[Goal Session TODO](../../notepads/done/opendan-goal-session-todo.md) 第一段）：Goal 对象在 Agent State（`state/goals/`，定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度），模板 `goal`；宿主按 Goal 列表补建 Goal Session，运行机会为 epoch 开始、本地定时（`every_secs`，可替换的 `ScheduleBackend`）、手动、Work 结束、UI 转交的消息；一个 Activation = 一个 Turn，Goal 头在批次提交前冻结；结束只关闭 Turn，结果按 Goal 格式写回；Work 带 `origin.goal`，按 `goal_id` 吸收。 | 第二段：workflow 计划任务接入（cron、时区、一次性）、Memory 整理 Goal 与删除 self_improve、self_check 退役、WebUI Goals 视图、follow_up 与对象订阅驱动、通知人。 |
 
 实现核对入口：
 
@@ -1602,7 +1602,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 
 | 事项 | 当前方向 | 尚需确定 |
 |---|---|---|
-| Agent 主动通知人 | **第一段已采用**（[通知人 TODO](../../notepads/opendan-agent-notify-todo.md)）：System Notify 在 msg-center（App 稳定接口 `notify.*`）；`ask_user` 以通知提问，问题是有过期时间（缺省 3 小时）的 Task；Goal `questions` 发成通知；UI 观察 `_notify` 与代理回答 | `post-message` 与回复关联、机械审批（先单列 llm_context TODO）、触达设置、状态变化的观察事件。 |
+| Agent 主动通知人 | **第一段已采用**（[通知人 TODO](../../notepads/done/opendan-agent-notify-todo.md)）：System Notify 在 msg-center（App 稳定接口 `notify.*`）；`ask_user` 以通知提问，问题是有过期时间（缺省 3 小时）的 Task；Goal `questions` 发成通知；UI 观察 `_notify` 与代理回答 | `post-message` 与回复关联、机械审批（先单列 llm_context TODO）、触达设置、状态变化的观察事件。 |
 | 意图分析接口名称 | **已采用**（§5.6）：`try_analyze_user_intent(request)`，由 behavior `analyze_intent` 的 `[tool]` 声明；旧 `task_route` 已删除；返回 `{status, behavior, submission: {report, result}}`，`result.outcome` 六种；创建在分析内部完成，不拆分创建调用 | `result` 字段目前只由引导文字约定，宿主不校验。 |
 | 自动创建与二次确认 | **已采用**：条件齐备时在分析内自动创建；需要用户拍板的单个选择作为 `ask_user` 问题问完仍自动创建；无法用一个问题问清的整体方案返回 `needs_confirmation`，UI 讲清后再调一次 | 哪些权限条件必须二次确认（目前只靠引导文字约束，按“先能力后安全”记为已知风险）。 |
 | Goal 与 Goal Session 的绑定 | 倾向同一 Goal 保持主要逻辑 Context 连续。**当前实现（2026-10-11，Goal Session TODO 第一段）**：同一时刻一个 Goal 一个 Goal Session，按 `(goal_id, epoch)` 确定性派生；reopen / restart 开新 epoch（旧 Session 结束、Goal State 存档），Work 按 `goal_id` 归属、跨 epoch 由新 Session 接管 | 多 Session 协作、跨节点所有权。 |

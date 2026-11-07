@@ -2,7 +2,7 @@
 
 - 文档版本：v0.2（2026-10-17，M6：后端定稿后的错误码、`msg.list_sessions` 消息请求、`group.list_by_member` 的 `member` / `invitations`、PeoplePicker `candidates` 与内嵌模式、mock 宿主桥）；v0.1（M0/M4）
 - 模块位置：`src/frame/desktop/src/components/network/`（组织方式同 `components/ContentPreview.tsx` + `components/preview/`）
-- 上游：[My Network 升级 TODO](../../../../../../notepads/my-network-upgrade-todo.md) §3.1–§3.6、[My Network PRD](../../../../../../product/my_networks/My_Network_PRD.md) §6.2–§6.4、§11.3
+- 上游：[My Network 升级 TODO](../../../../../../notepads/done/my-network-upgrade-todo.md) §3.1–§3.6、[My Network PRD](../../../../../../product/my_networks/My_Network_PRD.md) §6.2–§6.4、§11.3
 - 后端契约：websdk `src/msg_center_client.ts` 的 “Relationships (msg_contact.rs)” 一节；buckyos-api `msg_contact.rs`；`group.*` 见 msg-center `group_service.rs`
 - 使用方：My Network（本轮），MessageHub、HomeStation（M6），第三方 App 经 `/sysdlg/*`（M7）
 - My Network 独有的视图见 [`app/my-network/UI_DATAMODEL.md`](../../app/my-network/UI_DATAMODEL.md)

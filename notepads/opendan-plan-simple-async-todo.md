@@ -2,7 +2,7 @@
 
 日期：2026-11-02
 
-状态：**已实施（2026-11-02，未提交）**，实施记录见 §8。用户 2026-11-02 口述思路（§1），Claude 对照 [简单 Work Session 全异步化 TODO](./opendan-simple-worksession-async-todo.md)（已实施，§9 是实施记录）与当前源码写成本单；同日用户在 §4 裁决 Q1–Q14（Q1–Q4、Q9、Q10、Q12–Q14 按建议；Q5/Q6 确认事件路径并说明目的；**Q7 pause = llm_context 语义的停止推理、resume 从 checkpoint 续**；**Q8 plan 只从 Todo 角度控制**；**Q11 不再对单个 Todo review：验证自己是一条 Todo，plan 觉得完成即可结束**），Claude 据此回写 §3 / §5–§6；**用户同日确认 §3.9 的推断：PLAN/DO 执行器机制一并删除**。
+状态：**已实施（2026-11-02，未提交）**，实施记录见 §8。用户 2026-11-02 口述思路（§1），Claude 对照 [简单 Work Session 全异步化 TODO](./done/opendan-simple-worksession-async-todo.md)（已实施，§9 是实施记录）与当前源码写成本单；同日用户在 §4 裁决 Q1–Q14（Q1–Q4、Q9、Q10、Q12–Q14 按建议；Q5/Q6 确认事件路径并说明目的；**Q7 pause = llm_context 语义的停止推理、resume 从 checkpoint 续**；**Q8 plan 只从 Todo 角度控制**；**Q11 不再对单个 Todo review：验证自己是一条 Todo，plan 觉得完成即可结束**），Claude 据此回写 §3 / §5–§6；**用户同日确认 §3.9 的推断：PLAN/DO 执行器机制一并删除**。
 
 范围：`src/apps/jarvis_agent/agent/behaviors/plan_simple.toml` 及其依赖的 TodoList / 子 session 机制（agent_tool `todo_tools`、libopendan `todos.rs` / `runner/todos.rs` / `runner/children.rs` / `xagent_cli.rs`）、`work_simple.toml` 的一个新输入分支、`chat_route.toml` 的转发规则、`agent.toml` 的默认 behavior。第一刀的 class 级改动（多 Turn、explicit_report、timer tick、推理前注入、`waiting_for` 删除、Session 宿主无 `task wait`）已经对 plan_simple 父会话生效，本单不重做，只在其上改 plan 的职责与调度。UI / group / goal 会话除 §3.7 的转发规则外不动。
 
@@ -241,14 +241,14 @@ pause 语义（Q7，用户：llm_context 语义的停止，就是不再推理；
 
 - 驱动：`test/plan_do_todo_dv/main.py --mode plan_simple`（现有；旧 PLAN/DO 模式随 B11 删）扩展用例：`normal`（目标要求 ≥ 4 个 Todo，含两个可并行的探索与一条写 workspace 的链）、`user-update`（驱动在 T02 运行中向 plan 队列 post 一条用户变更消息，验收：T02 子 session 收到 updated 事件并在报告里体现新要求）、`failure`（现有；验收改为 plan 建了验证 Todo 并在报告里写明失败）。
 - 验收（对照 §3.10）：`parent/intents.json` 无 `todo dispatch` / `agent-session wait` / `todo review`，有至少一条验证 Todo；`todos.json` 里下游的 `started_at_ms` 早于父会话下一次推理；Turn 数 ≈ 子结束数 + 用户消息数 + 2；token 与 11-02 基线（534 k）对比记进 §8；无 403 / invalid_prompt。
-- Zone 侧（Loader 托管、MessageHub Turn task 卡片显示 paused / 更新标题、chat_route 转发）：本机 DV Zone `./debug_jarvis.sh devtest --agent <test agent>`（跑法见 [plan_simple TODO](./opendan-plan-simple-todo.md) §10.4），在 MessageHub 里对一个进行中的工作追加需求，观察 plan 的 Turn 卡片回复与子 session 的调整。
+- Zone 侧（Loader 托管、MessageHub Turn task 卡片显示 paused / 更新标题、chat_route 转发）：本机 DV Zone `./debug_jarvis.sh devtest --agent <test agent>`（跑法见 [plan_simple TODO](./done/opendan-plan-simple-todo.md) §10.4），在 MessageHub 里对一个进行中的工作追加需求，观察 plan 的 Turn 卡片回复与子 session 的调整。
 - 回归：`PLAN_DO_DV=1 python3 test/work_simple_dv/main.py all --variant normal`。
 
 ## 7. 关联
 
-- [简单 Work Session 全异步化 TODO](./opendan-simple-worksession-async-todo.md)（第一刀；§7 第二刀条目：plan_simple / explore 提示词与模板、子 session 等待形状 R2、noted task 分工 R5 由本单收尾；T2 call_behavior 不在本单）。
-- [plan_simple TODO](./opendan-plan-simple-todo.md)（intent 契约 §3 不变；§1 "整个父 Plan 是一个逻辑 Turn"、"等待只挂起"、"执行完成与验收通过分开（review）"三条**作废**，以本单为准）。
-- [llm_context 冻结 TODO](./llm-context-freeze-todo.md) 原则 8（loop 里不等待）。
+- [简单 Work Session 全异步化 TODO](./done/opendan-simple-worksession-async-todo.md)（第一刀；§7 第二刀条目：plan_simple / explore 提示词与模板、子 session 等待形状 R2、noted task 分工 R5 由本单收尾；T2 call_behavior 不在本单）。
+- [plan_simple TODO](./done/opendan-plan-simple-todo.md)（intent 契约 §3 不变；§1 "整个父 Plan 是一个逻辑 Turn"、"等待只挂起"、"执行完成与验收通过分开（review）"三条**作废**，以本单为准）。
+- [llm_context 冻结 TODO](./done/llm-context-freeze-todo.md) 原则 8（loop 里不等待）。
 - [xllm 视角 runtime review TODO](./xllm-agent-runtime-review-todo.md)（tool_policy，不相关但同期）。
 - 记忆原则：Agent 工具简化 + 渐进式披露（执行方式由配置定：派发由宿主做，不让模型选"何时派"）；OS 父子进程语义（pause 不杀任务）。
 

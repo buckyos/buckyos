@@ -74,7 +74,7 @@ AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LL
 
 交接点随快照一起写进 run.json 的 `handover`，先于 state 提交；崩溃后 reconcile（`runner/reconcile.rs::redo_transfer`）恰好补交一次。已返回的子 context 在 worklog 中保留全部记录供审计，但重建会话历史时只渲染它的 `process_done` 结果（`runner/history.rs`）；压缩一次读入整段未压缩范围，输入做同样的过滤；压缩发生时仍在运行的子 context，其记录会进入摘要。
 
-UI Stop 后补充输入（H3）已于 2026-10-10 暂缓，移出当前实现与验收范围；不适用于 Work，终态 Work 不 reopen，后续修改创建新 Task / 新 Work。`report` 工具与可选显式完成策略（H4）已实现。XML 完成规则为：`<report end="true">` 显式请求结束且同一决策不得有 actions，缺省 / false 只更新报告；`next_behavior` 保留切换 / 等待语义，不再使用 END 或隐式 done 完成。详见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md) H3 / H4.1。XML parser（`agent_tool::xllm::XllmActionParser`）拒绝 END / done、重复 report、非法 end、空最终报告及结束与动作或非空 next_behavior 的冲突；没有动作、不结束、不交接的决策（含空决策）是让出（Yield），本次 run 以 `Done` 结束，接下来等什么由 Session 决定。工具报告持久化与最终消息由 Session 处理，独立 xllm 不默认暴露 report 工具。
+UI Stop 后补充输入（H3）已于 2026-10-10 暂缓，移出当前实现与验收范围；不适用于 Work，终态 Work 不 reopen，后续修改创建新 Task / 新 Work。`report` 工具与可选显式完成策略（H4）已实现。XML 完成规则为：`<report end="true">` 显式请求结束且同一决策不得有 actions，缺省 / false 只更新报告；`next_behavior` 保留切换 / 等待语义，不再使用 END 或隐式 done 完成。详见 [Context 调度支持 TODO](../../notepads/done/llm-context-switch-support-todo.md) H3 / H4.1。XML parser（`agent_tool::xllm::XllmActionParser`）拒绝 END / done、重复 report、非法 end、空最终报告及结束与动作或非空 next_behavior 的冲突；没有动作、不结束、不交接的决策（含空决策）是让出（Yield），本次 run 以 `Done` 结束，接下来等什么由 Session 决定。工具报告持久化与最终消息由 Session 处理，独立 xllm 不默认暴露 report 工具。
 
 
 ## AgentSession Tree

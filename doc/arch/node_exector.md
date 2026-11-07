@@ -7,8 +7,8 @@
 > 首期裁决：Linux 形态 A + hosted xllm；严格的一对一 App/Agent 身份映射；设备准入由 cyfs-gateway process-chain 完成，Executor 不接收 remote device 身份；授权快照、跨 Stream 操作归属、持久 store_id 与最小恢复链路一起交付。远端 PromptExec 首期关闭。
 > 来源：
 > 1. 本文件旧版（node_Executor 需求）：执行 Scheduler 下发的 ThunkObject（Function Instance）。
-> 2. `notepads/node-agent-runtime-todo.md`（2026-10-13）：Agent 在指定 Node 上执行 shell/文件工具的 `remote_node` 运行时。
-> 3. `notepads/BuckyOS Node Executor设计思路.md`（2026-10-18）：两种执行模式、轻量 Agent Daemon、最终恢复通道。
+> 2. `notepads/done/node-agent-runtime-todo.md`（2026-10-13）：Agent 在指定 Node 上执行 shell/文件工具的 `remote_node` 运行时。
+> 3. `notepads/done/BuckyOS Node Executor设计思路.md`（2026-10-18）：两种执行模式、轻量 Agent Daemon、最终恢复通道。
 > 相关文档：`doc/BuckyOS 系统故障的诊断和恢复(beta3).md`（故障分层、第二诊断链路、Agent 修复前置条件）、`doc/arch/Reset & Unbind.md`（物理控制权、Headless）、`doc/arch/BuckyOS Security Arch.md`（L0–L3 用户层级、S0–S3 软件层级、Client Device）、`doc/task_mgr/task_mgr.md`（谁创建谁执行）、`doc/workflow/executor list.md`（func:: / optask::）、`cyfs-gateway/doc/rtcp/rtcp.md` 与 `rtcp rely.md`。
 
 ---
@@ -116,7 +116,7 @@
 | B. Agent Daemon 独立服务 | 独立常驻进程，内含 cyfs-gateway-lib + node_executor | 没有安装 BuckyOS 节点、但能装后台服务的电脑/终端 | ②（③ 看是否有后台保障） | 安装时授予 |
 | C. Agent Daemon 嵌入 App | 单进程 App 内以 Library 形式嵌入 | Android/iOS/盒子等不便装服务的设备 | ② | 不超过 App 自身权限 |
 
-形态 A 按 node_daemon 的运行身份分两种模式（2026-10-23 裁决，见 [集成 TODO §0](../../notepads/agent-runtime-session-workspace-integration-todo.md)）：
+形态 A 按 node_daemon 的运行身份分两种模式（2026-10-23 裁决，见 [集成 TODO §0](../../notepads/done/agent-runtime-session-workspace-integration-todo.md)）：
 
 | 模式 | node_daemon 运行方式 | identity_mode | profile `run_as` | 桌面能力 | 适用 |
 | --- | --- | --- | --- | --- | --- |
@@ -740,7 +740,7 @@ cargo check --workspace
 
 ## 16. 与来源文档的关系
 
-- 本文发布后，`notepads/node-agent-runtime-todo.md` 与 `notepads/BuckyOS Node Executor设计思路.md` 降为历史输入；与本文冲突处以本文为准。本次已将 TODO §6–§8 中仍适用的操作归属、持久 starting、崩溃窗口、输出游标、store_id 和墓碑规则纳入 §7/§11；不沿用 S2S peer 绑定、离线 spool/queued 恢复或 node_daemon 依赖 libopendan 的旧方案。CodeAgent 固化 wire 编码与 DTO 时遵循本次裁决，不能重新选择这些语义。
+- 本文发布后，`notepads/done/node-agent-runtime-todo.md` 与 `notepads/done/BuckyOS Node Executor设计思路.md` 降为历史输入；与本文冲突处以本文为准。本次已将 TODO §6–§8 中仍适用的操作归属、持久 starting、崩溃窗口、输出游标、store_id 和墓碑规则纳入 §7/§11；不沿用 S2S peer 绑定、离线 spool/queued 恢复或 node_daemon 依赖 libopendan 的旧方案。CodeAgent 固化 wire 编码与 DTO 时遵循本次裁决，不能重新选择这些语义。
 - Thunk 的后置范围与 `doc/workflow/executor list.md` 的后续阶段方向一致；本文 §6.3–6.6 保留旧执行器方案作比较输入，待 §6.2 定稿后更新，不作为首期实施契约。
 - `BuckyOS 系统故障的诊断和恢复(beta3).md` §10.3 的第二诊断链路由本文 §9 具体化；该文 §11 的 Agent 修复前置条件对本文来源①的 OPTask 与来源②的修复类命令同样适用。
 - `Reset & Unbind.md` §2.3 的物理控制权要求对应本文 §9.1 本地触发；§7.1 对远程擦除的保守态度同样适用于远程恢复脚本的能力边界。

@@ -314,4 +314,4 @@ uv run src/test/test_boot_gatweay/run_debug_tests.py
 
 网关规则 runner 需要可用的 cyfs-gateway 二进制，参数见其 [README](../../src/test/test_boot_gatweay/README.md)。重点用例包括 Token 复用/刷新、HTTP 401 后重新登录、SOCKS 拒绝后降级、断言与 custody 反例、伪造头清理、外 Zone 转发限制。
 
-真实环境验证还应覆盖两个 Zone 双向通信、陌生设备首连、RTCP 不通时的 HTTPS 路径、后续 RTCP 重探、不同 Zone Token 混用拒绝，以及消息/群/HomeStation 的业务权限。已有实施与 DV 记录可查阅 [cross-zone-comm-todo.md](../../notepads/cross-zone-comm-todo.md) §8；其中记载的历史测试结果不等于每次部署后的实时状态。
+真实环境验证还应覆盖两个 Zone 双向通信、陌生设备首连、RTCP 不通时的 HTTPS 路径、后续 RTCP 重探、不同 Zone Token 混用拒绝，以及消息/群/HomeStation 的业务权限。已有实施与 DV 记录可查阅 [cross-zone-comm-todo.md](../../notepads/done/cross-zone-comm-todo.md) §8；其中记载的历史测试结果不等于每次部署后的实时状态。

@@ -3,7 +3,7 @@
 //! `shell` runs a bash command in the runtime of the current run (native
 //! process, Node Executor or remote host — see `runtime`). Its lifecycle
 //! follows standard parent / child process semantics
-//! (`notepads/llm-context-long-tool-todo.md` §3.2): only the command in
+//! (`notepads/done/llm-context-long-tool-todo.md` §3.2): only the command in
 //! progress is managed; whatever the command leaves behind (`&`, nohup,
 //! setsid, daemons) is not tracked and never killed.
 //!

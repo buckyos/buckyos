@@ -1,5 +1,5 @@
 //! Running tasks: work that outlives one tool call and is addressed by a
-//! `task_id` (runtime spec, `notepads/llm-context-freeze-todo.md` §3.1).
+//! `task_id` (runtime spec, `notepads/done/llm-context-freeze-todo.md` §3.1).
 //!
 //! The waist knows nothing about tasks: every tool call returns a terminal
 //! observation. A tool whose work is not done within the runtime's wait

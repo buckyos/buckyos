@@ -1172,7 +1172,7 @@ CREATE TABLE s3_multipart_parts (
 
 ### 14.3 与现有保留实现的关系
 
-2026-10-26 按 `notepads/bucket-migration-todo.md` 迁移后的处置（各服务的桶、key 与谁 pin 见其 Durable Data Schema 文档）：
+2026-10-26 按 `notepads/done/bucket-migration-todo.md` 迁移后的处置（各服务的桶、key 与谁 pin 见其 Durable Data Schema 文档）：
 
 | 原有 | 处置 |
 | --- | --- |
@@ -1298,7 +1298,7 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | v0.3 | 2026-10-25 | 补 §4.4 权限模型与 §8 两级配额接口 |
 | v0.4 | 2026-10-25 | §18 全部裁决定案；§14.1 代码归属 cyfs-ndn lib + nfs-server loader |
 | v0.6 | 2026-10-26 | 内容网络视角：数据策略按"我创作 / 别人创作我认真收集 / 别人创作最好能有"三档重排，新增 `collected`、`ambient`，并入 `archive`；Binding 增 `origin`；Files 投影增 `Collected/`；D19–D20 定案 |
-| v0.7 | 2026-10-26 | D18 改判：`bkt_` / `gt_` / 群 48h 链接不并表，只共用令牌格式与校验代码（`name_lib::bearer_token`）；§14.3 改写为迁移后的处置表；§20 记录迁移落地（`notepads/bucket-migration-todo.md`） |
+| v0.7 | 2026-10-26 | D18 改判：`bkt_` / `gt_` / 群 48h 链接不并表，只共用令牌格式与校验代码（`name_lib::bearer_token`）；§14.3 改写为迁移后的处置表；§20 记录迁移落地（`notepads/done/bucket-migration-todo.md`） |
 | v0.5 | 2026-10-26 | 按 review：zone 只表达服务级归属、默认不共享，新增 `create` 动作与创建者覆盖规则；PUT 成功 = 持久保存三条件，状态机去掉 pending；`Expires` 保持 HTTP 缓存含义，删除 TTL 用 `x-bucky-expires-at`；预签名 URL 无状态，与 `bkt_` 令牌区分；快照 manifest 权威 + tree 派生、冲突改名、快照计费、备份时间点契约；版本成本措辞收窄；`storage_class` 改名 `data_policy`；新增 §3.4 三概念 |
 | v0.8 | 2026-11-05 | 新增 §4.6 Public Zone 视角的权限：按标准 URL 梳理 Zone 外访问者能读到什么，不变量 Z1–Z8，差距清单 G1–G10；D21–D25 定案，其中 D22 把 `/ndn/` 定为跨 Zone 按 ObjId 读取的统一协议（标准 HTTP + Range，`hint` 在 URL 里、可带令牌，公开缓存只收匿名可得的内容）；新增 §21 实施 TODO |
 | v0.9 | 2026-11-05 | 实现 §21：G1–G9 修复、`/ndn/` 读取与判定、公开桶准入、限速默认值、调用方（URL 构造、`CyfsNdnClient`、workflow、私聊跨 Zone 附件、`cyfs://` resolver、`ambient` 拉取）；§4.6 的【现状】改为实现后的状态；§6.4 增加 (d) |
@@ -1314,7 +1314,7 @@ Bucket 把保留表达成 pin，但 pin 要有效果，依赖 named store 侧几
 | M4 | 已实现：生命周期每小时、对象 TTL、版本开关 `bucket.set_versioning`、`snapshot` / `list_snapshots` / `delete_snapshot` / `restore_from_snapshot` / `export` / `verify_references`、对象与配额事件 | 同上 |
 | M3 | 已实现：cyfs-ndn `s3_gateway`（SigV4 header 与预签名、aws-chunked 含 chunk 签名校验、MinIO 式 ETag、第一期操作集 + ListObjects v1 / GetBucketVersioning、multipart、ACL 只读返回 owner FULL_CONTROL），密钥与分段会话表在 `bucket_store::s3`；nfs-server `/s3/*` 与 `s3.<zone>`、kRPC `bucket.create_s3_key / list_s3_keys / revoke_s3_key`、CLI `buckyos bucket s3-key-create / s3-keys / s3-key-revoke`、每日清理 7 天未完成的上传 | cyfs-ndn `src/s3_gateway`；nfs-server `src/bucket/s3.rs` |
 | cyfs-ndn 迁移前置（P0-4） | 已实现：`KnownStandardObject::Msg`（JSON 或 JWT，子项为 `content.refs` 里的数据对象）、chunk 字节回收 `NamedStore::gc_chunks`（无 pin、无入边、24h 未访问）、`bucket_store` 提交路径的 bind / unbind 日志、`bkt_` 改用 `name_lib::bearer_token` | cyfs-ndn `src/ndn-lib/src/lib.rs`、`src/named_store/src/{named_store,store_db}.rs`、`src/bucket_store/src/{store,access}.rs`；buckyos-base `src/name-lib/src/bearer_token.rs` |
-| 迁移（`notepads/bucket-migration-todo.md`） | 已实现：公共件（Rust `put_reader` / `put_bytes` / `put_json_object` / `copy_to`、websdk `importFiles({ bind })`、Desktop `bucket-object` 预览来源、`obj://bucket` URL）；Files 投影 `home/<user>/Apps/<App>/<bucket>/…` 与 `Collected/`（只读，删除 = 解绑）；系统服务和默认应用全部改为 RDB + 桶：AIWorkspace、msg-center、HomeStation、OpenDAN / Jarvis、AICC、control-panel（壁纸、Agent 模板、PIKG、安装暂存、`bucket.release_app`、存储空间页）、repo-service、ShareContentMgr、Text Editor、sys_test；旧保留表与 `msg-center:` / `homestation:` / `share:` pin owner 删除；GC 宿主默认驱逐 | 各服务的 `buckets.rs` 或等价模块；资源清单见《buckyos 数据落盘架构方向》§10.1；nfs-server `src/bucket/projection.rs` |
+| 迁移（`notepads/done/bucket-migration-todo.md`） | 已实现：公共件（Rust `put_reader` / `put_bytes` / `put_json_object` / `copy_to`、websdk `importFiles({ bind })`、Desktop `bucket-object` 预览来源、`obj://bucket` URL）；Files 投影 `home/<user>/Apps/<App>/<bucket>/…` 与 `Collected/`（只读，删除 = 解绑）；系统服务和默认应用全部改为 RDB + 桶：AIWorkspace、msg-center、HomeStation、OpenDAN / Jarvis、AICC、control-panel（壁纸、Agent 模板、PIKG、安装暂存、`bucket.release_app`、存储空间页）、repo-service、ShareContentMgr、Text Editor、sys_test；旧保留表与 `msg-center:` / `homestation:` / `share:` pin owner 删除；GC 宿主默认驱逐 | 各服务的 `buckets.rs` 或等价模块；资源清单见《buckyos 数据落盘架构方向》§10.1；nfs-server `src/bucket/projection.rs` |
 
 与本文的差异和未完成项：
 

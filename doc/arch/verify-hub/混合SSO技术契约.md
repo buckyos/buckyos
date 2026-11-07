@@ -2,7 +2,7 @@
 
 日期：2026-10-21。状态：阶段 A 交付物，随实现迭代；与代码冲突时以代码和本文同步修订为准。
 
-依据：[混合 SSO PRD](<BuckyOS 混合SSO PRD.md>)（v0.2）、[实施 TODO](<../../../notepads/hybrid-sso-implementation-todo.md>) §4 已定决策（D-1～D-9、Q-01～Q-10、S-1、P-1、P-2）、[UserType.md](<../../../product/users_and_agents/UserType.md>)。本文只冻结工程契约，不新增产品决策；术语沿用 PRD：专属邀请、自助注册、DID 登录、Guest。
+依据：[混合 SSO PRD](<BuckyOS 混合SSO PRD.md>)（v0.2）、[实施 TODO](<../../../notepads/done/hybrid-sso-implementation-todo.md>) §4 已定决策（D-1～D-9、Q-01～Q-10、S-1、P-1、P-2）、[UserType.md](<../../../product/users_and_agents/UserType.md>)。本文只冻结工程契约，不新增产品决策；术语沿用 PRD：专属邀请、自助注册、DID 登录、Guest。
 
 ## 1. 组件职责
 
@@ -192,7 +192,7 @@ kRPC 失败响应增加可选字段（buckyos-base kRPC）：
 
 ### 5.6 App 签发的登录码与 `verify-hub.login_by_app_access_token`（EXT-09，2026-10-24；`kind=link` 见 EXT-11）
 
-App 为自己的外部客户代登录（[应用扩展实施 TODO](../../../notepads/self-host-group-extension-todo.md) D-5 / D-7）。复用专属邀请的记录结构与判定表，差别只在签发方、有效期和一次性。`credential.kind`（`link` 缺省 | `code`）标明记录的凭据是 `/sso/invite` 链接的 `#s=` 还是 App 页面兑换的一次性 code，两者不互换：`login_by_exclusive_invite` 只接受 `link`，`login_by_app_access_token` 只接受 `code`，不符返回 `entry_unavailable` + `credential_kind`（排在“记录不存在 / 撤销”之后、账号状态之前）。
+App 为自己的外部客户代登录（[应用扩展实施 TODO](../../../notepads/done/self-host-group-extension-todo.md) D-5 / D-7）。复用专属邀请的记录结构与判定表，差别只在签发方、有效期和一次性。`credential.kind`（`link` 缺省 | `code`）标明记录的凭据是 `/sso/invite` 链接的 `#s=` 还是 App 页面兑换的一次性 code，两者不互换：`login_by_exclusive_invite` 只接受 `link`，`login_by_app_access_token` 只接受 `code`，不符返回 `entry_unavailable` + `credential_kind`（排在“记录不存在 / 撤销”之后、账号状态之前）。
 
 - **开关**：`services/control_panel/app_login/<app_instance_id>` → `{enabled, updated_by, updated_at}`，缺省关；owner 以 CP 用户会话调 `apps.app_login.set`。关闭时 CP 对每个绑定账号调 `revoke_families {subject, source_app_instance_id}`。
 - **绑定表**：`services/control_panel/app_identities/<app_instance_id>/<digest>` → `{user_id, created_at, last_issued_at, issue_count}`，`digest = base64url(sha256(app_instance_id "\n" external_account_id))`；外部账号原文不落盘。

@@ -2,7 +2,7 @@
 
 日期：2026-11-01
 
-状态：**整理中，待用户 review / 裁决（Q1–Q9 给的是建议值）。** 起因是 llm_context 冻结重构（[llm-context-freeze-todo](./llm-context-freeze-todo.md) §8.4 T7）之后在 xllm 里跑通了 `ask_user`，暴露出两件事：
+状态：**整理中，待用户 review / 裁决（Q1–Q9 给的是建议值）。** 起因是 llm_context 冻结重构（[llm-context-freeze-todo](./done/llm-context-freeze-todo.md) §8.4 T7）之后在 xllm 里跑通了 `ask_user`，暴露出两件事：
 
 1. 调用内等待预算是一刀切的 `task_wait_ms`（默认 30 秒、硬顶 30 分钟），而 `ask_user` 这类"等人"的工具应该能配到 2 小时这种级别。应当能通过 policy 针对特定工具配置最长等待。
 2. xllm 最常用的 native runtime 对"有没有 BuckyOS"的判定是隐式、分散的（有 token 就接 TaskMgr，provider 另算一套）。应当有显式三档：`yes` / `no` / `auto`（有则用）。
@@ -95,7 +95,7 @@ libopendan 里 `ask_user` 同样是 shell 命令；function call 形态的具名
 - [AgentRuntime 设计](<../doc/llm_context/AgentRuntime 设计.md>) §4.1 字段表、§7 长命令与 task（已写"每个任务在预算内等，不按工具分类"）。
 - [xllm_rust_sdk.md](../doc/llm_context/xllm_rust_sdk.md) §8 登录方式、§10 共享 AgentRuntime。
 - [LLM Context 设计](<../doc/llm_context/LLM Context 设计.md>) §11 xllm 工作流伪代码。
-- [llm-context-freeze-todo](./llm-context-freeze-todo.md) §3.2.1 等待规则（"等待规则只有一条：每个任务都在 Runtime 预算内等，不按工具分类……`pending_reason` 可当跳过等待的可选优化"）、§3.9 预设。**本单 §3.1 与这句"不按工具分类"是有意的修订**：规则仍是"一条"（预算内等），只是预算可按工具给。
+- [llm-context-freeze-todo](./done/llm-context-freeze-todo.md) §3.2.1 等待规则（"等待规则只有一条：每个任务都在 Runtime 预算内等，不按工具分类……`pending_reason` 可当跳过等待的可选优化"）、§3.9 预设。**本单 §3.1 与这句"不按工具分类"是有意的修订**：规则仍是"一条"（预算内等），只是预算可按工具给。
 - [xllm-ts-runtime-todo](./xllm-ts-runtime-todo.md) Q3/Q4：TS 的 `RuntimeConfig` 要同步新字段。
 
 ## 2. 问题清单（xllm 视角）
@@ -203,10 +203,10 @@ runtime:
 
 ## 6. 不在本单
 
-- agent-session 侧对 `tool_policy` 的使用（Q4 的模板配置）与 `ask_user` 撤销、`<<task_result>>` 渲染：[opendan-agent-session-async-task-todo](./opendan-agent-session-async-task-todo.md)。
+- agent-session 侧对 `tool_policy` 的使用（Q4 的模板配置）与 `ask_user` 撤销、`<<task_result>>` 渲染：[opendan-agent-session-async-task-todo](./done/opendan-agent-session-async-task-todo.md)。
 - 远端 runtime（`remote_ssh` / `remote_node`）上工具子进程的 BuckyOS 环境。
-- 审批 / 授权类 policy（`ActionGuard`、RuntimeGrant）：仍是 [llm-context-agent-runtime-todo](./llm-context-agent-runtime-todo.md) 的"后续规划"，本单的 `tool_policy` 只有时间字段，命名上为它留位置。
+- 审批 / 授权类 policy（`ActionGuard`、RuntimeGrant）：仍是 [llm-context-agent-runtime-todo](./done/llm-context-agent-runtime-todo.md) 的"后续规划"，本单的 `tool_policy` 只有时间字段，命名上为它留位置。
 
 ## 7. 关联
 
-[llm-context-freeze-todo](./llm-context-freeze-todo.md)（§3.2.1、§3.9、§8.4）、[llm-context-long-tool-todo](./llm-context-long-tool-todo.md)、[llm-context-agent-runtime-todo](./llm-context-agent-runtime-todo.md)、[xllm-ts-runtime-todo](./xllm-ts-runtime-todo.md)、[opendan-agent-session-async-task-todo](./opendan-agent-session-async-task-todo.md)、[AgentRuntime 设计](<../doc/llm_context/AgentRuntime 设计.md>)、[xllm_rust_sdk.md](../doc/llm_context/xllm_rust_sdk.md)。
+[llm-context-freeze-todo](./done/llm-context-freeze-todo.md)（§3.2.1、§3.9、§8.4）、[llm-context-long-tool-todo](./done/llm-context-long-tool-todo.md)、[llm-context-agent-runtime-todo](./done/llm-context-agent-runtime-todo.md)、[xllm-ts-runtime-todo](./xllm-ts-runtime-todo.md)、[opendan-agent-session-async-task-todo](./done/opendan-agent-session-async-task-todo.md)、[AgentRuntime 设计](<../doc/llm_context/AgentRuntime 设计.md>)、[xllm_rust_sdk.md](../doc/llm_context/xllm_rust_sdk.md)。

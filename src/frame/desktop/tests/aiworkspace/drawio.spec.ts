@@ -1,4 +1,4 @@
-/* draw.io import (notepads/aiworkspace-drawio-import-todo.md): the extended shape, frames and swimlanes, the import
+/* draw.io import (notepads/done/aiworkspace-drawio-import-todo.md): the extended shape, frames and swimlanes, the import
  * entries (file, drop, paste), SVG shapes and the library, metadata and export. Fixtures:
  * src/frame/aiworkspace/fixtures/drawio/. Screenshots go to test-results/aiworkspace-drawio/. */
 

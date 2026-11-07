@@ -1,4 +1,4 @@
-/* Table data import (notepads/aiworkspace-table-import-todo.md §11, TI-01 – TI-12): pasted spreadsheet HTML and TSV,
+/* Table data import (notepads/done/aiworkspace-table-import-todo.md §11, TI-01 – TI-12): pasted spreadsheet HTML and TSV,
  * CSV / xlsx / SQLite files through the drop, the insert catalog and the main menu, the wizard's header switch, types,
  * currencies and invalid values, flow pages and undo, more than 20 000 rows, and aiws's own "copy as table".
  * The fixtures are those of the shared importer (src/frame/aiworkspace/fixtures/table). Screenshots go to

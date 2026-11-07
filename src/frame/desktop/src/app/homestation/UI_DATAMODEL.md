@@ -6,7 +6,7 @@
 - 上游文档：
   - 架构：`doc/homestation/BuckyOS HomeStation 架构设计.md` v0.6（§4.4 发表流、§4.5 受众、§5 Feed Object、§8.5 标签过滤、§9 Feed UI、§12–§16 评论与 Head、§17.4 应用能力）
   - PRD：`product/homestation/homestation.md`
-  - 任务：`notepads/homestation-prototype-v0.6-todo.md`
+  - 任务：`notepads/done/homestation-prototype-v0.6-todo.md`
 - 下游用途：`integrate-ui-datamodel-with-backend`
 
 ---

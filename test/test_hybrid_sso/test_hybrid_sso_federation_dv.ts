@@ -1,5 +1,5 @@
 /**
- * Three-Zone DID federation acceptance (notepads/hybrid-sso-implementation-todo.md SSO-09 / SSO-14)
+ * Three-Zone DID federation acceptance (notepads/done/hybrid-sso-implementation-todo.md SSO-09 / SSO-14)
  * against the `ssotest` VM group (src/dev_configs/ssotest.json): canonical Zone A (alice), target
  * Zones B (bob) and C (charlie), all resolved through the SN like the VMs themselves.
  *

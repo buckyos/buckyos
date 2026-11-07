@@ -34,7 +34,7 @@ pub enum NamedStoreSource {
     Dir(PathBuf),
 }
 
-/// Share module settings (notepads/share-content-mgr-tech-design-todo.md).
+/// Share module settings (notepads/done/share-content-mgr-tech-design-todo.md).
 #[derive(Debug, Clone)]
 pub struct ShareConfig {
     /// Origin of share links, e.g. `https://share.<zone>`; links are `<base>/s/{token}`.

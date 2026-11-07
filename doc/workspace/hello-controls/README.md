@@ -2,7 +2,7 @@
 
 > 这是 [扩展实现思路](<../BuckyOS AI Workspace 扩展实现思路.md>) §6.10 的配套例子，2026-10-30 建立。目的只有一个：让人在 P3 全部做完之前，就能看到**开发者最终面对的“界面”**——先干什么、再干什么，每一步在 Desktop / CLI / 文件里看到的是什么，典型源码长什么样。
 >
-> 它**不需要跑起来**。但分两种成分：标 **[P0 可用]** / **[P1 可用]** 的文件是按已冻结的契约写的，`hello-kpi`、`hello-card`、`hello-board` 的 `component.json`（及 `hello-board` 的 `composition.json`）已用 websdk `aiws_ext.ts` 的 `checkComponent` / `checkComposition` 预检通过，`aiws-manifest.json`（`manifest_version: 3`）里的 `digest` 是用同一模块对这些文件算出的真值，真要用可以直接 `buckyos aiws build`（先 `hello-card` 再 `hello-board`）；标 **[P2 可用] [P3 可用]** 的部分按 [P2+P3 任务单](<../../../notepads/aiworkspace-extension-p2p3-todo.md>) M0 冻结、2026-10-31 实施后回写（事件、属性级写入、升级迁移、组合结果、模板）。`hello-board` 已按 [P1 任务单](<../../../notepads/aiworkspace-extension-p1-todo.md>) M0 冻结并于 2026-10-30 回写本目录。权威契约始终是 aiworkspace README “Extension controls” 与 `src/frame/aiworkspace/schemas/`。2026-10-30 用户裁决 Q20–Q25（扩展实现思路 §7.6）后已同步：`.pikg` 由服务端打包、独立域名上也能开发、自带资源的写法见第 6 步、作者 DID 不验真。
+> 它**不需要跑起来**。但分两种成分：标 **[P0 可用]** / **[P1 可用]** 的文件是按已冻结的契约写的，`hello-kpi`、`hello-card`、`hello-board` 的 `component.json`（及 `hello-board` 的 `composition.json`）已用 websdk `aiws_ext.ts` 的 `checkComponent` / `checkComposition` 预检通过，`aiws-manifest.json`（`manifest_version: 3`）里的 `digest` 是用同一模块对这些文件算出的真值，真要用可以直接 `buckyos aiws build`（先 `hello-card` 再 `hello-board`）；标 **[P2 可用] [P3 可用]** 的部分按 [P2+P3 任务单](<../../../notepads/done/aiworkspace-extension-p2p3-todo.md>) M0 冻结、2026-10-31 实施后回写（事件、属性级写入、升级迁移、组合结果、模板）。`hello-board` 已按 [P1 任务单](<../../../notepads/done/aiworkspace-extension-p1-todo.md>) M0 冻结并于 2026-10-30 回写本目录。权威契约始终是 aiworkspace README “Extension controls” 与 `src/frame/aiworkspace/schemas/`。2026-10-30 用户裁决 Q20–Q25（扩展实现思路 §7.6）后已同步：`.pikg` 由服务端打包、独立域名上也能开发、自带资源的写法见第 6 步、作者 DID 不验真。
 
 ## 0. 场景
 

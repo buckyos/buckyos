@@ -1,4 +1,4 @@
-/* Table data import on a real Zone (notepads/aiworkspace-table-import-todo.md §11: TI-01, TI-05, TI-08 on a Zone):
+/* Table data import on a real Zone (notepads/done/aiworkspace-table-import-todo.md §11: TI-01, TI-05, TI-08 on a Zone):
  * the Desktop the Zone serves, the wizard's reader Worker (xlsx / SQLite), the original file uploaded through NDM,
  * commits through the gateway — including one commit of 20 000 rows × 20 columns (the gateway's share of T0).
  * Assertions do not depend on the Desktop's language. */

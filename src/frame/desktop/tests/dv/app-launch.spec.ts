@@ -1,6 +1,6 @@
 /**
  * Opening a web App from the desktop without a password, on a real Zone
- * (notepads/desktop-app-sso-auto-login-todo.md):
+ * (notepads/done/desktop-app-sso-auto-login-todo.md):
  *
  *   BUCKYOS_TEST_ZONE_HOST=test.buckyos.io BUCKYOS_TEST_ADMIN_PASSWORD=… \
  *     pnpm exec playwright test --config=playwright.dv.config.ts tests/dv/app-launch.spec.ts

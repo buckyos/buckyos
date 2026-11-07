@@ -1,6 +1,6 @@
 # 扩展 Self-host Group：应用开发指南
 
-本文面向希望在 BuckyOS 群聊上增加业务能力的应用开发者。实现核对日期为 **2026-10-24**，基于当前工作区（[应用扩展实施 TODO](../../notepads/self-host-group-extension-todo.md) 阶段 A～D 的改动）；“已实现”表示当前源码存在相应执行路径，不代表已经完成真实部署或跨 Zone 联调。
+本文面向希望在 BuckyOS 群聊上增加业务能力的应用开发者。实现核对日期为 **2026-10-24**，基于当前工作区（[应用扩展实施 TODO](../../notepads/done/self-host-group-extension-todo.md) 阶段 A～D 的改动）；“已实现”表示当前源码存在相应执行路径，不代表已经完成真实部署或跨 Zone 联调。
 
 **现在可以开发配置生成器、嵌入式应用侧面板、HTTP Hook、使用默认群服务的自定义应用，以及为外部客户代登录；通用 Process Chain、自动跨 Zone 接入和群服务多副本仍需补齐。** 可落地的组合是 L1 + L2 + L3（Message Hub 内增强）和 L1 + L4A + L3（自己的 UI 服务外部客户）。
 

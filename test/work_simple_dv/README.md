@@ -1,6 +1,6 @@
 # work_simple_dv — asynchronous simple Work Session, real model
 
-Real-model DV of [notepads/opendan-simple-worksession-async-todo.md](../../notepads/opendan-simple-worksession-async-todo.md) §6: a `work_simple` session of the Jarvis package of this checkout builds two slow crates (`fixture/alpha`: build script 60 s, `fixture/beta`: 100 s) in parallel. The model is real; tools, tasks, Turns and ticks go through the real `xagent`.
+Real-model DV of [notepads/done/opendan-simple-worksession-async-todo.md](../../notepads/done/opendan-simple-worksession-async-todo.md) §6: a `work_simple` session of the Jarvis package of this checkout builds two slow crates (`fixture/alpha`: build script 60 s, `fixture/beta`: 100 s) in parallel. The model is real; tools, tasks, Turns and ticks go through the real `xagent`.
 
 The mock-model counterpart is `cargo test -p libopendan --test work_simple_async -- --test-threads=1` in `src/`.
 

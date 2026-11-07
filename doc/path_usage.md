@@ -113,7 +113,7 @@ $buckyos_root/data/home/$username/Documents => c:/users/alice/Documents
 ## 数据放在哪里（服务与 App 通用）
 
 业务数据不再由进程自己在数据目录里写文件：结构化记录进 RDB instance，对象本体进 named store，保留意图用应用对象桶表达
-（`doc/arch/应用对象桶 Bucket 设计.md`，改造指南 `notepads/bucket-migration-todo.md`）。每个要落盘的数据项先回答四问：
+（`doc/arch/应用对象桶 Bucket 设计.md`，改造指南 `notepads/done/bucket-migration-todo.md`）。每个要落盘的数据项先回答四问：
 
 | 问 | 答案 | 去处 |
 | --- | --- | --- |

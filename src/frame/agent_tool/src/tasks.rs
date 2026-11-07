@@ -1,4 +1,4 @@
-//! Tasks: work that outlives one tool call (`notepads/llm-context-long-tool-todo.md`
+//! Tasks: work that outlives one tool call (`notepads/done/llm-context-long-tool-todo.md`
 //! §4 / §5).
 //!
 //! - [`InProcessTaskManager`]: the task manager of this executor process.

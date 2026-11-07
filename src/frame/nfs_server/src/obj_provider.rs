@@ -1,4 +1,4 @@
-//! DID Object Provider of DFS (notepads/agent-object-url-todo.md §4.6): `obj://dfs/<path>`
+//! DID Object Provider of DFS (notepads/done/agent-object-url-todo.md §4.6): `obj://dfs/<path>`
 //! is the object view of the same resource as `cyfs:///<path>` (one RBAC key, one ACL),
 //! served at `/kapi/dfs/obj/...`. The object describes the file or directory (stat,
 //! listing); its bytes stay the file resource (`cyfs:///<path>`, `/nfs/v1/read/<node>`).

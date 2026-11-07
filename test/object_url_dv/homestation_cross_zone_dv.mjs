@@ -1,4 +1,4 @@
-// Cross-zone HomeStation over https references (notepads/agent-object-url-todo.md D10 / D11):
+// Cross-zone HomeStation over https references (notepads/done/agent-object-url-todo.md D10 / D11):
 // bob publishes in his zone, alice follows and pulls it into hers, and her comment is delivered
 // to bob's inbox through the dispatch target `https://<bob zone>/home/bob/inbox`. Every entry,
 // stream and inbox address is the https form; no `cyfs://<zone>/home` survives.

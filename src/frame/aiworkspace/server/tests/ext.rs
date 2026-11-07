@@ -1,4 +1,4 @@
-//! Extension controls over the real service (notepads/aiworkspace-extension-p0-todo.md M2): `ext.build` from
+//! Extension controls over the real service (notepads/done/aiworkspace-extension-p0-todo.md M2): `ext.build` from
 //! objects the caller may read (here: bucket uploads to the in-process nfs-server), git-like base revisions,
 //! compatibility with instances, exports, the library (install from a Workspace or a `.pikg`, import, bundles).
 

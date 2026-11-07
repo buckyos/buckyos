@@ -1,6 +1,6 @@
 // Zone DID Resolver —— "伪装成 resolver 的 zone 内权威 cache"
 // （buckyos-base doc/简单介绍resolve-did.md §2.2/§3/§5/§7，速查规则 8；
-//   需求整理 notepads/zone-did-resolver需求.md）。
+//   需求整理 notepads/done/zone-did-resolver需求.md）。
 //
 // 对外两个入口，语义不同（buckyos-base doc/http_did_resolver_api.md §1.1）：
 //   GET /1.0/identifiers/{did}?type={doc_type}   resolver API，回答一律是

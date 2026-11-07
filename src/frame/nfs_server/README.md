@@ -223,7 +223,7 @@ manifest 可带 `auto_bind: { bucket_id, key, content_type?, metadata?, tags?, e
 `src/preview/`:Preview 组件不能直显的内容(Chromium 上的 HEIC/HEIF、HEVC,浏览器播放失败的 MOV 等;
 Office / ODF / RTF 文档)由 nfs_server 进程内 spawn ffmpeg/ffprobe 或 LibreOffice 转成兼容副本,原文件字节、
 ObjId、下载原文件不变(`notepads/preview-iphone-media-compatibility-todo.md` D1–D10、
-`notepads/aiworkspace-office-import-todo.md` §5.1、Preview PRD §23.6–23.7)。
+`notepads/done/aiworkspace-office-import-todo.md` §5.1、Preview PRD §23.6–23.7)。
 
 - **工具**(`tools.rs`):ffmpeg+ffprobe(两者都在才算)与 `soffice` 各自独立,依次查
   `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` → `PATH` → 平台固定位置:macOS `/opt/homebrew/bin`、`/usr/local/bin`、

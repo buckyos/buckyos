@@ -6,7 +6,7 @@
 
 源码基线：`buckyos` `244b6d7d7`（包含 `0a335026b` 的 host 工具布局/路径注入），`BuckyOSApp` `449ed80`。后续实施以当时源码为准复查。
 
-前置材料：[macOS 用户会话启动 GAP 预研](macos-desktop-user-session-research.md)、[Node Executor 设计](../doc/arch/node_exector.md)、[Runtime / Session 集成裁决 R1/R2](agent-runtime-session-workspace-integration-todo.md)、[session-runtime 与标准工具基线](opendan-primary-runtime-tools-todo.md)。预研中有关“工具布局仍未提交”的描述是当时快照，当前进度以本文代码基线为准。
+前置材料：[macOS 用户会话启动 GAP 预研](done/macos-desktop-user-session-research.md)、[Node Executor 设计](../doc/arch/node_exector.md)、[Runtime / Session 集成裁决 R1/R2](done/agent-runtime-session-workspace-integration-todo.md)、[session-runtime 与标准工具基线](opendan-primary-runtime-tools-todo.md)。预研中有关“工具布局仍未提交”的描述是当时快照，当前进度以本文代码基线为准。
 
 **1. 已确定的方案与目标**
 

@@ -1,4 +1,4 @@
-/* Office import (notepads/aiworkspace-office-import-todo.md O4, O5, O5b): a .docx from the insert menu becomes a new
+/* Office import (notepads/done/aiworkspace-office-import-todo.md O4, O5, O5b): a .docx from the insert menu becomes a new
  * flow page of rich text and picture Blocks with the original file last; a dropped .pptx asks, then becomes a canvas
  * of page groups with a presentation path (hidden slides left out unless asked for), a chart as a picture when the
  * content server has LibreOffice and as a dashed box when it has not; a file Block expands without a second upload;

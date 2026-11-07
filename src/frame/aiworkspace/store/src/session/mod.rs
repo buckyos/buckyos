@@ -1,4 +1,4 @@
-//! Presentation sessions (第四期规划 §3–§8; `notepads/aiworkspace-phase4-todo.md` §1). A session is a row of the
+//! Presentation sessions (第四期规划 §3–§8; `notepads/done/aiworkspace-phase4-todo.md` §1). A session is a row of the
 //! registry (`registry.rs`) and a **run Workspace** (`purpose=session`): a whole-database clone of the source taken
 //! when the room is created, cut back to the clone point (no earlier history) and with the speaker notes moved into
 //! a presenter-scoped table. Everything a session records lives in the run Workspace: its content and Commits, its

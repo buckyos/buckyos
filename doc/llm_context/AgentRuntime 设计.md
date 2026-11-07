@@ -395,4 +395,4 @@ Node 集成测试有平台与 root 条件；SSH 用例需专用 runner。运行�
 - [本地任务、Run 目录与命令行协议](local_llm_context_protocol.md)：控制侧持久化与配置协议。
 - [AgentTool 开发指南](<agent_tool/OpenDAN AgentTool 开发指南.md>)：工具注册、派发与结果协议。
 - [Node Executor 设计](../arch/node_exector.md)：远端服务、Command Stream 与节点授权。
-- [AgentRuntime 下移 TODO](../../notepads/llm-context-agent-runtime-todo.md)、[长命令 TODO](../../notepads/llm-context-long-tool-todo.md)、[llm_context 简化与冻结 TODO](../../notepads/llm-context-freeze-todo.md)：决策来源；其中的 registrar、恢复时检查/停止进程、挂起回填、remote_node 尚未实现等描述不作为当前契约。
+- [AgentRuntime 下移 TODO](../../notepads/done/llm-context-agent-runtime-todo.md)、[长命令 TODO](../../notepads/done/llm-context-long-tool-todo.md)、[llm_context 简化与冻结 TODO](../../notepads/done/llm-context-freeze-todo.md)：决策来源；其中的 registrar、恢复时检查/停止进程、挂起回填、remote_node 尚未实现等描述不作为当前契约。

@@ -462,7 +462,7 @@ Owner 可限制观看、关闭新评论或删除房间；这些操作分别生�
 
 ## 13. 实施出入（2026-10-30）
 
-本期已按本文实施（未提交），记录与验收见[第四期实施记录与验收报告](<BuckyOS AI Workspace 第四期实施记录与验收报告.md>)，实施裁决见 `notepads/aiworkspace-phase4-todo.md` §1。与正文不同或正文未写明的地方：
+本期已按本文实施（未提交），记录与验收见[第四期实施记录与验收报告](<BuckyOS AI Workspace 第四期实施记录与验收报告.md>)，实施裁决见 `notepads/done/aiworkspace-phase4-todo.md` §1。与正文不同或正文未写明的地方：
 
 | 编号 | 正文 | 实施 |
 | --- | --- | --- |

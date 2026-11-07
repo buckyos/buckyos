@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """work_simple_dv: the asynchronous simple Work Session with a real model.
 
-notepads/opendan-simple-worksession-async-todo.md §6: a `work_simple`
+notepads/done/opendan-simple-worksession-async-todo.md §6: a `work_simple`
 session of the Jarvis package builds two slow crates in parallel. Each build
 outlives the 25 s in-call wait and becomes a task of the runner process; the
 session closes a Turn with a progress reply, a task's end (`<<task_result>>`)

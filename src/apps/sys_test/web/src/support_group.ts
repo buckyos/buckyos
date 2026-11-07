@@ -1,5 +1,5 @@
 /**
- * sys_test official example (notepads/self-host-group-extension-todo.md §11, EXT-10):
+ * sys_test official example (notepads/done/self-host-group-extension-todo.md §11, EXT-10):
  * a customer-service group for alice, bob and an external customer.
  *
  * Three buttons. "Create group" uses the signed-in user's session on this App origin

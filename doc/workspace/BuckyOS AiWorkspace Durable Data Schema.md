@@ -1,6 +1,6 @@
 # BuckyOS AiWorkspace Durable Data Schema
 
-日期：2026-10-26（Named Bucket 迁移 P1-1，`notepads/bucket-migration-todo.md` §3.3）
+日期：2026-10-26（Named Bucket 迁移 P1-1，`notepads/done/bucket-migration-todo.md` §3.3）
 
 ## 1. Overview
 

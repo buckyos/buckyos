@@ -11,7 +11,7 @@
 - `src/kernel/node_daemon/src/active_server.rs`（`/kapi/active` RPC 服务端）
 - `src/kernel/node_daemon/src/node_daemon.rs`（激活触发与激活后运行期逻辑）
 - 姊妹仓库 `cyfs-gateway`（`/Users/liuzhicong/project/cyfs-gateway`）中 SN、BNS 的实际接口实现
-- `notepads/sn-api-node-active-todo.md`、`notepads/sn-auth-dev-active-script.md` 两份工程决策记录
+- `notepads/done/sn-api-node-active-todo.md`、`notepads/done/sn-auth-dev-active-script.md` 两份工程决策记录
 
 本文档**只描述"现在是什么"**，不包含目标/路线图/验收标准。如果要把它升级成正式 PRD（补目标、非目标、用户故事、验收标准），建议作为下一步单独做，不要和"对齐现状"这一步混在一起——上一份文档就是混在一起后来对不上号的。
 
@@ -86,7 +86,7 @@ buckyos.getRuntimeType() === AppRuntime 且 getCurrentWalletUser() 返回空 →
 | 管理员密码哈希 | 用户在 SecurityStep 输入，客户端 `hashPassword()` 后传服务端 | 要求钱包签名响应里带 `pwd_hash`；钱包没返回就直接抛错 `"missing password hash"` |
 | 持久化 | 私钥只留在浏览器 React state，关闭标签页即丢失；服务端**不落盘 owner 私钥**，只落盘设备私钥/身份文件 | 私钥从未进入浏览器或服务端 |
 
-**⚠️ 需要在正式 PRD 里明确决策的缺口**：`notepads/sn-api-node-active-todo.md` 里确认的设计意图是"网页路线用同一个助记词通过 NameLib 派生出 EVM 密钥和 Owner 密钥"。但经代码核实（`active_lib.ts:99-107`），**当前网页路线的 Owner 密钥就是一次裸的 `generate_key_pair()` RPC 调用，代码里找不到任何助记词生成/BIP39 派生逻辑**。也就是说：
+**⚠️ 需要在正式 PRD 里明确决策的缺口**：`notepads/done/sn-api-node-active-todo.md` 里确认的设计意图是"网页路线用同一个助记词通过 NameLib 派生出 EVM 密钥和 Owner 密钥"。但经代码核实（`active_lib.ts:99-107`），**当前网页路线的 Owner 密钥就是一次裸的 `generate_key_pair()` RPC 调用，代码里找不到任何助记词生成/BIP39 派生逻辑**。也就是说：
 - 设计意图（助记词同时派生 EVM+Owner 两把钥匙）和当前实现（只生成一把 Owner 用的 Ed25519 密钥，看不到 EVM 密钥生成）之间存在落差；
 - 这与下面 §6.4 提到的"BNS EVM 写入在向导里完全没有入口"是同一个缺口的两面——网页路线目前事实上**没有**在向导里生成或获取 `bns_evm_private_key`，BNS 发布这条腿对网页路线用户来说当前不可达。
 
@@ -154,7 +154,7 @@ SN、BNS 的实际接口定义在姊妹仓库 `cyfs-gateway`（`src/components/c
 | 为什么不能反过来 | SN 这时候还没见过这台设备，没有锚定公钥可比对，只能认账号态凭证 | 设备已经通过 BNS `device_mini_doc` 锚定了公钥，SN 可以直接验签，不再需要账号态凭证 |
 | 获取方式 | 向导 SecurityStep 注册/登录时拿到；提交激活前 `acquire_sn_access_token()` 会先尝试 `refresh`，失败再重新登录一次（因为 1 小时有效期可能在用户填完向导前就过期了） | `node_daemon` 用本机已持久化的设备私钥现场签 |
 
-**已废弃、不要再提的旧设计**：`sn_device_proof`（"设备自签 JWT 直接用于激活期注册"）是 2026-06-28 落地过一版的设计，9 天后（2026-07-06，commit `7d9f77d7`）被上面这套两阶段方案取代——现在 `sn_device_proof` 只residual 存在于日志脱敏字段名单里（防止老前端还发这个字段时泄露到日志），代码里已经没有任何地方真正生产或消费它。`notepads/sn-api-node-active-todo.md`（06-28）里写的"改用 sn_device_proof"是**中间态**，不是现状，写新文档时不要照抄那份 notepad 的这一条结论。
+**已废弃、不要再提的旧设计**：`sn_device_proof`（"设备自签 JWT 直接用于激活期注册"）是 2026-06-28 落地过一版的设计，9 天后（2026-07-06，commit `7d9f77d7`）被上面这套两阶段方案取代——现在 `sn_device_proof` 只residual 存在于日志脱敏字段名单里（防止老前端还发这个字段时泄露到日志），代码里已经没有任何地方真正生产或消费它。`notepads/done/sn-api-node-active-todo.md`（06-28）里写的"改用 sn_device_proof"是**中间态**，不是现状，写新文档时不要照抄那份 notepad 的这一条结论。
 
 ### 6.3 `device_mini_doc` 与"反 TOFU"验证
 
@@ -185,7 +185,7 @@ Bns.sol（链上合约，只认 msg.sender，是唯一权威）
 
 `node_daemon`（`active_server.rs`）没有走 cyfs-gateway 里现成的高层封装 `SnBnsController`（那个封装目前唯一的生产调用方是 `cyfs-sn` 自己的 `auth.register` 引导流程），而是**直接手搓**：用 `bns-client` 的 `BnsEvmControllerClient` 拼 `zone`/`boot`/`device_mini_doc` 三份文档，本地签好交易后通过 `/kapi/bns` 的 `tx.submit_raw` 转发。Cargo 依赖上只加了 `bns-client`（`bns-indexer` 不是 buckyos 的直接或间接依赖，是 `bns-client` crate 自己测试用的 dev-dependency，`BnsIndexerClient` 类型是 `bns-client` 自己对远程 indexer 服务的客户端封装）。
 
-**[未接入UI]** 这整条 BNS 发布能力（`publish_bns_zone_documents`）只有在请求里带了 `bns_evm_private_key` 才会触发，而**当前向导没有任何一步会收集这个字段**——目前只能通过 `node_daemon` 宿主环境变量（`BNS_PRIVATE_KEY` 等）或 `notepads/sn-auth-dev-active-script.md` 里那个 dev 脚本（`src/active_ood.ts`）触发。钱包路线这边同样缺一座桥：钱包桥目前只有 `walletSignWithActiveDid`，没有 EVM 原始交易签名接口，"钱包路线怎么做 BNS EVM 签名"还是待补的开放问题。
+**[未接入UI]** 这整条 BNS 发布能力（`publish_bns_zone_documents`）只有在请求里带了 `bns_evm_private_key` 才会触发，而**当前向导没有任何一步会收集这个字段**——目前只能通过 `node_daemon` 宿主环境变量（`BNS_PRIVATE_KEY` 等）或 `notepads/done/sn-auth-dev-active-script.md` 里那个 dev 脚本（`src/active_ood.ts`）触发。钱包路线这边同样缺一座桥：钱包桥目前只有 `walletSignWithActiveDid`，没有 EVM 原始交易签名接口，"钱包路线怎么做 BNS EVM 签名"还是待补的开放问题。
 
 ### 6.5 `auth.register` / `auth.login` 本身没有被去掉
 
@@ -266,8 +266,8 @@ Bns.sol（链上合约，只认 msg.sender，是唯一权威）
 | `cyfs-gateway/doc/BNS/BNS-签名边界改造-EVM-TX-TODO.md` | cyfs-gateway | 当前，是 BNS 写路径架构最可信的单一来源 |
 | `cyfs-gateway/doc/SN/新SN核心流程整理.md` | cyfs-gateway | 当前，描述目标架构且与代码一致 |
 | `cyfs-gateway/doc/old_sn/*` | cyfs-gateway | 完全过时，只作为"改造前"的历史对照 |
-| `notepads/sn-api-node-active-todo.md` | buckyos | 2026-06-28 决策记录，**其中"改用 sn_device_proof"一条已被 07-06 的改动推翻**，其余密钥/BNS 约束仍然成立 |
-| `notepads/sn-auth-dev-active-script.md` | buckyos | 2026-07-06 完成记录，当前 |
+| `notepads/done/sn-api-node-active-todo.md` | buckyos | 2026-06-28 决策记录，**其中"改用 sn_device_proof"一条已被 07-06 的改动推翻**，其余密钥/BNS 约束仍然成立 |
+| `notepads/done/sn-auth-dev-active-script.md` | buckyos | 2026-07-06 完成记录，当前 |
 
 ---
 

@@ -1,6 +1,6 @@
 //! Task CLI bridge: the task tools (`wait_task` / `get_task_state` /
 //! `cancel_task`) as a command run through `shell`
-//! (`notepads/llm-context-chat-prompt-prereq-todo.md` P3).
+//! (`notepads/done/llm-context-chat-prompt-prereq-todo.md` P3).
 //!
 //! A run that offers `group:bash_core` with a task command
 //! (`XllmDeps.task_cli`) serves its task resolver on a Unix socket and

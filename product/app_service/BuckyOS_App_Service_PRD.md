@@ -165,6 +165,6 @@ Docker 展示 Engine/Image/Container；Script 展示进程健康；静态 Web �
 
 以两组 Playwright 用例覆盖普通 PIKG、显式 LocalDeveloper、禁止终止身份、重复/升级/降级、参数修改、PlanStale、错误密码/取消/过期、内容与信任阻塞、幂等并发、取消边界、失败重试、暂停恢复、刷新、任务权限、多 owner/用户/Zone、四种 runtime、运行未就绪、中英文和 375px 移动端。测试必须检查控制台错误与意外后端请求。
 
-执行 `pnpm run check`、`pnpm run build` 和本轮 Mock 的 Chromium 回归；复用 4173 服务前核实其环境。关键截图和实际验证结果记录在[执行清单](../../notepads/app-service-beta2.2-prototype-todo.md)。
+执行 `pnpm run check`、`pnpm run build` 和本轮 Mock 的 Chromium 回归；复用 4173 服务前核实其环境。关键截图和实际验证结果记录在[执行清单](../../notepads/done/app-service-beta2.2-prototype-todo.md)。
 
 2026-09-05：替换旧 v0.3 / Draft v0.5 的原型语义；取消数字任务 ID、检查即创建任务、原编号重试、任意权限 grant、安装时快捷域名、假 Settings 保存及 Completed 即 running 的假设。不提供旧 Mock 缓存或 DataModel 迁移。

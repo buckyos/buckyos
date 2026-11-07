@@ -2,7 +2,7 @@
 
 日期：2026-11-02
 
-状态：**已实施（2026-11-02，未提交）**，单测与 xllm 本机 DV 过，记录见 §5；主 TODO 可以开工（A4 依赖的 `wrap_up_tools` 已在）。§5.3 有一处自定修改和一个待裁决的发现。这是 [Work Session 上下文压缩与工具预算修正 TODO](./opendan-work-context-budget-fix-todo.md)（下称“主 TODO”）§3.1 第 2 条与 §3.2 第 3 条需要的 llm_context / agent_tool 层改动，按约定单列并**先于** libopendan 侧实施（[feedback-llm-context-first]）。两项彼此独立，可并行；各自带单测与 fixtures 更新。都是增量字段，缺省值保持旧行为，不动 [llm_context 冻结](./llm-context-freeze-todo.md) 已定的六件事边界（P2 只改“在哪里停”的一个判断条件，不加新的等待或提示语义）。
+状态：**已实施（2026-11-02，未提交）**，单测与 xllm 本机 DV 过，记录见 §5；主 TODO 可以开工（A4 依赖的 `wrap_up_tools` 已在）。§5.3 有一处自定修改和一个待裁决的发现。这是 [Work Session 上下文压缩与工具预算修正 TODO](./opendan-work-context-budget-fix-todo.md)（下称“主 TODO”）§3.1 第 2 条与 §3.2 第 3 条需要的 llm_context / agent_tool 层改动，按约定单列并**先于** libopendan 侧实施（[feedback-llm-context-first]）。两项彼此独立，可并行；各自带单测与 fixtures 更新。都是增量字段，缺省值保持旧行为，不动 [llm_context 冻结](./done/llm-context-freeze-todo.md) 已定的六件事边界（P2 只改“在哪里停”的一个判断条件，不加新的等待或提示语义）。
 
 路径均相对 `buckyos/src/frame/`。
 
@@ -75,7 +75,7 @@ pub wrap_up_rounds: u32,
 ## 4. 验证
 
 - `cargo test -p llm_context`、`cargo test -p agent_tool`（并发跑多个 cargo 时加 `-j 8`）。
-- xllm 本机 DV（跑法见 [llm-context-freeze-todo.md](./llm-context-freeze-todo.md) §8.4）：`.llm_context` 写 `context_window: 20000` + `context_yield_ratio: 0.5`，跑一个多轮工具任务，run.json `limit_reason = context` 出现在估算过 10k 时。
+- xllm 本机 DV（跑法见 [llm-context-freeze-todo.md](./done/llm-context-freeze-todo.md) §8.4）：`.llm_context` 写 `context_window: 20000` + `context_yield_ratio: 0.5`，跑一个多轮工具任务，run.json `limit_reason = context` 出现在估算过 10k 时。
 
 ## 5. 实施记录（2026-11-02，未提交）
 

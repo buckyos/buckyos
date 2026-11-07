@@ -2,7 +2,7 @@
 
 日期：2026-11-03
 
-状态：v0.1，待裁决（§6）。v0 为 2026-11-03 草案；**2026-11-05 按 [runtime 工作模型与生命周期 TODO](opendan-agent-runtime-lifecycle-todo.md) 第一期（P0 工作模型 + P1 记录模型，提交 c88404aaf）复核**：§1.1 记 runtime 侧的变化；§2.2、§3.6、§3.6.1 A–D、§4 P2 按“私有 runtime 永远在、skill 自装命令缺省装私有、connector + caps + grant、`runtime_exec / runtime_put`”改写；§6 的 1、10、12、13 据 runtime 侧裁决关闭，新增 14。来源：脑图《整理 skills 体系》（ui_skills / work_skills / plan skills / goal skills / skills 的基础结构），对照 2026-11-03 工作树源码整理。关联：[cmd_skill 机制 TODO](opendan-cmd-skill-todo.md)、[内置 cmd_skills TODO](opendan-builtin-cmd-skills-todo.md)、[Goal Session TODO](opendan-goal-session-todo.md)、[OpenDAN 开发指南 §2.4](../doc/sdk/OpenDAN_Agent_Dev_Guide.md)、[Session 架构设计 §9.3 / §10](<../doc/opendan/OpenDAN Agent Session架构设计.md>)。
+状态：v0.1，待裁决（§6）。v0 为 2026-11-03 草案；**2026-11-05 按 [runtime 工作模型与生命周期 TODO](opendan-agent-runtime-lifecycle-todo.md) 第一期（P0 工作模型 + P1 记录模型，提交 c88404aaf）复核**：§1.1 记 runtime 侧的变化；§2.2、§3.6、§3.6.1 A–D、§4 P2 按“私有 runtime 永远在、skill 自装命令缺省装私有、connector + caps + grant、`runtime_exec / runtime_put`”改写；§6 的 1、10、12、13 据 runtime 侧裁决关闭，新增 14。来源：脑图《整理 skills 体系》（ui_skills / work_skills / plan skills / goal skills / skills 的基础结构），对照 2026-11-03 工作树源码整理。关联：[cmd_skill 机制 TODO](opendan-cmd-skill-todo.md)、[内置 cmd_skills TODO](opendan-builtin-cmd-skills-todo.md)、[Goal Session TODO](done/opendan-goal-session-todo.md)、[OpenDAN 开发指南 §2.4](../doc/sdk/OpenDAN_Agent_Dev_Guide.md)、[Session 架构设计 §9.3 / §10](<../doc/opendan/OpenDAN Agent Session架构设计.md>)。
 
 目标：把现有的 cmd_skills / goal_skills 两类机制整理成脑图中的四类（ui / work / plan / goal），补齐“谁选、何时选、选了之后如何反馈”的闭环，并把安装、禁用/卸载、导入、发行和 self-improve 的入口做实。原则沿用已定裁决：skill 是捷径不是规定；Work 的手册创建时选定、运行中不调；同一 Session 内系统提示词前缀不变（provider prompt cache）；新增能力不改公共 tool schema。
 
@@ -115,7 +115,7 @@ skills 侧代码未动（`SkillMeta` 仍只有 `requires / baseline / platforms`
 
 ### 3.5 goal skills：暂不做
 
-保持 `goal_skills/` 目录与 `GoalSkill` 引用现状；在 [Goal Session TODO](opendan-goal-session-todo.md) 记一条：`GoalSkill.ref` 指向 `goal_skills/<name>.md` 时由激活渲染读入 `<current_skills>` 正文。本计划不改 Goal 的选择逻辑，只把 §3.2 第 2 条的 include 用上。
+保持 `goal_skills/` 目录与 `GoalSkill` 引用现状；在 [Goal Session TODO](done/opendan-goal-session-todo.md) 记一条：`GoalSkill.ref` 指向 `goal_skills/<name>.md` 时由激活渲染读入 `<current_skills>` 正文。本计划不改 Goal 的选择逻辑，只把 §3.2 第 2 条的 include 用上。
 
 ### 3.6 基础结构：如何安装
 

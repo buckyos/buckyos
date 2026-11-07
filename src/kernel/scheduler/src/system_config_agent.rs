@@ -1236,7 +1236,7 @@ pub(crate) async fn update_node_gateway_info(
                 }
             } else if spec_id == NFS_SERVER_SERVICE_NAME {
                 // `share.<zone>/s/{token}`: share links served by nfs-server (its own
-                // origin, apart from the Desktop), see notepads/share-content-mgr-tech-design-todo.md.
+                // origin, apart from the Desktop), see notepads/done/share-content-mgr-tech-design-todo.md.
                 // `s3.<zone>`: the S3 compatible endpoint of application object buckets.
                 if let Some(selector) = selector.as_ref() {
                     for host in ["share", "s3"] {

@@ -1,5 +1,5 @@
 /**
- * G1 DV (notepads/agent-object-url-todo.md §5): the Agent runtime's own session observes its
+ * G1 DV (notepads/done/agent-object-url-todo.md §5): the Agent runtime's own session observes its
  * owner's sessions read-only and is refused another owner's mailbox, through the msg-center
  * Provider and the kRPC it maps to.
  *

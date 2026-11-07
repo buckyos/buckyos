@@ -499,7 +499,7 @@ tunnel 收到 `relates_to.rel = edit` 的出站消息时必须落到平台编辑
 
 ## 15. 现状对照与迁移（P3，已完成）
 
-P3 迁移已于 2026-07-14 全部落地（明细见 `notepads/msg-center-design-freeze-todo.md`），
+P3 迁移已于 2026-07-14 全部落地（明细见 `notepads/done/msg-center-design-freeze-todo.md`），
 代码与冻结设计一致，无旧名兼容层：
 
 | 冻结设计 | 落地状态 |

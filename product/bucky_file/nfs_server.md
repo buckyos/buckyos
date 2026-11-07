@@ -559,7 +559,7 @@ UTF-8 边界截断到 255 字节。目标目录是自身或源的后代时拒绝
 
 ## 12. 分享（ShareContentMgr，实现扩展）
 
-2026-10-19 实现，设计与实施记录见 `notepads/share-content-mgr-tech-design-todo.md`（§3 设计、§9 记录）。
+2026-10-19 实现，设计与实施记录见 `notepads/done/share-content-mgr-tech-design-todo.md`（§3 设计、§9 记录）。
 代码在 `src/frame/nfs_server/src/share/`，客户端见 websdk `nfsp.ts` 的 `share*` 方法、CLI `buckyos share`、
 Desktop `sysdlg/share` 与“我的内容”。
 

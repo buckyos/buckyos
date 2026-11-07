@@ -4,7 +4,7 @@
 - 位置：`src/frame/lib_opendan`（二进制 `xagent`，替代 `examples/session.rs`），主文件名是xagent.rs
 - 依据：[Agent Session SDK 实现计划](<./Agent Session SDK 实现计划.md>) v0.10、[长任务与执行体 RFC](<./OpenDAN Long Task & Sub-Agent.md>)、[LLM Context readme](../llm_context/readme.md)、[xllm Rust SDK 参考](../llm_context/xllm_rust_sdk.md)、`doc/opendan/protocol/`
 - 读者：实施 xagent CLI 的开发者与 Code Agent；实现基线为 `5ef122a2`（输入与 Turn Loop）及 `b9d7fbbe`（媒体降级与实施记录补充），并对照当前仓库的 `libopendan` / `agent_tool` 源码。实施时先检查基线之后的相关变更。
-- 输入设计 Review：2026-10-03，确定三类受控输入 `on_init / on_input / on_context_switch` 与输入前装配的 `semi_subscription_snapshot`（半订阅快照）；模板、装配及提交规则见 §6.2 / §6.4 / §9.5，实施清单见 [输入与 Turn Loop TODO](../../notepads/lib-opendan-input-and-turn-loop-todo.md)。
+- 输入设计 Review：2026-10-03，确定三类受控输入 `on_init / on_input / on_context_switch` 与输入前装配的 `semi_subscription_snapshot`（半订阅快照）；模板、装配及提交规则见 §6.2 / §6.4 / §9.5，实施清单见 [输入与 Turn Loop TODO](../../notepads/done/lib-opendan-input-and-turn-loop-todo.md)。
 
 ---
 
@@ -281,7 +281,7 @@ impl AgentSession {
 
 于是 `try_create_worksession` 的形态是：ui context 调用一个子 context 函数，结果作为输入交回。**不需要层 ③**：子 context 不是一个进程内工具，而是 Session 的 Context 调度（回答 §12 第 7 项）。已采用的形态（2026-10-11）是 `try_analyze_user_intent`：behavior `analyze_intent`（`fork`）用下面的 `[tool]` 声明暴露给 UI，取代 `task_route`。
 
-**`[tool]` 声明：LLM 可见的具名函数**（2026-10-11，[意图分析 TODO](../../notepads/opendan-analyze-user-intent-todo.md) §3.13）。目标 behavior 可以把自己声明为一个具名函数，调用方的模型看到的是这个函数，而不是通用的 `call_behavior`：
+**`[tool]` 声明：LLM 可见的具名函数**（2026-10-11，[意图分析 TODO](../../notepads/done/opendan-analyze-user-intent-todo.md) §3.13）。目标 behavior 可以把自己声明为一个具名函数，调用方的模型看到的是这个函数，而不是通用的 `call_behavior`：
 
 ```toml
 [tool]
@@ -301,7 +301,7 @@ task = "{{args.request}}"           # 子 context 的 task 模板，只能引用
 
 ### 3.7 llm_context / xllm 层提供的原语
 
-调度语义归 Session（本节以上）；下层只提供机械的构造与交接原语，按“llm_context 先行”的规则单列在 [llm_context Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md)：
+调度语义归 Session（本节以上）；下层只提供机械的构造与交接原语，按“llm_context 先行”的规则单列在 [llm_context Context 调度支持 TODO](../../notepads/done/llm-context-switch-support-todo.md)：
 
 - **`derive_child(parent_snapshot, child_request, InheritHistory::{None | Material | Steps})`**（`llm_context::context_derive`）：create-sub-context 的历史派生。子 request 自带 system、模型、工具配置；父快照可以处于工具批次 / Step 中途，进行中的部分不带入子 context（Session 交接时父总在段结束处）。
 - **`fork_snapshot(parent_snapshot, ForkOptions)`**（同模块）：fork 的完整历史派生。保持父 system 不变，目标声明不同 system 时拒绝；父有未完成的工具批次 / Step 时，分叉点取在它之前。
@@ -461,7 +461,7 @@ pub struct SessionTemplate {
 | `ui` | Unbounded | Allowed | Queue（隐式半订阅 `_notify`：`system:notify:<id>`） | EventsAndActive | 是 | 长生命周期对话入口；只在有输入时 bootstrap（观察到的通知不会让它开口） |
 | `self_improve` | One | FinishFailed | None | Off | 否 | 感知窗口整理 |
 | `self_check` | Unbounded | FinishFailed | Queue（timer 事件） | Off | 是 | 定时自检 |
-| `goal` | Unbounded | EndTurn | Queue（`_goal_activation`：`system:goal` 事件） | EventsAndActive | 是 | 一个 Goal 的一个 epoch：每个 Activation 是一个 Turn；只由宿主为 Goal 创建（`xagent new --class goal` 拒绝），见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9 与 [Goal Session TODO](../../notepads/opendan-goal-session-todo.md) |
+| `goal` | Unbounded | EndTurn | Queue（`_goal_activation`：`system:goal` 事件） | EventsAndActive | 是 | 一个 Goal 的一个 epoch：每个 Activation 是一个 Turn；只由宿主为 Goal 创建（`xagent new --class goal` 拒绝），见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9 与 [Goal Session TODO](../../notepads/done/opendan-goal-session-todo.md) |
 
 **无队列 work session 的后果**：stop 由 lease 持有者将 SIGINT 接到现有取消路径；decide 走 artifacts 门面；exec 子进程的 `activity --touch` / `perceive` 没有通道，touching 由工具调用推断、感知只有结束时的 run_digest。父接收子状态（C15）与 task resolver 查询不需要队列，但子 LLM 主动给父发消息需要父有队列。只有需要接收外部投递的订阅才自动升为 Queue；默认时区的初始快照、拉取 session 状态、已跟踪 task 不因此强制建队列。无队列时不承诺收到外部时区更新。等待 task / children 时仍须轮询，不能因 `bus = None` 提前结束。
 
@@ -633,7 +633,7 @@ plan session 的 TodoList（`.opendan_agent_session/todos.json`，[Agent TodoLis
 
 ## 5. Runtime：Agent 的 Sandbox
 
-> 2026-10-03：共享 Runtime 已落实在 `agent_tool::runtime`，独立于 xagent 完成；配置、验收与后续 policy 边界见 [Runtime 实施记录](../../notepads/llm-context-agent-runtime-todo.md)。§5.1–5.3 描述当前接口，§5.2.1 的 Session 工厂规则已由 xagent 接线；grant、ActionGuard 和审批仍为后续设计。
+> 2026-10-03：共享 Runtime 已落实在 `agent_tool::runtime`，独立于 xagent 完成；配置、验收与后续 policy 边界见 [Runtime 实施记录](../../notepads/done/llm-context-agent-runtime-todo.md)。§5.1–5.3 描述当前接口，§5.2.1 的 Session 工厂规则已由 xagent 接线；grant、ActionGuard 和审批仍为后续设计。
 
 ### 5.1 定位
 
@@ -1311,7 +1311,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 
 ### 11.3 后移项与保证范围
 
-- 外部服务 dispatch intent / task 绑定；task 桥仍是映射与幂等 key helper。Turn / 子 Session 的 TaskMgr task（`TurnTaskSink`、`state.turn_tasks`、`origin.parent_task`）与占位 / 最终 edit 已实施（2026-10-04，见 [messagehub-agent-chat-task-todo](../../notepads/messagehub-agent-chat-task-todo.md)）；xagent 不提供钩子，行为不变。msg-center 接入、出站（`state.outbox` + `OutboundSink`）、正式 ui kind、真 kRPC Agent State（`state::krpc`）与常驻托管（`host::Supervisor`）已随 OpenDAN Loader 实施（2026-10-03，见 [opendan README](../../src/frame/opendan/README.md)）。
+- 外部服务 dispatch intent / task 绑定；task 桥仍是映射与幂等 key helper。Turn / 子 Session 的 TaskMgr task（`TurnTaskSink`、`state.turn_tasks`、`origin.parent_task`）与占位 / 最终 edit 已实施（2026-10-04，见 [messagehub-agent-chat-task-todo](../../notepads/done/messagehub-agent-chat-task-todo.md)）；xagent 不提供钩子，行为不变。msg-center 接入、出站（`state.outbox` + `OutboundSink`）、正式 ui kind、真 kRPC Agent State（`state::krpc`）与常驻托管（`host::Supervisor`）已随 OpenDAN Loader 实施（2026-10-03，见 [opendan README](../../src/frame/opendan/README.md)）。
 - 本机附件登记到 NamedStore；首版 CLI 的 --attach 仅接受 ObjId。
 - 长工具执行期间持续 activity 心跳；StopMonitor 当前仅查看 stop，不写 state。
 - 旧 Session 的显式迁移工具、TS helper / Runner、正式 UI / OpenDAN 改造。
@@ -1356,7 +1356,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 
 ### 11.6 UI Session 提示词改造（2026-10-17）
 
-按 [Jarvis UI Session 提示词改造 TODO](../../notepads/jarvis-chat-prompt-todo.md)（先行项见 [llm_context 先行 TODO](../../notepads/llm-context-chat-prompt-prereq-todo.md)）实施，只改 `kind = ui` 的 Session（一对一与群聊）；Work / Goal 不变：
+按 [Jarvis UI Session 提示词改造 TODO](../../notepads/done/jarvis-chat-prompt-todo.md)（先行项见 [llm_context 先行 TODO](../../notepads/done/llm-context-chat-prompt-prereq-todo.md)）实施，只改 `kind = ui` 的 Session（一对一与群聊）；Work / Goal 不变：
 
 - **system 段**：`## Identity`（role + 实例补充：名字、account、Agent DID 与 owner 的 account / DID）→ `## Current Session Constraints`（对端或群、身份来源、避让、session 目录、通知处理，按群聊 / 一对一分支）→ `## Objective`（UI Session 的设计意图，模板 `objective` / 内建 `UI_OBJECTIVE`，不再是 `msg.chat <route_key>`）→ 应用提示词原样（自带 `## Replying` / `## Memory`）→ `## Commands`（随 Session 冻结的 cmd_skills，`<agent_root>/cmd_skills/<name>.md`，`agent.toml [session.<class>] default_cmd_skills`；Work 的 cmd_skills 由 `create-worksession --cmd-skill` 在创建时选定，放在 `## objective` 之后，段首说明它们是可选捷径）。function call 循环的 UI run 关掉 xllm 追加的 `capabilities` / `cmd_manual` / `runtime_protocol` 三段（behavior 循环保留）。不写 session id。`SessionSection.owner` 记 owner DID。
 - **输入**：chat 格式（Session Input Protocol §6.5），背景行的显示记录 `state.background_shown` 随 receipt（`extra.background`）提交；半订阅版本作为背景行显示，不再单独成快照消息。子 Session 事件对 UI 父只有一行摘要。
@@ -1381,7 +1381,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 9. **后移：grant 呈现**。保留 §5.4 的带前缀并列工具方案供 policy 阶段评审。
 10. **后移：层 ② guard 粒度**。Agent State 级授权检查随 policy 设计，不把未实现的 ActionGuard 接口加成本轮依赖。
 11. **默认：StateLocator**。文件定位用 §7 的环境变量 / 映射表；进程内与转发桩验证 trait，真 kRPC 随 OpenDAN 改造。
-12. **后移：UI Stop 后补充输入**（[Context TODO](../../notepads/llm-context-switch-support-todo.md) H3）。保留原 Turn / run 或重开 Turn 的选择未定；本轮 ctl stop 仍终止 Turn 与 Session，不暗改为暂停。
+12. **后移：UI Stop 后补充输入**（[Context TODO](../../notepads/done/llm-context-switch-support-todo.md) H3）。保留原 Turn / run 或重开 Turn 的选择未定；本轮 ctl stop 仍终止 Turn 与 Session，不暗改为暂停。
 13. **后移：report 工具参数与 is_end**（Context TODO H4）。显式报告、可选 result 校验、同批剩余工具与 task 的关系未定。
 14. **后移：显式完成策略的模板范围**（Context TODO H4）。本轮沿用 end_condition 与 §4.7 的 WAIT_USER_MSG 解释，不让普通 Done 自动获得另一种完成语义。
 15. **默认：子 context 嵌套范围**。沿用现行规则：可再调用子 context；跳到 switch_context 目标交回调用方，WAIT_USER_MSG 交回 needs_user_input；扩展内部切换或直接等用户后移。

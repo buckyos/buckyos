@@ -2,7 +2,7 @@
 
 日期：2026-11-02
 
-状态：**待用户 review，未实施。已定：Q-G4（2026-11-02 用户：Goal 建的 Work 用 work_simple 就够了；Q-G4b 随之删除，Q-G5 收窄）。Q-U1 用户 11-02 给出方向：设一个 default chat session，Agent 的主动聊天都出现在这里，泛触达由通知带 URL 打开它（§4.3 B、§4.4、§4.5 已按此改写）。第四、五轮补了 §5 典型场景与归属（"维护 timer" 按用户澄清改为系统默认 Goal"日程管家"；Q-S1–Q-S10 待裁决）；其余未裁决。** 用户 2026-11-02 要求先写 TODO 整体过一遍：核心是两刀重构之后 Goal Session 的设计意图有没有变化；最大的体验问题是"Agent 主动和用户发起会话"应该放在哪。Claude 对照 [llm_context 冻结 TODO](./llm-context-freeze-todo.md)、[简单 Work Session 全异步化](./opendan-simple-worksession-async-todo.md)（第一刀，§9 是实施记录）、[plan_simple 多 Turn 化](./opendan-plan-simple-async-todo.md)（第二刀，§8 是实施记录）、[Goal Session TODO](./opendan-goal-session-todo.md)（第一段，§11 是实施记录）、[Agent 主动给用户发"消息"的方法总结](../doc/opendan/Agent%20主动给用户发_消息_的方法总结.md)（下称《方法总结》）与当前源码（含工作区未提交改动）写成。
+状态：**待用户 review，未实施。已定：Q-G4（2026-11-02 用户：Goal 建的 Work 用 work_simple 就够了；Q-G4b 随之删除，Q-G5 收窄）。Q-U1 用户 11-02 给出方向：设一个 default chat session，Agent 的主动聊天都出现在这里，泛触达由通知带 URL 打开它（§4.3 B、§4.4、§4.5 已按此改写）。第四、五轮补了 §5 典型场景与归属（"维护 timer" 按用户澄清改为系统默认 Goal"日程管家"；Q-S1–Q-S10 待裁决）；其余未裁决。** 用户 2026-11-02 要求先写 TODO 整体过一遍：核心是两刀重构之后 Goal Session 的设计意图有没有变化；最大的体验问题是"Agent 主动和用户发起会话"应该放在哪。Claude 对照 [llm_context 冻结 TODO](./done/llm-context-freeze-todo.md)、[简单 Work Session 全异步化](./done/opendan-simple-worksession-async-todo.md)（第一刀，§9 是实施记录）、[plan_simple 多 Turn 化](./opendan-plan-simple-async-todo.md)（第二刀，§8 是实施记录）、[Goal Session TODO](./done/opendan-goal-session-todo.md)（第一段，§11 是实施记录）、[Agent 主动给用户发"消息"的方法总结](../doc/opendan/Agent%20主动给用户发_消息_的方法总结.md)（下称《方法总结》）与当前源码（含工作区未提交改动）写成。
 
 范围：Goal Session（class `goal`、`goal.toml`、`memory_maintenance.toml`）的运行时语义、它派生的 Work 的形状与预算、它与用户之间的通道。两刀都写明"goal 会话不动"，本单就是补这一刀。UI 会话只涉及 §4"由谁在对话里开口"这部分；UI 的中间回复、提问撤销仍归第三刀（第一刀 §7）。
 
@@ -364,7 +364,7 @@ XLLM 结晶（架构 §9.4）面向企业客服，不作为个人 Agent 的默�
 
 ### C. 文档
 
-- C1 [Goal Session TODO](./opendan-goal-session-todo.md) §11 之后加一个指向本单的指针。
+- C1 [Goal Session TODO](./done/opendan-goal-session-todo.md) §11 之后加一个指向本单的指针。
 - C2 《方法总结》补一节"default chat session：Agent 主动说话的落点"（§4.4 U2、U5，§4.5），§11–§12 的通知路径随之改写；`Session Input Protocol` 补 `goal` 事件；手册 `opendan_agent_dev.md` 的 Goal 段落。
 
 ### D. 场景相关（Q-S 裁决后再细化）
@@ -383,9 +383,9 @@ XLLM 结晶（架构 §9.4）面向企业客服，不作为个人 Agent 的默�
 
 ## 9. 关联
 
-- [llm_context 冻结 TODO](./llm-context-freeze-todo.md)：原则 8、F18、F20、§3.2.1
-- [简单 Work Session 全异步化](./opendan-simple-worksession-async-todo.md)：§3.3、§7（第三刀 UI）
+- [llm_context 冻结 TODO](./done/llm-context-freeze-todo.md)：原则 8、F18、F20、§3.2.1
+- [简单 Work Session 全异步化](./done/opendan-simple-worksession-async-todo.md)：§3.3、§7（第三刀 UI）
 - [plan_simple 多 Turn 化](./opendan-plan-simple-async-todo.md)：§8.5（Goal 建的 plan tick 30 秒）、§8.6（半订阅只在输入里）
-- [MessageHub worksession UI TODO](./messagehub-worksession-ui-todo.md)：Q3 `--title` 必填、Q9 Goal UI 不做、B2
-- [Goal Session TODO](./opendan-goal-session-todo.md)、[Jarvis 默认 Goal TODO](./jarvis-default-goal-session-todo.md)（P1 候选确认）、[Agent 通知 TODO](./opendan-agent-notify-todo.md)
+- [MessageHub worksession UI TODO](./done/messagehub-worksession-ui-todo.md)：Q3 `--title` 必填、Q9 Goal UI 不做、B2
+- [Goal Session TODO](./done/opendan-goal-session-todo.md)、[Jarvis 默认 Goal TODO](./jarvis-default-goal-session-todo.md)（P1 候选确认）、[Agent 通知 TODO](./done/opendan-agent-notify-todo.md)
 - [Agent 主动给用户发"消息"的方法总结](../doc/opendan/Agent%20主动给用户发_消息_的方法总结.md)：§5、§7.1、§8.2、§10–§12

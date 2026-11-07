@@ -104,7 +104,7 @@ Linux、macOS、Windows 构建依赖它，在 `buckyos-install` 之后把清单�
 `$STAGE_ROOT/buckyos/bin/paios-images/paios_images.json`。`upload-payloads` 上传 payload 时，
 在每个 `buckyos-*.tar.gz` 旁边放一份 `<payload>.paios_images.json`，供在线安装发布流程读取。
 镜像 tar 不进 payload：传统安装包由打包机按清单从 R2 取对应架构的 tar，Linux 在线安装在安装时从 R2 下载。
-清单格式和 node_daemon 的锁定模式见 `notepads/paios-image-release-todo.md` §3。
+清单格式和 node_daemon 的锁定模式见 `notepads/done/paios-image-release-todo.md` §3。
 
 我们构建的发布目标有
 

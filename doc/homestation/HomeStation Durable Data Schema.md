@@ -1,7 +1,7 @@
 # HomeStation — Durable Data Schema
 
 > **日期**：2026-10-26（Named Bucket 迁移 P1-3 / P2-2 / P3-2）
-> **服务**：`homestation`（`src/frame/homestation`），协议与 kRPC 见《HomeStation 协议与实现》；桶的模型见 `doc/arch/应用对象桶 Bucket 设计.md`，迁移规则见 `notepads/bucket-migration-todo.md` §1、§3.2。
+> **服务**：`homestation`（`src/frame/homestation`），协议与 kRPC 见《HomeStation 协议与实现》；桶的模型见 `doc/arch/应用对象桶 Bucket 设计.md`，迁移规则见 `notepads/done/bucket-migration-todo.md` §1、§3.2。
 > **兼容**：开发期，**不兼容旧数据**：旧的 `<data>/users/<user>/homestation.db`、`<data>/zone.db`、单机 `<data>/chunks/` 与 `homestation:<entry>` pin 不再读取，DV 用 `uv run src/start.py --all` 全新安装。
 
 ## 1. Overview

@@ -1,4 +1,4 @@
-//! Goal Sessions (notepads/opendan-goal-session-todo.md, phase 1): Goals and
+//! Goal Sessions (notepads/done/opendan-goal-session-todo.md, phase 1): Goals and
 //! their Goal Sessions hosted by a Supervisor with a hand-moved clock and a
 //! scripted LLM. Acceptance ids (V01…) refer to §5 of the TODO.
 

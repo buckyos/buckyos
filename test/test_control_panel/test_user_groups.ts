@@ -1,6 +1,6 @@
 /**
  * User types, system user groups and contact projection against a running Zone
- * (product/users_and_agents/UserType.md, notepads/user-type-definition-todo.md §5):
+ * (product/users_and_agents/UserType.md, notepads/done/user-type-definition-todo.md §5):
  * RBAC lines, what a Limited account can reach before and after joining a group,
  * the projected address books on both sides, read-only projected entries, and a
  * direct message to an account without a personal inbox. Everything it creates is

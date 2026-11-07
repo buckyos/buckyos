@@ -1,5 +1,5 @@
 /**
- * System Notify acceptance against a running zone (notepads/opendan-agent-notify-todo.md
+ * System Notify acceptance against a running zone (notepads/done/opendan-agent-notify-todo.md
  * V20 / V21): msg-center `notify.*` driven by the owner's session token, answers
  * committed to TaskMgr the way MessageHub does.
  *

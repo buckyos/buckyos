@@ -184,7 +184,7 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 
 给了 `turn` 时 `complete` 根据 `turn_seq / open_turn` 判断，包括失败、停止等终态；不使用只统计成功轮次的 `turns_completed`。不给 `turn` 时 `complete` = session 已 Finished 且这一页读到了已提交的末尾（`next_after == committed`）。`task_id` 来自仍保留的 `turn_tasks` 绑定，历史绑定被清理时可为 null，日志仍可读。`children` 来自 session 登记表的 `origin.created_by_call`，按 run/call 精确挂在创建调用上；子 session 的首个 turn 是其 work task 的入口。此接口沿用整个 OpenDAN 的 owner/root 读权限，单有 TaskMgr grant 不授予 worklog 权限。
 
-`session.work_cards {sid, task_id}` 返回一个 UI Turn 建出的 work session 卡片（MessageHub 回复气泡下的附属 UI，`notepads/messagehub-worksession-ui-todo.md` §3）：
+`session.work_cards {sid, task_id}` 返回一个 UI Turn 建出的 work session 卡片（MessageHub 回复气泡下的附属 UI，`notepads/done/messagehub-worksession-ui-todo.md` §3）：
 
 ```jsonc
 {

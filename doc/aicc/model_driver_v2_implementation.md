@@ -1,6 +1,6 @@
 # Model Driver v2 与逻辑树实现记录
 
-日期：2026-09-25。对应 [任务单](../../notepads/aicc-model-driver-logical-tree-todo.md)。
+日期：2026-09-25。对应 [任务单](../../notepads/done/aicc-model-driver-logical-tree-todo.md)。
 
 本次实现 `功能 -> 厂商规格 -> 家族:effort -> 物理 instance`。全部 11 份 builtin Model Driver 使用 v2；OpenAI 保持已审阅的原文件，其余 10 份迁移。仅加载真实厂商 JSON 即可完成 catalog 校验、完整 builtin 树和目录查询，Provider Rules、Known Providers 与库存均可为空。
 

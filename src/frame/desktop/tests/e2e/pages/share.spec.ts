@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { openFromAllApps } from '../fixtures/desktop'
 
-/** ShareContentMgr (notepads/share-content-mgr-tech-design-todo.md §6): system share dialog + My Content, mock data. */
+/** ShareContentMgr (notepads/done/share-content-mgr-tech-design-todo.md §6): system share dialog + My Content, mock data. */
 
 async function openFiles(page: Page) {
   await page.setViewportSize({ width: 1440, height: 1000 })

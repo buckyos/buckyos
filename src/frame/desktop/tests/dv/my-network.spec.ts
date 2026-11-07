@@ -3,7 +3,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
 
 /**
  * My Network against a running zone with the msg-center, homestation and Desktop of this tree
- * (notepads/my-network-upgrade-todo.md §6.9):
+ * (notepads/done/my-network-upgrade-todo.md §6.9):
  *
  *   BUCKYOS_UI_DV_BASE_URL=https://test.buckyos.io BUCKYOS_TEST_ADMIN_PASSWORD=bucky2025 \
  *     pnpm exec playwright test --config=playwright.dv.config.ts my-network

@@ -61,7 +61,7 @@ Nothing is copied: the FileObject the browser uploaded is the asset (`object_id`
 
 Directory roots and descendants become `buckyos.container` folders, and files become AssetRefs in one normal business commit. A canvas import also creates corresponding groups and asset cells. Online imports may be cancelled; after failure or refresh, reselecting the source uses NDM deduplication. There is no offline upload queue or automatic recovery of browser File handles. FileList-based folder pickers cannot enumerate empty folders; callers with an explicit directory tree can preserve them through the SDK. draw.io and workspace ZIP retain their format validation, while image replacement and generated snapshots use the same asset stage/commit semantics.
 
-Table data (表格数据导入, `notepads/aiworkspace-table-import-todo.md`) is imported on the client: [import-table/](import-table/README.md) turns pasted HTML / TSV, CSV, xlsx and SQLite into a TableSource (header, field names, inferred types including `currency`, values in their stored form) and commits `entity.create` + `table.insert_records` (≤ 500 records each) in commits of at most 20 000 rows and 6 MiB — the service takes at most `Limits.max_commit_bytes` (8 MiB) per request. The service adds nothing for it: every value is checked by the usual write rules. The Desktop's wizard and the Agent command `import_table` (src/tools/buckyos-agent) run the same module.
+Table data (表格数据导入, `notepads/done/aiworkspace-table-import-todo.md`) is imported on the client: [import-table/](import-table/README.md) turns pasted HTML / TSV, CSV, xlsx and SQLite into a TableSource (header, field names, inferred types including `currency`, values in their stored form) and commits `entity.create` + `table.insert_records` (≤ 500 records each) in commits of at most 20 000 rows and 6 MiB — the service takes at most `Limits.max_commit_bytes` (8 MiB) per request. The service adds nothing for it: every value is checked by the usual write rules. The Desktop's wizard and the Agent command `import_table` (src/tools/buckyos-agent) run the same module.
 
 Bytes the service produces itself (Source fetches, wish results and program sources, the assets a package brings, test fixtures) are staged by `Workspace::stage_asset`: stored as the single-chunk FileObject of `canonical::file_object` and bound the same way. A workspace package is uploaded with `bind` into the importer's own `exports` bucket and imported with `ws.import { bucket_id, key, semantics, replace? }`; a successful import consumes the package (its binding goes), so the same upload cannot be replayed onto newer work. A restore journal recovers interruption between backing up the old directory and promoting the new one. Restore holds the workspace writer lock while rechecking permission, copying ACLs and replacing its state; queued writers observe the new epoch; the restored Workspace keeps its owner (whose buckets hold its objects). Final asset submission rechecks current workspace permission.
 
@@ -174,7 +174,7 @@ paths and Viewports and nothing else; neither type is allowed anywhere else (`pl
   on disk. A prompter authenticates with `params.prompter_token` instead of a session token, and only for
   `show.command`, `show.watch` and `show.notes` of its show.
 
-## Presentation sessions (第四期规划, `notepads/aiworkspace-phase4-todo.md`)
+## Presentation sessions (第四期规划, `notepads/done/aiworkspace-phase4-todo.md`)
 
 A **session** is a public presentation room of one Workspace's presentation path: a row of the service's registry
 (`sessions.sqlite`: state, owner, presenter, policy, baseline, archive, links, participants, posts) and a **run
@@ -297,7 +297,7 @@ It may carry `title` (the label text), `config` (appearance, ≤ 64 KiB, not ins
 - **Outline**: a connector's envelope carries `connector: { start, end, flip?, route?, controls?, label? }`
   (`start` / `end` always present, `null` when free); `config` is read with `doc.read`.
 
-## Block-controls (脑图方案, `notepads/aiworkspace-mindmap-todo.md` M0)
+## Block-controls (脑图方案, `notepads/done/aiworkspace-mindmap-todo.md` M0)
 
 Design: [脑图对象方案讨论](<../../../doc/workspace/脑图对象方案讨论.md>) v0.4. A **control** is a BlockTree container
 whose `kind` is a control id (`mindmap`, and `composite` — the host of every composite extension control, see
@@ -347,7 +347,7 @@ generated into `aiws/controls.json` by `deno run -A tools/build_catalog.ts`). La
 `fixtures/mindmap/layout/*.json` (`MINDMAP_REGEN=1 deno test -A` after an intended change; the formula is not
 versioned, R18); outline cases shared with the service's parser: `fixtures/mindmap/outlines.json`.
 
-## Extension controls (扩展控件 P0 + P1, `notepads/aiworkspace-extension-p0-todo.md`, `notepads/aiworkspace-extension-p1-todo.md`)
+## Extension controls (扩展控件 P0 + P1, `notepads/done/aiworkspace-extension-p0-todo.md`, `notepads/done/aiworkspace-extension-p1-todo.md`)
 
 Design: [扩展实现思路](<../../../doc/workspace/BuckyOS AI Workspace 扩展实现思路.md>) v0.9 (D6 edit → build, A1–A7,
 Q15–Q25). A **control** of this section is a Block definition (`buckyos.block-def`) whose source lives in its
@@ -595,7 +595,7 @@ Promise<string>`, a blob URL of a file the definition lists in `assets` (read by
 with the session, revoked when the Block unmounts; any other name is refused). A control checks
 `typeof aiws.asset === 'function'` and keeps working on hosts without it. Events and `parent` are host API 3 (next section).
 
-## Extension controls P2 / P3 (`notepads/aiworkspace-extension-p2p3-todo.md`, Q26–Q33)
+## Extension controls P2 / P3 (`notepads/done/aiworkspace-extension-p2p3-todo.md`, Q26–Q33)
 
 One version step for both phases: `manifest_version` **3** (`events`, the declarative `button`, composite `events`, a
 non-empty `workspace_templates`), HTML host API **3** (`aiws.emit`, `aiws.createBlock { parent, slot }`,

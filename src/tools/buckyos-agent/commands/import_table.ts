@@ -1,5 +1,5 @@
 // import_table — a CSV / TSV / xlsx / SQLite file → AI Workspace TableSources
-// Doc: notepads/aiworkspace-table-import-todo.md §8; the importer is the one the Desktop's wizard runs
+// Doc: notepads/done/aiworkspace-table-import-todo.md §8; the importer is the one the Desktop's wizard runs
 // (src/frame/aiworkspace/import-table, `@table/` in deno.json): read the file, infer header and field types
 // (numbers, decimals, percentages, dates, money with its currency, single-select…), shape every value, commit.
 // Steps: 1) argv  2) read the file into grids  3) plan (the wizard's defaults)  4) --dry-run: print the plan

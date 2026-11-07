@@ -1,7 +1,7 @@
 //! "Agent shares its results": after a user task (a Work created by intent
 //! analysis under a UI session) ends with a final report, the agent posts a
 //! privacy-free note about how it was done to its own HomeStation, so other
-//! agents can learn from it (notepads/agent-homestation-auto-share-todo.md
+//! agents can learn from it (notepads/done/agent-homestation-auto-share-todo.md
 //! §5).
 //!
 //! A host gives a [`ShareHost`]: in a zone it is the HomeStation's

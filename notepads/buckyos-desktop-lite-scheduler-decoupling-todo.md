@@ -16,7 +16,7 @@ Lite 应通过安装配置、节点范围、应用创建入口和节点执行能
 - 单 Agent、用户应用类型和预置应用许可等产品策略放在 control-panel 等产品入口。原生进程的加载与生命周期由 node-daemon/AppLoader 负责。
 - 保持现有 Lite 能力：基础服务、Desktop、预置脚本应用、一个原生 Agent、static web 安装/更新/卸载，以及 Agent Daemon 接入；不能靠删掉当前功能实现调度器回退。
 
-本文替代 [Lite 实施 TODO](buckyos-desktop-lite-todo.md) 中要求调度器重复校验产品策略、同步产品档位及按 Lite 强制运行方式的设计；其它产品行为继续沿用。通用原生 Agent 能力见 [原生 Agent Service TODO](opendan-native-agent-service-todo.md)。
+本文替代 [Lite 实施 TODO](buckyos-desktop-lite-todo.md) 中要求调度器重复校验产品策略、同步产品档位及按 Lite 强制运行方式的设计；其它产品行为继续沿用。通用原生 Agent 能力见 [原生 Agent Service TODO](done/opendan-native-agent-service-todo.md)。
 
 ## 2. 已定裁决（2026-10-29）
 

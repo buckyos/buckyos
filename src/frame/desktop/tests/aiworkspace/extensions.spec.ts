@@ -1,4 +1,4 @@
-/* Extension controls (notepads/aiworkspace-extension-p0-todo.md M5, p1-todo.md M5): a control made from a skeleton in
+/* Extension controls (notepads/done/aiworkspace-extension-p0-todo.md M5, p1-todo.md M5): a control made from a skeleton in
  * alice's home folder and built into the workspace, an instance initialized with a named binding, a source change
  * rebuilt into the instance, a broken source refused while the instance keeps the last build, the export to the library
  * and to a bundle folder, and the control added from the library into a second workspace; composite controls inserted,
@@ -113,7 +113,7 @@ test('a control from home: build, an instance with a binding, rebuild, a refused
   expect(imported.provenance_pkg).toBe('e2e-pack')
 })
 
-// ---- composite controls (notepads/aiworkspace-extension-p1-todo.md M5)
+// ---- composite controls (notepads/done/aiworkspace-extension-p1-todo.md M5)
 
 type J = Record<string, unknown>
 const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64')
@@ -308,7 +308,7 @@ test('aiws.asset: an HTML control takes a file of its assets as a blob URL (hell
   expect(refused).toContain('behavior.js')
 })
 
-// ---- events, run mode, parent, upgrades, templates (notepads/aiworkspace-extension-p2p3-todo.md M2–M5)
+// ---- events, run mode, parent, upgrades, templates (notepads/done/aiworkspace-extension-p2p3-todo.md M2–M5)
 
 const TASK = (status = 'open') => ({ op: 'entity.create', entity_id: 'task', type_id: 'buckyos.record', parent_id: 'data', order_key: 't', name: 'task',
   payload: { schema: { properties: [{ key: 'title', name: 'title', type: 'text' }, { key: 'status', name: 'status', type: 'text' }] }, props: { title: 'Write tests', status } } })

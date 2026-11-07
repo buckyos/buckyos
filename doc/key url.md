@@ -6,7 +6,7 @@
 1. **URL 规范** —— 系统里所有 URL 必须遵守的协议（scheme）约定、host 段规则、缩写展开和转换边界。这是唯一规范源：Prompt、SDK、网关、Agent 工具和 RBAC 都引用这里，不各自另猜一套。
 2. **稳定 URL 清单** —— 会被反向使用（外链）、系统承诺协议级稳定的具体 URL。
 
-设计裁决记录见 [notepads/agent-object-url-todo.md](../notepads/agent-object-url-todo.md) §1.5（D1–D12）；本文是其定稿结果，不再重复讨论过程。
+设计裁决记录见 [notepads/done/agent-object-url-todo.md](../notepads/done/agent-object-url-todo.md) §1.5（D1–D12）；本文是其定稿结果，不再重复讨论过程。
 
 ---
 

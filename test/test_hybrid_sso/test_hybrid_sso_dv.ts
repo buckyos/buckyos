@@ -1,5 +1,5 @@
 /**
- * Hybrid SSO acceptance against a running Zone (notepads/hybrid-sso-implementation-todo.md
+ * Hybrid SSO acceptance against a running Zone (notepads/done/hybrid-sso-implementation-todo.md
  * SSO-14). Raw kRPC so the `code` / `data` denial fields are read off the wire.
  *
  *   deno run --allow-net --allow-env --unsafely-ignore-certificate-errors test_hybrid_sso_dv.ts

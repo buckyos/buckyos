@@ -791,7 +791,7 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 
 展开按钮显示本 Turn 的 task tree（节点状态、名称、简短活动、等待原因，逐层展开、分页加载）。task_id 不出现在气泡里。
 
-**work session 卡片（`conversation/worksessions/`，2026-11-02，`notepads/messagehub-worksession-ui-todo.md`）**
+**work session 卡片（`conversation/worksessions/`，2026-11-02，`notepads/done/messagehub-worksession-ui-todo.md`）**
 
 UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`renderers.tsx` 的任务区位置渲染 `MessageAgentWork`，有卡片时显示卡片树，否则仍是上面的 `MessageTaskArea`。Q/A 列表位置不变。
 
@@ -821,7 +821,7 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
 
 #### 3.5.5 Agent 提问：`agent_ask`、问答折叠与会话输入态（2026-10-11）
 
-来源：`notepads/opendan-analyze-user-intent-todo.md` §3.8—§3.9。一次 Turn 里 Agent 可以反问用户，问答都在同一个 Turn 内：
+来源：`notepads/done/opendan-analyze-user-intent-todo.md` §3.8—§3.9。一次 Turn 里 Agent 可以反问用户，问答都在同一个 Turn 内：
 
 ```text
 [用户]  帮我把这个项目的文档整理一下
@@ -869,7 +869,7 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
 
 #### 3.5.6 系统通知：notify 投影、“系统通知”实体与 `?notify=` 深链（2026-10-11）
 
-来源：`notepads/opendan-agent-notify-todo.md` §3.1、§3.3、§3.4（N7）；接口契约 `doc/message_hub/System Notify.md`、`buckyos-api/src/msg_notify.rs`。
+来源：`notepads/done/opendan-agent-notify-todo.md` §3.1、§3.3、§3.4（N7）；接口契约 `doc/message_hub/System Notify.md`、`buckyos-api/src/msg_notify.rs`。
 
 **消息与状态**
 
@@ -996,7 +996,7 @@ Reader 的三种实现：
 
 ### 3.7 Self-host Group v2（2026-10-01 接入）
 
-依据 `doc/message_hub/Self-Host-Groupv2.md`、`src/frame/msg_center/doc/group-v2-backend.md` 与 2026-10-01 的「取消成员 proof」契约（`notepads/messagehub-group-v2-todo.md` §2.2）。
+依据 `doc/message_hub/Self-Host-Groupv2.md`、`src/frame/msg_center/doc/group-v2-backend.md` 与 2026-10-01 的「取消成员 proof」契约（`notepads/done/messagehub-group-v2-todo.md` §2.2）。
 纯规则在 `groupModel.ts`（通知解析、错误码、邀请链接、编辑窗口）和 `conversation/history/relations.ts`（消息关系折叠）；
 store 接口为 `group / groupStatus / ensureGroup / groupSession / createGroup / updateGroupProfile / inviteGroupMembers / removeGroupMember / approveGroupMember / rejectGroupMember / updateGroupMemberRole / moderateGroupMember / transferGroupOwner / cancelGroupOwnerTransfer / acceptGroupOwnerTransfer / createGroupInviteLink / revokeGroupInviteLink / requestGroupJoin / leaveGroup / deleteGroup / groupInvitation / acceptGroupInvitation / manageGroupSession / groupSessionMembers / ensureGroupSessionMembers / addGroupSessionMembers / removeGroupSessionMember / leaveGroupSession / inviteGroupSessionGuest / acceptGroupSessionInvitation / readReceipt`。
 

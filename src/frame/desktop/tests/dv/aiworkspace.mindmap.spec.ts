@@ -1,4 +1,4 @@
-/* Mind maps on a real Zone (notepads/aiworkspace-mindmap-todo.md, doc/workspace/脑图实施记录与验收报告.md): the M0
+/* Mind maps on a real Zone (notepads/done/aiworkspace-mindmap-todo.md, doc/workspace/脑图实施记录与验收报告.md): the M0
  * fixture committed with protocol 1.1 through the gateway and drawn by the Desktop, folding as each reader's own
  * state across two real accounts (and across a reload), a re-hang seen live by the other reader, a map built with
  * the keyboard, control.import / control.export, and a wish the real model answers with a mind map. */

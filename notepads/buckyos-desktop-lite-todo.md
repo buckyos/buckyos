@@ -25,8 +25,8 @@
 
 ## 2. 与已有工作的关系
 
-- [无 Docker 可行性研究](buckyos-desktop-without-docker-research.md)、[原研究 TODO](buckyos-desktop-without-docker-todo.md) 用作背景。本文确定的“预置脚本 + 可扩展静态网页 + 单 Agent”取代旧档位中的候选范围，不再把 D2 / 无应用作为最终交付目标。
-- [原生 Agent Service TODO](opendan-native-agent-service-todo.md) 已记录在途实现：复用 `AppRunMode::Native`、`native_agent_node`、`RuntimeType::NativeAgent` 和 `OPENDAN_SERVICE_MODE=native`。这些机制不是 Lite 专属，也不等于 Lite 已实现。
+- [无 Docker 可行性研究](done/buckyos-desktop-without-docker-research.md)、[原研究 TODO](done/buckyos-desktop-without-docker-todo.md) 用作背景。本文确定的“预置脚本 + 可扩展静态网页 + 单 Agent”取代旧档位中的候选范围，不再把 D2 / 无应用作为最终交付目标。
+- [原生 Agent Service TODO](done/opendan-native-agent-service-todo.md) 已记录在途实现：复用 `AppRunMode::Native`、`native_agent_node`、`RuntimeType::NativeAgent` 和 `OPENDAN_SERVICE_MODE=native`。这些机制不是 Lite 专属，也不等于 Lite 已实现。
 - [标准工具与 Session Runtime TODO](opendan-primary-runtime-tools-todo.md) 已有标准工具清单、`opendan install-agent-tools`、宿主工具目录和 Session 上下文。以当前源码清单为准，不照搬旧研究中“所有镜像工具都要带”的建议。
 - macOS 的运行身份和安装启动链依赖 [macOS Desktop 安装与运行 TODO](macos-desktop-install-runtime-todo.md)。Lite 需要该用户会话方案落地，不另设计一套 root 常驻启动链。
 

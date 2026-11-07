@@ -1,4 +1,4 @@
-//! "Agent shares its results" (notepads/agent-homestation-auto-share-todo.md
+//! "Agent shares its results" (notepads/done/agent-homestation-auto-share-todo.md
 //! §5): a user task — a Work created under a UI session with `--report
 //! final` — that ends with a final report becomes one post of the agent,
 //! written by the model without private details; nothing else is shared.

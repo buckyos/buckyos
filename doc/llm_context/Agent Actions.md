@@ -7,7 +7,7 @@
 > 3. `<report>` 跟 `<next_behavior>` 的关系、`last_report` 的生命周期
 > 4. 从旧版 `<action tool="...">` 协议迁移过来需要做什么
 
-**实施状态（2026-10-10）**：XML parser（`agent_tool::xllm::XllmActionParser`）、运行循环、xllm 接手和 Session 宿主已实现 `<report end="true">` 完成协议；`<next_behavior>` 保留切换和等待语义，END / done 被拒绝。协议与恢复规则见 §2.2，验收记录见 [Context Switch TODO](../../notepads/llm-context-switch-support-todo.md) 的 H4。
+**实施状态（2026-10-10）**：XML parser（`agent_tool::xllm::XllmActionParser`）、运行循环、xllm 接手和 Session 宿主已实现 `<report end="true">` 完成协议；`<next_behavior>` 保留切换和等待语义，END / done 被拒绝。协议与恢复规则见 §2.2，验收记录见 [Context Switch TODO](../../notepads/done/llm-context-switch-support-todo.md) 的 H4。
 
 ---
 

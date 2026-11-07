@@ -2,7 +2,7 @@
 
 日期：2026-10-17
 
-状态：v0.3，“已定”各项与待设计项 1 已实施（2026-10-17，见内置 cmd_skills TODO §10），其余待设计。来源：[Jarvis UI Session 提示词改造 TODO](jarvis-chat-prompt-todo.md) §8；review 原话“目前机制上还没有 cmd_skill，要先写个 todo”。实施任务在 [内置 cmd_skills TODO](opendan-builtin-cmd-skills-todo.md) §3（I01–I04、I08）。
+状态：v0.3，“已定”各项与待设计项 1 已实施（2026-10-17，见内置 cmd_skills TODO §10），其余待设计。来源：[Jarvis UI Session 提示词改造 TODO](done/jarvis-chat-prompt-todo.md) §8；review 原话“目前机制上还没有 cmd_skill，要先写个 todo”。实施任务在 [内置 cmd_skills TODO](opendan-builtin-cmd-skills-todo.md) §3（I01–I04、I08）。
 
 ## 已有（v0，2026-10-17 实施；同日 v1 已改为列表，见下）
 

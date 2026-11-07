@@ -7,7 +7,7 @@ assemble  the manifest from fragments (freshly built or inherited from the R2 po
 validate  structure, optionally tar URLs (HEAD) and bundled tar files
 validate-fragment  one images.<name> section, e.g. the R2 pointer
 
-Format: notepads/paios-image-release-todo.md §3.2. Rust reader:
+Format: notepads/done/paios-image-release-todo.md §3.2. Rust reader:
 src/kernel/node_daemon/src/paios_images.rs (same fixture in testdata/).
 """
 import argparse

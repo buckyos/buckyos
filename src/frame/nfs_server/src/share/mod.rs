@@ -1,4 +1,4 @@
-//! ShareContentMgr inside nfs-server (notepads/share-content-mgr-tech-design-todo.md):
+//! ShareContentMgr inside nfs-server (notepads/done/share-content-mgr-tech-design-todo.md):
 //! snapshot shares of files/folders, `share.<zone>/s/{token}` links, app
 //! handoffs (MessageHub, HomeStation), audit, access statistics and the Public
 //! (`srv/publish`) projection.

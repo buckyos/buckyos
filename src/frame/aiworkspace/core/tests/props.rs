@@ -1,4 +1,4 @@
-//! Extension controls P2 (notepads/aiworkspace-extension-p2p3-todo.md M1, Q28 / Q29): per-property writes of a Block's
+//! Extension controls P2 (notepads/done/aiworkspace-extension-p2p3-todo.md M1, Q28 / Q29): per-property writes of a Block's
 //! `config` / `bindings` / `on` (`entity.set_props`, one version cell `p:<key>.<name>` each), the read-set precondition
 //! on the definition an instance follows, and the shapes of `on` and of a definition's `events`.
 

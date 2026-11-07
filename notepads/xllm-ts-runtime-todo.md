@@ -2,7 +2,7 @@
 
 日期：2026-10-31
 
-状态：**待开工。** 2026-11-01 按 [llm_context 冻结 TODO](./llm-context-freeze-todo.md) 的落地结果回改了 L2 行与 Q1 / Q3 / Q7 / Q8 / Q9 (e) / T4-2 / T4-3 (ii)（waist 不再有挂起原语、单一 `CheckpointHook`、快照 v6、RunRecord v7 无 `inflight[]`、等待预算 `task_wait_ms`）。2026-10-31 用户裁决：xllm 是整个 Agent 体系里的独立工具，后端是命令行 / SDK，浏览器环境下应是一个本地 JS Worker；这件事非常通用（按 xllm 的抽象，还涉及浏览器下如何构造 runtime 的长期架构），**从 [许愿格浏览器优先 TODO](./aiworkspace-wish-browser-first-todo.md) 中抽出来独立做、独立验证，AiWorkspace 之后再集成**。
+状态：**待开工。** 2026-11-01 按 [llm_context 冻结 TODO](./done/llm-context-freeze-todo.md) 的落地结果回改了 L2 行与 Q1 / Q3 / Q7 / Q8 / Q9 (e) / T4-2 / T4-3 (ii)（waist 不再有挂起原语、单一 `CheckpointHook`、快照 v6、RunRecord v7 无 `inflight[]`、等待预算 `task_wait_ms`）。2026-10-31 用户裁决：xllm 是整个 Agent 体系里的独立工具，后端是命令行 / SDK，浏览器环境下应是一个本地 JS Worker；这件事非常通用（按 xllm 的抽象，还涉及浏览器下如何构造 runtime 的长期架构），**从 [许愿格浏览器优先 TODO](./aiworkspace-wish-browser-first-todo.md) 中抽出来独立做、独立验证，AiWorkspace 之后再集成**。
 
 依据：
 

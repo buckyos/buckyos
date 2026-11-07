@@ -212,7 +212,7 @@ child 的 Step 不写回调用方的 context;Session worklog 记录 child 的过
 
 交接点(run.json 的 `handover`)随快照先落盘,再提交 state;崩溃后 reconcile(`runner/reconcile.rs::redo_transfer`)恰好补交一次,state 用 `LiveRun.handover_at_ms` / `ProcessFrame.handover_at_ms` 记住已提交的交接。
 
-UI Stop 后补充输入(H3)已于 2026-10-10 暂缓,不纳入当前实现与验收,不适用于 Work;终态 Work 不 reopen,后续修改创建新 Task / 新 Work。`report` 工具与可选 `explicit_report` 完成策略(H4)已实现。XML 使用 `<report end="true">` 请求结束，普通 report 只更新报告；最终报告与所有动作、非空 next_behavior 互斥，END/done 进入纠错。见[Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md)。
+UI Stop 后补充输入(H3)已于 2026-10-10 暂缓,不纳入当前实现与验收,不适用于 Work;终态 Work 不 reopen,后续修改创建新 Task / 新 Work。`report` 工具与可选 `explicit_report` 完成策略(H4)已实现。XML 使用 `<report end="true">` 请求结束，普通 report 只更新报告；最终报告与所有动作、非空 next_behavior 互斥，END/done 进入纠错。见[Context 调度支持 TODO](../../notepads/done/llm-context-switch-support-todo.md)。
 
 > 旧 opendan Runtime(`src/frame/opendan/src/agent_session.rs` 的 `switch_behavior` / `apply_switch_*` / `handle_process_end`)是另一套实现:按 session class 的 `switch_mode` 切换,用 `apply_overrides_to_snapshot` 替换 request 侧(system prompt、tool policy 等),挂起的 process 快照存成 `.meta/behavior_<entry>.snap`,child `END` 时把 report 写成 parent `step_history` 里的 `<history_input source="process_return:...">`,independent 再入时 `reset_tool_iterations` / `reset_errors`,`END` 弹回上一 process、栈空才结束。这些是旧 Runtime 的私有 helper 和磁盘布局,不是新设计接口,待下一阶段 opendan 按 libopendan 的抽象重构接入。
 

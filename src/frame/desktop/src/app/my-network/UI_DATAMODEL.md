@@ -2,7 +2,7 @@
 
 - 文档版本：v0.2（2026-10-17，M6：消息请求按会话、等待审批的群、从请求打开 MessageHub 会话）；v0.1（M0/M5）
 - 模块位置：`src/frame/desktop/src/app/my-network/`
-- 上游：[My Network PRD](../../../../../../product/my_networks/My_Network_PRD.md) §5–§11、[升级 TODO](../../../../../../notepads/my-network-upgrade-todo.md) §3.5、§3.6、M5
+- 上游：[My Network PRD](../../../../../../product/my_networks/My_Network_PRD.md) §5–§11、[升级 TODO](../../../../../../notepads/done/my-network-upgrade-todo.md) §3.5、§3.6、M5
 - 关系数据、显示规则、对话框与错误文案都来自公共组件，见 [`components/network/UI_DATAMODEL.md`](../../components/network/UI_DATAMODEL.md)；本文只写 My Network 独有的视图。
 
 ## 1. 结构

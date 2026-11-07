@@ -1,4 +1,4 @@
-/* Mind maps (doc/workspace/脑图对象方案讨论.md; notepads/aiworkspace-mindmap-todo.md M1–M2): the M0 fixture
+/* Mind maps (doc/workspace/脑图对象方案讨论.md; notepads/done/aiworkspace-mindmap-todo.md M1–M2): the M0 fixture
  * (src/frame/aiworkspace/fixtures/mindmap/commits.json) drawn by the shared layout — four directions, a pinned node,
  * a nested control, a non-text node — folding as the reader's own state, building a map with the keyboard, dragging
  * nodes (re-hang, pin, refused outside), copy and paste of branches, a map on a flow page and an unknown control kind

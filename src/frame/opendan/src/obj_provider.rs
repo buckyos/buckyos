@@ -1,4 +1,4 @@
-//! DID Object Provider of one Agent (notepads/agent-object-url-todo.md §4.1, D5):
+//! DID Object Provider of one Agent (notepads/done/agent-object-url-todo.md §4.1, D5):
 //! `obj://<agent-id>`, `/sessions[/<sid>]`, `/workspaces[/<ws-id>]`, `/goals[/<gid>]`,
 //! `/artifacts[/<aid>]`, served at `/kapi/<agent_id>/obj/...` (the loader's
 //! `/kapi/opendan/obj` and `/api/opendan/obj` reach the same objects). Every read

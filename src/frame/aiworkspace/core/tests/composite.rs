@@ -1,4 +1,4 @@
-//! Extension controls P1 (notepads/aiworkspace-extension-p1-todo.md M2): composite definitions and their instances
+//! Extension controls P1 (notepads/done/aiworkspace-extension-p1-todo.md M2): composite definitions and their instances
 //! (`buckyos.container { kind: composite, def_ref }` with slotted children), definition → definition dependencies
 //! (`def_dep`, `REFERENCE_CYCLE`, only builds write `deps`), and the split of the validators (Q15): replay runs the
 //! primitive and reference checks only.

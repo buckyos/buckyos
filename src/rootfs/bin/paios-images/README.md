@@ -9,4 +9,4 @@ Development installs leave this directory without a manifest, so node_daemon
 uses the local `<repo>:latest-<arch>` images (`etc/devenv.json` can override the
 repo). Get them with `uv run build.py`, `docker pull`, or `./build_aios --local-test`.
 
-Format and pipeline: `notepads/paios-image-release-todo.md` §3.2.
+Format and pipeline: `notepads/done/paios-image-release-todo.md` §3.2.

@@ -97,7 +97,7 @@ ui/
                           tools.tsx (near toolbar, context menu, inspector); pdfImport.ts + ImportPdfDialog.tsx +
                           pdfImportRequest.ts (PDF pages → a new canvas with a presentation path, doc/workspace/BuckyOS
                           AI Workspace PDF 导入与放映方案讨论.md; the converter is ../aiworkspace/import-pdf, `@pdf/*`)
-  import/                 table data import (notepads/aiworkspace-table-import-todo.md; the importer is
+  import/                 table data import (notepads/done/aiworkspace-table-import-todo.md; the importer is
                           ../aiworkspace/import-table, `@table/*`): tableImportRequest.ts (request sink: source, ask /
                           wizard, canvas or data folder), TableImportDialog.tsx (ask step, one-screen wizard, progress,
                           report; mounted at the shell so the data tree can open it), tableImport.ts (plans checked by
@@ -416,7 +416,7 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   keeps only bindings inside the copied set; flow pages neither show nor accept lines; a line drawn to blank
   canvas offers the "next object" (note, text, shape, wish) bound to its end.
 
-## Block-controls and mind maps (doc/workspace/脑图对象方案讨论.md; notepads/aiworkspace-mindmap-todo.md)
+## Block-controls and mind maps (doc/workspace/脑图对象方案讨论.md; notepads/done/aiworkspace-mindmap-todo.md)
 
 - **Registry** (`ui/controls/registry.ts`): a `ContainerDefinition` per control kind — attributes (`configSchema`),
   child rules, the named layout (`layout.solve`, from the shared `@controls/*` module), the `Chrome` drawn in the
@@ -471,7 +471,7 @@ follow Cell read permissions and travel through export/import and offline prepar
 normal asset-size limit). `aiws.snapshot()` reports failed saves and refuses writes in view mode. HTML
 startup timeouts, crashes and disposal reject waiting calls and release the iframe; retry creates a new runtime.
 
-## Extension controls (notepads/aiworkspace-extension-p0-todo.md, p1-todo.md; backend README “Extension controls”)
+## Extension controls (notepads/done/aiworkspace-extension-p0-todo.md, p1-todo.md; backend README “Extension controls”)
 
 A control is a `buckyos.block-def` built from a source folder in the user's home (`component.json` + entry files;
 sub-folders allowed, file names are relative paths) by `ext.build`; the Desktop drives the same code as the CLI
@@ -533,7 +533,7 @@ sent by reference (`assetUploader`, Q22).
 - A flow page shows a composite as a group (its Blocks in order; Blocks are added on the canvas). Phones show
   instances read-only and do not offer “Define as control…”.
 
-### P2 / P3 (notepads/aiworkspace-extension-p2p3-todo.md; backend README “Extension controls P2 / P3”)
+### P2 / P3 (notepads/done/aiworkspace-extension-p2p3-todo.md; backend README “Extension controls P2 / P3”)
 
 - **Per-property writes** (Q28/Q29, `ui/blocks/ops.ts` `submitProps` / `setCellConfig`): the instance Inspector
   (`ui/controls/composite/Inspector.tsx` `InstanceInspector`, for composite containers and control Cells), the

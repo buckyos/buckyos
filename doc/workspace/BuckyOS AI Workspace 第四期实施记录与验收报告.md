@@ -1,6 +1,6 @@
 # BuckyOS AI Workspace 第四期：实施记录与验收报告
 
-> 日期：2026-10-30。对应设计：[第四期规划](<BuckyOS AI Workspace 第四期规划.md>) v0.3（§12 Q01–Q24 已定），实施 TODO 与自定裁决见 [notepads/aiworkspace-phase4-todo.md](<../../notepads/aiworkspace-phase4-todo.md>)（§1 I1–I13）。
+> 日期：2026-10-30。对应设计：[第四期规划](<BuckyOS AI Workspace 第四期规划.md>) v0.3（§12 Q01–Q24 已定），实施 TODO 与自定裁决见 [notepads/done/aiworkspace-phase4-todo.md](<../../notepads/done/aiworkspace-phase4-todo.md>)（§1 I1–I13）。
 >
 > 环境：e2e 用独立运行的 `aiworkspace` 服务（调试构建）＋独立 nfs-server ＋ Vite 开发服务器，Chromium（Playwright）；语音用 str0m 充当浏览器对端，以及 Chromium 的假麦克风。DV 在本机单 OOD Zone `test.buckyos.io` 上运行（release 构建的服务与 `pnpm build` 的 Desktop 部署到 `/opt/buckyos/bin/`，经 cyfs-gateway 访问），浏览器与 OOD 在同一台机器（见 §5、§6）。工作区在 HEAD `e9a19faa1` 之上，改动未提交。
 

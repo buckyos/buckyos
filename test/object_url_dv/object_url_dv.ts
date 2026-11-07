@@ -1,5 +1,5 @@
 /**
- * Object URL / DID Object Provider DV (notepads/agent-object-url-todo.md §6 第 2 段, §7):
+ * Object URL / DID Object Provider DV (notepads/done/agent-object-url-todo.md §6 第 2 段, §7):
  * through the real Zone gateway, the Providers at `/kapi/<host>/obj/...` answer Cards,
  * Profiles, properties and IndexTrait queries with the caller's own session, and refuse
  * other users exactly like the underlying kRPC / ACL.
