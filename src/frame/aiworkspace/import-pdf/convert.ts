@@ -10,8 +10,8 @@
  * The raster never holds what became an object: the host renders the page without the operators in `skip`. */
 
 import { ImportReport, type PagePlan, type PlanImage, type PlanItem } from '../import-drawio/convert.ts'
-import { normalizeRotation, type Rect } from '../import-drawio/geometry.ts'
-import type { Json, PdfPage } from './data.ts'
+import { normalizeRotation, rotatedBounds, type Rect } from '../import-drawio/geometry.ts'
+import { OPS, type Json, type PdfPage } from './data.ts'
 import { apply, interpret, mul, scaleOf, type ImageMark, type Mat } from './interpret.ts'
 import { groupText, readStruct, type Paragraph } from './text.ts'
 import { canJoin, candidateOf, intersect, joinGroup, openGroup, primitiveObject, svgObject, type Candidate, type ShapeObject, type SvgGroup } from './vector.ts'
@@ -77,6 +77,30 @@ export function worldOf(page: PdfPage): { world: Mat; scale: number } {
 interface Placed { order: number; item: PlanItem; image?: PlanImage; kind: 'text' | 'image' | 'shape' }
 
 function textItem(p: Paragraph, key: string, parent: string, source: Record<string, Json>): PlanItem {
+  const styleUse = new Map<string, number>()
+  const fragments = p.layout.spans.map(span => {
+    const position = { text: span.text, x: r2(span.x), y: r2(span.y), width: Math.max(0.01, r2(span.width)), size: Math.max(0.01, r2(span.size)) }
+    if (!span.style) return position
+    const style = { ...span.style, alpha: r2(span.style.alpha) }
+    const key = JSON.stringify(style)
+    styleUse.set(key, (styleUse.get(key) ?? 0) + 1)
+    return { ...position, style }
+  })
+  const styles: Record<string, Json>[] = []
+  const styleIndexes = new Map<string, number>()
+  const spans = fragments.map(fragment => {
+    if (!('style' in fragment)) return fragment
+    const { style, ...position } = fragment
+    const key = JSON.stringify(style)
+    if (styleUse.get(key) === 1) return fragment
+    let styleIndex = styleIndexes.get(key)
+    if (styleIndex === undefined) {
+      styleIndex = styles.length
+      styleIndexes.set(key, styleIndex)
+      styles.push(style)
+    }
+    return { ...position, styleIndex }
+  })
   const config: Record<string, Json> = {
     shape: 'text', fill: 'none', stroke: 'none', text: p.text, font_size: r2(p.fontSize), font_color: p.style.color, align: p.align, valign: 'top', wrap: false,
     ...(p.style.bold ? { bold: true } : {}), ...(p.style.italic ? { italic: true } : {}), ...(p.style.family !== 'sans' ? { font_family: p.style.family } : {}),
@@ -84,8 +108,8 @@ function textItem(p: Paragraph, key: string, parent: string, source: Record<stri
     pdf_source: {
       ...source, kind: 'text', ...(p.role ? { role: p.role } : {}),
       text_layout: {
-        ...p.layout, width: r2(p.layout.width), height: r2(p.layout.height), fontSize: r2(p.layout.fontSize),
-        spans: p.layout.spans.map((s) => ({ text: s.text, x: r2(s.x), y: r2(s.y), width: Math.max(0.01, r2(s.width)), size: Math.max(0.01, r2(s.size)) })),
+        ...p.layout, style: { ...p.style, alpha: p.style.alpha < 0.995 ? r2(p.style.alpha) : 1 }, width: r2(p.layout.width), height: r2(p.layout.height), fontSize: r2(p.layout.fontSize),
+        spans, ...(styles.length ? { styles } : {}),
       },
     },
   }
@@ -175,6 +199,7 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
     const a = apply(world, l.rect[0], l.rect[1]), b = apply(world, l.rect[2], l.rect[3])
     return { rect: { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) }, page: l.page, url: l.url }
   })
+  if (text.invisible) report.add('pdf_invisible_text', 'Invisible text (a scan’s recognised text) not imported', `p${n}`)
   const textItems = text.paragraphs.map((p, k) => {
     // the link covering most of the paragraph's text (boxes of neighbouring lines overlap a little)
     const area = (r: Rect | null) => (r ? r.w * r.h : 0)
@@ -188,7 +213,9 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
   }
 
   // pictures (§4.2)
-  const placed: Placed[] = []
+  let placed: Placed[] = []
+  const incompleteImages = new Map<number, number>()
+  for (const mark of marks.images) incompleteImages.set(mark.index, (incompleteImages.get(mark.index) ?? 0) + 1)
   const imageCache = new Map<string, PlanImage | null>()
   let imageCount = 0
   for (const mark of marks.images) {
@@ -208,6 +235,11 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
       crop = { x: (cut.x - at.rect.x) / at.rect.w, y: (cut.y - at.rect.y) / at.rect.h, w: cut.w / at.rect.w, h: cut.h / at.rect.h }
       rect = cut
     }
+    if (crop && at.flipX) crop = { ...crop, x: 1 - crop.x - crop.w }
+    if (mark.sourceCrop) {
+      const source = mark.sourceCrop
+      crop = crop ? { x: source.x + crop.x * source.w, y: source.y + crop.y * source.h, w: crop.w * source.w, h: crop.h * source.h } : source
+    }
     const aspect = Math.round((rect.w / Math.max(rect.h, 0.01)) * 1000) / 1000
     const cacheKey = `${mark.ref}|${at.flipX}|${aspect}|${crop ? [crop.x, crop.y, crop.w, crop.h].map((v) => v.toFixed(4)).join(',') : ''}`
     let image = imageCache.get(cacheKey)
@@ -216,7 +248,6 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
       imageCount += 1
       image = encoded ? { key: `${options.idPrefix}p${n}i${imageCount}`, name: `${options.fileBase}-p${String(n).padStart(3, '0')}-img${imageCount}.${encoded.mediaType === 'image/jpeg' ? 'jpg' : 'png'}`, mediaType: encoded.mediaType, bytes: encoded.bytes } : null
       imageCache.set(cacheKey, image)
-      if (image) images.push(image)
     }
     if (!image) { report.add('pdf_image_unreadable', 'Pictures that could not be decoded kept in the page raster', `p${n}`); continue }
     const alt = mark.mcid !== null ? struct.figureAlt.get(mark.mcid) : undefined
@@ -225,11 +256,35 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
       item: { key: `${groupKey}~i${placed.length}`, parent: groupKey, type: 'asset', rect: roundRect(rect), rotation: at.rotation, config: { pdf_source: { ...source, kind: 'image' } }, ...(alt ? { title: alt.slice(0, 256) } : {}), image,
         fallback: { config: { shape: 'rect', fill: 'none', stroke: 'auto', stroke_width: 1, dash: 'dashed', text: options.imageText?.() ?? 'Image', font_size: 14, pdf_source: { ...source, kind: 'image' } } } },
     })
-    skip.add(mark.index)
+    incompleteImages.set(mark.index, incompleteImages.get(mark.index)! - 1)
+  }
+  placed = placed.filter(p => incompleteImages.get(p.order) === 0)
+  for (const p of placed) skip.add(p.order)
+  for (const image of new Set(placed.map(p => p.image!))) images.push(image)
+
+  const runBounds = (r: typeof marks.runs[number]): Rect => ({
+    x: Math.min(r.start.x, r.end.x) - r.size,
+    y: Math.min(r.start.y, r.end.y) - r.size,
+    w: Math.abs(r.end.x - r.start.x) + 2 * r.size,
+    h: Math.abs(r.end.y - r.start.y) + 2 * r.size,
+  })
+  const coveredByEarlier = (order: number, box: Rect) => placed.some(p => p.order < order && p.kind !== 'text' && intersect(rotatedBounds(p.item.rect, p.item.rotation), box))
+  const groupedImage = (index: number) => page.fnArray[index] === OPS.paintImageXObjectRepeat || page.fnArray[index] === OPS.paintInlineImageXObjectGroup
+  const hasCoveredImageGroups = () => marks.images.some(m => {
+    if (!groupedImage(m.index) || skip.has(m.index)) return false
+    const { rect, rotation } = placeImage(m)
+    return coveredByEarlier(m.index, rotatedBounds(rect, rotation))
+  })
+    || marks.other.some(i => groupedImage(i) && coveredByEarlier(i, pageRect))
+  const preservePaintOrder = () => {
+    report.add('pdf_paint_order', 'Pages whose objects would cover retained content imported whole as pictures', `p${n}`)
+    images.length = 0
+    return rasterItem({ skip: new Set(), whole: true })
   }
 
   if (unreadable) {
     // §4.1 第 6 条: the whole page as a raster (its text in it), the pictures still taken out
+    if (hasCoveredImageGroups() || marks.runs.some(r => !r.blank && (r.mode & 3) !== 3 && coveredByEarlier(r.index, runBounds(r)))) return result(await preservePaintOrder())
     report.add('pdf_unreadable_text', 'Pages whose text cannot be read imported as pictures (pictures on them still separate)', `p${n}`)
     const raster = await rasterItem({ skip, whole: true })
     for (const p of placed) { items.push(p.item); counts.images += 1 }
@@ -239,10 +294,8 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
   // text (§4.1)
   for (const { paragraph: p, item } of textItems) {
     placed.push({ order: p.order, item, kind: 'text' })
-    if (p.mixed) report.add('pdf_mixed_style', 'Paragraphs with several styles imported in their main style', firstLine(p.text).slice(0, 48))
     for (const r of p.runs) skip.add(r)
   }
-  if (text.invisible) report.add('pdf_invisible_text', 'Invisible text (a scan’s recognised text) not imported', `p${n}`)
   if (text.vertical) report.add('pdf_vertical_text', 'Vertical text kept in the page raster', `p${n}`)
 
   // shapes (§4.3), joined in paint order; pictures and text in between close an SVG shape
@@ -293,6 +346,10 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
     for (const op of o.ops) skip.add(op)
   }
 
+  const coveredGlyphs = marks.runs.some(r => text.rasterRuns.has(r.index) && coveredByEarlier(r.index, runBounds(r)))
+  if (coveredGlyphs || hasCoveredImageGroups()) return result(await preservePaintOrder())
+  if (text.rasterRuns.size) report.add('pdf_glyph_raster', 'Text with uneditable glyphs retained in page images', `p${n}`)
+
   placed.sort((a, b) => a.order - b.order)
   for (const p of placed) {
     items.push(p.item)
@@ -304,7 +361,7 @@ export async function convertPdfPage(page: PdfPage, report: ImportReport, option
   // the raster: whatever is still drawn (§4.5)
   const onPage = (r: Rect) => intersect(r, pageRect) !== null
   const left = marks.paths.some((p) => !skip.has(p.index) && (p.fill?.kind !== 'none' || p.stroke?.kind !== 'none') && (p.shading && !p.segs.length ? true : onPage({ ...p.box, w: Math.max(p.box.w, 1), h: Math.max(p.box.h, 1) })))
-    || marks.runs.some((r) => !skip.has(r.index) && !r.blank && (r.mode & 3) !== 3 && onPage({ x: Math.min(r.start.x, r.end.x) - r.size, y: Math.min(r.start.y, r.end.y) - r.size, w: Math.abs(r.end.x - r.start.x) + 2 * r.size, h: Math.abs(r.end.y - r.start.y) + 2 * r.size }))
+    || marks.runs.some((r) => !skip.has(r.index) && !r.blank && (r.mode & 3) !== 3 && onPage(runBounds(r)))
     || marks.images.some((m) => !skip.has(m.index)) || marks.other.length > 0
   const raster = left ? await rasterItem({ skip, whole: false }) : null
   if (raster) report.add('pdf_raster_parts', 'Parts of pages that cannot be taken apart kept as a picture under the objects', `p${n}`)

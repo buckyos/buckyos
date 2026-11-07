@@ -347,6 +347,13 @@
         "fontSize": 41,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": true,
+         "italic": false,
+         "family": "sans"
+        },
         "spans": [
          {
           "text": "1. Introduction",
@@ -395,6 +402,13 @@
         "fontSize": 27.33,
         "align": "left",
         "lineHeight": 1.31,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "PDF import turns each page into editable objects. This paragraph is long enough to wrap onto at",
@@ -448,6 +462,13 @@
         "fontSize": 27.33,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "sans"
+        },
         "spans": [
          {
           "text": "中文段落：导入后每一页都是一个页面组，文字可以双击编辑，图片是独立对象。",
@@ -495,6 +516,13 @@
         "fontSize": 27.33,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "Name",
@@ -542,6 +570,13 @@
         "fontSize": 27.33,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "Value",
@@ -589,6 +624,13 @@
         "fontSize": 27.33,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "Pages",
@@ -636,6 +678,13 @@
         "fontSize": 27.33,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "3",
@@ -683,6 +732,13 @@
         "fontSize": 27.33,
         "align": "left",
         "lineHeight": null,
+        "style": {
+         "color": "#000000",
+         "alpha": 1,
+         "bold": false,
+         "italic": false,
+         "family": "serif"
+        },
         "spans": [
          {
           "text": "Inline",
@@ -696,7 +752,14 @@
           "x": 76.61,
           "y": 30.56,
           "width": 98.74,
-          "size": 27.33
+          "size": 27.33,
+          "style": {
+           "color": "#000000",
+           "alpha": 1,
+           "bold": false,
+           "italic": false,
+           "family": "mono"
+          }
          },
          {
           "text": "and",
@@ -710,7 +773,14 @@
           "x": 228.5,
           "y": 30.56,
           "width": 56.18,
-          "size": 27.33
+          "size": 27.33,
+          "style": {
+           "color": "#000000",
+           "alpha": 1,
+           "bold": false,
+           "italic": true,
+           "family": "serif"
+          }
          },
          {
           "text": "words.",
@@ -747,15 +817,6 @@
   "pages": 1,
   "objects": 21,
   "images": 0,
-  "notes": [
-   {
-    "kind": "pdf_mixed_style",
-    "message": "Paragraphs with several styles imported in their main style",
-    "count": 1,
-    "samples": [
-     "Inline code() and italic words."
-    ]
-   }
-  ]
+  "notes": []
  }
 }

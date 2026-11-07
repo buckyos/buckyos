@@ -27,6 +27,18 @@ def _load_start_script():
     return module
 
 
+class BuckyosStartInstallTreeTests(unittest.TestCase):
+    def test_non_linux_start_does_not_import_pwd(self) -> None:
+        module = _load_start_script()
+        with (
+            patch.object(stop, "needs_root", return_value=False),
+            patch.dict(sys.modules, {"pwd": None}),
+            patch.object(subprocess, "run") as run,
+        ):
+            module.take_back_install_tree(Path("."), install_all=True)
+        run.assert_not_called()
+
+
 @unittest.skipIf(os.name == "nt", "Linux node_daemon identity")
 class BuckyosStartLinuxRootTests(unittest.TestCase):
     def _run_as_linux_developer(self, args, root, sudo_returncode=0):

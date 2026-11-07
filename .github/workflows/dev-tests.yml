@@ -29,6 +29,10 @@ concurrency:
   group: dev-tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+
 jobs:
   quick-unit-tests:
     name: Quick Cargo Tests
@@ -38,6 +42,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Free Linux runner disk space
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h "$GITHUB_WORKSPACE"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -56,7 +66,15 @@ jobs:
 
       - name: Run cargo test
         working-directory: ./src
-        run: cargo test -- --test-threads=1
+        env:
+          CARGO_PROFILE_TEST_DEBUG: '0'
+        run: cargo test --no-fail-fast -- --test-threads=1
+
+      - name: Report Cargo disk usage
+        if: ${{ always() }}
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          du -sh src/target "$HOME/.cargo/registry" || true
 
       - name: Setup tmate on failure
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.debug_with_tmate }}
@@ -164,6 +182,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Free Linux runner disk space
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h "$GITHUB_WORKSPACE"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -273,6 +300,17 @@ jobs:
         run: |
           sudo mkdir -p /opt/buckyos /opt/buckyosci /opt/web3-gateway
           sudo chown -R "$(id -un):$(id -gn)" /opt/buckyos /opt/buckyosci /opt/web3-gateway
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            getfacl -cp -- "$BUCKYOS_BUILD_ROOT"
+            setfacl -k -- "$BUCKYOS_BUILD_ROOT"
+            umask 022
+            mode_check="$BUCKYOS_BUILD_ROOT/.ci-mode-check"
+            mkdir -- "$mode_check"
+            mode="$(stat -c %a "$mode_check")"
+            rmdir -- "$mode_check"
+            echo "Linux package directory mode: $mode"
+            test "$mode" = 755
+          fi
 
       - name: Prepare writable install roots (Windows)
         if: ${{ runner.os == 'Windows' }}
@@ -288,16 +326,10 @@ jobs:
         if: ${{ matrix.needs_tauri }}
         run: git clone --depth 1 --branch main https://github.com/buckyos/BuckyOSApp.git ../BuckyOSApp
 
-      - name: Install BuckyOSApp dependencies (Unix)
-        if: ${{ matrix.needs_tauri && runner.os != 'Windows' }}
+      - name: Install BuckyOSApp dependencies
+        if: ${{ matrix.needs_tauri }}
         working-directory: ${{ github.workspace }}/../BuckyOSApp
-        run: pnpm install --frozen-lockfile
-
-      - name: Install BuckyOSApp dependencies (Windows)
-        if: ${{ matrix.needs_tauri && runner.os == 'Windows' }}
-        shell: pwsh
-        working-directory: ${{ github.workspace }}/../BuckyOSApp
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Show package target (Unix)
         if: ${{ runner.os != 'Windows' }}
@@ -342,6 +374,7 @@ jobs:
           sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" "$PYTHON_BIN" start.py --all
           wait_for_port "node gateway" 127.0.0.1 3180
           wait_for_port "system_config" 127.0.0.1 3200
+          wait_for_port "verify_hub" 127.0.0.1 3300
           cargo run -p test_rbac
           popd
 
@@ -450,8 +483,12 @@ jobs:
           }
           buckyos-install --all
           python .\start.py --all
+          if ($LASTEXITCODE -ne 0) {
+            throw "BuckyOS startup failed with exit code $LASTEXITCODE"
+          }
           Wait-ForPort -Name "node gateway" -TargetHost "127.0.0.1" -Port 3180
           Wait-ForPort -Name "system_config" -TargetHost "127.0.0.1" -Port 3200
+          Wait-ForPort -Name "verify_hub" -TargetHost "127.0.0.1" -Port 3300
           cargo run -p test_rbac
           Pop-Location
 
@@ -481,8 +518,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          umask 022
           mkdir -p "$LOCAL_PKG_DIR"
-          python3 ./make_local_pkg.py build-pkg --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir "$LOCAL_PKG_DIR"
+          python3 ./make_local_pkg.py build-pkg --skip-cargo-update --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir "$LOCAL_PKG_DIR"
 
       - name: Build local package (Windows)
         if: ${{ runner.os == 'Windows' }}
@@ -490,7 +528,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Path $env:LOCAL_PKG_DIR -Force | Out-Null
-          python .\make_local_pkg.py build-pkg --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir $env:LOCAL_PKG_DIR
+          python .\make_local_pkg.py build-pkg --skip-cargo-update --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir $env:LOCAL_PKG_DIR
 
       - name: Capture package path (Unix)
         id: package_unix
@@ -660,10 +698,12 @@ jobs:
           echo "=== process list ==="
           ps -ef | grep -E "node_daemon|node-daemon|system_config|verify_hub|control_panel|scheduler|repo_service|task_manager" | grep -v grep || true
           echo "=== recent logs ==="
-          find "$BUCKYOS_LOGS_PATH" -maxdepth 2 -type f 2>/dev/null | sort | while read -r file; do
-            echo "--- ${file} ---"
-            tail -n 200 "${file}" || true
-          done
+          if [[ -d "$BUCKYOS_LOGS_PATH" ]]; then
+            find "$BUCKYOS_LOGS_PATH" -maxdepth 2 -type f | sort | while read -r file; do
+              echo "--- ${file} ---"
+              tail -n 200 "${file}" || true
+            done
+          fi
 
       - name: Show diagnostics on failure (Windows)
         if: ${{ failure() && runner.os == 'Windows' }}
@@ -705,8 +745,6 @@ jobs:
           name: dev-tests-logs-${{ matrix.platform_key }}-${{ matrix.arch }}
           path: |
             ${{ env.BUCKYOS_LOGS_PATH }}
-            ${{ env.BUCKYOS_ROOT }}/etc
-            ${{ env.WEB3_GATEWAY_ROOT }}
             ${{ env.LOCAL_PKG_DIR }}
           if-no-files-found: warn
 
@@ -715,7 +753,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dev-tests-logs-${{ matrix.platform_key }}-${{ matrix.arch }}
-          path: |
-            ${{ env.BUCKYOS_LOGS_PATH }}
-            ${{ env.LOCAL_PKG_DIR }}
+          path: ${{ env.BUCKYOS_LOGS_PATH }}
           if-no-files-found: warn

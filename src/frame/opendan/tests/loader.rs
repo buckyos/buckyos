@@ -2369,7 +2369,18 @@ async fn a_session_process_elsewhere_reaches_its_session_through_the_service() {
     let out = helper(&["sessions"], None);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stdout).contains(sd.sid()));
-    let out = helper(&["todo", "add", "from the node", "--content", "-"], Some("the Todo's text"));
+    let out = helper(
+        &[
+            "todo",
+            "add",
+            "from the node",
+            "--content",
+            "-",
+            "--queue-dir",
+            w.queue.to_str().unwrap(),
+        ],
+        Some("the Todo's text"),
+    );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let list = libopendan::todos::store_of(&sd).load().unwrap().render_view();
     assert!(list.contains("from the node"), "{list}");

@@ -6,6 +6,7 @@
  * (`link`, `tooltip`, `data`) becomes a `UserObject`. Blocks with no draw.io counterpart (rich text, notes, tables)
  * export as text in a box and are counted. */
 
+import { readPdfTextLayout, type PdfTextLayout } from '../import-pdf/text-layout.ts'
 import { cleanAnchors, defaultAnchors, findAnchor, RECT_ANCHORS, type AnchorDef, type Shape } from './anchors.ts'
 import { compose, routeConnector, type Binding, type ConnectorData, type Control, type Route, type TargetGeom } from './connector.ts'
 import type { Point, Rect } from './geometry.ts'
@@ -102,6 +103,29 @@ const styleDataUri = (uri: string) => uri.replace(/^data:([^;,]+);base64,/, 'dat
 /** A label as draw.io HTML: escaped, line breaks as `<br>`. */
 const html = (text: string) => text.split('\n').map((line) => line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')).join('<br>')
 
+function pdfTextHtml(layout: PdfTextLayout) {
+  let cursor = 0
+  const fragments = layout.spans.map(span => {
+    const start = cursor
+    let remaining = span.text.replace(/\s/g, '').length
+    while (remaining && cursor < layout.text.length) {
+      if (!/\s/.test(layout.text[cursor])) remaining -= 1
+      cursor += 1
+    }
+    const style = span.style ?? layout.style
+    const text = html(layout.text.slice(start, cursor)).replace(/ {2,}/g, spaces => '&nbsp;'.repeat(spaces.length - 1) + ' ')
+    if (!style) return text
+    const family = style.family === 'sans' ? 'sans-serif' : style.family === 'mono' ? 'monospace' : 'serif'
+    const css = [
+      ...(style.color ? [`color:${style.color}`] : []),
+      `font-size:${fmt(span.size)}px`, `font-family:${family}`, `font-weight:${style.bold ? 700 : 400}`,
+      `font-style:${style.italic ? 'italic' : 'normal'}`, `opacity:${fmt(style.alpha)}`,
+    ]
+    return `<span style="${css.join(';')}">${text}</span>`
+  })
+  return fragments.join('') + html(layout.text.slice(cursor))
+}
+
 const CAP_OUT: Record<string, [string, number]> = {
   none: ['none', 1], arrow: ['open', 1], triangle: ['classic', 1], triangle_outline: ['block', 0], diamond: ['diamond', 1], diamond_outline: ['diamond', 0],
   circle: ['oval', 1], circle_outline: ['oval', 0], bar: ['dash', 1],
@@ -178,17 +202,21 @@ export function exportDiagram(nodes: ExportNode[], page: ExportPage): ExportResu
     let label = ''
     if (as.view === 'shape') {
       const look = readLook(as.config, as.title)
-      label = look.text ? html(look.text) : ''
-      const own = [...lookKeys(look, rotation), ...textKeys(look)]
+      const pdfLayout = look.kind === 'text' ? readPdfTextLayout(as.config, look) : null
+      const styledPdf = pdfLayout?.style ? pdfLayout : null
+      label = styledPdf ? pdfTextHtml(styledPdf) : look.text ? html(look.text) : ''
+      const own = [...lookKeys(styledPdf ? { ...look, opacity: 1 } : look, rotation), ...textKeys(look)]
+      const owned = styledPdf ? [...VERTEX_KEYS, 'fillOpacity', 'strokeOpacity'] : VERTEX_KEYS
+      if (styledPdf && look.opacity < 1) own.push(['fillOpacity', Math.round(look.opacity * 100)], ['strokeOpacity', Math.round(look.opacity * 100)])
       const anchors = (cleanAnchors(as.config?.anchors) ?? []).filter((a) => !/^(n|nne|ne|ene|e|ese|se|sse|s|ssw|sw|wsw|w|wnw|nw|nnw)$/.test(a.id))
       if (anchors.length) own.push(['points', JSON.stringify(anchors.map((a) => (a.dx || a.dy ? [a.x, a.y, 0, a.dx ?? 0, a.dy ?? 0] : [a.x, a.y])))])
       const keptShape = parseStyle(typeof kept === 'string' ? kept : '').keys.get('shape') ?? ''
       if (look.kind === 'svg') {
         // the library or inline stencil the import came from draws it again; anything else becomes a picture
-        if (keptShape.startsWith('mxgraph.') || keptShape.startsWith('stencil(') || BUILTIN.has(keptShape)) style = styleFrom(kept, VERTEX_KEYS, own, true)
-        else if (look.svg) style = styleFrom(kept, VERTEX_KEYS, [...own, ['shape', 'image'], ['imageAspect', look.svg.aspect === 'fixed' ? 1 : 0], ['image', `data:image/svg+xml,${b64(svgDocument(look))}`]])
-        else style = styleFrom(kept, VERTEX_KEYS, own)
-      } else style = styleFrom(kept, VERTEX_KEYS, own)
+        if (keptShape.startsWith('mxgraph.') || keptShape.startsWith('stencil(') || BUILTIN.has(keptShape)) style = styleFrom(kept, owned, own, true)
+        else if (look.svg) style = styleFrom(kept, owned, [...own, ['shape', 'image'], ['imageAspect', look.svg.aspect === 'fixed' ? 1 : 0], ['image', `data:image/svg+xml,${b64(svgDocument(look))}`]])
+        else style = styleFrom(kept, owned, own)
+      } else style = styleFrom(kept, owned, own)
       if (look.kind === 'text') style = `text;${style}`
     } else if (as.view === 'frame') {
       const c = as.config ?? {}

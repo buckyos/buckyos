@@ -1,0 +1,419 @@
+{
+  "input": "src/frame/aiworkspace/fixtures/pdf/synthetic-pdf-import.pdf",
+  "sha256": "81cbe08d51c84d83c3b3e1654b8a2ee0fedc31305c2d1dce208007c2f0c4f017",
+  "bytes": 7428,
+  "baselineSource": "ec809dcf5531a83045994abd97cf6bf4375ad61c",
+  "checkedMain": "2772d188ea44c475943b8b9a751c0552083a55b0",
+  "pdfSourcesIdenticalToMain": true,
+  "scope": "isolated real AIWorkspace/NFS, static test identities; no Zone/Gateway/SSO acceptance",
+  "before": {
+    "seconds": 128.78,
+    "passed": 4,
+    "failed": 5,
+    "skipped": 1,
+    "pages": [
+      {
+        "page": 1,
+        "mode": "editable",
+        "sourceOperations": 240,
+        "importOperations": 240,
+        "renderOperations": [
+          204
+        ],
+        "rasters": 0,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_failed"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 1,
+        "mode": "raster",
+        "sourceOperations": 240,
+        "importOperations": 240,
+        "renderOperations": [
+          204
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 2,
+        "mode": "editable",
+        "sourceOperations": 20,
+        "importOperations": 20,
+        "renderOperations": [
+          20
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_image_unreadable",
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [
+          "Warning: #instantiateWasm: UnknownErrorException: Ensure that the `wasmUrl` API parameter is provided.",
+          "Warning: #getJsModule: TypeError: Failed to resolve module specifier 'nulljbig2_nowasm_fallback.js'",
+          "Warning: Unable to decode image \"img_p1_1\": \"Jbig2Error: JBig2 failed to initialize\".",
+          "Warning: Unable to decode image \"img_p1_2\": \"Jbig2Error: JBig2 failed to initialize\"."
+        ],
+        "regionInk": [
+          {
+            "name": "image-0",
+            "source": 0.14776284974731912,
+            "actual": 0
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 2,
+        "mode": "raster",
+        "sourceOperations": 20,
+        "importOperations": 20,
+        "renderOperations": [
+          20
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [
+          "Warning: #instantiateWasm: UnknownErrorException: Ensure that the `wasmUrl` API parameter is provided.",
+          "Warning: #getJsModule: TypeError: Failed to resolve module specifier 'nulljbig2_nowasm_fallback.js'",
+          "Warning: Unable to decode image \"img_p1_1\": \"Jbig2Error: JBig2 failed to initialize\".",
+          "Warning: Unable to decode image \"img_p1_2\": \"Jbig2Error: JBig2 failed to initialize\"."
+        ],
+        "regionInk": [
+          {
+            "name": "image-0",
+            "source": 0.14776284974731912,
+            "actual": 0
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 3,
+        "mode": "editable",
+        "sourceOperations": 31,
+        "importOperations": 31,
+        "renderOperations": [
+          31
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 1,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": [
+          {
+            "codepoint": "U+E123",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "mode": "raster",
+        "sourceOperations": 31,
+        "importOperations": 31,
+        "renderOperations": [
+          31
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 4,
+        "mode": "editable",
+        "sourceOperations": 28,
+        "importOperations": 28,
+        "renderOperations": [
+          28
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_mixed_style",
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [
+          {
+            "color": "#0d26d9",
+            "sourceCoverage": 0.00100187265917603,
+            "actualCoverage": 0.002841760299625468
+          },
+          {
+            "color": "#d90d0d",
+            "sourceCoverage": 0.0016807116104868914,
+            "actualCoverage": 0
+          }
+        ],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 4,
+        "mode": "raster",
+        "sourceOperations": 28,
+        "importOperations": 28,
+        "renderOperations": [
+          28
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [
+          {
+            "color": "#0d26d9",
+            "sourceCoverage": 0.00100187265917603,
+            "actualCoverage": 0.0011072097378277154
+          },
+          {
+            "color": "#d90d0d",
+            "sourceCoverage": 0.0016807116104868914,
+            "actualCoverage": 0.0015976123595505618
+          }
+        ],
+        "nonEditableCodepoints": []
+      }
+    ]
+  },
+  "after": {
+    "seconds": 124.39,
+    "passed": 9,
+    "failed": 0,
+    "skipped": 1,
+    "pages": [
+      {
+        "page": 1,
+        "mode": "editable",
+        "sourceOperations": 240,
+        "importOperations": 204,
+        "renderOperations": [
+          204
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 1,
+        "mode": "raster",
+        "sourceOperations": 240,
+        "importOperations": 204,
+        "renderOperations": [
+          204
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 2,
+        "mode": "editable",
+        "sourceOperations": 20,
+        "importOperations": 20,
+        "renderOperations": [
+          20
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [
+          {
+            "name": "image-0",
+            "source": 0.14776284974731912,
+            "actual": 0.14029335634167386
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 2,
+        "mode": "raster",
+        "sourceOperations": 20,
+        "importOperations": 20,
+        "renderOperations": [
+          20
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [
+          {
+            "name": "image-0",
+            "source": 0.14776284974731912,
+            "actual": 0.14448416122272895
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 3,
+        "mode": "editable",
+        "sourceOperations": 31,
+        "importOperations": 31,
+        "renderOperations": [
+          31
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [
+          {
+            "name": "glyph-outline-left",
+            "source": 0.6666666666666666,
+            "actual": 0.6666666666666666
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": [
+          {
+            "codepoint": "U+E123",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "page": 3,
+        "mode": "raster",
+        "sourceOperations": 31,
+        "importOperations": 31,
+        "renderOperations": [
+          31
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [
+          {
+            "name": "glyph-outline-left",
+            "source": 0.6666666666666666,
+            "actual": 0.6666666666666666
+          }
+        ],
+        "textColors": [],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 4,
+        "mode": "editable",
+        "sourceOperations": 28,
+        "importOperations": 28,
+        "renderOperations": [
+          28
+        ],
+        "rasters": 1,
+        "warningKinds": [
+          "pdf_effects",
+          "pdf_raster_parts"
+        ],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [
+          {
+            "color": "#0d26d9",
+            "sourceCoverage": 0.00100187265917603,
+            "actualCoverage": 0.0011048689138576779
+          },
+          {
+            "color": "#d90d0d",
+            "sourceCoverage": 0.0016807116104868914,
+            "actualCoverage": 0.001720505617977528
+          }
+        ],
+        "nonEditableCodepoints": []
+      },
+      {
+        "page": 4,
+        "mode": "raster",
+        "sourceOperations": 28,
+        "importOperations": 28,
+        "renderOperations": [
+          28
+        ],
+        "rasters": 1,
+        "warningKinds": [],
+        "filteredPrivateUseOperators": 0,
+        "decodingFailures": [],
+        "regionInk": [],
+        "textColors": [
+          {
+            "color": "#0d26d9",
+            "sourceCoverage": 0.00100187265917603,
+            "actualCoverage": 0.0011072097378277154
+          },
+          {
+            "color": "#d90d0d",
+            "sourceCoverage": 0.0016807116104868914,
+            "actualCoverage": 0.0015976123595505618
+          }
+        ],
+        "nonEditableCodepoints": []
+      }
+    ]
+  },
+  "additionalChecks": {
+    "pdfModule": {
+      "passed": 32,
+      "failed": 0
+    },
+    "legacyBrowserAndProductionAssets": {
+      "passed": 5,
+      "failed": 0
+    },
+    "desktopTypecheck": "passed",
+    "targetedLint": "passed"
+  }
+}

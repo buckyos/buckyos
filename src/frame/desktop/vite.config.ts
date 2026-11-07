@@ -37,11 +37,18 @@ function desktopServiceWorker(): Plugin {
 
 // pdf.js's CMaps (CJK text of older PDFs) and standard font data (PDFs that do not embed the 14 base fonts), served
 // next to the app under aiworkspace/pdfjs/ and fetched only by pages that need them (PDF 导入方案 §2): never precached.
-const PDFJS_ASSET_DIRS = ['cmaps', 'standard_fonts']
+const PDFJS_ASSET_DIRS = ['cmaps', 'standard_fonts', 'wasm', 'iccs']
 const PDFJS_PREFIX = 'aiworkspace/pdfjs/'
+const PDFJS_DECODERS = new Set(['jbig2.wasm', 'jbig2_nowasm_fallback.js', 'openjpeg.wasm', 'openjpeg_nowasm_fallback.js', 'qcms_bg.wasm'])
+function pdfjsAsset(dir: string, name: string) {
+  if (name.startsWith('LICENSE')) return true
+  if (dir === 'wasm') return PDFJS_DECODERS.has(name)
+  if (dir === 'iccs') return name === 'CGATS001Compat-v2-micro.icc'
+  return /\.(bcmap|pfb|ttf)$/.test(name)
+}
 function pdfjsAssets(): Plugin {
   const root = resolve(import.meta.dirname, 'node_modules/pdfjs-dist')
-  const types: Record<string, string> = { '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf' }
+  const types: Record<string, string> = { '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf', '.icc': 'application/vnd.iccprofile', '.wasm': 'application/wasm', '.js': 'text/javascript' }
   return {
     name: 'aiworkspace-pdfjs-assets',
     configureServer(server) {
@@ -49,6 +56,7 @@ function pdfjsAssets(): Plugin {
         const path = (req.url ?? '').split('?')[0]
         const m = new RegExp(`^/${PDFJS_PREFIX}(${PDFJS_ASSET_DIRS.join('|')})/([\\w.-]+)$`).exec(path)
         if (!m) return next()
+        if (!pdfjsAsset(m[1], m[2])) { res.statusCode = 404; res.end(); return }
         try {
           const body = readFileSync(join(root, m[1], m[2]))
           res.setHeader('Content-Type', m[2].startsWith('LICENSE') ? 'text/plain' : types[m[2].slice(m[2].lastIndexOf('.'))] ?? 'application/octet-stream')
@@ -60,7 +68,7 @@ function pdfjsAssets(): Plugin {
       for (const dir of PDFJS_ASSET_DIRS) {
         for (const name of readdirSync(join(root, dir))) {
           // the data files and their licences (Adobe's CMaps, Foxit's and Liberation fonts)
-          if (!/\.(bcmap|pfb|ttf)$|^LICENSE/.test(name)) continue
+          if (!pdfjsAsset(dir, name)) continue
           this.emitFile({ type: 'asset', fileName: `${PDFJS_PREFIX}${dir}/${name}`, source: readFileSync(join(root, dir, name)) })
         }
       }

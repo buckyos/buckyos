@@ -56,13 +56,13 @@ function inkFor(look: ShapeLook): string {
 }
 
 /** The outline (or SVG body) of a shape in a `w × h` box. */
-export function ShapeArt({ look, w, h }: { look: ShapeLook; w: number; h: number }) {
+export function ShapeArt({ look, w, h, opacity }: { look: ShapeLook; w: number; h: number; opacity?: number }) {
   const fill = paintOf(look.fill, 'fill')
   const stroke = paintOf(look.stroke, 'stroke')
   if (look.kind === 'svg') {
     if (!look.svg) return <svg className="aiws-shape-art" viewBox="0 0 10 10" preserveAspectRatio="none"><rect width="10" height="10" style={{ fill, stroke }} /></svg>
     const vars = { '--aiws-shape-fill': fill, '--aiws-shape-stroke': stroke, '--aiws-shape-stroke-width': look.strokeWidth } as CSSProperties
-    return <svg className="aiws-shape-art" viewBox={look.svg.viewBox} preserveAspectRatio={look.svg.aspect === 'fixed' ? 'xMidYMid meet' : 'none'} style={vars} dangerouslySetInnerHTML={{ __html: sanitizeSvgBody(look.svg.body) }} />
+    return <svg className="aiws-shape-art" viewBox={look.svg.viewBox} preserveAspectRatio={look.svg.aspect === 'fixed' ? 'xMidYMid meet' : 'none'} style={{ ...vars, opacity }} dangerouslySetInnerHTML={{ __html: sanitizeSvgBody(look.svg.body) }} />
   }
   // plain text draws a box only when it has a background or a border
   if (look.kind === 'text' && look.fill === 'none' && look.stroke === 'none') return null
@@ -70,7 +70,7 @@ export function ShapeArt({ look, w, h }: { look: ShapeLook; w: number; h: number
   const width = look.stroke === 'none' ? 0 : look.strokeWidth
   const style: CSSProperties = { fill: paths.open ? 'none' : fill, stroke, strokeWidth: width, strokeLinejoin: 'round', strokeDasharray: dashArray(look.dash, width) ?? undefined }
   return (
-    <svg className="aiws-shape-art" viewBox={`0 0 ${Math.max(w, 1)} ${Math.max(h, 1)}`} preserveAspectRatio="none">
+    <svg className="aiws-shape-art" viewBox={`0 0 ${Math.max(w, 1)} ${Math.max(h, 1)}`} preserveAspectRatio="none" style={{ opacity }}>
       <path d={paths.body} style={style} />
       {paths.details.map((d, i) => <path key={i} d={d} style={{ fill: 'none', stroke, strokeWidth: width }} />)}
     </svg>
@@ -103,13 +103,13 @@ function ShapeFrame({ context, children }: { context: RenderContext; children?: 
   const { w, h } = context.size
   const pdfLayout = !children && look.kind === 'text' ? readPdfTextLayout(context.payload.config, look) : null
   return (
-    <div className={`aiws-shape is-${look.kind}`} style={{ opacity: look.opacity < 1 ? look.opacity : undefined }} data-kind={look.kind} data-testid={`aiws-shape-${context.cell.entity_id}`}>
-      <ShapeArt look={look} w={w} h={h} />
+    <div className={`aiws-shape is-${look.kind}`} style={{ opacity: !pdfLayout?.style && look.opacity < 1 ? look.opacity : undefined }} data-kind={look.kind} data-testid={`aiws-shape-${context.cell.entity_id}`}>
+      <ShapeArt look={look} w={w} h={h} opacity={pdfLayout?.style ? look.opacity : undefined} />
       {pdfLayout ? (
         <svg className="aiws-shape-text aiws-pdf-text" viewBox={`0 0 ${pdfLayout.width} ${pdfLayout.height}`} preserveAspectRatio="none" width="100%" height="100%"
           style={{ position: 'absolute', inset: 0, overflow: 'visible', whiteSpace: 'pre', pointerEvents: 'none', fill: inkFor(look), fontFamily: look.fontFamily ? FONT_STACK[look.fontFamily] : undefined, fontWeight: look.bold ? 700 : undefined, fontStyle: look.italic ? 'italic' : undefined, textDecoration: look.underline ? 'underline' : undefined }}>
           {pdfLayout.spans.map((span, i) => (
-            <text key={i} x={span.x} y={span.y} fontSize={span.size} textLength={span.width} lengthAdjust="spacingAndGlyphs" xmlSpace="preserve">{span.text}</text>
+            <text key={i} fill={span.style?.color || undefined} fontFamily={span.style ? FONT_STACK[span.style.family] : undefined} fontWeight={span.style ? (span.style.bold ? 700 : 400) : undefined} fontStyle={span.style ? (span.style.italic ? 'italic' : 'normal') : undefined} opacity={span.style?.alpha ?? pdfLayout.style?.alpha} x={span.x} y={span.y} fontSize={span.size} textLength={span.width} lengthAdjust="spacingAndGlyphs" xmlSpace="preserve">{span.text}</text>
           ))}
         </svg>
       ) : (

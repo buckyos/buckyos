@@ -58,7 +58,7 @@ export interface PathMark {
   complex: string | null
 }
 
-export interface ImageMark { index: number; ref: string; corners: [Point, Point, Point, Point]; clips: Clip[]; alpha: number; form: number; mcid: number | null; complex: string | null }
+export interface ImageMark { index: number; ref: string; sourceCrop?: Rect; corners: [Point, Point, Point, Point]; clips: Clip[]; alpha: number; form: number; mcid: number | null; complex: string | null }
 
 export interface TextRun {
   index: number
@@ -164,7 +164,7 @@ function readPath(data: number[] | null, m: Mat): Seg[] {
 const FILLS = new Set<number>([OPS.fill, OPS.eoFill, OPS.fillStroke, OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke, OPS.rawFillPath])
 const STROKES = new Set<number>([OPS.stroke, OPS.closeStroke, OPS.fillStroke, OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke])
 const EVEN_ODD = new Set<number>([OPS.eoFill, OPS.eoFillStroke, OPS.closeEOFillStroke])
-const OTHER_PAINT = new Set<number>([OPS.paintImageMaskXObject, OPS.paintImageMaskXObjectGroup, OPS.paintImageMaskXObjectRepeat, OPS.paintImageXObjectRepeat, OPS.paintInlineImageXObjectGroup, OPS.paintSolidColorImageMask])
+const OTHER_PAINT = new Set<number>([OPS.paintImageMaskXObject, OPS.paintImageMaskXObjectGroup, OPS.paintImageMaskXObjectRepeat, OPS.paintSolidColorImageMask])
 
 /** Walk the page's operators. `world` maps user space to world units (the viewport transform, scaled). */
 export function interpret(page: PdfPage, world: Mat): Interpreted {
@@ -195,6 +195,10 @@ export function interpret(page: PdfPage, world: Mat): Interpreted {
   const restore = () => { const prev = stack.pop(); if (prev) st = prev }
   const toWorld = () => mul(world, st.ctm)
   const moveText = (x: number, y: number) => { st.lineX += x; st.lineY += y; st.x = st.lineX; st.y = st.lineY }
+  const image = (index: number, ref: string, transform: Mat = IDENTITY, sourceCrop?: Rect) => {
+    const m = mul(toWorld(), transform)
+    out.images.push({ index, ref, sourceCrop, corners: [apply(m, 0, 0), apply(m, 1, 0), apply(m, 1, 1), apply(m, 0, 1)], clips: st.clips, alpha: st.fillAlpha, form: st.form, mcid: mcid(), complex: complexOf(null) })
+  }
   for (let i = 0; i < page.fnArray.length; i++) {
     const fn = page.fnArray[i]
     const args = (page.argsArray[i] ?? []) as Json[]
@@ -324,10 +328,21 @@ export function interpret(page: PdfPage, world: Mat): Interpreted {
         else st.x += x * st.hScale * direction
         break
       }
-      case OPS.paintImageXObject: case OPS.paintInlineImageXObject: {
+      case OPS.paintImageXObject: case OPS.paintInlineImageXObject:
+        if (!hidden()) image(i, String(args[0]))
+        break
+      case OPS.paintImageXObjectRepeat: {
         if (hidden()) break
-        const m = toWorld()
-        out.images.push({ index: i, ref: String(args[0]), corners: [apply(m, 0, 0), apply(m, 1, 0), apply(m, 1, 1), apply(m, 0, 1)], clips: st.clips, alpha: st.fillAlpha, form: st.form, mcid: mcid(), complex: complexOf(null) })
+        const [ref, sx, sy, positions] = args as [string, number, number, number[] | null]
+        if (!positions?.length) { out.other.push(i); break }
+        for (let j = 0; j + 1 < positions.length; j += 2) image(i, ref, [sx, 0, 0, sy, positions[j], positions[j + 1]])
+        break
+      }
+      case OPS.paintInlineImageXObjectGroup: {
+        if (hidden()) break
+        const [ref, width, height, tiles] = args as [string, number, number, [Mat | null, number, number, number, number][]]
+        if (!width || !height || !tiles?.length || tiles.some(tile => !tile[0])) { out.other.push(i); break }
+        for (const [transform, x, y, w, h] of tiles) image(i, ref, transform!, { x: x / width, y: y / height, w: w / width, h: h / height })
         break
       }
       default:

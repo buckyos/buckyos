@@ -15,25 +15,9 @@ async fn test_three_node_cluster_and_failover() -> Result<(), String> {
     let port2 = ports[1];
     let port3 = ports[2];
     let cluster_name = format!("klog_cluster_{}_{}_{}", port1, port2, port3);
-    let join_seed = vec![format!("127.0.0.1:{}", port1)];
-
-    let mut nodes = Vec::new();
-    nodes.push(spawn_node(1, port1, &cluster_name, true, &[], "voter").await?);
-    wait_single_node_leader(port1, 1, Duration::from_secs(20)).await?;
-
-    // Join one by one to avoid concurrent membership-change races that may leave
-    // the cluster in a hard-to-elect transitional state.
-    nodes.push(spawn_node(2, port2, &cluster_name, false, &join_seed, "voter").await?);
-    let _ = wait_cluster_voters(&[port1, port2], &[1, 2], Duration::from_secs(40)).await?;
-
-    nodes.push(spawn_node(3, port3, &cluster_name, false, &join_seed, "voter").await?);
-
-    let states =
-        wait_cluster_voters(&[port1, port2, port3], &[1, 2, 3], Duration::from_secs(40)).await?;
-    let leader = states
-        .iter()
-        .find_map(|s| s.current_leader)
-        .ok_or_else(|| "cluster has no leader after convergence".to_string())?;
+    let mut nodes = spawn_three_voter_cluster(&cluster_name, port1, port2, port3).await?;
+    let leader =
+        wait_consistent_leader_on_ports(&[port1, port2, port3], Duration::from_secs(40)).await?;
     if ![1_u64, 2_u64, 3_u64].contains(&leader) {
         for n in &mut nodes {
             n.stop().await;

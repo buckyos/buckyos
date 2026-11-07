@@ -11,13 +11,13 @@
 
 import { batches, buildOperations, ImportReport, type ImportOp, type UploadedAsset } from '@drawio/mod'
 import { keysAfter } from '@drawio/keys'
-import { convertPdfPage, defaultColumns, extractPage, gridOrigins, OPS, pageScale, readBookmarks, stageOf, type EncodedImage, type ImageRequest, type PdfConvertOptions, type PdfjsDocument, type PdfjsPage, type PdfPage, type PdfPagePlan, type RasterRequest, type RasterResult } from '@pdf/mod'
+import { convertPdfPage, defaultColumns, extractPage, gridOrigins, OPS, pageScale, readBookmarks, stageOf, type EncodedImage, type ImageRequest, type PdfConvertOptions, type PdfjsDocument, type PdfjsPage, type PdfPage, type PdfPagePlan, type PdfOperatorList, type RasterRequest, type RasterResult } from '@pdf/mod'
 import { randomId } from '../../api/ids'
 import type { Json, Operation, ShowStep } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import { createPathOp } from '../../presentation/pathOps'
 import type { WorkspaceStore } from '../../state/store'
-import { openPdfDocument, renderPage, type PDFDocumentProxy, type PDFPageProxy } from '../media/pdfDoc'
+import { openPdfDocument, renderOperators, renderPage, type PDFDocumentProxy, type PDFPageProxy } from '../media/pdfDoc'
 import type { ImportOutcome } from './drawioImport'
 import type { PdfImportSource } from './pdfImportRequest'
 import { createSurfaceOps } from './surfaceOps'
@@ -129,14 +129,14 @@ async function encodePicture(page: PDFPageProxy, inline: unknown[], request: Ima
 }
 
 /** The page drawn without the operators that became objects, cropped to what is left (§4.5). */
-async function renderRaster(page: PDFPageProxy, opCount: number, world: { w: number; h: number }, request: RasterRequest, edge: number, report: ImportReport): Promise<RasterResult | null> {
-  let mismatch = false
+async function renderRaster(page: PDFPageProxy, operators: PdfOperatorList | null, world: { w: number; h: number }, request: RasterRequest, edge: number, signal?: AbortSignal): Promise<RasterResult | null> {
   const canvas = await renderPage(page, edge, {
-    transparent: true,
-    // the indices are those of the operator list the converter read: never filter another one
-    ...(request.skip.size ? { filter: (index: number, list: { fnArray: number[] }) => { if (list.fnArray.length !== opCount) { mismatch = true; return false } return !request.skip.has(index) } } : {}),
+    transparent: true, importWork: true, signal,
+    ...(request.skip.size ? { filter: (index: number, list: PdfOperatorList) => {
+      if (list !== operators) throw new Error('PDF rendering operator stream changed')
+      return !request.skip.has(index)
+    } } : {}),
   })
-  if (mismatch) { report.add('pdf_raster_failed', 'Page rasters that could not be made', `p${page.pageNumber}`); return null }
   const ctx = canvas.getContext('2d')!
   const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
   let x1 = canvas.width, y1 = canvas.height, x2 = -1, y2 = -1
@@ -167,15 +167,15 @@ async function renderRaster(page: PDFPageProxy, opCount: number, world: { w: num
   return { bytes: new Uint8Array(await blob.arrayBuffer()), mediaType: blob.type || 'image/png', rect }
 }
 
-function converterOptions(page: PDFPageProxy, inline: unknown[], opCount: number, choices: Pick<PdfImportChoices, 'mode' | 'unit' | 'rasterEdge'>, report: ImportReport, fileBase: string, idPrefix: string, encode: boolean): PdfConvertOptions {
+function converterOptions(page: PDFPageProxy, operators: PdfOperatorList | null, choices: Pick<PdfImportChoices, 'mode' | 'unit' | 'rasterEdge'>, fileBase: string, idPrefix: string, encode: boolean, signal?: AbortSignal): PdfConvertOptions {
   const base = page.getViewport({ scale: 1 })
   const scale = pageScale(base.width, base.height)
   const world = { w: Math.round(base.width * scale), h: Math.round(base.height * scale) }
   return {
     mode: choices.mode, unit: choices.unit, pathLimit: PATH_LIMIT, idPrefix, fileBase,
     pageTitle: (n) => aiwsT('aiworkspace.pdf.pageTitle', { n }), imageText: () => aiwsT('aiworkspace.pdf.imageMissing'),
-    encodeImage: encode ? (request) => encodePicture(page, inline, request) : () => Promise.resolve({ bytes: new Uint8Array(0), mediaType: 'image/png' }),
-    renderRaster: encode ? (request) => renderRaster(page, opCount, world, request, choices.mode === 'raster' ? choices.rasterEdge : RASTER_EDGE, report)
+    encodeImage: encode ? (request) => encodePicture(page, operators?.argsArray ?? [], request) : () => Promise.resolve({ bytes: new Uint8Array(0), mediaType: 'image/png' }),
+    renderRaster: encode ? (request) => renderRaster(page, operators, world, request, choices.mode === 'raster' ? choices.rasterEdge : RASTER_EDGE, signal)
       // the estimate only asks whether a raster would be needed
       : () => Promise.resolve({ bytes: new Uint8Array(0), mediaType: 'image/png', rect: { x: 0, y: 0, w: 1, h: 1 } }),
   }
@@ -190,14 +190,15 @@ export async function inspectPdf(bytes: Uint8Array, signal?: AbortSignal): Promi
     const page = await doc.getPage(1)
     const base = page.getViewport({ scale: 1 })
     let preview: Blob | null = null
-    try { preview = await canvasBlob(await renderPage(page, 480), 'image/jpeg', 0.85) } catch { /* no picture */ }
     let estimate: PdfInspection['estimate'] = null
     let title: string | null = null
     try {
-      const { page: data, raw } = await extractPage(doc as unknown as PdfjsDocument, page as unknown as PdfjsPage, new Map(), null)
-      const plan = await convertPdfPage(data, new ImportReport(), converterOptions(page, raw.argsArray, data.fnArray.length, { mode: 'editable', unit: 'paragraph', rasterEdge: 2560 }, new ImportReport(), 'pdf', 'x', false))
+      const operators = await renderOperators(page, signal)
+      const { page: data } = await extractPage(doc as unknown as PdfjsDocument, page as unknown as PdfjsPage, new Map(), null, operators ?? { fnArray: [], argsArray: [] })
+      const plan = await convertPdfPage(data, new ImportReport(), converterOptions(page, operators, { mode: 'editable', unit: 'paragraph', rasterEdge: 2560 }, 'pdf', 'x', false, signal))
       estimate = plan.counts
     } catch { /* the import tells */ }
+    try { preview = await canvasBlob(await renderPage(page, 480, { importWork: true, signal }), 'image/jpeg', 0.85) } catch { /* no picture */ }
     try {
       const info = await doc.getMetadata()
       const t = (info.info as { Title?: unknown } | undefined)?.Title
@@ -274,19 +275,20 @@ export async function importPdf(store: WorkspaceStore, source: PdfImportSource, 
       const page = await doc.getPage(n)
       let plan: PdfPagePlan
       try {
-        const { page: data, raw } = await extractPage(doc as unknown as PdfjsDocument, page as unknown as PdfjsPage, bookmarks, oc)
+        const operators = await renderOperators(page, signal)
+        const { page: data } = await extractPage(doc as unknown as PdfjsDocument, page as unknown as PdfjsPage, bookmarks, oc, operators ?? { fnArray: [], argsArray: [] })
         const complex = choices.mode === 'editable' && choices.complex === 'whole' && data.fnArray.filter((fn) => fn === OPS.constructPath).length > PATH_LIMIT
         if (complex) report.add('pdf_complex_whole', 'Pages with very many paths imported whole as pictures', `p${n}`)
-        plan = await convertPdfPage(data, report, converterOptions(page, raw.argsArray, data.fnArray.length, { ...choices, mode: complex ? 'raster' : choices.mode }, report, fileBase, idPrefix, true))
+        plan = await convertPdfPage(data, report, converterOptions(page, operators, { ...choices, mode: complex ? 'raster' : choices.mode }, fileBase, idPrefix, true, signal))
       } catch (error) {
         if (signal.aborted) throw error
         // the page whole as a picture
         report.add('pdf_page_failed', 'Pages that could not be taken apart imported whole as pictures', `p${n}`)
         const fallback: PdfPage = { number: n, width: page.getViewport({ scale: 1 }).width, height: page.getViewport({ scale: 1 }).height, transform: page.getViewport({ scale: 1 }).transform, fnArray: [], argsArray: [], text: [], fonts: {}, patterns: {}, images: {}, struct: null, links: [], bookmark: bookmarks.get(n) ?? null }
-        plan = await convertPdfPage(fallback, report, { ...converterOptions(page, [], -1, { ...choices, mode: 'raster' }, report, fileBase, idPrefix, true), renderRaster: async () => {
+        plan = await convertPdfPage(fallback, report, { ...converterOptions(page, null, { ...choices, mode: 'raster' }, fileBase, idPrefix, true, signal), renderRaster: async () => {
           const base = page.getViewport({ scale: 1 })
           const s = pageScale(base.width, base.height)
-          const canvas = await renderPage(page, RASTER_EDGE)
+          const canvas = await renderPage(page, choices.mode === 'raster' ? choices.rasterEdge : RASTER_EDGE, { importWork: true, signal })
           const blob = await canvasBlob(canvas, 'image/jpeg', 0.9)
           return { bytes: new Uint8Array(await blob.arrayBuffer()), mediaType: 'image/jpeg', rect: { x: 0, y: 0, w: Math.round(base.width * s), h: Math.round(base.height * s) } }
         } })

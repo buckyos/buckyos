@@ -8,11 +8,13 @@ import { OPS, type Json, type PdfFont, type PdfLink, type PdfPage, type PdfStruc
 /** What is read of a pdf.js object store (`page.objs`, `page.commonObjs`). */
 export interface PdfjsObjects { get(id: string, callback?: (data: unknown) => void): unknown; has(id: string): boolean }
 
+export interface PdfOperatorList { fnArray: number[]; argsArray: unknown[] }
+
 export interface PdfjsPage {
   pageNumber: number
   getViewport(options: { scale: number }): { width: number; height: number; transform: number[] }
   getTextContent(options: { includeMarkedContent: boolean }): Promise<{ items: unknown[]; styles: Record<string, { ascent?: number | null; descent?: number | null; vertical?: boolean }> }>
-  getOperatorList(): Promise<{ fnArray: number[]; argsArray: unknown[] }>
+  getOperatorList(): Promise<PdfOperatorList>
   getStructTree(): Promise<unknown>
   getAnnotations(): Promise<unknown[]>
   objs: PdfjsObjects
@@ -39,7 +41,7 @@ const isPlain = (v: unknown): boolean => v === null || ['string', 'number', 'boo
 /** Where a picture's pixels are: an object id (`img_p0_1`, `g_…` for shared ones) or `op:<index>` (inline). */
 export function pictureRef(fn: number, args: unknown[], index: number): string | null {
   if (fn === OPS.paintImageXObject || fn === OPS.paintImageXObjectRepeat) return typeof args[0] === 'string' ? args[0] : null
-  if (fn === OPS.paintInlineImageXObject) return `op:${index}`
+  if (fn === OPS.paintInlineImageXObject || fn === OPS.paintInlineImageXObjectGroup) return `op:${index}`
   return null
 }
 
@@ -77,12 +79,17 @@ function compactArgs(fn: number, raw: unknown, index: number, ocVisible: (data: 
       return isPlain(args) ? args as Json : ['Unknown']
     }
     case OPS.paintImageXObject: return [String(args[0]), Number(args[1]) || 0, Number(args[2]) || 0]
-    case OPS.paintImageXObjectRepeat: return [String(args[0])]
+    case OPS.paintImageXObjectRepeat: return [String(args[0]), Number(args[1]), Number(args[2]), nums(args[3])]
+    case OPS.paintInlineImageXObjectGroup: {
+      const img = args[0] as { width?: number; height?: number } | undefined
+      const tiles = (args[1] ?? []) as { transform: unknown; x: number; y: number; w: number; h: number }[]
+      return [`op:${index}`, img?.width ?? 0, img?.height ?? 0, tiles.map(tile => [nums(tile.transform), tile.x, tile.y, tile.w, tile.h])]
+    }
     case OPS.paintInlineImageXObject: {
       const img = args[0] as { width?: number; height?: number } | undefined
       return [`op:${index}`, img?.width ?? 0, img?.height ?? 0]
     }
-    case OPS.paintImageMaskXObject: case OPS.paintImageMaskXObjectGroup: case OPS.paintImageMaskXObjectRepeat: case OPS.paintInlineImageXObjectGroup: return []
+    case OPS.paintImageMaskXObject: case OPS.paintImageMaskXObjectGroup: case OPS.paintImageMaskXObjectRepeat: return []
     case OPS.paintFormXObjectBegin: return [nums(args[0]), nums(args[1])]
     case OPS.beginGroup: {
       const g = (args[0] ?? {}) as { knockout?: boolean; smask?: unknown; isolated?: boolean }
@@ -173,10 +180,10 @@ export interface Extracted {
 }
 
 /** Read one page. `bookmarks` from `readBookmarks`; `oc` the document's optional content configuration, if any. */
-export async function extractPage(doc: PdfjsDocument, page: PdfjsPage, bookmarks: Map<number, string>, oc: { isVisible(group: unknown): boolean } | null): Promise<Extracted> {
+export async function extractPage(doc: PdfjsDocument, page: PdfjsPage, bookmarks: Map<number, string>, oc: { isVisible(group: unknown): boolean } | null, operators?: PdfOperatorList): Promise<Extracted> {
   const viewport = page.getViewport({ scale: 1 })
   const content = await page.getTextContent({ includeMarkedContent: true })
-  const ops = await page.getOperatorList()
+  const ops = operators ?? await page.getOperatorList()
   const ocVisible = (data: unknown) => { try { return !oc || !data || oc.isVisible(data) } catch { return true } }
   const text: PdfTextItem[] = []
   const stack: (string | null)[] = []

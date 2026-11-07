@@ -459,8 +459,10 @@ impl SnapshotManager {
         Ok(Some((path, data)))
     }
 
-    /// Clean up old snapshots, keeping only the latest one with id == `last_snapshot_id`
     pub async fn clean_old_snapshots(&self, last_snapshot_id: &str) -> StorageResult<()> {
+        let Some(keep_from) = Self::parse_snapshot_id(last_snapshot_id) else {
+            return Ok(());
+        };
         if !self.data_dir.exists() {
             warn!("Snapshots directory does not exist: {:?}", self.data_dir);
             return Ok(());
@@ -496,8 +498,7 @@ impl SnapshotManager {
                 continue;
             }
 
-            let sid = &name["snapshot_".len()..];
-            if sid != last_snapshot_id {
+            if Self::parse_snapshot_file_name(name).is_some_and(|order| order < keep_from) {
                 snapshots.push(entry.path());
             }
         }

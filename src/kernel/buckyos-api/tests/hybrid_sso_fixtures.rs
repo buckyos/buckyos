@@ -37,7 +37,8 @@ fn identity_fixtures_round_trip() {
         } => {
             assert_eq!(user_type, UserType::Limited);
             assert!(restricted && !password_set);
-            assert_eq!(scopes.len(), 4);
+            assert_eq!(scopes.len(), 5);
+            assert!(scopes.contains(&SessionScope::Aicc));
         }
         other => panic!("unexpected {other:?}"),
     }
