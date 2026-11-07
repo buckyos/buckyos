@@ -705,6 +705,7 @@ caption 另起一个气泡，时间等页脚使用画布配色；含文件卡片
 - 媒体设置（`conversation/media/settings.ts`，localStorage `buckyos.messagehub.media.v1`）：`previewTarget: overlay | window`
   （`window` 交给 Preview App，仅桌面窗口内可用）与 `autoplayGif`（关闭后消息流只显示 GIF 首帧）。
 - 显示加载、不可用、无权限与重试状态；单个附件失败不隐藏正文或其它引用；`service_did` 引用保留原样显示。
+- 其他 Zone 发来的附件（`objectFailure` 按对象路由的状态和正文分类）：读取慢于 1.2 秒显示“正在从对方 Zone 获取”；`api/objects.ts` 按 `Retry-After` 自动重试（拉取中最多 12 次，来源不可达最多 2 次），之后才显示不可用加重试。发送方未接受显示“接受后可查看附件”，不算失败，联系人变化后自动重新读取。目录（415）、超限（413）、校验失败（502）说明原因，不提供重试。卡片只取描述：描述带 `remote` 时视频不生成缩略图，点击后才下载，图片照旧在渲染时取内容。
 - 文件卡片右侧和视频 / 缩略图下方的文件名行带下载按钮（2026-10-12）：经 `ObjectAccess.contentUrl` 取内容后以原文件名下载，
   不打开预览；取内容失败时按钮转为“下载失败 · 重试”。
 - 待发附件消息在附件下方显示进度条与文字（排队 / 处理中 / 上传百分比与字节数），附件本身半透明，完成后恢复。
@@ -1018,7 +1019,7 @@ store 接口为 `group / groupStatus / ensureGroup / groupSession / createGroup 
 - **共享状态与昵称**：群会话详情的共享标题 / 说明 / 公告走 `group.get_shared_state` + `group.update_shared_state { session_id?, expected_revision, set, unset, idempotency_key }`，昵称走 `group.get_member_state` + `group.update_member_state`；非群会话仍显示「尚未启用」。
 - **已读回执**：Session 规则 `receipts !== 'hidden'` 时，对本人最新一条群消息查 `group.list_messages` 得到 `session_seq`，再 `group.get_read_markers { session_id?, session_seq }` 显示「N 人已读」（`readers` 规则下附读者名）；标记已读时若已知 seq 则顺带 `group.update_read_marker`（host 也会按 READ 状态推进）。
 - **入口**：实体列表标题栏「+」菜单的「新建群聊」、Groups 过滤器首行、空会话页、个人 / Agent 详情「和 X 建群」（预选该联系人）。选人一律用公共 `PeoplePicker`：建群对话框内嵌（`embedded`，`filter: { kinds: GROUP_MEMBER_KINDS = ['user', 'agent'], excludeBlocked: true }`，上限 `GROUP_MEMBER_LIMIT`），邀请成员与 Guest 用对话框（已在群里的人以 `exclude` 列出并注明状态），具名 Session 加成员用 `candidates` 限定为群的 active 成员。候选来自 msg-center（`contact.lookup`：本人联系人与本 Zone 用户，可输入新 DID 并保存为联系人）。创建调用 `group.create({ profile: { name }, invitations })`；名称留空时用所选成员名生成。邀请失败的人与原因在关闭选人对话框后单独列出。
-- **邀请与通知**：通知为 `kind = 'operation'`、`machine.intent = 'buckyos.group_invitation'`，`machine.data = { group_did, action, data }`，投递到与发起者的会话（`dm:<inviter>`），群名取 `group.get_doc`。各 action 的卡片：
+- **邀请与通知**：通知为 `kind = 'operation'`、`machine.intent = 'buckyos.group_invitation'`，`machine.data = { group_did, action, by?, data }`，群名取 `group.get_doc`。`invite`、`session_invite` 是邀请人发给还不在群里的人，投递到与邀请人的会话（`dm:<inviter>`）。其他通知的来源是群：`from` 是群 DID，记录带 `group:<group_did>` tag，进群的默认 Session，操作者在 `by`，卡片的 X 取 `by`。各 action 的卡片：
 
   | action | data | 卡片 |
   |---|---|---|
@@ -1672,7 +1673,7 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | `EntitySession.isPinned/isMuted` | `ui_session.get_state` | KV 反序列化 + schema 校验 |
 | `EntitySession.lifecycle` / `lastActiveAt` / `requestCount` | `msg.list_sessions(lifecycle: 'all', order_by: 'activity')` 的 `lifecycle` / `last_activity_ms` / `request_count` | 服务端按活动时间排序并给出同口径游标 |
 | `MessageObject[]` | `msg.list_session`（当前 owner，`with_object: true`，最新页 + 向上分页） | `api/reader.ts::itemToMessage`，记录上下文置于 `ui_record` |
-| 附件对象 / 内容 | `GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=[<session MailboxAddress>/]<msg_id>`（Bearer 会话 token） | `api/objects.ts`，`context_path` 由 `objectContextOf` 给出（携带附件的消息，编辑后是最新一次编辑）；msg-center 只经该消息在 `attachments` 桶的绑定代读；群 / Session 展示文件（EXT-04）用 `displayContext(<session MailboxAddress>)` = `<session>/_display`；`uri_hint` 只作提示 |
+| 附件对象 / 内容 | `GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=[<session MailboxAddress>/]<msg_id>`（Bearer 会话 token） | `api/objects.ts`，`context_path` 由 `objectContextOf` 给出（携带附件的消息，编辑后是最新一次编辑）；msg-center 只经该消息在 `attachments` 桶的绑定代读，其他 Zone 的附件没有绑定时 `/content` 先拉取、描述只问来源；群 / Session 展示文件（EXT-04）用 `displayContext(<session MailboxAddress>)` = `<session>/_display`；`uri_hint` 只作提示 |
 | 收藏附件 | `msg.collect_attachment {obj_id, context_path}` → `{bucket_id: "user/msg-center/<user>/collected", key}` | `ObjectAccess.collect`；之后经 `/bucket/v1/<bucket_id>/<key>` 读，消息撤回不影响 |
 | `ui_message_id` | `SessionMessageItem.record_id` | 直接 |
 | `ui_delivery_status` | `SessionMessageItem.delivery.overall` | 枚举映射，见 3.5 |

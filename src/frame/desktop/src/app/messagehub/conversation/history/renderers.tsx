@@ -914,7 +914,7 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
   const view = notice ? actions.groupNotice?.(message) : null
   if (!notice || !view) return renderFallbackMessage(message, context)
   const nameOf = (did: string) => actions.displayName?.(did) ?? did
-  const inviter = nameOf(message.from)
+  const inviter = nameOf(notice.by ?? message.from)
   const invitation = notice.invitation
   const run = (operation: ((message: MessageObject) => Promise<void>) | undefined, doneKey: string) => {
     if (!operation || state === 'pending') return

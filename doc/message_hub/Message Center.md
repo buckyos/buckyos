@@ -452,7 +452,7 @@ Gateway 排空按“取出但暂不删 → 投 upstream → accepted 后删除�
 
 - 带 Bearer：必须是本 Zone 信任的 session token，`sub`（经 `principal_dids` 映射）为 principal。GET 状态查询只接受这种方式。
 - 不带 Bearer：只接受 `application/cyfs-named-object+jwt`，签名验出的 `from` 即 principal（未签名返回 401 `unauthenticated`）。每个发送方每分钟最多 30 条（进程内计数），超出返回 429 `rate-limited`（可重试）。配额在验签之前扣除，按 JWT 声称的 `from` 计，超额的发送方不会触发签名密钥的名字解析；已知风险：伪造者可以冒用某个 `from` 耗尽它在本 Zone 的配额。
-- 两种方式都要求 `from == principal` 且 `to` 含路径指定的收件人（否则 `sender-or-target-mismatch`），之后照常走 ContactMgr 准入：陌生人进 REQUEST_BOX，屏蔽丢弃并返回 403 `acl-denied`（不可重试）。所有签名消息都放行进准入，跨 Zone 私聊因此可用；垃圾消息是已知风险，目前只靠屏蔽、好友请求冷却与每分钟配额。
+- 两种方式都要求 `from == principal` 且 `to` 含路径指定的收件人（否则 `sender-or-target-mismatch`），之后照常走 ContactMgr 准入：陌生人进 REQUEST_BOX，屏蔽丢弃并返回 403 `acl-denied`（不可重试）。例外是群管理通知：`from` 是群，且本 Zone 记录过收件人加入或申请过这个群，直接进 INBOX 的群 Session；收件人屏蔽了这个群本身时仍然丢弃（Self-Host-Groupv2 §5.4）。所有签名消息都放行进准入，跨 Zone 私聊因此可用；垃圾消息是已知风险，目前只靠屏蔽、好友请求冷却与每分钟配额。
 
 CYFS 接收同时接受 `application/cyfs-named-object+json` 与 `application/cyfs-named-object+jwt`。JWT 形式的 MsgObject（`cyfs_dispatch.rs::verify_signed_message_with`）：
 
@@ -632,12 +632,39 @@ RPC `msg.create_session` / `msg.archive_session` / `msg.restore_session` / `msg.
   通用对象读权限）。受限会话必须带上下文。
 - 调用者能读该消息（或该 Session），消息引用了 `obj_id`（或展示配置列出了它），且 `zone/msg-center/_/attachments`
   中对应的 key（`<session>/<msg_id>/<n>`，展示文件为 `<group MailboxAddress>/_display/<obj_id>`）绑定的正是该对象，
-  才从 named store 读出；任一不满足、或找不到消息，都返回 404（受限会话的 404 带 `access_denied` /
-  `resource_grant_missing` 拒绝体）。
+  才从 named store 读出；找不到消息、消息没有引用它，都返回 404（受限会话的 404 带 `access_denied` /
+  `resource_grant_missing` 拒绝体）。不带上下文时优先选绑定已持有该对象的消息。
+- 其他 Zone 发来的消息收到时不绑定附件（消息签名和本地副本都不算授权，见 `Message Center Durable Data Schema.md`）。
+  调用者能读这条消息、但绑定还没有时：
+  - `/content` 向来源申请 `msg.attachment_ticket`，经 `/ndn/` 拉取、逐项校验并绑定，读取最多等 20 秒。
+  - 不带 `/content`（取描述）只向来源要 FileObject 并校验 ObjId，不写绑定，也不看本地 named store，响应带
+    `x-attachment-remote: 1`、`cache-control: no-store`。卡片因此不会把内容下载下来。
+  - 来源：私聊是发送方 Zone，以读者身份；本 Zone 托管的群是作者 Zone，以群的身份（host 接受消息后即在后台拉取，失败不影响接受，
+    下一次读取或票据请求再试）；joined 的群是 host，以读者身份，由 host 按群规则裁决。群的展示文件同样经 host 取。
+  - 私聊要读者已接受发送方（`decide_inbox_kind` 判定；看当前策略，不看记录在哪个 box），否则不外连。
+  - 群消息的来源是群，不看读者和作者之间的联系人策略：读者拉黑了作者或不认识作者，都照常读取（Self-Host-Groupv2 §5.4）。
+
+  | 响应 | 含义 |
+  | --- | --- |
+  | 403 `attachment-awaiting-acceptance` | 读者还没接受发送方，没有任何外连 |
+  | 404 `not-found` | 来源拒绝或没有（私聊的发送方屏蔽了读者时也一样），和消息不存在相同 |
+  | 413 | 按 chunk 自带长度累加超过 64 MiB，或 FileObject 声明超过，没有下载 chunk |
+  | 415 `attachment-directory-unsupported` | 目录附件，跨 Zone 暂不支持 |
+  | 502 `attachment-verification-failed` | 内容和 ObjId 不符，或 `size` 与实际长度不符 |
+  | 503 `attachment-fetching` + `Retry-After: 5` | 拉取中（后台继续），或 host 自己还在取 |
+  | 503 `attachment-source-unreachable` + `Retry-After: 30` | 来源暂不可达、绑定失败（含超配额）；30 秒内不再重试 |
 - 托管群的消息对象本身也经此路由读：受限会话以 `<session MailboxAddress>/<msg_id>` 为上下文，其他调用者能读该消息即可，不带上下文。
 - 可选 `inner_path` 读目录附件内的文件。
 
-`msg.collect_attachment {obj_id, context_path}` 把调用者经上述同一规则能读的附件复制进自己的
+转发时复用引用要来源消息的绑定持有该对象，仅仅引用不算；没有绑定的远端消息先按上述规则取回，取回前发送失败，错误码
+`attachment_pending`，可重试。
+
+`msg.attachment_ticket {obj_id, msg_id | context_path}` 由其他 Zone 代用户或群调用（跨 Zone 登录的 External 会话）：
+`msg_id` 时调用者必须在 `msg.to` 里（私聊收件人；群消息是群本身），私聊的发送方屏蔽了收件人时按消息不存在处理；`context_path`
+（`<session>/<msg_id>` 或 `<session>/_display`）时由 host 按群规则裁决成员，host 还没有内容时触发拉取并返回 `attachment_pending`。
+令牌只读、只覆盖这一个 key、1 小时、不限次，解绑即失效。
+
+`msg.collect_attachment {obj_id, context_path}` 把调用者经上述同一规则能读的附件（没有取回的先取回）复制进自己的
 `user/msg-center/<user>/collected` 桶（`origin = {author: 发送者 DID, source: cyfs://<msg_id>}`），返回
 `{bucket_id, key}`，key 为 `<msg_id>/<n>/<label>`；重复收藏返回同一个 key。只有 Zone 用户可调用（外部用户、受限会话拒绝）。
 收藏的副本之后经 `/bucket/v1/<bucket_id>/<key>` 读，消息撤回不影响它。桶的声明、key 与解绑规则见

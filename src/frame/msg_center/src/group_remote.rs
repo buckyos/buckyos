@@ -219,6 +219,29 @@ impl MessageCenter {
             .cloned())
     }
 
+    /// The group itself telling `owner` about their place in it (`msg.from` is proven by the
+    /// transport), and this Zone knows `owner` joined it or asked to: it goes to the group's
+    /// session, past the contact policy. A group nobody here asked for stays a stranger.
+    pub(crate) async fn is_notice_of_own_group(&self, msg: &ndn_lib::MsgObject, owner: &DID) -> bool {
+        let names_itself = msg.kind == ndn_lib::MsgObjKind::Operation
+            && msg.content.machine.as_ref().is_some_and(|machine| {
+                machine.intent.as_deref() == Some(GROUP_NOTICE_INTENT)
+                    && serde_json::to_value(&machine.data).is_ok_and(|data| data["group_did"] == json!(msg.from))
+            });
+        if !names_itself {
+            return false;
+        }
+        if matches!(self.load_group_binding(owner, &msg.from).await, Ok(Some(_))) {
+            return true;
+        }
+        self.cyfs_dispatch
+            .read()
+            .unwrap()
+            .joined_groups
+            .iter()
+            .any(|route| route.owner_did == *owner && route.group_did == msg.from)
+    }
+
     pub(crate) async fn remote_group_doc(&self, owner: &DID, group: &DID) -> Result<Value> {
         let route = self.resolve_group_route(owner, group).await?;
         let value = route

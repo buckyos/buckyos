@@ -282,10 +282,18 @@ async fn join(c: &MessageCenter, d: &DID) -> Value {
 /// `machine.data` payload of each `buckyos.group_invitation` message.
 async fn notices(c: &MessageCenter, d: &DID, from: &DID, kind: MailboxKind) -> Vec<Value> {
     let mailbox = MailboxAddress::new(d.clone(), Some(format!("dm:{}", from.to_string()))).unwrap();
+    notices_in(c, &mailbox, kind).await
+}
+/// What the group itself told `d`, in d's session of the group.
+async fn group_notices(c: &MessageCenter, d: &DID) -> Vec<Value> {
+    let mailbox = MailboxAddress::new(d.clone(), Some(session_key(&group(), None).unwrap())).unwrap();
+    notices_in(c, &mailbox, MailboxKind::Inbox).await
+}
+async fn notices_in(c: &MessageCenter, mailbox: &MailboxAddress, kind: MailboxKind) -> Vec<Value> {
     let mut out = vec![];
     for record in c
         .msg_box_db
-        .list_records(&mailbox, &kind, None, false)
+        .list_records(mailbox, &kind, None, false)
         .await
         .unwrap()
     {
@@ -2023,8 +2031,9 @@ async fn member_issued_invitations_need_approval_and_owners_appoint_admins_direc
         c.groups.load(&group()).await.unwrap().unwrap().group_seq,
         pending_seq
     );
-    let pending = notices(&c, &owner(), &guest(), MailboxKind::RequestBox).await;
+    let pending = group_notices(&c, &owner()).await;
     assert!(pending.iter().any(|n| n["action"] == "pending_approval"
+        && n["by"] == json!(guest())
         && n["data"]["member_did"] == json!(guest())
         && n["data"]["invited_by"] == json!(member())));
     assert!(call(
@@ -2215,11 +2224,47 @@ async fn agents_with_group_chat_disabled_refuse_every_invitation() {
     );
 }
 
+/// What the group says comes from the group: a member who blocked the one who acted hears it,
+/// in the group's session, with no private conversation from that person. Only a block of the
+/// group itself stops it.
+#[tokio::test]
+async fn what_the_group_says_reaches_a_member_who_blocked_the_one_who_acted() {
+    let (c, _tmp, _) = center().await;
+    create(&c, json!({})).await;
+    join(&c, &member()).await;
+    join(&c, &guest()).await;
+    c.contact_mgr.block_contact(owner(), None, Some(member())).await.unwrap();
+    c.contact_mgr.block_contact(group(), None, Some(guest())).await.unwrap();
+
+    call(&c, &owner(), "group.transfer_owner", json!({"member_did":member()})).await.unwrap();
+    call(&c, &owner(), "group.cancel_owner_transfer", json!({})).await.unwrap();
+    call(&c, &owner(), "group.remove_member", json!({"member_did":member()})).await.unwrap();
+    call(&c, &owner(), "group.remove_member", json!({"member_did":guest()})).await.unwrap();
+
+    let said = group_notices(&c, &member()).await;
+    let actions: Vec<_> = said.iter().map(|n| n["action"].as_str().unwrap()).collect();
+    assert_eq!(actions, ["owner_transfer", "removed"]);
+    assert!(said.iter().all(|n| n["by"] == json!(owner()) && n["group_did"] == json!(group())));
+
+    let mailbox = MailboxAddress::new(member(), Some(session_key(&group(), None).unwrap())).unwrap();
+    let records = c.msg_box_db.list_records(&mailbox, &MailboxKind::Inbox, None, false).await.unwrap();
+    let removal = records.iter().find(|r| r.msg_kind == ndn_lib::MsgObjKind::Operation).unwrap();
+    assert_eq!(removal.from, group());
+    assert!(removal.tags.contains(&format!("group:{}", group().to_string())));
+
+    for kind in [MailboxKind::Inbox, MailboxKind::RequestBox] {
+        let private = notices(&c, &member(), &owner(), kind).await;
+        assert!(private.iter().all(|n| n["action"] == "invite"), "{private:?}");
+    }
+    assert!(group_notices(&c, &guest()).await.is_empty(), "blocking the group is another matter");
+}
+
 #[tokio::test]
 async fn owner_transfer_takes_effect_only_when_the_target_accepts() {
     let (c, _tmp, _) = center().await;
     create(&c, json!({})).await;
     join(&c, &member()).await;
+    c.register_local_recipients([member()]);
     assert!(call(
         &c,
         &member(),
@@ -2236,10 +2281,10 @@ async fn owner_transfer_takes_effect_only_when_the_target_accepts() {
     )
     .await
     .unwrap();
-    let offered = notices(&c, &member(), &owner(), MailboxKind::RequestBox).await;
-    assert!(offered.iter().any(
-        |n| n["action"] == "owner_transfer" && n["data"]["transfer_id"] == first["transfer_id"]
-    ));
+    let offered = group_notices(&c, &member()).await;
+    assert!(offered.iter().any(|n| n["action"] == "owner_transfer"
+        && n["by"] == json!(owner())
+        && n["data"]["transfer_id"] == first["transfer_id"]));
     call(&c, &owner(), "group.cancel_owner_transfer", json!({}))
         .await
         .unwrap();
@@ -3128,6 +3173,49 @@ mod attachment_buckets {
         let dm = with_refs(direct(&owner(), &member(), "mine", 3), &[&secret]);
         c.post_send_internal(dm.clone(), None).await.unwrap();
         assert_eq!(bound(&b, &attachments(), &att_key(&dm, 0)).await, Some(secret.to_string()));
+    }
+
+    /// N1: being named by a message in one's mailbox or group is no grant. Only a message
+    /// whose binding holds the object lets a user send it on.
+    #[tokio::test]
+    async fn a_message_that_only_names_an_object_cannot_be_reissued() {
+        let (c, _tmp, b) = bound_center().await;
+        c.set_token_verifier(verifier(false));
+        create(&c, json!({})).await;
+        join(&c, &member()).await;
+        c.register_local_recipients([member()]);
+        let secret = file(&b.store, "secret.txt", b"someone's private bytes").await;
+
+        // A private message from outside names it; its recipient tries to reissue it.
+        let incoming = with_refs(direct(&guest(), &member(), "read this", 1), &[&secret]);
+        assert!(c.dispatch_to_receiver(incoming, None, member(), "https://local/inbox".to_string()).await.unwrap().ok);
+        let resend = with_refs(direct(&member(), &owner(), "as if it were mine", 2), &[&secret]);
+        assert!(c.handle_post_send(resend.clone(), None, context(&member())).await.is_err());
+        assert_eq!(bound(&b, &attachments(), &att_key(&resend, 0)).await, None);
+        assert_eq!(read(&c, &context(&member()), &secret, Some(&resend.gen_obj_id().0.to_string())).await.0, StatusCode::NOT_FOUND);
+
+        // A remote group member names it; another member tries the same.
+        let remote = GroupActor { did: guest(), client: None, remote: true };
+        call(&c, &owner(), "group.add_member", json!({"member_did": guest()})).await.ok();
+        let post = with_refs(message(&guest(), None, "see attached", 3), &[&secret]);
+        c.accept_group_message(&remote, post, None).await.unwrap();
+        let resend = with_refs(direct(&owner(), &member(), "from the group", 4), &[&secret]);
+        assert!(c.handle_post_send(resend.clone(), None, context(&owner())).await.is_err());
+        assert_eq!(bound(&b, &attachments(), &att_key(&resend, 0)).await, None);
+
+        // What the binding holds is sent on as before, from a message or a group.
+        let mine = file(&b.store, "mine.txt", b"really sent").await;
+        let dm = with_refs(direct(&owner(), &member(), "mine", 5), &[&mine]);
+        assert!(c.handle_dispatch(dm, None, None, context(&owner())).await.unwrap().ok);
+        let forward = with_refs(direct(&member(), &owner(), "forward", 6), &[&mine]);
+        c.handle_post_send(forward.clone(), None, context(&member())).await.expect("legitimate forward");
+        assert_eq!(bound(&b, &attachments(), &att_key(&forward, 0)).await, Some(mine.to_string()));
+        let shared = file(&b.store, "shared.txt", b"group file").await;
+        let post = with_refs(message(&owner(), None, "shared", 7), &[&shared]);
+        assert!(c.accept_group_message(&actor(owner()), post, None).await.unwrap().ok);
+        let onward = with_refs(direct(&member(), &owner(), "from the group", 8), &[&shared]);
+        c.handle_post_send(onward.clone(), None, context(&member())).await.expect("legitimate group forward");
+        assert_eq!(bound(&b, &attachments(), &att_key(&onward, 0)).await, Some(shared.to_string()));
     }
 
     #[tokio::test]

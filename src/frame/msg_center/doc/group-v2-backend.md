@@ -19,8 +19,8 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 | group.apply_config | expected_revision、patch、idempotency_key；返回新 revision，未知配置字段保留。`extensions.panels`（面板声明，整体替换）、`display`、`rules.display` 在此校验：面板 `entry_url` 必须是群 host Zone 的 App 子域（`invalid-panel-decl:*`），`rules.panels` 只能引用已声明 id（`unknown-panel:<id>`），`display.featured_members` 须是活跃成员（`invalid-display-member`）。不带 `secret` 的 Hook 绑定由服务生成 32 字节随机 secret，只在本次响应的 `hook_secrets: [{scope, index, secret}]` 中出现一次 |
 | group.rotate_hook_secret | session_id?、index；默认 Session / 模板 Hook 需 group.update_config，Session 覆盖项 Hook 需 session.manage；返回 `{revision, secret}` |
 | group.archive / delete | 仅 Owner；delete 留不可复用墓碑 |
-| group.transfer_owner | member_did；仅 DID controller，目标需 Active；发起两步转让，返回 transfer_id、member_did、expires_at_ms，目标成员收到 owner_transfer 通知；不自动接受 |
-| group.accept_owner_transfer | transfer_id；由目标成员调用，接受后返回 owner；无对应待接受转让或已过期返回 transfer-mismatch |
+| group.transfer_owner | member_did；仅 DID controller，目标需 Active 且在 host Zone（否则 owner-must-be-in-the-host-zone）；发起两步转让，返回 transfer_id、member_did、expires_at_ms，目标成员收到 owner_transfer 通知；不自动接受 |
+| group.accept_owner_transfer | transfer_id；由 host Zone 的目标成员调用，接受后返回 owner；无对应待接受转让或已过期返回 transfer-mismatch |
 | group.cancel_owner_transfer | 由群主调用，取消待接受的转让 |
 | group.invite_member | member_did、role?、expires_at_ms?；记录 invited_by；返回 invite_id、member_did、expires_at_ms、state（invited / active / pending_admin_approval，后两者表示同 Zone 成员一方已自动接受） |
 | group.revoke_invite | member_did |
@@ -70,7 +70,7 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 
 已删除的错误码：owner-proof-required、member-proof-required、signed-member-proof-required、proof-signer-mismatch、proof-payload-mismatch、invalid-proof-type、invalid-proof-lifetime、proof-scope-mismatch、proof-replayed、proof-key-unavailable、owner-proof-role-required、proof-invitation-mismatch、proof-role-mismatch、role-consent-required、owner-consent-required。新增：invitation-mismatch、transfer-mismatch、owner-transfer-pending、agent-owner-required、agent_group_disabled。
 
-通知（kind = operation，machine.intent = buckyos.group_invitation）：`invite` 的 data 带 `state`（active 表示已自动加入，pending_admin_approval 表示已接受待审批，invited 表示等待本人接受）和代为接受时的 `member_did`；`pending_approval` 发给有 group.approve_member 能力的成员，带 `member_did`、`invited_by?`；新增 `owner_transfer`（`transfer_id`、`expires_at_ms`）发给转让目标。
+通知（kind = operation，machine.intent = buckyos.group_invitation）：`invite` 的 data 带 `state`（active 表示已自动加入，pending_admin_approval 表示已接受待审批，invited 表示等待本人接受）和代为接受时的 `member_did`；`pending_approval` 发给有 group.approve_member 能力的成员，带 `member_did`、`invited_by?`；新增 `owner_transfer`（`transfer_id`、`expires_at_ms`）发给转让目标。`invite`、`session_invite` 的 `from` 是邀请人，按接收者对邀请人的联系人策略投递到 `dm:<inviter>`；其他通知（`pending_approval`、`rejected`、`removed`、`session_removed`、`owner_transfer`）的 `from` 是群，`machine.data.by` 是操作者，`to_session` 是群的默认 Session，只有接收者屏蔽了这个群才丢弃（Self-Host-Groupv2 §5.4）。
 
 消息保持 `from=认证主体`、`to=[group_did]`、`kind=group_msg`。`to_session` 决定 Session，topic 不参与路由。host 接受消息时分配序号，并保存原始 MsgObject；客户端 created_at_ms 不决定排序。编辑、撤回、回应和 @all 在关系目标、作者、时间窗、能力、成员资格和限流校验后执行。
 
@@ -91,7 +91,7 @@ inbox PUT 的 body 为 canonical MsgObject JSON 或 `application/cyfs-named-obje
 
 inbox GET 使用 after_seq/limit，返回 seq、obj_id、redacted；默认实现还返回 accepted_at_ms 供本地投影使用 host 排序。changes 使用 reader-bound opaque token，不暴露 group_seq；未知/过期 token 返回 limited。响应的 member 为当前调用者的 `{state, epoch}` 或 null，供重入同步区分历史移除事件与当前成员状态。退群、移除、Session 删除和群删除保留当事人的最小通知，不能借此读取消息正文。
 
-read_markers 的标准 body 为 `{ "session": "群的规范 MailboxAddress", "last_read_seq": 42 }`。默认实现也接受原始 session_id/null。附件必须携带 `context_path=<规范群 Session 地址>/<消息 ObjectId>`；host 校验该消息可读、实际引用了目标对象，且该消息在 `zone/msg-center/_/attachments` 的绑定（`<session>/<msg_id>/<n>`）持有它，再从 NamedStore 读取。
+read_markers 的标准 body 为 `{ "session": "群的规范 MailboxAddress", "last_read_seq": 42 }`。默认实现也接受原始 session_id/null。附件必须携带 `context_path=<规范群 Session 地址>/<消息 ObjectId>`；host 校验该消息可读、实际引用了目标对象，且该消息在 `zone/msg-center/_/attachments` 的绑定（`<session>/<msg_id>/<n>`）持有它，再从 NamedStore 读取。远端成员的附件没有绑定时，host 以群 DID 向作者 Zone 取回（接受消息后后台进行，读取和票据请求也会触发）；其他 Zone 的成员经 `msg.attachment_ticket {obj_id, context_path}` 取令牌再读 host 的 `/ndn/`，规则相同，见 Message Center 附件一节。跨 Zone 断言登录的群成员可以发带附件的消息（host 不绑定，由上述流程取回）；访客和 Session Guest 不行。
 
 公开资料有额外 GET `/<group_did>/doc`（ObjectId+Doc）和 `/<group_did>/did.json`（Doc 内容）入口。GroupDoc 来源于配置，包含 group DID context 和 iat，不作为规则来源。创建、公开配置/Owner 改变、归档和删除均在本地事务中登记发布待办；后台通过 system-config 原子发布 Zone resolver 的 did.json 文档（实际类型 group，由本 Zone OOD 设备 key 签成 JWT）或 tombstoned 状态，失败后重试。did:bns 下普通来源要求签名，远端按 owner → OOD 设备文档 → 群文档的 Zone 托管链验证。
 

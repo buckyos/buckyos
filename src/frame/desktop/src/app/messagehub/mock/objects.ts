@@ -1,5 +1,5 @@
 import type { AttachmentDirectory } from '../conversation/input/attachmentDraft'
-import type { ObjectAccess, ObjectInfo } from '../conversation/history/objectAccess'
+import { ObjectRouteError, retryingObjectRead, type ObjectAccess, type ObjectInfo } from '../conversation/history/objectAccess'
 
 interface MockObject {
   name: string
@@ -199,22 +199,34 @@ function blobOf(objId: string): Promise<Blob> {
   return pending
 }
 
+/**
+ * What a test wants the route to do, by file name: refuse reads
+ * (`window.__mockObjectAnswers = { 'a.pdf': { status, reason, retryAfter } }`)
+ * or describe a file as still in another Zone (`window.__mockRemoteObjects = ['a.webm']`).
+ */
+interface MockObjectAnswer { status: number; reason: string; retryAfter?: number }
+const testHooks = () => window as Window & { __mockObjectAnswers?: Record<string, MockObjectAnswer>; __mockRemoteObjects?: string[] }
+
+function answerOf(objId: string) {
+  const name = specOf(objId)?.name
+  const answer = name ? testHooks().__mockObjectAnswers?.[name] : undefined
+  if (answer) throw new ObjectRouteError(answer.status, answer.reason, answer.retryAfter)
+}
+
 export const mockObjectAccess: ObjectAccess = {
-  async describe(objId, _context, innerPath) {
-    objId = resolveMockId(objId, innerPath)
-    const directory = directories.get(objId)
-    if (directory) return { objId, name: directory.name, isFile: false, isDirectory: true, entries: directory.children.map(child => child.kind === 'dir' ? child.name : child.file.name) }
-    const spec = specOf(objId)
-    if (!spec) throw new Error('404 object unavailable')
-    const blob = await blobOf(objId).catch(() => null)
-    return { objId, isFile: true, name: spec.name, mimeType: spec.mimeType, size: blob?.size } satisfies ObjectInfo
+  describe(objId, _context, innerPath) {
+    return retryingObjectRead(() => mockDescribe(objId, innerPath))
   },
   contentUrl(objId, _context, innerPath) {
     objId = resolveMockId(objId, innerPath)
     let pending = urls.get(objId)
     if (!pending) {
-      pending = blobOf(objId).then(blob => URL.createObjectURL(blob))
-      pending.catch(() => urls.delete(objId))
+      const id = objId
+      pending = retryingObjectRead(async () => {
+        answerOf(id)
+        return URL.createObjectURL(await blobOf(id))
+      })
+      pending.catch(() => urls.delete(id))
       urls.set(objId, pending)
     }
     return pending
@@ -226,6 +238,17 @@ export const mockObjectAccess: ObjectAccess = {
     mockCollected.set(key, objId)
     return { bucketId: 'user/msg-center/mock/collected', key }
   },
+}
+
+async function mockDescribe(objId: string, innerPath?: string): Promise<ObjectInfo> {
+  objId = resolveMockId(objId, innerPath)
+  answerOf(objId)
+  const directory = directories.get(objId)
+  if (directory) return { objId, name: directory.name, isFile: false, isDirectory: true, entries: directory.children.map(child => child.kind === 'dir' ? child.name : child.file.name) }
+  const spec = specOf(objId)
+  if (!spec) throw new Error('404 object unavailable')
+  const blob = await blobOf(objId).catch(() => null)
+  return { objId, isFile: true, name: spec.name, mimeType: spec.mimeType, size: blob?.size, remote: testHooks().__mockRemoteObjects?.includes(spec.name) } satisfies ObjectInfo
 }
 
 /** What the viewer collected (`collect`): key → object id, for tests. */

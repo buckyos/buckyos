@@ -38,6 +38,12 @@ pub(crate) const ZONE_B: TestZone = TestZone {
     x: "mL_tm5diVGGkpt_6WmCZQxUsee4rHacyz7mx7TkKb-0",
 };
 
+pub(crate) const ZONE_C: TestZone = TestZone {
+    host: "c.example",
+    key: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIGyoPGOposnQ06mxLXQCVf89plIIsFk5Rj+iv0WFxuAh\n-----END PRIVATE KEY-----",
+    x: "Ln-BTq9IvgsTPWQ3dKJT-lSHJ1nJT0plB7ry9bRzHtQ",
+};
+
 impl TestZone {
     pub fn did(&self) -> DID {
         DID::new("web", self.host)
@@ -103,6 +109,9 @@ impl SessionTokenVerifier for ZoneVerifier {
     }
     async fn sso_settings(&self) -> Result<buckyos_api::SsoSettings, RPCErrors> {
         Ok(Default::default())
+    }
+    async fn authorize_imported_attachment(&self, _: &str, _: &ndn_lib::ObjId) -> Result<bool, RPCErrors> {
+        Ok(false)
     }
 }
 

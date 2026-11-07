@@ -351,14 +351,39 @@ impl CrossZoneClient {
         params: Value,
     ) -> Result<Value, CrossZoneError> {
         let host = self.zone_host(zone).await?;
-        let key = token_key(&host, service, principal);
-        let token = self.bearer(zone, &host, service, principal, &key).await?;
-        let result = self.krpc(&host, &format!("/kapi/{service}"), method, params.clone(), Some(token)).await;
+        self.call_to(zone, &host, service, principal, method, params).await
+    }
+
+    /// [`Self::call`] to a Zone known only by its hostname (see [`Self::request_host`]).
+    pub async fn call_host(
+        &self,
+        host: &str,
+        service: &str,
+        principal: &Principal,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, CrossZoneError> {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        self.call_to(&DID::new("web", &host), &host, service, principal, method, params).await
+    }
+
+    async fn call_to(
+        &self,
+        zone: &DID,
+        host: &str,
+        service: &str,
+        principal: &Principal,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, CrossZoneError> {
+        let key = token_key(host, service, principal);
+        let token = self.bearer(zone, host, service, principal, &key).await?;
+        let result = self.krpc(host, &format!("/kapi/{service}"), method, params.clone(), Some(token)).await;
         match result {
             Err(CrossZoneError::Target(RPCErrors::InvalidToken(_) | RPCErrors::TokenExpired(_))) => {
                 self.tokens.lock().unwrap().remove(&key);
-                let token = self.bearer(zone, &host, service, principal, &key).await?;
-                self.krpc(&host, &format!("/kapi/{service}"), method, params, Some(token)).await
+                let token = self.bearer(zone, host, service, principal, &key).await?;
+                self.krpc(host, &format!("/kapi/{service}"), method, params, Some(token)).await
             }
             other => other,
         }

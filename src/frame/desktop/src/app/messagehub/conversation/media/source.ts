@@ -11,7 +11,7 @@ import type { ndn } from 'buckyos'
 import { getMessageStableId, messageObjId, type MessageObject } from '../../protocol/msgobj'
 import { effectiveContent, messageRelations } from '../history/relations'
 import type { ConversationMessageReader } from '../history/types'
-import { getObjectAccess, type ObjectInfo } from '../history/objectAccess'
+import { getObjectAccess, objectFailure, type ObjectInfo } from '../history/objectAccess'
 
 export const MESSAGEHUB_OBJECT_SOURCE = 'messagehub-object'
 
@@ -134,12 +134,16 @@ function valueOf(source: ContentRef): MessageObjectSourceValue {
 
 function accessError(error: unknown): PreviewError {
   const text = error instanceof Error ? error.message : String(error)
-  const status = Number(text.split(' ')[0])
-  if (status === 401 || status === 403) return new PreviewError('PERMISSION_DENIED', 'You do not have access to this attachment', { detail: text })
-  if (status === 404) return new PreviewError('NOT_FOUND', 'This attachment is no longer available', { detail: text })
-  if (status === 413) return new PreviewError('TOO_LARGE', 'This attachment is too large to open here', { detail: text })
-  if (status === 415) return new PreviewError('UNSUPPORTED', 'This attachment has no downloadable content', { detail: text })
-  return new PreviewError('NETWORK', 'The attachment could not be loaded', { detail: text, retryable: true })
+  switch (objectFailure(error)) {
+    case 'awaiting_acceptance': return new PreviewError('PERMISSION_DENIED', 'Accept the sender to view this attachment', { detail: text })
+    case 'denied': return new PreviewError('PERMISSION_DENIED', 'You do not have access to this attachment', { detail: text })
+    case 'not_found': return new PreviewError('NOT_FOUND', 'This attachment is no longer available', { detail: text })
+    case 'too_large': return new PreviewError('TOO_LARGE', 'This attachment is too large to open here', { detail: text })
+    case 'directory': return new PreviewError('UNSUPPORTED', 'Folders from other Zones cannot be opened yet', { detail: text })
+    case 'unsupported': return new PreviewError('UNSUPPORTED', 'This attachment has no downloadable content', { detail: text })
+    case 'corrupt': return new PreviewError('NETWORK', 'This attachment failed verification', { detail: text })
+    default: return new PreviewError('NETWORK', 'The attachment could not be loaded', { detail: text, retryable: true })
+  }
 }
 
 async function resolveMessageObject(source: ContentRef): Promise<ResolvedPreviewSource> {

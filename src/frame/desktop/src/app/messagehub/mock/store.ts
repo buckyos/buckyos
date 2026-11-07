@@ -143,9 +143,9 @@ function seedSnapshot(now: number): Snapshot {
       reading: { sessionId: 'reading', title: 'Reading list', description: '', announcement: '', lifecycle: 'active', revision: 'rev-reading-1', receipts: 'count', allowGuests: true, participants: { [MOCK_SELF_DID]: 'invited_guest' } },
     }, inviteLinks: { 'book-club-token': { requireApproval: false, revoked: false } } },
   }
-  const notice = (id: string, from: string, sessionId: string, at: number, groupDid: string, action: string, data: Record<string, unknown>): MessageObject => ({
+  const notice = (id: string, from: string, sessionId: string, at: number, groupDid: string, action: string, data: Record<string, unknown>, by?: string): MessageObject => ({
     from, to: [MOCK_SELF_DID], kind: 'operation', created_at_ms: at, ui_message_id: id, ui_session_id: sessionId,
-    content: { format: 'text/plain', content: action, machine: { intent: GROUP_INVITATION_INTENT, data: { group_did: groupDid, action, data: data as Record<string, never> } } },
+    content: { format: 'text/plain', content: action, machine: { intent: GROUP_INVITATION_INTENT, data: { group_did: groupDid, action, ...(by ? { by } : {}), data: data as Record<string, never> } } },
   })
   sessions[sessionKey(MOCK_SELF_DID, 'session-carol-1')] = {
     id: 'session-carol-1', ownerDid: MOCK_SELF_DID, entityId: carol, title: 'Telegram', type: 'chat', source: 'telegram', binding: { kind: 'tunnel', tunnelInstanceId: 'telegram-personal', endpointDid: 'did:telegram:telegram-personal:carol', connectionName: 'Telegram · Personal', supportsMultipleSessions: false, canCreateRemoteSession: false, canSend: true, connected: true }, origin: 'connection', lifecycle: 'active',
@@ -159,8 +159,10 @@ function seedSnapshot(now: number): Snapshot {
     [sessionKey(MOCK_SELF_DID, 'session-bob-1')]: [notice('msg-invite-hiking', bob, 'session-bob-1', now - 50 * 60000, MOCK_HIKING_GROUP, 'invite', { invite_id: 'invite-hiking', role: 'member', expires_at_ms: now + INVITE_TTL_MS, state: 'invited' })],
     [sessionKey(MOCK_SELF_DID, 'session-alice-1')]: [
       notice('msg-invite-team-active', alice, 'session-alice-1', now - 12 * 60000, MOCK_PRODUCT_TEAM, 'invite', { invite_id: 'invite-team-self', role: 'admin', expires_at_ms: now + INVITE_TTL_MS, state: 'active' }),
-      notice('msg-pending-erin', alice, 'session-alice-1', now - 11 * 60000, MOCK_PRODUCT_TEAM, 'pending_approval', { member_did: erin, invited_by: bob }),
-      notice('msg-transfer-team', alice, 'session-alice-1', now - 10 * 60000, MOCK_PRODUCT_TEAM, 'owner_transfer', { transfer_id: 'transfer-team', expires_at_ms: now + INVITE_TTL_MS }),
+    ],
+    [sessionKey(MOCK_SELF_DID, 'session-team-1')]: [
+      notice('msg-pending-erin', MOCK_PRODUCT_TEAM, 'session-team-1', now - 11 * 60000, MOCK_PRODUCT_TEAM, 'pending_approval', { member_did: erin, invited_by: bob }, erin),
+      notice('msg-transfer-team', MOCK_PRODUCT_TEAM, 'session-team-1', now - 10 * 60000, MOCK_PRODUCT_TEAM, 'owner_transfer', { transfer_id: 'transfer-team', expires_at_ms: now + INVITE_TTL_MS }, alice),
     ],
     [sessionKey(MOCK_SELF_DID, 'session-carol-1')]: [
       notice('msg-invite-book-agent', carol, 'session-carol-1', now - 42 * 60000, MOCK_BOOK_CLUB, 'invite', { invite_id: 'invite-book-agent', role: 'member', expires_at_ms: now + INVITE_TTL_MS, state: 'invited', member_did: MOCK_AGENT_OWNER }),

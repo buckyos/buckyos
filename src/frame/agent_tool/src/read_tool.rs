@@ -120,6 +120,8 @@ fn file_object_mime(body: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+const ATTACHMENT_MAX_WAIT_SECS: u64 = 60;
+
 /// `GET <msg-center>/objects/<obj_id>/content`.
 async fn read_message_attachment(
     runtime: &buckyos_api::BuckyOSRuntime,
@@ -133,12 +135,29 @@ async fn read_message_attachment(
         .renew_token_from_verify_hub()
         .await
         .map_err(|e| format!("msg-center authentication: {e}"))?;
-    let response = reqwest::Client::new()
-        .get(format!("{base}/objects/{obj_id}/content"))
-        .bearer_auth(runtime.get_session_token().await)
-        .send()
-        .await
-        .map_err(|e| format!("msg-center: {e}"))?;
+    let client = reqwest::Client::new();
+    let mut waited = 0;
+    // An attachment still in another Zone: msg-center says when to ask again.
+    let response = loop {
+        let response = client
+            .get(format!("{base}/objects/{obj_id}/content"))
+            .bearer_auth(runtime.get_session_token().await)
+            .send()
+            .await
+            .map_err(|e| format!("msg-center: {e}"))?;
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|secs| {
+                response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    && waited + secs <= ATTACHMENT_MAX_WAIT_SECS
+            });
+        let Some(secs) = retry_after else { break response };
+        tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+        waited += secs;
+    };
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         return Err(format!(

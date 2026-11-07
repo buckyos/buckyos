@@ -16,6 +16,65 @@ export interface ObjectInfo {
   isFile: boolean
   isDirectory?: boolean
   entries?: string[]
+  /** Described by another Zone; the bytes come only when asked for (a click, not a card). */
+  remote?: boolean
+}
+
+/** A refused read of the object route: its status, its body and when to ask again. */
+export class ObjectRouteError extends Error {
+  readonly status: number
+  readonly reason: string
+  readonly retryAfterSeconds?: number
+
+  constructor(status: number, text: string, retryAfterSeconds?: number) {
+    super(`${status} ${text}`.trim())
+    this.name = 'ObjectRouteError'
+    this.status = status
+    this.reason = text
+    this.retryAfterSeconds = retryAfterSeconds
+  }
+}
+
+export type ObjectFailure = 'awaiting_acceptance' | 'denied' | 'not_found' | 'too_large' | 'directory' | 'unsupported' | 'corrupt' | 'fetching' | 'unreachable' | 'other'
+
+export function objectFailure(error: unknown): ObjectFailure {
+  const text = error instanceof Error ? error.message : String(error)
+  const reason = error instanceof ObjectRouteError ? error.reason : text.slice(text.indexOf(' ') + 1)
+  const status = error instanceof ObjectRouteError ? error.status : Number(text.split(' ')[0])
+  if (reason === 'attachment-awaiting-acceptance') return 'awaiting_acceptance'
+  if (reason === 'attachment-directory-unsupported') return 'directory'
+  if (reason === 'attachment-verification-failed') return 'corrupt'
+  if (reason === 'attachment-fetching') return 'fetching'
+  if (reason === 'attachment-source-unreachable') return 'unreachable'
+  if (status === 401 || status === 403) return 'denied'
+  if (status === 404) return 'not_found'
+  if (status === 413) return 'too_large'
+  if (status === 415) return 'unsupported'
+  return 'other'
+}
+
+/** Attempts after the first: a pull underway gets minutes, a Zone not answering does not. */
+const RETRIES: Partial<Record<ObjectFailure, number>> = { fetching: 12, unreachable: 2 }
+
+/**
+ * A read that honours the route's `Retry-After`, a bounded number of times:
+ * the bytes may still be on their way from another Zone. `wanted` ends the
+ * wait when nobody is left to see the answer.
+ */
+export async function retryingObjectRead<T>(read: () => Promise<T>, wanted: () => boolean = () => true): Promise<T> {
+  const used = new Map<ObjectFailure, number>()
+  for (;;) {
+    try {
+      return await read()
+    } catch (error) {
+      const failure = objectFailure(error)
+      const seconds = error instanceof ObjectRouteError ? error.retryAfterSeconds : undefined
+      const count = used.get(failure) ?? 0
+      if (seconds === undefined || count >= (RETRIES[failure] ?? 0) || !wanted()) throw error
+      used.set(failure, count + 1)
+      await new Promise(resolve => setTimeout(resolve, seconds * 1000))
+    }
+  }
 }
 
 /** Where a collected attachment is kept: a key of the viewer's `collected` bucket. */

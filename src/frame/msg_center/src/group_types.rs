@@ -19,6 +19,8 @@ pub fn missing() -> RPCErrors {
 pub fn revision() -> String {
     uuid::Uuid::new_v4().to_string()
 }
+pub const GROUP_NOTICE_INTENT: &str = "buckyos.group_invitation";
+
 pub fn session_key(group: &DID, session: Option<&str>) -> Result<String> {
     MailboxAddress::new(group.clone(), session.map(str::to_owned))
         .map(|m| m.to_string())

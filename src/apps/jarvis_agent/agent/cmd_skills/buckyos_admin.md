@@ -308,6 +308,11 @@ Keep a timeline: symptom (user words, time) → evidence (command, `trace_id`, q
   availability = content gone although bound, report it). nfs-server logs one `bucket bind|unbind <bucket_id> key=…
   obj_id=… version=…` line per change: `buckyos log query --service nfs-server --keyword "<key>"`; the calling service
   logs the same line on its side.
+- An attachment of a message from another Zone has no binding until its content is first read: `no_such_key` there means
+  not fetched yet, not removed. The read says why it is not here: 403 `attachment-awaiting-acceptance` (the sender has
+  not been accepted), 503 with `Retry-After` (being fetched, or the source is unreachable), 404 (the source refused or
+  has no such file), 413 (over 64 MiB), 415 (a directory), 502 (failed verification). msg-center logs the outcome:
+  `buckyos log query --service msg-center --keyword "<obj_id>"`.
 - Host-side evidence (processes, ports, docker, node_daemon, `etc/`, `security/`, other apps' container logs): name the
   host command for the owner, e.g. `uv run src/check.py`, `docker ps`, `ls $BUCKYOS_ROOT/logs/apps/`.
 

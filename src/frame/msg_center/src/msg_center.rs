@@ -1198,7 +1198,7 @@ impl MessageCenter {
         }
     }
 
-    async fn is_contact_blocked(
+    pub(crate) async fn is_contact_blocked(
         &self,
         did: &DID,
         owner: Option<DID>,
@@ -1222,7 +1222,7 @@ impl MessageCenter {
 
     /// The target's admission policy towards the principal when the
     /// transport identified one, otherwise towards the sender.
-    async fn decide_inbox_kind(
+    pub(crate) async fn decide_inbox_kind(
         &self,
         sender: &DID,
         principal: Option<&DID>,
@@ -1579,10 +1579,14 @@ impl MessageCenter {
                     }
                 }
 
-                let decision = match self
-                    .decide_inbox_kind(&sender, principal.as_ref(), &recipient, context_id.clone())
-                    .await
-                {
+                let from_group = self.is_notice_of_own_group(&stored_msg, &recipient).await;
+                let decided = if from_group {
+                    Ok(Some(MailboxKind::Inbox))
+                } else {
+                    self.decide_inbox_kind(&sender, principal.as_ref(), &recipient, context_id.clone())
+                        .await
+                };
+                let decision = match decided {
                     Ok(value) => value,
                     Err(error) => {
                         warn!(
@@ -1613,7 +1617,11 @@ impl MessageCenter {
                             &stored_msg,
                             Self::inbound_initial_state(&stored_msg),
                             ingress.clone(),
-                            Vec::new(),
+                            if from_group {
+                                vec![format!("group:{}", sender.to_string())]
+                            } else {
+                                Vec::new()
+                            },
                             "inbox",
                         )?);
                         result.delivered_recipients.push(recipient);
