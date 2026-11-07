@@ -300,6 +300,17 @@ jobs:
         run: |
           sudo mkdir -p /opt/buckyos /opt/buckyosci /opt/web3-gateway
           sudo chown -R "$(id -un):$(id -gn)" /opt/buckyos /opt/buckyosci /opt/web3-gateway
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            getfacl -cp -- "$BUCKYOS_BUILD_ROOT"
+            setfacl -k -- "$BUCKYOS_BUILD_ROOT"
+            umask 022
+            mode_check="$BUCKYOS_BUILD_ROOT/.ci-mode-check"
+            mkdir -- "$mode_check"
+            mode="$(stat -c %a "$mode_check")"
+            rmdir -- "$mode_check"
+            echo "Linux package directory mode: $mode"
+            test "$mode" = 755
+          fi
 
       - name: Prepare writable install roots (Windows)
         if: ${{ runner.os == 'Windows' }}
