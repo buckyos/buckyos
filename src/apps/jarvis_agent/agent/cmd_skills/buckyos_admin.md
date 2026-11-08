@@ -65,6 +65,11 @@ buckyos system info                                 # BuckyOS version, build_ver
   start|stop|restart|autostart on|off` controls it. Not running before the user logs in is expected; launchd output
   is in `logs/node_daemon/launchd.err.log`. Screen Recording and Accessibility are granted to "BuckyOS Runtime" (not
   the BuckyOS App or Terminal); Screen Recording applies after a Runtime restart.
+  Request them with `open -n "$BUCKYOS_ROOT/bin/node-daemon/BuckyOS Runtime.app" --args --request_permissions`.
+  A rebuilt ad-hoc signed development Runtime has a new code hash. If both switches are on but the Runtime
+  still reports permission required, check TCC logs for a code requirement mismatch; reset only its stale
+  grants (`tccutil reset ScreenCapture com.buckyos.runtime` and `tccutil reset Accessibility com.buckyos.runtime`),
+  request again, let the owner authorize the current build, then restart and verify the Runtime report.
 
 #### Find the real commands
 - Lightweight Linux/macOS/Windows executors: Settings → Cluster Manager → Nodes/Devices issues an access URL;
@@ -194,7 +199,9 @@ buckyos system info                                 # BuckyOS version, build_ver
   `agent.create` accepts these same runtime fields; for the container, use
   `runtimes: {"host": null}, default_runtime_id: "container"`. Create retries keep the saved choice.
 - A Zone owner's Agent whose default runtime is a node's `host` runs its Agent Service natively on that node: no
-  `buckyos-app-<agent>` container, no `container` runtime (`runtime_unavailable`), the node config shows
+  `buckyos-app-<agent>` container. When it runs as the owner's OS user on that node, `host` resolves to the same
+  `private` native runtime; local shell/files do not use the network. Computer use reuses node_daemon's driver over
+  a local Unix socket (Windows: named pipe), with the existing profile authorization and operation ledger. The node config shows
   `apps/<instance>/run_mode: "native"`, and `agent.runtime_directory <agent_id>` says `agent_service: {mode: "native",
   node_id}`. Changing the default between host and container restarts the Agent Service the other way; a default of
   `container` with no container node is refused (`container_unavailable`).

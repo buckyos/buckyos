@@ -9,6 +9,13 @@
 
 static atomic_bool capture_pending = false;
 
+void bucky_desktop_initialize(void) {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+    }
+}
+
 typedef struct {
     uint32_t uid;
     uint32_t session;
@@ -55,7 +62,26 @@ void bucky_desktop_probe(BuckyDesktop *out) {
             && (audit.ai_flags & (AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS | AU_SESSION_FLAG_HAS_CONSOLE_ACCESS))
                 == (AU_SESSION_FLAG_HAS_GRAPHIC_ACCESS | AU_SESSION_FLAG_HAS_CONSOLE_ACCESS);
         out->session = audit.ai_asid;
-        NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
+        out->capture = CGPreflightScreenCaptureAccess();
+        out->input = AXIsProcessTrusted() && CGPreflightPostEventAccess();
+        AXUIElementRef focusedApp = NULL;
+        if (out->input) {
+            AXUIElementRef system = AXUIElementCreateSystemWide();
+            AXUIElementSetMessagingTimeout(system, 0.2f);
+            CFTypeRef value = NULL;
+            if (AXUIElementCopyAttributeValue(system, kAXFocusedApplicationAttribute, &value) == kAXErrorSuccess
+                && value && CFGetTypeID(value) == AXUIElementGetTypeID()) {
+                pid_t pid = 0;
+                if (AXUIElementGetPid((AXUIElementRef)value, &pid) == kAXErrorSuccess && pid > 0) {
+                    focusedApp = (AXUIElementRef)value;
+                    out->focus_pid = pid;
+                }
+            }
+            if (value && !focusedApp) CFRelease(value);
+            CFRelease(system);
+        }
+        NSRunningApplication *front = out->focus_pid > 0
+            ? [NSRunningApplication runningApplicationWithProcessIdentifier:out->focus_pid] : nil;
         out->locked = [session[@"CGSSessionScreenIsLocked"] boolValue]
             || [front.bundleIdentifier isEqualToString:@"com.apple.loginwindow"]
             || [front.bundleIdentifier isEqualToString:@"com.apple.ScreenSaver.Engine"];
@@ -71,8 +97,6 @@ void bucky_desktop_probe(BuckyDesktop *out) {
         out->logical_height = bounds.size.height;
         out->width = (uint32_t)CGDisplayPixelsWide(out->display);
         out->height = (uint32_t)CGDisplayPixelsHigh(out->display);
-        out->capture = CGPreflightScreenCaptureAccess();
-        out->input = AXIsProcessTrusted() && CGPreflightPostEventAccess();
         out->events = event_revision(kCGEventSourceStateCombinedSessionState);
         out->hardware_events = event_revision(kCGEventSourceStateHIDSystemState);
         out->physical_input_down = (CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState)
@@ -92,9 +116,8 @@ void bucky_desktop_probe(BuckyDesktop *out) {
             }
             out->layout = layout;
         }
-        out->focus_pid = front.processIdentifier;
-        if (out->input && out->focus_pid > 0) {
-            AXUIElementRef app = AXUIElementCreateApplication(out->focus_pid);
+        if (focusedApp) {
+            AXUIElementRef app = focusedApp;
             AXUIElementSetMessagingTimeout(app, 0.2f);
             CFTypeRef focused = NULL;
             if (AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute, &focused) == kAXErrorSuccess && focused) {

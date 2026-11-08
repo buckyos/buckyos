@@ -15,6 +15,23 @@ const open = async (page: Page) => {
   return errors
 }
 
+test('Desktop Lite shows one native runtime with private and owner roles', async ({ page }) => {
+  await page.goto('/?data=mock&runtime=native')
+  const runtimes = page.getByTestId('known-runtimes')
+  await expect(runtimes.locator('li')).toHaveCount(1)
+  const native = runtimes.getByTestId('runtime-private')
+  await expect(native).toContainText('Private runtime')
+  await expect(native.getByTestId('runtime-default')).toHaveText('Owner’s default')
+  await expect(native).toContainText('local IPC')
+  await expect(native.getByTestId('runtime-toggle')).toHaveCount(0)
+  await expect(native.getByTestId('runtime-make-default')).toHaveCount(0)
+  await native.getByTestId('runtime-baseline-select').selectOption('extended')
+  await expect(native.getByTestId('runtime-baseline')).toHaveText('Extended environment')
+  await native.locator('select').last().selectOption('control')
+  await expect(native.locator('select').last()).toHaveValue('control')
+  await expect(runtimes.locator('li')).toHaveCount(1)
+})
+
 test('home shows the agent card and the work overview', async ({ page }) => {
   const errors = await open(page)
   const card = page.getByTestId('agent-card')

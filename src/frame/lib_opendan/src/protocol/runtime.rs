@@ -49,7 +49,12 @@ pub fn is_private_runtime(runtime_id: &str) -> bool {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeConnector {
     /// This process's own environment.
-    Native,
+    Native {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        aliases: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        computer: Option<agent_tool::runtime::computer::NativeComputerConfig>,
+    },
     /// A Node Executor: a node's embedded one (`node_did`) or a standalone
     /// executor (`executor_id`, form B), logged in under `profile_id`.
     NodeExecutor {
@@ -92,7 +97,7 @@ impl RuntimeConnector {
     }
 
     pub fn is_native(&self) -> bool {
-        matches!(self, RuntimeConnector::Native)
+        matches!(self, RuntimeConnector::Native { .. })
     }
 
     /// Executed through a Node Executor (`remote_node` runtime config).
@@ -102,7 +107,7 @@ impl RuntimeConnector {
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            RuntimeConnector::Native => "native",
+            RuntimeConnector::Native { .. } => "native",
             RuntimeConnector::NodeExecutor { .. } => "node_executor",
             RuntimeConnector::Ssh { .. } => "ssh",
         }
@@ -119,7 +124,13 @@ impl RuntimeConnector {
     /// The `agent_tool` RuntimeConfig this connector executes through.
     pub fn exec(&self) -> Value {
         match self {
-            RuntimeConnector::Native => serde_json::json!({ "kind": "native" }),
+            RuntimeConnector::Native { computer, .. } => {
+                let mut config = serde_json::json!({ "kind": "native" });
+                if let Some(computer) = computer {
+                    config["computer"] = serde_json::json!(computer);
+                }
+                config
+            },
             RuntimeConnector::NodeExecutor { node_did, executor_id, profile_id } => serde_json::json!({
                 "kind": agent_tool::runtime::node::REMOTE_NODE_KIND,
                 "remote_node": { "node_did": node_did, "executor_id": executor_id, "profile_id": profile_id },
@@ -314,6 +325,8 @@ pub struct RuntimeCaps {
     /// A desktop session the executor can observe or control.
     #[serde(default)]
     pub desktop: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_error: Option<String>,
     /// `current_user` / `switch_user`: how a node executes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_mode: Option<String>,
@@ -340,6 +353,7 @@ impl Default for RuntimeCaps {
         Self {
             platform: RuntimePlatform::default(),
             desktop: false,
+            desktop_error: None,
             identity_mode: None,
             baseline: RuntimeBaseline::Standard,
             buckyos_root: None,
@@ -481,7 +495,7 @@ pub struct RuntimeRecord {
     pub builtin: bool,
     /// The owner's default runtime (`default_runtime_id`): the machine the
     /// owner means by "my computer" and where the owner's absolute paths
-    /// are read; never where a chat runs.
+    /// are read; it may also be the private runtime.
     #[serde(default)]
     pub default: bool,
     #[serde(default)]
@@ -503,6 +517,10 @@ fn default_true() -> bool {
 }
 
 impl RuntimeRecord {
+    pub fn names(&self, id: &str) -> bool {
+        self.runtime_id == canonical_runtime(id) || matches!(&self.connector,
+            RuntimeConnector::Native { aliases, .. } if aliases.iter().any(|alias| alias == id))
+    }
     /// The `agent_tool` RuntimeConfig to execute through, when the runtime
     /// is switched on.
     pub fn exec(&self) -> Option<Value> {
@@ -555,6 +573,8 @@ pub struct PrivateRuntimeInfo {
     /// The Agent Service runs natively on its node: the private runtime is
     /// that process's environment, the same machine as `host`.
     pub native_service: bool,
+    pub native_node_did: Option<String>,
+    pub computer_endpoint: Option<String>,
     /// One sentence about where this process runs.
     pub note: String,
 }
@@ -567,18 +587,35 @@ pub struct PrivateRuntimeInfo {
 /// platform are learned from the node (`describe`) when it is checked.
 pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &PrivateRuntimeInfo) -> Vec<RuntimeRegister> {
     let default = canonical_runtime(settings.effective_default_runtime()).to_string();
-    let host_baseline = settings
-        .runtimes
-        .get(HOST_RUNTIME)
+    let mut aliases: Vec<String> = settings.runtimes.iter().filter_map(|(id, rs)| {
+        match &rs.target {
+            AgentRuntimeTarget::Node { node_did, .. }
+                if private.native_service && private.native_node_did.as_ref() == Some(node_did) => Some(id.clone()),
+            _ => None,
+        }
+    }).collect();
+    aliases.sort_by_key(|id| (id != &default, id != HOST_RUNTIME, id.clone()));
+    let owner = aliases.iter().find_map(|id| settings.runtimes.get(id));
+    let computer = owner.and_then(|s| private.computer_endpoint.as_ref().map(|endpoint| {
+        agent_tool::runtime::computer::NativeComputerConfig {
+            endpoint: endpoint.clone(),
+            node_did: private.native_node_did.clone().unwrap_or_default(),
+            profile_id: owner_agent_profile_id(agent_did),
+            access: if s.enabled { s.computer } else { ComputerAccess::None },
+        }
+    }));
+    let mut grant = RuntimeGrant::private();
+    grant.computer = computer.as_ref().map(|c| c.access).unwrap_or_default();
+    let host_baseline = owner
         .and_then(|h| h.baseline)
         .unwrap_or(RuntimeBaseline::Standard);
     let mut out = vec![RuntimeRegister {
         runtime_id: PRIVATE_RUNTIME.into(),
-        connector: RuntimeConnector::Native,
-        name: "Private runtime".into(),
+        connector: RuntimeConnector::Native { aliases: aliases.clone(), computer },
+        name: if aliases.is_empty() { "Private runtime" } else { "Owner's computer" }.into(),
         desc: if private.native_service {
             format!(
-                "Your own environment: the Agent Service runs natively on the owner's machine, so this is the same machine as `host`, reached as yourself (`host` is reached through its node executor under the owner's grant). Commands run directly. {}",
+                "The Agent Service runs natively on this machine. Shell and files execute locally; desktop operations use the local driver over IPC. Private and owner runtime roles on this machine refer to this one runtime. {}",
                 private.note
             )
         } else {
@@ -587,15 +624,18 @@ pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &Pri
         .trim()
         .to_string(),
         enabled: true,
-        default: default == PRIVATE_RUNTIME,
+        default: default == PRIVATE_RUNTIME || aliases.contains(&default),
         // The aios image: the standard tools plus its toolchains and media
         // tools (`build_aios` RUNTIME_PACKAGES, Node, Deno, uv).
         baseline: if private.native_service { host_baseline } else { RuntimeBaseline::Extended },
-        grant: RuntimeGrant::private(),
+        grant,
     }];
     let mut has_host = false;
     for (id, rs) in &settings.runtimes {
         has_host |= id == HOST_RUNTIME;
+        if aliases.contains(id) {
+            continue;
+        }
         let owner_grant = rs.grant.clone().unwrap_or_default();
         let (connector, name, desc) = match &rs.target {
             AgentRuntimeTarget::Node { node_id, node_did } => (
@@ -696,6 +736,6 @@ mod tests {
         assert!(node.exec()["remote_node"]["profile_id"].as_str().unwrap().starts_with("agent-"));
         let exec = RuntimeConnector::executor("dev-1", None);
         assert_eq!(exec.executor_id(), Some("dev-1"));
-        assert_eq!(RuntimeConnector::Native.exec(), serde_json::json!({ "kind": "native" }));
+        assert_eq!(RuntimeConnector::Native { aliases: Vec::new(), computer: None }.exec(), serde_json::json!({ "kind": "native" }));
     }
 }

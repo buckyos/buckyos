@@ -581,6 +581,10 @@ pub fn buckyos_root() -> Option<PathBuf> {
     exe.parent()?.parent()?.parent().map(Path::to_path_buf)
 }
 
+pub fn managed_tool_dirs() -> Vec<PathBuf> {
+    buckyos_root().map(|root| vec![root.join("tools/bin"), root.join("bin/agent-tools")]).unwrap_or_default()
+}
+
 /// The agent's BuckyOS identity for a service tool run by a Session
 /// process that has none in its environment (a node session-runtime: the
 /// executor passes no `BUCKYOS_*`): asked of AgentService with the

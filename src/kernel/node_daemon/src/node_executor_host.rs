@@ -358,6 +358,21 @@ pub fn spawn_node_executor(node_host_name: String, node_did: String, desktop_bui
                         if executor.is_none() && config.as_ref().map(|c| c.enabled).unwrap_or(false) {
                             match open_executor(&node_host_name, &node_did, desktop, host_account.as_ref()) {
                                 Ok(exec) => {
+                                    let local = exec.clone();
+                                    let endpoint = buckyos_api::node_executor_ipc::local_executor_endpoint(&buckyos_kit::get_buckyos_root_dir());
+                                    tokio::spawn(async move {
+                                        let result: std::io::Result<()> = async {
+                                            let mut listener = buckyos_api::node_executor_ipc::LocalExecutorListener::bind(&endpoint).await?;
+                                            loop {
+                                                let stream = listener.accept().await?;
+                                                let executor = local.clone();
+                                                tokio::spawn(async move { executor.serve(stream).await });
+                                            }
+                                        }.await;
+                                        if let Err(err) = result {
+                                            error!("local computer IPC listener stopped: {err}");
+                                        }
+                                    });
                                     let listener = exec.clone();
                                     let addr = SocketAddr::from(([127, 0, 0, 1], NODE_EXECUTOR_SERVICE_PORT));
                                     tokio::spawn(async move {

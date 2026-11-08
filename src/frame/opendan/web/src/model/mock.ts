@@ -558,7 +558,7 @@ const buildGoalFixtures = (): GoalFixture[] => {
 
 const delay = () => new Promise((resolve) => window.setTimeout(resolve, 60))
 
-export const createMockDataModel = (): OpenDanDataModel => {
+export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => {
   const fx = buildFixtures()
   const goals = buildGoalFixtures()
   const goalEntries: RegistryEntry[] = goals.flatMap((g) =>
@@ -663,6 +663,16 @@ export const createMockDataModel = (): OpenDanDataModel => {
   const runtimeSettings: RuntimeSettings = {
     runtimes: { host: { enabled: true, computer: 'observe', target: { kind: 'node', node_id: 'desktop', node_did: 'did:dev:mock' } } },
     default_runtime_id: 'host',
+  }
+  if (nativeRuntime) {
+    const runtime = runtimes[0]
+    runtime.connector = { type: 'native', aliases: ['host'] }
+    runtime.name = "Owner's computer"
+    runtime.desc = 'Private and owner default share this native runtime. Shell and files execute locally; desktop operations use local IPC.'
+    runtime.default = true
+    runtime.caps = { ...runtimes[1].caps, baseline_check: { checked_at_ms: ago(60), level: 'standard', missing: [], ok: true, ext: { status: 'ok', missing: [], system: [] } } }
+    runtime.grant.computer = 'observe'
+    runtimes.splice(1)
   }
   const availableRuntimeIds = () => runtimes.filter((r) => r.availability === 'available').map((r) => r.runtime_id).concat('local', 'container')
   const findWorkspace = (workspaceId: string) => {
@@ -853,19 +863,21 @@ export const createMockDataModel = (): OpenDanDataModel => {
 
     setRuntimeSetting: async (patch) => {
       await delay()
-      const entry = runtimeSettings.runtimes[patch.runtime_id]
-      if (patch.runtime_id !== 'container' && !entry) throw new OpenDanError('invalid_argument', `runtime ${patch.runtime_id} is not one of this agent's runtimes`)
+      const record = runtimes.find((r) => r.runtime_id === patch.runtime_id)
+      const settingId = record?.connector.type === 'native' ? (record.connector.aliases?.[0] ?? 'container') : patch.runtime_id
+      const entry = runtimeSettings.runtimes[settingId]
+      if (settingId !== 'container' && !entry) throw new OpenDanError('invalid_argument', `runtime ${patch.runtime_id} is not one of this agent's runtimes`)
       if (entry) {
         if (patch.enabled !== undefined) entry.enabled = patch.enabled
         if (patch.computer) entry.computer = patch.computer
         if (patch.baseline !== undefined) entry.baseline = patch.baseline
       }
-      const asSetting = (id: string) => (id === 'private' ? 'container' : id)
+      const asSetting = (id: string) => (id === 'private' ? (nativeRuntime ? 'host' : 'container') : id)
       if (patch.default === true) runtimeSettings.default_runtime_id = asSetting(patch.runtime_id)
       if (patch.default === false && runtimeSettings.default_runtime_id === asSetting(patch.runtime_id)) runtimeSettings.default_runtime_id = 'container'
       if (runtimeSettings.default_runtime_id !== 'container' && !runtimeSettings.runtimes[runtimeSettings.default_runtime_id]?.enabled) runtimeSettings.default_runtime_id = 'container'
       for (const r of runtimes) {
-        const chosen = runtimeSettings.runtimes[r.runtime_id]
+        const chosen = runtimeSettings.runtimes[asSetting(r.runtime_id)]
         r.default = runtimeSettings.default_runtime_id === asSetting(r.runtime_id)
         if (chosen) {
           r.grant.computer = chosen.computer

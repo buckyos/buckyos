@@ -394,7 +394,17 @@ async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
     let checked = agent.runtimes().check("host", &[], false).await.unwrap();
     assert_eq!(checked.availability, RuntimeAvailability::RuntimeUnavailable);
     up.store(true, Ordering::SeqCst);
+    let mut cfg = sd.config().unwrap();
+    cfg.session.policy.runtime_view = RuntimeView::Chat;
+    let tries = connects.load(Ordering::SeqCst);
+    let view = libopendan::runtime::runtimes_view(agent.as_ref(), &cfg).await;
+    assert_eq!(view["owner_default"]["available"], false);
+    assert_eq!(connects.load(Ordering::SeqCst), tries);
     tokio::time::sleep(std::time::Duration::from_millis(libopendan::api::RUNTIME_RECHECK_MS + 200)).await;
+    let view = libopendan::runtime::runtimes_view(agent.as_ref(), &cfg).await;
+    assert_eq!(view["owner_default"]["available"], true);
+    assert_eq!(view["owner_default"]["os"], "linux");
+    assert!(view["owner_default"].get("error").is_none());
     let usable = libopendan::runtime::usable_runtime(agent.as_ref(), "host").await.unwrap();
     assert_eq!(usable.availability, RuntimeAvailability::Available);
 }
@@ -419,8 +429,16 @@ async fn a_natively_run_agent_service_keeps_its_private_runtime() {
         },
     );
     settings.default_runtime_id = Some("host".into());
+    for native_node_did in [None, Some("did:web:another-node".into())] {
+        let separate = builtin_runtimes(&settings, "did:test:agent", &PrivateRuntimeInfo {
+            native_service: true, native_node_did, ..Default::default()
+        });
+        assert_eq!(separate.len(), 2);
+        assert!(separate[1].connector.is_node());
+        assert!(!separate[0].default);
+    }
     let project = |native: bool| {
-        builtin_runtimes(&settings, "did:test:agent", &PrivateRuntimeInfo { native_service: native, note: String::new() })
+        builtin_runtimes(&settings, "did:test:agent", &PrivateRuntimeInfo { native_service: native, native_node_did: Some("did:web:ood1.test.buckyos.io".into()), note: String::new(), ..Default::default() })
     };
     state.runtimes().ensure_builtin(&project(false), "host").await.unwrap();
     let private = state.runtimes().lookup("private").await.unwrap().unwrap();
@@ -430,11 +448,51 @@ async fn a_natively_run_agent_service_keeps_its_private_runtime() {
     let private = state.runtimes().lookup("private").await.unwrap().unwrap();
     assert_eq!(private.availability, RuntimeAvailability::Available, "{:?}", private.last_error);
     assert_eq!(private.exec(), Some(json!({ "kind": "native" })));
-    assert!(!private.default && private.desc.contains("natively"));
+    assert!(private.default && private.desc.contains("natively"));
+    assert_eq!(state.runtimes().list().await.unwrap().len(), 1);
     assert_eq!(private.caps.baseline, buckyos_api::RuntimeBaseline::Extended, "the host's declaration");
     let host = state.runtimes().lookup("host").await.unwrap().unwrap();
     assert!(host.default && host.grant.workspace);
+    assert_eq!(host.runtime_id, "private");
+    assert_eq!(host, private);
     state.runtimes().ensure_builtin(&project(false), "host").await.unwrap();
     let private = state.runtimes().lookup("private").await.unwrap().unwrap();
     assert!(private.availability == RuntimeAvailability::Available && !private.desc.contains("natively"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_alias_checks_and_executes_managed_tools_without_an_executor() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let old_root = std::env::var_os("BUCKYOS_ROOT");
+    std::env::set_var("BUCKYOS_ROOT", &root);
+    let tool_dir = root.join("bin/agent-tools");
+    std::fs::create_dir_all(&tool_dir).unwrap();
+    let tool = tool_dir.join("native-regression-tool");
+    std::fs::write(&tool, "#!/bin/sh\nprintf native-managed-tool").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let state = state(&root);
+    let mut builtins = builtin(&root);
+    builtins.truncate(1);
+    builtins[0].default = true;
+    builtins[0].connector = RuntimeConnector::Native {
+        aliases: vec!["host".into()],
+        computer: Some(agent_tool::runtime::computer::NativeComputerConfig {
+            endpoint: root.join("missing.sock").display().to_string(),
+            node_did: "did:web:test".into(),
+            profile_id: "agent-test".into(), access: buckyos_api::ComputerAccess::Control,
+        }),
+    };
+    state.runtimes().ensure_builtin(&builtins, "node").await.unwrap();
+    let checked = state.runtimes().check("host", &["native-regression-tool".into()], false).await.unwrap();
+    assert!(checked.usable());
+    assert_eq!(checked.runtime_id, "private");
+    assert!(checked.caps.desktop_error.is_some());
+    assert_eq!(checked.caps.tools_check.unwrap().resolved["native-regression-tool"].path, tool.display().to_string());
+    let ran = libopendan::runtime::runtime_exec(&state, "host", "native-regression-tool", None, 10_000, None).await.unwrap();
+    assert_eq!(ran.runtime_id, "private");
+    assert_eq!((ran.exit_code, ran.stdout.as_str()), (0, "native-managed-tool"));
+    match old_root { Some(value) => std::env::set_var("BUCKYOS_ROOT", value), None => std::env::remove_var("BUCKYOS_ROOT") }
 }

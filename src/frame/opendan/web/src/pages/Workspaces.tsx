@@ -437,7 +437,7 @@ function RuntimeCard({ runtime, chosen, refresh }: {
         </span>
         {runtime.default && <span className="text-accent" data-testid="runtime-default">{t('runtimeDefault')}</span>}
         {runtime.builtin && <span>{t('runtimeBuiltin')}</span>}
-        {!isPrivate && <span>{t('runtimeComputer')}: {t(computerLabel[grant.computer ?? 'none'])}</span>}
+        {<span>{t('runtimeComputer')}: {t(computerLabel[grant.computer ?? 'none'])}</span>}
         <span data-testid="runtime-baseline">{t(caps.baseline === 'extended' ? 'runtimeBaselineExtended' : 'runtimeBaselineStandard')}</span>
         {caps.os && <span className="font-mono">{caps.os}{caps.shell ? ` · ${caps.shell}` : ''}{caps.identity_mode ? ` · ${caps.identity_mode}` : ''}</span>}
         {caps.desktop && <span>{t('runtimeDesktop')}</span>}
@@ -458,6 +458,7 @@ function RuntimeCard({ runtime, chosen, refresh }: {
         </p>}
       {runtime.last_error && runtime.availability !== 'available' &&
         <p className="mt-2 break-words text-xs text-warn">{runtime.last_error}</p>}
+      {caps.desktop_error && <p className="mt-2 break-words text-xs text-warn" data-testid="runtime-desktop-error">{caps.desktop_error}</p>}
       {toolProblem &&
         <p className="mt-2 break-words text-xs text-warn" data-testid="runtime-tool-check">{toolProblem}</p>}
       {check?.ext &&
@@ -470,7 +471,7 @@ function RuntimeCard({ runtime, chosen, refresh }: {
       <ErrorBox error={error} />
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button className="tap border border-line text-xs" disabled={busy} onClick={() => void run(() => dataModel.checkRuntime(runtime.runtime_id))}>{t('runtimeCheck')}</button>
-        {chosen && <button className="tap border border-line text-xs" disabled={busy} data-testid="runtime-toggle"
+        {chosen && !isPrivate && <button className="tap border border-line text-xs" disabled={busy} data-testid="runtime-toggle"
           onClick={() => void run(() => dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, enabled: !chosen.enabled }))}>
           {t(chosen.enabled ? 'runtimeDisable' : 'runtimeEnable')}
         </button>}
@@ -513,7 +514,7 @@ export function RuntimeList() {
       <ErrorBox error={runtimes.error ?? settings.error} />
       {records.length > 0 ? <ul className="divide-y divide-line">
         {records.map((runtime) => <RuntimeCard key={runtime.runtime_id} runtime={runtime}
-          chosen={settings.data?.runtimes[runtime.runtime_id] ?? null} refresh={refresh} />)}
+          chosen={settings.data?.runtimes[runtime.connector.type === 'native' ? (runtime.connector.aliases?.[0] ?? runtime.runtime_id) : runtime.runtime_id] ?? null} refresh={refresh} />)}
       </ul> : !runtimes.error && <p className="py-2 text-sm text-mute">{t(runtimes.isLoading ? 'loading' : 'noRuntimes')}</p>}
     </section>
   )

@@ -110,6 +110,8 @@ fn main() {
         node_executor::worker::worker_main();
     }
     let args = Args::parse();
+    #[cfg(target_os = "macos")]
+    computer_driver::initialize_desktop();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

@@ -195,11 +195,13 @@ impl Home {
 
     /// The owner's runtime choice for this agent (`AgentSettings.runtimes`,
     /// `default_runtime_id`), as the WebUI edits it.
-    pub async fn runtime_settings(&self) -> Result<Value, OpenDanError> {
+    pub async fn runtime_settings(&self, agent: &dyn AgentStateClient) -> Result<Value, OpenDanError> {
         let settings = records::settings(self.records.as_ref()).await.map_err(store_err)?;
+        let default = agent.runtimes().lookup(settings.effective_default_runtime()).await?
+            .map(|r| r.runtime_id).unwrap_or_else(|| settings.effective_default_runtime().into());
         Ok(json!({
             "runtimes": settings.runtimes,
-            "default_runtime_id": settings.effective_default_runtime(),
+            "default_runtime_id": default,
         }))
     }
 
@@ -207,12 +209,16 @@ impl Home {
     /// disable, ComputerUse, declared baseline, default). Adding a runtime target is the
     /// control panel's (`agent.update` / `agent.runtime_directory`): this
     /// side never invents a target. Returns the new settings.
-    pub async fn set_runtime_settings(&self, params: &Value) -> Result<buckyos_api::AgentSettings, OpenDanError> {
+    pub async fn set_runtime_settings(&self, agent: &dyn AgentStateClient, params: &Value) -> Result<buckyos_api::AgentSettings, OpenDanError> {
         let invalid = |m: String| OpenDanError::InvalidArgument(m);
         let mut settings = records::settings(self.records.as_ref()).await.map_err(store_err)?;
         let runtime_id = text_param(params, "runtime_id")?
             .filter(|s| !s.is_empty())
             .ok_or_else(|| invalid("param `runtime_id` is required".into()))?;
+        let runtime_id = match agent.runtimes().lookup(&runtime_id).await?.map(|r| r.connector) {
+            Some(RuntimeConnector::Native { aliases, .. }) if !aliases.is_empty() => aliases[0].clone(),
+            _ => runtime_id,
+        };
         let private = libopendan::protocol::is_private_runtime(&runtime_id);
         let runtime_id = if private { buckyos_api::CONTAINER_RUNTIME_ID.to_string() } else { runtime_id };
         if !private {

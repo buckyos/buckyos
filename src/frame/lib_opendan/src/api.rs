@@ -226,7 +226,7 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
         // the agent's own environment exists, declared as the container is.
         None if runtime_id == PRIVATE_RUNTIME => FrozenRuntime {
             runtime_id: PRIVATE_RUNTIME.into(),
-            connector: RuntimeConnector::Native,
+            connector: RuntimeConnector::Native { aliases: Vec::new(), computer: None },
             revision: 0,
             selected_by,
             caps: RuntimeCaps {

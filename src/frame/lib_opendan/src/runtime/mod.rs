@@ -583,6 +583,13 @@ pub async fn runtime_for_session(
         config.id = cfg.runtime.requirement.runtime_id.clone();
     }
     settle_for_session(sd, cfg, &mut config)?;
+    if config.kind() == "native" {
+        if let Some(record) = agent.runtimes().lookup(PRIVATE_RUNTIME).await? {
+            if let RuntimeConnector::Native { computer, .. } = record.connector {
+                config.computer = computer;
+            }
+        }
+    }
     agent_tool::runtime::RuntimeRegistry::from_config(&config)
         .map_err(|e| OpenDanError::Bind(e.to_string()))
 }
@@ -683,6 +690,7 @@ pub fn runtime_entry(r: &RuntimeRecord) -> serde_json::Value {
         "workspace": r.grant.workspace,
         "roots": r.grant.roots,
         "desktop": r.caps.desktop,
+        "desktop_error": r.caps.desktop_error,
         "skill_commands": r.usage.skill_commands,
         "desc": r.desc,
     });
@@ -782,7 +790,7 @@ pub fn runtime_line(r: &RuntimeRecord) -> String {
 /// for its `<runtimes>` table (M6).
 pub async fn runtimes_view(agent: &dyn crate::state::AgentStateClient, cfg: &SessionConfig) -> serde_json::Value {
     let view = cfg.session.policy.runtime_view;
-    let all: Vec<RuntimeRecord> = agent
+    let mut all: Vec<RuntimeRecord> = agent
         .runtimes()
         .list()
         .await
@@ -790,8 +798,15 @@ pub async fn runtimes_view(agent: &dyn crate::state::AgentStateClient, cfg: &Ses
         .into_iter()
         .filter(|r| r.lifecycle == RuntimeLifecycle::Active)
         .collect();
+    if matches!(view, RuntimeView::Chat | RuntimeView::All) {
+        if let Some(default) = all.iter_mut().find(|r| r.default && !r.is_private()) {
+            if let Ok(Some(checked)) = lookup_rechecked(agent, &default.runtime_id).await {
+                *default = checked;
+            }
+        }
+    }
     let private = all.iter().find(|r| r.is_private()).map(runtime_entry);
-    let owner_default = all.iter().find(|r| r.default && !r.is_private()).map(runtime_entry);
+    let owner_default = all.iter().find(|r| r.default).map(runtime_entry);
     let working = cfg.runtime.runtime_id();
     match view {
         RuntimeView::Chat => serde_json::json!({
@@ -1085,7 +1100,8 @@ async fn resolve_on(record: &RuntimeRecord, ops_dir: &Path, names: &[&str], vers
     let timeout_ms = if versions.is_empty() { 30_000 } else { CHECK_FULL_TIMEOUT_MS };
     let (origin, probed) = if record.is_private() {
         let beside: Vec<PathBuf> = crate::baseline::beside_current_exe().into_iter().collect();
-        let agent_dirs = agent_root.map(crate::baseline::agent_tool_dirs).unwrap_or_default();
+        let mut agent_dirs = agent_root.map(crate::baseline::agent_tool_dirs).unwrap_or_default();
+        agent_dirs.extend(crate::baseline::managed_tool_dirs());
         let origin = CommandOrigin {
             root: crate::baseline::buckyos_root().map(|r| r.display().to_string()),
             agent_root: agent_root.map(|r| r.display().to_string()),
@@ -1434,6 +1450,7 @@ pub async fn runtime_exec(
                 layers.push(root.join("tools"));
             }
         }
+        layers.extend(crate::baseline::managed_tool_dirs());
         (private_runtime_of(&dir)?, dir.display().to_string(), layers)
     } else {
         let dir = cwd
@@ -1589,6 +1606,7 @@ pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<
                 layers.push(root.join("tools"));
             }
         }
+        layers.extend(crate::baseline::managed_tool_dirs());
     }
     let mut env = session_env_vars(ctx, &binding.runtime_id).await?;
     env.extend(agent_cache_env(binding.connector == "node_executor", &binding.workdir, ctx.agent_root.as_deref()));
@@ -1611,6 +1629,7 @@ fn session_layers(sd: &SessionDir, cfg: &SessionConfig, agent_root: Option<&Path
             layers.push(root.join("tools"));
         }
     }
+    layers.extend(crate::baseline::managed_tool_dirs());
     layers
 }
 

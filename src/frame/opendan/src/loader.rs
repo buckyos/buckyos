@@ -146,7 +146,12 @@ fn private_runtime(agent_root: &std::path::Path) -> PrivateRuntimeInfo {
         (None, _) => log::warn!("loader: $BUCKYOS_ROOT is not known to this process; the private runtime's layout was not verified"),
         (_, None) => log::debug!("loader: AgentRoot {} is not under <root>/data/home/<owner>/agents; layout not verified", agent_root.display()),
     }
-    PrivateRuntimeInfo { native_service: native_service(), note: note.trim().to_string() }
+    PrivateRuntimeInfo {
+        native_service: native_service(),
+        native_node_did: std::env::var("OPENDAN_NATIVE_NODE_DID").ok(),
+        computer_endpoint: std::env::var("OPENDAN_COMPUTER_IPC").ok(),
+        note: note.trim().to_string(),
+    }
 }
 
 impl Loader {

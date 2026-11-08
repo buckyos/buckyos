@@ -65,6 +65,7 @@ mod computer;
 pub use computer::*;
 mod node_executor;
 mod node_executor_proto;
+pub mod node_executor_ipc;
 mod opendan_client;
 mod permission;
 mod process_util;

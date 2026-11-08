@@ -265,7 +265,7 @@ async fn open_side(
         ROLE_SESSION => {
             let runtime_id = cfg.runtime.runtime_id().to_string();
             let frozen = cfg.runtime.frozen.as_ref();
-            let connector = frozen.map(|f| f.connector.clone()).unwrap_or(RuntimeConnector::Native);
+            let connector = frozen.map(|f| f.connector.clone()).unwrap_or(RuntimeConnector::Native { aliases: Vec::new(), computer: None });
             let base = if connector.is_node() {
                 crate::runtime::target_workdir(sd)?.ok_or_else(|| {
                     OpenDanError::Bind("the session has no working directory on its runtime yet (it binds at its first drive)".into())
@@ -287,7 +287,7 @@ async fn open_side(
             }
             let runtime_id = canonical_runtime(&b.location.runtime_id).to_string();
             let record = agent.runtimes().lookup(&runtime_id).await?;
-            let connector = record.as_ref().map(|r| r.connector.clone()).unwrap_or(RuntimeConnector::Native);
+            let connector = record.as_ref().map(|r| r.connector.clone()).unwrap_or(RuntimeConnector::Native { aliases: Vec::new(), computer: None });
             let base = b.location.directory.display().to_string();
             (runtime_id, below(&base, &ep.path, "workspace")?, connector, record.is_none_or(|r| r.enabled))
         }
@@ -304,7 +304,7 @@ async fn open_side(
                 }
                 // A host that registered no runtimes: only the agent's own
                 // environment exists (as `freeze_runtime` takes it).
-                None if is_private_runtime(id) => (PRIVATE_RUNTIME.to_string(), RuntimeConnector::Native, true),
+                None if is_private_runtime(id) => (PRIVATE_RUNTIME.to_string(), RuntimeConnector::Native { aliases: Vec::new(), computer: None }, true),
                 None => {
                     return Err(OpenDanError::NotFound(format!(
                         "runtime {id} (see `agent-session runtime list`)"

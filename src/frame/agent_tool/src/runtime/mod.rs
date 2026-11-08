@@ -1,4 +1,5 @@
 pub mod files;
+pub mod computer;
 pub mod executor;
 pub mod node;
 pub mod ssh;
@@ -42,6 +43,8 @@ pub struct RuntimeConfig {
     pub remote_ssh: Option<SshConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_node: Option<RemoteNodeConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computer: Option<computer::NativeComputerConfig>,
     /// The environment baseline its registrar declares; carried into
     /// `RuntimeInfo.baseline` for prompts, never probed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,6 +135,12 @@ impl RuntimeConfig {
             return Err(bad(
                 "remote_node connection block requires kind: remote_node".into()
             ));
+        }
+        if let Some(computer) = &self.computer {
+            if self.kind() != "native" || computer.node_did.is_empty() || computer.profile_id.is_empty()
+                || !Path::new(&computer.endpoint).is_absolute() {
+                return Err(bad("computer requires a native runtime, absolute local IPC endpoint, node DID and profile".into()));
+            }
         }
         for (k, v) in &self.env {
             if !valid_env_key(k) || v.contains('\0') {
@@ -793,7 +802,7 @@ impl AgentRuntime for Runtime {
                     .with_run_binding(ctx.run.clone()),
             )
         };
-        let (effective, mut manager) = crate::xllm::build_runtime_toolset(
+        let (mut effective, mut manager) = crate::xllm::build_runtime_toolset(
             tools,
             ctx.sources.clone(),
             ctx.loop_model,
@@ -807,6 +816,12 @@ impl AgentRuntime for Runtime {
             self.config.task_wait_ms(),
         )
         .await?;
+        if effective.exec_enabled && s.config.kind() == "native" {
+            if let Some(config) = self.config.computer.as_ref().filter(|c| c.access != buckyos_api::ComputerAccess::None) {
+                let tool = manager.register(computer::tool(config.clone(), ctx.run.clone(), deps.node_executor.clone()), "runtime:computer")?;
+                if effective.tools2actions { effective.actions.push(tool); } else { effective.native.push(tool); }
+            }
+        }
         let mut info = self.info().await?;
         info.tools.extend(effective.all_names());
         info.tools.sort();

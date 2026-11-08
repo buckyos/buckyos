@@ -26,6 +26,8 @@ baseline: standard
   Records then stay with the session; the default `~/.xllm/runs` sits inside the container, shared by all
   sessions. A `.llm_context` at the session root would also be merged into `llm_understand_media` calls there.
 
+Native sessions whose owner permits desktop access also expose the `computer` tool. It uses local IPC to the node's existing desktop driver. Begin with `{"request":{"command":"inspect","binding_id":""}}` or `{"request":{"command":"observe","binding_id":"","mode":"visual"}}`; an empty binding selects the local display. Follow the tool's schema for actions and use the preceding observation's target guards. Results preserve the driver's execution and feedback states; a returned `screenshot` is a local PNG for `llm_understand_media`. A desktop permission or IPC error does not make local shell or files unavailable. Shell/file-only xllm calls need no computer connection.
+
 #### Find the real commands
 - `agent_tool xllm --help`: every flag and exit code. `agent_tool xllm status [--run <id>]`: effective config
   with the source of each value, limits, usage, last error, resumability; `--format json` adds prompt and input.

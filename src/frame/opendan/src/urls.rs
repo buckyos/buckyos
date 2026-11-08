@@ -30,8 +30,10 @@ impl std::fmt::Debug for AgentUrlReader {
 
 /// The device a node runtime runs on: the first label of its `node_did` (`did:web:ood1.<zone>` → `ood1`).
 fn runtime_device(record: &RuntimeRecord) -> Option<String> {
-    let libopendan::protocol::RuntimeConnector::NodeExecutor { node_did: Some(node_did), .. } = &record.connector else {
-        return None;
+    let node_did = match &record.connector {
+        libopendan::protocol::RuntimeConnector::NodeExecutor { node_did: Some(node_did), .. } => node_did,
+        libopendan::protocol::RuntimeConnector::Native { computer: Some(computer), .. } => &computer.node_did,
+        _ => return None,
     };
     let host = DID::from_str(node_did).ok()?.to_host_name();
     host.split('.').next().map(str::to_string)
@@ -53,17 +55,20 @@ impl AgentUrlReader {
                     "{url}: no runtime of device {device} is registered for this Agent (`agent-session runtime list`), so its files are not reachable"
                 ))
             })?;
-        let target = libopendan::runtime::open_node_target(record, &self.ops_dir)
-            .await
-            .map_err(|e| AgentToolError::ExecFailed(format!("{url}: {e}")))?;
         let decoded = buckyos_api::decode_url_path(path);
-        let bytes = target.read(&decoded).await?;
+        let bytes = if record.is_private() {
+            tokio::fs::read(&decoded).await.map_err(|e| AgentToolError::ExecFailed(format!("{url}: {e}")))?
+        } else {
+            let target = libopendan::runtime::open_node_target(record, &self.ops_dir)
+                .await.map_err(|e| AgentToolError::ExecFailed(format!("{url}: {e}")))?;
+            target.read(&decoded).await?
+        };
         let text = String::from_utf8(bytes).map_err(|_| {
             AgentToolError::InvalidArgs(format!("{url} is not text; use llm_understand_media to look at media files"))
         })?;
         Ok(UrlContent {
             text,
-            details: json!({ "object": url, "source": format!("runtime:{}", record.runtime_id), "route": "node_runtime" }),
+            details: json!({ "object": url, "source": format!("runtime:{}", record.runtime_id), "route": if record.is_private() { "native_runtime" } else { "node_runtime" } }),
         })
     }
 }
@@ -89,6 +94,28 @@ impl UrlReader for AgentUrlReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_node_files_are_read_without_contacting_an_executor() {
+        use libopendan::protocol::*;
+        let dir = tempfile::tempdir().unwrap();
+        let agent = Arc::new(libopendan::FsAgentStateClient::open(dir.path().join("agent"), "did:web:jarvis.test.buckyos.io", None, None).unwrap());
+        let mut settings = buckyos_api::AgentSettings::default();
+        settings.runtimes.insert("host".into(), serde_json::from_value(json!({
+            "enabled": true, "computer": "control", "target": {"kind": "node", "node_id": "ood1", "node_did": "did:web:ood1.test.buckyos.io"}
+        })).unwrap());
+        let builtin = builtin_runtimes(&settings, agent.agent_did(), &PrivateRuntimeInfo {
+            native_service: true, native_node_did: Some("did:web:ood1.test.buckyos.io".into()),
+            computer_endpoint: Some(dir.path().join("absent.sock").display().to_string()), note: String::new(),
+        });
+        agent.runtimes().ensure_builtin(&builtin, "test").await.unwrap();
+        let path = dir.path().join("local.txt");
+        std::fs::write(&path, "local contents").unwrap();
+        let reader = AgentUrlReader { objects: ObjectUrlReader::builtin(), agent, ops_dir: dir.path().join("ops") };
+        let content = reader.read_url(&ctx(), &format!("file://ood1{}", path.display()), None).await.unwrap();
+        assert_eq!(content.text, "local contents");
+        assert_eq!(content.details["route"], "native_runtime");
+    }
 
     fn ctx() -> SessionRuntimeContext {
         SessionRuntimeContext {

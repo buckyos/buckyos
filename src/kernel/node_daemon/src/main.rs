@@ -44,6 +44,7 @@ fn main() {
     }
     #[cfg(target_os = "macos")]
     if desktop_runtime::is_app_entry(&args) {
+        computer_driver::initialize_desktop();
         std::process::exit(desktop_runtime::app_entry_main(&args));
     }
     let matches = Command::new("BuckyOS Node Daemon")
@@ -76,6 +77,10 @@ fn main() {
                 .required(false),
         )
         .get_matches();
+    #[cfg(target_os = "macos")]
+    if matches.get_flag("desktop_daemon") {
+        computer_driver::initialize_desktop();
+    }
     init_logging("node_daemon", true);
     #[cfg(target_os = "macos")]
     let _instance_guard = match desktop_runtime::acquire_instance_guard() {

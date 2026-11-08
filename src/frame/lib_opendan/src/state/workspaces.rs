@@ -317,7 +317,7 @@ impl FsWorkspaces {
     }
 
     fn runtime_record(&self, runtime_id: &str) -> Result<Option<RuntimeRecord>> {
-        fsutil::read_json_opt::<RuntimeRecord>(&self.layout.runtime_entry(canonical_runtime(runtime_id)))
+        super::runtimes::FsRuntimes::new(self.layout.clone()).resolve(runtime_id)
     }
 
     /// Whether the runtime a location names is configured and usable now:
@@ -325,7 +325,7 @@ impl FsWorkspaces {
     /// switch), or an enabled node runtime.
     fn runtime_available(&self, runtime_id: &str) -> Result<bool> {
         let registered = self.runtime_record(runtime_id)?;
-        if is_private_runtime(runtime_id) {
+        if is_private_runtime(runtime_id) || registered.as_ref().is_some_and(RuntimeRecord::is_private) {
             if registered.is_some_and(|r| r.availability != RuntimeAvailability::Available) {
                 return Ok(false);
             }
@@ -359,7 +359,7 @@ impl FsWorkspaces {
         if !self.runtime_available(runtime_id)? {
             return Err(self.unavailable(runtime_id));
         }
-        if is_private_runtime(runtime_id) {
+        if is_private_runtime(runtime_id) || self.runtime_record(runtime_id)?.is_some_and(|r| r.is_private()) {
             return Ok(Target::Local);
         }
         let record = self
@@ -378,7 +378,9 @@ impl FsWorkspaces {
         Ok((
             target,
             WorkspaceLocation {
-                runtime_id: location.runtime_id.clone(),
+                runtime_id: if is_private_runtime(&location.runtime_id) { location.runtime_id.clone() } else {
+                    self.runtime_record(&location.runtime_id)?.map(|r| r.runtime_id).unwrap_or_else(|| location.runtime_id.clone())
+                },
                 directory,
             },
         ))
@@ -784,6 +786,10 @@ impl FsWorkspaces {
 #[async_trait]
 impl WorkspaceManager for FsWorkspaces {
     async fn create(&self, request: &WorkspaceCreate, who: &str) -> Result<WorkspaceRecord> {
+        let mut request = request.clone();
+        if let Some(record) = self.runtime_record(&request.location.runtime_id)?.filter(|_| !is_private_runtime(&request.location.runtime_id)) {
+            request.location.runtime_id = record.runtime_id;
+        }
         let _lock = self.lock()?;
         let id = self.operation_id(&request.operation_id, who)?;
         let url = request_url(&request.url)?;

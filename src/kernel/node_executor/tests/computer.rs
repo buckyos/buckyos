@@ -6,7 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use buckyos_api::*;
 use node_executor::*;
-use tokio::io::DuplexStream;
+use buckyos_api::node_executor_ipc::{ExecutorIo, LocalExecutorListener, connect_local_executor};
 
 const APP: &str = "computer.test.buckyos.io";
 const OWNER: &str = "owner";
@@ -158,13 +158,26 @@ impl ComputerDriver for FakeDriver {
 
 struct Fixture {
     executor: NodeExecutor,
-    client: DuplexStream,
+    client: Box<dyn ExecutorIo>,
     _dir: tempfile::TempDir,
     driver: Arc<FakeDriver>,
     store: String,
     config: ExecutorConfig,
 }
 impl Fixture {
+    async fn use_ipc(&mut self) {
+        let endpoint = if cfg!(windows) {
+            node_executor_ipc::local_executor_endpoint(self._dir.path())
+        } else {
+            self._dir.path().join("ipc.sock").display().to_string()
+        };
+        let mut listener = LocalExecutorListener::bind(&endpoint).await.unwrap();
+        let executor = self.executor.clone();
+        tokio::spawn(async move {
+            executor.serve(listener.accept().await.unwrap()).await;
+        });
+        self.client = login(connect_local_executor(&endpoint).await.unwrap(), "test").await;
+    }
     async fn new(behavior: Behavior, ops: Vec<ExecutorOp>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let driver = FakeDriver::new(behavior);
@@ -281,10 +294,15 @@ impl Fixture {
         }
     }
 }
-async fn connect(executor: &NodeExecutor, token: &str) -> DuplexStream {
-    let (mut client, server) = tokio::io::duplex(64 * 1024);
+async fn connect(executor: &NodeExecutor, token: &str) -> Box<dyn ExecutorIo> {
+    let (client, server) = tokio::io::duplex(64 * 1024);
+    let client: Box<dyn ExecutorIo> = Box::new(client);
     let executor = executor.clone();
     tokio::spawn(async move { executor.serve(server).await });
+    login(client, token).await
+}
+
+async fn login(mut client: Box<dyn ExecutorIo>, token: &str) -> Box<dyn ExecutorIo> {
     let reply = exchange(
         &mut client,
         ExecutorClientMessage::Login(ExecutorLogin {
@@ -306,7 +324,7 @@ async fn connect(executor: &NodeExecutor, token: &str) -> DuplexStream {
     client
 }
 async fn exchange(
-    client: &mut DuplexStream,
+    client: &mut Box<dyn ExecutorIo>,
     message: ExecutorClientMessage,
 ) -> ExecutorServerMessage {
     let id = message.request_id().map(str::to_owned);
@@ -457,6 +475,7 @@ async fn unknown_input_pauses_the_driver_and_is_never_replayed() {
 #[tokio::test]
 async fn screenshots_use_ledger_content_and_original_actor_acl() {
     let mut fixture = Fixture::new(Behavior::Image, ExecutorOp::ALL.to_vec()).await;
+    fixture.use_ipc().await;
     fixture
         .submit(
             "observe",
@@ -495,6 +514,39 @@ async fn screenshots_use_ledger_content_and_original_actor_acl() {
         panic!()
     };
     assert_eq!(denied.error.code, ExecutorErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn local_ipc_preserves_computer_grants_and_duplicate_operation_identity() {
+    let mut fixture = Fixture::new(Behavior::Complete, vec![ExecutorOp::OpenStream, ExecutorOp::Describe,
+        ExecutorOp::ComputerInspect, ExecutorOp::ComputerObserve, ExecutorOp::Query]).await;
+    fixture.use_ipc().await;
+    assert!(matches!(fixture.submit("no-control", click(ComputerFeedback::None)).await, ExecutorServerMessage::Error(_)));
+    assert_eq!(fixture.driver.calls.load(Ordering::SeqCst), 0);
+    let inspect = ComputerRequest::Inspect { binding_id: "desktop:display:1".into() };
+    fixture.submit("inspect", inspect.clone()).await;
+    assert_eq!(fixture.result("inspect").await.state, ExecutorOpState::Succeeded);
+    let ExecutorServerMessage::Accepted(repeated) = fixture.submit("inspect", inspect).await else { panic!() };
+    assert!(repeated.duplicate);
+    assert_eq!(fixture.driver.calls.load(Ordering::SeqCst), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_ipc_socket_is_private_and_only_reclaims_its_own_stale_socket() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("computer.sock");
+    let endpoint = path.display().to_string();
+    std::fs::write(&path, "do not replace").unwrap();
+    assert!(LocalExecutorListener::bind(&endpoint).await.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "do not replace");
+    std::fs::remove_file(&path).unwrap();
+    let listener = LocalExecutorListener::bind(&endpoint).await.unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(LocalExecutorListener::bind(&endpoint).await.is_err());
+    drop(listener);
+    let _listener = LocalExecutorListener::bind(&endpoint).await.unwrap();
 }
 
 #[tokio::test]

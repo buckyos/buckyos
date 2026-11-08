@@ -1739,6 +1739,14 @@ impl AppLoader {
             env.insert("BUCKYOS_AGENT_SKILLS_PKG_DIR".to_string(), skills.to_string_lossy().to_string());
         }
         env.insert(OPENDAN_SERVICE_MODE_ENV.to_string(), "native".to_string());
+        if cfg!(windows) || crate::node_executor_host::desktop_mode(cfg!(target_os = "macos"))
+            || crate::host_account::runs_as_node_daemon(crate::host_account::load().as_ref()) {
+            let runtime = get_buckyos_api_runtime().map_err(|e| (ERR_SPAWN, e.to_string()))?;
+            if let Some(device) = runtime.device_config.as_ref() {
+                env.insert("OPENDAN_NATIVE_NODE_DID".into(), device.id.to_string());
+                env.insert("OPENDAN_COMPUTER_IPC".into(), buckyos_api::node_executor_ipc::local_executor_endpoint(&get_buckyos_root_dir()));
+            }
+        }
 
         let program = self.native_agent_program();
         let args = self.native_agent_args(&agent_root, service_port);

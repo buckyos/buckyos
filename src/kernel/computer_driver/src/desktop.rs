@@ -44,6 +44,8 @@ struct Desktop {
 
 extern "C" {
     fn bucky_desktop_probe(out: *mut Desktop);
+    #[cfg(target_os = "macos")]
+    fn bucky_desktop_initialize();
     fn bucky_desktop_capture(
         display: u32,
         width: u32,
@@ -199,6 +201,11 @@ fn native_capabilities(desktop: &Desktop, paused: bool) -> ComputerCapabilities 
             .collect(),
         focus_guard: focus_guard().into(),
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn initialize_desktop() {
+    unsafe { bucky_desktop_initialize() };
 }
 
 /// Ask macOS for Screen Recording and Accessibility access for this process,

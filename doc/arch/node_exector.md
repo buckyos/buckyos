@@ -139,6 +139,10 @@ Linux 系统服务默认不向 owner 的 Agent 开放（常规生产环境大家
 
 运行一个本机 Gateway 或嵌入 Gateway Library，不等于承担 Zone 网关角色，也不因此成为 OOD。
 
+Desktop Lite 中，Agent Service 与 owner 在同一节点、同一 OS 执行身份下运行时，Agent 的 `private` 和 owner default 指向同一个 native runtime；`host` 只保留为设置中的角色引用，由 registry 解析到 `private`。容器、其他节点，以及 Linux 上需要切换 OS 账号的执行环境仍分别登记。
+
+该 native runtime 的 shell、文件、工作区和工具检查直接在本机执行。PATH 在 Session/Agent skill 工具之后加入 `$BUCKYOS_ROOT/tools/bin` 与 `$BUCKYOS_ROOT/bin/agent-tools`。ComputerUse 单独通过本机 IPC 复用 node_daemon 已打开的 NodeExecutor/ComputerDriver：Unix 为 `$BUCKYOS_ROOT/local/node_daemon/executor/computer.sock`（0600），Windows 为按安装目录生成的本地 named pipe（拒绝远程客户端）。协议、Agent token、profile、授权快照、撤权、桌面锁、operation ledger 和截图 content 通道均复用现有实现，不经过 gateway/SOCKS/RTCP。IPC 或桌面权限失败仅影响桌面能力，不改变 native shell/file 的可用性。
+
 ### 4.3 能力声明
 
 `Device` 要成为"Agent 可控"，在其 DeviceDocument 的 `extra_info` 中声明（字段名为建议）：
@@ -867,5 +871,8 @@ DV 中发现并已修正：SOCKS hook 对 IP 目标只有 `REQ.target.type = "ip
 - 退出：SIGTERM（bootout、`kickstart -k`）先 `NodeExecutor::shutdown()`（至多 20 s，plist `ExitTimeOut=30`），再退出；run item 不随之停止，崩溃仍走账本恢复。
 - 环境：Executor 在 profile 未设 PATH 时的 macOS 默认值加入 `/opt/homebrew/bin` 与 sbin 目录；daemon 的服务 PATH 由 LaunchAgent 单独给出。
 - 权限：Runtime 的 app 入口（Finder 打开或 `open -n … --args --request_permissions`）由 Runtime 进程自己请求屏幕录制与辅助功能；常驻进程每 30 s 把 Driver readiness 写到 `local/node_daemon/desktop_status.json`，供 `node_control` check 与托盘呈现。
+- 焦点：macOS daemon 在主线程初始化 AppKit，再启动异步服务；缺少初始化时系统级 AX 焦点查询会返回 CannotComplete。Driver 通过系统 AX 元素的 `kAXFocusedApplicationAttribute` 读取当前应用及焦点元素；daemon 不运行 AppKit 主事件循环，不能依赖 `NSWorkspace.frontmostApplication` 的缓存。切换应用、焦点元素或显示器仍使旧观察失效。
+- 开发签名：ad-hoc 构建的 code hash 会变化。若系统权限开关开启但 Runtime 仍被拒绝，检查 TCC 日志的 code requirement mismatch；只重置 `com.buckyos.runtime` 的 ScreenCapture / Accessibility 授权，重新请求并由用户授权当前构建，再重启验证。
 - 已验证（macOS 15.8.1 arm64，ad-hoc 签名、开发构建）：bundle 组装/签名/复制后校验；含空格的自定义 root 下直接运行 bundle 内主程序，根路径发现、单实例锁、绑定其他 uid 时拒绝、SIGTERM 有界退出均符合预期；Runtime 报告 uid 501、GUI audit session 与两项权限缺失；未绑定时 `service start` 拒绝；`stop_osx.sh` 只停该 root 的进程。
-- 未验证：真实 LaunchAgent 的注册/登录启动/注销/Login Items 禁用、正式签名与 TCC 归属及升级连续性、本地网络权限、pkg 安装与覆盖升级、Intel 与 macOS 14、GUI DV。
+- 已验证（2026-11-08，macOS 15.8.1 arm64，Desktop Lite 开发环境）：用户为当前签名授权后，LaunchAgent Runtime 经本机 Unix socket 完成 1620×1080 截图、按钮点击、光标移动、文本输入与退格；临时应用回读确认点击计数和文本结果，原有文本保留。切换应用后的焦点元素及显示器范围校验通过；runtime 刷新为单一 native、桌面 ready，无 desktop_error。
+- 未验证：登录启动/注销/Login Items 禁用、正式签名与 TCC 归属及升级连续性、本地网络权限、pkg 安装与覆盖升级、Intel 与 macOS 14、其他桌面应用的完整 GUI 任务。

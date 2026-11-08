@@ -263,7 +263,7 @@ export type InstallGrant = 'none' | 'agent_bin' | 'system'
 
 /** How a runtime is reached: the record's only type tag. */
 export type RuntimeConnector =
-  | { type: 'native' }
+  | { type: 'native'; aliases?: string[]; computer?: { endpoint: string; node_did: string; profile_id: string; access: ComputerAccess } }
   | { type: 'node_executor'; node_did?: string | null; executor_id?: string | null; profile_id: string }
   | { type: 'ssh'; host: string; user?: string | null; port?: number | null; identity_file?: string | null }
 
@@ -309,6 +309,7 @@ export interface RuntimeCaps {
   arch: string
   shell: string
   desktop: boolean
+  desktop_error?: string
   identity_mode?: string | null
   baseline: RuntimeBaseline
   /** `$BUCKYOS_ROOT` of that machine as its executor reports it. */
@@ -348,7 +349,7 @@ export interface KnownRuntime {
   grant: RuntimeGrant
   availability: 'available' | 'runtime_unavailable' | 'permission_denied'
   builtin: boolean
-  /** The owner's default runtime: the owner's machine, never where a chat runs. */
+  /** The owner's default runtime: the owner's machine; it may also be the private runtime. */
   default: boolean
   /** `retired`: withdrawn, expired or unregistered; kept for its history. */
   lifecycle: 'active' | 'retired'

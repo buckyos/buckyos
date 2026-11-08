@@ -362,16 +362,16 @@ impl StateService {
             "home.workspaces" => self.home.workspaces(self.agent.as_ref()).await,
             "skills.status" => self.home.skills_status(self.agent.as_ref(), params).await,
             "skills.install_plan" => self.home.skills_install_plan(self.agent.as_ref(), params).await,
-            "runtimes.settings" => self.home.runtime_settings().await,
+            "runtimes.settings" => self.home.runtime_settings(self.agent.as_ref()).await,
             "runtimes.settings_set" => {
-                let settings = self.home.set_runtime_settings(params).await?;
+                let settings = self.home.set_runtime_settings(self.agent.as_ref(), params).await?;
                 // The projection follows the settings at once (the watcher
                 // would catch up later).
                 if let Some(root) = crate::home::agent_root_of(self.agent.as_ref()) {
                     crate::loader::project_runtimes(self.agent.as_ref(), &root, &settings, who).await;
                     tokio::spawn(crate::loader::check_runtimes(self.agent.clone()));
                 }
-                self.home.runtime_settings().await
+                self.home.runtime_settings(self.agent.as_ref()).await
             }
             "goals.activate" => {
                 let id: String = param(params, "goal_id")?;

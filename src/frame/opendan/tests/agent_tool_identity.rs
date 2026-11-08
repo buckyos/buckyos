@@ -172,6 +172,7 @@ impl Drop for Gateway {
 }
 
 fn read_request(stream: TcpStream) -> (TcpStream, String, Value) {
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();

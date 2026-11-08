@@ -26,7 +26,7 @@ use buckyos_api::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 
 use super::files::{
@@ -59,8 +59,7 @@ const BUSY_RETRY_WINDOW: Duration = Duration::from_secs(60);
 const BUSY_RETRY_FIRST: Duration = Duration::from_millis(100);
 const BUSY_RETRY_MAX: Duration = Duration::from_secs(2);
 
-pub trait NodeIo: AsyncRead + AsyncWrite + Send + Unpin {}
-impl<T: AsyncRead + AsyncWrite + Send + Unpin> NodeIo for T {}
+pub use buckyos_api::node_executor_ipc::ExecutorIo as NodeIo;
 
 /// Supplied by the host: a fresh byte stream to the executor of a node (via
 /// the local gateway) and the App session token to log in with.
@@ -402,6 +401,12 @@ impl NodeClient {
         let op_id = loc.op_id.clone();
         let call_id = loc.call_id.clone();
         let reply = match op {
+            RemoteOp::Computer { request } => self.request(
+                |rid, store, run| ExecutorClientMessage::Computer(buckyos_api::ExecutorComputerRequest {
+                    request_id: rid.into(), store_id: store.into(), op_id: op_id.clone(),
+                    run_id: run.into(), call_id: call_id.clone(), request: (*request).clone(),
+                }), None, Duration::ZERO,
+            ).await?,
             RemoteOp::Exec { cmd, cwd, env, timeout_ms } => {
                 self.request(
                     |rid, store, run| {
@@ -646,6 +651,7 @@ impl NodeClient {
 }
 
 pub(crate) enum RemoteOp<'a> {
+    Computer { request: &'a buckyos_api::ComputerRequest },
     Exec {
         cmd: &'a str,
         cwd: &'a str,
@@ -692,6 +698,7 @@ pub(crate) enum RemoteOp<'a> {
 impl RemoteOp<'_> {
     fn kind(&self) -> &'static str {
         match self {
+            RemoteOp::Computer { .. } => "computer",
             RemoteOp::Exec { .. } => "exec",
             RemoteOp::Read { .. } | RemoteOp::ReadRange { .. } => "read",
             RemoteOp::Write { .. } => "write",
@@ -705,6 +712,7 @@ impl RemoteOp<'_> {
 
     fn digest(&self) -> String {
         let value = match self {
+            RemoteOp::Computer { request } => json!({"kind": "computer", "request": request}),
             RemoteOp::Exec { cmd, cwd, env, timeout_ms } => {
                 json!({"kind": "exec", "cmd": cmd, "cwd": cwd, "env": env, "timeout_ms": timeout_ms})
             }
@@ -809,11 +817,7 @@ impl NodeClient {
             ));
         };
         let digest = op.digest();
-        let existing = if self.connector.executor_target().is_some() {
-            read_locator_checked(&run_dir, call_id)?
-        } else {
-            read_locator(&run_dir, call_id)
-        };
+        let existing = read_locator_checked(&run_dir, call_id)?;
         if let Some(existing) = existing {
             if existing.request_digest != digest || existing.kind != op.kind()
                 || existing.executor_target != self.connector.executor_target()

@@ -43,6 +43,36 @@ fn skill(env: &Env, name: &str, front: &str) {
 }
 
 #[tokio::test]
+async fn native_owner_alias_freezes_to_private_and_keeps_workspace_local() {
+    let env = Env::new();
+    let agent = env.agent();
+    let mut runtimes = builtin_runtimes(&Default::default(), AGENT, &PrivateRuntimeInfo::default());
+    runtimes.truncate(1);
+    runtimes[0].default = true;
+    runtimes[0].connector = RuntimeConnector::Native { aliases: vec!["host".into()], computer: None };
+    agent.runtimes().ensure_builtin(&runtimes, APP).await.unwrap();
+    let workspace = agent.workspaces().create(&WorkspaceCreate {
+        operation_id: "native-alias".into(), name: "Native workspace".into(), description: String::new(),
+        url: None, location: WorkspaceLocation { runtime_id: "host".into(), directory: env.root.join("native-workspace") },
+        usage: WorkspaceUsage::Private, source_session: None, policy_ref: None,
+    }, APP).await.unwrap();
+    assert_eq!(workspace.location.runtime_id, "private");
+    let mut spec = work_spec("owner work locally");
+    spec.runtime.requirement.runtime_id = Some("host".into());
+    spec.workspace = Some(WorkspaceRef { workspace_id: workspace.workspace_id, access: WorkspaceAccess::ReadWrite });
+    let sd = env.create_work(spec).await;
+    let cfg = sd.config().unwrap();
+    assert_eq!(cfg.runtime.runtime_id(), "private");
+    assert!(!cfg.runtime.is_node());
+    let mut chat = cfg.clone();
+    chat.session.policy.runtime_view = RuntimeView::Chat;
+    let view = libopendan::runtime::runtimes_view(agent.as_ref(), &chat).await;
+    assert_eq!(view["private"]["id"], "private");
+    assert_eq!(view["owner_default"]["id"], "private");
+    assert_eq!(libopendan::runtime::workspace_view(&cfg).unwrap()["same_runtime"], true);
+}
+
+#[tokio::test]
 async fn the_workspace_never_chooses_the_session_runtime() {
     let env = Env::new();
     let agent = env.agent();

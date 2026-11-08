@@ -147,6 +147,13 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
         if !baseline.is_empty() {
             t.push_str(&format!(", {baseline} environment"));
         }
+        if let Some(desc) = runtimes
+            .and_then(|r| r.pointer("/private/desc"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+        {
+            t.push_str(&format!("; {}", one_line(desc, 800)));
+        }
         out.push(BackgroundLine::new("runtime", t));
     }
     if let Some(r) = runtimes {
@@ -159,7 +166,14 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
                 if s("computer") != "none" {
                     t.push_str(&format!(", desktop access {}", s("computer")));
                 }
-                t.push_str("): the owner's machine — absolute paths the owner gives are read there; work there is a work session on it, not done from this chat");
+                if let Some(error) = d.get("desktop_error").and_then(Value::as_str) {
+                    t.push_str(&format!(", desktop unavailable: {}", one_line(error, 200)));
+                }
+                if r.pointer("/private/id") == d.get("id") {
+                    t.push_str("): the same native runtime as your private environment; the owner's paths are local paths here");
+                } else {
+                    t.push_str("): the owner's machine — absolute paths the owner gives are read there; work there is a work session on it");
+                }
                 if !available {
                     if let Some(e) = d.get("error").and_then(Value::as_str) {
                         t.push_str(&format!("; {e}"));
@@ -395,6 +409,37 @@ mod tests {
         );
         assert_eq!(local_time(ms, None).0, "2026-10-16T17:45:45Z");
         assert_eq!(local_time(ms, Some("Mars/Base")).1, "UTC");
+    }
+
+    #[test]
+    fn runtime_background_preserves_native_and_container_location() {
+        for native_service in [false, true] {
+            let registers = builtin_runtimes(
+                &Default::default(),
+                "did:test:agent",
+                &PrivateRuntimeInfo { native_service, note: String::new(), ..Default::default() },
+            );
+            let desc = &registers[0].desc;
+            let status = serde_json::json!({
+                "kind": "native", "hostname": "desktop", "cwd": "/s",
+                "runtimes": {
+                    "private": {"id": "private", "desc": desc},
+                    "owner_default": {"id": "host", "os": "macos", "available": false, "computer": "control"}
+                }
+            });
+            let mut i = input(0, &[]);
+            i.runtime_status = &status;
+            let background = lines(&i);
+            let private = &background.iter().find(|l| l.key == "runtime").unwrap().text;
+            assert!(private.contains(desc), "{private}");
+            if native_service {
+                assert!(private.contains("one runtime"), "{private}");
+                assert!(private.contains("IPC"), "{private}");
+            } else {
+                assert!(private.contains("paths here are not the owner's host paths"), "{private}");
+            }
+            assert!(background.iter().find(|l| l.key == "owner_runtime").unwrap().text.contains("not available"));
+        }
     }
 
     #[test]
