@@ -214,6 +214,7 @@ pub fn required_commands(level: RuntimeBaseline, overlay: bool) -> Vec<&'static 
 
 /// Where the tools of an Agent keep what they download (ExtTools TODO §3.6): its own directory, so that nothing lands in the
 /// account's global caches, npm prefix or interpreters. `HOME` stays; the Agent runs as the account it was given.
+/// `llm_understand_media` unpacks long documents there too (doc/llm_context/LLM Understand Media.md §4.7).
 pub fn tool_cache_env(cache: &Path) -> Vec<(String, String)> {
     [
         ("DENO_DIR", "deno-cache"),
@@ -222,6 +223,7 @@ pub fn tool_cache_env(cache: &Path) -> Vec<(String, String)> {
         ("NPM_CONFIG_CACHE", "npm-cache"),
         ("NPM_CONFIG_PREFIX", "npm-prefix"),
         ("PIP_CACHE_DIR", "pip-cache"),
+        ("LLM_UNDERSTAND_MEDIA_CATALOG_DIR", "media-catalog"),
     ]
     .into_iter()
     .map(|(name, dir)| (name.to_string(), cache.join(dir).display().to_string()))
@@ -724,7 +726,7 @@ mod tests {
         let env = tool_cache_env(Path::new("/a/.cache"));
         assert!(env.iter().all(|(_, value)| value.starts_with("/a/.cache/")), "{env:?}");
         assert!(env.iter().all(|(name, _)| name != "HOME" && name != "USERPROFILE" && name != "PATH"));
-        for wanted in ["DENO_DIR", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "NPM_CONFIG_CACHE", "NPM_CONFIG_PREFIX", "PIP_CACHE_DIR"] {
+        for wanted in ["DENO_DIR", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "NPM_CONFIG_CACHE", "NPM_CONFIG_PREFIX", "PIP_CACHE_DIR", "LLM_UNDERSTAND_MEDIA_CATALOG_DIR"] {
             assert!(env.iter().any(|(name, _)| name == wanted), "{wanted}");
         }
     }

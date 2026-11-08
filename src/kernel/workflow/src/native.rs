@@ -71,6 +71,9 @@ pub struct ToolEnvironment {
     /// Digest of the installed font set, when this host can list its fonts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fonts: Option<String>,
+    /// Language data tesseract has (`tesseract --list-langs`), sorted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ocr_langs: Vec<String>,
     pub revision: String,
     pub probed_at: i64,
 }
@@ -92,6 +95,7 @@ impl ToolEnvironment {
                 (name.clone(), json!({"path": info.path, "version": info.version}))
             }).collect::<BTreeMap<_, _>>(),
             "fonts": self.fonts,
+            "ocr_langs": self.ocr_langs,
         });
         let (id, _) = ndn_lib::build_named_object_by_json("toolenv", &value);
         hex::encode(&id.obj_hash)
@@ -133,6 +137,7 @@ impl ToolEnvironment {
             "tools": self.tools,
             "missing": self.missing,
             "searched": self.searched,
+            "ocr_langs": self.ocr_langs,
         })
     }
 }
@@ -479,10 +484,22 @@ impl NativeContext {
         args: &[String],
         stdout_limit: usize,
     ) -> Result<ToolOutput, ThunkExecutionError> {
+        self.run_tool_env(program, args, &[], stdout_limit).await
+    }
+
+    /// [`Self::run_tool`] with extra environment variables.
+    pub async fn run_tool_env(
+        &self,
+        program: &Path,
+        args: &[String],
+        envs: &[(&str, &str)],
+        stdout_limit: usize,
+    ) -> Result<ToolOutput, ThunkExecutionError> {
         self.check_cancelled()?;
         let mut command = tokio::process::Command::new(program);
         command
             .args(args)
+            .envs(envs.iter().copied())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

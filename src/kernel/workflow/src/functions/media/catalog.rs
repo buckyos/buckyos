@@ -3,7 +3,7 @@ use crate::native::{param_str, ExecutionLane, NativeContext, NativeFunction, Nat
 use async_trait::async_trait;
 use buckyos_api::{
     FunctionObject, MediaEntry, MediaEntryError, MediaEntryKind, MediaEntryStatus, MediaManifest,
-    MediaSourceRef, MediaWhere, ThunkExecutionError, MEDIA_MANIFEST_OBJ_TYPE,
+    MediaOcr, MediaSourceRef, MediaTextQuality, MediaWhere, ThunkExecutionError, MEDIA_MANIFEST_OBJ_TYPE,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -24,6 +24,7 @@ pub fn function_object() -> FunctionObject {
                 "probe": {"type": "object"},
                 "text": {"type": "object"},
                 "images": {"type": "object"},
+                "ocr": {"type": "object"},
                 "frames": {"type": "object"},
                 "audio": {"type": "object"}
             }
@@ -56,9 +57,48 @@ fn obj_id(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-/// Builds the page entries of a document family from the text and image
-/// step results: one entry per page in `1..=total`, merging both sources.
-pub fn page_entries(text: Option<&Value>, images: Option<&Value>, source: MediaSourceRef) -> (Option<u64>, Vec<u64>, Vec<MediaEntry>) {
+fn percent(value: &Value, key: &str) -> Option<u8> {
+    value.get(key).and_then(Value::as_u64).map(|v| v.min(100) as u8)
+}
+
+/// OCR text and text facts of each page `media.ocr_pages` looked at.
+fn ocr_pages(ocr: Option<&Value>) -> BTreeMap<u64, (Option<String>, MediaTextQuality)> {
+    let mut out = BTreeMap::new();
+    for entry in ocr.and_then(|o| o.get("pages")).and_then(Value::as_array).into_iter().flatten() {
+        let Some(page) = entry.get("page").and_then(Value::as_u64) else { continue };
+        let status = entry.get("status").and_then(Value::as_str).unwrap_or("");
+        let quality = MediaTextQuality {
+            layer_clean: percent(entry, "layer_clean"),
+            ocr_clean: percent(entry, "ocr_clean"),
+            agreement: percent(entry, "agreement"),
+            ocr_confidence: percent(entry, "confidence"),
+            ocr: (status != "ok").then(|| status.to_string()),
+        };
+        out.insert(page, (obj_id(entry, "ocr_text_obj_id"), quality));
+    }
+    out
+}
+
+pub fn ocr_summary(ocr: Option<&Value>) -> Option<MediaOcr> {
+    let ocr = ocr?;
+    Some(MediaOcr {
+        status: ocr.get("status").and_then(Value::as_str).unwrap_or("unknown").to_string(),
+        lang: obj_id(ocr, "lang"),
+        script: obj_id(ocr, "script"),
+        vertical: ocr.get("vertical").and_then(Value::as_bool).unwrap_or(false),
+        garbled_layer: ocr.get("garbled_layer").and_then(Value::as_bool).unwrap_or(false),
+        basis: ocr.get("basis").cloned().unwrap_or(Value::Null),
+    })
+}
+
+/// Builds the page entries of a document family from the text, image and OCR
+/// step results: one entry per page in `1..=total`, merging the sources.
+pub fn page_entries(
+    text: Option<&Value>,
+    images: Option<&Value>,
+    ocr: Option<&Value>,
+    source: MediaSourceRef,
+) -> (Option<u64>, Vec<u64>, Vec<MediaEntry>) {
     #[derive(Default)]
     struct Page {
         text_obj_id: Option<String>,
@@ -98,15 +138,20 @@ pub fn page_entries(text: Option<&Value>, images: Option<&Value>, source: MediaS
         }
     }
     let requested: Vec<u64> = pages.iter().filter(|(_, p)| p.requested).map(|(n, _)| *n).collect();
+    let mut ocr = ocr_pages(ocr);
     let mut entries = Vec::new();
     let last = total.unwrap_or_else(|| pages.keys().next_back().copied().unwrap_or(0));
     for page in 1..=last {
         let slot = pages.get(&page);
+        let (ocr_text_obj_id, text_quality) = match ocr.remove(&page) {
+            Some((id, quality)) => (id, Some(quality)),
+            None => (None, None),
+        };
         let (status, error) = match slot {
             None => (MediaEntryStatus::Unprocessed, None),
             Some(p) if p.error.is_some() && p.text_obj_id.is_none() && p.image_obj_id.is_none() => (MediaEntryStatus::Failed, p.error.clone()),
             Some(p) if p.error.is_some() => (MediaEntryStatus::Failed, p.error.clone()),
-            Some(p) if p.text_obj_id.is_none() && p.no_text => (MediaEntryStatus::NoText, None),
+            Some(p) if p.text_obj_id.is_none() && ocr_text_obj_id.is_none() && p.no_text => (MediaEntryStatus::NoText, None),
             Some(_) => (MediaEntryStatus::Ok, None),
         };
         entries.push(MediaEntry {
@@ -115,6 +160,8 @@ pub fn page_entries(text: Option<&Value>, images: Option<&Value>, source: MediaS
             text_obj_id: slot.and_then(|p| p.text_obj_id.clone()),
             image_obj_id: slot.and_then(|p| p.image_obj_id.clone()),
             audio_obj_id: None,
+            ocr_text_obj_id,
+            text_quality,
             status,
             error,
         });
@@ -139,6 +186,8 @@ pub fn video_entries(frames: Option<&Value>, audio: Option<&Value>) -> (Option<u
                 text_obj_id: None,
                 image_obj_id: obj_id(frame, "image_obj_id"),
                 audio_obj_id: None,
+                ocr_text_obj_id: None,
+                text_quality: None,
                 status: if failed { MediaEntryStatus::Failed } else { MediaEntryStatus::Ok },
                 error: if failed { entry_error(frame.get("error")) } else { None },
             });
@@ -155,6 +204,8 @@ pub fn video_entries(frames: Option<&Value>, audio: Option<&Value>) -> (Option<u
             text_obj_id: None,
             image_obj_id: None,
             audio_obj_id: obj_id(audio, "audio_obj_id"),
+            ocr_text_obj_id: None,
+            text_quality: None,
             status: if absent { MediaEntryStatus::Absent } else { MediaEntryStatus::Ok },
             error: None,
         });
@@ -172,11 +223,15 @@ pub fn build_manifest(params: &Value) -> Result<MediaManifest, ThunkExecutionErr
     let (total, requested, entries) = match family {
         "video" => video_entries(params.get("frames"), params.get("audio")),
         "image" => (None, Vec::new(), Vec::new()),
-        _ => page_entries(
-            params.get("text"),
-            params.get("images"),
-            if derived.is_some() { MediaSourceRef::Derived } else { MediaSourceRef::Original },
-        ),
+        _ => {
+            manifest.ocr = ocr_summary(params.get("ocr"));
+            page_entries(
+                params.get("text"),
+                params.get("images"),
+                params.get("ocr"),
+                if derived.is_some() { MediaSourceRef::Derived } else { MediaSourceRef::Original },
+            )
+        }
     };
     manifest.range.total = total;
     manifest.range.requested = requested;

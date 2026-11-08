@@ -18,15 +18,16 @@
 | 工具 / 命令 | 最低版本 | 用到它的函数 | 用途 | 探测方式（`functions/media/tools.rs`） |
 | --- | --- | --- | --- | --- |
 | `pdfinfo` | poppler ≥ 22.0 | `media.probe`（pdf / document）、`media.extract_pdf_text`、`media.render_pdf_pages`、`media.to_pdf`（数派生 PDF 页数） | 页数、页尺寸 | `pdfinfo -v`，取 `version` 后的第一个 token |
-| `pdftotext` | poppler ≥ 22.0 | `media.extract_pdf_text` | 分页文本（`-layout` 不用；按页逐次调用） | `pdftotext -v` |
+| `pdftotext` | poppler ≥ 22.0 | `media.extract_pdf_text` | 分页文本（`-layout`，版面靠空格补齐，Agent 侧读入时规范空白；按页逐次调用） | `pdftotext -v` |
 | `pdftoppm` | poppler ≥ 22.0 | `media.render_pdf_pages` | 页图（PNG，`-r <dpi>`，长边按 `max_long_edge` 缩放） | `pdftoppm -v` |
 | `ffprobe` | ffmpeg ≥ 6.0 | `media.probe`（video）、`media.extract_frames`、`media.extract_audio` | 时长、流信息（有无音轨） | `ffprobe -hide_banner -version`，取 `ffprobe version <x>` |
 | `ffmpeg` | ≥ 6.0，带 `libmp3lame`（音轨输出）、PNG 编码 | `media.extract_frames`、`media.extract_audio`；`media.fit_image` 的可选依赖（`image` crate 解不了的格式先转 PNG） | 均匀抽帧、提取音轨、非常见图片格式解码 | `ffmpeg -hide_banner -version` |
 | `soffice`（LibreOffice headless：core、writer、impress、calc） | ≥ 7.0 | `media.to_pdf` | DOCX / PPTX / ODT / ODP / DOC / PPT / RTF / TXT → PDF；每次调用独立 `-env:UserInstallation` profile，Office lane 并发 1 | `soffice --version`（Windows 上 `soffice.com`），取第一个数字 token |
 | 字体：DejaVu、Liberation、Noto（含 CJK） | — | `media.to_pdf`（经 soffice） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf` 指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
 | locale：`C.UTF-8` 可用，建议生成 `en_US.UTF-8` | — | `media.to_pdf` | soffice 的文件名、编码处理 | 不单独探测 |
+| `tesseract`，带常用语言数据（`ext-core` 保留的 28 种加 `osd`，见 [paios容器需求.md](../app_service/paios容器需求.md) §6.4） | ≥ 5.0 | `media.ocr_pages`（软依赖：缺它时各页保留文字层，步骤输出 `status: tools_missing`，结果不进缓存） | 文字层缺失或乱码的页重新识别；按窗口抽样选语言（试各文字系统的代表模型比置信度，都不像时问 `osd`）；竖排中日韩用 `_vert` 模型 | `tesseract --version` 取第二个 token；`tesseract --list-langs` 的语言表进 `ocr_pages` 指纹（`env/ocr_langs`），增减语言包使旧结果失效 |
 
-不在基线内：ImageMagick、tesseract（服务于其它场景，workflow 本期不依赖）；`media.capabilities` / `media.build_catalog` / `media.fit_image`（常规格式）只需要 workflow 自身与 `image` crate（编译依赖，随 workflow 发布）。
+不在基线内：ImageMagick（服务于其它场景）；`media.capabilities` / `media.build_catalog` / `media.fit_image`（常规格式）只需要 workflow 自身与 `image` crate（编译依赖，随 workflow 发布）。
 
 查找顺序（三平台相同，与 nfs_server preview 的 `tools.rs` 一致）：`$BUCKYOS_ROOT/libexec/buckyos-tool/bin/` → `PATH` → 固定位置（macOS Homebrew prefix、`/Applications/LibreOffice.app/Contents/MacOS`；Linux `/usr/lib/libreoffice/program`、`/opt/libreoffice*/program`；Windows `%ProgramFiles%\LibreOffice\program`）→ `$BUCKYOS_ROOT/tools/bin/`（扩展包，Windows 上是 `.cmd`）。扩展包排最后：机器上已有的工具不被替换。`ext-core` 的 ffmpeg（conda-forge）没有 libzimg，也就没有 `zscale`，只靠它的机器上 nfs_server 预览的 HDR 视频和 HEIF 不做色调映射，结果带“颜色可能失真”的说明。
 

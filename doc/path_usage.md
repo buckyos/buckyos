@@ -71,13 +71,15 @@ Agent 容器另有两组只读 bind mount(普通 script 容器没有):
 - `tools/deno-cache`、`tools/uv-cache`: 种子镜像预热的缓存 lower(只有带种子镜像的节点有)
 - `tools/seed/`: 种子镜像带的 ext-core payload,解包后删除
 
-Agent 自己的工具缓存(`DENO_DIR`、`UV_CACHE_DIR`、`UV_PYTHON_INSTALL_DIR`、`NPM_CONFIG_CACHE`、`NPM_CONFIG_PREFIX`、`PIP_CACHE_DIR`)不进 `tools/`,`HOME` 不改:
+Agent 自己的工具缓存(`DENO_DIR`、`UV_CACHE_DIR`、`UV_PYTHON_INSTALL_DIR`、`NPM_CONFIG_CACHE`、`NPM_CONFIG_PREFIX`、`PIP_CACHE_DIR`,以及 `llm_understand_media` 展开长文档目录的 `LLM_UNDERSTAND_MEDIA_CATALOG_DIR`)不进 `tools/`,`HOME` 不改:
 
 | 形态 | 位置 |
 | --- | --- |
-| 容器 | `/opt/buckyos/instance/{deno-cache,uv-cache,uv-python,npm-cache,npm-prefix,pip-cache}` |
+| 容器 | `/opt/buckyos/instance/{deno-cache,uv-cache,uv-python,npm-cache,npm-prefix,pip-cache,media-catalog}` |
 | 原生私有 runtime(Desktop Lite) | `<AgentRoot>/.cache/{同上}` |
 | 节点 runtime(host) | `<账户 home>/.opendan/<agent_id>/cache/{同上}` |
+
+`media-catalog/<源文件对象 id>/` 是转换结果(workflow 步骤缓存)的本地展开,随时可删,下次调用按路径里的对象 id 重建;总量超过 `LLM_UNDERSTAND_MEDIA_CATALOG_MAX_BYTES`(默认 5 GiB)时工具按最近使用时间删旧的。没有这个变量时(单独运行 helper)退到系统临时目录。
 
 应用不能把运行时生成物写入 `/opt/buckyos/tools`;需要写入且可执行的内容放到 `/opt/buckyos/instance`。
 `/home/$username/.local/share/$appid` 仍是 app 的永久 user/app data,host 上对应

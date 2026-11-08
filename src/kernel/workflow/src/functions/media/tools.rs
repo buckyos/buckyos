@@ -15,9 +15,10 @@ pub const PDFTOPPM: &str = "pdftoppm";
 pub const FFMPEG: &str = "ffmpeg";
 pub const FFPROBE: &str = "ffprobe";
 pub const SOFFICE: &str = "soffice";
+pub const TESSERACT: &str = "tesseract";
 
 /// Every tool the built-in media functions may need.
-pub const MEDIA_TOOLS: &[&str] = &[PDFINFO, PDFTOTEXT, PDFTOPPM, FFMPEG, FFPROBE, SOFFICE];
+pub const MEDIA_TOOLS: &[&str] = &[PDFINFO, PDFTOTEXT, PDFTOPPM, FFMPEG, FFPROBE, SOFFICE, TESSERACT];
 
 pub fn exe_name(name: &str) -> String {
     if cfg!(windows) {
@@ -114,6 +115,30 @@ pub fn parse_soffice_version(text: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// `tesseract 5.5.3\n leptonica-1.87.0 ...` -> `5.5.3`.
+pub fn parse_tesseract_version(text: &str) -> Option<String> {
+    let line = text.lines().find(|l| l.trim_start().starts_with("tesseract"))?;
+    line.split_whitespace()
+        .nth(1)
+        .map(|v| v.trim_start_matches('v').to_string())
+        .filter(|v| v.starts_with(|c: char| c.is_ascii_digit()))
+}
+
+/// The language data of `tesseract --list-langs`, sorted.
+pub fn parse_tesseract_langs(text: &str) -> Vec<String> {
+    let mut langs: Vec<String> = text
+        .lines()
+        .skip_while(|l| !l.starts_with("List of available languages"))
+        .skip(1)
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .map(str::to_string)
+        .collect();
+    langs.sort();
+    langs.dedup();
+    langs
+}
+
 fn soffice_version(path: &Path) -> Option<String> {
     let version = |p: &Path| output_of(p, &["--version"]).and_then(|t| parse_soffice_version(&t));
     let com = path.with_extension("com");
@@ -127,6 +152,7 @@ fn version_of(name: &str, path: &Path) -> Option<String> {
         }
         PDFINFO | PDFTOTEXT | PDFTOPPM => output_of(path, &["-v"]).and_then(|t| parse_poppler_version(&t)),
         SOFFICE => soffice_version(path),
+        TESSERACT => output_of(path, &["--version"]).and_then(|t| parse_tesseract_version(&t)),
         _ => None,
     }
 }
@@ -147,6 +173,11 @@ pub fn probe(dirs: &[PathBuf]) -> ToolEnvironment {
     env.missing = missing;
     env.searched = dirs.to_vec();
     env.fonts = font_set_digest(dirs);
+    if let Some(tesseract) = env.tools.get(TESSERACT) {
+        env.ocr_langs = output_of(&tesseract.path, &["--list-langs"])
+            .map(|t| parse_tesseract_langs(&t))
+            .unwrap_or_default();
+    }
     env.revision = env.compute_revision();
     env
 }
@@ -187,6 +218,10 @@ mod tests {
         assert_eq!(parse_poppler_version("pdfinfo version 24.02.0\nCopyright").as_deref(), Some("24.02.0"));
         assert_eq!(parse_soffice_version("LibreOffice 25.2.3.2 520(Build:2)\n").as_deref(), Some("25.2.3.2"));
         assert!(parse_soffice_version("usage: soffice [options]").is_none());
+        assert_eq!(parse_tesseract_version("tesseract 5.5.3\n leptonica-1.87.0\n").as_deref(), Some("5.5.3"));
+        assert_eq!(parse_tesseract_version("tesseract v4.1.1\n").as_deref(), Some("4.1.1"));
+        let langs = parse_tesseract_langs("List of available languages in \"/x/tessdata/\" (3):\nosd\neng\nchi_sim\n");
+        assert_eq!(langs, vec!["chi_sim", "eng", "osd"]);
     }
 
     #[test]

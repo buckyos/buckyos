@@ -10,6 +10,11 @@ pub const OPENDAN_SESSION_ID_ENV: &str = "OPENDAN_SESSION_ID";
 pub const BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV: &str = "BUCKYOS_APPCLIENT_SESSION_TOKEN";
 pub const OPENDAN_TRACE_ID_ENV: &str = "OPENDAN_TRACE_ID";
 
+/// The least life a session token handed to a command has left (Verify Hub
+/// tokens live 15 minutes): the command cannot renew it, so a conversion of a
+/// long document must not outlive it.
+pub const LENT_TOKEN_MIN_SECS: u64 = 600;
+
 pub const DEFAULT_TRACE_ID: &str = "cli-trace";
 pub const DEFAULT_SESSION_ID: &str = "cli-session";
 
@@ -19,7 +24,7 @@ pub async fn refresh_appclient_session_env(
     let Ok(runtime) = buckyos_api::get_buckyos_api_runtime() else {
         return Ok(());
     };
-    Box::pin(runtime.renew_token_from_verify_hub())
+    Box::pin(runtime.renew_token_ahead(LENT_TOKEN_MIN_SECS))
         .await
         .map_err(|err| {
             AgentToolError::ExecFailed(format!(

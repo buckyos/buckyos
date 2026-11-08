@@ -297,7 +297,8 @@ async fn system_definitions_are_seeded_bound_and_read_only() {
 
     let pdf = ok(&f, "get_definition", json!({"workflow_id": "media.pdf"}), BOB).await;
     let bound = pdf["definition"]["resolved_functions"].as_object().unwrap();
-    assert_eq!(bound.len(), 5);
+    assert_eq!(bound.len(), 6);
+    assert!(bound.contains_key("ocr_pages"));
     for fun_id in bound.values() {
         let function = ok(&f, "get_function", json!({"fun_id": fun_id}), BOB).await;
         assert_eq!(function["function"]["published"], true);
@@ -306,7 +307,7 @@ async fn system_definitions_are_seeded_bound_and_read_only() {
     assert_eq!(pdf["definition"]["revision"].as_str().unwrap().len(), 64);
 
     let functions = ok(&f, "list_functions", json!({"prefix": "media."}), ALICE).await;
-    assert_eq!(functions["functions"].as_array().unwrap().len(), 9);
+    assert_eq!(functions["functions"].as_array().unwrap().len(), 10);
     let caps = ok(&f, "get_capabilities", json!({}), ALICE).await;
     assert_eq!(caps["execution_epoch"], 1);
 
@@ -725,6 +726,8 @@ async fn a_manifest_hands_over_every_object_it_names() {
             text_obj_id: Some(text.to_string()),
             image_obj_id: Some(image.to_string()),
             audio_obj_id: None,
+            ocr_text_obj_id: (page == 1).then(|| "cyfile:cc01".to_string()),
+            text_quality: None,
             status: buckyos_api::MediaEntryStatus::Ok,
             error: None,
         });
@@ -737,10 +740,10 @@ async fn a_manifest_hands_over_every_object_it_names() {
         .unwrap();
     let owner = Owner { user_id: "alice".into(), app_id: "agent-a".into() };
     let held = f.handler.grant_output_holdings(&owner, &[manifest_id.clone()]).await.unwrap();
-    assert_eq!(held, 5);
+    assert_eq!(held, 6);
     let mut holdings = f.io.holdings_of("alice/agent-a");
     holdings.sort();
-    let mut expected = vec![manifest_id, "cyfile:aa01".into(), "cyfile:aa02".into(), "cyfile:bb01".into(), "cyfile:bb02".into()];
+    let mut expected = vec![manifest_id, "cyfile:aa01".into(), "cyfile:aa02".into(), "cyfile:bb01".into(), "cyfile:bb02".into(), "cyfile:cc01".into()];
     expected.sort();
     assert_eq!(holdings, expected);
 }

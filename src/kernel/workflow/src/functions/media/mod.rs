@@ -1,5 +1,5 @@
 //! `media.*` native functions (TODO T2a / T2b): capabilities, probe,
-//! fit_image, extract_pdf_text, render_pdf_pages, extract_frames,
+//! fit_image, extract_pdf_text, render_pdf_pages, ocr_pages, extract_frames,
 //! extract_audio, to_pdf, build_catalog. Tool requirements derived from the
 //! registrations are the host / paios baseline (TODO T2c, §2.5).
 
@@ -7,6 +7,7 @@ pub mod capabilities;
 pub mod catalog;
 pub mod document;
 pub mod image;
+pub mod ocr;
 pub mod pdf;
 pub mod probe;
 pub mod tools;
@@ -32,6 +33,7 @@ pub const PROBE: &str = "media.probe";
 pub const FIT_IMAGE: &str = "media.fit_image";
 pub const EXTRACT_PDF_TEXT: &str = "media.extract_pdf_text";
 pub const RENDER_PDF_PAGES: &str = "media.render_pdf_pages";
+pub const OCR_PAGES: &str = "media.ocr_pages";
 pub const EXTRACT_FRAMES: &str = "media.extract_frames";
 pub const EXTRACT_AUDIO: &str = "media.extract_audio";
 pub const TO_PDF: &str = "media.to_pdf";
@@ -42,7 +44,7 @@ pub const STDOUT_LIMIT: usize = 16 * 1024 * 1024;
 /// Bump when what any media function produces changes: the revision is part of
 /// `fun_id`, so results of the old implementation stop matching. impl-3: artifact
 /// FileObjects carry the common meta under `mime`.
-const IMPLEMENTATION_REVISION: &str = "impl-3";
+pub(crate) const IMPLEMENTATION_REVISION: &str = "impl-3";
 
 pub fn content_param() -> FunctionParamType {
     FunctionParamType::CheckByRunner("file_content".to_string())
@@ -56,9 +58,23 @@ pub fn function(
     result_name: &str,
     result_schema: Value,
 ) -> FunctionObject {
+    function_revised(name, IMPLEMENTATION_REVISION, is_pure, content_params, params_schema, result_name, result_schema)
+}
+
+/// [`function`] with a revision of its own: a function whose results change
+/// alone invalidates only its own cache.
+pub fn function_revised(
+    name: &str,
+    revision: &str,
+    is_pure: bool,
+    content_params: &[&str],
+    params_schema: Value,
+    result_name: &str,
+    result_schema: Value,
+) -> FunctionObject {
     FunctionObject {
         func_type: FunctionType::Native,
-        content: format!("{name}/{IMPLEMENTATION_REVISION}"),
+        content: format!("{name}/{revision}"),
         is_pure,
         params_type: content_params
             .iter()
@@ -122,6 +138,14 @@ fn registrations() -> Vec<Registration> {
             native: Arc::new(pdf::RenderPdfPages),
         },
         Registration {
+            name: OCR_PAGES,
+            description: "Reads page images with OCR where the text layer is missing or garbled",
+            timeout: 900,
+            tools: &[],
+            object: ocr::function_object(),
+            native: Arc::new(ocr::OcrPages),
+        },
+        Registration {
             name: EXTRACT_FRAMES,
             description: "Samples uniformly spaced frames of a video",
             timeout: 600,
@@ -182,8 +206,9 @@ pub struct ToolRequirement {
 
 /// Derives the baseline from the registrations: a tool appears once with
 /// every function that hard-requires it. `ffmpeg` is additionally an optional
-/// dependency of `media.fit_image` (non-decodable formats) and `pdfinfo` of
-/// `media.to_pdf` (page count); those are listed under `used_by` too.
+/// dependency of `media.fit_image` (non-decodable formats), `pdfinfo` of
+/// `media.to_pdf` (page count) and `tesseract` of `media.ocr_pages` (without
+/// it pages keep their text layer); those are listed under `used_by` too.
 pub fn media_tool_baseline() -> Vec<ToolRequirement> {
     let mut by_tool: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
     for reg in registrations() {
@@ -193,6 +218,7 @@ pub fn media_tool_baseline() -> Vec<ToolRequirement> {
     }
     by_tool.entry(tools::FFMPEG).or_default().push(FIT_IMAGE);
     by_tool.entry(tools::PDFINFO).or_default().push(TO_PDF);
+    by_tool.entry(tools::TESSERACT).or_default().push(OCR_PAGES);
     by_tool
         .into_iter()
         .map(|(tool, mut used_by)| {
@@ -205,6 +231,7 @@ pub fn media_tool_baseline() -> Vec<ToolRequirement> {
                 tools::FFPROBE => (Some("6.0"), "video / audio stream probing"),
                 tools::FFMPEG => (Some("6.0"), "frame sampling, audio extraction, exotic image decoding (needs libmp3lame)"),
                 tools::SOFFICE => (Some("7.0"), "office document to PDF conversion (headless LibreOffice with fonts and locale)"),
+                tools::TESSERACT => (Some("5.0"), "OCR of page images whose text layer is missing or garbled (with the common language data)"),
                 _ => (None, ""),
             };
             ToolRequirement {

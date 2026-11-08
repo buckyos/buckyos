@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,15 +15,21 @@ use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod catalog;
 mod pipeline;
+mod terms;
 mod zone_file;
 
+use catalog::{CatalogFile, CatalogSource, CatalogTarget};
 use pipeline::{
-    audio_entry, document_format_from_mime, document_format_from_name, frame_entries,
-    freeze_reader, image_dimensions, object_head, plan_pages, protocol_accepts_documents,
-    read_manifest, read_object_bytes, run_pipeline, Coverage, DocumentLimits, ImageLimits,
-    PipelineOutcome, PipelineRequest, PipelineTrace, VideoLimits, CATALOG_WINDOW_PAGES,
-    FAMILY_DOCUMENT, FAMILY_IMAGE, FAMILY_PDF, FAMILY_VIDEO, MAX_INPUT_BYTES,
+    audio_entry, choose_text, document_format_from_mime, document_format_from_name,
+    frame_entries, freeze_reader, goal_pages, goal_terms, image_dimensions, normalize_text,
+    object_head, parse_pages_arg, plan_pages, progress,
+    protocol_accepts_documents, read_manifest, read_object_bytes, run_pipeline,
+    window_done_line, Coverage, DocumentLimits, ImageLimits, PageText, PipelineOutcome,
+    PipelineRequest, PipelineTrace, PlanRequest, VideoLimits, WindowWatch,
+    CATALOG_WINDOW_PAGES, FAMILY_DOCUMENT, FAMILY_IMAGE, FAMILY_PDF, FAMILY_VIDEO,
+    MAX_INPUT_BYTES,
 };
 
 use crate::xllm::{
@@ -134,6 +140,10 @@ impl AgentTool for LlmUnderstandMediaTool {
                         "type": "integer",
                         "minimum": 1,
                         "description": "Token budget for the media model to complete this task."
+                    },
+                    "pages": {
+                        "type": "string",
+                        "description": "Pages of a document to read, e.g. \"14,50,70\" or \"2-33\"; also taken from the goal (\"page 12\")."
                     }
                 }
             }),
@@ -193,6 +203,7 @@ pub async fn run_subcommand(args: Vec<String>) -> i32 {
         }
     };
 
+    pipeline::enable_progress();
     let (result, exit_code) = run(opts).await;
     emit_result(&result);
     exit_code
@@ -216,9 +227,18 @@ struct RunOpts {
     summary_model: String,
     target_tokens: u32,
     max_completion_tokens: u32,
+    /// `--pages`: pages of a document to read, with those the goal names.
+    pages: BTreeSet<u64>,
 }
 
 impl RunOpts {
+    /// Pages to read: `--pages` and the pages the goal names.
+    fn named_pages(&self) -> BTreeSet<u64> {
+        let mut pages = goal_pages(&self.goal);
+        pages.extend(self.pages.iter().copied());
+        pages
+    }
+
     fn from_tool_args(args: Value) -> Result<Self, AgentToolError> {
         let map = args.as_object().ok_or_else(|| {
             AgentToolError::InvalidArgs("llm_understand_media args must be object".to_string())
@@ -282,6 +302,22 @@ impl RunOpts {
             ));
         }
         let max_completion_tokens = normalize_completion_tokens(max_completion_tokens);
+        let pages = match map.get("pages") {
+            None | Some(Value::Null) => BTreeSet::new(),
+            Some(Value::String(raw)) if raw.trim().is_empty() => BTreeSet::new(),
+            Some(Value::String(raw)) => parse_pages_arg(raw).map_err(AgentToolError::InvalidArgs)?,
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| v.as_u64().filter(|p| *p > 0))
+                .collect::<Option<BTreeSet<u64>>>()
+                .ok_or_else(|| AgentToolError::InvalidArgs("pages must be page numbers from 1".to_string()))?,
+            Some(other) => {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "pages must be a string such as \"1,5,10-20\", got {}",
+                    json_type_name(other)
+                )))
+            }
+        };
         Ok(Self {
             media_value,
             session_id: None,
@@ -292,6 +328,7 @@ impl RunOpts {
             summary_model,
             target_tokens,
             max_completion_tokens,
+            pages,
         })
     }
 }
@@ -312,6 +349,16 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
             build_error_result(&opts, format!("init buckyos runtime failed: {err}")),
             CLI_EXIT_ERROR,
         );
+    }
+
+    if let MediaSource::LocalFile(path) = &media.source {
+        let root = catalog::catalog_root();
+        if let Some(target) = catalog::recognize(path, &root) {
+            let changed = matches!(target, CatalogTarget::Page { .. }) && catalog::page_image_changed(target.dir(), path);
+            if !changed {
+                return run_catalog(&opts, target).await;
+            }
+        }
     }
 
     let (resolved_media, zone_file) = match resolve_media(&media, opts.session_id.as_deref()).await {
@@ -335,7 +382,7 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         Ok(prepared) => prepared,
         Err(err) => {
             let mut result = build_error_result(&opts, err.message);
-            attach_pipeline_details(&mut result, Some(&err.decision), err.trace.as_ref(), None, None, None);
+            attach_pipeline_details(&mut result, Some(&err.decision), err.trace.as_ref(), None, None, None, None);
             attach_zone_file(&mut result, zone_file.as_ref());
             return (result, CLI_EXIT_ERROR);
         }
@@ -375,7 +422,26 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         mime: &mime,
         media_id: &media_id,
     };
-    let (mut result, mut code) = analysis.run(&prepared).await;
+    if let Some(reading) = &prepared.reading {
+        progress(format!("reading {reading} with {model_alias}"));
+    }
+    let job = prepared.catalog_job.take();
+    let unpack = async {
+        match job {
+            Some(job) => Some(catalog::write(&job.root, &job.file, &job.texts).await),
+            None => None,
+        }
+    };
+    let ((mut result, mut code), unpacked) = tokio::join!(analysis.run(&prepared), unpack);
+    match unpacked {
+        Some(Ok(dir)) => progress(format!("catalog written to {}", dir.display())),
+        Some(Err(err)) => {
+            log::warn!("llm_understand_media: unpacking the catalog failed: {err}");
+            progress(format!("the catalog could not be unpacked: {err}"));
+            prepared.catalog_dir = None;
+        }
+        None => {}
+    }
     if prepared.convert_if_refused && code == CLI_EXIT_ERROR && result.details.get("outcome").is_some() {
         log::warn!(
             "llm_understand_media: the model refused the document directly ({}); media_id={media_id}",
@@ -385,6 +451,15 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         match prepare_document(&resolved_media, &opts, None, reason).await {
             Ok(converted) => {
                 prepared = converted;
+                if let Some(job) = prepared.catalog_job.take() {
+                    match catalog::write(&job.root, &job.file, &job.texts).await {
+                        Ok(dir) => progress(format!("catalog written to {}", dir.display())),
+                        Err(err) => {
+                            log::warn!("llm_understand_media: unpacking the catalog failed: {err}");
+                            prepared.catalog_dir = None;
+                        }
+                    }
+                }
                 (result, code) = analysis.run(&prepared).await;
             }
             Err(err) => log::warn!("llm_understand_media: conversion after the refusal failed: {}", err.message),
@@ -397,7 +472,9 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         prepared.coverage.as_ref(),
         prepared.preprocess.as_ref(),
         prepared.caller_note.as_deref(),
+        prepared.catalog_dir.as_deref(),
     );
+    attach_extra_details(&mut result, &prepared);
     attach_zone_file(&mut result, zone_file.as_ref());
     if opts.work_dir.is_none() && result.status == AgentToolStatus::Success {
         if let Err(err) = std::fs::remove_dir_all(&work_dir) {
@@ -499,6 +576,7 @@ fn attach_pipeline_details(
     coverage: Option<&Coverage>,
     preprocess: Option<&Value>,
     caller_note: Option<&str>,
+    catalog_dir: Option<&Path>,
 ) {
     if let Value::Object(map) = &mut result.details {
         if let Some(decision) = decision {
@@ -524,13 +602,37 @@ fn attach_pipeline_details(
     if let Some(note) = caller_note {
         notes.push(note.to_string());
     }
-    if let Some(note) = coverage.and_then(Coverage::uncovered_note) {
-        notes.push(note);
+    match coverage.and_then(|c| c.uncovered_note(catalog_dir)) {
+        Some(note) => notes.push(note),
+        None => {
+            if let Some(dir) = catalog_dir {
+                notes.push(format!(
+                    "The document is unpacked in {} (index.tsv lists every page; pages/ holds each page's text and image).",
+                    dir.display()
+                ));
+            }
+        }
+    }
+    if let (Some(dir), Value::Object(map)) = (catalog_dir, &mut result.details) {
+        map.insert("catalog".to_string(), json!({"dir": dir.display().to_string()}));
     }
     if let (Some(output), false) = (result.output.as_mut(), notes.is_empty()) {
         for note in notes {
             output.push('\n');
             output.push_str(&note);
+        }
+    }
+}
+
+/// `details.retrieval` (how pages were searched) and `details.media_source`
+/// of a catalog page.
+fn attach_extra_details(result: &mut AgentToolResult, prepared: &PreparedMedia) {
+    if let Value::Object(map) = &mut result.details {
+        if let Some(retrieval) = &prepared.retrieval {
+            map.insert("retrieval".to_string(), retrieval.clone());
+        }
+        if let Some(source) = &prepared.media_source {
+            map.insert("media_source".to_string(), source.clone());
         }
     }
 }
@@ -1769,6 +1871,19 @@ struct PreparedMedia {
     caller_note: Option<String>,
     /// Sent directly; a pipeline can still represent it if the model refuses.
     convert_if_refused: bool,
+    /// What the model is given, for the progress line (`16 page images and 56 pages of text`).
+    reading: Option<String>,
+    /// The catalog to unpack while the model works, and where it goes.
+    catalog_job: Option<CatalogJob>,
+    catalog_dir: Option<PathBuf>,
+    retrieval: Option<Value>,
+    media_source: Option<Value>,
+}
+
+struct CatalogJob {
+    root: PathBuf,
+    file: CatalogFile,
+    texts: BTreeMap<u64, PageText>,
 }
 
 impl PreparedMedia {
@@ -1781,6 +1896,11 @@ impl PreparedMedia {
             preprocess: None,
             caller_note: None,
             convert_if_refused: false,
+            reading: None,
+            catalog_job: None,
+            catalog_dir: None,
+            retrieval: None,
+            media_source: None,
         }
     }
 }
@@ -1966,7 +2086,7 @@ async fn prepare_pdf(
     }
     let decision = MediaDecision::converted(media, FAMILY_PDF, "counting the pages of the PDF");
     let obj_id = frozen_input(media, &decision).await?;
-    let input = limits.pipeline_input(&obj_id.to_string(), None, &[1], 1);
+    let input = limits.pipeline_input(&obj_id.to_string(), None, &[1], 1, pipeline::OCR_LANG_AUTO);
     let (output, trace) = drive(FAMILY_PDF, &obj_id, input, opts, &decision).await?;
     let pages = output
         .get("build_catalog")
@@ -2019,8 +2139,20 @@ async fn drive(
     opts: &RunOpts,
     decision: &MediaDecision,
 ) -> Result<(BTreeMap<String, Value>, PipelineTrace), PrepareError> {
+    drive_watched(family, obj_id, input, opts, decision, None).await
+}
+
+async fn drive_watched(
+    family: &'static str,
+    obj_id: &ObjId,
+    input: Value,
+    opts: &RunOpts,
+    decision: &MediaDecision,
+    watch: Option<WindowWatch>,
+) -> Result<(BTreeMap<String, Value>, PipelineTrace), PrepareError> {
     let mut request = PipelineRequest::new(family, &obj_id.to_string(), input);
     request.session_id = opts.session_id.clone();
+    request.watch = watch;
     match run_pipeline(request).await {
         Ok(PipelineOutcome::Completed { output, trace }) => Ok((output, trace)),
         Ok(PipelineOutcome::Failed { error, trace }) => {
@@ -2134,16 +2266,31 @@ async fn build_document_catalog(
     let limits = DocumentLimits::from_env();
     let id = obj_id.to_string();
     let as_error = |e: String| PrepareError::new(decision.clone().with_kind("failed"), e);
-    let input = limits.pipeline_input(&id, format, &[], limits.first_window_pages());
-    let (output, mut trace) = drive(family, obj_id, input, opts, decision).await?;
+    let input = limits.pipeline_input(&id, format, &[], limits.first_window_pages(), pipeline::OCR_LANG_AUTO);
+    let watch = |label: String, first: bool| Some(WindowWatch { label, first, max_pages: limits.max_pages });
+    let started = std::time::Instant::now();
+    let (output, mut trace) =
+        drive_watched(family, obj_id, input, opts, decision, watch("the first pages".to_string(), true)).await?;
     let first_id = manifest_id_of(&output).map_err(as_error)?;
     let mut manifest = read_manifest(&first_id).await.map_err(as_error)?;
+    let total = manifest.range.total.unwrap_or(0);
+    let first_last = total.min(u64::from(limits.first_window_pages()));
+    progress(window_done_line(&format!("pages 1-{first_last}"), &trace, started.elapsed()));
+    // Every window is read in the language the first one found.
+    let ocr_lang = manifest
+        .ocr
+        .as_ref()
+        .and_then(|o| o.lang.clone())
+        .unwrap_or_else(|| pipeline::OCR_LANG_AUTO.to_string());
     let mut manifest_ids = vec![first_id];
     let mut incomplete = None;
-    for window in limits.later_windows(manifest.range.total.unwrap_or(0)) {
-        let input = limits.pipeline_input(&id, format, &window, CATALOG_WINDOW_PAGES);
-        let next = match drive(family, obj_id, input, opts, decision).await {
+    for window in limits.later_windows(total) {
+        let input = limits.pipeline_input(&id, format, &window, CATALOG_WINDOW_PAGES, &ocr_lang);
+        let label = format!("pages {}-{}", window.first().copied().unwrap_or(0), window.last().copied().unwrap_or(0));
+        let started = std::time::Instant::now();
+        let next = match drive_watched(family, obj_id, input, opts, decision, watch(label.clone(), false)).await {
             Ok((output, window_trace)) => {
+                progress(window_done_line(&label, &window_trace, started.elapsed()));
                 trace.more_runs.push(window_trace);
                 match manifest_id_of(&output) {
                     Ok(next_id) => read_manifest(&next_id).await.map(|m| (next_id, m)),
@@ -2175,28 +2322,35 @@ async fn build_document_catalog(
     Ok((manifest, manifest_ids, trace, incomplete))
 }
 
-/// Page texts of a manifest, and why the others could not be read.
+/// The text each page is read by (text layer or OCR, normalized), and why
+/// the others could not be read.
 async fn read_page_texts(
     manifest: &buckyos_api::MediaManifest,
-) -> (BTreeMap<u64, String>, BTreeMap<u64, String>) {
-    let ids: Vec<(u64, String)> = manifest
+) -> (BTreeMap<u64, PageText>, BTreeMap<u64, String>) {
+    let ids: Vec<(u64, String, pipeline::TextSource)> = manifest
         .entries
         .iter()
-        .filter_map(|e| Some((u64::from(e.location.page?), e.text_obj_id.clone()?)))
+        .filter_map(|e| {
+            let (id, source) = choose_text(e)?;
+            Some((u64::from(e.location.page?), id, source))
+        })
         .collect();
     let mut texts = BTreeMap::new();
     let mut unreadable = BTreeMap::new();
     for batch in ids.chunks(TEXT_READ_CONCURRENCY) {
         let mut reads = tokio::task::JoinSet::new();
-        for (page, id) in batch.iter().cloned() {
-            reads.spawn(async move { (page, read_object_bytes(&id).await) });
+        for (page, id, source) in batch.iter().cloned() {
+            reads.spawn(async move { (page, source, read_object_bytes(&id).await) });
         }
         while let Some(read) = reads.join_next().await {
             match read {
-                Ok((page, Ok(bytes))) => {
-                    texts.insert(page, String::from_utf8_lossy(&bytes).into_owned());
+                Ok((page, source, Ok(bytes))) => {
+                    let text = normalize_text(&String::from_utf8_lossy(&bytes));
+                    if !text.is_empty() {
+                        texts.insert(page, PageText { text, source });
+                    }
                 }
-                Ok((page, Err(err))) => {
+                Ok((page, _, Err(err))) => {
                     log::warn!("llm_understand_media: read page {page} text failed: {err}");
                     unreadable.insert(page, err);
                 }
@@ -2220,16 +2374,75 @@ async fn prepare_document(
     let (manifest, manifest_ids, trace, incomplete) =
         build_document_catalog(family, &obj_id, format, opts, &decision).await?;
     let (texts, unreadable) = read_page_texts(&manifest).await;
-    let plan = plan_pages(&opts.goal, &manifest, &texts, &unreadable, text_char_budget(), max_images());
+    let given_as = match &media.payload {
+        MediaPayload::File(path) if media._download.is_none() => Some(path.display().to_string()),
+        _ => None,
+    };
+    let file = CatalogFile {
+        source: CatalogSource {
+            obj_id: obj_id.to_string(),
+            name: media.name.clone(),
+            mime: media.mime.clone(),
+            family: family.to_string(),
+            format: format.map(str::to_string),
+            given_as,
+        },
+        manifest_ids,
+        manifest,
+    };
+    let mut prepared = document_content(opts, &file, &texts, &unreadable, decision, &BTreeSet::new()).await?;
+    prepared.trace = Some(trace);
+    prepared.caller_note = incomplete;
+    // A long document, or one the model does not see whole, is unpacked for the Agent.
+    let long = file.manifest.range.total.unwrap_or(0) > u64::from(DocumentLimits::from_env().long_doc_pages);
+    let partial = prepared.coverage.as_ref().is_some_and(|c| !c.uncovered.is_empty());
+    if long || partial {
+        let root = catalog::catalog_root();
+        prepared.catalog_dir = Some(catalog::dir_of(&root, &file.source.obj_id));
+        prepared.catalog_job = Some(CatalogJob { root, file, texts });
+    }
+    Ok(prepared)
+}
+
+/// The model input of a document catalog: the pages chosen for the goal (doc
+/// §4.7). `only`: pages to read, whatever the goal says; empty for the goal's
+/// own choice.
+async fn document_content(
+    opts: &RunOpts,
+    file: &CatalogFile,
+    texts: &BTreeMap<u64, PageText>,
+    unreadable: &BTreeMap<u64, String>,
+    decision: MediaDecision,
+    only: &BTreeSet<u64>,
+) -> Result<PreparedMedia, PrepareError> {
+    let manifest = &file.manifest;
+    let named = if only.is_empty() { opts.named_pages() } else { only.clone() };
+    let budget = text_char_budget();
+    let own_terms = goal_terms(&opts.goal);
+    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new());
+    let (terms, retrieval) =
+        terms::search_terms(&llm, &opts.goal, &own_terms, &named, manifest, texts, budget).await;
+    let request = PlanRequest { terms: &terms, named: &named, text_char_budget: budget, max_images: max_images() };
+    let plan = plan_pages(&request, manifest, texts, unreadable);
+    let derived = manifest.derived_content_id.is_some();
     let mut content = Vec::with_capacity(plan.texts.len() + plan.images.len() * 2 + 2);
     content.push(AiContent::text(format!(
-        "Document catalog from the media pipeline ({}): {} pages in the source{}; page texts shown for pages {:?}; page images shown for pages {:?}. Page numbers refer to {}.",
+        "Document catalog from the media pipeline ({}{}): {} pages in the source{}; page texts shown for pages {}; page images shown for pages {}. Page numbers refer to {}.{}",
         manifest.family,
+        file.source.name.as_deref().map(|n| format!(", \u{ab}{n}\u{bb}")).unwrap_or_default(),
         manifest.range.total.map(|t| t.to_string()).unwrap_or_else(|| "?".to_string()),
-        manifest.derived_content_id.as_ref().map(|_| " (converted to PDF first)").unwrap_or(""),
-        plan.texts.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
-        plan.images.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
-        if manifest.derived_content_id.is_some() { "the derived PDF" } else { "the original document" },
+        if derived { " (converted to PDF first)" } else { "" },
+        pipeline::format_ranges(&plan.texts.iter().map(|(p, _)| *p).collect::<Vec<_>>()),
+        pipeline::format_ranges(&plan.images.iter().map(|(p, _)| *p).collect::<Vec<_>>()),
+        if derived { "the derived PDF" } else { "the original document" },
+        if plan.coverage.text_ocr.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " The text of pages {} was recognized from the page image (OCR) and may contain recognition errors.",
+                pipeline::format_ranges(&plan.coverage.text_ocr)
+            )
+        },
     )));
     if let Some(index) = &plan.index {
         content.push(AiContent::text(index.clone()));
@@ -2242,12 +2455,208 @@ async fn prepare_document(
         content.push(AiContent::text(format!("Page {page} image:")));
         content.push(AiContent::image(source));
     }
+    let reading = format!(
+        "{} page image{} and {} page{} of text",
+        plan.images.len(),
+        if plan.images.len() == 1 { "" } else { "s" },
+        plan.texts.len(),
+        if plan.texts.len() == 1 { "" } else { "s" },
+    );
     let mut prepared = PreparedMedia::new(content, decision);
-    prepared.trace = Some(trace);
     prepared.coverage = Some(plan.coverage);
-    prepared.preprocess = Some(json!({"manifest_obj_ids": manifest_ids, "summary": manifest.summary()}));
-    prepared.caller_note = incomplete;
+    prepared.preprocess = Some(json!({
+        "manifest_obj_ids": file.manifest_ids,
+        "summary": manifest.summary(),
+        "ocr": manifest.ocr.as_ref().map(|o| json!({"status": o.status, "lang": o.lang, "script": o.script, "garbled_layer": o.garbled_layer})),
+    }));
+    prepared.reading = Some(reading);
+    prepared.retrieval = retrieval.and_then(|r| serde_json::to_value(r).ok());
     Ok(prepared)
+}
+
+/// A catalog directory as found, or rebuilt from the conversion cache when it
+/// is gone (the run's steps all come from the step cache).
+async fn open_catalog(
+    opts: &RunOpts,
+    target: &CatalogTarget,
+) -> Result<(CatalogFile, BTreeMap<u64, PageText>, Option<PipelineTrace>), PrepareError> {
+    let dir = target.dir();
+    if let Some(file) = catalog::load(dir) {
+        let texts = catalog::load_texts(dir, &file);
+        return Ok((file, texts, None));
+    }
+    progress(format!("the catalog {} is gone; rebuilding it from the conversion cache", dir.display()));
+    let obj_id = target.obj_id();
+    let failed = |message: String| {
+        PrepareError::new(
+            MediaDecision {
+                kind: "failed",
+                reason: "rebuilding a catalog".to_string(),
+                family: None,
+                obj_id: Some(obj_id.to_string()),
+                mime: String::new(),
+            },
+            message,
+        )
+    };
+    let id = ObjId::new(obj_id).map_err(|e| failed(format!("`{obj_id}` is not an object id: {e}")))?;
+    let head = object_head(&id, PROBE_HEAD_BYTES)
+        .await
+        .map_err(&failed)?
+        .ok_or_else(|| failed(format!("the source object {obj_id} of this catalog cannot be read any more; call llm_understand_media with the original file")))?;
+    let mime = head
+        .mime
+        .clone()
+        .or_else(|| sniff_mime(&head.head))
+        .unwrap_or_else(|| "application/pdf".to_string());
+    let format = document_format_from_mime(&mime).or_else(|| head.name.as_deref().and_then(document_format_from_name));
+    let family = if format.is_some() { FAMILY_DOCUMENT } else { FAMILY_PDF };
+    let decision = MediaDecision {
+        kind: "converted",
+        reason: "rebuilding the catalog from the conversion cache".to_string(),
+        family: Some(family),
+        obj_id: Some(obj_id.to_string()),
+        mime: mime.clone(),
+    };
+    let (manifest, manifest_ids, trace, _) = build_document_catalog(family, &id, format, opts, &decision).await?;
+    let (texts, _) = read_page_texts(&manifest).await;
+    let file = CatalogFile {
+        source: CatalogSource {
+            obj_id: obj_id.to_string(),
+            name: head.name,
+            mime,
+            family: family.to_string(),
+            format: format.map(str::to_string),
+            given_as: None,
+        },
+        manifest_ids,
+        manifest,
+    };
+    let root = dir.parent().map(Path::to_path_buf).unwrap_or_else(catalog::catalog_root);
+    let written = catalog::write(&root, &file, &texts).await.map_err(&failed)?;
+    progress(format!("catalog written to {}", written.display()));
+    Ok((file, texts, Some(trace)))
+}
+
+/// `llm_understand_media <catalog>/pages/0101.png` (one page: its image as
+/// converted, with its text) or `llm_understand_media <catalog> --pages …`:
+/// the conversion is read from the catalog, nothing is stored again.
+async fn run_catalog(opts: &RunOpts, target: CatalogTarget) -> (AgentToolResult, i32) {
+    let (file, texts, trace) = match open_catalog(opts, &target).await {
+        Ok(opened) => opened,
+        Err(err) => {
+            let mut result = build_error_result(opts, err.message);
+            attach_pipeline_details(&mut result, Some(&err.decision), err.trace.as_ref(), None, None, None, None);
+            return (result, CLI_EXIT_ERROR);
+        }
+    };
+    let dir = target.dir().to_path_buf();
+    let total = file.manifest.range.total.unwrap_or(0);
+    let name = file.source.name.clone().unwrap_or_else(|| file.source.obj_id.clone());
+    let decision = MediaDecision {
+        kind: "catalog",
+        reason: format!("read from the catalog {}", dir.display()),
+        family: Some(if file.source.family == FAMILY_DOCUMENT { FAMILY_DOCUMENT } else { FAMILY_PDF }),
+        obj_id: Some(file.source.obj_id.clone()),
+        mime: file.source.mime.clone(),
+    };
+    let prepared = match &target {
+        CatalogTarget::Page { page, .. } => {
+            let entry = file.manifest.entries.iter().find(|e| e.location.page.map(u64::from) == Some(*page));
+            let Some(image_id) = entry.and_then(|e| e.image_obj_id.clone()) else {
+                let message = if *page > total {
+                    format!("{name} has {total} pages; there is no page {page}")
+                } else {
+                    format!("page {page} of {name} has no page image")
+                };
+                return (build_error_result(opts, message), CLI_EXIT_USAGE);
+            };
+            let source = match named_object(&image_id) {
+                Ok(source) => source,
+                Err(err) => return (build_error_result(opts, err), CLI_EXIT_ERROR),
+            };
+            let mut content = vec![AiContent::text(format!(
+                "This is page {page} of \u{ab}{name}\u{bb} ({total} pages){}.",
+                if file.manifest.derived_content_id.is_some() { ", numbered as in the PDF it was converted to" } else { "" }
+            ))];
+            if let Some(text) = texts.get(page) {
+                content.push(AiContent::text(format!(
+                    "Page {page} text{}:\n{}",
+                    if text.source == pipeline::TextSource::Ocr { " (recognized from the page image, may contain errors)" } else { "" },
+                    text.text
+                )));
+            }
+            content.push(AiContent::text(format!("Page {page} image:")));
+            content.push(AiContent::image(source));
+            let mut prepared = PreparedMedia::new(content, decision);
+            prepared.coverage = Some(Coverage {
+                family: file.manifest.family.clone(),
+                total: Some(total),
+                requested: vec![*page],
+                processed: vec![*page],
+                text_delivered: texts.contains_key(page).then_some(*page).into_iter().collect(),
+                text_ocr: texts.get(page).filter(|t| t.source == pipeline::TextSource::Ocr).map(|_| *page).into_iter().collect(),
+                image_delivered: vec![*page],
+                complete: file.manifest.complete,
+                ..Default::default()
+            });
+            prepared.reading = Some(format!("page {page} of {name}"));
+            prepared.media_source = Some(json!({"catalog": file.source.obj_id, "page": page, "dir": dir.display().to_string()}));
+            prepared
+        }
+        CatalogTarget::Dir { .. } => {
+            let only = opts.named_pages();
+            if !only.is_empty() && only.iter().all(|p| *p == 0 || *p > total) {
+                return (build_error_result(opts, format!("{name} has {total} pages; pages {} are not in it", pipeline::format_ranges(&only.iter().copied().collect::<Vec<_>>()))), CLI_EXIT_USAGE);
+            }
+            match document_content(opts, &file, &texts, &BTreeMap::new(), decision, &only).await {
+                Ok(mut prepared) => {
+                    prepared.media_source = Some(json!({"catalog": file.source.obj_id, "pages": only, "dir": dir.display().to_string()}));
+                    prepared
+                }
+                Err(err) => return (build_error_result(opts, err.message), CLI_EXIT_ERROR),
+            }
+        }
+    };
+    let mut prepared = prepared;
+    prepared.trace = trace;
+    prepared.catalog_dir = Some(dir);
+    let mime = if matches!(target, CatalogTarget::Page { .. }) { "image/png" } else { file.source.mime.as_str() };
+    let Some(model_alias) = opts.model.clone().or_else(|| route_model(mime)) else {
+        return (build_error_result(opts, format!("no model route for media mime `{mime}`")), CLI_EXIT_ERROR);
+    };
+    if let Some(reading) = &prepared.reading {
+        progress(format!("reading {reading} with {model_alias}"));
+    }
+    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new());
+    let work_dir = opts.work_dir.clone().unwrap_or_else(|| default_work_dir(&opts.goal));
+    let media_id = file.source.obj_id.clone();
+    let analysis = Analysis {
+        opts,
+        history: &[],
+        llm: &llm,
+        model_alias: &model_alias,
+        work_dir: &work_dir,
+        mime,
+        media_id: &media_id,
+    };
+    let (mut result, code) = analysis.run(&prepared).await;
+    // The caller is in the catalog already: name it again only to say what was left out.
+    let partial = prepared.coverage.as_ref().is_some_and(|c| !c.uncovered.is_empty());
+    attach_pipeline_details(
+        &mut result,
+        Some(&prepared.decision),
+        prepared.trace.as_ref(),
+        prepared.coverage.as_ref(),
+        prepared.preprocess.as_ref(),
+        None,
+        prepared.catalog_dir.as_deref().filter(|_| partial),
+    );
+    attach_extra_details(&mut result, &prepared);
+    if opts.work_dir.is_none() && result.status == AgentToolStatus::Success {
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+    (result, code)
 }
 
 async fn prepare_video(media: &ResolvedMedia, opts: &RunOpts) -> Result<PreparedMedia, PrepareError> {
@@ -2760,17 +3169,32 @@ Media (one of):
   <locator>               A local file (relative to the current directory or absolute), a Zone file
                           (cyfs:///home/<owner>/…, or the path Files shows: /home/<owner>/…), an object id
                           (cyfile:…, a chunk id such as mix256:…, cyfs://<objid>/; e.g. an attachment of a
-                          message) or an http(s) URL.
+                          message), an http(s) URL, or a catalog directory / page image (see below).
   --media <json>          The same as a JSON ResourceRef, e.g. {"kind":"named_object","obj_id":"cyfile:…","mime_hint":"image/png"},
                           {"kind":"local_file","path":"/abs/frame.png"}, or {"url":"https://…"}.
 
 Options:
   --goal <text>           What to find out (default: describe the content in detail).
+  --pages <list>          Pages of a document to read, e.g. 14,50,70 or 2-33 (pages the goal names count too).
   --history-file <path>   JSON Vec<AiMessage> parent history snapshot.
   --work-dir <path>       LocalLLMContext working directory.
   --model <alias>         AICC logical model alias; default image route is llm.vision.
   --max-completion-tokens <n>  Positive output budget; default 2048, rounded up to 2048/4096/8192 tiers.
   -h, --help              Show this help.
+
+Long documents (PDF, docx, pptx, ...):
+  The first call converts the document: every page gets its text and a page image (text recognized by OCR
+  where the PDF has none or a garbled one). That takes minutes for hundreds of pages; progress lines go to
+  stderr meanwhile. Do not render or extract pages yourself.
+  The conversion is kept: asking again with another goal, or with --pages, converts nothing and costs one
+  more model call.
+  A long document is also unpacked into a local directory, named in the output:
+    <dir>/index.tsv          one row a page: page, status, text_source (layer|ocr), chars, image size, first line
+    <dir>/pages/0001.txt     the page's text        <dir>/pages/0001.png   the page image
+  Search it with grep, then look at the pages that matter:
+    llm_understand_media <dir>/pages/0101.png --goal "…"     one page: its image and its text
+    llm_understand_media <dir> --pages 14,50,70 --goal "…"   several pages together
+  The directory may be deleted; any path into it rebuilds it from the kept conversion.
 "#;
 
 /// The goal of a CLI call without `--goal`.
@@ -2784,6 +3208,7 @@ struct CliOpts {
     work_dir: Option<PathBuf>,
     model: Option<String>,
     max_completion_tokens: Option<u32>,
+    pages: BTreeSet<u64>,
 }
 
 impl CliOpts {
@@ -2812,6 +3237,7 @@ impl CliOpts {
                 self.max_completion_tokens
                     .unwrap_or(DEFAULT_MAX_COMPLETION_TOKENS),
             ),
+            pages: self.pages,
         })
     }
 
@@ -2822,6 +3248,7 @@ impl CliOpts {
         let mut work_dir: Option<PathBuf> = None;
         let mut model: Option<String> = None;
         let mut max_completion_tokens = None;
+        let mut pages = BTreeSet::new();
 
         let mut idx = 0;
         fn set_media(value: Value, media: &mut Option<Value>) -> Result<(), ParseError> {
@@ -2851,6 +3278,9 @@ impl CliOpts {
                     work_dir = Some(PathBuf::from(next_value(args, &mut idx, "--work-dir")?));
                 }
                 "--model" => model = Some(next_value(args, &mut idx, "--model")?),
+                "--pages" => {
+                    pages.extend(parse_pages_arg(&next_value(args, &mut idx, "--pages")?).map_err(ParseError::Bad)?);
+                }
                 "--max-completion-tokens" => {
                     max_completion_tokens = Some(parse_positive_u32(
                         &next_value(args, &mut idx, "--max-completion-tokens")?,
@@ -2878,6 +3308,7 @@ impl CliOpts {
             work_dir,
             model,
             max_completion_tokens,
+            pages,
         })
     }
 }
@@ -3071,6 +3502,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL_ALIAS.to_string(),
             target_tokens: DEFAULT_TARGET_TOKENS,
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
+            pages: BTreeSet::new(),
         };
 
         let input = build_input(
@@ -3310,6 +3742,7 @@ mod tests {
             Some(&coverage),
             Some(&json!({"original": {"width": 4096}, "sent": {"width": 2048}})),
             Some("Note: analyzed a downscaled copy (4096x1024 -> 2048x512); for fine detail, crop the region of interest and analyze the crop."),
+            None,
         );
         assert_eq!(result.details["media_decision"]["family"], "media.pdf");
         assert_eq!(result.details["pipeline_trace"]["revision"], "rev");
@@ -3344,6 +3777,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL_ALIAS.to_string(),
             target_tokens: DEFAULT_TARGET_TOKENS,
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
+            pages: BTreeSet::new(),
         };
         let media_content = vec![
             AiContent::text("Frame at 1.250 seconds:"),

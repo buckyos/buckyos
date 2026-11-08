@@ -91,6 +91,7 @@ aios entrypoint 派生或兼容变量：
 | `UV_CACHE_DIR` | aios entrypoint | uv cache，默认 `$BUCKYOS_INSTANCE_VOLUME/uv-cache`。 |
 | `NPM_CONFIG_CACHE` | aios entrypoint | npm cache，默认 `$BUCKYOS_INSTANCE_VOLUME/npm-cache`。 |
 | `PIP_CACHE_DIR` | aios entrypoint | pip cache，默认 `$BUCKYOS_INSTANCE_VOLUME/pip-cache`。 |
+| `LLM_UNDERSTAND_MEDIA_CATALOG_DIR` | aios entrypoint | `llm_understand_media` 展开长文档目录的位置，默认 `$BUCKYOS_INSTANCE_VOLUME/media-catalog`；是缓存，可随时删除。 |
 | `SCRIPT_APP_ID` | aios entrypoint | 旧 script-service 兼容变量，值来自 `BUCKYOS_APP_ID`。 |
 | `SCRIPT_PACKAGE_ROOT` | aios entrypoint | 旧 script-service 兼容变量，值来自 `BUCKYOS_PKG_DIR`。 |
 | `SCRIPT_DATA_ROOT` | aios entrypoint | 旧 script-service 兼容变量，值来自 `BUCKYOS_DATA_DIR`。 |

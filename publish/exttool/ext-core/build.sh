@@ -195,10 +195,15 @@ if git_core.is_dir():
     for path in git_core.iterdir():
         if path.is_symlink() and os.readlink(path) == "git":
             path.unlink()
+# OCR language data (§6.4 of doc/app_service/paios容器需求.md): the UI languages, their vertical variants, and the other
+# common ones; keep smoke/tesseract.sh and smoke/tesseract.ps1 in step.
+tesseract_langs = {"osd", "eng", "chi_sim", "chi_tra", "spa", "fra", "deu", "kor", "jpn", "rus",
+                   "chi_sim_vert", "chi_tra_vert", "jpn_vert", "kor_vert",
+                   "por", "ita", "nld", "pol", "tur", "ukr", "ara", "fas", "heb", "hin", "ben", "tha", "vie", "ind", "msa"}
 for tessdata in (top / "share" / "tessdata", prefix / "share" / "tessdata"):
     if tessdata.is_dir():
         for path in tessdata.iterdir():
-            if path.suffix == ".traineddata" and path.name not in ("eng.traineddata", "osd.traineddata"):
+            if path.suffix == ".traineddata" and path.stem not in tesseract_langs:
                 rm(path)
 bin_dir = top / "bin"
 keep_bin = {"ffmpeg", "ffprobe", "magick", "convert", "identify", "compare", "pdftotext", "pdftoppm", "pdfinfo", "tesseract",

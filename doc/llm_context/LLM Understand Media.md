@@ -33,7 +33,7 @@
 | Workflow DSL | `buckyos_api::workflow_dsl::WorkflowDefinition` / `StepDefinition` / `ControlNodeDefinition` | [workflow_dsl.rs](src/kernel/buckyos-api/src/workflow_dsl.rs)、[src/kernel/workflow/src/dsl.rs](src/kernel/workflow/src/dsl.rs) |
 | Workflow executor 表达 | `ExecutorRef` 支持 `service::` / `http::` / `appservice::` / `operator::` / `func::` 与 `/agent/` / `/skill/` / `/tool/` 语义路径 | [workflow_types.rs](src/kernel/buckyos-api/src/workflow_types.rs)、[doc/workflow/executor list.md](doc/workflow/executor%20list.md) |
 | 共享表示缓存（转换产物） | workflow service 的 Step cache：`step_cache_key = hash(thunk_obj_id, 工具指纹)`，索引在 service-local SQLite（`data/srv/workflow/workflow.db`），结果 / manifest 为 Named Object，产物在 workflow zone 桶 `artifacts`（temp，30 天）；活动 Run 按 principal 合并（ensure） | [src/kernel/workflow/src/cache_index.rs](src/kernel/workflow/src/cache_index.rs)、[persistence.rs](src/kernel/workflow/src/persistence.rs)、[orchestrator.rs](src/kernel/workflow/src/orchestrator.rs) |
-| 转换函数 | 九个 `media.*` Native FunctionObject（capabilities、probe、fit_image、extract_pdf_text、render_pdf_pages、extract_frames、extract_audio、to_pdf、build_catalog），由 `/tool/media.<fn>@1` 引用 | [src/kernel/workflow/src/functions/media/mod.rs](src/kernel/workflow/src/functions/media/mod.rs) |
+| 转换函数 | 十个 `media.*` Native FunctionObject（capabilities、probe、fit_image、extract_pdf_text、render_pdf_pages、ocr_pages、extract_frames、extract_audio、to_pdf、build_catalog），由 `/tool/media.<fn>@1` 引用 | [src/kernel/workflow/src/functions/media/mod.rs](src/kernel/workflow/src/functions/media/mod.rs) |
 | 转换工具探测 | workflow 宿主启动时探测 poppler / ffmpeg / soffice（三平台查找，版本进指纹）；缺工具时对应步骤 Failed(`tools_missing`)，是部署缺陷而非正常降级（基线见 [doc/workflow/media tool baseline.md](doc/workflow/media%20tool%20baseline.md)） | [functions/media/tools.rs](src/kernel/workflow/src/functions/media/tools.rs) |
 | Office / 表格的 Agent 命令 | `import_office`（docx / pptx → Blocks）、`import_table`（csv / xlsx / sqlite → TableSources）。它们是 Agent 手册命令，媒体管线不使用（TODO D9） | [import_office.ts](src/tools/buckyos-agent/commands/import_office.ts)、[import_table.ts](src/tools/buckyos-agent/commands/import_table.ts) |
 | 媒体工具基线（可用性约束） | workflow 宿主和 paios 镜像都要满足同一份清单（poppler、ffmpeg、LibreOffice、字体、locale）；官方命令清单仍以 paios 文档为入口 | [doc/workflow/media tool baseline.md](doc/workflow/media%20tool%20baseline.md)、[paios 容器需求 §6.4](doc/app_service/paios容器需求.md) |
@@ -252,6 +252,7 @@ struct ObservationItem {
 ```
 
 - 旁路里的媒体像素、派生 artifact 和模型推理中间状态在返回瞬间随工作目录蒸发，主干 history 永远只留一对 `ToolUse` / `ToolResult`。正常结束后删除默认工作目录；失败时保留，供诊断。模型输入里是对象引用，快照不含媒体字节（没有 NDN 身份的小文件除外，§4.3）。
+- fork-and-discard 约束的是主干 history。长文档展开的本地目录（§4.7）是这次调用有意留给 Agent 的缓存，不随工作目录删除。
 - 旁路对主干**无副作用**——除了最终写回的 `tool_result`。
 - 旁路中的模型分析 stage 受 xllm run 的推理边界快照保护（每次推理前提交）；转换阶段在 workflow 的 Run 里，由 Step cache 复用（见 §5）。
 - 旁路中的推理（包括 §4.2 压缩父 history 的摘要调用和模型分析 stage）是这次工具调用内部的嵌套模型调用，归属关系见 §5.2。
@@ -333,7 +334,7 @@ model = "llm.video"
 
 - **管线 = `WorkflowDefinition`**：四条系统定义 `media.image` / `media.pdf` / `media.video` / `media.document` 随 workflow service 发布（`src/kernel/workflow/defs/media.*.json`，启动时播种，`source: system`，只读）。
 - **一次转换 = 一个 Run**：`llm_understand_media` 调 `workflow.create_run` 创建 Run；输入是内容寻址对象，产物是 NDN 对象。
-- **stage = `autonomous` Step**，executor 是 `/tool/media.<fn>@1` 语义链接，编译期经 FunctionRegistry 绑定到真实 FunctionObject（`func:<hex>`）。这是 FunctionObject / Thunk 通道的第一次真实落地：九个 `media.*` Native 函数在 workflow 进程内的 `LocalThunkRunner` 执行。
+- **stage = `autonomous` Step**，executor 是 `/tool/media.<fn>@1` 语义链接，编译期经 FunctionRegistry 绑定到真实 FunctionObject（`func:<hex>`）。这是 FunctionObject / Thunk 通道的第一次真实落地：十个 `media.*` Native 函数在 workflow 进程内的 `LocalThunkRunner` 执行。
 - **跨 Run 复用 = Orchestrator 的 Step cache**：`step_cache_key = hash(thunk_obj_id, 执行指纹)`，持久化在 workflow 的 SQLite 索引里，命中前校验结果对象与全部产物仍可读。
 - **可观测**：Run / Step / Thunk 进 task_manager 任务树，请求者获得 Run 根任务的 WholeTree 读 grant，`run_id` 就是根任务 id（WF-DV-012 已验证）；Desktop `app/workflow` 已改接真实 RPC，未在 Zone 上验证（§10）。
 
@@ -356,17 +357,17 @@ model = "llm.video"
 | 定义 | 有效输入（默认值） | steps | Run output（终端节点） | Run 期限 |
 |---|---|---|---|---|
 | `media.image` | `obj_id`、`max_long_edge` 2048、`max_pixels` 4194304、`max_bytes` 3670016 | capabilities → probe → fit_image | `fit_image`: `{model_media_obj_id, mime, original, sent, actions}` | 10 分钟 |
-| `media.pdf` | `obj_id`、`dpi` 144、`max_long_edge` 2048、`page_range` `[]`（全部）、`limits.max_pages` 50（上限 200） | capabilities → probe → extract_pdf_text → render_pdf_pages → build_catalog | `build_catalog`: `{manifest_obj_id, summary, complete}` | 30 分钟 |
+| `media.pdf` | `obj_id`、`dpi` 144、`max_long_edge` 2048、`page_range` `[]`（全部）、`limits.max_pages` 50（上限 200）、`ocr_lang` `auto` | capabilities → probe → extract_pdf_text → render_pdf_pages → ocr_pages → build_catalog | `build_catalog`: `{manifest_obj_id, summary, complete}` | 30 分钟 |
 | `media.video` | `obj_id`、`strategy` uniform、`max_frames` 16（上限 64）、`frame_max_edge` 1280、`limits.max_duration_ms` 3600000（上限 4 小时） | capabilities → probe → extract_frames → extract_audio → build_catalog | 同上；无音轨为正常 `absent`，ASR 留在 agent_tool | 30 分钟 |
-| `media.document` | `media.pdf` 的输入 + `format`（docx / pptx / odt / odp / doc / ppt / rtf / txt，必填） | capabilities → probe → to_pdf → PDF 三步（以 `${to_pdf.output.pdf_content_id}` 为源） | 同上；manifest 同时保留原源与派生 PDF 内容 ID | 45 分钟 |
+| `media.document` | `media.pdf` 的输入 + `format`（docx / pptx / odt / odp / doc / ppt / rtf / txt，必填） | capabilities → probe → to_pdf → PDF 四步（以 `${to_pdf.output.pdf_content_id}` 为源） | 同上；manifest 同时保留原源与派生 PDF 内容 ID | 45 分钟 |
 
 `capabilities` 是 `idempotent: true` 但 `is_pure: false` 的函数：每次 Run 都真实执行，输出本机工具环境事实，永不进缓存。其余函数只在 `step.idempotent && function.is_pure` 时读写缓存。
 
 `to_pdf` 的 `is_pure: true` 语义是“结果可复用”，不要求字节相同（§10.3 Q5）。实测 LibreOffice 25.2 对同一输入转两次，文件大小相同，但有 91 字节不同，差异在 `CreationDate`、`/ID`、`DocChecksum`。第一次的结果写入缓存，之后 `pdf_content_id` 稳定，后续文本、页图、manifest 全部命中（WF-DV-015）。它的指纹是 soffice、pdfinfo 版本加字体集摘要（`env/fonts`），字体变化使旧结果失效。
 
-#### 4.5.3 `media.*` FunctionObject（首批 9 个）
+#### 4.5.3 `media.*` FunctionObject（10 个）
 
-注册在 `src/kernel/workflow/src/functions/media/mod.rs`，`content = "<name>/impl-2"`，`func_type = native`，参数以 `params_schema` 为权威、`params_type` 只标出 `content_id` 这类 `CheckByRunner("file_content")` 引用。Native 行为变化必须升级 `impl-<n>`，老 Run 不会悄悄绑定新函数。
+注册在 `src/kernel/workflow/src/functions/media/mod.rs`，`content = "<name>/impl-3"`，`func_type = native`，参数以 `params_schema` 为权威、`params_type` 只标出 `content_id` 这类 `CheckByRunner("file_content")` 引用。Native 行为变化必须升级 `impl-<n>`，老 Run 不会悄悄绑定新函数。
 
 | 函数 | 关键参数 | 结果 | 工具（requirements） |
 |---|---|---|---|
@@ -375,10 +376,11 @@ model = "llm.video"
 | `media.fit_image` | `content_id`、`max_long_edge`、`max_pixels`、`max_bytes` | `{model_media_obj_id, mime, original, sent, actions}` | image crate；非常见格式可选 ffmpeg |
 | `media.extract_pdf_text` | `content_id`、`page_range`、`max_pages` | `{pages: [{page, status, text_obj_id?, chars?, error?}], total_pages}` | pdfinfo、pdftotext |
 | `media.render_pdf_pages` | `content_id`、`dpi`、`max_long_edge`、`page_range`、`max_pages` | `{pages: [{page, status, image_obj_id?, width, height, error?}], total_pages}` | pdfinfo、pdftoppm |
+| `media.ocr_pages` | `text`（extract_pdf_text 的输出）、`images`（render_pdf_pages 的输出）、`lang`（`auto` 或 tesseract 语言名，如 `chi_sim+eng`） | `{status: ok \| not_needed \| lang_unavailable \| tools_missing, lang, script, vertical, garbled_layer, basis, pages: [{page, status, ocr_text_obj_id?, chars?, confidence?, layer_clean?, ocr_clean?, agreement?, error?}]}` | tesseract（软依赖，见 §4.6.5）；Pdf lane，进程内多个 tesseract 并行，`OMP_THREAD_LIMIT=1`；指纹加语言表 `env/ocr_langs` |
 | `media.extract_frames` | `content_id`、`strategy`、`max_frames`、`frame_max_edge`、`max_duration_ms` | `{frames: [{index, time_ms, image_obj_id, width, height, status}], duration_ms}` | ffprobe、ffmpeg |
 | `media.extract_audio` | `content_id`、`max_duration_ms` | `{status: ok | absent, audio_obj_id?, codec?, duration_ms?}`；输出固定为 mp3，`codec` 是源音轨编码 | ffprobe、ffmpeg |
 | `media.to_pdf` | `content_id`、`format` | `{pdf_content_id, pdf_obj_id, pages}` | soffice（headless，独立 profile，并发 1）；pdfinfo 数页 |
-| `media.build_catalog` | `family`、`source_content_id`、`derived_content_id?`、`probe`、`text?`、`images?`、`frames?`、`audio?` | `{manifest_obj_id, summary, complete}` | 无 |
+| `media.build_catalog` | `family`、`source_content_id`、`derived_content_id?`、`probe`、`text?`、`images?`、`ocr?`、`frames?`、`audio?` | `{manifest_obj_id, summary, complete}` | 无 |
 
 共同约定：
 
@@ -448,10 +450,13 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
 | `IMAGE_MAX_EDGE` / `IMAGE_MAX_PIXELS` / `IMAGE_MAX_BYTES` | 2048 / 4194304 / 3670016 | 图片直传判断，同时是 `media.image` 输入 |
 | `PDF_DPI` / `PAGE_MAX_EDGE` | 144 / 2048 | `media.pdf` / `media.document` 输入 |
 | `LONG_DOC_PAGES` | 20 | 页数超过它的 PDF 不直传，走目录 |
-| `MAX_PAGES` | 1000 | 一份文档进目录的页数上限，超出的标 `unprocessed` |
+| `MAX_PAGES` | 2000 | 一份文档进目录的页数上限，超出的标 `unprocessed` |
 | `DOCUMENT_MAX_BYTES` | 20 MiB | 文档直传上限 |
 | `VIDEO_FRAMES` / `VIDEO_FRAME_MAX_EDGE` | 16 / 1280 | `media.video` 输入 |
 | `TEXT_CHARS` / `MAX_IMAGES` | 60000 / 16 | 一次送给模型的文本字符数与图片数 |
+| `CATALOG_DIR` | 由 runtime 注入（§4.7），缺省为系统临时目录下的 `llm_understand_media-catalog` | 长文档展开成本地目录的位置 |
+| `CATALOG_MAX_BYTES` | 5 GiB | 这些目录的总量上限，超出时按最近使用时间删旧的 |
+| `TERMS_MODEL` | `llm.chat` | 把 goal 翻成资料语言的检索词时用的模型（§4.7） |
 
 失败处理：
 
@@ -472,9 +477,11 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
   "derived_content_id": "<document → PDF 时的派生内容 id>",
   "probe": { … },
   "range": { "total": 42, "requested": [1, 2, 3], "processed": [1, 2], "failed": [3] },
+  "ocr": { "status": "ok", "lang": "eng", "script": "Latin", "vertical": false, "garbled_layer": true, "basis": { "trial": { "eng": [81, 412] } } },
   "entries": [
-    { "kind": "page", "where": { "source": "original | derived", "page": 1 }, "text_obj_id": "…", "image_obj_id": "…", "status": "ok" },
-    { "kind": "page", "where": { "source": "original", "page": 2 }, "status": "no_text", "image_obj_id": "…" },
+    { "kind": "page", "where": { "source": "original | derived", "page": 1 }, "text_obj_id": "…", "image_obj_id": "…", "status": "ok",
+      "ocr_text_obj_id": "…", "text_quality": { "layer_clean": 48, "ocr_clean": 80, "agreement": 42, "ocr_confidence": 69 } },
+    { "kind": "page", "where": { "source": "original", "page": 2 }, "status": "no_text", "image_obj_id": "…", "text_quality": { "ocr": "empty" } },
     { "kind": "page", "where": { "source": "original", "page": 4 }, "status": "unprocessed" },
     { "kind": "frame", "where": { "source": "original", "time_ms": 12000, "index": 3 }, "image_obj_id": "…", "status": "ok" },
     { "kind": "audio", "where": { "source": "original", "time_ms": 0 }, "status": "absent" }
@@ -483,7 +490,8 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
 }
 ```
 
-- 条目状态：`ok` / `no_text`（扫描页、空白页）/ `absent`（无音轨）/ `unprocessed`（在源中但不在请求范围）/ `failed`（带 `error {code, message, retryable}`）。缺失以状态表达，不让条目消失：文档族从第 1 页到最后一页每页一条。
+- 条目状态：`ok` / `no_text`（扫描页、空白页；有 OCR 文本的扫描页是 `ok`）/ `absent`（无音轨）/ `unprocessed`（在源中但不在请求范围）/ `failed`（带 `error {code, message, retryable}`）。
+- `ocr_text_obj_id` 与 `text_quality`（百分比）来自 `media.ocr_pages`：两份文本都保留，用哪份由读的一方按 §4.6.5 的规则选；`text_quality.ocr` 说明没有 OCR 文本的原因（`skipped`：文字层可信；`empty`、`failed`、`lang_unavailable`、`tools_missing`）。缺失以状态表达，不让条目消失：文档族从第 1 页到最后一页每页一条。
 - `failed` 条目可能仍带另一种表示（文本成功、页图失败时保留 `text_obj_id`）。
 - 坐标：文档的 `range` 和 `where.page` 是页码（`total` 是总页数）；视频的 `range` 是帧时间戳（`total` 是时长毫秒）。
 - `complete` 只有整份源都处理成功才为 true：存在 `failed` 或 `unprocessed` 条目都是 false，所以按范围读取时它总是 false。「本次请求是否处理完」看 `range.requested` 与 `range.processed`。同一源的多个窗口用 `MediaManifest::merge_range` 合并（§4.7）。
@@ -535,11 +543,19 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
 
 | 输入 | 转换策略 | 验收重点 |
 |---|---|---|
-| PDF | 模型支持、预算合适且不长时直传；否则 `media.pdf` 产出分页文本 + 页图 + manifest；扫描页靠页图做视觉覆盖，本期不做 OCR | 文本 PDF、扫描 PDF、图文混排及长 PDF 均可理解；能找到后部页面并引用页码 |
-| DOCX / PPTX / ODT / ODP / DOC / PPT / RTF | `media.document`：soffice → PDF，再复用 PDF 三步；页码明确属于派生 PDF | 正文与版式信息可检索；页码只引用派生 PDF |
+| PDF | 模型支持、预算合适且不长时直传；否则 `media.pdf` 产出分页文本 + 页图 + manifest；没有文字层或文字层乱码的页由 `media.ocr_pages` 用 tesseract 重新识别（见下） | 文本 PDF、扫描 PDF、图文混排及长 PDF 均可理解；能找到后部页面并引用页码 |
+| DOCX / PPTX / ODT / ODP / DOC / PPT / RTF | `media.document`：soffice → PDF，再复用 PDF 四步；页码明确属于派生 PDF | 正文与版式信息可检索；页码只引用派生 PDF |
 | Excel | 延后：不把 PDF 当成公式 / sheet / 单元格语义，本期不引入 Office 解析 crate。协议接受 Document 时走直传，否则 Error，Agent 可用 `import_table` | — |
 | 视频 | `media.video`：均匀抽帧 + 音轨；音轨转写在 agent_tool 走 AICC ASR；ASR 失败时只分析帧并在 coverage 记录 | 无音轨为正常 absent；按时间段检索未实现（`extract_frames` 只有 `uniform` 策略，没有时间范围参数） |
 | 音频 | AICC `audio.asr` 转写；要求同步返回，异步任务报错 | 转写文本带来源说明，不声称识别出音乐、环境音 |
+
+**OCR（2026-11-07 起进本期，推翻原定的"不做 OCR、workflow 不依赖 tesseract"）。** 起因是 dk10000.pdf：自带文字层像是用中文模型 OCR 的英文书，按词检索命不中，送给模型的文本也没用（[复盘](../../notepads/llm-understand-media-long-pdf-todo.md)）。`media.ocr_pages` 只产出事实，用哪份文本由 agent_tool 定，调整规则不会让缓存失效：
+
+1. 每个页窗口内：没有文字层的页都识别。文字层"干净词"（只由字母组成、可带一个首尾标点的词）少于 60% 的页是可疑页，先抽 4 页识别，算"一致率"（OCR 的词里也出现在文字层里的比例）；中位数低于 70% 判为这个窗口的文字层乱码，所有页都识别。否则只有抽到的页带 OCR 结果。原生文档几乎不触发：实测原生英文、中文、中英混排 64 页一致率都在 77% 以上，dk10000 的页在 21%–65%（65% 的是词多的索引页）。
+2. 选语言按窗口，不按页：抽 3 页，用各文字系统的代表模型（`eng`、`chi_sim`、`jpn`、`kor`、`rus`）各识别一次，比加权平均置信度。都低于 60 时问 `osd` 是哪种文字，再试对应的模型（阿拉伯、希伯来、天城文、孟加拉、泰文）。实测 OSD 单独判断很不可靠（德文判成西里尔、韩文判成天城文、中文扫描件判成拉丁），所以只作兜底。拉丁文字再按内置常用词表分出西、法、德、葡、意、荷、波、土、越、印尼、马来；汉字在 `chi_sim` / `chi_tra` 间比置信度；中日韩页的单字框在下方比右侧更近（字成列排）时用 `_vert` 模型、`--psm 5`，否则 `--psm 11`。除英语和竖排外都加 `+eng`。选定的语言、文字系统和依据写进 `manifest.ocr`，后续窗口沿用第一个窗口的语言。
+3. 缺对应语言包时不识别，条目记 `text_quality.ocr = lang_unavailable`；拉丁文字缺专门的包时用 `eng`（`basis.wanted` 记下本该用的语言）。没有 tesseract 时整步输出 `tools_missing`，各页保留文字层，结果不进缓存，装上以后重新识别。
+4. agent_tool 的选用规则：两份都有时，一致率低于 70%，且 OCR 的干净词比例不低于文字层或 OCR 置信度不低于 60（满页数字的页 OCR 干净词反而少），用 OCR；只有一份就用那一份。实测 30 份语料（dk10000 46 页、原生中英文与混排、中文 / 中英混排扫描件、12 种语言的扫描页、竖排中日文）语言全部选对，原生页 100% 保留文字层，dk10000 的有字页全部改用 OCR。
+5. 成本：英文约 0.4 秒一页，`chi_sim+eng` 约 1.5–2.5 秒一页；workflow 宿主上最多 4 个 tesseract 并行（CPU 数的一半）。之后走缓存。
 
 ### 4.7 目录理解与检索
 
@@ -549,15 +565,27 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
 
 **建一次，之后复用。** 一次 Run 覆盖全部页的文本和页图，换一个 goal 再问时所有转换步骤都命中 Step cache（实测 DOCX 第二次调用全程 4 秒）。不按需渲染：thunk 参数包含页范围，选页不同就是另一个计算，按需渲染会让每个新 goal 都重新渲染。
 
-**很长的文档。** 单个 Run 上限 200 页，更长的文档按 200 页一个窗口连续跑 Run，再用 `MediaManifest::merge_range` 合并。一份文档最多进目录 `MAX_PAGES` 页（默认 1000），其余标 `unprocessed`。后续窗口失败时已建的部分仍交付，并在 `output` 说明止于哪一页。实测 240 页 PDF 首次 78 秒。
+**很长的文档。** 单个 Run 上限 200 页，更长的文档按 200 页一个窗口连续跑 Run（窗口先不并行），再用 `MediaManifest::merge_range` 合并。一份文档最多进目录 `MAX_PAGES` 页（默认 2000），其余标 `unprocessed`。后续窗口失败时已建的部分仍交付，并在 `output` 说明止于哪一页。实测 240 页 PDF 首次 78 秒。
+
+**等待时的输出。** 作为命令运行时，进度写到 stderr（stdout 最后是 JSON 结果，不混进去）：第一个窗口的 probe 报出页数、且有转换步骤在执行时，输出 `converting 403 pages in 3 runs (first time for this file; later calls reuse the result)`；之后每分钟一行当前步骤；每个窗口结束输出 `pages 1-200 ready (2m23s)` 或 `pages 1-200 from cache`；然后是 `reading 16 page images and 56 pages of text with <model>` 与 `catalog written to <目录>`。runtime 的 task_watch 把后台命令新增的 stderr 放进 `<<background_context>>`，Agent 等待时能看到这些行。
 
 **读目录（[`plan_pages`](src/frame/agent_tool/src/llm_understand_media/pipeline.rs)）。** 工具进程在全部文本里检索，旁路模型不开工具：
 
-1. 文本：全部页文本不超过 `TEXT_CHARS` 就全送；否则优先 goal 点名的页（`page 12`、`pages 3-5`、`第12页`），再按词法命中打分。词法打分把 CJK 切成二元组，其余语言按词；完全没有命中时在全文范围内均匀取页。
-2. 页图：点名的页；有词法命中的页，占一半额度（图表只能靠看）；只有页图的页，均匀取；其余已选文本的页；总数不超过 `MAX_IMAGES`。
-3. 模型没有看全时，先给一份所有页的索引（放得下时带每页开头，否则按类别列页码范围）。内置提示词要求先读索引，再读文本和页图，不声称读过没给的页。
-4. 没送给模型的页记入 `coverage.uncovered`，`output` 末尾追加一行，按原因列页码范围，提示 Agent 可以点名页码再问。
-5. 视频：帧在时间轴上均匀取到 `MAX_IMAGES` 张，其余记入 `uncovered`；转写失败时 `output` 说明只覆盖了帧。
+0. 页文本：按 §4.6.5 的规则在文字层和 OCR 之间选一份，再规范空白（去掉行首行尾空白，连续空行合成一行，行内两个以上的空白合成两个空格）后计数、发送、写进本地目录。`pdftotext -layout` 用空格补齐版面，dk10000 全书 186 万字里只有 32 万个非空白字符，规范后 43 万字。规范放在 agent 侧，不动 workflow 函数的输出，已建好的目录立即生效。
+1. 文本：点名了页（goal 里的 `page 12`、`pages 3-5`、`page 14, 50, 70`、`p14`、`pp. 3-5`、`第12页`、`第14、50、70页`、`物理页14`，加上 `--pages`）时只送这些页，每页最多分到预算的平均份额，其余页只在索引里出现。没点名时，全部页文本不超过 `TEXT_CHARS` 就全送；否则先送词法命中的页，最多占剩余预算的一半、每页最多八分之一；剩下的预算在其余页里均匀取，每页截到 `max(剩余预算 / 份数, 1500)`，份数按截断后的长度算，保证均匀选中的页都装得下。截断处标 `[page N text truncated: X of Y chars]`，页码记入 `coverage.text_truncated`。词法打分把 CJK 切成二元组，其余语言按词，按 IDF 加权，出现在一半以上页面的词不计分。
+2. 检索词：文本需要检索、goal 没有点名页、goal 自己的词命中不到 3 页，而且 goal 与资料不是同一种文字时，用 `TERMS_MODEL` 发一次带 `json_schema` 的小调用，输入 goal 和均匀取 20 页开头的样本（合计不超过 2000 字），得到资料的语言和该语言的检索词，与 goal 的词一起打分。资料语言优先用 `manifest.ocr.lang`。调用失败时只用原词并记录。结果写 `details.retrieval = {doc_language, terms, source: translated | goal, error?}`。这一步只服务旁路模型的选页。
+3. 页图：点名时只在点名的页里均匀取。否则：有词法命中的页，占一半额度（图表只能靠看）；只有页图的页，均匀取；剩余额度先在已选文本的页里均匀取，再在所有有页图的页里均匀取；总数不超过 `MAX_IMAGES`。
+4. 模型没有看全时，先给一份所有页的索引：放得下时每页一行带开头；放不下时均匀取一部分页列开头（每行 40 字），其余页按类别（`text+image`、`ocr+image`、`image` 等）列页码范围。内置提示词要求先读索引，再读文本和页图，不声称读过没给的页。
+5. 没送给模型的页记入 `coverage.uncovered`，`output` 末尾追加一行，按原因列页码范围，并给出本地目录和 `--pages`、单页图的用法。
+6. 视频：帧在时间轴上均匀取到 `MAX_IMAGES` 张，其余记入 `uncovered`；转写失败时 `output` 说明只覆盖了帧。
+
+**Agent 侧目录（2026-11-07 裁决 Q1 / Q5 / Q7）。** index + 文本 + 页图这个结构的本意是利用 LLM 成熟的目录检索能力，所以长文档还原成一个 Agent 能用自己的工具浏览的本地目录，而不是给 `read` 加 manifest 模式。长期缓存在 named store（workflow 步骤缓存 30 天，加上交付时登记的持有记录，§4.8.2）；本地目录只是它的展开，随时可删。
+
+- 位置：`LLM_UNDERSTAND_MEDIA_CATALOG_DIR`，由 runtime 与 `DENO_DIR` 一样注入（`tool_cache_env`；容器 `/opt/buckyos/instance/media-catalog/`，Desktop Lite `<AgentRoot>/.cache/media-catalog/`，节点 runtime `<账户 home>/.opendan/<agent_id>/cache/media-catalog/`，见 [path_usage.md](../path_usage.md)）；没有时退到系统临时目录。
+- 每份文档一个目录，名字是源文件对象 id（`cyfile-…`，`:` 换成 `-`）：`README.md`（来源、页数、文本来源统计、用法）、`index.tsv`（`page status text_source chars image_wh first_line`）、`manifest.json`（合并后的 MediaManifest 和各窗口的 manifest id）、`pages/0001.txt`（选定、规范后的文本）、`pages/0001.png`（页图）、`.complete`。
+- 长于 `LONG_DOC_PAGES` 或模型没看全的文档才展开；直传和一次全送得下的不展开。展开与模型分析并行。先写到同级临时目录，写完改名到位；`.complete` 记录 manifest id 与文本规则版本：一致就只更新 mtime，规则变了只重写文本和 `index.tsv`。总量超过 `CATALOG_MAX_BYTES` 时按 `.complete` 的 mtime 删最久没用的目录。写入只用工具已能读到的对象。
+- 在目录里做分析（Q7）：`llm_understand_media <目录>/pages/0101.png --goal …` 直接用 manifest 里的 `image_obj_id`，不再冻结、上传；告诉模型这是《原文件名》第 101 页并附上这一页的文本；`details.media_source = {catalog, page, dir}`。`llm_understand_media <目录> --pages 14,50,70 --goal …` 读 `manifest.json` 和页文本，不调 workflow。Agent 改过的页图（mtime 晚于 `.complete`）按普通图片处理，所以可以原地裁剪后再看。页图长边 2048 像素，裁剪不增加细节；更高分辨率的单页重渲染以后再做。
+- 目录被删掉后，用旧路径（目录或页图）调用：工具从路径取出对象 id，重跑管线（全部命中缓存）、重建目录，再继续。
 
 要求与现状：
 
@@ -574,6 +602,8 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
   "processed": [1, 2],
   "failed": [3],
   "text_delivered": [1, 2],    // 文本送给了模型的坐标
+  "text_truncated": [2],       // 其中被截断的页
+  "text_ocr": [1],             // 其中用的是 OCR 文本的页
   "image_delivered": [2],      // 图片送给了模型的坐标
   "uncovered": [{ "where": 3, "reason": "tool_failed: render" }],  // 含产物读取失败
   "audio": null,               // 视频：absent / transcribed / failed: … / not_requested
@@ -615,7 +645,7 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
 #### 4.8.4 边界
 
 - 区分可复用的**转换产物**与本次 goal / 模型相关的**理解结论**：理解结论不进 workflow 缓存。
-- manifest 中的分页文本是否也让 `read` 工具直接按页读取，见 §9。
+- 按页读取不走 `read`，走 §4.7 的本地目录（2026-11-07 裁决）。
 
 ---
 
@@ -659,6 +689,8 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
 - `shell` 默认 30 分钟超时。命令被停后 Run 还在 workflow 里继续，再次调用靠账本（§4.8.1）接回同一个 Run。
 - `run_not_found`（服务重启）或明确 `retryable` 的失败才重新 ensure，最多 3 次；单次调用最长等 1 小时（长于定义里最长的 45 分钟），超时报 `deadline_exceeded`，超过恢复次数报 `run_lost`。
 - 查询间隔从 400 毫秒退避到 3 秒。
+- 等待期间进度写 stderr（§4.7"等待时的输出"），`--help` 写明首次转换要几分钟、之后复用、不要自己渲染页面。
+- 命令用的是 Agent 借给它的 session token，自己没有 refresh token、续不了。OpenDAN 注入前保证它至少还剩 10 分钟（`runtime_context::LENT_TOKEN_MIN_SECS`，buckyos-api `renew_token_ahead`）；单次调用超过这个时间仍可能在最后读 manifest 时失败，这时再调用一次，转换全部来自缓存。
 
 ---
 
@@ -733,7 +765,7 @@ name / version / description / timeout / requirements 在 `FunctionRegistration`
   → shell: llm_understand_media O2 --goal "第三季度的营收是多少"
   → 旁路进程：
       create_run(media.pdf, ensure=true, {obj_id: O2, ...})
-      workflow: capabilities → probe → extract_pdf_text → render_pdf_pages → build_catalog
+      workflow: capabilities → probe → extract_pdf_text → render_pdf_pages → ocr_pages → build_catalog
       读 manifest：31 页 ok、10 页 no_text、1 页 failed
       选内容：按 goal 选文本页；命中页和 no_text 页送页图，至多 16 张
       model: xllm run，User[目录说明, 全部页的索引, 各页文本, 页图..., Goal]
@@ -784,10 +816,10 @@ workflow 侧的验收以 TODO §5 为准，这里只列整个工具的验收。�
 | 跨主体 single-flight | §4.8.1 | 本期不做（裁决 R1） |
 | 后续媒体函数 | §4.5.3 | OCR / ASR / 关键帧去重等按同一规则新增 FunctionObject；`media.audio` family 未交付 |
 | 用户扩展 stage | §4.5.6 | 本期只有系统内置定义；用户 / Agent 发布 FunctionObject 与 Zone 级 registry 后置 |
-| OCR | §4.6.5，可显著降低 vision 漏字 | 不进本期；workflow 不依赖 tesseract |
+| OCR | §4.6.5 | 已做（2026-11-07）：`media.ocr_pages`，ext-core 带 28 种语言；版面还原（表格、多栏）、单页高分辨率重渲染以后再做 |
 | 嵌套 `llm_*` | §6.3，本期深度 = 1 | 如需开放，先定深度/预算上限并接入 L4 预算账户 |
 | 辅助视觉模型降级 | §4.3 末段，纯文本主模型回退 | 本期返回明确 Error；后续实现时复用 `agent_tool` 已有 `llm_*` 工具调用模式 |
-| 目录产物与 `read` 的边界 | `read` 目前把非文本对象一律推给本工具 | 确定 manifest 里的分页文本是否可被 `read` 直接读取，使"按需读某页"不必经 LLM 旁路 |
+| 目录产物与 `read` 的边界 | `read` 目前把非文本对象一律推给本工具 | 已定：不给 `read` 加 manifest 模式，长文档展开成本地目录（§4.7） |
 | Excel | §4.6.5 | 延后；不引入 Office 解析 crate |
 | 视频按时间段检索 | §4.6.5，需要 `extract_frames` 增加时间范围或关键帧策略 | 有真实需求后再加 |
 | 能力信息选路 | §4.6，`enabled_capabilities` 未使用 | 协议白名单先用着，出现误判再接 |

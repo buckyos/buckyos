@@ -64,6 +64,8 @@ export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$NPM_CACHE_DEFAULT}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$PIP_CACHE_DEFAULT}"
 export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-${BUCKYOS_INSTANCE_VOLUME}/uv-python}"
 export NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-${BUCKYOS_INSTANCE_VOLUME}/npm-prefix}"
+# Long documents llm_understand_media unpacks for the Agent; a cache, deletable any time.
+export LLM_UNDERSTAND_MEDIA_CATALOG_DIR="${LLM_UNDERSTAND_MEDIA_CATALOG_DIR:-${BUCKYOS_INSTANCE_VOLUME}/media-catalog}"
 
 # Extension packages come before the instance/system PATH. Always named: the
 # node's reconciler may fill the volume after this container started.

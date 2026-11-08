@@ -1132,7 +1132,7 @@ async function runDocumentCacheCase(args: {
   await writeJsonFile(joinPath(reportDir, "run-b.json"), doneB.graph);
   assert.equal(doneB.graph.status, "completed", JSON.stringify(doneB.graph.node_errors));
   assert.equal(doneB.graph.node_sources?.capabilities, "executed");
-  for (const step of ["probe", "to_pdf", "extract_pdf_text", "render_pdf_pages", "build_catalog"]) {
+  for (const step of ["probe", "to_pdf", "extract_pdf_text", "render_pdf_pages", "ocr_pages", "build_catalog"]) {
     assert.equal(doneB.graph.node_sources?.[step], "cache", `${step} of the second run comes from the cache`);
   }
   const catalog = (graph: typeof doneA.graph) => (graph.output?.build_catalog as JsonObject)?.manifest_obj_id;
@@ -1392,7 +1392,8 @@ async function runObservabilityCase(args: {
     workflow_id: "media.pdf",
   });
   const resolved = pdfDef.definition.resolved_functions as Record<string, string>;
-  assert.ok(Object.keys(resolved).length >= 5, "every media.pdf step binds a function");
+  assert.ok(Object.keys(resolved).length >= 6, "every media.pdf step binds a function");
+  assert.ok(resolved.ocr_pages, "media.pdf reads garbled or missing text layers with OCR");
   for (const [node, funId] of Object.entries(resolved)) {
     assert.ok(funId.startsWith("func:"), `${node} bound to a real fun_id, got ${funId}`);
   }
@@ -1400,7 +1401,7 @@ async function runObservabilityCase(args: {
     prefix: "media.",
   });
   const names = functions.functions.map((f) => (f.registration as JsonObject).name).sort();
-  assert.equal(names.length, 9, `9 media functions, got ${names.join(",")}`);
+  assert.equal(names.length, 10, `10 media functions, got ${names.join(",")}`);
   const probe = await rpcOk<{ ok: true; function: JsonObject }>(workflowRpc, "get_function", {
     name: "media.probe",
     version: "1",

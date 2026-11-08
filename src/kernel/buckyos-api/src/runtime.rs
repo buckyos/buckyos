@@ -1106,6 +1106,13 @@ impl BuckyOSRuntime {
     }
 
     pub async fn renew_token_from_verify_hub(&self) -> Result<()> {
+        self.renew_token_ahead(30).await
+    }
+
+    /// [`Self::renew_token_from_verify_hub`], also renewing a Verify Hub session
+    /// token with less than `margin_secs` left: a token lent to a child process
+    /// has to last for the child's work, which the lender cannot renew for it.
+    pub async fn renew_token_ahead(&self, margin_secs: u64) -> Result<()> {
         let _renewal = self.token_renewal.lock().await;
         let status = self.get_authentication_status().await;
         let now = buckyos_get_unix_timestamp();
@@ -1121,7 +1128,7 @@ impl BuckyOSRuntime {
             .execute_retryable_operation(
                 "renew_token_from_verify_hub",
                 Self::renew_token_retry_policy(),
-                || self.renew_token_from_verify_hub_once(),
+                || self.renew_token_from_verify_hub_once(margin_secs),
             )
             .await;
         match result {
@@ -1176,7 +1183,7 @@ impl BuckyOSRuntime {
         }
     }
 
-    async fn renew_token_from_verify_hub_once(&self) -> Result<bool> {
+    async fn renew_token_from_verify_hub_once(&self, margin_secs: u64) -> Result<bool> {
         let auth_target = self.get_auth_target()?;
         let session_token_str = self.session_token.read().await.clone();
         if session_token_str.is_empty() {
@@ -1187,7 +1194,7 @@ impl BuckyOSRuntime {
             return Ok(false);
         };
         let from_verify_hub = real_session_token.iss.as_deref() == Some(VERIFY_HUB_TOKEN_ISSUER);
-        if from_verify_hub && buckyos_get_unix_timestamp() < expires.saturating_sub(30) {
+        if from_verify_hub && buckyos_get_unix_timestamp() < expires.saturating_sub(margin_secs) {
             return Ok(false);
         }
         let refresh_token = self.refresh_token.read().await.clone();
@@ -3366,6 +3373,21 @@ mod tests {
             runtime.get_authentication_status().await.state,
             RuntimeAuthState::Ready
         );
+
+        // Five minutes left: kept for the runtime itself, renewed before it is lent.
+        let lent = refresh_test_pair("lent", buckyos_get_unix_timestamp() + 300);
+        *runtime.session_token.write().await = lent.session_token.clone();
+        *runtime.refresh_token.write().await = lent.refresh_token.clone();
+        runtime.renew_token_from_verify_hub().await.unwrap();
+        assert!(requests.try_recv().is_err(), "no renewal 30 seconds ahead");
+        let ahead_runtime = runtime.clone();
+        let ahead = tokio::spawn(async move { ahead_runtime.renew_token_ahead(600).await });
+        let (request, respond) = next_refresh(&mut requests).await;
+        assert_eq!(request["params"]["refresh_token"], lent.refresh_token);
+        let fresh = refresh_test_pair("fresh", buckyos_get_unix_timestamp() + 900);
+        respond.send(Some(serde_json::json!({ "result": fresh }))).unwrap();
+        ahead.await.unwrap().unwrap();
+        assert_eq!(runtime.get_session_token().await, fresh.session_token);
         server.abort();
     }
 

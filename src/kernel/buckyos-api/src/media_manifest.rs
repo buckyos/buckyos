@@ -65,9 +65,56 @@ pub struct MediaEntry {
     pub image_obj_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_obj_id: Option<String>,
+    /// Text recognized from the page image (`media.ocr_pages`); which of the
+    /// two texts to read is the reader's choice, from `text_quality`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_text_obj_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_quality: Option<MediaTextQuality>,
     pub status: MediaEntryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<MediaEntryError>,
+}
+
+/// Facts about the two texts of a page, in percent. `*_clean`: words made of
+/// letters only (one leading / trailing punctuation allowed); `agreement`: OCR
+/// words that also occur in the text layer.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaTextQuality {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_clean: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_clean: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreement: Option<u8>,
+    /// Mean word confidence tesseract reported, 0-100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_confidence: Option<u8>,
+    /// Why the page has no OCR text: `skipped` (text layer kept), `empty`,
+    /// `failed`, `lang_unavailable`, `tools_missing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr: Option<String>,
+}
+
+/// What `media.ocr_pages` decided for the document (one page window).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaOcr {
+    /// `ok` / `not_needed` / `lang_unavailable` / `tools_missing`.
+    pub status: String,
+    /// tesseract `-l` value, e.g. `chi_sim+eng`, `jpn_vert`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    /// Writing system: `Latin`, `Han`, `Japanese`, `Hangul`, `Cyrillic`, ...
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    #[serde(default)]
+    pub vertical: bool,
+    /// Sampled pages showed the text layer disagrees with the page images.
+    #[serde(default)]
+    pub garbled_layer: bool,
+    /// How the language was chosen.
+    #[serde(default)]
+    pub basis: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +156,8 @@ pub struct MediaManifest {
     #[serde(default)]
     pub probe: Value,
     pub range: MediaRange,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr: Option<MediaOcr>,
     pub entries: Vec<MediaEntry>,
     /// `true` when the whole source is covered: no entry is `Failed` or
     /// `Unprocessed` and every requested item has an `Ok` / `NoText` / `Absent`
@@ -125,6 +174,7 @@ impl MediaManifest {
             derived_content_id: None,
             probe: Value::Null,
             range: MediaRange::default(),
+            ocr: None,
             entries: Vec::new(),
             complete: true,
         }
@@ -185,6 +235,9 @@ impl MediaManifest {
         self.range.requested.sort_unstable();
         self.range.requested.dedup();
         self.range.total = self.range.total.max(other.range.total);
+        if self.ocr.as_ref().map_or(true, |o| o.lang.is_none()) && other.ocr.is_some() {
+            self.ocr = other.ocr;
+        }
         self.recompute_coverage();
     }
 
@@ -199,7 +252,7 @@ impl MediaManifest {
     pub fn artifact_refs(&self) -> Vec<String> {
         let mut refs = Vec::new();
         for entry in &self.entries {
-            for id in [&entry.text_obj_id, &entry.image_obj_id, &entry.audio_obj_id]
+            for id in [&entry.text_obj_id, &entry.image_obj_id, &entry.audio_obj_id, &entry.ocr_text_obj_id]
                 .into_iter()
                 .flatten()
             {
@@ -238,6 +291,9 @@ impl MediaManifest {
             if entry.audio_obj_id.is_some() {
                 summary.audio_entries += 1;
             }
+            if entry.ocr_text_obj_id.is_some() {
+                summary.ocr_entries += 1;
+            }
         }
         summary
     }
@@ -267,6 +323,8 @@ pub struct MediaManifestSummary {
     pub text_entries: u64,
     pub image_entries: u64,
     pub audio_entries: u64,
+    #[serde(default)]
+    pub ocr_entries: u64,
     pub complete: bool,
 }
 
@@ -281,6 +339,8 @@ mod tests {
             text_obj_id: (status == MediaEntryStatus::Ok).then(|| format!("cyfile:{page}")),
             image_obj_id: None,
             audio_obj_id: None,
+            ocr_text_obj_id: None,
+            text_quality: None,
             status,
             error: (status == MediaEntryStatus::Failed).then(|| MediaEntryError {
                 code: "tool_failed".into(),

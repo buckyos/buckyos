@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -38,6 +39,51 @@ pub const CATALOG_WINDOW_PAGES: u32 = 200;
 /// Most bytes workflow takes as one input (`ExecutionLimits::max_input_bytes`).
 pub const MAX_INPUT_BYTES: u64 = 512 * 1024 * 1024;
 const INDEX_CHARS: usize = 6_000;
+/// `ocr_lang` of a window that chooses its OCR language itself.
+pub const OCR_LANG_AUTO: &str = "auto";
+/// A page's text is never cut below this many characters.
+pub const PAGE_TEXT_FLOOR: usize = 1_500;
+/// Steps that do the work of a conversion (the others take a moment).
+const HEAVY_STEPS: [&str; 4] = ["to_pdf", "extract_pdf_text", "render_pdf_pages", "ocr_pages"];
+const HEARTBEAT_SECS: u64 = 60;
+
+static PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Progress lines go to stderr when the tool runs as a command: stdout ends
+/// with the JSON result.
+pub fn enable_progress() {
+    PROGRESS.store(true, Ordering::SeqCst);
+}
+
+pub fn progress(line: impl AsRef<str>) {
+    if PROGRESS.load(Ordering::SeqCst) {
+        eprintln!("llm_understand_media: {}", line.as_ref());
+    }
+}
+
+/// `2m23s` / `45s`.
+pub fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs >= 60 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+fn step_doing(step: &str) -> &'static str {
+    match step {
+        "to_pdf" => "converting to PDF",
+        "extract_pdf_text" => "extracting the text",
+        "render_pdf_pages" => "rendering page images",
+        "ocr_pages" => "recognizing text in page images (OCR)",
+        "build_catalog" => "building the catalog",
+        "extract_frames" => "sampling frames",
+        "extract_audio" => "extracting the audio track",
+        "fit_image" => "fitting the image",
+        _ => "working",
+    }
+}
 
 /// Limits the image pipeline is asked to fit to and the direct-pass check
 /// uses; env overrides are clamped to the definition's schema maxima.
@@ -112,18 +158,21 @@ impl DocumentLimits {
                 .unwrap_or(2048)
                 .clamp(256, 4096),
             max_pages: env_positive("LLM_UNDERSTAND_MEDIA_MAX_PAGES").unwrap_or(2000),
-            long_doc_pages: env_positive("LLM_UNDERSTAND_MEDIA_LONG_DOC_PAGES").unwrap_or(30),
+            long_doc_pages: env_positive("LLM_UNDERSTAND_MEDIA_LONG_DOC_PAGES").unwrap_or(20),
             direct_max_bytes: env_positive("LLM_UNDERSTAND_MEDIA_DOCUMENT_MAX_BYTES")
                 .unwrap_or(20 * 1024 * 1024),
         }
     }
 
+    /// `ocr_lang`: the language the first window chose, so that every window of
+    /// a document is read the same way (`auto` lets the window choose).
     pub fn pipeline_input(
         &self,
         obj_id: &str,
         format: Option<&str>,
         page_range: &[u32],
         max_pages: u32,
+        ocr_lang: &str,
     ) -> Value {
         let mut input = json!({
             "obj_id": obj_id,
@@ -131,6 +180,7 @@ impl DocumentLimits {
             "max_long_edge": self.max_long_edge,
             "page_range": page_range,
             "limits": {"max_pages": max_pages},
+            "ocr_lang": ocr_lang,
         });
         if let Some(format) = format {
             input["format"] = Value::String(format.to_string());
@@ -576,6 +626,9 @@ pub struct PipelineRequest {
     pub obj_id: String,
     pub input: Value,
     pub session_id: Option<String>,
+    /// Progress of a document window: what it is called, and whether it is the
+    /// first window (whose probe tells the page count).
+    pub watch: Option<WindowWatch>,
 }
 
 impl PipelineRequest {
@@ -585,7 +638,89 @@ impl PipelineRequest {
             obj_id: obj_id.to_string(),
             input,
             session_id: None,
+            watch: None,
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WindowWatch {
+    pub label: String,
+    pub first: bool,
+    /// Pages a document can bring into its catalog.
+    pub max_pages: u32,
+}
+
+/// What a waiting call says while a run works: the size of the conversion
+/// once its probe knows, then a line a minute naming the step at work.
+struct Watcher {
+    watch: Option<WindowWatch>,
+    started: Instant,
+    last_look: Option<Instant>,
+    last_line: Instant,
+}
+
+static ANNOUNCED: AtomicBool = AtomicBool::new(false);
+
+impl Watcher {
+    fn new(watch: Option<WindowWatch>) -> Self {
+        Self { watch, started: Instant::now(), last_look: None, last_line: Instant::now() }
+    }
+
+    async fn look(&mut self, client: &WorkflowServiceClient, run_id: &str) {
+        if !PROGRESS.load(Ordering::SeqCst) {
+            return;
+        }
+        if self.last_look.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+            return;
+        }
+        self.last_look = Some(Instant::now());
+        let Ok(graph) = client.get_run_graph(run_id).await else {
+            return;
+        };
+        let state_of = |node: &str| {
+            graph
+                .node_states
+                .get(node)
+                .and_then(|s| serde_json::to_value(s).ok())
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default()
+        };
+        let running: Option<&str> = HEAVY_STEPS.iter().copied().find(|s| state_of(s) == "running");
+        if let (Some(watch), Some(_)) = (&self.watch, running) {
+            let pages = graph.node_outputs.get("probe").and_then(|p| p.get("pages")).and_then(Value::as_u64);
+            if let (true, Some(pages)) = (watch.first, pages) {
+                if !ANNOUNCED.swap(true, Ordering::SeqCst) {
+                    let pages = pages.min(u64::from(watch.max_pages));
+                    let runs = pages.div_ceil(u64::from(CATALOG_WINDOW_PAGES)).max(1);
+                    progress(format!(
+                        "converting {pages} pages in {runs} run{} (first time for this file; later calls reuse the result)",
+                        if runs == 1 { "" } else { "s" }
+                    ));
+                    self.last_line = Instant::now();
+                }
+            }
+        }
+        if let Some(step) = running {
+            if self.last_line.elapsed() >= Duration::from_secs(HEARTBEAT_SECS) {
+                let label = self.watch.as_ref().map(|w| format!("{}: ", w.label)).unwrap_or_default();
+                progress(format!("{label}{} ({})", step_doing(step), format_elapsed(self.started.elapsed())));
+                self.last_line = Instant::now();
+            }
+        }
+    }
+}
+
+/// `pages 1-200 ready (2m23s)`, or `from cache` when no step had to run.
+pub fn window_done_line(label: &str, trace: &PipelineTrace, elapsed: Duration) -> String {
+    let executed = trace
+        .steps
+        .iter()
+        .any(|(node, step)| HEAVY_STEPS.contains(&node.as_str()) && step.source.as_deref() != Some("cache"));
+    if executed {
+        format!("{label} ready ({})", format_elapsed(elapsed))
+    } else {
+        format!("{label} from cache")
     }
 }
 
@@ -705,9 +840,11 @@ async fn wait_terminal(
     client: &WorkflowServiceClient,
     run_id: &str,
     deadline: Instant,
+    watcher: &mut Watcher,
 ) -> Result<Option<Result<WorkflowRunOutput, RunStatus>>, String> {
     let mut poll = Duration::from_millis(POLL_MIN_MS);
     loop {
+        watcher.look(client, run_id).await;
         match client.get_run_output(run_id).await {
             Ok(output) if output.terminal || is_terminal(output.status) => {
                 return Ok(Some(Ok(output)));
@@ -749,6 +886,7 @@ pub async fn run_pipeline(request: PipelineRequest) -> Result<PipelineOutcome, S
         .load(&key)
         .filter(|e| now_secs().saturating_sub(e.first_requested_at) <= TOTAL_DEADLINE_SECS);
     let mut reused = entry.is_some();
+    let mut watcher = Watcher::new(request.watch.clone());
     loop {
         let current = match entry.take() {
             Some(existing) => existing,
@@ -768,7 +906,7 @@ pub async fn run_pipeline(request: PipelineRequest) -> Result<PipelineOutcome, S
             recoveries: current.recoveries,
             ..Default::default()
         };
-        let waited = wait_terminal(&client, &current.run_id, deadline).await?;
+        let waited = wait_terminal(&client, &current.run_id, deadline, &mut watcher).await?;
         let output = match waited {
             Some(Ok(output)) => output,
             Some(Err(status)) => {
@@ -868,6 +1006,12 @@ pub struct Coverage {
     /// Coordinates whose text was given to the model.
     #[serde(default)]
     pub text_delivered: Vec<u64>,
+    /// Delivered pages whose text was cut to fit the budget.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_truncated: Vec<u64>,
+    /// Delivered pages whose text is the OCR of the page image, not its text layer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_ocr: Vec<u64>,
     /// Coordinates whose image was given to the model.
     #[serde(default)]
     pub image_delivered: Vec<u64>,
@@ -888,8 +1032,9 @@ pub struct Uncovered {
 }
 
 impl Coverage {
-    /// The line the calling agent reads: what the model did not see, by reason.
-    pub fn uncovered_note(&self) -> Option<String> {
+    /// The line the calling agent reads: what the model did not see, by reason,
+    /// and how to read it (`catalog`: the document unpacked as a directory).
+    pub fn uncovered_note(&self, catalog: Option<&std::path::Path>) -> Option<String> {
         if self.uncovered.is_empty() {
             return None;
         }
@@ -899,24 +1044,93 @@ impl Coverage {
         }
         let parts = by_reason
             .iter()
-            .map(|(reason, places)| format!("{reason}: {}", format_ranges(places)))
+            .map(|(reason, places)| format!("{reason}: {}", short_ranges(places, 120)))
             .collect::<Vec<_>>()
             .join("; ");
-        let (unit, hint) = if self.family == "video" {
-            ("frames (by ms)", "")
-        } else {
-            ("pages", " Name a page in the goal (\"page 12\") to read it.")
+        if self.family == "video" {
+            return Some(format!(
+                "Note: {} of {} frames (by ms) were not shown to the model ({parts}).",
+                self.uncovered.len(),
+                self.requested.len()
+            ));
+        }
+        let of = self.total.unwrap_or(self.requested.len() as u64);
+        let first: Vec<u64> = self.uncovered.iter().map(|u| u.location).take(1).collect();
+        let example_range = first_range(&self.uncovered.iter().map(|u| u.location).collect::<Vec<_>>());
+        let page = first.first().copied().unwrap_or(1);
+        let hint = match catalog {
+            Some(dir) => {
+                let dir = dir.display();
+                format!(
+                    " Every page is unpacked in {dir} (index.tsv lists them): `grep -il <word> {dir}/pages/*.txt` finds pages, \
+                     `llm_understand_media {dir} --pages {example_range} --goal \"…\"` reads several, \
+                     `llm_understand_media {dir}/pages/{} --goal \"…\"` one page with its text. Nothing is converted again.",
+                    page_file_name(page, of, "png")
+                )
+            }
+            None => format!(" Add `--pages {example_range}` to read pages; nothing is converted again."),
         };
-        let of = self.total.filter(|_| self.family != "video").unwrap_or(self.requested.len() as u64);
         Some(format!(
-            "Note: {} of {of} {unit} were not shown to the model ({parts}).{hint}",
+            "Note: {} of {of} pages were not shown to the model ({parts}).{hint}",
             self.uncovered.len()
         ))
     }
 }
 
+/// `0101.png`: page numbers padded to the width of the page count (at least 4).
+pub fn page_file_name(page: u64, total: u64, ext: &str) -> String {
+    let width = total.to_string().len().max(4);
+    format!("{page:0width$}.{ext}")
+}
+
+/// The first run of consecutive places, at most 32 long: `2-33`.
+fn first_range(places: &[u64]) -> String {
+    let mut sorted = places.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let Some(&start) = sorted.first() else {
+        return "1".to_string();
+    };
+    let mut end = start;
+    for p in sorted.iter().skip(1) {
+        if *p != end + 1 || end - start >= 31 {
+            break;
+        }
+        end = *p;
+    }
+    if start == end {
+        start.to_string()
+    } else {
+        format!("{start}-{end}")
+    }
+}
+
+/// [`format_ranges`] within about `max` characters: the first ranges, then
+/// the count of the rest and the last place.
+pub fn short_ranges(places: &[u64], max: usize) -> String {
+    let full = format_ranges(places);
+    if full.len() <= max {
+        return full;
+    }
+    let mut shown = String::new();
+    let mut count = 0usize;
+    for part in full.split(", ") {
+        if shown.len() + part.len() > max * 2 / 3 {
+            break;
+        }
+        if !shown.is_empty() {
+            shown.push_str(", ");
+        }
+        shown.push_str(part);
+        count += 1;
+    }
+    let rest = full.split(", ").count() - count;
+    let last = places.iter().max().copied().unwrap_or(0);
+    format!("{} places: {shown}, … {rest} more ranges up to {last}", places.len())
+}
+
 /// `[1, 2, 3, 7]` -> `1-3, 7`.
-fn format_ranges(places: &[u64]) -> String {
+pub fn format_ranges(places: &[u64]) -> String {
     let mut sorted = places.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
@@ -932,9 +1146,99 @@ fn format_ranges(places: &[u64]) -> String {
     parts.join(", ")
 }
 
+/// Which text of a page the catalog uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextSource {
+    Layer,
+    Ocr,
+}
+
+impl TextSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            TextSource::Layer => "layer",
+            TextSource::Ocr => "ocr",
+        }
+    }
+}
+
+/// The text a page is read by, whitespace normalized.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageText {
+    pub text: String,
+    pub source: TextSource,
+}
+
+/// Version of the rule that picks and normalizes page text: a catalog written
+/// under another rule rewrites its texts.
+pub const TEXT_RULE_VERSION: u32 = 2;
+/// Below this agreement with its OCR (percent), a text layer is not what the
+/// page shows: native layers agree 77% or more, dk10000.pdf's garbled one at
+/// most 65%.
+const OCR_OVER_LAYER_AGREEMENT: u8 = 70;
+/// OCR this sure of itself replaces a disagreeing layer even when it has
+/// fewer clean words (a page of numbers).
+const OCR_CONFIDENT: u8 = 60;
+
+/// The text of a page to read: the text layer, unless it disagrees with what
+/// OCR reads on the page image and the OCR is cleaner or confident (doc §4.6.5).
+pub fn choose_text(entry: &MediaEntry) -> Option<(String, TextSource)> {
+    let quality = entry.text_quality.as_ref();
+    match (&entry.text_obj_id, &entry.ocr_text_obj_id) {
+        (Some(layer), Some(ocr)) => {
+            let use_ocr = quality.is_some_and(|q| {
+                q.agreement.is_some_and(|a| a < OCR_OVER_LAYER_AGREEMENT)
+                    && (q.ocr_clean.unwrap_or(0) >= q.layer_clean.unwrap_or(0)
+                        || q.ocr_confidence.unwrap_or(0) >= OCR_CONFIDENT)
+            });
+            Some(if use_ocr { (ocr.clone(), TextSource::Ocr) } else { (layer.clone(), TextSource::Layer) })
+        }
+        (Some(layer), None) => Some((layer.clone(), TextSource::Layer)),
+        (None, Some(ocr)) => Some((ocr.clone(), TextSource::Ocr)),
+        (None, None) => None,
+    }
+}
+
+/// Layout whitespace out: lines trimmed, runs of blank lines kept as one, and
+/// runs of whitespace inside a line as two spaces (a hint of columns).
+pub fn normalize_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() / 2);
+    let mut blank = false;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            blank = !out.is_empty();
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+            if blank {
+                out.push('\n');
+            }
+        }
+        blank = false;
+        let mut spaces = 0usize;
+        for c in line.chars() {
+            if c.is_whitespace() {
+                spaces += 1;
+                continue;
+            }
+            match spaces {
+                0 => {}
+                1 => out.push(' '),
+                _ => out.push_str("  "),
+            }
+            spaces = 0;
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub struct PagePlan {
     pub page: u64,
-    pub text: Option<String>,
+    pub text: Option<PageText>,
     pub image_obj_id: Option<String>,
 }
 
@@ -944,6 +1248,16 @@ pub struct ContentPlan {
     pub texts: Vec<(u64, String)>,
     pub images: Vec<(u64, String)>,
     pub coverage: Coverage,
+}
+
+/// What the caller asks of a catalog.
+pub struct PlanRequest<'a> {
+    /// Search terms: the goal's, plus those translated into the document's language.
+    pub terms: &'a [String],
+    /// Pages the goal or `--pages` names.
+    pub named: &'a BTreeSet<u64>,
+    pub text_char_budget: usize,
+    pub max_images: usize,
 }
 
 fn entry_coordinate(entry: &MediaEntry) -> Option<u64> {
@@ -963,7 +1277,7 @@ fn is_cjk(c: char) -> bool {
 
 /// Terms of the goal that drive lexical page selection: words of other scripts,
 /// and overlapping character pairs of CJK text, which has no spaces to split on.
-fn goal_terms(goal: &str) -> Vec<String> {
+pub fn goal_terms(goal: &str) -> Vec<String> {
     let mut terms: Vec<String> = Vec::new();
     for word in goal.split(|c: char| !c.is_alphanumeric()) {
         let chars: Vec<char> = word.to_lowercase().chars().collect();
@@ -987,17 +1301,32 @@ fn goal_terms(goal: &str) -> Vec<String> {
     terms
 }
 
-fn lexical_score(text: &str, terms: &[String]) -> usize {
-    let compact: String = text
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect();
-    terms.iter().filter(|t| compact.contains(t.as_str())).count()
+/// Lower case without whitespace: how terms and texts are compared.
+fn compact(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
+}
+
+/// Score of every page for `terms`: the inverse document frequency of each
+/// term it contains. A term on more than half of the pages says nothing.
+pub fn page_scores(terms: &[String], texts: &BTreeMap<u64, PageText>) -> BTreeMap<u64, f64> {
+    let terms: Vec<String> = terms.iter().map(|t| compact(t)).filter(|t| !t.is_empty()).collect();
+    let pages: Vec<(u64, String)> = texts.iter().map(|(p, t)| (*p, compact(&t.text))).collect();
+    let n = pages.len().max(1) as f64;
+    let mut scores: BTreeMap<u64, f64> = BTreeMap::new();
+    for term in &terms {
+        let hits: Vec<u64> = pages.iter().filter(|(_, t)| t.contains(term.as_str())).map(|(p, _)| *p).collect();
+        if hits.is_empty() || hits.len() as f64 > n / 2.0 && pages.len() > 2 {
+            continue;
+        }
+        let weight = ((n + 1.0) / (hits.len() as f64 + 1.0)).ln().max(0.05);
+        for page in hits {
+            *scores.entry(page).or_default() += weight;
+        }
+    }
+    scores
 }
 
 fn leading_number(text: &str) -> Option<(u64, &str)> {
-    let text = text.trim_start();
     let digits = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
     if digits == 0 {
         return None;
@@ -1005,29 +1334,98 @@ fn leading_number(text: &str) -> Option<(u64, &str)> {
     Some((text[..digits].parse().ok()?, &text[digits..]))
 }
 
-/// Pages the goal names: `page 12`, `p. 12`, `pages 3-5`, `第12页`, `第3到5页`.
-fn goal_pages(goal: &str) -> BTreeSet<u64> {
+/// `14, 50 和 70`, `3-5`, `3 to 5`: the numbers and ranges right after a page
+/// marker, and what follows them.
+fn page_list(text: &str) -> (Vec<(u64, u64)>, &str) {
+    let mut items = Vec::new();
+    let mut rest = text.trim_start();
+    loop {
+        let Some((first, after)) = leading_number(rest) else {
+            break;
+        };
+        let trimmed = after.trim_start();
+        let range = ["-", "–", "~", "到", "至", "to ", "through "]
+            .iter()
+            .find_map(|sep| trimmed.strip_prefix(sep))
+            .and_then(|r| leading_number(r.trim_start()));
+        let (last, after) = range.unwrap_or((first, after));
+        items.push((first, last.max(first).min(first.saturating_add(u64::from(CATALOG_WINDOW_PAGES)))));
+        rest = after;
+        let trimmed = rest.trim_start();
+        let next = [",", "，", "、", "和", "与", "及", "/", "&", "and ", "or "]
+            .iter()
+            .find_map(|sep| trimmed.strip_prefix(sep))
+            .map(str::trim_start)
+            .filter(|r| r.starts_with(|c: char| c.is_ascii_digit()));
+        match next {
+            Some(more) => rest = more,
+            None => break,
+        }
+    }
+    (items, rest)
+}
+
+/// Pages the goal names: `page 12`, `pages 3-5`, `page 14, 50, 70`, `p14`,
+/// `p. 12`, `pp. 3-5`, `第12页`, `第14、50、70页`, `第3到5页`, `物理页14`.
+pub fn goal_pages(goal: &str) -> BTreeSet<u64> {
     let lower = goal.to_lowercase();
     let mut pages = BTreeSet::new();
-    for marker in ["pages", "page", "p.", "第"] {
-        let mut rest = lower.as_str();
-        while let Some(at) = rest.find(marker) {
-            rest = &rest[at + marker.len()..];
-            let Some((first, after)) = leading_number(rest) else {
-                continue;
-            };
-            let range_end = after
-                .trim_start()
-                .strip_prefix(['-', '–', '~', '到', '至'])
-                .and_then(leading_number);
-            let (last, after) = range_end.unwrap_or((first, after));
-            if marker == "第" && !after.trim_start().starts_with('页') {
-                continue;
+    let mut add = |items: &[(u64, u64)]| {
+        for (first, last) in items {
+            pages.extend((*first..=*last).filter(|p| *p > 0));
+        }
+    };
+    let chars: Vec<(usize, char)> = lower.char_indices().collect();
+    for (i, (at, c)) in chars.iter().enumerate() {
+        let before_ok = i == 0 || !chars[i - 1].1.is_ascii_alphanumeric();
+        let rest = &lower[*at..];
+        if *c == '第' {
+            let (items, after) = page_list(&rest['第'.len_utf8()..]);
+            if after.trim_start().starts_with('页') {
+                add(&items);
             }
-            pages.extend(first..=last.min(first.saturating_add(u64::from(CATALOG_WINDOW_PAGES))));
+            continue;
+        }
+        if *c == '页' {
+            let (items, _) = page_list(&rest['页'.len_utf8()..]);
+            add(&items);
+            continue;
+        }
+        if !before_ok || *c != 'p' {
+            continue;
+        }
+        for marker in ["pages", "page", "pp.", "pp", "p.", "p"] {
+            if let Some(after) = rest.strip_prefix(marker) {
+                // `p` / `pp` only right before the number (`p14`, `pp 3-5`).
+                if matches!(marker, "p" | "pp") && !after.trim_start_matches(' ').starts_with(|c: char| c.is_ascii_digit()) {
+                    continue;
+                }
+                if marker == "p" && after.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                    continue;
+                }
+                let (items, _) = page_list(after);
+                add(&items);
+                break;
+            }
         }
     }
     pages
+}
+
+/// `--pages 1,5,10-20`.
+pub fn parse_pages_arg(raw: &str) -> Result<BTreeSet<u64>, String> {
+    let (items, rest) = page_list(raw);
+    if items.is_empty() || !rest.trim().is_empty() {
+        return Err(format!("--pages `{raw}` is not a list of pages such as 1,5,10-20"));
+    }
+    let mut pages = BTreeSet::new();
+    for (first, last) in items {
+        if first == 0 {
+            return Err("pages are numbered from 1".to_string());
+        }
+        pages.extend(first..=last);
+    }
+    Ok(pages)
 }
 
 /// `pages` reordered so that any prefix of about `fits` entries spreads over the
@@ -1042,57 +1440,113 @@ fn spread(pages: &[u64], fits: usize) -> Vec<u64> {
     order
 }
 
+fn kind_of(plan: &PagePlan) -> &'static str {
+    match (plan.text.as_ref().map(|t| t.source), plan.image_obj_id.is_some()) {
+        (Some(TextSource::Layer), true) => "text+image",
+        (Some(TextSource::Ocr), true) => "ocr+image",
+        (Some(TextSource::Layer), false) => "text",
+        (Some(TextSource::Ocr), false) => "ocr",
+        (None, true) => "image",
+        (None, false) => "nothing",
+    }
+}
+
+fn first_line(plan: &PagePlan, chars: usize) -> String {
+    plan.text
+        .as_ref()
+        .and_then(|t| t.text.lines().map(str::trim).find(|l| !l.is_empty()))
+        .unwrap_or("")
+        .chars()
+        .take(chars)
+        .collect()
+}
+
 /// The list of every page: one line each with the start of its text when that
-/// fits `budget`, ranges of the same kind otherwise.
+/// fits `budget`; otherwise lines for pages spread over the document and the
+/// other pages as ranges by kind.
 fn render_index(pages: &BTreeMap<u64, PagePlan>, budget: usize) -> String {
-    let kind = |plan: &PagePlan| match (plan.text.is_some(), plan.image_obj_id.is_some()) {
-        (true, true) => "text+image",
-        (true, false) => "text",
-        (false, true) => "image",
-        (false, false) => "nothing",
-    };
-    let snippet_chars = (budget / pages.len().max(1)).saturating_sub(16).min(60);
     let mut out = String::from("Index of the whole document (what the pipeline has for each page):\n");
+    let snippet_chars = (budget / pages.len().max(1)).saturating_sub(16).min(60);
     if snippet_chars >= 16 {
         for plan in pages.values() {
-            let snippet: String = plan
-                .text
-                .as_deref()
-                .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
-                .unwrap_or("")
-                .chars()
-                .take(snippet_chars)
-                .collect();
-            out.push_str(&format!("{} [{}] {}\n", plan.page, kind(plan), snippet));
+            out.push_str(&format!("{} [{}] {}\n", plan.page, kind_of(plan), first_line(plan, snippet_chars)));
         }
         return out;
     }
-    let mut by_kind: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
-    for plan in pages.values() {
-        by_kind.entry(kind(plan)).or_default().push(plan.page);
+    // About 60 characters a listed line; a tenth of the budget for the ranges.
+    let listed_count = (budget * 9 / 10 / 60).max(1);
+    let all: Vec<u64> = pages.keys().copied().collect();
+    let listed: BTreeSet<u64> = spread(&all, listed_count).into_iter().take(listed_count).collect();
+    for page in &listed {
+        let plan = &pages[page];
+        out.push_str(&format!("{} [{}] {}\n", plan.page, kind_of(plan), first_line(plan, 40)));
     }
-    for (name, places) in by_kind {
-        out.push_str(&format!("{name}: {}\n", format_ranges(&places)));
+    let mut by_kind: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
+    for plan in pages.values().filter(|p| !listed.contains(&p.page)) {
+        by_kind.entry(kind_of(plan)).or_default().push(plan.page);
+    }
+    if !by_kind.is_empty() {
+        out.push_str("Other pages:\n");
+        for (name, places) in by_kind {
+            out.push_str(&format!("{name}: {}\n", format_ranges(&places)));
+        }
     }
     out
 }
 
-/// Chooses what the model sees from a page manifest. Text: every page while it
-/// fits `text_char_budget`, otherwise the pages the goal names, then those that
-/// lexically match it; with no match at all, pages spread over the document.
-/// Images: named pages, up to half the budget for matching pages (their figures
-/// are what text search cannot show), pages that only have an image, then the
-/// other selected pages.
+/// `text` cut to about `cap` characters at a line end, with a marker.
+fn truncate_page(page: u64, text: &str, cap: usize) -> (String, bool) {
+    let total = text.chars().count();
+    if total <= cap {
+        return (text.to_string(), false);
+    }
+    let cut: String = text.chars().take(cap).collect();
+    let cut = match cut.rfind('\n') {
+        Some(at) if at >= cut.len() * 4 / 5 => cut[..at].to_string(),
+        _ => cut,
+    };
+    let kept = cut.chars().count();
+    (format!("{cut}\n[page {page} text truncated: {kept} of {total} chars]"), true)
+}
+
+/// The most pages of `candidates`, spread over them, whose texts cut to
+/// `max(budget / n, PAGE_TEXT_FLOOR)` fit `budget`; with that cap.
+fn spread_fitting(candidates: &[u64], len: &dyn Fn(u64) -> usize, budget: usize) -> (Vec<u64>, usize) {
+    let cap_of = |n: usize| (budget / n.max(1)).max(PAGE_TEXT_FLOOR);
+    let fits = |n: usize| {
+        n == 0 || spread(candidates, n).iter().take(n).map(|p| len(*p).min(cap_of(n))).sum::<usize>() <= budget
+    };
+    let (mut lo, mut hi) = (0usize, candidates.len());
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let picked: Vec<u64> = spread(candidates, lo).into_iter().take(lo).collect();
+    (picked, cap_of(lo))
+}
+
+/// Chooses what the model sees from a page manifest (doc §4.7).
+///
+/// Text: every page while they fit `text_char_budget`. Otherwise the named
+/// pages first (each up to an even share of the budget), then pages that match
+/// the terms (up to half of the budget, each up to an eighth of it), and the
+/// rest of the budget over the other pages, spread evenly, each cut to the
+/// same cap so that the spread pages all fit.
+/// Images: named pages; up to half the budget for matching pages (their
+/// figures are what text search cannot show); pages that only have an image;
+/// then spread over the pages whose text was chosen, then over all pages.
 pub fn plan_pages(
-    goal: &str,
+    request: &PlanRequest,
     manifest: &MediaManifest,
-    texts: &BTreeMap<u64, String>,
+    texts: &BTreeMap<u64, PageText>,
     unreadable: &BTreeMap<u64, String>,
-    text_char_budget: usize,
-    max_images: usize,
 ) -> ContentPlan {
-    let terms = goal_terms(goal);
-    let named = goal_pages(goal);
+    let budget = request.text_char_budget;
+    let max_images = request.max_images;
     let mut coverage = Coverage {
         family: manifest.family.clone(),
         total: manifest.range.total,
@@ -1108,11 +1562,7 @@ pub fn plan_pages(
         let Some(coord) = entry_coordinate(entry) else {
             continue;
         };
-        let plan = pages.entry(coord).or_insert(PagePlan {
-            page: coord,
-            text: None,
-            image_obj_id: None,
-        });
+        let plan = pages.entry(coord).or_insert(PagePlan { page: coord, text: None, image_obj_id: None });
         match entry.status {
             MediaEntryStatus::Failed => {
                 failed_reasons.insert(
@@ -1131,50 +1581,63 @@ pub fn plan_pages(
             }
             _ => {}
         }
-        if entry.text_obj_id.is_some() {
-            if let Some(text) = texts.get(&coord) {
-                if !text.trim().is_empty() {
-                    plan.text = Some(text.clone());
-                }
-            }
+        if let Some(text) = texts.get(&coord).filter(|t| !t.text.trim().is_empty()) {
+            plan.text = Some(text.clone());
         }
         if let Some(image) = entry.image_obj_id.as_ref() {
             plan.image_obj_id = Some(image.clone());
         }
     }
 
-    // Text selection.
+    // Text selection: page -> cap.
     let text_pages: Vec<u64> = pages.values().filter(|p| p.text.is_some()).map(|p| p.page).collect();
-    let text_len = |page: u64| pages[&page].text.as_ref().map(|t| t.chars().count()).unwrap_or(0);
+    let text_len = |page: u64| pages[&page].text.as_ref().map(|t| t.text.chars().count()).unwrap_or(0);
     let total_chars: usize = text_pages.iter().map(|p| text_len(*p)).sum();
-    let mut scored: Vec<(usize, u64)> = text_pages
-        .iter()
-        .map(|p| {
-            let score = if named.contains(p) {
-                usize::MAX
-            } else {
-                pages[p].text.as_deref().map(|t| lexical_score(t, &terms)).unwrap_or(0)
-            };
-            (score, *p)
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let matching: Vec<u64> = scored.iter().filter(|(s, _)| *s > 0).map(|(_, p)| *p).collect();
-    let ranked: Vec<u64> = if matching.is_empty() {
-        let average = total_chars / text_pages.len().max(1);
-        spread(&text_pages, text_char_budget / average.max(1))
-    } else {
-        scored.iter().map(|(_, p)| *p).collect()
-    };
-    let mut selected_text: BTreeSet<u64> = BTreeSet::new();
-    let mut used = 0usize;
-    for page in &ranked {
-        let len = text_len(*page);
-        if used + len > text_char_budget {
-            continue;
+    let named: Vec<u64> = request.named.iter().copied().filter(|p| pages.contains_key(p)).collect();
+    let page_texts: BTreeMap<u64, PageText> =
+        pages.values().filter_map(|p| Some((p.page, p.text.clone()?))).collect();
+    let scores = page_scores(request.terms, &page_texts);
+    let mut matching: Vec<u64> = scores.keys().copied().filter(|p| !request.named.contains(p)).collect();
+    matching.sort_by(|a, b| scores[b].total_cmp(&scores[a]).then(a.cmp(b)));
+    let mut selected_text: BTreeMap<u64, usize> = BTreeMap::new();
+    if !named.is_empty() {
+        // Named pages are what the caller wants to see: those only.
+        let named_text: Vec<u64> = named.iter().copied().filter(|p| text_len(*p) > 0).collect();
+        let named_cap = (budget / named_text.len().max(1)).max(PAGE_TEXT_FLOOR);
+        let mut used = 0usize;
+        for page in &named_text {
+            let take = text_len(*page).min(named_cap).min(budget.saturating_sub(used));
+            if take < 200.min(text_len(*page)) {
+                break;
+            }
+            used += take;
+            selected_text.insert(*page, take);
         }
-        used += len;
-        selected_text.insert(*page);
+    } else if total_chars <= budget {
+        for page in &text_pages {
+            selected_text.insert(*page, usize::MAX);
+        }
+    } else {
+        let mut used = 0usize;
+        let others_left = text_pages.iter().any(|p| !selected_text.contains_key(p) && !matching.contains(p));
+        let match_limit = if others_left { used + budget.saturating_sub(used) / 2 } else { budget };
+        let match_cap = (budget / 8).max(PAGE_TEXT_FLOOR);
+        let mut matched = false;
+        for page in &matching {
+            let take = text_len(*page).min(match_cap);
+            let limit = if matched { match_limit } else { budget };
+            if take == 0 || used + take > limit {
+                continue;
+            }
+            used += take;
+            matched = true;
+            selected_text.insert(*page, take);
+        }
+        let rest: Vec<u64> = text_pages.iter().copied().filter(|p| !selected_text.contains_key(p)).collect();
+        let (spread_pages, cap) = spread_fitting(&rest, &text_len, budget.saturating_sub(used));
+        for page in spread_pages {
+            selected_text.insert(page, cap);
+        }
     }
 
     // Image selection.
@@ -1185,10 +1648,17 @@ pub fn plan_pages(
             chosen.push(page);
         }
     };
-    for page in named.iter().filter(|p| has_image(p)) {
-        take(*page, max_images, &mut selected_images);
-    }
-    for page in matching.iter().filter(|p| selected_text.contains(*p) && has_image(p)) {
+    let even_over = |pool: Vec<u64>, chosen: &mut Vec<u64>| {
+        let pool: Vec<u64> = pool.into_iter().filter(|p| !chosen.contains(p)).collect();
+        let room = max_images.saturating_sub(chosen.len());
+        for page in spread(&pool, room).into_iter().take(room) {
+            take(page, max_images, chosen);
+        }
+    };
+    let named_images: Vec<u64> = named.iter().copied().filter(|p| has_image(p)).collect();
+    even_over(named_images, &mut selected_images);
+    let open = named.is_empty();
+    for page in matching.iter().filter(|_| open).filter(|p| selected_text.contains_key(*p) && has_image(p)) {
         take(*page, (max_images / 2).max(selected_images.len()), &mut selected_images);
     }
     let image_only: Vec<u64> = pages
@@ -1196,23 +1666,30 @@ pub fn plan_pages(
         .filter(|p| p.text.is_none() && p.image_obj_id.is_some())
         .map(|p| p.page)
         .collect();
-    for page in spread(&image_only, max_images.saturating_sub(selected_images.len())) {
-        take(page, max_images, &mut selected_images);
-    }
-    for page in ranked.iter().filter(|p| selected_text.contains(*p) && has_image(p)) {
-        take(*page, max_images, &mut selected_images);
+    if open {
+        even_over(image_only, &mut selected_images);
+        even_over(selected_text.keys().copied().filter(|p| has_image(p)).collect(), &mut selected_images);
+        even_over(pages.values().filter(|p| p.image_obj_id.is_some()).map(|p| p.page).collect(), &mut selected_images);
     }
     selected_images.sort_unstable();
 
-    let texts_out: Vec<(u64, String)> = selected_text
-        .iter()
-        .map(|p| (*p, pages[p].text.clone().unwrap_or_default()))
-        .collect();
+    let mut texts_out: Vec<(u64, String)> = Vec::new();
+    for (page, cap) in &selected_text {
+        let text = pages[page].text.as_ref().expect("selected page has text");
+        let (shown, cut) = truncate_page(*page, &text.text, *cap);
+        if cut {
+            coverage.text_truncated.push(*page);
+        }
+        if text.source == TextSource::Ocr {
+            coverage.text_ocr.push(*page);
+        }
+        texts_out.push((*page, shown));
+    }
     let images_out: Vec<(u64, String)> = selected_images
         .iter()
         .map(|p| (*p, pages[p].image_obj_id.clone().unwrap_or_default()))
         .collect();
-    coverage.text_delivered = selected_text.iter().copied().collect();
+    coverage.text_delivered = selected_text.keys().copied().collect();
     coverage.image_delivered = selected_images.clone();
     for (coord, reason) in unreadable {
         coverage.uncovered.push(Uncovered {
@@ -1221,12 +1698,14 @@ pub fn plan_pages(
         });
     }
     for (coord, plan) in &pages {
-        let seen = selected_text.contains(coord) || selected_images.contains(coord);
+        let seen = selected_text.contains_key(coord) || selected_images.contains(coord);
         if seen {
             continue;
         }
         let reason = failed_reasons.get(coord).cloned().unwrap_or_else(|| {
-            if plan.text.is_some() || plan.image_obj_id.is_some() {
+            if !named.is_empty() {
+                "not among the pages asked for".to_string()
+            } else if plan.text.is_some() || plan.image_obj_id.is_some() {
                 "omitted by the budget".to_string()
             } else {
                 "no representation produced".to_string()
@@ -1271,7 +1750,7 @@ pub fn audio_entry(manifest: &MediaManifest) -> Option<&MediaEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{MediaEntryError, MediaSourceRef, MediaWhere};
+    use buckyos_api::{MediaEntryError, MediaSourceRef, MediaTextQuality, MediaWhere};
 
     fn entry(page: u32, status: MediaEntryStatus, text: bool, image: bool) -> MediaEntry {
         MediaEntry {
@@ -1280,9 +1759,22 @@ mod tests {
             text_obj_id: text.then(|| format!("cyfile:t{page}")),
             image_obj_id: image.then(|| format!("cyfile:i{page}")),
             audio_obj_id: None,
+            ocr_text_obj_id: None,
+            text_quality: None,
             status,
             error: (status == MediaEntryStatus::Failed).then(|| MediaEntryError { code: "tool_failed".into(), message: "render".into(), retryable: true }),
         }
+    }
+
+    fn layer(texts: BTreeMap<u64, String>) -> BTreeMap<u64, PageText> {
+        texts.into_iter().map(|(p, text)| (p, PageText { text, source: TextSource::Layer })).collect()
+    }
+
+    fn plan_for(goal: &str, extra: &[u64], manifest: &MediaManifest, texts: &BTreeMap<u64, PageText>, unreadable: &BTreeMap<u64, String>, budget: usize, images: usize) -> ContentPlan {
+        let terms = goal_terms(goal);
+        let mut named = goal_pages(goal);
+        named.extend(extra.iter().copied());
+        plan_pages(&PlanRequest { terms: &terms, named: &named, text_char_budget: budget, max_images: images }, manifest, texts, unreadable)
     }
 
     #[test]
@@ -1315,13 +1807,13 @@ mod tests {
             entry(5, MediaEntryStatus::Ok, true, true),
         ];
         manifest.recompute_coverage();
-        let texts = BTreeMap::from([
+        let texts = layer(BTreeMap::from([
             (1u64, "introduction about cats".to_string()),
             (2u64, "the answer is on the last page".to_string()),
             (5u64, "final answer: forty-two".to_string()),
-        ]);
+        ]));
         let none = BTreeMap::new();
-        let plan = plan_pages("what is the final answer", &manifest, &texts, &none, 25, 2);
+        let plan = plan_for("what is the final answer", &[], &manifest, &texts, &none, 25, 2);
         let text_pages: Vec<u64> = plan.texts.iter().map(|(p, _)| *p).collect();
         assert!(text_pages.contains(&5), "{text_pages:?}");
         assert!(!text_pages.contains(&1), "{text_pages:?}");
@@ -1335,27 +1827,27 @@ mod tests {
         assert_eq!(plan.coverage.failed, vec![4]);
         assert!(plan.index.as_deref().unwrap().contains("Index of the whole document"));
 
-        let all = plan_pages("anything", &manifest, &texts, &none, 10_000, 16);
+        let all = plan_for("anything", &[], &manifest, &texts, &none, 10_000, 16);
         assert_eq!(all.texts.len(), 3);
         assert_eq!(all.images.len(), 4);
         assert_eq!(all.coverage.uncovered.len(), 1);
     }
 
-    fn long_document(pages: u32) -> (MediaManifest, BTreeMap<u64, String>) {
+    fn long_document(pages: u32) -> (MediaManifest, BTreeMap<u64, PageText>) {
         let mut manifest = MediaManifest::new("pdf", "sha256:x");
         manifest.range.total = Some(u64::from(pages));
         manifest.range.requested = (1..=u64::from(pages)).collect();
         manifest.entries = (1..=pages).map(|p| entry(p, MediaEntryStatus::Ok, true, true)).collect();
         manifest.recompute_coverage();
-        let texts = (1..=u64::from(pages)).map(|p| (p, format!("ordinary filler {p:04}"))).collect();
+        let texts = layer((1..=u64::from(pages)).map(|p| (p, format!("ordinary filler {p:04}"))).collect());
         (manifest, texts)
     }
 
     #[test]
     fn a_chinese_goal_finds_the_page_that_answers_it() {
         let (manifest, mut texts) = long_document(120);
-        texts.insert(97, "第三季度 营收 为 四十二 亿元".to_string());
-        let plan = plan_pages("第三季度的营收是多少", &manifest, &texts, &BTreeMap::new(), 20, 4);
+        texts.insert(97, PageText { text: "第三季度 营收 为 四十二 亿元".to_string(), source: TextSource::Layer });
+        let plan = plan_for("第三季度的营收是多少", &[], &manifest, &texts, &BTreeMap::new(), 20, 4);
         assert_eq!(plan.coverage.text_delivered, vec![97]);
         assert!(plan.images.iter().any(|(p, _)| *p == 97));
     }
@@ -1363,27 +1855,87 @@ mod tests {
     #[test]
     fn a_named_page_is_read_and_a_goal_without_matches_spreads_over_the_document() {
         let (manifest, texts) = long_document(100);
-        let plan = plan_pages("translate 第88页", &manifest, &texts, &BTreeMap::new(), 100, 2);
-        assert!(plan.coverage.text_delivered.contains(&88));
-        assert!(plan.coverage.image_delivered.contains(&88));
+        let plan = plan_for("translate 第88页", &[], &manifest, &texts, &BTreeMap::new(), 100, 2);
+        assert_eq!(plan.coverage.text_delivered, vec![88], "named pages only");
+        assert_eq!(plan.coverage.image_delivered, vec![88]);
+        assert!(plan.index.is_some(), "the rest of the document as an index");
+        let plan2 = plan_for("第14、50、70页讲什么", &[], &manifest, &texts, &BTreeMap::new(), 60_000, 16);
+        assert_eq!(plan2.coverage.text_delivered, vec![14, 50, 70]);
+        assert_eq!(plan2.coverage.image_delivered, vec![14, 50, 70]);
+        let many = plan_for("translate this", &(1..=40).collect::<Vec<_>>(), &manifest, &texts, &BTreeMap::new(), 60_000, 4);
+        assert_eq!(many.coverage.text_delivered.len(), 40);
+        assert_eq!(many.coverage.image_delivered, vec![1, 11, 21, 31], "images spread over the named pages");
 
-        let plan = plan_pages("zzz", &manifest, &texts, &BTreeMap::new(), 200, 0);
+        let plan = plan_for("zzz", &[], &manifest, &texts, &BTreeMap::new(), 200, 0);
         let delivered = &plan.coverage.text_delivered;
         assert!(delivered.len() >= 5);
         assert!(delivered.iter().any(|p| *p > 80), "{delivered:?}");
         assert!(delivered.iter().any(|p| *p < 20), "{delivered:?}");
     }
 
+    /// dk10000.pdf: 402 text pages of about a thousand characters, one of 48k.
+    #[test]
+    fn a_huge_page_is_cut_and_the_chosen_pages_spread_over_the_book() {
+        let mut manifest = MediaManifest::new("pdf", "sha256:x");
+        manifest.range.total = Some(403);
+        manifest.range.requested = (1..=403).collect();
+        manifest.entries = (1..=403).map(|p| entry(p, MediaEntryStatus::Ok, p != 383, true)).collect();
+        manifest.recompute_coverage();
+        let mut texts: BTreeMap<u64, PageText> = (1..=403u64)
+            .filter(|p| *p != 383)
+            .map(|p| (p, PageText { text: format!("{p:04} {}", "word ".repeat(200)), source: TextSource::Ocr }))
+            .collect();
+        texts.insert(101, PageText { text: format!("0101 {}", "x".repeat(48_000)), source: TextSource::Ocr });
+        let plan = plan_for("总结一下这本书", &[], &manifest, &texts, &BTreeMap::new(), 60_000, 16);
+        let pages = &plan.coverage.text_delivered;
+        assert!(pages.len() >= 50, "{} pages of text", pages.len());
+        let used: usize = plan.texts.iter().map(|(_, t)| t.chars().count()).sum();
+        assert!(used <= 60_000 + 200, "{used}");
+        let average = 403.0 / pages.len() as f64;
+        for pair in pages.windows(2) {
+            assert!(((pair[1] - pair[0]) as f64) <= 2.0 * average, "gap {pair:?} > 2 x {average}");
+        }
+        assert!(pages[0] <= 2 * average as u64 && *pages.last().unwrap() >= 403 - 2 * average as u64);
+        if pages.contains(&101) {
+            assert_eq!(plan.coverage.text_truncated, vec![101]);
+            assert!(plan.texts.iter().any(|(p, t)| *p == 101 && t.contains("[page 101 text truncated:")));
+        }
+        assert_eq!(plan.coverage.text_ocr.len(), pages.len());
+        // M4: the image budget is used, over the whole book.
+        let images = &plan.coverage.image_delivered;
+        assert_eq!(images.len(), 16);
+        assert!(images.contains(&383), "the page with only an image");
+        assert!(images.first().unwrap() < &40 && images.last().unwrap() > &360, "{images:?}");
+        // M5: the index lists pages over the whole book, the rest by range.
+        let index = plan.index.unwrap();
+        assert!(index.lines().filter(|l| l.contains("[ocr+image]")).count() >= 50, "{index}");
+        assert!(index.contains("Other pages:") && index.contains("ocr+image: "), "{index}");
+        assert!(index.contains("\n383 [image]") || index.contains("image: ") , "{index}");
+        assert!(index.len() <= INDEX_CHARS + 600, "{}", index.len());
+    }
+
     #[test]
     fn unread_text_is_reported_and_the_note_names_ranges() {
         let (manifest, texts) = long_document(30);
         let unreadable = BTreeMap::from([(7u64, "gone".to_string())]);
-        let plan = plan_pages("zzz", &manifest, &texts, &unreadable, 60, 0);
+        let plan = plan_for("zzz", &[], &manifest, &texts, &unreadable, 60, 0);
         assert!(plan.coverage.uncovered.iter().any(|u| u.location == 7 && u.reason.contains("gone")));
-        let note = plan.coverage.uncovered_note().unwrap();
+        let note = plan.coverage.uncovered_note(None).unwrap();
         assert!(note.contains("were not shown to the model"), "{note}");
         assert!(note.contains("omitted by the budget"), "{note}");
+        assert!(note.contains("--pages "), "{note}");
+        let dir = std::path::Path::new("/c/cyfile-ab");
+        let note = plan.coverage.uncovered_note(Some(dir)).unwrap();
+        assert!(note.contains("llm_understand_media /c/cyfile-ab --pages "), "{note}");
+        assert!(note.contains("/c/cyfile-ab/pages/0002.png") || note.contains("/c/cyfile-ab/pages/0001.png"), "{note}");
         assert_eq!(format_ranges(&[7, 1, 2, 3, 9, 10]), "1-3, 7, 9-10");
+        let gappy: Vec<u64> = (1..=403).filter(|p| p % 7 != 0).collect();
+        let short = short_ranges(&gappy, 120);
+        assert!(short.len() < 140 && short.starts_with("346 places: 1-6, 8-13") && short.ends_with("up to 403"), "{short}");
+        assert_eq!(short_ranges(&[1, 2, 3], 120), "1-3");
+        assert_eq!(first_range(&[2, 3, 4, 9]), "2-4");
+        assert_eq!(page_file_name(7, 403, "png"), "0007.png");
+        assert_eq!(page_file_name(7, 12000, "txt"), "00007.txt");
     }
 
     #[test]
@@ -1392,9 +1944,58 @@ mod tests {
         assert!(goal_terms("Q3 revenue").contains(&"revenue".to_string()));
         assert!(!goal_terms("is a 3").contains(&"3".to_string()));
         assert_eq!(goal_terms("营收多少"), vec!["多少", "收多", "营收"]);
-        assert_eq!(goal_pages("see page 12 and pages 3-5"), BTreeSet::from([3, 4, 5, 12]));
-        assert_eq!(goal_pages("第12页和第3到5页"), BTreeSet::from([3, 4, 5, 12]));
-        assert_eq!(goal_pages("第三季度 第2季度"), BTreeSet::new());
+        let set = |v: &[u64]| v.iter().copied().collect::<BTreeSet<u64>>();
+        assert_eq!(goal_pages("see page 12 and pages 3-5"), set(&[3, 4, 5, 12]));
+        assert_eq!(goal_pages("第12页和第3到5页"), set(&[3, 4, 5, 12]));
+        assert_eq!(goal_pages("第三季度 第2季度"), set(&[]));
+        assert_eq!(goal_pages("page 14, 50, 70"), set(&[14, 50, 70]));
+        assert_eq!(goal_pages("第14、50、70页讲什么"), set(&[14, 50, 70]));
+        assert_eq!(goal_pages("看一下PDF物理页14、50、70、104、148、162"), set(&[14, 50, 70, 104, 148, 162]));
+        assert_eq!(goal_pages("compare p14 with pp. 3-5"), set(&[3, 4, 5, 14]));
+        assert_eq!(goal_pages("p. 12 and page 7 and 9"), set(&[7, 9, 12]));
+        assert_eq!(goal_pages("pages 3 to 5"), set(&[3, 4, 5]));
+        assert_eq!(goal_pages("the top 10 photos, step 3, php 5"), set(&[]));
+        assert_eq!(parse_pages_arg("1,5,10-12").unwrap(), set(&[1, 5, 10, 11, 12]));
+        assert_eq!(parse_pages_arg(" 7 ").unwrap(), set(&[7]));
+        assert!(parse_pages_arg("1,x").is_err() && parse_pages_arg("0").is_err() && parse_pages_arg("").is_err());
+    }
+
+    #[test]
+    fn page_text_is_normalized_and_the_layer_gives_way_to_better_ocr() {
+        let raw = "   44.2      HEAD   \n\n\n\n        brain          sinus\t\t \n  \n   palate";
+        assert_eq!(normalize_text(raw), "44.2  HEAD\n\nbrain  sinus\n\npalate");
+        assert_eq!(normalize_text("a b\nc"), "a b\nc");
+        let mut e = entry(1, MediaEntryStatus::Ok, true, true);
+        assert_eq!(choose_text(&e), Some(("cyfile:t1".to_string(), TextSource::Layer)));
+        e.ocr_text_obj_id = Some("cyfile:o1".into());
+        e.text_quality = Some(MediaTextQuality { layer_clean: Some(48), ocr_clean: Some(80), agreement: Some(42), ocr_confidence: Some(69), ocr: None });
+        assert_eq!(choose_text(&e).unwrap().1, TextSource::Ocr);
+        e.text_quality = Some(MediaTextQuality { layer_clean: Some(55), ocr_clean: Some(57), agreement: Some(97), ocr_confidence: Some(90), ocr: None });
+        assert_eq!(choose_text(&e).unwrap().1, TextSource::Layer, "a layer OCR agrees with stays");
+        // dk10000.pdf p.356, cardinal numbers: OCR has digits, the layer garbage.
+        e.text_quality = Some(MediaTextQuality { layer_clean: Some(51), ocr_clean: Some(39), agreement: Some(21), ocr_confidence: Some(85), ocr: None });
+        assert_eq!(choose_text(&e).unwrap().1, TextSource::Ocr);
+        // p.392, an index page: most words right, still garbled.
+        e.text_quality = Some(MediaTextQuality { layer_clean: Some(59), ocr_clean: Some(67), agreement: Some(61), ocr_confidence: Some(91), ocr: None });
+        assert_eq!(choose_text(&e).unwrap().1, TextSource::Ocr);
+        e.text_quality = Some(MediaTextQuality { layer_clean: Some(60), ocr_clean: Some(40), agreement: Some(50), ocr_confidence: Some(30), ocr: None });
+        assert_eq!(choose_text(&e).unwrap().1, TextSource::Layer, "unsure OCR with fewer clean words loses");
+        e.text_obj_id = None;
+        assert_eq!(choose_text(&e).unwrap().1, TextSource::Ocr);
+        e.ocr_text_obj_id = None;
+        assert_eq!(choose_text(&e), None);
+    }
+
+    #[test]
+    fn idf_ignores_terms_on_most_pages() {
+        let texts = layer(BTreeMap::from([
+            (1u64, "this book is about cooking".to_string()),
+            (2u64, "this page is about trains".to_string()),
+            (3u64, "this page is about ships".to_string()),
+            (4u64, "this is the index".to_string()),
+        ]));
+        let scores = page_scores(&["this".into(), "cooking verbs".into(), "cooking".into()], &texts);
+        assert_eq!(scores.keys().copied().collect::<Vec<_>>(), vec![1]);
     }
 
     #[test]
@@ -1416,10 +2017,18 @@ mod tests {
         assert_eq!(capped.len(), 1);
         assert_eq!(*capped[0].last().unwrap(), 250);
         assert!(DocumentLimits { max_pages: 50, ..limits }.later_windows(450).is_empty());
-        let input = limits.pipeline_input("cyfile:a", Some("docx"), &[1], 1);
+        let input = limits.pipeline_input("cyfile:a", Some("docx"), &[1], 1, "auto");
         assert_eq!(input["page_range"], json!([1]));
         assert_eq!(input["limits"]["max_pages"], 1);
         assert_eq!(input["format"], "docx");
+        assert_eq!(input["ocr_lang"], "auto");
+        assert_eq!(format_elapsed(Duration::from_secs(143)), "2m23s");
+        assert_eq!(format_elapsed(Duration::from_secs(45)), "45s");
+        let mut trace = PipelineTrace::default();
+        trace.steps.insert("render_pdf_pages".into(), StepTrace { state: "completed".into(), source: Some("cache".into()), attempts: 1, error: None });
+        assert_eq!(window_done_line("pages 1-200", &trace, Duration::from_secs(3)), "pages 1-200 from cache");
+        trace.steps.insert("ocr_pages".into(), StepTrace { state: "completed".into(), source: Some("executed".into()), attempts: 1, error: None });
+        assert_eq!(window_done_line("pages 1-200", &trace, Duration::from_secs(143)), "pages 1-200 ready (2m23s)");
     }
 
     #[test]

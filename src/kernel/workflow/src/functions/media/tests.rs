@@ -73,12 +73,12 @@ async fn invoke(f: &dyn NativeFunction, e: &Env, params: Value) -> Result<Native
 }
 
 #[test]
-fn registry_publishes_nine_functions_and_baseline_lists_their_tools() {
+fn registry_publishes_ten_functions_and_baseline_lists_their_tools() {
     let mut registry = FunctionRegistry::new();
     register(&mut registry).unwrap();
     let names: Vec<String> = registry.list().iter().map(|f| f.registration.name.clone()).collect();
-    assert_eq!(names.len(), 9);
-    for name in [CAPABILITIES, PROBE, FIT_IMAGE, EXTRACT_PDF_TEXT, RENDER_PDF_PAGES, EXTRACT_FRAMES, EXTRACT_AUDIO, TO_PDF, BUILD_CATALOG] {
+    assert_eq!(names.len(), 10);
+    for name in [CAPABILITIES, PROBE, FIT_IMAGE, EXTRACT_PDF_TEXT, RENDER_PDF_PAGES, OCR_PAGES, EXTRACT_FRAMES, EXTRACT_AUDIO, TO_PDF, BUILD_CATALOG] {
         let f = registry.resolve(name, "1").expect(name);
         f.object.validate().unwrap();
         assert!(f.native.is_some());
@@ -90,10 +90,14 @@ fn registry_publishes_nine_functions_and_baseline_lists_their_tools() {
     assert!(!registry.resolve(CAPABILITIES, "1").unwrap().object.is_pure);
     assert!(registry.resolve(TO_PDF, "1").unwrap().object.is_pure);
     assert!(registry.resolve(FIT_IMAGE, "1").unwrap().object.is_pure);
+    let ocr = registry.resolve(OCR_PAGES, "1").unwrap();
+    assert!(ocr.object.is_pure);
+    assert!(!ocr.registration.requirements.contains_key("cmd/tesseract"), "without tesseract pages keep their text layer");
 
     let baseline = media_tool_baseline();
     let tools: Vec<&str> = baseline.iter().map(|t| t.tool).collect();
-    assert_eq!(tools, vec!["ffmpeg", "ffprobe", "pdfinfo", "pdftoppm", "pdftotext", "soffice"]);
+    assert_eq!(tools, vec!["ffmpeg", "ffprobe", "pdfinfo", "pdftoppm", "pdftotext", "soffice", "tesseract"]);
+    assert_eq!(baseline.iter().find(|t| t.tool == "tesseract").unwrap().used_by, vec![OCR_PAGES]);
     let ffmpeg = baseline.iter().find(|t| t.tool == "ffmpeg").unwrap();
     assert_eq!(ffmpeg.used_by, vec![EXTRACT_AUDIO, EXTRACT_FRAMES, FIT_IMAGE]);
     let soffice = baseline.iter().find(|t| t.tool == "soffice").unwrap();
@@ -309,6 +313,74 @@ async fn build_catalog_covers_pages_frames_and_absent_audio() {
     assert_eq!(manifest.entries[2].kind, buckyos_api::MediaEntryKind::Audio);
 }
 
+#[tokio::test]
+async fn build_catalog_keeps_both_texts_and_their_facts() {
+    let e = env();
+    let text = json!({"total_pages": 3, "pages": [
+        {"page": 1, "status": "ok", "text_obj_id": "cyfile:t1", "chars": 10},
+        {"page": 2, "status": "no_text", "chars": 0},
+        {"page": 3, "status": "ok", "text_obj_id": "cyfile:t3", "chars": 10}
+    ]});
+    let images = json!({"total_pages": 3, "pages": [
+        {"page": 1, "status": "ok", "image_obj_id": "cyfile:i1"},
+        {"page": 2, "status": "ok", "image_obj_id": "cyfile:i2"},
+        {"page": 3, "status": "ok", "image_obj_id": "cyfile:i3"}
+    ]});
+    let ocr = json!({"status": "ok", "lang": "eng", "script": "Latin", "vertical": false, "garbled_layer": true,
+        "basis": {"trial": {"eng": [81, 120]}}, "pages": [
+        {"page": 1, "status": "ok", "ocr_text_obj_id": "cyfile:o1", "chars": 40, "confidence": 82, "layer_clean": 31, "ocr_clean": 78, "agreement": 24},
+        {"page": 2, "status": "ok", "ocr_text_obj_id": "cyfile:o2", "chars": 30, "confidence": 77, "ocr_clean": 80},
+        {"page": 3, "status": "empty", "confidence": 12, "layer_clean": 40}
+    ]});
+    let out = invoke(&catalog::BuildCatalog, &e, json!({
+        "family": "pdf", "source_content_id": "sha256:src", "derived_content_id": null,
+        "probe": {}, "text": text, "images": images, "ocr": ocr
+    })).await.unwrap();
+    assert!(out.cacheable);
+    assert!(out.artifact_refs.contains(&"cyfile:o1".to_string()));
+    assert_eq!(out.result["summary"]["ocr_entries"], 2);
+    let manifest: buckyos_api::MediaManifest = serde_json::from_value(e.io.get_object(out.result["manifest_obj_id"].as_str().unwrap()).await.unwrap().unwrap()).unwrap();
+    let ocr = manifest.ocr.as_ref().unwrap();
+    assert_eq!((ocr.status.as_str(), ocr.lang.as_deref(), ocr.garbled_layer), ("ok", Some("eng"), true));
+    let first = &manifest.entries[0];
+    assert_eq!(first.text_obj_id.as_deref(), Some("cyfile:t1"));
+    assert_eq!(first.ocr_text_obj_id.as_deref(), Some("cyfile:o1"));
+    let q = first.text_quality.as_ref().unwrap();
+    assert_eq!((q.layer_clean, q.ocr_clean, q.agreement, q.ocr_confidence, q.ocr.as_deref()), (Some(31), Some(78), Some(24), Some(82), None));
+    assert_eq!(manifest.entries[1].status, buckyos_api::MediaEntryStatus::Ok, "a scanned page with OCR text has text");
+    assert_eq!(manifest.entries[2].text_quality.as_ref().unwrap().ocr.as_deref(), Some("empty"));
+    assert!(manifest.complete);
+}
+
+#[tokio::test]
+async fn ocr_pages_without_tesseract_keeps_the_text_layer() {
+    let e = env();
+    let (layer_id, _) = e.io.add_file("page-1.txt", b"Proxmox VE uses a REST like API and the concept is to use resources as objects.").await;
+    let text = json!({"total_pages": 2, "pages": [
+        {"page": 1, "status": "ok", "text_obj_id": layer_id, "chars": 80},
+        {"page": 2, "status": "no_text", "chars": 0}
+    ]});
+    let images = json!({"total_pages": 2, "pages": [
+        {"page": 1, "status": "ok", "image_obj_id": "cyfile:i1"},
+        {"page": 2, "status": "ok", "image_obj_id": "cyfile:i2"}
+    ]});
+    let only_clean = json!({"total_pages": 1, "pages": [{"page": 1, "status": "ok", "image_obj_id": "cyfile:i1"}]});
+    let out = invoke(&ocr::OcrPages, &e, json!({"text": text, "images": only_clean, "lang": "auto"})).await.unwrap();
+    assert_eq!(out.result["status"], "not_needed");
+    assert!(out.cacheable);
+    assert_eq!(out.result["pages"][0]["status"], "skipped");
+    assert!(out.result["pages"][0]["layer_clean"].as_u64().unwrap() >= 80);
+
+    let out = invoke(&ocr::OcrPages, &e, json!({"text": text, "images": images, "lang": "auto"})).await.unwrap();
+    assert_eq!(out.result["status"], "tools_missing");
+    assert!(!out.cacheable, "installing tesseract later reads the pages");
+    assert_eq!(out.result["pages"][1]["status"], "tools_missing");
+    ocr::function_object().validate_result(&out.result).unwrap();
+    let err = invoke(&ocr::OcrPages, &e, json!({"text": text, "images": images, "lang": "-c"})).await.unwrap_err();
+    assert_eq!(err.code, error_codes::INVALID_PARAMS);
+    assert!(ocr::OcrPages.fingerprint(&ToolEnvironment::default()).contains_key("env/ocr_langs"));
+}
+
 // ----- tool-backed tests (run with `cargo test -p workflow -- --ignored`) -----
 
 fn minimal_pdf(pages: &[&str]) -> Vec<u8> {
@@ -410,6 +482,40 @@ async fn poppler_extracts_text_renders_pages_and_probes() {
     let (_, id2) = small.io.add_file("doc.pdf", &pdf).await;
     let err = invoke(&pdf::RenderPdfPages, &small, json!({"content_id": id2, "dpi": 72, "max_long_edge": 500, "page_range": [], "max_pages": 10})).await.unwrap_err();
     assert_eq!(err.code, error_codes::RESOURCE_LIMIT);
+}
+
+#[tokio::test]
+#[ignore]
+async fn tesseract_reads_scanned_pages_and_replaces_a_garbled_layer() {
+    let Some(e) = real_env() else { return };
+    if !has(&e, &[tools::PDFINFO, tools::PDFTOPPM, tools::TESSERACT]) {
+        return;
+    }
+    let lines = "Gutenberg printed many books with type";
+    let pdf = minimal_pdf(&[lines, lines, lines]);
+    let (_, id) = e.io.add_file("doc.pdf", &pdf).await;
+    let rendered = invoke(&pdf::RenderPdfPages, &e, json!({"content_id": id, "dpi": 200, "max_long_edge": 2048, "page_range": [], "max_pages": 10})).await.unwrap();
+    let images = rendered.result.clone();
+    // Page 1 keeps a good layer, page 2 has none (scanned), page 3 a garbled one.
+    let (good, _) = e.io.add_file("p1.txt", lines.as_bytes()).await;
+    let (bad, _) = e.io.add_file("p3.txt", "Gu7enb3rg pr1nted 巳ooks 矗阳 m4ny w1th 『 typ3 叩".as_bytes()).await;
+    let text = json!({"total_pages": 3, "pages": [
+        {"page": 1, "status": "ok", "text_obj_id": good},
+        {"page": 2, "status": "no_text"},
+        {"page": 3, "status": "ok", "text_obj_id": bad}
+    ]});
+    let out = invoke(&ocr::OcrPages, &e, json!({"text": text, "images": images, "lang": "auto"})).await.unwrap();
+    ocr::function_object().validate_result(&out.result).unwrap();
+    assert_eq!(out.result["status"], "ok", "{}", out.result);
+    assert_eq!(out.result["lang"], "eng", "{}", out.result["basis"]);
+    assert_eq!(out.result["garbled_layer"], true);
+    let pages = out.result["pages"].as_array().unwrap();
+    let scanned = e.io.artifact_bytes(pages[1]["ocr_text_obj_id"].as_str().unwrap()).unwrap();
+    assert!(String::from_utf8(scanned).unwrap().contains("Gutenberg"));
+    assert!(pages[2]["agreement"].as_u64().unwrap() < u64::from(ocr::GARBLED_AGREEMENT));
+    assert!(pages[2]["ocr_clean"].as_u64().unwrap() > pages[2]["layer_clean"].as_u64().unwrap());
+    assert_eq!(pages[0]["status"], "ok", "a garbled window reads every page");
+    assert!(pages[0]["agreement"].as_u64().unwrap() >= 80);
 }
 
 async fn make_video(e: &Env, with_audio: bool) -> Option<String> {
@@ -717,5 +823,46 @@ mod ndn_input {
         let shown = format!("{} {} {}", err.code, err.message, err.details);
         assert!(!shown.contains(TOKEN), "{shown}");
         assert!(shown.contains("<input>") || !shown.contains("127.0.0.1"), "{shown}");
+    }
+}
+
+/// What `media.ocr_pages` decides on a corpus: `MEDIA_OCR_CORPUS=<dir>` holds one
+/// directory per document with `pNNN.png` page images and `pNNN.txt` text layers
+/// (empty for scanned pages); the result of each goes to `<dir>/<doc>.ocr.json`.
+#[tokio::test]
+#[ignore]
+async fn ocr_pages_on_a_corpus() {
+    let Some(corpus) = std::env::var_os("MEDIA_OCR_CORPUS").map(std::path::PathBuf::from) else {
+        eprintln!("skipped: MEDIA_OCR_CORPUS is not set");
+        return;
+    };
+    let Some(e) = real_env() else { return };
+    if !has(&e, &[tools::TESSERACT]) {
+        return;
+    }
+    let mut docs: Vec<_> = std::fs::read_dir(&corpus).unwrap().flatten().map(|d| d.path()).filter(|p| p.is_dir()).collect();
+    docs.sort();
+    for doc in docs {
+        let mut pngs: Vec<_> = std::fs::read_dir(&doc).unwrap().flatten().map(|d| d.path()).filter(|p| p.extension().is_some_and(|x| x == "png")).collect();
+        pngs.sort();
+        let (mut texts, mut images) = (Vec::new(), Vec::new());
+        for png in &pngs {
+            let page: u32 = png.file_stem().unwrap().to_string_lossy().trim_start_matches('p').parse().unwrap();
+            let (image_id, _) = e.io.add_file(&format!("page-{page}.png"), &std::fs::read(png).unwrap()).await;
+            images.push(json!({"page": page, "status": "ok", "image_obj_id": image_id}));
+            let layer = std::fs::read(png.with_extension("txt")).unwrap_or_default();
+            if String::from_utf8_lossy(&layer).trim().is_empty() {
+                texts.push(json!({"page": page, "status": "no_text"}));
+            } else {
+                let (text_id, _) = e.io.add_file(&format!("page-{page}.txt"), &layer).await;
+                texts.push(json!({"page": page, "status": "ok", "text_obj_id": text_id}));
+            }
+        }
+        let started = std::time::Instant::now();
+        let out = invoke(&ocr::OcrPages, &e, json!({"text": {"pages": texts}, "images": {"pages": images}, "lang": "auto"})).await.unwrap();
+        let mut result = out.result.clone();
+        result["seconds"] = json!(started.elapsed().as_secs_f64());
+        std::fs::write(corpus.join(format!("{}.ocr.json", doc.file_name().unwrap().to_string_lossy())), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        eprintln!("{}: {} lang={} garbled={} {:.1}s", doc.display(), result["status"], result["lang"], result["garbled_layer"], started.elapsed().as_secs_f64());
     }
 }

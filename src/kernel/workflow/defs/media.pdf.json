@@ -2,7 +2,7 @@
   "schema_version": "0.2.0",
   "id": "media.pdf",
   "name": "media.pdf",
-  "description": "Turn a PDF into per-page text and page images for an LLM, catalogued in a media manifest.",
+  "description": "Turn a PDF into per-page text (OCR where the text layer is missing or garbled) and page images for an LLM, catalogued in a media manifest.",
   "trigger": {
     "type": "manual",
     "input_schema": {
@@ -47,6 +47,11 @@
               "default": 50
             }
           }
+        },
+        "ocr_lang": {
+          "type": "string",
+          "pattern": "^(auto|[a-z][a-z_]*(\\+[a-z][a-z_]*)*)$",
+          "default": "auto"
         }
       }
     },
@@ -93,6 +98,11 @@
               "default": 50
             }
           }
+        },
+        "ocr_lang": {
+          "type": "string",
+          "pattern": "^(auto|[a-z][a-z_]*(\\+[a-z][a-z_]*)*)$",
+          "default": "auto"
         },
         "content_id": {
           "type": "string"
@@ -278,6 +288,50 @@
       }
     },
     {
+      "id": "ocr_pages",
+      "name": "OCR pages",
+      "executor": "/tool/media.ocr_pages@1",
+      "type": "autonomous",
+      "idempotent": true,
+      "skippable": false,
+      "input": {
+        "text": "${extract_pdf_text.output}",
+        "images": "${render_pdf_pages.output}",
+        "lang": "${trigger.output.ocr_lang}"
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "status",
+          "pages"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "lang": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "guards": {
+        "retry": {
+          "max_attempts": 1,
+          "fallback": "abort"
+        },
+        "timeout": "900s"
+      }
+    },
+    {
       "id": "build_catalog",
       "name": "Build catalog",
       "executor": "/tool/media.build_catalog@1",
@@ -290,7 +344,8 @@
         "derived_content_id": null,
         "probe": "${probe.output}",
         "text": "${extract_pdf_text.output}",
-        "images": "${render_pdf_pages.output}"
+        "images": "${render_pdf_pages.output}",
+        "ocr": "${ocr_pages.output}"
       },
       "output_schema": {
         "type": "object",
@@ -334,6 +389,10 @@
     },
     {
       "from": "render_pdf_pages",
+      "to": "ocr_pages"
+    },
+    {
+      "from": "ocr_pages",
       "to": "build_catalog"
     },
     {
