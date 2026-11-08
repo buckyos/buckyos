@@ -186,7 +186,7 @@ const runtime = createSiteRuntime({ scene: 'demo.site.notes', origin: location.o
 
 ## 9. 共享向量
 
-一致性不靠共享二进制，靠共享向量：Rust 生成并校验，TS 消费。生成与校验在 `agent_tool` 的 `xllm::vectors` 测试里（`cargo test -p agent_tool --lib xllm::vectors`；`XLLM_VECTORS_REGEN=1` 时重写文件，否则比对），文件在 `buckyos/src/frame/llm_context/tests/vectors/`，手工复制到 `buckyos-websdk/tests/fixtures/xllm/`，两边以文件头的 `vectors_version` 对齐。模型看到的 JSON 由 `core/rust_text.ts` 的 `serdeJson` 按 serde_json 的写法生成（键按码点排序、数字格式同 serde），裁剪用 Rust 的空白集合，长度按 Unicode 标量计，所以逐字比较不需要 canonical 化。
+一致性不靠共享二进制，靠共享向量：Rust 生成并校验，TS 消费。生成与校验在 `agent_tool` 的 `xllm::vectors` 测试里（`cargo test -p agent_tool --lib xllm::vectors`；`XLLM_VECTORS_REGEN=1` 时重写文件，否则比对），文件只在 `buckyos/src/frame/llm_context/tests/vectors/` 一处，websdk 的测试直接读同级 buckyos 检出里的这个目录（或环境变量 `XLLM_VECTORS_DIR` 指定的目录），找不到就跳过：jest 的向量用例、Deno 的身份向量和接手测试都是这样。websdk 的 CI 不检出 buckyos，所以那里不跑这些比对；改 TS 时在两个仓库并排的环境里跑。两边以文件头的 `vectors_version` 对齐。模型看到的 JSON 由 `core/rust_text.ts` 的 `serdeJson` 按 serde_json 的写法生成（键按码点排序、数字格式同 serde），裁剪用 Rust 的空白集合，长度按 Unicode 标量计，所以逐字比较不需要 canonical 化。
 
 每个文件是 `{ "vectors_version": 1, "cases": [ { "name": …, … } ] }`。消息文本在协议文本（a）、提示（f）、任务文本（g）、behavior 循环的 `last_request_messages`（c）和压缩（i）里逐字比较；错误类（c）（d）只比 kind 与 failure。
 
@@ -216,7 +216,7 @@ pnpm test:xllm:conformance  # Rust 与 Deno 宿主对同一 mock：结果、身�
 cargo test -p agent_tool --lib xllm::vectors          # 向量与 Rust 一致；XLLM_VECTORS_REGEN=1 重生成
 ```
 
-同一组用例在 `tests/xllm_cases.ts`。向量在 `tests/fixtures/xllm/`，由 `tests/xllm/vectors.test.ts` 逐条比对；`provider_errors.json` 里 `ts: false` 的输入只有 Rust 有（本地生成的 kRPC 错误变体），跳过；`xml_behavior.json` 的 `artifacts_must_be_strings`、`result_must_be_json` 的错误文本来自 serde_json，只比对“是错误”。能力边界检查（都应为空）：
+同一组用例在 `tests/xllm_cases.ts`。向量由 `tests/xllm/vectors.test.ts` 逐条比对（读取位置见 §9）；`provider_errors.json` 里 `ts: false` 的输入只有 Rust 有（本地生成的 kRPC 错误变体），跳过；`xml_behavior.json` 的 `artifacts_must_be_strings`、`result_must_be_json` 的错误文本来自 serde_json，只比对“是错误”。能力边界检查（都应为空）：
 
 ```bash
 grep -rn "window\.\|document\.\|process\.\|Deno\.\|navigator\.\|location\." src/xllm/core src/xllm/runtime src/xllm/providers

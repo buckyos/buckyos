@@ -98,7 +98,7 @@ agent_tool llm_understand_media --media <json | locator> [--goal <text>] [option
 
 | 参数 | 说明 |
 |---|---|
-| `<locator>` | 本地文件（相对当前目录或绝对路径）、对象 id（`cyfile:…`、chunk id，例如消息附件）或 http(s) URL |
+| `<locator>` | 本地文件（相对当前目录或绝对路径）、Zone 文件（`cyfs:///<path>`，或 Files 显示的 `/home/<owner>/…`）、对象 id（`cyfile:…`、chunk id、`cyfs://<objid>/`，例如消息附件）或 http(s) URL |
 | `--media <json>` | 同上的 JSON 形式：`{"kind":"named_object","obj_id":"cyfile:…","mime_hint":"image/png"}`、`{"kind":"local_file","path":"/abs/frame.png"}`、`{"url":"https://…"}` |
 | `--goal <text>` | 要了解什么；缺省时要求详细描述内容，让看不到原文件的人也能使用 |
 | `--max-completion-tokens <n>` | 输出预算，默认 2048，按 2048 / 4096 / 8192 分档向上取整 |
@@ -117,6 +117,12 @@ agent_tool llm_understand_media --media <json | locator> [--goal <text>] [option
 - **首选**：`NamedObject { obj_id: ObjId }`——content-addressed、跨 zone/peer 可寻址、可由 `ndn_lib` GC 模型统一管理。工具只读 FileObject 和内容头部（4 KiB）做 probe，不整文件读入；模型阶段也用这个引用，由 AICC 自己读取（§4.3）。
 - **可接受**：`Url { url, mime_hint }`——当媒体来源是远端 HTTP(S) 且 buckyos 这一侧不需要长期持有该资源时；但调用方需自承"URL 过期 / 跨设备失效"风险，本工具不为其增引用计数。也接受 `data:` URL。下载流式写入临时文件，用完删除，上限 512 MiB。
 - **可接受（本机产物）**：`{kind: "local_file", path}`——上一步 shell 产出的文件。它没有 NDN 身份；工具只探测大小和头部，确需转换时才冻结为对象（§4.8.3），直传不上传（超过 AICC 内联上限 4 MiB 时除外），上限 512 MiB。
+- **可接受（Zone 文件）**：系统里其他常用的文件写法，免得模型先报一次错再改写（2026-11-07）。实现在 `agent_tool/src/llm_understand_media/zone_file.rs`，URL 语法沿用 `buckyos_api::parse_object_url`（`doc/key url.md`）：
+  - `cyfs:///<path>`、当前 Zone 的 `cyfs://<zone>/<path>`、`obj://dfs/<path>`、`dfs:///<path>`，以及按 Desktop 的宽松读法补全的 `cyfs://home/…`（缺第三个斜杠）和重复斜杠：都是 `$BUCKYOS_ROOT/data/<path>`，按 `local_file` 处理。Agent 容器把 owner 的 home 挂在宿主机相同路径，宿主机上的 runtime 能看到整个 data 根目录；本 runtime 没有挂载的 Zone 文件直接拒绝，错误里列出查找过的本地路径和 owner home 的位置，不走 nfs-server 读取。
+  - `/home/<rest>` 不是文件时，再到 owner 的 home 里找 `/home/<owner>/<rest>`（提示词把 owner 的 home 叫 `home`）；找到后在 `details.media_source` 写明实际读取的 `cyfs:///…`，并在输出末尾附一行说明。
+  - 本机不存在的裸绝对路径，如果第一级目录是 data 根目录下的目录，就按 Files 显示的 Zone 路径解释（与 `buckyos share` 接受的路径一致）；本机存在的路径仍优先按本机文件读。
+  - `cyfs://<objid>/` 等同于对象 id；`file:///<path>` 是本机文件；`file://<device>/<path>` 在 data 根目录下时是 Zone 文件，否则拒绝，并提示先用 `agent-session copy` 复制过来；其他 `obj://` 是服务对象，提示改用 `read`。
+  - 写在 `url` / `uri` / `path` / `obj_id` 任一字段里的系统 URL 都按上面的规则解析。另一个 Zone 的 `cyfs://` 拒绝，提示改用分享链接。
 - **chunk id 与只有 msg-center 才能读的附件**：没有可用的 FileObject 或 NDM 读权限，工具读出字节后按本地内容处理。
 - **禁止作为长期 history 引用**：`Base64 { mime, data_base64 }`——一旦写回主干 `tool_result`，base64 永久驻留 history，违背本设计的核心收益。`llm_understand_media` 在写回时**必须**剔除 inline base64。详见 §6.1。
 - **MIME 来源**：模型路由必须基于媒体 MIME / media kind，而不是仅基于 `obj_id`。

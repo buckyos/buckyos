@@ -68,6 +68,7 @@ import { useBrowserPane } from './data/useBrowserPane'
 import {
   COLLECTION_SCHEME,
   collectionUrl,
+  copyPathText,
   crumbsForUrl,
   dfsPathOf,
   displayPath,
@@ -864,8 +865,8 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
       case 'copy-path':
         copyText(
           entries.length
-            ? entries.map((item) => item.path).join('\n')
-            : displayPath(context.currentUrl),
+            ? entries.map((item) => copyPathText(item.path)).join('\n')
+            : copyPathText(context.currentUrl),
         )
         break
       case 'copy-ref-path':
@@ -1538,7 +1539,7 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
           onViewModeChange={left.setViewMode}
           searchQuery={left.searchQuery}
           onSearchChange={left.setSearchQuery}
-          onCopyPath={() => copyText(displayPath(left.currentUrl))}
+          onCopyPath={() => copyText(copyPathText(left.currentUrl))}
           onSendTabToRight={handleSendToRight}
           canSendToRight={left.tabs.length > 1 && width >= 700}
           {...toolbarPropsFor('left')}
@@ -1614,7 +1615,7 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
             onViewModeChange={right.setViewMode}
             searchQuery={right.searchQuery}
             onSearchChange={right.setSearchQuery}
-            onCopyPath={() => copyText(displayPath(right.currentUrl))}
+            onCopyPath={() => copyText(copyPathText(right.currentUrl))}
             {...toolbarPropsFor('right')}
           />
           {selectionProgress(right)}

@@ -3,7 +3,7 @@ import { Tooltip } from '@mui/material'
 import { useI18n } from '../../i18n/provider'
 import { formatBytes } from './fileDisplay'
 import type { FileItem } from './data/FolderReader'
-import { displayPath } from './data/urls'
+import { copyPathText, displayPath } from './data/urls'
 
 interface StatusBarProps {
   /** Canonical location url. */
@@ -91,7 +91,7 @@ export function StatusBar({
           <Tooltip title={t('filebrowser.topbar.copyPath', 'Copy path')}>
             <button
               type="button"
-              onClick={() => onCopy(entry.path)}
+              onClick={() => onCopy(copyPathText(entry.path))}
               className="hidden min-w-0 max-w-48 truncate items-center gap-1 rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-2 py-0.5 font-mono text-[10px] hover:border-[color:var(--cp-accent)] hover:text-[color:var(--cp-accent)]"
             >
               <Copy size={10} /> {displayPath(entry.path)}
@@ -101,7 +101,7 @@ export function StatusBar({
             <Tooltip title={t('filebrowser.status.originalPath', 'Original location')}>
               <button
                 type="button"
-                onClick={() => onCopy(originalHint)}
+                onClick={() => onCopy(copyPathText(originalHint))}
                 className="hidden min-w-0 max-w-48 truncate items-center gap-1 rounded-full border border-[color:color-mix(in_srgb,var(--cp-border)_60%,transparent)] px-2 py-0.5 font-mono text-[10px] hover:border-[color:var(--cp-accent)] hover:text-[color:var(--cp-accent)]"
               >
                 <CornerUpRight size={10} /> {originalHint}

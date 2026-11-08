@@ -4,6 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { handlerOfApp, type HandlerPlan, type TransferableContentRef, type TransferableSessionContext } from 'buckyos/content'
 import { useI18n } from '../../i18n/provider'
 import { ensurePreviewProvider } from '../../components/preview/provider'
+import { normalizeCyfsPath } from '../../components/preview/session'
 import { extensionRefField, isCyfsPathRef, isObjectIdRef, type ContentRef, type PreviewReadRef, type PreviewSessionContext } from '../../components/preview/types'
 import type { PreviewLaunchOrigin } from '../preview/types'
 import { contentHandlers, handlerLabel, openContent } from './open'
@@ -48,7 +49,7 @@ export function OpenWithSheet({ target, onClose, preferFullApp, overlay = 'absol
     return () => { current = false }
   }, [source, target.readRef])
   const apps = handlers.filter(p => p.appInstanceId)
-  const reference = isCyfsPathRef(source) ? source.path : isObjectIdRef(source) ? source.objectId : extensionRefField(source, 'reference') ?? name
+  const reference = isCyfsPathRef(source) ? normalizeCyfsPath(source.path) : isObjectIdRef(source) ? source.objectId : extensionRefField(source, 'reference') ?? name
   const download = () => {
     if (!readRef) return
     const anchor = document.createElement('a')

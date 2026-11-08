@@ -18,7 +18,7 @@ import { useI18n } from '../../i18n/provider'
 import { formatBytes, formatDate, kindIcon } from './fileDisplay'
 import type { FileItem } from './data/FolderReader'
 import { usePreview } from './data/usePreview'
-import { displayPath } from './data/urls'
+import { copyPathText, displayPath } from './data/urls'
 import type { Topic } from './types'
 import { levelLabel } from './dialogs/permissionLabels'
 
@@ -124,7 +124,7 @@ export function PreviewPanel({
           >
             {originalPath}
           </button>
-          <button className="min-h-8 text-xs underline" onClick={() => void navigator.clipboard.writeText(originalPath)}>{t('filebrowser.topbar.copyPath', 'Copy path')}</button>
+          <button className="min-h-8 text-xs underline" onClick={() => void navigator.clipboard.writeText(copyPathText(originalPath))}>{t('filebrowser.topbar.copyPath', 'Copy path')}</button>
           {entry.link?.broken || item.ref?.broken ? (
             <span className="mt-1 inline-block rounded-full bg-[color:color-mix(in_srgb,var(--cp-warning)_18%,var(--cp-surface))] px-2 py-0.5 text-[10px] font-semibold text-[color:var(--cp-warning)]">
               {t('filebrowser.preview.brokenRef', 'Dangling reference')}

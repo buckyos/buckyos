@@ -55,6 +55,19 @@ export function displayPath(url: string): string {
   return dfsPathOf(url) ?? url
 }
 
+/**
+ * What "Copy path" puts on the clipboard: a DFS location (a bare path or a dfs url) as its Zone file URL
+ * `cyfs:///<path>`, the form nfs-server's `canonical_path` and the previews use. Names stay readable; only `%`, `?`
+ * and `#` are escaped so the text still parses as that URL. Any other location (an existing cyfs url,
+ * collection://, view://) is copied as-is.
+ */
+export function copyPathText(pathOrUrl: string): string {
+  const raw = pathOrUrl.trim()
+  const path = dfsPathOf(raw) ?? (raw.startsWith('/') ? raw : null)
+  if (path === null) return raw
+  return `cyfs://${path.replace(/[%?#]/g, (c) => encodeURIComponent(c))}`
+}
+
 export interface CollectionUrlParts {
   collectionId: string
   /**

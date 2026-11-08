@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod pipeline;
+mod zone_file;
 
 use pipeline::{
     audio_entry, document_format_from_mime, document_format_from_name, frame_entries,
@@ -115,7 +116,7 @@ impl AgentTool for LlmUnderstandMediaTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LLM_UNDERSTAND_MEDIA.to_string(),
-            description: "Understand a media resource through a controlled LLM side context. Images, PDFs, office documents (docx/pptx/odt/...) and videos the model cannot take directly are converted by the system media pipeline first; the call waits for the conversion. Archives must be extracted first. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a URL, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier shell produced.".to_string(),
+            description: "Understand a media resource through a controlled LLM side context. Images, PDFs, office documents (docx/pptx/odt/...) and videos the model cannot take directly are converted by the system media pipeline first; the call waits for the conversion. Archives must be extracted first. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a Zone file ({url:\"cyfs:///home/<owner>/…\"}), a URL, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier shell produced.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -123,7 +124,7 @@ impl AgentTool for LlmUnderstandMediaTool {
                 "properties": {
                     "media": {
                         "type": "object",
-                        "description": "Media locator. {kind:\"named_object\", obj_id:\"cyfile:…\"} for a stored object, {kind:\"local_file\", path:\"/abs/path\"} for a file on this host (for example a frame written by a previous shell), or {url:\"https://…\"}. A bare path or url string is also accepted. mime_hint is optional."
+                        "description": "Media locator. {kind:\"named_object\", obj_id:\"cyfile:…\"} for a stored object, {kind:\"local_file\", path:\"/abs/path\"} for a file on this host (for example a frame written by a previous shell), or {url:\"…\"} for a Zone file (cyfs:///<path>, or the path Files shows, /home/<owner>/…), a cyfs://<objid>/ or https URL. A bare path, object id or url string is also accepted. mime_hint is optional."
                     },
                     "goal": {
                         "type": "string",
@@ -313,8 +314,8 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         );
     }
 
-    let resolved_media = match resolve_media(&media, opts.session_id.as_deref()).await {
-        Ok(media) => media,
+    let (resolved_media, zone_file) = match resolve_media(&media, opts.session_id.as_deref()).await {
+        Ok(resolved) => resolved,
         Err(err) => return (build_error_result(&opts, err), CLI_EXIT_ERROR),
     };
     let mime = resolved_media.mime.clone();
@@ -335,6 +336,7 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         Err(err) => {
             let mut result = build_error_result(&opts, err.message);
             attach_pipeline_details(&mut result, Some(&err.decision), err.trace.as_ref(), None, None, None);
+            attach_zone_file(&mut result, zone_file.as_ref());
             return (result, CLI_EXIT_ERROR);
         }
     };
@@ -396,6 +398,7 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         prepared.preprocess.as_ref(),
         prepared.caller_note.as_deref(),
     );
+    attach_zone_file(&mut result, zone_file.as_ref());
     if opts.work_dir.is_none() && result.status == AgentToolStatus::Success {
         if let Err(err) = std::fs::remove_dir_all(&work_dir) {
             log::warn!("llm_understand_media: remove {} failed: {err}", work_dir.display());
@@ -529,6 +532,24 @@ fn attach_pipeline_details(
             output.push('\n');
             output.push_str(&note);
         }
+    }
+}
+
+/// `details.media_source`: the Zone file read, so the caller can name it; a
+/// reading other than the path as written is also told in the output.
+fn attach_zone_file(result: &mut AgentToolResult, found: Option<&zone_file::ZoneFile>) {
+    let Some(found) = found else {
+        return;
+    };
+    if let Value::Object(map) = &mut result.details {
+        map.insert(
+            "media_source".to_string(),
+            json!({ "url": found.url, "path": found.path.display().to_string() }),
+        );
+    }
+    if let (Some(note), Some(output)) = (found.note.as_deref(), result.output.as_mut()) {
+        output.push('\n');
+        output.push_str(note);
     }
 }
 
@@ -805,6 +826,12 @@ struct MediaArg {
 enum MediaSource {
     Resource(ResourceRef),
     LocalFile(PathBuf),
+    /// A file of the Zone's DFS (`cyfs:///<path>`), as decoded path segments;
+    /// `zone` is the host a `cyfs://<zone>/<path>` names.
+    ZoneFile {
+        zone: Option<String>,
+        segments: Vec<String>,
+    },
 }
 
 impl MediaSource {
@@ -813,6 +840,7 @@ impl MediaSource {
         match self {
             MediaSource::Resource(source) => resource_source_kind(source),
             MediaSource::LocalFile(_) => "local_file",
+            MediaSource::ZoneFile { .. } => "zone_file",
         }
     }
 
@@ -824,6 +852,10 @@ impl MediaSource {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| "<local file>".to_string()),
+            MediaSource::ZoneFile { segments, .. } => segments
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "<zone file>".to_string()),
         }
     }
 }
@@ -971,9 +1003,12 @@ impl MediaDecision {
 ///
 /// Accepted shapes, in order of preference:
 /// * `{"kind":"named_object","obj_id":"cyfile:…"}` — a stored object;
+/// * a system URL (`cyfs:///<path>`, `cyfs://<objid>/`, `file://…`), bare or
+///   in any of the fields below — the ways the system names a file;
 /// * `{"url":"https://…"}` / a bare `http(s):` / `data:` string;
 /// * a bare path or `{"kind":"local_file","path":"…"}` — a file on this host,
-///   which covers artifacts an earlier `shell` produced;
+///   which covers artifacts an earlier `shell` produced, or the Zone path
+///   Files shows (`/home/<owner>/…`);
 /// * `{"kind":"named_object","obj_id":"<path>"}` — a model that reached for
 ///   the only shape it knows; coerced to a local file when the path exists,
 ///   rejected with an actionable message when it does not.
@@ -1002,14 +1037,22 @@ fn parse_media_arg(value: &Value) -> Result<MediaArg, String> {
                 .and_then(Value::as_str)
                 .map(|kind| kind.trim().to_ascii_lowercase());
 
-            if let Some(url) = map
-                .get("url")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
+            if let Some(url) = ["url", "uri"].iter().find_map(|key| {
+                map.get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            }) {
                 // Documented shorthand — `{"url": "…"}`, with or without the
                 // `kind` tag the wire type insists on.
+                parse_media_locator(url)?
+            } else if let Some(url) = ["path", "file", "local_path", "obj_id"].iter().find_map(|key| {
+                map.get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| value.contains("://"))
+            }) {
+                // A system URL in whichever field the model chose for it.
                 parse_media_locator(url)?
             } else if let Some(path) = local_path_from_object(map, kind.as_deref())? {
                 MediaSource::LocalFile(path)
@@ -1073,6 +1116,9 @@ fn parse_media_locator(raw: &str) -> Result<MediaSource, String> {
     if let Some(rest) = trimmed.strip_prefix("data:") {
         return parse_data_url(rest).map(MediaSource::Resource);
     }
+    if let Some(source) = zone_file::parse_system_url(trimmed)? {
+        return Ok(source);
+    }
     if looks_like_object_id(trimmed) {
         // Let the wire type do the decoding so the error message stays
         // authoritative about what a valid object id is.
@@ -1084,12 +1130,14 @@ fn parse_media_locator(raw: &str) -> Result<MediaSource, String> {
         .map_err(|err| format!("invalid object id `{trimmed}`: {err}"));
     }
     let path = PathBuf::from(trimmed);
-    if path.exists() {
+    // A path is resolved later, where the session workspace and the Zone's
+    // files are tried and every miss is reported.
+    if path.exists() || looks_like_path(trimmed) {
         return Ok(MediaSource::LocalFile(path));
     }
     Err(format!(
-        "media `{trimmed}` is neither a URL, a typed object id (`cyfile:…` / `chunk:…`), \
-         nor an existing local file"
+        "media `{trimmed}` is neither a URL (`cyfs:///<path>`, https://…), a typed object id \
+         (`cyfile:…` / `chunk:…`), nor a file path"
     ))
 }
 
@@ -1260,11 +1308,69 @@ fn env_path(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The media and, when it is a Zone file, which one was read.
 async fn resolve_media(
     media: &MediaArg,
     session_id: Option<&str>,
-) -> Result<ResolvedMedia, String> {
+) -> Result<(ResolvedMedia, Option<zone_file::ZoneFile>), String> {
     let hint = media.mime_hint.as_deref().and_then(normalize_mime);
+    match &media.source {
+        MediaSource::LocalFile(raw) => {
+            let (path, found) = match resolve_local_file_path(raw, session_id) {
+                Ok(path) => (path, None),
+                // Not a file here: the path Files shows for a Zone file.
+                Err(local_err) => {
+                    let zone = zone_file::ZoneView::from_runtime();
+                    let Some(segments) = zone.bare_path_segments(raw) else {
+                        return Err(local_err);
+                    };
+                    let found = zone.locate(None, &segments).map_err(|zone_err| {
+                        log::debug!("llm_understand_media: {local_err}");
+                        format!("`{}` is not a file here; as a Zone path: {zone_err}", raw.display())
+                    })?;
+                    (found.path.clone(), Some(found))
+                }
+            };
+            Ok((local_media(path, hint).await?, found))
+        }
+        MediaSource::ZoneFile { zone, segments } => {
+            let found = zone_file::ZoneView::from_runtime().locate(zone.as_deref(), segments)?;
+            Ok((local_media(found.path.clone(), hint).await?, Some(found)))
+        }
+        MediaSource::Resource(source) => Ok((resolve_resource(source, hint).await?, None)),
+    }
+}
+
+/// A file of this runtime, probed.
+async fn local_media(path: PathBuf, hint: Option<String>) -> Result<ResolvedMedia, String> {
+    let (size, head) = probe_file(&path).await?;
+    let mime = hint
+        .or_else(|| mime_from_path_extension(&path))
+        .or_else(|| sniff_mime(&head))
+        .ok_or_else(|| {
+            format!(
+                "cannot determine MIME for local media `{}`; pass mime_hint",
+                path.display()
+            )
+        })?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "media".to_string());
+    Ok(ResolvedMedia {
+        payload: MediaPayload::File(path),
+        mime,
+        size,
+        name: Some(name),
+        head,
+        _download: None,
+    })
+}
+
+async fn resolve_resource(
+    source: &ResourceRef,
+    hint: Option<String>,
+) -> Result<ResolvedMedia, String> {
     let inline = |mime: String, name: Option<String>, bytes: Vec<u8>| {
         let head = bytes[..bytes.len().min(PROBE_HEAD_BYTES)].to_vec();
         ResolvedMedia {
@@ -1276,34 +1382,8 @@ async fn resolve_media(
             _download: None,
         }
     };
-    match &media.source {
-        MediaSource::LocalFile(raw) => {
-            let path = resolve_local_file_path(raw, session_id)?;
-            let (size, head) = probe_file(&path).await?;
-            let mime = hint
-                .clone()
-                .or_else(|| mime_from_path_extension(&path))
-                .or_else(|| sniff_mime(&head))
-                .ok_or_else(|| {
-                    format!(
-                        "cannot determine MIME for local media `{}`; pass mime_hint",
-                        path.display()
-                    )
-                })?;
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "media".to_string());
-            Ok(ResolvedMedia {
-                payload: MediaPayload::File(path),
-                mime,
-                size,
-                name: Some(name),
-                head,
-                _download: None,
-            })
-        }
-        MediaSource::Resource(ResourceRef::Base64 { mime, data_base64 }) => {
+    match source {
+        ResourceRef::Base64 { mime, data_base64 } => {
             let mime =
                 normalize_mime(mime).ok_or_else(|| "base64 media has empty mime".to_string())?;
             if data_base64.trim().is_empty() {
@@ -1315,7 +1395,7 @@ async fn resolve_media(
             let name = format!("inline.{}", mime.rsplit('/').next().unwrap_or("bin"));
             Ok(inline(mime, Some(name), bytes))
         }
-        MediaSource::Resource(ResourceRef::Url { url, mime_hint }) => {
+        ResourceRef::Url { url, mime_hint } => {
             let download = download_url(url).await?;
             let (size, head) = probe_file(&download.0).await?;
             let mime = mime_hint
@@ -1334,7 +1414,7 @@ async fn resolve_media(
                 _download: Some(download),
             })
         }
-        MediaSource::Resource(ResourceRef::NamedObject { obj_id }) => {
+        ResourceRef::NamedObject { obj_id } => {
             let head = if obj_id.is_file_object() {
                 object_head(obj_id, PROBE_HEAD_BYTES).await?
             } else {
@@ -2677,8 +2757,10 @@ const USAGE: &str = r#"Usage: llm_understand_media <file | object id | url> [--g
        agent_tool llm_understand_media --media <json | locator> [--goal <text>] [options]
 
 Media (one of):
-  <locator>               A local file (relative to the current directory or absolute), an object id
-                          (cyfile:…, a chunk id such as mix256:…; e.g. an attachment of a message) or an http(s) URL.
+  <locator>               A local file (relative to the current directory or absolute), a Zone file
+                          (cyfs:///home/<owner>/…, or the path Files shows: /home/<owner>/…), an object id
+                          (cyfile:…, a chunk id such as mix256:…, cyfs://<objid>/; e.g. an attachment of a
+                          message) or an http(s) URL.
   --media <json>          The same as a JSON ResourceRef, e.g. {"kind":"named_object","obj_id":"cyfile:…","mime_hint":"image/png"},
                           {"kind":"local_file","path":"/abs/frame.png"}, or {"url":"https://…"}.
 
@@ -2786,7 +2868,7 @@ impl CliOpts {
 
         Ok(Self {
             media: media.ok_or_else(|| {
-                ParseError::Bad("missing media: a file, an object id (cyfile:…) or a url".to_string())
+                ParseError::Bad("missing media: a file, a Zone file (cyfs:///…), an object id (cyfile:…) or a url".to_string())
             })?,
             goal: goal
                 .map(|value| value.trim().to_string())
@@ -2869,6 +2951,41 @@ mod tests {
         assert!(matches!(cli(&["a.png", "b.png"]), Err(ParseError::Bad(_))));
         assert!(matches!(cli(&["a.png", "--nope"]), Err(ParseError::Bad(_))));
         assert!(matches!(cli(&["--help"]), Err(ParseError::Help)));
+    }
+
+    #[test]
+    fn a_zone_file_parses_bare_or_in_any_media_field() {
+        let book = "cyfs://home/English for Everyone (Audio).pdf";
+        let expected = vec!["home".to_string(), "English for Everyone (Audio).pdf".to_string()];
+        for value in [
+            json!(book),
+            json!({ "url": book }),
+            json!({ "uri": book }),
+            json!({ "kind": "local_file", "path": book }),
+            json!({ "kind": "named_object", "obj_id": book }),
+        ] {
+            match parse_media_arg(&value).unwrap().source {
+                MediaSource::ZoneFile { zone: None, segments } => assert_eq!(segments, expected, "{value}"),
+                other => panic!("{value}: {other:?}"),
+            }
+        }
+        let id = ObjId::new(OBJECT).unwrap();
+        let in_url = json!({ "kind": "named_object", "obj_id": format!("cyfs://{}/", id.to_base32()) });
+        assert!(matches!(
+            parse_media_arg(&in_url).unwrap().source,
+            MediaSource::Resource(ResourceRef::NamedObject { obj_id }) if obj_id == id
+        ));
+        // A path that is not a file in the process's directory is still a path:
+        // resolution tries the session workspace and the Zone.
+        assert!(matches!(
+            parse_media_arg(&json!("/home/alice/Documents/report.pdf")).unwrap().source,
+            MediaSource::LocalFile(_)
+        ));
+        assert!(matches!(
+            parse_media_arg(&json!("frame008.png")).unwrap().source,
+            MediaSource::LocalFile(_)
+        ));
+        assert!(parse_media_arg(&json!("not-a-locator")).is_err());
     }
 
     #[test]
