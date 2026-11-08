@@ -2,7 +2,7 @@
 
 日期：2026-11-01
 
-状态：**整理中，待用户 review / 裁决（Q1–Q9 给的是建议值）。** 起因是 llm_context 冻结重构（[llm-context-freeze-todo](./done/llm-context-freeze-todo.md) §8.4 T7）之后在 xllm 里跑通了 `ask_user`，暴露出两件事：
+状态：**整理中，待用户 review / 裁决（Q2 已于 2026-11-06 裁决为取小；其余 Q1、Q3–Q9 给的是建议值）。** 起因是 llm_context 冻结重构（[llm-context-freeze-todo](./done/llm-context-freeze-todo.md) §8.4 T7）之后在 xllm 里跑通了 `ask_user`，暴露出两件事：
 
 1. 调用内等待预算是一刀切的 `task_wait_ms`（默认 30 秒、硬顶 30 分钟），而 `ask_user` 这类"等人"的工具应该能配到 2 小时这种级别。应当能通过 policy 针对特定工具配置最长等待。
 2. xllm 最常用的 native runtime 对"有没有 BuckyOS"的判定是隐式、分散的（有 token 就接 TaskMgr，provider 另算一套）。应当有显式三档：`yes` / `no` / `auto`（有则用）。
@@ -26,7 +26,7 @@
 `RuntimeConfig`（`deny_unknown_fields`）：`kind`（缺省 native）、`id`、`workdir`、`env`、`remote_ssh`、`remote_node`、`baseline`、`task_wait_ms`。
 
 - **身份**：`runtime_id` 由 native 的 `host + uid`（[mod.rs:525](../src/frame/agent_tool/src/runtime/mod.rs) `native_host_id` = `AGENT_TOOL_HOST_ID` 或 `/etc/hostname + /etc/machine-id`）或远端目标派生，进 `RuntimeDescriptor`，恢复时逐字段核对。策略字段不参与（`task_wait_ms` 已这样处理）。
-- **kind 与依赖**：`remote_node` 要 `XllmDeps.node_executor`，拿不到报 Capability（[mod.rs:794](../src/frame/agent_tool/src/runtime/mod.rs) `from_config_with`）；`container / container_host / http_proxy_runtime` 报"规划中"；TS 侧规划 `browser` kind（[xllm-ts-runtime-todo](./xllm-ts-runtime-todo.md) Q4）。
+- **kind 与依赖**：`remote_node` 要 `XllmDeps.node_executor`，拿不到报 Capability（[mod.rs:794](../src/frame/agent_tool/src/runtime/mod.rs) `from_config_with`）；`container / container_host / http_proxy_runtime` 报"规划中"；TS 侧规划 `site` kind（[xllm-ts-runtime-todo](./xllm-ts-runtime-todo.md) Q4）。
 - **合并**：祖先 → 子目录，同 kind 逐字段覆盖，换 kind 重置整段；CLI `--runtime` 只换 kind。
 - **打开**：`open_runtime(config, ctx, tools, deps)` → `runtime.open` → `(EffectiveTools, XllmToolManager)`；`ShellSettings::from_config(cfg.shell, task_wait_ms)`（xllm.rs:592）把预算塞给 shell 当 `wait_ms`。
 - **Capabilities**（descriptor）：只有 `tools / network / os`，没有"任务后端是什么""有没有 BuckyOS"。
@@ -133,7 +133,7 @@ runtime:
 语义：
 
 - **匹配键（Q1）**：按顺序取第一个命中——(a) `call.name`（function call 工具名 / behavior 动作名 / MCP 工具名）；(b) `call.name == "shell"` 且命令是 `command_is_simple_for_protocol_forward` 认可的简单命令时，取其程序名（basename，去 `.exe`）。不按 `pending_reason` 配（它是工具的自述，不是宿主可控的身份）；不按任务 schema 配（要多一次查询，而且预算在派发时就要定）。
-- **与 `check_after` 的关系（Q2）**：`check_after` 从"替代"改为"建议"：`wait = min(check_after ?? policy.task_wait_ms ?? runtime.task_wait_ms, max_task_wait_ms, deadline)`。工具不能单方面把等待拉过宿主上限。
+- **与 `check_after` 的关系（Q2，2026-11-06 用户裁决：取小）**：`check_after` 从"替代"改为"只能缩短"：`wait = min(check_after（有才算）, policy.task_wait_ms ?? runtime.task_wait_ms, max_task_wait_ms, deadline)`。工具不能单方面把等待拉过宿主预算。这里原来的公式是 `min(check_after ?? policy ?? runtime, max, deadline)`，工具仍能把等待拉到上限，不是取小，已改。这一项随 [TS TODO](./xllm-ts-runtime-todo.md) T2-0 先做，上限在 `max_task_wait_ms` 落地前仍是常量 `MAX_IN_TOOL_WAIT_MS`。
 - **与 run `timeout` 的关系（Q3）**：`timeout` 保持 run 总时长语义，不豁免等待。配置校验：任一 `tool_policy.*.task_wait_ms` 或 `task_wait_ms` > `timeout` → `Config` 错，提示把 `timeout` 调大或预算调小；`max_task_wait_ms` > `timeout` 只 warn（上限可以比总时长大，具体预算不能）。
 - **预算到期的行为不变**：返回"仍在运行 t-…"；xllm 场景下模型可 `wait_task`（其 `wait_ms` 上限也改为 `max_task_wait_ms`），或回复 → `paused (tasks_running)` 等人 `--resume`。libopendan 可为 `ask_user` 配 0 预算（有事件源，等人 30 秒没意义）——"0 等待"这才有了配置落点（第四轮曾建议由 `pending_reason` 声明，第六轮删了；本单用 tool_policy 承接，Q4）。
 - **身份与记录**：`tool_policy / max_task_wait_ms` 与 `task_wait_ms` 一样是策略，不进 `runtime_id`；写进 run.json 的 `config.runtime`，恢复沿用保存值。
@@ -178,7 +178,7 @@ runtime:
 | # | 问题 | 选项 | 建议 |
 | --- | --- | --- | --- |
 | Q1 | `tool_policy` 的匹配键 | (a) 工具名；(b) + shell 简单命令程序名；(c) + `pending_reason` | **a + b**。c 不做：`pending_reason` 是工具自述 |
-| Q2 | `check_after` 与 policy 的关系 | 替代（现状）/ 取小 | **取小**：宿主上限优先 |
+| Q2 | `check_after` 与 policy 的关系 | 替代（现状）/ 取小 | **已裁决：取小**（2026-11-06）。工具只能把等待缩短 |
 | Q3 | 预算 > run `timeout` | 静默截断（现状）/ Config 错 / 等待不计入 timeout | **Config 错**。不改 `timeout` 语义 |
 | Q4 | libopendan 的 `ask_user` 预算 | 由 `pending_reason` 跳过 / tool_policy 配 0 / 维持 30 s | **tool_policy 配 0**（opendan 的 agent 模板里给） |
 | Q5 | Zone 任务等待的轮询 | 维持 1 s / 退避到 30 s / TaskMgr 订阅 | **退避**；有订阅接口再换 |
@@ -199,7 +199,7 @@ runtime:
    - `tool_policy.ask_user.task_wait_ms: 7200000` + `timeout: 10800` → `ask_user` 在调用内等到用户在 MessageHub 作答（≥ 31 分钟后作答，证明越过了旧硬顶）；
    - `timeout: 3600` 配同样预算 → Config 错；
    - SIGKILL 后在无 BuckyOS 的进程里 `--resume` 一个带 `t-` 任务的 `yes` run → NotResumable。
-6. 文档回写：AgentRuntime 设计 §4.1 字段表 / §7 等待规则（"预算可按工具给"）/ §4 三份示例；xllm_rust_sdk.md §8（三档）/ §10；freeze TODO §3.2.1 那句"不按工具分类"改为引用本单；TS TODO Q3（`RuntimeConfig` 新字段）/ Q4（`browser` kind 的 `buckyos` = 是否有浏览器 session）。
+6. 文档回写：AgentRuntime 设计 §4.1 字段表 / §7 等待规则（"预算可按工具给"）/ §4 三份示例；xllm_rust_sdk.md §8（三档）/ §10；freeze TODO §3.2.1 那句"不按工具分类"改为引用本单；TS TODO Q3（`RuntimeConfig` 新字段）/ Q4（`site` kind 的 `buckyos` = 是否有浏览器 session）。
 
 ## 6. 不在本单
 

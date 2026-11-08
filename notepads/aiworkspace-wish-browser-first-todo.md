@@ -97,7 +97,7 @@
 - [ ] **T2-4** README 方法表 `proc.*` 升 `stable`，`METHOD_LEVELS` 同步；契约 fixture `AIWS_REGEN=1 cargo test -p aiworkspace --test contract` 重录（`ws.get_info` 形状变了）。
 - 完成条件：`rg -n "xllm|Deno|deno|wish-host|AIWS_HOST|allow_service_execution|wish_aicc" src/frame/aiworkspace/server src/frame/aiworkspace/store src/frame/aiworkspace/aiws src/kernel/buckyos-api/src/aiworkspace_client.rs` 只剩注释里的历史说明或托管手册引用；三 crate 编译通过。
 
-### M3 Desktop：浏览器执行器接入 xllm TS 运行时（**前置：[xllm TS 运行时 TODO](./xllm-ts-runtime-todo.md) M1–M3 与 MW 完成、`buckyos/xllm` 已发布到 Desktop 依赖的 websdk 版本**）
+### M3 Desktop：浏览器执行器接入 xllm TS 运行时（**前置：[xllm TS 运行时 TODO](./xllm-ts-runtime-todo.md) M1、M2、M6（Worker 宿主；2026-11-07 起排在那边第三步之后）与 MW 完成、`buckyos/xllm` 已发布到 Desktop 依赖的 websdk 版本**）
 
 - [ ] **T3-0** 升级 Desktop 的 `buckyos` 依赖到含 `buckyos/xllm` 与 `buckyos/xllm/worker` 的版本；Vite 下 Worker 入口用 `new Worker(new URL('buckyos/xllm/worker', import.meta.url), { type: 'module' })` 或 `xllmWorkerBlobUrl()`（按打包结果择一，记入 §7）。
 - [ ] **T3-1** `executor/llmMap.ts`：移植 `llm.rs::llm_map`（分批 `batch` 默认 20、上限 50；`MAP_SYSTEM` 同文；schema 子集校验移植 `validate`——`type` / `enum` / `type: [..]` / `null`；失败项逐个重试；项数预算 `budget.llm_map_max_items` 超限返回 `{ error }`；返回 `{ results, calls, cached }`）；缓存：先 `proc.tool llm_cache{get}` 批量查，命中跳过，新结果 `llm_cache{put}`；模型 = `budget.map_model`，模型调用 = providers `LlmClient.infer({ json_schema })`（AICC 走用户 session；dev 覆盖用 `OpenAiLlmClient`——`mock-llm.mjs` 已按 system 含 `item-by-item judge` 回 `mapJudge`）。
