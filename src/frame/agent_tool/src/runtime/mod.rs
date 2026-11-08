@@ -243,6 +243,9 @@ impl RuntimeConfig {
         if other.workdir.is_some() {
             self.workdir = other.workdir.clone();
         }
+        if other.computer.is_some() {
+            self.computer = other.computer.clone();
+        }
         if other.baseline.is_some() {
             self.baseline = other.baseline;
         }

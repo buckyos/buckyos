@@ -9,7 +9,10 @@ use serde_json::{json, Value};
 
 use super::node::{BuckyosNodeConnector, NodeClient, NodeExecutorConnector, NodeIo, RemoteOp};
 use crate::llm_bash::{new_run_binding_slot, RunBindingSlot};
-use crate::{AgentTool, AgentToolError, ToolCtx, TypedTool, TypedToolHandle};
+use crate::{
+    AgentTool, AgentToolError, AgentToolResult, AgentToolStatus, CallingConventions,
+    SessionRuntimeContext, ToolCtx, ToolSpec, TypedTool, TypedToolHandle,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -100,7 +103,7 @@ impl TypedTool for ComputerTool {
     }
 
     fn description(&self) -> &str {
-        "Use this native runtime's desktop through local IPC. request uses the Computer API: command inspect, observe, click, type, keypress, scroll or wait_for; binding_id is filled from the local display when empty or omitted. Start with inspect or observe (mode: visual or auto); inspect reports the modes supported by the local driver. Actions require the target and observation guards from the preceding observation. Returns driver results and a local screenshot PNG path; inspect that image with the media tools when needed. Owner permissions, focus checks and desktop locking are enforced by the existing driver."
+        "Use this native runtime's desktop through local IPC. request uses the Computer API: command inspect, observe, click, type, keypress, scroll or wait_for; binding_id is filled from the local display when empty or omitted. Start with inspect or observe (mode: visual or auto); inspect reports the modes supported by the local driver. Results are JSON: status.result.computer contains execution, error and observation; screenshot is an absolute local PNG path. Use llm_understand_media on that local file to locate a target in the observation's original screenshot width and height. Actions must use that observation_id, binding_id and screenshot coordinates before expires_at_ms; if the observation expires or the screen changes, observe again and verify the target. An unknown execution outcome must not be blindly retried. Owner permissions, focus checks and desktop locking are enforced by the existing driver."
     }
 
     async fn execute(&self, _ctx: &ToolCtx<'_>, args: Self::Args) -> Result<Value, AgentToolError> {
@@ -233,17 +236,66 @@ impl TypedTool for ComputerTool {
     }
 }
 
+struct ComputerToolHandle(TypedToolHandle<ComputerTool>);
+
+#[async_trait]
+impl AgentTool for ComputerToolHandle {
+    fn spec(&self) -> ToolSpec {
+        self.0.spec()
+    }
+
+    fn calling(&self) -> CallingConventions {
+        self.0.calling()
+    }
+
+    async fn call(
+        &self,
+        ctx: &SessionRuntimeContext,
+        args: Value,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        let result = self.0.call(ctx, args).await?;
+        let state = result
+            .details
+            .pointer("/status/state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let status = if state == "succeeded" {
+            AgentToolStatus::Success
+        } else {
+            AgentToolStatus::Error
+        };
+        let summary = match result
+            .details
+            .pointer("/status/result/computer/error/message")
+            .and_then(Value::as_str)
+        {
+            Some(error) => format!("computer {state}: {error}"),
+            None => format!("computer {state}"),
+        };
+        let output = result.details.to_string();
+        Ok(result
+            .with_output(output)
+            .with_result(summary)
+            .with_status(status)
+            .refresh_default_title())
+    }
+}
+
 pub fn tool(
     config: NativeComputerConfig,
     run: RunBindingSlot,
     tokens: Option<Arc<dyn NodeExecutorConnector>>,
 ) -> Arc<dyn AgentTool> {
-    Arc::new(TypedToolHandle::new(ComputerTool {
+    Arc::new(ComputerToolHandle(TypedToolHandle::new(ComputerTool {
         config,
         run,
         tokens: tokens.unwrap_or_else(|| Arc::new(BuckyosNodeConnector)),
-    }))
+    })))
 }
+
+#[cfg(test)]
+#[path = "computer_result_tests.rs"]
+mod result_tests;
 
 #[cfg(test)]
 mod tests {

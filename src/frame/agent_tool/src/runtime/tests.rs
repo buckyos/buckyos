@@ -217,6 +217,109 @@ fn site_runtime_is_a_capability_error() {
 }
 
 #[tokio::test]
+async fn native_computer_config_layers_control_standalone_tool_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let workdir = dir.path().join("work");
+    std::fs::create_dir(&workdir).unwrap();
+    let inherited = json!({
+        "endpoint": dir.path().join("parent.sock"),
+        "node_did": "did:web:ood1.test.buckyos.io",
+        "profile_id": "parent-profile",
+        "access": "control"
+    });
+    std::fs::write(
+        dir.path().join(".llm_context"),
+        json!({
+            "runtime": {"kind": "native", "computer": inherited},
+            "tools": true,
+            "runs_dir": "none"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    for access in [None, Some("observe"), Some("none"), Some("control")] {
+        let mut child = json!({"runtime": {"env": {"COMPUTER_CONFIG_TEST": "child"}}});
+        let expected = match access {
+            None => inherited.clone(),
+            Some(access) => {
+                let computer = json!({
+                    "endpoint": dir.path().join("child.sock"),
+                    "node_did": "did:web:ood2.test.buckyos.io",
+                    "profile_id": "child-profile",
+                    "access": access
+                });
+                child["runtime"]["computer"] = computer.clone();
+                computer
+            }
+        };
+        std::fs::write(workdir.join(".llm_context"), child.to_string()).unwrap();
+        let prepared = crate::xllm::XllmTask::prepare(
+            &workdir,
+            crate::xllm::TaskInput::question("Inspect the desktop"),
+            crate::xllm::TaskOverrides {
+                runtime: Some(RuntimeConfig {
+                    kind: Some("native".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            &XllmDeps::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&prepared.config.runtime.computer).unwrap(),
+            expected,
+            "child access: {access:?}"
+        );
+        assert_eq!(
+            prepared.tools.native.iter().any(|tool| tool.name == "computer"),
+            access != Some("none"),
+            "child access: {access:?}"
+        );
+    }
+}
+
+#[test]
+fn native_computer_config_is_cleared_when_layers_switch_runtime_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let native = crate::xllm::ConfigLayer {
+        path: "/parent/.llm_context".into(),
+        file: crate::xllm::parse_llm_context_file(
+            Path::new("/parent/.llm_context"),
+            &json!({"runtime": {"kind": "native", "computer": {
+                "endpoint": dir.path().join("computer.sock"),
+                "node_did": "did:web:ood1.test.buckyos.io",
+                "profile_id": "owner",
+                "access": "control"
+            }}})
+            .to_string(),
+        )
+        .unwrap(),
+    };
+    let remote = crate::xllm::ConfigLayer {
+        path: "/parent/work/.llm_context".into(),
+        file: crate::xllm::parse_llm_context_file(
+            Path::new("/parent/work/.llm_context"),
+            "runtime: {kind: remote_ssh, workdir: /srv/work, remote_ssh: {host: build}}",
+        )
+        .unwrap(),
+    };
+    let mut merged = crate::xllm::merge_config_layers(&[native, remote]).unwrap().runtime;
+    assert_eq!(merged.kind(), "remote_ssh");
+    assert!(merged.computer.is_none());
+    merged.validate(true).unwrap();
+    merged.merge_over(&RuntimeConfig {
+        kind: Some("native".into()),
+        ..Default::default()
+    });
+    assert!(merged.computer.is_none());
+    assert!(merged.remote_ssh.is_none());
+    merged.validate(true).unwrap();
+}
+
+#[tokio::test]
 async fn native_default_explicit_env_files_and_prompt_share_executor() {
     let dir = tempfile::tempdir().unwrap();
     let (default, _, _) = open(
