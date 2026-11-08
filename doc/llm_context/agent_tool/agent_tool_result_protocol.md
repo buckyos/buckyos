@@ -499,7 +499,7 @@ Agent Tool 内部的完整返回。
 
 ### `check_after`
 
-秒，仅在 `status = pending` 时有意义：派发器把它当作这次调用内等待的上限（从返回时起算），取代 runtime 的等待预算。缺省时用预算 `RuntimeConfig.task_wait_ms`（默认 25 秒）。两种情况都受工具内等待上限（30 分钟）和 run 的 deadline 约束。
+秒，仅在 `status = pending` 时有意义：这次调用内最多等多久（从返回时起算）。工具只能把等待缩短，不能拉长：派发器等 `min(check_after, RuntimeConfig.task_wait_ms)`，缺省时等预算 `task_wait_ms`（默认 25 秒）；两种情况都再受工具内等待上限（30 分钟）和 run 的 deadline 约束（`task_model::wait_until_ms`）。
 
 ### `estimated_wait`
 
@@ -714,7 +714,7 @@ xllm 和 libopendan 共用的派发器 `agent_tool::xllm::XllmToolManager` 把�
 
 ### pending 的处理：调用内等待
 
-llm_context 不认识 task，循环里不等待，也没有让工具挂起 run 的原语：每次调用都当场得到结果，任何等待都是 task。派发器（`XllmToolManager`）收到 `pending` + `task_id` 后，经本 run 的 resolver（`task_model::RunningTaskResolver`）在这次调用里等：等到 task 结束、`check_after`，或 runtime 的调用内等待预算 `RuntimeConfig.task_wait_ms`（默认 30 秒），且不超过工具内等待上限（`task_model::MAX_IN_TOOL_WAIT_MS`，30 分钟）和 run 的 deadline。然后把 task 当时的状态交给模型：
+llm_context 不认识 task，循环里不等待，也没有让工具挂起 run 的原语：每次调用都当场得到结果，任何等待都是 task。派发器（`XllmToolManager`）收到 `pending` + `task_id` 后，经本 run 的 resolver（`task_model::RunningTaskResolver`）在这次调用里等：等到 task 结束，或 runtime 的调用内等待预算 `RuntimeConfig.task_wait_ms`（默认 25 秒；工具给的 `check_after` 更短时以它为准），且不超过工具内等待上限（`task_model::MAX_IN_TOOL_WAIT_MS`，30 分钟）和 run 的 deadline。然后把 task 当时的状态交给模型：
 
 - 已结束：task 的结果，成功为 `Success`，失败为 `Error`
 - 仍在运行：普通的 `Success` 结果，正文是 `task <id> is still running (<已运行时长>): <简述>`、输出尾部和跟进方式；信封带 `task_id`、`partial_output`，`summary` 为 `task <id> still running`

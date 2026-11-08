@@ -1088,3 +1088,4 @@ xllm 完成后的后续规划，是基于 OpenDAN Agent Session 提供面向单�
 - [现有 run_local_llm 目录与命令行协议](../../doc/agent_tool/local_llm_context_protocol.md) 用于理解已有能力及问题，不作为新产品的兼容约束。
 - [现有 XML behavior 协议提示词](../../src/frame/llm_context/src/xml_behavior.rs) 和 [OpenDAN 模板环境](../../src/frame/opendan/src/prompt_env.rs) 是运行时协议装配的实现参考，不限定 xllm 通用 loop 的任务类型。当前协议文本通过模板变量引入，loop 本身不自动补入；新 SDK 须保证通用规则、实际协议说明与执行器成套装配。
 - 后续 SDK/CLI 技术设计需要落实目录默认任务与显式选组、Provider 对象与身份来源、主模型/文件模型分工、两种 loop 与 tools2actions、MCP/内置工具解析、组内工具覆盖、外部组文件展开、环境模板及 section 行号拼接、result_format 提取与 CLI 包装、run_logs 与两类超时、配置来源和凭据引用、管道执行时序、错误分类与退出码、Runs 格式和恢复保证；遇到产品行为变化时，应同步修订本 PRD。
+- TypeScript 版本（websdk `buckyos/xllm`）不改变本文的产品行为，见 [xllm TS 运行时](../../doc/llm_context/xllm_ts_runtime.md)；它没有自己的命令行，命令行由 Rust 交付。

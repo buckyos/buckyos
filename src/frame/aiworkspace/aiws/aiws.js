@@ -39,6 +39,13 @@ function fieldList(fields) {
   return Object.entries(fields).map(([name, t]) => (typeof t === 'string' ? { name, type: t } : { name, ...t }))
 }
 
+/** The message and the stack: a stack of SpiderMonkey or JavaScriptCore (the browser's executor) does not repeat the message. */
+function errorText(error) {
+  const text = String(error)
+  const stack = typeof error?.stack === 'string' ? error.stack : ''
+  return stack.includes(text) ? stack : [text, stack].filter(Boolean).join('\n')
+}
+
 function compareValues(a, b) {
   if (a === b) return 0
   if (a === null || a === undefined) return 1
@@ -365,7 +372,7 @@ export class ProgramHost {
       checks: this.checks,
       external: [...this.external],
       llm_map: this.llmStats,
-      error: error ? String(error?.stack ?? error) : null,
+      error: error ? errorText(error) : null,
     }
     Deno.writeTextFileSync(join(dir, 'results.json'), JSON.stringify(out))
     return out

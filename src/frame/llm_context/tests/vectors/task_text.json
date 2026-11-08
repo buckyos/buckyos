@@ -1,0 +1,407 @@
+{
+  "cases": [
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 173,
+        "call_id": "call-1",
+        "content": "task local:7 is still running (5s): cargo build --release\nCall `wait_task` with task_id=\"local:7\" to keep waiting (wait_ms up to 30 min), or `get_task_state` to check later.",
+        "host": {
+          "agent_tool_protocol": "1",
+          "status": "success",
+          "summary": "task local:7 still running",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "kind": "tools"
+      },
+      "name": "running_seconds_no_tail",
+      "state": {
+        "brief": "cargo build --release",
+        "cancellable": false,
+        "elapsed_ms": 5400,
+        "kind": "running"
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 243,
+        "call_id": "call-1",
+        "content": "task local:7 is still running (1m05s): cargo build --release\n--- output so far (tail) ---\nCompiling x v0.1.0\nCompiling y v0.2.0\nCall `wait_task` with task_id=\"local:7\" to keep waiting (wait_ms up to 30 min), or `get_task_state` to check later.",
+        "host": {
+          "agent_tool_protocol": "1",
+          "partial_output": "Compiling x v0.1.0\nCompiling y v0.2.0\n",
+          "status": "success",
+          "summary": "task local:7 still running",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "kind": "tools"
+      },
+      "name": "running_minutes_with_tail",
+      "state": {
+        "brief": "cargo build --release",
+        "cancellable": false,
+        "elapsed_ms": 65000,
+        "kind": "running",
+        "output_tail": "Compiling x v0.1.0\nCompiling y v0.2.0\n"
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 223,
+        "call_id": "call-1",
+        "content": "task local:7 is still running (1h02m): cargo build --release\nCall `wait_task` with task_id=\"local:7\" to keep waiting (wait_ms up to 30 min), or `get_task_state` to check later. `cancel_task` with task_id=\"local:7\" stops it.",
+        "host": {
+          "agent_tool_protocol": "1",
+          "partial_output": "   ",
+          "status": "success",
+          "summary": "task local:7 still running",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "kind": "tools"
+      },
+      "name": "running_hours_cancellable",
+      "state": {
+        "brief": "cargo build --release",
+        "cancellable": true,
+        "elapsed_ms": 3725000,
+        "kind": "running",
+        "output_tail": "   "
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 297,
+        "call_id": "call-1",
+        "content": "task local:7 is still running (12s): cargo build --release\n--- output so far (tail) ---\nstep 3/9\nRun `buckyos-task wait local:7 --wait-ms <ms>` to keep waiting (give the shell call a larger wait_ms than that), or `buckyos-task state local:7` to check later. `buckyos-task cancel local:7` stops it.",
+        "host": {
+          "agent_tool_protocol": "1",
+          "partial_output": "step 3/9",
+          "status": "success",
+          "summary": "task local:7 still running",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "cli": "buckyos-task",
+        "kind": "command"
+      },
+      "name": "running_command_cancellable",
+      "state": {
+        "brief": "cargo build --release",
+        "cancellable": true,
+        "elapsed_ms": 12000,
+        "kind": "running",
+        "output_tail": "step 3/9"
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 222,
+        "call_id": "call-1",
+        "content": "task local:7 is still running (10m00s): cargo build --release\nRun `buckyos-task wait local:7 --wait-ms <ms>` to keep waiting (give the shell call a larger wait_ms than that), or `buckyos-task state local:7` to check later.",
+        "host": {
+          "agent_tool_protocol": "1",
+          "status": "success",
+          "summary": "task local:7 still running",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "cli": "buckyos-task",
+        "kind": "command"
+      },
+      "name": "running_command_not_cancellable",
+      "state": {
+        "brief": "cargo build --release",
+        "cancellable": false,
+        "elapsed_ms": 600000,
+        "kind": "running"
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 248,
+        "call_id": "call-1",
+        "content": "task local:7 is still running (1s): cargo build --release\nIts end comes back to you as input: do not check on it again. Reply with where things stand (that ends your turn), or go on with other work meanwhile. `buckyos-task cancel local:7` stops it.",
+        "host": {
+          "agent_tool_protocol": "1",
+          "status": "success",
+          "summary": "task local:7 still running",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "cli": "buckyos-task",
+        "kind": "input"
+      },
+      "name": "running_input_with_cli_cancellable",
+      "state": {
+        "brief": "cargo build --release",
+        "cancellable": true,
+        "elapsed_ms": 1000,
+        "kind": "running"
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 208,
+        "call_id": "call-1",
+        "content": "task local:7 is still running (1s): cargo build --release\nIts end comes back to you as input: do not check on it again. Reply with where things stand (that ends your turn), or go on with other work meanwhile.",
+        "host": {
+          "agent_tool_protocol": "1",
+          "status": "success",
+          "summary": "task local:7 still running",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "cli": "buckyos-task",
+        "kind": "input"
+      },
+      "name": "running_input_with_cli_not_cancellable",
+      "state": {
+        "brief": "cargo build --release",
+        "cancellable": false,
+        "elapsed_ms": 1000,
+        "kind": "running"
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 290,
+        "call_id": "call-1",
+        "content": "task local:7 is still running (59s): cargo build --release\n--- output so far (tail) ---\ntail\nIts end comes back to you as input: do not check on it again. Reply with where things stand (that ends your turn), or go on with other work meanwhile. `cancel_task` with task_id=\"local:7\" stops it.",
+        "host": {
+          "agent_tool_protocol": "1",
+          "partial_output": "tail",
+          "status": "success",
+          "summary": "task local:7 still running",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "kind": "input"
+      },
+      "name": "running_input_without_cli_cancellable",
+      "state": {
+        "brief": "cargo build --release",
+        "cancellable": true,
+        "elapsed_ms": 59999,
+        "kind": "running",
+        "output_tail": "tail"
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 5,
+        "call_id": "call-1",
+        "content": "done\n",
+        "host": {
+          "agent_tool_protocol": "1",
+          "status": "success",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "kind": "tools"
+      },
+      "name": "finished_success",
+      "state": {
+        "kind": "finished",
+        "output": "done\n",
+        "success": true
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "bytes": 5,
+        "call_id": "call-1",
+        "content": "built",
+        "host": {
+          "agent_tool_protocol": "1",
+          "return_code": 0,
+          "status": "success",
+          "summary": "cargo build => success",
+          "task_id": "local:7"
+        },
+        "kind": "success",
+        "truncated": false
+      },
+      "fn": "observation",
+      "followup": {
+        "kind": "tools"
+      },
+      "name": "finished_success_with_tool_result",
+      "state": {
+        "kind": "finished",
+        "output": "built",
+        "success": true,
+        "tool_result": {
+          "return_code": 0,
+          "status": "success",
+          "summary": "cargo build => success"
+        }
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "call_id": "call-1",
+        "host": {
+          "agent_tool_protocol": "1",
+          "status": "error",
+          "task_id": "local:7"
+        },
+        "kind": "error",
+        "message": "exit=2"
+      },
+      "fn": "observation",
+      "followup": {
+        "kind": "tools"
+      },
+      "name": "finished_failure",
+      "state": {
+        "kind": "finished",
+        "output": "exit=2",
+        "success": false
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "call_id": "call-1",
+        "host": {
+          "agent_tool_protocol": "1",
+          "status": "error",
+          "task_id": "local:7"
+        },
+        "kind": "error",
+        "message": "task local:7 failed"
+      },
+      "fn": "observation",
+      "followup": {
+        "kind": "tools"
+      },
+      "name": "finished_failure_empty_output",
+      "state": {
+        "kind": "finished",
+        "output": " \n",
+        "success": false
+      },
+      "task_id": "local:7"
+    },
+    {
+      "call_id": "call-1",
+      "expect": {
+        "call_id": "call-1",
+        "host": {
+          "agent_tool_protocol": "1",
+          "status": "error",
+          "summary": "task local:7 state unknown",
+          "task_id": "local:7"
+        },
+        "kind": "error",
+        "message": "task local:7: state unknown (task manager restarted). Its result was not recorded; check the actual state (files, processes, logs) before repeating the work."
+      },
+      "fn": "observation",
+      "followup": {
+        "cli": "buckyos-task",
+        "kind": "command"
+      },
+      "name": "unknown",
+      "state": {
+        "kind": "unknown",
+        "reason": "task manager restarted"
+      },
+      "task_id": "local:7"
+    },
+    {
+      "expect": "A task is followed with `wait_task` (task_id, wait_ms up to 30 min) to keep waiting, or `get_task_state` to check it later; `cancel_task` stops a cancellable task.",
+      "fn": "general_hint",
+      "followup": {
+        "kind": "tools"
+      },
+      "name": "general_hint_tools"
+    },
+    {
+      "expect": "A task is followed with `buckyos-task wait <task_id> --wait-ms <ms>` to keep waiting (give the shell call a larger wait_ms than that), or `buckyos-task state <task_id>` to check it later; `buckyos-task cancel <task_id>` stops a cancellable task.",
+      "fn": "general_hint",
+      "followup": {
+        "cli": "buckyos-task",
+        "kind": "command"
+      },
+      "name": "general_hint_command"
+    },
+    {
+      "expect": "A task's end comes back to you as input with its full result, and its new output is shown to you before you answer: do not wait for it or check on it in a loop. When nothing else is to be done now, reply with where things stand — that ends your turn; the task's end starts the next one. `buckyos-task state <task_id>` shows a task's output once when you need it; `buckyos-task cancel <task_id>` stops a cancellable one.",
+      "fn": "general_hint",
+      "followup": {
+        "cli": "buckyos-task",
+        "kind": "input"
+      },
+      "name": "general_hint_input_with_cli"
+    },
+    {
+      "expect": "A task's end comes back to you as input with its full result, and its new output is shown to you before you answer: do not wait for it or check on it in a loop. When nothing else is to be done now, reply with where things stand — that ends your turn; the task's end starts the next one. `cancel_task` stops a cancellable one.",
+      "fn": "general_hint",
+      "followup": {
+        "kind": "input"
+      },
+      "name": "general_hint_input_without_cli"
+    }
+  ],
+  "vectors_version": 1
+}

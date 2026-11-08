@@ -33,10 +33,12 @@ pub enum ProviderFailure {
     /// waist turns it into `Outcome::ContextLimitReached { which: ProviderRefused }`.
     ContextLimit,
     /// The AI service refused the call under a policy of the party it is
-    /// charged to (quota, resource permission, ...), reported by a structured
-    /// service code. Re-running cannot help until that policy changes; the
-    /// layer above must not retry the same call by itself. `code` is defined
-    /// by the provider adapter and opaque to the waist.
+    /// charged to (quota, resource permission, ...) or refused the caller's
+    /// credentials (a rejected or expired token, HTTP 401 / 403), reported
+    /// by a structured service code or status. Re-running cannot help until
+    /// that policy or credential changes; the layer above must not retry the
+    /// same call by itself. `code` is defined by the provider adapter and
+    /// opaque to the waist.
     Refused { code: String },
 }
 

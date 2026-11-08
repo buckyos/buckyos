@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use agent_tool::xllm::RunStatus;
+use agent_tool::xllm::{RunStatus, REFUSED_CREDENTIALS};
 use buckyos_api::AiUsage;
 use llm_context::error::{ErrorSource, LLMComputeError, ProviderFailure};
 use llm_context::outcome::{ContextOutput, LLMContextOutcome};
@@ -762,7 +762,7 @@ pub(super) async fn handle_context_outcome(
                 LLMComputeError::Provider {
                     failure: ProviderFailure::Refused { code },
                     ..
-                } => json!({
+                } if code != REFUSED_CREDENTIALS => json!({
                     "kind": AI_QUOTA_ERROR_KIND,
                     "refusal": code,
                     "message": "the AI service refused the call under the quota or resource policy of the Agent's owner",

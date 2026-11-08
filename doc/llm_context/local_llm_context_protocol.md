@@ -312,7 +312,7 @@ Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。
 | `failed` | 是 | 不可恢复 Provider / 内部错误、连续可纠正错误超限、压缩失败或重复超限等 |
 | `limit_reached` | 是 | 工具迭代、wallclock 等底层预算耗尽；工具预算的 `limit_reason` 为 `tool iteration limit (N) reached`（底层 `BudgetKind::ToolIterations`，序列化为 `tool_iterations`） |
 
-Provider Permanent 错误中包含 token、401、403、auth、expired、permission 等线索时，当前实现将其归为可恢复的 `credentials`；其它 Permanent 和 Unknown 为失败。此处是错误文本分类，不是自动刷新任意凭据的保证。可恢复故障停止为 paused，由调用方显式 resume；不在同一次 CLI 中无限重试。
+服务拒绝调用方凭据（kRPC `InvalidToken` / `TokenExpired` / `NoPermission`、HTTP 401 / 403）时，adapter 给出结构化的 `Refused { code: "credentials" }`，归为可恢复的 `credentials`；Permanent 和 Unknown 为失败，不按错误文本分类。这不是自动刷新任意凭据的保证。可恢复故障停止为 paused，由调用方显式 resume；不在同一次 CLI 中无限重试。
 
 `yield` 与 `tasks_running` 不是故障：循环里不等待，模型停下来等新输入，或者回复时本 Run 交出的 task 还没结束（task 由 `XllmToolManager` 的 resolver 列出）。暂停时进程内仍在运行的 task 交给操作系统（`InProcessTaskManager::release_running`，shell 任务解除进程组守卫），进程退出后命令照跑，执行目录记下 `exit`；resume 后 `local:shell:<call_id>` 从执行目录读出结局（还没结束时是"状态未知，可能仍在运行"）。快照停在推理之后的边界上，`last_error.message` 是模型这一步的报告或回复文本。`--resume [message]` 把消息作为新的 user 输入注入同一个快照（`XllmRun::inject_input`，注入后先提交快照），在同一个 Run 里接着推理，Step 编号连续；不带消息时直接续跑。快照停在一批工具调用中间时不能注入消息，先不带消息 resume。
 
@@ -321,7 +321,7 @@ Provider Permanent 错误中包含 token、401、403、auth、expired、permissi
 1. 按显式 ID 或当前工作目录最新非终态记录选择 Run。若指定终态，返回保存的记录，不再次执行；同时给执行额度参数会报 `RunTerminal`。
 2. 非终态检查运行锁、记录版本、宿主状态（`host_commit_pending`、`handover`、待校验的最终报告、受管 workspace，见 §11）、运行协议及原工作目录。
 3. 取得 Run / 工作目录锁后重读记录，再次确认宿主输入已提交、没有待宿主处理的交接点或最终报告，见 §11。
-4. 使用保存的配置与工具来源重建工具 / Provider，重新读取凭据引用，核对重建出的 runtime descriptor；不重新合并 `.llm_context`、重选组或重渲染提示词。
+4. 使用保存的配置与工具来源重建工具 / Provider，重新读取凭据引用，核对重建出的 runtime descriptor；不重新合并 `.llm_context`、重选组或重渲染提示词。对模型广告的工具 spec 是 run 保存的那份，保存的工具在本执行者派发不了时拒绝接手（`NotResumable`）。
 5. 使用 `latest_snapshot_idx` 指向的快照恢复；尚未有快照时使用 `pending_input`。两者都没有则拒绝恢复。快照里可能在执行的调用交给派发器按 call_id 处理，见 §8.3。
 6. 重置本次 wallclock 起点；保留用量、`usage.llm_requests` 和已消费的工具迭代。`ResumeLimits` 可覆盖 `max_tokens`、`max_tool_iterations`、`timeout_secs`、`llm_timeout_secs`；调整 `max_tool_iterations` 时以新总额度减去已消费额度（原总额度 − `tool_iterations_left`）计算剩余值，已消费的额度不退还。
 7. 未挂起快照直接续跑；上下文上限快照先压缩。CLI 带了消息时先注入快照（§8.1）再续跑。

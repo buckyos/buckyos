@@ -605,7 +605,7 @@ Workspace 服务可以作为经过授权的服务调用中介。例如，以服�
 | D18 | 公式 v1 边界 | v1 后端不做读时求值；共享结果经 Commit 物化，复用 derived 记录 | K10 | 已确认：采纳建议（2026-10-22） |
 | D19 | 配额与维护通道 | 先定计量口径、超额结果形状和维护方法清单；数值与计费延后 | K09 | 已确认：采纳建议（2026-10-22） |
 | D20 | 规范化日志是否独立于 planner 可应用 | 日志改为纯应用型；K05 验收改为“旧日志在新 planner 下重放一致” | K05、D01、D07 | 已确认：采纳建议（2026-10-23） |
-| D21 | 本地模式生成程序的执行形态 | sandboxed iframe / Worker + postMessage SDK，不持有 token | D14、K15 | 已确认：Worker + postMessage；不用 iframe，每个 Workspace 独立域名，见 D21 决定（2026-10-23） |
+| D21 | 本地模式生成程序的执行形态 | sandboxed iframe / Worker + postMessage SDK，不持有 token | D14、K15 | 已确认：Worker + postMessage；不用 iframe 承载页面，每个 Workspace 独立域名，见 D21 决定（2026-10-23）；2026-11-07 实测同源 Worker 不是隔离边界，Worker 改放进隐藏的 sandbox iframe + CSP，见 D21 决定的补充 |
 | D22 | 任务结果写权限的来源 | 托管执行模式按执行身份；本地模式按确认者，由服务签发限定输出的 run token | D16、D14 | 已确认：v1 托管执行用 Owner 指定配置，后续支持当前用户的 Agent，见 D22 决定（2026-10-23） |
 | D23 | “用户后台模式”是否并入托管执行模式 | 并入；默认执行者为该用户的 Jarvis | D14 | 已确认：并入，但改称“托管执行模式”（Run Agent Work Session 是 AppLoader 的一种形式），见 D23 决定（2026-10-23） |
 | D24 | v1 自动同步的宿主 | 服务侧只做无凭据公开 URL 抓取，计流量额度；有凭据的 Source 走托管执行模式 | D12、D14、D19 | 已确认：采纳建议（2026-10-23） |
@@ -947,7 +947,7 @@ Folder 是唯一能廉价随时算出实体级 Content ID 的原语（成员名�
 
 **Review 补充（2026-10-22）**
 
-**本地模式的安全形态要先定（D21）。** 恢复“AI 生成程序在浏览器执行”意味着模型写的 JS 带着用户 session 跑在应用源下，等价于自我注入 XSS。按“先能力后安全”可以作为已知风险上线，但形态应现在定：生成程序跑在 sandboxed iframe 或 Worker，只通过 postMessage 拿到受限的 Workspace SDK（读输入快照、写候选结果），不直接持有 token。这决定本地执行器的接口形状，后改成本高。本地模式的运行特征还包括：标签页关闭即中断、长任务不可能、需要心跳或租约协议（D15）。
+**本地模式的安全形态要先定（D21）。** 恢复“AI 生成程序在浏览器执行”意味着模型写的 JS 带着用户 session 跑在应用源下，等价于自我注入 XSS。按“先能力后安全”可以作为已知风险上线，但形态应现在定：生成程序跑在 sandboxed iframe 或 Worker，只通过 postMessage 拿到受限的 Workspace SDK（读输入快照、写候选结果），不直接持有 token。这决定本地执行器的接口形状，后改成本高。本地模式的运行特征还包括：标签页关闭即中断、长任务不可能、需要心跳或租约协议（D15）。**→ 2026-11-07 实测**：只用同源 Worker 不够，它的请求自动带本页 cookie，也能联网和读写本页存储；生成程序改在隐藏 sandbox iframe + CSP 里的 Worker 中运行，见 D21 决定的补充。
 
 **托管执行模式的三个缺口：**
 
@@ -1083,9 +1083,11 @@ D06 与本项相互制约：若提交历史 v1 不截断，删除内容本身不
 
 **决定（2026-10-23）**：不用 iframe。每个 Workspace 使用独立域名，URL 对 SEO 友好，形态为 `aiws-<id>.<zonehost>/<workspace_name>/<surface_name>?...`，Workspace 之间以及与 Desktop 之间由浏览器源隔离。生成程序用 Worker + postMessage。
 
+**补充（2026-11-07）**：“不用 iframe”指不用 iframe 承载 Workspace 页面，页面形态（独立域名、SEO 友好的 URL）不变。只放开一种用法：隐藏的 sandbox iframe 作为生成程序的容器，不承载页面，程序仍在它里面的 Worker 中运行（下面第一条细则）。
+
 以下细则由决定推导，实施前需再核对：
 
-- 独立源隔离的是 Workspace 彼此及 Desktop，不隔离生成程序与本 Workspace 页面。Worker 与页面同源，但没有 DOM 和 cookie 访问；token 只留在页面主线程，SDK 调用经 postMessage 代理。建议中的“不持有 token”仍然成立。
+- 独立源隔离的是 Workspace 彼此及 Desktop，不隔离生成程序与本 Workspace 页面。原推导“Worker 与页面同源，但没有 DOM 和 cookie 访问”**→ 2026-11-07 实测不成立**（Chromium 156、Firefox 157、WebKit 27.2，不依赖 Zone 的用例）：同源 Worker 读不到 `document.cookie`，但它的 `fetch` 自动带本页 cookie（包括 `POST /sso_refresh`；按代码推断这能换到 `session_token`，未在 Zone 上实测），能向外发数据（`fetch`、WebSocket、远程 `import`、嵌套 Worker），能读写本页的 IndexedDB、覆盖 Cache Storage。所以生成程序放进沙箱：隐藏的 `<iframe sandbox="allow-scripts">`（源为 `null`，没有本页的 cookie、IndexedDB、Cache Storage）加 meta CSP `default-src 'none'; script-src 'unsafe-inline' blob:; worker-src blob:`（没有任何网络来源）；iframe 从 blob 起 classic Worker（Chromium 的 sandbox 里 module Worker 起不来，Firefox、WebKit 能起），Worker 继承 CSP，runner 再 `import()` blob 里的程序。只有 sandbox、没有 CSP 时，三种浏览器向外发数据都成功，Firefox、WebKit 的同源请求还带上了未设 SameSite 的 cookie（BuckyOS 的登录 cookie 设了 `SameSite=Lax`），所以两者都要；程序放在 Worker 而不是 iframe 脚本里，因为 iframe 脚本能把自己导航出去。WebKit 允许 `null` 源写一份自己的 Cache Storage，本页和之后的运行都看不到。主线程只接受 `event.source` 是该 iframe、类型为 `llm_map` / `done` 且形状正确的消息；发进去的只有快照文件、程序源码和 `llm_map` 结果（`targetOrigin` 只能是 `*`），不带 token；超时或取消时移除 iframe，Worker 随之结束。程序因此不能联网（`aiws/prompts/execute.md`；服务内执行路径不变）。实现：`desktop/src/app/aiworkspace/executor/programHost.ts`、`program.worker.ts`（由 `vite.config.ts` 连同 `aiws.js` 打成一段 classic 脚本），用例 `desktop/tests/aiworkspace/program-sandbox.spec.ts`。token 只留在页面主线程，`llm.map` 经 postMessage 由主线程代理，建议中的“不持有 token”仍然成立。
 - 子域名由 cyfs-gateway 的子域路由提供；现有 `/workspace/<id>` 独立页面路由迁到子域。登录态在 `<zonehost>` 父域还是各子域各自持有，要与混合 SSO 的 cookie 策略一起定。**→ 2026-10-28 定：各子域自持**（host-only cookie，`System(aiworkspace)` 目标，Desktop 经 `prepare_app_launch` 委派、Zone 根 `/login` 对已登录者自动接力）；Zone 根 `/workspace/<id>` 不迁移、直接删除（breaking），`/workspace` 列表保留。
 - URL 中的 `workspace_name`、`surface_name` 是 D10 的名称投影，可变。改名后旧链接是否继续解析（保留名称到 ID 的历史别名）需要决定；D10 的“URL 与引用对象无损互转”要求 URL 里仍能带上 ID 或 ID 可由名字唯一解析。**→ 2026-10-28 定：`/<workspace slug>/<surface slug>?id=<surface id>`**——名字只为可读，`id` 决定导向；无 `id` 的链接由服务按名/标题 slug 解析后 302 到带 `id` 的规范地址，名字无别名。
 - SEO 友好意味着公开内容需要服务端渲染或预渲染，属于 D26 发布链路的产品项，不属于内核。

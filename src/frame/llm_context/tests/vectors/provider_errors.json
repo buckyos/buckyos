@@ -1,0 +1,773 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "quota_exhausted"
+          }
+        }
+      },
+      "input": {
+        "code": "quota_exhausted",
+        "data": {
+          "code": "quota_exhausted",
+          "message": "aicc quota_exhausted"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc quota_exhausted (quota_exhausted)"
+      },
+      "name": "rpc_quota_exhausted",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "quota_exhausted"
+          }
+        }
+      },
+      "input": {
+        "code": "quota_exhausted",
+        "data": {
+          "code": "quota_exhausted",
+          "message": "aicc quota_exhausted",
+          "retriable": true
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc quota_exhausted (quota_exhausted)"
+      },
+      "name": "rpc_quota_exhausted_marked_retriable",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "quota_budget_exceeded"
+          }
+        }
+      },
+      "input": {
+        "code": "quota_budget_exceeded",
+        "data": {
+          "code": "quota_budget_exceeded",
+          "message": "aicc quota_budget_exceeded"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc quota_budget_exceeded (quota_budget_exceeded)"
+      },
+      "name": "rpc_quota_budget_exceeded",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "resource_not_permitted"
+          }
+        }
+      },
+      "input": {
+        "code": "resource_not_permitted",
+        "data": {
+          "code": "resource_not_permitted",
+          "message": "aicc resource_not_permitted"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc resource_not_permitted (resource_not_permitted)"
+      },
+      "name": "rpc_resource_not_permitted",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "attribution_unavailable"
+          }
+        }
+      },
+      "input": {
+        "code": "attribution_unavailable",
+        "data": {
+          "code": "attribution_unavailable",
+          "message": "aicc attribution_unavailable"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc attribution_unavailable (attribution_unavailable)"
+      },
+      "name": "rpc_attribution_unavailable",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "code": "quota_unavailable",
+        "data": {
+          "code": "quota_unavailable",
+          "message": "aicc quota_unavailable"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc quota_unavailable (quota_unavailable)"
+      },
+      "name": "rpc_quota_unavailable",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "context_limit"
+      },
+      "input": {
+        "code": "context_length_exceeded",
+        "data": {
+          "code": "context_length_exceeded",
+          "message": "aicc context_length_exceeded"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc context_length_exceeded (context_length_exceeded)"
+      },
+      "name": "rpc_context_length_exceeded",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "context_limit"
+      },
+      "input": {
+        "code": "provider_error",
+        "data": {
+          "code": "provider_error",
+          "details": {
+            "http_status": 413
+          },
+          "message": "aicc provider_error"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc provider_error (provider_error)"
+      },
+      "name": "rpc_provider_413",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "code": "timeout",
+        "data": {
+          "code": "timeout",
+          "message": "aicc timeout"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc timeout (timeout)"
+      },
+      "name": "rpc_aicc_timeout",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "code": "provider_error",
+        "data": {
+          "code": "provider_error",
+          "message": "aicc provider_error",
+          "retriable": true
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc provider_error (provider_error)"
+      },
+      "name": "rpc_aicc_retriable",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "code": "provider_error",
+        "data": {
+          "code": "provider_error",
+          "message": "aicc provider_error"
+        },
+        "kind": "rpc_detailed",
+        "message": "aicc provider_error (provider_error)"
+      },
+      "name": "rpc_aicc_not_retriable",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "code": "access_denied",
+        "data": {
+          "reason": "x"
+        },
+        "kind": "rpc_detailed",
+        "message": "denied (access_denied)"
+      },
+      "name": "rpc_detailed_without_aicc_data",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "context_limit"
+      },
+      "input": {
+        "kind": "rpc_http_status",
+        "status": 413
+      },
+      "name": "rpc_http_413",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "kind": "rpc_http_status",
+        "status": 408
+      },
+      "name": "rpc_http_408",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "kind": "rpc_http_status",
+        "status": 504
+      },
+      "name": "rpc_http_504",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "credentials"
+          }
+        }
+      },
+      "input": {
+        "kind": "rpc_http_status",
+        "status": 401
+      },
+      "name": "rpc_http_401",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "credentials"
+          }
+        }
+      },
+      "input": {
+        "kind": "rpc_http_status",
+        "status": 403
+      },
+      "name": "rpc_http_403",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "kind": "rpc_http_status",
+        "status": 500
+      },
+      "name": "rpc_http_500",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "kind": "rpc_http_status",
+        "status": 502
+      },
+      "name": "rpc_http_502",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "kind": "rpc_reason",
+        "message": "Failed due to reason: {\"code\":\"timeout\",\"message\":\"slow\",\"retriable\":true}"
+      },
+      "name": "rpc_reason_text_is_not_read",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "credentials"
+          }
+        }
+      },
+      "input": {
+        "kind": "rpc_local",
+        "message": "bad signature",
+        "variant": "invalid_token"
+      },
+      "name": "local_invalid_token",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "credentials"
+          }
+        }
+      },
+      "input": {
+        "kind": "rpc_local",
+        "message": "expired",
+        "variant": "token_expired"
+      },
+      "name": "local_token_expired",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "credentials"
+          }
+        }
+      },
+      "input": {
+        "kind": "rpc_local",
+        "message": "denied",
+        "variant": "no_permission"
+      },
+      "name": "local_no_permission",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": "permanent"
+      },
+      "input": {
+        "kind": "rpc_local",
+        "message": "helper.llm_chat",
+        "variant": "unknown_method"
+      },
+      "name": "local_unknown_method",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": "permanent"
+      },
+      "input": {
+        "kind": "rpc_local",
+        "message": "aicc",
+        "variant": "service_not_valid"
+      },
+      "name": "local_service_not_valid",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "kind": "rpc_local",
+        "message": "timeout",
+        "variant": "s2s_transient"
+      },
+      "name": "local_s2s_transient",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": "permanent"
+      },
+      "input": {
+        "kind": "rpc_local",
+        "message": "bad key",
+        "variant": "s2s_permanent"
+      },
+      "name": "local_s2s_permanent",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "kind": "rpc_local",
+        "message": "x",
+        "variant": "key_not_exist"
+      },
+      "name": "local_key_not_exist",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "kind": "rpc_local",
+        "variant": "http_transport_connect"
+      },
+      "name": "local_http_transport_connect",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": "context_limit"
+      },
+      "input": {
+        "aicc_error": {
+          "code": "context_length_exceeded",
+          "message": "aicc context_length_exceeded"
+        },
+        "kind": "rpc_local",
+        "variant": "aicc_in_process"
+      },
+      "name": "local_aicc_in_process_context_length",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "aicc_error": {
+          "code": "provider_error",
+          "message": "aicc provider_error",
+          "retriable": true
+        },
+        "kind": "rpc_local",
+        "variant": "aicc_in_process"
+      },
+      "name": "local_aicc_in_process_retriable",
+      "ts": false
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "quota_exhausted"
+          }
+        }
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "error": {
+            "code": "quota_exhausted",
+            "message": "aicc quota_exhausted",
+            "retriable": true
+          },
+          "event_ref": "event-1",
+          "status": "failed",
+          "task_id": "aicc-task"
+        }
+      },
+      "name": "aicc_failed_quota_exhausted",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "context_limit"
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "error": {
+            "code": "context_length_exceeded",
+            "message": "aicc context_length_exceeded"
+          },
+          "event_ref": "event-1",
+          "status": "failed",
+          "task_id": "aicc-task"
+        }
+      },
+      "name": "aicc_failed_context_length",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "error": {
+            "code": "timeout",
+            "message": "aicc timeout"
+          },
+          "event_ref": "event-1",
+          "status": "failed",
+          "task_id": "aicc-task"
+        }
+      },
+      "name": "aicc_failed_timeout",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "error": {
+            "code": "provider_error",
+            "message": "aicc provider_error",
+            "retriable": true
+          },
+          "event_ref": "event-1",
+          "status": "failed",
+          "task_id": "aicc-task"
+        }
+      },
+      "name": "aicc_failed_retriable",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "error": {
+            "code": "provider_error",
+            "message": "aicc provider_error"
+          },
+          "event_ref": "event-1",
+          "status": "failed",
+          "task_id": "aicc-task"
+        }
+      },
+      "name": "aicc_failed_not_retriable",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "event_ref": "event-1",
+          "status": "failed",
+          "task_id": "aicc-task"
+        }
+      },
+      "name": "aicc_failed_without_error",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "permanent"
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "status": "running",
+          "task_id": "aicc-task"
+        }
+      },
+      "name": "aicc_running_is_not_polled",
+      "ts": true
+    },
+    {
+      "expect": {
+        "ok": true
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "message": {
+            "content": [
+              {
+                "text": "done",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          },
+          "status": "succeeded",
+          "task_id": "aicc-task",
+          "usage": {
+            "input_tokens": 4,
+            "output_tokens": 2,
+            "total_tokens": 6
+          }
+        }
+      },
+      "name": "aicc_succeeded",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "kind": "aicc_response",
+        "response": {
+          "message": null,
+          "status": "succeeded",
+          "task_id": "aicc-task",
+          "usage": {
+            "input_tokens": 4,
+            "output_tokens": 2,
+            "total_tokens": 6
+          }
+        }
+      },
+      "name": "aicc_succeeded_without_message",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "credentials"
+          }
+        }
+      },
+      "input": {
+        "body": "{\"error\":{\"message\":\"Incorrect API key\",\"code\":\"invalid_api_key\"}}",
+        "kind": "openai_http",
+        "status": 401
+      },
+      "name": "openai_401",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": {
+          "refused": {
+            "code": "credentials"
+          }
+        }
+      },
+      "input": {
+        "body": "forbidden",
+        "kind": "openai_http",
+        "status": 403
+      },
+      "name": "openai_403",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "context_limit"
+      },
+      "input": {
+        "body": "{\"error\":{\"message\":\"maximum context length is 8192 tokens\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}",
+        "kind": "openai_http",
+        "status": 400
+      },
+      "name": "openai_context_length_code",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "permanent"
+      },
+      "input": {
+        "body": "{\"error\":{\"message\":\"maximum context length is 8192 tokens\",\"code\":null}}",
+        "kind": "openai_http",
+        "status": 400
+      },
+      "name": "openai_400",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "permanent"
+      },
+      "input": {
+        "body": "model not found",
+        "kind": "openai_http",
+        "status": 404
+      },
+      "name": "openai_404",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "permanent"
+      },
+      "input": {
+        "body": "",
+        "kind": "openai_http",
+        "status": 422
+      },
+      "name": "openai_422",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "body": "rate limited",
+        "kind": "openai_http",
+        "status": 429
+      },
+      "name": "openai_429",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "transient"
+      },
+      "input": {
+        "body": "",
+        "kind": "openai_http",
+        "status": 503
+      },
+      "name": "openai_503",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "body": "payload too large",
+        "kind": "openai_http",
+        "status": 413
+      },
+      "name": "openai_413",
+      "ts": true
+    },
+    {
+      "expect": {
+        "failure": "unknown"
+      },
+      "input": {
+        "body": "",
+        "kind": "openai_http",
+        "status": 418
+      },
+      "name": "openai_418",
+      "ts": true
+    }
+  ],
+  "vectors_version": 1
+}

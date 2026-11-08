@@ -1,0 +1,9 @@
+provider:
+  type: openai
+  base_url: http://127.0.0.1:46189/s/shell/v1
+  api_key_env: XLLM_FIXTURE_KEY
+model: mock-model
+runtime:
+  task_wait_ms: 1800000
+tools:
+  enabled: true

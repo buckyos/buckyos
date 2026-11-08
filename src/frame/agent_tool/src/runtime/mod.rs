@@ -116,6 +116,11 @@ impl RuntimeConfig {
                     self.kind()
                 )))
             }
+            "site" => {
+                return Err(XllmError::Capability(
+                    "runtime `site` is built by a website with the TypeScript xllm runtime; this executor does not provide it".into(),
+                ))
+            }
             kind => return Err(bad(format!("unknown runtime kind `{kind}`"))),
         }
         if self.remote_ssh.is_some() && self.kind() != "remote_ssh" && self.kind.is_some() {
@@ -535,13 +540,86 @@ pub(crate) fn interrupted_shell_text(
 pub const HOST_ID_ENV: &str = "AGENT_TOOL_HOST_ID";
 
 pub fn native_host_id() -> String {
-    if let Some(id) = std::env::var(HOST_ID_ENV).ok().filter(|v| !v.trim().is_empty()) {
+    let host_id = std::env::var(HOST_ID_ENV).ok();
+    if host_id.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+        return native_host_id_from(host_id.as_deref(), None, None, None);
+    }
+    let etc_hostname = std::fs::read_to_string("/etc/hostname").ok();
+    let hostname_env = match etc_hostname {
+        Some(_) => None,
+        None => std::env::var("HOSTNAME").ok(),
+    };
+    let machine_id = std::fs::read_to_string("/etc/machine-id").ok();
+    native_host_id_from(
+        None,
+        etc_hostname.as_deref(),
+        hostname_env.as_deref(),
+        machine_id.as_deref(),
+    )
+}
+
+/// [`native_host_id`] from what it reads: `AGENT_TOOL_HOST_ID`,
+/// `/etc/hostname`, `HOSTNAME` (when the file is unreadable) and
+/// `/etc/machine-id` (`None`: unset / unreadable).
+pub fn native_host_id_from(
+    host_id_env: Option<&str>,
+    etc_hostname: Option<&str>,
+    hostname_env: Option<&str>,
+    machine_id: Option<&str>,
+) -> String {
+    if let Some(id) = host_id_env.filter(|v| !v.trim().is_empty()) {
         return format!("host:{}:", id.trim());
     }
-    let host = std::fs::read_to_string("/etc/hostname")
-        .unwrap_or_else(|_| std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into()));
-    let machine = std::fs::read_to_string("/etc/machine-id").unwrap_or_default();
-    format!("host:{}:{}", host.trim(), machine.trim())
+    let host = etc_hostname.or(hostname_env).unwrap_or("unknown");
+    format!(
+        "host:{}:{}",
+        host.trim(),
+        machine_id.unwrap_or_default().trim()
+    )
+}
+
+/// The target of a native runtime: the host and the probed user id.
+pub fn native_target(host_id: &str, uid: &str) -> Value {
+    json!({ "host": host_id, "uid": uid })
+}
+
+/// The configured `runtime.id`, else `<kind>:` + the first 24 hex of the
+/// blake3 of the target's JSON text.
+pub fn derive_runtime_id(configured: Option<&str>, kind: &str, target: &Value) -> String {
+    configured.map(str::to_string).unwrap_or_else(|| {
+        format!(
+            "{kind}:{}",
+            &blake3::hash(target.to_string().as_bytes()).to_hex()[..24]
+        )
+    })
+}
+
+/// The descriptor of an opened runtime (`info` is the probed environment).
+pub fn runtime_descriptor(
+    runtime_id: String,
+    kind: String,
+    target: Value,
+    info: &RuntimeInfo,
+) -> RuntimeDescriptor {
+    RuntimeDescriptor {
+        runtime_id,
+        kind,
+        host: target
+            .get("host")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        target,
+        workdir: info.cwd.clone(),
+        capabilities: Capabilities {
+            os: info.os.clone(),
+            network: true,
+            tools: info
+                .tools
+                .iter()
+                .map(|s| (s.clone(), "available".into()))
+                .collect(),
+        },
+    }
 }
 
 impl Runtime {
@@ -604,7 +682,7 @@ impl Runtime {
                         ));
                     }
                     let probe = ssh::local_probe(&cwd, &config.env).await?;
-                    let target = json!({ "host": native_host_id(), "uid": probe.identity.uid });
+                    let target = native_target(&native_host_id(), &probe.identity.uid);
                     (
                         probe.info,
                         target,
@@ -613,37 +691,14 @@ impl Runtime {
                         probe.path,
                     )
                 };
-                let id = config.id.clone().unwrap_or_else(|| {
-                    format!(
-                        "{kind}:{}",
-                        &blake3::hash(target.to_string().as_bytes()).to_hex()[..24]
-                    )
-                });
+                let id = derive_runtime_id(config.id.as_deref(), &kind, &target);
                 let mut info = info.with_declared(config.baseline);
                 info.id = id.clone();
                 info.kind = kind.clone();
                 info.target = target.clone();
                 config.id = Some(id.clone());
                 config.workdir = Some(info.cwd.clone());
-                let descriptor = RuntimeDescriptor {
-                    runtime_id: id,
-                    kind,
-                    host: target
-                        .get("host")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    target,
-                    workdir: info.cwd.clone(),
-                    capabilities: Capabilities {
-                        os: info.os.clone(),
-                        network: true,
-                        tools: info
-                            .tools
-                            .iter()
-                            .map(|s| (s.clone(), "available".into()))
-                            .collect(),
-                    },
-                };
+                let descriptor = runtime_descriptor(id, kind, target, &info);
                 Ok(OpenedRuntime {
                     config,
                     descriptor,

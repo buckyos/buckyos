@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import https from 'node:https'
 import { join, relative, resolve, sep } from 'node:path'
-import { defineConfig, searchForWorkspaceRoot, type Plugin } from 'vite'
+import { build, defineConfig, searchForWorkspaceRoot, type Plugin, type Rolldown } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // Desktop service worker (application resources for a cold start without the network): after the
@@ -104,8 +104,31 @@ const TABLE_DIR = resolve(import.meta.dirname, '../aiworkspace/import-table')
 const OFFICE_DIR = resolve(import.meta.dirname, '../aiworkspace/import-office')
 // The Block-controls shared with Deno and Agents (脑图 TODO M1): layout, measuring, outline conversion, catalogue.
 const CONTROLS_DIR = resolve(import.meta.dirname, '../aiworkspace/controls')
-// The wish program host (src/frame/aiworkspace/aiws/aiws.js) the local executor's Worker runs programs with: the file the service runs.
-const AIWS_DIR = resolve(import.meta.dirname, '../aiworkspace/aiws')
+// The local executor's program runner (src/app/aiworkspace/executor/program.worker.ts with the program host
+// src/frame/aiworkspace/aiws/aiws.js, the file the service runs) as one classic script text,
+// `import runner from 'virtual:aiws-program-runner'`: programHost.ts starts it from a blob inside a sandboxed iframe,
+// where Chromium does not start a module Worker. Built by a nested build, in dev and production alike.
+const PROGRAM_RUNNER_ID = 'virtual:aiws-program-runner'
+function aiwsProgramRunner(): Plugin {
+  const entry = resolve(import.meta.dirname, 'src/app/aiworkspace/executor/program.worker.ts')
+  return {
+    name: 'aiworkspace-program-runner',
+    resolveId(id) { return id === PROGRAM_RUNNER_ID ? `\0${PROGRAM_RUNNER_ID}` : null },
+    async load(id) {
+      if (id !== `\0${PROGRAM_RUNNER_ID}`) return null
+      const out = await build({
+        configFile: false,
+        root: import.meta.dirname,
+        publicDir: false,
+        logLevel: 'warn',
+        build: { write: false, minify: false, emptyOutDir: false, lib: { entry, formats: ['iife'], name: 'aiwsProgramRunner' } },
+      }) as Rolldown.RolldownOutput | Rolldown.RolldownOutput[]
+      const chunk = (Array.isArray(out) ? out[0] : out).output[0]
+      for (const file of chunk.moduleIds) this.addWatchFile(file)
+      return `export default ${JSON.stringify(chunk.code)}`
+    },
+  }
+}
 
 // NFSP dev proxy: nfs-server has no CORS (in production the zone gateway
 // forwards the same-origin root path /nfs/v1/* to it), so dev mirrors that
@@ -161,7 +184,7 @@ export default defineConfig(() => {
     : {}
   return {
     base: '/',
-    plugins: [react(), pdfjsAssets(), aiwsHostPages(), desktopServiceWorker()],
+    plugins: [react(), pdfjsAssets(), aiwsHostPages(), aiwsProgramRunner(), desktopServiceWorker()],
     // two pages of one build: the Desktop (index.html) and a Workspace's own page (aiws.html), sharing their chunks
     build: { rollupOptions: { input: { index: resolve(import.meta.dirname, 'index.html'), aiws: resolve(import.meta.dirname, 'aiws.html') } } },
     // The Replica Worker (src/app/aiworkspace/offline/replica.worker.ts) is a module worker.
@@ -177,7 +200,7 @@ export default defineConfig(() => {
       alias: [{ find: /^loro-crdt$/, replacement: 'loro-crdt/web' }, { find: /^@drawio\//, replacement: `${DRAWIO_DIR}/` }, { find: /^@pdf\//, replacement: `${PDF_DIR}/` }, { find: /^@table\//, replacement: `${TABLE_DIR}/` }, { find: /^@office\//, replacement: `${OFFICE_DIR}/` }, { find: /^@controls\//, replacement: `${CONTROLS_DIR}/` }],
     },
     server: {
-      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, PDF_DIR, TABLE_DIR, OFFICE_DIR, CONTROLS_DIR, AIWS_DIR] },
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), DRAWIO_DIR, PDF_DIR, TABLE_DIR, OFFICE_DIR, CONTROLS_DIR] },
       host: '0.0.0.0',
       port: 5174,
       proxy: {

@@ -1,0 +1,5686 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 1,
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "plain_done",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "hi there",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            },
+            "usage": {
+              "input_tokens": 4,
+              "output_tokens": 4,
+              "total_tokens": 8
+            }
+          }
+        }
+      ],
+      "source": "llm_context function_call_loop::done_without_tool_calls",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [
+          "c-1"
+        ],
+        "inferences": 2,
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 3
+        }
+      },
+      "name": "tool_batch_then_done",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "calling echo",
+                  "type": "text"
+                },
+                {
+                  "args": {
+                    "msg": "ping"
+                  },
+                  "call_id": "c-1",
+                  "name": "echo",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "done after echo",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context function_call_loop::one_tool_batch_then_done",
+      "tool_results": {
+        "c-1": {
+          "observation": {
+            "bytes": 23,
+            "call_id": "c-1",
+            "content": {
+              "echo": {
+                "msg": "ping"
+              }
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [
+          "c1",
+          "c2",
+          "c3"
+        ],
+        "inferences": 3,
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 3
+        }
+      },
+      "name": "batches_count_tool_iterations_not_rounds",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 5,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c1",
+                  "name": "echo",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c2",
+                  "name": "echo",
+                  "type": "tool_use"
+                },
+                {
+                  "args": {},
+                  "call_id": "c3",
+                  "name": "echo",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "final answer",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context budgets::function_call_loop_counts_rounds_and_tool_iterations_separately",
+      "tool_results": {
+        "c1": {
+          "observation": {
+            "bytes": 11,
+            "call_id": "c1",
+            "content": {
+              "echo": {}
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        },
+        "c2": {
+          "observation": {
+            "bytes": 11,
+            "call_id": "c2",
+            "content": {
+              "echo": {}
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        },
+        "c3": {
+          "observation": {
+            "bytes": 11,
+            "call_id": "c3",
+            "content": {
+              "echo": {}
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [
+          "c-1",
+          "c-2"
+        ],
+        "inferences": 3,
+        "outcome": {
+          "kind": "budget_exhausted",
+          "which": "tool_iterations"
+        },
+        "run": {
+          "limit_reason": "tool iteration limit (2) reached",
+          "status": "limit_reached"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 0
+        }
+      },
+      "name": "tool_iteration_budget",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 2,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {
+                    "msg": "ping"
+                  },
+                  "call_id": "c-1",
+                  "name": "echo",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {
+                    "msg": "ping"
+                  },
+                  "call_id": "c-2",
+                  "name": "echo",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {
+                    "msg": "ping"
+                  },
+                  "call_id": "c-3",
+                  "name": "echo",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context function_call_loop::tool_iterations_budget_exhausted",
+      "tool_results": {
+        "c-1": {
+          "observation": {
+            "bytes": 23,
+            "call_id": "c-1",
+            "content": {
+              "echo": {
+                "msg": "ping"
+              }
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        },
+        "c-2": {
+          "observation": {
+            "bytes": 23,
+            "call_id": "c-2",
+            "content": {
+              "echo": {
+                "msg": "ping"
+              }
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [
+          "c-1",
+          "c-2"
+        ],
+        "inferences": 3,
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 2
+        }
+      },
+      "name": "tool_failure_fed_back_then_clean_batch",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c-1",
+                  "name": "fail:b",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c-2",
+                  "name": "a",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "done",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::clean_tool_batch_resets_consecutive_errors",
+      "tool_results": {
+        "c-1": {
+          "observation": {
+            "call_id": "c-1",
+            "kind": "error",
+            "message": "bad args"
+          }
+        },
+        "c-2": {
+          "observation": {
+            "bytes": 4,
+            "call_id": "c-2",
+            "content": "ok",
+            "kind": "success",
+            "truncated": false
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "a"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "fail:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "dispatch:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "c"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "shell"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [
+          "c-1",
+          "c-2",
+          "c-3"
+        ],
+        "inferences": 2,
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 1,
+          "output_repairs": 0,
+          "tool_iterations_left": 3
+        }
+      },
+      "name": "batch_errors_count_once",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 2
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c-1",
+                  "name": "fail:b",
+                  "type": "tool_use"
+                },
+                {
+                  "args": {},
+                  "call_id": "c-2",
+                  "name": "fail:b",
+                  "type": "tool_use"
+                },
+                {
+                  "args": {},
+                  "call_id": "c-3",
+                  "name": "fail:b",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "gave up on tools",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::multiple_tool_errors_in_one_batch_count_as_one_failure",
+      "tool_results": {
+        "c-1": {
+          "observation": {
+            "call_id": "c-1",
+            "kind": "error",
+            "message": "bad args"
+          }
+        },
+        "c-2": {
+          "observation": {
+            "call_id": "c-2",
+            "kind": "error",
+            "message": "bad args"
+          }
+        },
+        "c-3": {
+          "observation": {
+            "call_id": "c-3",
+            "kind": "error",
+            "message": "bad args"
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "a"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "fail:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "dispatch:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "c"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "shell"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [
+          "c-1",
+          "c-2",
+          "c-3",
+          "c-4"
+        ],
+        "inferences": 4,
+        "outcome": {
+          "error": {
+            "kind": "tool_failed"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "tool_errors_exhausted",
+          "status": "failed"
+        },
+        "state": {
+          "consecutive_errors": 4,
+          "output_repairs": 0,
+          "tool_iterations_left": 1
+        }
+      },
+      "name": "consecutive_errors_over_the_cap",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c-1",
+                  "name": "fail:b",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c-2",
+                  "name": "fail:b",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c-3",
+                  "name": "fail:b",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c-4",
+                  "name": "fail:b",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "never reached",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::successful_inference_does_not_reset_consecutive_errors",
+      "tool_results": {
+        "c-1": {
+          "observation": {
+            "call_id": "c-1",
+            "kind": "error",
+            "message": "bad args"
+          }
+        },
+        "c-2": {
+          "observation": {
+            "call_id": "c-2",
+            "kind": "error",
+            "message": "bad args"
+          }
+        },
+        "c-3": {
+          "observation": {
+            "call_id": "c-3",
+            "kind": "error",
+            "message": "bad args"
+          }
+        },
+        "c-4": {
+          "observation": {
+            "call_id": "c-4",
+            "kind": "error",
+            "message": "bad args"
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "a"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "fail:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "dispatch:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "c"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "shell"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 2,
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 1,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "max_calls_per_round_rejected",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c-1",
+                  "name": "a",
+                  "type": "tool_use"
+                },
+                {
+                  "args": {},
+                  "call_id": "c-2",
+                  "name": "a",
+                  "type": "tool_use"
+                },
+                {
+                  "args": {},
+                  "call_id": "c-3",
+                  "name": "a",
+                  "type": "tool_use"
+                },
+                {
+                  "args": {},
+                  "call_id": "c-4",
+                  "name": "a",
+                  "type": "tool_use"
+                },
+                {
+                  "args": {},
+                  "call_id": "c-5",
+                  "name": "a",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "done without tools",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context context_loop::run_inner max_calls_per_round (no dedicated test; shaped like error_policy::policy_rejection_keeps_transcript_paired_and_is_correctable)",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "a"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "fail:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "dispatch:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "c"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "shell"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [
+          "c-1"
+        ],
+        "inferences": 2,
+        "outcome": {
+          "kind": "budget_exhausted",
+          "which": "tokens"
+        },
+        "run": {
+          "limit_reason": "token budget exhausted",
+          "status": "limit_reached"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 3
+        }
+      },
+      "name": "token_budget",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": 10,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {
+                    "msg": "ping"
+                  },
+                  "call_id": "c-1",
+                  "name": "echo",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            },
+            "usage": {
+              "total_tokens": 8
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "finished",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            },
+            "usage": {
+              "input_tokens": 4,
+              "output_tokens": 4,
+              "total_tokens": 8
+            }
+          }
+        }
+      ],
+      "source": "llm_context budgets::behavior_inner_context_inherits_outer_budget (function call form)",
+      "tool_results": {
+        "c-1": {
+          "observation": {
+            "bytes": 23,
+            "call_id": "c-1",
+            "content": {
+              "echo": {
+                "msg": "ping"
+              }
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 1,
+        "outcome": {
+          "error": {
+            "failure": "transient",
+            "kind": "provider"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "provider_transient",
+          "status": "paused"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "provider_transient",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "error": {
+            "failure": "transient",
+            "kind": "provider",
+            "message": "temporary aicc failure"
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "never reached",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::provider_failure_ends_run_without_feedback_or_second_inference",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 1,
+        "outcome": {
+          "error": {
+            "failure": "permanent",
+            "kind": "provider"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "provider_permanent",
+          "status": "failed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "provider_permanent",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "error": {
+            "failure": "permanent",
+            "kind": "provider",
+            "message": "invalid api key"
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "never reached",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::permanent_provider_error_and_adapter_internal_are_terminal",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 1,
+        "outcome": {
+          "error": {
+            "failure": "unknown",
+            "kind": "provider"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "provider_error",
+          "status": "failed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "provider_unknown",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "error": {
+            "failure": "unknown",
+            "kind": "provider",
+            "message": "?"
+          }
+        }
+      ],
+      "source": "xllm tests::permanent_and_credential_errors_are_classified (Unknown)",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 1,
+        "outcome": {
+          "error": {
+            "kind": "timeout"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "provider_timeout",
+          "status": "paused"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "provider_timeout",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "error": {
+            "kind": "timeout"
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "never reached",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::permanent_provider_error_and_adapter_internal_are_terminal (Timeout)",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 1,
+        "outcome": {
+          "error": {
+            "failure": {
+              "refused": {
+                "code": "credentials"
+              }
+            },
+            "kind": "provider"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "credentials",
+          "status": "paused"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "refused_credentials",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "error": {
+            "failure": {
+              "refused": {
+                "code": "credentials"
+              }
+            },
+            "kind": "provider",
+            "message": "aicc helper.llm_chat failed: Token expired:expired"
+          }
+        }
+      ],
+      "source": "xllm tests::permanent_and_credential_errors_are_classified",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 1,
+        "outcome": {
+          "error": {
+            "failure": {
+              "refused": {
+                "code": "quota_exhausted"
+              }
+            },
+            "kind": "provider"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "quota_exhausted",
+          "status": "failed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "refused_quota",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "error": {
+            "failure": {
+              "refused": {
+                "code": "quota_exhausted"
+              }
+            },
+            "kind": "provider",
+            "message": "token quota is exhausted"
+          }
+        }
+      ],
+      "source": "xllm tests::aicc_refusals_stay_refused_even_when_marked_retriable",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [
+          "c1"
+        ],
+        "inferences": 2,
+        "outcome": {
+          "kind": "context_limit_reached",
+          "which": "provider_refused"
+        },
+        "run": {
+          "kind": "context_capacity",
+          "status": "failed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 3
+        }
+      },
+      "name": "provider_context_limit",
+      "note": "xllm compacts the context and continues the same run; `run` is what it records once no compaction is left (failed, context_capacity)",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {
+                    "command": "echo before-limit"
+                  },
+                  "call_id": "c1",
+                  "name": "shell",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "error": {
+            "failure": "context_limit",
+            "kind": "provider",
+            "message": "context_length_exceeded"
+          }
+        }
+      ],
+      "source": "xllm tests::provider_context_refusal_compacts_and_continues_the_same_run",
+      "tool_results": {
+        "c1": {
+          "observation": {
+            "bytes": 14,
+            "call_id": "c1",
+            "content": "before-limit",
+            "kind": "success",
+            "truncated": false
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "shell"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [
+          "c-1",
+          "c-2"
+        ],
+        "inferences": 1,
+        "outcome": {
+          "error": {
+            "kind": "tool_runtime"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "tool_runtime",
+          "status": "paused"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "dispatch_error_effect_unknown",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {},
+                  "call_id": "c-1",
+                  "name": "a",
+                  "type": "tool_use"
+                },
+                {
+                  "args": {},
+                  "call_id": "c-2",
+                  "name": "dispatch:b",
+                  "type": "tool_use"
+                },
+                {
+                  "args": {},
+                  "call_id": "c-3",
+                  "name": "c",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "never reached in this run",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::tool_dispatch_failure_stops_batch_and_keeps_partial_results",
+      "tool_results": {
+        "c-1": {
+          "observation": {
+            "bytes": 4,
+            "call_id": "c-1",
+            "content": "ok",
+            "kind": "success",
+            "truncated": false
+          }
+        },
+        "c-2": {
+          "dispatch_error": {
+            "effect_unknown": true,
+            "message": "sandbox connection lost"
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "a"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "fail:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "dispatch:b"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "c"
+        },
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "shell"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 2,
+        "outcome": {
+          "kind": "done",
+          "output_kind": "json"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 1,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "strict_json_corrected",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "json",
+          "strict": true
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "not json",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            },
+            "usage": {
+              "input_tokens": 1,
+              "output_tokens": 1,
+              "total_tokens": 2
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"answer\": 42}",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            },
+            "usage": {
+              "input_tokens": 1,
+              "output_tokens": 2,
+              "total_tokens": 3
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::strict_json_parse_error_is_fed_back_then_corrected",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 4,
+        "outcome": {
+          "error": {
+            "kind": "output_parse"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "llm_output",
+          "status": "failed"
+        },
+        "state": {
+          "consecutive_errors": 4,
+          "output_repairs": 0,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "strict_json_errors_exhausted",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "json",
+          "strict": true
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "still not json",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "still not json",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "still not json",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "still not json",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "still not json",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "still not json",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::persistent_strict_json_errors_terminate_on_fourth_failure",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 2,
+        "outcome": {
+          "kind": "done",
+          "output_kind": "json"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 1,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "reply_contract_repaired",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "json",
+          "max_repairs": 1,
+          "schema": {
+            "additionalProperties": false,
+            "properties": {
+              "artifacts": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reply": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reply"
+            ],
+            "type": "object"
+          },
+          "strict": true
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"answer\": \"hi\"}",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"reply\": \"hi\"}",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context reply_contract::a_mismatch_is_repaired_once",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "expect": {
+        "dispatched": [],
+        "inferences": 2,
+        "outcome": {
+          "kind": "done",
+          "output_kind": "invalid"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "output_repairs": 1,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "reply_contract_exhausted",
+      "request": {
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "json",
+          "max_repairs": 1,
+          "schema": {
+            "additionalProperties": false,
+            "properties": {
+              "artifacts": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reply": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reply"
+            ],
+            "type": "object"
+          },
+          "strict": true
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "plain words",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "still plain words",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"reply\": \"never reached\"}",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context reply_contract::a_second_failure_returns_the_raw_reply",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "echo"
+        }
+      ]
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "timestamps"
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": true,
+          "self_report": "finished"
+        },
+        "dispatched": [],
+        "inferences": 1,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 0,
+          "next_step_index": 1,
+          "output_repairs": 0,
+          "steps": 1,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "behavior_final_report",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><intent>done</intent><report end=\"true\">finished</report></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context behavior_loop::behavior_loop_assigns_step_metadata",
+      "tool_results": {},
+      "tools": []
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "no_timestamps"
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": true,
+          "self_report": "{\"report\":\"结论 77\"}"
+        },
+        "dispatched": [
+          "1"
+        ],
+        "inferences": 2,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "<response><intent>run</intent><actions><shell><![CDATA[echo behavior-77]]></shell></actions></response>",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "text": "<<last_step_action_results behavior=\"xllm\" step=\"0\">>\n- #1 Run echo behavior-77\n\n```output\nbehavior-77\n```\n\n<</last_step_action_results>>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 1,
+          "next_step_index": 2,
+          "output_repairs": 0,
+          "steps": 2,
+          "tool_iterations_left": 3
+        }
+      },
+      "name": "behavior_actions_then_final_report",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><intent>run</intent><actions><shell><![CDATA[echo behavior-77]]></shell></actions></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><observation>saw it</observation><report end=\"true\"><![CDATA[{\"report\":\"结论 77\"}]]></report></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "xllm tests::behavior_loop_end_to_end_with_tools2actions",
+      "tool_results": {
+        "1": {
+          "observation": {
+            "bytes": 12,
+            "call_id": "1",
+            "content": "behavior-77\n",
+            "host": {
+              "agent_tool_protocol": "1",
+              "detail": {},
+              "output": "behavior-77\n",
+              "status": "success",
+              "summary": "exit 0",
+              "tool": "shell"
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        }
+      },
+      "tools": []
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "no_timestamps"
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": false,
+          "self_report": "intermediate finding"
+        },
+        "dispatched": [],
+        "inferences": 1,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "kind": "yield",
+          "status": "paused"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 0,
+          "next_step_index": 1,
+          "output_repairs": 0,
+          "steps": 1,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "behavior_progress_report_yields",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><report>intermediate finding</report></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "xllm tests::behavior_progress_report_continues_until_explicit_final_report",
+      "tool_results": {},
+      "tools": []
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "timestamps"
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": true,
+          "self_report": "finished"
+        },
+        "dispatched": [],
+        "inferences": 2,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "text": "<<last_step_action_results behavior=\"xllm\" step=\"0\">>\n- Step error\n\n```output\nError: parse failed: empty response: no text and no tool_calls\n```\n\n<</last_step_action_results>>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 0,
+          "next_step_index": 2,
+          "output_repairs": 0,
+          "steps": 2,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "behavior_parse_error_correction_step",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><intent>saw it</intent><report end=\"true\">finished</report></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context behavior_loop::behavior_loop_parse_error_feeds_back_as_user_message_and_recovers",
+      "tool_results": {},
+      "tools": []
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "no_timestamps"
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": true,
+          "self_report": "corrected final"
+        },
+        "dispatched": [],
+        "inferences": 2,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "<actions><shell>must not run</shell></actions><report end=\"true\">invalid</report>",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "text": "<<last_step_action_results behavior=\"xllm\" step=\"0\">>\n- Step error\n\n```output\nError: parse failed: a final report cannot be combined with actions\n```\n\n<</last_step_action_results>>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 0,
+          "next_step_index": 2,
+          "output_repairs": 0,
+          "steps": 2,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "behavior_final_report_with_actions_corrected",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<actions><shell>must not run</shell></actions><report end=\"true\">invalid</report>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<report end=\"true\">corrected final</report>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context behavior_loop::behavior_loop_rejects_ending_report_with_actions_before_side_effects",
+      "tool_results": {},
+      "tools": []
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "no_timestamps"
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": true,
+          "self_report": "finished"
+        },
+        "dispatched": [
+          "1",
+          "2"
+        ],
+        "inferences": 2,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "<response>\n<intent>three actions</intent>\n<actions><shell>echo a</shell><shell>echo b</shell><shell>echo c</shell></actions>\n</response>",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "text": "<<last_step_action_results behavior=\"xllm\" step=\"0\">>\n- #1 Run echo a\n\n```output\na\n```\n- #2 Run echo b\n\n```output\nb: command failed\n```\n- #3 Run echo c\n\n```output\nNot executed: not executed: an earlier action in this step failed\n```\n\n<</last_step_action_results>>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 3,
+          "next_step_index": 2,
+          "output_repairs": 0,
+          "steps": 2,
+          "tool_iterations_left": 3
+        }
+      },
+      "name": "behavior_failing_action_stops_the_step",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response>\n<intent>three actions</intent>\n<actions><shell>echo a</shell><shell>echo b</shell><shell>echo c</shell></actions>\n</response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><intent>saw it</intent><report end=\"true\">finished</report></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::behavior_actions_stop_after_first_business_error_and_record_skipped",
+      "tool_results": {
+        "1": {
+          "observation": {
+            "bytes": 2,
+            "call_id": "1",
+            "content": "a\n",
+            "host": {
+              "agent_tool_protocol": "1",
+              "detail": {},
+              "output": "a\n",
+              "status": "success",
+              "summary": "exit 0",
+              "tool": "shell"
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        },
+        "2": {
+          "observation": {
+            "call_id": "2",
+            "host": {
+              "agent_tool_protocol": "1",
+              "detail": {},
+              "output": "b: command failed\n",
+              "status": "error",
+              "summary": "exit 1",
+              "tool": "shell"
+            },
+            "kind": "error",
+            "message": "exit 1\nb: command failed"
+          }
+        }
+      },
+      "tools": []
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "no_timestamps"
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": true,
+          "self_report": "finished"
+        },
+        "dispatched": [
+          "native-1",
+          "1",
+          "2"
+        ],
+        "inferences": 3,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "<response><actions><shell>echo a</shell><shell>echo b</shell></actions></response>",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "text": "<<last_step_action_results behavior=\"xllm\" step=\"0\">>\n- #1 Run echo a\n\n```output\na\n```\n- #2 Run echo b\n\n```output\nb\n```\n\n<</last_step_action_results>>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [
+          "read_file"
+        ],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 2,
+          "next_step_index": 2,
+          "output_repairs": 0,
+          "steps": 2,
+          "tool_iterations_left": 3
+        }
+      },
+      "name": "behavior_native_calls_inside_a_step",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 5,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "args": {
+                    "path": "notes.txt"
+                  },
+                  "call_id": "native-1",
+                  "name": "read_file",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><actions><shell>echo a</shell><shell>echo b</shell></actions></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><intent>saw it</intent><report end=\"true\">finished</report></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context budgets::behavior_step_spans_rounds_and_holds_several_actions",
+      "tool_results": {
+        "1": {
+          "observation": {
+            "bytes": 2,
+            "call_id": "1",
+            "content": "a\n",
+            "host": {
+              "agent_tool_protocol": "1",
+              "detail": {},
+              "output": "a\n",
+              "status": "success",
+              "summary": "exit 0",
+              "tool": "shell"
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        },
+        "2": {
+          "observation": {
+            "bytes": 2,
+            "call_id": "2",
+            "content": "b\n",
+            "host": {
+              "agent_tool_protocol": "1",
+              "detail": {},
+              "output": "b\n",
+              "status": "success",
+              "summary": "exit 0",
+              "tool": "shell"
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        },
+        "native-1": {
+          "observation": {
+            "bytes": 7,
+            "call_id": "native-1",
+            "content": "line 1\n",
+            "host": {
+              "agent_tool_protocol": "1",
+              "detail": {},
+              "output": "line 1\n",
+              "status": "success",
+              "summary": "read 1 line",
+              "tool": "read_file"
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        }
+      },
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "read_file"
+        }
+      ]
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "timestamps"
+      },
+      "expect": {
+        "dispatched": [
+          "1",
+          "2"
+        ],
+        "inferences": 3,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "<response><actions><read_file path=\"fixture.txt\"><![CDATA[]]></read_file></actions></response>",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "text": "<<last_step_action_results behavior=\"xllm\" step=\"0\">>\n- #1 Run read_file path=fixture.txt\n\n```output\nbehavior-fixture-3142\n```\n\n<</last_step_action_results>>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "<response><actions><read_file><![CDATA[missing.txt]]></read_file></actions></response>",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "text": "<<last_step_action_results behavior=\"xllm\" step=\"1\">>\n- #2 Run read_file path=missing.txt\n\n```output\nmissing.txt: not found\n```\n\n<</last_step_action_results>>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": null,
+        "outcome": {
+          "kind": "budget_exhausted",
+          "which": "tool_iterations"
+        },
+        "run": {
+          "limit_reason": "tool iteration limit (2) reached",
+          "status": "limit_reached"
+        },
+        "state": {
+          "consecutive_errors": 1,
+          "last_step": true,
+          "next_action_id": 3,
+          "next_step_index": 3,
+          "output_repairs": 0,
+          "steps": 1,
+          "tool_iterations_left": 0
+        }
+      },
+      "name": "behavior_step_exhausts_tool_iterations",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 2,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><actions><read_file path=\"fixture.txt\"><![CDATA[]]></read_file></actions></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><actions><read_file><![CDATA[missing.txt]]></read_file></actions></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><actions><write_file path=\"excess.txt\"><![CDATA[excess]]></write_file></actions></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "xllm tests::behavior_file_actions_respect_arguments_and_persist_tool_iteration_limit",
+      "tool_results": {
+        "1": {
+          "observation": {
+            "bytes": 21,
+            "call_id": "1",
+            "content": "behavior-fixture-3142",
+            "host": {
+              "agent_tool_protocol": "1",
+              "detail": {},
+              "output": "behavior-fixture-3142",
+              "status": "success",
+              "summary": "read 1 line",
+              "tool": "read_file"
+            },
+            "kind": "success",
+            "truncated": false
+          }
+        },
+        "2": {
+          "observation": {
+            "call_id": "2",
+            "host": {
+              "agent_tool_protocol": "1",
+              "detail": {},
+              "output": "",
+              "status": "error",
+              "summary": "missing.txt: not found",
+              "tool": "read_file"
+            },
+            "kind": "error",
+            "message": "missing.txt: not found"
+          }
+        }
+      },
+      "tools": []
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "no_timestamps"
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": true,
+          "self_report": "corrected"
+        },
+        "dispatched": [],
+        "inferences": 2,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "<report end=\"true\">invalid</report>",
+                "type": "text"
+              },
+              {
+                "args": {
+                  "path": "a.txt"
+                },
+                "call_id": "blocked",
+                "name": "read_file",
+                "type": "tool_use"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "call_id": "blocked",
+                "content": [
+                  {
+                    "text": "an ending report cannot contain actions or native tool_calls",
+                    "type": "text"
+                  }
+                ],
+                "is_error": true,
+                "type": "tool_result"
+              }
+            ],
+            "role": "tool"
+          }
+        ],
+        "last_request_tools": [
+          "read_file"
+        ],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 0,
+          "next_step_index": 1,
+          "output_repairs": 0,
+          "steps": 1,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "behavior_native_calls_conflict_with_final_report",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<report end=\"true\">invalid</report>",
+                  "type": "text"
+                },
+                {
+                  "args": {
+                    "path": "a.txt"
+                  },
+                  "call_id": "blocked",
+                  "name": "read_file",
+                  "type": "tool_use"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<report end=\"true\">corrected</report>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context behavior_loop::native_ending_report_conflict_pairs_calls_without_dispatch",
+      "tool_results": {},
+      "tools": [
+        {
+          "args_schema": {},
+          "description": "",
+          "name": "read_file"
+        }
+      ]
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "no_timestamps"
+      },
+      "expect": {
+        "dispatched": [
+          "1"
+        ],
+        "inferences": 1,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [],
+        "outcome": {
+          "error": {
+            "kind": "tool_runtime"
+          },
+          "kind": "error"
+        },
+        "run": {
+          "kind": "tool_runtime",
+          "status": "paused"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": true,
+          "next_action_id": 2,
+          "next_step_index": 1,
+          "output_repairs": 0,
+          "steps": 0,
+          "tool_iterations_left": 3
+        }
+      },
+      "name": "behavior_action_dispatch_error",
+      "request": {
+        "behavior_name": "xllm",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response>\n<intent>two actions</intent>\n<actions><shell>echo a</shell><shell>echo b</shell></actions>\n</response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "never reached",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context error_policy::behavior_action_dispatch_failure_ends_run_with_sedimented_partial_step",
+      "tool_results": {
+        "1": {
+          "dispatch_error": {
+            "effect_unknown": true,
+            "message": "sandbox connection lost"
+          }
+        }
+      },
+      "tools": []
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "timestamps",
+        "seed": {
+          "inner_transcript": [
+            {
+              "content": [
+                {
+                  "text": "Continue TASK_ANCHOR.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "next_step_index": 2,
+          "steps": [
+            {
+              "assistant_text": "<response><intent>create todos</intent></response>",
+              "meta": {
+                "behavior_name": "plan",
+                "compression_level": "full",
+                "ended_at_ms": 20,
+                "started_at_ms": 10,
+                "step_index": 0
+              },
+              "report_end": false,
+              "thought": "created todos"
+            },
+            {
+              "assistant_text": "<response><intent>switch to do</intent><next_behavior>DO</next_behavior></response>",
+              "meta": {
+                "behavior_name": "plan",
+                "compression_level": "full",
+                "ended_at_ms": 30,
+                "started_at_ms": 21,
+                "step_index": 1
+              },
+              "report_end": false,
+              "thought": "switch to do"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": true,
+          "self_report": "finished"
+        },
+        "dispatched": [],
+        "inferences": 1,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "<<step_history>>\n<step_record behavior=\"plan\" index=\"0\" started_at_ms=\"10\" ended_at_ms=\"20\" compression=\"full\">\n<observation></observation>\n<intent>created todos</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<step_record behavior=\"plan\" index=\"1\" started_at_ms=\"21\" ended_at_ms=\"30\" compression=\"full\">\n<observation></observation>\n<intent>switch to do</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<</step_history>>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "Continue TASK_ANCHOR.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 0,
+          "next_step_index": 3,
+          "output_repairs": 0,
+          "steps": 3,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "behavior_inherited_steps_with_timestamps",
+      "request": {
+        "behavior_name": "do",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><intent>start do</intent><report end=\"true\">finished</report></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context behavior_loop::inner_transcript_renders_after_inherited_steps_and_clears_after_inference",
+      "tool_results": {},
+      "tools": []
+    },
+    {
+      "behavior": {
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "t"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "t"
+          }
+        ],
+        "renderer": "no_timestamps",
+        "seed": {
+          "inner_transcript": [
+            {
+              "content": [
+                {
+                  "text": "Continue TASK_ANCHOR.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "next_step_index": 2,
+          "steps": [
+            {
+              "assistant_text": "<response><intent>create todos</intent></response>",
+              "meta": {
+                "behavior_name": "plan",
+                "compression_level": "full",
+                "ended_at_ms": 20,
+                "started_at_ms": 10,
+                "step_index": 0
+              },
+              "report_end": false,
+              "thought": "created todos"
+            },
+            {
+              "assistant_text": "<response><intent>switch to do</intent><next_behavior>DO</next_behavior></response>",
+              "meta": {
+                "behavior_name": "plan",
+                "compression_level": "full",
+                "ended_at_ms": 30,
+                "started_at_ms": 21,
+                "step_index": 1
+              },
+              "report_end": false,
+              "thought": "switch to do"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "behavior_result": {
+          "report_end": true,
+          "self_report": "finished"
+        },
+        "dispatched": [],
+        "inferences": 1,
+        "last_request_messages": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "<<step_history>>\n<step_record behavior=\"plan\" index=\"0\" compression=\"full\">\n<observation></observation>\n<intent>created todos</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<step_record behavior=\"plan\" index=\"1\" compression=\"full\">\n<observation></observation>\n<intent>switch to do</intent>\n<actions>\nNo action.\n</actions>\n</step_record>\n<</step_history>>",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "text": "Continue TASK_ANCHOR.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "last_request_tools": [],
+        "outcome": {
+          "kind": "done",
+          "output_kind": "text"
+        },
+        "run": {
+          "status": "completed"
+        },
+        "state": {
+          "consecutive_errors": 0,
+          "last_step": false,
+          "next_action_id": 0,
+          "next_step_index": 3,
+          "output_repairs": 0,
+          "steps": 3,
+          "tool_iterations_left": 4
+        }
+      },
+      "name": "behavior_inherited_steps_without_timestamps",
+      "request": {
+        "behavior_name": "do",
+        "budget": {
+          "context_window_tokens": null,
+          "context_yield_threshold": null,
+          "max_completion_tokens": null,
+          "max_cost_units": null,
+          "max_total_tokens": null,
+          "max_wallclock_ms": null,
+          "on_exhausted": "fail"
+        },
+        "error_policy": {
+          "max_consecutive_errors": 3
+        },
+        "forbid_next_behavior": false,
+        "input": [
+          {
+            "content": [
+              {
+                "text": "You act with the XML actions of this run.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "content": [
+              {
+                "text": "Do the task.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model_policy": {
+          "fallbacks": [],
+          "max_completion_tokens": null,
+          "preferred": "test-model",
+          "provider_options": null,
+          "temperature": null
+        },
+        "objective": "test",
+        "output": {
+          "kind": "text"
+        },
+        "owner": {
+          "id": "t"
+        },
+        "tool_policy": {
+          "action_mode": "all",
+          "action_whitelist": [],
+          "disable_capabilities": [],
+          "finish_grace_ms": 30000,
+          "max_calls_per_round": 4,
+          "max_tool_iterations": 4,
+          "mode": "all",
+          "whitelist": []
+        },
+        "trace": "trace-1"
+      },
+      "script": [
+        {
+          "response": {
+            "message": {
+              "content": [
+                {
+                  "text": "<response><intent>start do</intent><report end=\"true\">finished</report></response>",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          }
+        }
+      ],
+      "source": "llm_context behavior_loop::inner_transcript_renders_after_inherited_steps_and_clears_after_inference",
+      "tool_results": {},
+      "tools": []
+    }
+  ],
+  "vectors_version": 1
+}

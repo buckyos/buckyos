@@ -1,0 +1,290 @@
+{
+  "cases": [
+    {
+      "agent_tool_host_id": "  xllm-fixture ",
+      "etc_hostname": "devbox\n",
+      "expect": "host:xllm-fixture:",
+      "fn": "native_host_id",
+      "hostname_env": null,
+      "machine_id": "m\n",
+      "name": "host_id_from_agent_tool_host_id"
+    },
+    {
+      "agent_tool_host_id": "  ",
+      "etc_hostname": "devbox\n",
+      "expect": "host:devbox:0123abcd",
+      "fn": "native_host_id",
+      "hostname_env": null,
+      "machine_id": "0123abcd\n",
+      "name": "host_id_blank_env_falls_back"
+    },
+    {
+      "agent_tool_host_id": null,
+      "etc_hostname": null,
+      "expect": "host:ci-runner:",
+      "fn": "native_host_id",
+      "hostname_env": "ci-runner",
+      "machine_id": null,
+      "name": "host_id_from_hostname_env"
+    },
+    {
+      "agent_tool_host_id": null,
+      "etc_hostname": null,
+      "expect": "host:unknown:",
+      "fn": "native_host_id",
+      "hostname_env": null,
+      "machine_id": null,
+      "name": "host_id_unknown"
+    },
+    {
+      "configured_id": null,
+      "expect": {
+        "descriptor": {
+          "capabilities": {
+            "network": true,
+            "os": "linux",
+            "tools": {
+              "base64": "available",
+              "bash": "available",
+              "realpath": "available"
+            }
+          },
+          "host": "host:xllm-fixture:",
+          "kind": "native",
+          "runtime_id": "native:b221a8203dcd83ba5a18a73d",
+          "target": {
+            "host": "host:xllm-fixture:",
+            "uid": "1000"
+          },
+          "workdir": "/work/project"
+        },
+        "runtime_id": "native:b221a8203dcd83ba5a18a73d",
+        "target": {
+          "host": "host:xllm-fixture:",
+          "uid": "1000"
+        },
+        "target_text": "{\"host\":\"host:xllm-fixture:\",\"uid\":\"1000\"}"
+      },
+      "fn": "native_identity",
+      "host_id": "host:xllm-fixture:",
+      "name": "native_identity_fixture_host",
+      "probe": {
+        "cwd": "/work/project",
+        "os": "linux",
+        "tools": [
+          "bash",
+          "realpath",
+          "base64"
+        ],
+        "uid": "1000"
+      }
+    },
+    {
+      "configured_id": null,
+      "expect": {
+        "descriptor": {
+          "capabilities": {
+            "network": true,
+            "os": "linux",
+            "tools": {
+              "base64": "available",
+              "bash": "available",
+              "realpath": "available"
+            }
+          },
+          "host": "host:xllm-fixture:",
+          "kind": "native",
+          "runtime_id": "native:4d158d688f4ca5774193a6e3",
+          "target": {
+            "host": "host:xllm-fixture:",
+            "uid": "0"
+          },
+          "workdir": "/work/project"
+        },
+        "runtime_id": "native:4d158d688f4ca5774193a6e3",
+        "target": {
+          "host": "host:xllm-fixture:",
+          "uid": "0"
+        },
+        "target_text": "{\"host\":\"host:xllm-fixture:\",\"uid\":\"0\"}"
+      },
+      "fn": "native_identity",
+      "host_id": "host:xllm-fixture:",
+      "name": "native_identity_root",
+      "probe": {
+        "cwd": "/work/project",
+        "os": "linux",
+        "tools": [
+          "bash",
+          "realpath",
+          "base64"
+        ],
+        "uid": "0"
+      }
+    },
+    {
+      "configured_id": null,
+      "expect": {
+        "descriptor": {
+          "capabilities": {
+            "network": true,
+            "os": "linux",
+            "tools": {
+              "base64": "available",
+              "bash": "available",
+              "realpath": "available"
+            }
+          },
+          "host": "host:devbox:0123abcd",
+          "kind": "native",
+          "runtime_id": "native:4732d76d8fa122ba23a7ef64",
+          "target": {
+            "host": "host:devbox:0123abcd",
+            "uid": "1000"
+          },
+          "workdir": "/work/project"
+        },
+        "runtime_id": "native:4732d76d8fa122ba23a7ef64",
+        "target": {
+          "host": "host:devbox:0123abcd",
+          "uid": "1000"
+        },
+        "target_text": "{\"host\":\"host:devbox:0123abcd\",\"uid\":\"1000\"}"
+      },
+      "fn": "native_identity",
+      "host_id": "host:devbox:0123abcd",
+      "name": "native_identity_machine_host",
+      "probe": {
+        "cwd": "/work/project",
+        "os": "linux",
+        "tools": [
+          "bash",
+          "realpath",
+          "base64"
+        ],
+        "uid": "1000"
+      }
+    },
+    {
+      "configured_id": "my-runtime",
+      "expect": {
+        "descriptor": {
+          "capabilities": {
+            "network": true,
+            "os": "linux",
+            "tools": {
+              "base64": "available",
+              "bash": "available",
+              "realpath": "available"
+            }
+          },
+          "host": "host:xllm-fixture:",
+          "kind": "native",
+          "runtime_id": "my-runtime",
+          "target": {
+            "host": "host:xllm-fixture:",
+            "uid": "1000"
+          },
+          "workdir": "/work/project"
+        },
+        "runtime_id": "my-runtime",
+        "target": {
+          "host": "host:xllm-fixture:",
+          "uid": "1000"
+        },
+        "target_text": "{\"host\":\"host:xllm-fixture:\",\"uid\":\"1000\"}"
+      },
+      "fn": "native_identity",
+      "host_id": "host:xllm-fixture:",
+      "name": "native_identity_configured_id",
+      "probe": {
+        "cwd": "/work/project",
+        "os": "linux",
+        "tools": [
+          "bash",
+          "realpath",
+          "base64"
+        ],
+        "uid": "1000"
+      }
+    },
+    {
+      "expect": {
+        "identity": {
+          "hostname": "devbox",
+          "machine": "0123456789abcdef0123456789abcdef",
+          "uid": "1000"
+        },
+        "info": {
+          "arch": "x86_64",
+          "current_time": "2026-11-07T10:00:00+0800",
+          "cwd": "/work/project",
+          "hostname": "devbox",
+          "os": "linux",
+          "shell": "/usr/bin/bash",
+          "timezone": "CST+0800",
+          "tools": [
+            "bash",
+            "realpath",
+            "base64"
+          ]
+        },
+        "path": "/usr/local/bin:/usr/bin:/bin"
+      },
+      "fn": "parse_probe",
+      "name": "parse_probe_local",
+      "stdout": "0123456789abcdef0123456789abcdef\u0000devbox\u00001000\u0000linux\u0000x86_64\u0000/usr/bin/bash\u0000/work/project\u0000/usr/local/bin:/usr/bin:/bin\u00002026-11-07T10:00:00+0800\u0000CST+0800\u0000bash\u0000realpath\u0000base64\u0000"
+    },
+    {
+      "expect": {
+        "error": {
+          "kind": "capability"
+        }
+      },
+      "fn": "parse_probe",
+      "name": "parse_probe_incomplete",
+      "stdout": "0123456789abcdef0123456789abcdef\u0000devbox\u0000\u0000linux\u0000x86_64\u0000/usr/bin/bash\u0000/work/project\u0000/usr/local/bin:/usr/bin:/bin\u00002026-11-07T10:00:00+0800\u0000CST+0800\u0000bash\u0000realpath\u0000base64\u0000"
+    },
+    {
+      "expect": {
+        "file_name": "c2f433bcc22dbb561d378ab2.lock",
+        "path": "/home/u/.xllm/locks/c2f433bcc22dbb561d378ab2.lock"
+      },
+      "fn": "workdir_lock_path",
+      "lock_dir": "/home/u/.xllm/locks",
+      "name": "lock_path_plain",
+      "workdir": "/work/project"
+    },
+    {
+      "expect": {
+        "file_name": "37166ab308b707ff0a0d1ebc.lock",
+        "path": "/home/u/.xllm/locks/37166ab308b707ff0a0d1ebc.lock"
+      },
+      "fn": "workdir_lock_path",
+      "lock_dir": "/home/u/.xllm/locks",
+      "name": "lock_path_trailing_slash_differs",
+      "workdir": "/work/project/"
+    },
+    {
+      "expect": {
+        "file_name": "d8c958bc34ab02b26693a00e.lock",
+        "path": "/home/u/.xllm/locks/d8c958bc34ab02b26693a00e.lock"
+      },
+      "fn": "workdir_lock_path",
+      "lock_dir": "/home/u/.xllm/locks",
+      "name": "lock_path_unicode_and_space",
+      "workdir": "/home/u/项目 a"
+    },
+    {
+      "expect": {
+        "file_name": "6e294b7e507c459943dd48e5.lock",
+        "path": "/home/u/.xllm/locks/6e294b7e507c459943dd48e5.lock"
+      },
+      "fn": "workdir_lock_path",
+      "lock_dir": "/home/u/.xllm/locks",
+      "name": "lock_path_windows_style",
+      "workdir": "C:\\Users\\u\\proj"
+    }
+  ],
+  "vectors_version": 1
+}

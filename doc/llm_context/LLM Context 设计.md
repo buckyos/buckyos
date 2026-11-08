@@ -10,7 +10,7 @@
 >
 > 术语：Round = 一次推理，Step = Behavior Loop 的一次决策记录（`StepRecord`），Turn = AgentSession 的一次逻辑 Input → result，工具迭代 = 工具预算的计量单位；定义见 [readme](readme.md)。本文的 `run()` 指一次 `LLMContext::run()` 调用。
 >
-> 核对：2026-11-01 按工作区源码逐节核对（`src/frame/llm_context`，快照 v6；`src/frame/agent_tool/src/xllm.rs`，RunRecord v7）。本文描述**现状**；设计取舍的裁决记录见 [llm_context 简化与冻结 TODO](../../notepads/done/llm-context-freeze-todo.md)，尚未落地的两项在 §11.6 标注"冻结 TODO Fn"。
+> 核对：2026-11-01 按工作区源码逐节核对（`src/frame/llm_context`，快照 v6；`src/frame/agent_tool/src/xllm.rs`，RunRecord v7）。本文描述**现状**；设计取舍的裁决记录见 [llm_context 简化与冻结 TODO](../../notepads/done/llm-context-freeze-todo.md)，尚未落地的项在 §11.6 标注"冻结 TODO Fn"。
 >
 > 分层一句话：**llm_context 只跑 loop**（推理、派发工具调用、把结果配对回历史、决定在哪里停、怎么接着跑、什么时候打 checkpoint）；工具、结果信封、任务模型、调用内的等待预算、按 call_id 的恢复、XML 协议与 prompt 引擎在 Runtime 层（`agent_tool`）；Session、Turn、输入、子 context、子 session 以及在 loop 外跟进任务在宿主（libopendan）。loop 里不允许等待，任何等待都是任务。
 
@@ -346,7 +346,7 @@ pub struct ToolDispatchError { message: String, effect_unknown: bool }
 
 **任务不是 waist 概念**：waist 对工具结果只做一种处理——配对回历史、交给下一次推理。工作比一次调用活得久的，是 Runtime 的任务（`agent_tool::task_model`）：
 
-- **调用内等待预算**：工具结果是 pending 信封（AgentToolResult `status=pending` + `task_id`）时，Runtime 的 ToolManager 在预算内（工具给的 `check_after`，否则 `RuntimeConfig.task_wait_ms`，默认 30 秒、上限 `MAX_IN_TOOL_WAIT_MS` = 30 分钟，再受 run 截止时间约束，`task_model::wait_until_ms`）经 `RunningTaskResolver::wait` 等它；结束了就是普通结果，还在运行就返回一个 Success（"task X is still running …" + 跟进提示，`host` 里的视图带 task_id）。打断 / 平滑结束只取消等待，任务本身继续。
+- **调用内等待预算**：工具结果是 pending 信封（AgentToolResult `status=pending` + `task_id`）时，Runtime 的 ToolManager 在预算内（`RuntimeConfig.task_wait_ms`，默认 25 秒；工具给的 `check_after` 只能把它缩短；上限 `MAX_IN_TOOL_WAIT_MS` = 30 分钟，再受 run 截止时间约束，`task_model::wait_until_ms`）经 `RunningTaskResolver::wait` 等它；结束了就是普通结果，还在运行就返回一个 Success（"task X is still running …" + 跟进提示，`host` 里的视图带 task_id）。打断 / 平滑结束只取消等待，任务本身继续。
 - **谁跟进任务**：`RunningTaskResolver`（`state` / `wait` / `cancel` / `can_resolve` / `watch` / `active` / `followup`）由 Runtime 装配，task_id 对 waist 不透明。`task_state_observation_via` 是 `TaskState` 到 observation 的唯一渲染，"仍在运行"的提示措辞由 `followup()` 决定：`TaskFollowup::Tools`（模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进）、`Command(cli)`（经 `shell` 运行的 task CLI 桥）、`Input(cli)`（Session 宿主在 loop 外跟进，结局作为输入回来，模型不必等）。
 - 没有每轮附加在请求末尾的后台任务简介：每轮变化的内容会破坏前缀缓存。宿主要让模型看到什么，就经 `CheckpointHook::before_inference` 注入（进历史、进快照，§9.4）。
 
@@ -1165,7 +1165,7 @@ XllmToolManager::call_tool(call: AiToolCall, ctx: ToolCallCtx) -> Result<Observa
     match result:
         Ok(AgentToolResult { status: Pending, task_id, check_after, .. }):
             task_id 为空                          ⇒ Observation::Error（协议违规）
-            否则 wait_in_tool（预算 = check_after | task_wait_ms，再受 30 min 与 run 截止时间约束，task_model::wait_until_ms）：
+            否则 wait_in_tool（预算 = min(check_after, task_wait_ms)，再受 30 min 与 run 截止时间约束，task_model::wait_until_ms）：
                  select! { resolver.wait(task_id, until), ctx.cancelled() ⇒ Cancelled{effect_unknown:false}（任务本身继续） }
                  → task_state_observation_via(call_id, task_id, state, resolver.followup())
                    // 结束了：任务结果；还在运行：Success "task X is still running …"，host 的视图带 task_id
@@ -1199,7 +1199,8 @@ XllmRun::resume(store, run_id | 工作目录最近的未完成 run, limits, deps
     workdir 不存在                                   ⇒ NotResumable
     取锁；持锁后重读 record 并重做上述门禁
     runtime = deps.runtime | RuntimeRegistry::from_config(record.config.runtime)
-    manager = rebuild_toolset(record, deps)          // 按 run.json 记的工具来源重建（spec 对账见冻结 TODO F6）
+    manager = rebuild_toolset(record, deps)          // 按 run.json 记的工具来源重建；对模型广告 run.json 保存的 spec，
+                                                     // 保存的工具有一个派发不了 ⇒ NotResumable（冻结 TODO F6）
     套用本次命令的 limits（timeout / max_tokens / max_tool_iterations；已消耗的工具迭代沿用）
     llm 同 start
     snapshot = latest_snapshot_idx 对应的快照（最后一次工具调用前 / 推理前 / outcome 边界的 checkpoint）
@@ -1239,8 +1240,7 @@ record.host = Some(HostRunInfo)：提示词与输入来自宿主，xllm 接手�
 
 ### 11.6 这个骨架里的接缝（现状，不是结论）
 
-- 接手时工具 spec 来自重建后的 manager，而不是 `run.json` 保存的 spec（冻结 TODO F6）。
-- 工具结果里的提示没有去重：同类结果每次都带同样的跟进提示，AgentToolResult 还没有 `hints` / `dedup` 字段，Runtime 也不按 session 去重（冻结 TODO F11）。
+冻结 TODO 记下的两处接缝都已补上：恢复时对模型广告 run.json 保存的工具 spec（F6，2026-11-07），结果提示的 `once` / `dedup` 去重（F11，`5184e1947`）。目前没有已知的接缝。
 
 ---
 
@@ -1302,7 +1302,7 @@ src/frame/llm_context/src/
 | [prompt_render_engine](prompt_render_engine.md) | `agent_tool::prompt_engine` 模板引擎（§7） |
 | [Agent Actions](<Agent Actions.md>) | Behavior 模式 `<actions>` / `<report>` 的最终形态 |
 | [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) | libopendan Session 宿主：Turn、lease、历史重写、hosted run |
-| [llm_context 简化与冻结 TODO](../../notepads/done/llm-context-freeze-todo.md) | 分层取舍的裁决记录 F1–F24；未落地的 F6 / F11 见 §11.6 |
+| [llm_context 简化与冻结 TODO](../../notepads/done/llm-context-freeze-todo.md) | 分层取舍的裁决记录 F1–F24 |
 
 早期设想的 `LLMAgentContext 设计.md` / `LLMWorkflowContext 设计.md` 没有单独成文：Agent 一侧由 libopendan 的 Session 承担，Workflow 一侧尚无实现。
 

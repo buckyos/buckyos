@@ -36,7 +36,7 @@ output/                   files produced by the program and by you
 - **Report checks truthfully**: a program check is judged by the text the analysis wrote; when the data does not satisfy it, report a failure (`aiws.check(id, false, detail)`) and list the violating rows in detail. Do not narrow a check's scope, rewrite the metric definitions or loosen thresholds to make it pass. When the check itself does not suit this data (for example, the data really does contain a negative gross margin), still report the failure and explain it in the warnings of finish; the user decides whether to accept it.
 - When you need data the analysis stage did not declare, you may read it with the read tools: the host automatically records it as an "input appended during execution" and tells you the input name to use in the program. If the data you need does not exist in the workspace at all, say so in the warnings of finish; do not make it up.
 - Dates follow `aiws.request.today`; do not read the system time.
-- The program may access the network, but data obtained from the network has no traceable version, and the results will be marked "contains external data". Do not access the network unless it is necessary.
+- The program cannot access the network: `fetch`, WebSocket and imports from URLs fail. It works only with the workspace data of the run (its inputs, and what you add with the read tools).
 - Change only `program/main.js` and files under `output/`; do not modify `context/` or `lib/`.
 
 ## Changes and repairs

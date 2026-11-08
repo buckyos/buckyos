@@ -68,7 +68,7 @@ fn probe_script(cwd: &str, env: &BTreeMap<String, String>) -> String {
     s.push_str(PROBE);
     s
 }
-pub(super) fn parse_probe(bytes: &[u8]) -> Result<Probe, XllmError> {
+pub(crate) fn parse_probe(bytes: &[u8]) -> Result<Probe, XllmError> {
     let p = bytes
         .strip_suffix(&[0])
         .unwrap_or(bytes)

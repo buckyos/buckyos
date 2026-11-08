@@ -1,8 +1,10 @@
 /* The program runner of the local executor (内核架构改进 T3-4, D21): a wish program runs in this Worker on
- * the stage snapshot the main thread fetched, through the same program host the service uses (aiws.js). It
- * sees files, not the Workspace: no session, no token, no kRPC. `aiws.llm.map` goes to the main thread,
- * which asks the service under the run's attribution. Everything the program writes under output/ and
- * what the host collected go back as the run's output. */
+ * the stage snapshot the main thread fetched, through the same program host the service uses (aiws.js). The
+ * Worker is a classic one inside programHost.ts's sandbox (an opaque origin without network): it sees files,
+ * not the Workspace — no session, no cookie, none of the page's storage, no network. `aiws.llm.map` goes to
+ * the main thread, which asks the service under the run's attribution. Everything the program writes under
+ * output/ and what the host collected go back as the run's output. Built into one script text by
+ * vite.config.ts (`virtual:aiws-program-runner`). */
 
 import { createHost } from '../../../../../aiworkspace/aiws/aiws.js'
 
@@ -54,6 +56,12 @@ const deno = {
 }
 ;(globalThis as unknown as { Deno: unknown }).Deno = deno
 
+// the sandbox refuses every request: a failing fetch says so, in words the model can act on
+const sandboxFetch = globalThis.fetch
+globalThis.fetch = (input, init) => sandboxFetch(input, init).catch((error: unknown) => {
+  throw new TypeError(`fetch(${input instanceof Request ? input.url : String(input)}) failed (${String(error)}): a wish program has no network access here; work with the run's inputs (aiws.input)`)
+})
+
 let mapSeq = 0
 const mapWaiters = new Map<number, (body: unknown) => void>()
 ;(globalThis as unknown as { __aiwsLlmMap: (req: unknown) => Promise<unknown> }).__aiwsLlmMap = (req) => new Promise((resolve) => {
@@ -76,7 +84,9 @@ async function run(msg: RunMessage) {
   let url: string | null = null
   try {
     url = URL.createObjectURL(new Blob([msg.source], { type: 'text/javascript' }))
-    const mod = await import(/* @vite-ignore */ url) as { default?: unknown; main?: unknown }
+    const mod = await import(/* @vite-ignore */ url).catch((error: unknown) => {
+      throw error instanceof TypeError ? new TypeError(`program/main.js did not load (${String(error)}): a wish program cannot import modules, from the network or from files; use the JavaScript built-ins and the aiws argument of main`) : error
+    }) as { default?: unknown; main?: unknown }
     const main = mod.default ?? mod.main
     if (typeof main !== 'function') throw new Error('program/main.js must `export default async function main(aiws) { … }`')
     await (main as (aiws: unknown) => Promise<void>)(host.aiws)
@@ -88,7 +98,7 @@ async function run(msg: RunMessage) {
   const results = host.flush(failed)
   const summary = host.summary()
   if (summary) log.push(summary)
-  if (failed) log.push(String((failed as { stack?: string })?.stack ?? failed))
+  if (results.error) log.push(results.error)
   const outputs: Record<string, string | { base64: string }> = {}
   for (const path of written) {
     if (!path.startsWith('output/') || path.startsWith('output/.aiws/')) continue

@@ -238,7 +238,7 @@ Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, Resume
 
 这些挂起都不结束 Step 或 Turn；恢复时不重扣已扣的工具迭代额度。Interrupted 只有真实发起过的推理才计入 Round。
 
-loop 里没有等待，任何等待都是任务：工具在 Runtime 的等待预算（`RuntimeConfig.task_wait_ms`，默认 30 秒）内没做完，就返回"仍在运行，任务 X"。libopendan 在 loop 外跟进本 run 的任务和子 session，结局以 `<<task_result task=… call_id=… status=…>>` / `<event … source="session:<sid>" …>` 输入注入同一快照（run 保留期间 Turn 保持打开）；提问用户也是任务：websdk `ask_user` 发 `input` 通知，答复是这个任务的结果。xllm 自己的 run 由模型用 `wait_task` / `get_task_state` 跟进，让出或回复时仍有运行中的任务就停为 `paused`，`xllm --resume [message]` 继续。xllm 不能 resume 停在交接点（run.json `handover`）的宿主 run。
+loop 里没有等待，任何等待都是任务：工具在 Runtime 的等待预算（`RuntimeConfig.task_wait_ms`，默认 25 秒）内没做完，就返回"仍在运行，任务 X"。libopendan 在 loop 外跟进本 run 的任务和子 session，结局以 `<<task_result task=… call_id=… status=…>>` / `<event … source="session:<sid>" …>` 输入注入同一快照（run 保留期间 Turn 保持打开）；提问用户也是任务：websdk `ask_user` 发 `input` 通知，答复是这个任务的结果。xllm 自己的 run 由模型用 `wait_task` / `get_task_state` 跟进，让出或回复时仍有运行中的任务就停为 `paused`，`xllm --resume [message]` 继续。xllm 不能 resume 停在交接点（run.json `handover`）的宿主 run。
 
 
 ## AgentRuntime
@@ -249,7 +249,7 @@ loop 里没有等待，任何等待都是任务：工具在 Runtime 的等待预
 
 RuntimeInfo 提供执行环境信息供提示词引用；native/SSH 刷新执行侧时间和时区，remote_node 当前使用控制侧 UTC 时间。Session 的稳定信息放 system，新鲜时间、半订阅与 active sessions 仍由 Session 输入批次管理。配置/日志/快照/INCLUDE 属于控制侧素材，runtime.workdir 属于执行侧。
 
-恢复读取各执行体的命令目录或 Node 操作 locator，不核验、不停止旧进程，也不盲目重放：工具调用前快照里第一个没有结果的调用（`exec_tracking::in_flight_call`）再派发时，ToolManager 按 call_id 找回（shell 的任务 `local:shell:<call_id>` 已结束就用它的结果），幂等工具重跑，其余由 `AgentRuntime::describe_interrupted` 生成说明、以结果未知交给 LLM。有 task manager 且等待预算（`RuntimeConfig.task_wait_ms`）小于命令超时时，shell 命令在预算内没结束就移交 task manager；之后 xllm 的模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进，Session 宿主在 loop 外跟进、结局作为输入回来。完整 Session 目前支持 native 与创建时冻结到节点 runtime 的 remote_node；SSH 远端 Session helper 未部署，独立 xllm 可使用 SSH/Node。policy、grant、approval 与其它执行体留到后续阶段。SDK 入口见 [xllm Rust SDK §10](xllm_rust_sdk.md#10-共享-agentruntime)。
+恢复读取各执行体的命令目录或 Node 操作 locator，不核验、不停止旧进程，也不盲目重放：工具调用前快照里第一个没有结果的调用（`exec_tracking::in_flight_call`）再派发时，ToolManager 按 call_id 找回（shell 的任务 `local:shell:<call_id>` 已结束就用它的结果），幂等工具重跑，其余由 `AgentRuntime::describe_interrupted` 生成说明、以结果未知交给 LLM。有 task manager 且等待预算（`RuntimeConfig.task_wait_ms`）小于命令超时时，shell 命令在预算内没结束就移交 task manager；之后 xllm 的模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进，Session 宿主在 loop 外跟进、结局作为输入回来。完整 Session 目前支持 native 与创建时冻结到节点 runtime 的 remote_node；SSH 远端 Session helper 未部署，独立 xllm 可使用 SSH/Node。policy、grant、approval 与其它执行体留到后续阶段。SDK 入口见 [xllm Rust SDK §11](xllm_rust_sdk.md#11-共享-agentruntime)。
 
 ## AgentState (RootFS)
 
@@ -261,3 +261,7 @@ RuntimeInfo 提供执行环境信息供提示词引用；native/SSH 刷新执行
 ## 命令行工具
 - xllm 加载(创建) local_llm_context,并运行到一个Step结束
 - xagent 加载（创建）AgentSession，并运行(到turn结束)。xagent拉起的也可以是一个持续获取input不断执行TurnLoop的AgentSession
+
+## TS 运行时
+
+xllm 的 TypeScript 版本在 websdk（`buckyos/xllm`）：同一套任务语义（配置、提示词装配、function_call 与 behavior 循环、预算与六态结束、Run 记录与恢复、观察事件），core 只用 Web 标准 API，同一份代码在浏览器页面、Node 和 Deno 上跑。浏览器里没有通用 runtime：网站用 `createSiteRuntime` 把自己的 JS 函数包成 `site` runtime（场景进身份，配置只能收窄），可选的基础工具 `siteTools` 把页面的资源和命令做成 `read` / `write` / `edit` / `exec`。Deno 宿主实现 `native` runtime，能接手同机 Rust 跑到一半的 run 目录。与 Rust 的一致性由共享向量证明（Rust `xllm::vectors` 生成并校验，websdk 消费）。详见 [xllm TS 运行时](xllm_ts_runtime.md)。

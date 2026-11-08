@@ -1,0 +1,13 @@
+{
+  "call_id": "call_shell_1",
+  "command_mtime_offset_secs": 7200,
+  "no_exit": {
+    "tool_message": "[unresolved: result unknown] shell (native): the previous executor exited while `printf 'started\\n'; sleep 60; printf 'finished\\n' # xllm-fixture-shell` was running (started 2h00m ago (at {{command_mtime_ms}} ms since epoch)). The command may have partly executed; it usually ended together with the executor, but not necessarily (e.g. after kill -9 it may still be running). Background processes it started are unaffected. Check the actual state before repeating it.\n--- stdout (tail) ---\nstarted",
+    "reason": "shell (native): the previous executor exited while `printf 'started\\n'; sleep 60; printf 'finished\\n' # xllm-fixture-shell` was running (started 2h00m ago (at {{command_mtime_ms}} ms since epoch)). The command may have partly executed; it usually ended together with the executor, but not necessarily (e.g. after kill -9 it may still be running). Background processes it started are unaffected. Check the actual state before repeating it.\n--- stdout (tail) ---\nstarted"
+  },
+  "exit_0": {
+    "exit_file": "0\n",
+    "stdout_append": "finished\n",
+    "tool_message": "`printf 'started\\n'; sleep 60; printf 'finished\\n' # xllm-fixture-shell` (task local:shell:call_shell_1) exited with code 0; started by a previous executor, read from {{exec_dir}}.\n--- stdout (tail) ---\nstarted\nfinished"
+  }
+}

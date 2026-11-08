@@ -3,7 +3,7 @@
 //! against a schema, cached per deployment by (model, instruction, schema, item).
 
 use super::{StageState, WishConfig};
-use agent_tool::xllm::{DefaultLlmClientFactory, LlmClientFactory, ProviderConfig, ProviderKind, SecretRef};
+use agent_tool::xllm::{DefaultLlmClientFactory, LlmClientFactory, ProviderConfig, ProviderKind, SecretRef, REFUSED_CREDENTIALS};
 use aiworkspace_core::canonical::{canonical_json, sha256_hex};
 use aiworkspace_core::{Code, WsError, WsResult};
 use buckyos_api::{AiMessage, AiRole, AiccOnBehalfOf};
@@ -192,7 +192,7 @@ async fn ask(llm: &Arc<dyn LlmClient>, model: &str, system: &str, user: String) 
         abort: InferenceAbortToken::noop(),
     };
     let r = llm.infer(req).await.map_err(|e| match &e {
-        LLMComputeError::Provider { failure: ProviderFailure::Refused { code }, .. } => {
+        LLMComputeError::Provider { failure: ProviderFailure::Refused { code }, .. } if code != REFUSED_CREDENTIALS => {
             AskError::Refused(super::refusal_sub_code(code).unwrap_or("AI_QUOTA_EXHAUSTED"))
         }
         _ => AskError::Failed(format!("model call failed: {e:?}")),

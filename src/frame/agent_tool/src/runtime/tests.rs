@@ -199,6 +199,23 @@ fn config_merge_resolves_source_paths_and_resets_kind() {
     .is_err());
 }
 
+#[test]
+fn site_runtime_is_a_capability_error() {
+    let site = RuntimeConfig {
+        kind: Some("site".into()),
+        ..Default::default()
+    };
+    assert!(matches!(site.validate(false), Err(XllmError::Capability(_))));
+    assert!(matches!(
+        RuntimeRegistry::from_config_with(&site, &XllmDeps::default()),
+        Err(XllmError::Capability(_))
+    ));
+    assert!(matches!(
+        crate::xllm::parse_llm_context_file(Path::new(".llm_context"), "runtime: {kind: site}"),
+        Err(XllmError::Capability(_))
+    ));
+}
+
 #[tokio::test]
 async fn native_default_explicit_env_files_and_prompt_share_executor() {
     let dir = tempfile::tempdir().unwrap();

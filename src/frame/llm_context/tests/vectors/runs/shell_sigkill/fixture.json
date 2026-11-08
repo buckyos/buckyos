@@ -1,0 +1,8 @@
+{
+  "root": "/tmp/xllm-fixture-root/shell",
+  "run_id": "20261107-150632-6c7d36",
+  "uid": "1000",
+  "host_id": "xllm-fixture",
+  "base_url": "http://127.0.0.1:46189/s/shell/v1",
+  "api_key_env": "XLLM_FIXTURE_KEY"
+}

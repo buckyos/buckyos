@@ -1,0 +1,357 @@
+{
+  "cases": [
+    {
+      "expect_once": [
+        "shell.task_followup",
+        "shell.task_followup:2"
+      ],
+      "name": "once_hint_shows_once_plain_hint_always",
+      "steps": [
+        {
+          "expect": {
+            "kind": "success",
+            "text": "<output>\nbody\n</output>\n<runtime_hints>\n- Follow a long command with `wait_task`.\n- always\n</runtime_hints>"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "detail": {},
+            "hints": [
+              {
+                "once": "shell.task_followup",
+                "text": "Follow a long command with `wait_task`."
+              },
+              {
+                "text": "always"
+              }
+            ],
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        },
+        {
+          "expect": {
+            "kind": "success",
+            "text": "<output>\nbody\n</output>\n<runtime_hints>\n- always\n</runtime_hints>"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "detail": {},
+            "hints": [
+              {
+                "once": "shell.task_followup",
+                "text": "Follow a long command with `wait_task`."
+              },
+              {
+                "text": "always"
+              }
+            ],
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        },
+        {
+          "expect": {
+            "kind": "success",
+            "text": "<output>\nbody\n</output>\n<runtime_hints>\n- Follow a long command with `wait_task`.\n</runtime_hints>"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "detail": {},
+            "hints": [
+              {
+                "once": "shell.task_followup:2",
+                "text": "Follow a long command with `wait_task`."
+              }
+            ],
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        }
+      ]
+    },
+    {
+      "expect_once": [],
+      "name": "dedup_repeat_and_clear",
+      "steps": [
+        {
+          "expect": {
+            "kind": "success",
+            "text": "body\n"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "dedup": {
+              "hint": "unchanged since you read it",
+              "key": "read:/a:1"
+            },
+            "detail": {},
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        },
+        {
+          "expect": {
+            "kind": "success",
+            "text": "unchanged since you read it"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "dedup": {
+              "hint": "unchanged since you read it",
+              "key": "read:/a:1"
+            },
+            "detail": {},
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        },
+        {
+          "expect": {
+            "kind": "success",
+            "text": "body\n"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "dedup": {
+              "hint": "unchanged since you read it",
+              "key": "read:/b:1"
+            },
+            "detail": {},
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        },
+        {
+          "clear_dedup": true
+        },
+        {
+          "expect": {
+            "kind": "success",
+            "text": "body\n"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "dedup": {
+              "hint": "unchanged since you read it",
+              "key": "read:/a:1"
+            },
+            "detail": {},
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        }
+      ]
+    },
+    {
+      "expect_once": [
+        "read.first"
+      ],
+      "name": "dedup_with_hints",
+      "steps": [
+        {
+          "expect": {
+            "kind": "success",
+            "text": "<output>\nbody\n</output>\n<runtime_hints>\n- first read\n- plain\n</runtime_hints>"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "dedup": {
+              "hint": "unchanged",
+              "key": "read:/a:1"
+            },
+            "detail": {},
+            "hints": [
+              {
+                "once": "read.first",
+                "text": "first read"
+              },
+              {
+                "text": "plain"
+              }
+            ],
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        },
+        {
+          "expect": {
+            "kind": "success",
+            "text": "<output>\nunchanged\n</output>\n<runtime_hints>\n- plain\n</runtime_hints>"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "dedup": {
+              "hint": "unchanged",
+              "key": "read:/a:1"
+            },
+            "detail": {},
+            "hints": [
+              {
+                "once": "read.first",
+                "text": "first read"
+              },
+              {
+                "text": "plain"
+              }
+            ],
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        }
+      ]
+    },
+    {
+      "expect_once": [],
+      "name": "empty_hints_dropped",
+      "steps": [
+        {
+          "expect": {
+            "kind": "success",
+            "text": "<output>\nbody\n</output>\n<runtime_hints>\n- kept\n</runtime_hints>"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "detail": {},
+            "hints": [
+              {
+                "once": "blank.once",
+                "text": "   "
+              },
+              {
+                "text": ""
+              },
+              {
+                "once": "",
+                "text": " kept "
+              }
+            ],
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        },
+        {
+          "expect": {
+            "kind": "success",
+            "text": "<output>\nbody\n</output>\n<runtime_hints>\n- kept\n</runtime_hints>"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "detail": {},
+            "hints": [
+              {
+                "once": "",
+                "text": " kept "
+              }
+            ],
+            "output": "body\n",
+            "status": "success",
+            "summary": "read 1 line",
+            "tool": "read"
+          }
+        }
+      ]
+    },
+    {
+      "expect_once": [
+        "read.path"
+      ],
+      "name": "error_status_rendering",
+      "steps": [
+        {
+          "expect": {
+            "kind": "error",
+            "text": "<output>\nexit 2\nstderr: no such file\n</output>\n<runtime_hints>\n- Check the path first.\n</runtime_hints>"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "detail": {},
+            "hints": [
+              {
+                "once": "read.path",
+                "text": "Check the path first."
+              }
+            ],
+            "output": "stderr: no such file\n",
+            "status": "error",
+            "summary": "exit 2",
+            "tool": "read"
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "text": "exit 2"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "detail": {},
+            "output": "",
+            "status": "error",
+            "summary": "exit 2",
+            "tool": "read"
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "text": "tool error"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "detail": {},
+            "output": "",
+            "status": "error",
+            "summary": "",
+            "tool": "read"
+          }
+        }
+      ]
+    },
+    {
+      "expect_once": [],
+      "name": "success_without_output_uses_summary",
+      "steps": [
+        {
+          "expect": {
+            "kind": "success",
+            "text": "<output>\nwrote 3 bytes\n</output>\n<runtime_hints>\n- Read it back to verify.\n</runtime_hints>"
+          },
+          "result": {
+            "agent_tool_protocol": "1",
+            "detail": {},
+            "hints": [
+              {
+                "text": "Read it back to verify."
+              }
+            ],
+            "output": " ",
+            "status": "success",
+            "summary": "wrote 3 bytes",
+            "tool": "read"
+          }
+        }
+      ]
+    }
+  ],
+  "vectors_version": 1
+}

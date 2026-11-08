@@ -1,0 +1,859 @@
+{
+  "cases": [
+    {
+      "actions": [
+        {
+          "args_schema": {
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "shell",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "write_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "new_string": {
+                "type": "string"
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "edit_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "bar": {
+                "type": "string"
+              },
+              "foo": {
+                "type": "integer"
+              },
+              "opts": {
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "description": "",
+          "name": "mytool",
+          "source": "t"
+        }
+      ],
+      "expect": {
+        "result": {
+          "assistant_text": "```xml\n<response>\n  <intent>plan</intent>\n  <actions>\n    <shell><![CDATA[ls -la && echo \"<done>\"]]></shell>\n    <write_file path=\"a.txt\"><![CDATA[hi\nthere]]></write_file>\n    <edit_file path=\"x.rs\"><old_string><![CDATA[a]]></old_string><new_string>b &amp; c</new_string></edit_file>\n    <mytool foo=\"7\" bar=\"x\"><![CDATA[{\"opts\":{\"k\":1}}]]></mytool>\n    <mytool foo=\"8\"><opts><![CDATA[{\"k\":2}]]></opts></mytool>\n  </actions>\n</response>\n```",
+          "do_actions": [
+            {
+              "args": {
+                "command": "ls -la && echo \"<done>\""
+              },
+              "call_id": "action-1",
+              "name": "shell"
+            },
+            {
+              "args": {
+                "content": "hi\nthere",
+                "path": "a.txt"
+              },
+              "call_id": "action-2",
+              "name": "write_file"
+            },
+            {
+              "args": {
+                "new_string": "b & c",
+                "old_string": "a",
+                "path": "x.rs"
+              },
+              "call_id": "action-3",
+              "name": "edit_file"
+            },
+            {
+              "args": {
+                "bar": "x",
+                "foo": 7,
+                "opts": {
+                  "k": 1
+                }
+              },
+              "call_id": "action-4",
+              "name": "mytool"
+            },
+            {
+              "args": {
+                "foo": 8,
+                "opts": {
+                  "k": 2
+                }
+              },
+              "call_id": "action-5",
+              "name": "mytool"
+            }
+          ],
+          "report_end": false,
+          "thought": "plan"
+        }
+      },
+      "name": "fenced_actions_attrs_cdata_children",
+      "text": "```xml\n<response>\n  <intent>plan</intent>\n  <actions>\n    <shell><![CDATA[ls -la && echo \"<done>\"]]></shell>\n    <write_file path=\"a.txt\"><![CDATA[hi\nthere]]></write_file>\n    <edit_file path=\"x.rs\"><old_string><![CDATA[a]]></old_string><new_string>b &amp; c</new_string></edit_file>\n    <mytool foo=\"7\" bar=\"x\"><![CDATA[{\"opts\":{\"k\":1}}]]></mytool>\n    <mytool foo=\"8\"><opts><![CDATA[{\"k\":2}]]></opts></mytool>\n  </actions>\n</response>\n```"
+    },
+    {
+      "actions": [
+        {
+          "args_schema": {
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "shell",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "write_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "new_string": {
+                "type": "string"
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "edit_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "bar": {
+                "type": "string"
+              },
+              "foo": {
+                "type": "integer"
+              },
+              "opts": {
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "description": "",
+          "name": "mytool",
+          "source": "t"
+        }
+      ],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><thinking>old</thinking><actions><shell>ls</shell></actions></response>",
+          "do_actions": [
+            {
+              "args": {
+                "command": "ls"
+              },
+              "call_id": "action-1",
+              "name": "shell"
+            }
+          ],
+          "report_end": false,
+          "thought": "old"
+        }
+      },
+      "name": "legacy_thinking_is_the_intent",
+      "text": "<response><thinking>old</thinking><actions><shell>ls</shell></actions></response>"
+    },
+    {
+      "actions": [
+        {
+          "args_schema": {
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "shell",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "write_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "new_string": {
+                "type": "string"
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "edit_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "bar": {
+                "type": "string"
+              },
+              "foo": {
+                "type": "integer"
+              },
+              "opts": {
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "description": "",
+          "name": "mytool",
+          "source": "t"
+        }
+      ],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><report end=\"true\"><![CDATA[final <answer>]]></report></response>",
+          "report_end": true,
+          "self_report": "final <answer>"
+        }
+      },
+      "name": "final_report_in_cdata",
+      "text": "<response><report end=\"true\"><![CDATA[final <answer>]]></report></response>"
+    },
+    {
+      "actions": [
+        {
+          "args_schema": {
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "shell",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "write_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "new_string": {
+                "type": "string"
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "edit_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "bar": {
+                "type": "string"
+              },
+              "foo": {
+                "type": "integer"
+              },
+              "opts": {
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "description": "",
+          "name": "mytool",
+          "source": "t"
+        }
+      ],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><actions><nope x=\"1\"/></actions></response>",
+          "do_actions": [
+            {
+              "args": {
+                "x": "1"
+              },
+              "call_id": "action-1",
+              "name": "nope"
+            }
+          ],
+          "report_end": false
+        }
+      },
+      "name": "unknown_action_tag_still_dispatched",
+      "text": "<response><actions><nope x=\"1\"/></actions></response>"
+    },
+    {
+      "actions": [
+        {
+          "args_schema": {
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "shell",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "write_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "new_string": {
+                "type": "string"
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          },
+          "description": "",
+          "name": "edit_file",
+          "source": "t"
+        },
+        {
+          "args_schema": {
+            "properties": {
+              "bar": {
+                "type": "string"
+              },
+              "foo": {
+                "type": "integer"
+              },
+              "opts": {
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "description": "",
+          "name": "mytool",
+          "source": "t"
+        }
+      ],
+      "expect": {
+        "error": "empty response: no text and no tool_calls"
+      },
+      "name": "blank_reply_is_an_error",
+      "text": "   "
+    },
+    {
+      "actions": [],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><report>progress</report></response>",
+          "report_end": false,
+          "self_report": "progress"
+        }
+      },
+      "name": "progress_report_without_end",
+      "text": "<response><report>progress</report></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><observation>saw it</observation><report end=\"false\">progress</report><next_behavior>WAIT_USER_MSG</next_behavior></response>",
+          "next_behavior": "WAIT_USER_MSG",
+          "observation": "saw it",
+          "report_end": false,
+          "self_report": "progress"
+        }
+      },
+      "name": "progress_report_with_next_behavior",
+      "text": "<response><observation>saw it</observation><report end=\"false\">progress</report><next_behavior>WAIT_USER_MSG</next_behavior></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><actions/><report end=\"true\">final</report><artifacts>[\"out.txt\"]</artifacts><result>{\"ok\":true}</result></response>",
+          "report_end": true,
+          "report_result": {
+            "artifacts": [
+              "out.txt"
+            ],
+            "ok": true
+          },
+          "self_report": "final"
+        }
+      },
+      "name": "final_report_with_artifacts_and_result",
+      "text": "<response><actions/><report end=\"true\">final</report><artifacts>[\"out.txt\"]</artifacts><result>{\"ok\":true}</result></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "a final report cannot be combined with actions"
+      },
+      "name": "final_report_with_actions",
+      "text": "<response><report end=\"true\">final</report><actions><shell>echo side-effect</shell></actions></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "an ending report cannot contain next_behavior"
+      },
+      "name": "final_report_with_next_behavior",
+      "text": "<response><report end=\"true\">final</report><next_behavior>CHECK</next_behavior></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "an ending report must contain non-empty text"
+      },
+      "name": "final_report_empty",
+      "text": "<response><report end=\"true\"> </report></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "report end must be true or false"
+      },
+      "name": "report_end_is_case_sensitive",
+      "text": "<response><report end=\"TRUE\">final</report></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "report has duplicate end attributes"
+      },
+      "name": "report_end_twice",
+      "text": "<response><report end=\"false\" end=\"true\">final</report></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "a decision must contain at most one report"
+      },
+      "name": "two_reports",
+      "text": "<response><report>first</report><report>second</report></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "next_behavior END/done is invalid; submit <report end=\"true\"> to finish"
+      },
+      "name": "next_behavior_end_is_invalid",
+      "text": "<response><report>progress</report><next_behavior>END</next_behavior></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "artifacts requires a report in the same decision"
+      },
+      "name": "artifacts_need_a_report",
+      "text": "<response><artifacts>[]</artifacts></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "report artifacts must be an array of strings: invalid type: map, expected a sequence"
+      },
+      "name": "artifacts_must_be_strings",
+      "text": "<response><report>progress</report><artifacts>{}</artifacts></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "invalid report result JSON: expected value at line 1 column 1"
+      },
+      "name": "result_must_be_json",
+      "text": "<response><report>progress</report><result>invalid</result></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "a report result given with artifacts must be a JSON object"
+      },
+      "name": "result_with_artifacts_must_be_an_object",
+      "text": "<response><report>progress</report><artifacts>[\"a.txt\"]</artifacts><result>1</result></response>"
+    },
+    {
+      "actions": [],
+      "expect": {
+        "error": "an ending report cannot contain actions or native tool_calls"
+      },
+      "name": "native_calls_conflict_with_final_report",
+      "text": "<response><report end=\"true\">final</report></response>",
+      "tool_calls": [
+        {
+          "args": {
+            "command": "echo side-effect"
+          },
+          "call_id": "native-1",
+          "name": "shell"
+        }
+      ]
+    },
+    {
+      "actions": [],
+      "expect": {
+        "result": {
+          "assistant_text": "",
+          "do_actions": [
+            {
+              "args": {
+                "command": "echo side-effect"
+              },
+              "call_id": "native-1",
+              "name": "shell"
+            }
+          ],
+          "report_end": false
+        }
+      },
+      "name": "native_calls_without_text",
+      "text": "",
+      "tool_calls": [
+        {
+          "args": {
+            "command": "echo side-effect"
+          },
+          "call_id": "native-1",
+          "name": "shell"
+        }
+      ]
+    },
+    {
+      "actions": [
+        {
+          "args_schema": {
+            "properties": {
+              "path": {
+                "description": "File path",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "description": "Read a file",
+          "name": "read_file",
+          "source": "test"
+        }
+      ],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><actions><read_file><![CDATA[fixture.txt]]></read_file></actions></response>",
+          "do_actions": [
+            {
+              "args": {
+                "path": "fixture.txt"
+              },
+              "call_id": "action-1",
+              "name": "read_file"
+            }
+          ],
+          "report_end": false
+        }
+      },
+      "name": "body_carries_the_only_required_string",
+      "text": "<response><actions><read_file><![CDATA[fixture.txt]]></read_file></actions></response>"
+    },
+    {
+      "actions": [
+        {
+          "args_schema": {
+            "properties": {
+              "path": {
+                "description": "File path",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "description": "Read a file",
+          "name": "read_file",
+          "source": "test"
+        }
+      ],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><actions><read_file path=\"fixture.txt\"><![CDATA[   ]]></read_file></actions></response>",
+          "do_actions": [
+            {
+              "args": {
+                "path": "fixture.txt"
+              },
+              "call_id": "action-1",
+              "name": "read_file"
+            }
+          ],
+          "report_end": false
+        }
+      },
+      "name": "attribute_wins_over_blank_body",
+      "text": "<response><actions><read_file path=\"fixture.txt\"><![CDATA[   ]]></read_file></actions></response>"
+    },
+    {
+      "actions": [
+        {
+          "args_schema": {
+            "properties": {
+              "path": {
+                "description": "File path",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "description": "Read a file",
+          "name": "read_file",
+          "source": "test"
+        }
+      ],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><actions><read_file><path>fixture.txt</path></read_file></actions></response>",
+          "do_actions": [
+            {
+              "args": {
+                "path": "fixture.txt"
+              },
+              "call_id": "action-1",
+              "name": "read_file"
+            }
+          ],
+          "report_end": false
+        }
+      },
+      "name": "child_tag_argument",
+      "text": "<response><actions><read_file><path>fixture.txt</path></read_file></actions></response>"
+    },
+    {
+      "actions": [
+        {
+          "args_schema": {
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "description": "Write a file",
+          "name": "write_file",
+          "source": "test"
+        }
+      ],
+      "expect": {
+        "result": {
+          "assistant_text": "<response><actions><write_file path=\"out.txt\"><![CDATA[path: fixture.txt]]></write_file></actions></response>",
+          "do_actions": [
+            {
+              "args": {
+                "content": "path: fixture.txt",
+                "path": "out.txt"
+              },
+              "call_id": "action-1",
+              "name": "write_file"
+            }
+          ],
+          "report_end": false
+        }
+      },
+      "name": "raw_body_value_keeps_a_field_prefix",
+      "text": "<response><actions><write_file path=\"out.txt\"><![CDATA[path: fixture.txt]]></write_file></actions></response>"
+    }
+  ],
+  "vectors_version": 1
+}

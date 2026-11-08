@@ -1,0 +1,3490 @@
+{
+  "cases": [
+    {
+      "expect": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "runtime_protocol",
+      "json": false,
+      "loop_model": "function_call",
+      "name": "protocol_fc_tools",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- Submit a report with report({report: \"free text or Markdown\", artifacts: [\"relative/file\" or \"cyfile:…\"], result: <optional JSON>, is_end: false}). Omitted is_end means false: it records progress without ending the context or sending a user message.\n- To request completion, call report with is_end: true and a nonempty final report. The host validates and persists it, returns the tool receipt, and completes the current context without another model reply. It skips later calls in that batch; a rejected report returns an error and can be corrected.\n- Final report delivery and Session completion follow the host policy. Child contexts return to their caller. Plain assistant text with no tool calls yields the current Turn; it completes a Session only when the host permits ordinary Done completion.\n",
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "runtime_protocol",
+      "json": false,
+      "loop_model": "function_call",
+      "name": "protocol_fc_report_tool",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "is_end": {
+                  "type": "boolean"
+                },
+                "report": {
+                  "type": "string"
+                },
+                "result": {}
+              },
+              "required": [
+                "report"
+              ],
+              "type": "object"
+            },
+            "description": "Submit a report",
+            "name": "report",
+            "source": "name:report"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are the agent of this Session. The user talks to you across Turns.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- Submit a report with report({report: \"free text or Markdown\", artifacts: [\"relative/file\" or \"cyfile:…\"], result: <optional JSON>, is_end: false}). Omitted is_end means false: it records progress without ending the context or sending a user message.\n- To request completion, call report with is_end: true and a nonempty final report. The host validates and persists it, returns the tool receipt, and completes the current context without another model reply. It skips later calls in that batch; a rejected report returns an error and can be corrected.\n- Final report delivery and Session completion follow the host policy. Child contexts return to their caller. Plain assistant text with no tool calls yields the current Turn; it completes a Session only when the host permits ordinary Done completion.\n",
+      "flavor": {
+        "intro": "You are the agent of this Session. The user talks to you across Turns.\n",
+        "kind": "session"
+      },
+      "fn": "runtime_protocol",
+      "json": false,
+      "loop_model": "function_call",
+      "name": "protocol_fc_session_report_tool",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "is_end": {
+                  "type": "boolean"
+                },
+                "report": {
+                  "type": "string"
+                },
+                "result": {}
+              },
+              "required": [
+                "report"
+              ],
+              "type": "object"
+            },
+            "description": "Submit a report",
+            "name": "report",
+            "source": "name:report"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop: no tools or actions are available in this run. Answer directly in a single reply; do not request or describe tool calls. Your reply is delivered verbatim to the caller.\n",
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "runtime_protocol",
+      "json": false,
+      "loop_model": "function_call",
+      "name": "protocol_fc_without_tools",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": false,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop: no tools or actions are available in this run. Answer directly in a single reply; do not request or describe tool calls. Your reply is delivered verbatim to the caller.\n",
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "runtime_protocol",
+      "json": false,
+      "loop_model": "function_call",
+      "name": "protocol_fc_tools_disabled",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": false,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n\nOutput constraint: the final reply MUST be exactly one valid JSON value with no surrounding prose or code fences.\n",
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "runtime_protocol",
+      "json": true,
+      "loop_model": "function_call",
+      "name": "protocol_fc_json_with_tools",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are the agent of this Session. The user talks to you across Turns.\n\nExecution loop: no tools or actions are available in this run. Answer directly in a single reply; do not request or describe tool calls. Your reply is delivered verbatim to the caller.\n\nOutput constraint: the final reply MUST be exactly one valid JSON value with no surrounding prose or code fences.\n",
+      "flavor": {
+        "intro": "You are the agent of this Session. The user talks to you across Turns.\n",
+        "kind": "session"
+      },
+      "fn": "runtime_protocol",
+      "json": true,
+      "loop_model": "function_call",
+      "name": "protocol_fc_json_without_tools",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": false,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n  <actions>\n    ...zero or more actions, executed in order...\n  </actions>\n  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\nRules:\n- <report> or <report end=\"false\"> submits a progress report. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n- A final report cannot share a reply with actions, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n- To act, put one or more actions inside <actions>; the results come back in the next message. You may include a progress report with end=\"false\".\n- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the tool iteration limit.\n- Only the actions listed below exist; do not invent others. Put multi-line or special-character values inside <![CDATA[ ... ]]>.\nAvailable actions:\n- <shell timeout_ms?=\"<integer>\"><![CDATA[<command value>]]></shell>\n  Body/CDATA contains only the raw value of `command`; do not include the field name or a `command:` prefix.\n  Run a command\n  command: Command line\n- <write_file path=\"<string>\"><![CDATA[<content value>]]></write_file>\n  Body/CDATA contains only the raw value of `content`; do not include the field name or a `content:` prefix.\n  Write a file\n- <edit_file new_string=\"<string>\" old_string=\"<string>\" path=\"<string>\"/>\n- <read_file><![CDATA[<path value>]]></read_file>\n  Body/CDATA contains only the raw value of `path`; do not include the field name or a `path:` prefix.\n  Read a file\n  path: File path\n- <search limit?=\"<integer>\" pattern?=\"<string>\"><filters?><![CDATA[<json object>]]></filters></search>\n  Search the notes\n  filters: Field filters\n  limit: Max hits\n- <annotate pinned?=\"<boolean>\"><labels?><![CDATA[<json array>]]></labels><text><![CDATA[...]]></text></annotate>\n  Annotate a note\n",
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "runtime_protocol",
+      "json": false,
+      "loop_model": "behavior",
+      "name": "protocol_behavior_action_shapes",
+      "tools": {
+        "action_sources": [],
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "new_string": {
+                  "type": "string"
+                },
+                "old_string": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "old_string",
+                "new_string"
+              ],
+              "type": "object"
+            },
+            "description": "",
+            "name": "edit_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "filters": {
+                  "description": "Field filters",
+                  "type": "object"
+                },
+                "limit": {
+                  "description": "Max hits",
+                  "type": "integer"
+                },
+                "pattern": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "description": "Search the notes",
+            "name": "search",
+            "source": "name:search"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "labels": {
+                  "type": "array"
+                },
+                "pinned": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "description": "Annotate a note",
+            "name": "annotate",
+            "source": "name:annotate"
+          }
+        ],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are the agent of this Session. The user talks to you across Turns.\n\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n  <actions>\n    ...zero or more actions, executed in order...\n  </actions>\n  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\nRules:\n- <report> or <report end=\"false\"> submits a progress report. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n- A final report cannot share a reply with actions, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n- A report may include sibling <artifacts> containing a JSON array of relative file paths and <result> containing any JSON value. These require a report in the same response. The host validates and persists the submission; completion applies to the current context, with child reports returned to their caller.\n- Yielding is how you wait for work this session started (tasks, sub sessions): the session wakes you with its result. When nothing it started is running, the session ends the Turn instead.\n- To act, put one or more actions inside <actions>; the results come back in the next message. You may include a progress report with end=\"false\".\n- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the tool iteration limit.\n- Only the actions listed below exist; do not invent others. Put multi-line or special-character values inside <![CDATA[ ... ]]>.\nAvailable actions:\n- <shell timeout_ms?=\"<integer>\"><![CDATA[<command value>]]></shell>\n  Body/CDATA contains only the raw value of `command`; do not include the field name or a `command:` prefix.\n  Run a command\n  command: Command line\n- Native function-call tools are also declared for this run; a reply that uses them is treated as a step with actions.\n",
+      "flavor": {
+        "intro": "You are the agent of this Session. The user talks to you across Turns.\n",
+        "kind": "session"
+      },
+      "fn": "runtime_protocol",
+      "json": false,
+      "loop_model": "behavior",
+      "name": "protocol_behavior_session_actions_and_native",
+      "tools": {
+        "action_sources": [],
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\nRules:\n- <report> or <report end=\"false\"> submits a progress report. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n- A final report cannot share a reply with actions, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n- To act, call one or more of the native function-call tools declared for this run (never inside <actions>); their results come back to you and you may call more. Only the declared tools exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- A reply without tool calls is the <response> document of the step: submit <report end=\"true\"> with the complete final result only after you have done the work and observed the results; a reply without it yields.\n",
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "runtime_protocol",
+      "json": false,
+      "loop_model": "behavior",
+      "name": "protocol_behavior_native_only",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are the agent of this Session. The user talks to you across Turns.\n\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\nRules:\n- <report> or <report end=\"false\"> submits a progress report. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n- A final report cannot share a reply with actions, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n- A report may include sibling <artifacts> containing a JSON array of relative file paths and <result> containing any JSON value. These require a report in the same response. The host validates and persists the submission; completion applies to the current context, with child reports returned to their caller.\n- Yielding is how you wait for work this session started (tasks, sub sessions): the session wakes you with its result. When nothing it started is running, the session ends the Turn instead.\n- No actions or tools are available in this run: reply with a single <response> whose <report end=\"true\"> contains the complete final result. Do not include <actions>.\n",
+      "flavor": {
+        "intro": "You are the agent of this Session. The user talks to you across Turns.\n",
+        "kind": "session"
+      },
+      "fn": "runtime_protocol",
+      "json": false,
+      "loop_model": "behavior",
+      "name": "protocol_behavior_session_nothing",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": false,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n  <actions>\n    ...zero or more actions, executed in order...\n  </actions>\n  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\nRules:\n- <report> or <report end=\"false\"> submits a progress report. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n- A final report cannot share a reply with actions, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n- To act, put one or more actions inside <actions>; the results come back in the next message. You may include a progress report with end=\"false\".\n- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the tool iteration limit.\n- Only the actions listed below exist; do not invent others. Put multi-line or special-character values inside <![CDATA[ ... ]]>.\nAvailable actions:\n- <shell timeout_ms?=\"<integer>\"><![CDATA[<command value>]]></shell>\n  Body/CDATA contains only the raw value of `command`; do not include the field name or a `command:` prefix.\n  Run a command\n  command: Command line\n- Output constraint: the content of the final <report end=\"true\"> MUST be exactly one valid JSON value.\n",
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "runtime_protocol",
+      "json": true,
+      "loop_model": "behavior",
+      "name": "protocol_behavior_json",
+      "tools": {
+        "action_sources": [],
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "Native tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.",
+      "fn": "rules",
+      "loop_model": "function_call",
+      "name": "rules_native_bash_workspace",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "Native tools available in this run (behavior): report\nBehavior actions available in this run: read_file, shell\nConfigured tools were converted into actions; call them through the XML action protocol, not through native function calls.\nBuiltin file tools and shell's cwd may access paths outside the working directory, subject to the current user's operating-system permissions. Relative paths default to the working directory.\nDo not claim a tool or command exists unless it is listed here.",
+      "fn": "rules",
+      "loop_model": "behavior",
+      "name": "rules_tools2actions_bash_core_unrestricted",
+      "tools": {
+        "action_sources": [],
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash_core"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash_core"
+          }
+        ],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "unrestricted",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "is_end": {
+                  "type": "boolean"
+                },
+                "report": {
+                  "type": "string"
+                },
+                "result": {}
+              },
+              "required": [
+                "report"
+              ],
+              "type": "object"
+            },
+            "description": "Submit a report",
+            "name": "report",
+            "source": "name:report"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": true
+      }
+    },
+    {
+      "expect": "Native tools available in this run (function_call): report, search\nDo not claim a tool or command exists unless it is listed here.",
+      "fn": "rules",
+      "loop_model": "function_call",
+      "name": "rules_without_builtin_sources",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": false,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "is_end": {
+                  "type": "boolean"
+                },
+                "report": {
+                  "type": "string"
+                },
+                "result": {}
+              },
+              "required": [
+                "report"
+              ],
+              "type": "object"
+            },
+            "description": "Submit a report",
+            "name": "report",
+            "source": "name:report"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "filters": {
+                  "description": "Field filters",
+                  "type": "object"
+                },
+                "limit": {
+                  "description": "Max hits",
+                  "type": "integer"
+                },
+                "pattern": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "description": "Search the notes",
+            "name": "search",
+            "source": "mcp:http://127.0.0.1:9000/mcp"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "Capabilities for this run: no tools or actions can be called. Work only with the material submitted in this task.",
+      "fn": "rules",
+      "loop_model": "function_call",
+      "name": "rules_enabled_but_empty",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": false,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "Capabilities for this run: no tools or actions can be called. Work only with the material submitted in this task.",
+      "fn": "rules",
+      "loop_model": "behavior",
+      "name": "rules_tools_disabled",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": false,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "Commands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n- rg: search Command: `rg`. Usage: `rg -n <pattern>`.\n- jq: Filter JSON. Command: `jq`.",
+      "fn": "cmd_manual",
+      "name": "cmd_manual_with_bash_tools",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [
+          {
+            "command": "rg",
+            "description": "search ",
+            "name": "rg",
+            "usage": "rg -n <pattern>"
+          },
+          {
+            "command": "jq",
+            "description": "Filter JSON.",
+            "name": "jq"
+          }
+        ],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": "Commands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n(no additional commands documented; standard commands on PATH may be used)",
+      "fn": "cmd_manual",
+      "name": "cmd_manual_without_bash_tools",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": null,
+      "fn": "cmd_manual",
+      "name": "cmd_manual_exec_disabled",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [
+          {
+            "command": "rg",
+            "description": "search ",
+            "name": "rg",
+            "usage": "rg -n <pattern>"
+          },
+          {
+            "command": "jq",
+            "description": "Filter JSON.",
+            "name": "jq"
+          }
+        ],
+        "enabled": true,
+        "exec_enabled": false,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": null,
+      "fn": "cmd_manual",
+      "name": "cmd_manual_tools_disabled",
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [
+          {
+            "command": "rg",
+            "description": "search ",
+            "name": "rg",
+            "usage": "rg -n <pattern>"
+          },
+          {
+            "command": "jq",
+            "description": "Filter JSON.",
+            "name": "jq"
+          }
+        ],
+        "enabled": false,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {
+        "XLLM_VECTOR_PROJECT": "demo"
+      },
+      "expect": {
+        "mode": "standard",
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "sections": [
+          {
+            "line": 10,
+            "name": "role",
+            "user_source": "group:review",
+            "user_text": "You are a code reviewer."
+          },
+          {
+            "line": 20,
+            "name": "contexts",
+            "system_text": "Current time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nOperating system: linux\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nHostname: devbox\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]",
+            "user_source": "group:review",
+            "user_text": "Project: demo. Cwd: /work/project."
+          },
+          {
+            "line": 25,
+            "name": "project_conventions",
+            "user_source": "/vectors/project/.llm_context",
+            "user_text": "Public API changes need caller checks."
+          },
+          {
+            "line": 30,
+            "name": "rules",
+            "system_text": "Native tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.",
+            "user_source": "/vectors/project/.llm_context",
+            "user_text": "Only report grounded findings."
+          },
+          {
+            "line": 40,
+            "name": "cmd_manual",
+            "system_text": "Commands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n- rg: search Command: `rg`. Usage: `rg -n <pattern>`.\n- jq: Filter JSON. Command: `jq`.",
+            "user_source": "group:review",
+            "user_text": "Prefer rg."
+          },
+          {
+            "line": 50,
+            "name": "delivery_checklist",
+            "user_source": "/vectors/project/.llm_context"
+          },
+          {
+            "line": 100,
+            "name": "output_format",
+            "user_source": "/vectors/project/.llm_context",
+            "user_text": "Report file, evidence, suggestion."
+          }
+        ],
+        "system_prompt": "## role\nYou are a code reviewer.\n\n## contexts\nProject: demo. Cwd: /work/project.\nCurrent time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nOperating system: linux\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nHostname: devbox\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]\n\n## project_conventions\nPublic API changes need caller checks.\n\n## rules\nOnly report grounded findings.\nNative tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\n## cmd_manual\nPrefer rg.\nCommands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n- rg: search Command: `rg`. Usage: `rg -n <pattern>`.\n- jq: Filter JSON. Command: `jq`.\n\n## output_format\nReport file, evidence, suggestion.\n\n## runtime_protocol\nYou are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "template_vars": {
+          "env.XLLM_VECTOR_PROJECT": "demo",
+          "runtime.cwd": "/work/project"
+        },
+        "user_request": "Review the code in /work/project.\n"
+      },
+      "fn": "assemble_prompt",
+      "json": false,
+      "llm_context": {
+        "prompt": {
+          "groups": {
+            "docs": {
+              "sections": {
+                "role": {
+                  "text": "You are a docs editor."
+                }
+              }
+            },
+            "review": {
+              "default_user": "Review the code in {{runtime.cwd}}.\n",
+              "sections": {
+                "cmd_manual": {
+                  "text": "Prefer rg."
+                },
+                "contexts": {
+                  "text": "Project: {{env.XLLM_VECTOR_PROJECT}}. Cwd: {{runtime.cwd}}."
+                },
+                "output_format": {
+                  "text": "Answer in the report field."
+                },
+                "role": {
+                  "text": "You are a code reviewer."
+                },
+                "rules": {
+                  "text": "Read before judging."
+                }
+              }
+            }
+          },
+          "sections": {
+            "100": {
+              "text": "Report file, evidence, suggestion."
+            },
+            "25": {
+              "name": "project_conventions",
+              "text": "Public API changes need caller checks."
+            },
+            "50": {
+              "name": "delivery_checklist",
+              "text": ""
+            },
+            "rules": {
+              "text": "Only report grounded findings."
+            }
+          },
+          "select": "review"
+        }
+      },
+      "loop_model": "function_call",
+      "name": "assemble_group_with_top_level_sections",
+      "origin": "/vectors/project/.llm_context",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [
+          {
+            "command": "rg",
+            "description": "search ",
+            "name": "rg",
+            "usage": "rg -n <pattern>"
+          },
+          {
+            "command": "jq",
+            "description": "Filter JSON.",
+            "name": "jq"
+          }
+        ],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "mode": "standard",
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "sections": [
+          {
+            "line": 10,
+            "name": "persona",
+            "user_source": "group:b",
+            "user_text": "You are B."
+          },
+          {
+            "line": 20,
+            "name": "environment",
+            "system_text": "Current time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nHostname: devbox\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]",
+            "user_source": "group:b",
+            "user_text": "Work in /work/project."
+          },
+          {
+            "line": 30,
+            "name": "rules",
+            "system_text": "Native tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.",
+            "user_source": "default"
+          },
+          {
+            "line": 40,
+            "name": "cmd_manual",
+            "system_text": "Commands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n(no additional commands documented; standard commands on PATH may be used)",
+            "user_source": "default"
+          },
+          {
+            "line": 60,
+            "name": "notes",
+            "user_source": "/vectors/project/.llm_context",
+            "user_text": "Keep notes short."
+          },
+          {
+            "line": 100,
+            "name": "output_format",
+            "user_source": "default"
+          }
+        ],
+        "system_prompt": "## persona\nYou are B.\n\n## environment\nWork in /work/project.\nCurrent time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nHostname: devbox\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]\n\n## rules\nNative tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\n## cmd_manual\nCommands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n(no additional commands documented; standard commands on PATH may be used)\n\n## notes\nKeep notes short.\n\n## runtime_protocol\nYou are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "template_vars": {
+          "runtime.cwd": "/work/project",
+          "runtime.os": "linux"
+        },
+        "user_request": "Task B on linux."
+      },
+      "fn": "assemble_prompt",
+      "json": false,
+      "llm_context": {
+        "prompt": {
+          "groups": {
+            "a": {
+              "default_user": "Task A.",
+              "sections": {
+                "role": "You are A."
+              }
+            },
+            "b": {
+              "default_user": "Task B on {{runtime.os}}.",
+              "sections": {
+                "env": {
+                  "text": "Work in {{runtime.cwd}}."
+                },
+                "role": "You are B."
+              }
+            }
+          },
+          "sections": {
+            "10": {
+              "name": "persona"
+            },
+            "60": {
+              "name": "notes",
+              "text": "Keep notes short."
+            },
+            "contexts": {
+              "name": "environment"
+            }
+          },
+          "select": "a"
+        }
+      },
+      "loop_model": "function_call",
+      "name": "assemble_select_override_and_alias_names",
+      "origin": "/vectors/project/.llm_context",
+      "override_select": "b",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "mode": "standard",
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n\nOutput constraint: the final reply MUST be exactly one valid JSON value with no surrounding prose or code fences.\n",
+        "sections": [
+          {
+            "line": 10,
+            "name": "role",
+            "user_source": "/vectors/project/.llm_context",
+            "user_text": "You read code."
+          },
+          {
+            "line": 20,
+            "name": "contexts",
+            "system_text": "Current time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nOperating system: linux\nWorking directory: /work/project\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nHostname: devbox\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]",
+            "user_source": "default"
+          },
+          {
+            "line": 30,
+            "name": "rules",
+            "system_text": "Native tools available in this run (function_call): read_file\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.",
+            "user_source": "default"
+          },
+          {
+            "line": 40,
+            "name": "cmd_manual",
+            "user_source": "/vectors/project/.llm_context"
+          },
+          {
+            "line": 100,
+            "name": "output_format",
+            "user_source": "/vectors/project/.llm_context"
+          }
+        ],
+        "system_prompt": "## role\nYou read code.\n\n## contexts\nCurrent time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nOperating system: linux\nWorking directory: /work/project\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nHostname: devbox\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]\n\n## rules\nNative tools available in this run (function_call): read_file\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\n## runtime_protocol\nYou are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n\nOutput constraint: the final reply MUST be exactly one valid JSON value with no surrounding prose or code fences.\n",
+        "template_vars": {}
+      },
+      "fn": "assemble_prompt",
+      "json": true,
+      "llm_context": {
+        "prompt": {
+          "sections": {
+            "cmd_manual": "Use make.",
+            "output_format": {
+              "text": ""
+            },
+            "role": "You read code."
+          }
+        }
+      },
+      "loop_model": "function_call",
+      "name": "assemble_exec_disabled_drops_cmd_manual",
+      "origin": "/vectors/project/.llm_context",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [
+          {
+            "command": "rg",
+            "description": "search ",
+            "name": "rg",
+            "usage": "rg -n <pattern>"
+          },
+          {
+            "command": "jq",
+            "description": "Filter JSON.",
+            "name": "jq"
+          }
+        ],
+        "enabled": true,
+        "exec_enabled": false,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "mode": "custom",
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "sections": [],
+        "system_prompt": "You translate on linux.\n\n## capabilities\nNative tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\nCommands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n- rg: search Command: `rg`. Usage: `rg -n <pattern>`.\n- jq: Filter JSON. Command: `jq`.\n\n## runtime_protocol\nYou are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "template_vars": {
+          "runtime.os": "linux"
+        }
+      },
+      "fn": "assemble_prompt",
+      "json": false,
+      "llm_context": {
+        "prompt": {
+          "mode": "custom",
+          "system": "You translate on {{runtime.os}}.\n"
+        }
+      },
+      "loop_model": "function_call",
+      "name": "assemble_custom_mode",
+      "origin": "/vectors/project/.llm_context",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [
+          {
+            "command": "rg",
+            "description": "search ",
+            "name": "rg",
+            "usage": "rg -n <pattern>"
+          },
+          {
+            "command": "jq",
+            "description": "Filter JSON.",
+            "name": "jq"
+          }
+        ],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {
+        "XLLM_VECTOR_PROJECT": "demo"
+      },
+      "expect": {
+        "mode": "custom",
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop: no tools or actions are available in this run. Answer directly in a single reply; do not request or describe tool calls. Your reply is delivered verbatim to the caller.\n",
+        "sections": [],
+        "system_prompt": "Answer briefly about devbox.\n\n## capabilities\nCapabilities for this run: no tools or actions can be called. Work only with the material submitted in this task.\n\n## runtime_protocol\nYou are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop: no tools or actions are available in this run. Answer directly in a single reply; do not request or describe tool calls. Your reply is delivered verbatim to the caller.\n",
+        "template_vars": {
+          "runtime.hostname": "devbox"
+        }
+      },
+      "fn": "assemble_prompt",
+      "json": false,
+      "llm_context": {
+        "prompt": {
+          "groups": {
+            "docs": {
+              "sections": {
+                "role": {
+                  "text": "You are a docs editor."
+                }
+              }
+            },
+            "review": {
+              "default_user": "Review the code in {{runtime.cwd}}.\n",
+              "sections": {
+                "cmd_manual": {
+                  "text": "Prefer rg."
+                },
+                "contexts": {
+                  "text": "Project: {{env.XLLM_VECTOR_PROJECT}}. Cwd: {{runtime.cwd}}."
+                },
+                "output_format": {
+                  "text": "Answer in the report field."
+                },
+                "role": {
+                  "text": "You are a code reviewer."
+                },
+                "rules": {
+                  "text": "Read before judging."
+                }
+              }
+            }
+          },
+          "sections": {
+            "100": {
+              "text": "Report file, evidence, suggestion."
+            },
+            "25": {
+              "name": "project_conventions",
+              "text": "Public API changes need caller checks."
+            },
+            "50": {
+              "name": "delivery_checklist",
+              "text": ""
+            },
+            "rules": {
+              "text": "Only report grounded findings."
+            }
+          },
+          "select": "review"
+        }
+      },
+      "loop_model": "function_call",
+      "name": "assemble_override_system_wins",
+      "origin": "/vectors/project/.llm_context",
+      "override_system": "Answer briefly about {{runtime.hostname}}.",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": false,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "mode": "standard",
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "sections": [
+          {
+            "line": 10,
+            "name": "role",
+            "user_source": "/vectors/project/.llm_context",
+            "user_text": "Write {{name}} literally on devbox."
+          },
+          {
+            "line": 20,
+            "name": "contexts",
+            "system_text": "Current time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nWorking directory: /work/project\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]",
+            "user_source": "/vectors/project/.llm_context",
+            "user_text": "OS: linux, shell bash."
+          },
+          {
+            "line": 30,
+            "name": "rules",
+            "system_text": "Native tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.",
+            "user_source": "default"
+          },
+          {
+            "line": 40,
+            "name": "cmd_manual",
+            "system_text": "Commands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n(no additional commands documented; standard commands on PATH may be used)",
+            "user_source": "default"
+          },
+          {
+            "line": 100,
+            "name": "output_format",
+            "user_source": "default"
+          }
+        ],
+        "system_prompt": "## role\nWrite {{name}} literally on devbox.\n\n## contexts\nOS: linux, shell bash.\nCurrent time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nWorking directory: /work/project\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]\n\n## rules\nNative tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\n## cmd_manual\nCommands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n(no additional commands documented; standard commands on PATH may be used)\n\n## runtime_protocol\nYou are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "template_vars": {
+          "runtime.hostname": "devbox",
+          "runtime.os": "linux",
+          "runtime.shell_kind": "bash"
+        }
+      },
+      "fn": "assemble_prompt",
+      "json": false,
+      "llm_context": {
+        "prompt": {
+          "sections": {
+            "contexts": "OS: {{runtime.os}}, shell {{runtime.shell_kind}}.",
+            "role": "Write \\{{name}} literally on {{ runtime.hostname }}."
+          }
+        }
+      },
+      "loop_model": "function_call",
+      "name": "assemble_template_escape_and_referenced_contexts",
+      "origin": "/vectors/project/.llm_context",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "mode": "standard",
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n  <actions>\n    ...zero or more actions, executed in order...\n  </actions>\n  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\nRules:\n- <report> or <report end=\"false\"> submits a progress report. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n- A final report cannot share a reply with actions, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n- To act, put one or more actions inside <actions>; the results come back in the next message. You may include a progress report with end=\"false\".\n- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the tool iteration limit.\n- Only the actions listed below exist; do not invent others. Put multi-line or special-character values inside <![CDATA[ ... ]]>.\nAvailable actions:\n- <shell timeout_ms?=\"<integer>\"><![CDATA[<command value>]]></shell>\n  Body/CDATA contains only the raw value of `command`; do not include the field name or a `command:` prefix.\n  Run a command\n  command: Command line\n- <write_file path=\"<string>\"><![CDATA[<content value>]]></write_file>\n  Body/CDATA contains only the raw value of `content`; do not include the field name or a `content:` prefix.\n  Write a file\n",
+        "sections": [
+          {
+            "line": 10,
+            "name": "role",
+            "user_source": "group:edit",
+            "user_text": "You edit files."
+          },
+          {
+            "line": 20,
+            "name": "contexts",
+            "system_text": "Current time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nOperating system: linux\nWorking directory: /work/project\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nHostname: devbox\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]",
+            "user_source": "default"
+          },
+          {
+            "line": 30,
+            "name": "rules",
+            "system_text": "Behavior actions available in this run: shell, write_file\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.",
+            "user_source": "group:edit",
+            "user_text": "Edit only what is asked."
+          },
+          {
+            "line": 40,
+            "name": "cmd_manual",
+            "system_text": "Commands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n(no additional commands documented; standard commands on PATH may be used)",
+            "user_source": "default"
+          },
+          {
+            "line": 100,
+            "name": "output_format",
+            "user_source": "default"
+          }
+        ],
+        "system_prompt": "## role\nYou edit files.\n\n## contexts\nCurrent time: 2026-11-07 10:00:00 +08:00\nTimezone: Asia/Shanghai\nOperating system: linux\nWorking directory: /work/project\nRuntime: local\nExecution mechanism: local\nArchitecture: x86_64\nHostname: devbox\nShell: /bin/bash\nEnvironment baseline: standard\nAvailable tools: [\"git\",\"rg\"]\n\n## rules\nEdit only what is asked.\nBehavior actions available in this run: shell, write_file\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\n## cmd_manual\nCommands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n(no additional commands documented; standard commands on PATH may be used)\n\n## runtime_protocol\nYou are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n  <actions>\n    ...zero or more actions, executed in order...\n  </actions>\n  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\nRules:\n- <report> or <report end=\"false\"> submits a progress report. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n- A final report cannot share a reply with actions, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n- To act, put one or more actions inside <actions>; the results come back in the next message. You may include a progress report with end=\"false\".\n- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the tool iteration limit.\n- Only the actions listed below exist; do not invent others. Put multi-line or special-character values inside <![CDATA[ ... ]]>.\nAvailable actions:\n- <shell timeout_ms?=\"<integer>\"><![CDATA[<command value>]]></shell>\n  Body/CDATA contains only the raw value of `command`; do not include the field name or a `command:` prefix.\n  Run a command\n  command: Command line\n- <write_file path=\"<string>\"><![CDATA[<content value>]]></write_file>\n  Body/CDATA contains only the raw value of `content`; do not include the field name or a `content:` prefix.\n  Write a file\n",
+        "template_vars": {},
+        "user_request": "Fix the typo in README.md."
+      },
+      "fn": "assemble_prompt",
+      "json": false,
+      "llm_context": {
+        "prompt": {
+          "groups": {
+            "edit": {
+              "default_user": "Fix the typo in README.md.",
+              "sections": {
+                "role": "You edit files.",
+                "rules": "Edit only what is asked."
+              }
+            }
+          },
+          "select": "edit"
+        }
+      },
+      "loop_model": "behavior",
+      "name": "assemble_behavior_group_default_user",
+      "origin": "/vectors/project/.llm_context",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            },
+            "description": "Write a file",
+            "name": "write_file",
+            "source": "groupname:bash"
+          }
+        ],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "error": {
+          "kind": "template"
+        }
+      },
+      "fn": "assemble_prompt",
+      "json": false,
+      "llm_context": {
+        "prompt": {
+          "sections": {
+            "role": "You run on {{runtime.gpu}}."
+          }
+        }
+      },
+      "loop_model": "function_call",
+      "name": "assemble_missing_runtime_variable",
+      "origin": "/vectors/project/.llm_context",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "error": {
+          "kind": "template"
+        }
+      },
+      "fn": "assemble_prompt",
+      "json": false,
+      "llm_context": {
+        "prompt": {
+          "sections": {
+            "role": "Project {{env.XLLM_VECTOR_UNSET}}."
+          }
+        }
+      },
+      "loop_model": "function_call",
+      "name": "assemble_unset_env_variable",
+      "origin": "/vectors/project/.llm_context",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "error": {
+          "field": "prompt.select",
+          "kind": "config"
+        }
+      },
+      "fn": "assemble_prompt",
+      "json": false,
+      "llm_context": {
+        "prompt": {
+          "groups": {
+            "a": {
+              "sections": {
+                "role": "A"
+              }
+            }
+          },
+          "select": "missing"
+        }
+      },
+      "loop_model": "function_call",
+      "name": "assemble_unknown_group",
+      "origin": "/vectors/project/.llm_context",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "current_time": "2026-11-07 10:00:00 +08:00",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "timezone": "Asia/Shanghai",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "system_prompt": "You help with the notes in /work/project on devbox.\n\n## capabilities\nNative tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\n## cmd_manual\nCommands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n- rg: search Command: `rg`. Usage: `rg -n <pattern>`.\n- jq: Filter JSON. Command: `jq`.\n\n## runtime_protocol\nYou are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "template_vars": {
+          "runtime.cwd": "/work/project",
+          "runtime.hostname": "devbox"
+        }
+      },
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "hosted_system",
+      "host_system": "You help with the notes in {{runtime.cwd}} on {{runtime.hostname}}.\n\n",
+      "json": false,
+      "loop_model": "function_call",
+      "name": "hosted_all_sections_function_call",
+      "origin": "demo.notes",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "sections": {
+        "capabilities": true,
+        "cmd_manual": true,
+        "runtime_protocol": true
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [
+          {
+            "command": "rg",
+            "description": "search ",
+            "name": "rg",
+            "usage": "rg -n <pattern>"
+          },
+          {
+            "command": "jq",
+            "description": "Filter JSON.",
+            "name": "jq"
+          }
+        ],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n\nOutput constraint: the final reply MUST be exactly one valid JSON value with no surrounding prose or code fences.\n",
+        "system_prompt": "You help with notes.\n",
+        "template_vars": {}
+      },
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "hosted_system",
+      "host_system": "You help with notes.",
+      "json": true,
+      "loop_model": "function_call",
+      "name": "hosted_no_sections_json",
+      "origin": "demo.notes",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "sections": {
+        "capabilities": false,
+        "cmd_manual": false,
+        "runtime_protocol": false
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "runtime_protocol": "You are the agent of this Session. The user talks to you across Turns.\n\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n  <actions>\n    ...zero or more actions, executed in order...\n  </actions>\n  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\nRules:\n- <report> or <report end=\"false\"> submits a progress report. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n- A final report cannot share a reply with actions, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n- A report may include sibling <artifacts> containing a JSON array of relative file paths and <result> containing any JSON value. These require a report in the same response. The host validates and persists the submission; completion applies to the current context, with child reports returned to their caller.\n- Yielding is how you wait for work this session started (tasks, sub sessions): the session wakes you with its result. When nothing it started is running, the session ends the Turn instead.\n- To act, put one or more actions inside <actions>; the results come back in the next message. You may include a progress report with end=\"false\".\n- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the tool iteration limit.\n- Only the actions listed below exist; do not invent others. Put multi-line or special-character values inside <![CDATA[ ... ]]>.\nAvailable actions:\n- <shell timeout_ms?=\"<integer>\"><![CDATA[<command value>]]></shell>\n  Body/CDATA contains only the raw value of `command`; do not include the field name or a `command:` prefix.\n  Run a command\n  command: Command line\n- Native function-call tools are also declared for this run; a reply that uses them is treated as a step with actions.\n",
+        "system_prompt": "You are Jarvis.\n\n## capabilities\nNative tools available in this run (behavior): report\nBehavior actions available in this run: shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\n## runtime_protocol\nYou are the agent of this Session. The user talks to you across Turns.\n\nExecution loop (behavior protocol): every reply MUST be one XML document with this shape:\n<response>\n  <observation>what the previous action results tell you (omit on the first step)</observation>\n  <intent>the next move, in one short sentence</intent>\n  <actions>\n    ...zero or more actions, executed in order...\n  </actions>\n  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\nRules:\n- <report> or <report end=\"false\"> submits a progress report. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n- A final report cannot share a reply with actions, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n- A reply without actions, native tool calls, next_behavior or a final report (a progress report alone, or nothing) yields: this context stops and waits for new input, such as the result of work it started that is still running or a new message. Never yield while there is work you can do now.\n- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n- A report may include sibling <artifacts> containing a JSON array of relative file paths and <result> containing any JSON value. These require a report in the same response. The host validates and persists the submission; completion applies to the current context, with child reports returned to their caller.\n- Yielding is how you wait for work this session started (tasks, sub sessions): the session wakes you with its result. When nothing it started is running, the session ends the Turn instead.\n- To act, put one or more actions inside <actions>; the results come back in the next message. You may include a progress report with end=\"false\".\n- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the tool iteration limit.\n- Only the actions listed below exist; do not invent others. Put multi-line or special-character values inside <![CDATA[ ... ]]>.\nAvailable actions:\n- <shell timeout_ms?=\"<integer>\"><![CDATA[<command value>]]></shell>\n  Body/CDATA contains only the raw value of `command`; do not include the field name or a `command:` prefix.\n  Run a command\n  command: Command line\n- Native function-call tools are also declared for this run; a reply that uses them is treated as a step with actions.\n",
+        "template_vars": {}
+      },
+      "flavor": {
+        "intro": "You are the agent of this Session. The user talks to you across Turns.\n",
+        "kind": "session"
+      },
+      "fn": "hosted_system",
+      "host_system": "You are Jarvis.",
+      "json": false,
+      "loop_model": "behavior",
+      "name": "hosted_session_behavior_without_cmd_manual",
+      "origin": "demo.notes",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "sections": {
+        "capabilities": true,
+        "cmd_manual": false,
+        "runtime_protocol": true
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "bash_tools": [
+          {
+            "command": "rg",
+            "description": "search ",
+            "name": "rg",
+            "usage": "rg -n <pattern>"
+          },
+          {
+            "command": "jq",
+            "description": "Filter JSON.",
+            "name": "jq"
+          }
+        ],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "artifacts": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "is_end": {
+                  "type": "boolean"
+                },
+                "report": {
+                  "type": "string"
+                },
+                "result": {}
+              },
+              "required": [
+                "report"
+              ],
+              "type": "object"
+            },
+            "description": "Submit a report",
+            "name": "report",
+            "source": "name:report"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+        "system_prompt": "## capabilities\nNative tools available in this run (function_call): read_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\n## cmd_manual\nCommands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n- rg: search Command: `rg`. Usage: `rg -n <pattern>`.\n- jq: Filter JSON. Command: `jq`.\n",
+        "template_vars": {}
+      },
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "hosted_system",
+      "host_system": "",
+      "json": false,
+      "loop_model": "function_call",
+      "name": "hosted_empty_host_text",
+      "origin": "demo.notes",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "sections": {
+        "capabilities": true,
+        "cmd_manual": true,
+        "runtime_protocol": false
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [
+          {
+            "command": "rg",
+            "description": "search ",
+            "name": "rg",
+            "usage": "rg -n <pattern>"
+          },
+          {
+            "command": "jq",
+            "description": "Filter JSON.",
+            "name": "jq"
+          }
+        ],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "error": {
+          "kind": "capability"
+        }
+      },
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "hosted_system",
+      "host_system": "You are Jarvis.",
+      "json": false,
+      "loop_model": "behavior",
+      "name": "hosted_behavior_needs_runtime_protocol",
+      "origin": "demo.notes",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "sections": {
+        "capabilities": false,
+        "cmd_manual": false,
+        "runtime_protocol": false
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "error": {
+          "kind": "capability"
+        }
+      },
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "hosted_system",
+      "host_system": "You are Jarvis.",
+      "json": true,
+      "loop_model": "behavior",
+      "name": "hosted_json_needs_function_call",
+      "origin": "demo.notes",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "sections": {
+        "capabilities": true,
+        "cmd_manual": true,
+        "runtime_protocol": true
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "env": {},
+      "expect": {
+        "error": {
+          "kind": "template"
+        }
+      },
+      "flavor": {
+        "kind": "one_shot"
+      },
+      "fn": "hosted_system",
+      "host_system": "Today is {{runtime.current_time}}.",
+      "json": false,
+      "loop_model": "function_call",
+      "name": "hosted_has_no_current_time",
+      "origin": "demo.notes",
+      "runtime_vars": {
+        "arch": "x86_64",
+        "baseline": "standard",
+        "cwd": "/work/project",
+        "hostname": "devbox",
+        "id": "local",
+        "kind": "local",
+        "os": "linux",
+        "platform": "linux",
+        "shell": "/bin/bash",
+        "shell_kind": "bash",
+        "target": "{\"kind\":\"local\"}",
+        "tools": "[\"git\",\"rg\"]"
+      },
+      "sections": {
+        "capabilities": true,
+        "cmd_manual": true,
+        "runtime_protocol": true
+      },
+      "tools": {
+        "action_sources": [],
+        "actions": [],
+        "bash_tools": [],
+        "enabled": true,
+        "exec_enabled": true,
+        "filesystem_policy": "workspace",
+        "native": [
+          {
+            "args_schema": {
+              "properties": {
+                "path": {
+                  "description": "File path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "description": "Read a file",
+            "name": "read_file",
+            "source": "groupname:bash"
+          },
+          {
+            "args_schema": {
+              "properties": {
+                "command": {
+                  "description": "Command line",
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ],
+              "type": "object"
+            },
+            "description": "Run a command",
+            "name": "shell",
+            "source": "groupname:bash"
+          }
+        ],
+        "shell": {
+          "max_timeout_ms": 3600000,
+          "timeout_ms": 1800000,
+          "wait_ms": 25000
+        },
+        "sources": {},
+        "tool_sources": [],
+        "tools2actions": false
+      }
+    },
+    {
+      "expect": {
+        "ok": true
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "context_window": 128000,
+        "context_yield_ratio": 0.75,
+        "json": true,
+        "json_schema": {
+          "properties": {
+            "answer": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "llm_timeout": 120,
+        "loop_model": "function_call",
+        "max_tool_iterations": 6,
+        "model": "llm.chat",
+        "prompt": {
+          "groups": {
+            "review": {
+              "default_user": "Review it.",
+              "sections": {
+                "50": {
+                  "name": "checklist",
+                  "text": "Check refs."
+                },
+                "role": "You review."
+              },
+              "tools": {
+                "enabled": true
+              }
+            }
+          },
+          "sections": {
+            "contexts": null,
+            "rules": {
+              "text": "Be precise."
+            }
+          },
+          "select": "review"
+        },
+        "provider": {
+          "type": "buckyos"
+        },
+        "result_format": "result.answer",
+        "run_logs": "warn",
+        "runs_dir": "none",
+        "timeout": 900,
+        "tools": {
+          "bash_tools": [
+            {
+              "command": "rg",
+              "description": "search",
+              "name": "rg",
+              "usage": "rg -n <pattern>"
+            }
+          ],
+          "enabled": true,
+          "filesystem_policy": "workspace",
+          "shell": {
+            "timeout_ms": 60000
+          },
+          "tools": [
+            {
+              "groupname": "bash"
+            },
+            {
+              "name": "report"
+            }
+          ]
+        }
+      },
+      "name": "parse_full_config",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "temperature",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "model": "llm.chat",
+        "temperature": 0.2
+      },
+      "name": "parse_unknown_root_key",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "tools.shell.wait_ms",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "tools": {
+          "shell": {
+            "wait_ms": 1000
+          }
+        }
+      },
+      "name": "parse_unknown_nested_key",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "max_tool_iterations",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "max_tool_iterations": "8"
+      },
+      "name": "parse_wrong_type_integer",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "tools.enabled",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "tools": {
+          "enabled": "yes"
+        }
+      },
+      "name": "parse_wrong_type_bool",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "prompt.sections",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "prompt": {
+          "sections": {
+            "30": "b",
+            "rules": "a"
+          }
+        }
+      },
+      "name": "parse_alias_and_line_conflict",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "prompt.sections.50",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "prompt": {
+          "sections": {
+            "50": {
+              "name": "rules",
+              "text": "x"
+            }
+          }
+        }
+      },
+      "name": "parse_alias_name_on_other_line",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "prompt.mode",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "prompt": {
+          "mode": "custom",
+          "select": "a",
+          "system": "x"
+        }
+      },
+      "name": "parse_custom_with_select",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "runs_dir",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "runs_dir": "  "
+      },
+      "name": "parse_runs_dir_empty",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "context_yield_ratio",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "context_yield_ratio": 1.5
+      },
+      "name": "parse_context_yield_ratio_out_of_range",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "kind": "capability"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "runtime": {
+          "kind": "container"
+        }
+      },
+      "name": "parse_planned_runtime_kind",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "provider",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "provider": {
+          "api_key": "k",
+          "api_key_env": "OPENAI_KEY",
+          "type": "openai"
+        }
+      },
+      "name": "parse_api_key_sources_exclusive",
+      "origin": "/vectors/project/.llm_context"
+    },
+    {
+      "expect": {
+        "error": {
+          "field": "tools.tools[0]",
+          "kind": "config"
+        }
+      },
+      "fn": "parse_config",
+      "llm_context": {
+        "tools": {
+          "tools": [
+            {
+              "groupname": "bash",
+              "name": "report"
+            }
+          ]
+        }
+      },
+      "name": "parse_tool_source_with_two_kinds",
+      "origin": "/vectors/project/.llm_context"
+    }
+  ],
+  "vectors_version": 1
+}

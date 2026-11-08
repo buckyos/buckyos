@@ -1,0 +1,295 @@
+{
+  "version": 7,
+  "run_id": "20261107-150632-19c89c",
+  "status": "paused",
+  "workdir": "/tmp/xllm-fixture-root/paused/work",
+  "runs_dir": "/tmp/xllm-fixture-root/paused/runs",
+  "created_at_ms": 1794099992186,
+  "updated_at_ms": 1794099992217,
+  "summary": "Write notes.txt with one line, then finish.",
+  "input": {
+    "request": "Write notes.txt with one line, then finish.",
+    "request_source": "explicit",
+    "attachments": []
+  },
+  "config": {
+    "runtime": {
+      "kind": "native",
+      "id": "native:b221a8203dcd83ba5a18a73d",
+      "workdir": "/tmp/xllm-fixture-root/paused/work",
+      "env": {},
+      "task_wait_ms": 1800000
+    },
+    "runtime_descriptor": {
+      "runtime_id": "native:b221a8203dcd83ba5a18a73d",
+      "kind": "native",
+      "host": "host:xllm-fixture:",
+      "target": {
+        "host": "host:xllm-fixture:",
+        "uid": "1000"
+      },
+      "workdir": "/tmp/xllm-fixture-root/paused/work",
+      "capabilities": {
+        "tools": {
+          "base64": "available",
+          "bash": "available",
+          "realpath": "available"
+        },
+        "network": true,
+        "os": "linux"
+      }
+    },
+    "provider": {
+      "kind": "openai",
+      "base_url": "http://127.0.0.1:46189/s/paused/v1",
+      "api_key": {
+        "kind": "env",
+        "name": "XLLM_FIXTURE_KEY"
+      }
+    },
+    "model": "mock-model",
+    "loop_model": "function_call",
+    "limits": {
+      "max_tool_iterations": 8,
+      "timeout_secs": 3600,
+      "llm_timeout_secs": 600
+    },
+    "run_logs": "warn",
+    "result_format": {
+      "kind": "raw"
+    },
+    "json": false,
+    "tools": {
+      "enabled": true,
+      "filesystem_policy": "workspace",
+      "tools2actions": false,
+      "tool_sources": [
+        {
+          "kind": "group",
+          "groupname": "bash"
+        }
+      ],
+      "action_sources": [],
+      "native": [
+        {
+          "name": "read_file",
+          "description": "Read a text file. range selects 1-based lines (\"120-200\", \"120:$\", \"120:+20\", \"-50:$\" for the last 50); first_chunk starts the read at the first occurrence of that text. Paths are relative to the working directory; paths outside it only where the run's filesystem policy allows.",
+          "args_schema": {
+            "properties": {
+              "first_chunk": {
+                "description": "Start the read at the first occurrence of this text (range then counts from there).",
+                "type": "string"
+              },
+              "path": {
+                "description": "File to read, relative to the working directory.",
+                "type": "string"
+              },
+              "range": {
+                "description": "1-based line range: \"120-200\", \"120:$\" (to the end), \"120:+20\" (20 lines from 120); negative numbers count from the end (\"-50:$\")."
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "source": "groupname:bash"
+        },
+        {
+          "name": "write_file",
+          "description": "Write a text file: mode \"write\" (default) creates or overwrites it, \"append\" adds to its end, \"new\" creates it and fails if it exists. Parent directories are created. Paths are relative to the working directory; paths outside it only where the run's filesystem policy allows.",
+          "args_schema": {
+            "properties": {
+              "content": {
+                "description": "The text to write.",
+                "type": "string"
+              },
+              "mode": {
+                "description": "`write` (default): create or overwrite; `append`: add to the end; `new`: create, fail if the file exists.",
+                "type": "string"
+              },
+              "path": {
+                "description": "File to write, relative to the working directory.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "path"
+            ],
+            "type": "object"
+          },
+          "source": "groupname:bash"
+        },
+        {
+          "name": "edit_file",
+          "description": "Replace the one exact occurrence of old_string with new_string in a text file. Fails when old_string is absent or occurs more than once: include enough surrounding text to make it unique. Paths are relative to the working directory; paths outside it only where the run's filesystem policy allows.",
+          "args_schema": {
+            "properties": {
+              "new_string": {
+                "description": "The replacement text.",
+                "type": "string"
+              },
+              "old_string": {
+                "description": "The exact text to replace; it must occur exactly once.",
+                "type": "string"
+              },
+              "path": {
+                "description": "File to edit, relative to the working directory.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "new_string",
+              "old_string",
+              "path"
+            ],
+            "type": "object"
+          },
+          "source": "groupname:bash"
+        },
+        {
+          "name": "shell",
+          "description": "Run a command in this run's runtime (native) with bash syntax. It starts in the working directory unless cwd is given; it is not sandboxed and runs with the current user's permissions. The command is a child process of this executor: an interrupt or a timeout ends its process group; processes it leaves behind after returning are not managed. Waits for the command to finish. Default timeout 1800s, max 3600s; on timeout the command is stopped and the output so far is returned. Start a long-lived service with nohup / setsid and return at once; on Unix, processes started with `&` / nohup in the foreground command's process group also end when that command is interrupted or times out. Long output keeps its beginning and end.",
+          "args_schema": {
+            "properties": {
+              "command": {
+                "description": "bash command to execute",
+                "type": "string"
+              },
+              "cwd": {
+                "description": "Working directory, relative to or within the configured workspace. Defaults to the workspace.",
+                "type": "string"
+              },
+              "timeout_ms": {
+                "description": "Timeout in milliseconds (default 1800000, max 3600000). Set it explicitly for long builds, tests or media commands.",
+                "maximum": 3600000,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "source": "groupname:bash"
+        }
+      ],
+      "actions": [],
+      "bash_tools": [],
+      "shell": {
+        "wait_ms": 1800000,
+        "timeout_ms": 1800000,
+        "max_timeout_ms": 3600000
+      },
+      "exec_enabled": true,
+      "sources": {
+        "actions": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+        "bash_tools": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+        "enabled": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+        "filesystem_policy": "default",
+        "shell": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+        "tools": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+        "tools2actions": "/tmp/xllm-fixture-root/paused/work/.llm_context"
+      }
+    },
+    "config_files": [
+      "/tmp/xllm-fixture-root/paused/work/.llm_context"
+    ],
+    "sources": {
+      "llm_timeout": "default",
+      "loop_model": "default",
+      "max_tool_iterations": "default",
+      "model": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+      "provider.api_key": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+      "provider.base_url": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+      "provider.type": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+      "result_format": "default",
+      "run_logs": "cli",
+      "runs_dir": "cli",
+      "runtime": "/tmp/xllm-fixture-root/paused/work/.llm_context",
+      "timeout": "default",
+      "tools": "/tmp/xllm-fixture-root/paused/work/.llm_context"
+    }
+  },
+  "prompt": {
+    "mode": "standard",
+    "loop_model": "function_call",
+    "sections": [
+      {
+        "line": 10,
+        "name": "role",
+        "user_source": "default"
+      },
+      {
+        "line": 20,
+        "name": "contexts",
+        "user_source": "default",
+        "system_text": "Current time: 2026-11-07T15:06:32-1000\nTimezone: HST-1000\nOperating system: linux\nWorking directory: /tmp/xllm-fixture-root/paused/work\nRuntime: native:b221a8203dcd83ba5a18a73d\nExecution mechanism: native\nArchitecture: x86_64\nHostname: lzc\nShell: /usr/bin/bash\nAvailable tools: [\"base64\",\"bash\",\"edit_file\",\"read_file\",\"realpath\",\"shell\",\"write_file\"]"
+      },
+      {
+        "line": 30,
+        "name": "rules",
+        "user_source": "default",
+        "system_text": "Native tools available in this run (function_call): read_file, write_file, edit_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here."
+      },
+      {
+        "line": 40,
+        "name": "cmd_manual",
+        "user_source": "default",
+        "system_text": "Commands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n(no additional commands documented; standard commands on PATH may be used)"
+      },
+      {
+        "line": 100,
+        "name": "output_format",
+        "user_source": "default"
+      }
+    ],
+    "runtime_protocol": "You are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+    "protocol_version": "xllm/2",
+    "system_prompt": "## contexts\nCurrent time: 2026-11-07T15:06:32-1000\nTimezone: HST-1000\nOperating system: linux\nWorking directory: /tmp/xllm-fixture-root/paused/work\nRuntime: native:b221a8203dcd83ba5a18a73d\nExecution mechanism: native\nArchitecture: x86_64\nHostname: lzc\nShell: /usr/bin/bash\nAvailable tools: [\"base64\",\"bash\",\"edit_file\",\"read_file\",\"realpath\",\"shell\",\"write_file\"]\n\n## rules\nNative tools available in this run (function_call): read_file, write_file, edit_file, shell\nBuiltin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.\nDo not claim a tool or command exists unless it is listed here.\n\n## cmd_manual\nCommands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n(no additional commands documented; standard commands on PATH may be used)\n\n## runtime_protocol\nYou are running inside xllm (xllm/2), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n\nExecution loop (native function calling):\n- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n",
+    "user_request": "Write notes.txt with one line, then finish.",
+    "user_request_source": "explicit",
+    "template_vars": {},
+    "runtime_vars": {
+      "arch": "x86_64",
+      "baseline": "",
+      "current_time": "2026-11-07T15:06:32-1000",
+      "cwd": "/tmp/xllm-fixture-root/paused/work",
+      "hostname": "lzc",
+      "id": "native:b221a8203dcd83ba5a18a73d",
+      "kind": "native",
+      "os": "linux",
+      "platform": "linux",
+      "shell": "/usr/bin/bash",
+      "shell_kind": "bash",
+      "target": "{\"host\":\"host:xllm-fixture:\",\"uid\":\"1000\"}",
+      "timezone": "HST-1000",
+      "tools": "[\"base64\",\"bash\",\"edit_file\",\"read_file\",\"realpath\",\"shell\",\"write_file\"]"
+    }
+  },
+  "latest_snapshot_idx": 5,
+  "last_error": {
+    "phase": "model",
+    "kind": "provider_transient",
+    "message": "llm provider failed (Transient): openai http 503: {\"error\":{\"message\":\"mock overloaded\",\"type\":\"server_error\"}}",
+    "recoverable": true,
+    "condition": "wait for the model service to recover, then resume",
+    "at_ms": 1794099992217
+  },
+  "artifacts": [
+    "/tmp/xllm-fixture-root/paused/work/notes.txt"
+  ],
+  "usage": {
+    "main": {
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "total_tokens": 15,
+      "request_units": 1
+    },
+    "llm_requests": 2
+  },
+  "compactions": 0,
+  "pid": 2271806
+}

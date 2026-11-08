@@ -193,16 +193,16 @@ pub struct CompressOutcome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum UnitKind {
+pub(crate) enum UnitKind {
     Round,
     Summary,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Unit {
-    start: usize,
-    end: usize,
-    kind: UnitKind,
+pub(crate) struct Unit {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) kind: UnitKind,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -438,7 +438,7 @@ fn render_keep_exact(entries: &[String]) -> String {
 /// results message) and the user input right after them; leading user
 /// messages (the opening input) join the first round, and a user message
 /// after an assistant's final reply opens a new round.
-fn segment(history: &[AiMessage], start: usize) -> Vec<Unit> {
+pub(crate) fn segment(history: &[AiMessage], start: usize) -> Vec<Unit> {
     let mut units = Vec::new();
     let mut idx = start;
     while idx < history.len() {
@@ -699,7 +699,7 @@ fn value_text(v: &Value) -> String {
 
 /// Append new verbatim entries (whitespace normalized, exact duplicates
 /// skipped); the oldest entries beyond the cap become memory candidates.
-fn merge_keep_exact(
+pub(crate) fn merge_keep_exact(
     keep: &mut Vec<String>,
     new: impl Iterator<Item = String>,
     deps: &LLMContextDeps,

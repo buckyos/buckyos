@@ -98,12 +98,13 @@ native 目标包含本机身份与 uid；`AGENT_TOOL_HOST_ID` 可提供稳定宿
 | `native` | Runner 所在 OS/容器，当前用户 | xllm、libopendan Session；默认执行体 | 不创建容器、不提供额外 OS 隔离；Unix 与 Windows 使用各自本机 shell 实现 |
 | `remote_ssh` | 目标机器上的 shell 和文件系统 | 独立 xllm，或具备所需依赖的 SDK 宿主 | 系统 OpenSSH、远端 Linux/bash/SFTP；完整 Session helper 尚未部署 |
 | `remote_node` | Node Executor Command Stream 对应的节点、profile 与 OS 身份 | xllm CLI、注入 connector 的 SDK 宿主、libopendan Session（冻结到 `host` / 其它节点 runtime 的 Session） | 需要实际节点授权与连接器；模板 `__EXEC__` 尚未支持；命令只来自节点自身 PATH，不按命令名回到控制侧执行（见 §6.2） |
+| `site` | 网站页面：工具是页面给的 JS 函数，没有 shell 与文件系统 | 网站用 TS 运行时自己构建（[xllm TS 运行时](./xllm_ts_runtime.md)）；Rust 侧报 `Capability` | 能力只来自页面代码，配置只能收窄 |
 
 native 的 Windows 实现使用 PowerShell；不能将公共 Runtime 契约限定为“所有目标都运行 Linux Bash”。`BashRunner` 是现有代码中的抽象名称，命令语法仍取决于实际执行体。
 
 `RuntimeRegistry::from_config` 构造 native/SSH；`from_config_with(config, deps)` 另支持 `remote_node`，要求 `XllmDeps.node_executor`。缺少依赖时报 `Capability`，不回退到 native。xllm CLI 的新建和恢复路径已注入 `BuckyosNodeConnector`，按需取得 BuckyOS runtime、连接和 session token。
 
-`container / container_host / http_proxy_runtime` 仍是规划名称，选择时返回 `Capability`。未识别的 kind 返回 `Config`。
+`container / container_host / http_proxy_runtime` 仍是规划名称，选择时返回 `Capability`；`site` 只由 TS 运行时实现，Rust 侧选择它同样返回 `Capability`。未识别的 kind 返回 `Config`。
 
 ### 与 executor 工具组的区别
 

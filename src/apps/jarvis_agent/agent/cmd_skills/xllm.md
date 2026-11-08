@@ -135,10 +135,11 @@ extraction or JSON check failed (raw reply saved).
   the 32 MiB RPC body) is compacted and resent in the same run, at most 3 times; if it still does not fit,
   exit 1 with last error `context_capacity`: split the material and start a new run.
 - Exit 3 (model timeout; transient provider error, including any AICC error marked `retriable` such as an
-  overloaded provider's 503; rejected or expired token) → the printed hint
-  `agent_tool xllm --resume --run <id> --runs-dir <dir>`. Resume reuses the saved config:
-  later `.llm_context` edits and `--model`/`--tools` are ignored; `--llm-timeout`, `--timeout`, `--max-tokens`,
-  `--max-tool-iterations` can be raised. Resume resends the unfinished model request; an interrupted HTTP
+  overloaded provider's 503; a rejected or expired token or HTTP 401/403, last error `credentials`) → the
+  printed hint `agent_tool xllm --resume --run <id> --runs-dir <dir>`. Resume reuses the saved config:
+  later `.llm_context` edits and `--model`/`--tools` are ignored and the model sees the tool specs saved with
+  the run (a saved tool this executor cannot provide: exit 1 `cannot be resumed`); `--llm-timeout`,
+  `--timeout`, `--max-tokens`, `--max-tool-iterations` can be raised. Resume resends the unfinished model request; an interrupted HTTP
   connection does not prove the provider stopped processing it. Check the original task/trace before retrying.
 - `HTTP 504 Gateway Timeout` with `response head timeout` means the gateway stopped waiting for the service.
   Check `buckyos_admin` and the gateway/AICC logs; increasing only `--llm-timeout` cannot extend a gateway limit.

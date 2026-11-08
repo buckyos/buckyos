@@ -2918,6 +2918,51 @@ pub(crate) fn build_contexts_system_text(
     }
 }
 
+/// The prompt group a task assembles: `--select` over `prompt.select`; none
+/// in custom mode (`--system`, or `prompt.mode: custom` without `--select`).
+fn select_prompt_group(
+    merged: &MergedConfig,
+    overrides: &TaskOverrides,
+) -> Result<Option<String>, XllmError> {
+    let custom = overrides.system.is_some()
+        || (overrides.select.is_none() && merged.prompt.mode == Some(PromptMode::Custom));
+    if custom {
+        return Ok(None);
+    }
+    let Some(sel) = overrides
+        .select
+        .clone()
+        .or_else(|| merged.prompt.select.clone())
+    else {
+        return Ok(None);
+    };
+    if !merged.prompt.groups.contains_key(&sel) {
+        let available: Vec<String> = merged.prompt.groups.keys().cloned().collect();
+        let src = if overrides.select.is_some() {
+            "cli:--select".to_string()
+        } else {
+            merged
+                .sources
+                .get("prompt.select")
+                .cloned()
+                .unwrap_or_default()
+        };
+        return Err(XllmError::Config {
+            file: src,
+            field: "prompt.select".into(),
+            reason: format!(
+                "prompt group `{sel}` does not exist (available: {})",
+                if available.is_empty() {
+                    "none".to_string()
+                } else {
+                    available.join(", ")
+                }
+            ),
+        });
+    }
+    Ok(Some(sel))
+}
+
 /// 组装参数。
 pub struct PromptAssembly<'a> {
     pub merged: &'a MergedConfig,
@@ -4054,6 +4099,9 @@ pub struct XllmToolManager {
     intent: BTreeMap<String, IntentPolicy>,
     /// The intent each call stated, by call id.
     intents: Mutex<BTreeMap<String, String>>,
+    /// Resume: the specs saved with the run, shown instead of the tools'
+    /// own (freeze TODO F6).
+    advertised: Option<BTreeMap<String, ToolSpecLite>>,
 }
 
 impl XllmToolManager {
@@ -4106,6 +4154,7 @@ impl XllmToolManager {
             hints: MemoryHintLedger::new(),
             intent: BTreeMap::new(),
             intents: Mutex::new(BTreeMap::new()),
+            advertised: None,
         }
     }
 
@@ -4295,6 +4344,30 @@ impl XllmToolManager {
     pub fn has(&self, name: &str) -> bool {
         self.tools.contains_key(name)
     }
+
+    /// Show the model `saved` instead of the registered tools' specs; every
+    /// saved tool must be registered. Returns the first one that is not.
+    pub fn advertise_saved<'a>(
+        &mut self,
+        saved: impl IntoIterator<Item = &'a ResolvedTool>,
+    ) -> Result<(), &'a ResolvedTool> {
+        let mut specs = BTreeMap::new();
+        for tool in saved {
+            if !self.has(&tool.name) {
+                return Err(tool);
+            }
+            specs.insert(
+                tool.name.clone(),
+                ToolSpecLite {
+                    name: tool.name.clone(),
+                    description: tool.description.clone(),
+                    args_schema: tool.args_schema.clone(),
+                },
+            );
+        }
+        self.advertised = Some(specs);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -4386,11 +4459,11 @@ impl ToolManager for XllmToolManager {
                     });
                 };
                 // Every task is waited for within the runtime's budget; a
-                // `check_after` of the tool replaces it.
+                // `check_after` of the tool can only shorten it.
+                let budget = self.task_wait_ms();
                 let wait_ms = res
                     .check_after
-                    .map(|secs| secs.saturating_mul(1000))
-                    .unwrap_or_else(|| self.task_wait_ms());
+                    .map_or(budget, |secs| secs.saturating_mul(1000).min(budget));
                 self.wait_in_tool(call_id, &task_id, wait_ms, &call_ctx)
                     .await
             }
@@ -4452,19 +4525,26 @@ impl ToolManager for XllmToolManager {
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
-        self.tools
-            .values()
-            .map(|t| {
-                let spec = t.spec();
-                let policy = self.intent_policy(&spec.name);
-                with_intent(
+        let specs: Vec<ToolSpecLite> = match &self.advertised {
+            Some(saved) => saved.values().cloned().collect(),
+            None => self
+                .tools
+                .values()
+                .map(|t| {
+                    let spec = t.spec();
                     ToolSpecLite {
                         name: spec.name,
                         description: spec.description,
                         args_schema: spec.args_schema,
-                    },
-                    policy,
-                )
+                    }
+                })
+                .collect(),
+        };
+        specs
+            .into_iter()
+            .map(|spec| {
+                let policy = self.intent_policy(&spec.name);
+                with_intent(spec, policy)
             })
             .collect()
     }
@@ -5464,6 +5544,9 @@ pub const REFUSED_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 pub const REFUSED_QUOTA_BUDGET_EXCEEDED: &str = "quota_budget_exceeded";
 pub const REFUSED_RESOURCE_NOT_PERMITTED: &str = "resource_not_permitted";
 pub const REFUSED_ATTRIBUTION_UNAVAILABLE: &str = "attribution_unavailable";
+/// The service refused the caller's credentials (kRPC token errors, HTTP
+/// 401 / 403): a run paused on it resumes once the credential is fixed.
+pub const REFUSED_CREDENTIALS: &str = "credentials";
 
 /// AICC 额度与资源策略的拒绝（AI Center Quota PRD §7.4）；暂不可用的额度状态可以稍后重试。
 fn aicc_refusal(code: AiccErrorCode) -> Option<ProviderFailure> {
@@ -5518,6 +5601,9 @@ pub fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError
             .and_then(Value::as_u64),
         _ => None,
     };
+    let credentials = || ProviderFailure::Refused {
+        code: REFUSED_CREDENTIALS.to_string(),
+    };
     let failure = match &err {
         RPCErrors::HttpTransportError(_) => {
             if err.is_retryable_transport() {
@@ -5531,11 +5617,12 @@ pub fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError
         RPCErrors::Detailed(_) if matches!(http_status, Some(408 | 504)) => {
             ProviderFailure::Transient
         }
+        RPCErrors::Detailed(_) if matches!(http_status, Some(401 | 403)) => credentials(),
         RPCErrors::S2sTransientError(_) => ProviderFailure::Transient,
-        RPCErrors::InvalidToken(_)
-        | RPCErrors::TokenExpired(_)
-        | RPCErrors::NoPermission(_)
-        | RPCErrors::InvalidPassword
+        RPCErrors::InvalidToken(_) | RPCErrors::TokenExpired(_) | RPCErrors::NoPermission(_) => {
+            credentials()
+        }
+        RPCErrors::InvalidPassword
         | RPCErrors::UserNotFound(_)
         | RPCErrors::UnknownMethod(_)
         | RPCErrors::ServiceNotValid(_)
@@ -5547,6 +5634,33 @@ pub fn provider_error_from_rpc(context: &str, err: RPCErrors) -> LLMComputeError
         | RPCErrors::Detailed(_) => ProviderFailure::Unknown,
     };
     LLMComputeError::provider(failure, format!("{context}: {err}"))
+}
+
+/// The provider failure of a non-2xx OpenAI-compatible response.
+fn openai_http_failure(status: u16, body: &str) -> LLMComputeError {
+    // OpenAI-compatible APIs report a prompt that does not fit with
+    // the structured error code `context_length_exceeded`.
+    let context_limit = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.pointer("/error/code")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .is_some_and(|c| c == "context_length_exceeded");
+    let failure = match status {
+        _ if context_limit => ProviderFailure::ContextLimit,
+        401 | 403 => ProviderFailure::Refused {
+            code: REFUSED_CREDENTIALS.to_string(),
+        },
+        404 | 400 | 422 => ProviderFailure::Permanent,
+        408 | 409 | 425 | 429 | 500 | 502 | 503 | 504 => ProviderFailure::Transient,
+        _ => ProviderFailure::Unknown,
+    };
+    LLMComputeError::provider(
+        failure,
+        format!("openai http {status}: {}", truncate_chars(body, 512)),
+    )
 }
 
 /// OpenAI 兼容 Chat Completions 客户端（openai Provider）。
@@ -5755,27 +5869,7 @@ impl LlmClient for OpenAiLlmClient {
             )
         })?;
         if !status.is_success() {
-            let code = status.as_u16();
-            // OpenAI-compatible APIs report a prompt that does not fit with
-            // the structured error code `context_length_exceeded`.
-            let context_limit = serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|v| {
-                    v.pointer("/error/code")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .is_some_and(|c| c == "context_length_exceeded");
-            let failure = match code {
-                _ if context_limit => ProviderFailure::ContextLimit,
-                401 | 403 | 404 | 400 | 422 => ProviderFailure::Permanent,
-                408 | 409 | 425 | 429 | 500 | 502 | 503 | 504 => ProviderFailure::Transient,
-                _ => ProviderFailure::Unknown,
-            };
-            return Err(LLMComputeError::provider(
-                failure,
-                format!("openai http {code}: {}", truncate_chars(&text, 512)),
-            ));
+            return Err(openai_http_failure(status.as_u16(), &text));
         }
         let parsed: Value = serde_json::from_str(&text).map_err(|e| {
             LLMComputeError::provider(
@@ -7180,44 +7274,13 @@ impl XllmTask {
 
         // ---- 模式与选组 ----
         let structured = input.structured.is_some();
-        let custom = overrides.system.is_some()
-            || (overrides.select.is_none() && merged.prompt.mode == Some(PromptMode::Custom));
-        let mut group_name: Option<String> = None;
-        if !structured && !custom {
-            if let Some(sel) = overrides
-                .select
-                .clone()
-                .or_else(|| merged.prompt.select.clone())
-            {
-                if !merged.prompt.groups.contains_key(&sel) {
-                    let available: Vec<String> = merged.prompt.groups.keys().cloned().collect();
-                    let src = if overrides.select.is_some() {
-                        "cli:--select".to_string()
-                    } else {
-                        merged
-                            .sources
-                            .get("prompt.select")
-                            .cloned()
-                            .unwrap_or_default()
-                    };
-                    return Err(XllmError::Config {
-                        file: src,
-                        field: "prompt.select".into(),
-                        reason: format!(
-                            "prompt group `{sel}` does not exist (available: {})",
-                            if available.is_empty() {
-                                "none".to_string()
-                            } else {
-                                available.join(", ")
-                            }
-                        ),
-                    });
-                }
-                if overrides.select.is_some() {
-                    sources.insert("prompt.select".into(), "cli".into());
-                }
-                group_name = Some(sel);
-            }
+        let group_name = if structured {
+            None
+        } else {
+            select_prompt_group(&merged, &overrides)?
+        };
+        if group_name.is_some() && overrides.select.is_some() {
+            sources.insert("prompt.select".into(), "cli".into());
         }
         let group = group_name
             .as_ref()
@@ -7492,6 +7555,83 @@ impl std::fmt::Debug for HostedTask {
     }
 }
 
+/// The loops a hosted run can drive with the sections its host allows.
+fn check_hosted_loop(
+    origin: &str,
+    sections: HostPromptSections,
+    loop_model: LoopModel,
+    json: bool,
+) -> Result<(), XllmError> {
+    if !sections.runtime_protocol && loop_model != LoopModel::FunctionCall {
+        return Err(XllmError::Capability(format!(
+            "{origin}: the runtime protocol defines the reply shape of the behavior loop; only a function call loop can run without it"
+        )));
+    }
+    if json && loop_model != LoopModel::FunctionCall {
+        return Err(XllmError::Capability(format!(
+            "{origin}: a JSON reply (json / json_schema) needs loop_model function_call; a behavior loop reply is its XML step"
+        )));
+    }
+    Ok(())
+}
+
+/// The system prompt of a hosted run (`PromptPlan` pieces).
+struct HostedSystem {
+    /// The host's system text, rendered.
+    custom_system: String,
+    runtime_protocol: String,
+    system_prompt: String,
+    template_vars: BTreeMap<String, String>,
+}
+
+/// The host's system text (rendered with `env`, which a hosted run gives no
+/// `current_time` / `timezone`) followed by the sections the host allows.
+#[allow(clippy::too_many_arguments)]
+fn assemble_hosted_system(
+    host_system: &str,
+    origin: &str,
+    env: &TemplateEnv,
+    sections: HostPromptSections,
+    flavor: &HostProtocolFlavor,
+    loop_model: LoopModel,
+    tools: &EffectiveTools,
+    json: bool,
+) -> Result<HostedSystem, XllmError> {
+    let runtime_protocol = build_runtime_protocol_for(flavor, loop_model, tools, json);
+    let rendered_host_system = env.render(host_system, &format!("host:{origin}"))?;
+    let mut appended = Vec::new();
+    if sections.capabilities {
+        appended.push(format!(
+            "## capabilities\n{}",
+            build_rules_system_text(loop_model, tools).trim_end()
+        ));
+    }
+    if sections.cmd_manual {
+        if let Some(manual) = build_cmd_manual_system_text(tools) {
+            appended.push(format!("## cmd_manual\n{}", manual.trim_end()));
+        }
+    }
+    if sections.runtime_protocol {
+        appended.push(format!("## runtime_protocol\n{}", runtime_protocol.trim_end()));
+    }
+    let mut system = rendered_host_system.trim_end().to_string();
+    for section in appended {
+        if !system.is_empty() {
+            system.push_str("\n\n");
+        }
+        system.push_str(&section);
+    }
+    if !system.is_empty() {
+        system.push('\n');
+    }
+    Ok(HostedSystem {
+        custom_system: rendered_host_system,
+        runtime_protocol,
+        system_prompt: system,
+        template_vars: env.used_vars(),
+    })
+}
+
 impl XllmTask {
     /// Prepare a host-assembled run. `llm_context` is the JSON form of an
     /// `.llm_context` file (`origin` names it in diagnostics); `host_system`
@@ -7540,17 +7680,8 @@ impl XllmTask {
         };
         let loop_model = merged.loop_model.unwrap_or(LoopModel::FunctionCall);
         let sections = deps.host_prompt_sections;
-        if !sections.runtime_protocol && loop_model != LoopModel::FunctionCall {
-            return Err(XllmError::Capability(format!(
-                "{origin}: the runtime protocol defines the reply shape of the behavior loop; only a function call loop can run without it"
-            )));
-        }
         let json = merged.json == Some(true) || merged.json_schema.is_some();
-        if json && loop_model != LoopModel::FunctionCall {
-            return Err(XllmError::Capability(format!(
-                "{origin}: a JSON reply (json / json_schema) needs loop_model function_call; a behavior loop reply is its XML step"
-            )));
-        }
+        check_hosted_loop(origin, sections, loop_model, json)?;
         let limits = RunLimits {
             max_tokens: merged.max_tokens,
             max_tool_iterations: merged
@@ -7578,8 +7709,6 @@ impl XllmTask {
             crate::runtime::open_runtime(&runtime_config, &open, &tools_cfg, deps).await?;
         let runtime_config = runtime.config();
         let runtime_descriptor = runtime.descriptor().clone();
-        let runtime_protocol =
-            build_runtime_protocol_for(&deps.host_protocol, loop_model, &tools, json);
         let mut template_env = TemplateEnv::for_new_run(
             manager
                 .runtime_info()
@@ -7587,45 +7716,29 @@ impl XllmTask {
         );
         template_env.runtime.remove("current_time");
         template_env.runtime.remove("timezone");
-        let rendered_host_system = template_env.render(host_system, &format!("host:{origin}"))?;
-        let mut appended = Vec::new();
-        if sections.capabilities {
-            appended.push(format!(
-                "## capabilities\n{}",
-                build_rules_system_text(loop_model, &tools).trim_end()
-            ));
-        }
-        if sections.cmd_manual {
-            if let Some(manual) = build_cmd_manual_system_text(&tools) {
-                appended.push(format!("## cmd_manual\n{}", manual.trim_end()));
-            }
-        }
-        if sections.runtime_protocol {
-            appended.push(format!("## runtime_protocol\n{}", runtime_protocol.trim_end()));
-        }
-        let mut system = rendered_host_system.trim_end().to_string();
-        for section in appended {
-            if !system.is_empty() {
-                system.push_str("\n\n");
-            }
-            system.push_str(&section);
-        }
-        if !system.is_empty() {
-            system.push('\n');
-        }
+        let hosted = assemble_hosted_system(
+            host_system,
+            origin,
+            &template_env,
+            sections,
+            &deps.host_protocol,
+            loop_model,
+            &tools,
+            json,
+        )?;
         let prompt = PromptPlan {
             mode: PromptMode::Custom,
             group: None,
             loop_model,
             sections: Vec::new(),
-            custom_system: Some(rendered_host_system),
+            custom_system: Some(hosted.custom_system),
             custom_system_source: Some(format!("host:{origin}")),
-            runtime_protocol,
+            runtime_protocol: hosted.runtime_protocol,
             protocol_version: RUNTIME_PROTOCOL_VERSION.into(),
-            system_prompt: system,
+            system_prompt: hosted.system_prompt,
             user_request: None,
             user_request_source: "structured".into(),
-            template_vars: template_env.used_vars(),
+            template_vars: hosted.template_vars,
             runtime_vars: manager
                 .runtime_info()
                 .ok_or_else(|| XllmError::Capability("runtime info unavailable".into()))?
@@ -7785,7 +7898,9 @@ fn restore_host_report_tool(record: &RunRecord, deps: &XllmDeps) -> XllmDeps {
 }
 
 /// Rebuild the tool set of a saved run from its recorded sources and policy
-/// (what `XllmRun::resume` does), bound to the run id.
+/// (what `XllmRun::resume` does), bound to the run id. The model is shown
+/// the specs saved in the record; a saved tool the rebuilt set cannot
+/// dispatch makes the run not resumable.
 pub async fn rebuild_toolset(
     record: &RunRecord,
     deps: &XllmDeps,
@@ -7817,6 +7932,16 @@ pub async fn rebuild_toolset(
             "saved runtime target or workdir changed".into(),
         ));
     }
+    let saved = &record.config.tools;
+    manager
+        .advertise_saved(saved.native.iter().chain(saved.actions.iter()))
+        .map_err(|tool| XllmError::NotResumable {
+            run_id: record.run_id.clone(),
+            reason: format!(
+                "saved tool `{}` ({}) is not available on this executor",
+                tool.name, tool.source
+            ),
+        })?;
     manager.bind_run_dir(
         &record.run_id,
         record
@@ -8092,6 +8217,181 @@ impl RunOutcome {
     }
 }
 
+/// `last_error.kind` / message of a run whose context does not fit after
+/// the compactions it may make: the run fails.
+const CONTEXT_CAPACITY_EXHAUSTED: (&str, &str) = (
+    "context_capacity",
+    "the task context still exceeds the model capacity after repeated compaction",
+);
+
+/// What `XllmRun::execute` does with a waist outcome ([`run_step`]).
+#[derive(Debug)]
+enum RunStep {
+    /// The reply is the result.
+    Complete { raw: String, usage: AiUsage },
+    /// A hosted behavior step submitted its final report; the host commits it.
+    HostReport { usage: AiUsage },
+    /// A hosted run hands over to another behavior.
+    Handover { target: String, usage: AiUsage },
+    /// The model yielded, or tasks of this run are still running.
+    Wait {
+        kind: &'static str,
+        message: String,
+        condition: String,
+        usage: AiUsage,
+    },
+    LimitReached { reason: String, usage: AiUsage },
+    /// `keep_context`: the error left the context valid (a runtime failure).
+    Error {
+        error: RunErrorRecord,
+        keep_context: bool,
+        usage: AiUsage,
+    },
+    Interrupted { reason: String, usage: AiUsage },
+    /// The context does not fit: compact it and continue.
+    Compact {
+        snapshot: LLMContextSnapshot,
+        accumulated: Vec<AiMessage>,
+        usage: AiUsage,
+    },
+}
+
+impl RunStep {
+    /// The status the run records (still `running` while compacting).
+    fn status(&self) -> RunStatus {
+        match self {
+            RunStep::Complete { .. } => RunStatus::Completed,
+            RunStep::HostReport { .. } | RunStep::Handover { .. } | RunStep::Wait { .. } => {
+                RunStatus::Paused
+            }
+            RunStep::LimitReached { .. } => RunStatus::LimitReached,
+            RunStep::Error { error, .. } => {
+                if error.recoverable {
+                    RunStatus::Paused
+                } else {
+                    RunStatus::Failed
+                }
+            }
+            RunStep::Interrupted { .. } => RunStatus::Interrupted,
+            RunStep::Compact { .. } => RunStatus::Running,
+        }
+    }
+}
+
+/// How a run ends a command on a waist outcome. `hosted`: the run has a
+/// host (`RunRecord.host`); `running_tasks`: tasks of this run still running
+/// when a function call reply ended it.
+fn run_step(
+    outcome: LLMContextOutcome,
+    hosted: bool,
+    running_tasks: &[String],
+    limits: &RunLimits,
+    provider: &ProviderConfig,
+) -> RunStep {
+    match outcome {
+        LLMContextOutcome::Done {
+            output,
+            usage,
+            response,
+            behavior_result,
+            ..
+        } => {
+            if hosted && behavior_result.as_ref().is_some_and(|result| result.report_end) {
+                return RunStep::HostReport { usage };
+            }
+            // A hosted run that hands over to another behavior is not
+            // finished: it yields at the hand-over point and its host
+            // session commits the transfer.
+            let target = behavior_result
+                .as_ref()
+                .and_then(|b| b.next_behavior.clone())
+                .filter(|b| is_handover_target(b));
+            if let (Some(target), true) = (target, hosted) {
+                return RunStep::Handover { target, usage };
+            }
+            // The loop never waits (freeze TODO F17/F18): a behavior step
+            // that yields, or a reply while tasks of this run are still
+            // running, pauses the run; `resume` (with a message, when there
+            // is something to say) continues the same snapshot.
+            let yielded = behavior_result
+                .as_ref()
+                .is_some_and(|b| !b.report_end && b.next_behavior.is_none());
+            if yielded {
+                return RunStep::Wait {
+                    kind: "yield",
+                    message: behavior_result
+                        .as_ref()
+                        .and_then(|b| b.self_report.clone())
+                        .unwrap_or_else(|| response.message.text_content()),
+                    condition:
+                        "the model stopped to wait for new input; resume with a message to continue"
+                            .to_string(),
+                    usage,
+                };
+            }
+            if !running_tasks.is_empty() {
+                return RunStep::Wait {
+                    kind: "tasks_running",
+                    message: response.message.text_content(),
+                    condition: format!(
+                        "tasks {} are still running; resume once they ended (optionally with a message)",
+                        running_tasks.join(", ")
+                    ),
+                    usage,
+                };
+            }
+            let raw = match &output {
+                ContextOutput::Json { content } => {
+                    let text = response.message.text_content();
+                    if text.trim().is_empty() {
+                        content.to_string()
+                    } else {
+                        text
+                    }
+                }
+                ContextOutput::Text { .. } | ContextOutput::Invalid { .. } => {
+                    response.message.text_content()
+                }
+            };
+            RunStep::Complete { raw, usage }
+        }
+        LLMContextOutcome::BudgetExhausted { which, usage, .. } => RunStep::LimitReached {
+            reason: match which {
+                BudgetKind::ToolIterations => format!(
+                    "tool iteration limit ({}) reached",
+                    limits.max_tool_iterations
+                ),
+                BudgetKind::Wallclock => format!(
+                    "total execution time limit ({}s) reached",
+                    limits.timeout_secs
+                ),
+                BudgetKind::Tokens => "token budget exhausted".to_string(),
+                BudgetKind::CostUnits => "cost budget exhausted".to_string(),
+            },
+            usage,
+        },
+        LLMContextOutcome::Error { error, usage, .. } => RunStep::Error {
+            keep_context: error.source() == ErrorSource::Runtime,
+            error: XllmRun::classify_error(&error, provider),
+            usage,
+        },
+        LLMContextOutcome::Interrupted { reason, usage, .. }
+        | LLMContextOutcome::Settled { reason, usage, .. } => {
+            RunStep::Interrupted { reason, usage }
+        }
+        LLMContextOutcome::ContextLimitReached {
+            accumulated,
+            snapshot,
+            usage,
+            ..
+        } => RunStep::Compact {
+            snapshot,
+            accumulated,
+            usage,
+        },
+    }
+}
+
 /// resume 时允许显式调整的执行限制（只对非终态任务生效）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResumeLimits {
@@ -8243,7 +8543,13 @@ impl XllmRun {
         let mut rec = self.record.lock().expect("record lock");
         f(&mut rec);
         rec.updated_at_ms = now_ms();
-        rec.artifacts = self.manager.artifacts();
+        // The manager only knows this segment's writes; earlier segments'
+        // stay in the record.
+        for a in self.manager.artifacts() {
+            if !rec.artifacts.contains(&a) {
+                rec.artifacts.push(a);
+            }
+        }
         rec.hints_once = self
             .manager
             .hint_ledger()
@@ -8731,47 +9037,30 @@ impl XllmRun {
                 Some("the model request timed out; resume to retry it".into()),
             ),
             LLMComputeError::Cancelled => (true, "cancelled", Some("resume to retry".into())),
-            LLMComputeError::Provider { failure, message } => match failure {
+            LLMComputeError::Provider { failure, .. } => match failure {
                 ProviderFailure::Transient => (
                     true,
                     "provider_transient",
                     Some("wait for the model service to recover, then resume".into()),
                 ),
-                ProviderFailure::Permanent => {
-                    let m = message.to_ascii_lowercase();
-                    let auth = [
-                        "token",
-                        "unauthorized",
-                        "401",
-                        "403",
-                        "auth",
-                        "expired",
-                        "api key",
-                        "permission",
-                        "credential",
-                    ]
-                    .iter()
-                    .any(|k| m.contains(k));
-                    if auth {
-                        let src = provider
-                            .session_token
-                            .as_ref()
-                            .or(provider.api_key.as_ref())
-                            .map(|r| r.describe())
-                            .unwrap_or_else(|| "the current identity".into());
-                        (
-                            true,
-                            "credentials",
-                            Some(format!(
-                                "fix the credential referenced by {src}, then resume"
-                            )),
-                        )
-                    } else {
-                        (false, "provider_permanent", None)
-                    }
-                }
+                ProviderFailure::Permanent => (false, "provider_permanent", None),
                 ProviderFailure::Unknown => (false, "provider_error", None),
                 ProviderFailure::ContextLimit => (false, "context_capacity", None),
+                ProviderFailure::Refused { code } if code == REFUSED_CREDENTIALS => {
+                    let src = provider
+                        .session_token
+                        .as_ref()
+                        .or(provider.api_key.as_ref())
+                        .map(|r| r.describe())
+                        .unwrap_or_else(|| "the current identity".into());
+                    (
+                        true,
+                        REFUSED_CREDENTIALS,
+                        Some(format!(
+                            "fix the credential referenced by {src}, then resume"
+                        )),
+                    )
+                }
                 ProviderFailure::Refused { code } => (
                     false,
                     code.as_str(),
@@ -9140,155 +9429,95 @@ impl XllmRun {
                 });
                 return Ok(RunOutcome::Paused(self.record()));
             }
-            match outcome {
+            // Tasks of this run still running when a function call reply
+            // ended it (a behavior step never waits on them here).
+            let running: Vec<String> = match &outcome {
                 LLMContextOutcome::Done {
-                    output,
-                    usage,
-                    response,
-                    behavior_result,
+                    behavior_result: None,
                     ..
-                } => {
-                    if self.record().host.is_some()
-                        && behavior_result
-                            .as_ref()
-                            .is_some_and(|result| result.report_end)
-                    {
-                        let calls = self.llm.calls();
-                        self.update(|record| {
-                            record.status = RunStatus::Paused;
-                            record.last_error = None;
-                            record.usage.main = Some(usage);
-                            record.usage.llm_requests += calls;
-                        })?;
-                        return Ok(RunOutcome::Paused(self.record()));
-                    }
-                    // A hosted run that hands over to another behavior is not
-                    // finished: it yields at the hand-over point and its host
-                    // session commits the transfer.
-                    let target = behavior_result
-                        .as_ref()
-                        .and_then(|b| b.next_behavior.clone())
-                        .filter(|b| is_handover_target(b));
-                    if let (Some(target), true) = (target, self.record().host.is_some()) {
-                        let calls = self.llm.calls();
-                        self.update(|r| {
-                            r.status = RunStatus::Paused;
-                            r.last_error = None;
-                            r.usage.main = Some(usage);
-                            r.usage.llm_requests += calls;
-                            r.handover = Some(RunHandover {
-                                next_behavior: target,
-                                at_ms: now_ms(),
-                            });
-                        })?;
-                        return Ok(RunOutcome::Paused(self.record()));
-                    }
-                    // The loop never waits (freeze TODO F17/F18): a behavior
-                    // step that yields, or a reply while tasks of this run
-                    // are still running, pauses the run; `resume` (with a
-                    // message, when there is something to say) continues
-                    // the same snapshot.
-                    let yielded = behavior_result
-                        .as_ref()
-                        .is_some_and(|b| !b.report_end && b.next_behavior.is_none());
-                    let running: Vec<String> = if behavior_result.is_none() {
-                        self.manager
-                            .resolver()
-                            .active()
-                            .await
-                            .into_iter()
-                            .filter(|t| t.status == "running")
-                            .map(|t| t.task_id)
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                    if yielded || !running.is_empty() {
-                        // The run waits for them: they outlive this process.
-                        self.manager.tasks().release_running().await;
-                        self.ctx = Some(ctx);
-                        let calls = self.llm.calls();
-                        let (kind, message, condition) = if yielded {
-                            (
-                                "yield",
-                                behavior_result
-                                    .as_ref()
-                                    .and_then(|b| b.self_report.clone())
-                                    .unwrap_or_else(|| response.message.text_content()),
-                                "the model stopped to wait for new input; resume with a message to continue"
-                                    .to_string(),
-                            )
-                        } else {
-                            (
-                                "tasks_running",
-                                response.message.text_content(),
-                                format!(
-                                    "tasks {} are still running; resume once they ended (optionally with a message)",
-                                    running.join(", ")
-                                ),
-                            )
-                        };
-                        self.update(|r| {
-                            r.status = RunStatus::Paused;
-                            r.usage.main = Some(usage);
-                            r.usage.llm_requests += calls;
-                            r.last_error = Some(RunErrorRecord {
-                                phase: "model".into(),
-                                kind: kind.into(),
-                                message,
-                                recoverable: true,
-                                condition: Some(condition),
-                                at_ms: now_ms(),
-                            });
-                        })?;
-                        return Ok(RunOutcome::Paused(self.record()));
-                    }
-                    let raw = match &output {
-                        ContextOutput::Json { content } => {
-                            let text = response.message.text_content();
-                            if text.trim().is_empty() {
-                                content.to_string()
-                            } else {
-                                text
-                            }
-                        }
-                        ContextOutput::Text { .. } | ContextOutput::Invalid { .. } => {
-                            response.message.text_content()
-                        }
-                    };
-                    return self.finish_with_response(raw, usage);
-                }
-                LLMContextOutcome::BudgetExhausted { which, usage, .. } => {
+                } => self
+                    .manager
+                    .resolver()
+                    .active()
+                    .await
+                    .into_iter()
+                    .filter(|t| t.status == "running")
+                    .map(|t| t.task_id)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let step = run_step(
+                outcome,
+                self.record().host.is_some(),
+                &running,
+                &self.record().config.limits,
+                &provider,
+            );
+            let status = step.status();
+            match step {
+                RunStep::Complete { raw, usage } => return self.finish_with_response(raw, usage),
+                RunStep::HostReport { usage } => {
                     let calls = self.llm.calls();
-                    let reason = match which {
-                        BudgetKind::ToolIterations => format!(
-                            "tool iteration limit ({}) reached",
-                            self.record().config.limits.max_tool_iterations
-                        ),
-                        BudgetKind::Wallclock => format!(
-                            "total execution time limit ({}s) reached",
-                            self.record().config.limits.timeout_secs
-                        ),
-                        BudgetKind::Tokens => "token budget exhausted".to_string(),
-                        BudgetKind::CostUnits => "cost budget exhausted".to_string(),
-                    };
+                    self.update(|record| {
+                        record.status = status;
+                        record.last_error = None;
+                        record.usage.main = Some(usage);
+                        record.usage.llm_requests += calls;
+                    })?;
+                }
+                RunStep::Handover { target, usage } => {
+                    let calls = self.llm.calls();
                     self.update(|r| {
-                        r.status = RunStatus::LimitReached;
+                        r.status = status;
+                        r.last_error = None;
+                        r.usage.main = Some(usage);
+                        r.usage.llm_requests += calls;
+                        r.handover = Some(RunHandover {
+                            next_behavior: target,
+                            at_ms: now_ms(),
+                        });
+                    })?;
+                }
+                RunStep::Wait {
+                    kind,
+                    message,
+                    condition,
+                    usage,
+                } => {
+                    // The run waits for them: they outlive this process.
+                    self.manager.tasks().release_running().await;
+                    self.ctx = Some(ctx);
+                    let calls = self.llm.calls();
+                    self.update(|r| {
+                        r.status = status;
+                        r.usage.main = Some(usage);
+                        r.usage.llm_requests += calls;
+                        r.last_error = Some(RunErrorRecord {
+                            phase: "model".into(),
+                            kind: kind.into(),
+                            message,
+                            recoverable: true,
+                            condition: Some(condition),
+                            at_ms: now_ms(),
+                        });
+                    })?;
+                }
+                RunStep::LimitReached { reason, usage } => {
+                    let calls = self.llm.calls();
+                    self.update(|r| {
+                        r.status = status;
                         r.usage.main = Some(usage);
                         r.usage.llm_requests += calls;
                         r.limit_reason = Some(reason);
                     })?;
-                    return Ok(RunOutcome::LimitReached(self.record()));
                 }
-                LLMContextOutcome::Error { error, usage, .. } => {
+                RunStep::Error {
+                    error,
+                    keep_context,
+                    usage,
+                } => {
                     let calls = self.llm.calls();
-                    let err = Self::classify_error(&error, &provider);
-                    let status = if err.recoverable {
-                        RunStatus::Paused
-                    } else {
-                        RunStatus::Failed
-                    };
-                    if error.source() == ErrorSource::Runtime {
+                    if keep_context {
                         // 上下文仍有效；本进程不再继续，交给 resume。
                         self.ctx = Some(ctx);
                     }
@@ -9296,26 +9525,22 @@ impl XllmRun {
                         r.status = status;
                         r.usage.main = Some(usage);
                         r.usage.llm_requests += calls;
-                        r.last_error = Some(err);
+                        r.last_error = Some(error);
                     })?;
-                    return Ok(RunOutcome::from_record(self.record()));
                 }
-                LLMContextOutcome::Interrupted { reason, usage, .. }
-                | LLMContextOutcome::Settled { reason, usage, .. } => {
+                RunStep::Interrupted { reason, usage } => {
                     let calls = self.llm.calls();
                     self.update(|r| {
-                        r.status = RunStatus::Interrupted;
+                        r.status = status;
                         r.usage.main = Some(usage);
                         r.usage.llm_requests += calls;
                         r.interrupt_reason = Some(reason);
                     })?;
-                    return Ok(RunOutcome::Interrupted(self.record()));
                 }
-                LLMContextOutcome::ContextLimitReached {
-                    accumulated,
+                RunStep::Compact {
                     snapshot,
+                    accumulated,
                     usage,
-                    ..
                 } => {
                     if let Some(outcome) =
                         self.compact_context(snapshot, accumulated, usage).await?
@@ -9325,6 +9550,7 @@ impl XllmRun {
                     continue;
                 }
             }
+            return Ok(RunOutcome::from_record(self.record()));
         }
     }
 
@@ -9362,12 +9588,8 @@ impl XllmRun {
             Ok(Some(RunOutcome::Failed(this.record())))
         };
         if self.record().compactions >= 3 {
-            return fail(
-                self,
-                "context_capacity",
-                "the task context still exceeds the model capacity after repeated compaction"
-                    .into(),
-            );
+            let (kind, message) = CONTEXT_CAPACITY_EXHAUSTED;
+            return fail(self, kind, message.into());
         }
         let compressor = LlmSummarizeCompressor::new(
             self.waist_deps.clone().into_traditional(),
@@ -9379,13 +9601,7 @@ impl XllmRun {
             .await
         {
             Ok(r) => r,
-            Err(e) => {
-                return fail(
-                    self,
-                    "context_compaction",
-                    format!("context compaction failed: {e}"),
-                )
-            }
+            Err(e) => return fail(self, "context_compaction", e.to_string()),
         };
         // Behavior runs fold the materialized history into the input; the
         // inner transcript of the step in progress is kept by the waist.
@@ -9611,6 +9827,10 @@ pub fn build_result_view(
 // =========================================================================
 // 测试
 // =========================================================================
+
+#[cfg(test)]
+#[path = "xllm_vectors.rs"]
+mod vectors;
 
 #[cfg(test)]
 mod behavior_protocol_tests {
@@ -9925,6 +10145,7 @@ mod tests {
         model: String,
         messages: Vec<AiMessage>,
         tool_names: Vec<String>,
+        tool_specs: Vec<ToolSpecLite>,
         allow_tool_calls: bool,
         force_json: bool,
     }
@@ -9958,6 +10179,7 @@ mod tests {
                 model: req.model_alias.clone(),
                 messages: req.messages.clone(),
                 tool_names: req.tool_specs.iter().map(|t| t.name.clone()).collect(),
+                tool_specs: req.tool_specs.clone(),
                 allow_tool_calls: req.allow_tool_calls,
                 force_json: req.force_json,
             });
@@ -11500,29 +11722,58 @@ there]]></write_file>
     #[tokio::test]
     async fn permanent_and_credential_errors_are_classified() {
         let env = Env::new();
-        let llm = ScriptedLlm::new(vec![Err(LLMComputeError::provider(
-            ProviderFailure::Permanent,
-            "model xyz not found",
-        ))]);
-        let o = env
-            .run(TaskInput::question("q"), env.overrides(), llm)
-            .await
-            .unwrap();
-        assert!(matches!(o, RunOutcome::Failed(_)));
-        assert!(!o.record().last_error.as_ref().unwrap().recoverable);
+        for message in ["model xyz not found", "max_tokens exceeds the model limit"] {
+            let llm = ScriptedLlm::new(vec![Err(LLMComputeError::provider(
+                ProviderFailure::Permanent,
+                message,
+            ))]);
+            let o = env
+                .run(TaskInput::question("q"), env.overrides(), llm)
+                .await
+                .unwrap();
+            assert!(matches!(o, RunOutcome::Failed(_)), "{message}");
+            let e = o.record().last_error.clone().unwrap();
+            assert!(!e.recoverable);
+            assert_eq!(e.kind, "provider_permanent");
+        }
 
-        let llm = ScriptedLlm::new(vec![Err(LLMComputeError::provider(
-            ProviderFailure::Permanent,
-            "invalid token: expired",
-        ))]);
-        let o = env
-            .run(TaskInput::question("q"), env.overrides(), llm)
-            .await
-            .unwrap();
-        assert!(matches!(o, RunOutcome::Paused(_)));
-        let e = o.record().last_error.clone().unwrap();
-        assert_eq!(e.kind, "credentials");
-        assert!(e.condition.unwrap().contains("credential"));
+        for rpc in [
+            RPCErrors::TokenExpired("expired".into()),
+            RPCErrors::InvalidToken("bad signature".into()),
+            RPCErrors::NoPermission("denied".into()),
+            RPCErrors::Detailed(::kRPC::RPCErrorDetail::new(
+                "http_error",
+                "rpc call error: 401 Unauthorized",
+                Some(json!({"status": 401})),
+            )),
+            RPCErrors::Detailed(::kRPC::RPCErrorDetail::new(
+                "http_error",
+                "rpc call error: 403 Forbidden",
+                Some(json!({"status": 403})),
+            )),
+        ] {
+            let error = provider_error_from_rpc("aicc helper.llm_chat failed", rpc);
+            assert!(
+                matches!(
+                    &error,
+                    LLMComputeError::Provider {
+                        failure: ProviderFailure::Refused { code },
+                        ..
+                    } if code == REFUSED_CREDENTIALS
+                ),
+                "{error:?}"
+            );
+            let llm = ScriptedLlm::new(vec![Err(error)]);
+            let o = env
+                .run(TaskInput::question("q"), env.overrides(), llm)
+                .await
+                .unwrap();
+            assert!(matches!(o, RunOutcome::Paused(_)));
+            let e = o.record().last_error.clone().unwrap();
+            assert!(e.recoverable);
+            assert_eq!(e.kind, REFUSED_CREDENTIALS);
+            assert!(e.condition.unwrap().contains("credential"));
+        }
 
         let llm = ScriptedLlm::new(vec![Err(LLMComputeError::provider(
             ProviderFailure::Unknown,
@@ -12362,6 +12613,93 @@ there]]></write_file>
         }
     }
 
+    /// Resume (freeze TODO F6): the model is shown the tool specs saved
+    /// in run.json, not the re-expanded ones; a saved tool the executor
+    /// cannot dispatch makes the run not resumable.
+    #[tokio::test]
+    async fn resume_advertises_the_saved_tool_specs() {
+        let description = |req: &SeenRequest| {
+            req.tool_specs
+                .iter()
+                .find(|s| s.name == "read_file")
+                .map(|s| s.description.clone())
+                .expect("read_file advertised")
+        };
+        async fn paused(env: &Env) -> (RunRecord, SeenRequest) {
+            let overrides = TaskOverrides {
+                tools: Some(true),
+                ..env.overrides()
+            };
+            let llm = ScriptedLlm::new(vec![Err(LLMComputeError::provider(
+                ProviderFailure::Transient,
+                "down",
+            ))]);
+            let o = env
+                .run(TaskInput::question("q"), overrides, llm.clone())
+                .await
+                .unwrap();
+            assert!(matches!(o, RunOutcome::Paused(_)));
+            (o.record().clone(), llm.seen()[0].clone())
+        }
+
+        let env = Env::new();
+        let (mut record, first) = paused(&env).await;
+        let store = env.store();
+        record
+            .config
+            .tools
+            .native
+            .iter_mut()
+            .find(|t| t.name == "read_file")
+            .unwrap()
+            .description = "read_file as the run was started".into();
+        store.write_record(&record).unwrap();
+        let llm = ScriptedLlm::new(vec![text("done")]);
+        let ResumeStart::Run(mut run) = XllmRun::resume(
+            &store,
+            Some(&record.run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(llm.clone()),
+        )
+        .await
+        .unwrap() else {
+            panic!("expected run")
+        };
+        assert!(matches!(run.execute().await.unwrap(), RunOutcome::Completed(_)));
+        assert_ne!(description(&first), "read_file as the run was started");
+        assert_eq!(description(&llm.seen()[0]), "read_file as the run was started");
+        assert_eq!(llm.seen()[0].tool_names, first.tool_names);
+        drop(run);
+
+        let env = Env::new();
+        let (mut record, _) = paused(&env).await;
+        let store = env.store();
+        record
+            .config
+            .tools
+            .native
+            .iter_mut()
+            .find(|t| t.name == "read_file")
+            .unwrap()
+            .name = "read_file_v0".into();
+        store.write_record(&record).unwrap();
+        let err = XllmRun::resume(
+            &store,
+            Some(&record.run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(ScriptedLlm::new(vec![])),
+        )
+        .await
+        .err()
+        .expect("not resumable");
+        assert!(
+            matches!(&err, XllmError::NotResumable { reason, .. } if reason.contains("read_file_v0")),
+            "{err}"
+        );
+    }
+
     #[test]
     fn xml_scanner_handles_nesting_cdata_and_self_closing() {
         let els = scan_xml_elements(
@@ -12863,6 +13201,114 @@ there]]></write_file>
         manager.set_recovering("c3", "unknown".into());
         let obs = manager.call_tool_t(read).await.unwrap();
         assert!(matches!(obs, Observation::Success { .. }), "idempotent: {obs:?}");
+    }
+
+    struct WaitDeadlines(StdMutex<Vec<u64>>);
+
+    #[async_trait]
+    impl RunningTaskResolver for WaitDeadlines {
+        async fn state(&self, _: &str) -> TaskState {
+            TaskState::Running {
+                brief: "remote job".into(),
+                elapsed_ms: 0,
+                output_tail: String::new(),
+                cancellable: false,
+            }
+        }
+
+        async fn wait(&self, task_id: &str, until_ms: Option<u64>) -> TaskState {
+            self.0.lock().unwrap().push(until_ms.expect("wait deadline"));
+            self.state(task_id).await
+        }
+
+        async fn cancel(
+            &self,
+            task_id: &str,
+        ) -> Result<TaskState, crate::task_model::CancelUnsupported> {
+            Err(crate::task_model::CancelUnsupported {
+                task_id: task_id.into(),
+            })
+        }
+
+        async fn active(&self) -> Vec<crate::task_model::TaskBrief> {
+            Vec::new()
+        }
+    }
+
+    struct PendingTool;
+
+    #[async_trait]
+    impl AgentTool for PendingTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "pending_tool".into(),
+                description: "hands its work to a task".into(),
+                args_schema: json!({"type": "object"}),
+                output_schema: json!({"type": "object"}),
+                usage: None,
+            }
+        }
+
+        fn calling(&self) -> crate::CallingConventions {
+            crate::CallingConventions::ALL
+        }
+
+        async fn call(
+            &self,
+            _: &SessionRuntimeContext,
+            args: Value,
+        ) -> Result<AgentToolResult, AgentToolError> {
+            let mut res = AgentToolResult::from_details(json!({}))
+                .with_status(AgentToolStatus::Pending)
+                .with_task_id("t-remote");
+            if let Some(secs) = args.get("check_after").and_then(Value::as_u64) {
+                res = res.with_check_after(secs);
+            }
+            Ok(res)
+        }
+    }
+
+    /// `check_after` only shortens the in-call wait: the budget caps a
+    /// larger one, a smaller one takes effect, none waits the budget.
+    #[tokio::test]
+    async fn check_after_takes_the_minimum_with_the_wait_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let deadlines = Arc::new(WaitDeadlines(StdMutex::new(Vec::new())));
+        let mut manager = XllmToolManager::with_run_binding(
+            dir.path().to_path_buf(),
+            "run-test",
+            LoopModel::FunctionCall,
+            new_run_binding_slot(),
+            InProcessTaskManager::new(),
+            Some(deadlines.clone()),
+        );
+        manager.set_task_wait_ms(10_000);
+        manager
+            .register(Arc::new(PendingTool), "name:pending_tool")
+            .unwrap();
+        for (check_after, expected_ms) in [(Some(60), 10_000), (Some(2), 2_000), (None, 10_000)] {
+            let mut args = HashMap::new();
+            if let Some(secs) = check_after {
+                args.insert("check_after".to_string(), json!(secs));
+            }
+            let before = crate::now_ms();
+            let obs = manager
+                .call_tool_t(AiToolCall {
+                    name: "pending_tool".into(),
+                    args,
+                    call_id: "c1".into(),
+                })
+                .await
+                .unwrap();
+            let after = crate::now_ms();
+            assert!(matches!(obs, Observation::Success { .. }), "{obs:?}");
+            let until = deadlines.0.lock().unwrap().pop().unwrap();
+            assert!(
+                until >= before + expected_ms && until <= after + expected_ms,
+                "check_after {check_after:?}: waited {} ms",
+                until - before
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -13548,6 +13994,116 @@ there]]></write_file>
     }
 
     #[tokio::test]
+    async fn a_failing_compaction_reports_its_error_once() {
+        let env = Env::new();
+        let llm = ScriptedLlm::new(vec![Err(LLMComputeError::provider(
+            ProviderFailure::Transient,
+            "aicc down",
+        ))]);
+        let o = env
+            .run(TaskInput::question("hello"), env.overrides(), llm)
+            .await
+            .unwrap();
+        let run_id = o.record().run_id.clone();
+        let store = env.store();
+        let mut limited = store
+            .get_snapshot(&run_id, o.record().latest_snapshot_idx.unwrap())
+            .unwrap();
+        limited
+            .state
+            .accumulated
+            .push(AiMessage::text(AiRole::User, "material ".repeat(40_000)));
+        limited.state.suspended = Some(llm_context::state::Suspension {
+            which: llm_context::outcome::ContextLimitKind::ProviderRefused,
+            estimated_tokens: None,
+            at_ms: now_ms(),
+        });
+        let idx = store.put_snapshot(&run_id, &limited).unwrap();
+        let mut rec = store.read_record(&run_id).unwrap();
+        rec.latest_snapshot_idx = Some(idx);
+        store.write_record(&rec).unwrap();
+        let summarizer = ScriptedLlm::new(vec![Err(LLMComputeError::provider(
+            ProviderFailure::Transient,
+            "summarizer down",
+        ))]);
+        let start = XllmRun::resume(
+            &store,
+            Some(&run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(summarizer.clone()),
+        )
+        .await
+        .unwrap();
+        let ResumeStart::Run(mut run) = start else {
+            panic!("expected run")
+        };
+        let o = run.execute().await.unwrap();
+        assert!(matches!(o, RunOutcome::Failed(_)), "{:?}", o.status());
+        let err = o.record().last_error.clone().unwrap();
+        assert_eq!(err.kind, "context_compaction");
+        assert_eq!(
+            err.message.matches("context compaction failed").count(),
+            1,
+            "{}",
+            err.message
+        );
+        assert!(err.message.contains("summarizer down"), "{}", err.message);
+        assert_eq!(summarizer.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn resume_keeps_the_artifacts_of_earlier_segments() {
+        let env = Env::new();
+        let overrides = TaskOverrides {
+            tools: Some(true),
+            ..env.overrides()
+        };
+        let llm = ScriptedLlm::new(vec![
+            tool_call("write_file", json!({"path":"a.txt","content":"a"}), "c1"),
+            Err(LLMComputeError::provider(
+                ProviderFailure::Transient,
+                "aicc down",
+            )),
+        ]);
+        let o = env
+            .run(TaskInput::question("write two files"), overrides, llm)
+            .await
+            .unwrap();
+        assert!(matches!(o, RunOutcome::Paused(_)), "{:?}", o.status());
+        assert_eq!(o.record().artifacts.len(), 1);
+        let llm = ScriptedLlm::new(vec![
+            tool_call("write_file", json!({"path":"b.txt","content":"b"}), "c2"),
+            text("both written"),
+        ]);
+        let start = XllmRun::resume(
+            &env.store(),
+            Some(&o.record().run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(llm),
+        )
+        .await
+        .unwrap();
+        let ResumeStart::Run(mut run) = start else {
+            panic!("expected run")
+        };
+        let done = run.execute().await.unwrap();
+        assert!(
+            matches!(done, RunOutcome::Completed(_)),
+            "{:?}",
+            done.status()
+        );
+        let names: Vec<&str> = done
+            .record()
+            .artifacts
+            .iter()
+            .map(|a| a.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(names, ["a.txt", "b.txt"]);
+    }
+
+    #[tokio::test]
     async fn host_wrap_up_tools_round_trip_through_the_run_snapshot() {
         // A host-assembled run whose host set wrap-up tools: the persisted
         // request carries them and xllm, resuming the run, honors them.
@@ -13652,30 +14208,51 @@ there]]></write_file>
         format!("http://{addr}/v1")
     }
 
+    async fn openai_infer_err(base: String) -> LLMComputeError {
+        let client = OpenAiLlmClient::new(Some(base), Some("k".into()), BTreeMap::new()).unwrap();
+        client
+            .infer(LlmInferenceRequest {
+                trace_id: None,
+                messages: vec![AiMessage::text(AiRole::User, "hi")],
+                model_alias: "m".into(),
+                fallbacks: Vec::new(),
+                temperature: None,
+                max_completion_tokens: None,
+                force_json: false,
+                json_schema: None,
+                provider_options: None,
+                disable_capabilities: Vec::new(),
+                tool_specs: Vec::new(),
+                allow_tool_calls: false,
+                abort: llm_context::InferenceAbortToken::noop(),
+            })
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn openai_401_403_are_credential_refusals() {
+        for status in [401, 403] {
+            let err = openai_infer_err(
+                serve_status(status, r#"{"error":{"message":"invalid api key"}}"#).await,
+            )
+            .await;
+            assert!(
+                matches!(
+                    &err,
+                    LLMComputeError::Provider {
+                        failure: ProviderFailure::Refused { code },
+                        ..
+                    } if code == REFUSED_CREDENTIALS
+                ),
+                "{status}: {err:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn openai_context_length_code_is_a_structured_context_limit() {
-        let infer = |base: String| async move {
-            let client =
-                OpenAiLlmClient::new(Some(base), Some("k".into()), BTreeMap::new()).unwrap();
-            client
-                .infer(LlmInferenceRequest {
-                    trace_id: None,
-                    messages: vec![AiMessage::text(AiRole::User, "hi")],
-                    model_alias: "m".into(),
-                    fallbacks: Vec::new(),
-                    temperature: None,
-                    max_completion_tokens: None,
-                    force_json: false,
-                    json_schema: None,
-                    provider_options: None,
-                    disable_capabilities: Vec::new(),
-                    tool_specs: Vec::new(),
-                    allow_tool_calls: false,
-                    abort: llm_context::InferenceAbortToken::noop(),
-                })
-                .await
-                .unwrap_err()
-        };
+        let infer = openai_infer_err;
         let err = infer(
             serve_status(
                 400,

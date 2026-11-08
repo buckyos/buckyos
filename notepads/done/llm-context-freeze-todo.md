@@ -2,7 +2,7 @@
 
 日期：2026-11-01
 
-状态：**§6 第 1–4 步已实施（2026-11-01，未提交），xllm 已在本机 DV Zone 的 AICC 上验收（§8.4）；agent-session 的重构与 DV 移到 [Agent Session 全异步 task 化 TODO](./opendan-agent-session-async-task-todo.md)（用户 11-01 裁决）；第 5 步（F11、F6）按计划留作后续。** F1–F24 全部已定。历史：2026-11-01 第二轮讨论补了 §2.4、§3.6–§3.8 和 F9–F11（用户描述意图，Claude 按方案回写，待用户 review）。2026-11-01 第三轮：**F2 裁决为 B（删掉挂起原语）**，补了原则 8、§3.2 的 B 方案细节和 F12；同日用户提出 runtime 预设想法，写成 §3.9 + F13（Claude 按用户口述回写，待 review）。2026-11-01 第四轮：Claude 对照源码 review，修正了三处事实（§2.4 两个钩子并非重复、§3.2.1 `subctx:` 不是子 session、opendan 的等待预算），补了"再删清单"（§3.10）、F9–F11 的陷阱、实施顺序（§6），新增 F14–F16 待裁决。2026-11-01 第六轮：用户倾向 **ask-user 一般化为标准异步 function call**（§3.2.1，F20）：问题是 Zone TaskMgr 上的 `human.input/v1` 任务，xllm 这种在调用内等的 CLI 也经 notify 系统拿到答案；F14 并入 F18，F7 提前为前置。2026-11-01 第七轮：F20 裁决一般化；按双中立扫描 waist 公开面写成 §3.11，**F21–F24 用户全部按建议裁决**（删无使用方模块、`Observation.host` 不透明、msg_parser / prompt_engine / xml_util 搬出、RefusalKind / ContextOwnerRef / report_artifacts 改型）。待裁决只剩 F15、F16。2026-11-01 第五轮：两种 loop 的结束状态与续接（原则 9、§3.2.2、F17–F19、§3.10 增补、原则 10 串行派发；Claude 按用户口述回写，待 review）。
+状态：**§6 第 1–4 步已实施（2026-11-01，未提交），xllm 已在本机 DV Zone 的 AICC 上验收（§8.4）；agent-session 的重构与 DV 移到 [Agent Session 全异步 task 化 TODO](./opendan-agent-session-async-task-todo.md)（用户 11-01 裁决）；第 5 步（F11、F6）都已落地：F11 在 `5184e1947`，F6 在 2026-11-07（§8.3）。** F1–F24 全部已定。历史：2026-11-01 第二轮讨论补了 §2.4、§3.6–§3.8 和 F9–F11（用户描述意图，Claude 按方案回写，待用户 review）。2026-11-01 第三轮：**F2 裁决为 B（删掉挂起原语）**，补了原则 8、§3.2 的 B 方案细节和 F12；同日用户提出 runtime 预设想法，写成 §3.9 + F13（Claude 按用户口述回写，待 review）。2026-11-01 第四轮：Claude 对照源码 review，修正了三处事实（§2.4 两个钩子并非重复、§3.2.1 `subctx:` 不是子 session、opendan 的等待预算），补了"再删清单"（§3.10）、F9–F11 的陷阱、实施顺序（§6），新增 F14–F16 待裁决。2026-11-01 第六轮：用户倾向 **ask-user 一般化为标准异步 function call**（§3.2.1，F20）：问题是 Zone TaskMgr 上的 `human.input/v1` 任务，xllm 这种在调用内等的 CLI 也经 notify 系统拿到答案；F14 并入 F18，F7 提前为前置。2026-11-01 第七轮：F20 裁决一般化；按双中立扫描 waist 公开面写成 §3.11，**F21–F24 用户全部按建议裁决**（删无使用方模块、`Observation.host` 不透明、msg_parser / prompt_engine / xml_util 搬出、RefusalKind / ContextOwnerRef / report_artifacts 改型）。待裁决只剩 F15、F16。2026-11-01 第五轮：两种 loop 的结束状态与续接（原则 9、§3.2.2、F17–F19、§3.10 增补、原则 10 串行派发；Claude 按用户口述回写，待 review）。
 
 背景：LLM Context 的设计准备冻结，并用另一种语言（TypeScript，见 [xllm TS 运行时 TODO](../xllm-ts-runtime-todo.md)）再实现一遍。冻结之前先把 llm_context 这一层削薄：冻结的东西越少，第二份实现越容易对齐，以后的改动也越少碰到破坏性变更。
 
@@ -344,14 +344,14 @@ B 之后还能顺手拿掉的，全部是净删除：
 
 ## 4. 冻结前要修的已知出入
 
-- **工具 spec 不对账。** `rebuild_toolset` 把重新展开的工具丢掉了（`_eff`，xllm.rs:7608）。模型看到的 spec 来自重建后的 manager，只按 whitelist 过滤名字（[deps.rs:604](../../src/frame/llm_context/src/deps.rs)）。建议：以 `run.json` 里的 `ResolvedTool`（name、args_schema、description）为契约，恢复时对模型广告保存的 spec，并要求每个名字都能派发，否则 `NotResumable`。具体场景是 CLI xllm 接手 libopendan 的 `bash_core` run：没有 `task_cli`，task 工具又不在 whitelist 里（按代码推断，未实测）。
+- **工具 spec 不对账。** `rebuild_toolset` 把重新展开的工具丢掉了（`_eff`，xllm.rs:7608）。模型看到的 spec 来自重建后的 manager，只按 whitelist 过滤名字（[deps.rs:604](../../src/frame/llm_context/src/deps.rs)）。建议：以 `run.json` 里的 `ResolvedTool`（name、args_schema、description）为契约，恢复时对模型广告保存的 spec，并要求每个名字都能派发，否则 `NotResumable`。具体场景是 CLI xllm 接手 libopendan 的 `bash_core` run：没有 `task_cli`，task 工具又不在 whitelist 里（按代码推断，未实测）。**已按 F6 修（2026-11-07，见 §8.3）。**
 - **runtime descriptor 的派生规则本身就是协议。** native 的 `runtime_id = "native:" + blake3(紧凑 JSON {"host": "...", "uid": "<字符串>"})[..24]`（runtime/mod.rs:563），其他语言必须逐字节复现。放进共享向量。
 - **`AgentToolResult` 的结构和协议文档有出入**（[agent_tool/src/lib.rs:423](../../src/frame/agent_tool/src/lib.rs)）：多了一个文档里没有的 `estimated_wait`；`pending_reason` 是严格枚举，新增取值会让老解析器整个失败，建议改成字符串；`detail` 默认序列化为 `{}`、`summary` 总是序列化，跨语言比对 JSON 时要注意。
 - **TaskMgr 适配只为 shell 写过。** `ZoneShellTasks` 认领所有 `t-` id，读取时不检查 schema，渲染却完全按 shell 来（[tasks_zone.rs:521](../../src/frame/agent_tool/src/tasks_zone.rs)、`result_of`）。其他服务的 TaskMgr 任务结束后，真正的结果（例如 obj_id）会被丢掉（按代码推断，未实测）。想法：
   - 拆成"shell 任务本身"和"通用 TaskMgr 解析器"两部分；
   - 和工具有关的 TaskMgr 任务，result 约定为 AgentToolResult v1 信封；
   - `XllmDeps.buckyos_tasks` 改名为 `host_tasks`。
-- **`classify_error` 靠字符串判断"疑似凭据问题"**（匹配 `token / 401 / expired` 等），违反"只看枚举"原则。TS TODO 的 Q6 同时写了"照搬"和"不做字符串匹配"。需要 AICC 给出结构化的凭据错误码。
+- **`classify_error` 靠字符串判断"疑似凭据问题"**（匹配 `token / 401 / expired` 等），违反"只看枚举"原则。TS TODO 的 Q6 同时写了"照搬"和"不做字符串匹配"。需要 AICC 给出结构化的凭据错误码。**2026-11-07 已改**（[TS TODO](../xllm-ts-runtime-todo.md) §2 已裁决 1、T2-0）：kRPC token 错误与 HTTP 401 / 403 映射为 `Refused { code: "credentials" }`，`classify_error` 不再匹配文本。
 - **文档与代码不一致：**
   - [agent_tool_result_protocol.md](../../doc/llm_context/agent_tool/agent_tool_result_protocol.md) 写"`allow_deferred=false`（xllm、libopendan 当前都是）"；
   - [AgentRuntime 设计](<../../doc/llm_context/AgentRuntime 设计.md>) §7 写"libopendan 只允许 `call_behavior` deferred"；
@@ -437,7 +437,8 @@ B 之后还能顺手拿掉的，全部是净删除：
 ### 8.3 没做 / 待验证（agent-session 相关的已并入 [Agent Session TODO](./opendan-agent-session-async-task-todo.md) §2）
 
 - 移到 [Agent Session TODO](./opendan-agent-session-async-task-todo.md)：提问撤销（R7）、保活中 UI Turn 的中间回复（R6）、`waiting_for` 的形状（R1）、`<<task_result>>` 的 `failed` 状态（R8）、`remote_node` 滤掉 `XLLM_*`（R9）、agent-session 的 DV 与 `ask_user` 端到端（§3）。
-- F11（hints / dedup）、F6（spec 对账）未做（§6 第 5 步）。
+- F11（hints / dedup）已在 `5184e1947` 落地：AgentToolResult 的 `hints[]` / `dedup`、`agent_tool/src/hints.rs` 的 `HintLedger`、RunRecord `hints_once`。
+- F6（spec 对账）2026-11-07 已做：`rebuild_toolset` 让重建的 `XllmToolManager` 对模型广告 run.json `config.tools.native / actions` 保存的 spec（`advertise_saved`），保存的工具名有一个派发不了就 `NotResumable`；`XllmRun::resume` 与 libopendan 的 `resume_live_run`、fork 子 run 都经过它。测试 `xllm::tests::resume_advertises_the_saved_tool_specs`。
 - 偏历史 / 方案性质的文档没改：`doc/opendan` 的 Agent Session SDK 实现计划、NewOpenDANRuntime、Agent配置改进，`doc/llm_context` 的 why behavior loop、LLM Context Switch 样例、improve-behavior-report，以及 behavior loop 文档 §10"实施顺序（历史记录）"。
 
 ### 8.4 xllm DV（2026-11-01，本机 DV Zone，buckyos provider → AICC `llm.chat`）

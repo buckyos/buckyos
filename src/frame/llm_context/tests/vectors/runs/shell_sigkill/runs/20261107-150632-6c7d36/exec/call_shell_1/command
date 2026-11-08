@@ -1,0 +1,1 @@
+printf 'started\n'; sleep 60; printf 'finished\n' # xllm-fixture-shell
