@@ -183,8 +183,11 @@ impl Perception for ForwardingStateClient {
 
 #[async_trait]
 impl Cognition for ForwardingStateClient {
-    async fn recall_hints(&self, q: &RecallQuery) -> Result<Vec<Hint>> {
-        self.inner.cognition().recall_hints(q).await
+    async fn query(&self, sid: &str, q: &crate::memory::MemoryQuery) -> Result<crate::memory::QueryResult> {
+        self.inner.cognition().query(sid, q).await
+    }
+    async fn read(&self, sid: &str, reference: &str) -> Result<crate::memory::MemoryRead> {
+        self.inner.cognition().read(sid, reference).await
     }
     async fn notebook_append(&self, note: &NotebookNote, who: &str) -> Result<()> {
         self.inner.cognition().notebook_append(note, who).await

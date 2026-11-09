@@ -80,11 +80,43 @@ pub struct PerceptionView {
     pub hint: Hint,
 }
 
+/// A reference read in full (`agent-session recall --read`): a cognition
+/// with where it comes from, or a perception.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "layer", rename_all = "snake_case")]
+pub enum MemoryRead {
+    Cognition {
+        cognition: CognitionView,
+        provenance: ProvenanceView,
+    },
+    Perception {
+        perception: PerceptionView,
+    },
+}
+
 fn not_found(r: &str) -> MemoryError {
     MemoryError::NotFound(r.to_string())
 }
 
 impl Memory {
+    /// A cognition (`item_x`, `item_x@N`) with its provenance, or a
+    /// perception (`<sid>:<seq>`); what the caller may not see is "not
+    /// found".
+    pub fn read(&self, caller: &Caller, reference: &str) -> MemoryResult<MemoryRead> {
+        if reference.starts_with("item_") {
+            let cognition = self.read_cognition(caller, reference)?;
+            let provenance = self.read_provenance(caller, &cognition.item.item_id)?;
+            Ok(MemoryRead::Cognition {
+                cognition,
+                provenance,
+            })
+        } else {
+            Ok(MemoryRead::Perception {
+                perception: self.read_perception(caller, reference)?,
+            })
+        }
+    }
+
     /// `item_x` (current) or `item_x@N` (fixed revision).
     pub fn read_cognition(&self, caller: &Caller, reference: &str) -> MemoryResult<CognitionView> {
         let view = self.graph_view()?;

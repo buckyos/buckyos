@@ -1497,6 +1497,8 @@ pub(super) struct InputBatch<'a> {
     /// `background_shown` after this batch and the semi-subscription
     /// versions its input message shows (as background lines).
     pub background: Option<(std::collections::BTreeMap<String, String>, Vec<EventReceipt>)>,
+    /// The session's Memory observation after this batch.
+    pub memory: Option<super::memory_batch::MemoryReceipt>,
     /// The controlled input message: template output and media blocks.
     pub text: String,
     pub media: Vec<AiContent>,
@@ -1586,6 +1588,21 @@ pub(super) async fn commit_input_batch(
             serde_json::to_value(map).unwrap_or(Value::Null),
         );
         events = shown;
+    }
+    if let Some(m) = batch.memory {
+        extra.insert(
+            RECEIPT_MEMORY.to_string(),
+            serde_json::to_value(&m.state).unwrap_or(Value::Null),
+        );
+        if let Some(t) = m.topic {
+            extra.insert(
+                RECEIPT_TOPIC.to_string(),
+                serde_json::to_value(t).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(e) = m.error {
+            extra.insert(RECEIPT_MEMORY_ERROR.to_string(), Value::String(e));
+        }
     }
     if let Some(g) = &goal {
         extra.insert(

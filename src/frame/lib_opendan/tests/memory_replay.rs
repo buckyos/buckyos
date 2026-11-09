@@ -773,10 +773,36 @@ async fn capture_with_the_real_model() {
     assert!(failed.is_empty(), "capture checks failed:\n{}", failed.join("\n"));
 }
 
-/// T1 → T0 → T2 in one piece, on the real model: what the owner says in a
-/// conversation is perceived, consolidated by the maintenance Goal, and
-/// comes back as hint lines that say what supports them, where they hold
-/// and when they end.
+/// The Memory lines a session's inputs showed, in order (the input
+/// messages are in its worklog with their background).
+fn memory_lines(sd: &libopendan::SessionDir) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in sd.worklog().read_all_for_audit().unwrap() {
+        if let WorklogBody::UserMessage { content, .. } = &e.body {
+            for l in content.lines() {
+                let l = l.trim_start_matches("- ");
+                if ["hint", "noted,", "correction noted,", "asked to remember,", "note ", "memory "].iter().any(|p| l.starts_with(p)) {
+                    out.push(l.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A general concept tag in English (or a name / identifier kept as written,
+/// which the reader judges): what the language rule asks (TODO §3.3).
+fn tag_report(tags: &[String]) -> String {
+    let cjk: Vec<&String> = tags.iter().filter(|t| t.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))).collect();
+    format!("{tags:?} — {} of {} not in English (allowed only for names)", cjk.len(), tags.len())
+}
+
+/// T1 → T0 → T2 and the recall wiring (notepads/agent-memory-recall-wiring-
+/// todo.md R5), on the real model: what the owner says in a conversation is
+/// perceived; another conversation sees it as a note not yet consolidated;
+/// the maintenance Goal consolidates it; a new conversation has the clues
+/// on its first turn without running `recall`, and a note written later
+/// reaches it without the words being said again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "calls the real model through the local Zone's AICC; writes target/memory-replay/pipeline.md"]
 async fn conversation_to_hint_with_the_real_model() {
@@ -793,12 +819,34 @@ async fn conversation_to_hint_with_the_real_model() {
         say(&env, &host, &sd, text).await;
     }
     let records = perceived(&env, &sd);
+    let mut problems: Vec<String> = Vec::new();
     let mut report = String::from("# From a conversation to hint lines\n\n## Said\n\n");
     for s in said {
         report.push_str(&format!("- {s}\n"));
     }
     report.push_str(&format!("\n## Perceived ({})\n\n{}", records.len(), records.iter().map(describe).collect::<String>()));
+    let perceived_tags: Vec<String> = records.iter().flat_map(|r| r.tags.clone()).collect();
+    report.push_str(&format!("\nPerception tags: {}\n", tag_report(&perceived_tags)));
     assert!(!records.is_empty(), "nothing was perceived:\n{report}");
+
+    // Before consolidation (D3): another conversation of the owner sees the
+    // note as a note, with where it comes from.
+    let early = Arc::new(Replies::default());
+    let (host_b, sd_b) = conversation_on(&env, "dm%3Adid%3Abns%3Aalice%2Fearly", Some(early.clone()), None).await;
+    say(&env, &host_b, &sd_b, "项目 A 的周报有什么要求来着？").await;
+    let lines_b = memory_lines(&sd_b);
+    report.push_str("\n## Another conversation before consolidation\n\n");
+    for l in &lines_b {
+        report.push_str(&format!("- `{l}`\n"));
+    }
+    report.push_str(&format!(
+        "\nAnswer: {}\n",
+        early.0.lock().unwrap().last().cloned().unwrap_or_default().replace('\n', " ")
+    ));
+    if !lines_b.iter().any(|l| l.contains("not yet consolidated") && l.contains(sd.sid())) {
+        problems.push("the conversation before consolidation saw no note of the first one".into());
+    }
+
     let h = hosted(
         &env,
         agent_tool::xllm::XllmDeps::default(),
@@ -815,7 +863,9 @@ async fn conversation_to_hint_with_the_real_model() {
     ));
     let view = Memory::open(&env.agent_root, MemoryConfig::default()).graph_view().unwrap();
     let mut lines = Vec::new();
+    let mut item_tags = Vec::new();
     for item in view.items().filter(|i| i.status == ItemStatus::Active) {
+        item_tags.extend(item.tags.clone());
         report.push_str(&format!(
             "- `{}` basis={} explicit={} stability={} weight={} valid_until={:?} tags={:?}\n  > {}\n",
             item.reference(),
@@ -827,46 +877,65 @@ async fn conversation_to_hint_with_the_real_model() {
             item.tags,
             item.statement()
         ));
-        // The line a conversation whose topic carries one of the item's
-        // tags is shown (the runner's recall path).
-        let hints = env
+        // The line the conversation that said it gets when it asks by one of
+        // the item's tags (the session-bound query of `agent-session recall`).
+        let r = env
             .agent()
             .cognition()
-            .recall_hints(&libopendan::state::RecallQuery {
-                tags: item.tags.iter().take(1).cloned().collect(),
-                max_hints: 5,
-            })
+            .query(
+                sd.sid(),
+                &libopendan::memory::MemoryQuery {
+                    tags: item.tags.iter().take(1).cloned().collect(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
-        for hint in hints.iter().filter(|x| x.id == item.reference()) {
-            lines.push((item.clone(), format!("hint: {} ({})", hint.sentence, hint.note())));
+        for hint in r.cognitions.iter().filter(|x| x.reference == item.reference()) {
+            let c = libopendan::memory::Change {
+                kind: libopendan::memory::ChangeKind::Recalled,
+                hint: hint.clone(),
+            };
+            lines.push((item.clone(), libopendan::runner::memory_batch::line(&c, &Default::default()).text));
         }
     }
+    report.push_str(&format!("\nCognition tags: {}\n", tag_report(&item_tags)));
     report.push_str("\n## Hint lines\n\n");
     for (_, line) in &lines {
         report.push_str(&format!("- {line}\n"));
     }
-    // The third layer: a new conversation about the same project. Whether
-    // the cognition is recalled there (the runner recalls by the topic's
-    // tags, so not before the conversation has a topic) and whether the
-    // answer uses it are reported, not asserted: a list that is right but
-    // not recalled is a recall problem, not a consolidation one.
+
+    // A new conversation about the same project: the clues are in its first
+    // input (no `recall` needed); then the first conversation adds a note
+    // and the new one's next input, which does not repeat the words, gets
+    // it through its topic.
     let replies = Arc::new(Replies::default());
     let (host2, sd2) = conversation_on(&env, "dm%3Adid%3Abns%3Aalice%2Fnext", Some(replies.clone()), None).await;
     report.push_str("\n## The next conversation\n\n");
-    for text in [
-        "我们来过一下项目 A 的周报。先别动手，告诉我你记得的要求。",
-        "好，按这个要求给我列一个本周周报的提纲，每部分一句话。",
-    ] {
-        say(&env, &host2, &sd2, text).await;
-        let state = sd2.state().unwrap();
-        let shown: Vec<&String> = state.background_shown.keys().filter(|k| k.starts_with("hint:")).collect();
-        report.push_str(&format!(
-            "- Said: {text}\n  topic: {} {:?}; hint lines shown: {shown:?}\n  Answer: {}\n",
-            state.topic.title,
-            state.topic.tags,
-            replies.0.lock().unwrap().last().cloned().unwrap_or_default().replace('\n', " ")
-        ));
+    let first = "我们来过一下项目 A 的周报。先别动手，告诉我你记得的要求。";
+    say(&env, &host2, &sd2, first).await;
+    let shown_first = memory_lines(&sd2);
+    let state = sd2.state().unwrap();
+    report.push_str(&format!(
+        "- Said: {first}\n  memory lines: {shown_first:?}\n  topic: {} {}\n  Answer: {}\n",
+        state.topic.title,
+        tag_report(&state.topic.tags),
+        replies.0.lock().unwrap().last().cloned().unwrap_or_default().replace('\n', " ")
+    ));
+    let first_turn_hint = shown_first.iter().any(|l| l.starts_with("hint:") && l.contains("周报"));
+    say(&env, &host, &sd, "另外，项目 A 的周报以后每周五中午前发给我。").await;
+    let later = perceived(&env, &sd);
+    let added: Vec<String> = later.iter().skip(records.len()).map(|r| format!("{} {:?}", r.reference(), r.tags)).collect();
+    report.push_str(&format!("- The first conversation adds: {added:?}\n"));
+    let second = "好，还有别的需要注意的吗？";
+    say(&env, &host2, &sd2, second).await;
+    let shown_second: Vec<String> = memory_lines(&sd2).into_iter().skip(shown_first.len()).collect();
+    report.push_str(&format!(
+        "- Said: {second}\n  new memory lines: {shown_second:?}\n  Answer: {}\n",
+        replies.0.lock().unwrap().last().cloned().unwrap_or_default().replace('\n', " ")
+    ));
+    if !shown_second.iter().any(|l| l.contains("周五")) {
+        problems.push("the note added later did not reach the next conversation".into());
     }
     // How it got there: the memory commands the conversation ran itself.
     let location = env.agent().sessions().lookup(sd2.sid()).await.unwrap().unwrap().location;
@@ -881,6 +950,7 @@ async fn conversation_to_hint_with_the_real_model() {
         }
     }
     report.push_str(&format!("\nMemory commands it ran: {commands:?}\n"));
+    report.push_str(&format!("\nProblems: {problems:?}\n"));
     println!("{report}");
     std::fs::write(out_dir.join("pipeline.md"), &report).unwrap();
     assert!(!lines.is_empty(), "no cognition came back as a hint");
@@ -896,4 +966,5 @@ async fn conversation_to_hint_with_the_real_model() {
             assert!(line.contains(&format!("holds until {t}")), "{line}");
         }
     }
+    assert!(first_turn_hint, "the new conversation's first input had no hint of the weekly report:\n{report}");
 }

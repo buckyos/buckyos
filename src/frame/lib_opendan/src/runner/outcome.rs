@@ -1195,11 +1195,13 @@ async fn commit_run_end(
             });
         }
     }
-    // The conversation's topic, from its structured reply (MEM §1120):
-    // hints are recalled by its tags from the next batch on, and other
-    // sessions see it through the registry. A reply without one keeps it.
+    // The conversation's topic, from its structured reply (MEM §1120): its
+    // tags are what the session keeps watching in Memory from the next
+    // batch on, until they decay; other sessions see it through the
+    // registry. A reply without one reinforces nothing (recall wiring TODO
+    // §3.3).
     if let Some(topic) = &next.topic {
-        s.state.topic = topic.clone();
+        super::memory_batch::apply_reply_topic(sh, s, topic);
     }
     // A plan that ends: what still runs of its TodoList ends stopped, and
     // where every Todo stands is recorded with the end (never a gate).

@@ -597,6 +597,7 @@ pub fn kind_label(k: &ChangeKind) -> String {
         ChangeKind::CognitionStatus { status } => format!("status:{status}"),
         ChangeKind::ReviewPending { .. } => "review_pending".into(),
         ChangeKind::ReadRevision { from } => format!("read_revision_from@{from}"),
+        ChangeKind::Recalled => "recalled".into(),
     }
 }
 

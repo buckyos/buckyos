@@ -962,6 +962,19 @@ pub struct InputReceipt {
 /// applied to the state with the receipt.
 pub const RECEIPT_BACKGROUND: &str = "background";
 
+/// `InputReceipt.extra` key: the session's Memory observation after a
+/// batch (`SessionState.memory`), applied with the receipt.
+pub const RECEIPT_MEMORY: &str = "memory";
+
+/// `InputReceipt.extra` key: the topic other sessions see after a batch
+/// (`SessionState.topic`, a UI session's), applied with the receipt.
+pub const RECEIPT_TOPIC: &str = "topic";
+
+/// `InputReceipt.extra` key: why the batch's Memory material could not be
+/// read (the batch shows `memory unavailable: …` instead; its worklog
+/// marker records it).
+pub const RECEIPT_MEMORY_ERROR: &str = "memory_error";
+
 /// libopendan host metadata stored in `LLMContextState.host["libopendan"]`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct HostMeta {

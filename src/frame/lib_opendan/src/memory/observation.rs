@@ -250,8 +250,10 @@ impl ObservationState {
             self.topic.title = title.to_string();
         }
         // A new topic phase (re-showing is allowed) starts on a switch, not
-        // on a refinement of the same topic.
-        if drift >= cfg.title_drift {
+        // on a refinement of the same topic, nor when a conversation that
+        // had no title yet gets its first one (what its first batches showed
+        // is still in its context).
+        if switched {
             self.shown.clear();
         }
         let ratio = (added.len() + evicted.len()) as f64 / prev_len.max(1) as f64;
@@ -274,6 +276,54 @@ impl ObservationState {
             evicted,
             valve,
         })
+    }
+
+    /// Forget what the conversation stopped mentioning (recall wiring TODO
+    /// §3.3): tags whose decayed score fell below the floor are evicted
+    /// before a batch recalls or observes, whether or not the last reply set
+    /// a topic. Scores and `touched_at_ms` stay as they are (decay is
+    /// computed from them, so time offline counts too); only a tag the
+    /// model mentions again is reinforced (`set_topic`).
+    pub fn decay(&mut self, now_ms: u64, cfg: &TopicConfig) -> Vec<String> {
+        let mut evicted = Vec::new();
+        self.topic.tags.retain(|t| {
+            let keep = t.effective(now_ms, cfg.decay_tau_ms) >= cfg.min_score;
+            if !keep {
+                evicted.push(t.tag.clone());
+            }
+            keep
+        });
+        if !evicted.is_empty() {
+            self.topic.revision += 1;
+        }
+        evicted
+    }
+
+    /// The topic a structured reply states (title and the tags it really
+    /// mentions): invalid tags are dropped one by one, an empty title keeps
+    /// the current one. Same as [`Self::set_topic`] otherwise.
+    pub fn reply_topic(
+        &mut self,
+        title: &str,
+        tags: &[String],
+        now_ms: u64,
+        cfg: &TopicConfig,
+    ) -> MemoryResult<TopicUpdate> {
+        let tags: Vec<String> = tags
+            .iter()
+            .filter_map(|t| {
+                agent_tool::agent_memory::normalize_tags(std::slice::from_ref(t))
+                    .ok()?
+                    .into_iter()
+                    .next()
+            })
+            .collect();
+        let title = if title.trim().is_empty() {
+            self.topic.title.clone()
+        } else {
+            title.to_string()
+        };
+        self.set_topic(&title, &tags, now_ms, cfg)
     }
 
     pub fn clear_topic(&mut self) {
@@ -554,4 +604,254 @@ pub fn unchanged(memory: &Memory, caller: &Caller, obs: &ObservationState) -> Me
         }
     }
     Ok(memory.snapshot()? == q.snapshot)
+}
+
+/// What one controlled input batch adds to the Session's own topic.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatchEntry {
+    /// Text of this batch only (a UI batch: its messages). It joins the
+    /// title for this one recall and is never kept in the topic.
+    pub text: String,
+    /// Run the topic recall (a batch with message text, or a rebuild).
+    pub recall: bool,
+}
+
+/// One batch's Memory material before assembly (recall wiring TODO §3.2,
+/// §3.4): the topic recall and the observation merged, deduplicated and
+/// split by one budget.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatchDelivery {
+    /// What fits the budget, validity changes first.
+    pub items: Vec<Change>,
+    /// Refs that did not fit (kept as pending).
+    pub overflow: Vec<String>,
+    /// Where the Session moves to once the batch is committed.
+    pub snapshot: Option<MemorySnapshot>,
+    /// The topic recall of this batch, when one ran.
+    pub recall: Option<RecallStatus>,
+    /// The observation could not go on from the saved snapshot (none yet,
+    /// a resync was asked, or too many changes): rebuilt by a recall.
+    pub rebuilt: bool,
+    /// Visible unconsolidated perceptions in range.
+    pub pending_in_scope: usize,
+    /// The words of the unconsolidated corrections the delivered
+    /// cognitions carry (`<sid>:<seq>` → summary).
+    pub corrections: BTreeMap<String, String>,
+    pub disabled: bool,
+}
+
+/// Recall and observe for one controlled input batch (recall wiring TODO
+/// §3.1, §3.2). The observation pulls what changed after the saved
+/// snapshot (pending refs first); the topic recall runs when the batch asks
+/// for it (`entry.recall`) and whenever the observation must be rebuilt.
+/// Both feed one candidate list: deduplicated by reference and state,
+/// what this topic phase already showed left out, then split by `budget`
+/// (validity changes first, shares borrowed). Nothing is accepted here:
+/// [`ObservationState::commit_batch`] does that once the batch is rendered.
+pub fn observe_batch(
+    memory: &Memory,
+    caller: &Caller,
+    obs: &ObservationState,
+    entry: &BatchEntry,
+    budget: &Budget,
+    cfg: &TopicConfig,
+) -> MemoryResult<BatchDelivery> {
+    if !obs.enabled {
+        return Ok(BatchDelivery {
+            disabled: true,
+            ..BatchDelivery::default()
+        });
+    }
+    let topic = obs.query_scope();
+    let mut rebuild = obs.snapshot.is_none() || obs.resync_required;
+    let mut snapshot = None;
+    let mut pending: Vec<Change> = Vec::new();
+    let mut observed: Vec<Change> = Vec::new();
+    let mut ctx = None;
+    if !obs.pending.is_empty() {
+        let c = memory.change_ctx(caller, &topic)?;
+        for r in &obs.pending {
+            if let Some(ch) = memory.resolve_pending(&c, caller, &topic, &obs.read_set, r) {
+                pending.push(ch);
+            }
+        }
+        ctx = Some(c);
+    }
+    if let (false, Some(since)) = (rebuild, &obs.snapshot) {
+        let mut watched = obs.read_set.clone();
+        for r in obs.shown.keys().filter(|r| !r.starts_with("item_")) {
+            watched.insert(r.clone(), 0);
+        }
+        let set = memory.changes_since(caller, since, &topic, &watched, cfg.max_changes)?;
+        if set.resync_required {
+            rebuild = true;
+        } else {
+            snapshot = Some(set.snapshot);
+            observed = set.changes;
+        }
+    }
+    let mut recalled: Vec<Change> = Vec::new();
+    let mut recall = None;
+    let mut pending_in_scope = 0;
+    if entry.recall || rebuild {
+        // Taken before reading: what is written meanwhile is a later change.
+        let at = memory.snapshot()?;
+        let mut scope = topic.clone();
+        let text = entry.text.trim();
+        if !text.is_empty() {
+            scope.title = if scope.title.is_empty() {
+                text.to_string()
+            } else {
+                format!("{}\n{text}", scope.title)
+            };
+        }
+        let p = memory.topic_pools(caller, &TopicQuery::new(scope, budget.clone()))?;
+        recall = Some(p.status);
+        pending_in_scope = p.pending_in_scope;
+        for pool in p.pools {
+            recalled.extend(pool.into_iter().map(|hint| Change {
+                kind: ChangeKind::Recalled,
+                hint,
+            }));
+        }
+        if rebuild {
+            snapshot = Some(at);
+        }
+    }
+    // The Session's own perceptions are in its own context already.
+    let own = |c: &Change| {
+        c.hint.layer == HintLayer::Perception
+            && c.hint.session_id.as_deref() == Some(caller.session_id.as_str())
+    };
+    // What waited and what changed, as the observation says it (a revision
+    // of a read cognition is a validity change, not a plain clue).
+    let mut seen = std::collections::BTreeSet::new();
+    let mut waited = Vec::new();
+    let mut changed = Vec::new();
+    let waiting = pending.len();
+    for (i, c) in pending.into_iter().chain(observed).enumerate() {
+        if own(&c) || obs.already_shown(&c) || !seen.insert(c.key()) {
+            continue;
+        }
+        if i < waiting {
+            waited.push(c);
+        } else {
+            changed.push(c);
+        }
+    }
+    // A recall may show again what an earlier topic phase showed (the
+    // phase's `shown` was cleared), never what this one did; the same
+    // material found by the observation keeps the observation's kind.
+    let recalled: Vec<Change> = recalled
+        .into_iter()
+        .filter(|c| {
+            !own(c)
+                && obs.shown.get(&c.hint.reference) != Some(&state_key(&c.hint))
+                && seen.insert(c.key())
+        })
+        .collect();
+    // Pending first (it waited), then this batch's recall, then the
+    // changes; within each pool the order is kept.
+    let mut pools: [Vec<Change>; 4] = Default::default();
+    for c in waited.into_iter().chain(recalled).chain(changed) {
+        pools[c.pool()].push(c);
+    }
+    let (items, rest) = budget.allocate(pools);
+    let mut corrections = BTreeMap::new();
+    let wanted: Vec<&String> = items
+        .iter()
+        .flat_map(|c| c.hint.corrections.iter())
+        .collect();
+    if !wanted.is_empty() {
+        let records = match &ctx {
+            Some(c) => c.records.values().cloned().collect::<Vec<_>>(),
+            None => memory.load_perceptions(None)?,
+        };
+        for r in records {
+            let reference = r.reference();
+            if wanted.contains(&&reference) && record_visible_to(&r, caller) {
+                corrections.insert(reference, r.summary.clone());
+            }
+        }
+    }
+    Ok(BatchDelivery {
+        overflow: rest.iter().map(Change::pending_ref).collect(),
+        items,
+        snapshot,
+        recall,
+        rebuilt: rebuild,
+        pending_in_scope,
+        corrections,
+        disabled: false,
+    })
+}
+
+fn record_visible_to(r: &crate::protocol::PerceptionRecord, caller: &Caller) -> bool {
+    r.scope
+        .as_ref()
+        .is_none_or(|s| s.visible_to(&caller.grants))
+}
+
+impl ObservationState {
+    /// Accept a rendered batch (recall wiring TODO §3.3): `displayed` holds
+    /// the [`Change::key`]s the model input really shows. Only those enter
+    /// `shown` / `read_set`; every delivered item that was not shown and
+    /// everything over the budget stays pending (first next time); the
+    /// snapshot moves to what this batch covered. A batch that is never
+    /// committed leaves the state as it was.
+    pub fn commit_batch(
+        &mut self,
+        d: &BatchDelivery,
+        displayed: &std::collections::BTreeSet<String>,
+        caller: &Caller,
+        now_ms: u64,
+        cfg: &TopicConfig,
+    ) {
+        if d.disabled {
+            return;
+        }
+        if let Some(s) = &d.snapshot {
+            self.snapshot = Some(s.clone());
+            self.resync_required = false;
+        }
+        self.pending.clear();
+        let mut had_corrections = false;
+        let mut expires: Option<String> = None;
+        let mut kept = Vec::new();
+        for c in &d.items {
+            if displayed.contains(&c.key()) {
+                self.mark_shown(&c.hint);
+                had_corrections |= !c.hint.corrections.is_empty() || c.hint.is_correction();
+                if let Some(v) = &c.hint.valid_until {
+                    if expires.as_ref().is_none_or(|e| v < e) {
+                        expires = Some(v.clone());
+                    }
+                }
+            } else {
+                kept.push(c.pending_ref());
+            }
+        }
+        self.merge_pending(kept.into_iter().chain(d.overflow.iter().cloned()));
+        if self.pending.len() > cfg.pending_cap {
+            // Too much waits: rebuild from a recall instead (the next
+            // batch does, without waiting for a new topic).
+            self.pending.clear();
+            self.resync_required = true;
+        }
+        match (&d.recall, &mut self.last_query) {
+            (Some(_), _) => {
+                self.last_query = Some(LastQuery {
+                    at_ms: now_ms,
+                    topic_revision: self.topic.revision,
+                    rounds_since: 0,
+                    key: self.cache_key(caller),
+                    snapshot: d.snapshot.clone().unwrap_or_default(),
+                    had_corrections,
+                    expires_at: expires,
+                });
+            }
+            (None, Some(q)) => q.rounds_since += 1,
+            (None, None) => {}
+        }
+    }
 }

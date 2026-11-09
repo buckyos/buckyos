@@ -9,10 +9,12 @@
 //! A template that does not place it leaves the session blind to it.
 //!
 //! A UI session's chat format has the time, the runtime, the work it
-//! started, other conversations' topics, state versions (notifications),
-//! hints; every session has its state versions and the new output of the
-//! tasks it follows. The end or need of a sub session is its event, never
-//! a line.
+//! started, other conversations' topics, state versions (notifications);
+//! every session has its state versions and the new output of the tasks it
+//! follows, and a UI or Work session the Memory clues of the batch
+//! ([`super::memory_batch`]: deduplicated by the session's observation, not
+//! by this map). The end or need of a sub session is its event, never a
+//! line.
 //!
 //! ```text
 //! <<background_context>>
@@ -27,7 +29,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::protocol::*;
-use crate::state::{ActiveSession, Hint, Relation};
+use crate::state::{ActiveSession, Relation};
 
 use super::input_view::EventView;
 
@@ -72,12 +74,11 @@ pub struct BackgroundInput<'a> {
     pub active: &'a [ActiveSession],
     /// Semi-subscription state versions shown with this batch.
     pub events: &'a [EventView],
-    pub hints: &'a [Hint],
     /// DID of the tunnel the batch's last message came through.
     pub tunnel: Option<&'a str>,
 }
 
-fn one_line(text: &str, max: usize) -> String {
+pub(super) fn one_line(text: &str, max: usize) -> String {
     let one = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if one.chars().count() <= max {
         return one;
@@ -259,12 +260,6 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
             .iter()
             .filter(|e| !(e.source.kind == "system" && e.source.id == USER_TIMEZONE_SOURCE_ID)),
     ));
-    for h in i.hints {
-        out.push(BackgroundLine::new(
-            format!("hint:{}", h.id),
-            format!("hint: {} ({})", one_line(&h.sentence, 300), one_line(&h.note(), 400)),
-        ));
-    }
     out
 }
 
@@ -383,15 +378,14 @@ pub fn render(lines: &[BackgroundLine]) -> String {
 mod tests {
     use super::*;
 
-    fn input<'a>(now_ms: u64, hints: &'a [Hint]) -> BackgroundInput<'a> {
+    fn input<'a>(now_ms: u64, active: &'a [ActiveSession]) -> BackgroundInput<'a> {
         BackgroundInput {
             sid: "ui-1",
             now_ms,
             timezone: Some("America/Los_Angeles"),
             runtime_status: Box::leak(Box::new(serde_json::json!({"kind": "native", "hostname": "pve", "cwd": "/s"}))),
-            active: &[],
+            active,
             events: &[],
-            hints,
             tunnel: None,
         }
     }
@@ -442,21 +436,25 @@ mod tests {
     #[test]
     fn only_changed_lines_are_shown_and_time_every_five_seconds() {
         let t0 = 1_792_172_745_000;
-        let hints = [Hint {
-            id: "h1".into(),
-            time: "2026-10-02".into(),
-            sentence: "owner prefers Chinese".into(),
-            basis: Some("inference".into()),
-            applies_to: vec!["workspace:proj-a".into()],
-            ..Default::default()
-        }];
+        // Another conversation and what it is about.
+        let other = ActiveSession {
+            session_id: "ui-2".into(),
+            kind: SessionKind::Ui,
+            run_state: RunState::Waiting,
+            objective: String::new(),
+            activity: Activity::default(),
+            relation: Relation::Other,
+            overlap: Vec::new(),
+            possibly_interrupted: false,
+            driver: String::new(),
+            parent: None,
+            topic: Some(Topic { title: "trip to Kyoto".into(), tags: Vec::new() }),
+        };
+        let hints = [other];
         let (shown, map) = select(lines(&input(t0, &hints)), &BTreeMap::new(), t0);
         let keys: Vec<&str> = shown.iter().map(|l| l.key.as_str()).collect();
-        assert_eq!(keys, ["time", "runtime", "hint:h1"]);
-        assert_eq!(
-            shown[2].text,
-            "hint: owner prefers Chinese (the agent's inference, not confirmed; applies to workspace:proj-a; noticed 2026-10-02)"
-        );
+        assert_eq!(keys, ["time", "runtime", "ui:ui-2"]);
+        assert_eq!(shown[2].text, "conversation ui-2 is about: trip to Kyoto");
         assert!(render(&shown).contains("- current_time 2026-10-16T10:45:45-07:00 (America/Los_Angeles)\n"));
         // 2 s later nothing changed: nothing at all.
         let (shown, map2) = select(lines(&input(t0 + 2_000, &hints)), &map, t0 + 2_000);
@@ -466,11 +464,11 @@ mod tests {
         let (shown, map3) = select(lines(&input(t0 + 6_000, &hints)), &map2, t0 + 6_000);
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].key, "time");
-        // A hint that is gone is forgotten; it is shown again when back.
+        // A line that is gone is forgotten; it is shown again when back.
         let (_, map4) = select(lines(&input(t0 + 7_000, &[])), &map3, t0 + 7_000);
-        assert!(!map4.contains_key("hint:h1"));
+        assert!(!map4.contains_key("ui:ui-2"));
         let (shown, _) = select(lines(&input(t0 + 8_000, &hints)), &map4, t0 + 8_000);
-        assert_eq!(shown.iter().map(|l| l.key.as_str()).collect::<Vec<_>>(), ["hint:h1"]);
+        assert_eq!(shown.iter().map(|l| l.key.as_str()).collect::<Vec<_>>(), ["ui:ui-2"]);
     }
 
     #[test]

@@ -2502,6 +2502,9 @@
       ],
       "default": null
     },
+    "memory": {
+      "description": "The session's Memory observation (recall wiring TODO §3.3): the topic with every tag's score and when it was last mentioned, the snapshot, pending refs, read set and what this topic phase showed. A batch's receipt carries it as it is after that batch."
+    },
     "nudge": {
       "allOf": [
         {
@@ -2668,7 +2671,8 @@
       ],
       "default": {
         "title": ""
-      }
+      },
+      "description": "What the conversation is about, as other sessions see it: derived from [`Self::memory`] (its title and the tags still held)."
     },
     "turn_seq": {
       "default": 0,

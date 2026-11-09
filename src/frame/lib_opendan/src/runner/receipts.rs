@@ -118,6 +118,21 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
     {
         state.background_shown = map;
     }
+    // The Memory observation as this batch left it, and the topic view.
+    if let Some(obs) = r
+        .extra
+        .get(RECEIPT_MEMORY)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+    {
+        state.memory = Some(obs);
+    }
+    if let Some(topic) = r
+        .extra
+        .get(RECEIPT_TOPIC)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+    {
+        state.topic = topic;
+    }
     let input_ids: Vec<String> = r.inputs.iter().map(|i| i.id()).collect();
     let event_keys: Vec<String> = r.events.iter().map(|e| e.key.clone()).collect();
     match live.turns.last_mut() {
@@ -248,4 +263,63 @@ pub fn validate_receipts(meta: &HostMeta, run_id: &str, applied: u64) -> Result<
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::{ObservationState, QueryScope};
+
+    fn receipt(seq: u64, obs: &ObservationState, topic: &Topic) -> InputReceipt {
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert(RECEIPT_MEMORY.to_string(), serde_json::to_value(obs).unwrap());
+        extra.insert(RECEIPT_TOPIC.to_string(), serde_json::to_value(topic).unwrap());
+        InputReceipt {
+            run_id: "run-1".into(),
+            input_seq: seq,
+            turn: 1,
+            opens_turn: seq == 1,
+            hook: "on_input".into(),
+            inputs: Vec::new(),
+            events: Vec::new(),
+            reply: None,
+            parts: Vec::new(),
+            bootstrap: false,
+            after_step: 0,
+            extra,
+            at_ms: 1,
+        }
+    }
+
+    /// Recall wiring TODO §3.3: the observation a batch accepted (tag
+    /// scores, snapshot, pending, read set) comes back from its receipt
+    /// when state.json missed the commit, and a receipt applied twice
+    /// changes nothing.
+    #[test]
+    fn the_memory_observation_is_restored_from_the_batch_receipt() {
+        let mut obs = ObservationState::new(QueryScope {
+            subjects: vec!["did:bns:bob".into()],
+            objects: Vec::new(),
+        });
+        obs.reply_topic("周报", &["weekly-report".into()], 1_000, &Default::default())
+            .unwrap();
+        obs.pending.push("c:item_x".into());
+        obs.read_set.insert("item_y".into(), 2);
+        let topic = Topic {
+            title: "周报".into(),
+            tags: vec!["weekly-report".into()],
+        };
+        let mut state = SessionState::initial(Default::default(), 0);
+        let r = receipt(1, &obs, &topic);
+        assert!(apply_receipt(&mut state, &r).unwrap());
+        assert_eq!(state.memory.as_ref(), Some(&obs));
+        assert_eq!(state.topic, topic);
+        assert_eq!(state.memory.as_ref().unwrap().topic.tags[0].touched_at_ms, 1_000);
+        // Already applied: the later state stays.
+        let mut later = obs.clone();
+        later.pending.clear();
+        state.memory = Some(later.clone());
+        assert!(!apply_receipt(&mut state, &r).unwrap());
+        assert_eq!(state.memory, Some(later));
+    }
 }

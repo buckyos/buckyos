@@ -1669,24 +1669,20 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         // versions the input shows.
         let mut background: Option<(std::collections::BTreeMap<String, String>, Vec<EventReceipt>)> =
             None;
+        // The Memory observation after this batch (recall wiring TODO §3).
+        let mut memory_receipt = None;
         if triggered {
             let me = sh.agent().sessions().lookup(sh.dir.sid()).await?;
             let policy = &cfg.session.policy;
-            let hints = if sh.deps.options.load_hints
-                && policy.load_hints
-                && (!state.bootstrap_done || !picked.is_empty())
-            {
-                sh.agent()
-                    .cognition()
-                    .recall_hints(&crate::state::RecallQuery {
-                        tags: state.topic.tags.clone(),
-                        max_hints: 5,
-                    })
-                    .await
-                    .unwrap_or_default()
+            let now_ms = crate::now_ms();
+            // Forget, recall and observe before anything is decided on this
+            // batch (its first batch included).
+            let memory = if super::memory_batch::wanted(sh, &cfg, &state, !picked.is_empty()) {
+                Some(super::memory_batch::prepare(sh, &cfg, &state, &picked, now_ms).await)
             } else {
-                Vec::new()
+                None
             };
+            let hints = memory.as_ref().map(|m| m.texts()).unwrap_or_default();
             let active = if policy.observe == ObserveScope::EventsAndActive {
                 sh.agent()
                     .activity()
@@ -1696,7 +1692,6 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             } else {
                 Vec::new()
             };
-            let now_ms = crate::now_ms();
             let items: Vec<InputItem> = picked
                 .iter()
                 .filter_map(|m| match &m.input {
@@ -1769,15 +1764,20 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     runtime_status: &material.runtime_status,
                     active: &material.active,
                     events: &views,
-                    hints: &material.hints,
                     tunnel: tunnel.as_deref(),
                 })
             } else {
                 super::background::event_lines(&views)
             };
             candidates.extend(super::observe::task_lines(sh, &state).await);
-            let (lines, mut map) =
+            // A Memory failure is said once while it lasts; the clues are
+            // deduplicated by the session's observation, not by this map.
+            candidates.extend(memory.as_ref().and_then(|m| m.error_line()));
+            let (mut lines, mut map) =
                 super::background::select(candidates, &state.background_shown, now_ms);
+            if let Some(m) = &memory {
+                lines.extend(m.lines.iter().cloned());
+            }
             material.background = lines;
             msg = sh
                 .deps
@@ -1794,6 +1794,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 );
                 shown.retain(|e| placed.contains(&format!("event:{}", e.key)));
                 background = Some((map, shown));
+                memory_receipt = memory.map(|m| super::memory_batch::settle(m, text, now_ms));
             }
             match &msg {
                 Some(text) => {
@@ -1981,6 +1982,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     hook,
                     picked: &picked,
                     background: background.take(),
+                    memory: memory_receipt.take(),
                     text,
                     media,
                     goal: goal_opening,

@@ -451,7 +451,8 @@ fn is_read(method: &str) -> bool {
             | "perception.cursor"
             | "perception.backlog"
             | "perception.read"
-            | "cognition.recall_hints"
+            | "cognition.query"
+            | "cognition.read"
             | "artifacts.head"
             | "artifacts.version"
             | "artifacts.versions"
@@ -635,7 +636,7 @@ mod permission_tests {
         for method in [
             "agent.info", "sessions.lookup", "sessions.query", "sessions.children_of",
             "activity.active", "perception.last_seq", "perception.cursor", "perception.backlog",
-            "perception.read", "cognition.recall_hints", "artifacts.head", "artifacts.version",
+            "perception.read", "cognition.query", "cognition.read", "artifacts.head", "artifacts.version",
             "artifacts.versions", "artifacts.list", "workspaces.lookup", "workspaces.query",
             "workspaces.list", "workspaces.runtime_impact", "runtimes.list", "runtimes.lookup",
             "behaviors.identity", "behaviors.get", "behaviors.list", "behaviors.revision",

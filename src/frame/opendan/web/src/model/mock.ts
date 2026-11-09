@@ -1029,17 +1029,30 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       return { role: 'Jarvis, the personal agent of devtest.', self: 'I am careful, concise and I report what I did.' }
     },
 
-    recallHints: async (tags, maxHints = 8) => {
+    queryMemory: async (_session, words) => {
       await delay()
       const all = [
-        { id: 'h-101', time: '2026-09-28', sentence: 'Photos live under /home/devtest/Pictures/camera.', kind: 'fact', tags: ['photos'] },
-        { id: 'h-102', time: '2026-09-30', sentence: 'The user prefers reports as markdown with a short summary first.', kind: 'preference', tags: ['report'] },
-        { id: 'h-103', time: '2026-10-01', sentence: 'Renaming photos requires an accept decision before files are moved.', kind: 'rule', tags: ['photos', 'rename'] },
+        { id: 'item_photos_dir', time: '2026-09-28T00:00:00Z', sentence: 'Photos live under /home/devtest/Pictures/camera.', kind: 'fact', tags: ['photos'] },
+        { id: 'item_report_style', time: '2026-09-30T00:00:00Z', sentence: 'The user prefers reports as markdown with a short summary first.', kind: 'preference', tags: ['report'] },
+        { id: 'item_rename_accept', time: '2026-10-01T00:00:00Z', sentence: 'Renaming photos requires an accept decision before files are moved.', kind: 'rule', tags: ['photos', 'rename'] },
       ]
-      return all
-        .filter((h) => tags.length === 0 || h.tags.some((t) => tags.includes(t)))
-        .slice(0, maxHints)
-        .map((h) => ({ id: h.id, time: h.time, sentence: h.sentence, kind: h.kind }))
+      const cognitions = all
+        .filter((h) => words.length > 0 && h.tags.some((t) => words.includes(t)))
+        .map((h) => ({
+          layer: 'cognition' as const,
+          reference: `${h.id}@1`,
+          id: h.id,
+          summary: h.sentence,
+          kind: h.kind,
+          state: 'active',
+          observed_at: h.time,
+        }))
+      return {
+        status: words.length ? ('recalled' as const) : ('not_triggered' as const),
+        cognitions,
+        recent_perceptions: [],
+        pending_in_scope: 0,
+      }
     },
 
     goals: async () => {

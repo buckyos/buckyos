@@ -223,7 +223,7 @@ fn commit_args_schema() -> Value {
             "review_at":{"type":"string","description":"RFC 3339"},
             "review_when":{"type":"array","items":{"type":"string"}},
             "semantic_kind":{"type":"string","description":"preference | experience | correction | fact | …"},
-            "tags":{"type":"array","items":{"type":"string"},"description":"2..32 bytes each; letters, digits, spaces and `-` only (a tag with `_`, `.` or `/` is refused)"},
+            "tags":{"type":"array","items":{"type":"string"},"description":"2..32 bytes each; letters, digits, spaces and `-` only (a tag with `_`, `.` or `/` is refused). General concepts in English, lowercase words joined by `-` (weekly-report); names of people, projects and places and exact identifiers as written (陈宁, proj-a): sessions name their topics the same way"},
             "subject":{"type":"string","description":"upsert_relation: `obj_…`"},
             "predicate":{"type":"string","description":"upsert_relation: lowercase snake_case"},
             "object":{"type":"string","description":"upsert_relation: `obj_…`"},
@@ -1147,36 +1147,11 @@ pub(super) struct PerceiveArgs<'a> {
     pub mentions: &'a [String],
 }
 
-/// The Memory identity of a session, bound by the host (T01 rule): a UI
-/// session speaks for its peer, a Work for the agent's owner, a Goal Session
-/// for its Goal's owner; the Agent itself is always among the grants, and a
-/// bound workspace is a subject too.
+/// The Memory identity of a session, bound by the host
+/// ([`crate::memory::session_caller`]); a Goal Session speaks for its Goal's
+/// owner.
 pub(super) fn memory_caller(cfg: &SessionConfig, caps: &GoalCaps) -> Caller {
-    let agent = cfg.session.agent_did.clone();
-    let subject = match cfg.session.kind {
-        SessionKind::Ui => cfg
-            .channels
-            .outbound
-            .as_ref()
-            .map(|o| o.to.clone())
-            .or_else(|| cfg.session.owner.clone()),
-        SessionKind::Goal => caps.owner.clone().or_else(|| cfg.session.owner.clone()),
-        _ => cfg.session.owner.clone(),
-    };
-    let mut subjects: Vec<String> = subject.into_iter().collect();
-    if let Some(w) = &cfg.workspace_binding {
-        subjects.push(format!("workspace:{}", w.workspace_id));
-    }
-    if subjects.is_empty() {
-        subjects.push(agent.clone());
-    }
-    let mut grants: Vec<&str> = subjects.iter().map(String::as_str).collect();
-    grants.push(agent.as_str());
-    Caller::new(
-        cfg.session_id(),
-        &grants,
-        &subjects.iter().map(String::as_str).collect::<Vec<_>>(),
-    )
+    crate::memory::session_caller(cfg, caps.owner.as_deref())
 }
 
 /// Record a perception of this session through the Memory facade: the

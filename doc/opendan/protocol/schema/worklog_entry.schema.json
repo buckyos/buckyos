@@ -307,6 +307,13 @@
           },
           "type": "array"
         },
+        "memory_error": {
+          "description": "The batch's Memory material could not be read: why.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "run_id": {
           "type": "string"
         },
@@ -363,6 +370,13 @@
             "$ref": "#/definitions/InputRef"
           },
           "type": "array"
+        },
+        "memory_error": {
+          "description": "The batch's Memory material could not be read: why.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "run_id": {
           "type": "string"

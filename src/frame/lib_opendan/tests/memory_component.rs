@@ -16,7 +16,7 @@ use libopendan::lock::{Acquire, Lease};
 use libopendan::memory::*;
 use libopendan::protocol::{HolderInfo, PerceptionRecord};
 use libopendan::state::perception::read_records;
-use libopendan::state::{AgentStateClient, FsAgentStateClient, RecallQuery as RunnerRecall};
+use libopendan::state::{AgentStateClient, FsAgentStateClient};
 use memory_sim::*;
 use tempfile::TempDir;
 
@@ -598,45 +598,39 @@ async fn s13_runner_recall_reports_failures() {
     let (_t, mut h) = host();
     let si = h.si("si");
     seed(&mut h, &si);
-    let client = FsAgentStateClient::open(&h.root, "did:bns:a1", None, None).unwrap();
-    let ok = client
-        .cognition()
-        .recall_hints(&RunnerRecall {
-            tags: vec!["背景效果".into()],
-            max_hints: 5,
-        })
-        .await
-        .unwrap();
-    assert_eq!(ok.len(), 1);
+    let c = Caller::new("ui-b", &[U1, A1], &[U1]);
+    let q = MemoryQuery {
+        tags: vec!["背景效果".into()],
+        include_recent_perceptions: true,
+        ..MemoryQuery::default()
+    };
+    let ok = h.memory.query(&c, &q).unwrap();
+    assert_eq!(ok.cognitions.len(), 1);
     // The clue says what supports it and where it holds (capture / retain
     // TODO T2): the user's own lasting statement, limited to its object.
-    assert_eq!(ok[0].basis.as_deref(), Some("user_statement"));
-    assert!(ok[0].explicit);
-    assert_eq!(ok[0].applies_to, vec![ALPHA_GAME.to_string()]);
+    let hint = &ok.cognitions[0];
+    assert_eq!(hint.basis.map(|b| b.as_str()), Some("user_statement"));
+    assert!(hint.explicit);
+    assert_eq!(hint.applies_to(), vec![ALPHA_GAME.to_string()]);
     assert_eq!(
-        ok[0].qualifier(),
+        hint.qualifier(),
         format!("the user's explicit statement; applies to {ALPHA_GAME}")
     );
-    let none = client
-        .cognition()
-        .recall_hints(&RunnerRecall::default())
-        .await
-        .unwrap();
+    assert!(hint.note().ends_with(&format!("ref {}", hint.reference)), "{}", hint.note());
+    let none = h.memory.query(&c, &MemoryQuery::default()).unwrap();
     assert!(
-        none.is_empty(),
+        none.status == RecallStatus::NotTriggered && none.cognitions.is_empty(),
         "no entry: not triggered, not the whole Graph"
     );
+    // Through the Agent State, only a session's identity reads: one that
+    // cannot be found is an error, never an unrestricted read.
+    let client = FsAgentStateClient::open(&h.root, "did:bns:a1", None, None).unwrap();
+    assert!(client.cognition().query("ui-nobody", &q).await.is_err());
     let log = h.root.join("memory/.meta/occasions.jsonl");
     let text = std::fs::read_to_string(&log).unwrap();
     std::fs::write(&log, text.replacen("不闪烁", "会闪烁", 1)).unwrap();
-    assert!(client
-        .cognition()
-        .recall_hints(&RunnerRecall {
-            tags: vec!["背景效果".into()],
-            max_hints: 5,
-        })
-        .await
-        .is_err());
+    h.restart();
+    assert!(h.memory.query(&c, &q).is_err());
 }
 
 #[test]

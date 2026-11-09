@@ -1,0 +1,606 @@
+{
+ "owner": "did:bns:alice",
+ "agent": "did:bns:jarvis.alice",
+ "items": [
+  {
+   "item_id": "item_family_album_user_name",
+   "fixture": "c10_c11_c13_subjects",
+   "statement": "用户所说的“小相册”指家庭照片归档项目；在家庭照片整理语境中，应按这个项目称呼理解，而不是另建一个同名项目。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-family-photos"
+    ]
+   },
+   "tags": [
+    "小相册",
+    "家庭照片",
+    "项目称呼"
+   ],
+   "basis": "user_statement",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.65,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-10-22T03:00:00Z"
+  },
+  {
+   "item_id": "item_owner_supplier_x_timing_view",
+   "fixture": "c10_c11_c13_subjects",
+   "statement": "用户在讨论项目 B 的供应商时，对供应商 X 的交付时效不太放心，理由是其称 X 上次在项目 A 交付拖了两周。后续涉及 X 的供应商评估时应考虑这项担忧及其项目背景，而不是把它当作已独立核实的普遍不可靠结论。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "供应商x",
+    "时效",
+    "供应商选择",
+    "项目a"
+   ],
+   "basis": "user_statement",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.6,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-10-30T03:00:00Z"
+  },
+  {
+   "item_id": "item_project_a_design_contact",
+   "fixture": "c10_c11_c13_subjects",
+   "statement": "用户称陈宁是项目 A 的设计对接人，视觉问题一般找他确认；这不表示其拥有其他审批权限。群里发送报价单的同名者尚未确认是这位设计对接人，识别或关联联系人时不能仅凭“陈宁”这个姓名归并。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "陈宁",
+    "项目a",
+    "设计对接",
+    "身份辨别"
+   ],
+   "basis": "user_statement",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.65,
+   "confidence": 0.98,
+   "last_evidence_at": "2026-10-31T03:00:00Z"
+  },
+  {
+   "item_id": "item_proj_a_test_endpoint_convention",
+   "fixture": "c14_exact_url",
+   "statement": "用户约定在项目 A 中，“测试入口”指其指定的测试端点，不是生产入口。后续涉及该称谓时，应到项目配置的 test_endpoint 项查取当前地址，避免混用环境。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "项目a",
+    "测试入口",
+    "环境"
+   ],
+   "basis": "user_statement",
+   "explicit": true,
+   "stability": "contextual",
+   "weight": 0.85,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-10-26T03:00:00Z"
+  },
+  {
+   "item_id": "item_proj_a_t_v2_sample_check",
+   "fixture": "c3_success_method",
+   "statement": "用转换器 v2 批量转换项目 A 的模板 T 月报前，先试转含表格和页眉的代表性样本，重点检查页眉布局和表格跨页；样本检查曾在两个批次中提前暴露问题，分别修正模板映射、调整分页参数后整批通过。此经验限于该模板与转换器版本，模板或转换器变更时需重新验证。",
+   "scope": {
+    "subjects": [
+     "workspace:proj-a"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "转换器",
+    "模板t",
+    "月报",
+    "样本检查"
+   ],
+   "basis": "tool_observation",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.7,
+   "confidence": 0.98,
+   "last_evidence_at": "2026-11-05T03:00:00Z"
+  },
+  {
+   "item_id": "item_proj_a_active_users_comparison_clue",
+   "fixture": "c9_c12_reason_and_clue",
+   "statement": "项目 A 的“活跃用户”跨季度存在口径变化：Q2 按 7 日登录统计，Q3 起按 30 日有操作统计，不能直接把两者当作同一指标比较。比较历史数据前，先查项目指标字典 docs/metrics.md 和 2026-07 的决策记录，确认各期定义及后续是否又有变更。",
+   "scope": {
+    "subjects": [
+     "workspace:proj-a"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "项目a",
+    "活跃用户",
+    "统计口径",
+    "指标字典"
+   ],
+   "basis": "tool_observation",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.7,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-11-02T03:00:00Z"
+  },
+  {
+   "item_id": "item_proj_a_transcription_offline_reason",
+   "fixture": "c9_c12_reason_and_clue",
+   "statement": "项目 A 的语音转写方案未采用服务 X，是因为用户说明现场没有外网、必须离线运行，最终选择了本地模型。后续重新评估转写方案时，应先确认现场离线约束是否仍成立，而不是把服务 X 视为普遍不适用。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "项目a",
+    "语音转写",
+    "离线",
+    "服务x"
+   ],
+   "basis": "user_statement",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.7,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-10-18T03:00:00Z"
+  },
+  {
+   "item_id": "item_alice_proj_a_weekly_structure",
+   "fixture": "guidance_user_method",
+   "statement": "用户要求以后项目 A 的周报先给结论和待决事项，明细放附件；此要求限于项目 A 的周报。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "项目a",
+    "周报",
+    "结构"
+   ],
+   "basis": "user_statement",
+   "explicit": true,
+   "stability": "stable",
+   "weight": 0.8,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-11-01T04:00:00Z"
+  },
+  {
+   "item_id": "item_proj_a_tool_y_cache_suggestion",
+   "fixture": "guidance_user_method",
+   "statement": "在项目 A 使用 tool-y 时，可考虑用户提出的先建好缓存目录的方法；该方法尚未经代理实测，不能当作已验证的运行条件或修复办法。",
+   "scope": {
+    "subjects": [
+     "workspace:proj-a"
+    ],
+    "objects": [
+     "tool-y"
+    ]
+   },
+   "tags": [
+    "tool-y",
+    "缓存目录"
+   ],
+   "basis": "user_statement",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.5,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-11-01T03:00:00Z"
+  },
+  {
+   "item_id": "item_agent_completion_label_caution",
+   "fixture": "s1_delivery_merge",
+   "statement": "在 ClawChat 接入的委派交付中，Work 标记完成或一次发送 ACK 不足以证明接入完成；汇报前应按任务验收项核对实际运行证据，尤其不能遗漏接收和重连。此前漏查接收导致误报；逐项核对发送、接收、重连的运行记录后，用户才确认可用。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice",
+     "did:bns:jarvis.alice"
+    ],
+    "objects": [
+     "proj-clawchat"
+    ]
+   },
+   "tags": [
+    "clawchat",
+    "委派",
+    "验收",
+    "交付汇报"
+   ],
+   "basis": "tool_observation",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.8,
+   "confidence": 0.95,
+   "last_evidence_at": "2026-10-30T02:00:00Z"
+  },
+  {
+   "item_id": "item_clawchat_progress_output_checks",
+   "fixture": "s1_delivery_merge",
+   "statement": "跟进 ClawChat 长任务时，不能仅以“还在运行”判断或汇报进展，应核查阶段、实际产出和已确认的阻塞；阶段和产出长时间不变时，应结合预期耗时检查原因。曾在两小时无变化后查出等待授权，但无变化本身不证明卡住，也不能据此假定都是授权问题。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-clawchat"
+    ]
+   },
+   "tags": [
+    "clawchat",
+    "长任务",
+    "进展汇报",
+    "阻塞核查"
+   ],
+   "basis": "tool_observation",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.7,
+   "confidence": 0.9,
+   "last_evidence_at": "2026-10-29T08:00:00Z"
+  },
+  {
+   "item_id": "item_dev_provider_backup_recovery",
+   "fixture": "s3_error_with_remedy",
+   "statement": "本机 dev 环境报告生成遇到 llm.chat 的 provider 返回 auth_unavailable 时，可考虑切换备用模型 llm.backup：在业务代码未改的一次运行中，该切换让同一任务继续并完成。这是恢复线索，不代表原 provider 已恢复；认证配置未查，故障原因未确认。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "env-dev"
+    ]
+   },
+   "tags": [
+    "provider",
+    "auth-unavailable",
+    "备用模型",
+    "dev"
+   ],
+   "basis": "tool_observation",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.6,
+   "confidence": 0.95,
+   "last_evidence_at": "2026-11-01T06:20:00Z"
+  },
+  {
+   "item_id": "item_alice_residence_shanghai",
+   "fixture": "s4_city_four_meanings",
+   "statement": "用户长期住在上海；需要常住地背景时可据此理解，但不能据此判断用户此刻的位置。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ]
+   },
+   "tags": [
+    "常住地",
+    "上海"
+   ],
+   "basis": "user_statement",
+   "explicit": false,
+   "stability": "stable",
+   "weight": 0.6,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-11-03T03:00:00Z"
+  },
+  {
+   "item_id": "item_alice_weather_default_shanghai",
+   "fixture": "s4_city_four_meanings",
+   "statement": "用户问天气而未指定地点时，默认查询上海；这项默认仅适用于天气查询，不代表用户当前所在地。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ]
+   },
+   "tags": [
+    "天气",
+    "默认城市",
+    "上海"
+   ],
+   "basis": "user_statement",
+   "explicit": true,
+   "stability": "stable",
+   "weight": 0.7,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-11-03T04:00:00Z"
+  },
+  {
+   "item_id": "item_owner_proj_a_deliver_source_and_pdf",
+   "fixture": "s5_exception",
+   "statement": "用户要求项目 A 的后续交付同时提供可编辑源文件和 PDF。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "项目a",
+    "交付形式"
+   ],
+   "basis": "user_statement",
+   "explicit": true,
+   "stability": "stable",
+   "weight": 0.7,
+   "confidence": 0.9,
+   "last_evidence_at": "2026-10-12T02:00:00Z"
+  },
+  {
+   "item_id": "item_owner_proj_a_report_one_page",
+   "fixture": "s5_exception",
+   "statement": "用户要求项目 A 的后续报告控制在一页以内。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "项目a",
+    "报告",
+    "篇幅"
+   ],
+   "basis": "user_statement",
+   "explicit": true,
+   "stability": "stable",
+   "weight": 0.7,
+   "confidence": 0.9,
+   "last_evidence_at": "2026-10-20T02:00:00Z"
+  },
+  {
+   "item_id": "item_owner_proj_a_report_one_page_v2",
+   "fixture": "s5_lasting_change",
+   "statement": "用户要求项目 A 的后续报告控制在一页以内，但技术评审报告以后不受一页限制。",
+   "scope": {
+    "subjects": [
+     "did:bns:alice"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "项目a",
+    "报告",
+    "篇幅",
+    "技术评审"
+   ],
+   "basis": "user_statement",
+   "explicit": true,
+   "stability": "stable",
+   "weight": 0.7,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-11-06T02:00:00Z"
+  },
+  {
+   "item_id": "item_proja_artifact_directory_convention",
+   "fixture": "s6_tool_counterexample",
+   "statement": "proj-a 的产物以后统一放 workspace/build，这是用户设定的项目约定；即使工具允许默认输出到当前目录，也应按此约定指定产物位置。",
+   "scope": {
+    "subjects": [
+     "workspace:proj-a"
+    ],
+    "objects": [
+     "proj-a"
+    ]
+   },
+   "tags": [
+    "产物目录",
+    "项目约定"
+   ],
+   "basis": "user_statement",
+   "explicit": true,
+   "stability": "contextual",
+   "weight": 0.8,
+   "confidence": 1.0,
+   "last_evidence_at": "2026-11-04T05:00:00Z"
+  },
+  {
+   "item_id": "item_ws_toolx_needs_output_dir",
+   "fixture": "s6_tool_counterexample",
+   "statement": "在 proj-a 中使用 tool-x v1.4（Linux）生成产物时，遇到 “no output target” 应先检查是否显式指定 --out；已有独立复现表明补上输出目录后成功。此经验不能推广到所有版本：v2.0（Linux）已在不带 --out 时成功将产物写入当前目录。",
+   "scope": {
+    "subjects": [
+     "workspace:proj-a"
+    ],
+    "objects": [
+     "tool-x"
+    ]
+   },
+   "tags": [
+    "tool-x",
+    "输出目录",
+    "linux",
+    "版本差异"
+   ],
+   "basis": "tool_observation",
+   "explicit": false,
+   "stability": "contextual",
+   "weight": 0.6,
+   "confidence": 0.95,
+   "last_evidence_at": "2026-11-04T03:00:00Z"
+  }
+ ],
+ "messages": [
+  {
+   "text": "我们来过一下项目 A 的周报。先别动手，告诉我你记得的要求。",
+   "relevant": [
+    "item_alice_proj_a_weekly_structure",
+    "item_owner_proj_a_report_one_page",
+    "item_owner_proj_a_report_one_page_v2"
+   ]
+  },
+  {
+   "text": "明天天气怎么样？要不要带伞？",
+   "relevant": [
+    "item_alice_weather_default_shanghai"
+   ]
+  },
+  {
+   "text": "小相册里上个月的照片帮我按日期整理一下。",
+   "relevant": [
+    "item_family_album_user_name"
+   ]
+  },
+  {
+   "text": "ClawChat 那个接入现在什么进展了？",
+   "relevant": [
+    "item_clawchat_progress_output_checks",
+    "item_agent_completion_label_caution"
+   ]
+  },
+  {
+   "text": "项目 A 的语音转写要不要换成服务 X？听说它识别率更高。",
+   "relevant": [
+    "item_proj_a_transcription_offline_reason"
+   ]
+  },
+  {
+   "text": "供应商 X 这次报价挺低的，项目 B 要不要选他们？",
+   "relevant": [
+    "item_owner_supplier_x_timing_view"
+   ]
+  },
+  {
+   "text": "陈宁在群里发了一份报价单，你帮我看看能不能直接批。",
+   "relevant": [
+    "item_project_a_design_contact"
+   ]
+  },
+  {
+   "text": "项目 A 的技术评审报告大概要写多长？",
+   "relevant": [
+    "item_owner_proj_a_report_one_page_v2",
+    "item_owner_proj_a_report_one_page"
+   ]
+  },
+  {
+   "text": "dev 环境生成报告又报 auth_unavailable 了，怎么办？",
+   "relevant": [
+    "item_dev_provider_backup_recovery"
+   ]
+  },
+  {
+   "text": "把项目 A 的测试入口地址发给我。",
+   "relevant": [
+    "item_proj_a_test_endpoint_convention"
+   ]
+  },
+  {
+   "text": "这次项目 A 交付要给哪些格式的文件？",
+   "relevant": [
+    "item_owner_proj_a_deliver_source_and_pdf"
+   ]
+  },
+  {
+   "text": "ClawChat 接入做完了吗？做完了我就跟老板说。",
+   "relevant": [
+    "item_agent_completion_label_caution",
+    "item_clawchat_progress_output_checks"
+   ]
+  },
+  {
+   "text": "帮我写一首关于秋天的短诗。",
+   "relevant": []
+  },
+  {
+   "text": "今天晚饭吃什么比较好？给我推荐三个家常菜。",
+   "relevant": []
+  },
+  {
+   "text": "解释一下 TCP 三次握手是怎么回事。",
+   "relevant": []
+  },
+  {
+   "text": "把这句翻译成中文：The quick brown fox jumps over the lazy dog.",
+   "relevant": []
+  },
+  {
+   "text": "我的电脑风扇声音很大，可能是什么原因？",
+   "relevant": []
+  },
+  {
+   "text": "提醒我下午三点开会。",
+   "relevant": []
+  },
+  {
+   "text": "最近有什么好看的科幻电影？推荐几部。",
+   "relevant": []
+  },
+  {
+   "text": "帮我算一下 1234 乘以 5678 等于多少。",
+   "relevant": []
+  },
+  {
+   "text": "你好，在吗？",
+   "relevant": []
+  },
+  {
+   "text": "我想学 Rust，从哪里开始比较好？",
+   "relevant": []
+  },
+  {
+   "text": "周末想去爬山，有什么需要准备的？",
+   "relevant": []
+  },
+  {
+   "text": "帮我起草一封请假邮件，下周一到周三家里有事。",
+   "relevant": []
+  },
+  {
+   "text": "项目 B 的月报明天要交，帮我列个提纲。",
+   "relevant": []
+  },
+  {
+   "text": "帮我查一下北京明天的天气。",
+   "relevant": []
+  },
+  {
+   "text": "我上周去上海出差的报销单还没交，提醒我一下。",
+   "relevant": []
+  },
+  {
+   "text": "这份报告的结论部分写得不清楚，你帮我改改。",
+   "relevant": []
+  }
+ ]
+}

@@ -464,11 +464,25 @@ export interface IdentityText {
   i18n?: Record<string, string>
 }
 
+/** A Memory clue (`libopendan::memory::Hint`), as far as the page shows it. */
 export interface Hint {
+  layer: 'cognition' | 'perception' | 'clarification'
+  /** `item_x@3`, or `<sid>:<seq>` for a note not yet consolidated. */
+  reference: string
   id: string
-  time: string
-  sentence: string
-  kind: string
+  summary: string
+  kind?: string
+  state: string
+  observed_at?: string
+  session_id?: string
+}
+
+/** `cognition.query` (an active Memory query as one session). */
+export interface MemoryQueryResult {
+  status: 'not_triggered' | 'recalled' | 'unchanged'
+  cognitions: Hint[]
+  recent_perceptions: Hint[]
+  pending_in_scope: number
 }
 
 export interface ModuleStatus {

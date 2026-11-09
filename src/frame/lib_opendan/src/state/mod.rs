@@ -35,7 +35,7 @@ pub use behaviors::{
     check_cmd_skill_names, freeze_behavior, freeze_config, parse_behavior, BehaviorCatalog,
     FsBehaviorCatalog, MemBehaviorCatalog, CMD_SKILLS_DIR, ROLE_SUPPLEMENT_FILE,
 };
-pub use cognition::{Hint, NotebookNote, RecallQuery};
+pub use cognition::NotebookNote;
 pub use connect::{
     connect, register_in_process, unregister_in_process, ConnectOptions, ForwardingStateClient,
     StateLocator, WithBehaviors, WithNotify, ENV_AGENT_ROOT, ENV_AGENT_STATE_URL,
@@ -109,11 +109,15 @@ pub trait Perception: Send + Sync {
     async fn last_seq(&self, sid: &str) -> Result<u64>;
 }
 
-/// Cognition facade (§6.4) over `agent_tool` memory / notebook.
+/// Cognition facade (§6.3, §6.4) over the Memory component / notebook.
 #[async_trait]
 pub trait Cognition: Send + Sync {
-    /// Read-only; any session may call it.
-    async fn recall_hints(&self, q: &RecallQuery) -> Result<Vec<Hint>>;
+    /// Active Memory query of session `sid`, as its host-bound identity
+    /// (its grants decide what is visible). Read-only.
+    async fn query(&self, sid: &str, q: &crate::memory::MemoryQuery) -> Result<crate::memory::QueryResult>;
+    /// A reference in full (a cognition with its provenance, or a
+    /// perception), as session `sid`. Read-only.
+    async fn read(&self, sid: &str, reference: &str) -> Result<crate::memory::MemoryRead>;
     /// Explicit declaration from an ordinary session ("remember this").
     async fn notebook_append(&self, note: &NotebookNote, who: &str) -> Result<()>;
 }

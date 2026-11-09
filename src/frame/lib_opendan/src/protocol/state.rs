@@ -633,8 +633,17 @@ pub struct SessionState {
     pub process_stack: Vec<ProcessFrame>,
     #[serde(default)]
     pub bootstrap_done: bool,
+    /// What the conversation is about, as other sessions see it: derived
+    /// from [`Self::memory`] (its title and the tags still held).
     #[serde(default)]
     pub topic: Topic,
+    /// The session's Memory observation (recall wiring TODO §3.3): the
+    /// topic with every tag's score and when it was last mentioned, the
+    /// snapshot, pending refs, read set and what this topic phase showed.
+    /// A batch's receipt carries it as it is after that batch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<Value>")]
+    pub memory: Option<crate::memory::ObservationState>,
     #[serde(default)]
     pub live_run: Option<LiveRun>,
     #[serde(default)]
@@ -851,6 +860,7 @@ impl SessionState {
             process_stack: Vec::new(),
             bootstrap_done: false,
             topic: Topic::default(),
+            memory: None,
             live_run: None,
             last_run: None,
             worklog,

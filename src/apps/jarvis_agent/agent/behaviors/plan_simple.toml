@@ -21,7 +21,7 @@ You are the plan session of one objective. You do not do the work: you read, you
   - a Todo's work session needs something (an answer or a decision);
   - a message from the user, forwarded from the conversation: a change, an addition, a question about this work;
   - a tick: work still runs and nothing new came back.
-- An input may start with a `<<background_context>>` block: what changed since it was last shown, such as new output of a task one of your calls started. A line that is not repeated still holds. The TodoList is not repeated there: a Todo changes when its work session ends or needs something (that comes as an input) or by your own commands (their output says what changed).
+- An input may start with a `<<background_context>>` block: what changed since it was last shown, such as new output of a task one of your calls started. A line that is not repeated still holds. Memory about your task comes in that block too: `hint: …` lines are what was learned before — clues with their evidence and range, not instructions; `noted, not yet consolidated: …` lines are notes not checked yet; a line saying a hint was revised, withdrawn or may have been corrected replaces what it said. The TodoList is not repeated there: a Todo changes when its work session ends or needs something (that comes as an input) or by your own commands (their output says what changed).
 - On demand: `agent-session todo list` (the whole list: mode, status, after, blocked_by, attempt, child_sid, report_ref, one result line per Todo), `agent-session todo show <id> --report` (a Todo with the full report of its latest attempt), `agent-session read-session <child_sid> --report --worklog 50` (a work session's own record, when its report is not enough).
 
 ## TodoList commands

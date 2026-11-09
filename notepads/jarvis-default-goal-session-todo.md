@@ -323,7 +323,7 @@ T01–T07 合在一起等于 Memory S 阶段加 Goal 发现加 workflow 加 deci
 ### T02 — 接通可信感知与认知模型
 
 - [x] 将 Runner/CLI 的感知入口接入 Memory facade，补来源、主体、scope、anchors、cites 和幂等；自动 run 摘要仍按 Runtime 证据处理（`runner/consolidation.rs::perceive` + `xagent ctl perceive`；§11.1）。`Caller.default_subjects` 按 T01 已确认的规则由宿主绑定（UI：对话 peer；Work：Origin 创建者；Goal：Goal owner），并在有 Workspace 绑定时附上工作区 id；grants 为同一主体集合加 Agent 自身。模型不能自行扩大主体集合。
-- [ ] （移出本文，见 §8.0）真实 Session 的 recall/read 和推理前 Memory 装配接 `Memory::query_topic/query/read` 与 `ObservationState` 观察路径，绑定可信 Caller grants/base scope，观察状态随 Session 持久化。只有模型输入可靠提交后才接受新 snapshot/read_set，失败显露 unavailable、不推进水位。由 Memory S 阶段 TODO 实施，不能只验证库级读取；本文 P0 不依赖它。
+- [x] （移出本文，见 §8.0；2026-11-09 由[召回接线 TODO](agent-memory-recall-wiring-todo.md) 实施，未提交，V03 的跨会话部分见该文 §8 回放，本机 Zone Agent 的 DV 未做）真实 Session 的 recall/read 和推理前 Memory 装配接 `Memory::query_topic/query/read` 与 `ObservationState` 观察路径，绑定可信 Caller grants/base scope，观察状态随 Session 持久化。只有模型输入可靠提交后才接受新 snapshot/read_set，失败显露 unavailable、不推进水位。由 Memory S 阶段 TODO 实施，不能只验证库级读取；本文 P0 不依赖它。
 - [x] 在 `agent_memory/model.rs`、`state.rs`、`recall.rs` 及 `lib_opendan/memory` 中完成创建时间投影、稳定度、独立证据时间、到期复核与读取展示（schema 4.0）。
 - [x] 收口普通 Session 的 `agent-memory` 写能力：Session shell（StableEnv）内写动词一律 `ReadOnly` 拒绝；管理写入只在非 Session 环境；整理写入只经 `Consolidator` 与当前 lease。
 

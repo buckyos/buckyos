@@ -11,7 +11,7 @@ import type {
   GoalSchedule,
   GoalState,
   GoalStatus,
-  Hint,
+  MemoryQueryResult,
   IdentityText,
   KnownRuntime,
   RuntimeExtTools,
@@ -78,7 +78,8 @@ export interface OpenDanDataModel {
   behaviors(): Promise<BehaviorCatalog>
   behavior(name: string): Promise<unknown>
   identity(): Promise<IdentityText>
-  recallHints(tags: string[], maxHints?: number): Promise<Hint[]>
+  /** What session `session` finds in Memory for `words` (its grants decide what is visible). */
+  queryMemory(session: string, words: string[]): Promise<MemoryQueryResult>
 
   goals(): Promise<GoalDefinition[]>
   /** `null`: no such Goal (or revision). */

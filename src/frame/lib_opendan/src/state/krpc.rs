@@ -238,9 +238,17 @@ pub async fn serve_call(
             Ok(sid) => agent.perception().last_seq(&sid).await.and_then(out),
             Err(e) => Err(e),
         },
-        "cognition.recall_hints" => match arg::<RecallQuery>(params, "query") {
-            Ok(q) => agent.cognition().recall_hints(&q).await.and_then(out),
-            Err(e) => Err(e),
+        // As the session's own identity (its configuration binds it).
+        "cognition.query" => match (
+            arg::<String>(params, "session"),
+            arg::<crate::memory::MemoryQuery>(params, "query"),
+        ) {
+            (Ok(sid), Ok(q)) => agent.cognition().query(&sid, &q).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "cognition.read" => match (arg::<String>(params, "session"), arg::<String>(params, "reference")) {
+            (Ok(sid), Ok(r)) => agent.cognition().read(&sid, &r).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
         },
         "cognition.notebook_append" => match arg::<NotebookNote>(params, "note") {
             Ok(n) => agent.cognition().notebook_append(&n, who).await.and_then(out),
@@ -684,8 +692,11 @@ impl Perception for KrpcAgentStateClient {
 
 #[async_trait]
 impl Cognition for KrpcAgentStateClient {
-    async fn recall_hints(&self, q: &RecallQuery) -> Result<Vec<Hint>> {
-        self.call("cognition.recall_hints", json!({ "query": q })).await
+    async fn query(&self, sid: &str, q: &crate::memory::MemoryQuery) -> Result<crate::memory::QueryResult> {
+        self.call("cognition.query", json!({ "session": sid, "query": q })).await
+    }
+    async fn read(&self, sid: &str, reference: &str) -> Result<crate::memory::MemoryRead> {
+        self.call("cognition.read", json!({ "session": sid, "reference": reference })).await
     }
     async fn notebook_append(&self, note: &NotebookNote, _who: &str) -> Result<()> {
         self.call("cognition.notebook_append", json!({ "note": note })).await

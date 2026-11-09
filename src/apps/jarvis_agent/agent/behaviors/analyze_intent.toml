@@ -46,7 +46,7 @@ For the request below, decide what it needs:
    - `agent-session sessions --children --active`, `agent-session read-session <sid> --report`: work running or just finished (a failed work's report is input for a new one)
    - `agent-session goal list` / `goal show <id>`: existing goals
    - `agent-session skill list --kind cmd`: command manuals (cmd_skills) a work session can be given, with what each is for and needs
-   - `agent-session recall <tag>...`: what you learned earlier
+   - `agent-session recall <words or tags>...`: what you learned earlier (consolidated memory, and apart the notes not consolidated yet; `--read <ref>` shows one with its evidence)
    - plain shell commands to look at directories, files and git status
 3. Ask the user what only the user can answer (below), then look again with the answer.
 4. Create what the request needs once it is ready.

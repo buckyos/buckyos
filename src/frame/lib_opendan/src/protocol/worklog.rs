@@ -94,6 +94,9 @@ pub enum WorklogBody {
         events: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hook: Option<String>,
+        /// The batch's Memory material could not be read: why.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_error: Option<String>,
         at_ms: u64,
     },
     /// An input batch that joined the open Turn (hand-over, sub context
@@ -108,6 +111,9 @@ pub enum WorklogBody {
         events: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hook: Option<String>,
+        /// The batch's Memory material could not be read: why.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_error: Option<String>,
         at_ms: u64,
     },
     UserMessage {

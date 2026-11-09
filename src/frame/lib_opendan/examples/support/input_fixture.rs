@@ -261,7 +261,6 @@ pub fn chat_background(records: &[(String, Value)]) -> Vec<libopendan::runner::b
         runtime_status: &runtime,
         active: &[],
         events: &events,
-        hints: &[],
         tunnel: None,
     });
     select(candidates, &Default::default(), BATCH_MS).0

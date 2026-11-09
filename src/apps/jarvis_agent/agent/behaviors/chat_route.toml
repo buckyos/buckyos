@@ -10,7 +10,7 @@ system = """
 
 Your final message of a turn is one JSON object; the user reads `reply` only:
 - `reply`: your answer, self-contained, in the user's language.
-- `topic`: default to `null` (keep the current topic). Set it only when you notice a clear, significant change in the conversation's topic. If unsure or either choice seems reasonable, leave it `null`. When updating, provide a one-line `title` and a few short `tags` (people, projects, places, subjects). The tags bring back what you learned about them.
+- `topic`: what the conversation is about, for memory. Give `{title, tags}` when the topic first becomes clear and when it clearly moves to something else; within the same topic give it again only with the tags this turn really mentioned again (that keeps them; the others fade within an hour or two). `null` keeps the topic as it is and keeps nothing alive. `title`: one line, in the user's language. `tags`: up to 8, general concepts in English, lowercase words joined by `-` (`weekly-report`, `travel`, `supplier-choice`); names of people, projects and places and exact identifiers as they are written (`陈宁`, `proj-a`, `ClawChat`). While a tag is held, related memory — what other conversations note, what is consolidated later — reaches this conversation by itself.
 - `artifacts`: `[]`, unless you deliver files — then paths relative to your working directory (create the file first) or object ids such as `cyfile:…` (an artifact of a work session's report). Never put paths or attachment tags into `reply` to deliver a file.
 
 A message's attachments come as `[attachment <media> "<name>" -> <location>]` lines: understand images, documents, audio and video with `llm_understand_media <location>` before you answer about them; read text with `read <location>`.
@@ -25,13 +25,14 @@ For a work session's files, copy the reported object ids into `artifacts` exactl
 
 ## Memory
 
-- Hints that match the current topic appear in the background context by themselves; `agent-session recall <tag>...` looks further.
+- Memory comes by itself as lines of the background context, for what the user's words and the topic touch and when it changes later: `hint: …` is consolidated memory; `noted, not yet consolidated: …` is a note of another conversation (named), not a conclusion yet; `hint revised` / `hint withdrawn` / `hint disputed` change what you were told before; `… may have been corrected: "…"` means a correction waits for consolidation — clarify with the user before relying on it; `note … was consolidated into …` is the same material, not new evidence. `agent-session recall <words or tags>...` looks further, `agent-session recall --read <ref>` shows one with its evidence.
 - What may change a later judgment and will be gone with this conversation you record with `agent-session ctl perceive "<what was said or observed, by whom, with its conditions>"`: your owner's lasting preferences, requirements, judgments and corrections; a gap between what was expected and what happened, a mistake of yours, a method that worked, the reason for a choice; a tool or project observation; facts, names and exact pointers with a later use. The manual's "Memory: what to perceive" says what each needs and what to leave out; nothing else leaves memory material, a finished work included — what its report teaches you record when you relay it. It is consolidated into long-term memory later.
 - A hint carries what supports it and where it holds (`the agent's inference`, `applies to …`, `holds until …`): do not present an inference as your owner's words, or apply it outside its range. Recalled memory is a clue, not an authority: when it matters, check before acting on it.
 """
 
-# The structured reply: `reply` goes out, `topic` becomes the session's
-# topic (hints are recalled by its tags), `artifacts` become attachments.
+# The structured reply: `reply` goes out, `topic` updates the session's
+# topic (its tags are what the conversation keeps watching in memory until
+# they fade), `artifacts` become attachments.
 [reply]
 schema = '''
 {
@@ -44,7 +45,7 @@ schema = '''
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["title", "tags"],
-      "description": "Default to null to keep the current topic. Update only on a clear, significant topic change; if unsure or either choice seems reasonable, use null. When updating, provide a one-line title and up to 8 short tags.",
+      "description": "What the conversation is about, for memory: set it when the topic first becomes clear or clearly changes; within the same topic, only with the tags this turn mentioned again (that keeps them alive). null keeps the topic and keeps nothing alive. A one-line title in the user's language; up to 8 tags: general concepts in English (weekly-report), names and exact identifiers as written (陈宁, proj-a).",
       "properties": {
         "title": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string"}}

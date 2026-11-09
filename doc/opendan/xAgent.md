@@ -739,7 +739,7 @@ pub struct RuntimeGrant {
 | 工具（层 ②） | Agent State 门面 | 读 / 写 | 备注 |
 |---|---|---|---|
 | `ctl activity --summary/--touch`、`ctl perceive` | — | 控制协议：投递到本 session 队列（§4.4） | 无队列 session 不可用 |
-| `recall <query>` | `cognition().recall_hints` | 读 | |
+| `recall <words or tags>...`、`recall --read <ref>` | `cognition().query` / `read`（以本 session 的授权身份，session 来自 `$OPENDAN_SESSION_ID`） | 读 | 认知与待整理感知分开输出（2026-11-09） |
 | `note <text>` | `cognition().notebook_append(who)` | 写 | |
 | `sessions`、`read-session <sid>` | `sessions().query/lookup` + 目录读 | 读 | 遵守 `acl.agent_access` |
 | `create-worksession`、`post <sid>` | `sessions().register` / `post_input` | 写 | 创建 Sub Session（§4.11）；子 session 的 driver 默认是调用者 |
@@ -943,7 +943,7 @@ impl dyn AgentStateClient {
 | `sessions()` | 登记门槛 `lookup`、每批 `me`、订阅的 session、`children_of`（新：子 session 状态，§4.14）、`scope_touching` | 每次提交后 `report_state`；创建时 `register` |
 | `activity()` | 受控输入现算完整 `<active_sessions>` | （活动摘要经 `report_state` 回报） |
 | `perception()` | 整理 Goal 的材料读取 | perception 输入（`ctl perceive`）；Runtime 不再写 run_digest / task_outcome，也不补发（2026-11-08） |
-| `cognition()` | bootstrap 或有新 msg/event 时 `recall_hints` | self_improve 成功时 `commit_consolidation` |
+| `cognition()` | 层 ② 的 `recall`（`query` / `read`）；批次的自动召回与观察不经此门面，由驱动者直接调用 Memory 组件（`memory_batch`） | 整理 Goal 的 `commit_consolidation` |
 | `artifacts()` | `head` / `version` | `register_version`、`decide` |
 | `locks()` | — | `self_improve`、`artifact:<aid>` |
 | `behaviors()`（新） | 冻结时 `identity / get / revision`；补冻结时 `get` | — |

@@ -376,6 +376,16 @@ pub(super) struct Core {
     pub index: Option<IndexUse>,
 }
 
+/// [`Memory::topic_pools`].
+pub(super) struct TopicPools {
+    pub status: RecallStatus,
+    pub pools: [Vec<Hint>; 4],
+    pub ambiguous: Vec<AmbiguousAlias>,
+    pub pending_in_scope: usize,
+    pub last_consolidated_at: Option<String>,
+    pub index: Option<IndexUse>,
+}
+
 pub(super) struct Spec<'a> {
     pub topic: TopicScope,
     pub aliases: &'a [String],
@@ -500,11 +510,16 @@ impl Memory {
         })
     }
 
-    /// Initial recall of a topic (A.9): the snapshot is taken before
-    /// reading, so anything written meanwhile shows up as a later change
-    /// (possibly twice; Sessions dedupe by reference and revision).
-    pub fn query_topic(&self, caller: &Caller, q: &TopicQuery) -> MemoryResult<TopicResult> {
-        let snapshot = self.snapshot()?;
+    /// The candidates of a topic recall before any budget, in the four
+    /// pools of [`Budget::allocate`]: validity changes (cognitions whose
+    /// validity is in question, and the unconsolidated corrections behind
+    /// them), plain cognitions (by score), unconsolidated perceptions, and
+    /// clarification questions.
+    pub(super) fn topic_pools(
+        &self,
+        caller: &Caller,
+        q: &TopicQuery,
+    ) -> MemoryResult<TopicPools> {
         let core = self.recall_core(
             caller,
             &Spec {
@@ -515,7 +530,35 @@ impl Memory {
                 now: self.now(),
             },
         )?;
-        if core.status == RecallStatus::NotTriggered {
+        let mut validity = Vec::new();
+        let mut plain = Vec::new();
+        if q.cognitions {
+            for h in core.cognitions {
+                if h.state.is_validity_change() {
+                    validity.push(h);
+                } else {
+                    plain.push(h);
+                }
+            }
+        }
+        validity.extend(core.corrections);
+        Ok(TopicPools {
+            status: core.status,
+            pools: [validity, plain, core.perceptions, core.clarifications],
+            ambiguous: core.ambiguous,
+            pending_in_scope: core.pending_in_scope,
+            last_consolidated_at: core.last_consolidated_at,
+            index: core.index,
+        })
+    }
+
+    /// Initial recall of a topic (A.9): the snapshot is taken before
+    /// reading, so anything written meanwhile shows up as a later change
+    /// (possibly twice; Sessions dedupe by reference and revision).
+    pub fn query_topic(&self, caller: &Caller, q: &TopicQuery) -> MemoryResult<TopicResult> {
+        let snapshot = self.snapshot()?;
+        let p = self.topic_pools(caller, q)?;
+        if p.status == RecallStatus::NotTriggered {
             return Ok(TopicResult {
                 status: RecallStatus::NotTriggered,
                 cognitions: Vec::new(),
@@ -530,21 +573,7 @@ impl Memory {
                 index: None,
             });
         }
-        let mut validity = Vec::new();
-        let mut plain = Vec::new();
-        if q.cognitions {
-            for h in core.cognitions {
-                if h.state.is_validity_change() {
-                    validity.push(h);
-                } else {
-                    plain.push(h);
-                }
-            }
-        }
-        validity.extend(core.corrections);
-        let (delivered, rest) =
-            q.budget
-                .allocate([validity, plain, core.perceptions, core.clarifications]);
+        let (delivered, rest) = q.budget.allocate(p.pools);
         let mut result = TopicResult {
             status: RecallStatus::Recalled,
             cognitions: Vec::new(),
@@ -553,10 +582,10 @@ impl Memory {
             truncated: !rest.is_empty(),
             omitted: rest.iter().map(pending_ref).collect(),
             snapshot,
-            ambiguous_aliases: core.ambiguous,
-            pending_in_scope: core.pending_in_scope,
-            last_consolidated_at: core.last_consolidated_at,
-            index: core.index,
+            ambiguous_aliases: p.ambiguous,
+            pending_in_scope: p.pending_in_scope,
+            last_consolidated_at: p.last_consolidated_at,
+            index: p.index,
         };
         for h in delivered {
             match h.layer {

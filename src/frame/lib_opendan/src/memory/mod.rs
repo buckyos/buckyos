@@ -50,12 +50,12 @@ pub use consolidation::{
 pub use expression::{review_expression, LONG_STATEMENT_CHARS};
 pub use hint::{scope_object_url, Budget, Hint, HintLayer, HintState};
 pub use observation::{
-    observe, set_topic, Delivery, LastQuery, ObservationState, TopicConfig, TopicOutcome,
-    TopicState, TopicTag, TopicUpdate, Valve,
+    observe, observe_batch, set_topic, BatchDelivery, BatchEntry, Delivery, LastQuery,
+    ObservationState, TopicConfig, TopicOutcome, TopicState, TopicTag, TopicUpdate, Valve,
 };
 pub use perception::{PerceptionInput, PerceptionReceipt, ReceiptStatus};
 pub use read::{
-    BasisEntry, CognitionView, PerceptionView, ProvenanceView, RevisionEntry,
+    BasisEntry, CognitionView, MemoryRead, PerceptionView, ProvenanceView, RevisionEntry,
     SourceAvailability,
 };
 pub use recall::{MemoryQuery, QueryResult, RecallStatus, TopicQuery, TopicResult, TopicScope};
@@ -239,6 +239,42 @@ impl Caller {
             record_policy: RecordPolicy::Normal,
         }
     }
+}
+
+/// The Memory identity of a session, bound by the host (T01 rule; never
+/// by the model): a UI session speaks for its peer, a Work for the agent's
+/// owner, a Goal Session for its Goal's owner (`goal_owner`, else the
+/// session's owner); the Agent itself is always among the grants, and a
+/// bound workspace is a subject too.
+pub fn session_caller(cfg: &crate::protocol::SessionConfig, goal_owner: Option<&str>) -> Caller {
+    use crate::protocol::SessionKind;
+    let agent = cfg.session.agent_did.clone();
+    let subject = match cfg.session.kind {
+        SessionKind::Ui => cfg
+            .channels
+            .outbound
+            .as_ref()
+            .map(|o| o.to.clone())
+            .or_else(|| cfg.session.owner.clone()),
+        SessionKind::Goal => goal_owner
+            .map(str::to_string)
+            .or_else(|| cfg.session.owner.clone()),
+        _ => cfg.session.owner.clone(),
+    };
+    let mut subjects: Vec<String> = subject.into_iter().collect();
+    if let Some(w) = &cfg.workspace_binding {
+        subjects.push(format!("workspace:{}", w.workspace_id));
+    }
+    if subjects.is_empty() {
+        subjects.push(agent.clone());
+    }
+    let mut grants: Vec<&str> = subjects.iter().map(String::as_str).collect();
+    grants.push(agent.as_str());
+    Caller::new(
+        cfg.session_id(),
+        &grants,
+        &subjects.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
 }
 
 #[derive(Clone)]

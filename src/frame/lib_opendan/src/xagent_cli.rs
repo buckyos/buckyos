@@ -79,7 +79,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   <spec> = active|semi:object:<id>[#<event>] | semi:session:<sid>[:watch=f1,f2] | active|semi:timer:<name>
 
   inside a session's shell (as `agent-session`; the session comes from the environment):
-  ctl activity ... | ctl perceive <text> | recall <tag>... | note <text> | sessions [--active] [--children] [--json]
+  ctl activity ... | ctl perceive <text> | note <text> | sessions [--active] [--children] [--json]
+  recall <word|tag>... [--object <path>]... [--alias <name>]... [--limit <n>] [--json] | recall --read <ref> [--json]
   read-session <sid> [--report] [--worklog <n>] | artifact head <aid> | artifact list
   create-worksession --title <t> --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
         [--class <c>] [--behavior <b>] [--cmd-skill <name>]... [--workspace inherit|none|<id>] [--runtime inherit|<id>]
@@ -1113,18 +1114,150 @@ fn cmd_schema(mut a: Args) -> R<i32> {
 
 // ---- commands of a session's own shell (layer ② session tools) ----
 
+/// `recall <words>... [--object <path>]... [--alias <name>]... [--limit <n>]
+/// [--json]` and `recall --read <ref> [--json]`: the session's active Memory
+/// query (§6.3). Who asks is the session the shell belongs to (its host
+/// binds it), never an argument: what it may see is that session's.
 async fn cmd_recall(a: Args) -> R<i32> {
+    let sid = env_sid().ok_or_else(|| {
+        bad("recall runs in a session's shell ($OPENDAN_SESSION_ID): what it may see is that session's")
+    })?;
     let c = ctx(&a, None, false).await?;
-    let hints = c
-        .agent
-        .cognition()
-        .recall_hints(&crate::state::RecallQuery {
-            tags: a.pos.iter().cloned().collect(),
-            max_hints: a.num("max")?.unwrap_or(5),
-        })
-        .await?;
-    print(&hints);
+    if let Some(reference) = a.get("read") {
+        let v = c.agent.cognition().read(&sid, &reference).await?;
+        if a.has("json") {
+            print(&v);
+        } else {
+            print!("{}", render_memory_read(&v));
+        }
+        return Ok(0);
+    }
+    let words: Vec<String> = a.pos.iter().map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect();
+    // Every word is a tag too; one a tag cannot be is only text.
+    let tags: Vec<String> = words
+        .iter()
+        .filter(|w| agent_tool::agent_memory::normalize_tags(std::slice::from_ref(*w)).is_ok())
+        .cloned()
+        .collect();
+    let q = crate::memory::MemoryQuery {
+        text: Some(words.join(" ")).filter(|t| !t.is_empty()),
+        tags,
+        objects: a.all("object"),
+        aliases: a.all("alias"),
+        // Notes not yet consolidated come back too, apart (§6.3.1).
+        include_recent_perceptions: true,
+        limit: a.num("limit")?.unwrap_or(10),
+        ..Default::default()
+    };
+    let r = c.agent.cognition().query(&sid, &q).await?;
+    if a.has("json") {
+        print(&r);
+    } else {
+        print!("{}", render_query(&r));
+    }
     Ok(0)
+}
+
+/// The answer of `recall`, in the lines a batch's background uses.
+fn render_query(r: &crate::memory::QueryResult) -> String {
+    use crate::memory::{Change, ChangeKind, RecallStatus};
+    use crate::runner::memory_batch::line;
+    if r.status == RecallStatus::NotTriggered {
+        return "nothing to look up by: give words, tags, --object or --alias\n".into();
+    }
+    let corrections: std::collections::BTreeMap<String, String> = r
+        .corrections
+        .iter()
+        .map(|h| (h.reference.clone(), h.summary.clone()))
+        .collect();
+    let lines = |hints: &[crate::memory::Hint]| -> String {
+        hints
+            .iter()
+            .map(|h| {
+                let c = Change { kind: ChangeKind::Recalled, hint: h.clone() };
+                format!("- {}\n", line(&c, &corrections).text)
+            })
+            .collect()
+    };
+    let mut out = String::new();
+    out.push_str(&format!("cognitions ({}{}):\n", r.cognitions.len(), if r.next_cursor.is_some() { ", more with a larger --limit" } else { "" }));
+    out.push_str(&lines(&r.cognitions));
+    if r.cognitions.is_empty() {
+        out.push_str("- none found (that is not \"never said\": try other words, or --object)\n");
+    }
+    out.push_str(&format!(
+        "noted, not yet consolidated ({}; not conclusions, the consolidation may still change or drop them):\n",
+        r.recent_perceptions.len()
+    ));
+    out.push_str(&lines(&r.recent_perceptions));
+    let more = r.pending_in_scope.saturating_sub(r.recent_perceptions.len());
+    if more > 0 {
+        out.push_str(&format!("({more} more notes in range wait for consolidation and did not match)\n"));
+    }
+    for a in &r.ambiguous_aliases {
+        out.push_str(&format!(
+            "ambiguous: `{}` could be {} — ask, or pass --object\n",
+            a.alias,
+            a.candidates
+                .iter()
+                .map(|c| format!("{} ({})", c.canonical_name, c.object_id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if let Some(t) = &r.last_consolidated_at {
+        out.push_str(&format!("last consolidation: {t}\n"));
+    }
+    out.push_str("Read one in full (where it comes from, its revisions): recall --read <ref>\n");
+    out
+}
+
+/// `recall --read <ref>`: a cognition with its evidence and revisions, or a
+/// note with its state.
+fn render_memory_read(v: &crate::memory::MemoryRead) -> String {
+    use crate::memory::{Change, ChangeKind, MemoryRead};
+    use crate::runner::memory_batch::line;
+    let mut out = String::new();
+    match v {
+        MemoryRead::Cognition { cognition, provenance } => {
+            let corrections: std::collections::BTreeMap<String, String> = cognition
+                .corrections
+                .iter()
+                .map(|h| (h.reference.clone(), h.summary.clone()))
+                .collect();
+            let c = Change { kind: ChangeKind::Recalled, hint: cognition.hint.clone() };
+            out.push_str(&format!("{}\n", line(&c, &corrections).text));
+            out.push_str(&format!(
+                "status: {} (current revision {}, {})\n",
+                cognition.item.status, cognition.current_revision, cognition.current_status
+            ));
+            if !provenance.current_basis.is_empty() {
+                out.push_str("evidence:\n");
+                for b in &provenance.current_basis {
+                    out.push_str(&format!(
+                        "- {}{}{}\n",
+                        b.content,
+                        b.occurred_at.as_ref().map(|t| format!(" ({t})")).unwrap_or_default(),
+                        b.event_ref.as_ref().map(|e| format!(" [source {e}]")).unwrap_or_default()
+                    ));
+                }
+            }
+            if provenance.revisions.len() > 1 {
+                out.push_str("revisions:\n");
+                for r in &provenance.revisions {
+                    out.push_str(&format!("- @{} {} {}: {}\n", r.revision, r.status, r.noticed_at, r.statement));
+                }
+            }
+            if !provenance.absorbed.is_empty() {
+                out.push_str(&format!("consolidated from notes: {}\n", provenance.absorbed.join(", ")));
+            }
+        }
+        MemoryRead::Perception { perception } => {
+            let c = Change { kind: ChangeKind::Recalled, hint: perception.hint.clone() };
+            out.push_str(&format!("{}\n", line(&c, &Default::default()).text));
+        }
+    }
+    out
 }
 
 async fn cmd_note(mut a: Args) -> R<i32> {
@@ -2962,7 +3095,7 @@ async fn real_main() -> R<i32> {
         ("skill", _) => &["json", "replace"],
         ("runtime", Some("baseline")) => &["json", "check", "overlay"],
         ("runtime", Some("check")) => &["full"],
-        ("workspace" | "runtime", Some("list")) | ("sessions", _) => &["json"],
+        ("workspace" | "runtime", Some("list")) | ("sessions", _) | ("recall", _) => &["json"],
         ("copy", _) => &["replace"],
         _ => &[],
     };

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::PerceptionRecord;
 
-use super::hint::{Hint, HintState};
+use super::hint::{Hint, HintLayer, HintState};
 use super::perception::parse_cite;
 use super::recall::{
     cites_item, deferral_expired, is_pending, item_topic_hit, overlay_corrections,
@@ -41,6 +41,9 @@ pub enum ChangeKind {
     ReadRevision {
         from: u64,
     },
+    /// Found by the topic recall of this batch (its text, title or tags),
+    /// not by a change after the Session's snapshot.
+    Recalled,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -65,6 +68,13 @@ impl Change {
             }
             ChangeKind::NewPerception => 2,
             ChangeKind::PerceptionDisposed => 3,
+            ChangeKind::Recalled => match self.hint.layer {
+                HintLayer::Cognition if self.hint.state.is_validity_change() => 0,
+                HintLayer::Cognition => 1,
+                HintLayer::Perception if self.hint.is_correction() => 0,
+                HintLayer::Perception => 2,
+                HintLayer::Clarification => 3,
+            },
         }
     }
 
@@ -75,6 +85,7 @@ impl Change {
             ChangeKind::NewPerception | ChangeKind::PerceptionDisposed => {
                 format!("p:{}", self.hint.id)
             }
+            ChangeKind::Recalled => super::recall::pending_ref(&self.hint),
             _ => format!("c:{}", self.hint.id),
         }
     }

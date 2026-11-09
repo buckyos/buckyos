@@ -1,6 +1,6 @@
 # Agent Memory 召回接线 TODO
 
-状态：2026-11-09 起草，未实施；经 review 补齐双层 Hint、英文 tag、遗忘、半订阅和状态持久化约束。§5 的 D1—D4 已于 2026-11-09 全部裁决，方案不再有待定的方向性问题；剩下的参数（文本入口门槛、Work 的预算份额）由 R0、R5 的数据决定。
+状态：2026-11-09 起草；经 review 补齐双层 Hint、英文 tag、遗忘、半订阅和状态持久化约束。§5 的 D1—D4 已于 2026-11-09 全部裁决。**2026-11-09 R0—R6 已实施（未提交）**，实施记录、实测数据与未做事项见 §8；本机 Zone 真实 Agent 的 DV（要重建 aios 镜像）未做。
 
 本文是[捕获／保留／权重 TODO](agent-memory-capture-retain-weight-todo.md) 里 Q2 的展开，也是 [jarvis 默认 Goal TODO](jarvis-default-goal-session-todo.md) T02 第二条移出去的那份“Memory S 阶段 TODO”中关于召回的部分。写入侧（感知、整理、提交）已经接通，本文主要处理读取侧：真实 Session 怎样显露认知、待整理感知及其后续更新；写入侧同步统一 tag 的语言规则。
 
@@ -133,13 +133,13 @@ Work 的同批总预算是 4 条（D4），首批话题召回和之后的观察�
 
 ## 4. 任务
 
-- [ ] **R0 文本入口的误命中测量。** 不调模型：用 14 个整理夹具回放后留下的认知库，加一组无关消息和相关消息，统计每条消息进入候选的条数、前 8 条里相关的占比。入口用来信文本已定（D1），本项只决定门槛：维持两个词、提高到三个、或按命中比例。
-- [ ] **R1 UI 会话换接。** 基础范围与 `Caller`（复用 `memory_caller`，主体取 `grants`）；完整 `ObservationState` 进 `SessionState` 并随 receipt 提交、恢复；每批独立衰减，`state.topic` 作为派生视图回写；drive 里的 `recall_hints` 换成 §3.1 + §3.2，处理初始化与 `resync_required`；话题召回和观察候选合并去重，统一分配预算；去掉 `unwrap_or_default()`；§3.4 的行格式，限定语搬到门面 `Hint`。组件和 runner 测试覆盖下表中的遗忘、订阅、预算、恢复与可见性约束。
-- [ ] **R2 Work 启动装配。** Work 模板打开召回（D4），宿主持久初始化标题和目标作为观察主题；首批召回，之后每批只 `observe`，需要重建时例外；同批总预算 4 条（§3.4）。测试：Work 一批显露不超过 4 条；Work 的第一条输入带相关认知；后续新增相关材料能被观察；与 Work 无关的 owner 认知不进来（依赖 R0 的门槛）。
-- [ ] **R3 主动查询与清理。** `agent-session recall` 与 kRPC 换接，显式开启普通待整理感知并说明认知分页边界；删除 `FsCognition::recall_hints`、`state::Hint`、`state::RecallQuery`；按引用读认知和来源视图（`agent-session recall --read <ref>` 或单独子命令，实施时定）。
-- [ ] **R4 提示词与手册。** chat_route、groupchat_route 的 prompt 与回复 schema 明确英文概念 tag、名字／标识例外及持续半订阅用途；去掉现有“默认 `null`，拿不准就留 `null`”的写法（D1 的补充手段），改为主题首次明确、显著漂移时更新，同主题内确实再次提及的 tag 可显式提交以增强，`null` 不增强旧 tag。感知写入手册 `ui_core.md` 与整理 prompt `memory_maintenance.toml` 同步概念 tag 规则，保持 `scope.objects` 的对象身份语义。说明 §3.4 各类行的读法（待整理的不是定论，纠正叠加时先澄清）；work_simple、plan_simple 加一句 Hint 行的读法。同步 `ui_core.md` 的 recall 说明，检查 `opendan_agent_dev.md` 里对 `background_context` 的描述。
-- [ ] **R5 验收。** 扩展 `memory_replay.rs` 的 `conversation_to_hint_with_the_real_model`，覆盖下表；状态和预算规则优先用确定性测试，语言生成和跨会话使用用真实模型回放。对应需求的 B-13、B-18、B-24、B-47、B-48 和 jarvis TODO 的 V03。最后在本机 Zone 的真实 Agent 上走一遍（需要重建 aios 镜像）。
-- [ ] **R6 文档回写。** 需求文档 §6.6、A.6.1、A.9、TD-01、TD-13、TD-15、TD-18 的规则与进度；按 D2 改写 M-21、TD-15 和 §11“召回机会与预算”一行里“每次推理前、含工具返回后”的表述，改为每个受控输入批次；按 D3 更新 §11.1“整理前广播”一行。架构文档 §6.3.1、§12.7 的同一表述，§15.5 “半订阅时机”一行的“待定”改为已定不做，“Topic 与成本控制”一行和 §12.10 写明旁路 LLM 当前不做、入口用来信文本（D1）；Session Input Protocol 的 hint 行格式；Agent State Protocol 的完整观察状态与 `cognition.*`；本文与两份上游 TODO。
+- [x] **R0 文本入口的误命中测量。** 不调模型：用 14 个整理夹具回放后留下的认知库，加一组无关消息和相关消息，统计每条消息进入候选的条数、前 8 条里相关的占比。入口用来信文本已定（D1），本项只决定门槛：维持两个词、提高到三个、或按命中比例。
+- [x] **R1 UI 会话换接。** 基础范围与 `Caller`（复用 `memory_caller`，主体取 `grants`）；完整 `ObservationState` 进 `SessionState` 并随 receipt 提交、恢复；每批独立衰减，`state.topic` 作为派生视图回写；drive 里的 `recall_hints` 换成 §3.1 + §3.2，处理初始化与 `resync_required`；话题召回和观察候选合并去重，统一分配预算；去掉 `unwrap_or_default()`；§3.4 的行格式，限定语搬到门面 `Hint`。组件和 runner 测试覆盖下表中的遗忘、订阅、预算、恢复与可见性约束。
+- [x] **R2 Work 启动装配。** Work 模板打开召回（D4），宿主持久初始化标题和目标作为观察主题；首批召回，之后每批只 `observe`，需要重建时例外；同批总预算 4 条（§3.4）。测试：Work 一批显露不超过 4 条；Work 的第一条输入带相关认知；后续新增相关材料能被观察；与 Work 无关的 owner 认知不进来（依赖 R0 的门槛）。
+- [x] **R3 主动查询与清理。** `agent-session recall` 与 kRPC 换接，显式开启普通待整理感知并说明认知分页边界；删除 `FsCognition::recall_hints`、`state::Hint`、`state::RecallQuery`；按引用读认知和来源视图（`agent-session recall --read <ref>` 或单独子命令，实施时定）。
+- [x] **R4 提示词与手册。** chat_route、groupchat_route 的 prompt 与回复 schema 明确英文概念 tag、名字／标识例外及持续半订阅用途；去掉现有“默认 `null`，拿不准就留 `null`”的写法（D1 的补充手段），改为主题首次明确、显著漂移时更新，同主题内确实再次提及的 tag 可显式提交以增强，`null` 不增强旧 tag。感知写入手册 `ui_core.md` 与整理 prompt `memory_maintenance.toml` 同步概念 tag 规则，保持 `scope.objects` 的对象身份语义。说明 §3.4 各类行的读法（待整理的不是定论，纠正叠加时先澄清）；work_simple、plan_simple 加一句 Hint 行的读法。同步 `ui_core.md` 的 recall 说明，检查 `opendan_agent_dev.md` 里对 `background_context` 的描述。
+- [ ] **R5 验收。**（真实模型回放已过；本机 Zone 真实 Agent 未走） 扩展 `memory_replay.rs` 的 `conversation_to_hint_with_the_real_model`，覆盖下表；状态和预算规则优先用确定性测试，语言生成和跨会话使用用真实模型回放。对应需求的 B-13、B-18、B-24、B-47、B-48 和 jarvis TODO 的 V03。最后在本机 Zone 的真实 Agent 上走一遍（需要重建 aios 镜像）。
+- [x] **R6 文档回写。** 需求文档 §6.6、A.6.1、A.9、TD-01、TD-13、TD-15、TD-18 的规则与进度；按 D2 改写 M-21、TD-15 和 §11“召回机会与预算”一行里“每次推理前、含工具返回后”的表述，改为每个受控输入批次；按 D3 更新 §11.1“整理前广播”一行。架构文档 §6.3.1、§12.7 的同一表述，§15.5 “半订阅时机”一行的“待定”改为已定不做，“Topic 与成本控制”一行和 §12.10 写明旁路 LLM 当前不做、入口用来信文本（D1）；Session Input Protocol 的 hint 行格式；Agent State Protocol 的完整观察状态与 `cognition.*`；本文与两份上游 TODO。
 
 验收场景：
 
@@ -161,7 +161,7 @@ Work 的同批总预算是 4 条（D4），首批话题召回和之后的观察�
 
 ## 5. 裁决
 
-2026-11-09 全部已定：D3 在 review 时确定，D1、D2、D4 由用户按建议裁决。均未实施。
+2026-11-09 全部已定：D3 在 review 时确定，D1、D2、D4 由用户按建议裁决。2026-11-09 已按此实施（§8）。
 
 | # | 问题 | 结论 |
 |---|---|---|
@@ -188,3 +188,50 @@ Work 的同批总预算是 4 条（D4），首批话题召回和之后的观察�
 - 现有回放的感知和认知含 `周报` 等中文概念 tag，当前匹配没有跨语言翻译。必须同步 Session、感知和整理端的英文概念 tag 规则；R5 用新规则生成材料验证中文对话下的召回和持续更新。已有材料不会因改 prompt 自动重写，不能宣称旧中文 tag 已获得英文匹配能力。
 - 文本入口不替代持久 tag。R5 必须包含后续输入不重复主题词的场景，否则即使半订阅没接好，也可能靠当批正文召回掩盖问题。
 - 已有 Session 冻结了旧的 behavior，新 prompt 只对新一代 Session 生效。
+
+## 8. 实施记录（2026-11-09，未提交）
+
+### 8.1 落点
+
+| 部分 | 位置 |
+|---|---|
+| 门面：同批召回与观察 | `memory/observation.rs` 的 `observe_batch`（`BatchEntry`、`BatchDelivery`）、`ObservationState::commit_batch`、`decay`、`reply_topic`；`memory/recall.rs` 抽出 `topic_pools`（`query_topic` 与批次共用，未截断的四个池）；`memory/changes.rs` 增加 `ChangeKind::Recalled` |
+| 门面 Hint | `memory/hint.rs`：补 `stability` 字段（保留 `short-lived`）、`applies_to()`、`qualifier()`、`note()`（末尾带 `ref <引用>`）；旧 `state::Hint`、`state::RecallQuery`、`FsCognition::recall_hints` 删除 |
+| 身份 | `memory::session_caller`（原 `runner/consolidation.rs::memory_caller` 的规则搬到门面，runner 与服务端共用） |
+| runner | `runner/memory_batch.rs`（新）：`wanted`、`prepare`（衰减 → `observe_batch`）、`line`（行格式）、`settle`（按渲染文本确认）、`apply_reply_topic`；`drive.rs` 换掉旧调用；`live.rs` 的 `InputBatch.memory` 写入 receipt；`receipts.rs` 应用 `extra.memory` / `extra.topic`；`outcome.rs` 的回复 topic 走 `reply_topic`；`history.rs::compact` 调 `bump_context_generation`；`flush.rs` 把 `extra.memory_error` 写进 worklog 批次标记 |
+| 状态与协议 | `SessionState.memory`（完整 `ObservationState`）；`RECEIPT_MEMORY` / `RECEIPT_TOPIC` / `RECEIPT_MEMORY_ERROR`；`WorklogBody::TurnStarted/InputBatch.memory_error`；`doc/opendan/protocol/schema/` 的 `session_state`、`worklog_entry` 两份 schema 已重新生成（其余 schema 与代码原本就有出入，没动） |
+| 模板 | `template.rs`：Work 内建模板 `load_hints = true`；`assembler.rs`：`InputMaterial.hints` 改为行文本，内建模板不再另放 `<hints>`（线索都在背景里，UI 与 Work 一致） |
+| 主动查询 | `state/cognition.rs` 的 `Cognition::query(sid, MemoryQuery)` / `read(sid, ref)`：按登记表找到 Session、读配置、绑定身份；kRPC `cognition.query` / `cognition.read`（`cognition.recall_hints` 删除，opendan 服务的只读列表、README、WebUI 的 Agent State 页同步：页面要先填 Session id）；`xagent_cli.rs::cmd_recall`：`recall <words or tags>... [--object] [--alias] [--limit] [--json]`、`recall --read <ref>`，只认 `$OPENDAN_SESSION_ID` |
+| 提示词 | chat_route / groupchat_route 的 `topic` 说明与 schema、Memory 段的各类行读法；`ui_core.md` 的 recall 用法与 `--tag` 规则；`memory_maintenance.toml` 与提交工具 schema（`runner/consolidation.rs`，非 Jarvis 也生效）的 tag 规则；work_simple、plan_simple 各一句；analyze_intent 的 recall 用法；`opendan_agent_dev.md` 的 `background_context` 说明 |
+| 测试 | `tests/memory_recall.rs`（11 个，见 §8.3）、`tests/memory_recall_entry.rs`（R0）、`receipts.rs` 与 `hint.rs` 的单测、`memory_component.rs::s13` 改写、`memory_replay.rs` 的真实模型用例重写 |
+
+### 8.2 实施时定下的细节
+
+- **`shown` 只在真正换题时清空。** 原 `set_topic` 在标题从空变为非空时也清空 `shown`：首批召回已经显示的线索，在回复第一次给出 topic 后会被下一批重复显示（runner 测试复现）。改为只在“原标题非空且漂移超过阈值”时清空。
+- **同一材料两路都找到时，保留观察的身份。** 已读认知的修订既被观察（`ReadRevision`，有效性池）又被本批召回（`Recalled`，普通池）时，原先先到先得，修订失去优先级。现在先收观察与待送，召回里同键的条目跳过；输出顺序仍是待送 → 召回 → 变化。召回只按 `shown` 去重（换题后可再显示），观察按 `already_shown`（含 `read_set`）。
+- **本 Session 自己写的感知不回到自己**（召回路径也排除，与 `changes_since` 一致）；自己写的纠正仍叠加在认知上。
+- **线索行不走 `background_shown`**，只由观察状态去重；`memory unavailable` 一行走 `background_shown`（错误持续时只说一次），每批 worklog 标记仍记 `memory_error`。没有 AgentRoot 的远端驱动者因此每批都是 `memory unavailable`（它本来也不能写感知）。
+- **基础范围的主体每批按当前身份刷新**（工作区绑定变了随之变）；Work 标题为 `title` 加换行加 `objective`（两者相同只取一次）。
+- **一批的确认态只看渲染文本是否包含该行**：模板没放的线索留在 `pending`，下批优先；`pending` 超上限置 `resync_required`，下一批自己重建，不等新 topic。
+- **kRPC 的 `session` 参数是调用方自报的**（与 `goals.*` 一样），服务端只保证“以某个 Session 的身份”而不是“以调用方声称的任意范围”读；登记表里找不到就报错，不做不过滤的读取。
+- 主动查询的位置参数既当文本也当 tag（不是合法 tag 的词只当文本）；输出里认知与待整理感知分开，带“还有 N 条待整理”、歧义别名和 `--read` 提示。
+
+### 8.3 测试与实测
+
+- R0（`cargo test -p libopendan --test memory_recall_entry -- --nocapture`，报告 `target/memory-replay/recall_entry.md`，存档 `evidence/agent-memory-recall-wiring/2026-11-09/`）：用 11-09 整理回放报告里的 19 条有效认知建库，28 条手写消息（12 条相关、12 条无关、4 条近似）。UI 身份下“共有两个词”：相关认知 17 条召回 15 条，前 8 条精确率 79%，无关和近似消息 16 条一条都没进候选；“三个词”或“消息的五分之一”召回降到 9/17，“三分之一”降到 3/17。**结论：门槛维持两个词。** Work（多一个工作区主体）结果相同，近似消息里有 1 条误入。
+- R1—R3 确定性测试（`tests/memory_recall.rs`）：遗忘（每批衰减、只有提及才增强、召回命中与恢复不续期、离线计时、容量与换题淘汰、底层记忆保留）；半订阅（另一会话写入的感知、整理出的新认知与处置标记，在不重复词、只有事件的批次里送达）；tag 淘汰后已读认知的修订仍送达且同版本不重复；同批合并去重最多 8 条、有效性变化优先、份额可借、溢出待送；只确认实际渲染的线索、待送超限后自动重建；群聊与他人会话看不到 owner 私聊的认知和感知；runner：新会话首轮有 Hint、第二轮不重复、观察状态与 receipt 一致；群聊会话无线索；Work 首批 ≤4 条且无关认知不进；Memory 读坏时出 `memory unavailable` 行与 worklog 记录、进度不动；`cognition.query/read` 与 `xagent recall` 按会话身份回答。另有 receipt 重放的单测。
+- 全量 `cargo test -p libopendan --no-fail-fast`：新增失败为零。仍失败的是基线已知的 `fixtures.rs` 5 个与 `xagent_cli.rs` 2 个；`plan_simple_async`（6）与 `runtimes`（1）在全量并行时超时失败，单独串行（`--test-threads=1`）全部通过，属负载问题。`opendan` 包测试全过；WebUI `tsc -b` 通过（Playwright 用例未跑）。
+- R5 真实模型回放（`cargo test -p libopendan --test memory_replay conversation_to_hint_with_the_real_model -- --ignored --nocapture`，93 秒，报告存档同上 `pipeline.md`）：
+  - 感知 tag：`weekly-report`、`travel`、`report-generation`、`tool-x`、`linux` 为英文概念 tag，`项目 a`、`上海` 是名字（规则允许）；整理后的认知 tag 相同。
+  - 整理前另一会话问周报：背景出现 `noted, not yet consolidated: … (from session ui-…; …)`，回答正确。
+  - 整理后新会话第一句就问周报：首批背景有周报认知的 `hint:` 行，模型**没有执行 `recall`** 就答对（一页以内、明细放附件、只限项目 A）；回复的 topic 为 `项目 A 的周报要求` + `["项目 a", "weekly-report"]`。
+  - 第一个会话追加“周报每周五中午前发”后，新会话下一句“还有别的需要注意的吗？”不含这些词，背景送来了这条待整理感知，回答用上了它并追问时区。
+  - **误命中一例**：同一批还送来了 tool-x 恢复线索（标题“项目 A 的周报要求”加“还有别的需要注意的吗”与它共有“要求”“需要”一类通用二元组）。模型没有用它。R0 的近似消息没测到这种“标题 + 泛问句”的组合，见 §8.4。
+
+### 8.4 未做与后续
+
+- 本机 Zone 真实 Agent 的 DV（`./build_aios --local-test` 重建镜像后走一遍）未做；已有 Session 冻结的 behavior 不变，新 prompt 只对新会话生效。
+- Work 的“后续批次观察”只有组件级测试；runner 级没有构造第二批（需要 tick 或任务结束）。
+- 中文全文入口的通用二元组（“要求”“需要”“还有”等）会让泛问句命中无关认知（§8.3 一例）。可选做法：二元组停用表、按 IDF 加权，或要求至少一个非通用词命中；需要先扩 R0 的消息集再定。
+- 对象入口、Goal 会话召回、旁路 LLM、工具返回后的观察：按 §6 不做。
+- 已有回放材料里的中文概念 tag（如 `周报`）不会自动变成英文；新规则只影响新写入的感知与认知。

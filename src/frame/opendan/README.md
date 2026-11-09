@@ -134,7 +134,8 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 | `sessions.verify` | – | `string[]`（标记为 unreachable 的 sid） |
 | `activity.active` | `{me?: sid, limit?}` | `ActiveSession[]` |
 | `perception.last_seq` | `{sid}` | `number` |
-| `cognition.recall_hints` | `{query: {tags, max_hints}}` | `Hint[]` |
+| `cognition.query` | `{session: sid, query: MemoryQuery}`：以该 Session 的身份（宿主按其配置绑定的授权主体）主动查询 Memory，`include_recent_perceptions` 打开时待整理感知另列 | `QueryResult` |
+| `cognition.read` | `{session: sid, reference}`：`item_x[@N]` 返回认知与来源，`<sid>:<seq>` 返回感知；看不到的一律 `not_found` | `MemoryRead` |
 | `cognition.notebook_append` | `{note: NotebookNote}` | `null` |
 | `artifacts.list` / `artifacts.head {aid}` / `artifacts.versions {aid}` / `artifacts.version {aid, ver}` | | `ArtifactHead[]` / `ArtifactHead \| null` / `ArtifactVersion[]` / `ArtifactVersion \| null` |
 | `artifacts.decide` | `{aid, ver, decision: accept \| discard}`（服务端在调用期间持有 `artifact:<aid>` 锁） | `DecideResult` |

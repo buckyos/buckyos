@@ -221,7 +221,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 属性值转义 `& < > "`。只有一条纯文本消息时也使用 `<msg>`。`machine` 与 `ServiceDid` 引用不在内建渲染中出现。
 
-内建模板（UI Session 除外，见 §6.5）：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、`<hints>`（每条 `<hint id time [object] [note]>`，`note` 是 §6.6 `hint:<id>` 行的 `qualifier`：证据性质、范围与有效期）、活动 session 列表、`<runtime>`；有变化的背景行时，`<<background_context>>` 块放在 `<session_input>` 之前（§6.6）。
+内建模板（UI Session 除外，见 §6.5）：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、活动 session 列表、`<runtime>`；有变化的背景行时，`<<background_context>>` 块放在 `<session_input>` 之前（§6.6）。Memory 线索（§6.5 的 `memory:` 行）只在背景里，内建模板不再另放 `<hints>`；自定义模板可用变量 `hints`（同样的行，字符串数组）或 `hints_text`（`<hints>` 包着的 `- <行>` 列表），线索只有在输入里出现其行文本才算显示。
 
 协议时间与内建渲染一律 UTC。用户时区与 Session 绑定（`session.timezone`，IANA 名），其初始值与后续变化经隐式 semi 订阅进入半订阅状态，不取 Runner 所在机器的时区，变化本身不唤醒推理。
 
@@ -258,7 +258,8 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 - runtime native on lzc-pve, cwd …/sessions/<sid>
 - work work-12481d…: running — reviewing PR #667 diff
 - [notify n_01] input/timely from session work-… : Which branch? … — check the current state with `agent-session notify show n_01`
-- hint: owner prefers replies in Chinese (the agent's inference, not confirmed; applies to workspace:proj-a; noticed 2026-10-02)
+- hint: owner prefers replies in Chinese (the agent's inference, not confirmed; applies to workspace:proj-a; noticed 2026-10-02T08:00:00Z; ref item_reply_language@1)
+- noted, not yet consolidated: the owner said project A's weekly report goes out before Friday noon (from session ui-20261109-1; noticed 2026-11-09T20:05:19Z; ref ui-20261109-1:4)
 <</background_context>>
 你好 Jarvis
 ```
@@ -282,10 +283,12 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 | `ui:<sid>` | 其它 UI Session 的 topic 标题 | 活动视图（登记表 `status.topic`） |
 | `session:<sid>` | 与本 Session 目标相同或范围重叠的其它活动 Session（避让规则） | 活动视图 |
 | `event:<key>` | 半订阅状态版本：`_notify` 的通知行原样（`[notify <id>] …`）；其它为 `<source> <event>: <summary>`。用户时区事件不单列（由 `time` 行承载） | `pending_events`（同 §5 的选择与预算） |
-| `hint:<id>` | `hint: <sentence> (<qualifier>; noticed <time>; about <object url>)`。`qualifier` 说明这条线索凭什么成立、适用于哪里、何时结束，缺哪项就省哪项：证据性质（`the user's explicit statement` / `stated by the user` / `observed` / `a third party's claim, not verified` / `the agent's inference, not confirmed`，confidence 低于 0.5 另加 `weak evidence`）、范围（`applies to <workspace 主体与 scope 对象，至多 3 个>`、`not to <例外>`）、有效期（`holds until <valid_until>`，没有期限的 volatile 为 `short-lived`） | 按 `state.topic.tags` 召回的 hints（`Hint::note()`） |
+| `memory:<ref>\|<state>` | 本批的 Memory 线索，一条一行（UI 与 Work Session 都有，见下），按身份区分：认知 `hint: <陈述> (<note>)`；读过的认知被修订 `hint revised (you saw @<n>): …`；被替代 / 删除 / 过时 `hint withdrawn (<superseded by …\|deleted\|no longer current>), do not rely on it: …`；`hint disputed: …`；有未整理的纠正叠加 `hint: … (<note>) — may have been corrected: "<纠正原话>"; clarify before relying on it`；未整理感知 `noted, not yet consolidated: <摘要> (from session <sid>; noticed <时间>; ref <sid>:<seq>)`（纠正为 `correction noted`，要求记住的为 `asked to remember`，暂缓的为 `consolidation deferred`）；已显示感知的处置 `note <sid>:<seq> was consolidated into <认知引用> (the same material, not new evidence)`（或 `was a duplicate of …` / `was discarded by consolidation`）；澄清问题 `memory question pending: <问题> (about note <ref>)`。`<note>` 依次是 `qualifier`（证据性质：`the user's explicit statement` / `stated by the user` / `observed` / `a third party's claim, not verified` / `the agent's inference, not confirmed`，confidence 低于 0.5 另加 `weak evidence`；范围：`applies to <workspace 主体与 scope 对象，至多 3 个>`、`not to <例外>`；有效期：`holds until <valid_until>`，没有期限的 volatile 为 `short-lived`）、`noticed <时间>`、`about <对象 URL>`、`ref <引用>`，缺哪项省哪项 | `runner/memory_batch.rs`：Memory 门面 `observe_batch` 的结果（`Hint::note()`） |
+| `memory:unavailable` | `memory unavailable: <原因>`：本批读不到 Memory（不是“没有相关记忆”） | 同上；worklog 的批次标记记 `memory_error` |
 
 - **只显示变化的行**：`state.background_shown` 记录每个 key 上次显示时的内容摘要；摘要变了才显示。`time` 行另按 5 秒粒度：距上次显示不足 `BACKGROUND_TIME_STEP_MS = 5000` 且时区未变时不显示。本批候选里没有的 key 从记录中删除（再出现时重新显示）。所有行都没有变化时整个 `<<background_context>>` 块省略。
 - 新记录随批次 receipt 提交（`extra.background`，见 §7），恢复时与 receipt 一起应用；显示了哪些半订阅版本仍记在 receipt 的 `events` 里。只有输入消息里实际出现的行才记为已显示（§6.6）。
+- **Memory 线索**不走 `background_shown`（`memory:unavailable` 除外）：每个有新输入的批次（UI 与 Work，首批包括在内）先让 topic 的 tag 按时间衰减，再经 Memory 门面召回与观察——UI 以标题、本批消息正文与有效 tag 召回，Work 只在首批以标题和目标召回，此后只观察快照之后的变化（含已读认知的修订）；两路候选合并去重后按同批预算分配（UI 8 条、Work 4 条，有效性变化优先）。去重与“已显示”记在 Session 的观察状态里（`state.memory`），随 receipt 的 `extra.memory` 提交；只有出现在输入里的线索记为已显示，其余留待下一批。召回失败只出 `memory:unavailable` 一行，不推进观察进度。
 - **消息**：一对一时只写原文，不写 key / from / time；附件每个一行 `[attachment <media> "<name>" -> <path 或 ObjId>]`；回复 / 编辑等关系有才写一行（`(replying to <ObjId>)`）。一个批次有多条消息时每条前加一行 `[<发言人> <本地时间 HH:MM:SS>]`。**群聊**保留 §6.2 的 `<msg>` 元素（发言人与 `context="true"` 是群聊语义的根本），与事件一起放在 `<<inputs>>` 里。
 - **事件**：保留 `<event>` 元素（属性是用 CLI 回查的依据），放在 `<<inputs>> … <</inputs>>` 中、消息原文之前；子 Session 事件的摘要对 UI 父 Session 只有一行，不附 `report:`，结束时末尾附 `— read: agent-session read-session <sid> --report`。
 - 交接块（`<context_switch>` 等）与 TodoList 视图有时照旧放在最前。自定义模板可用 `background`（行数组）与 `background_context`（整块文本）。
@@ -294,7 +297,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 半订阅永远不是一条独立的输入，只能在输入里被使用：每个受控输入批次算出自上次显示以来变化的背景行，作为模板变量 `background`（行数组，`{key, text}`）与 `background_context`（整块 `<<background_context>>` 文本，无变化时为空串）交给该批次的模板。模板不引用它，半订阅对这个 Session 就不可见。没有单独的快照消息，工具结果之后也不注入背景。
 
-- 候选行：UI Session 为 §6.5 的各行；其它 Session 为半订阅状态版本（`event:<key>`，格式同 §6.5，用户时区事件也成行）；所有 Session 另有在跟的运行中 task 的新输出（`task:<id>`：`task <id> · <命令摘要> · running <时长> · new output:` 加自上次显示以来的新输出，最多 2 KB，超出只留末尾）。
+- 候选行：UI Session 为 §6.5 的各行；其它 Session 为半订阅状态版本（`event:<key>`，格式同 §6.5，用户时区事件也成行），Work Session 另有本批的 Memory 线索（`memory:` 行，§6.5）；所有 Session 另有在跟的运行中 task 的新输出（`task:<id>`：`task <id> · <命令摘要> · running <时长> · new output:` 加自上次显示以来的新输出，最多 2 KB，超出只留末尾）。
 - 子 Session 的结束、等输入、等决定，task 的结束，Todo 的状态都不成行：它们是事件（或调用结果、命令输出）。
 - 已显示的判定：渲染后的输入文本包含该行文本才算显示。未出现的行保持原记录（下次放置它的输入照样显示），未出现的状态版本不进 receipt 的 `events`，留在 `pending_events`。
 - `task:<id>` 的记录值是已显示到的输出位置 `<stdout 字节>,<stderr 字节>`；调用转为 task 后的第一个推理边界记下当时位置（调用结果已显示到这里），不产生消息。
@@ -315,6 +318,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 ```
 
 - `extra.background`：本批之后的 `state.background_shown`，应用 receipt 时整体替换。
+- `extra.memory`：本批之后的 Session Memory 观察状态（`state.memory`：topic 的标题、每个 tag 的分数与最近提及时间、基础范围、快照、`pending`、`read_set`、`shown` 等），应用时整体替换；`extra.topic`：UI Session 由它派生、给其它 Session 看的 `state.topic`；`extra.memory_error`：本批读不到 Memory 的原因（worklog 批次标记的 `memory_error`）。
 - 批次 ID = `(run_id, input_seq)`，每个 run 从 1 开始连续。`opens_turn` 只看提交时有没有打开的 Turn。
 - `inputs`：本批消费的 msg 与 Input event。Runner 自己合成的输入（Session 在跟的 task 结束，§9）用 `src = "_task"`、`key = task:<task_id>:terminal`，没有消费位置。
 - `events`：输入消息里实际出现（作为背景行）的状态版本；应用时按 `(subscription_id, source, key)`（有 `seq` 时一并核对）从 `pending_events` 精确清除。处理 v7 期间收到 v8，提交 v7 不删除 v8。

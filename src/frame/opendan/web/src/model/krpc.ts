@@ -161,7 +161,11 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     },
     behavior: (name) => call('behaviors.get', { name }),
     identity: () => call('behaviors.identity'),
-    recallHints: (tags, maxHints = 8) => call('cognition.recall_hints', { query: { tags, max_hints: maxHints } }),
+    queryMemory: (session, words) =>
+      call('cognition.query', {
+        session,
+        query: { text: words.join(' '), tags: words, include_recent_perceptions: true, limit: 20 },
+      }),
     goals: () => call('goals.list'),
     goal: (goalId) => call('goals.get', { goal_id: goalId }),
     goalRevision: (goalId, revision) => call('goals.revision', { goal_id: goalId, revision }),

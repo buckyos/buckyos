@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '../lib'
-import { dataModel, type Hint } from '../model'
+import { dataModel, type MemoryQueryResult } from '../model'
 import { Badge, Empty, ErrorBox, Fields, Mono, Panel, Pre, Sid, Time } from '../ui'
 
 // The perception backlog is consolidated by the built-in memory maintenance
@@ -161,19 +161,29 @@ function Behaviors() {
 }
 
 function Hints() {
-  const [tags, setTags] = useState('')
-  const [hints, setHints] = useState<Hint[] | null>(null)
+  const [session, setSession] = useState('')
+  const [words, setWords] = useState('')
+  const [result, setResult] = useState<MemoryQueryResult | null>(null)
+  const [needSession, setNeedSession] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const recall = async () => {
     setError(null)
+    // Memory answers as one session: its grants decide what is visible.
+    if (!session.trim()) {
+      setNeedSession(true)
+      setResult(null)
+      return
+    }
+    setNeedSession(false)
     try {
-      setHints(await dataModel.recallHints(tags.split(/[\s,]+/).filter(Boolean)))
+      setResult(await dataModel.queryMemory(session.trim(), words.split(/[\s,]+/).filter(Boolean)))
     } catch (e) {
       setError(e)
     }
   }
+  const rows = result ? [...result.cognitions, ...result.recent_perceptions] : []
   return (
-    <Panel title="Hints recall" testId="agent-hints">
+    <Panel title="Memory recall (as a session)" testId="agent-hints">
       <form
         className="mb-2 flex gap-2"
         onSubmit={(e) => {
@@ -181,26 +191,30 @@ function Hints() {
           void recall()
         }}
       >
-        <input className="input flex-1" placeholder="tags (space or comma separated)" aria-label="Tags" value={tags} onChange={(e) => setTags(e.target.value)} />
+        <input className="input w-48" placeholder="session id" aria-label="Session" value={session} onChange={(e) => setSession(e.target.value)} />
+        <input className="input flex-1" placeholder="words or tags (space or comma separated)" aria-label="Tags" value={words} onChange={(e) => setWords(e.target.value)} />
         <button className="btn" type="submit">Recall</button>
       </form>
       <ErrorBox error={error} />
-      {hints &&
-        (hints.length ? (
+      {needSession && <Empty>Memory answers as one session: enter its id.</Empty>}
+      {result &&
+        (rows.length ? (
           <table className="tbl">
             <tbody>
-              {hints.map((h) => (
-                <tr key={h.id}>
-                  <td className="w-px"><Mono>{h.id}</Mono></td>
-                  <td className="w-px">{h.kind && <Badge value={h.kind} />}</td>
-                  <td className="text-xs">{h.sentence}</td>
-                  <td className="w-px whitespace-nowrap text-xs text-mute">{h.time}</td>
+              {rows.map((h) => (
+                <tr key={h.reference}>
+                  <td className="w-px"><Mono>{h.reference}</Mono></td>
+                  <td className="w-px">
+                    <Badge value={h.layer === 'cognition' ? h.state : 'not yet consolidated'} />
+                  </td>
+                  <td className="text-xs">{h.summary}</td>
+                  <td className="w-px whitespace-nowrap text-xs text-mute">{h.observed_at}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         ) : (
-          <Empty>No hints.</Empty>
+          <Empty>{result.status === 'not_triggered' ? 'Nothing to look up by.' : 'No hints.'}</Empty>
         ))}
     </Panel>
   )

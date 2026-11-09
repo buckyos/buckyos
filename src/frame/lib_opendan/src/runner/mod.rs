@@ -18,6 +18,7 @@ mod hook;
 mod inputs;
 mod live;
 mod live_tasks;
+pub mod memory_batch;
 mod observe;
 mod outbound;
 mod outcome;

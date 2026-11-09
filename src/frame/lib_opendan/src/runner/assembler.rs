@@ -31,7 +31,7 @@ use serde_json::{json, Value};
 
 use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
-use crate::state::{render_active_sessions, ActiveSession, Hint, ROLE_SUPPLEMENT_FILE};
+use crate::state::{render_active_sessions, ActiveSession, ROLE_SUPPLEMENT_FILE};
 
 use super::input_view::{
     input_formats, render_event_xml, render_msg_xml, EventView, InputView, MessageView,
@@ -47,7 +47,10 @@ pub struct InputMaterial {
     pub hook: String,
     /// The selected inputs (`input.*`): the only material from the bus.
     pub input: InputView,
-    pub hints: Vec<Hint>,
+    /// The Memory clues of this batch, one line each (recall wiring TODO
+    /// §3.4); the same lines are among `background`, where the built-in
+    /// templates show them.
+    pub hints: Vec<String>,
     pub active: Vec<ActiveSession>,
     pub runtime_status: Value,
     pub now_ms: u64,
@@ -426,7 +429,7 @@ impl SessionAssembler for DefaultAssembler {
                 "clock_text": m.input.time,
             },
             "handover": handover,
-            "hints": m.hints.iter().map(|h| json!({"id": h.id, "time": h.time, "sentence": h.sentence, "qualifier": h.qualifier()})).collect::<Vec<_>>(),
+            "hints": m.hints,
             "task_text": blocks.task,
             "handover_text": blocks.handover,
             "todos_text": blocks.todos,
@@ -514,25 +517,15 @@ impl Blocks {
                 }
             }
         }
+        // For a custom template that places the clues apart from the
+        // background (a clue counts as shown when its line is in the input).
         let mut hints = String::new();
         if !m.hints.is_empty() {
             hints.push_str("<hints>\n");
             for h in &m.hints {
-                let object = h
-                    .object
-                    .as_deref()
-                    .map(|o| format!(" object=\"{}\"", escape_xml_attr(o)))
-                    .unwrap_or_default();
-                let qualifier = Some(h.qualifier())
-                    .filter(|q| !q.is_empty())
-                    .map(|q| format!(" note=\"{}\"", escape_xml_attr(&q)))
-                    .unwrap_or_default();
-                hints.push_str(&format!(
-                    "<hint id=\"{}\" time=\"{}\"{object}{qualifier}>{}</hint>\n",
-                    escape_xml_attr(&h.id),
-                    escape_xml_attr(&h.time),
-                    esc(&h.sentence)
-                ));
+                hints.push_str("- ");
+                hints.push_str(h);
+                hints.push('\n');
             }
             hints.push_str("</hints>\n");
         }
@@ -614,7 +607,6 @@ impl Blocks {
             s.push('\n');
         }
         s.push_str(&self.todos);
-        s.push_str(&self.hints);
         s.push_str(&self.active);
         s.push_str(&self.runtime);
         s.push_str("</session_input>");

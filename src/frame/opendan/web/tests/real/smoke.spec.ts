@@ -31,7 +31,7 @@ test('built UI loads from opendan and every page reads the kRPC service', async 
   await expect.poll(() => new Set(calls)).toEqual(
     new Set([
       'agent.profile', 'usage.models', 'ui.bindings', 'loader.status', 'sessions.query', 'activity.active', 'perception.cursor', 'perception.backlog', 'artifacts.list',
-      'behaviors.revision', 'behaviors.list', 'behaviors.identity', 'cognition.recall_hints', 'session.read',
+      'behaviors.revision', 'behaviors.list', 'behaviors.identity', 'session.read',
     ]),
   )
   await expect(page.getByRole('alert')).toHaveCount(1)

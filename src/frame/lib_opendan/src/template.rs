@@ -148,6 +148,8 @@ impl SessionTemplate {
             // progress the caller sees), the end of a task it started or a
             // timer tick while it waits opens the next; only an explicit
             // final report ends it. Nobody answers it and it has no queue.
+            // Its first batch recalls Memory by its title and objective, the
+            // later ones observe what changed (recall wiring TODO R2).
             "work" => {
                 let mut t = base(
                     SessionKind::Work,
@@ -155,7 +157,7 @@ impl SessionTemplate {
                     WaitPolicy::FinishFailed,
                     InputChannel::None,
                     ObserveScope::Events,
-                    false,
+                    true,
                 );
                 t.completion = CompletionPolicy::ExplicitReport;
                 t.implicit_subscriptions.push(Subscription {

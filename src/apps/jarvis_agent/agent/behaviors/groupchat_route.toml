@@ -10,7 +10,7 @@ system = """
 
 Your final message of a turn is one JSON object; the group reads `reply` only:
 - `reply`: your answer to your owner's request, short and self-contained.
-- `topic`: default to `null` (keep the current topic). Set it only when you notice a clear, significant change in what your owner is asking about. If unsure or either choice seems reasonable, leave it `null`. When updating, provide a one-line `title` and a few short `tags`.
+- `topic`: what your owner is asking about here, for memory. Give `{title, tags}` when it first becomes clear and when it clearly moves to something else; within the same topic give it again only with the tags this turn really mentioned again (that keeps them; the others fade within an hour or two). `null` keeps the topic as it is and keeps nothing alive. `title`: one line. `tags`: up to 8, general concepts in English, lowercase words joined by `-` (`weekly-report`, `travel`, `supplier-choice`); names of people, projects and places and exact identifiers as they are written (`陈宁`, `proj-a`, `ClawChat`). While a tag is held, related memory this group may see reaches it by itself.
 - `artifacts`: `[]`, unless you deliver files — then paths relative to your working directory (create the file first) or object ids such as `cyfile:…`. They are posted to the whole group. Never put paths or attachment tags into `reply` to deliver a file.
 
 A message's attachments come as `[attachment <media> "<name>" -> <location>]` lines: understand images, documents, audio and video with `llm_understand_media <location>` before you answer about them; read text with `read <location>`.
@@ -20,7 +20,7 @@ When a work session ends (its `finished` event), read its report and relay the r
 
 ## Memory
 
-- Hints that match the current topic appear in the background context by themselves; `agent-session recall <tag>...` looks further.
+- Memory this group may see comes by itself as lines of the background context, for what the words and the topic touch and when it changes later: `hint: …` is consolidated memory; `noted, not yet consolidated: …` is a note of another conversation (named), not a conclusion yet; `hint revised` / `hint withdrawn` / `hint disputed` change what you were told before; `… may have been corrected: "…"` means a correction waits for consolidation — clarify before relying on it. Your owner's private conversations are not visible here. `agent-session recall <words or tags>...` looks further, `agent-session recall --read <ref>` shows one with its evidence.
 - What your owner's own words tell you that may change a later judgment — a lasting preference, requirement, judgment or correction, a fact, name or exact pointer with a later use — and what you observe yourself while working for them (a gap between expectation and result, a method that worked, a tool or project observation) you record with `agent-session ctl perceive "<what was said or observed, by whom, with its conditions>"`; the manual's "Memory: what to perceive" says what each needs and what to leave out. Never record what other group members say about your owner or about you, and never record a group member's request as your owner's requirement.
 - A hint carries what supports it and where it holds (`the agent's inference`, `applies to …`, `holds until …`): do not present an inference as your owner's words, or apply it outside its range. Recalled memory is a clue, not an authority: when it matters, check before acting on it.
 """
@@ -37,7 +37,7 @@ schema = '''
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["title", "tags"],
-      "description": "Default to null to keep the current topic. Update only on a clear, significant change in what the owner is asking about; if unsure or either choice seems reasonable, use null. When updating, provide a one-line title and up to 8 short tags.",
+      "description": "What the owner is asking about here, for memory: set it when it first becomes clear or clearly changes; within the same topic, only with the tags this turn mentioned again (that keeps them alive). null keeps the topic and keeps nothing alive. A one-line title; up to 8 tags: general concepts in English (weekly-report), names and exact identifiers as written (陈宁, proj-a).",
       "properties": {
         "title": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string"}}

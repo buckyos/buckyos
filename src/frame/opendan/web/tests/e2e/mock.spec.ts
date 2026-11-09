@@ -114,6 +114,7 @@ test('agent state page shows perception, artifacts, behaviors, identity and hint
   await expect(page.getByTestId('agent-identity')).toContainText('personal agent of devtest')
 
   const hints = page.getByTestId('agent-hints')
+  await hints.getByLabel('Session').fill('ui-20261001-1')
   await hints.getByLabel('Tags').fill('report')
   await hints.getByRole('button', { name: 'Recall' }).click()
   await expect(hints.locator('tbody tr')).toHaveCount(1)

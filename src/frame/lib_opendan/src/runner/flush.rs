@@ -163,6 +163,11 @@ fn native_message_entries(run_id: &str, turn: u64, m: &buckyos_api::AiMessage) -
 fn batch_marker(run_id: &str, r: &InputReceipt) -> WorklogBody {
     let inputs = r.inputs.clone();
     let events: Vec<String> = r.events.iter().map(|e| e.key.clone()).collect();
+    let memory_error = r
+        .extra
+        .get(RECEIPT_MEMORY_ERROR)
+        .and_then(Value::as_str)
+        .map(str::to_string);
     if r.opens_turn {
         WorklogBody::TurnStarted {
             run_id: run_id.to_string(),
@@ -171,6 +176,7 @@ fn batch_marker(run_id: &str, r: &InputReceipt) -> WorklogBody {
             inputs,
             events,
             hook: Some(r.hook.clone()),
+            memory_error: memory_error.clone(),
             at_ms: r.at_ms,
         }
     } else {
@@ -181,6 +187,7 @@ fn batch_marker(run_id: &str, r: &InputReceipt) -> WorklogBody {
             inputs,
             events,
             hook: Some(r.hook.clone()),
+            memory_error: memory_error.clone(),
             at_ms: r.at_ms,
         }
     }

@@ -114,6 +114,9 @@ pub struct Hint {
     /// End of validity (cognition) or of the deferral window (perception).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<String>,
+    /// `stable | contextual | volatile` (cognitions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stability: Option<String>,
     #[serde(default)]
     pub expand_recommended: bool,
     /// The object it is about, as a URL `read` follows (TODO A4): its first object URL, else the URL it was
@@ -163,6 +166,7 @@ impl Hint {
             review_when: item.review_when.clone(),
             replaced_by: item.replaced_by.clone(),
             valid_until: item.valid_until.clone(),
+            stability: Some(item.stability.as_str().to_string()),
             expand_recommended: !item.review_when.is_empty() || item.status == ItemStatus::Disputed,
             object_url: scope_object_url(item.scope.as_ref()),
         }
@@ -226,6 +230,7 @@ impl Hint {
             review_when: Vec::new(),
             replaced_by: None,
             valid_until: deadline,
+            stability: None,
             expand_recommended: false,
             object_url: r
                 .objects
@@ -238,7 +243,101 @@ impl Hint {
     pub fn is_correction(&self) -> bool {
         self.layer == HintLayer::Perception && self.kind.as_deref() == Some("correction")
     }
+
+    /// What its scope limits it to: the workspaces among its subjects and
+    /// its scope objects.
+    pub fn applies_to(&self) -> Vec<String> {
+        self.scope
+            .as_ref()
+            .map(|s| {
+                s.subjects
+                    .iter()
+                    .filter(|x| x.starts_with("workspace:"))
+                    .chain(s.objects.iter())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// What a reader must know to not take the clue for more than it is:
+    /// the nature of its evidence, its range and its end. Empty when the
+    /// cognition carries none of them.
+    pub fn qualifier(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        match (self.basis.map(|b| b.as_str()), self.explicit) {
+            (Some("user_statement"), true) => parts.push("the user's explicit statement".into()),
+            (Some("user_statement"), false) => parts.push("stated by the user".into()),
+            (Some("tool_observation"), _) => parts.push("observed".into()),
+            (Some("third_party_claim"), _) => {
+                parts.push("a third party's claim, not verified".into())
+            }
+            (Some("inference"), _) => parts.push("the agent's inference, not confirmed".into()),
+            _ => {}
+        }
+        if self.confidence.is_some_and(|c| c < WEAK_CONFIDENCE) {
+            parts.push("weak evidence".into());
+        }
+        let list = |v: &[String]| {
+            let mut t = v
+                .iter()
+                .take(QUALIFIER_ENTRIES)
+                .map(|s| s.chars().take(80).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if v.len() > QUALIFIER_ENTRIES {
+                t.push_str(", …");
+            }
+            t
+        };
+        let applies: Vec<String> = self
+            .applies_to()
+            .into_iter()
+            .filter(|a| Some(a.as_str()) != self.object_url.as_deref())
+            .collect();
+        if !applies.is_empty() {
+            parts.push(format!("applies to {}", list(&applies)));
+        }
+        let except = self
+            .scope
+            .as_ref()
+            .map(|s| s.exceptions.clone())
+            .unwrap_or_default();
+        if !except.is_empty() {
+            parts.push(format!("not to {}", list(&except)));
+        }
+        match (&self.valid_until, self.stability.as_deref()) {
+            (Some(t), _) if self.layer == HintLayer::Cognition => {
+                parts.push(format!("holds until {t}"))
+            }
+            (None, Some("volatile")) => parts.push("short-lived".into()),
+            _ => {}
+        }
+        parts.join("; ")
+    }
+
+    /// The parenthesis after the statement of a cognition line: qualifier,
+    /// when it was noticed, the object it is about and its reference.
+    pub fn note(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        let q = self.qualifier();
+        if !q.is_empty() {
+            parts.push(q);
+        }
+        if let Some(t) = &self.observed_at {
+            parts.push(format!("noticed {t}"));
+        }
+        if let Some(o) = &self.object_url {
+            parts.push(format!("about {o}"));
+        }
+        parts.push(format!("ref {}", self.reference));
+        parts.join("; ")
+    }
 }
+
+/// Evidence below this is said to be weak next to the clue.
+const WEAK_CONFIDENCE: f64 = 0.5;
+const QUALIFIER_ENTRIES: usize = 3;
 
 /// Context budget of one delivery, split into pools (M-20): validity
 /// changes first, then reserved shares for cognitions and new perceptions.
@@ -302,5 +401,100 @@ impl Budget {
             rest.append(pool);
         }
         (out, rest)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hint(basis: Basis) -> Hint {
+        Hint {
+            layer: HintLayer::Cognition,
+            reference: "item_a@1".into(),
+            id: "item_a".into(),
+            revision: Some(1),
+            summary: "s".into(),
+            scope: None,
+            basis: Some(basis),
+            kind: None,
+            explicit: false,
+            memory_intent: None,
+            state: HintState::Active,
+            weight: None,
+            confidence: Some(0.8),
+            score: 0.0,
+            reasons: Vec::new(),
+            sources: Vec::new(),
+            observed_at: Some("2026-11-01T00:00:00Z".into()),
+            session_id: None,
+            corrections: Vec::new(),
+            cites: Vec::new(),
+            disposition: None,
+            review_when: Vec::new(),
+            replaced_by: None,
+            valid_until: None,
+            stability: Some("contextual".into()),
+            expand_recommended: false,
+            object_url: None,
+        }
+    }
+
+    #[test]
+    fn an_inference_is_never_shown_as_the_users_words() {
+        assert_eq!(hint(Basis::Inference).qualifier(), "the agent's inference, not confirmed");
+        assert_eq!(hint(Basis::UserStatement).qualifier(), "stated by the user");
+        let mut h = hint(Basis::UserStatement);
+        h.explicit = true;
+        assert_eq!(h.qualifier(), "the user's explicit statement");
+        assert_eq!(
+            hint(Basis::ThirdPartyClaim).qualifier(),
+            "a third party's claim, not verified"
+        );
+        let mut h = hint(Basis::ToolObservation);
+        h.confidence = Some(0.4);
+        assert_eq!(h.qualifier(), "observed; weak evidence");
+    }
+
+    #[test]
+    fn range_and_end_are_part_of_the_clue() {
+        let mut h = hint(Basis::ToolObservation);
+        h.scope = Some(Scope {
+            subjects: vec!["did:bns:alice".into(), "workspace:proj-a".into()],
+            objects: vec!["tool-x/v1".into()],
+            exceptions: vec!["tool-x/v2".into()],
+        });
+        assert_eq!(
+            h.qualifier(),
+            "observed; applies to workspace:proj-a, tool-x/v1; not to tool-x/v2"
+        );
+        // A short-lived clue says when it ends, or at least that it does.
+        let mut h = hint(Basis::UserStatement);
+        h.stability = Some("volatile".into());
+        assert_eq!(h.qualifier(), "stated by the user; short-lived");
+        h.valid_until = Some("2026-11-13T23:59:59+08:00".into());
+        assert_eq!(
+            h.qualifier(),
+            "stated by the user; holds until 2026-11-13T23:59:59+08:00"
+        );
+        // The object the clue is about is named once; its reference ends it.
+        let mut h = hint(Basis::ToolObservation);
+        h.object_url = Some("obj://a/b".into());
+        h.scope = Some(Scope {
+            subjects: vec!["did:bns:alice".into()],
+            objects: vec!["obj://a/b".into()],
+            exceptions: Vec::new(),
+        });
+        assert_eq!(
+            h.note(),
+            "observed; noticed 2026-11-01T00:00:00Z; about obj://a/b; ref item_a@1"
+        );
+        // Nothing known about its evidence: nothing claimed.
+        let mut bare = hint(Basis::Inference);
+        bare.basis = None;
+        bare.confidence = None;
+        bare.stability = None;
+        assert_eq!(bare.qualifier(), "");
+        assert_eq!(bare.note(), "noticed 2026-11-01T00:00:00Z; ref item_a@1");
     }
 }
