@@ -32,6 +32,11 @@ test.describe('Desktop folder', () => {
     await expect(note).toContainText('Click Jarvis to create your own Agent.')
     await expect(note).toContainText('Chat with your Agent in MessageHub.')
     await expect(page.locator('[data-widget-type="clock"]')).toBeVisible()
+    await expect(page.getByTestId('system-info-fields')).toContainText('0.7.0')
+    const noteBox = await page.getByTestId('desktop-item-Getting Started.widget').boundingBox()
+    const infoBox = await page.getByTestId('system-info-widget').boundingBox()
+    expect(Math.abs(infoBox!.x - noteBox!.x)).toBeLessThan(2)
+    expect(infoBox!.y).toBeGreaterThanOrEqual(noteBox!.y + noteBox!.height)
 
     // Three rows of shortcuts to the right of the widgets.
     const rows = [
@@ -63,7 +68,7 @@ test.describe('Desktop folder', () => {
     expect(Object.keys(entries).sort()).toEqual([
       'AI Center.lnk', 'AI Workspace.lnk', 'App Service.lnk', 'Clock.widget', 'Files.lnk', 'Getting Started.widget',
       'HomeStation.lnk', 'Jarvis.lnk', 'MessageHub.lnk', 'My Network.lnk', 'Preview.lnk', 'Settings.lnk',
-      'Task Center.lnk', 'Users & Agents.lnk', 'Workflow.lnk',
+      'System Info.widget', 'Task Center.lnk', 'Users & Agents.lnk', 'Workflow.lnk',
     ])
     expect(JSON.parse(entries['MessageHub.lnk'].text!)).toEqual({ app: 'messagehub' })
 
@@ -167,8 +172,7 @@ test.describe('Desktop folder', () => {
     await expect(page.getByTestId('mobile-taskbar')).toBeAttached()
     await expect.poll(() => itemIds(page)).toEqual(desktopItems)
     // The note spans the phone's width under the clock.
-    const note = await page.getByTestId('desktop-item-Getting Started.widget').boundingBox()
-    expect(note!.width).toBeGreaterThan(300)
+    await expect.poll(async () => (await page.getByTestId('desktop-item-Getting Started.widget').boundingBox())?.width ?? 0).toBeGreaterThan(300)
   })
 
   test('restoring defaults brings back the default items the folder lost', async ({ page }) => {

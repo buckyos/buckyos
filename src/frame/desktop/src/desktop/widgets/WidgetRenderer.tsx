@@ -2,11 +2,13 @@ import { useI18n } from '../../i18n/provider'
 import type { WidgetItem } from '../../models/ui'
 import { ClockWidget } from './ClockWidget'
 import { NotepadWidget } from './NotepadWidget'
+import { SystemInfoWidget } from './SystemInfoWidget'
 import type { DesktopWidgetComponent } from './types'
 
 const widgetRegistry: Record<string, DesktopWidgetComponent> = {
   clock: ClockWidget,
   notepad: NotepadWidget,
+  'system-info': SystemInfoWidget,
 }
 
 function UnsupportedWidget({ item }: { item: WidgetItem }) {

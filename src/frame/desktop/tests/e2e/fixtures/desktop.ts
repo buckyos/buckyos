@@ -33,6 +33,7 @@ export async function seedDesktopFolder(
   page: Page,
   shortcuts: Record<string, string>,
   extra: Record<string, { kind: 'file' | 'dir'; size: number; mtime: number; text?: string }> = {},
+  options: { systemInfoInitialized?: boolean } = {},
 ) {
   const entries = {
     ...Object.fromEntries(
@@ -43,12 +44,14 @@ export async function seedDesktopFolder(
     ),
     ...extra,
   }
-  await page.addInitScript(([key, value]) => {
+  await page.addInitScript(([key, value, initialized]) => {
     if (!window.sessionStorage.getItem('desktop-folder-seeded')) {
       window.localStorage.setItem(key, value)
+      if (initialized) window.localStorage.setItem('buckyos.mock.desktop-state.system-info-widget', JSON.stringify({ initialized: true }))
+      else window.localStorage.removeItem('buckyos.mock.desktop-state.system-info-widget')
       window.sessionStorage.setItem('desktop-folder-seeded', '1')
     }
-  }, [MOCK_DESKTOP_FOLDER_KEY, JSON.stringify({ entries })] as const)
+  }, [MOCK_DESKTOP_FOLDER_KEY, JSON.stringify({ entries }), options.systemInfoInitialized !== false] as const)
 }
 
 /** The taskbar's pinned apps before the first page load (instead of the defaults). */
