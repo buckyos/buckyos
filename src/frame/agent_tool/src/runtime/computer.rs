@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use buckyos_api::{ComputerAccess, ComputerRequest, ExecutorChannel, ExecutorDescribeOk};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -103,7 +104,7 @@ impl TypedTool for ComputerTool {
     }
 
     fn description(&self) -> &str {
-        "Use this native runtime's desktop through local IPC. request uses the Computer API: command inspect, observe, click, type, keypress, scroll or wait_for; binding_id is filled from the local display when empty or omitted. Start with inspect or observe (mode: visual or auto); inspect reports the modes supported by the local driver. Results are JSON: status.result.computer contains execution, error and observation; screenshot is an absolute local PNG path. Use llm_understand_media on that local file to locate a target in the observation's original screenshot width and height. Actions must use that observation_id, binding_id and screenshot coordinates before expires_at_ms; if the observation expires or the screen changes, observe again and verify the target. An unknown execution outcome must not be blindly retried. Owner permissions, focus checks and desktop locking are enforced by the existing driver."
+        "Use this native runtime's desktop through local IPC. request uses the Computer API: command inspect, observe, click, type, keypress, scroll or wait_for; binding_id is filled from the local display when empty or omitted. Start with inspect or observe (mode: visual or auto); inspect reports the modes supported by the local driver. Results are JSON: status.result.computer contains execution, error and observation; screenshot is the absolute local path of the PNG, which also comes with the result as an image for you to look at. Locate targets on that image in the observation's screenshot width and height. Actions must use that observation_id, binding_id and screenshot coordinates before expires_at_ms; if the observation expires or the screen changes, observe again and verify the target. An unknown execution outcome must not be blindly retried. Owner permissions, focus checks and desktop locking are enforced by the existing driver."
     }
 
     async fn execute(&self, _ctx: &ToolCtx<'_>, args: Self::Args) -> Result<Value, AgentToolError> {
@@ -236,6 +237,10 @@ impl TypedTool for ComputerTool {
     }
 }
 
+/// The largest screenshot shown to the model with a result: AICC's inline
+/// resource limit.
+const MAX_SHOWN_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+
 struct ComputerToolHandle(TypedToolHandle<ComputerTool>);
 
 #[async_trait]
@@ -272,12 +277,36 @@ impl AgentTool for ComputerToolHandle {
             Some(error) => format!("computer {state}: {error}"),
             None => format!("computer {state}"),
         };
+        let mut result = result;
+        let png = result
+            .details
+            .get("screenshot")
+            .and_then(Value::as_str)
+            .and_then(|path| std::fs::read(path).ok());
+        let image = match png {
+            Some(png) if png.len() <= MAX_SHOWN_IMAGE_BYTES => Some(buckyos_api::ResourceRef::base64(
+                "image/png".into(),
+                base64::engine::general_purpose::STANDARD.encode(png),
+            )),
+            Some(png) => {
+                result.details["screenshot_not_shown"] = json!(format!(
+                    "the PNG has {} bytes, more than the {MAX_SHOWN_IMAGE_BYTES} a model request takes inline; read it with llm_understand_media",
+                    png.len()
+                ));
+                None
+            }
+            None => None,
+        };
         let output = result.details.to_string();
-        Ok(result
+        let result = result
             .with_output(output)
             .with_result(summary)
             .with_status(status)
-            .refresh_default_title())
+            .refresh_default_title();
+        Ok(match image {
+            Some(image) => result.with_image(image),
+            None => result,
+        })
     }
 }
 

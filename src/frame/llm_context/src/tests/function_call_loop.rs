@@ -391,3 +391,131 @@ fn resume_rejects_other_snapshot_versions() {
         );
     }
 }
+
+/// Each call shows one image named after its call id.
+struct ScreenshotTools;
+
+#[async_trait]
+impl crate::deps::ToolManager for ScreenshotTools {
+    async fn call_tool(
+        &self,
+        call: AiToolCall,
+        _ctx: crate::deps::ToolCallCtx,
+    ) -> Result<crate::Observation, crate::deps::ToolDispatchError> {
+        Ok(crate::Observation::Success {
+            content: json!(format!("observed {}", call.call_id)),
+            images: vec![ResourceRef::base64("image/png".into(), call.call_id.clone())],
+            call_id: call.call_id,
+            bytes: 0,
+            truncated: false,
+            host: None,
+        })
+    }
+
+    fn list_tool_specs(&self) -> Vec<crate::deps::ToolSpecLite> {
+        vec![crate::deps::ToolSpecLite {
+            name: "shot".into(),
+            description: "take a screenshot".into(),
+            args_schema: json!({}),
+        }]
+    }
+}
+
+fn tool_result_images(messages: &[AiMessage]) -> Vec<(String, Option<String>)> {
+    messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|part| match part {
+            AiContent::ToolResult { call_id, content, .. } => Some((call_id, content)),
+            _ => None,
+        })
+        .map(|(call_id, content)| {
+            assert!(matches!(&content[0], buckyos_api::AiToolResultContent::Text { text } if *text == format!("observed {call_id}")));
+            let image = match &content[1] {
+                buckyos_api::AiToolResultContent::Image {
+                    source: ResourceRef::Base64 { mime, data_base64 },
+                } => {
+                    assert_eq!(mime, "image/png");
+                    Some(data_base64.clone())
+                }
+                buckyos_api::AiToolResultContent::Text { text } => {
+                    assert_eq!(text, crate::OMITTED_IMAGE_TEXT);
+                    None
+                }
+                other => panic!("unexpected tool result block {other:?}"),
+            };
+            assert_eq!(content.len(), 2);
+            (call_id.clone(), image)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn tool_images_reach_the_model_and_only_the_newest_are_kept() {
+    let shots = crate::MAX_TOOL_RESULT_IMAGES + 2;
+    let mut script: Vec<AiResponse> = (1..=shots)
+        .map(|i| {
+            tool_response(
+                None,
+                vec![AiToolCall {
+                    name: "shot".into(),
+                    args: HashMap::new(),
+                    call_id: format!("s{i}"),
+                }],
+            )
+        })
+        .collect();
+    script.push(text_response("seen"));
+    let llm = Arc::new(ScriptedRecordingLlm::new(script));
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(ScreenshotTools));
+    let mut request = base_request();
+    request.tool_policy.max_tool_iterations = 10;
+    let mut ctx = LLMContext::new(request, deps);
+
+    assert!(matches!(ctx.run().await, LLMContextOutcome::Done { .. }));
+    let seen = llm.seen();
+    assert_eq!(
+        tool_result_images(&seen[1]),
+        vec![("s1".to_string(), Some("s1".to_string()))],
+        "the model sees the image of the call it just made"
+    );
+    let last: Vec<_> = tool_result_images(seen.last().unwrap());
+    let expected: Vec<_> = (1..=shots)
+        .map(|i| {
+            let id = format!("s{i}");
+            let kept = i > shots - crate::MAX_TOOL_RESULT_IMAGES;
+            (id.clone(), kept.then_some(id))
+        })
+        .collect();
+    assert_eq!(last, expected);
+    assert_eq!(
+        tool_result_images(&ctx.snapshot().state.accumulated),
+        expected,
+        "the snapshot keeps no more images than the model is sent"
+    );
+}
+
+#[test]
+fn image_observations_round_trip_and_plain_ones_stay_compact() {
+    let plain = crate::Observation::Success {
+        call_id: "c".into(),
+        content: json!("text"),
+        bytes: 4,
+        truncated: false,
+        host: None,
+        images: Vec::new(),
+    };
+    assert!(serde_json::to_value(&plain).unwrap().get("images").is_none());
+    let with_image = crate::Observation::Success {
+        call_id: "c".into(),
+        content: json!("text"),
+        bytes: 4,
+        truncated: false,
+        host: None,
+        images: vec![ResourceRef::base64("image/png".into(), "AA==".into())],
+    };
+    let wire = serde_json::to_value(&with_image).unwrap();
+    assert_eq!(serde_json::from_value::<crate::Observation>(wire).unwrap(), with_image);
+    let old = json!({"kind": "success", "call_id": "c", "content": "text", "bytes": 4});
+    assert_eq!(serde_json::from_value::<crate::Observation>(old).unwrap(), plain);
+}

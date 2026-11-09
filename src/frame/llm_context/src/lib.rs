@@ -38,7 +38,9 @@ pub use deps::{
 };
 pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure};
 pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle};
-pub use observation::{Observation, ToolExecRecord, ToolExecStatus};
+pub use observation::{
+    Observation, ToolExecRecord, ToolExecStatus, MAX_TOOL_RESULT_IMAGES, OMITTED_IMAGE_TEXT,
+};
 pub use outcome::{
     BudgetKind, ContextLimitKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill,
 };

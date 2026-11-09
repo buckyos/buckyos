@@ -1,7 +1,13 @@
 //! Tool observation types (effect-side product paired with `AiToolCall`).
 
+use buckyos_api::ResourceRef;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// How many tool-result images a context keeps: older ones are replaced by
+/// [`OMITTED_IMAGE_TEXT`] when a newer one arrives.
+pub const MAX_TOOL_RESULT_IMAGES: usize = 3;
+pub const OMITTED_IMAGE_TEXT: &str = "[image omitted: a later tool result has a newer one]";
 
 /// Normalised result of a single tool invocation. `ToolManager` implementations
 /// translate whatever native shape they use into one of these variants.
@@ -22,6 +28,10 @@ pub enum Observation {
         truncated: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         host: Option<Value>,
+        /// Images the tool shows the LLM with its content (a screenshot of
+        /// a desktop observation), in order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ResourceRef>,
     },
     Error {
         call_id: String,

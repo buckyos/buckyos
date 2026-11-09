@@ -162,6 +162,7 @@ fn surface_fallthrough(req: &CommandNotFoundRequest, reason: &SkipReason) -> (Ag
         return_code: Some(CLI_EXIT_COMMAND_NOT_FOUND),
         partial_output: None,
         output: None,
+        images: Vec::new(),
     };
     (result, CLI_EXIT_COMMAND_NOT_FOUND)
 }

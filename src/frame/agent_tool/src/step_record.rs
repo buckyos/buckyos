@@ -933,6 +933,7 @@ mod tests {
             bytes: 2,
             truncated: false,
             host: None,
+            images: Vec::new(),
         }];
 
         let (a, u) = renderer.render(&step);
@@ -972,6 +973,7 @@ mod tests {
                 bytes: 5,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             },
             Observation::Success {
                 call_id: "c-2".into(),
@@ -979,6 +981,7 @@ mod tests {
                 bytes: 6,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             },
         ];
         let (_, u) = renderer.render(&step);
@@ -1007,6 +1010,7 @@ mod tests {
                 bytes: 6,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             },
             Observation::Success {
                 call_id: "2".into(),
@@ -1014,6 +1018,7 @@ mod tests {
                 bytes: 9,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             },
         ];
 
@@ -1044,6 +1049,7 @@ mod tests {
             bytes: 6,
             truncated: false,
             host: None,
+            images: Vec::new(),
         }];
 
         let msgs = renderer.render_history(vec![step], "do", Vec::new());
@@ -1076,6 +1082,7 @@ mod tests {
             bytes: 14,
             truncated: false,
             host: None,
+            images: Vec::new(),
         }];
         let (_, u) = renderer.render(&step);
         let text = user_text_of(&u);
@@ -1168,6 +1175,7 @@ mod tests {
             bytes: 0,
             truncated: false,
             host: None,
+            images: Vec::new(),
         }];
         let (_, u) = renderer.render(&step);
         // JSON object stringified without XML escaping.
@@ -1186,6 +1194,7 @@ mod tests {
             bytes: 0,
             truncated: false,
             host: None,
+            images: Vec::new(),
         }];
         let (_, u) = renderer.render(&step);
         let user_text = user_text_of(&u);
@@ -1202,6 +1211,7 @@ mod tests {
             content: json!("legacy fallback should not render"),
             bytes: 0,
             truncated: false,
+            images: Vec::new(),
             host: Some(ToolResultView {
                 status: ToolResultStatusView::Success,
                 cmd_name: Some("custom_tool".into()),
@@ -1231,6 +1241,7 @@ mod tests {
             content: json!("legacy fallback should not render"),
             bytes: 0,
             truncated: false,
+            images: Vec::new(),
             host: Some(ToolResultView {
                 status: ToolResultStatusView::Success,
                 cmd_name: Some("read_file".into()),
@@ -1262,6 +1273,7 @@ mod tests {
             content: json!("legacy fallback should not render"),
             bytes: 0,
             truncated: false,
+            images: Vec::new(),
             host: Some(ToolResultView {
                 status: ToolResultStatusView::Success,
                 title: "custom_tool => success".into(),
@@ -1335,6 +1347,7 @@ mod tests {
                 bytes: body.len(),
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             }];
             step
         };
@@ -1378,6 +1391,7 @@ mod tests {
                 bytes: 8,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             }];
             step
         };
@@ -1410,6 +1424,7 @@ mod tests {
                 bytes: 2,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             }];
             step
         };
@@ -1453,6 +1468,7 @@ mod tests {
                 bytes: 12,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             }];
             step
         };

@@ -443,11 +443,42 @@ async fn completed_click_preserves_success_when_screenshot_download_fails() {
 async fn xllm_dispatch_preserves_native_observation_in_model_content() {
     let fixture = Fixture::new(Reply::Observe).await;
     let observation = fixture.dispatch().await;
-    let Observation::Success { content, .. } = observation else {
+    let Observation::Success {
+        content, images, ..
+    } = observation
+    else {
         panic!("expected a successful observation")
     };
     assert_observation(content.as_str().expect("model content"));
+    assert_eq!(
+        images,
+        vec![ResourceRef::base64("image/png".into(), PNG_B64.into())],
+        "the model must see the screenshot itself"
+    );
     fixture.finish().await;
+}
+
+#[tokio::test]
+async fn completed_click_without_screenshot_shows_no_image() {
+    let fixture = Fixture::new(Reply::ClickWithScreenshotFailure).await;
+    let result = fixture.call().await;
+    assert_eq!(result.status, AgentToolStatus::Success);
+    assert!(result.images.is_empty());
+    fixture.finish().await;
+}
+
+#[test]
+fn images_never_come_from_protocol_json() {
+    let mut result = AgentToolResult::from_details(json!({"screenshot": "C:/secret.png"}))
+        .with_image(ResourceRef::base64("image/png".into(), PNG_B64.into()));
+    let wire = serde_json::to_value(&result).unwrap();
+    assert!(wire.get("images").is_none(), "{wire}");
+    let mut forged = wire;
+    forged["images"] = json!([{"kind": "base64", "mime": "image/png", "data_base64": PNG_B64}]);
+    let parsed: AgentToolResult = serde_json::from_value(forged).unwrap();
+    assert!(parsed.images.is_empty());
+    result.images.clear();
+    assert_eq!(parsed, result);
 }
 
 #[tokio::test]

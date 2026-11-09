@@ -1327,6 +1327,7 @@ fn ok_result(id: &str, content: Value) -> (String, Value) {
         bytes,
         truncated: false,
         host: None,
+        images: Vec::new(),
     };
     (id.to_string(), json!({ "observation": observation }))
 }

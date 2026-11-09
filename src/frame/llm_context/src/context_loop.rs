@@ -70,7 +70,9 @@ use crate::error::{CheckpointStage, LLMComputeError, ProviderFailure};
 use crate::interrupt::{
     InferenceAbortState, InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle,
 };
-use crate::observation::{Observation, ToolExecRecord, ToolExecStatus};
+use crate::observation::{
+    Observation, ToolExecRecord, ToolExecStatus, MAX_TOOL_RESULT_IMAGES, OMITTED_IMAGE_TEXT,
+};
 use crate::outcome::{
     BudgetKind, ContextLimitKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill,
 };
@@ -790,10 +792,13 @@ impl LLMContext {
             };
 
             match &observation {
-                Observation::Success { .. } => {
+                Observation::Success { images, .. } => {
                     self.state
                         .accumulated
                         .push(tool_observation_message(&call.call_id, &observation));
+                    if !images.is_empty() {
+                        omit_older_tool_images(&mut self.state.accumulated, MAX_TOOL_RESULT_IMAGES);
+                    }
                     self.record_tool(&call, ToolExecStatus::Succeeded, duration_ms, None);
                     self.deps
                         .worklog
@@ -1918,6 +1923,10 @@ impl LLMContext {
                     self.record_tool(&action, status, duration_ms, Some(reason.clone()));
                 }
             }
+            let mut observation = observation;
+            if let Observation::Success { images, .. } = &mut observation {
+                images.clear();
+            }
             if let Some(a) = self.state.action_step.as_mut() {
                 a.step.action_results.push(observation);
             }
@@ -2429,6 +2438,10 @@ fn merge_usage(left: &AiUsage, right: &AiUsage) -> AiUsage {
 /// Build the tool-role message that carries one observation back to the LLM.
 /// Keyed by `call_id` so providers can wire it to the originating ToolUse.
 pub(crate) fn tool_observation_message(call_id: &str, observation: &Observation) -> AiMessage {
+    let images = match observation {
+        Observation::Success { images, .. } => images.as_slice(),
+        _ => &[],
+    };
     let (content_text, is_error) = match observation {
         Observation::Success { content, .. } => {
             let text = if let Some(s) = content.as_str() {
@@ -2466,14 +2479,39 @@ pub(crate) fn tool_observation_message(call_id: &str, observation: &Observation)
             (text, true)
         }
     };
+    let mut content = vec![AiToolResultContent::text(content_text)];
+    content.extend(images.iter().map(|source| AiToolResultContent::Image {
+        source: source.clone(),
+    }));
     AiMessage::new(
         AiRole::Tool,
         vec![AiContent::ToolResult {
             call_id: call_id.to_string(),
-            content: vec![AiToolResultContent::text(content_text)],
+            content,
             is_error,
         }],
     )
+}
+
+/// Keep the `keep` newest tool-result images of `messages`; each older one
+/// becomes [`OMITTED_IMAGE_TEXT`].
+pub(crate) fn omit_older_tool_images(messages: &mut [AiMessage], keep: usize) {
+    let mut seen = 0;
+    for message in messages.iter_mut().rev() {
+        for part in message.content.iter_mut().rev() {
+            let AiContent::ToolResult { content, .. } = part else {
+                continue;
+            };
+            for block in content.iter_mut().rev() {
+                if matches!(block, AiToolResultContent::Image { .. }) {
+                    seen += 1;
+                    if seen > keep {
+                        *block = AiToolResultContent::text(OMITTED_IMAGE_TEXT);
+                    }
+                }
+            }
+        }
+    }
 }
 
 const FINISHING_SKIP_REASON: &str = "not executed: the run is finishing";

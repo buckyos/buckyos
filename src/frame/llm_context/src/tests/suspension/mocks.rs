@@ -124,6 +124,7 @@ impl ToolManager for Tools {
             bytes: 0,
             truncated: false,
             host: None,
+            images: Vec::new(),
         })
     }
 }

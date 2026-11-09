@@ -4,7 +4,7 @@
 //! never sees a half-built index.
 
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -80,7 +80,7 @@ pub fn random_suffix() -> String {
 
 #[cfg(unix)]
 pub fn sync_dir(path: &Path) -> Result<()> {
-    File::open(path)?.sync_all()?;
+    fs::File::open(path)?.sync_all()?;
     Ok(())
 }
 
@@ -396,7 +396,8 @@ fn rebuild_sqlite(root: &Path, view: &GraphView) -> Result<()> {
         }
         tx.commit()?;
     }
-    File::open(&tmp)?.sync_all()?;
+    // Windows FlushFileBuffers needs a writable handle.
+    OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
     fs::rename(&tmp, root.join(SQLITE_FILE))?;
     sync_dir(root)
 }

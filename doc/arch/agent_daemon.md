@@ -17,7 +17,7 @@ buckyos_agent_daemon run --url-file /private/access-url
 buckyos_agent_daemon doctor --json
 buckyos_agent_daemon status --executor <executor_id> --json
 buckyos_agent_daemon stop --executor <executor_id>
-# macOS/Windows：人工接管/恢复桌面输入；恢复后必须重新观察
+# macOS/Windows：手动暂停/恢复桌面输入；恢复后必须重新观察
 buckyos_agent_daemon pause --executor <executor_id>
 buckyos_agent_daemon resume --executor <executor_id>
 ```
@@ -125,7 +125,7 @@ macOS 的 `interactive_session_id` 使用 `getaudit_addr` 返回的 audit sessio
 
 visual/auto 返回 PNG，semantic/hybrid、element target、move/drag、text/element_state 等待和 `delivery=keys` 明确不支持。type 在现有光标/选区输入 Unicode 文本，不清空、不追加 Enter、不使用剪贴板；keypress 区分 Control 与 Meta。截图尺寸和逻辑显示坐标分别保存，point 必须是截图内整数坐标。focus 输入要求能重新核验焦点元素及其所属显示器，无法核验即拒绝。
 
-每个桌面使用跨 daemon 进程锁和共享交互 revision；观察与输入串行。每个输入步骤校验取消、执行截止、桌面代次、锁屏、焦点和系统权限，按键/鼠标 down/up 在同一原生调用中配对。管理重连、授权变化、暂停/恢复使旧观察失效。已知外部输入和显示布局变化也会拒绝旧观察；这些检查不能消除 GUI 自身的检查—执行竞争，应用业务成功仍需新观察验证。
+每个桌面使用跨 daemon 进程锁和共享交互 revision；观察与输入串行。每个输入步骤校验取消、执行截止、桌面代次、锁屏、焦点和系统权限，按键/鼠标 down/up 在同一原生调用中配对。管理重连、授权变化、暂停/恢复使旧观察失效。显示布局和焦点窗口变化也会拒绝旧观察；人的键鼠操作（包括鼠标移动和按住的键）不使观察失效，也不暂停或拒绝动作。这些检查不能消除 GUI 自身的检查—执行竞争，应用业务成功仍需新观察验证。
 
 本地 `pause/resume` 使用经过 PID/启动时间校验的控制请求。返回成功仅说明请求已提交；`status --json` 的 `instances[].capabilities.ui.state` 在线时通常会在下一次心跳（约 5 秒）反映暂停。Computer inspect 返回实际 Driver readiness。暂停不会因重连自动恢复，resume 不重放原动作。
 
@@ -139,7 +139,7 @@ daemon 必须在当前已登录用户的交互会话前台运行，截图与输�
 
 普通用户 daemon 不向更高完整性级别的窗口输入，也不能绕过 UIPI 或 UAC 安全桌面。焦点、目标进程或输入完整性无法验证时拒绝操作。系统 API 接受输入只说明派发事实，输入已发出但后置截图失败时仍按原 operation 查询，不能重发输入。暂停、取消、断线和 unknown 的恢复复用上述共享协议与 Executor 账本。
 
-动作校验发现观察之后有人工键鼠事件，或输入过程中检测到人工接管时，会自动暂停并使旧观察失效。用户处理完桌面后需在本机执行 `resume --executor <executor_id>`，确认实际 readiness 恢复，再重新观察；重新连接、重新查询或单独发送新动作不会自动解除暂停。
+驱动不检测人工接管：观察之后或输入过程中人使用键盘鼠标，动作照常执行，由人适应 Agent 正在操作的桌面。人想让 Agent 停手时用 `pause --executor <executor_id>`，之后 `resume` 并重新观察；重新连接、重新查询或单独发送新动作不会自动解除暂停。
 
 输入监视线程的心跳断档阈值默认 250 ms；若配置了 `HKCU\Control Panel\Desktop\LowLevelHooksTimeout`，阈值取 250 ms 与该值一半中的较小值。键不存在时使用默认值，读取失败或值无效时禁用桌面驱动。检测到断档后健康状态持续为 false，并更新桌面代次，使旧观察失效；`resume` 不会重新启用监视线程，必须先停止并重启 daemon，再检查 readiness 和重新观察。休眠、调试暂停或较长调度停顿也可能触发该保护。心跳保护检测已知线程停顿，不代表能发现 Windows 对 hook 的所有静默移除。
 

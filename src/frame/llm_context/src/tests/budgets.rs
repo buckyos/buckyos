@@ -310,6 +310,7 @@ impl ToolManager for WrapUpTools {
             bytes: 0,
             truncated: false,
             host: None,
+            images: Vec::new(),
         })
     }
 

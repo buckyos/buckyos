@@ -281,6 +281,7 @@ pub fn task_state_observation_via(
                 content: Value::String(text),
                 bytes,
                 truncated: false,
+                images: Vec::new(),
                 host: Some(
                     ToolResultView {
                         status: ToolResultStatusView::Success,
@@ -305,6 +306,7 @@ pub fn task_state_observation_via(
                     bytes,
                     truncated: false,
                     host: Some(tool_result.into_host()),
+                    images: Vec::new(),
                 }
             } else {
                 tool_result.status = ToolResultStatusView::Error;

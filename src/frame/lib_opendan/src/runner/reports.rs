@@ -548,6 +548,7 @@ pub(super) async fn call(
                 content,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             })
         }
         Err(OpenDanError::InvalidArgument(message) | OpenDanError::Artifact(message)) => Ok(Observation::Error {

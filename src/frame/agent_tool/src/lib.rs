@@ -290,6 +290,11 @@ pub struct AgentToolResult {
     /// unchanged).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedup: Option<ResultDedup>,
+    /// Images shown to the model with the result (a desktop screenshot).
+    /// Only an in-process tool can attach them: they never travel in the
+    /// protocol JSON, so a command's output cannot make the host load a file.
+    #[serde(skip)]
+    pub images: Vec<buckyos_api::ResourceRef>,
 }
 
 /// One entry of [`AgentToolResult::hints`].
@@ -405,7 +410,13 @@ impl AgentToolResult {
             output: None,
             hints: Vec::new(),
             dedup: None,
+            images: Vec::new(),
         }
+    }
+
+    pub fn with_image(mut self, image: buckyos_api::ResourceRef) -> Self {
+        self.images.push(image);
+        self
     }
 
     /// Add a hint (see [`AgentToolResult::hints`]).
@@ -701,6 +712,7 @@ pub fn cli_error_result(tool_name: Option<&str>, err: &AgentToolError) -> AgentT
         return_code: None,
         partial_output: None,
         output: Some(message),
+        images: Vec::new(),
     }
 }
 
@@ -729,6 +741,7 @@ pub fn cli_success_result(
         return_code: None,
         partial_output: None,
         output: None,
+        images: Vec::new(),
     }
 }
 

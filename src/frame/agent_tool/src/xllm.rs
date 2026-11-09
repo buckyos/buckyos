@@ -4554,7 +4554,7 @@ impl ToolManager for XllmToolManager {
 /// (`<output>` / `<runtime_hints>`).
 fn map_result_to_observation_with_hints(
     call_id: String,
-    result: AgentToolResult,
+    mut result: AgentToolResult,
     hints: &[String],
 ) -> Observation {
     let host = Some(result.to_host());
@@ -4573,6 +4573,7 @@ fn map_result_to_observation_with_hints(
                 bytes,
                 truncated,
                 host,
+                images: std::mem::take(&mut result.images),
             }
         }
         AgentToolStatus::Error => Observation::Error {

@@ -25,8 +25,11 @@ provides no usable short path, use a shorter BuckyOS data location and inspect
 `src/frame/lib_opendan/src/session_context.rs` and the reported directory.
 If the Windows input monitor stops being healthy after sleep, a debugger pause or a scheduling stall,
 restart the daemon and check readiness; local resume alone cannot restore it. Query old operations and observe again.
-The planned `buckyos computer` CLI and image-to-model bridge are not yet available; PNG bytes alone
-do not prove the model received an image. Do not publish a `computer_use` recipe requiring those commands.
+On a native runtime the `computer` tool attaches each screenshot to its tool result as an image
+(`AgentToolResult.images` → `Observation::Success.images`, never parsed from command output); a
+function-call context keeps the newest `MAX_TOOL_RESULT_IMAGES`, a behavior (text) loop drops them.
+The planned `buckyos computer` CLI and its `--present` bridge for shell commands are not yet available;
+do not publish a `computer_use` recipe requiring those commands.
 The CLI alternative is `buckyos executor --help`; inspect the installed command schema before use.
 Management URL credentials authenticate the target daemon only, while tool calls use the Agent's App session.
 After connection loss, rediscover the active generation and query the original operation using its

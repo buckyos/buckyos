@@ -738,6 +738,7 @@ fn build_outcome_result(
                             return_code: Some(0),
                             partial_output: None,
                             output: Some(rendered),
+                            images: Vec::new(),
                         },
                         CLI_EXIT_SUCCESS,
                     )
@@ -815,6 +816,7 @@ fn build_outcome_result(
                             return_code: None,
                             partial_output: None,
                             output: None,
+                            images: Vec::new(),
                         },
                         CLI_EXIT_ERROR,
                     )
@@ -858,6 +860,7 @@ fn build_outcome_result(
                     return_code: None,
                     partial_output: None,
                     output: None,
+                    images: Vec::new(),
                 },
                 CLI_EXIT_SUCCESS,
             )
@@ -903,6 +906,7 @@ fn build_outcome_result(
                     return_code: None,
                     partial_output: None,
                     output: None,
+                    images: Vec::new(),
                 },
                 CLI_EXIT_ERROR,
             )
@@ -3092,6 +3096,7 @@ fn build_error_result(opts: &RunOpts, message: impl Into<String>) -> AgentToolRe
         return_code: None,
         partial_output: None,
         output: None,
+        images: Vec::new(),
     }
 }
 

@@ -123,6 +123,7 @@ mod tests {
                     bytes: 2,
                     truncated: false,
                     host: None,
+                    images: Vec::new(),
                 }],
                 ..Default::default()
             },

@@ -73,6 +73,7 @@ impl ToolManager for CancelTools {
                     bytes: 10,
                     truncated: false,
                     host: None,
+                    images: Vec::new(),
                 })
             }
             "bad_cancel" => Ok(Observation::Cancelled {
@@ -86,6 +87,7 @@ impl ToolManager for CancelTools {
                 bytes: 2,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             }),
         }
     }
@@ -368,6 +370,7 @@ async fn recovered_finish_pairs_native_receipts_before_an_expired_wallclock_budg
                 bytes: 0,
                 truncated: false,
                 host: None,
+                images: Vec::new(),
             })
         }
     }

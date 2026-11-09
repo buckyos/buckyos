@@ -94,7 +94,8 @@ buckyos system info                                 # BuckyOS version, build_ver
   The owner can run `buckyos_agent_daemon pause|resume --executor <id>`; request acceptance is not
   cancellation confirmation. Inspect `instances[].capabilities` in local status, query the original operation,
   and take a new observation after resuming. Never replace the original store or replay uncertain input.
-  Windows automatically pauses on detected human input; the owner must resume locally and observe again.
+  Human keyboard or mouse use neither pauses the driver nor invalidates an observation: actions go on
+  and the person adapts; only an explicit pause, a focus or layout change, or an expired observation stops one.
   If a crash loses the pending Unicode release data, resume stays paused/dirty and requires owner handling;
   do not delete its coordination file to bypass that state.
   A Windows input monitor heartbeat gap disables desktop access until daemon restart, including gaps after

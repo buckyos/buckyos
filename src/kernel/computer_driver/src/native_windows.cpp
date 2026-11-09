@@ -522,7 +522,7 @@ static int dispatch(std::vector<INPUT> &events) {
     if (!r.pending.empty()) return 1;
     BuckyDesktop desktop{};
     probe(desktop);
-    if (!desktop.input || desktop.physical_input_down) return 1;
+    if (!desktop.input) return 1;
     r.pending.reserve(events.size());
     if (dispatch_guard && !dispatch_guard(dispatch_guard_context, &desktop)) return 1;
     UINT sent = SendInput(static_cast<UINT>(events.size()), events.data(), sizeof(INPUT));
@@ -596,7 +596,7 @@ extern "C" int bucky_desktop_finish() {
         if (r.pending.empty()) return 0;
         BuckyDesktop desktop{};
         probe(desktop);
-        if (!desktop.input || desktop.physical_input_down) return 1;
+        if (!desktop.input) return 1;
         auto releases = r.pending;
         UINT sent = SendInput(static_cast<UINT>(releases.size()), releases.data(), sizeof(INPUT));
         for (UINT i = 0; i < sent; ++i) remember(releases[i], r.pending);

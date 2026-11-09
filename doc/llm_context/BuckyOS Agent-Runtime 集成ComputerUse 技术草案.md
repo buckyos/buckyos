@@ -4,7 +4,7 @@
 | --- | --- |
 | 文档版本 | 0.2，已确定 CLI 路线的实施 TODO |
 | 更新日期 | 2026-10-23 |
-| 状态 | daemon 子集已实现；本文的上层 ComputerUse CLI、模型图片桥接及完整验收仍是交付目标 |
+| 状态 | daemon 子集已实现；native runtime 的 `computer` tool 已把截图作为图片放进 tool result（见 §9.3）；本文的上层 ComputerUse CLI、shell `--present` 图片桥接及完整验收仍是交付目标 |
 | 设计基线 | [AgentRuntime 设计](<AgentRuntime 设计.md>)、[Agent Daemon 协议](../arch/agent_daemon.md)及当前工作区源码 |
 | Agent 入口 | 现有 `shell` 工具调用 `buckyos computer …` |
 | 首期目标 | Windows、macOS 用户桌面上的观察—动作—再观察闭环 |
@@ -372,12 +372,12 @@ type FocusTarget = {
 ### 6.3 有效性规则
 
 1. 动作必须引用属于当前授权 binding、Surface、epoch 且未过期的观察。
-2. 自身动作或已检测到的外部交互改变 revision；可能改变 UI 的 move 也默认使旧观察失效。
+2. 自身动作改变 revision；可能改变 UI 的 move 也默认使旧观察失效。
 3. 每一步动作后用 feedback 或 observe 获取新观察。不能把旧坐标换绑到模型未见过的新图上。
 4. 单纯生成只读观察不必使同 revision 的其它观察全部失效，但仍需 TTL 和目标校验。
 5. 动作执行前重新检查真实目标/焦点/坐标映射；校验与输入尽量放在同一临界区。
 6. wait_for 开始时绑定目标，等待过程中按该身份跟踪，不把正常的状态变化全部当作过期；导航或目标被另一个节点替换应结束等待。
-7. 人工接管、锁屏、注销、显示布局改变和不能证明连续性的重连使相关旧观察失效。
+7. 锁屏、注销、显示布局改变、焦点窗口改变和不能证明连续性的重连使相关旧观察失效；人的键鼠操作不使观察失效（见 §8.1）。
 
 观察 ID 不能消除检查—使用之间的 GUI 竞争。资源授权、前置核验、输入后验证仍然必要。
 
@@ -414,7 +414,7 @@ type FocusTarget = {
 - 由 daemon 按 `interaction_resource_id` 串行调度写动作；观察与动作协调，避免把拖动中间态当成稳定观察。
 - 模型思考期间不持有不可中断的按键/鼠标锁。binding 的控制租约可以有界保留/续期，但过期后新动作必须重取租约和新观察。
 - helper/worker 校验 fencing token，拒绝旧执行者的迟到请求。仅修改 Broker owner 字段不够。
-- 人工接管暂停新动作、取消队列并清理输入；恢复后重新观察。已送达应用的输入不能撤回。
+- 不检测人工接管：人在 Agent 操作期间移动鼠标、点击或按键，不暂停、不拒绝动作，也不使观察失效，由人适应 AI 的动作。要让 Agent 停手，用显式的暂停入口；暂停取消队列并清理输入，恢复后重新观察。已送达应用的输入不能撤回。
 - 首期可以使用专用测试用户桌面；直接控制用户桌面时必须具备可见状态、暂停/接管和撤销入口。浏览器 Context 不等于 OS 隔离。
 
 ### 8.2 异步批准沿用原操作
@@ -456,6 +456,10 @@ CLI 入口不会削弱授权，function 入口也不会自动提供 OS 隔离。
 `--present` 登记图片不表示 LLM 已在脚本中途看见它。图片在 shell 调用返回或已有任务结果交付点进入模型上下文。
 
 需要模型视觉判断时必须结束当前 shell 调用，等模型看到图像，再执行下一次动作。禁止同一脚本里“截图 → 自动拿一个固定坐标 → 点击”，却声称中间有模型判断。
+
+### 9.3 当前实现：native `computer` tool
+
+native runtime 的 `computer` tool（`agent_tool/src/runtime/computer.rs`）在下载到截图后把 PNG 作为图片附到本次 tool result：`AgentToolResult.images`（`#[serde(skip)]`，只能由进程内 tool 设置，不从命令输出的协议 JSON 解析）→ `Observation::Success.images` → `AiToolResultContent::Image`。function-call loop 中模型在同一次结果里看到图像；context 只保留最新 `MAX_TOOL_RESULT_IMAGES`（3）张，更早的替换为占位文字，快照随之收缩；behavior（文本）loop 不传图片。模型路由需能接收 tool result 图片：OpenAI Responses、Claude Messages、Gemini 已映射，base Chat Completions 会拒绝该请求。
 
 自动脚本可以使用新语义观察和已验证条件继续；视觉坐标必须来自模型实际收到的对应图像。预算导致图像被丢弃/省略时，宿主要明确说明，Agent 不能把它当成已见过的观察。
 
@@ -836,7 +840,7 @@ exit $cuCode
 
 验收：从发行产物安装后，Agent 只靠已有 shell 和 cmd_skill 完成任务；不依赖开发目录中的未分发脚本。
 
-本次 Windows daemon 实现已同步 `buckyos_admin`、`opendan_agent_dev`、`xllm` 和独立包 README 的平台、运行路径、恢复与打包说明。上层 CLI、图片桥接和 `computer_use` 手册仍待交付，不能把草案示例发布为可执行命令。实施完整 T5 时还需同步这些上层能力及其分发产物，并完成示例验收。
+本次 Windows daemon 实现已同步 `buckyos_admin`、`opendan_agent_dev`、`xllm` 和独立包 README 的平台、运行路径、恢复与打包说明。native `computer` tool 的图片结果已交付（§9.3）；上层 CLI、shell `--present` 图片桥接和 `computer_use` 手册仍待交付，不能把草案示例发布为可执行命令。实施完整 T5 时还需同步这些上层能力及其分发产物，并完成示例验收。
 
 ### T6：故障、平台和端到端验收
 

@@ -126,6 +126,7 @@ impl ToolManager for EchoTools {
             bytes: 0,
             truncated: false,
             host: None,
+            images: Vec::new(),
         })
     }
 
@@ -274,6 +275,7 @@ impl ToolManager for ScriptedTools {
             bytes: 2,
             truncated: false,
             host: None,
+            images: Vec::new(),
         })
     }
 

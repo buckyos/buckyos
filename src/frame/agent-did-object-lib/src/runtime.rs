@@ -161,6 +161,7 @@ impl AgentDIDObjectRuntime {
             }),
             partial_output: None,
             output: response.output,
+            images: Vec::new(),
         })
     }
 
@@ -243,6 +244,7 @@ fn read_response_to_tool_result(
             return_code: Some(0),
             partial_output: None,
             output: Some(READ_UNCHANGED_MESSAGE.to_string()),
+            images: Vec::new(),
         };
     }
 
@@ -295,6 +297,7 @@ fn read_response_to_tool_result(
         return_code: Some(0),
         partial_output: None,
         output: Some(output),
+        images: Vec::new(),
     }
 }
 

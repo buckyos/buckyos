@@ -1433,7 +1433,7 @@ impl AgentMemory {
             // replaces the full one.
             if fs::hard_link(self.log_path(), &dst).is_err() {
                 fs::copy(self.log_path(), &dst)?;
-                fs::File::open(&dst)?.sync_all()?;
+                OpenOptions::new().write(true).open(&dst)?.sync_all()?;
             }
             derived::sync_dir(&dir)?;
             manifest.archives.push(ArchiveEntry {

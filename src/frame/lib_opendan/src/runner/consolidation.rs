@@ -881,6 +881,7 @@ pub(super) async fn call(sh: &Arc<Shared>, _run: &RunHandle, call: &AiToolCall) 
             content,
             truncated: false,
             host: None,
+            images: Vec::new(),
         }),
         Err(OpenDanError::InvalidArgument(message)) => Ok(Observation::Error {
             call_id: call.call_id.clone(),

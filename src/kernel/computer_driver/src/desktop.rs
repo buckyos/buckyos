@@ -96,10 +96,6 @@ unsafe extern "C" fn check_native_fence(
 ) -> i32 {
     let fence = &*context.cast::<NativeInputFence<'_>>();
     let current = &*current;
-    if current.hardware_events != fence.desktop.hardware_events {
-        fence.driver.set_paused(true);
-        return 0;
-    }
     i32::from(
         fence.driver.stopped(fence.context, fence.epoch).is_none()
             && same_surface(fence.desktop, current)
@@ -532,6 +528,28 @@ fn capture_consistent(before: &Desktop, after: &Desktop) -> Result<(), &'static 
     }
 }
 
+/// Whether an action may still use `record` on `desktop`. A person using
+/// the mouse or keyboard meanwhile does not invalidate it: only the surface
+/// and the focused window the observation saw matter.
+fn observation_current(
+    record: &ObservationRecord,
+    desktop: &Desktop,
+    epoch: u64,
+    revision: u64,
+) -> Result<(), &'static str> {
+    if record.expired()
+        || record.epoch != epoch
+        || record.revision != revision
+        || !same_surface(&record.desktop, desktop)
+    {
+        return Err("stale_observation");
+    }
+    if record.desktop.focus_pid != desktop.focus_pid || record.desktop.focus != desktop.focus {
+        return Err("focus_changed");
+    }
+    Ok(())
+}
+
 fn point(desktop: &Desktop, x: u32, y: u32) -> Result<(f64, f64), &'static str> {
     if x >= desktop.width || y >= desktop.height || desktop.width == 0 || desktop.height == 0 {
         return Err("coordinate_out_of_bounds");
@@ -864,22 +882,7 @@ impl DesktopComputer {
         ) {
             return Err("observation_forbidden");
         }
-        #[cfg(windows)]
-        if record.desktop.hardware_events != desktop.hardware_events {
-            self.set_paused(true);
-            return Err("human_takeover");
-        }
-        if record.expired()
-            || record.epoch != epoch
-            || record.revision != revision
-            || !same_surface(&record.desktop, desktop)
-            || record.desktop.events != desktop.events
-        {
-            return Err("stale_observation");
-        }
-        if record.desktop.focus_pid != desktop.focus_pid || record.desktop.focus != desktop.focus {
-            return Err("focus_changed");
-        }
+        observation_current(&record, desktop, epoch, revision)?;
         if matches!(target, ComputerTarget::Focus { .. })
             && (desktop.focus == 0 || desktop.focus_on_display == 0)
         {
@@ -905,16 +908,6 @@ impl DesktopComputer {
                 return Err((error, dispatched));
             }
             let current = probe();
-            if current.physical_input_down != 0 {
-                self.set_paused(true);
-                return Err(("human_input_active", dispatched));
-            }
-            if current.hardware_events != desktop.hardware_events
-                || (!dispatched && current.events != desktop.events)
-            {
-                self.set_paused(true);
-                return Err(("human_takeover", dispatched));
-            }
             if !same_surface(desktop, &current) || current.input == 0 {
                 return Err(("desktop_unavailable", dispatched));
             }
@@ -1045,12 +1038,7 @@ impl DesktopComputer {
                     if let Some(error) = self.stopped(context, epoch) {
                         return Err((error, false));
                     }
-                    let current = probe();
-                    if current.hardware_events != desktop.hardware_events {
-                        self.set_paused(true);
-                        return Err(("human_takeover", false));
-                    }
-                    if !same_surface(desktop, &current) {
+                    if !same_surface(desktop, &probe()) {
                         return Err(("desktop_unavailable", false));
                     }
                     tokio::time::sleep(
@@ -1446,6 +1434,53 @@ mod tests {
         assert!(capture_consistent(&before, &busy).is_ok());
         assert!(capture_consistent(&before, &Desktop { layout: 8, ..busy }).is_err());
         assert!(capture_consistent(&before, &Desktop { capture: 0, ..busy }).is_err());
+    }
+
+    #[test]
+    fn human_input_does_not_invalidate_an_observation() {
+        let seen = Desktop {
+            ready: 1,
+            display: 1,
+            session: 2,
+            layout: 7,
+            focus_pid: 100,
+            focus: 200,
+            events: 10,
+            hardware_events: 10,
+            ..Desktop::default()
+        };
+        let record = ObservationRecord {
+            actor: Actor {
+                agent_did: "did:example:alice".into(),
+                app_instance_id: "app@alice".into(),
+            },
+            profile: "desktop".into(),
+            store: "store-1".into(),
+            server_epoch: "epoch-1".into(),
+            binding: "desktop:display:1".into(),
+            desktop: seen,
+            epoch: 1,
+            revision: 1,
+            created: Instant::now(),
+            created_boot_ms: crate::boot_ms(),
+        };
+        let used = Desktop {
+            events: 90,
+            hardware_events: 80,
+            physical_input_down: 1,
+            ..seen
+        };
+        assert_eq!(observation_current(&record, &used, 1, 1), Ok(()));
+        assert_eq!(
+            observation_current(&record, &Desktop { focus: 201, ..used }, 1, 1),
+            Err("focus_changed")
+        );
+        assert_eq!(
+            observation_current(&record, &Desktop { layout: 8, ..used }, 1, 1),
+            Err("stale_observation")
+        );
+        assert_eq!(observation_current(&record, &used, 2, 1), Err("stale_observation"));
+        assert_eq!(observation_current(&record, &used, 1, 2), Err("stale_observation"));
     }
 
     #[test]
