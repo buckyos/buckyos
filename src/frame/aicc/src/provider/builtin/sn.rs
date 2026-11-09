@@ -831,7 +831,7 @@ mod tests {
                 .provider_rules(SN_PROVIDER_PROFILE_ID)
                 .unwrap()
                 .revision_seq,
-            13
+            15
         );
         assert!(catalog.model_driver(SN_PROVIDER_PROFILE_ID).is_none());
         for driver in ["bytedance", "glm", "kimi", "mistral", "openai", "qwen"] {
@@ -1180,7 +1180,7 @@ mod tests {
         .unwrap();
         assert_eq!(inventory.provider_profile_id, SN_PROVIDER_PROFILE_ID);
         assert_eq!(inventory.protocol_adapter_id, SN_OPENAI_ADAPTER_ID);
-        assert_eq!(inventory.models.len(), 54);
+        assert_eq!(inventory.models.len(), 52);
         assert!(inventory.unmatched_models.is_empty());
         assert_eq!(inventory.unavailable_presets.len(), 1);
         assert_eq!(
@@ -1189,13 +1189,13 @@ mod tests {
         );
         assert_eq!(inventory.unavailable_presets[0].effort, "none");
         assert!(inventory.models.iter().all(|model| !model.api_types.is_empty()));
-        for excluded in ["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "sora-2", "sora-2-pro"] {
+        for excluded in ["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "sora-2", "sora-2-pro", "qwen-image-3-pro", "wan-3.0"] {
             assert!(
                 !inventory
                     .models
                     .iter()
                     .any(|model| model.provider_model_id == excluded),
-                "{excluded} must remain excluded because its inference transport is unsupported or the model is discontinued"
+                "{excluded} must remain excluded by the reviewed channel policy"
             );
         }
         let model = inventory
@@ -1220,13 +1220,16 @@ mod tests {
             embedding.operations["embedding.text"],
             crate::protocol::OPENAI_EMBEDDINGS_OPERATION_ID
         );
-        let image = inventory
-            .models
-            .iter()
-            .find(|model| model.provider_model_id == "qwen-image-3-pro")
-            .unwrap();
-        assert_eq!(image.operations["image.txt2img"], "images.generate");
-        assert_eq!(image.operations["image.img2img"], "images.edit");
+        for (model, apis) in [
+            ("qwen-image-3.0-pro", vec!["image.txt2img", "image.img2img"]),
+            ("wan3.0-video", vec!["video.generate", "video.edit", "video.extend"]),
+        ] {
+            let facts = catalog.resolve_model("qwen", model).unwrap().semantics;
+            assert_ne!(facts.exclude, Some(true));
+            for api in apis {
+                assert!(facts.api_types.as_ref().unwrap().contains(api));
+            }
+        }
         let ui_tars = inventory
             .models
             .iter()
@@ -1247,14 +1250,6 @@ mod tests {
         assert!(voxtral.api_types.contains(&buckyos_api::ApiType::Llm));
         assert!(voxtral.api_types.contains(&buckyos_api::ApiType::AudioSpeechRecognition));
         assert_eq!(voxtral.operations["audio.asr"], "chat.completions.create");
-        let wan = inventory
-            .models
-            .iter()
-            .find(|model| model.provider_model_id == "wan-3.0")
-            .unwrap();
-        for api in ["video.generate", "video.edit", "video.extend"] {
-            assert_eq!(wan.operations[api], "videos.create");
-        }
         let qwen_27b = inventory.models.iter().find(|model| model.provider_model_id == "qwen3.8-27b").unwrap();
         assert_eq!(qwen_27b.capabilities["max_context_tokens"], serde_json::json!(262144));
         assert_eq!(catalog.resolve_model("qwen", "qwen3.8-27b").unwrap().semantics.capabilities.unwrap()["max_context_tokens"], serde_json::json!(1000000));

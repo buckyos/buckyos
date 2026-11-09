@@ -92,6 +92,7 @@ export type ProviderProtocolContract = {
   body_field_formats?: Record<string, "http_url" | "http_url_or_data_uri">;
   required_body_values?: Record<string, unknown>;
   required_body_values_by_model?: Record<string, Record<string, unknown>>;
+  optional_body_values_by_model?: Record<string, Record<string, unknown>>;
   json_string_body_values?: Record<string, Record<string, unknown>>;
   required_body_paths?: string[];
   forbidden_body_paths?: string[];
@@ -557,6 +558,26 @@ export function validateProviderProtocolCatalog(
             if (!pointer.startsWith("/")) {
               throw new Error(
                 `${id}.required_body_values_by_model.${modelId} keys must be JSON pointers`,
+              );
+            }
+          }
+        }
+      }
+      if (contract.optional_body_values_by_model !== undefined) {
+        const byModel = object(
+          contract.optional_body_values_by_model,
+          `${id}.optional_body_values_by_model`,
+        );
+        for (const [modelId, rawValues] of Object.entries(byModel)) {
+          nonEmptyString(modelId, `${id}.optional_body_values_by_model key`);
+          const values = object(
+            rawValues,
+            `${id}.optional_body_values_by_model.${modelId}`,
+          );
+          for (const pointer of Object.keys(values)) {
+            if (!pointer.startsWith("/")) {
+              throw new Error(
+                `${id}.optional_body_values_by_model.${modelId} keys must be JSON pointers`,
               );
             }
           }
@@ -1213,6 +1234,15 @@ export function validateProviderRequest(
     const actual = pointerValue(pointer);
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
       errors.push(`body ${pointer} must equal ${JSON.stringify(expected)}`);
+    }
+  }
+  const optionalModelValues = typeof body.model === "string"
+    ? contract.optional_body_values_by_model?.[body.model] ?? {}
+    : {};
+  for (const [pointer, expected] of Object.entries(optionalModelValues)) {
+    const actual = pointerValue(pointer);
+    if (actual !== undefined && JSON.stringify(actual) !== JSON.stringify(expected)) {
+      errors.push(`body ${pointer} must equal ${JSON.stringify(expected)} when supplied`);
     }
   }
   for (const [pointer, expected] of Object.entries(contract.json_string_body_values ?? {})) {

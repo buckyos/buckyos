@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 13,
+  "revision_seq": 15,
   "provider_profile_id": "sn",
   "model_driver_overrides": {
     "gpt-6-astra": "openai/gpt-6-astra",
@@ -504,7 +504,8 @@
       "operations": {
         "image.txt2img": "images.generate",
         "image.img2img": "images.edit"
-      }
+      },
+      "exclude": true
     },
     {
       "id": "ui-tars-1.5-7b",
@@ -727,7 +728,11 @@
         {
           "remove": [
             "/temperature",
-            "/top_p"
+            "/top_p",
+            "/n",
+            "/presence_penalty",
+            "/frequency_penalty",
+            "/thinking"
           ]
         }
       ]
@@ -829,7 +834,8 @@
             "video/mp4"
           ]
         }
-      }
+      },
+      "exclude": true
     }
   ],
   "patterns": [

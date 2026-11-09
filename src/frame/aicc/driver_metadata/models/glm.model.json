@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "glm",
-  "revision_seq": 8,
+  "revision_seq": 9,
   "required_features": [],
   "models": [
     {
@@ -423,8 +423,12 @@
     },
     {
       "id": "glm-5.3-flash",
-      "parameter_scale": "flash",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "parameter_scale": "320B",
+      "api_types": [
+        "llm",
+        "vision.ocr",
+        "vision.caption"
+      ],
       "capabilities": {
         "max_context_tokens": 1048576,
         "max_output_tokens": 131072,
@@ -432,17 +436,19 @@
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
-        "vision": true
+        "vision": true,
+        "active_parameters": 18000000000,
+        "thinking_required": true
       },
       "llm": {
         "spec": "glm-flash",
         "effort": "max",
         "default_effort": "max",
         "supported_efforts": [
-  "low",
-  "high",
-  "max"
-],
+          "low",
+          "high",
+          "max"
+        ],
         "stability": "stable",
         "weight": 53
       }
@@ -765,7 +771,7 @@
     },
     {
       "id": "glm-5.3-flashx",
-      "parameter_scale": "flash",
+      "parameter_scale": "320B",
       "api_types": [
         "llm",
         "vision.ocr",
@@ -778,7 +784,9 @@
         "tool_call": true,
         "json_schema": true,
         "reasoning": true,
-        "vision": true
+        "vision": true,
+        "active_parameters": 18000000000,
+        "thinking_required": true
       },
       "llm": {
         "spec": "glm-flash",

@@ -1,0 +1,19 @@
+{
+  "baseline_revision": "2026-11-02.2",
+  "provider_driver": "sn-ai-provider",
+  "provider_instance": "sn-us-full-20261030-t2",
+  "models": [
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst"
+  ],
+  "api_types": [
+    "image.txt2img",
+    "image.img2img",
+    "image.inpaint"
+  ],
+  "max_new_model_calls": 8,
+  "max_estimated_cost_usd": 4,
+  "timeout_ms": 900000,
+  "automatic_retries": 0,
+  "named_data_read_origin": "http://localhost:3180"
+}

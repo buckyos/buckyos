@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "2026-10-30.1",
-  "checked_at": "2026-10-30",
+  "revision": "2026-11-02.1",
+  "checked_at": "2026-11-02",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -3763,6 +3763,9 @@
             "anthropic/claude-haiku-5.5": [
               "/temperature",
               "/top_p"
+            ],
+            "moonshotai/kimi-k3.1-pro": [
+              "/thinking"
             ]
           },
           "protocol_adapter_id": "openrouter-responses",
@@ -3956,7 +3959,16 @@
             "https://openrouter.ai/docs/api/api-reference/responses/create-responses",
             "https://openrouter.ai/openapi.yaml"
           ],
-          "evidence_summary": "OpenRouter Responses uses POST /api/v1/responses with Bearer authentication and the OpenResponses model/input, output item, usage, tool, and SSE event shapes."
+          "evidence_summary": "OpenRouter Responses uses POST /api/v1/responses with Bearer authentication and the OpenResponses model/input, output item, usage, tool, and SSE event shapes.",
+          "optional_body_values_by_model": {
+            "moonshotai/kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
+          }
         },
         {
           "id": "openrouter.images.v1",
@@ -4446,7 +4458,21 @@
             "https://openrouter.ai/docs/guides/overview/multimodal/audio",
             "https://openrouter.ai/openapi.json"
           ],
-          "evidence_summary": "OpenRouter chat audio output requires stream=true and returns incremental base64 audio and transcript in choices[].delta.audio SSE chunks terminated by [DONE]."
+          "evidence_summary": "OpenRouter chat audio output requires stream=true and returns incremental base64 audio and transcript in choices[].delta.audio SSE chunks terminated by [DONE].",
+          "forbidden_body_paths_by_model": {
+            "moonshotai/kimi-k3.1-pro": [
+              "/thinking"
+            ]
+          },
+          "optional_body_values_by_model": {
+            "moonshotai/kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
+          }
         },
         {
           "id": "openrouter.decisions.alpha",
@@ -4865,7 +4891,8 @@
           },
           "official_sources": [
             "https://platform.kimi.com/docs/api/chat",
-            "https://platform.kimi.com/docs/api/errors"
+            "https://platform.kimi.com/docs/api/errors",
+            "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart"
           ],
           "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE].",
           "conformance_test_model_ids": {
@@ -4878,6 +4905,20 @@
             "vision.caption": [
               "kimi-k3.1-pro"
             ]
+          },
+          "forbidden_body_paths_by_model": {
+            "kimi-k3.1-pro": [
+              "/thinking"
+            ]
+          },
+          "optional_body_values_by_model": {
+            "kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
           }
         }
       ]
@@ -9394,6 +9435,20 @@
             "gpt-6.1-terra-pro": {
               "/reasoning/mode": "pro"
             }
+          },
+          "forbidden_body_paths_by_model": {
+            "kimi-k3.1-pro": [
+              "/thinking"
+            ]
+          },
+          "optional_body_values_by_model": {
+            "kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
           }
         },
         {
@@ -9778,6 +9833,20 @@
             },
             "gpt-6.1-terra-pro": {
               "/reasoning/mode": "pro"
+            }
+          },
+          "forbidden_body_paths_by_model": {
+            "kimi-k3.1-pro": [
+              "/thinking"
+            ]
+          },
+          "optional_body_values_by_model": {
+            "kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
             }
           }
         },
@@ -10232,6 +10301,20 @@
               "gemini-4-argon",
               "gemini-3.8-flash"
             ]
+          },
+          "forbidden_body_paths_by_model": {
+            "kimi-k3.1-pro": [
+              "/thinking"
+            ]
+          },
+          "optional_body_values_by_model": {
+            "kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
           }
         },
         {

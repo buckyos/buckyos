@@ -1,0 +1,20 @@
+{
+  "executed_baseline_revision": "2026-11-02.2",
+  "current_baseline_revision": "2026-11-02.3",
+  "provider_driver": "sn-ai-provider",
+  "model": "glm-5.3-flashx",
+  "instances": [
+    "sn-global-open-20261030-t2",
+    "sn-us-full-20261030-t2"
+  ],
+  "api_types": [
+    "llm",
+    "vision.ocr",
+    "vision.caption"
+  ],
+  "max_real_calls_total": 6,
+  "max_estimated_cost_usd_total": 1,
+  "timeout_ms": 900000,
+  "automatic_retries": 0,
+  "judge_enabled": false
+}

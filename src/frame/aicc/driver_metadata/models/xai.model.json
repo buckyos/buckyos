@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "xai",
-  "revision_seq": 1,
+  "revision_seq": 2,
   "models": [
     {
       "id": "grok-4.7",
@@ -18,7 +18,20 @@
         "json_schema": true,
         "vision": true,
         "reasoning": true,
-        "max_context_tokens": 500000
+        "max_context_tokens": 500000,
+        "sampling_parameters": {
+          "temperature": {
+            "min": 0,
+            "max": 2,
+            "recommended": 0.7,
+            "effective_max": 1
+          },
+          "top_p": {
+            "max": 1,
+            "default": 0.95,
+            "effective_max": 0.95
+          }
+        }
       },
       "llm": {
         "spec": "grok-standard",

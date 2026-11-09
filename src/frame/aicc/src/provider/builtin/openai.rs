@@ -313,7 +313,7 @@ mod tests {
             "OpenAI"
         );
         assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 6);
-        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 8);
+        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 9);
     }
 
     #[tokio::test]

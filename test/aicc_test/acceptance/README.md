@@ -108,7 +108,7 @@ T2 会为 OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter、Kimi、
 
 普通 `chat.completions.create` 用例显式关闭 AICC 默认附加的 `web_search`，避免把基础聊天错误地限定为必须支持联网搜索；联网搜索作为独立 capability 分支验证。Provider 凭据临时写入后，runner 会等待 system-config 与 AICC runtime settings 收敛，再验证 settings 字节恢复、运行时 inventory、Named Data 和消息资源清理。
 
-T2 的 Named Data 读取默认使用 NDM Proxy。运行环境只提供原生 NDN GET 时，可在 TOML `[fixtures]` 设置 `named_data_read_mode = "ndn"`；runner 使用现有 `cyfs-dir` 服务和测试期 Gateway 路由读取制品，并在结束时移除路由。此选项不改变 Provider 请求，也不补齐 NDM Proxy 删除接口；无法清理的对象仍会如实报告。
+T2 的 Named Data 读取默认使用 NDM Proxy。运行环境只提供原生 NDN GET 时，可在 TOML `[fixtures]` 设置 `named_data_read_mode = "ndn"`；runner 使用现有 `cyfs-dir` 服务和测试期 Gateway 路由读取制品，并在结束时移除路由。此选项不改变 Provider 请求，也不补齐 NDM Proxy 删除接口；无法清理的对象仍会如实报告。 临时路由安装后，Gateway 的旧 HTTP 长连接可能仍使用旧路由并返回 403；本地测试可把 `[fixtures].ndn_public_gateway_url` 设置为 `http://localhost:3180`，与 RPC 的 `http://127.0.0.1:3180` 使用不同连接池。该配置仍经过同一个 Gateway，不修改 NDN 实现。
 
 T2 在提供用户名和密码时会提前续期 Gateway 登录，并在服务明确返回 token 过期时重新登录后重发同一请求，保留原 idempotency key；Provider 协议或推理错误不会触发此重发。RPC、任务查询和 NDN 下载使用同一份更新后的登录凭据。仅提供 session token 时无法自动重新登录，应确保其有效期覆盖整轮测试。计划调用数和费用包含按模型/源 API 去重的生成物前置调用。
 

@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 14,
+  "revision_seq": 15,
   "provider_profile_id": "openrouter",
   "reported_cost": {
     "currency": "USD",
@@ -367,6 +367,16 @@
               "text"
             ]
           }
+        },
+        {
+          "remove": [
+            "/temperature",
+            "/top_p",
+            "/n",
+            "/presence_penalty",
+            "/frequency_penalty",
+            "/thinking"
+          ]
         }
       ]
     },

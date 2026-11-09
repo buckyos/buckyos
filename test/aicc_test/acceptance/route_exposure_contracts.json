@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "contract_revision": "2026-10-30.1",
-  "capability_baseline_revision": "2026-10-30.1",
+  "contract_revision": "2026-11-09.1",
+  "capability_baseline_revision": "2026-11-09.1",
   "capability_cells_sha256": "1bf98f43a887646667c1f236211158228e3ee8fcac1701100d0646d398076f31",
   "logical_entrypoint_baseline_revision": "2026-10-26.1",
   "profiles": [
@@ -633,6 +633,36 @@
           "api_type": "llm",
           "mode": "exact_only",
           "reason": "The xAI model family has no logical LLM mount; select its exact model."
+        },
+        {
+          "model_pattern": "qwen-image-3-pro",
+          "api_type": "image.txt2img",
+          "mode": "excluded",
+          "reason": "SN channel disabled: unresolved upstream protocol mismatch recorded in sn-business #49."
+        },
+        {
+          "model_pattern": "qwen-image-3-pro",
+          "api_type": "image.img2img",
+          "mode": "excluded",
+          "reason": "SN channel disabled: unresolved upstream protocol mismatch recorded in sn-business #49."
+        },
+        {
+          "model_pattern": "wan-3.0",
+          "api_type": "video.generate",
+          "mode": "excluded",
+          "reason": "SN channel disabled: unresolved upstream protocol mismatch recorded in sn-business #49."
+        },
+        {
+          "model_pattern": "wan-3.0",
+          "api_type": "video.edit",
+          "mode": "excluded",
+          "reason": "SN channel disabled: unresolved upstream protocol mismatch recorded in sn-business #49."
+        },
+        {
+          "model_pattern": "wan-3.0",
+          "api_type": "video.extend",
+          "mode": "excluded",
+          "reason": "SN channel disabled: unresolved upstream protocol mismatch recorded in sn-business #49."
         }
       ]
     }

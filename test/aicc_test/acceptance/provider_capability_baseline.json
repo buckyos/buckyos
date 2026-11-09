@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-10-30.1",
-  "checked_at": "2026-10-30",
+  "baseline_revision": "2026-11-09.1",
+  "checked_at": "2026-11-09",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -2100,7 +2100,8 @@
           ],
           "evidence_summary": "The fal video upscaler applies RealESRGAN to video frames."
         }
-      ]
+      ],
+      "coverage_rules": []
     },
     {
       "provider_driver": "minimax",
@@ -2397,7 +2398,8 @@
           ],
           "evidence_summary": "Music generation remains available to existing paid accounts."
         }
-      ]
+      ],
+      "coverage_rules": []
     },
     {
       "provider_driver": "openrouter",
@@ -2530,9 +2532,10 @@
             "tool_call"
           ],
           "source_urls": [
-            "https://openrouter.ai/api/v1/models"
+            "https://openrouter.ai/api/v1/models",
+            "https://docs.x.ai/developers/grok-4-7"
           ],
-          "evidence_summary": "Original model capabilities and provider parameter lowering checked 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: 500000 context, no vendor text output hard limit, low/medium/high/xhigh (default high); proxy ceiling remains a channel fact. No new T2 execution."
         },
         {
           "model_pattern": "z-ai/glm-5.3-flashx",
@@ -2557,9 +2560,10 @@
             "tool_call"
           ],
           "source_urls": [
-            "https://openrouter.ai/api/v1/models"
+            "https://openrouter.ai/api/v1/models",
+            "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash"
           ],
-          "evidence_summary": "Original model capabilities and provider parameter lowering checked 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: vendor lists FlashX as a distinct callable model code; SN forwards it to openrouter/z-ai/glm-5.3-flashx. Separate model identity and T2 cells are retained; shared architecture and faster throughput do not establish alias equivalence. No independent FlashX T2 execution yet."
         },
         {
           "model_pattern": "moonshotai/kimi-k3.1-pro",
@@ -2584,9 +2588,10 @@
             "tool_call"
           ],
           "source_urls": [
-            "https://openrouter.ai/api/v1/models"
+            "https://openrouter.ai/api/v1/models",
+            "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart"
           ],
-          "evidence_summary": "Original model capabilities and provider parameter lowering checked 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: 1M context, max completion 1048576 (default 131072), low/high/max effort, fixed sampling; channel output ceiling remains 943718 where declared. No new T2 execution."
         },
         {
           "model_pattern": "typesafe/jev-1.13",
@@ -2992,9 +2997,10 @@
             }
           },
           "source_urls": [
-            "https://platform.moonshot.cn/docs/api/models-overview"
+            "https://platform.moonshot.cn/docs/api/models-overview",
+            "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart"
           ],
-          "evidence_summary": "Original model capabilities and provider parameter lowering checked 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: 1M context, max completion 1048576 (default 131072), low/high/max effort, fixed sampling; channel output ceiling remains 943718 where declared. No new T2 execution."
         },
         {
           "model_pattern": "kimi-k3",
@@ -3208,9 +3214,10 @@
             "tool_call"
           ],
           "source_urls": [
-            "https://docs.z.ai/guides/vlm/glm-5.3-flash"
+            "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+            "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash"
           ],
-          "evidence_summary": "Original model capabilities and provider parameter lowering checked 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: vendor lists FlashX as a distinct callable model code; SN forwards it to openrouter/z-ai/glm-5.3-flashx. Separate model identity and T2 cells are retained; shared architecture and faster throughput do not establish alias equivalence. No independent FlashX T2 execution yet."
         },
         {
           "model_pattern": "*",
@@ -4475,7 +4482,7 @@
           "source_urls": [
             "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference"
           ],
-          "evidence_summary": "Vendor duration is 2\u201330 seconds; the current native Qwen adapter exposes generation only, while SN has separate edit/extension operations."
+          "evidence_summary": "Vendor duration is 2–30 seconds; the current native Qwen adapter exposes generation only, while SN has separate edit/extension operations."
         },
         {
           "model_pattern": "qwen3.8-max",
@@ -5104,16 +5111,6 @@
           "evidence_summary": "Same underlying model served with a different inference mode or throughput; T1.5 covers wire parameters and T2 deduplicates physical inference."
         },
         {
-          "model_pattern": "glm-5.3-flashx",
-          "action": "alias",
-          "physical_model_id": "glm-5.3-flash",
-          "reason": "logical_alias",
-          "source_urls": [
-            "https://docs.z.ai/guides/vlm/glm-5.3-flash"
-          ],
-          "evidence_summary": "Same underlying model served with a different inference mode or throughput; T1.5 covers wire parameters and T2 deduplicates physical inference."
-        },
-        {
           "model_pattern": "qwen3.8-max-prime",
           "action": "alias",
           "physical_model_id": "qwen3.8-max-0902",
@@ -5122,6 +5119,24 @@
             "https://openrouter.ai/qwen/qwen3.8-max-prime"
           ],
           "evidence_summary": "Same underlying model served with a different inference mode or throughput; T1.5 covers wire parameters and T2 deduplicates physical inference."
+        },
+        {
+          "model_pattern": "qwen-image-3-pro",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/issues/49"
+          ],
+          "evidence_summary": "SN channel disabled by user decision after failed T2 and unresolved SN/LiteLLM upstream protocol incompatibility; original vendor API capabilities remain intact. Evidence: sn-business #49."
+        },
+        {
+          "model_pattern": "wan-3.0",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/issues/49"
+          ],
+          "evidence_summary": "SN channel disabled by user decision after failed T2 and unresolved SN/LiteLLM upstream protocol incompatibility; original vendor API capabilities remain intact. Evidence: sn-business #49."
         }
       ],
       "rules": [
@@ -5758,9 +5773,14 @@
           "resource_representation": "base64",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/qwen-image-3-0-pro",
-            "https://openrouter.ai/qwen/qwen-image-3-pro"
+            "https://openrouter.ai/qwen/qwen-image-3-pro",
+            "https://github.com/buckyos/sn-business/issues/49"
           ],
-          "evidence_summary": "SN maps its Qwen Image 3 Pro alias to the original generation/editing model and OpenAI-compatible image routes."
+          "evidence_summary": "SN channel disabled by user decision after failed T2 and unresolved SN/LiteLLM upstream protocol incompatibility; original vendor API capabilities remain intact. Evidence: sn-business #49.",
+          "disabled_api_types": [
+            "image.txt2img",
+            "image.img2img"
+          ]
         },
         {
           "model_pattern": "ui-tars-1.5-7b",
@@ -5815,7 +5835,10 @@
             "video.generate": {
               "output": {
                 "duration_seconds": 2,
-                "size": { "width": 854, "height": 480 }
+                "size": {
+                  "width": 854,
+                  "height": 480
+                }
               }
             }
           },
@@ -5824,9 +5847,15 @@
             "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
             "https://openrouter.ai/alibaba/wan-3.0",
             "https://openrouter.ai/docs/cookbook/video-generation/text-to-video",
-            "https://openrouter.ai/docs/cookbook/video-generation/image-to-video"
+            "https://openrouter.ai/docs/cookbook/video-generation/image-to-video",
+            "https://github.com/buckyos/sn-business/issues/49"
           ],
-          "evidence_summary": "SN maps Wan 3.0 to OpenRouter through LiteLLM OpenAI compatibility. SN exposes authenticated create, edit and extension routes with shared status/content endpoints. Native video IDs are required for extension; actual Wan support depends on the upstream proxy channel."
+          "evidence_summary": "SN channel disabled by user decision after failed T2 and unresolved SN/LiteLLM upstream protocol incompatibility; original vendor API capabilities remain intact. Evidence: sn-business #49.",
+          "disabled_api_types": [
+            "video.generate",
+            "video.edit",
+            "video.extend"
+          ]
         },
         {
           "model_pattern": "voxtral-small-24b-2507",
@@ -5921,9 +5950,10 @@
           ],
           "source_urls": [
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
-            "https://developers.openai.com/api/docs/models"
+            "https://developers.openai.com/api/docs/models",
+            "https://developers.openai.com/api/docs/guides/image-prompting"
           ],
-          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: auto/low/medium/high/xhigh/max quality, 16-pixel edges, 655360..8294400 pixels, max edge 3840 and aspect ratio 3:1. No new T2 execution."
         },
         {
           "model_pattern": "gpt-image-2.5-sunburst",
@@ -5948,9 +5978,10 @@
           ],
           "source_urls": [
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
-            "https://developers.openai.com/api/docs/models"
+            "https://developers.openai.com/api/docs/models",
+            "https://developers.openai.com/api/docs/guides/image-prompting"
           ],
-          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: auto/low/medium/high/xhigh/max quality, 16-pixel edges, 655360..8294400 pixels, max edge 3840 and aspect ratio 3:1. No new T2 execution."
         },
         {
           "model_pattern": "gpt-6.1-terra",
@@ -6241,9 +6272,10 @@
           ],
           "source_urls": [
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
-            "https://docs.x.ai/developers/models"
+            "https://docs.x.ai/developers/models",
+            "https://docs.x.ai/developers/grok-4-7"
           ],
-          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: 500000 context, no vendor text output hard limit, low/medium/high/xhigh (default high); proxy ceiling remains a channel fact. No new T2 execution."
         },
         {
           "model_pattern": "qwen3.8-flash",
@@ -6401,9 +6433,10 @@
           ],
           "source_urls": [
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
-            "https://platform.moonshot.cn/docs/intro"
+            "https://platform.moonshot.cn/docs/intro",
+            "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart"
           ],
-          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: 1M context, max completion 1048576 (default 131072), low/high/max effort, fixed sampling; channel output ceiling remains 943718 where declared. No new T2 execution."
         },
         {
           "model_pattern": "glm-5.3-flash",
@@ -6459,9 +6492,10 @@
           ],
           "source_urls": [
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
-            "https://docs.z.ai/guides/vlm/glm-5.3-flash"
+            "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+            "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash"
           ],
-          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+          "evidence_summary": "Rechecked 2026-11-02: vendor lists FlashX as a distinct callable model code; SN forwards it to openrouter/z-ai/glm-5.3-flashx. Separate model identity and T2 cells are retained; shared architecture and faster throughput do not establish alias equivalence. FlashX requires independent T2 coverage for each selected SN account and API type."
         },
         {
           "model_pattern": "glm-5.3-prime",

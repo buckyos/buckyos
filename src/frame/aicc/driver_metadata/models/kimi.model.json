@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "kimi",
-  "revision_seq": 7,
+  "revision_seq": 8,
   "required_features": [],
   "models": [
     {
@@ -100,7 +100,52 @@
         "weight": 26
       }
     },
-    {"id": "kimi-k3.1-pro", "api_types": ["llm", "vision.ocr", "vision.caption"], "capabilities": {"max_context_tokens": 1048576, "max_output_tokens": 1048576, "streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true}, "llm": {"spec": "kimi-flagship", "effort": "max", "default_effort": "max", "supported_efforts": ["low", "high", "max"], "stability": "stable", "weight": 31}}
+    {
+      "id": "kimi-k3.1-pro",
+      "api_types": [
+        "llm",
+        "vision.ocr",
+        "vision.caption"
+      ],
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 1048576,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true,
+        "sampling_parameters": {
+          "temperature": {
+            "fixed": 1.0
+          },
+          "top_p": {
+            "fixed": 0.95
+          },
+          "n": {
+            "fixed": 1
+          },
+          "presence_penalty": {
+            "fixed": 0
+          },
+          "frequency_penalty": {
+            "fixed": 0
+          }
+        }
+      },
+      "llm": {
+        "spec": "kimi-flagship",
+        "effort": "max",
+        "default_effort": "max",
+        "supported_efforts": [
+          "low",
+          "high",
+          "max"
+        ],
+        "stability": "stable",
+        "weight": 31
+      }
+    }
   ],
   "patterns": [],
   "defaults": {},

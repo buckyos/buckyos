@@ -3859,9 +3859,9 @@ test("SN matrix uses its inventory and original-vendor capability evidence", asy
         api_types: ["embedding.text"],
         logical_mounts: [],
       }, {
-        exact_model: "qwen-image-3-pro@sn-default",
-        provider_model_id: "qwen-image-3-pro",
-        api_types: ["image.txt2img", "image.img2img"],
+        exact_model: "gpt-image-2@sn-default",
+        provider_model_id: "gpt-image-2",
+        api_types: ["image.txt2img", "image.img2img", "image.inpaint"],
         logical_mounts: [],
       }],
     }]),
@@ -3869,6 +3869,7 @@ test("SN matrix uses its inventory and original-vendor capability evidence", asy
   assert.deepEqual([...new Set(cells.map((cell) => cell.api_type))].sort(), [
     "embedding.text",
     "image.img2img",
+    "image.inpaint",
     "image.txt2img",
     "llm",
     "vision.caption",
@@ -6680,20 +6681,33 @@ test("channel-disabled APIs retain vendor facts and reject leaked runtime capabi
 });
 
 
-test("T1.5 rechecks all reopened SN channel cells", async () => {
+test("SN channel exclusions preserve vendor fixtures and keep proven APIs enabled", async () => {
   const catalog = await loadProviderProtocolCatalog();
   const source = await baseline();
   const cases = buildT15Manifest(catalog).filter((item) => item.provider_driver === "sn-ai-provider");
-  assert.equal(cases.filter((item) => channelDisablesCase(catalog, source, item)).length, 0);
-  for (const api of ["video.generate", "video.edit", "video.extend", "image.inpaint", "vision.ocr"]) {
-    assert.ok(cases.some((item) => item.api_type === api), api);
-  }
-  assert.ok(cases.some((item) => item.protocol_contract_id === "sn.qwen-images-generations.v1"));
   const profile = source.providers.find((item) => item.provider_driver === "sn-ai-provider")!;
-  profile.rules.find((item) => item.model_pattern === "wan-3.0")!.disabled_api_types = ["video.generate"];
-  assert.ok(cases.some((item) => item.api_type === "video.generate" && channelDisablesCase(catalog, source, item)));
+  for (const model of ["qwen-image-3-pro", "wan-3.0"]) {
+    const rule = profile.rules.find((item) => item.model_pattern === model)!;
+    assert.deepEqual(rule.disabled_api_types, rule.api_types);
+    assert.equal(profile.coverage_rules!.find((item) => item.model_pattern === model)!.action, "exclude");
+    for (const api of rule.api_types) {
+      const fixture = cases.find((item) => item.model_selector?.kind === "exact" && item.model_selector.value === model && item.api_type === api);
+      assert.ok(fixture, `${model}/${api} retains its protocol fixture`);
+      assert.equal(channelDisablesCase(catalog, source, fixture), true);
+    }
+  }
+  for (const model of ["grok-4.7", "gpt-6.1-terra", "qwen3.7-plus"]) {
+    for (const fixture of cases.filter((item) => item.model_selector?.kind === "exact" && item.model_selector.value === model)) {
+      assert.equal(channelDisablesCase(catalog, source, fixture), false, fixture.case_id);
+    }
+  }
+  const inventories: ProviderInventory[] = [{provider_instance_name:"sn-disabled",provider_driver:"sn-ai-provider",models:[
+    {exact_model:"qwen3.7-plus@sn-disabled",provider_model_id:"qwen3.7-plus",api_types:["llm","vision.ocr","vision.caption"],logical_mounts:[]},
+  ]}];
+  const official = structuredClone(inventories);
+  official[0].models.push({exact_model:"qwen-image-3-pro@sn-disabled",provider_model_id:"qwen-image-3-pro",api_types:["image.txt2img","image.img2img"],logical_mounts:[]});
+  assert.equal(buildProviderMatrix({baseline:source,officialInventories:official,aiccInventories:inventories}).length, 3);
 });
-
 
 test("unified video results validate typed videos and nested document resources", () => {
   const cell = { api_type: "video.edit", output_kinds: ["video"] } as Parameters<typeof assertResponseShape>[0];
@@ -6771,4 +6785,48 @@ test("T3 provider attribution uses public provider profiles without inferring fr
   assert.equal(instanceDriver({ provider_profile_id: "sn", provider_instance_name: "temporary" }), "sn-ai-provider");
   assert.equal(instanceDriver({ provider_profile_id: "gemini" }), "google-gemini");
   assert.equal(instanceDriver({ provider_instance_name: "sn-ai-provider-main" }), "");
+});
+
+test("Kimi K3.1 Pro wire accepts fixed sampling values and rejects incompatible parameters", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const [driver, contractId, model] of [
+    ["kimi", "kimi.chat-completions.v1", "kimi-k3.1-pro"],
+    ["openrouter", "openrouter.responses.v1", "moonshotai/kimi-k3.1-pro"],
+    ["sn-ai-provider", "sn.openai-responses.v1", "kimi-k3.1-pro"],
+  ]) {
+    const contract = protocolContract(catalog, driver, contractId);
+    const request = t15ProviderRequest("https://mock.invalid", contract, model, {}, "llm");
+    const body = JSON.parse(request.init.body as string);
+    const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body };
+    for (const field of ["temperature", "top_p", "n", "presence_penalty", "frequency_penalty", "thinking"]) delete body[field];
+    assert.deepEqual(validateProviderRequest(contract, captured, "llm"), []);
+    for (const [field, value] of Object.entries({ temperature: 1, top_p: 0.95, n: 1, presence_penalty: 0, frequency_penalty: 0 })) {
+      if (!contract.allowed_body_fields.includes(field)) continue;
+      body[field] = value;
+      assert.deepEqual(validateProviderRequest(contract, captured, "llm"), [], `${driver} accepts fixed ${field}`);
+      delete body[field];
+    }
+    for (const [field, value] of Object.entries({ temperature: 0.2, top_p: 0.5, n: 2, presence_penalty: 1, frequency_penalty: 1, thinking: { type: "disabled" } })) {
+      body[field] = value;
+      assert.ok(validateProviderRequest(contract, captured, "llm").some((error) => error.includes(field)), `${driver} must reject ${field}`);
+      delete body[field];
+    }
+  }
+});
+
+test("SN FlashX retains independent T2 cells and never deduplicates to Flash", async () => {
+  const source = await baseline();
+  const inventories: ProviderInventory[] = [{
+    provider_instance_name: "sn-flashx-identity",
+    provider_driver: "sn-ai-provider",
+    models: ["glm-5.3-flash", "glm-5.3-flashx"].map((model) => ({
+      exact_model: `${model}@sn-flashx-identity`, provider_model_id: model,
+      api_types: ["llm", "vision.ocr", "vision.caption"], logical_mounts: [],
+    })),
+  }];
+  const cells = buildProviderMatrix({ baseline: source, ...matrixInputs(inventories) });
+  assert.equal(cells.filter((cell) => cell.baseline_status === "active").length, 6);
+  for (const model of ["glm-5.3-flash", "glm-5.3-flashx"]) {
+    assert.equal(cells.filter((cell) => cell.provider_model_id === model && cell.baseline_status === "active").length, 3);
+  }
 });
