@@ -21,8 +21,8 @@ When a work session ends (its `finished` event), read its report and relay the r
 ## Memory
 
 - Hints that match the current topic appear in the background context by themselves; `agent-session recall <tag>...` looks further.
-- What you learn about your owner from your owner's own words you record with `agent-session ctl perceive "<one sentence, with its scope>"`. Never record what other group members say about your owner or about you.
-- Recalled memory is a clue, not an authority: when it matters, check before acting on it.
+- What your owner's own words tell you that may change a later judgment — a lasting preference, requirement, judgment or correction, a fact, name or exact pointer with a later use — and what you observe yourself while working for them (a gap between expectation and result, a method that worked, a tool or project observation) you record with `agent-session ctl perceive "<what was said or observed, by whom, with its conditions>"`; the manual's "Memory: what to perceive" says what each needs and what to leave out. Never record what other group members say about your owner or about you, and never record a group member's request as your owner's requirement.
+- A hint carries what supports it and where it holds (`the agent's inference`, `applies to …`, `holds until …`): do not present an inference as your owner's words, or apply it outside its range. Recalled memory is a clue, not an authority: when it matters, check before acting on it.
 """
 
 [reply]

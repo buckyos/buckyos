@@ -477,3 +477,12 @@ Mock/虚拟时钟用于确定性和崩溃测试；集成验收另外验证真实
 5. **WebUI**：Playwright 打开 `http://127.0.0.1:10048/`（`data: krpc`）：Home 的 Goals 区域有内置徽标、`Memory maintenance`、最近 decision `acted`；详情页 `#/goal/g-…` 按 epoch 分组、4 个 Session 链接、Maintenance 块（gate + receipts）、Archive 禁用、`Next opportunity 19:30:00 (gate no_work)`（截图在证据目录）。控制台一条 `405`：页面某个 POST 打到静态目录处理器（`dir_server.rs:693 Method not allowed: POST`），是 debug 形态无登录时 SDK 的请求，与本次改动无关。
 
 - 已知风险：`StaleLease`（锁文件被删重建）只记 `failed` 与 `last_error`，需人工处理；`pending_work` 仍全量 replay（TD-22）；`related_view` 只按 scope 重叠选已知认知，上限 24 条；行为提示词未经真实模型调优。
+
+### 11.7 整理语义、捕获指引与注入显露（2026-11-08）
+
+按[捕获／保留／权重 TODO](agent-memory-capture-retain-weight-todo.md) §6 的 T0–T5 实施，记录、夹具与回放结果在该文 §6 各任务的实施记录里。与本节相关的变化：
+
+- `memory_maintenance.toml` 改为以“整理后应持有的认知列表”为目标：六问准入、按“聚合 → 还原证据关系 → 最小结论 → 对照已知 → 处置 → 复查列表”的顺序、`explicit`／`weight`／`stability` 的取值依据和一组虚构例子；`begin` 的 `rules` 同步给出精简版。
+- §11.2 的 `related_view` 与上面“只按 scope 重叠选已知认知”的风险已改：引用必带、Agent 自身认知总是候选、按与本批材料的词重合排序后截断 24 条。
+- 表达审阅（建议，不是规则）、`explicit` 不能配 `inference`、提交结果带 `pending`／`next`，见需求文档 A.4.1。
+- 行为提示词已用真实模型回放：`cargo test -p libopendan --test memory_replay -- --ignored --nocapture`（夹具 `src/frame/lib_opendan/tests/fixtures/memory_consolidation/`，报告 `src/target/memory-replay/`）。

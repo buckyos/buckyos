@@ -221,7 +221,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 属性值转义 `& < > "`。只有一条纯文本消息时也使用 `<msg>`。`machine` 与 `ServiceDid` 引用不在内建渲染中出现。
 
-内建模板（UI Session 除外，见 §6.5）：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、`<hints>`、活动 session 列表、`<runtime>`；有变化的背景行时，`<<background_context>>` 块放在 `<session_input>` 之前（§6.6）。
+内建模板（UI Session 除外，见 §6.5）：`<session_input hook="…" time="<批次时间>">` 元素，依次包含交接状态（`<context_switch to>`、`<process_result>`、`<sub_task>`）、bootstrap 的 `<task>` / `<scope>`、`input.text`、`<perceptions>`、`<hints>`（每条 `<hint id time [object] [note]>`，`note` 是 §6.6 `hint:<id>` 行的 `qualifier`：证据性质、范围与有效期）、活动 session 列表、`<runtime>`；有变化的背景行时，`<<background_context>>` 块放在 `<session_input>` 之前（§6.6）。
 
 协议时间与内建渲染一律 UTC。用户时区与 Session 绑定（`session.timezone`，IANA 名），其初始值与后续变化经隐式 semi 订阅进入半订阅状态，不取 Runner 所在机器的时区，变化本身不唤醒推理。
 
@@ -258,7 +258,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 - runtime native on lzc-pve, cwd …/sessions/<sid>
 - work work-12481d…: running — reviewing PR #667 diff
 - [notify n_01] input/timely from session work-… : Which branch? … — check the current state with `agent-session notify show n_01`
-- hint: owner prefers replies in Chinese (noticed 2026-10-02)
+- hint: owner prefers replies in Chinese (the agent's inference, not confirmed; applies to workspace:proj-a; noticed 2026-10-02)
 <</background_context>>
 你好 Jarvis
 ```
@@ -282,7 +282,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 | `ui:<sid>` | 其它 UI Session 的 topic 标题 | 活动视图（登记表 `status.topic`） |
 | `session:<sid>` | 与本 Session 目标相同或范围重叠的其它活动 Session（避让规则） | 活动视图 |
 | `event:<key>` | 半订阅状态版本：`_notify` 的通知行原样（`[notify <id>] …`）；其它为 `<source> <event>: <summary>`。用户时区事件不单列（由 `time` 行承载） | `pending_events`（同 §5 的选择与预算） |
-| `hint:<id>` | `hint: <sentence> (noticed <time>)` | 按 `state.topic.tags` 召回的 hints |
+| `hint:<id>` | `hint: <sentence> (<qualifier>; noticed <time>; about <object url>)`。`qualifier` 说明这条线索凭什么成立、适用于哪里、何时结束，缺哪项就省哪项：证据性质（`the user's explicit statement` / `stated by the user` / `observed` / `a third party's claim, not verified` / `the agent's inference, not confirmed`，confidence 低于 0.5 另加 `weak evidence`）、范围（`applies to <workspace 主体与 scope 对象，至多 3 个>`、`not to <例外>`）、有效期（`holds until <valid_until>`，没有期限的 volatile 为 `short-lived`） | 按 `state.topic.tags` 召回的 hints（`Hint::note()`） |
 
 - **只显示变化的行**：`state.background_shown` 记录每个 key 上次显示时的内容摘要；摘要变了才显示。`time` 行另按 5 秒粒度：距上次显示不足 `BACKGROUND_TIME_STEP_MS = 5000` 且时区未变时不显示。本批候选里没有的 key 从记录中删除（再出现时重新显示）。所有行都没有变化时整个 `<<background_context>>` 块省略。
 - 新记录随批次 receipt 提交（`extra.background`，见 §7），恢复时与 receipt 一起应用；显示了哪些半订阅版本仍记在 receipt 的 `events` 里。只有输入消息里实际出现的行才记为已显示（§6.6）。

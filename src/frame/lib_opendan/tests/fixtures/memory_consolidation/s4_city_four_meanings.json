@@ -1,0 +1,118 @@
+{
+  "id": "s4_city_four_meanings",
+  "title": "S4 同样是“上海”：查询参数、临时所在地、常住地、默认天气城市",
+  "covers": [
+    "S4 四种城市表达",
+    "C7"
+  ],
+  "known": [],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "ui-fx-s4a",
+      "subject": "owner",
+      "content": "用户问：“查一下上海天气。”已回答。",
+      "occurred_at": "2026-11-03T01:00:00Z",
+      "event": "ui-fx-s4a:e2",
+      "actor": "agent",
+      "tags": [
+        "天气",
+        "上海"
+      ],
+      "objects": []
+    },
+    {
+      "key": "m2",
+      "session": "ui-fx-s4b",
+      "subject": "owner",
+      "content": "用户说：“我现在在上海，周五离开。”（说这句话时是 2026-11-03 周二）",
+      "occurred_at": "2026-11-03T02:00:00Z",
+      "event": "ui-fx-s4b:e2",
+      "actor": "agent",
+      "tags": [
+        "所在地",
+        "上海"
+      ],
+      "objects": []
+    },
+    {
+      "key": "m3",
+      "session": "ui-fx-s4c",
+      "subject": "owner",
+      "content": "用户说：“我长期住在上海。”",
+      "occurred_at": "2026-11-03T03:00:00Z",
+      "event": "ui-fx-s4c:e2",
+      "actor": "agent",
+      "tags": [
+        "常住地",
+        "上海"
+      ],
+      "objects": []
+    },
+    {
+      "key": "m4",
+      "session": "ui-fx-s4d",
+      "subject": "owner",
+      "content": "用户说：“以后问天气默认查上海。”",
+      "occurred_at": "2026-11-03T04:00:00Z",
+      "event": "ui-fx-s4d:e2",
+      "actor": "agent",
+      "tags": [
+        "天气",
+        "默认城市"
+      ],
+      "objects": []
+    }
+  ],
+  "expected": {
+    "list": [
+      "m1 只是查询参数：丢弃，不形成用户属性。",
+      "m2 至多是带截止时间的当前位置线索：volatile，valid_until 约为 2026-11-06（周五），不是常住地。也可丢弃（没有跨 Session 用途时）。",
+      "m3 形成常住地属性：basis=user_statement，说明不代表当前所在地；不强制 stable。",
+      "m4 形成限天气查询的持续偏好：explicit=true，范围是天气查询，不是所在地或时区。",
+      "m3 与 m4 是两条不同用途的认知，不合并成“用户在上海”。"
+    ],
+    "exclude": [
+      "查询参数说明用户在上海",
+      "常住地等于当前所在地",
+      "由任一句推导日程时区",
+      "所有地点统一给半年有效期"
+    ],
+    "dispositions": {
+      "m1": [
+        "discarded"
+      ],
+      "m2": [
+        "absorbed",
+        "discarded"
+      ],
+      "m3": [
+        "absorbed"
+      ],
+      "m4": [
+        "absorbed"
+      ]
+    },
+    "max_new_items": 3,
+    "min_new_items": 2,
+    "must_have": [
+      {
+        "any_of": [
+          "天气"
+        ],
+        "why": "默认天气城市偏好"
+      },
+      {
+        "any_of": [
+          "长期",
+          "常住",
+          "居住",
+          "住在"
+        ],
+        "why": "常住地属性"
+      }
+    ],
+    "next_task": "问天气时默认查上海；安排日程时不据此推导时区；周五之后不再把“在上海”当作当前位置。"
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

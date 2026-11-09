@@ -608,6 +608,15 @@ async fn s13_runner_recall_reports_failures() {
         .await
         .unwrap();
     assert_eq!(ok.len(), 1);
+    // The clue says what supports it and where it holds (capture / retain
+    // TODO T2): the user's own lasting statement, limited to its object.
+    assert_eq!(ok[0].basis.as_deref(), Some("user_statement"));
+    assert!(ok[0].explicit);
+    assert_eq!(ok[0].applies_to, vec![ALPHA_GAME.to_string()]);
+    assert_eq!(
+        ok[0].qualifier(),
+        format!("the user's explicit statement; applies to {ALPHA_GAME}")
+    );
     let none = client
         .cognition()
         .recall_hints(&RunnerRecall::default())

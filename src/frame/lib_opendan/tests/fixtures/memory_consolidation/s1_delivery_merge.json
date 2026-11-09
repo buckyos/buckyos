@@ -1,0 +1,185 @@
+{
+  "id": "s1_delivery_merge",
+  "title": "S1 委派交付：完成标记、单次成功与实际验收；同源转述不算独立证据",
+  "covers": [
+    "S1 合并",
+    "S1 同源重复",
+    "C1",
+    "C2"
+  ],
+  "known": [
+    {
+      "item_id": "item_agent_completion_label_caution",
+      "statement": "委派出去的工作标记为完成，不代表真的做完了。",
+      "subject": "agent",
+      "objects": [],
+      "basis": "inference",
+      "explicit": false,
+      "stability": "contextual",
+      "weight": 0.6,
+      "confidence": 0.7,
+      "semantic_kind": "experience",
+      "tags": [
+        "委派",
+        "验收"
+      ],
+      "last_evidence_at": "2026-10-27T23:10:00Z",
+      "evidence": [
+        {
+          "content": "一次委派工作报告成功，后来发现交付不完整",
+          "event": "work-fx-s1-0:e9",
+          "kind": "behavior_signal"
+        }
+      ]
+    },
+    {
+      "item_id": "item_agent_clawchat_milestone",
+      "statement": "ClawChat 接入已完成消息发送，下一步是接收与自动回复。",
+      "subject": "agent",
+      "objects": [
+        "proj-clawchat"
+      ],
+      "basis": "inference",
+      "explicit": false,
+      "stability": "contextual",
+      "weight": 0.6,
+      "confidence": 0.7,
+      "semantic_kind": "experience",
+      "tags": [
+        "ClawChat",
+        "进度"
+      ],
+      "last_evidence_at": "2026-10-28T02:00:00Z",
+      "evidence": [
+        {
+          "content": "接入进展：发送已通，接收未做",
+          "event": "work-fx-s1-0:e12",
+          "kind": "behavior_signal"
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "ui-fx-s1",
+      "subject": "owner",
+      "content": "ClawChat 接入的委派 Work 在一次发送收到 ACK 后把任务报告为完成；我据此告诉用户“接入已完成”。任务验收项还包括持续接收和断线重连，当时都没有核对。",
+      "occurred_at": "2026-10-29T03:10:00Z",
+      "event": "ui-fx-s1:e21",
+      "actor": "agent",
+      "tags": [
+        "ClawChat",
+        "验收",
+        "委派交付"
+      ],
+      "objects": [
+        "proj-clawchat"
+      ]
+    },
+    {
+      "key": "m2",
+      "session": "ui-fx-s1",
+      "subject": "owner",
+      "content": "用户说：“你说完成了，可我发的消息一条都没回。”我回查后确认：只有发送通了，接收没有运行。之前“已完成”的汇报是错的。",
+      "occurred_at": "2026-10-29T05:40:00Z",
+      "event": "ui-fx-s1:e30",
+      "actor": "agent",
+      "tags": [
+        "ClawChat",
+        "验收"
+      ],
+      "objects": [
+        "proj-clawchat"
+      ]
+    },
+    {
+      "key": "m3",
+      "session": "ui-fx-s1",
+      "subject": "owner",
+      "content": "（对 e30 的转述）用户反馈 ClawChat 没有回消息，说明此前完成的汇报不成立。",
+      "occurred_at": "2026-10-29T05:45:00Z",
+      "event": "ui-fx-s1:e30",
+      "actor": "agent",
+      "tags": [
+        "ClawChat"
+      ],
+      "objects": [
+        "proj-clawchat"
+      ]
+    },
+    {
+      "key": "m4",
+      "session": "ui-fx-s1",
+      "subject": "owner",
+      "content": "用户在两小时内三次问“进展怎么样了”，我三次都只回答“还在运行”。事后看：这段时间 Work 的阶段和产出都没有变化，直到我去查才发现它卡在等待授权。",
+      "occurred_at": "2026-10-29T08:00:00Z",
+      "event": "ui-fx-s1:e41",
+      "actor": "agent",
+      "tags": [
+        "ClawChat",
+        "长任务",
+        "进展汇报"
+      ],
+      "objects": [
+        "proj-clawchat"
+      ]
+    },
+    {
+      "key": "m5",
+      "session": "ui-fx-s1",
+      "subject": "owner",
+      "content": "按任务验收项逐条核对后（发送、接收、重连各有运行记录），再向用户汇报 ClawChat 接入完成，用户确认可用。",
+      "occurred_at": "2026-10-30T02:00:00Z",
+      "event": "ui-fx-s1:e55",
+      "actor": "agent",
+      "tags": [
+        "ClawChat",
+        "验收"
+      ],
+      "objects": [
+        "proj-clawchat"
+      ]
+    }
+  ],
+  "expected": {
+    "list": [
+      "一条验收经验（优先修订 item_agent_completion_label_caution）：在本项目 ClawChat 接入的委派任务中，完成状态或单次收发成功不足以证明整体交付；汇报完成前按任务验收项核对产物与运行证据。范围限该项目。",
+      "一条长任务监督经验：用产出、阶段变化和已确认阻塞判断进展；状态持续不变时核查原因并说明已验证与未确认的部分。不写成“没有新产出就是卡住”。",
+      "旧的进度流水 item_agent_clawchat_milestone 退出有效列表（superseded/stale），或至少不再作为当前事实；进度留在任务。",
+      "不新增“用户喜欢被主动汇报”之类的 owner 偏好：催问本身不是持续要求。"
+    ],
+    "exclude": [
+      "所有接入任务都必须持续连接、心跳或自动回复",
+      "没有新产出就一定卡住",
+      "用户有“喜欢被主动汇报”的长期偏好（催问不是持续要求）",
+      "把上次的阶段当作当前进度"
+    ],
+    "dispositions": {
+      "m1": [
+        "absorbed"
+      ],
+      "m2": [
+        "absorbed"
+      ],
+      "m3": [
+        "duplicate",
+        "absorbed"
+      ],
+      "m4": [
+        "absorbed"
+      ],
+      "m5": [
+        "absorbed",
+        "duplicate",
+        "discarded"
+      ]
+    },
+    "max_new_items": 1,
+    "revised": [
+      "item_agent_completion_label_caution"
+    ],
+    "next_task": "同项目继续接入：Agent 查当前 Task 与交付证据再汇报完成；监督时说明新增产出、待核查项或已确认阻塞。"
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

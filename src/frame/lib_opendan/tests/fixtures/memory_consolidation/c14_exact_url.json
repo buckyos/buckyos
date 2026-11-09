@@ -1,0 +1,79 @@
+{
+  "id": "c14_exact_url",
+  "title": "C14 精确入口：完整 URL 及用途可恢复，本次参数不入列表",
+  "covers": [
+    "C14 精确原文与用途"
+  ],
+  "known": [],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "ui-fx-c14",
+      "subject": "owner",
+      "content": "用户说：“项目 A 的测试入口是 https://staging.proj-a.example.com:8443/api/v2?tenant=qa ，别和生产搞混；以后我说‘测试入口’就是它。”该地址也写在项目配置的 test_endpoint 项里。",
+      "occurred_at": "2026-10-26T03:00:00Z",
+      "event": "ui-fx-c14:e5",
+      "actor": "agent",
+      "tags": [
+        "项目A",
+        "测试入口",
+        "环境"
+      ],
+      "objects": [
+        "proj-a"
+      ]
+    },
+    {
+      "key": "m2",
+      "session": "ui-fx-c14",
+      "subject": "owner",
+      "content": "用户说：“这次回调先打到 13800001234 这个号码上试一下。”已按此执行。",
+      "occurred_at": "2026-10-26T04:00:00Z",
+      "event": "ui-fx-c14:e9",
+      "actor": "agent",
+      "tags": [
+        "回调",
+        "测试号码"
+      ],
+      "objects": [
+        "proj-a"
+      ]
+    }
+  ],
+  "expected": {
+    "list": [
+      "一条使用线索：用户所说的项目 A“测试入口”指其指定的测试服务，不是生产；完整 URL 从项目配置 test_endpoint 读取（认知中带完整 URL 也可接受，但必须完整：端口 8443、路径 /api/v2、参数 tenant=qa 都在，或都不写而指向配置）。观察里保留完整原值。",
+      "m2 的电话号码只是本次任务参数：丢弃，不进入长期认知。"
+    ],
+    "exclude": [
+      "凭摘要补全或截短 URL",
+      "把一次性的电话号码存成长期认知"
+    ],
+    "dispositions": {
+      "m1": [
+        "absorbed"
+      ],
+      "m2": [
+        "discarded"
+      ]
+    },
+    "max_new_items": 1,
+    "min_new_items": 1,
+    "must_have": [
+      {
+        "any_of": [
+          "测试入口"
+        ],
+        "why": "私有称呼与用途"
+      }
+    ],
+    "observation_must_contain": [
+      "https://staging.proj-a.example.com:8443/api/v2?tenant=qa"
+    ],
+    "next_task": "用户说“测试入口”时定位到测试服务并从配置读取当前地址，不凭摘要重建 URL。",
+    "must_not_match": [
+      "13800001234"
+    ]
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

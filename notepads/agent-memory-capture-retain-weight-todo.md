@@ -1,10 +1,10 @@
 # Agent Memory：整合经验后，哪些内容进入最终认知列表 —— 场景推演 TODO
 
-原稿日期：2026-11-03｜修订日期：2026-11-08
+原稿日期：2026-11-03｜修订日期：2026-11-08｜实施日期：2026-11-08—11-09
 
-状态：**已按 review 调整文档，实施待开展**。本文先定义整理结果与准入标准，再给典型条目和场景推演，再结合业界经验讨论捕获、表达、权重及实施。此次修订不改代码，不代表 demo 数据已完成修订。
+状态：**TR 已提交；T0–T5 已实施、未提交**，实施记录、夹具与真实模型回放结果在 §6 各任务末尾，未做的事项集中在 §8。本文先定义整理结果与准入标准，再给典型条目和场景推演，再结合业界经验讨论捕获、表达、权重及实施。demo 上的旧数据没有修订。
 
-2026-11-08 第二轮 review 裁决：**删除 `run_digest` 这类 Runtime 自动生成的感知路径**，`task_outcome`／`task_discarded` 一并删除（Q10 已裁决）。TR 的代码与文档同步已于当日实施（未提交），见 TR 末尾的实施记录。
+2026-11-08 第二轮 review 裁决：**删除 `run_digest` 这类 Runtime 自动生成的感知路径**，`task_outcome`／`task_discarded` 一并删除（Q10 已裁决）。TR 的代码与文档同步已于当日实施并提交（`f9e5b33ec`），见 TR 末尾的实施记录。
 
 读者：用户 review；之后是 codeagent。文内相对链接以本文位置解析，代码路径说明相对 `buckyos/`；实施前重新核对源码。
 
@@ -383,22 +383,22 @@ I1／I2 是本次查看的公开源码版本，不代表每个 Codex 产品端�
 
 ## 6. 实施任务与结果验收
 
-以下是后续实施清单，本次文档更新没有执行这些变更。
+以下任务已于 2026-11-08—11-09 实施，每个任务末尾是实施记录；Q 表的“落实”一列说明各待定项的去向。
 
 ### 6.1 实施边界与待定项
 
-| # | 问题 | 本文建议 |
-|---|---|---|
-| Q1 | 注入是否显露来源、范围与不确定性 | 显露简短来源性质、关键范围和未确认部分；数值不能代替说明。渲染未接通前，statement 保留必要限定 |
-| Q2 | drive 接新召回门面 | 单列实现依赖，见 §7.3。验证新旧路径对范围、入口和纠正的行为，不假定补 tag 就全部解决 |
-| Q3 | 权重指引 | 使用 §4.3 的相对优先级并回放校准，不做来源分类查表或固定档位硬校验 |
-| Q4 | 捕获指引落点 | ui_core 手册写 P1–P6 及 §4.1.1–§4.1.2 的保真与范围要求；chat_route／groupchat_route 引用，并覆盖经验和结果反馈 |
-| Q5 | “做过 X”和当前阶段 | 纯历史／进度不入认知；有选择理由或后续核查价值时，只保留相应结论与对象入口 |
-| Q6 | 语言 | 默认 owner 的语言，保留术语 |
-| Q7 | 旧模板 Agent 缺整理 Goal | 独立处理模板升级／测试 Agent 创建，不为文档验证重建或改动 demo |
-| Q8 | 字数、时间戳和 session id 检查 | 可提示重写或移入 observation，不以模式命中一律拒绝；真正的适用日期、版本不可删掉 |
-| Q9 | 明确记忆意图与持续偏好 | 依 M-20 保留明确持续偏好与边界，核对 `explicit` 映射及淡出策略；不能只识别“记住”二字 |
-| Q10 | `task_outcome`／`task_discarded` 是否随 `run_digest` 一并删除 | **已裁决（2026-11-08）：一并删除。** 三者同属 Runtime 自动记录，`task_outcome` 的 summary 与同一 run 的 `run_digest` 完全相同，只多 outcome／acceptance 两个字段，而这两个值 Task 对象已有（M-31、B-26） |
+| # | 问题 | 本文建议 | 落实（2026-11-09） |
+|---|---|---|---|
+| Q1 | 注入是否显露来源、范围与不确定性 | 显露简短来源性质、关键范围和未确认部分；数值不能代替说明。渲染未接通前，statement 保留必要限定 | 已实施（T2）：Hint 行与 `<hint note>` 带证据性质、范围、有效期 |
+| Q2 | drive 接新召回门面 | 单列实现依赖，见 §7.3。验证新旧路径对范围、入口和纠正的行为，不假定补 tag 就全部解决 | 未做，仍是独立依赖。注入仍走只按 tag 的旧路径：没有范围过滤，纠正叠加与分池预算也没有；范围现在只是显示在 Hint 行里 |
+| Q3 | 权重指引 | 使用 §4.3 的相对优先级并回放校准，不做来源分类查表或固定档位硬校验 | 已实施（T0）：prompt、`rules.weight` 给相对优先级；提交只校验 0..=1。回放中取值落在 0.5–0.85 |
+| Q4 | 捕获指引落点 | ui_core 手册写 P1–P6 及 §4.1.1–§4.1.2 的保真与范围要求；chat_route／groupchat_route 引用，并覆盖经验和结果反馈 | 已实施（T1） |
+| Q5 | “做过 X”和当前阶段 | 纯历史／进度不入认知；有选择理由或后续核查价值时，只保留相应结论与对象入口 | 已实施（T0）：prompt 的“Not a cognition”与 `stale` 退出规则；S1、S2 回放中旧流水条目退出有效列表 |
+| Q6 | 语言 | 默认 owner 的语言，保留术语 | 已实施（T0）：statement 用 owner 的语言；回放中全部为中文并保留 tool-x、--out、URL 等原文 |
+| Q7 | 旧模板 Agent 缺整理 Goal | 独立处理模板升级／测试 Agent 创建，不为文档验证重建或改动 demo | 未做，不在本文范围 |
+| Q8 | 字数、时间戳和 session id 检查 | 可提示重写或移入 observation，不以模式命中一律拒绝；真正的适用日期、版本不可删掉 | 已实施（T3）：表达审阅只给建议，`reviewed: true` 原样提交 |
+| Q9 | 明确记忆意图与持续偏好 | 依 M-20 保留明确持续偏好与边界，核对 `explicit` 映射及淡出策略；不能只识别“记住”二字 | 已实施（T0）：`explicit` 改为“用户亲口提出的面向今后的持续偏好、要求或边界，或要求记住”；`explicit` 配 `inference` 被拒绝；淡出策略不变 |
+| Q10 | `task_outcome`／`task_discarded` 是否随 `run_digest` 一并删除 | **已裁决（2026-11-08）：一并删除。** 三者同属 Runtime 自动记录，`task_outcome` 的 summary 与同一 run 的 `run_digest` 完全相同，只多 outcome／acceptance 两个字段，而这两个值 Task 对象已有（M-31、B-26） | 已实施（TR，已提交） |
 
 ### TR — 删除 Runtime 自动感知路径（先于 T0）
 
@@ -427,7 +427,7 @@ I1／I2 是本次查看的公开源码版本，不代表每个 Codex 产品端�
 - 整理 Goal 只在有主动感知、到期暂缓或到期复核时激活；验收见 T4“无主动感知的 Work”一行。
 - 验收：`cargo test -p libopendan --test memory_maintenance --test memory_component` 通过；本机测试 Agent 跑完一个 finished Work 后 `state/perception/<sid>.jsonl` 无新行，整理 Goal gate 为 `no_work`；含旧 runtime 行的 jsonl 仍可读且不触发激活。
 
-**实施记录（2026-11-08，未提交）：**
+**实施记录（2026-11-08，已提交）：**
 
 - 代码：`finish_run` 不再预留 seq、不构造 run_digest／task_outcome，`RunEnded` 只剩 run_id／sid／prev；`catch_up` 不再补发感知；`inputs.rs` discard 分支不写 task_discarded；`state::run_digest()` 删除；`Memory::record_perception` 对三种 runtime kind 返回 invalid（“no longer written”），`check_source` 去掉 runtime 分支；`classify` 跳过旧 runtime 行（不计 new、不进批次、不清理）；`is_runtime` 保留给旧行过滤与 recall 排除。
 - 测试：`leave_material` 改为 Work 运行前 post 一条 `Perceive` 控制输入；`examples/support/memory_scenarios.rs` 的 S45 步骤改为拒绝 + 观察（done notepad 的 S45 行已注）；`s45` 改为“写入口拒绝 + 旧行可读但非材料／非变化／非 topic 命中”；`review_one_seq_allocator_per_file` 改用 observation 记录；`runner_basic`／`crash` 的 last_seq==2 断言改为无感知文件；`runner_more` 的 task_discarded 计数改为无感知记录。
@@ -441,22 +441,51 @@ I1／I2 是本次查看的公开源码版本，不代表每个 Codex 产品端�
 - [consolidation.rs](../src/frame/lib_opendan/src/runner/consolidation.rs) 的 `rules` 同步准入和修订指引；复用 `known_cognitions`、对象和现有 operations，不为文档示例另造字段。
 - 验收：检查 begin 返回是否足以进行跨材料比较；运行相关 memory_maintenance 测试，再以结果样例判断语义效果。
 
+**实施记录（2026-11-08—11-09，未提交）：**
+
+- 结果样例：[tests/fixtures/memory_consolidation/](../src/frame/lib_opendan/tests/fixtures/memory_consolidation/) 14 个 JSON，每个是“已有认知（`known`）＋材料（`materials`，带会话、来源事件、记录者、主体）→ 期望（`expected`）”。期望分为 `list`（整理后应持有什么）、`exclude`（必须排除的推断）、每条材料允许的处置、新增条目数上下限、应修订／应原样保留的条目、不得出现的字面值，以及 `next_task`。覆盖 S1–S6、C3、C9／C12、C10／C11／C13、C14、用户指导、第三方建议；S3、S5 各有正反两个。全部是虚构数据。
+- prompt：[memory_maintenance.toml](../src/apps/jarvis_agent/agent/behaviors/memory_maintenance.toml) 以“整理后应持有的列表”为目标重写判断部分：六问准入（§1.1）、三类主语、不成为认知的五类内容（§1.3）；每次激活按“聚合 → 还原证据关系 → 最小结论 → 对照已知 → 逐条处置 → 复查列表”进行（§1.2），带反例收窄、本次例外、明确表达与推断、本批缺证四条修订规则，以及条目退出时用 `stale`／`superseded`／`deleted` 的区别；字段取值依据（statement 的语言与限定、精确值留在观察里、`basis` 看证据性质、`explicit`、`stability`／`valid_until`／`review_at`、`weight` 三档参考、`last_evidence_at` 不被转述刷新）；十个一两句话的虚构例子（S1、S6、C3、S2、S4、S5、S3、C9／C12、C10／C11／C13、第三方）。system 文本从约 6 KB 增到约 17 KB。
+- `begin` 的 `rules`（[runner/consolidation.rs](../src/frame/lib_opendan/src/runner/consolidation.rs)）补 `admission`、`evidence`、`statement`、`explicit`、`weight`，`revision` 补收窄／例外／缺证／退出状态；不使用 Jarvis behavior 的模板只靠它。提交 schema 里 `explicit`、`weight` 的说明同步。
+- begin 返回的补强（验收“是否足以进行跨材料比较”时发现的缺口）：原先 `known_cognitions` 只按 scope 主体重叠选、按 id 顺序截前 24 条，而 `ctl perceive` 的默认主体是 owner，主语为 Agent 自己的经验类认知永远不会出现在批次里，模型只能重复新建。现在引用的认知必带、Agent 自身的认知总是候选、按与本批材料的词重合排序后截断；每条带 `tags` 和 `sources`（证据指向的来源事件），用于识别同源转述。
+- 提交成功的结果带 `pending`／`next`，没有材料时模型直接 `report`，不再为空的 `begin` 花一轮（真实模型回放里一次单批激活从 4 轮降到 3 轮，见 T4）。
+- Q9：`explicit` 的口径从“用户说记住”改为“用户亲口提出的面向今后的持续偏好、要求或边界，或要求记住”；`explicit: true` 配 `basis: inference` 的提交被拒绝。淡出实现未动（`explicit` 不淡出）。
+- 验收：`every_fixture_reaches_the_model_with_what_comparison_needs`（[tests/memory_replay.rs](../src/frame/lib_opendan/tests/memory_replay.rs)，不调模型）对 14 个夹具逐一检查批次内容：每条材料的正文、`occurred_at`、来源事件、记录者、主体、引用的当前 revision；每条已知认知的陈述、basis、explicit、主体、tags、sources；六条 rules。语义效果见 T4。
+
 ### T1 — 主动捕获保留原意与条件
 
 - [ui_core.md](../src/apps/jarvis_agent/agent/cmd_skills/ui_core.md) 补 P1–P6，以及任务参数／持续要求、观察／推断的成对例子；落实 §4.1.1–§4.1.2 的精确原文、用户指导和主体认识边界，结合 §5.2–§5.3 保留纠正原因、成功方法、验证边界和来源。
 - [chat_route.toml](../src/apps/jarvis_agent/agent/behaviors/chat_route.toml)、[groupchat_route.toml](../src/apps/jarvis_agent/agent/behaviors/groupchat_route.toml) 引用手册；群聊仍遵守主体和来源边界。
 - 验收：同样涉及“上海”的四种表达捕获不同信息；原因未明的有价值异常仍能捕获条件、行动与结果；地址／URL 原值及用途可恢复，用户评价保留评价者和依据；检查实际 UI session prompt。
 
+**实施记录（2026-11-08—11-09，未提交）：**
+
+- [ui_core.md](../src/apps/jarvis_agent/agent/cmd_skills/ui_core.md) 新增“Memory: what to perceive”一节：`ctl perceive` 的可用参数；六类入口（P1–P6）；写法（保留是谁的话、条件、尝试／报告完成／已验证／用户认可四者不互相代替、精确值原样保留并带归属与用途、原因未明记为未知、同名不合并、tag 与对象）；七组“同样的话，不同的记法”（四种上海、本次要求与持续要求、用户建议的方法、用户对供应商的评价）；不捕获的内容。P4 写明 Work 自己不留材料，其报告里的经验由转述结果的 Session 捕获（TR 的补偿）。
+- [chat_route.toml](../src/apps/jarvis_agent/agent/behaviors/chat_route.toml)、[groupchat_route.toml](../src/apps/jarvis_agent/agent/behaviors/groupchat_route.toml) 的 Memory 段改为列出要记的几类并指向手册；群聊保留“只记 owner 本人的话、不把群成员的请求记成 owner 的要求”。两处都补了一句怎样读 Hint 的限定语（T2）。
+- `--explicit` 的含义不变（用户要求记住，需求 §4.2）。第一次真实模型运行里，模型对没有“记住”字样的持续要求也加了它，手册随后把这句收紧。
+- 验收：实际 UI Session 的 prompt 由 `a_jarvis_conversation_is_told_what_to_perceive`（不调模型）检查，用本仓库的 Jarvis 包建一对一会话，断言 system 文本的 `## Memory` 段和 `## Commands` 下手册的这一节都在。真实模型的捕获结果（`capture_with_the_real_model`，夹具 [tests/fixtures/memory_capture/cases.json](../src/frame/lib_opendan/tests/fixtures/memory_capture/cases.json)）见 T4 的“捕获”一段。opendan 里专门导出 prompt 的 `jarvis_prompt_review`（ignored）在基线上就因一处与本文无关的断言（`Read:` 与 `read:` 大小写）失败，没有用它，也没有改它。
+
 ### T2 — 注入保留认知含义
 
 - 检查 [background.rs](../src/frame/lib_opendan/src/runner/background.rs)、[state/cognition.rs](../src/frame/lib_opendan/src/state/cognition.rs) 与消费它们的装配路径，按 Q1 显露必要信息。
 - 验收：推断不显示成用户原话，v1 经验不显示成所有版本事实，短期线索不会被当作永久属性；字段渲染和范围匹配分别核查。
+
+**实施记录（2026-11-08—11-09，未提交）：**
+
+- 旧门面的 `Hint`（[state/cognition.rs](../src/frame/lib_opendan/src/state/cognition.rs)）增加 `basis`、`explicit`、`confidence`、`stability`、`valid_until`、`applies_to`（scope 里的 workspace 主体和对象）、`except`（scope 例外），由 `recall_hints` 从召回条目填入。`Hint::qualifier()` 把它们写成一句限定语，缺哪项省哪项：证据性质（`the user's explicit statement`／`stated by the user`／`observed`／`a third party's claim, not verified`／`the agent's inference, not confirmed`，confidence 低于 0.5 加 `weak evidence`）、范围（`applies to …`、`not to …`）、有效期（`holds until …`，没有期限的 volatile 为 `short-lived`）。
+- 三条消费路径都接上：UI Session 的背景行（[background.rs](../src/frame/lib_opendan/src/runner/background.rs)）为 `hint: <statement> (<qualifier>; noticed <time>; about <object>)`；其它 Session 的 `<hint>` 元素加 `note` 属性，模板变量 `hints[].qualifier`（[assembler.rs](../src/frame/lib_opendan/src/runner/assembler.rs)）；`agent-session recall` 输出的 JSON 带全部新字段。kRPC `cognition.recall_hints` 的返回只增可选字段。
+- 验收分两半。字段渲染：`cognition.rs` 的两个单测（推断不显示成用户原话；范围、例外、期限进入限定语）、`background.rs` 的行文本断言、`s13_runner_recall_reports_failures` 从真实存储召回后断言 `basis`／`explicit`／`applies_to` 和限定语；真实链路见 T4“全链路”。范围匹配：**没有改**。注入仍走只按 tag 的旧路径（Q2），不做主体和对象的范围过滤，项目 A 的认知在别的项目话题里命中 tag 时照样显露，现在只是带着 `applies to …`；到期的 `valid_until` 由召回硬过滤挡住（既有行为）。
 
 ### T3 — 表达质量提示
 
 - 对疑似整段日志、过长陈述或同义重复提供审阅／改写提示，保留现有数据结构合法性校验。
 - 不引入“有时间戳就 invalid”“少于两个 tag 就无效”等语义替代规则。可追溯性、范围和有用性仍由整理判断。
 - 若实施此项，针对必要日期／版本和无关日志分别验证，不能用拒绝合法内容换取格式整齐。
+
+**实施记录（2026-11-08—11-09，未提交）：**
+
+- `memory::review_expression`（[memory/expression.rs](../src/frame/lib_opendan/src/memory/expression.rs)）在提交落盘前看 `put_item` 的陈述，三种情况给出建议：超过 400 字符；含 Session id 或两个以上时刻（`hh:mm`）；新建条目与同范围的已知认知词重合（Jaccard）达到 0.6。命中时第一次提交被退回，消息以 `expression review (advice, not a rule)` 开头并点名条目；模型改写，或带 `reviewed: true` 把同一计划原样提交。数据结构合法性校验未动。
+- 没有引入语义替代规则：日期、版本、适用时段、比例（`16:9`）都不触发；tag 数量不检查。
+- 验收：`expression_review_is_advice_and_explicit_is_never_an_inference`（流水式陈述被点名一次，`reviewed: true` 后原样入库）、`a_dated_versioned_statement_passes_and_a_twin_is_named`（带版本和日期的陈述一次通过；同范围近似重复被点名并改为修订原条目）、`expression.rs` 的两个单测。真实模型两轮共 28 次整理提交都没有触发审阅。
 
 ### T4 — 以最终列表与下一次行为验收
 
@@ -485,11 +514,70 @@ I1／I2 是本次查看的公开源码版本，不代表每个 Codex 产品端�
 
 使用本机隔离的测试 Agent 与可控 fixture。若使用 demo 材料，先核对原始事件及脱敏，再核对 seq、来源映射与 lease 条件；不直接复制文件就认定可以回放。运行入口参见 jarvis TODO §11.6，实际命令以当前工具帮助为准。
 
+**实施记录（2026-11-09，未提交）：**
+
+做法：不建 Zone Agent，也不碰 demo。三个 `#[ignore]` 用例（[tests/memory_replay.rs](../src/frame/lib_opendan/tests/memory_replay.rs)）在临时目录里各建一个隔离的 AgentRoot，装入本仓库的 Jarvis 包，经本机 Zone 的 AICC 调真实模型（`llm.chat`，本次路由到 `gpt-6.1-sol:reasoning-medium`）。报告存档在 [evidence/agent-memory-capture-retain-weight/2026-11-09/](evidence/agent-memory-capture-retain-weight/2026-11-09/)，每份含期望、必须排除的推断、逐条处置及理由、整理后的完整列表、新增的观察、轮数与被拒的提交。
+
+```bash
+cd src && cargo test -p libopendan --test memory_replay -- --ignored --nocapture --test-threads=1
+# 只跑部分夹具：MEMORY_REPLAY_ONLY=s1_delivery_merge,s6_tool_counterexample
+# 保留各夹具的 AgentRoot：MEMORY_REPLAY_KEEP=<dir>
+```
+
+**整理（`replay_with_the_real_model`，14 个夹具，最终一轮）。** 机械检查 14／14 通过；列表逐份核对过，语义上都符合 §3 的目标结果：
+
+| 夹具 | 处置 | 列表变化 | 对应 T4 表的行 |
+|---|---|---|---|
+| s1_delivery_merge | 4 吸收、同源转述 1 判重 | 修订原“完成标记”条目为限 ClawChat 的验收经验；新增 1 条长任务监督经验；旧进度流水转 `stale` | S1 合并、S1 同源重复 |
+| s2_task_parameter | 丢弃 | 零新增；“发过两条帖”转 `stale` | S2 任务参数 |
+| s3_error_no_remedy | 3 条全丢弃 | 零新增，没有“已恢复”或原因 | S3 缺证 |
+| s3_error_with_remedy | 吸收 | 1 条限 dev 环境的恢复线索，写明原因未确认 | S3 恢复 |
+| s4_city_four_meanings | 查询参数与已过期的停留丢弃，另 2 条吸收 | 常住地（非 explicit、注明不代表当前位置）与默认天气城市（explicit、限天气查询）两条 | S4 四种城市表达 |
+| s5_exception | 2 条都判重 | 两条旧偏好原样保留，revision 不变 | S5 例外、旧认知在本批缺证、无增量批次 |
+| s5_lasting_change | 吸收 | 修订同一条：一页以内，技术评审报告除外 | S5 纠正 |
+| s6_tool_counterexample | 3 吸收、转述判重、未验证归因与等待状态丢弃 | 原条目收窄到 v1.4／Linux 并写入 v2.0 反例；另 1 条用户的产物目录约定（explicit） | S6 反例收窄 |
+| c3_success_method | 2 吸收 | 1 条样本检查经验，`tool_observation`，限转换器 v2 与模板 T | C3 成功方法 |
+| c9_c12_reason_and_clue | 2 吸收 | 离线约束这一选择理由；口径差异及核查入口，未保存当期数值 | C9／C12 |
+| c10_c11_c13_subjects | 4 吸收 | 私有用语、对接人（注明不含审批权、同名者身份未确认）、用户对供应商时效的看法 | C10／C11／C13 |
+| c14_exact_url | URL 吸收、电话号码丢弃 | 1 条“测试入口”用途线索，指向配置项；完整 URL 在观察里 | C14 |
+| guidance_user_method | 2 吸收、本次要求丢弃 | 周报结构（explicit，限项目 A 周报）；tool-y 方法作为用户建议、注明未实测 | 用户指导与持续要求 |
+| third_party_advice | 2 条全丢弃 | 零新增 | 第三方建议与采纳 |
+
+- 成本：每次激活 3 轮（begin、commit、report），4.1–4.6 万 token；c14 因 tag 含下划线被拒一次，4 轮 5.7 万。14 次合计 608,505 token。
+- 中间两轮的发现与修正。第一轮（857,689 token）语义同样达标，暴露三点并已改：Agent 亲自执行并看到结果的经验被标成 `inference`（现在 `basis` 按证据性质取，三处都改为 `tool_observation`，也不再写“未独立核验”）；选择理由被标 `explicit`（现在只给面向今后的要求）；4／14 次激活因 `kind: attribute` 缺 `claim.subject` 被拒而多花一轮（schema、rules、prompt 都写明常用 `observation_inference`，最终一轮没有再出现）。提交结果带 `next` 后每次激活少一轮空的 `begin`。第一轮有 3 个夹具的机械检查报错，是我的子串匹配把“不能推广到所有版本”这类否定句也算中，已把这类排除项改成给人读的 `exclude`。
+- weight 的实际取值在 0.5–0.85：用户强调或漏掉会误判的（测试入口、周报篇幅、产物目录、验收经验）0.8–0.85，一般经验与偏好 0.6–0.7，未验证的用户建议 0.5。没有做固定档位校验。
+
+**捕获（`capture_with_the_real_model`，10 个用例，每个是一轮真实的一对一会话）。** 10／10 符合预期：
+
+- 四种“上海”：问天气不留记录；“现在在上海，周五离开”记为截至 11-13 的临时停留并注明不是常住地；“长期住在上海”记为常住地并注明不代表实时位置；“以后问天气默认查上海”记为天气查询的默认地点偏好。
+- 完整 URL（端口、路径、参数）与“测试入口”这一用途都在记录里；用户对供应商的评价保留了评价者、经历和“不代表在所有项目都不可靠”；原因未查清的异常记下了版本、平台、行动、结果和“不能认定唯一原因”。
+- “这次写详细点”和问候不留记录；没有“记住”字样的持续要求不再带 `--explicit`（手册收紧后）。
+- 用例把 chat_route 的意图分析工具去掉了，只验证会话自己捕获什么；Work 结果回到会话后的经验捕获（P4 的那一句）没有用真实模型验证。
+
+**全链路（`conversation_to_hint_with_the_real_model`）。** 一个会话里说三句话（周报要求、临时停留、原因未明的工具异常）→ 3 条感知 → 一次整理激活得到 3 条认知 → 召回出的 Hint 行：
+
+```text
+hint: 用户在 2026-11-09 表示临时在上海，计划于 2026-11-13 离开；… (stated by the user; holds until 2026-11-12T16:00:00Z; noticed …)
+hint: 用户要求今后项目 A 的周报控制在一页以内，明细放附件；仅适用于项目 A 的周报，直到用户另行修改。 (the user's explicit statement; noticed …)
+```
+
+随后新开一个会话问“告诉我你记得的项目 A 周报要求”并要求列提纲：回答准确给出一页以内、明细放附件、仅限项目 A 周报，提纲按此执行。**这条认知不是自动注入想起的**：该会话的 topic 始终为空（chat_route 默认 `topic: null`），没有任何 hint 行进入背景；是模型自己执行了 `agent-session recall '项目 A' '周报'`。自动注入依赖 `state.topic.tags`，一个还没有 topic 的会话不会触发，这属于 Q2 的召回路径问题，本次没有改。
+
+**T4 表中未用真实模型覆盖的行。** “无主动感知的 Work（TR）”由既有用例覆盖（`runner_basic`、`the_builtin_goal_is_seeded_once_and_costs_no_model_without_material`、`s45`），本机 Zone Agent 上的 DV 仍未做。“实际召回是否保留范围”只验证了字段渲染；注入路径不做范围过滤（Q2）。夹具里的材料没有带对象 URL，真实会话的感知也都没有 `--object`，`applies to …` 在这几轮真实输出里没有出现过，只有单测覆盖。
+
 ### T5 — 文档与手册回写
 
 - 语义与效果验收后，更新需求文档附录 B 和 jarvis TODO §11 的实施状态，保留 fixture 和验证结果入口。
-- 同步受影响 cmd_skills；此次仅改设计 TODO，没有修改 CLI、API、运行路径或已生效行为，暂不把提案写成现行手册。
+- 同步受影响 cmd_skills。
 - 不自动把本文样例写入任何 Agent 的 Memory。
+
+**实施记录（2026-11-09，未提交）：**
+
+- 需求文档：A.4.1 补整理宿主工具的三处变化（已知认知的选取、表达审阅与 `reviewed`、提交结果的 `pending`／`next`）；A.5 写入入口列全 `ctl perceive` 参数并指向手册；A.6 输出一行与 TD-07（`explicit` 口径）、TD-16（捕获指引落点）、TD-26（夹具与回放入口）加 2026-11-08／09 的进度。
+- 协议文档：Session Input Protocol §6.2／§6.6 的 `<hint note>` 与 `hint:<id>` 行格式；Agent State Protocol §5 的 `recall_hints` 返回字段。
+- jarvis TODO 新增 §11.7，并更正 §11.5 里“`related_view` 只按 scope 重叠”的已知风险。
+- cmd_skills：受影响的是 `ui_core`（本次修改的就是它）。`ctl perceive` 的参数本身没有变，手册只是把已有参数写出来；`opendan_agent_dev` 不描述感知或 Hint，无需修改。验证：`cargo test -p libopendan --test xagent_lib work_sessions_take`、`--test xagent_cli skills_are`、`cargo test -p opendan` 通过。
+- 没有把本文样例写入任何 Agent 的 Memory；回放都在临时目录的隔离 AgentRoot 里。
 
 ## 7. 源码与 demo 核对记录（2026-11-03 历史快照）
 
@@ -546,15 +634,35 @@ Agent 什么时候会主动 perceive，只有两句提示：
 - 4 条认知全是 `observation_inference` + `semantic_kind=experience` + contextual + 主语=Agent 自己；`entities` 全空；没有 object、relation、attribute；没有 volatile；没有 deferred；没有 explicit。
 - 另 6 个 Agent（feifei、mandyhong、oxo-jarvis、xiaobai、xiaobai2、zzy/jarvis）用旧模板创建，`agent.toml` 无 maintenance 段、无 goal session，共 92 条感知从未整理。
 
-## 8. 验证范围与后续命令
+## 8. 验证范围、未做事项与命令
 
-原稿为文档修订。2026-11-08 TR 已实施：跑了 memory_component、memory_maintenance、runner_basic、runner_more、crash 五个测试文件（结果见 TR 实施记录），未启动 demo／本机 Agent。
+**跑过的验证（2026-11-09，`buckyos/src`）：**
 
-后续代码实施时可从以下命令开始（在 `buckyos/src` 运行），但测试通过不能替代 T4 的语义回放与下一次任务验证：
+| 命令 | 结果 |
+|---|---|
+| `cargo test -p libopendan --no-fail-fast -- --test-threads=1` | 474 个用例：466 通过，8 失败。7 个是下面说的环境问题；另一个 `state::registry::id_tests::concurrent_reservations_share_a_counter_and_reuse_the_same_key` 在这一遍失败（当时同时有别的 cargo 任务在跑），单独重跑 3 次都通过，前一遍全量也通过，与本次改动的文件无关 |
+| `cargo test -p libopendan --test memory_replay -- --ignored --nocapture --test-threads=1` | 3 个真实模型用例通过，见 T4 |
+| `cargo test -p agent_tool --lib agent_memory` | 29 通过（本次没有改 agent_tool） |
+| `cargo test -p opendan -- --test-threads=1` | 51 通过；2 个 ignored 未跑（其中 `jarvis_prompt_review` 在基线上就失败，见 T1） |
+| `cargo check --workspace --tests` | 通过 |
+
+libopendan 全量里失败的 7 个（`fixtures.rs` 的 f04／f06／f07／f12／f15，`xagent_cli.rs` 的 2 个）在暂存本次改动后的基线上同样失败，报的都是 `recovery_blocked`：录制夹具里的 Session 工具路径与本机不符，或缺 `src/tools/bin`。TR 记录里提到的“87 个基线失败”和 memory_maintenance 的 3 个崩溃恢复用例是同一类原因：测试进程把 `src/target` 当作 BUCKYOS_ROOT，恢复中断的 run 时要求 `src/target/tools/bin` 和 `src/target/bin/agent-tools` 存在。本机已有前一个目录，这次补建后一个（空目录即可）之后，memory_maintenance 的 3 个用例通过，全量失败数从 87 降到上面的 7 个；不是代码缺陷。
+
+**没有做的：**
+
+- Q2：drive 仍走只按 tag 的旧召回路径。没有范围过滤、纠正叠加和分池预算；还没有 topic 的会话不会自动注入任何 Hint（T4 全链路里是模型主动 `recall` 才想起）。
+- Q7：旧模板 Agent 没有整理 Goal。
+- 本机 Zone Agent 与容器形态的 DV，包括 TR 留下的“finished Work 后无感知文件、gate 为 `no_work`”。这些改动进容器要重建镜像（仓库根目录 `./build_aios --local-test`，再 `uv run src/start.py --skip-update`）；已有 Session 冻结的 behavior 不变，新一代 Session 才用上新的 prompt 与手册。
+- demo 上的旧认知与积压感知没有处理。
+- 群聊（groupchat_route）和“Work 结果回到会话后的经验捕获”只改了文字，没有用真实模型跑。
+- 回放只用了本机 `llm.chat` 当前路由到的一个模型；换模型后 prompt 的效果要重跑回放确认。
+
+**命令：**
 
 ```bash
 cargo test -p agent_tool --lib agent_memory
-cargo test -p libopendan --test memory_maintenance --test memory_sessions --test memory_component
+cargo test -p libopendan --test memory_maintenance --test memory_sessions --test memory_component --test memory_replay
 cargo test -p libopendan -- --test-threads=1
+cargo test -p libopendan --test memory_replay -- --ignored --nocapture --test-threads=1   # 真实模型；整理回放一项约 61 万 token，捕获与全链路未统计
 cargo check --workspace --tests
 ```

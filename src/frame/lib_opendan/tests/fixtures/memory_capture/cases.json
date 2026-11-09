@@ -1,0 +1,154 @@
+{
+  "note": "虚构数据。每个用例是用户在一对一会话里说的话，以及会话结束后感知文件里应有或不应有什么（notepads/agent-memory-capture-retain-weight-todo.md §4.1、T1）。contains_all／contains_any 在该会话全部感知正文拼接后检查。",
+  "cases": [
+    {
+      "id": "city_query",
+      "covers": "S4：查询参数",
+      "say": [
+        "上海明天会下雨吗？不用真的去查，告诉我你打算怎么查就行。"
+      ],
+      "expect": "none",
+      "why": "城市只是这次问题的参数，不是用户属性。"
+    },
+    {
+      "id": "city_stay",
+      "covers": "S4：临时所在地",
+      "say": [
+        "顺便说一下，我现在在上海，周五离开。"
+      ],
+      "expect": "some",
+      "contains_all": [
+        "上海"
+      ],
+      "contains_any": [
+        "周五",
+        "Friday",
+        "离开",
+        "until"
+      ],
+      "why": "有截止时间的停留：保留“到周五”，不写成常住。"
+    },
+    {
+      "id": "city_home",
+      "covers": "S4：常住地／C7",
+      "say": [
+        "对了，我长期住在上海。"
+      ],
+      "expect": "some",
+      "contains_all": [
+        "上海"
+      ],
+      "contains_any": [
+        "长期",
+        "常住",
+        "居住",
+        "住在",
+        "live",
+        "resid"
+      ],
+      "why": "用户自述常住地：保留“长期居住”的原意。"
+    },
+    {
+      "id": "city_default",
+      "covers": "S4：默认天气城市／P1",
+      "say": [
+        "以后我问天气，默认查上海。"
+      ],
+      "expect": "some",
+      "contains_all": [
+        "上海"
+      ],
+      "contains_any": [
+        "天气",
+        "weather"
+      ],
+      "why": "限天气查询的持续偏好，不是所在地。"
+    },
+    {
+      "id": "exact_url",
+      "covers": "C14／§4.1.1 精确原文",
+      "say": [
+        "项目 A 的测试入口是 https://staging.proj-a.example.com:8443/api/v2?tenant=qa ，别和生产搞混；以后我说“测试入口”就是它。"
+      ],
+      "expect": "some",
+      "contains_all": [
+        "https://staging.proj-a.example.com:8443/api/v2?tenant=qa"
+      ],
+      "contains_any": [
+        "测试",
+        "test",
+        "staging"
+      ],
+      "why": "完整 URL（端口、路径、参数）与用途都要能恢复。"
+    },
+    {
+      "id": "owner_evaluation",
+      "covers": "C13／P2",
+      "say": [
+        "供应商 X 上次在项目 A 交付拖了两周，我对他们的时效不太放心。"
+      ],
+      "expect": "some",
+      "contains_all": [
+        "项目 A"
+      ],
+      "contains_any": [
+        "供应商 X",
+        "供应商X",
+        "supplier X",
+        "Supplier X"
+      ],
+      "why": "保留评价者（用户）、对象、理由和经历，不写成“X 不可靠”。"
+    },
+    {
+      "id": "anomaly_unknown_cause",
+      "covers": "P4：原因未明的异常",
+      "say": [
+        "记一下刚才的情况：你用 tool-x v1 在 Linux 上生成报告失败了两次，加上 --out build/ 之后才成功。到底是不是只和输出目录有关，我们还没查清。"
+      ],
+      "expect": "some",
+      "contains_all": [
+        "--out"
+      ],
+      "contains_any": [
+        "v1"
+      ],
+      "why": "条件、行动、结果都在；原因未查清要写成未知，不能漏记也不能编原因。"
+    },
+    {
+      "id": "lasting_requirement",
+      "covers": "S5／C5／P1",
+      "say": [
+        "以后项目 A 的周报控制在一页以内，明细放附件。"
+      ],
+      "expect": "some",
+      "contains_all": [
+        "一页"
+      ],
+      "contains_any": [
+        "项目 A",
+        "项目A",
+        "project A",
+        "Project A"
+      ],
+      "why": "明确的持续要求：范围是项目 A 的周报。"
+    },
+    {
+      "id": "task_parameter",
+      "covers": "S5：本次例外",
+      "say": [
+        "这次的回复写详细一点：用三四句话介绍一下你自己。"
+      ],
+      "expect": "none",
+      "why": "只改变本次交付。"
+    },
+    {
+      "id": "greeting",
+      "covers": "§4.1 不捕获",
+      "say": [
+        "你好，你都能做些什么？"
+      ],
+      "expect": "none",
+      "why": "问候与能力自述不是材料。"
+    }
+  ]
+}

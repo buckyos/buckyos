@@ -1677,6 +1677,12 @@ interface ConsolidationCommit {
 - 实现补充：只能处置本批次实际读到的材料（含作为上下文读到的未到期暂缓材料）；`deferred` 必须有理由、重评条件和不超过配置窗口（初值 72 小时）的截止时间，再次暂缓不能晚于第一次的截止时间；`absorbed` 必须指出承接的认知，`discarded` 必须有理由；被引用的认知必须存在。
 - 提交结果：`Committed`；`AlreadyCommitted`（同键同计划的重试）；`CommitUnknown`（追加或 fsync 中途失败，调用方用同一幂等键重试，写者先截掉未完成的尾行再按键查询，不会重复追加）；派生物重建失败时仍是 `Committed`，`derived = PendingRepair`，由下一次写入或 `verify --repair` 修复。
 
+整理宿主工具的补充（2026-11-08，`lib_opendan/src/runner/consolidation.rs`，见[捕获／保留／权重 TODO](../../notepads/agent-memory-capture-retain-weight-todo.md) T0、T3）：
+
+- `memory_consolidation_begin` 的 `known_cognitions` 不再只按 scope 主体重叠、按 id 顺序取前 24 条：材料 `cites` 的认知必带；主体是 Agent 自己的认知总是候选（任何 Session 的材料都可能是 Agent 自己的经验，而 `ctl perceive` 的默认主体是 owner）；候选按与本批材料正文和 tag 的词重合排序后再截断。每条带 `tags` 与 `sources`（证据观察指向的来源事件），供判断同源转述。`rules` 增 `admission`、`evidence`、`statement`、`explicit`、`weight`。
+- `memory_consolidation_commit` 增 `reviewed`。表达审阅（`memory::review_expression`）只给建议不作规则：陈述超过 400 字符、含 Session id 或两个以上时刻（像流水）、新建条目与同范围已知认知的词重合达到 0.6 时，第一次提交被退回并点名，模型改写或带 `reviewed: true` 原样提交。日期、版本和适用时段不触发。`explicit: true` 配 `basis: inference` 是硬拒绝。
+- 提交成功的结果带 `pending` 与 `next`：没有待处理材料时模型直接 `report` 结束，不再为一次空的 `begin` 多花一轮。
+
 #### A.4.2 图操作（继承）
 
 | 操作 | 字段 | 规则 |
@@ -1718,7 +1724,7 @@ interface PerceptionRecord {
 
 为满足 §4.2 新增的字段（已实现，TD-16）：`idempotency_key`、`content_digest`（清理后仍保留，用来识别同键不同内容）、`scope`（`subjects` 即主体引用，加对象与例外）、`suggested_kind`（含 `correction`）、`memory_intent`、`cites`（召回回声与纠正引用的认知，E-15、§4.3）、`anchors`（时区、语言区域、位置、意图锚点）、`occurred_at`、`source_ref`（事件引用、`task_ref`/`goal_ref`、`actor_kind`）、`mentions`（原始提及与组件附上的可见候选）、`backfilled`（补写标记）、`cleared`（清理后的处置标记）。
 
-写入入口：模型经 `agent-session ctl perceive <text> [--kind] [--tag]` 写观察，“你记一下”也走这里（M-01）。Runtime 自动记录（`run_digest`、`task_outcome`、`task_discarded`）已于 2026-11-08 删除：它们只是 Task / Goal 已有的进度状态，demo 上 105/123 条被整理丢弃，却让整理 Goal 为此激活；写入口现在拒绝这三种 kind，旧文件中的残留行只读、不计材料。追加要求持有 Session lease。组件库入口 `Memory::record_perception(caller, session_lease, input)` 由宿主绑定身份、授权主体、来源事件和记录策略：“不记忆”策略直接跳过、不写入；来源事件经宿主核验，Runtime 附加的 Memory 块不能作为来源；`cites` 必须指向可见的认知；回执返回 `<sid>:<seq>`、同范围已有认知引用（读不到 Graph 时省略）和提及候选。`ctl perceive` 已接线（2026-10-23）：`--subject / --object / --cite / --source / --occurred-at / --suggest / --intent | --explicit / --mention`，驱动者分配 seq、绑定主体（UI 取对话 peer，Work 取 owner，Goal 取 Goal owner，Workspace 绑定附 `workspace:<id>`）、来源与时区锚点，控制输入 key 为幂等键。`catch_up` 不再补发任何感知记录（TD-16 的 `backfilled` 项随自动记录一起作废）。
+写入入口：模型经 `agent-session ctl perceive <text> [--tag]... [--object]... [--subject]... [--cite item@rev]... [--suggest] [--explicit | --intent] [--occurred-at] [--source <input key>] [--mention]...` 写观察，“你记一下”也走这里（M-01）；什么值得记、怎样保留原意与条件，见 Jarvis `cmd_skills/ui_core.md` 的“Memory: what to perceive”。Runtime 自动记录（`run_digest`、`task_outcome`、`task_discarded`）已于 2026-11-08 删除：它们只是 Task / Goal 已有的进度状态，demo 上 105/123 条被整理丢弃，却让整理 Goal 为此激活；写入口现在拒绝这三种 kind，旧文件中的残留行只读、不计材料。追加要求持有 Session lease。组件库入口 `Memory::record_perception(caller, session_lease, input)` 由宿主绑定身份、授权主体、来源事件和记录策略：“不记忆”策略直接跳过、不写入；来源事件经宿主核验，Runtime 附加的 Memory 块不能作为来源；`cites` 必须指向可见的认知；回执返回 `<sid>:<seq>`、同范围已有认知引用（读不到 Graph 时省略）和提及候选。`ctl perceive` 已接线（2026-10-23）：`--subject / --object / --cite / --source / --occurred-at / --suggest / --intent | --explicit / --mention`，驱动者分配 seq、绑定主体（UI 取对话 peer，Work 取 owner，Goal 取 Goal owner，Workspace 绑定附 `workspace:<id>`）、来源与时区锚点，控制输入 key 为幂等键。`catch_up` 不再补发任何感知记录（TD-16 的 `backfilled` 项随自动记录一起作废）。
 
 整理读取：组件按逐条处置状态计算待处理集合（未处置、到期暂缓、已终局待清理），排除整理自身的 Session，同一来源事件的一轮表达整体进入同一批次；排除按“Goal 带 `memory_consolidation` 能力的 Goal Session”判定（跨 epoch），字节偏移游标已删除（2026-10-23）。
 
@@ -1739,7 +1745,7 @@ interface PerceptionRecord {
 | 3. 候选 | 对象单点、对象对、有向关系的一到两跳展开；tag；全文（含证据观察与自由条目）；范围内未整理的感知与纠正 | 已实现：实体、对象对、有向一到两跳展开（上限 32）、范围对象、tag、全文（CJK 二元组 + 词，SQLite FTS5 与日志一致时用索引，否则内存扫描并在结果中说明）；感知层由组件按范围与入口另行召回 |
 | 4. 打分 | `结构命中 + tag 位置加分 + weight×Wd + confidence×Cd − 淡出(noticed_at)`；明确提出的认知不淡出 | 已实现：实体 +12、对象对 +18、范围对象 +12、一跳 +6、两跳 +3、tag 8/4/2/1、全文每个命中词 +2（上限 5 个）、weight×10、confidence×6，淡出 `min(age_days/30, 20)` 可配置，`explicit` 不淡出；完整分项（`score_parts`）随结果返回 |
 | 5. 预算 | 按类别分池，有效性变化优先（M-20） | 组件：有效性变化（待复核、可能已被纠正、替代、撤回及其纠正感知）优先，其后认知与新感知各有保留额度，剩余按序填充；预算外的引用进 `omitted` / `pending` |
-| 6. 输出 | 摘要、适用范围、证据性质、revision、命中原因、是否建议展开（§6.2） | 组件 Hint 已带 layer、ref/revision、scope、basis、weight、confidence、状态、命中原因、来源事件、纠正引用、有效期、是否建议展开；runner 的 `<hints>` 仍只有 id、时间和一句话（S 阶段，TD-13） |
+| 6. 输出 | 摘要、适用范围、证据性质、revision、命中原因、是否建议展开（§6.2） | 组件 Hint 已带 layer、ref/revision、scope、basis、weight、confidence、状态、命中原因、来源事件、纠正引用、有效期、是否建议展开；runner 的旧门面 `recall_hints` 自 2026-11-08 起每条带 `basis`、`explicit`、`confidence`、`stability`、`valid_until`、`applies_to`、`except`，注入行与 `<hint note>` 渲染为一句限定语（证据性质、范围、有效期；`Hint::qualifier()`），命中原因、revision 状态与纠正叠加仍待 drive 接新门面（S 阶段，TD-13） |
 
 排序键继承 v2.10：`score DESC, weight DESC, confidence DESC, item_id ASC`。tag、对象、别名和全文都没给时视为“未触发”，不再按全局显著性返回全库前若干条（M-34，TD-10）。一次查询最多 32 个 tag、对象、别名，全文不超过 4096 字节；非空 tag 全部非法时报参数错误，部分非法时忽略并在结果中列出。
 
@@ -1933,6 +1939,7 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 - 现状：`am` 的 `recency_penalty` 为 `min(age_days/30, 20)`，对所有条目一视同仁，一年前的明确边界会输给新近噪声。
 - 改为：`explicit = true` 的条目不计淡出惩罚，只随修订改变；淡出惩罚的上限与曲线可配置。
 - 进度（2026-10-10，组件阶段）：完成：`explicit` 不淡出，淡出曲线与上限可配置（`FadeConfig`），但仍受有效期、权限与范围约束（S32）。
+- 2026-11-08：`explicit` 的写入口径与 M-20 对齐。整理 prompt、`begin` 的 `rules.explicit` 与提交 schema 原先写的是“只有用户说记住才置 true”，会让没有“记住”二字的明确持续偏好照常淡出；现改为：用户用自己的话提出面向今后的持续偏好、要求或边界（有没有“记住”都算），或明确要求记住时置 true；一次任务的要求、事实、过去的决定及其理由不置。`explicit: true` 与 `basis: inference` 同时出现的提交被拒绝（`runner/consolidation.rs::check_explicit`）。感知侧的 `memory_intent = explicit`（`ctl perceive --explicit`）含义不变，仍只表示用户要求记住（§4.2）。
 
 **TD-08 状态枚举与迁移校验**（M-29、A.3.5）
 - 现状：kind、status、alias_type、`SourceRef.type` 都是自由字符串；`set_status` 不做迁移校验，`deleted → active` 也能写；`replaced_by` 只在对象合并时生效，不级联到别名。
@@ -1981,6 +1988,7 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 - 改为：按 A.5 增加字段（含 `idempotency_key` 及其冲突规则）与对应的 CLI 参数（对象、主体、`--memory-intent`、`--kind correction`、`--cites`）；Runtime 补齐锚点与来源事件；补写记录标明是补写。
 - 进度（2026-10-10，组件阶段）：组件完成：A.5 字段、幂等键规则、库级写入口与来源核验。S 待办：`ctl perceive` 参数（对象、主体、`--memory-intent`、`--kind correction`、`--cites`）、Runtime 补齐锚点与来源事件、`catch_up` 合成记录置 `backfilled`。
 - 2026-11-08：Runtime 自动记录与 `catch_up` 补发一并删除，`backfilled` 项作废；写入口拒绝 `run_digest` / `task_outcome` / `task_discarded`。
+- 2026-11-08：捕获指引落到 Jarvis 的 `cmd_skills/ui_core.md`“Memory: what to perceive”一节（六类入口、保真与范围写法、同词不同记法的成对例子、不该记的内容），`chat_route` / `groupchat_route` 的 Memory 段引用它；主动捕获是唯一材料来源，Work 的结果由父 Session 在转述时捕获。见[捕获／保留／权重 TODO](../../notepads/agent-memory-capture-retain-weight-todo.md) T1。
 
 **TD-17 CLI 返回值与对象匹配**（A.7）
 - 现状：`observe add` 不返回新 id，behavior 只能按 `obs_<seq>_00` 猜测（`self_improve_set_memory.toml`）；`object upsert` 不返回对象 id 与 created/updated/ambiguous；不传 `--object` 时不按名字或别名匹配已有对象，总是新建；`--evidence` 不是必填；只支持一个别名。
@@ -2036,3 +2044,4 @@ Session 侧的库函数（组件提供实现，状态由 Session 保存）：
 - 现状：`am` 有 11 个单测，`cli` 有 7 个 agent-memory 测试，图操作子命令没有 CLI 测试；召回与 `<hints>` 注入路径没有测试。
 - 改为：补别名冲突与合并、状态迁移、salience 排除、淡出与豁免、证据失效过滤、锁超时、digest 损坏、图操作 CLI、召回注入的测试；B-44—B-51 中属于组件阶段的场景做成组件测试。
 - 进度（2026-10-10，组件阶段）：组件完成：`agent_memory` 单元测试 27 个；`lib_opendan/tests/memory_sessions.rs`（十个场景、99 项检查）与 `memory_component.rs`（并发、故障、预算、两进程及独立 review 发现的回归共 25 个）。S 待办：CLI 图操作测试、真实召回注入与 runner 测试。
+- 2026-11-09：整理语义的结果样例与真实模型回放。夹具 `lib_opendan/tests/fixtures/memory_consolidation/`（14 个“已有认知＋材料 → 期望列表”场景）与 `tests/fixtures/memory_capture/cases.json`（10 个会话捕获用例）；`tests/memory_replay.rs` 的 `every_fixture_reaches_the_model_with_what_comparison_needs` 不调模型，检查每个夹具的批次内容；`replay_with_the_real_model`、`capture_with_the_real_model`、`conversation_to_hint_with_the_real_model` 三个 `#[ignore]` 用例经本机 Zone 的 AICC 调真实模型（`cargo test -p libopendan --test memory_replay -- --ignored --nocapture --test-threads=1`，报告写到 `src/target/memory-replay/`）。最近一次结果存档在 `notepads/evidence/agent-memory-capture-retain-weight/2026-11-09/`，说明见[捕获／保留／权重 TODO](../../notepads/agent-memory-capture-retain-weight-todo.md) T4。

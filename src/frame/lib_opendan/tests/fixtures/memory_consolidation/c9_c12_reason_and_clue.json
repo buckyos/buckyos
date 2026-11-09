@@ -1,0 +1,85 @@
+{
+  "id": "c9_c12_reason_and_clue",
+  "title": "C9 选择理由与 C12 查找线索",
+  "covers": [
+    "C9／C12 理由与线索"
+  ],
+  "known": [],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "ui-fx-c9",
+      "subject": "owner",
+      "content": "讨论项目 A 的语音转写方案时，用户说：“服务 X 不用了，现场没有外网，必须离线跑。”最终选了本地模型方案。",
+      "occurred_at": "2026-10-18T03:00:00Z",
+      "event": "ui-fx-c9:e8",
+      "actor": "agent",
+      "tags": [
+        "项目A",
+        "方案选择",
+        "服务X",
+        "离线"
+      ],
+      "objects": [
+        "proj-a"
+      ]
+    },
+    {
+      "key": "m2",
+      "session": "work-fx-c12",
+      "subject": "workspace:proj-a",
+      "content": "对比项目 A 两个季度的“活跃用户”时数字对不上：Q2 报表按 7 日登录统计，Q3 起改为 30 日有操作。两种口径都记在项目的指标字典（docs/metrics.md）和 2026-07 的决策记录里。本次 Q3 活跃用户数为 18,420。",
+      "occurred_at": "2026-11-02T03:00:00Z",
+      "event": "work-fx-c12:e14",
+      "actor": "agent",
+      "tags": [
+        "项目A",
+        "活跃用户",
+        "统计口径"
+      ],
+      "objects": [
+        "proj-a"
+      ]
+    }
+  ],
+  "expected": {
+    "list": [
+      "C9：项目 A 上次未采用服务 X，原因是当时必须离线运行；评估替代方案时先核查该限制是否仍成立。保留理由，不写成“永远不用 X”。",
+      "C12：项目 A 的“活跃用户”有两种统计口径；比较历史数据前先查指标字典和决策记录中的适用版本。不复制 18,420 这个当前数值。"
+    ],
+    "exclude": [
+      "项目 A 永远不用服务 X",
+      "把 18,420 当作长期事实保存"
+    ],
+    "dispositions": {
+      "m1": [
+        "absorbed"
+      ],
+      "m2": [
+        "absorbed"
+      ]
+    },
+    "max_new_items": 2,
+    "min_new_items": 2,
+    "must_have": [
+      {
+        "any_of": [
+          "离线"
+        ],
+        "why": "选择理由"
+      },
+      {
+        "any_of": [
+          "口径"
+        ],
+        "why": "核查线索"
+      }
+    ],
+    "next_task": "再评估转写方案：先问离线限制是否还在；做活跃用户对比：先查口径。",
+    "must_not_match": [
+      "18,420",
+      "18420"
+    ]
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

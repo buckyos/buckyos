@@ -12,6 +12,7 @@
 
 mod changes;
 mod consolidation;
+mod expression;
 mod hint;
 mod observation;
 mod perception;
@@ -46,6 +47,7 @@ pub use consolidation::{
     Batch, BatchOptions, CleanupReport, Consolidator, Material, MaterialState, PendingWork,
     ReviewDue, DEFAULT_BATCH_LIMIT, DEFAULT_CONTEXT_LIMIT,
 };
+pub use expression::{review_expression, LONG_STATEMENT_CHARS};
 pub use hint::{scope_object_url, Budget, Hint, HintLayer, HintState};
 pub use observation::{
     observe, set_topic, Delivery, LastQuery, ObservationState, TopicConfig, TopicOutcome,

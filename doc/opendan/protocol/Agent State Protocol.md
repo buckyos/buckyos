@@ -99,7 +99,7 @@
 
 Memory Graph（`memory/`，schema 4.0：认知另带 `stability = stable | contextual | volatile`、`last_evidence_at`（独立证据时间，新建整理认知必填，修订不续期）、`review_at`（结构化复核日期）；`created_at` 是 `first_occasion` 时间的读取投影；召回淡出按稳定度 365 / 30 / 1 天一分、上限 20 分，`explicit` 不淡出；旧主版本根目录拒绝打开，不迁移）由 `agent_tool::agent_memory` 实现：`.meta/occasions.jsonl` 是追加写的提交真相源，一次整理提交是一条 occasion（图操作 + 逐条处置 + 幂等键 + `produced_by` + 真实 `actor_session_id` + 整理 lease 的 epoch）；读路径不取写锁。两层的统一门面是 `libopendan::memory::Memory`（感知写入、`query_topic` / `query` / 按引用读取、`changes_since`、`pending_work` / `due_reviews`、整理与清理）；topic 与观察进度（`ObservationState`）归 Session 保存，Memory 不登记订阅。认知只在 `memory_consolidation` lease 下经 `Consolidator::commit` 改变：该 lease 由 Goal 带 `memory_consolidation` 能力的 Goal Session 的 drive 全程持有，其宿主工具 `memory_consolidation_begin / commit` 是唯一写路径（§9.7）；普通 Session 只能写感知和读取，`agent-memory` CLI 在 Session shell 内拒绝写。
 
-`recall_hints`（runner 的旧门面）没有 tag 时返回空列表（未触发），存储不可读时返回错误；`notebook_append` 与 `notebook/` 是待退役的旧调用方，S 阶段移除（`attention_signals/` 已于 2026-11-01 退役，旧目录不再被读写）。非 Rust 实现通过 `agent_tool agent-memory …` CLI 访问 Graph。
+`recall_hints`（runner 的旧门面）没有 tag 时返回空列表（未触发），存储不可读时返回错误；每条 `Hint` 除 `id / time / sentence / kind / object` 外带认知的 `basis`、`explicit`、`confidence`、`stability`、`valid_until`、`applies_to`（scope 中的 workspace 主体与对象）、`except`（scope 例外），注入时渲染为一句限定语（`Hint::qualifier()`，见 Session Input Protocol §6.6），推断不显示成用户原话、局部经验带着范围、短期线索带着期限；`notebook_append` 与 `notebook/` 是待退役的旧调用方，S 阶段移除（`attention_signals/` 已于 2026-11-01 退役，旧目录不再被读写）。非 Rust 实现通过 `agent_tool agent-memory …` CLI 访问 Graph。
 
 ## 6. 产物列表（只登记与指向）
 

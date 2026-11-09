@@ -33,9 +33,10 @@ use serde_json::{json, Value};
 use crate::error::{OpenDanError, Result};
 use crate::lock::Lease;
 use crate::memory::{
-    iso_ms, ActorKind, Batch, BatchOptions, Caller, ConsolidationCommit, Disposition, GraphOperation,
-    Material, MaterialState, Memory, MemoryConfig, MemoryError, PendingWork, PerceptionInput,
-    PerceptionReceipt, ProducedBy, Scope, SourceRef, SourceType, CONSOLIDATION_LEASE,
+    iso_ms, review_expression, ActorKind, Basis, Batch, BatchOptions, Caller, ConsolidationCommit,
+    Disposition, GraphOperation, Material, MaterialState, Memory, MemoryConfig, MemoryError,
+    PendingWork, PerceptionInput, PerceptionReceipt, ProducedBy, Scope, SourceRef, SourceType,
+    CONSOLIDATION_LEASE,
 };
 use crate::protocol::*;
 use crate::session::runs::RunHandle;
@@ -179,7 +180,7 @@ impl AgentTool for CommitTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_COMMIT.into(),
-            description: "Commit the consolidation of the batch `operation_id` as one Memory envelope: `operations` (graph operations: add_observation, upsert_object, upsert_relation, put_item, set_status, reinforce_object_weight) and `dispositions` (one per material you read: absorbed | duplicate | discarded | deferred with a deadline). A new cognition needs scope, basis, last_evidence_at and evidence; every disposed material must be in this batch. The commit is idempotent by operation_id; cleanup of the disposed bodies follows. `abandon: true` closes the batch without disposing anything (the material comes back next time).".into(),
+            description: "Commit the consolidation of the batch `operation_id` as one Memory envelope: `operations` (graph operations: add_observation, upsert_object, upsert_relation, put_item, set_status, reinforce_object_weight) and `dispositions` (one per material you read: absorbed | duplicate | discarded | deferred with a deadline). A new cognition needs scope, basis, last_evidence_at and evidence; every disposed material must be in this batch. A refusal that starts with `expression review` is advice on wording: rewrite, or resubmit with `reviewed: true`. The commit is idempotent by operation_id; cleanup of the disposed bodies follows. `abandon: true` closes the batch without disposing anything (the material comes back next time).".into(),
             args_schema: commit_args_schema(),
             output_schema: json!({"type":"object"}),
             usage: Some("memory_consolidation_commit({operation_id, summary, operations: [...], dispositions: [...]})".into()),
@@ -202,27 +203,27 @@ fn commit_args_schema() -> Value {
         "operations":{"type":"array","description":"graph operations, applied in order; observations before the cognitions that cite them","items":{"type":"object","additionalProperties":true,"properties":{
             "op":{"type":"string","enum":["add_observation","upsert_object","upsert_relation","put_item","set_status","reinforce_object_weight","set_free","remove_free"]},
             "observation_id":{"type":"string","description":"add_observation: `obs_<name>` (ASCII letters, digits, `_ - .`)"},
-            "kind":{"type":"string","description":"add_observation: mention | explicit_statement | behavior_signal | tool_evidence | curator_note. put_item: attribute | observation_inference | free | event_effect. upsert_object: user | person | agent | project | repo | file | service | concept | organization | place | custom"},
+            "kind":{"type":"string","description":"add_observation: mention | explicit_statement | behavior_signal | tool_evidence | curator_note. put_item: observation_inference (a conclusion in a sentence; the usual kind, whatever its basis) | attribute | free | event_effect. upsert_object: user | person | agent | project | repo | file | service | concept | organization | place | custom"},
             "content":{"type":"string","description":"add_observation: what was observed, close to the source"},
             "source_ref":{"type":"object","description":"add_observation: the material's source, as an object","properties":{"type":{"type":"string","enum":["session_event","tool_result","file","url","manual","system"]},"event_ref":{"type":"string","description":"the material's source.event_ref, or its `ref` when there is none"},"session_id":{"type":"string"}},"required":["type","event_ref"]},
             "scope":{"type":"object","description":"subjects: the agent DID, the user principal or `workspace:<id>` from the material; objects: optional object paths, or the canonical URL of the object (obj://…, cyfs://…) so it can be read later","properties":{"subjects":{"type":"array","items":{"type":"string"}},"objects":{"type":"array","items":{"type":"string"}}},"required":["subjects"]},
             "confidence":{"type":"number","minimum":0,"maximum":1},
-            "weight":{"type":"number","minimum":0,"maximum":1,"description":"recall importance"},
+            "weight":{"type":"number","minimum":0,"maximum":1,"description":"how much it deserves to come to mind in its situation (see rules.weight); not a measure of evidence"},
             "item_id":{"type":"string","description":"put_item / upsert_relation: `item_<name>`; a known cognition's id with `expected_revision` revises it"},
             "expected_revision":{"type":"integer","description":"required when revising a known cognition"},
-            "claim":{"type":"object","description":"put_item: {type: <the same value as kind>, statement: <sentence>, ...}; attribute: + subject, attribute, value; event_effect: + effect. `semantic_kind` (preference, experience, …) is a separate field, not claim.type"},
+            "claim":{"type":"object","description":"put_item: {type: <the same value as kind>, statement: <sentence>}. observation_inference and free need only `statement`; attribute is refused without non-empty `subject`, `attribute` and `value`; event_effect needs `effect`. When in doubt use observation_inference. `semantic_kind` (preference, experience, …) is a separate field, not claim.type"},
             "entities":{"type":"array","items":{"type":"string"},"description":"object ids (`obj_…`) the cognition is about"},
             "evidence":{"type":"array","items":{"type":"string"},"description":"observation ids (`obs_…`) added in this commit or already known; at least one for a cognition"},
             "write_reason":{"type":"string"},
             "basis":{"type":"string","enum":["user_statement","tool_observation","third_party_claim","inference"]},
-            "explicit":{"type":"boolean","description":"true only when the user asked to remember"},
+            "explicit":{"type":"boolean","description":"true when the user set it, in their own words, as a standing preference, requirement or boundary for future work (with or without `remember`), or asked to remember it: it then does not fade with time. Never with basis inference; not for a fact, a past decision or one task's request"},
             "stability":{"type":"string","enum":["stable","contextual","volatile"]},
             "last_evidence_at":{"type":"string","description":"RFC 3339: when the evidence was observed (the material's at / occurred_at), never now"},
             "valid_until":{"type":"string","description":"RFC 3339"},
             "review_at":{"type":"string","description":"RFC 3339"},
             "review_when":{"type":"array","items":{"type":"string"}},
             "semantic_kind":{"type":"string","description":"preference | experience | correction | fact | …"},
-            "tags":{"type":"array","items":{"type":"string"},"description":"2..32 bytes each, letters digits spaces -"},
+            "tags":{"type":"array","items":{"type":"string"},"description":"2..32 bytes each; letters, digits, spaces and `-` only (a tag with `_`, `.` or `/` is refused)"},
             "subject":{"type":"string","description":"upsert_relation: `obj_…`"},
             "predicate":{"type":"string","description":"upsert_relation: lowercase snake_case"},
             "object":{"type":"string","description":"upsert_relation: `obj_…`"},
@@ -248,6 +249,7 @@ fn commit_args_schema() -> Value {
             "clarify":{"type":"string","description":"deferred: a low-priority question a UI may ask"}
         },"required":["perception_ref","outcome"]}},
         "tags":{"type":"array","items":{"type":"string"}},
+        "reviewed":{"type":"boolean","description":"true after an `expression review` refusal, when the statements it named are worded as the evidence needs: the plan is committed as it is"},
         "abandon":{"type":"boolean","description":"close the batch without disposing anything"},
         "reason":{"type":"string","description":"why the batch is abandoned"}
     },"required":["operation_id"]}"#).expect("commit tool schema is valid JSON")
@@ -399,38 +401,54 @@ fn material_view(m: &Material) -> Value {
     v
 }
 
-/// Cognitions already known in the scope of the batch (the model revises
-/// them instead of writing them again), with the objects they name.
+/// Cognitions already known that the batch may revise (the model revises
+/// them instead of writing them again), with the objects they name: the
+/// ones a material cites, the ones in the scope of a material, and what is
+/// known about the agent itself (any session's material may be the agent's
+/// own experience). Closest to the batch's wording first, so the limit
+/// cuts the unrelated ones.
 fn related_view(
     view: &agent_tool::agent_memory::GraphView,
     batch: &Batch,
     agent_did: &str,
 ) -> (Vec<Value>, Vec<Value>) {
-    // Material without a scope (the runtime's own records) is about the
-    // agent itself: what is known about the agent is shown with it.
     let agent_scope = Scope::new(&[agent_did], &[]);
-    let scopes: Vec<&Scope> = batch
-        .materials
-        .iter()
-        .chain(batch.context.iter())
+    let materials = || batch.materials.iter().chain(batch.context.iter());
+    let scopes: Vec<&Scope> = materials()
         .map(|m| m.record.scope.as_ref().unwrap_or(&agent_scope))
         .collect();
+    let cited: std::collections::BTreeSet<&str> = materials()
+        .flat_map(|m| m.cited.iter())
+        .map(|c| c.cite.split('@').next().unwrap_or(&c.cite))
+        .collect();
+    let words = agent_tool::agent_memory::fts_tokens(
+        &materials()
+            .map(|m| format!("{} {}", m.record.summary, m.record.tags.join(" ")))
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    let mut found: Vec<(bool, usize, &agent_tool::agent_memory::MemoryItem)> = view
+        .items()
+        .filter(|item| item.status.recallable())
+        .filter_map(|item| {
+            let is_cited = cited.contains(item.item_id.as_str());
+            let in_scope = item
+                .scope
+                .as_ref()
+                .is_some_and(|s| s.subjects.iter().any(|x| x == agent_did) || scopes.iter().any(|q| s.overlaps(q)));
+            if !is_cited && !in_scope {
+                return None;
+            }
+            let (own, evidence) = agent_tool::agent_memory::item_search_text(view, item);
+            let text = agent_tool::agent_memory::fts_tokens(&format!("{own} {evidence}"));
+            Some((is_cited, text.intersection(&words).count(), item))
+        })
+        .collect();
+    found.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)).then_with(|| a.2.item_id.cmp(&b.2.item_id)));
+    found.truncate(RELATED_LIMIT);
     let mut items = Vec::new();
     let mut objects = std::collections::BTreeSet::new();
-    for item in view.items() {
-        if items.len() >= RELATED_LIMIT {
-            break;
-        }
-        if !item.status.recallable() {
-            continue;
-        }
-        let hit = match &item.scope {
-            Some(s) => scopes.iter().any(|q| s.overlaps(q)),
-            None => false,
-        };
-        if !hit {
-            continue;
-        }
+    for (_, _, item) in found {
         for e in &item.entities {
             objects.insert(e.clone());
         }
@@ -446,6 +464,7 @@ fn related_view(
             "stability": item.stability,
             "weight": item.weight,
             "confidence": item.confidence,
+            "tags": item.tags,
             "created_at": view.item_created_at(item),
             "last_evidence_at": item.last_evidence_at,
             "valid_until": item.valid_until,
@@ -453,6 +472,7 @@ fn related_view(
             "review_when": item.review_when,
             "status": item.status,
             "evidence": item.evidence,
+            "sources": view.item_source_events(item, None),
         }));
     }
     let objects = objects
@@ -560,9 +580,14 @@ async fn begin(sh: &Arc<Shared>, args: BeginArgs) -> Result<Value> {
             "deferral_window_hours": window_hours,
             "dispose": "every material in `materials` (and any `context` you read) gets one disposition {perception_ref: <ref>, outcome: absorbed|duplicate|discarded|deferred, cognition_refs?, reason?, deadline?}; context you did not judge is left alone",
             "subjects": "a cognition's scope.subjects are the Agent, its owner (the user) or a workspace; anything else is a world observation: contextual or volatile with valid_until/review_at, or hung on one of those three",
-            "new_cognition": "put_item {op, item_id: item_<name>, kind: observation_inference|attribute|free|event_effect, claim: {type: <kind>, statement}, weight, confidence, evidence: [obs_…], write_reason, scope, basis: user_statement|tool_observation|third_party_claim|inference, stability: stable|contextual|volatile, last_evidence_at: <the material's at>, explicit?, valid_until?, review_at?, semantic_kind?, tags?}",
+            "new_cognition": "put_item {op, item_id: item_<name>, kind: observation_inference (the usual kind: a conclusion in a sentence, whatever its basis) | attribute (only with claim.subject, claim.attribute, claim.value) | free | event_effect (with claim.effect), claim: {type: <the same value as kind>, statement}, weight, confidence, evidence: [obs_…], write_reason, scope, basis: user_statement|tool_observation|third_party_claim|inference, stability: stable|contextual|volatile, last_evidence_at: <the material's at>, explicit?, valid_until?, review_at?, semantic_kind?, tags?}",
             "new_observation": "add_observation {op, observation_id: obs_<name>, kind: explicit_statement|behavior_signal|tool_evidence|mention|curator_note, content, source_ref: {type: session_event, event_ref: <material source.event_ref or ref>, session_id}, scope, confidence}",
-            "revision": "a known cognition is revised with its item_id and expected_revision; a correction supersedes it (set_status superseded) or replaces it (`replaces`)",
+            "revision": "a known cognition is revised with its item_id and expected_revision; a correction supersedes it (set_status superseded) or replaces it (`replaces`). A counterexample first narrows its conditions; an exception of one task changes nothing; a cognition this batch does not mention stays as it is. set_status: superseded (with replaced_by) for a replaced conclusion, stale for an item that is only task state or history, deleted only when the owner asked to forget",
+            "admission": "a cognition needs a next use (it changes what is understood, chosen, checked or said in a situation), source events that support it, a range no wider than its evidence, and something `known_cognitions` do not already say. Task state and history, a parameter of one task, common sense, an unverified cause and an echo are not cognitions; a batch with no new cognition is a valid result",
+            "evidence": "materials with the same source.event_ref, or whose event is already among a known cognition's `sources`, are one piece of evidence; a retelling does not refresh last_evidence_at. basis is the kind of evidence under the conclusion: the user's words (also quoted by the agent) user_statement, what the agent ran or read and what came back tool_observation, another party's text third_party_claim, inference only for what goes beyond what was said or observed",
+            "statement": "one conclusion in 1-3 sentences in the owner's language, with the conditions and limits that change the action; session ids and event times go into the observation, a date, version or period that changes the meaning stays; exact values (URL, address, number, a name's spelling) are kept exact in the observation",
+            "explicit": "explicit: true when the user set, in their own words, a standing preference, requirement or boundary for future work, or asked to remember it (no fading); not for a fact, a past decision or its reason, an inference or one task's request",
+            "weight": "decided after admission: about 0.8-0.9 when the user stressed it or missing it causes repeated rework or misjudgment, 0.5-0.7 for a preference, project understanding or experience with a clear later use, 0.3-0.4 for narrow background or a lookup clue; repeated evidence does not raise it, a one-time exception does not lower it; confidence is the support of the evidence, stability how fast the content changes",
         },
     }))
 }
@@ -595,9 +620,30 @@ struct CommitArgs {
     #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
+    reviewed: bool,
+    #[serde(default)]
     abandon: bool,
     #[serde(default)]
     reason: Option<String>,
+}
+
+/// `explicit` is what the user stated (M-20: it never fades): an inference
+/// cannot carry it.
+fn check_explicit(operations: &[GraphOperation]) -> Result<()> {
+    for op in operations {
+        let (id, meta) = match op {
+            GraphOperation::PutItem(p) => (p.item_id.as_deref(), &p.meta),
+            GraphOperation::UpsertRelation(r) => (r.item_id.as_deref(), &r.meta),
+            _ => continue,
+        };
+        if meta.explicit && meta.basis == Some(Basis::Inference) {
+            return Err(invalid(format!(
+                "{}: explicit marks what the user stated as lasting (it never fades); an inference is not explicit — drop `explicit`, or give the basis the evidence has",
+                id.unwrap_or("a new item")
+            )));
+        }
+    }
+    Ok(())
 }
 
 async fn commit(sh: &Arc<Shared>, args: CommitArgs) -> Result<Value> {
@@ -653,6 +699,20 @@ async fn commit(sh: &Arc<Shared>, args: CommitArgs) -> Result<Value> {
             return Err(invalid(format!(
                 "{} is not in batch {}; only material read in this batch can be disposed",
                 d.perception_ref, receipt.batch_id
+            )));
+        }
+    }
+    check_explicit(&args.operations)?;
+    if !args.reviewed {
+        let memory = memory(sh)?;
+        let operations = args.operations.clone();
+        let notes = blocking(move || Ok(review_expression(memory.graph_view()?.as_ref(), &operations)))
+            .await
+            .map_err(OpenDanError::from)?;
+        if !notes.is_empty() {
+            return Err(invalid(format!(
+                "expression review (advice, not a rule): {}. Rewrite what is named, or submit the same plan with `reviewed: true` when the wording is what the evidence needs",
+                notes.join("; ")
             )));
         }
     }
@@ -848,6 +908,16 @@ async fn advance_receipt(sh: &Arc<Shared>, operation_id: &str) -> Result<Value> 
         .unwrap_or(receipt);
     let mut v = receipt_view(&final_receipt, "committed");
     v["cleanup"] = cleanup;
+    // What still waits, so that an activation with nothing left ends
+    // without a round spent on an empty `begin`.
+    if let Ok(p) = blocking(move || memory.pending_work()).await {
+        v["pending"] = pending_view(&p);
+        v["next"] = json!(if p.needs_run() {
+            "material still waits: begin the next batch when the budget allows"
+        } else {
+            "nothing waits: end the activation with report"
+        });
+    }
     Ok(v)
 }
 

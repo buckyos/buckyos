@@ -1,0 +1,77 @@
+{
+  "id": "s2_task_parameter",
+  "title": "S2 一次中文发帖不是长期语言偏好",
+  "covers": [
+    "S2 任务参数"
+  ],
+  "known": [
+    {
+      "item_id": "item_agent_posted_twice",
+      "statement": "已在 Home Station 发过两条帖子（问候、中文自我介绍），帖子未修改，不是定期发帖。",
+      "subject": "agent",
+      "objects": [
+        "home-station"
+      ],
+      "basis": "inference",
+      "explicit": false,
+      "stability": "contextual",
+      "weight": 0.6,
+      "confidence": 0.7,
+      "semantic_kind": "experience",
+      "tags": [
+        "Home Station",
+        "发帖"
+      ],
+      "last_evidence_at": "2026-10-28T10:00:00Z",
+      "evidence": [
+        {
+          "content": "两次发帖 Work 均报告发布成功",
+          "event": "work-fx-s2-0:e5",
+          "kind": "behavior_signal"
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "ui-fx-s2",
+      "subject": "owner",
+      "content": "用户说：“去 Home Station 发个问候，再用中文发一条自我介绍。”两条都已发布。",
+      "occurred_at": "2026-10-28T09:30:00Z",
+      "event": "ui-fx-s2:e3",
+      "actor": "agent",
+      "tags": [
+        "Home Station",
+        "发帖"
+      ],
+      "objects": [
+        "home-station"
+      ]
+    }
+  ],
+  "expected": {
+    "list": [
+      "不新增长期认知：“用中文发这一条”只是本次任务要求。",
+      "旧历史条目 item_agent_posted_twice 没有复用理由，退出有效列表或保持不动；不得被改写成“用户偏好中文”。"
+    ],
+    "exclude": [
+      "用户长期偏好中文",
+      "曾经发过帖等于本次已完成"
+    ],
+    "dispositions": {
+      "m1": [
+        "discarded",
+        "duplicate"
+      ]
+    },
+    "max_new_items": 0,
+    "next_task": "新的发帖任务按当次要求执行，不默认长期中文，也不把曾经发布当作本次已完成。",
+    "must_not_match": [
+      "偏好中文",
+      "默认中文",
+      "prefers Chinese"
+    ]
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

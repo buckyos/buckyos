@@ -1,0 +1,83 @@
+{
+  "id": "s3_error_no_remedy",
+  "title": "S3 只有重复报错，没有处置与验证",
+  "covers": [
+    "S3 缺证"
+  ],
+  "known": [],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "ui-fx-s3",
+      "subject": "owner",
+      "content": "调用模型时 provider 返回 auth_unavailable，本轮回复失败。",
+      "occurred_at": "2026-10-29T01:00:00Z",
+      "event": "ui-fx-s3:e2",
+      "actor": "agent",
+      "tags": [
+        "provider",
+        "auth-unavailable"
+      ],
+      "objects": []
+    },
+    {
+      "key": "m2",
+      "session": "ui-fx-s3",
+      "subject": "owner",
+      "content": "再次出现 auth_unavailable，回复失败。",
+      "occurred_at": "2026-10-29T01:05:00Z",
+      "event": "ui-fx-s3:e4",
+      "actor": "agent",
+      "tags": [
+        "provider",
+        "auth-unavailable"
+      ],
+      "objects": []
+    },
+    {
+      "key": "m3",
+      "session": "ui-fx-s3",
+      "subject": "owner",
+      "content": "用户打招呼并问我能做什么，我正常回答了能力介绍。",
+      "occurred_at": "2026-10-29T03:00:00Z",
+      "event": "ui-fx-s3:e9",
+      "actor": "agent",
+      "tags": [
+        "问候"
+      ],
+      "objects": []
+    }
+  ],
+  "expected": {
+    "list": [
+      "不新增恢复经验，也不由后来的问候推断 provider 已恢复或给出原因；报错由运行记录承载。可以全部丢弃，或对报错暂缓并写明等待什么检查。"
+    ],
+    "exclude": [
+      "provider 已恢复",
+      "故障原因或恢复方法（材料里没有）"
+    ],
+    "dispositions": {
+      "m1": [
+        "discarded",
+        "deferred",
+        "duplicate"
+      ],
+      "m2": [
+        "discarded",
+        "deferred",
+        "duplicate"
+      ],
+      "m3": [
+        "discarded"
+      ]
+    },
+    "max_new_items": 0,
+    "next_task": "下次遇到同样报错：没有现成经验，按当前环境核查，不凭空修改业务代码。",
+    "must_not_match": [
+      "已恢复",
+      "恢复正常",
+      "recovered"
+    ]
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

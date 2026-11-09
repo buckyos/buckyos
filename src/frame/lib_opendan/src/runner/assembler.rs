@@ -426,7 +426,7 @@ impl SessionAssembler for DefaultAssembler {
                 "clock_text": m.input.time,
             },
             "handover": handover,
-            "hints": m.hints.iter().map(|h| json!({"id": h.id, "time": h.time, "sentence": h.sentence})).collect::<Vec<_>>(),
+            "hints": m.hints.iter().map(|h| json!({"id": h.id, "time": h.time, "sentence": h.sentence, "qualifier": h.qualifier()})).collect::<Vec<_>>(),
             "task_text": blocks.task,
             "handover_text": blocks.handover,
             "todos_text": blocks.todos,
@@ -523,8 +523,12 @@ impl Blocks {
                     .as_deref()
                     .map(|o| format!(" object=\"{}\"", escape_xml_attr(o)))
                     .unwrap_or_default();
+                let qualifier = Some(h.qualifier())
+                    .filter(|q| !q.is_empty())
+                    .map(|q| format!(" note=\"{}\"", escape_xml_attr(&q)))
+                    .unwrap_or_default();
                 hints.push_str(&format!(
-                    "<hint id=\"{}\" time=\"{}\"{object}>{}</hint>\n",
+                    "<hint id=\"{}\" time=\"{}\"{object}{qualifier}>{}</hint>\n",
                     escape_xml_attr(&h.id),
                     escape_xml_attr(&h.time),
                     esc(&h.sentence)

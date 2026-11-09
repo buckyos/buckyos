@@ -1,0 +1,146 @@
+{
+  "id": "s5_exception",
+  "title": "S5 持续要求与本次例外；本批没提到的旧认知保持原样",
+  "covers": [
+    "S5 例外与纠正",
+    "旧认知在本批缺证",
+    "无增量批次"
+  ],
+  "known": [
+    {
+      "item_id": "item_owner_proj_a_report_one_page",
+      "statement": "用户要求项目 A 的后续报告控制在一页以内。",
+      "subject": "owner",
+      "objects": [
+        "proj-a"
+      ],
+      "basis": "user_statement",
+      "explicit": true,
+      "stability": "stable",
+      "weight": 0.7,
+      "confidence": 0.9,
+      "semantic_kind": "preference",
+      "tags": [
+        "项目A",
+        "报告",
+        "篇幅"
+      ],
+      "last_evidence_at": "2026-10-20T02:00:00Z",
+      "evidence": [
+        {
+          "content": "用户说：“以后这个项目的报告给我一页以内。”",
+          "event": "ui-fx-s5-0:e7",
+          "kind": "explicit_statement"
+        }
+      ]
+    },
+    {
+      "item_id": "item_owner_proj_a_deliver_source_and_pdf",
+      "statement": "用户要求项目 A 的后续交付同时提供可编辑源文件和 PDF。",
+      "subject": "owner",
+      "objects": [
+        "proj-a"
+      ],
+      "basis": "user_statement",
+      "explicit": true,
+      "stability": "stable",
+      "weight": 0.7,
+      "confidence": 0.9,
+      "semantic_kind": "preference",
+      "tags": [
+        "项目A",
+        "交付形式"
+      ],
+      "last_evidence_at": "2026-10-12T02:00:00Z",
+      "evidence": [
+        {
+          "content": "用户说：“项目 A 以后交付都要给我源文件和 PDF。”",
+          "event": "ui-fx-s5-0:e2",
+          "kind": "explicit_statement"
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "ui-fx-s5",
+      "subject": "owner",
+      "content": "用户在项目 A 的本期报告任务里说：“这次详细点。”已按详细版交付。",
+      "occurred_at": "2026-11-03T02:00:00Z",
+      "event": "ui-fx-s5:e12",
+      "actor": "agent",
+      "tags": [
+        "项目A",
+        "报告",
+        "篇幅"
+      ],
+      "objects": [
+        "proj-a"
+      ],
+      "cites": [
+        "item_owner_proj_a_report_one_page"
+      ]
+    },
+    {
+      "key": "m2",
+      "session": "ui-fx-s5",
+      "subject": "owner",
+      "content": "用户再次提到：“项目 A 的报告还是一页以内。”",
+      "occurred_at": "2026-11-05T02:00:00Z",
+      "event": "ui-fx-s5:e20",
+      "actor": "agent",
+      "tags": [
+        "项目A",
+        "报告",
+        "篇幅"
+      ],
+      "objects": [
+        "proj-a"
+      ],
+      "cites": [
+        "item_owner_proj_a_report_one_page"
+      ]
+    }
+  ],
+  "expected": {
+    "list": [
+      "一页以内的偏好保持有效：m1 是本次例外，不修订、不降权、不撤回。",
+      "m2 是同义重申：判重，或作为新证据补到原条目（last_evidence_at 可更新），不新建条目，weight 不因此机械上调。",
+      "本批没提到的 item_owner_proj_a_deliver_source_and_pdf 保持原样。"
+    ],
+    "exclude": [
+      "本次例外撤回或削弱一页以内的偏好",
+      "因为本批没提到而改动交付形式的约定",
+      "重申一次就机械上调 weight"
+    ],
+    "dispositions": {
+      "m1": [
+        "duplicate",
+        "discarded",
+        "absorbed"
+      ],
+      "m2": [
+        "duplicate",
+        "absorbed"
+      ]
+    },
+    "max_new_items": 0,
+    "untouched": [
+      "item_owner_proj_a_deliver_source_and_pdf"
+    ],
+    "still_active": [
+      "item_owner_proj_a_report_one_page"
+    ],
+    "must_have": [
+      {
+        "any_of": [
+          "一页"
+        ],
+        "why": "原偏好仍在"
+      }
+    ],
+    "next_task": "下一期项目 A 报告仍默认一页以内。"
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

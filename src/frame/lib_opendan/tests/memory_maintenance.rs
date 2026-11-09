@@ -549,6 +549,125 @@ async fn an_acted_report_with_an_open_batch_is_refused() {
     h.shutdown().await;
 }
 
+/// A plan that writes one cognition `item` with `statement` for `refs`.
+fn statement_plan(op: &str, refs: &[String], item: &str, statement: &str, extra: Value) -> Value {
+    let obs = extra["obs"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("obs_{}", item.trim_start_matches("item_")));
+    let mut put = json!({"op": "put_item", "item_id": item, "kind": "observation_inference",
+        "claim": {"type": "observation_inference", "statement": statement},
+        "weight": 0.6, "confidence": 0.7, "evidence": [obs], "write_reason": "test",
+        "scope": {"subjects": [AGENT]}, "basis": "tool_observation",
+        "last_evidence_at": "2026-10-23T00:00:00Z", "stability": "contextual"});
+    let mut plan = json!({
+        "operation_id": op,
+        "summary": "one cognition from the work's observation",
+        "dispositions": refs.iter().map(|r| json!({"perception_ref": r, "outcome": "absorbed", "cognition_refs": [item]})).collect::<Vec<_>>(),
+    });
+    for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+        if k == "reviewed" {
+            plan[k] = v;
+        } else if k != "obs" {
+            put[k] = v;
+        }
+    }
+    plan["operations"] = json!([
+        {"op": "add_observation", "observation_id": obs, "kind": "tool_evidence",
+         "content": "as observed", "source_ref": {"type": "session_event", "event_ref": refs[0]}, "confidence": 0.8},
+        put
+    ]);
+    plan
+}
+
+/// The commits of one activation, tried in order: the next one is sent
+/// after each refusal, the report after the first accepted one.
+fn committing_llm(attempts: Vec<(&'static str, &'static str, Value)>) -> Arc<ScriptedLlm> {
+    ScriptedLlm::new(move |req, n| {
+        let results = tool_results(req);
+        if results.iter().any(|t| t.contains("\"status\":\"committed\"")) {
+            return report(n, json!({ "decision": "acted", "distance": "batch committed" }));
+        }
+        let Some(begin) = results.iter().find(|t| t.contains("\"operation_id\":\"mc-")) else {
+            return tool_call(&format!("b{n}"), TOOL_MEMORY_CONSOLIDATION_BEGIN, json!({}));
+        };
+        let tried = results.len() - 1;
+        let (item, statement, extra) = attempts.get(tried).unwrap_or_else(|| panic!("no attempt {tried}: {results:?}"));
+        tool_call(
+            &format!("c{n}"),
+            TOOL_MEMORY_CONSOLIDATION_COMMIT,
+            statement_plan(&field(begin, "operation_id").unwrap(), &refs_of(begin), item, statement, extra.clone()),
+        )
+    })
+}
+
+/// T3 / Q9: `explicit` is the user's statement, never an inference; a
+/// statement that reads like a log is named once (advice) and accepted as
+/// it is with `reviewed: true`; the batch shows the rules and the sources
+/// of what is known.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expression_review_is_advice_and_explicit_is_never_an_inference() {
+    const LOG: &str = "2026-10-27T23:00:15Z work-20261027-3 reported done; 2026-10-28T01:10:00Z the UI relayed it";
+    let env = Env::new();
+    enable_maintenance(&env);
+    leave_material(&env, "A").await;
+    let llm = committing_llm(vec![
+        ("item_log", LOG, json!({ "explicit": true, "basis": "inference" })),
+        ("item_log", LOG, json!({})),
+        ("item_log", LOG, json!({ "reviewed": true })),
+    ]);
+    let h = hosted(&env, llm.clone());
+    h.tick().await;
+    let g = h.builtin();
+    h.until("activation", |h| h.activations(&g.goal_id).len() == 1).await;
+    assert_eq!(h.activations(&g.goal_id)[0].decision, ActivationDecision::Acted);
+    let last = llm.requests.lock().unwrap().last().cloned().unwrap();
+    let results = tool_results(&last);
+    assert!(results[0].contains("\"admission\"") && results[0].contains("\"weight\"") && results[0].contains("\"explicit\""), "{}", results[0]);
+    assert!(results[1].contains("an inference is not explicit"), "{}", results[1]);
+    assert!(results[2].contains("expression review") && results[2].contains("reads like a log") && results[2].contains("reviewed: true"), "{}", results[2]);
+    assert!(results[3].contains("\"status\":\"committed\""), "{}", results[3]);
+    let view = memory(&env).graph_view().unwrap();
+    assert_eq!(view.item("item_log").expect("kept on purpose").statement(), LOG);
+    h.shutdown().await;
+}
+
+/// T3: a date, a version and a period that change the meaning are not a
+/// log; a new item that repeats a known one in the same range is named,
+/// with the known item's sources shown in the batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dated_versioned_statement_passes_and_a_twin_is_named() {
+    const STATEMENT: &str = "tool-x v1.2 on Linux needs an explicit output directory (seen 2026-11-01; v2 succeeded without one)";
+    let env = Env::new();
+    enable_maintenance(&env);
+    let first = leave_material(&env, "A").await;
+    let llm = committing_llm(vec![("item_toolx", STATEMENT, json!({}))]);
+    let h = hosted(&env, llm.clone());
+    h.tick().await;
+    let g = h.builtin();
+    h.until("first activation", |h| h.activations(&g.goal_id).len() == 1).await;
+    assert_eq!(llm.count(), 3, "begin, one accepted commit, report");
+    h.shutdown().await;
+
+    leave_material(&env, "B").await;
+    let llm = committing_llm(vec![
+        ("item_toolx_again", "tool-x v1.2 on Linux needs an explicit output directory (seen 2026-11-01)", json!({})),
+        ("item_toolx", STATEMENT, json!({ "expected_revision": 1, "obs": "obs_toolx_b" })),
+    ]);
+    let h = hosted(&env, llm.clone());
+    h.clock.advance(SLOT_MS);
+    h.until("second activation", |h| h.activations(&g.goal_id).len() == 2).await;
+    let last = llm.requests.lock().unwrap().last().cloned().unwrap();
+    let results = tool_results(&last);
+    assert!(results[0].contains(&format!("\"sources\":[\"{}:1\"]", first.sid())), "{}", results[0]);
+    assert!(results[1].contains("expression review") && results[1].contains("close to the known item_toolx@1"), "{}", results[1]);
+    assert!(results[2].contains("\"status\":\"committed\""), "{}", results[2]);
+    let view = memory(&env).graph_view().unwrap();
+    assert!(view.item("item_toolx_again").is_none());
+    assert_eq!(view.item("item_toolx").unwrap().revision, 2);
+    h.shutdown().await;
+}
+
 /// V02 / V06: a paused Goal shows `paused` in its gate and runs nothing; a
 /// resumed one checks again at the next slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

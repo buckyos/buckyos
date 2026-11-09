@@ -1,0 +1,47 @@
+{
+  "id": "s3_error_with_remedy",
+  "title": "S3 有实际处置与验证：形成有限的恢复线索",
+  "covers": [
+    "S3 恢复",
+    "P4 原因未明的异常"
+  ],
+  "known": [],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "work-fx-s3b",
+      "subject": "owner",
+      "content": "本机 dev 环境执行报告生成时，llm.chat 路由的 provider 连续三次返回 auth_unavailable。预期：正常返回。已做：确认业务代码未改；把模型别名切到备用模型 llm.backup 后同一任务继续并完成。未知：原 provider 为什么不可用（未查认证配置）。",
+      "occurred_at": "2026-11-01T06:20:00Z",
+      "event": "work-fx-s3b:e14",
+      "actor": "agent",
+      "tags": [
+        "provider",
+        "auth-unavailable",
+        "备用模型"
+      ],
+      "objects": [
+        "env-dev"
+      ]
+    }
+  ],
+  "expected": {
+    "list": [
+      "一条有限的处置线索：在该环境出现 auth_unavailable 时，优先核查认证和 provider 可用性；切到备用模型曾让任务继续，可作为处置候选；原因未确认。范围保留环境，不写成唯一原因或保证有效。暂缓（等待原因）也可接受。"
+    ],
+    "exclude": [
+      "原 provider 不可用是唯一原因",
+      "切换备用模型保证有效",
+      "故障短暂所以整条经验 volatile"
+    ],
+    "dispositions": {
+      "m1": [
+        "absorbed",
+        "deferred"
+      ]
+    },
+    "max_new_items": 1,
+    "next_task": "同环境再遇 auth_unavailable：先查认证与 provider 可用性，再考虑备用模型；具体切换仍按当前可用模型与权限。"
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

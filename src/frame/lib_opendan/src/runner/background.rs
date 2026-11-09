@@ -262,10 +262,7 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
     for h in i.hints {
         out.push(BackgroundLine::new(
             format!("hint:{}", h.id),
-            match &h.object {
-                Some(object) => format!("hint: {} (noticed {}; about {object})", one_line(&h.sentence, 300), h.time),
-                None => format!("hint: {} (noticed {})", one_line(&h.sentence, 300), h.time),
-            },
+            format!("hint: {} ({})", one_line(&h.sentence, 300), one_line(&h.note(), 400)),
         ));
     }
     out
@@ -449,12 +446,17 @@ mod tests {
             id: "h1".into(),
             time: "2026-10-02".into(),
             sentence: "owner prefers Chinese".into(),
-            kind: String::new(),
-            object: None,
+            basis: Some("inference".into()),
+            applies_to: vec!["workspace:proj-a".into()],
+            ..Default::default()
         }];
         let (shown, map) = select(lines(&input(t0, &hints)), &BTreeMap::new(), t0);
         let keys: Vec<&str> = shown.iter().map(|l| l.key.as_str()).collect();
         assert_eq!(keys, ["time", "runtime", "hint:h1"]);
+        assert_eq!(
+            shown[2].text,
+            "hint: owner prefers Chinese (the agent's inference, not confirmed; applies to workspace:proj-a; noticed 2026-10-02)"
+        );
         assert!(render(&shown).contains("- current_time 2026-10-16T10:45:45-07:00 (America/Los_Angeles)\n"));
         // 2 s later nothing changed: nothing at all.
         let (shown, map2) = select(lines(&input(t0 + 2_000, &hints)), &map, t0 + 2_000);

@@ -1,0 +1,93 @@
+{
+  "id": "s5_lasting_change",
+  "title": "S5 明确的长期修改修订旧偏好；类型例外只补例外",
+  "covers": [
+    "S5 例外与纠正"
+  ],
+  "known": [
+    {
+      "item_id": "item_owner_proj_a_report_one_page",
+      "statement": "用户要求项目 A 的后续报告控制在一页以内。",
+      "subject": "owner",
+      "objects": [
+        "proj-a"
+      ],
+      "basis": "user_statement",
+      "explicit": true,
+      "stability": "stable",
+      "weight": 0.7,
+      "confidence": 0.9,
+      "semantic_kind": "preference",
+      "tags": [
+        "项目A",
+        "报告",
+        "篇幅"
+      ],
+      "last_evidence_at": "2026-10-20T02:00:00Z",
+      "evidence": [
+        {
+          "content": "用户说：“以后这个项目的报告给我一页以内。”",
+          "event": "ui-fx-s5-0:e7",
+          "kind": "explicit_statement"
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "ui-fx-s5b",
+      "subject": "owner",
+      "content": "用户说：“项目 A 的技术评审报告以后不受一页限制，其他报告照旧。”",
+      "occurred_at": "2026-11-06T02:00:00Z",
+      "event": "ui-fx-s5b:e4",
+      "actor": "agent",
+      "tags": [
+        "项目A",
+        "报告",
+        "篇幅"
+      ],
+      "objects": [
+        "proj-a"
+      ],
+      "cites": [
+        "item_owner_proj_a_report_one_page"
+      ],
+      "suggest": "correction"
+    }
+  ],
+  "expected": {
+    "list": [
+      "修订同一条偏好并补充例外：项目 A 的报告一页以内，技术评审报告除外。不新建矛盾条目，不抹掉其他报告类型的要求，explicit 保持 true。"
+    ],
+    "exclude": [
+      "整条一页以内的要求被撤回",
+      "新旧两条矛盾结论同时有效"
+    ],
+    "dispositions": {
+      "m1": [
+        "absorbed"
+      ]
+    },
+    "max_new_items": 0,
+    "revised": [
+      "item_owner_proj_a_report_one_page"
+    ],
+    "must_have": [
+      {
+        "any_of": [
+          "技术评审"
+        ],
+        "why": "例外写入"
+      },
+      {
+        "any_of": [
+          "一页"
+        ],
+        "why": "其余要求保留"
+      }
+    ],
+    "next_task": "技术评审报告可超过一页；周报等仍一页以内。"
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

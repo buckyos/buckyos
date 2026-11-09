@@ -1,0 +1,202 @@
+{
+  "id": "s6_tool_counterexample",
+  "title": "S6 工具经验：合并支持，吸收反例，另留项目约定",
+  "covers": [
+    "S6 反例收窄",
+    "C4",
+    "C8"
+  ],
+  "known": [
+    {
+      "item_id": "item_ws_toolx_needs_output_dir",
+      "statement": "tool-x 生成产物时必须显式指定输出目录。",
+      "subject": "workspace:proj-a",
+      "objects": [
+        "tool-x"
+      ],
+      "basis": "tool_observation",
+      "explicit": false,
+      "stability": "contextual",
+      "weight": 0.6,
+      "confidence": 0.7,
+      "semantic_kind": "experience",
+      "tags": [
+        "tool-x",
+        "输出目录"
+      ],
+      "last_evidence_at": "2026-10-25T03:00:00Z",
+      "evidence": [
+        {
+          "content": "tool-x v1（Linux）不带 --out 时生成失败，加上后成功",
+          "event": "work-fx-s6-0:e6",
+          "kind": "tool_evidence"
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "work-fx-s6a",
+      "subject": "workspace:proj-a",
+      "content": "tool-x v1.4（Linux）再次在未指定 --out 时生成产物失败，报 “no output target”；加上 --out build/ 后成功。与上次是不同任务的独立复现。",
+      "occurred_at": "2026-11-01T03:00:00Z",
+      "event": "work-fx-s6a:e8",
+      "actor": "agent",
+      "tags": [
+        "tool-x",
+        "输出目录"
+      ],
+      "objects": [
+        "tool-x"
+      ],
+      "cites": [
+        "item_ws_toolx_needs_output_dir"
+      ]
+    },
+    {
+      "key": "m2",
+      "session": "ui-fx-s6",
+      "subject": "workspace:proj-a",
+      "content": "（对 work-fx-s6a e8 的转述）告诉用户：tool-x 这次又是因为没指定输出目录失败的。",
+      "occurred_at": "2026-11-01T03:20:00Z",
+      "event": "work-fx-s6a:e8",
+      "actor": "agent",
+      "tags": [
+        "tool-x"
+      ],
+      "objects": [
+        "tool-x"
+      ]
+    },
+    {
+      "key": "m3",
+      "session": "work-fx-s6b",
+      "subject": "workspace:proj-a",
+      "content": "tool-x v2.0（Linux）不带 --out 直接运行成功，产物写到了当前目录。",
+      "occurred_at": "2026-11-04T03:00:00Z",
+      "event": "work-fx-s6b:e5",
+      "actor": "agent",
+      "tags": [
+        "tool-x",
+        "输出目录",
+        "v2"
+      ],
+      "objects": [
+        "tool-x"
+      ],
+      "cites": [
+        "item_ws_toolx_needs_output_dir"
+      ]
+    },
+    {
+      "key": "m4",
+      "session": "ui-fx-s6",
+      "subject": "workspace:proj-a",
+      "content": "用户说：“这个项目的产物以后统一放 workspace/build。”",
+      "occurred_at": "2026-11-04T05:00:00Z",
+      "event": "ui-fx-s6:e15",
+      "actor": "agent",
+      "tags": [
+        "产物目录",
+        "项目约定"
+      ],
+      "objects": [
+        "proj-a"
+      ]
+    },
+    {
+      "key": "m5",
+      "session": "work-fx-s6b",
+      "subject": "workspace:proj-a",
+      "content": "v1 失败时我猜可能还和目录权限有关，但没有验证。",
+      "occurred_at": "2026-11-04T03:30:00Z",
+      "event": "work-fx-s6b:e7",
+      "actor": "agent",
+      "tags": [
+        "tool-x",
+        "权限"
+      ],
+      "objects": [
+        "tool-x"
+      ]
+    },
+    {
+      "key": "m6",
+      "session": "work-fx-s6b",
+      "subject": "workspace:proj-a",
+      "content": "tool-x 的构建还在等待中，剩两步。",
+      "occurred_at": "2026-11-04T03:40:00Z",
+      "event": "work-fx-s6b:e9",
+      "actor": "agent",
+      "tags": [
+        "tool-x",
+        "进度"
+      ],
+      "objects": [
+        "tool-x"
+      ]
+    }
+  ],
+  "expected": {
+    "list": [
+      "修订原条目，收窄为：tool-x v1／Linux 在已观察条件下生成失败时，优先检查是否显式指定输出目录；v2 有不指定也成功的反例。m2 是同源转述，不增证据。",
+      "另留一条项目约定：本项目产物统一放 workspace/build（用户选择，basis=user_statement，explicit=true），不与工具限制合并。",
+      "权限归因未验证：暂缓并写明缺什么证据，或丢弃；等待状态丢弃。"
+    ],
+    "exclude": [
+      "所有版本都必须指定输出目录",
+      "把用户的目录约定当成工具限制",
+      "未验证的权限归因写成结论",
+      "同源转述当作第二份证据"
+    ],
+    "dispositions": {
+      "m1": [
+        "absorbed"
+      ],
+      "m2": [
+        "duplicate",
+        "absorbed"
+      ],
+      "m3": [
+        "absorbed"
+      ],
+      "m4": [
+        "absorbed"
+      ],
+      "m5": [
+        "deferred",
+        "discarded"
+      ],
+      "m6": [
+        "discarded"
+      ]
+    },
+    "max_new_items": 1,
+    "revised": [
+      "item_ws_toolx_needs_output_dir"
+    ],
+    "must_have": [
+      {
+        "any_of": [
+          "v1"
+        ],
+        "why": "版本收窄"
+      },
+      {
+        "any_of": [
+          "v2"
+        ],
+        "why": "反例保留"
+      },
+      {
+        "any_of": [
+          "workspace/build"
+        ],
+        "why": "项目约定"
+      }
+    ],
+    "next_task": "v1 任务想到检查输出目录；v2 不被旧全局规则误导；本项目产物按用户约定放 workspace/build。"
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

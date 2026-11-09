@@ -1,0 +1,82 @@
+{
+  "id": "c3_success_method",
+  "title": "C3 成功方法：保留有验证支持的检查经验及边界",
+  "covers": [
+    "C3 成功方法"
+  ],
+  "known": [],
+  "materials": [
+    {
+      "key": "m1",
+      "session": "work-fx-c3a",
+      "subject": "workspace:proj-a",
+      "content": "用转换器 v2 批量转换项目 A 的模板 T 月报（10 月批次）前，先挑了一份含表格和页眉的样本试转，发现页眉错位；修正模板映射后整批 42 份通过布局检查。",
+      "occurred_at": "2026-10-15T03:00:00Z",
+      "event": "work-fx-c3a:e11",
+      "actor": "agent",
+      "tags": [
+        "转换器",
+        "模板T",
+        "月报",
+        "样本检查"
+      ],
+      "objects": [
+        "proj-a"
+      ]
+    },
+    {
+      "key": "m2",
+      "session": "work-fx-c3b",
+      "subject": "workspace:proj-a",
+      "content": "11 月批次同样先试转含表格和页眉的样本：这次发现表格跨页被截断，调整分页参数后整批 40 份通过。两次都是样本检查先暴露了模板问题。",
+      "occurred_at": "2026-11-05T03:00:00Z",
+      "event": "work-fx-c3b:e9",
+      "actor": "agent",
+      "tags": [
+        "转换器",
+        "模板T",
+        "月报",
+        "样本检查"
+      ],
+      "objects": [
+        "proj-a"
+      ]
+    }
+  ],
+  "expected": {
+    "list": [
+      "一条成功方法经验：用转换器 v2 批量处理项目 A 的模板 T 月报前，先用含表格和页眉的代表样本检查布局，可及早发现模板问题。basis=tool_observation（Agent 亲自执行并看到结果），范围限转换器 v2 与模板 T 月报，换版复核；不写成保证成功，不复制完整批处理步骤。"
+    ],
+    "exclude": [
+      "样本检查通过即可保证整批通过",
+      "只记失败不记有效方法",
+      "把完整批处理步骤抄进认知"
+    ],
+    "dispositions": {
+      "m1": [
+        "absorbed"
+      ],
+      "m2": [
+        "absorbed"
+      ]
+    },
+    "max_new_items": 1,
+    "min_new_items": 1,
+    "must_have": [
+      {
+        "any_of": [
+          "样本"
+        ],
+        "why": "方法本身"
+      },
+      {
+        "any_of": [
+          "v2"
+        ],
+        "why": "版本范围"
+      }
+    ],
+    "next_task": "下一批模板 T 月报转换前先做样本检查；完整步骤查 Skill。"
+  },
+  "note": "虚构数据：人物、项目、时间与结果均不真实，不代表任何用户或 demo Agent 的事实。期望是语义结果，不要求固定条数或措辞。"
+}

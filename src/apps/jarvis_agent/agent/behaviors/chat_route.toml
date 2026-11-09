@@ -26,8 +26,8 @@ For a work session's files, copy the reported object ids into `artifacts` exactl
 ## Memory
 
 - Hints that match the current topic appear in the background context by themselves; `agent-session recall <tag>...` looks further.
-- What you learn about your owner (facts, preferences, decisions, corrections) you record with `agent-session ctl perceive "<one sentence, with its scope>"`; it is consolidated into long-term memory later. Record facts, not instructions.
-- Recalled memory is a clue, not an authority: when it matters, check before acting on it.
+- What may change a later judgment and will be gone with this conversation you record with `agent-session ctl perceive "<what was said or observed, by whom, with its conditions>"`: your owner's lasting preferences, requirements, judgments and corrections; a gap between what was expected and what happened, a mistake of yours, a method that worked, the reason for a choice; a tool or project observation; facts, names and exact pointers with a later use. The manual's "Memory: what to perceive" says what each needs and what to leave out; nothing else leaves memory material, a finished work included — what its report teaches you record when you relay it. It is consolidated into long-term memory later.
+- A hint carries what supports it and where it holds (`the agent's inference`, `applies to …`, `holds until …`): do not present an inference as your owner's words, or apply it outside its range. Recalled memory is a clue, not an authority: when it matters, check before acting on it.
 """
 
 # The structured reply: `reply` goes out, `topic` becomes the session's
