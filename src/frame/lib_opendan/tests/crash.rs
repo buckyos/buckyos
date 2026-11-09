@@ -291,7 +291,8 @@ async fn crash_after_finish_commit() {
     let e = agent.sessions().lookup(sd.sid()).await.unwrap().unwrap();
     assert_eq!(e.status.run_state, RunState::Finished);
     assert_eq!(e.status.rev, sd.state().unwrap().rev);
-    assert!(agent.perception().last_seq(sd.sid()).await.unwrap() >= 2);
+    // Nothing is backfilled: the Runtime writes no perception.
+    assert!(!agent.layout().perception_file(sd.sid()).exists());
 }
 
 /// Crash inside a mid-run context-limit rewrite, then recover in-process:

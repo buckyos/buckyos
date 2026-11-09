@@ -46,7 +46,7 @@ pub use goals::{
     GoalStatusChange, GoalStore,
 };
 pub use krpc::{KrpcAgentStateClient, KrpcTransport, StateTransport};
-pub use perception::{run_digest, PERCEPTION_LOCK_TIMEOUT};
+pub use perception::PERCEPTION_LOCK_TIMEOUT;
 
 /// Session registry (session mgr, §6.2). The only entry point to discover
 /// every session of an agent, wherever its directory lives.

@@ -637,7 +637,7 @@ J/e9 是新的推理记录，但不是新的独立事实来源。直接把 Runti
 | S42 | 局部推断、第三方主张与业务对象分离 | 预设计划保留最窄范围和 basis，不无证据扩至 Agent 全局；模拟任务/授权逻辑不读取 Memory 内容作分支；B-42/B-43 的真实代码和模型验收仍在 S/Q |
 | S43 | 清理与同一感知文件的追加并发 | 文件级短锁使两者互斥；追加记录不丢、`seq` 不倒退，已清理条目只剩处置标记；对应 B-06/B-07 |
 | S44 | SI 写入期间多个 Session 每次推理前观察 | 快照未变时快速路径不打开 Graph、不取写锁；有变化时读取不因整理写入而锁超时；对应 B-22 |
-| S45 | Runtime 自动写入 `run_digest`/`task_outcome` | 只进整理批次，可按引用读取，不出现在其他 Session 的变化里；对应 B-26 的组件部分与 M-31 |
+| S45 | Runtime 自动写入 `run_digest`/`task_outcome` | 原：只进整理批次，可按引用读取，不出现在其他 Session 的变化里；对应 B-26 的组件部分与 M-31。**2026-11-08 改：Runtime 自动记录全部删除，写入口拒绝这三种 kind；旧文件残留行只读、不作材料、不作变化**（agent-memory-capture-retain-weight-todo §6 TR） |
 
 S15 只用 fixture 改变外部对象状态并调用 Memory 组件验证，不实施真实任务回滚。B-01/B-08/B-25 中关于真实 Agent 自动记录、未主动检索时获益及新任务行为的验收，留给 Session 接入阶段。
 
@@ -708,7 +708,7 @@ cargo test -p libopendan --test memory_sessions --test memory_component
 | S19、S20 | `explicit_request`、`tool_experience` |
 | S10、S35、S37 | `correction_fallback`（无引用纠正兜底、“这次先不用”不是纠正、有纠正时不答“未变化”）；S37 另见 `s37_snapshots_unchanged_answers_and_pages` |
 | S18、S23 | `tool_experience`、`world_selection` |
-| S15、S27、S45 | `world_selection`；S27 另见 `s27_only_the_consolidation_lease_writes_cognitions`，S45 另见 `s45_runtime_records_feed_consolidation_only` |
+| S15、S27、S45 | `world_selection`；S27 另见 `s27_only_the_consolidation_lease_writes_cognitions`，S45 另见 `s45_runtime_records_are_refused_and_legacy_ones_are_not_material`（2026-11-08 改名） |
 | S24—S28 | `task_revision_boundary`（Task 修订只在 fixture 中） |
 | S04、S29、S31 | `read_set_topic_switch`；S04 另见 `s04_s34_topic_lifecycle_and_valve` |
 | S22、S30 | `deferral_expiry` |

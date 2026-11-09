@@ -548,7 +548,8 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
             .head,
         None
     );
-    // Perception carries task_discarded with its source.
+    // A discard leaves no Runtime perception (the decision is in the
+    // worklog and the Task).
     let mut kinds = Vec::new();
     for e in std::fs::read_dir(agent.layout().perception_dir()).unwrap().flatten() {
         let name = e.file_name().to_string_lossy().to_string();
@@ -558,11 +559,7 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
             }
         }
     }
-    assert_eq!(
-        kinds.iter().filter(|k| *k == "task_discarded").count(),
-        2,
-        "{kinds:?}"
-    );
+    assert!(kinds.is_empty(), "{kinds:?}");
     // Discarded is final: B gave its queue back and any decide is refused
     // up front (a finished session takes no more input).
     let q = queue_of(&b);

@@ -933,6 +933,8 @@ def report_state(lease, sid, status):                       # 驱动者在每次
 | `observation` | LLM 调用 `perceive` 工具，或子进程以 `perception` 类型投递到 kmsg 队列 | 一次工具调用 |
 | `task_outcome` / `task_discarded` | finished / accept / discard 时自动写 | 零 LLM |
 
+> 2026-11-08：`run_digest` / `task_outcome` / `task_discarded` 已删除，感知只有 `observation`；上表、下文伪代码第 7 步和“缺失的 run_digest 按 state.json 重建”是历史设计。依据见 notepads/agent-memory-capture-retain-weight-todo.md §6 TR。
+
 ```python
 def append_perceptions(lease, sid, records):                 # 驱动者调用
     last = tail_seq(perc(sid))                               # 反向读最后一行；重试幂等：跳过 seq ≤ last 的记录

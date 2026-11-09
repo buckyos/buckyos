@@ -144,16 +144,19 @@ pub struct RegistryEntry {
 
 /// One line of `state/perception/<sid>.jsonl` (Memory requirements A.5).
 ///
-/// Runtime records (`run_digest`, `task_outcome`, `task_discarded`) only feed
-/// consolidation; `observation` records are what Sessions write. After a
-/// consolidation disposes a record, cleanup keeps the line with its identity,
-/// key, source and `cleared` marker and drops the body.
+/// Sessions write `observation` records (`ctl perceive`). The Runtime kinds
+/// (`run_digest`, `task_outcome`, `task_discarded`) are no longer written
+/// (2026-11-08): progress stays in the Task / Goal; lines of those kinds in
+/// existing files are still parsed but are neither material nor changes.
+/// After a consolidation disposes a record, cleanup keeps the line with its
+/// identity, key, source and `cleared` marker and drops the body.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PerceptionRecord {
     pub seq: u64,
     pub at_ms: u64,
     pub session_id: String,
-    /// `run_digest | observation | task_outcome | task_discarded`.
+    /// `observation`; legacy files also hold `run_digest | task_outcome |
+    /// task_discarded`.
     pub kind: String,
     /// `session | self`.
     #[serde(default = "session_source")]
@@ -253,7 +256,8 @@ impl PerceptionRecord {
         format!("{}:{}", self.session_id, self.seq)
     }
 
-    /// Written by the Runtime, not observed by a Session (A.9).
+    /// A legacy Runtime record (no longer written): not observed by a
+    /// Session, never material nor a change (A.9).
     pub fn is_runtime(&self) -> bool {
         matches!(self.kind.as_str(), "run_digest" | "task_outcome" | "task_discarded")
     }

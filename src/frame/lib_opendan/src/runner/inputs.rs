@@ -729,32 +729,8 @@ pub(super) async fn apply_decide(
         by: if by.is_empty() { m.from.clone() } else { by.to_string() },
         report,
     };
-    if decision == "discard" {
-        // Appended after the commit by the caller's commit; perception after.
-        let seq = s.state.perception_seq + 1;
-        s.state.perception_seq = seq;
-        let rec = PerceptionRecord {
-            seq,
-            at_ms: crate::now_ms(),
-            session_id: sid.clone(),
-            kind: "task_discarded".into(),
-            source: "session".into(),
-            tags: s.state.topic.tags.clone(),
-            objects: s
-                .config
-                .artifact_id
-                .iter()
-                .map(|a| format!("artifact:{a}"))
-                .collect(),
-            summary: format!("work session {sid} was discarded"),
-            payload: json!({ "session": sid, "artifact_version": version.as_ref().map(|v| v.ver.clone()) }),
-            refs: Value::Null,
-            ..Default::default()
-        };
-        if let Err(e) = sh.agent().perception().append(&sh.lease, &sid, vec![rec]).await {
-            log::warn!("task_discarded perception of {sid}: {e}");
-        }
-    }
+    // A discarded task leaves no Runtime perception: the decision is in the
+    // worklog and the Task object.
     Ok(Some(body))
 }
 

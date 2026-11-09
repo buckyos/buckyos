@@ -309,36 +309,3 @@ impl Perception for FsPerception {
     }
 }
 
-/// Build the automatic `run_digest` record, written when a run ends. `turn`
-/// is the Turn the run ended in; `turn_status` is set when that end also
-/// closed the Turn (a fork child or a hand-over ends a run, not a Turn).
-#[allow(clippy::too_many_arguments)]
-pub fn run_digest(
-    sid: &str,
-    seq: u64,
-    run_id: &str,
-    turn: u64,
-    turn_status: Option<TurnStatus>,
-    topic: &Topic,
-    objects: Vec<String>,
-    summary: &str,
-    worklog_seq: u64,
-) -> PerceptionRecord {
-    PerceptionRecord {
-        seq,
-        at_ms: crate::now_ms(),
-        session_id: sid.to_string(),
-        kind: "run_digest".to_string(),
-        source: "session".to_string(),
-        tags: topic.tags.clone(),
-        objects,
-        summary: summary.chars().take(500).collect(),
-        payload: serde_json::json!({
-            "run_id": run_id,
-            "turn": turn,
-            "turn_status": turn_status,
-        }),
-        refs: serde_json::json!({ "worklog_seq": worklog_seq }),
-        ..Default::default()
-    }
-}

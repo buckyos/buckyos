@@ -74,7 +74,7 @@
 
 ```jsonc
 // state/perception/<sid>.jsonl，单写者 = 该 session 的驱动者（或组件阶段的模拟 Session），seq 严格递增
-{"seq":31,"at_ms":0,"session_id":"…","kind":"run_digest|observation|task_outcome|task_discarded",
+{"seq":31,"at_ms":0,"session_id":"…","kind":"observation",   // 旧文件可能还有 run_digest|task_outcome|task_discarded，只读、不作材料
  "source":"session","tags":[],"objects":[],"summary":"…","payload":{…},"refs":{"worklog_seq":316},
  // Memory 需求 A.5 的扩展字段（缺省省略）
  "idempotency_key":"A/e31/observation-1","content_digest":"…",
@@ -90,7 +90,7 @@
 - 追加幂等：跳过 `seq ≤` 文件最后一条的记录（反向读最后一行得到）；带 `idempotency_key` 的记录按键去重：同键同内容（`content_digest`）是重放，同键不同内容报冲突。正文清理后键与摘要仍在，重放不会让材料复活。
 - 文件级短锁 `state/perception/<sid>.jsonl.lock`：追加（driver 仍须持 Session lease）与整理清理都在短锁内进行。清理以“写新文件 → fsync → rename”替换原文件，只把已终局处置记录的正文换成 `cleared` 标记，保留 `seq`、键、摘要、`scope`、`source_ref` 与 `<sid>:<seq>` 身份；`seq` 不变。读取不取锁，忽略未以换行结束的尾部。
 - 可见性：`scope.subjects` 由宿主按写入 Session 的绑定补齐（模型只能在授权主体集合内收窄）；读者的每个授权主体集合必须包含记录的全部主体才可见。
-- 自动记录：每次 run 结束写 `run_digest`，payload `{run_id, turn, turn_status}`：`turn` 是该 run 结束时所属的 Turn，`turn_status`（`completed | failed | budget_exhausted | stopped`）只在这次 run 结束同时关闭了 Turn 时有值，否则为 null（例如 `WAIT_USER_MSG` 未交付答复、fork 子 process 返回；drive 补发缺失记录时也为 null）。它按 run 结束生成，不代表 Turn 完成；普通切换与 fork / independent 挂起不写。finished 追加 `task_outcome`；discard 追加 `task_discarded`（保留来源）；`perception` 类型输入并入 `observation`。`state.perception_seq` 在提交中预留，追加在提交之后，缺失的由下次 drive 补发。这三种 Runtime 记录只进入整理批次，不出现在其它 Session 的变化里。
+- 没有自动记录（2026-11-08 起）：Runtime 不再在 run 结束、finished 或 discard 时写 `run_digest` / `task_outcome` / `task_discarded`，进度由 Task / Goal 承载；感知只来自 `ctl perceive`（`perception` 类型输入并入 `observation`）。`state.perception_seq` 由驱动者在写入后推进，不再预留与补发，seq 允许有缺口。旧文件中残留的这三种 kind 仍可按引用读取，但不进入整理批次、不出现在任何 Session 的变化里，也不触发整理 Goal。
 - **待处理集合**：由 Memory 提交日志中的逐条处置计算（未处置 = 新增；`deferred` 且到期 = 待处置；已终局但正文未清 = 待重试清理），不按字节游标跳过暂缓材料。见 Memory 组件 `pending_work` / `begin`。
 - **写入口**：Session 的 `ctl perceive` 控制输入由驱动者经 `Memory::record_perception` 写入：驱动者分配 `seq`、按 Session 绑定主体（UI 取对话 peer，Work 取 Agent 的 owner，Goal Session 取 Goal 的 owner，有 Workspace 绑定时附 `workspace:<id>`，grants 另含 Agent 自身）、绑定来源事件（`--source` 给出的本 Session 输入 key，否则这条控制输入本身、`actor_kind = agent`）与时区锚点，控制输入的 key 是幂等键。Goal 的 `extensions.opendan.records_perception = false`（整理 Goal）时该输入被拒绝（`input_rejected`），Runtime 记录也不写。
 - **防回声**：Goal 带 `memory_consolidation` 能力的 Goal Session（各 epoch）的记录不成为材料；没有字节游标。

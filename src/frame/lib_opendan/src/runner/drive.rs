@@ -28,7 +28,6 @@ use crate::lock::{Acquire, Lease};
 use crate::protocol::*;
 use crate::runtime::{bind_or_verify, SessionEnv, SessionEnvCtx};
 use crate::session::{Session, SessionDir};
-use crate::state::run_digest;
 
 use super::assembler::InputMaterial;
 use super::children::poll_children;
@@ -607,47 +606,17 @@ pub(super) async fn ensure_frozen(sh: &Arc<Shared>, behavior: Option<&str>) -> R
 }
 
 async fn catch_up(sh: &Arc<Shared>) -> Result<()> {
-    let sid = sh.dir.sid().to_string();
-    let (status, perception_seq, last_run, turn, topic, summary, wseq, reported) = {
+    let (status, reported) = {
         let s = sh.session.lock().await;
-        (
-            s.status(sh.lease.epoch()),
-            s.state.perception_seq,
-            s.state.last_run.clone().unwrap_or_default(),
-            s.state.current_turn(),
-            s.state.topic.clone(),
-            s.state.one_line_status.clone(),
-            s.state.worklog.committed_seq,
-            s.state.reported_rev,
-        )
+        (s.status(sh.lease.epoch()), s.state.reported_rev)
     };
     if reported < status.rev {
         report(sh, status).await;
     }
-    if !super::consolidation::caps(sh).records_perception {
-        return Ok(());
-    }
-    let last = sh.agent().perception().last_seq(&sid).await?;
-    if last < perception_seq {
-        let mut recs = Vec::new();
-        for seq in last + 1..=perception_seq {
-            recs.push(run_digest(
-                &sid,
-                seq,
-                &last_run,
-                turn,
-                None,
-                &topic,
-                Vec::new(),
-                &summary,
-                wseq,
-            ));
-        }
-        sh.agent()
-            .perception()
-            .append(&sh.lease, &sid, recs)
-            .await?;
-    }
+    // No perception is backfilled: the Runtime writes no run digest any
+    // more, and `ctl perceive` updates `perception_seq` after its write, so
+    // a gap in the seq (a crash between a reservation and its append) is
+    // harmless and left alone.
     Ok(())
 }
 

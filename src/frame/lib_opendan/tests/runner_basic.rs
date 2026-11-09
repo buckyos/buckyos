@@ -86,8 +86,9 @@ async fn a01_work_session_completes_with_tool_call() {
     assert_eq!(e.status.rev, st.rev);
     assert_eq!(e.status.run_state, RunState::Finished);
     assert!(e.status.last_runner.is_some());
-    // Perception: run digest + task outcome.
-    assert_eq!(agent.perception().last_seq(sd.sid()).await.unwrap(), 2);
+    // No Runtime perception: a finished Work without `ctl perceive` leaves
+    // no perception file.
+    assert!(!agent.layout().perception_file(sd.sid()).exists());
     // binding + session bin prepared.
     let b = sd.binding_opt().unwrap().unwrap();
     assert_eq!(b.runtime_id, "rt-test-native");
@@ -183,7 +184,7 @@ async fn a02_two_runners_share_one_agent_root_concurrently() {
         let e = agent.sessions().lookup(sd.sid()).await.unwrap().unwrap();
         assert_eq!(e.status.run_state, RunState::Finished);
         assert_eq!(e.status.rev, sd.state().unwrap().rev);
-        assert_eq!(agent.perception().last_seq(sd.sid()).await.unwrap(), 2);
+        assert!(!agent.layout().perception_file(sd.sid()).exists());
     }
     // Both runner identities appear as last runners.
     let runners: std::collections::BTreeSet<String> = futures_join(&agent, &dirs).await;

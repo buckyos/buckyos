@@ -15,7 +15,6 @@ use crate::error::Result;
 use crate::protocol::*;
 use crate::session::runs::RunHandle;
 use crate::session::Session;
-use crate::state::run_digest;
 
 use super::flush::{run_history_entries, FlushMarks};
 use super::history::maybe_compact;
@@ -1136,11 +1135,6 @@ async fn keep_while_running(
 struct RunEnded {
     run_id: String,
     sid: String,
-    turn: u64,
-    /// The Turn closed by this commit, if any.
-    turn_closed: Option<TurnStatus>,
-    /// Perception seq of the run digest (`+ 1` is the task outcome record).
-    digest_seq: u64,
     /// The run this one replaced as `last_run` (cleanup candidate).
     prev: Option<String>,
 }
@@ -1401,21 +1395,15 @@ async fn commit_run_end(
             }
         }
     }
-    let digest_seq = s.state.perception_seq + 1;
-    // The consolidation Goal's session leaves no material: no seq is
-    // reserved for it either (nothing for `catch_up` to backfill).
-    if super::consolidation::caps(sh).records_perception {
-        s.state.perception_seq = digest_seq + u64::from(next.finished);
-    }
+    // No Runtime perception is written at the end of a run (no run digest,
+    // no task outcome): progress stays in the Task / Goal, Memory material
+    // comes from `ctl perceive` only.
     sh.hints.store(&mut s.state);
     s.commit_state(&sh.lease)?; // commit point
     crate::fault::point("finish_run:after_commit");
     Ok(RunEnded {
         run_id,
         sid,
-        turn,
-        turn_closed,
-        digest_seq,
         prev,
     })
 }
@@ -1506,14 +1494,7 @@ async fn after_run_end(
     next: &Next,
     ended: RunEnded,
 ) -> Result<()> {
-    let RunEnded {
-        run_id,
-        sid,
-        turn,
-        turn_closed,
-        digest_seq,
-        prev,
-    } = ended;
+    let RunEnded { run_id, sid, prev } = ended;
     // Cleanup of the replaced run.
     if let Some(p) = prev.filter(|p| p != &run_id && !s.state.references(p)) {
         if let Err(e) = remove_if_safe(sh, &p).await {
@@ -1564,50 +1545,7 @@ async fn after_run_end(
             st.cost += u.reported_cost.unwrap_or(0.0);
         }
     });
-    // Registry, perception, notification (catch-up later).
-    let mut recs = vec![run_digest(
-        &sid,
-        digest_seq,
-        &run_id,
-        turn,
-        turn_closed,
-        &s.state.topic,
-        s.config.artifact_id.iter().map(|a| format!("artifact:{a}")).collect(),
-        &s.state.one_line_status,
-        s.state.worklog.committed_seq,
-    )];
-    // What a Goal Session perceives belongs to its Goal.
-    if let Some(b) = super::goal::binding(&s.config) {
-        let mut source = agent_tool::agent_memory::SourceRef::event(
-            agent_tool::agent_memory::SourceType::System,
-            format!("goal:{}:{}:turn:{turn}", b.goal_id, b.epoch),
-        );
-        source.session_id = Some(sid.clone());
-        source.goal_ref = Some(format!("goal:{}", b.goal_id));
-        source.actor_kind = Some(agent_tool::agent_memory::ActorKind::Runtime);
-        recs[0].source_ref = Some(source);
-    }
-    if next.finished {
-        recs.push(PerceptionRecord {
-            seq: digest_seq + 1,
-            at_ms: crate::now_ms(),
-            session_id: sid.clone(),
-            kind: "task_outcome".into(),
-            source: "session".into(),
-            tags: s.state.topic.tags.clone(),
-            objects: Vec::new(),
-            summary: s.state.one_line_status.clone(),
-            payload: json!({ "outcome": next.outcome, "acceptance": s.state.acceptance }),
-            refs: Value::Null,
-            ..Default::default()
-        });
-    }
-    // The consolidation Goal writes no material of its own (anti echo).
-    if super::consolidation::caps(sh).records_perception {
-        if let Err(e) = sh.agent().perception().append(&sh.lease, &sid, recs).await {
-            log::warn!("perception of {sid}: {e}");
-        }
-    }
+    // Registry and notification (catch-up later).
     let status = s.status(sh.lease.epoch());
     drop(s);
     report(sh, status).await;

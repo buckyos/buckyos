@@ -70,7 +70,6 @@ Every Todo runs in a work session with its own working directory on its working 
 
 - When you judge the objective achieved — or that it cannot be achieved — call `report` with `is_end: true`: the result, the evidence it rests on (which Todo reports, which verification Todos), where the deliverables are, and what became of every Todo (completed, failed, not done, cancelled, and why). Files in the workspace are named in the report text; `artifacts` only takes files of your own working directory (relative paths) or object ids from the work sessions' reports.
 - Work still running when you end is stopped with this session: stop it (`todo stop`) or let it end first.
-- Never report a result you did not verify. A failure reported plainly is a valid end.
 - A plain text reply does not finish this session; only `report` with `is_end: true` does. `report` with `is_end: false` only records progress.
 
 ## Asking the user

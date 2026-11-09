@@ -1355,13 +1355,13 @@ pub fn world_selection(h: &mut Host) {
     h.trace.step(
         &h.now_local(),
         "Runtime",
-        "T1 被用户放弃，Runtime 写 task_discarded",
+        "T1 被用户放弃。Runtime 不再写 task_discarded（2026-11-08 删除）：写入口拒绝这种 kind",
     );
     let mut discard_src = SourceRef::event(SourceType::System, "unused");
     discard_src.event_ref = None;
     discard_src.task_ref = Some("task:T1".into());
     discard_src.actor_kind = Some(ActorKind::Runtime);
-    t1.record(
+    let refused = t1.record(
         h,
         PerceptionInput {
             kind: Some("task_discarded".into()),
@@ -1369,15 +1369,33 @@ pub fn world_selection(h: &mut Host) {
             source: Some(discard_src),
             ..PerceptionInput::default()
         },
+    );
+    h.check(
+        "S45.runtime_kind_refused",
+        matches!(&refused, Err(MemoryError::Invalid(m)) if m.contains("no longer written")),
+        "the Runtime kinds are refused at the write entry; progress stays in the Task",
+    );
+    h.trace.step(
+        &h.now_local(),
+        "E",
+        "用户：“T1 那个版本不要了。”(E/e2) E 记一条带 task_ref 的观察，这才是整理的材料",
+    );
+    let mut e2_src = h.event("E/e2", "ui-e", ActorKind::User, "T1 那个版本不要了");
+    e2_src.task_ref = Some("task:T1".into());
+    e.record(
+        h,
+        PerceptionInput {
+            source: Some(e2_src),
+            ..observation(
+                "用户放弃了任务 T1 及其产物版本",
+                SourceRef::event(SourceType::SessionEvent, "E/e2"),
+                &[PROJECT],
+                "E/e2/1",
+            )
+        },
     )
     .unwrap();
-    h.name("work-t1:2", "p-discarded");
-    let de = e.observe(h).unwrap();
-    h.check(
-        "S45.runtime_not_broadcast",
-        !de.changes.iter().any(|c| c.hint.id == "work-t1:2"),
-        "task_discarded goes to consolidation only, not into other Sessions' changes",
-    );
+    h.name("ui-e:1", "p-discarded");
     let si_caller = Caller::new("si-memory", &[U1, U2, A1], &[]);
     let affected = h
         .memory
@@ -1397,7 +1415,7 @@ pub fn world_selection(h: &mut Host) {
     );
     let (batch, _) = si
         .run(h, 10, |b, _| {
-            assert!(b.materials.iter().any(|m| m.reference == "work-t1:2"));
+            assert!(b.materials.iter().any(|m| m.reference == "ui-e:1"));
             plan(
                 "t1-discard",
                 "T1 discarded: its artifact state is no longer current",
@@ -1408,16 +1426,16 @@ pub fn world_selection(h: &mut Host) {
                     "task T1 was discarded",
                 )],
                 vec![discarded(
-                    "work-t1:2",
+                    "ui-e:1",
                     "任务放弃已处理：依赖其产物版本的认知置为待复核",
                 )],
             )
         })
         .unwrap();
     h.check(
-        "S45.in_batch",
-        batch.materials.iter().any(|m| m.reference == "work-t1:2"),
-        "the runtime record reaches the batch",
+        "S45.observation_in_batch",
+        batch.materials.iter().any(|m| m.reference == "ui-e:1"),
+        "the observation about the discarded task reaches the batch",
     );
     let mut e2 = h.session("E2", "ui-e2", &[U1, A1], &[U1], &[PROJECT]);
     let r = e2

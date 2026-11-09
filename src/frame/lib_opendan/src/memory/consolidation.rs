@@ -204,7 +204,9 @@ impl Memory {
         };
         let mut excluded: BTreeMap<String, bool> = BTreeMap::new();
         for r in self.load_perceptions(None)? {
-            if r.cleared.is_some() {
+            // Legacy Runtime records (run digests, task outcomes) are not
+            // material any more: left in place, never read by a batch.
+            if r.cleared.is_some() || r.is_runtime() {
                 continue;
             }
             let skip = *excluded.entry(r.session_id.clone()).or_insert_with(|| {

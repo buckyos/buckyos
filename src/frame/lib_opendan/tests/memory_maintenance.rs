@@ -272,9 +272,34 @@ fn silent_llm() -> Arc<ScriptedLlm> {
     ScriptedLlm::new(|req, _| panic!("no inference expected: {}", render(&req.messages)))
 }
 
-/// A finished Work session leaves run_digest / task_outcome material.
+/// A Work session that perceives something before it finishes leaves one
+/// observation as material. (The Runtime itself writes no perception: a
+/// finished Work without `ctl perceive` leaves nothing.)
 async fn leave_material(env: &Env, objective: &str) -> SessionDir {
     let sd = env.create_work(work_spec(objective)).await;
+    libopendan::post_input(
+        env.agent().as_ref(),
+        sd.sid(),
+        &PostedInput::control(
+            APP,
+            &format!("p-{objective}"),
+            ControlCommand::Perceive {
+                kind: "observation".into(),
+                summary: format!("objective {objective} finished in one run"),
+                tags: vec!["work".into()],
+                objects: vec![],
+                subjects: vec![],
+                cites: vec![],
+                source: None,
+                occurred_at: None,
+                suggested_kind: None,
+                memory_intent: None,
+                mentions: vec![],
+            },
+        ),
+    )
+    .await
+    .unwrap();
     assert!(drive(&sd, &env.deps(ScriptedLlm::new(|_, _| text("ok"))), StopWhen::Finished)
         .await
         .is_finished());

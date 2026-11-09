@@ -384,7 +384,7 @@ pub struct AgentEvent {
 | `decide accept\|discard` | 决定者 | finished 后由驱动者在 artifact 锁下执行 | 决定者直接走 `artifacts().decide`（锁已存在），不经 session |
 | `subscribe` / `unsubscribe` | 驱动者 app、父 session | 改 `config.subscriptions`，`config_rev + 1` | 创建时声明；运行中不可改 |
 | `activity {summary, touch, clear}` | exec 子进程 | 合并进 `state.activity` | Runner 由工具调用推断 touching；summary 来自 scope |
-| `perceive {kind, summary}` | exec 子进程 | 驱动者以 lease 追加到感知流 | 结束时只有 run_digest / task_outcome |
+| `perceive {kind, summary}` | exec 子进程 | 驱动者以 lease 追加到感知流 | Runtime 不写自动感知（run_digest / task_outcome 已于 2026-11-08 删除） |
 
 控制命令沿用 `ControlCommand`，但在协议文档里独立成《Session Control Protocol》。`perception` kind 并入控制协议。
 
@@ -463,7 +463,7 @@ pub struct SessionTemplate {
 | `self_check` | Unbounded | FinishFailed | Queue（timer 事件） | Off | 是 | 定时自检 |
 | `goal` | Unbounded | EndTurn | Queue（`_goal_activation`：`system:goal` 事件） | EventsAndActive | 是 | 一个 Goal 的一个 epoch：每个 Activation 是一个 Turn；只由宿主为 Goal 创建（`xagent new --class goal` 拒绝），见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9 与 [Goal Session TODO](../../notepads/done/opendan-goal-session-todo.md) |
 
-**无队列 work session 的后果**：stop 由 lease 持有者将 SIGINT 接到现有取消路径；decide 走 artifacts 门面；exec 子进程的 `activity --touch` / `perceive` 没有通道，touching 由工具调用推断、感知只有结束时的 run_digest。父接收子状态（C15）与 task resolver 查询不需要队列，但子 LLM 主动给父发消息需要父有队列。只有需要接收外部投递的订阅才自动升为 Queue；默认时区的初始快照、拉取 session 状态、已跟踪 task 不因此强制建队列。无队列时不承诺收到外部时区更新。等待 task / children 时仍须轮询，不能因 `bus = None` 提前结束。
+**无队列 work session 的后果**：stop 由 lease 持有者将 SIGINT 接到现有取消路径；decide 走 artifacts 门面；exec 子进程的 `activity --touch` / `perceive` 没有通道，touching 由工具调用推断；这类 Work 自己不留感知（Runtime 自动 run_digest 已于 2026-11-08 删除），其结果经 Final Report 回到父 Session，由父 Session 判断有无持续信号再 `ctl perceive`。父接收子状态（C15）与 task resolver 查询不需要队列，但子 LLM 主动给父发消息需要父有队列。只有需要接收外部投递的订阅才自动升为 Queue；默认时区的初始快照、拉取 session 状态、已跟踪 task 不因此强制建队列。无队列时不承诺收到外部时区更新。等待 task / children 时仍须轮询，不能因 `bus = None` 提前结束。
 
 ### 4.8 xagent 的三种运行形态
 
@@ -942,7 +942,7 @@ impl dyn AgentStateClient {
 |---|---|---|
 | `sessions()` | 登记门槛 `lookup`、每批 `me`、订阅的 session、`children_of`（新：子 session 状态，§4.14）、`scope_touching` | 每次提交后 `report_state`；创建时 `register` |
 | `activity()` | 受控输入现算完整 `<active_sessions>` | （活动摘要经 `report_state` 回报） |
-| `perception()` | self_improve bootstrap 窗口、`last_seq` 补发 | perception 输入、`finish_run` 的 run_digest / task_outcome |
+| `perception()` | 整理 Goal 的材料读取 | perception 输入（`ctl perceive`）；Runtime 不再写 run_digest / task_outcome，也不补发（2026-11-08） |
 | `cognition()` | bootstrap 或有新 msg/event 时 `recall_hints` | self_improve 成功时 `commit_consolidation` |
 | `artifacts()` | `head` / `version` | `register_version`、`decide` |
 | `locks()` | — | `self_improve`、`artifact:<aid>` |
