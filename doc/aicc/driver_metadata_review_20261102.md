@@ -22,4 +22,4 @@
 
 受影响手册 `aigc_image`、`aigc_audio`、`aigc_video` 已检查：本轮没有改变 CLI、任务结果结构、下载入口或手册命令，故不修改。没有修改公共运行组件、共享类型、存储或依赖；只更新 metadata、测试及文档。
 
-最终测试与历史 T2 结论见 [本轮汇总](../../test/aicc_test/sn_reports/20261102/model-parameter-review/summary.md)。
+测试报告仅在本地保存，不随源码提交。

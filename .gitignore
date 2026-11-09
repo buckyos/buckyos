@@ -98,6 +98,7 @@ test/deno.lock
 uv.lock
 test/aicc_test/deno.lock
 test/aicc_test/reports/*
+test/aicc_test/sn_reports/
 # AICC 验收测试报告不入库（PR review 要求：报告无信息量）
 /*_REPORT.md
 test/aicc_test/**/*_REPORT.md
