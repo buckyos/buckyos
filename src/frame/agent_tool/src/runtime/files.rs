@@ -107,13 +107,65 @@ fn canonical_missing(path: &Path) -> Result<PathBuf, AgentToolError> {
 }
 
 pub fn check_allowed(path: &Path, roots: &[PathBuf]) -> Result<(), AgentToolError> {
-    if roots.is_empty() || roots.iter().any(|root| path.starts_with(root)) {
+    if roots.is_empty() || roots.iter().any(|root| path_within(path, root)) {
         return Ok(());
     }
     Err(AgentToolError::InvalidArgs(format!(
         "path not allowed by policy: {}",
         path.display()
     )))
+}
+
+#[cfg(not(windows))]
+fn path_within(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
+/// `\\?\C:\a` and `c:\A` name the same Windows path as `C:\a`.
+#[cfg(windows)]
+fn path_within(path: &Path, root: &Path) -> bool {
+    fn key(path: &Path) -> PathBuf {
+        let text = path.to_string_lossy().replace('/', "\\");
+        let text = match text.strip_prefix(r"\\?\UNC\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => text.strip_prefix(r"\\?\").unwrap_or(text.as_str()).to_string(),
+        };
+        let path = PathBuf::from(text);
+        match path.components().next() {
+            Some(std::path::Component::Prefix(_)) => {
+                PathBuf::from(path.to_string_lossy().to_lowercase())
+            }
+            _ => path,
+        }
+    }
+    key(path).starts_with(key(root))
+}
+
+#[cfg(all(test, windows))]
+mod windows_policy_tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_and_case_variants_of_a_root_are_inside_it() {
+        let root = [PathBuf::from(r"\\?\C:\buckyos\data\home\devtest\agents\a\sessions\ui-1")];
+        for inside in [
+            r"C:\buckyos\data\home\devtest\agents\a\sessions\ui-1",
+            r"c:\BuckyOS\data\home\devtest\agents\a\sessions\ui-1\x.txt",
+            r"\\?\C:\buckyos\data\home\devtest\agents\a\sessions\ui-1\sub",
+            r"C:/buckyos/data/home/devtest/agents/a/sessions/ui-1/sub",
+        ] {
+            assert!(check_allowed(Path::new(inside), &root).is_ok(), "{inside}");
+        }
+        for outside in [
+            r"C:\buckyos\data\home\devtest\agents\a\sessions\ui-10",
+            r"D:\buckyos\data\home\devtest\agents\a\sessions\ui-1",
+            r"C:\buckyos\data\home\devtest\agents\a\sessions",
+        ] {
+            assert!(check_allowed(Path::new(outside), &root).is_err(), "{outside}");
+        }
+        let unc = [PathBuf::from(r"\\?\UNC\nas\share\work")];
+        assert!(check_allowed(Path::new(r"\\NAS\share\work\a"), &unc).is_ok());
+    }
 }
 
 #[async_trait]

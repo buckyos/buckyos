@@ -866,7 +866,9 @@ impl NodeClient {
 /// Windows path rules whatever OS this side runs on.
 fn remote_resolve(root: &Path, raw: &str, allowed: &[PathBuf]) -> Result<PathBuf, AgentToolError> {
     let root_text = root.to_string_lossy();
-    if !is_drive_path(&root_text) {
+    let root_text = plain_drive_path(&root_text);
+    let raw = plain_drive_path(raw);
+    if !is_drive_path(root_text) {
         let lexical = crate::path_utils::resolve_path_from_root(root, raw)?;
         check_allowed(&lexical, allowed)?;
         return Ok(lexical);
@@ -880,7 +882,12 @@ fn remote_resolve(root: &Path, raw: &str, allowed: &[PathBuf]) -> Result<PathBuf
         normalize_drive_path(&format!("{root_text}\\{raw}"))
     };
     let inside = |root: &PathBuf| {
-        let root = normalize_drive_path(&root.to_string_lossy()).to_ascii_lowercase();
+        let root = root.to_string_lossy();
+        let root = plain_drive_path(&root);
+        if !is_drive_path(root) {
+            return false;
+        }
+        let root = normalize_drive_path(root).to_ascii_lowercase();
         let path = lexical.to_ascii_lowercase();
         path == root || path.starts_with(&format!("{}\\", root.trim_end_matches('\\')))
     };
@@ -888,6 +895,14 @@ fn remote_resolve(root: &Path, raw: &str, allowed: &[PathBuf]) -> Result<PathBuf
         return Err(AgentToolError::InvalidArgs(format!("path not allowed by policy: {lexical}")));
     }
     Ok(PathBuf::from(lexical))
+}
+
+/// `\\?\C:\a` → `C:\a`: the verbatim form names the same Windows path.
+fn plain_drive_path(path: &str) -> &str {
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if is_drive_path(rest) => rest,
+        _ => path,
+    }
 }
 
 fn is_drive_path(path: &str) -> bool {
@@ -2141,5 +2156,14 @@ mod tests {
         assert!(resolve(r"..\other").is_err());
         assert!(resolve(r"D:\ws").is_err());
         assert_eq!(remote_resolve(root, r"D:\x\..\y", &[]).unwrap(), PathBuf::from(r"D:\y"));
+
+        let verbatim = Path::new(r"\\?\C:\Users\owner\ws");
+        let verbatim_allowed = [verbatim.to_path_buf()];
+        assert_eq!(
+            remote_resolve(verbatim, r"C:\Users\owner\ws\a", &verbatim_allowed).unwrap(),
+            PathBuf::from(r"C:\Users\owner\ws\a")
+        );
+        assert_eq!(resolve(r"\\?\C:\Users\owner\ws\b").unwrap(), r"C:\Users\owner\ws\b");
+        assert!(remote_resolve(verbatim, r"C:\Users\owner\wsx", &verbatim_allowed).is_err());
     }
 }

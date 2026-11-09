@@ -524,6 +524,14 @@ fn same_surface(a: &Desktop, b: &Desktop) -> bool {
         && b.ready != 0
 }
 
+fn capture_consistent(before: &Desktop, after: &Desktop) -> Result<(), &'static str> {
+    if same_surface(before, after) && after.capture != 0 {
+        Ok(())
+    } else {
+        Err("observation_changed_during_capture")
+    }
+}
+
 fn point(desktop: &Desktop, x: u32, y: u32) -> Result<(f64, f64), &'static str> {
     if x >= desktop.width || y >= desktop.height || desktop.width == 0 || desktop.height == 0 {
         return Err("coordinate_out_of_bounds");
@@ -764,14 +772,7 @@ impl DesktopComputer {
         if let Some(error) = self.stopped(context, epoch) {
             return Err(error);
         }
-        if !same_surface(&desktop, &after)
-            || desktop.events != after.events
-            || desktop.focus_pid != after.focus_pid
-            || desktop.focus != after.focus
-            || after.capture == 0
-        {
-            return Err("observation_changed_during_capture");
-        }
+        capture_consistent(&desktop, &after)?;
         let observation_id = format!("obs_{}", uuid::Uuid::new_v4().simple());
         let completed = node_executor::now_ms();
         let observation = ComputerObservation {
@@ -817,7 +818,7 @@ impl DesktopComputer {
             store: context.store_id.clone(),
             server_epoch: context.server_epoch.clone(),
             binding: request.binding_id().into(),
-            desktop: after,
+            desktop,
             epoch,
             revision,
             created: Instant::now(),
@@ -1417,6 +1418,34 @@ mod tests {
                 ..desktop
             }
         ));
+    }
+
+    #[test]
+    fn capture_survives_input_and_focus_but_not_surface_change() {
+        let before = Desktop {
+            ready: 1,
+            capture: 1,
+            display: 1,
+            session: 2,
+            layout: 7,
+            width: 1920,
+            height: 1080,
+            focus_pid: 100,
+            focus: 200,
+            events: 10,
+            hardware_events: 10,
+            ..Desktop::default()
+        };
+        let busy = Desktop {
+            focus_pid: 101,
+            focus: 201,
+            events: 15,
+            hardware_events: 15,
+            ..before
+        };
+        assert!(capture_consistent(&before, &busy).is_ok());
+        assert!(capture_consistent(&before, &Desktop { layout: 8, ..busy }).is_err());
+        assert!(capture_consistent(&before, &Desktop { capture: 0, ..busy }).is_err());
     }
 
     #[test]

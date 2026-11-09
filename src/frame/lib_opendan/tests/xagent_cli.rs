@@ -425,7 +425,10 @@ fn a_sub_session_is_created_and_followed_through_the_shell_tool() {
     assert_eq!(code, 0, "{v}\n{err}");
     assert_eq!((v["kind"].as_str(), v["turn"].as_u64()), (Some("turn_closed"), Some(2)), "{v}");
     assert_eq!(v["answer"], "the child said forty-two");
-    assert!(sd.runtime_bin_dir().join("agent-session").is_file());
+    assert!(sd
+        .runtime_bin_dir()
+        .join(libopendan::runtime::bin_overlay::entry_name("agent-session"))
+        .is_file());
 
     let (code, list, _) = cli.run(&["sessions", "--json", "--children", "--of", sd.sid()]);
     assert_eq!(code, 0);
