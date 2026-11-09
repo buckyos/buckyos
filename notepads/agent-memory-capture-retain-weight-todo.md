@@ -651,9 +651,6 @@ libopendan 全量里失败的 7 个（`fixtures.rs` 的 f04／f06／f07／f12／
 **没有做的：**
 
 - Q2：drive 仍走只按 tag 的旧召回路径。没有范围过滤、纠正叠加和分池预算；还没有 topic 的会话不会自动注入任何 Hint（T4 全链路里是模型主动 `recall` 才想起）。
-- Q7：旧模板 Agent 没有整理 Goal。
-- 本机 Zone Agent 与容器形态的 DV，包括 TR 留下的“finished Work 后无感知文件、gate 为 `no_work`”。这些改动进容器要重建镜像（仓库根目录 `./build_aios --local-test`，再 `uv run src/start.py --skip-update`）；已有 Session 冻结的 behavior 不变，新一代 Session 才用上新的 prompt 与手册。
-- demo 上的旧认知与积压感知没有处理。
 - 群聊（groupchat_route）和“Work 结果回到会话后的经验捕获”只改了文字，没有用真实模型跑。
 - 回放只用了本机 `llm.chat` 当前路由到的一个模型；换模型后 prompt 的效果要重跑回放确认。
 
