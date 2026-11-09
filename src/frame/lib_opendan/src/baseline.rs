@@ -668,7 +668,7 @@ fn run_deno_command(root: &Path, name: &str, args: &[std::ffi::OsString], env: V
     }
 }
 
-fn link_entry(program: &Path, entry: &Path) -> std::io::Result<()> {
+pub(crate) fn link_entry(program: &Path, entry: &Path) -> std::io::Result<()> {
     match std::fs::symlink_metadata(entry) {
         Ok(_) => std::fs::remove_file(entry)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

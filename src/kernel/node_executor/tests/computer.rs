@@ -10,6 +10,7 @@ use buckyos_api::node_executor_ipc::{ExecutorIo, LocalExecutorListener, connect_
 
 const APP: &str = "computer.test.buckyos.io";
 const OWNER: &str = "owner";
+const LARGE_PNG_BYTES: usize = 3 * 1024 * 1024;
 
 struct Verifier;
 #[async_trait]
@@ -45,6 +46,9 @@ enum Behavior {
     Cancel,
     Unknown,
     Image,
+    LargeImage,
+    Semantic,
+    OversizedSemantic,
     PersistFailure,
     Timeout,
 }
@@ -119,40 +123,73 @@ impl ComputerDriver for FakeDriver {
                     message: "no dispatch confirmation".into(),
                 });
             }
-            Behavior::Image => {
+            Behavior::Image | Behavior::LargeImage => {
                 use base64::Engine;
-                png = Some(base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=").unwrap());
+                let mut image = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=").unwrap();
+                if matches!(self.behavior, Behavior::LargeImage) {
+                    image.resize(LARGE_PNG_BYTES, 0);
+                }
+                if image.len() > context.max_image_bytes {
+                    result.feedback.state = ComputerFeedbackState::Failed;
+                    result.error = Some(ComputerError {
+                        code: "capture_size_limit".into(),
+                        message: "screenshot exceeds the image budget".into(),
+                    });
+                } else {
+                    png = Some(image);
+                    result.feedback.state = ComputerFeedbackState::Included;
+                    result.observation = Some(observation(&request, true, None));
+                }
+            }
+            Behavior::Semantic | Behavior::OversizedSemantic => {
+                let text = match self.behavior {
+                    Behavior::Semantic => "[e1] window \"Notepad\" @0,0 800x600\n  [e2] button \"Save\" (invoke) @10,10 40x20\n".to_string(),
+                    _ => "x".repeat(COMPUTER_SEMANTIC_MAX_TEXT_BYTES + 1),
+                };
                 result.feedback.state = ComputerFeedbackState::Included;
-                result.observation = Some(ComputerObservation {
-                    observation_id: "observation".into(),
-                    binding_id: request.binding_id().into(),
-                    surface_id: "display:1".into(),
-                    surface_epoch: 1,
-                    interaction_revision: 1,
-                    requested_mode: ComputerObservationMode::Visual,
-                    effective_mode: ComputerObservationMode::Visual,
-                    selection_reason: "explicit".into(),
-                    capture_started_at_ms: now_ms(),
-                    capture_completed_at_ms: now_ms(),
-                    consistency: "best_effort".into(),
-                    screenshot: ComputerScreenshot {
-                        artifact_ref: String::new(),
-                        mime_type: "image/png".into(),
-                        width: 1,
-                        height: 1,
-                        space: ComputerCoordinateSpace::Screenshot,
-                        interactive: true,
-                    },
-                    focus_guard: "surface".into(),
-                    expires_at_ms: now_ms() + 30_000,
-                    warnings: vec![],
-                });
+                result.observation = Some(observation(&request, false, Some(text)));
             }
         }
         ComputerOutput { result, png }
     }
     fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::SeqCst);
+    }
+}
+
+fn observation(request: &ComputerRequest, screenshot: bool, outline: Option<String>) -> ComputerObservation {
+    let mode = if outline.is_some() { ComputerObservationMode::Semantic } else { ComputerObservationMode::Visual };
+    ComputerObservation {
+        observation_id: "observation".into(),
+        binding_id: request.binding_id().into(),
+        surface_id: "display:1".into(),
+        surface_epoch: 1,
+        interaction_revision: 1,
+        requested_mode: mode,
+        effective_mode: mode,
+        selection_reason: "explicit".into(),
+        capture_started_at_ms: now_ms(),
+        capture_completed_at_ms: now_ms(),
+        consistency: "best_effort".into(),
+        screenshot: screenshot.then(|| ComputerScreenshot {
+            artifact_ref: String::new(),
+            mime_type: "image/png".into(),
+            width: 1,
+            height: 1,
+            space: ComputerCoordinateSpace::Screenshot,
+            interactive: true,
+            captured_at_ms: now_ms(),
+        }),
+        semantic: outline.map(|text| ComputerSemantic {
+            format: COMPUTER_SEMANTIC_FORMAT.into(),
+            text,
+            windows: vec![],
+            coverage: ComputerSemanticCoverage { visited: 2, returned: 2, truncated: false, reason: None },
+            captured_at_ms: now_ms(),
+        }),
+        focus_guard: "surface".into(),
+        expires_at_ms: now_ms() + 30_000,
+        warnings: vec![],
     }
 }
 
@@ -482,6 +519,7 @@ async fn screenshots_use_ledger_content_and_original_actor_acl() {
             ComputerRequest::Observe {
                 binding_id: "desktop:display:1".into(),
                 mode: ComputerObservationMode::Visual,
+                scope: None,
             },
         )
         .await;
@@ -493,6 +531,7 @@ async fn screenshots_use_ledger_content_and_original_actor_acl() {
         .observation
         .unwrap()
         .screenshot
+        .unwrap()
         .artifact_ref
         .starts_with("executor-content:"));
     let query = ExecutorClientMessage::Query(ExecutorQueryRequest {
@@ -514,6 +553,68 @@ async fn screenshots_use_ledger_content_and_original_actor_acl() {
         panic!()
     };
     assert_eq!(denied.error.code, ExecutorErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn screenshots_beyond_the_file_limit_fit_the_image_limit_and_still_reserve_store_space() {
+    let mut fixture = Fixture::new(Behavior::LargeImage, ExecutorOp::ALL.to_vec()).await;
+    let limits = fixture.config.limits.clone();
+    assert!(LARGE_PNG_BYTES as u64 > limits.max_file_bytes);
+    assert!(LARGE_PNG_BYTES as u64 <= limits.max_computer_image_bytes);
+    let observe = ComputerRequest::Observe {
+        binding_id: "desktop:display:1".into(),
+        mode: ComputerObservationMode::Visual,
+        scope: None,
+    };
+    fixture.submit("large", observe.clone()).await;
+    let result = fixture.result("large").await.result.unwrap();
+    assert_eq!(result.state, ExecutorOpState::Succeeded, "{:?}", result.computer);
+    assert_eq!(result.content.unwrap().retained_bytes, LARGE_PNG_BYTES as u64);
+    assert!(result.computer.unwrap().observation.unwrap().screenshot.unwrap()
+        .artifact_ref.starts_with("executor-content:"));
+
+    let mut config = fixture.config.clone();
+    config.generation += 1;
+    config.revision = "sha256:small-store".into();
+    config.limits.max_store_bytes = limits.max_computer_image_bytes;
+    assert_eq!(fixture.executor.apply_config(Some(config)).await, ApplyResult::Replaced);
+    fixture.client = connect(&fixture.executor, "test").await;
+    let ExecutorServerMessage::Error(full) = fixture.submit("no-room", observe).await else {
+        panic!("the image reservation must not fit the remaining store budget")
+    };
+    assert_eq!(full.error.code, ExecutorErrorCode::CapacityExceeded);
+    assert_eq!(fixture.driver.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn semantic_feedback_stays_in_the_control_frame_within_its_limit() {
+    for (behavior, op_id) in [(Behavior::Semantic, "semantic"), (Behavior::OversizedSemantic, "oversized")] {
+        let mut fixture = Fixture::new(behavior, ExecutorOp::ALL.to_vec()).await;
+        fixture
+            .submit(
+                op_id,
+                ComputerRequest::Observe {
+                    binding_id: "desktop:display:1".into(),
+                    mode: ComputerObservationMode::Semantic,
+                    scope: None,
+                },
+            )
+            .await;
+        let result = fixture.result(op_id).await.result.unwrap();
+        assert!(result.content.is_none(), "semantic observations never use the content channel");
+        let computer = result.computer.unwrap();
+        if matches!(behavior, Behavior::Semantic) {
+            assert_eq!(result.state, ExecutorOpState::Succeeded);
+            let observation = computer.observation.unwrap();
+            assert!(observation.screenshot.is_none());
+            assert!(observation.semantic.unwrap().text.contains("[e2] button \"Save\""));
+        } else {
+            assert_eq!(result.state, ExecutorOpState::Failed);
+            assert_eq!(computer.feedback.state, ComputerFeedbackState::Failed);
+            assert!(computer.observation.is_none());
+            assert_eq!(computer.error.unwrap().code, "feedback_failed");
+        }
+    }
 }
 
 #[tokio::test]

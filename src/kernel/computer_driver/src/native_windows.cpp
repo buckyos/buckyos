@@ -6,11 +6,21 @@
 #include <objidl.h>
 #include <gdiplus.h>
 #include <sddl.h>
+#include <objbase.h>
+#include <oleauto.h>
+#include <dwmapi.h>
+#include <uiautomation.h>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <deque>
+#include <functional>
+#include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -631,6 +641,750 @@ extern "C" int bucky_desktop_release(uint16_t cleanup) {
     } catch (...) { return 1; }
 }
 
+// UI Automation: every IUIAutomation call runs on one MTA worker thread.
+// Callers queue a job and wait with a deadline; a job that has not started
+// when its caller gives up is skipped, so a late action never runs.
+
+enum : uint32_t {
+    PAT_INVOKE = 1u << 0, PAT_VALUE = 1u << 1, PAT_TOGGLE = 1u << 2, PAT_SELECTION_ITEM = 1u << 3,
+    PAT_EXPAND_COLLAPSE = 1u << 4, PAT_SCROLL_ITEM = 1u << 5, PAT_FOCUSABLE = 1u << 6,
+};
+enum : uint32_t {
+    ST_DISABLED = 1u << 0, ST_FOCUSED = 1u << 1, ST_READONLY = 1u << 2, ST_SELECTED = 1u << 3,
+    ST_CHECKED = 1u << 4, ST_MIXED = 1u << 5, ST_EXPANDED = 1u << 6, ST_COLLAPSED = 1u << 7,
+    ST_PARTIAL = 1u << 8, ST_DIALOG = 1u << 9,
+};
+enum : int { UR_OK = 0, UR_STALE = 1, UR_TIMEOUT = 2, UR_FAILED = 3, UR_UNAVAILABLE = 4, UR_BUSY = 5, UR_DISABLED = 6, UR_DENIED = 7, UR_NOT_STARTED = 8 };
+enum : int { JOB_QUEUED = 0, JOB_RUNNING = 1, JOB_ABANDONED = 2 };
+
+static const uint32_t UIA_MAX_VISITED = 3000;
+static const uint32_t UIA_MAX_POPUPS = 4;
+static const size_t UIA_MAX_NAME = 512;
+static const size_t UIA_MAX_VALUE = 20000;
+static const size_t UIA_MAX_SNAPSHOTS = 96;
+
+struct UiaJob {
+    std::function<int()> run;
+    std::atomic<int> state{JOB_QUEUED};
+    int result = UR_FAILED;
+    std::string json;
+    HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ~UiaJob() { if (done) CloseHandle(done); }
+};
+
+struct UiaNode {
+    IUIAutomationElement *element = nullptr;
+    HWND root = nullptr;
+    DWORD root_pid = 0, pid = 0;
+    std::vector<int> id;
+};
+
+struct UiaSnapshot { std::vector<UiaNode> nodes; };
+
+struct Uia {
+    std::once_flag start;
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::deque<std::shared_ptr<UiaJob>> jobs;
+    bool stop = false;
+    HRESULT status = E_PENDING;
+    HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE thread = nullptr;
+    IUIAutomation2 *automation = nullptr;
+    IUIAutomationCondition *view = nullptr;
+    IUIAutomationCacheRequest *element_cache = nullptr;
+    IUIAutomationCacheRequest *children_cache = nullptr;
+    std::map<uint64_t, UiaSnapshot> snapshots;
+    uint64_t next_snapshot = 1;
+};
+
+static Uia &uia() { static Uia *value = new Uia; return *value; }
+
+static void release_snapshot(UiaSnapshot &snapshot) {
+    for (auto &node : snapshot.nodes) if (node.element) { node.element->Release(); node.element = nullptr; }
+}
+
+static HRESULT make_cache(Uia &u, TreeScope scope, IUIAutomationCacheRequest **out) {
+    IUIAutomationCacheRequest *request = nullptr;
+    HRESULT hr = u.automation->CreateCacheRequest(&request);
+    if (FAILED(hr)) return hr;
+    const PROPERTYID required[] = {
+        UIA_RuntimeIdPropertyId, UIA_ControlTypePropertyId, UIA_NamePropertyId, UIA_AutomationIdPropertyId,
+        UIA_ClassNamePropertyId, UIA_BoundingRectanglePropertyId, UIA_IsOffscreenPropertyId, UIA_IsEnabledPropertyId,
+        UIA_HasKeyboardFocusPropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_ProcessIdPropertyId,
+        UIA_IsInvokePatternAvailablePropertyId, UIA_IsValuePatternAvailablePropertyId, UIA_IsTogglePatternAvailablePropertyId,
+        UIA_IsSelectionItemPatternAvailablePropertyId, UIA_IsExpandCollapsePatternAvailablePropertyId,
+        UIA_IsScrollItemPatternAvailablePropertyId, UIA_ValueValuePropertyId, UIA_ValueIsReadOnlyPropertyId,
+        UIA_ToggleToggleStatePropertyId, UIA_SelectionItemIsSelectedPropertyId, UIA_ExpandCollapseExpandCollapseStatePropertyId,
+    };
+    for (auto id : required) {
+        hr = request->AddProperty(id);
+        if (FAILED(hr)) break;
+    }
+    if (SUCCEEDED(hr)) {
+        request->AddProperty(UIA_AriaRolePropertyId);
+        request->AddProperty(UIA_HeadingLevelPropertyId);
+        request->AddProperty(UIA_IsDialogPropertyId);
+        hr = request->put_TreeScope(scope);
+    }
+    if (SUCCEEDED(hr)) hr = request->put_TreeFilter(u.view);
+    if (FAILED(hr)) { request->Release(); return hr; }
+    *out = request;
+    return S_OK;
+}
+
+static DWORD WINAPI uia_thread(void *) {
+    auto &u = uia();
+    DpiScope dpi;
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool com = SUCCEEDED(hr);
+    if (com) hr = CoCreateInstance(__uuidof(CUIAutomation8), nullptr, CLSCTX_INPROC_SERVER, __uuidof(IUIAutomation2), reinterpret_cast<void **>(&u.automation));
+    if (SUCCEEDED(hr)) hr = u.automation->put_ConnectionTimeout(1000);
+    if (SUCCEEDED(hr)) hr = u.automation->put_TransactionTimeout(1500);
+    if (SUCCEEDED(hr)) hr = u.automation->get_ControlViewCondition(&u.view);
+    if (SUCCEEDED(hr)) hr = make_cache(u, TreeScope_Element, &u.element_cache);
+    if (SUCCEEDED(hr)) hr = make_cache(u, TreeScope_Children, &u.children_cache);
+    if (SUCCEEDED(hr) && !dpi.previous) hr = E_FAIL;
+    {
+        std::lock_guard<std::mutex> lock(u.mutex);
+        u.status = hr;
+    }
+    SetEvent(u.ready);
+    for (;;) {
+        std::shared_ptr<UiaJob> job;
+        {
+            std::unique_lock<std::mutex> lock(u.mutex);
+            u.wake.wait(lock, [&u] { return u.stop || !u.jobs.empty(); });
+            if (u.stop) break;
+            job = u.jobs.front();
+            u.jobs.pop_front();
+        }
+        int expected = JOB_QUEUED;
+        if (job->state.compare_exchange_strong(expected, JOB_RUNNING)) {
+            try { job->result = SUCCEEDED(hr) ? job->run() : UR_UNAVAILABLE; } catch (...) { job->result = UR_FAILED; }
+        }
+        SetEvent(job->done);
+    }
+    for (auto &entry : u.snapshots) release_snapshot(entry.second);
+    u.snapshots.clear();
+    if (u.children_cache) u.children_cache->Release();
+    if (u.element_cache) u.element_cache->Release();
+    if (u.view) u.view->Release();
+    if (u.automation) u.automation->Release();
+    if (com) CoUninitialize();
+    return 0;
+}
+
+static void uia_shutdown() {
+    auto &u = uia();
+    {
+        std::lock_guard<std::mutex> lock(u.mutex);
+        u.stop = true;
+    }
+    u.wake.notify_all();
+    if (u.thread) WaitForSingleObject(u.thread, 300);
+}
+
+static bool uia_ready() {
+    auto &u = uia();
+    std::call_once(u.start, [&u] {
+        if (!u.ready) return;
+        u.thread = CreateThread(nullptr, 0, uia_thread, nullptr, 0, nullptr);
+        if (!u.thread) { SetEvent(u.ready); return; }
+        std::atexit(uia_shutdown);
+    });
+    if (!u.ready || WaitForSingleObject(u.ready, 2000) != WAIT_OBJECT_0) return false;
+    std::lock_guard<std::mutex> lock(u.mutex);
+    return u.thread && SUCCEEDED(u.status) && !u.stop;
+}
+
+static int submit(const std::shared_ptr<UiaJob> &job, uint32_t timeout_ms, bool wait_result) {
+    auto &u = uia();
+    if (!uia_ready()) return UR_UNAVAILABLE;
+    if (!job->done) return UR_FAILED;
+    {
+        std::lock_guard<std::mutex> lock(u.mutex);
+        if (u.stop) return UR_UNAVAILABLE;
+        if (u.jobs.size() >= 16) return UR_BUSY;
+        u.jobs.push_back(job);
+    }
+    u.wake.notify_one();
+    if (!wait_result) return UR_OK;
+    ULONGLONG until = GetTickCount64() + timeout_ms;
+    for (;;) {
+        ULONGLONG now = GetTickCount64();
+        DWORD remaining = now >= until ? 0 : static_cast<DWORD>(until - now);
+        DWORD waited = MsgWaitForMultipleObjects(1, &job->done, FALSE, remaining, QS_ALLINPUT);
+        if (waited == WAIT_OBJECT_0) return job->result;
+        if (waited == WAIT_OBJECT_0 + 1) {
+            MSG message;
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            continue;
+        }
+        int expected = JOB_QUEUED;
+        return job->state.compare_exchange_strong(expected, JOB_ABANDONED) ? UR_NOT_STARTED : UR_TIMEOUT;
+    }
+}
+
+static int uia_error(HRESULT hr) {
+    if (hr == UIA_E_ELEMENTNOTAVAILABLE) return UR_STALE;
+    if (hr == UIA_E_TIMEOUT) return UR_TIMEOUT;
+    if (hr == UIA_E_ELEMENTNOTENABLED) return UR_DISABLED;
+    if (hr == E_ACCESSDENIED) return UR_DENIED;
+    return UR_FAILED;
+}
+
+static std::wstring clip(const wchar_t *text, size_t length, size_t limit) {
+    if (!text) return {};
+    if (length > limit) {
+        length = limit;
+        if (length && text[length - 1] >= 0xd800 && text[length - 1] <= 0xdbff) --length;
+    }
+    return std::wstring(text, length);
+}
+
+static std::wstring take_bstr(BSTR text, size_t limit) {
+    std::wstring result = clip(text, text ? SysStringLen(text) : 0, limit);
+    SysFreeString(text);
+    return result;
+}
+
+static void json_string(std::string &out, const std::wstring &text) {
+    std::string utf8;
+    if (!text.empty()) {
+        int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+        if (size > 0) {
+            utf8.resize(static_cast<size_t>(size));
+            WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), utf8.data(), size, nullptr, nullptr);
+        }
+    }
+    out += '"';
+    for (char c : utf8) {
+        auto byte = static_cast<unsigned char>(c);
+        if (c == '"' || c == '\\') { out += '\\'; out += c; }
+        else if (byte < 0x20) { char escaped[8]; std::snprintf(escaped, sizeof(escaped), "\\u%04x", byte); out += escaped; }
+        else out += c;
+    }
+    out += '"';
+}
+
+static void json_rect(std::string &out, LONG left, LONG top, LONG right, LONG bottom) {
+    out += '[' + std::to_string(left) + ',' + std::to_string(top) + ',' + std::to_string(right > left ? right - left : 0)
+        + ',' + std::to_string(bottom > top ? bottom - top : 0) + ']';
+}
+
+static bool cached_bool(IUIAutomationElement *element, PROPERTYID id) {
+    VARIANT value;
+    VariantInit(&value);
+    bool result = SUCCEEDED(element->GetCachedPropertyValueEx(id, TRUE, &value)) && value.vt == VT_BOOL && value.boolVal == VARIANT_TRUE;
+    VariantClear(&value);
+    return result;
+}
+
+static int cached_int(IUIAutomationElement *element, PROPERTYID id, int fallback) {
+    VARIANT value;
+    VariantInit(&value);
+    int result = SUCCEEDED(element->GetCachedPropertyValueEx(id, TRUE, &value)) && value.vt == VT_I4 ? value.lVal : fallback;
+    VariantClear(&value);
+    return result;
+}
+
+static std::wstring cached_text(IUIAutomationElement *element, PROPERTYID id, size_t limit) {
+    VARIANT value;
+    VariantInit(&value);
+    std::wstring result;
+    if (SUCCEEDED(element->GetCachedPropertyValueEx(id, TRUE, &value)) && value.vt == VT_BSTR) result = clip(value.bstrVal, SysStringLen(value.bstrVal), limit);
+    VariantClear(&value);
+    return result;
+}
+
+static std::vector<int> cached_runtime_id(IUIAutomationElement *element) {
+    VARIANT value;
+    VariantInit(&value);
+    std::vector<int> result;
+    if (SUCCEEDED(element->GetCachedPropertyValue(UIA_RuntimeIdPropertyId, &value)) && value.vt == (VT_ARRAY | VT_I4) && value.parray) {
+        LONG lower = 0, upper = -1;
+        SafeArrayGetLBound(value.parray, 1, &lower);
+        SafeArrayGetUBound(value.parray, 1, &upper);
+        for (LONG i = lower; i <= upper && result.size() < 64; ++i) {
+            int item = 0;
+            if (SUCCEEDED(SafeArrayGetElement(value.parray, &i, &item))) result.push_back(item);
+        }
+    }
+    VariantClear(&value);
+    return result;
+}
+
+struct UiaFacts {
+    CONTROLTYPEID type = 0;
+    std::wstring name;
+    uint32_t patterns = 0, states = 0;
+    bool offscreen = false;
+    DWORD pid = 0;
+    RECT bounds{};
+};
+
+static UiaFacts read_facts(IUIAutomationElement *element) {
+    UiaFacts facts;
+    element->get_CachedControlType(&facts.type);
+    BSTR name = nullptr;
+    if (SUCCEEDED(element->get_CachedName(&name))) facts.name = take_bstr(name, UIA_MAX_NAME);
+    BOOL flag = FALSE;
+    if (SUCCEEDED(element->get_CachedIsOffscreen(&flag))) facts.offscreen = flag != FALSE;
+    flag = TRUE;
+    if (SUCCEEDED(element->get_CachedIsEnabled(&flag)) && !flag) facts.states |= ST_DISABLED;
+    flag = FALSE;
+    if (SUCCEEDED(element->get_CachedHasKeyboardFocus(&flag)) && flag) facts.states |= ST_FOCUSED;
+    flag = FALSE;
+    if (SUCCEEDED(element->get_CachedIsKeyboardFocusable(&flag)) && flag) facts.patterns |= PAT_FOCUSABLE;
+    int pid = 0;
+    if (SUCCEEDED(element->get_CachedProcessId(&pid))) facts.pid = static_cast<DWORD>(pid);
+    element->get_CachedBoundingRectangle(&facts.bounds);
+    if (cached_bool(element, UIA_IsInvokePatternAvailablePropertyId)) facts.patterns |= PAT_INVOKE;
+    if (cached_bool(element, UIA_IsScrollItemPatternAvailablePropertyId)) facts.patterns |= PAT_SCROLL_ITEM;
+    if (cached_bool(element, UIA_IsValuePatternAvailablePropertyId)) {
+        facts.patterns |= PAT_VALUE;
+        if (cached_bool(element, UIA_ValueIsReadOnlyPropertyId)) facts.states |= ST_READONLY;
+    }
+    if (cached_bool(element, UIA_IsTogglePatternAvailablePropertyId)) {
+        facts.patterns |= PAT_TOGGLE;
+        int toggle = cached_int(element, UIA_ToggleToggleStatePropertyId, ToggleState_Off);
+        if (toggle == ToggleState_On) facts.states |= ST_CHECKED;
+        else if (toggle == ToggleState_Indeterminate) facts.states |= ST_MIXED;
+    }
+    if (cached_bool(element, UIA_IsSelectionItemPatternAvailablePropertyId)) {
+        facts.patterns |= PAT_SELECTION_ITEM;
+        if (cached_bool(element, UIA_SelectionItemIsSelectedPropertyId)) facts.states |= ST_SELECTED;
+    }
+    if (cached_bool(element, UIA_IsExpandCollapsePatternAvailablePropertyId)) {
+        int state = cached_int(element, UIA_ExpandCollapseExpandCollapseStatePropertyId, ExpandCollapseState_LeafNode);
+        if (state != ExpandCollapseState_LeafNode) facts.patterns |= PAT_EXPAND_COLLAPSE;
+        if (state == ExpandCollapseState_Expanded) facts.states |= ST_EXPANDED;
+        else if (state == ExpandCollapseState_Collapsed) facts.states |= ST_COLLAPSED;
+        else if (state == ExpandCollapseState_PartiallyExpanded) facts.states |= ST_PARTIAL;
+    }
+    if (cached_bool(element, UIA_IsDialogPropertyId)) facts.states |= ST_DIALOG;
+    return facts;
+}
+
+static void node_json(std::string &out, IUIAutomationElement *element, const UiaFacts &facts, int parent, HWND root) {
+    out += "{\"p\":" + std::to_string(parent) + ",\"ct\":" + std::to_string(facts.type) + ",\"n\":";
+    json_string(out, facts.name);
+    BSTR text = nullptr;
+    out += ",\"aid\":";
+    json_string(out, SUCCEEDED(element->get_CachedAutomationId(&text)) ? take_bstr(text, 128) : std::wstring());
+    text = nullptr;
+    out += ",\"cls\":";
+    json_string(out, SUCCEEDED(element->get_CachedClassName(&text)) ? take_bstr(text, 128) : std::wstring());
+    out += ",\"aria\":";
+    json_string(out, cached_text(element, UIA_AriaRolePropertyId, 64));
+    int heading = cached_int(element, UIA_HeadingLevelPropertyId, HeadingLevel_None);
+    out += ",\"hl\":" + std::to_string(heading > HeadingLevel_None && heading <= HeadingLevel9 ? heading - HeadingLevel_None : 0);
+    out += ",\"pat\":" + std::to_string(facts.patterns) + ",\"st\":" + std::to_string(facts.states) + ",\"b\":";
+    json_rect(out, facts.bounds.left, facts.bounds.top, facts.bounds.right, facts.bounds.bottom);
+    if (facts.patterns & PAT_VALUE) {
+        out += ",\"v\":";
+        json_string(out, cached_text(element, UIA_ValueValuePropertyId, 1024));
+    }
+    out += ",\"pid\":" + std::to_string(facts.pid) + ",\"hwnd\":" + std::to_string(reinterpret_cast<uintptr_t>(root)) + '}';
+}
+
+static bool container_type(CONTROLTYPEID type) {
+    switch (type) {
+        case UIA_PaneControlTypeId: case UIA_GroupControlTypeId: case UIA_CustomControlTypeId: case UIA_TextControlTypeId:
+        case UIA_ImageControlTypeId: case UIA_CalendarControlTypeId: case UIA_ProgressBarControlTypeId: case UIA_ScrollBarControlTypeId:
+        case UIA_SpinnerControlTypeId: case UIA_StatusBarControlTypeId: case UIA_ToolTipControlTypeId: case UIA_ThumbControlTypeId:
+        case UIA_TitleBarControlTypeId: case UIA_SeparatorControlTypeId: case UIA_SemanticZoomControlTypeId: case UIA_HeaderControlTypeId:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool leaf_type(CONTROLTYPEID type) {
+    return type == UIA_TextControlTypeId || type == UIA_ImageControlTypeId || type == UIA_SeparatorControlTypeId
+        || type == UIA_ThumbControlTypeId || type == UIA_ScrollBarControlTypeId || type == UIA_ProgressBarControlTypeId;
+}
+
+static RECT primary_rect() {
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    POINT origin{0, 0};
+    if (!GetMonitorInfoW(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &info)) return RECT{};
+    return info.rcMonitor;
+}
+
+static bool shown_on(HWND window, const RECT &display, RECT &rect) {
+    DWORD cloaked = 0;
+    if (!IsWindowVisible(window) || IsIconic(window) || !GetWindowRect(window, &rect)) return false;
+    if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return false;
+    RECT overlap{};
+    return rect.right > rect.left && rect.bottom > rect.top && IntersectRect(&overlap, &rect, &display);
+}
+
+static std::wstring process_name(DWORD pid) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return {};
+    wchar_t path[MAX_PATH]{};
+    DWORD length = MAX_PATH;
+    std::wstring result;
+    if (QueryFullProcessImageNameW(process, 0, path, &length)) {
+        std::wstring full(path, length);
+        size_t slash = full.find_last_of(L"\\/");
+        result = slash == std::wstring::npos ? full : full.substr(slash + 1);
+    }
+    CloseHandle(process);
+    return result;
+}
+
+struct WindowSearch {
+    RECT display{};
+    HWND foreground = nullptr;
+    std::string json;
+    uint32_t count = 0;
+    HWND root = nullptr;
+    DWORD root_pid = 0;
+    std::vector<HWND> popups;
+};
+
+static BOOL CALLBACK collect_window(HWND window, LPARAM context) {
+    auto &search = *reinterpret_cast<WindowSearch *>(context);
+    RECT rect{};
+    if (search.count >= 32 || !shown_on(window, search.display, rect)) return TRUE;
+    wchar_t title[256]{};
+    int length = InternalGetWindowText(window, title, 256);
+    bool foreground = window == search.foreground;
+    if ((length <= 0 || (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)) && !foreground) return TRUE;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(window, &pid);
+    wchar_t cls[128]{};
+    int cls_length = GetClassNameW(window, cls, 128);
+    if (search.count) search.json += ',';
+    search.json += "{\"hwnd\":" + std::to_string(reinterpret_cast<uintptr_t>(window)) + ",\"pid\":" + std::to_string(pid) + ",\"title\":";
+    json_string(search.json, std::wstring(title, length > 0 ? static_cast<size_t>(length) : 0));
+    search.json += ",\"process\":";
+    json_string(search.json, process_name(pid));
+    search.json += ",\"class\":";
+    json_string(search.json, std::wstring(cls, cls_length > 0 ? static_cast<size_t>(cls_length) : 0));
+    search.json += ",\"bounds\":";
+    json_rect(search.json, rect.left, rect.top, rect.right, rect.bottom);
+    search.json += std::string(",\"foreground\":") + (foreground ? "true" : "false") + ",\"accessible\":" + (process_allowed(pid) ? "true" : "false") + '}';
+    ++search.count;
+    return TRUE;
+}
+
+static BOOL CALLBACK collect_popup(HWND window, LPARAM context) {
+    auto &search = *reinterpret_cast<WindowSearch *>(context);
+    RECT rect{};
+    if (window == search.root || search.popups.size() >= UIA_MAX_POPUPS || !shown_on(window, search.display, rect)) return TRUE;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(window, &pid);
+    if (pid != search.root_pid) return TRUE;
+    wchar_t cls[16]{};
+    GetClassNameW(window, cls, 16);
+    bool owned = std::wcscmp(cls, L"#32768") == 0;
+    HWND owner = GetWindow(window, GW_OWNER);
+    for (int depth = 0; owner && !owned && depth < 16; ++depth) {
+        owned = owner == search.root;
+        owner = GetWindow(owner, GW_OWNER);
+    }
+    if (owned) search.popups.push_back(window);
+    return TRUE;
+}
+
+static bool window_matches(HWND window, DWORD pid) {
+    DWORD owner = 0;
+    return window && IsWindow(window) && GetWindowThreadProcessId(window, &owner) && owner == pid;
+}
+
+static int snapshot_job(Uia &u, HWND requested, DWORD requested_pid, uint32_t max_nodes, uint32_t budget_ms, std::string &json) {
+    ULONGLONG deadline = GetTickCount64() + budget_ms;
+    if (requested && !window_matches(requested, requested_pid)) return UR_STALE;
+    WindowSearch search;
+    search.display = primary_rect();
+    search.foreground = GetForegroundWindow();
+    EnumWindows(collect_window, reinterpret_cast<LPARAM>(&search));
+    search.root = requested ? requested : GetAncestor(search.foreground, GA_ROOT);
+    if (search.root) GetWindowThreadProcessId(search.root, &search.root_pid);
+    json = "{\"root\":" + std::to_string(reinterpret_cast<uintptr_t>(search.root)) + ",\"root_pid\":" + std::to_string(search.root_pid)
+        + ",\"windows\":[" + search.json + "],\"nodes\":[";
+    UiaSnapshot snapshot;
+    const char *reason = nullptr;
+    bool truncated = false;
+    uint32_t visited = 0, counted = 0;
+    if (!search.root) reason = "no_window";
+    else if (!process_allowed(search.root_pid)) reason = "window_inaccessible";
+    else {
+        std::vector<HWND> roots{search.root};
+        EnumWindows(collect_popup, reinterpret_cast<LPARAM>(&search));
+        roots.insert(roots.end(), search.popups.begin(), search.popups.end());
+        // A visit owns one reference to the element it expands; `out` is the
+        // returned node its children hang under. Offscreen nodes are not
+        // returned; one without geometry (a WinUI Popup window) is a logical
+        // container whose children may be on screen, so it is still expanded.
+        struct Visit { IUIAutomationElement *element; int out; int label; uint32_t depth; HWND root; DWORD root_pid; };
+        std::deque<Visit> queue;
+        std::vector<std::wstring> labels;
+        std::set<std::vector<int>> seen;
+        auto add = [&](IUIAutomationElement *element, int parent, int label, HWND root, DWORD root_pid, uint32_t depth, bool is_root) {
+            ++visited;
+            UiaFacts facts = read_facts(element);
+            std::vector<int> id = cached_runtime_id(element);
+            if (!id.empty() && !seen.insert(id).second) { element->Release(); return; }
+            if (facts.offscreen && !is_root) {
+                bool geometry = facts.bounds.right > facts.bounds.left && facts.bounds.bottom > facts.bounds.top;
+                if (geometry || leaf_type(facts.type)) element->Release();
+                else queue.push_back(Visit{element, parent, label, depth, root, root_pid});
+                return;
+            }
+            uint32_t actions = facts.patterns & ~PAT_SCROLL_ITEM;
+            bool redundant = (facts.type == UIA_TextControlTypeId || facts.type == UIA_ImageControlTypeId) && !actions && !facts.name.empty()
+                && label >= 0 && labels[static_cast<size_t>(label)].find(facts.name) != std::wstring::npos;
+            bool counts = is_root || (!redundant && !(facts.name.empty() && !actions && container_type(facts.type)));
+            if (snapshot.nodes.size()) json += ',';
+            node_json(json, element, facts, parent, root);
+            UiaNode node;
+            node.element = element;
+            node.root = root;
+            node.root_pid = root_pid;
+            node.pid = facts.pid;
+            node.id = std::move(id);
+            snapshot.nodes.push_back(std::move(node));
+            int next_label = label;
+            if (counts) {
+                ++counted;
+                labels.push_back(facts.name);
+                next_label = static_cast<int>(labels.size() - 1);
+            }
+            if (!leaf_type(facts.type)) {
+                element->AddRef();
+                queue.push_back(Visit{element, static_cast<int>(snapshot.nodes.size() - 1), next_label, depth, root, root_pid});
+            }
+        };
+        for (auto root : roots) {
+            IUIAutomationElement *element = nullptr;
+            HRESULT hr = u.automation->ElementFromHandleBuildCache(root, u.element_cache, &element);
+            if (SUCCEEDED(hr) && element) add(element, -1, -1, root, search.root_pid, 0, true);
+            else if (root == search.root) reason = uia_error(hr) == UR_TIMEOUT ? "backend_timeout" : "backend_error";
+        }
+        while (!queue.empty()) {
+            if (GetTickCount64() >= deadline) { reason = "timeout"; break; }
+            if (counted >= max_nodes) { reason = "max_nodes"; break; }
+            if (visited >= UIA_MAX_VISITED) { reason = "max_visited"; break; }
+            Visit visit = queue.front();
+            queue.pop_front();
+            IUIAutomationElement *updated = nullptr;
+            HRESULT hr = visit.depth < 256 ? visit.element->BuildUpdatedCache(u.children_cache, &updated) : E_ABORT;
+            visit.element->Release();
+            if (FAILED(hr) || !updated) {
+                if (hr == UIA_E_TIMEOUT) reason = "backend_timeout";
+                continue;
+            }
+            IUIAutomationElementArray *children = nullptr;
+            int length = 0;
+            if (SUCCEEDED(updated->GetCachedChildren(&children)) && children && SUCCEEDED(children->get_Length(&length))) {
+                for (int i = 0; i < length; ++i) {
+                    if (visited >= UIA_MAX_VISITED) { reason = "max_visited"; truncated = true; break; }
+                    IUIAutomationElement *child = nullptr;
+                    if (SUCCEEDED(children->GetElement(i, &child)) && child)
+                        add(child, visit.out, visit.label, visit.root, visit.root_pid, visit.depth + 1, false);
+                }
+            }
+            if (children) children->Release();
+            updated->Release();
+        }
+        truncated = truncated || !queue.empty() || (reason && std::strcmp(reason, "backend_timeout") == 0);
+        for (auto &visit : queue) visit.element->Release();
+    }
+    json += "],\"visited\":" + std::to_string(visited) + ",\"truncated\":" + (truncated ? "true" : "false") + ",\"reason\":";
+    json_string(json, reason ? std::wstring(reason, reason + std::strlen(reason)) : std::wstring());
+    uint64_t id = u.next_snapshot++;
+    json += ",\"snapshot\":" + std::to_string(id) + '}';
+    while (u.snapshots.size() >= UIA_MAX_SNAPSHOTS) {
+        release_snapshot(u.snapshots.begin()->second);
+        u.snapshots.erase(u.snapshots.begin());
+    }
+    u.snapshots.emplace(id, std::move(snapshot));
+    return UR_OK;
+}
+
+static int refresh(Uia &u, UiaNode &node, IUIAutomationElement **fresh) {
+    *fresh = nullptr;
+    if (!node.element || !window_matches(node.root, node.root_pid)) return UR_STALE;
+    HRESULT hr = node.element->BuildUpdatedCache(u.element_cache, fresh);
+    if (FAILED(hr) || !*fresh) return FAILED(hr) ? uia_error(hr) : UR_STALE;
+    int pid = 0;
+    if (cached_runtime_id(*fresh) != node.id || FAILED((*fresh)->get_CachedProcessId(&pid)) || static_cast<DWORD>(pid) != node.pid) {
+        (*fresh)->Release();
+        *fresh = nullptr;
+        return UR_STALE;
+    }
+    return UR_OK;
+}
+
+static int element_job(Uia &u, uint64_t snapshot_id, uint32_t index, uint32_t op, const std::wstring &text, std::string &json) {
+    auto found = u.snapshots.find(snapshot_id);
+    if (found == u.snapshots.end() || index >= found->second.nodes.size()) return UR_STALE;
+    UiaNode &node = found->second.nodes[index];
+    IUIAutomationElement *fresh = nullptr;
+    int status = refresh(u, node, &fresh);
+    if (status != UR_OK) return status;
+    UiaFacts facts = read_facts(fresh);
+    HRESULT hr = S_OK;
+    json = "{";
+    if (op == 0) {
+        POINT point{(facts.bounds.left + facts.bounds.right) / 2, (facts.bounds.top + facts.bounds.bottom) / 2};
+        BOOL clickable = FALSE;
+        POINT offered{};
+        if (SUCCEEDED(fresh->GetClickablePoint(&offered, &clickable)) && clickable) point = offered;
+        POINT center{(facts.bounds.left + facts.bounds.right) / 2, (facts.bounds.top + facts.bounds.bottom) / 2};
+        HWND at = WindowFromPoint(point), at_center = WindowFromPoint(center);
+        bool obscured = !at || GetAncestor(at, GA_ROOT) != node.root;
+        bool center_obscured = !at_center || GetAncestor(at_center, GA_ROOT) != node.root;
+        json += "\"off\":" + std::string(facts.offscreen ? "true" : "false") + ",\"st\":" + std::to_string(facts.states)
+            + ",\"pat\":" + std::to_string(facts.patterns) + ",\"b\":";
+        json_rect(json, facts.bounds.left, facts.bounds.top, facts.bounds.right, facts.bounds.bottom);
+        json += ",\"pt\":[" + std::to_string(point.x) + ',' + std::to_string(point.y) + "],\"obscured\":" + (obscured ? "true" : "false")
+            + ",\"center_obscured\":" + (center_obscured ? "true" : "false");
+    } else if (facts.states & ST_DISABLED) {
+        status = UR_DISABLED;
+    } else if (op == 1) {
+        hr = fresh->SetFocus();
+        bool focused = false;
+        for (int attempt = 0; SUCCEEDED(hr) && !focused && attempt < 10; ++attempt) {
+            IUIAutomationElement *after = nullptr;
+            if (SUCCEEDED(node.element->BuildUpdatedCache(u.element_cache, &after)) && after) {
+                BOOL flag = FALSE;
+                focused = SUCCEEDED(after->get_CachedHasKeyboardFocus(&flag)) && flag;
+                after->Release();
+            }
+            if (!focused) Sleep(20);
+        }
+        json += std::string("\"focused\":") + (focused ? "true" : "false");
+    } else if (op == 2) {
+        IUIAutomationInvokePattern *pattern = nullptr;
+        hr = fresh->GetCurrentPatternAs(UIA_InvokePatternId, __uuidof(IUIAutomationInvokePattern), reinterpret_cast<void **>(&pattern));
+        if (SUCCEEDED(hr) && !pattern) hr = E_NOINTERFACE;
+        if (SUCCEEDED(hr)) hr = pattern->Invoke();
+        if (pattern) pattern->Release();
+        if (SUCCEEDED(hr)) {
+            IUIAutomationElement *after = nullptr;
+            bool gone = refresh(u, node, &after) != UR_OK;
+            json += std::string("\"gone\":") + (gone ? "true" : "false");
+            if (after) {
+                UiaFacts current = read_facts(after);
+                json += ",\"st\":" + std::to_string(current.states);
+                after->Release();
+            }
+        }
+    } else if (op == 3) {
+        IUIAutomationValuePattern *pattern = nullptr;
+        hr = fresh->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern), reinterpret_cast<void **>(&pattern));
+        if (SUCCEEDED(hr) && !pattern) hr = E_NOINTERFACE;
+        BSTR value = nullptr;
+        if (SUCCEEDED(hr)) {
+            value = SysAllocStringLen(text.data(), static_cast<UINT>(text.size()));
+            hr = value ? pattern->SetValue(value) : E_OUTOFMEMORY;
+            SysFreeString(value);
+        }
+        if (SUCCEEDED(hr)) {
+            BSTR current = nullptr;
+            if (SUCCEEDED(pattern->get_CurrentValue(&current)) && current) {
+                json += "\"v\":";
+                json_string(json, take_bstr(current, UIA_MAX_VALUE));
+            } else SysFreeString(current);
+        }
+        if (pattern) pattern->Release();
+    } else {
+        status = UR_FAILED;
+    }
+    fresh->Release();
+    json += '}';
+    if (status == UR_OK && FAILED(hr)) status = uia_error(hr);
+    return status;
+}
+
+static int take_json(const std::shared_ptr<UiaJob> &job, int status, char **json, size_t *length) {
+    if (status != UR_OK) return status;
+    *json = static_cast<char *>(std::malloc(job->json.size() + 1));
+    if (!*json) return UR_FAILED;
+    std::memcpy(*json, job->json.data(), job->json.size());
+    (*json)[job->json.size()] = 0;
+    *length = job->json.size();
+    return UR_OK;
+}
+
+extern "C" int bucky_uia_status() {
+    try { return initialize() && uia_ready() ? UR_OK : UR_UNAVAILABLE; } catch (...) { return UR_UNAVAILABLE; }
+}
+
+extern "C" int bucky_uia_snapshot(uint64_t root, uint32_t root_pid, uint32_t max_nodes, uint32_t budget_ms, char **json, size_t *length) {
+    if (!json || !length) return UR_FAILED;
+    *json = nullptr;
+    *length = 0;
+    try {
+        if (!initialize()) return UR_UNAVAILABLE;
+        auto job = std::make_shared<UiaJob>();
+        UiaJob *raw = job.get();
+        HWND window = reinterpret_cast<HWND>(static_cast<uintptr_t>(root));
+        job->run = [raw, window, root_pid, max_nodes, budget_ms] {
+            return snapshot_job(uia(), window, root_pid, max_nodes, budget_ms, raw->json);
+        };
+        return take_json(job, submit(job, budget_ms + 2500, true), json, length);
+    } catch (...) { return UR_FAILED; }
+}
+
+extern "C" int bucky_uia_element(uint64_t snapshot, uint32_t index, uint32_t op, const uint16_t *text, size_t text_length,
+                                 uint32_t timeout_ms, char **json, size_t *length) {
+    if (!json || !length || (text_length && !text) || op > 3) return UR_FAILED;
+    *json = nullptr;
+    *length = 0;
+    try {
+        auto job = std::make_shared<UiaJob>();
+        UiaJob *raw = job.get();
+        std::wstring value = text_length ? std::wstring(reinterpret_cast<const wchar_t *>(text), text_length) : std::wstring();
+        job->run = [raw, snapshot, index, op, value] { return element_job(uia(), snapshot, index, op, value, raw->json); };
+        return take_json(job, submit(job, timeout_ms, true), json, length);
+    } catch (...) { return UR_FAILED; }
+}
+
+extern "C" void bucky_uia_retain(uint64_t snapshot, const uint32_t *indices, size_t count) {
+    try {
+        std::vector<uint32_t> keep(indices, indices + (indices ? count : 0));
+        auto job = std::make_shared<UiaJob>();
+        job->run = [snapshot, keep] {
+            auto found = uia().snapshots.find(snapshot);
+            if (found == uia().snapshots.end()) return UR_OK;
+            std::vector<bool> kept(found->second.nodes.size(), false);
+            for (auto index : keep) if (index < kept.size()) kept[index] = true;
+            for (size_t i = 0; i < kept.size(); ++i) {
+                auto &node = found->second.nodes[i];
+                if (!kept[i] && node.element) { node.element->Release(); node.element = nullptr; }
+            }
+            return UR_OK;
+        };
+        submit(job, 0, false);
+    } catch (...) {}
+}
+
+extern "C" void bucky_uia_release(uint64_t snapshot) {
+    try {
+        auto job = std::make_shared<UiaJob>();
+        job->run = [snapshot] {
+            auto found = uia().snapshots.find(snapshot);
+            if (found != uia().snapshots.end()) {
+                release_snapshot(found->second);
+                uia().snapshots.erase(found);
+            }
+            return UR_OK;
+        };
+        submit(job, 0, false);
+    } catch (...) {}
+}
+
 #ifdef BUCKY_DESKTOP_SELF_TEST
 #include <cstdio>
 
@@ -669,6 +1423,127 @@ static bool test_text(HWND window, const wchar_t *text) {
 static int reject_test_input(const void *context, const BuckyDesktop *) {
     static_cast<std::atomic<unsigned> *>(const_cast<void *>(context))->fetch_add(1);
     return 0;
+}
+
+static unsigned test_invoked = 0;
+static LRESULT CALLBACK test_uia_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_COMMAND && LOWORD(wparam) == 101 && HIWORD(wparam) == BN_CLICKED) ++test_invoked;
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
+static LRESULT CALLBACK test_hung_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_APP) Sleep(8000);
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
+struct HungWindow { HWND window = nullptr; HANDLE created = CreateEventW(nullptr, TRUE, FALSE, nullptr); int x = 0, y = 0; };
+
+static DWORD WINAPI test_hung_thread(void *parameter) {
+    auto &hung = *static_cast<HungWindow *>(parameter);
+    DpiScope dpi;
+    WNDCLASSW cls{};
+    cls.lpfnWndProc = test_hung_proc;
+    cls.hInstance = GetModuleHandleW(nullptr);
+    cls.lpszClassName = L"BuckyUiaHungSelfTest";
+    RegisterClassW(&cls);
+    hung.window = CreateWindowExW(0, cls.lpszClassName, L"BuckyOS UIA hung self-test", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        hung.x, hung.y, 300, 200, nullptr, nullptr, cls.hInstance, nullptr);
+    SetEvent(hung.created);
+    MSG message;
+    while (GetMessageW(&message, nullptr, 0, 0) > 0) DispatchMessageW(&message);
+    return 0;
+}
+
+static int find_test_node(const std::string &tree, const char *needle) {
+    size_t nodes = tree.find("\"nodes\":[");
+    size_t at = tree.find(needle, nodes == std::string::npos ? 0 : nodes);
+    if (nodes == std::string::npos || at == std::string::npos) return -1;
+    int index = -1;
+    for (size_t pos = tree.find("{\"p\":", nodes); pos != std::string::npos && pos < at; pos = tree.find("{\"p\":", pos + 1)) ++index;
+    return index;
+}
+
+static int test_uia_call(const std::function<int(char **, size_t *)> &call, std::string &out) {
+    char *json = nullptr;
+    size_t length = 0;
+    int code = call(&json, &length);
+    out = code == 0 && json ? std::string(json, length) : std::string();
+    bucky_desktop_free(json);
+    return code;
+}
+
+static int uia_self_test(const BuckyDesktop &desktop) {
+    if (bucky_uia_status() != 0) { std::puts("UI Automation is unavailable"); return 1; }
+    DpiScope dpi;
+    WNDCLASSW cls{};
+    cls.lpfnWndProc = test_uia_proc;
+    cls.hInstance = GetModuleHandleW(nullptr);
+    cls.lpszClassName = L"BuckyUiaSelfTest";
+    RegisterClassW(&cls);
+    HWND window = CreateWindowExW(0, cls.lpszClassName, L"BuckyOS UIA self-test", WS_OVERLAPPEDWINDOW,
+        static_cast<int>(desktop.x) + 96, static_cast<int>(desktop.y) + 96, 480, 260, nullptr, nullptr, cls.hInstance, nullptr);
+    if (!window) return 1;
+    HWND button = CreateWindowExW(0, L"BUTTON", L"Bucky Invoke", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 12, 12, 160, 32, window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(101)), cls.hInstance, nullptr);
+    HWND edit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 12, 56, 300, 28, window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(102)), cls.hInstance, nullptr);
+    HWND check = CreateWindowExW(0, L"BUTTON", L"Bucky Check", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 96, 160, 28, window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(103)), cls.hInstance, nullptr);
+    if (!button || !edit || !check) { DestroyWindow(window); return 1; }
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    pump_test(200);
+    std::string tree, reply;
+    ULONGLONG started = GetTickCount64();
+    int code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_snapshot(reinterpret_cast<uintptr_t>(window), GetCurrentProcessId(), 400, 3000, json, length); }, tree);
+    std::printf("snapshot code=%d bytes=%zu elapsed=%llums\n", code, tree.size(), static_cast<unsigned long long>(GetTickCount64() - started));
+    size_t id_at = tree.rfind("\"snapshot\":");
+    uint64_t snapshot = id_at == std::string::npos ? 0 : std::strtoull(tree.c_str() + id_at + 11, nullptr, 10);
+    int button_node = find_test_node(tree, "\"n\":\"Bucky Invoke\"");
+    int check_node = find_test_node(tree, "\"n\":\"Bucky Check\"");
+    int edit_node = find_test_node(tree, "\"ct\":50004");
+    bool passed = code == 0 && snapshot && button_node > 0 && check_node > 0 && edit_node > 0
+        && tree.find("\"ct\":50002") != std::string::npos && tree.find("\"ct\":50032") != std::string::npos;
+    std::printf("tree: button=%d edit=%d checkbox=%d\n", button_node, edit_node, check_node);
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_element(snapshot, static_cast<uint32_t>(button_node), 0, nullptr, 0, 3000, json, length); }, reply);
+    passed = passed && code == 0 && reply.find("\"pt\":[") != std::string::npos && reply.find("\"off\":false") != std::string::npos;
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_element(snapshot, static_cast<uint32_t>(button_node), 2, nullptr, 0, 3000, json, length); }, reply);
+    pump_test(100);
+    std::printf("invoke code=%d clicked=%u\n", code, test_invoked);
+    passed = passed && code == 0 && test_invoked == 1;
+    const wchar_t *value = L"uia 中文 value";
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_element(snapshot, static_cast<uint32_t>(edit_node), 3, reinterpret_cast<const uint16_t *>(value),
+        std::wcslen(value), 3000, json, length); }, reply);
+    pump_test(50);
+    wchar_t text[64]{};
+    GetWindowTextW(edit, text, 64);
+    std::printf("set_value code=%d applied=%d\n", code, std::wcscmp(text, value) == 0);
+    passed = passed && code == 0 && std::wcscmp(text, value) == 0 && reply.find("\"v\":") != std::string::npos;
+    DestroyWindow(button);
+    pump_test(50);
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_element(snapshot, static_cast<uint32_t>(button_node), 2, nullptr, 0, 3000, json, length); }, reply);
+    pump_test(50);
+    std::printf("destroyed element code=%d clicked=%u\n", code, test_invoked);
+    passed = passed && code == 1 && test_invoked == 1;
+    bucky_uia_release(snapshot);
+    HungWindow hung;
+    hung.x = static_cast<int>(desktop.x) + 160;
+    hung.y = static_cast<int>(desktop.y) + 160;
+    HANDLE thread = CreateThread(nullptr, 0, test_hung_thread, &hung, 0, nullptr);
+    if (!thread || WaitForSingleObject(hung.created, 3000) != WAIT_OBJECT_0 || !hung.window) { DestroyWindow(window); return 1; }
+    CloseHandle(thread);
+    pump_test(100);
+    PostMessageW(hung.window, WM_APP, 0, 0);
+    Sleep(100);
+    started = GetTickCount64();
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_snapshot(reinterpret_cast<uintptr_t>(hung.window), GetCurrentProcessId(), 400, 3000, json, length); }, tree);
+    ULONGLONG elapsed = GetTickCount64() - started;
+    size_t reason = tree.find("\"reason\":");
+    std::printf("hung window snapshot code=%d elapsed=%llums %s\n", code, static_cast<unsigned long long>(elapsed),
+        reason == std::string::npos ? "" : tree.substr(reason, 40).c_str());
+    passed = passed && elapsed < 6000 && (code == 0 || code == 2 || code == 8);
+    std::printf("uia self-test: %s\n", passed ? "passed" : "failed");
+    DestroyWindow(window);
+    return passed ? 0 : 1;
 }
 
 int main(int argc, char **argv) {
@@ -717,6 +1592,7 @@ int main(int argc, char **argv) {
     bucky_desktop_free(png);
     if (!valid) { std::printf("capture failed: code=%d bytes=%zu\n", captured, length); return 1; }
     std::printf("capture PNG and invalid-input rejection passed: %zu bytes\n", length);
+    if (argc == 2 && std::strcmp(argv[1], "--uia") == 0) return uia_self_test(desktop);
     if (argc != 2 || std::strcmp(argv[1], "--input") != 0) return 0;
     DpiScope dpi;
     HWND previous = GetForegroundWindow();

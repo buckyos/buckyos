@@ -339,12 +339,7 @@ pub async fn run_process() -> CliRunOutput {
         };
     }
 
-    if args.get(1).and_then(|v| v.to_str()) == Some("llm_understand_media") {
-        let sub_args: Vec<String> = args
-            .iter()
-            .skip(2)
-            .map(|v| v.to_string_lossy().into_owned())
-            .collect();
+    if let Some(sub_args) = llm_understand_media_args(&args) {
         let exit_code = llm_understand_media::run_subcommand(sub_args).await;
         return CliRunOutput {
             exit_code,
@@ -665,6 +660,21 @@ async fn resolve_content_input(
             Ok(buf)
         }
     }
+}
+
+/// The arguments of `llm_understand_media` when this process runs it:
+/// `agent_tool llm_understand_media …`, or this program named
+/// `llm_understand_media` (the Windows session helper).
+fn llm_understand_media_args(args: &[OsString]) -> Option<Vec<String>> {
+    let invoked = args.first().and_then(|a| Path::new(a).file_stem()).and_then(|s| s.to_str());
+    let skip = if invoked == Some("llm_understand_media") {
+        1
+    } else if args.get(1).and_then(|v| v.to_str()) == Some("llm_understand_media") {
+        2
+    } else {
+        return None;
+    };
+    Some(args.iter().skip(skip).map(|v| v.to_string_lossy().into_owned()).collect())
 }
 
 fn parse_command(args: &[OsString], current_dir: &Path) -> Result<ParsedCommand, AgentToolError> {
@@ -4918,6 +4928,20 @@ methods = ["x_call"]
         for name in ["opendan", "xagent", "llm_understand_media", ""] {
             assert!(!handles_invocation_name(name), "{name}");
         }
+    }
+
+    #[test]
+    fn llm_understand_media_runs_as_a_subcommand_or_under_its_own_name() {
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        let want = Some(vec!["a.png".to_string(), "--ask".to_string()]);
+        assert_eq!(llm_understand_media_args(&os(&["agent_tool", "llm_understand_media", "a.png", "--ask"])), want);
+        #[cfg(windows)]
+        assert_eq!(
+            llm_understand_media_args(&os(&[r"C:\s\.runtime\bin\llm_understand_media.exe", "a.png", "--ask"])),
+            want
+        );
+        assert_eq!(llm_understand_media_args(&os(&["/s/.runtime/bin/llm_understand_media", "a.png", "--ask"])), want);
+        assert_eq!(llm_understand_media_args(&os(&["agent_tool", "read_file", "llm_understand_media"])), None);
     }
 
     #[test]

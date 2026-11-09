@@ -671,8 +671,9 @@ async fn tool_plan_tombstones_are_repaired_before_running() {
         .await
         .is_finished());
     let bin = sd.runtime_bin_dir();
-    assert!(bin.join("rm-all").exists());
-    std::fs::remove_file(bin.join("rm-all")).unwrap();
+    let tombstone = bin.join(libopendan::runtime::bin_overlay::tombstone_name("rm-all"));
+    assert!(tombstone.exists());
+    std::fs::remove_file(tombstone).unwrap();
     let plan =
         libopendan::runtime::bin_plan_for(&sd.config().unwrap(), Some(&env.agent_root), None, &[])
             .unwrap();

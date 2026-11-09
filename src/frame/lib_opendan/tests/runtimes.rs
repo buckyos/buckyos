@@ -496,3 +496,40 @@ async fn native_alias_checks_and_executes_managed_tools_without_an_executor() {
     assert_eq!((ran.exit_code, ran.stdout.as_str()), (0, "native-managed-tool"));
     match old_root { Some(value) => std::env::set_var("BUCKYOS_ROOT", value), None => std::env::remove_var("BUCKYOS_ROOT") }
 }
+
+/// A desktop found unavailable is probed again once its check is older than
+/// the recheck interval: what a probe saw while the executor still waited for
+/// its first authorization is not what later sessions are told.
+#[tokio::test]
+async fn a_desktop_found_unavailable_is_probed_again() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(temp.path());
+    let mut builtins = builtin(temp.path());
+    builtins.truncate(1);
+    builtins[0].default = true;
+    builtins[0].connector = RuntimeConnector::Native {
+        aliases: vec!["host".into()],
+        computer: Some(agent_tool::runtime::computer::NativeComputerConfig {
+            endpoint: temp.path().join("missing.sock").display().to_string(),
+            node_did: "did:web:test".into(),
+            profile_id: "agent-test".into(),
+            access: buckyos_api::ComputerAccess::Control,
+        }),
+    };
+    state.runtimes().ensure_builtin(&builtins, "node").await.unwrap();
+    let live = state.runtimes().check("private", &[], false).await.unwrap().caps.desktop_error.expect("no executor answers");
+
+    let file = state.layout().runtimes_dir().join("private.json");
+    let stale = "local computer IPC: the executor has no valid authorization snapshot";
+    let mut stored: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    stored["caps"]["desktop_error"] = json!(stale);
+    std::fs::write(&file, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let kept = libopendan::runtime::lookup_rechecked(&state, "private").await.unwrap().unwrap();
+    assert_eq!(kept.caps.desktop_error.as_deref(), Some(stale), "checked moments ago");
+
+    stored["checked_at_ms"] = json!(1);
+    std::fs::write(&file, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let again = libopendan::runtime::lookup_rechecked(&state, "private").await.unwrap().unwrap();
+    assert_eq!(again.caps.desktop_error, Some(live));
+    assert!(again.checked_at_ms.unwrap() > 1);
+}

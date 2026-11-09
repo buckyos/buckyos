@@ -14,6 +14,7 @@ const OBSERVATION_ID: &str = "observation-native-test";
 const EXPIRES_AT_MS: u64 = 4_000_000_060_000;
 const PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0AQAAAADNn8i8AAAAHklEQVR4nO3BMQEAAADCoPVPbQ0PoAAAAAAAAAB+DRzUAAFaKJ4EAAAAAElFTkSuQmCC";
 const SCREENSHOT_ERROR: &str = "Screenshot content is no longer available";
+const OUTLINE: &str = "[e1] window \"Notepad\" @0,0 800x600\n  [e2] button \"Save\" (invoke) @10,10 40x20\n";
 
 struct TokensOnly;
 
@@ -32,6 +33,7 @@ impl NodeExecutorConnector for TokensOnly {
 enum Reply {
     Inspect,
     Observe,
+    SemanticObserve,
     FailedClick,
     ClickWithScreenshotFailure,
 }
@@ -41,6 +43,7 @@ impl Reply {
         match self {
             Self::Inspect => json!({"command": "inspect"}),
             Self::Observe => json!({"command": "observe", "mode": "visual"}),
+            Self::SemanticObserve => json!({"command": "observe", "mode": "semantic"}),
             Self::FailedClick | Self::ClickWithScreenshotFailure => json!({
                 "command": "click",
                 "target": {
@@ -53,11 +56,11 @@ impl Reply {
 
     fn status(self, request: &ExecutorComputerRequest) -> ExecutorOpStatus {
         let (state, kind, mut computer) = match self {
-            Self::Inspect | Self::Observe | Self::ClickWithScreenshotFailure => (
+            Self::Inspect | Self::Observe | Self::SemanticObserve | Self::ClickWithScreenshotFailure => (
                 "succeeded",
                 match self {
                     Self::Inspect => "computer_inspect",
-                    Self::Observe => "computer_observe",
+                    Self::Observe | Self::SemanticObserve => "computer_observe",
                     _ => "computer_act",
                 },
                 serde_json::to_value(ComputerResult::new(
@@ -112,7 +115,29 @@ impl Reply {
                     "expires_at_ms": EXPIRES_AT_MS, "warnings": [],
                     "screenshot": {
                         "artifact_ref": "content", "mime_type": "image/png",
-                        "width": 320, "height": 180, "space": "screenshot", "interactive": true
+                        "width": 320, "height": 180, "space": "screenshot", "interactive": true,
+                        "captured_at_ms": 4_000_000_000_010_u64
+                    }
+                });
+            }
+            Self::SemanticObserve => {
+                computer["feedback"]["state"] = json!("included");
+                computer["observation"] = json!({
+                    "observation_id": OBSERVATION_ID, "binding_id": BINDING_ID,
+                    "surface_id": "display:1", "surface_epoch": 1, "interaction_revision": 7,
+                    "requested_mode": "semantic", "effective_mode": "semantic",
+                    "selection_reason": "explicit_request",
+                    "capture_started_at_ms": 4_000_000_000_000_u64,
+                    "capture_completed_at_ms": 4_000_000_000_010_u64,
+                    "consistency": "best_effort", "focus_guard": "window",
+                    "expires_at_ms": EXPIRES_AT_MS, "warnings": [],
+                    "semantic": {
+                        "format": "outline-v1", "text": OUTLINE,
+                        "windows": [{"ref": "w1", "title": "Notepad", "process": "notepad.exe", "pid": 42,
+                            "bounds": {"x": 0, "y": 0, "width": 800, "height": 600},
+                            "foreground": true, "accessible": true}],
+                        "coverage": {"visited": 3, "returned": 2, "truncated": false},
+                        "captured_at_ms": 4_000_000_000_010_u64
                     }
                 });
             }
@@ -406,6 +431,45 @@ async fn observe_exposes_downloaded_png_and_original_target_coordinates() {
     let result = fixture.call().await;
     assert_eq!(result.status, AgentToolStatus::Success);
     assert_observation(&result.observation_text());
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn semantic_observation_shows_its_outline_as_text_without_an_image() {
+    let fixture = Fixture::new(Reply::SemanticObserve).await;
+    let result = fixture.call().await;
+    assert_eq!(result.status, AgentToolStatus::Success);
+    assert!(result.images.is_empty(), "no screenshot, no image");
+    assert_eq!(
+        result.details["status"]["result"]["computer"]["observation"]["semantic"]["text"],
+        OUTLINE
+    );
+    let text = result.observation_text();
+    let (json_part, outline) = text.split_once("\n\n").expect("JSON, then the outline");
+    let details: Value = serde_json::from_str(json_part).unwrap();
+    let observation = &details["status"]["result"]["computer"]["observation"];
+    assert_eq!(observation["semantic"]["text"], "(outline below)");
+    assert_eq!(observation["semantic"]["windows"][0]["ref"], "w1");
+    assert!(details.get("screenshot").is_none());
+    assert!(outline.contains(OBSERVATION_ID));
+    assert!(outline.ends_with(OUTLINE), "outline lines reach the model unescaped");
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn xllm_dispatch_shows_semantic_outline_without_images() {
+    let fixture = Fixture::new(Reply::SemanticObserve).await;
+    let Observation::Success {
+        content, images, ..
+    } = fixture.dispatch().await
+    else {
+        panic!("expected a successful observation")
+    };
+    assert!(images.is_empty());
+    assert!(content
+        .as_str()
+        .expect("model content")
+        .contains("\n  [e2] button \"Save\" (invoke) @10,10 40x20\n"));
     fixture.finish().await;
 }
 

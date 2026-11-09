@@ -478,7 +478,7 @@ impl Store {
 
     pub fn reservation_for(spec: &ExecutorOpSpec, budget: &OpBudget) -> u64 {
         let body = match spec {
-            ExecutorOpSpec::Computer { request } => budget.max_file_bytes.min(buckyos_api::COMPUTER_MAX_IMAGE_BYTES as u64) + serde_json::to_vec(request).map_or(0, |v| v.len() as u64),
+            ExecutorOpSpec::Computer { request } => budget.max_file_bytes + serde_json::to_vec(request).map_or(0, |v| v.len() as u64),
             ExecutorOpSpec::Exec { cmd, .. } => cmd.len() as u64 + 2 * budget.max_output_bytes,
             ExecutorOpSpec::Read { .. } => budget.max_file_bytes,
             ExecutorOpSpec::Write { content_length, .. } => *content_length,
@@ -932,7 +932,7 @@ mod tests {
         let store = Store::open(&dir.path().join("ledger"), "did:dev:a").unwrap();
         let mut rec = record(&store, "observe", "observe", "unused");
         rec.spec = ExecutorOpSpec::Computer { request: buckyos_api::ComputerRequest::Observe {
-            binding_id: "dev:display:1".into(), mode: buckyos_api::ComputerObservationMode::Visual,
+            binding_id: "dev:display:1".into(), mode: buckyos_api::ComputerObservationMode::Visual, scope: None,
         }};
         rec.digest = buckyos_api::executor_request_digest("node-dev", "run1", "observe", "observe", &rec.spec);
         store.admit(&rec, &ExecutorLimits::default(), None).unwrap();

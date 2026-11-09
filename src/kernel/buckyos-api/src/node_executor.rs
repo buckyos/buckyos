@@ -244,6 +244,7 @@ pub struct ExecutorLimits {
     pub max_execution_ms: u64,
     pub max_output_bytes_per_stream: u64,
     pub max_file_bytes: u64,
+    pub max_computer_image_bytes: u64,
     pub result_retention_secs: u64,
     pub max_records: u64,
     pub max_store_bytes: u64,
@@ -257,6 +258,7 @@ impl Default for ExecutorLimits {
             max_execution_ms: 3_600_000,
             max_output_bytes_per_stream: 8 * 1024 * 1024,
             max_file_bytes: 1024 * 1024,
+            max_computer_image_bytes: 8 * 1024 * 1024,
             result_retention_secs: 7 * 24 * 3600,
             max_records: 100_000,
             max_store_bytes: 2 * 1024 * 1024 * 1024,
@@ -271,11 +273,18 @@ impl ExecutorLimits {
             || self.max_execution_ms == 0
             || self.max_output_bytes_per_stream == 0
             || self.max_file_bytes == 0
+            || self.max_computer_image_bytes == 0
             || self.result_retention_secs == 0
             || self.max_records == 0
             || self.max_store_bytes == 0
         {
             return Err("executor limits must all be positive".to_string());
+        }
+        if self.max_computer_image_bytes > crate::COMPUTER_MAX_IMAGE_BYTES as u64 {
+            return Err(format!(
+                "max_computer_image_bytes must not exceed {}",
+                crate::COMPUTER_MAX_IMAGE_BYTES
+            ));
         }
         Ok(())
     }
@@ -720,6 +729,23 @@ mod tests {
 
         config.principal_bindings.get_mut(&agent).unwrap().enabled = false;
         assert!(config.granted_ops("dev", &agent).is_empty());
+    }
+
+    #[test]
+    fn computer_image_limit_defaults_apart_from_files_and_stays_within_the_protocol_cap() {
+        let limits: ExecutorLimits =
+            serde_json::from_value(serde_json::json!({"max_file_bytes": 4096})).unwrap();
+        assert_eq!(limits.max_computer_image_bytes, 8 * 1024 * 1024);
+        limits.validate().unwrap();
+        let mut limits = ExecutorLimits {
+            max_computer_image_bytes: crate::COMPUTER_MAX_IMAGE_BYTES as u64,
+            ..Default::default()
+        };
+        limits.validate().unwrap();
+        limits.max_computer_image_bytes += 1;
+        assert!(limits.validate().is_err());
+        limits.max_computer_image_bytes = 0;
+        assert!(limits.validate().is_err());
     }
 
     #[test]

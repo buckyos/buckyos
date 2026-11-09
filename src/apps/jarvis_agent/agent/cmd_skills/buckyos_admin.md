@@ -89,8 +89,11 @@ buckyos system info                                 # BuckyOS version, build_ver
   The standalone Windows package build links the MSVC CRT statically; ordinary Cargo development binaries
   require the matching VC++ v14 runtime. `--binary` packages are unverified: inspect their manifest and
   provide the prebuilt binary's runtime dependencies instead of assuming VC runtime DLLs ship with Windows.
-  Windows supports the primary display, visual/auto observations, click, Unicode type, keypress,
-  line scrolling and delay waits; semantic/hybrid, dragging and pixel scrolling are unsupported.
+  Windows supports the primary display, visual/semantic/hybrid/auto observations, click, Unicode type,
+  keypress, line scrolling, delay waits and, through UI Automation, element targets with invoke/set_value;
+  `inspect` reports `accessibility` readiness. Windows of a higher integrity level (Task Manager, an
+  elevated terminal) are listed `accessible:false` without a control tree. macOS stays visual/auto with
+  `accessibility` unsupported; dragging and pixel scrolling are unsupported on Windows.
   The owner can run `buckyos_agent_daemon pause|resume --executor <id>`; request acceptance is not
   cancellation confirmation. Inspect `instances[].capabilities` in local status, query the original operation,
   and take a new observation after resuming. Never replace the original store or replay uncertain input.
@@ -188,7 +191,8 @@ buckyos system info                                 # BuckyOS version, build_ver
   field of `nodes/<node>/settings` (`enabled`, `allowed_devices` = exact device DIDs from `devices/<id>/info`,
   `profiles.<id>` = `run_as{uid,gid}` (non-root; omitted for Windows nodes), `workdir_roots` (absolute node paths,
   e.g. `C:\Users\<u>\ws` on Windows), `env`, `principals` = exact Agent DIDs, `ops`, and
-  `limits`, and `owner_agents` = the node's policy for the zone owner's Agents: `enabled`, default `workdir_roots`,
+  `limits` (`max_computer_image_bytes` caps screenshots apart from `max_file_bytes`: default 8 MiB, at most 16 MiB;
+  raise it when visual observations fail with `capture_size_limit`), and `owner_agents` = the node's policy for the zone owner's Agents: `enabled`, default `workdir_roots`,
   `env`, `ops` (empty = all), `computer` max `none|observe|control`, optional `run_as`; a Desktop node seeds it open on
   first start, absent = never initialized, `enabled:false` = closed by the administrator); writing it needs an owner
   sudo token. Which Agent uses a node is the Agent's own setting: `agent.runtime_directory [agent_id]` lists the nodes

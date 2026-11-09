@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use buckyos_api::{
-    ComputerExecutionState, ComputerFeedbackState, ComputerResult, COMPUTER_MAX_IMAGE_BYTES,
+    ComputerExecutionState, ComputerFeedbackState, ComputerResult,
     executor_content_hash, executor_request_digest, ExecutorChannel, ExecutorChunk, ExecutorError,
     ExecutorErrorCode, ExecutorFileResult, ExecutorLimits, ExecutorOpKind, ExecutorOpResult,
     ExecutorOpSpec, ExecutorOpState, ExecutorOpStatus, ExecutorOutputSummary, ExecutorProfile,
@@ -336,7 +336,10 @@ impl OpsManager {
                 _ => 0,
             },
             max_output_bytes: ctx.limits.max_output_bytes_per_stream,
-            max_file_bytes: ctx.limits.max_file_bytes,
+            max_file_bytes: match &spec {
+                ExecutorOpSpec::Computer { .. } => ctx.limits.max_computer_image_bytes,
+                _ => ctx.limits.max_file_bytes,
+            },
         };
         let record = OpRequestRecord {
             schema_version: STORE_SCHEMA_VERSION,
@@ -695,7 +698,7 @@ impl OpsManager {
             auth_valid_until_ms: now_ms().saturating_add(remaining_auth),
             op_id: op.identity.op_id.clone(),
             execution_timeout_ms: timeout,
-            max_image_bytes: (record.budget.max_file_bytes as usize).min(COMPUTER_MAX_IMAGE_BYTES),
+            max_image_bytes: record.budget.max_file_bytes as usize,
             cancellation,
         };
         let request = request.clone();
@@ -722,12 +725,27 @@ impl OpsManager {
             driver.invalidate();
         }
         let mut content = None;
-        if let Some(png) = output.png {
-            let maximum = record.budget.max_file_bytes.min(COMPUTER_MAX_IMAGE_BYTES as u64);
-            let valid = png.len() as u64 <= maximum && png.starts_with(b"\x89PNG\r\n\x1a\n") && png.len() >= 24;
-            let image_matches = output.result.observation.as_ref().is_some_and(|obs| {
-                valid && obs.screenshot.width == u32::from_be_bytes(png[16..20].try_into().unwrap())
-                    && obs.screenshot.height == u32::from_be_bytes(png[20..24].try_into().unwrap())
+        let mut png = output.png.take();
+        if output.result.feedback.state == ComputerFeedbackState::Included {
+            let invalid = match output.result.observation.as_ref() {
+                None => Some("driver returned no observation"),
+                Some(obs) if obs.screenshot.is_none() && obs.semantic.is_none() => Some("observation has neither a screenshot nor a semantic tree"),
+                Some(obs) if obs.semantic.as_ref().is_some_and(|semantic| !semantic.within_limit()) => Some("semantic payload exceeds its size limit"),
+                Some(obs) if obs.screenshot.is_some() != png.is_some() => Some("driver returned no screenshot"),
+                Some(_) => None,
+            };
+            if let Some(message) = invalid {
+                png = None;
+                output.result.feedback.state = ComputerFeedbackState::Failed;
+                output.result.observation = None;
+                output.result.error = Some(buckyos_api::ComputerError { code: "feedback_failed".into(), message: message.into() });
+            }
+        }
+        if let Some(png) = png {
+            let valid = png.len() as u64 <= record.budget.max_file_bytes && png.starts_with(b"\x89PNG\r\n\x1a\n") && png.len() >= 24;
+            let image_matches = output.result.observation.as_ref().and_then(|obs| obs.screenshot.as_ref()).is_some_and(|shot| {
+                valid && shot.width == u32::from_be_bytes(png[16..20].try_into().unwrap())
+                    && shot.height == u32::from_be_bytes(png[20..24].try_into().unwrap())
             });
             let path = self.store.op_dir(&op.key).join(ExecutorChannel::Content.as_str());
             let saved = if image_matches {
@@ -739,8 +757,8 @@ impl OpsManager {
                 write.await.is_ok()
             } else { false };
             if saved {
-                if let Some(obs) = output.result.observation.as_mut() {
-                    obs.screenshot.artifact_ref = format!("executor-content:{}:{}", record.store_id, op.identity.op_id);
+                if let Some(shot) = output.result.observation.as_mut().and_then(|obs| obs.screenshot.as_mut()) {
+                    shot.artifact_ref = format!("executor-content:{}:{}", record.store_id, op.identity.op_id);
                 }
                 content = Some(ExecutorOutputSummary {
                     total_bytes: png.len() as u64, retained_bytes: png.len() as u64,
@@ -754,12 +772,6 @@ impl OpsManager {
                     code: "feedback_failed".into(), message: "screenshot is invalid, exceeds the image budget, or could not be persisted".into(),
                 });
             }
-        } else if output.result.feedback.state == ComputerFeedbackState::Included {
-            output.result.feedback.state = ComputerFeedbackState::Failed;
-            output.result.observation = None;
-            output.result.error = Some(buckyos_api::ComputerError {
-                code: "feedback_failed".into(), message: "driver returned no screenshot".into(),
-            });
         }
         Self::computer_result(output.result, content)
     }

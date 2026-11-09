@@ -1,6 +1,6 @@
 # Agent Daemon：Linux/macOS/Windows 接入与执行协议
 
-当前支持独立 Linux/macOS/Windows 当前用户宿主。macOS 14+ 提供同一进程内的 ScreenCaptureKit、Accessibility 和 Quartz 桌面驱动；Windows 提供 Win32/GDI 截图和原生输入；Linux 的桌面能力仍为 unsupported。三者均不依赖 Docker、BuckyOSApp、目标机网关或 Device DID。语义树、`buckyos computer` CLI 和模型图片结果桥接尚未交付；Windows daemon 的实现范围不等于完整 Agent 桌面闭环已验收。
+当前支持独立 Linux/macOS/Windows 当前用户宿主。macOS 14+ 提供同一进程内的 ScreenCaptureKit、Accessibility 和 Quartz 桌面驱动；Windows 提供 Win32/GDI 截图、原生输入和 UI Automation 语义树（semantic/hybrid、element target、invoke/set_value）；Linux 的桌面能力仍为 unsupported。三者均不依赖 Docker、BuckyOSApp、目标机网关或 Device DID。macOS 的 AX 语义树与浏览器语义后端、`buckyos computer` CLI 和 shell 命令的图片结果桥接尚未交付；Windows daemon 的实现范围不等于完整 Agent 桌面闭环已验收。
 
 ## 使用与构建
 
@@ -123,7 +123,7 @@ macOS 的 `interactive_session_id` 使用 `getaudit_addr` 返回的 audit sessio
 
 结果在 `op.result.computer`，外层 `op.state` 保持 Executor 合同；内层 `operation_state`、`execution.state` 和 `feedback.state` 分别说明操作、输入与截图事实。比如输入成功但截图失败：`execution.state=completed`、`feedback.state=failed`，不能重发输入。查询、等待和取消复用 `query(wait_ms)` / `cancel`；取消请求已接受不能等同输入已停止。新 generation 可在核验同 executor/profile/store 后查询旧操作，未知结果不自动重放。
 
-visual/auto 返回 PNG，semantic/hybrid、element target、move/drag、text/element_state 等待和 `delivery=keys` 明确不支持。type 在现有光标/选区输入 Unicode 文本，不清空、不追加 Enter、不使用剪贴板；keypress 区分 Control 与 Meta。截图尺寸和逻辑显示坐标分别保存，point 必须是截图内整数坐标。focus 输入要求能重新核验焦点元素及其所属显示器，无法核验即拒绝。
+visual 返回 PNG；semantic 返回控件树（`observation.semantic`：`outline-v1` 大纲文本、顶层窗口列表与 coverage），走控制帧，单个载荷上限 256 KiB，不使用 content channel；hybrid 同时返回两者并各带采样时间；auto 在语义可用且前台窗口树有足够可操作节点时选 semantic，否则选 visual，`selection_reason` 写明原因（`semantic_available`、`tree_sparse`、`window_inaccessible`、`accessibility_unavailable` 等）。动作的 `feedback_mode` 默认 auto，不在 binding 上记住模式。语义平台支持见下文 Windows 一节；macOS 仍只有 visual/auto，`accessibility` 报 unsupported。move/drag、text/element_state 等待和 `delivery=keys` 明确不支持。type 在现有光标/选区输入 Unicode 文本，不清空、不追加 Enter、不使用剪贴板；keypress 区分 Control 与 Meta。截图尺寸和逻辑显示坐标分别保存，point 必须是截图内整数坐标。focus 输入要求能重新核验焦点元素及其所属显示器，无法核验即拒绝。
 
 每个桌面使用跨 daemon 进程锁和共享交互 revision；观察与输入串行。每个输入步骤校验取消、执行截止、桌面代次、锁屏、焦点和系统权限，按键/鼠标 down/up 在同一原生调用中配对。管理重连、授权变化、暂停/恢复使旧观察失效。显示布局和焦点窗口变化也会拒绝旧观察；人的键鼠操作（包括鼠标移动和按住的键）不使观察失效，也不暂停或拒绝动作。这些检查不能消除 GUI 自身的检查—执行竞争，应用业务成功仍需新观察验证。
 
@@ -133,9 +133,13 @@ visual/auto 返回 PNG，semantic/hybrid、element target、move/drag、text/ele
 
 daemon 必须在当前已登录用户的交互会话前台运行，截图与输入均在同一进程内完成。本实现不创建 Session 0 服务，不跨用户切换身份，也不安装用于跨会话代理的 helper。`SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 等 API 要求 Windows 10 1703（build 15063）或更新系统；这表示 API 基线，不代表 Windows 10/11 各版本已经验收。`doctor --json` 和 Computer inspect 区分平台支持与当前就绪；锁屏、安全桌面、非交互会话和无法核验的焦点目标不能作为可写桌面。
 
-当前驱动仅绑定主显示器 `display:1`。观察通过 GDI BitBlt 与系统 GDI+ PNG 编码，输入通过 Win32 派发；Windows 使用物理像素坐标，截图像素与显示坐标由共享 Driver 映射，不能直接把应用 UI 的逻辑坐标当截图像素。显示器布局、缩放、旋转、桌面或用户会话发生变化后必须重新 inspect/observe，不能把旧截图坐标转投到新目标。焦点保护为前台 HWND、焦点子窗口 HWND 与焦点事件代次；Focus 目标在最终派发前再次核验仍位于绑定主屏。不声称能辨识浏览器或 WinUI 内部没有独立 HWND 的语义控件。
+当前驱动仅绑定主显示器 `display:1`。观察通过 GDI BitBlt 与系统 GDI+ PNG 编码，输入通过 Win32 派发；Windows 使用物理像素坐标，截图像素与显示坐标由共享 Driver 映射，不能直接把应用 UI 的逻辑坐标当截图像素。显示器布局、缩放、旋转、桌面或用户会话发生变化后必须重新 inspect/observe，不能把旧截图坐标转投到新目标。焦点保护为前台 HWND、焦点子窗口 HWND 与焦点事件代次；Focus 目标在最终派发前再次核验仍位于绑定主屏。
 
-支持 `visual/auto`、point click、Unicode type、keypress、`scroll` 的 line 单位及 `wait_for` 的 delay 条件。semantic/hybrid、element target、move/drag、pixel scroll、text/element_state 等待和 `delivery=keys` 明确 unsupported。type 使用 Unicode 输入事件，不借助剪贴板，不自动清空或提交；Meta 对应 Windows 键，Control 保留独立语义。
+支持 `visual/semantic/hybrid/auto`、point/element click、Unicode type、keypress、`scroll` 的 line 单位、`wait_for` 的 delay 条件，以及语义命令 `invoke`、`set_value`。move/drag、pixel scroll、text/element_state 等待和 `delivery=keys` 明确 unsupported。type 使用 Unicode 输入事件，不借助剪贴板，不自动清空或提交；Meta 对应 Windows 键，Control 保留独立语义。
+
+语义观察使用 UI Automation（`CUIAutomation8`）。所有 UIA 调用在 `native_windows.cpp` 的一个 MTA 工作线程上执行，Rust 侧用阻塞任务同步调用并设截止时间；ConnectionTimeout 1 秒、TransactionTimeout 1.5 秒，排队未开始的请求在调用方超时后丢弃，不会迟到执行。观察返回主屏上的顶层窗口列表（ref `wN`、标题、进程名、pid、bounds、是否前台、是否可访问）和一个窗口的 Control View 子树：默认前台窗口，`observe.scope={"kind":"window","observation_id","ref"}` 取上次窗口列表中的另一个窗口；同进程的弹出菜单（`#32768`）和被该窗口拥有的弹出窗口作为并列根一起返回。observe 不改变焦点。遍历按广度优先：offscreen 节点只计入 coverage（没有几何的 offscreen 节点，如 WinUI 3 弹出菜单外层的 `Popup` 窗口，不返回但继续展开），同一 RuntimeId 只出现一次，无名称、无动作的纯容器把子节点上提，重复祖先名称的文字/图片标签省略，名称中的零宽与 bidi 等不可见格式字符去掉；固定上限 400 节点、大纲深度 32、文本 32 KiB、单次快照 3 秒，超出时返回已遍历部分并标 `truncated` 与 `reason`。role、状态、动作只用跨平台通用名（`buckyos-api` 的 `ComputerRole`/`ComputerElementState`/`ComputerElementAction`，映射与单元测试在 `computer_driver/src/semantic.rs`）；大纲省略几乎所有元素都有的 `scroll_into_view`。bounds 换算到截图坐标，与 point 目标同一坐标系。Chromium/Electron 在发现 UIA 客户端后才启用网页无障碍：窗口树里还没有 `document` 时等待 500 ms 重采样一次，不修改浏览器启动参数。
+
+元素 ref（`eN`）只对所在 observation 有效。观察记录保存 ref → 工作线程缓存的 UIA 元素、RuntimeId、pid 和顶层 HWND；动作前重新解析，要求元素仍在、RuntimeId 与进程一致、顶层窗口未换主，失败返回 `stale_element`，不按名称、下标或坐标找替代节点。`click(element)` 在元素的可点击点做物理点击，`scroll(element)` 在元素中心滚动，二者要求元素不在 offscreen、点在主屏内且未被其他顶层窗口遮挡（`element_offscreen`/`element_out_of_bounds`/`element_obscured`）；`type`/`keypress(element)` 先经 UIA `SetFocus` 聚焦并回读焦点，再以新焦点作为输入的焦点保护；`invoke`（InvokePattern）与 `set_value`（ValuePattern，替换整个值后回读，不一致报 `value_mismatch`）不移动鼠标，可用于部分遮挡或不在可视区的元素，且只对观察中声明了该动作、当前未禁用的元素开放。语义动作同样经过桌面锁、输入串行和 finish 释放路径，不检测人工接管；UIA 调用超时且已开始执行时执行状态记为 `unknown`。动作的语义反馈优先观察被操作元素所在的窗口，窗口已关闭则回到前台窗口。更高完整性级别的窗口（任务管理器、管理员终端）在列表中标 `accessible:false`，不返回子树；不使用 UIAccess，也不提权。
 
 普通用户 daemon 不向更高完整性级别的窗口输入，也不能绕过 UIPI 或 UAC 安全桌面。焦点、目标进程或输入完整性无法验证时拒绝操作。系统 API 接受输入只说明派发事实，输入已发出但后置截图失败时仍按原 operation 查询，不能重发输入。暂停、取消、断线和 unknown 的恢复复用上述共享协议与 Executor 账本。
 
@@ -149,7 +153,7 @@ Windows 的会话切换、锁屏/UAC、多显示器/DPI、UIPI、Unicode 输入�
 
 继续使用 Node Executor Store schema_version=1，不新增数据库或第二份去重日志。`request.json` 的 spec 新增 Computer 联合，`result.json` 新增 ComputerResult，`content` 保存不可变 PNG；操作摘要覆盖规范化的完整请求。未知执行重启后保留 unknown，回收结果保留 tombstone，不能让原 ID 重新执行。当前 0.7 开发阶段不做旧二进制兼容；升级必须同时更新协议消费方，旧版本不能读取新的 Computer 记录。
 
-账本使用本机私有目录是独立离线执行端恢复事实的要求，不依赖 Zone 在线数据库。输入文本随规范化请求持久保存于当前用户私有目录（Unix 0700，Windows 用户 DACL），不能把长期密码输入当作安全凭据通道。保留和清理由现有 ExecutorLimits 控制；图像最大 16 MiB，并受 ExecutorConfig.limits 的 max_file_bytes/max_store_bytes 进一步限制；截屏最多 4000 万像素，输入文本最多 16 KiB，执行预算最多 30 秒。观察引用仅驻留内存，最多 64 条、TTL 30 秒，进程重启后不能再执行旧观察。PNG 和执行事实可在账本保留期间查询。
+账本使用本机私有目录是独立离线执行端恢复事实的要求，不依赖 Zone 在线数据库。输入文本随规范化请求持久保存于当前用户私有目录（Unix 0700，Windows 用户 DACL），不能把长期密码输入当作安全凭据通道。保留和清理由现有 ExecutorLimits 控制；图像上限是 ExecutorConfig.limits 的 max_computer_image_bytes（默认 8 MiB，不得超过 16 MiB），与文件上限 max_file_bytes 无关；每次 Computer 操作准入时按该上限在 max_store_bytes 内预留空间；截屏最多 4000 万像素，输入文本最多 16 KiB，执行预算最多 30 秒。观察引用仅驻留内存，最多 64 条、TTL 30 秒，进程重启后不能再执行旧观察。PNG 和执行事实可在账本保留期间查询。
 
 macOS 的 `/tmp/buckyos-computer-<uid>.lock` 是所有 daemon 共用的输入资源锁，不是第二份操作账本；权限为 0600，拒绝软链接/异主文件。固定 schema_version=1 的 12 字节内容保存版本、64 位 revision、dirty 标志和待释放的单个键/鼠标按钮。输入前持久标记 dirty，确认释放后清理；崩溃遗留 dirty 时禁止下一写者输入。本地 resume 只有在取得独占锁、确认桌面/权限和没有用户正在按住键鼠后才尝试补释放；仍忙或清理失败则保持暂停，不能直接删除锁文件来绕过。此开发期协调格式不提供旧格式兼容。
 
@@ -173,15 +177,19 @@ cargo test -p buckyos_agent_daemon --lib windows_desktop_capture_smoke -- --igno
 
 最新完整 daemon 的 Windows x64 静态 CRT **debug** 构建已通过：在 `src/` 使用包含 `-C` 和 `target-feature=+crt-static` 两个参数的 `CARGO_ENCODED_RUSTFLAGS`（以 ASCII `0x1f` 分隔），执行 `cargo build -p buckyos_agent_daemon --target x86_64-pc-windows-msvc`。`dumpbin /dependents` 确认该二进制只导入 Windows 系统 DLL，不包含 `MSVCP140`、`VCRUNTIME140` 系列；该产物的 `doctor --json` 同样报告 session 1 的 capture/input/command/file 均 ready。这项证据仅覆盖静态 CRT debug 构建，不代表 release 发行包已构建。
 
-Windows 原生桥接另带 `BUCKY_DESKTOP_SELF_TEST` 编译入口。在 MSVC Developer PowerShell 的 `src/kernel/buckyos_agent_daemon/` 下可构建并执行：
+Windows 原生桥接另带 `BUCKY_DESKTOP_SELF_TEST` 编译入口。在 MSVC Developer PowerShell 的 `src/kernel/computer_driver/` 下可构建并执行：
 
 ```powershell
-cl /std:c++17 /EHsc /O2 /W4 /WX /MD /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /DBUCKY_DESKTOP_SELF_TEST src\computer\native_windows.cpp /Fe:native-test.exe /link user32.lib gdi32.lib gdiplus.lib ole32.lib advapi32.lib wtsapi32.lib shcore.lib
+cl /std:c++17 /EHsc /O2 /W4 /WX /MD /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /DBUCKY_DESKTOP_SELF_TEST src\native_windows.cpp /Fe:native-test.exe /link user32.lib gdi32.lib gdiplus.lib ole32.lib oleaut32.lib advapi32.lib wtsapi32.lib shcore.lib dwmapi.lib
 if ($LASTEXITCODE -ne 0) { throw 'Native desktop test compilation failed' }
 .\native-test.exe
 ```
 
-默认仅探测会话、截图和拒绝无效输入。显式传 `--input` 才创建本进程 EDIT 测试窗口，并测试 Unicode、组合键、点击和滚动；拿不到该窗口焦点时退出码 2 表示输入阶段跳过，不能记为通过。当前 Windows 本机独立 MSVC `/W4 /WX` 编译、默认只读 probe/PNG capture、无效输入拒绝、最终派发 guard 拒绝合法按键且不产生输入事件，以及心跳断档后持续禁用驱动的检查已通过；`--input` 因前台窗口限制跳过，真实输入闭环仍未验收。
+默认仅探测会话、截图和拒绝无效输入。显式传 `--input` 才创建本进程 EDIT 测试窗口，并测试 Unicode、组合键、点击和滚动；拿不到该窗口焦点时退出码 2 表示输入阶段跳过，不能记为通过。传 `--uia` 创建含按钮、输入框、复选框的测试窗口（不需要前台、不发送键鼠输入），检查 UIA 树中能找到三者、元素解析给出可点击点、Invoke 触发按钮、SetValue 写入中文文本、控件销毁后同一 ref 返回 stale，并对另一线程上挂起的窗口快照，要求在截止时间内返回。2026-11-08 在本机（Windows 11，5120×1440 主屏）`--uia` 通过：快照 15 ms，挂起窗口约 1 s 返回 `backend_timeout`。
+
+语义树的只读 smoke 同样默认 ignored：`cargo test -p computer_driver --lib windows_semantic_smoke -- --ignored --nocapture` 打印前台窗口（或环境变量 `BUCKY_SEMANTIC_TITLE` 指定标题的窗口）的窗口列表、大纲与 coverage，不发送输入。本机 Chrome 首次观察只有浏览器外壳（47 节点、3.5 KB 大纲、29 ms），Chrome 启用网页无障碍后同一窗口为 149 节点、10.8 KB 大纲、约 38 ms。
+
+实机 DV 用 `cargo run -p computer_driver --example computer_dv -- <port> <输出目录>`：真实 NodeExecutor 加真实 Driver，经 `127.0.0.1:<port>` 每次接收一个 Computer 请求（一行 JSON，可省略 `binding_id`），返回与 agent `computer` 工具给模型相同的文本，截图存到输出目录。它会真实地点击、输入，只在可以交给它的桌面上运行，并先确认本机没有其他 Agent 正在操作桌面。2026-11-08 的场景结果见 [UIA 语义观察 TODO](../../notepads/computer-use-uia-semantic-todo.md) §7.5。当前 Windows 本机独立 MSVC `/W4 /WX` 编译、默认只读 probe/PNG capture、无效输入拒绝、最终派发 guard 拒绝合法按键且不产生输入事件，以及心跳断档后持续禁用驱动的检查已通过；`--input` 因前台窗口限制跳过，真实输入闭环仍未验收。
 
 已登录且授予屏幕录制权限的 Mac 可执行只读原生截图 smoke；它验证 PNG 尺寸后丢弃像素，不发送点击/按键。缺权限或会话返回 77，不自动弹出申请：
 

@@ -798,11 +798,10 @@ pub async fn runtimes_view(agent: &dyn crate::state::AgentStateClient, cfg: &Ses
         .into_iter()
         .filter(|r| r.lifecycle == RuntimeLifecycle::Active)
         .collect();
-    if matches!(view, RuntimeView::Chat | RuntimeView::All) {
-        if let Some(default) = all.iter_mut().find(|r| r.default && !r.is_private()) {
-            if let Ok(Some(checked)) = lookup_rechecked(agent, &default.runtime_id).await {
-                *default = checked;
-            }
+    let with_default = matches!(view, RuntimeView::Chat | RuntimeView::All);
+    for shown in all.iter_mut().filter(|r| r.is_private() || (with_default && r.default)) {
+        if let Ok(Some(checked)) = lookup_rechecked(agent, &shown.runtime_id).await {
+            *shown = checked;
         }
     }
     let private = all.iter().find(|r| r.is_private()).map(runtime_entry);
@@ -1364,15 +1363,15 @@ fn runtime_ops_dir(agent: &dyn crate::state::AgentStateClient) -> Result<PathBuf
 }
 
 /// A runtime's record for something about to use it. A node runtime found
-/// unreachable earlier is asked again first: its executor may have come up
+/// unreachable earlier, or a desktop found unavailable, is asked again
+/// first: its executor may have come up or received its authorization
 /// since (node_daemon opens it after loading the node's settings, the agent
 /// may have checked first).
 pub async fn lookup_rechecked(agent: &dyn crate::state::AgentStateClient, runtime_id: &str) -> Result<Option<RuntimeRecord>> {
     let record = agent.runtimes().lookup(runtime_id).await?;
     let Some(r) = record.as_ref().filter(|r| {
-        r.availability != RuntimeAvailability::Available
+        ((r.availability != RuntimeAvailability::Available && r.connector.is_node()) || r.caps.desktop_error.is_some())
             && r.lifecycle == RuntimeLifecycle::Active
-            && r.connector.is_node()
             && r.enabled
             && r.checked_at_ms.is_none_or(|t| crate::now_ms().saturating_sub(t) >= crate::api::RUNTIME_RECHECK_MS)
     }) else {

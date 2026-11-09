@@ -70,6 +70,369 @@ extern "C" {
         guard: Option<unsafe extern "C" fn(*const std::ffi::c_void, *const Desktop) -> i32>,
         context: *const std::ffi::c_void,
     );
+    #[cfg(windows)]
+    fn bucky_uia_status() -> i32;
+    #[cfg(windows)]
+    fn bucky_uia_snapshot(
+        root: u64,
+        root_pid: u32,
+        max_nodes: u32,
+        budget_ms: u32,
+        json: *mut *mut u8,
+        length: *mut usize,
+    ) -> i32;
+    #[cfg(windows)]
+    fn bucky_uia_element(
+        snapshot: u64,
+        index: u32,
+        op: u32,
+        text: *const u16,
+        text_length: usize,
+        timeout_ms: u32,
+        json: *mut *mut u8,
+        length: *mut usize,
+    ) -> i32;
+    #[cfg(windows)]
+    fn bucky_uia_retain(snapshot: u64, indices: *const u32, count: usize);
+    #[cfg(windows)]
+    fn bucky_uia_release(snapshot: u64);
+}
+
+/// Synchronous calls into the native UIA worker; run them in blocking tasks.
+#[cfg(windows)]
+mod native_uia {
+    use super::*;
+
+    pub(super) const OP_RESOLVE: u32 = 0;
+    pub(super) const OP_FOCUS: u32 = 1;
+    pub(super) const OP_INVOKE: u32 = 2;
+    pub(super) const OP_SET_VALUE: u32 = 3;
+
+    fn take(code: i32, json: *mut u8, length: usize) -> Result<Vec<u8>, i32> {
+        let bytes =
+            (!json.is_null()).then(|| unsafe { std::slice::from_raw_parts(json, length).to_vec() });
+        unsafe { bucky_desktop_free(json.cast()) };
+        if code != 0 {
+            return Err(code);
+        }
+        bytes.ok_or(3)
+    }
+
+    pub(super) fn ready() -> bool {
+        unsafe { bucky_uia_status() == 0 }
+    }
+
+    pub(super) fn snapshot(
+        root: u64,
+        root_pid: u32,
+        budget_ms: u32,
+    ) -> Result<crate::semantic::uia::Snapshot, i32> {
+        let (mut json, mut length) = (std::ptr::null_mut(), 0);
+        let code = unsafe {
+            bucky_uia_snapshot(
+                root,
+                root_pid,
+                COMPUTER_SEMANTIC_MAX_NODES as u32,
+                budget_ms,
+                &mut json,
+                &mut length,
+            )
+        };
+        serde_json::from_slice(&take(code, json, length)?).map_err(|_| 3)
+    }
+
+    pub(super) fn element(
+        snapshot: u64,
+        index: u32,
+        op: u32,
+        text: &str,
+        timeout_ms: u32,
+    ) -> Result<Value, i32> {
+        let text: Vec<u16> = text.encode_utf16().collect();
+        let (mut json, mut length) = (std::ptr::null_mut(), 0);
+        let code = unsafe {
+            bucky_uia_element(
+                snapshot,
+                index,
+                op,
+                text.as_ptr(),
+                text.len(),
+                timeout_ms,
+                &mut json,
+                &mut length,
+            )
+        };
+        serde_json::from_slice(&take(code, json, length)?).map_err(|_| 3)
+    }
+
+    pub(super) fn retain(snapshot: u64, indices: &[u32]) {
+        unsafe { bucky_uia_retain(snapshot, indices.as_ptr(), indices.len()) }
+    }
+
+    pub(super) fn release(snapshot: u64) {
+        unsafe { bucky_uia_release(snapshot) }
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn uia_failure(code: i32) -> &'static str {
+    match code {
+        1 => "stale_element",
+        2 | 8 => "backend_timeout",
+        4 => "accessibility_unavailable",
+        5 => "backend_busy",
+        6 => "element_disabled",
+        7 => "element_inaccessible",
+        _ => "element_action_failed",
+    }
+}
+
+fn semantic_supported() -> bool {
+    #[cfg(windows)]
+    return native_uia::ready();
+    #[cfg(not(windows))]
+    false
+}
+
+const AUTO_MIN_NODES: u32 = 10;
+#[cfg_attr(not(windows), allow(dead_code))]
+const CHROMIUM_RESAMPLE_MS: u64 = 500;
+const AUTO_MIN_ACTIONABLE: usize = 5;
+
+/// Releases the native element handles of one semantic observation.
+#[cfg_attr(not(windows), allow(dead_code))]
+struct SnapshotHandle(u64);
+
+impl Drop for SnapshotHandle {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if self.0 != 0 {
+            native_uia::release(self.0);
+        }
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+struct ElementRecord {
+    index: u32,
+    actions: Vec<ComputerElementAction>,
+}
+
+/// ref → backend identity of one semantic observation (Windows: the cached
+/// UIA element, RuntimeId, pid and top-level window kept by the worker).
+#[cfg_attr(not(windows), allow(dead_code))]
+struct SemanticRecord {
+    handle: SnapshotHandle,
+    root: (u64, u32),
+    elements: HashMap<String, ElementRecord>,
+    windows: HashMap<String, (u64, u32)>,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+struct SemanticTree {
+    payload: ComputerSemantic,
+    record: SemanticRecord,
+    actionable: usize,
+    /// A Chromium/Electron window whose web document is not in the tree yet.
+    web_pending: bool,
+}
+
+fn sparse_reason(coverage: &ComputerSemanticCoverage, actionable: usize) -> Option<&'static str> {
+    if coverage.reason.as_deref() == Some("window_inaccessible") {
+        Some("window_inaccessible")
+    } else if coverage.returned < AUTO_MIN_NODES || actionable < AUTO_MIN_ACTIONABLE {
+        Some("tree_sparse")
+    } else {
+        None
+    }
+}
+
+/// `(effective mode, selection_reason)`: `tree` is `Ok` when a rich tree is
+/// available, otherwise why not. Auto prefers semantic and falls back to
+/// visual; explicit modes keep a sparse tree but fail on a backend error.
+fn select_mode(
+    mode: ComputerObservationMode,
+    tree: Result<(), &'static str>,
+) -> Result<(ComputerObservationMode, &'static str), &'static str> {
+    use ComputerObservationMode::*;
+    match (mode, tree) {
+        (Visual, _) => Ok((Visual, "explicit_request")),
+        (Auto, Ok(())) => Ok((Semantic, "semantic_available")),
+        (Auto, Err(reason)) => Ok((Visual, reason)),
+        (_, Ok(()) | Err("tree_sparse" | "window_inaccessible")) => Ok((mode, "explicit_request")),
+        (_, Err(error)) => Err(error),
+    }
+}
+
+/// A native screen rectangle `[left, top, width, height]` in screenshot space.
+fn screen_bounds(desktop: &Desktop, rect: [i64; 4]) -> ComputerBounds {
+    let scale_x = if desktop.logical_width > 0.0 {
+        desktop.width as f64 / desktop.logical_width
+    } else {
+        1.0
+    };
+    let scale_y = if desktop.logical_height > 0.0 {
+        desktop.height as f64 / desktop.logical_height
+    } else {
+        1.0
+    };
+    let clamp_i = |v: f64| v.clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+    let clamp_u = |v: f64| v.clamp(0.0, u32::MAX as f64) as u32;
+    ComputerBounds {
+        x: clamp_i(((rect[0] as f64 - desktop.x) * scale_x).floor()),
+        y: clamp_i(((rect[1] as f64 - desktop.y) * scale_y).floor()),
+        width: clamp_u((rect[2] as f64 * scale_x).round()),
+        height: clamp_u((rect[3] as f64 * scale_y).round()),
+    }
+}
+
+fn on_display(desktop: &Desktop, x: f64, y: f64) -> bool {
+    x.is_finite()
+        && y.is_finite()
+        && x >= desktop.x
+        && y >= desktop.y
+        && x < desktop.x + desktop.logical_width
+        && y < desktop.y + desktop.logical_height
+}
+
+#[cfg(windows)]
+fn build_tree(
+    raw: crate::semantic::uia::Snapshot,
+    desktop: &Desktop,
+    captured_at_ms: u64,
+) -> SemanticTree {
+    use crate::semantic;
+    let nodes: Vec<_> = raw
+        .nodes
+        .iter()
+        .map(|node| semantic::uia::node(node, screen_bounds(desktop, node.b)))
+        .collect();
+    let outline = semantic::outline(&nodes, &semantic::Limits::default());
+    let class = raw.nodes.first().map(|n| n.cls.clone()).unwrap_or_default();
+    let web_pending = class.starts_with("Chrome_WidgetWin")
+        && !outline
+            .refs
+            .iter()
+            .any(|(_, i)| nodes[*i].role == ComputerRole::Document);
+    let kept: Vec<u32> = outline.refs.iter().map(|(_, i)| *i as u32).collect();
+    native_uia::retain(raw.snapshot, &kept);
+    let elements = outline
+        .refs
+        .iter()
+        .map(|(reference, i)| {
+            (
+                reference.clone(),
+                ElementRecord {
+                    index: *i as u32,
+                    actions: nodes[*i].actions.clone(),
+                },
+            )
+        })
+        .collect();
+    let mut windows = HashMap::new();
+    let list = raw
+        .windows
+        .iter()
+        .take(COMPUTER_MAX_WINDOWS)
+        .enumerate()
+        .map(|(i, window)| {
+            let reference = format!("w{}", i + 1);
+            windows.insert(reference.clone(), (window.hwnd, window.pid));
+            ComputerWindow {
+                window_ref: reference,
+                title: semantic::plain(&window.title),
+                process: semantic::plain(&window.process),
+                pid: window.pid,
+                bounds: screen_bounds(desktop, window.bounds),
+                foreground: window.foreground,
+                accessible: window.accessible,
+            }
+        })
+        .collect();
+    let reason = outline
+        .truncated
+        .map(str::to_owned)
+        .or_else(|| (!raw.reason.is_empty()).then(|| raw.reason.clone()));
+    SemanticTree {
+        payload: ComputerSemantic {
+            format: COMPUTER_SEMANTIC_FORMAT.into(),
+            text: outline.text,
+            windows: list,
+            coverage: ComputerSemanticCoverage {
+                visited: raw.visited,
+                returned: outline.refs.len() as u32,
+                truncated: raw.truncated || outline.truncated.is_some(),
+                reason,
+            },
+            captured_at_ms,
+        },
+        record: SemanticRecord {
+            handle: SnapshotHandle(raw.snapshot),
+            root: (raw.root, raw.root_pid),
+            elements,
+            windows,
+        },
+        actionable: outline.actionable,
+        web_pending,
+    }
+}
+
+/// Where a semantic observation looks: the foreground window, a window the
+/// caller chose from a window list, or (action feedback) the acted-on
+/// element's window when it still exists.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Scope {
+    Foreground,
+    Window(u64, u32),
+    Prefer(u64, u32),
+}
+
+struct Resolved {
+    record: Arc<SemanticRecord>,
+    index: u32,
+    point: (f64, f64),
+}
+
+/// Whether the command types into the focused element (focus target, or an
+/// element target that is focused first).
+fn focus_input(request: &ComputerRequest) -> bool {
+    match request.target() {
+        Some(ComputerTarget::Focus { .. }) => true,
+        Some(ComputerTarget::Element { .. }) => matches!(
+            request,
+            ComputerRequest::Type { .. } | ComputerRequest::Keypress { .. }
+        ),
+        _ => false,
+    }
+}
+
+/// The element target must name an element of that observation and, for
+/// semantic commands, one whose observation declared the action.
+fn element_target<'a>(
+    record: &'a ObservationRecord,
+    request: &ComputerRequest,
+) -> Result<Option<(&'a Arc<SemanticRecord>, &'a ElementRecord)>, &'static str> {
+    let Some(reference) = request.target().and_then(ComputerTarget::element_ref) else {
+        return Ok(None);
+    };
+    let semantic = record.semantic.as_ref().ok_or("stale_element")?;
+    let element = semantic.elements.get(reference).ok_or("stale_element")?;
+    let required = match request {
+        ComputerRequest::Invoke { .. } => Some(ComputerElementAction::Invoke),
+        ComputerRequest::SetValue { .. } => Some(ComputerElementAction::SetValue),
+        ComputerRequest::Type { .. } | ComputerRequest::Keypress { .. } => {
+            Some(ComputerElementAction::Focus)
+        }
+        _ => None,
+    };
+    if required.is_some_and(|action| !element.actions.contains(&action)) {
+        return Err("element_action_unsupported");
+    }
+    Ok(Some((semantic, element)))
+}
+
+fn element_timeout(context: &ComputerContext) -> u32 {
+    context.execution_timeout_ms.clamp(1, 4_000) as u32
 }
 
 #[cfg(windows)]
@@ -171,12 +534,24 @@ fn desktop_reason(desktop: &Desktop) -> Option<&'static str> {
     }
 }
 
-fn native_capabilities(desktop: &Desktop, paused: bool) -> ComputerCapabilities {
+fn native_capabilities(desktop: &Desktop, paused: bool, semantic: bool) -> ComputerCapabilities {
     let state = if paused {
         Some("paused")
     } else {
         desktop_reason(desktop)
     };
+    let mut observation_modes = vec![
+        ComputerObservationMode::Visual,
+        ComputerObservationMode::Auto,
+    ];
+    let mut commands = vec!["click", "type", "keypress", "scroll", "wait_for"];
+    if semantic {
+        observation_modes.extend([
+            ComputerObservationMode::Semantic,
+            ComputerObservationMode::Hybrid,
+        ]);
+        commands.extend(["invoke", "set_value"]);
+    }
     ComputerCapabilities {
         capture: capability(
             true,
@@ -186,15 +561,16 @@ fn native_capabilities(desktop: &Desktop, paused: bool) -> ComputerCapabilities 
             true,
             state.or((desktop.input == 0).then_some(input_reason())),
         ),
-        accessibility: capability(false, Some("semantic_observation_unsupported")),
-        observation_modes: vec![
-            ComputerObservationMode::Visual,
-            ComputerObservationMode::Auto,
-        ],
-        commands: ["click", "type", "keypress", "scroll", "wait_for"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
+        accessibility: if cfg!(windows) {
+            capability(
+                true,
+                state.or((!semantic).then_some("ui_automation_unavailable")),
+            )
+        } else {
+            capability(false, Some("semantic_observation_unsupported"))
+        },
+        observation_modes,
+        commands: commands.into_iter().map(str::to_owned).collect(),
         focus_guard: focus_guard().into(),
     }
 }
@@ -218,7 +594,7 @@ pub fn request_access() -> (bool, bool) {
 
 pub fn capabilities() -> Value {
     let desktop = probe();
-    let caps = native_capabilities(&desktop, false);
+    let caps = native_capabilities(&desktop, false, semantic_supported());
     json!({
         "ui": {"supported": true, "ready": caps.capture.ready && caps.input.ready,
             "state": desktop_reason(&desktop).unwrap_or(if caps.capture.ready && caps.input.ready {"ready"} else {"permission_required"}),
@@ -231,6 +607,7 @@ pub fn capabilities() -> Value {
             "interactive_session_id": desktop.session,
             "focus_guard": caps.focus_guard, "observation_modes": caps.observation_modes,
             "commands": caps.commands, "text_delivery": ["text"],
+            "targets": if caps.accessibility.supported {vec!["point", "focus", "element"]} else {vec!["point", "focus"]},
             "scroll_units": if cfg!(windows) {vec!["line"]} else {vec!["pixel", "line"]}},
         "capture": caps.capture, "input": caps.input, "accessibility": caps.accessibility
     })
@@ -256,6 +633,7 @@ struct ObservationRecord {
     revision: u64,
     created: Instant,
     created_boot_ms: u64,
+    semantic: Option<Arc<SemanticRecord>>,
 }
 
 impl ObservationRecord {
@@ -495,11 +873,13 @@ fn failed(
     }
 }
 
-fn validate_mode(mode: ComputerObservationMode) -> Result<(), &'static str> {
-    if matches!(
-        mode,
-        ComputerObservationMode::Visual | ComputerObservationMode::Auto
-    ) {
+fn validate_mode(mode: ComputerObservationMode, semantic: bool) -> Result<(), &'static str> {
+    if semantic
+        || matches!(
+            mode,
+            ComputerObservationMode::Visual | ComputerObservationMode::Auto
+        )
+    {
         Ok(())
     } else {
         Err("observation_mode_unsupported")
@@ -693,10 +1073,7 @@ impl DesktopComputer {
             epoch,
             desktop,
             guard_focus,
-            require_focus_on_display: matches!(
-                request.target(),
-                Some(ComputerTarget::Focus { .. })
-            ),
+            require_focus_on_display: focus_input(request),
         };
         #[cfg(windows)]
         unsafe {
@@ -726,29 +1103,21 @@ impl DesktopComputer {
         }
     }
 
-    async fn observe(
+    async fn capture(
         &self,
         context: &ComputerContext,
-        request: &ComputerRequest,
-        desktop: Desktop,
-        epoch: u64,
-        revision: u64,
-    ) -> Result<(ComputerObservation, Vec<u8>), &'static str> {
-        let mode = request.feedback().1;
-        validate_mode(mode)?;
+        desktop: &Desktop,
+    ) -> Result<Vec<u8>, &'static str> {
         if desktop.capture == 0 {
             return Err(capture_reason());
-        }
-        if let Some(error) = self.stopped(context, epoch).or(desktop_reason(&desktop)) {
-            return Err(error);
         }
         if u64::from(desktop.width) * u64::from(desktop.height) > 40_000_000 {
             return Err("capture_pixel_limit");
         }
-        let started = node_executor::now_ms();
         let timeout = context.execution_timeout_ms.min(10_000);
         let max_image_bytes = context.max_image_bytes.min(COMPUTER_MAX_IMAGE_BYTES);
-        let png = tokio::task::spawn_blocking(move || {
+        let desktop = *desktop;
+        tokio::task::spawn_blocking(move || {
             let mut bytes = std::ptr::null_mut();
             let mut length = 0;
             let code = unsafe {
@@ -785,12 +1154,116 @@ impl DesktopComputer {
             Ok(image)
         })
         .await
-        .map_err(|_| "capture_failed")??;
+        .map_err(|_| "capture_failed")?
+    }
+
+    /// The control tree of the scoped window. Chromium enables its renderer
+    /// accessibility only after a UIA client appears, so a sparse first tree
+    /// of a Chromium window is sampled once more.
+    async fn semantic_tree(
+        &self,
+        context: &ComputerContext,
+        desktop: &Desktop,
+        scope: Scope,
+    ) -> Result<SemanticTree, &'static str> {
+        #[cfg(windows)]
+        {
+            let started = Instant::now();
+            let budget = COMPUTER_SEMANTIC_SNAPSHOT_MS.min(context.execution_timeout_ms);
+            let mut scope = scope;
+            for attempt in 0..2 {
+                let (root, pid) = match scope {
+                    Scope::Foreground => (0, 0),
+                    Scope::Window(root, pid) | Scope::Prefer(root, pid) => (root, pid),
+                };
+                let raw = tokio::task::spawn_blocking(move || {
+                    native_uia::snapshot(root, pid, budget as u32)
+                })
+                .await
+                .map_err(|_| "semantic_failed")?;
+                let raw = match raw {
+                    Err(1) if matches!(scope, Scope::Prefer(..)) => {
+                        scope = Scope::Foreground;
+                        continue;
+                    }
+                    Err(1) => return Err("stale_window"),
+                    Err(code) => return Err(uia_failure(code)),
+                    Ok(raw) => raw,
+                };
+                let tree = build_tree(raw, desktop, node_executor::now_ms());
+                let retry = attempt == 0
+                    && tree.web_pending
+                    && started.elapsed() + Duration::from_millis(CHROMIUM_RESAMPLE_MS + budget)
+                        < Duration::from_millis(context.execution_timeout_ms);
+                if !retry {
+                    return Ok(tree);
+                }
+                drop(tree);
+                tokio::time::sleep(Duration::from_millis(CHROMIUM_RESAMPLE_MS)).await;
+                if let Some(error) = self.stopped(context, self.epoch.load(Ordering::Acquire)) {
+                    return Err(error);
+                }
+            }
+            Err("semantic_failed")
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (context, desktop, scope);
+            Err("accessibility_unavailable")
+        }
+    }
+
+    async fn observe(
+        &self,
+        context: &ComputerContext,
+        request: &ComputerRequest,
+        desktop: Desktop,
+        epoch: u64,
+        revision: u64,
+        scope: Scope,
+    ) -> Result<(ComputerObservation, Option<Vec<u8>>), &'static str> {
+        let mode = request.feedback().1;
+        let semantic = semantic_supported();
+        validate_mode(mode, semantic)?;
+        if let Some(error) = self.stopped(context, epoch).or(desktop_reason(&desktop)) {
+            return Err(error);
+        }
+        let started = node_executor::now_ms();
+        let tree = if mode == ComputerObservationMode::Visual {
+            Err("explicit_request")
+        } else if !semantic {
+            Err("accessibility_unavailable")
+        } else {
+            self.semantic_tree(context, &desktop, scope).await
+        };
+        let usable = match &tree {
+            Ok(tree) => sparse_reason(&tree.payload.coverage, tree.actionable).map_or(Ok(()), Err),
+            Err(error) => Err(*error),
+        };
+        let (effective, reason) = select_mode(mode, usable)?;
+        let tree = if effective == ComputerObservationMode::Visual {
+            None
+        } else {
+            tree.ok()
+        };
+        let png = if matches!(
+            effective,
+            ComputerObservationMode::Visual | ComputerObservationMode::Hybrid
+        ) {
+            Some(self.capture(context, &desktop).await?)
+        } else {
+            None
+        };
+        let captured = node_executor::now_ms();
         let after = probe();
         if let Some(error) = self.stopped(context, epoch) {
             return Err(error);
         }
-        capture_consistent(&desktop, &after)?;
+        if png.is_some() {
+            capture_consistent(&desktop, &after)?;
+        } else if !same_surface(&desktop, &after) {
+            return Err("observation_changed_during_capture");
+        }
         let observation_id = format!("obs_{}", uuid::Uuid::new_v4().simple());
         let completed = node_executor::now_ms();
         let observation = ComputerObservation {
@@ -800,24 +1273,21 @@ impl DesktopComputer {
             surface_epoch: epoch,
             interaction_revision: revision,
             requested_mode: mode,
-            effective_mode: ComputerObservationMode::Visual,
-            selection_reason: if mode == ComputerObservationMode::Auto {
-                "semantic_unavailable"
-            } else {
-                "explicit_request"
-            }
-            .into(),
+            effective_mode: effective,
+            selection_reason: reason.into(),
             capture_started_at_ms: started,
             capture_completed_at_ms: completed,
             consistency: "best_effort".into(),
-            screenshot: ComputerScreenshot {
+            screenshot: png.as_ref().map(|_| ComputerScreenshot {
                 artifact_ref: format!("executor-content:{}/{}", context.store_id, context.op_id),
                 mime_type: "image/png".into(),
                 width: desktop.width,
                 height: desktop.height,
                 space: ComputerCoordinateSpace::Screenshot,
                 interactive: true,
-            },
+                captured_at_ms: captured,
+            }),
+            semantic: tree.as_ref().map(|tree| tree.payload.clone()),
             focus_guard: if desktop.focus != 0 && desktop.focus_on_display != 0 {
                 focus_guard()
             } else {
@@ -841,6 +1311,7 @@ impl DesktopComputer {
             revision,
             created: Instant::now(),
             created_boot_ms: crate::boot_ms(),
+            semantic: tree.map(|tree| Arc::new(tree.record)),
         };
         let mut observations = self.observations.lock().unwrap();
         observations.retain(|_, record| !record.expired());
@@ -857,20 +1328,17 @@ impl DesktopComputer {
         Ok((observation, png))
     }
 
-    fn target(
+    fn record(
         &self,
         context: &ComputerContext,
         request: &ComputerRequest,
-        desktop: &Desktop,
-        epoch: u64,
-        revision: u64,
+        observation_id: &str,
     ) -> Result<ObservationRecord, &'static str> {
-        let target = request.target().ok_or("target_required")?;
         let record = self
             .observations
             .lock()
             .unwrap()
-            .get(target.observation_id())
+            .get(observation_id)
             .cloned()
             .ok_or("stale_observation")?;
         if !record.belongs_to(
@@ -882,6 +1350,49 @@ impl DesktopComputer {
         ) {
             return Err("observation_forbidden");
         }
+        Ok(record)
+    }
+
+    /// The window an observe `scope` names in an earlier window list.
+    fn scope(
+        &self,
+        context: &ComputerContext,
+        request: &ComputerRequest,
+        epoch: u64,
+    ) -> Result<Scope, &'static str> {
+        let ComputerRequest::Observe {
+            scope:
+                Some(ComputerObserveScope::Window {
+                    observation_id,
+                    window_ref,
+                }),
+            ..
+        } = request
+        else {
+            return Ok(Scope::Foreground);
+        };
+        let record = self.record(context, request, observation_id)?;
+        if record.expired() || record.epoch != epoch {
+            return Err("stale_observation");
+        }
+        record
+            .semantic
+            .as_ref()
+            .and_then(|semantic| semantic.windows.get(window_ref).copied())
+            .map(|(hwnd, pid)| Scope::Window(hwnd, pid))
+            .ok_or("stale_window")
+    }
+
+    fn target(
+        &self,
+        context: &ComputerContext,
+        request: &ComputerRequest,
+        desktop: &Desktop,
+        epoch: u64,
+        revision: u64,
+    ) -> Result<ObservationRecord, &'static str> {
+        let target = request.target().ok_or("target_required")?;
+        let record = self.record(context, request, target.observation_id())?;
         observation_current(&record, desktop, epoch, revision)?;
         if matches!(target, ComputerTarget::Focus { .. })
             && (desktop.focus == 0 || desktop.focus_on_display == 0)
@@ -891,7 +1402,135 @@ impl DesktopComputer {
         if let ComputerTarget::Point { x, y, .. } = target {
             point(desktop, *x, *y)?;
         }
+        element_target(&record, request)?;
         Ok(record)
+    }
+
+    /// Re-resolve an element target through the backend: same native
+    /// identity and process, enabled and offering the action, and for
+    /// pointer commands on screen, on the display and not covered by
+    /// another window. No fallback to a similar node or to coordinates.
+    async fn resolve(
+        &self,
+        context: &ComputerContext,
+        request: &ComputerRequest,
+        record: &ObservationRecord,
+        desktop: &Desktop,
+    ) -> Result<Option<Resolved>, &'static str> {
+        let Some((semantic, element)) = element_target(record, request)? else {
+            return Ok(None);
+        };
+        #[cfg(not(windows))]
+        {
+            let _ = (context, desktop, semantic, element);
+            Err("stale_element")
+        }
+        #[cfg(windows)]
+        {
+            use crate::semantic::uia::*;
+            let (snapshot, index, timeout) = (semantic.handle.0, element.index, element_timeout(context));
+            let state = tokio::task::spawn_blocking(move || {
+                native_uia::element(snapshot, index, native_uia::OP_RESOLVE, "", timeout)
+            })
+            .await
+            .map_err(|_| "element_action_failed")?
+            .map_err(uia_failure)?;
+            let bits = |key: &str| state[key].as_u64().unwrap_or(0) as u32;
+            let flag = |key: &str| state[key].as_bool().unwrap_or(true);
+            let (states, patterns) = (bits("st"), bits("pat"));
+            let rect: Vec<f64> = state["b"]
+                .as_array()
+                .map(|v| v.iter().filter_map(Value::as_f64).collect())
+                .unwrap_or_default();
+            let pointer = |x: f64, y: f64, covered: bool| -> Result<(f64, f64), &'static str> {
+                if flag("off") {
+                    Err("element_offscreen")
+                } else if !on_display(desktop, x, y) {
+                    Err("element_out_of_bounds")
+                } else if covered {
+                    Err("element_obscured")
+                } else {
+                    Ok((x, y))
+                }
+            };
+            let required = |pattern: u32| -> Result<(f64, f64), &'static str> {
+                if states & ST_DISABLED != 0 {
+                    Err("element_disabled")
+                } else if patterns & pattern == 0 {
+                    Err("element_action_unsupported")
+                } else {
+                    Ok((0.0, 0.0))
+                }
+            };
+            let point = match request {
+                ComputerRequest::Click { .. } => {
+                    let at: Vec<f64> = state["pt"]
+                        .as_array()
+                        .map(|v| v.iter().filter_map(Value::as_f64).collect())
+                        .unwrap_or_default();
+                    if at.len() != 2 {
+                        return Err("element_out_of_bounds");
+                    }
+                    pointer(at[0], at[1], flag("obscured"))?
+                }
+                ComputerRequest::Scroll { .. } => {
+                    if rect.len() != 4 {
+                        return Err("element_out_of_bounds");
+                    }
+                    pointer(
+                        (rect[0] + rect[2] / 2.0).floor(),
+                        (rect[1] + rect[3] / 2.0).floor(),
+                        flag("center_obscured"),
+                    )?
+                }
+                ComputerRequest::Type { .. } | ComputerRequest::Keypress { .. } => {
+                    required(PAT_FOCUSABLE)?
+                }
+                ComputerRequest::Invoke { .. } => required(PAT_INVOKE)?,
+                ComputerRequest::SetValue { .. } => {
+                    if states & ST_READONLY != 0 {
+                        return Err("element_readonly");
+                    }
+                    required(PAT_VALUE)?
+                }
+                _ => return Err("command_unsupported"),
+            };
+            Ok(Some(Resolved {
+                record: semantic.clone(),
+                index,
+                point,
+            }))
+        }
+    }
+
+    async fn element_op(
+        &self,
+        context: &ComputerContext,
+        resolved: &Resolved,
+        op: u32,
+        value: &str,
+    ) -> Result<Value, (&'static str, ComputerExecutionState)> {
+        #[cfg(windows)]
+        {
+            let (snapshot, index, timeout) =
+                (resolved.record.handle.0, resolved.index, element_timeout(context));
+            let value = value.to_owned();
+            match tokio::task::spawn_blocking(move || {
+                native_uia::element(snapshot, index, op, &value, timeout)
+            })
+            .await
+            {
+                Ok(Ok(reply)) => Ok(reply),
+                Ok(Err(2)) => Err(("backend_timeout", ComputerExecutionState::Unknown)),
+                Ok(Err(code)) => Err((uia_failure(code), ComputerExecutionState::NotStarted)),
+                Err(_) => Err(("element_action_failed", ComputerExecutionState::Unknown)),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (context, resolved, op, value);
+            Err(("command_unsupported", ComputerExecutionState::NotStarted))
+        }
     }
 
     async fn act(
@@ -901,42 +1540,83 @@ impl DesktopComputer {
         desktop: &Desktop,
         epoch: u64,
         cleanup: u16,
-    ) -> Result<(), (&'static str, bool)> {
-        let mut dispatched = false;
-        let check = |dispatched| -> Result<(), (&'static str, bool)> {
+        resolved: Option<&Resolved>,
+    ) -> Result<(), (&'static str, ComputerExecutionState)> {
+        let progress = |dispatched: bool| {
+            if dispatched {
+                ComputerExecutionState::Partial
+            } else {
+                ComputerExecutionState::NotStarted
+            }
+        };
+        let focus_input = focus_input(request);
+        let check = |reference: &Desktop, dispatched: bool| -> Result<(), (&'static str, ComputerExecutionState)> {
             if let Some(error) = self.stopped(context, epoch) {
-                return Err((error, dispatched));
+                return Err((error, progress(dispatched)));
             }
             let current = probe();
-            if !same_surface(desktop, &current) || current.input == 0 {
-                return Err(("desktop_unavailable", dispatched));
+            if !same_surface(reference, &current) || current.input == 0 {
+                return Err(("desktop_unavailable", progress(dispatched)));
             }
-            if (!dispatched || matches!(request.target(), Some(ComputerTarget::Focus { .. })))
-                && (desktop.focus_pid != current.focus_pid || desktop.focus != current.focus)
+            if (!dispatched || focus_input)
+                && (reference.focus_pid != current.focus_pid || reference.focus != current.focus)
             {
-                return Err(("focus_changed", dispatched));
+                return Err(("focus_changed", progress(dispatched)));
             }
-            if matches!(request.target(), Some(ComputerTarget::Focus { .. }))
-                && current.focus_on_display == 0
-            {
-                return Err(("focus_unverifiable", dispatched));
+            if focus_input && current.focus_on_display == 0 {
+                return Err(("focus_unverifiable", progress(dispatched)));
             }
             if let Some(error) = self.stopped(context, epoch) {
-                return Err((error, dispatched));
+                return Err((error, progress(dispatched)));
             }
             Ok(())
         };
+        let mut dispatched = false;
+        let mut focused = None;
+        if let (
+            Some(resolved),
+            ComputerRequest::Type { .. } | ComputerRequest::Keypress { .. },
+        ) = (resolved, request)
+        {
+            if let Some(error) = self.stopped(context, epoch) {
+                return Err((error, ComputerExecutionState::NotStarted));
+            }
+            let current = probe();
+            if !same_surface(desktop, &current) || current.input == 0 {
+                return Err(("desktop_unavailable", ComputerExecutionState::NotStarted));
+            }
+            if desktop.focus_pid != current.focus_pid || desktop.focus != current.focus {
+                return Err(("focus_changed", ComputerExecutionState::NotStarted));
+            }
+            let reply = self
+                .element_op(context, resolved, native_focus_op(), "")
+                .await?;
+            let after = probe();
+            if reply["focused"] != Value::Bool(true) || after.focus == 0 || after.focus_on_display == 0
+            {
+                return Err(("focus_unverifiable", ComputerExecutionState::Partial));
+            }
+            dispatched = true;
+            focused = Some(after);
+        }
+        let reference = focused.as_ref().unwrap_or(desktop);
         match request {
             ComputerRequest::Click {
-                target: ComputerTarget::Point { x, y, .. },
+                target,
                 button,
                 count,
                 modifiers,
                 ..
             } => {
-                let (x, y) = point(desktop, *x, *y).map_err(|e| (e, false))?;
+                let (x, y) = match (target, resolved) {
+                    (ComputerTarget::Point { x, y, .. }, _) => {
+                        point(desktop, *x, *y).map_err(|e| (e, progress(false)))?
+                    }
+                    (_, Some(resolved)) => resolved.point,
+                    _ => return Err(("stale_element", progress(false))),
+                };
                 for click in 1..=*count {
-                    check(dispatched)?;
+                    check(desktop, dispatched)?;
                     let code = self.native_input(
                         context,
                         request,
@@ -960,7 +1640,7 @@ impl DesktopComputer {
                     if code != 0 {
                         return Err((
                             self.stopped(context, epoch).unwrap_or("input_failed"),
-                            dispatched || code == 2,
+                            progress(dispatched || code == 2),
                         ));
                     }
                     dispatched = true;
@@ -971,20 +1651,20 @@ impl DesktopComputer {
             }
             ComputerRequest::Type { text, delivery, .. } => {
                 if *delivery != ComputerTextDelivery::Text {
-                    return Err(("text_delivery_unsupported", false));
+                    return Err(("text_delivery_unsupported", progress(dispatched)));
                 }
                 for character in text.chars() {
-                    check(dispatched)?;
+                    check(reference, dispatched)?;
                     let mut utf16 = [0u16; 2];
                     let character = character.encode_utf16(&mut utf16);
                     let code =
-                        self.native_input(context, request, epoch, desktop, true, || unsafe {
+                        self.native_input(context, request, epoch, reference, true, || unsafe {
                             bucky_desktop_key(0, 0, character.as_ptr(), character.len())
                         });
                     if code != 0 {
                         return Err((
                             self.stopped(context, epoch).unwrap_or("input_failed"),
-                            dispatched || code == 2,
+                            progress(dispatched || code == 2),
                         ));
                     }
                     dispatched = true;
@@ -993,26 +1673,32 @@ impl DesktopComputer {
             }
             ComputerRequest::Keypress { keys, .. } => {
                 let code = cleanup;
-                check(false)?;
-                let status = self.native_input(context, request, epoch, desktop, true, || unsafe {
+                check(reference, dispatched)?;
+                let status = self.native_input(context, request, epoch, reference, true, || unsafe {
                     bucky_desktop_key(code, flags(&keys[..keys.len() - 1]), std::ptr::null(), 0)
                 });
                 if status != 0 {
                     return Err((
                         self.stopped(context, epoch).unwrap_or("input_failed"),
-                        status == 2,
+                        progress(dispatched || status == 2),
                     ));
                 }
             }
             ComputerRequest::Scroll {
-                target: ComputerTarget::Point { x, y, .. },
+                target,
                 delta_x,
                 delta_y,
                 unit,
                 ..
             } => {
-                let (x, y) = point(desktop, *x, *y).map_err(|e| (e, false))?;
-                check(false)?;
+                let (x, y) = match (target, resolved) {
+                    (ComputerTarget::Point { x, y, .. }, _) => {
+                        point(desktop, *x, *y).map_err(|e| (e, progress(false)))?
+                    }
+                    (_, Some(resolved)) => resolved.point,
+                    _ => return Err(("stale_element", progress(false))),
+                };
+                check(desktop, false)?;
                 let status = self.native_input(context, request, epoch, desktop, true, || unsafe {
                     bucky_desktop_scroll(
                         x,
@@ -1025,8 +1711,26 @@ impl DesktopComputer {
                 if status != 0 {
                     return Err((
                         self.stopped(context, epoch).unwrap_or("input_failed"),
-                        status == 2,
+                        progress(status == 2),
                     ));
+                }
+            }
+            ComputerRequest::Invoke { .. } | ComputerRequest::SetValue { .. } => {
+                let resolved = resolved.ok_or(("stale_element", progress(false)))?;
+                check(desktop, false)?;
+                let (op, value) = match request {
+                    ComputerRequest::SetValue { value, .. } => (native_set_value_op(), value.as_str()),
+                    _ => (native_invoke_op(), ""),
+                };
+                let reply = self.element_op(context, resolved, op, value).await?;
+                if let ComputerRequest::SetValue { value, .. } = request {
+                    if reply
+                        .get("v")
+                        .and_then(Value::as_str)
+                        .is_some_and(|current| current != value)
+                    {
+                        return Err(("value_mismatch", ComputerExecutionState::Completed));
+                    }
                 }
             }
             ComputerRequest::WaitFor {
@@ -1036,10 +1740,10 @@ impl DesktopComputer {
                 let end = Instant::now() + Duration::from_millis(*duration_ms);
                 while Instant::now() < end {
                     if let Some(error) = self.stopped(context, epoch) {
-                        return Err((error, false));
+                        return Err((error, progress(false)));
                     }
                     if !same_surface(desktop, &probe()) {
-                        return Err(("desktop_unavailable", false));
+                        return Err(("desktop_unavailable", progress(false)));
                     }
                     tokio::time::sleep(
                         Duration::from_millis(20)
@@ -1048,10 +1752,31 @@ impl DesktopComputer {
                     .await;
                 }
             }
-            _ => return Err(("command_unsupported", false)),
+            _ => return Err(("command_unsupported", progress(false))),
         }
         Ok(())
     }
+}
+
+fn native_focus_op() -> u32 {
+    #[cfg(windows)]
+    return native_uia::OP_FOCUS;
+    #[cfg(not(windows))]
+    1
+}
+
+fn native_invoke_op() -> u32 {
+    #[cfg(windows)]
+    return native_uia::OP_INVOKE;
+    #[cfg(not(windows))]
+    2
+}
+
+fn native_set_value_op() -> u32 {
+    #[cfg(windows)]
+    return native_uia::OP_SET_VALUE;
+    #[cfg(not(windows))]
+    3
 }
 
 #[async_trait]
@@ -1152,6 +1877,7 @@ impl ComputerDriver for DesktopComputer {
             result.capabilities = Some(native_capabilities(
                 &desktop,
                 self.paused.load(Ordering::Acquire) || lock.dirty,
+                semantic_supported(),
             ));
             return ComputerOutput { result, png: None };
         }
@@ -1165,7 +1891,7 @@ impl ComputerDriver for DesktopComputer {
             );
         }
         if request.feedback().0 == ComputerFeedback::After {
-            if let Err(error) = validate_mode(request.feedback().1) {
+            if let Err(error) = validate_mode(request.feedback().1, semantic_supported()) {
                 return failed(
                     &context,
                     &request,
@@ -1174,6 +1900,17 @@ impl ComputerDriver for DesktopComputer {
                 );
             }
         }
+        let mut scope = match self.scope(&context, &request, epoch) {
+            Ok(scope) => scope,
+            Err(error) => {
+                return failed(
+                    &context,
+                    &request,
+                    ComputerExecutionState::NotStarted,
+                    error,
+                )
+            }
+        };
         if !matches!(request, ComputerRequest::Observe { .. }) {
             if lock.dirty {
                 return failed(
@@ -1191,13 +1928,31 @@ impl ComputerDriver for DesktopComputer {
                     input_reason(),
                 );
             }
-            if let Err(error) = self.target(&context, &request, &desktop, epoch, lock.revision) {
-                return failed(
-                    &context,
-                    &request,
-                    ComputerExecutionState::NotStarted,
-                    error,
-                );
+            let record = match self.target(&context, &request, &desktop, epoch, lock.revision) {
+                Ok(record) => record,
+                Err(error) => {
+                    return failed(
+                        &context,
+                        &request,
+                        ComputerExecutionState::NotStarted,
+                        error,
+                    )
+                }
+            };
+            let resolved = match self.resolve(&context, &request, &record, &desktop).await {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    return failed(
+                        &context,
+                        &request,
+                        ComputerExecutionState::NotStarted,
+                        error,
+                    )
+                }
+            };
+            if let Some(resolved) = &resolved {
+                let (root, pid) = resolved.record.root;
+                scope = Scope::Prefer(root, pid);
             }
             let cleanup = match cleanup_for(&request) {
                 Ok(cleanup) => cleanup,
@@ -1219,7 +1974,9 @@ impl ComputerDriver for DesktopComputer {
                 );
             }
             self.observations.lock().unwrap().clear();
-            let executed = self.act(&context, &request, &desktop, epoch, cleanup).await;
+            let executed = self
+                .act(&context, &request, &desktop, epoch, cleanup, resolved.as_ref())
+                .await;
             #[cfg(windows)]
             if unsafe { bucky_desktop_finish() } != 0 {
                 self.set_paused(true);
@@ -1234,30 +1991,21 @@ impl ComputerDriver for DesktopComputer {
                 self.set_paused(true);
                 return failed(&context, &request, ComputerExecutionState::Unknown, error);
             }
-            if let Err((error, dispatched)) = executed {
-                return failed(
-                    &context,
-                    &request,
-                    if dispatched {
-                        ComputerExecutionState::Partial
-                    } else {
-                        ComputerExecutionState::NotStarted
-                    },
-                    error,
-                );
+            if let Err((error, state)) = executed {
+                return failed(&context, &request, state, error);
             }
             tokio::time::sleep(Duration::from_millis(60)).await;
         }
         let mut png = None;
         if request.feedback().0 == ComputerFeedback::After {
             match self
-                .observe(&context, &request, probe(), epoch, lock.revision)
+                .observe(&context, &request, probe(), epoch, lock.revision, scope)
                 .await
             {
                 Ok((observation, image)) => {
                     result.observation = Some(observation);
                     result.feedback.state = ComputerFeedbackState::Included;
-                    png = Some(image);
+                    png = image;
                 }
                 Err(error) => {
                     if matches!(request, ComputerRequest::Observe { .. }) {
@@ -1463,6 +2211,7 @@ mod tests {
             revision: 1,
             created: Instant::now(),
             created_boot_ms: crate::boot_ms(),
+            semantic: None,
         };
         let used = Desktop {
             events: 90,
@@ -1484,13 +2233,183 @@ mod tests {
     }
 
     #[test]
-    fn semantic_and_key_text_modes_are_not_advertised() {
-        let caps = native_capabilities(&Desktop::default(), false);
-        assert!(!caps.accessibility.supported);
+    fn semantic_modes_and_commands_follow_the_backend() {
+        let caps = native_capabilities(&Desktop::default(), false, false);
+        assert_eq!(caps.accessibility.supported, cfg!(windows));
+        assert!(!caps.accessibility.ready);
         assert!(!caps.capture.ready);
         assert!(!caps.input.ready);
-        assert!(validate_mode(ComputerObservationMode::Semantic).is_err());
-        assert!(validate_mode(ComputerObservationMode::Hybrid).is_err());
+        assert!(!caps.commands.contains(&"invoke".to_string()));
+        assert!(validate_mode(ComputerObservationMode::Semantic, false).is_err());
+        assert!(validate_mode(ComputerObservationMode::Hybrid, false).is_err());
+        assert!(validate_mode(ComputerObservationMode::Auto, false).is_ok());
+        assert!(validate_mode(ComputerObservationMode::Hybrid, true).is_ok());
+        let ready = Desktop {
+            ready: 1,
+            capture: 1,
+            input: 1,
+            ..Desktop::default()
+        };
+        let caps = native_capabilities(&ready, false, true);
+        assert_eq!(caps.accessibility.ready, cfg!(windows));
+        assert!(caps
+            .observation_modes
+            .contains(&ComputerObservationMode::Semantic));
+        assert!(caps.commands.contains(&"set_value".to_string()));
+        assert_eq!(
+            native_capabilities(&ready, true, true)
+                .accessibility
+                .reason
+                .as_deref(),
+            Some(if cfg!(windows) {
+                "paused"
+            } else {
+                "semantic_observation_unsupported"
+            })
+        );
+    }
+
+    fn coverage(returned: u32, reason: Option<&str>) -> ComputerSemanticCoverage {
+        ComputerSemanticCoverage {
+            visited: returned,
+            returned,
+            truncated: false,
+            reason: reason.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn auto_prefers_a_rich_tree_and_explains_fallbacks() {
+        use ComputerObservationMode::*;
+        assert_eq!(sparse_reason(&coverage(40, None), 12), None);
+        assert_eq!(sparse_reason(&coverage(40, Some("timeout")), 12), None);
+        assert_eq!(sparse_reason(&coverage(6, None), 12), Some("tree_sparse"));
+        assert_eq!(sparse_reason(&coverage(40, None), 2), Some("tree_sparse"));
+        assert_eq!(
+            sparse_reason(&coverage(0, Some("window_inaccessible")), 0),
+            Some("window_inaccessible")
+        );
+        assert_eq!(
+            select_mode(Auto, Ok(())),
+            Ok((Semantic, "semantic_available"))
+        );
+        for reason in [
+            "tree_sparse",
+            "window_inaccessible",
+            "accessibility_unavailable",
+            "backend_timeout",
+        ] {
+            assert_eq!(select_mode(Auto, Err(reason)), Ok((Visual, reason)));
+        }
+        assert_eq!(select_mode(Visual, Ok(())), Ok((Visual, "explicit_request")));
+        assert_eq!(
+            select_mode(Semantic, Err("tree_sparse")),
+            Ok((Semantic, "explicit_request"))
+        );
+        assert_eq!(select_mode(Hybrid, Ok(())), Ok((Hybrid, "explicit_request")));
+        assert_eq!(
+            select_mode(Semantic, Err("backend_timeout")),
+            Err("backend_timeout")
+        );
+        assert_eq!(select_mode(Hybrid, Err("stale_window")), Err("stale_window"));
+    }
+
+    fn element_record(semantic: Option<Arc<SemanticRecord>>) -> ObservationRecord {
+        ObservationRecord {
+            actor: Actor {
+                agent_did: "did:example:alice".into(),
+                app_instance_id: "app@alice".into(),
+            },
+            profile: "desktop".into(),
+            store: "store-1".into(),
+            server_epoch: "epoch-1".into(),
+            binding: "desktop:display:1".into(),
+            desktop: Desktop::default(),
+            epoch: 1,
+            revision: 1,
+            created: Instant::now(),
+            created_boot_ms: crate::boot_ms(),
+            semantic,
+        }
+    }
+
+    fn element_request(command: &str, reference: &str) -> ComputerRequest {
+        let mut value = json!({"command": command, "binding_id": "desktop:display:1",
+            "target": {"kind": "element", "observation_id": "obs", "ref": reference}});
+        match command {
+            "set_value" => value["value"] = json!("x"),
+            "type" => value["text"] = json!("x"),
+            _ => {}
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn element_refs_resolve_only_within_their_observation_and_declared_actions() {
+        let semantic = Arc::new(SemanticRecord {
+            handle: SnapshotHandle(0),
+            root: (10, 20),
+            elements: HashMap::from([(
+                "e2".to_string(),
+                ElementRecord {
+                    index: 7,
+                    actions: vec![ComputerElementAction::Focus, ComputerElementAction::Invoke],
+                },
+            )]),
+            windows: HashMap::from([("w1".to_string(), (10, 20))]),
+        });
+        let record = element_record(Some(semantic));
+        let (found, element) = element_target(&record, &element_request("invoke", "e2"))
+            .unwrap()
+            .unwrap();
+        assert_eq!((element.index, found.root), (7, (10, 20)));
+        assert!(element_target(&record, &element_request("click", "e2"))
+            .unwrap()
+            .is_some());
+        assert!(element_target(&record, &element_request("type", "e2"))
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            element_target(&record, &element_request("set_value", "e2")).err(),
+            Some("element_action_unsupported")
+        );
+        assert_eq!(
+            element_target(&record, &element_request("invoke", "e3")).err(),
+            Some("stale_element")
+        );
+        assert_eq!(
+            element_target(&element_record(None), &element_request("invoke", "e2")).err(),
+            Some("stale_element")
+        );
+        assert!(focus_input(&element_request("type", "e2")));
+        assert!(!focus_input(&element_request("click", "e2")));
+        assert!(!focus_input(&element_request("invoke", "e2")));
+    }
+
+    #[test]
+    fn native_bounds_map_into_screenshot_space() {
+        let desktop = Desktop {
+            x: -1920.0,
+            y: 0.0,
+            width: 2880,
+            height: 1800,
+            logical_width: 1440.0,
+            logical_height: 900.0,
+            ..Desktop::default()
+        };
+        assert_eq!(
+            screen_bounds(&desktop, [-1920, 0, 100, 50]),
+            ComputerBounds {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 100
+            }
+        );
+        assert_eq!(screen_bounds(&desktop, [-1930, -5, 10, 10]).x, -20);
+        assert!(on_display(&desktop, -1920.0, 0.0));
+        assert!(!on_display(&desktop, -480.0, 10.0));
+        assert!(!on_display(&desktop, f64::NAN, 10.0));
     }
 
     #[test]
@@ -1540,6 +2459,7 @@ mod tests {
             revision: 1,
             created: Instant::now(),
             created_boot_ms: crate::boot_ms(),
+            semantic: None,
         };
         assert!(record.belongs_to(&actor, "desktop", "store-1", "epoch-1", "desktop:display:1"));
         let other = Actor {
@@ -1631,14 +2551,68 @@ mod tests {
             input: 0,
             ..Desktop::default()
         };
-        let caps = native_capabilities(&desktop, false);
+        let caps = native_capabilities(&desktop, false, false);
         assert!(caps.capture.ready);
         assert_eq!(
             caps.input.reason.as_deref(),
             Some("foreground_identity_or_integrity_unavailable")
         );
-        assert!(!caps.accessibility.supported);
-        assert!(!native_capabilities(&desktop, true).capture.ready);
+        assert!(caps.accessibility.supported);
+        assert_eq!(
+            caps.accessibility.reason.as_deref(),
+            Some("ui_automation_unavailable")
+        );
+        assert!(native_capabilities(&desktop, false, true).accessibility.ready);
+        assert!(!native_capabilities(&desktop, true, true).capture.ready);
+    }
+
+    /// `BUCKY_SEMANTIC_TITLE=<title substring>` picks a window from the
+    /// window list instead of the foreground window.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires an unlocked Windows interactive desktop; reads UI Automation without input"]
+    fn windows_semantic_smoke() {
+        let desktop = probe();
+        assert_eq!(desktop.ready, 1, "desktop is unavailable: {desktop:?}");
+        assert!(native_uia::ready(), "UI Automation is unavailable");
+        let first = native_uia::snapshot(0, 0, 3000).expect("foreground snapshot");
+        let scope = std::env::var("BUCKY_SEMANTIC_TITLE").ok().map(|title| {
+            first
+                .windows
+                .iter()
+                .find(|w| w.title.contains(&title))
+                .map(|w| (w.hwnd, w.pid))
+                .expect("no listed window has that title")
+        });
+        for attempt in 0..2 {
+            let started = Instant::now();
+            let raw = match scope {
+                Some((root, pid)) => native_uia::snapshot(root, pid, 3000).expect("window snapshot"),
+                None => native_uia::snapshot(0, 0, 3000).expect("foreground snapshot"),
+            };
+            let elapsed = started.elapsed();
+            let tree = build_tree(raw, &desktop, 0);
+            let payload = serde_json::to_vec(&tree.payload).unwrap().len();
+            if attempt == 1 {
+                for window in &tree.payload.windows {
+                    println!("{} {:?} {} foreground={} accessible={}", window.window_ref, window.title, window.process, window.foreground, window.accessible);
+                }
+                println!("{}", tree.payload.text);
+            }
+            println!(
+                "attempt {attempt}: web_pending={} coverage={:?} actionable={} sparse={:?} outline_bytes={} payload_bytes={payload} elapsed={elapsed:?}",
+                tree.web_pending,
+                tree.payload.coverage,
+                tree.actionable,
+                sparse_reason(&tree.payload.coverage, tree.actionable),
+                tree.payload.text.len(),
+            );
+            assert!(tree.payload.within_limit());
+            assert!(elapsed < Duration::from_millis(5_600));
+            if tree.web_pending {
+                std::thread::sleep(Duration::from_millis(CHROMIUM_RESAMPLE_MS));
+            }
+        }
     }
 
     #[cfg(windows)]

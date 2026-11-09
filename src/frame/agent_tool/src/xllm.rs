@@ -2090,6 +2090,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
+/// What a Session Bin manifest records of a program entry: its length and
+/// modification time, which a hard link shares with the program and a copy
+/// keeps.
+pub fn session_program_stamp(path: &Path) -> std::io::Result<String> {
+    let meta = std::fs::metadata(path)?;
+    let modified = meta
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Ok(format!("{}:{modified}", meta.len()))
+}
+
 /// 读取所有显式附件，保留顺序；任一附件不可用即报错，不会丢弃附件继续。
 pub fn load_attachments(
     attachments: &[Attachment],
@@ -8019,18 +8032,31 @@ fn restore_host_environment(
     )
     .map_err(|e| blocked(e.to_string()))?;
     if manifest["entries"] != check["bin_manifest"]["entries"]
+        || manifest["programs"] != check["bin_manifest"]["programs"]
         || manifest["tool_plan"] != check["bin_manifest"]["tool_plan"]
     {
         return Err(blocked("Session bin manifest changed".into()));
+    }
+    let entry_path = |name: &str| {
+        if name.contains(['/', '\\']) || name == "." || name == ".." {
+            return Err(blocked("invalid Session bin entry".into()));
+        }
+        Ok(bin.join(name))
+    };
+    if let Some(programs) = manifest["programs"].as_object() {
+        for (name, recorded) in programs {
+            let found = session_program_stamp(&entry_path(name)?)
+                .map_err(|e| blocked(format!("Session helper {name} unavailable: {e}")))?;
+            if recorded.as_str() != Some(found.as_str()) {
+                return Err(blocked(format!("Session helper {name} changed")));
+            }
+        }
     }
     let entries = manifest["entries"]
         .as_object()
         .ok_or_else(|| blocked("Session bin manifest entries missing".into()))?;
     for (name, digest) in entries {
-        if name.contains('/') || name == "." || name == ".." {
-            return Err(blocked("invalid Session bin entry".into()));
-        }
-        let path = bin.join(name);
+        let path = entry_path(name)?;
         let content = std::fs::read(&path)
             .map_err(|e| blocked(format!("Session helper {name} unavailable: {e}")))?;
         if digest.as_str() != Some(sha256_hex(&content).as_str()) {
@@ -10927,6 +10953,21 @@ there]]></write_file>
         ));
         record.host = Some(host(check(vec![bin.clone(), other])));
         restore_host_environment(&record, &mut open()).unwrap();
+
+        // A program entry is held to its recorded length and mtime.
+        std::fs::write(bin.join("agent-session.exe"), b"program").unwrap();
+        let stamp = session_program_stamp(&bin.join("agent-session.exe")).unwrap();
+        let manifest = json!({"entries": {}, "programs": {"agent-session.exe": stamp}, "tool_plan": null});
+        std::fs::write(bin.join(".manifest.json"), manifest.to_string()).unwrap();
+        let mut env_check = check(Vec::new());
+        env_check["bin_manifest"] = manifest;
+        record.host = Some(host(env_check));
+        restore_host_environment(&record, &mut open()).unwrap();
+        std::fs::write(bin.join("agent-session.exe"), b"another program").unwrap();
+        assert!(matches!(
+            restore_host_environment(&record, &mut open()),
+            Err(XllmError::RecoveryBlocked(_))
+        ));
     }
 
     #[tokio::test]

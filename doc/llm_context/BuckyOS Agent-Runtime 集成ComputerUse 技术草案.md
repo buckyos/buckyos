@@ -142,6 +142,8 @@ capabilities / policy_version / expires_at
 
 默认模式随 binding 配置，每次 `observe --mode` 或动作 `feedback_mode` 可以覆盖。首期不必增加有状态的 `set_mode` CLI；减少跨调用的隐式状态。
 
+实现状态（2026-11-08，[UIA 语义观察 TODO](../../notepads/computer-use-uia-semantic-todo.md)）：Windows Driver 支持全部四种模式；macOS 仍为 visual/auto，`accessibility` 报 unsupported，浏览器语义后端未实施。动作的 `feedback_mode` 默认为 `auto`，Driver 不在 binding 上记住上一次的模式。auto 在语义可用、且前台窗口树至少有 10 个返回节点和 5 个可操作节点时选 semantic，否则选 visual；`selection_reason` 为 `semantic_available`、`tree_sparse`、`window_inaccessible`、`accessibility_unavailable`、`backend_timeout` 等。显式 semantic/hybrid 在稀疏或不可访问的窗口上仍返回窗口列表与 coverage，后端失败时报错。
+
 ## 4. CLI 合同
 
 ### 4.1 命令树
@@ -339,6 +341,32 @@ daemon 保存不可变的观察及后端映射。建议结构：
 
 semantic 模式附带格式、文本/结构化节点、引用、coverage 和 truncated；hybrid 同时附带两类内容和采样区间。截图与树通常不是原子快照，检测到导航或明显漂移时重采样/报错。
 
+当前实现的语义载荷（`ComputerObservation.semantic`，截图改为可选的 `screenshot`）：
+
+~~~json
+{
+  "format": "outline-v1",
+  "text": "[e1] window \"Gmail - Google Chrome\" @0,0 1280x1400\n  [e12] tab \"Gmail\" selected (select) @29,0 256x41\n",
+  "windows": [{"ref": "w1", "title": "Gmail - Google Chrome", "process": "chrome.exe", "pid": 4120,
+               "bounds": {"x": 0, "y": 0, "width": 1280, "height": 1400}, "foreground": true, "accessible": true}],
+  "coverage": {"visited": 199, "returned": 149, "truncated": false},
+  "captured_at_ms": 1794000000000
+}
+~~~
+
+大纲每行一个节点：缩进表示层级，`[ref] role "name" #id value="…" 状态… (动作, …) @x,y wxh`；bounds 位于截图坐标空间，与 point 目标同一坐标系。不再重复一份逐节点 JSON，结构化节点与平台原生信息只保留在 Driver 的观察记录中。语义载荷经控制帧传输，单个不超过 256 KiB（`COMPUTER_MAX_SEMANTIC_BYTES`）；固定上限为 400 节点、大纲深度 32、文本 32 KiB、单次快照 3 秒。`observe` 的可选 `scope` 为 `{"kind":"foreground"}`（默认）或 `{"kind":"window","observation_id","ref"}`（取上一次窗口列表中的窗口），不做整桌面全树，observe 不改变焦点；hybrid 的截图与树分别带 `captured_at_ms`。
+
+**跨平台通用语义。** 协议、大纲与命令只使用 `buckyos-api` 中定义的通用名（Rust `ComputerRole` / `ComputerElementState` / `ComputerElementAction`，websdk `COMPUTER_ROLES` / `COMPUTER_ELEMENT_STATES` / `COMPUTER_ELEMENT_ACTIONS`），平台原生名只留在 Driver 观察记录供诊断：
+
+| 类别 | 名称 |
+| --- | --- |
+| role（WAI-ARIA 名） | `window` `dialog` `document` `group` `toolbar` `heading` `button` `link` `tab` `tablist` `menu` `menubar` `menuitem` `checkbox` `radio` `switch` `textbox` `combobox` `slider` `list` `listitem` `tree` `treeitem` `table` `row` `cell` `image` `text`，其余为 `generic` |
+| 状态 | `disabled` `focused` `selected` `checked` `mixed` `expanded` `collapsed` `readonly` |
+| 动作 | `focus` `invoke` `set_value` `toggle` `select` `expand` `collapse` `scroll_into_view` |
+| id | Windows AutomationId；macOS AXIdentifier；浏览器 DOM `id` |
+
+Windows UIA 的 ControlType / AriaRole / pattern 到通用名的映射与单元测试在 `src/kernel/computer_driver/src/semantic.rs`；macOS AX 与浏览器后端实施时复用这张表，并实测确认各自映射。大纲省略几乎每个元素都有的 `scroll_into_view`（第二阶段命令），记录中仍保留。
+
 `surface_epoch` 表示交互面身份代次；`interaction_revision` 表示已知的交互变化，不声称覆盖所有动画、DOM 或外部输入。
 
 ### 6.2 Target 类型
@@ -368,6 +396,7 @@ type FocusTarget = {
 - 如果宿主缩放图片，应固定交付版本并维护映射及尺寸；不能让模型看到缩放图却按原图坐标执行。
 - focus 至少核验授权桌面、Surface 和代次；能获取焦点节点/输入上下文时也须核验。弱焦点保护在能力中明确报告。
 - 元素失败不自动猜坐标，坐标失效不自动猜同名元素。
+- 当前实现（Windows UIA）：`ref` 为观察内短 id（`e1`、`e2`…），只对该 `observation_id` 有效；Driver 记录 ref → 缓存的 UIA 元素、RuntimeId、pid 和顶层 HWND。动作前重新解析：元素仍存在、RuntimeId 与进程一致、顶层窗口未换主；pointer 命令另要求不在 offscreen、点在主屏内且未被其他顶层窗口遮挡。失败返回 `stale_element`（或 `element_offscreen`、`element_out_of_bounds`、`element_obscured`、`element_disabled`、`element_action_unsupported`），不退化为坐标。`wait_for` 暂不接受 element 目标。
 
 ### 6.3 有效性规则
 
@@ -394,6 +423,22 @@ type FocusTarget = {
 | `move` | element/point。可能触发 hover，参与审计和观察失效 |
 | `drag` | from/to、可选 duration_ms/path。同一 Surface 和 Observation，两个目标同为元素或同为坐标；失败报告 partial/unknown 并清理输入 |
 | `wait_for` | condition 为 delay/text/element_state，有界且可取消；不接受任意代码 |
+| `invoke` | element。执行元素的默认动作（UIA Invoke、AX Press、DOM 激活），不移动鼠标，可用于部分遮挡或不在可视区的元素 |
+| `set_value` | element、value（≤16 KiB）。替换整个值（即 `semantic.fill`），执行后回读，回读不一致报 `value_mismatch` |
+
+语义动作分两阶段：第一阶段为 element 目标的 click/type/keypress/scroll 与 `invoke`、`set_value`（Windows 已实现）；第二阶段视实测效果再加 `toggle`、`select`、`expand`、`collapse`、`scroll_into_view`。每个语义命令只对观察中声明了该动作的元素开放，归入 `computer_act`，只读授权不能调用。`click(element)` 在元素可点击点做物理点击，不等同于 invoke；`type`/`keypress(element)` 先经通用 `focus` 聚焦并回读焦点，再输入；`scroll(element)` 在元素中心滚动。通用动作在各平台的映射：
+
+| 通用动作 | Windows UIA | macOS AX | 浏览器 |
+| --- | --- | --- | --- |
+| `focus` | `SetFocus` | 设置 `AXFocused` | `element.focus()` |
+| `invoke` | InvokePattern.Invoke | `AXPress` | DOM 激活（`element.click()`） |
+| `set_value` | ValuePattern.SetValue | 设置 `AXValue` | 设置 value 并派发 input / change 事件 |
+| `toggle` | TogglePattern.Toggle | checkbox 上的 `AXPress` | `element.click()` |
+| `select` | SelectionItemPattern.Select | 设置 `AXSelected` | 选中 option / 激活 tab |
+| `expand`、`collapse` | ExpandCollapsePattern | 设置 `AXExpanded` / `AXDisclosing` | 激活带 `aria-expanded` 的控件 |
+| `scroll_into_view` | ScrollItemPattern.ScrollIntoView | `AXScrollToVisible` | `element.scrollIntoView()` |
+
+UIA 调用超时且已开始执行时，元素动作的执行状态为 `unknown`，按原 operation 查询，不盲目重试。
 
 补充约束：
 

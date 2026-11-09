@@ -193,7 +193,8 @@ fn build_windows() {
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=computer_native");
     for library in [
-        "user32", "gdi32", "gdiplus", "ole32", "advapi32", "wtsapi32", "shcore",
+        "user32", "gdi32", "gdiplus", "ole32", "oleaut32", "advapi32", "wtsapi32", "shcore",
+        "dwmapi",
     ] {
         println!("cargo:rustc-link-lib={library}");
     }

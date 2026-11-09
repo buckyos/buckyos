@@ -1147,3 +1147,53 @@ fn create_worksession_requires_a_title_and_cuts_it() {
     let (_, st, _) = cli.run(&["status", child.sid()]);
     assert_eq!(st["entry"]["title"], title.as_str());
 }
+
+/// On Windows the session's `agent-session` is the `xagent` program itself:
+/// PowerShell, `cmd`, `Start-Process` (which would hand a script to its file
+/// association) and a direct process start all run it with its words intact.
+#[cfg(windows)]
+#[test]
+fn windows_agent_session_is_a_program_every_caller_runs() {
+    use libopendan::runtime::bin_overlay::{prepare, verify, BinPlan};
+    use std::os::windows::process::CommandExt;
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let bin = dir.path().join("bin");
+    let plan = BinPlan { session_cli: Some(PathBuf::from(env!("CARGO_BIN_EXE_xagent"))), ..Default::default() };
+    prepare(&bin, &plan).unwrap();
+    verify(&bin, &plan).unwrap();
+    assert!(bin.join("agent-session.exe").is_file());
+    assert!(!bin.join("agent-session.ps1").exists() && !bin.join("agent-session").exists());
+    let path = format!("{};{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let target = |how: &str| dir.path().join(format!("out {how} & 'q' 中文"));
+    let psq = |p: PathBuf| p.display().to_string().replace('\'', "''");
+
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         $c = Get-Command agent-session\n\
+         if ($c.CommandType -ne 'Application' -or -not $c.Source.EndsWith('agent-session.exe')) {{ throw \"resolved to $($c.Source)\" }}\n\
+         agent-session schema '{}' | Out-Null\n\
+         if ($LASTEXITCODE -ne 0) {{ exit 3 }}\n\
+         $p = Start-Process agent-session -ArgumentList 'schema', '\"{}\"' -WindowStyle Hidden -Wait -PassThru\n\
+         exit $p.ExitCode\n",
+        psq(target("ps")),
+        psq(target("start")),
+    );
+    let out = Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script])
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let out = Command::new("cmd.exe")
+        .raw_arg(format!("/d /c agent-session schema \"{}\"", target("cmd").display()))
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let out = Command::new("agent-session").arg("schema").arg(target("direct")).env("PATH", &path).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    for how in ["ps", "start", "cmd", "direct"] {
+        let written = std::fs::read_dir(target(how)).map(|d| d.count()).unwrap_or(0);
+        assert!(written > 0, "`{how}` did not run agent-session with its argument");
+    }
+}

@@ -141,7 +141,7 @@ Linux 系统服务默认不向 owner 的 Agent 开放（常规生产环境大家
 
 Desktop Lite 中，Agent Service 与 owner 在同一节点、同一 OS 执行身份下运行时，Agent 的 `private` 和 owner default 指向同一个 native runtime；`host` 只保留为设置中的角色引用，由 registry 解析到 `private`。容器、其他节点，以及 Linux 上需要切换 OS 账号的执行环境仍分别登记。
 
-该 native runtime 的 shell、文件、工作区和工具检查直接在本机执行。PATH 在 Session/Agent skill 工具之后加入 `$BUCKYOS_ROOT/tools/bin` 与 `$BUCKYOS_ROOT/bin/agent-tools`。ComputerUse 单独通过本机 IPC 复用 node_daemon 已打开的 NodeExecutor/ComputerDriver：Unix 为 `$BUCKYOS_ROOT/local/node_daemon/executor/computer.sock`（0600），Windows 为按安装目录生成的本地 named pipe（拒绝远程客户端）。协议、Agent token、profile、授权快照、撤权、桌面锁、operation ledger 和截图 content 通道均复用现有实现，不经过 gateway/SOCKS/RTCP。IPC 或桌面权限失败仅影响桌面能力，不改变 native shell/file 的可用性。
+该 native runtime 的 shell、文件、工作区和工具检查直接在本机执行。PATH 在 Session/Agent skill 工具之后加入 `$BUCKYOS_ROOT/tools/bin` 与 `$BUCKYOS_ROOT/bin/agent-tools`。ComputerUse 单独通过本机 IPC 复用 node_daemon 已打开的 NodeExecutor/ComputerDriver：Unix 为 `$BUCKYOS_ROOT/local/node_daemon/executor/computer.sock`（0600），Windows 为按安装目录生成的本地 named pipe（拒绝远程客户端）。协议、Agent token、profile、授权快照、撤权、桌面锁、operation ledger 和截图 content 通道均复用现有实现，不经过 gateway/SOCKS/RTCP。语义观察（Windows UIA；`observation.semantic` 的大纲、窗口列表与 coverage）随结果走控制帧，单个载荷不超过 `COMPUTER_MAX_SEMANTIC_BYTES`（256 KiB），只有截图使用 content 通道；结果给模型时大纲以纯文本行展示，没有截图时不附图片。IPC 或桌面权限失败仅影响桌面能力，不改变 native shell/file 的可用性。
 
 ### 4.3 能力声明
 
@@ -229,7 +229,7 @@ Scheduler 是正常体系的最高配置来源；Owner 是正常体系之外的�
     "limits": {
       "max_streams": 4, "max_concurrency": 2,
       "max_execution_ms": 3600000, "max_output_bytes_per_stream": 8388608,
-      "max_file_bytes": 1048576,
+      "max_file_bytes": 1048576, "max_computer_image_bytes": 8388608,
       "result_retention_secs": 604800, "max_records": 100000,
       "max_store_bytes": 2147483648
     }
@@ -795,10 +795,10 @@ P0-A（配置与权限）与 P0-B（Command Stream 最小闭环，Linux 形态 A
 - 账本 `$BUCKYOS_ROOT/local/node_daemon/executor/`：`meta.json`、`owner.lock`（flock 单写者）、`operations/<key-hash>/{request.json,state.json,result.json,stdout,stderr,content,upload}`、`tombstones/<key-hash>.json`、`tmp/`。key-hash = sha256(`["op", store_id, agent_did, app_instance_id, profile, runtime_id, op_id]`)，另以 run/call 元组做第二唯一键。记录在 tmp 下写全并 fsync 后整目录 rename 发布，之后才回复 accepted；result.json 写一次。重启时 starting/running 而无结果的记 unknown（effect_unknown），meta 缺失但有记录、node_did 不符、记录损坏均拒绝打开（节点日志报错，执行器保持关闭）。
 - exec：先以目标身份跑一次 worker 解析 cwd（须在 roots 内），再在串行控制门内检查取消、直接 spawn `bash --noprofile --norc -c <wrapper>`（独立进程组；pre_exec 内显式 setgroups([gid])/setgid/setuid 并核对，以目标身份 chdir，继承的 fd 置 CLOEXEC（Linux 用 `close_range`，macOS 或 close_range 不可用时按 RLIMIT_NOFILE 逐个 fcntl）；Linux 另设 no_new_privs、清 ambient caps），脚本经 stdin 读入后 stdin 改为 /dev/null，不进 argv。**差异**：shell 进程本身就是降权 worker，没有再套一层持有 shell 的 worker。stdout/stderr 各保留前 N 字节、超出继续 drain；leader 退出后最多再等 500 ms 读管道；超时/取消对进程组 SIGTERM，2 s 后 SIGKILL，以 wait 确认后才发布 timed_out/cancelled；正常结束不清理后台进程。
 - 文件操作：node_daemon 以 `--executor-worker` 重入自身、以 profile 身份执行；路径在打开后的 fd（Linux `/proc/self/fd`，macOS `F_GETPATH`）上校验是否在 roots 内；写入为同目录临时文件 + fsync + renameat + 目录 fsync（`append` 例外：`O_APPEND` 原地追加后 fsync，不受 max_file_bytes 对整文件的限制，只限单次上传；给出 expected_hash 时流式计算已有内容摘要）；rename/remove 在已校验的父目录句柄上 `renameat`/`linkat`/`unlinkat`；`write` 可创建 roots 内缺失的父目录；同一 canonical 路径的写串行（rename 同时锁定两端）；expected_hash / expected_size 不符为 Conflict。read/edit 的内容快照写入 `content`，query 读取的是快照而非现场文件。文件操作一旦开始不可中断，取消请求之后按自然结果发布。
-- 容量：准入前按操作预留空间（exec 为 2×输出上限，文件为 max_file_bytes），计入 max_records（含墓碑）与 max_store_bytes，超出 CapacityExceeded；GC 每 60 s 先写墓碑再删目录，墓碑不按 TTL 删除。
+- 容量：准入前按操作预留空间（exec 为 2×输出上限，文件为 max_file_bytes，Computer 为 max_computer_image_bytes），计入 max_records（含墓碑）与 max_store_bytes，超出 CapacityExceeded；GC 每 60 s 先写墓碑再删目录，墓碑不按 TTL 删除。
 - 非 root 的 daemon 只声明 open_stream/describe/query/cancel，exec/read/write/edit/mkdir/stat/rename/remove 返回 Capability。
 - `describe` 的 `target` 另带 `workdir_roots`（profile 的 roots：控制侧据此放 Session 默认目录 `<root0>/.opendan/<agent>/sessions/<sid>`），`info` 另带 `identity_mode`（`current_user | switch_user`）与注入 Driver 时的 `desktop`（`ui/capture/input/accessibility` readiness）：A-system 与 A-desktop 由此区分，不猜安装形态。
-- node_daemon 桌面模式（A-desktop）：`--desktop_daemon` 构建、平台有 Driver（macOS/Windows）且进程非 root 时，以 `CurrentUser` 打开并注入 `computer_driver` crate 的共享 Driver（与 agent-daemon 同一实现、同一用户会话输入协调锁）；Linux 与 root 场景保持 A-system。
+- node_daemon 桌面模式（A-desktop）：`--desktop_daemon` 构建、平台有 Driver（macOS/Windows）且进程非 root 时，以 `CurrentUser` 打开并注入 `computer_driver` crate 的共享 Driver（与 agent-daemon 同一实现、同一用户会话输入协调锁）；Linux 与 root 场景保持 A-system。Windows 的 Driver 同时提供 UI Automation 语义观察（semantic/hybrid/auto）、element target 与 `invoke`/`set_value`，`desktop.accessibility` 报其就绪；macOS 仍只有 visual/auto（行为与限制见 [agent_daemon.md](agent_daemon.md) 的 Windows ComputerUse 一节）。
 
 ### 17.5 gateway 与 Agent 侧
 

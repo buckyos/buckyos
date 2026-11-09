@@ -104,7 +104,7 @@ impl TypedTool for ComputerTool {
     }
 
     fn description(&self) -> &str {
-        "Use this native runtime's desktop through local IPC. request uses the Computer API: command inspect, observe, click, type, keypress, scroll or wait_for; binding_id is filled from the local display when empty or omitted. Start with inspect or observe (mode: visual or auto); inspect reports the modes supported by the local driver. Results are JSON: status.result.computer contains execution, error and observation; screenshot is the absolute local path of the PNG, which also comes with the result as an image for you to look at. Locate targets on that image in the observation's screenshot width and height. Actions must use that observation_id, binding_id and screenshot coordinates before expires_at_ms; if the observation expires or the screen changes, observe again and verify the target. An unknown execution outcome must not be blindly retried. Owner permissions, focus checks and desktop locking are enforced by the existing driver."
+        "Use this native runtime's desktop through local IPC. request uses the Computer API: command inspect, observe, click, type, keypress, scroll, wait_for, invoke or set_value; binding_id is filled from the local display when empty or omitted. Start with inspect or observe; inspect reports the observation modes and commands the local driver supports. observe takes mode visual, semantic, hybrid or auto (auto reads the window's control tree when it is usable, otherwise takes a screenshot); actions return a new observation in feedback_mode, default auto. A semantic observation is shown after the JSON as an outline, one control per line: `[ref] role \"name\" states (actions) @x,y wxh`, plus a window list; observe with scope {\"kind\":\"window\",\"observation_id\":...,\"ref\":\"wN\"} reads another listed window. Target a control with {\"kind\":\"element\",\"observation_id\":...,\"ref\":\"eN\"}: click and scroll act on it physically, type and keypress focus it first, invoke runs its default action without moving the pointer, set_value replaces its whole value; invoke and set_value need that action in its line. A screenshot comes with the result as an image (screenshot is its absolute local path); point targets use that image's width and height coordinates. Results are JSON: status.result.computer contains execution, error and observation. Targets must use an observation_id of this binding before expires_at_ms, and after each action the new observation; on stale_element or an expired observation, observe again instead of guessing another element or coordinates. An unknown execution outcome must not be blindly retried. Owner permissions, focus checks and desktop locking are enforced by the existing driver."
     }
 
     async fn execute(&self, _ctx: &ToolCtx<'_>, args: Self::Args) -> Result<Value, AgentToolError> {
@@ -297,7 +297,7 @@ impl AgentTool for ComputerToolHandle {
             }
             None => None,
         };
-        let output = result.details.to_string();
+        let output = model_output(&result.details);
         let result = result
             .with_output(output)
             .with_result(summary)
@@ -308,6 +308,30 @@ impl AgentTool for ComputerToolHandle {
             None => result,
         })
     }
+}
+
+const OBSERVATION: &str = "/status/result/computer/observation";
+
+/// The result JSON for the model, with a semantic outline moved out of its
+/// JSON string into plain lines after it.
+fn model_output(details: &Value) -> String {
+    let outline = details
+        .pointer(&format!("{OBSERVATION}/semantic/text"))
+        .and_then(Value::as_str);
+    let Some(outline) = outline else {
+        return details.to_string();
+    };
+    let observation_id = details
+        .pointer(&format!("{OBSERVATION}/observation_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut shown = details.clone();
+    if let Some(text) = shown.pointer_mut(&format!("{OBSERVATION}/semantic/text")) {
+        *text = json!("(outline below)");
+    }
+    format!(
+        "{shown}\n\nsemantic outline of observation {observation_id}; target a line with {{\"kind\":\"element\",\"observation_id\":\"{observation_id}\",\"ref\":\"<ref>\"}}:\n{outline}"
+    )
 }
 
 pub fn tool(
