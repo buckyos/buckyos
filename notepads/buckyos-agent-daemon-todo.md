@@ -238,7 +238,7 @@ UI 请求复用 Command Stream 的操作生命周期。下面是逻辑工具名�
 
 ### 7.1 macOS：AX 为主，无 BuckyOSApp
 
-- [ ] 实现 AX 应用/窗口发现、属性读取、动作枚举、`AXUIElementPerformAction`、可写属性设置和按应用注册的 AXObserver。
+- [ ] 实现 AX 应用/窗口发现、属性读取、动作枚举、`AXUIElementPerformAction`、可写属性设置和按应用注册的 AXObserver。（2026-11-09：除 AXObserver 外已在 `computer_driver` 实施，见 [UIA 语义观察 TODO](computer-use-uia-semantic-todo.md) §8。）
 - [ ] 支持异步权限检查与最小授权引导；区分 Accessibility 与 Screen Recording。只使用 AX 的主路径不要求先完成截图权限。
 - [ ] 实际调用 AX/截图/输入 API 的 daemon 或 helper 使用稳定安装位置与签名身份；需要 bundle 元数据时打包最小后台 bundle，不引入完整 BuckyOSApp。
 - [ ] 独立模式按 §4.3 支持按需选择启动上下文：GUI 会话中直接启动或显式 LaunchAgent 可由 daemon 自身承载 UI 后端，纯命令模式可使用 LaunchDaemon。完整节点需要跨会话时再将 helper 安装到 `/Library/LaunchAgents`，按目标已登录用户加载 `gui/<uid>`；默认脚本不自动注册启动项。

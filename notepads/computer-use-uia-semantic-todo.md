@@ -2,7 +2,7 @@
 
 日期：2026-11-08
 
-状态：设计已 Review（2026-11-08，结论见 §6）；第一阶段已实施（2026-11-08，记录见 §7），§4.6 的 Windows 实机场景验收尚未执行。§2 是实施前的源码事实；旧文档里的规划不代表已有实现。
+状态：设计已 Review（2026-11-08，结论见 §6）；第一阶段已实施（2026-11-08，记录见 §7），§4.6 的 Windows 实机场景验收尚未执行。macOS AX 后端已按同一协议实施并在本机 DV（2026-11-09，记录见 §8）。§2 是实施前的源码事实；旧文档里的规划不代表已有实现。
 
 来源与相关设计：
 
@@ -21,7 +21,7 @@ Agent 通过控件树观察和操作普通应用：按钮、菜单、标签页�
 - 通用语义协议：`buckyos-api` 中的共享类型、node_executor、agent_tool 的 `computer` tool，以及 websdk 的类型。
 - Windows UIA 后端：位于 `computer_driver`，由 node_daemon 桌面模式和 `buckyos_agent_daemon` 共用。
 
-macOS AX 后端和浏览器语义后端按同一协议另列实施；在那之前，这两个平台如实报告 semantic 不支持。Linux GUI 不在范围内。
+macOS AX 后端和浏览器语义后端按同一协议另列实施；macOS 已于 2026-11-09 完成（§8），浏览器语义后端实施前如实报告 semantic 不支持。Linux GUI 不在范围内。
 
 验收场景以今天跑通的那类任务为准：在 Chrome 中切到 Gmail，进入垃圾邮件文件夹，选中一封移到垃圾箱，全程以语义观察为主。
 
@@ -170,7 +170,7 @@ JSON 只保留 `format`（`outline-v1`）、`text`、`windows`、`coverage`，�
 - [x] `validate_mode` 放开 semantic / hybrid；`observe` 生成树（以及 hybrid 下的截图）和大纲文本；观察记录保存 ref 映射；实现 auto 的选择逻辑（D7）。
 - [x] `target()` 校验 element 目标（D4），point / focus 的规则不变。
 - [x] `act()` 实现 D5 的 element 目标，以及 `invoke` / `set_value`；仍走现有桌面锁、输入串行和 finish 释放路径。
-- [x] macOS 后端在 AX 完成前继续报告 semantic 不支持。
+- [x] macOS 后端在 AX 完成前继续报告 semantic 不支持（2026-11-09 已由 AX 后端取代，见 §8）。
 
 ### 4.4 node_executor 与 agent_tool
 
@@ -208,7 +208,6 @@ JSON 只保留 `format`（`outline-v1`）、`text`、`windows`、`coverage`，�
 ## 5. 后续
 
 - D6 第二阶段命令：`toggle`、`select`、`expand`、`collapse`、`scroll_into_view`。
-- macOS AX 后端：按 D13 实施（见 [buckyos-agent-daemon TODO](buckyos-agent-daemon-todo.md) §7.1）。
 - 浏览器语义后端：按 D13 实施，另列 TODO。
 - `wait_for` 的 `element_state` / `text` 条件：依赖 D4 的元素跟踪。
 - move / drag、多显示器、Linux AT-SPI、UIAccess。
@@ -253,7 +252,7 @@ JSON 只保留 `format`（`outline-v1`）、`text`、`windows`、`coverage`，�
 
 ### 7.3 验证结果
 
-- 单元测试：`cargo test -p buckyos-api --lib computer`（协议 7 项）、`cargo test -p computer_driver`（25 通过，2 项 ignored 的桌面 smoke）、`cargo test -p node_executor --lib --test computer`（6 + 11，含语义载荷不走 content、超限 feedback 失败）、`cargo test -p agent_tool --lib runtime::computer`（11，含大纲纯文本、无图）；websdk `jest tests/executor_client.test.ts`（5）与 `tsc -p tsconfig.build.json`。
+- 单元测试：`cargo test -p buckyos-api --lib computer`（协议 7 项）、`cargo test -p computer_driver`（25 通过，2 项 ignored 的桌面 smoke；只读 smoke 当时名为 `windows_semantic_smoke`，2026-11-09 起改为跨平台的 `semantic_smoke`）、`cargo test -p node_executor --lib --test computer`（6 + 11，含语义载荷不走 content、超限 feedback 失败）、`cargo test -p agent_tool --lib runtime::computer`（11，含大纲纯文本、无图）；websdk `jest tests/executor_client.test.ts`（5）与 `tsc -p tsconfig.build.json`。
 - 原生自测：MSVC `/W4 /WX` 编译通过。默认 probe 与截图通过；`--uia` 通过：快照 15 ms，找到按钮、输入框、复选框，Invoke 触发按钮，SetValue 写入中文，控件销毁后返回 stale，挂起窗口约 1 秒返回 `backend_timeout`。
 - 只读 smoke（`windows_semantic_smoke`，本机 Windows 11、5120×1440 主屏、前台 Chrome）：首次观察 47 节点、3.5 KB 大纲、29 ms，没有网页 `document`；Chrome 启用网页无障碍后，同一窗口 149 节点、10.8 KB 大纲（JSON 载荷 12.6 KB）、约 38 ms，含 `document`。
 - 上下文成本（4.4，估算）：按仓库 `ByteHeuristicTokenizer`（4 字节 ≈ 1 token），149 节点大纲约 2.7k token，400 节点 / 32 KiB 上限约 8.2k token。截图成本取决于 provider 的缩放；按 Anthropic 公开的公式（缩放到长边 1568 px、约 1.15 MP 以内后 宽×高/750）估算，本机 5120×1440 截图约 0.9k token、1920×1080 约 1.5k token。即富页面上单次语义观察并不比截图省 token，收益在于精确目标、无需逐步截图核对；每个任务的实际对比要等 DV。
@@ -262,7 +261,7 @@ JSON 只保留 `format`（`outline-v1`）、`text`、`windows`、`coverage`，�
 ### 7.4 未完成与风险
 
 - §4.6 中 Gmail 移到垃圾箱、RDP 会话与 150% DPI 未执行，原因见 §7.5。
-- macOS AX 与浏览器语义后端未实施，继续报告 semantic 不支持。
+- 浏览器语义后端未实施，继续报告 semantic 不支持（macOS AX 见 §8）。
 - D6 第二阶段命令与 `wait_for` 的 `element_state` / `text` 未实施。
 - 有的 provider 在 Invoke 打开模态对话框时会阻塞直到对话框关闭，调用会超时并记为 `unknown`，随后 Driver 被暂停、需本地 resume。DV 中需要关注其频率。
 
@@ -298,3 +297,85 @@ DV 中发现并已修复：
 - **动作反馈时机**：反馈在动作后 60 ms 观察，`invoke` 打开的“另存为”对话框没赶上，下一次 observe 才看到。等第二阶段的 `wait_for element_state` 或增加有界的稳定等待。
 - **Gmail 行的体量**：每行展开约 10 个 cell，且不少 cell 名称重复行名，26 行就用满 32 KiB。可考虑省略与所在行同名的 cell。
 - **不属于本任务、但在 DV 中看到的问题**：Jarvis 在 Windows 原生 runtime 中执行无扩展名的 `agent-session` 时，系统用 Notepad 打开它并报 “Cannot find …\.runtime\bin\agent-session file”；Jarvis 的工作日志里还有 `local computer IPC: the executor has no valid authorization snapshot`（node_daemon 的执行器授权快照过期）。
+
+## 8. macOS AX 实施记录（2026-11-09）
+
+协议、通用名、大纲与 Driver 流程与 Windows 共用；本节只记录 macOS 后端及为共用而做的调整。
+
+### 8.1 改动入口
+
+| 位置 | 内容 |
+| --- | --- |
+| [native.m](../src/kernel/computer_driver/src/native.m) | AX 后端：`bucky_semantic_status/snapshot/element/retain/release`；窗口列表、根选择、广度优先快照、元素解析与 focus / invoke / set_value；按快照保存 AXUIElement。probe 的 `focus_on_display` 改为焦点元素被其窗口裁剪后的可见部分在主屏内（见 §8.2） |
+| [native_windows.cpp](../src/kernel/computer_driver/src/native_windows.cpp) | 五个入口由 `bucky_uia_*` 改名为平台中立的 `bucky_semantic_*`，行为不变 |
+| [semantic.rs](../src/kernel/computer_driver/src/semantic.rs) | pattern / state 位与 `states()`、`actions()` 移出 `uia`，两个后端共用；`RawWindow` / `RawSnapshot` / `RawNode`，`Snapshot` 按平台取别名；新增 `ax` 模块（AX role / subrole 到 D13 名的映射）及单元测试 |
+| [desktop.rs](../src/kernel/computer_driver/src/desktop.rs) | `native_uia` 改为两平台共用的 `native_semantic`；macOS 报告 `accessibility`（未授权时原因为 `accessibility_permission_required`）；`build_tree`、`semantic_tree`、`resolve`、`element_op` 去掉 Windows 条件编译；只读 smoke 改名 `semantic_smoke`，两平台共用 |
+| [ax_macos.m](../test/agent_daemon/ax_macos.m)（新增） | 原生自测：子进程显示测试窗口，父进程只经 AX 观察和操作；[capture_macos.m](../test/agent_daemon/capture_macos.m) 修正 `computer_driver` 拆分后失效的 include 路径 |
+| 文档与手册 | [agent_daemon.md](../doc/arch/agent_daemon.md)、[node_exector.md](../doc/arch/node_exector.md)、草案 §1 / §3.3 / §6 / §7、`buckyos_admin.md`、`opendan_agent_dev.md`、[buckyos-agent-daemon TODO](buckyos-agent-daemon-todo.md) §7.1 |
+
+共享协议（`buckyos-api`）、node_executor、agent_tool 与 websdk 没有改动：macOS 只是让同一协议在另一个平台可用。`xllm.md` 中 computer tool 的用法与平台无关，无需修改。
+
+### 8.2 实施中定下的细节
+
+- **线程与超时**：AX 是对目标进程的同步 IPC，可在任意线程调用，因此没有像 UIA 那样设工作线程，Rust 侧仍在阻塞任务里同步调用。每个元素设 messaging timeout（不超过 1 s，且不超过快照剩余预算），快照整体 3 s；某次调用返回 `kAXErrorCannotComplete` 即视为目标进程无响应，停止遍历并报 `backend_timeout`。
+- **窗口列表**：`CGWindowListCopyWindowInfo` 取主屏上 on-screen、layer 0 的窗口，按前后次序，最多 32 个；标题优先用 `kCGWindowName`，拿不到（无屏幕录制权限）时用 AX 窗口标题，所以语义观察只需要辅助功能权限。`process` 为 owner 名，`accessible` 为窗口属主 uid 与当前用户相同，`foreground` 为 AX 焦点应用的焦点窗口。窗口身份是 CGWindowID，用 `_AXUIElementGetWindow` 对应到 AX 窗口，失败时按 pid 与窗口 frame 匹配。
+- **根**：scope 指定的窗口；默认取 AX 焦点应用的 `AXFocusedWindow`，依次退到 `AXMainWindow`、第一个窗口。对前台应用另加两类根：应用下打开的上下文菜单（`AXMenu`）和菜单栏（菜单栏是 macOS 的主要命令入口；未展开的子菜单没有几何，不展开）。遍历结束后，若应用的焦点元素不在树中（Finder 改名时的 field editor 直接挂在 `AXApplication` 下），把它作为一个额外的根。
+- **offscreen**：AX 没有 IsOffscreen。以主屏为初始可见区，经过 `AXScrollArea`、`AXWebArea` 时与其 frame 求交，进入 `AXMenu` 时重置为主屏（菜单是独立窗口）。可见部分为空且有几何的节点不返回也不展开；没有几何的节点视为逻辑容器，不返回但继续展开（`AXMenu` 与叶子角色除外）。`AXColumn` 不返回（其单元格已在行下）；同一元素按 `CFEqual` 只收一次。
+- **pattern / state 位**（与 UIA 同一布局）：
+  - `invoke`：动作列表含 `AXPress`；
+  - `set_value`：文本类角色的 `AXValue` 可写，否则标 `readonly`；
+  - `focus`：文本、列表、表格、大纲、网页区域和滑块上 `AXFocused` 可写；
+  - `toggle` 与 `checked` / `mixed`：`AXCheckBox` 的 `AXValue` 为 1 / 2，菜单项看 `AXMenuItemMarkChar`；
+  - `select`：只给行、单选、标签页；`AXRadioButton`（含标签页）`AXValue` 为 1 时 `selected`；
+  - `expand` / `collapse`：只给 combobox、popup、菜单按钮和行（`AXExpanded`），以及 `AXDisclosureTriangle`。
+  Chromium 在每个节点上都报 `AXSelected` / `AXExpanded`（值为 false），不限定角色时 Gmail 等网页的每个 group 都会带 `select` 和 `expand`，无法裁剪；其他角色只在值为 true 时显示 `selected` / `expanded`。`focused` 不读各元素的 `AXFocused`（SwiftUI 列表在每个单元格上都报 true），改为与应用的 `AXFocusedUIElement` 比较。
+- **名称与 id**：依次取 `AXTitle`、`AXDescription`、静态文本的值、`AXTitleUIElement` 的值、文本框的 placeholder；带 subrole 的可 invoke 控件或文本框再取 `AXRoleDescription`（窗口的关闭 / 最小化 / 全屏按钮、搜索框），最后是可操作元素的 `AXHelp`。id 取 `AXIdentifier`（AppKit 自动生成的 `_NS:` 除外），否则取网页的 `AXDOMIdentifier`。value 只取文本类、combobox、popup 和滑块。
+- **映射**（Rust `semantic::ax`）：
+  - 角色：`AXSheet`、`AXPopover`、对话框 subrole 映射为 `dialog`；`AXWebArea` 为 `document`；`AXPopUpButton` 为 `combobox`；`AXRadioButton` + `AXTabButton` 为 `tab`；`AXCheckBox` + `AXSwitch` 为 `switch`，+ `AXToggle` 为 `button`；`AXRow` + `AXOutlineRow` 为 `treeitem`；`AXMenuBarItem` 为 `menuitem`。其余见代码与单元测试，原生侧的计数容器表与之由测试对齐。
+  - 裁剪：无名称、无动作的菜单项（分隔线；原生侧对无名称且禁用的菜单项也不报 `AXPress`）记为 `generic`；无名称、无状态、无动作的单元格记为 `group`，与其他纯容器一起被裁剪。
+- **Chromium / Electron（D9）**：快照时对目标应用设置 `AXManualAccessibility = true`，成功即视为 Chromium 系（`web`）；树中没有 `document` 时由 Driver 等 500 ms 重采样一次（与 Windows 同一逻辑）。这是运行时的 AX 属性，不改浏览器启动参数。Chrome 的网页节点不在动作列表里声明 `AXPress`（链接和按钮只有 `AXShowMenu`、`AXScrollToVisible`），因此大纲中网页链接和按钮没有 `invoke`，用 `click(element)`；Chrome 自身的标签页、工具栏和 Electron 的网页按钮都声明 `AXPress`。
+- **元素解析**：重新读取属性，`kAXErrorInvalidUIElement` 或角色变化即 `stale_element`。可见部分沿祖先求得（scroll area、web area，到菜单为止），点击点是其在主屏内部分的中心；用系统范围的 AX 命中测试判断遮挡，命中其他进程或同进程的其他窗口即 `element_obscured`。
+- **focus**：目标应用不在前台时先设置 `AXFrontmost`，再对其窗口 `AXRaise` 并设 `AXMain`，然后设 `AXFocused`，回读系统焦点元素等于目标或其后代（最多 10 次、每次间隔 20 ms；激活过应用时 30 次）。
+- **invoke**：`AXPress` 放在后台队列执行。0.5 s 内没有返回时，再向该应用发一个请求（读 `AXFocusedUIElement`）：若有应答，说明按下已在嵌套循环（模态对话框、菜单跟踪）中执行，按已送达处理，返回 `pending`、执行状态 `completed`，不记为 `unknown`，也不会因此暂停 Driver。若该请求也无应答，就等到超时，返回 `backend_timeout` / `unknown`。
+- **set_value**：设置 `AXValue` 后回读，与 Windows 一样不一致时报 `value_mismatch`。
+- **probe**：长文档的 `AXTextArea` frame 是整篇文档，原先“焦点元素整体在主屏内”的判断会让 `type(element)` 与 focus 目标返回 `focus_unverifiable`。现改为焦点元素被其窗口裁剪后的部分非空且在主屏内，与 Windows 按焦点 HWND（只含可见控件）判断的含义一致。
+- **对本进程的 AX 请求**：AX 请求若发给调用者自己的进程，会在调用线程上直接处理；在后台线程设置自己窗口里文本框的值会与主线程布局死锁。因此原生自测把测试窗口放在子进程里。Driver 不会以自身为目标（Runtime.app 不显示窗口）。
+
+### 8.3 验证结果
+
+- 单元测试：`cargo test -p computer_driver`（20 通过，1 项 ignored 的 `semantic_smoke`，含新增的 AX 角色映射与节点映射）、`cargo test -p buckyos_agent_daemon`（通过）；`cargo check -p node_daemon -p buckyos_agent_daemon` 通过（node_daemon 有一条与本改动无关的既有 dead code 警告）。`native.m` 按 build.rs 的 `-Wall -Werror` 编译。
+- 原生自测 `ax_macos.m`：17 项通过。快照 12 节点约 88 ms；invoke 计数、Unicode `set_value` 回读、复选框 invoke 后树中为 `checked`；focus 激活窗口并聚焦文本框；打开模态面板的按钮 invoke 约 511 ms 返回 `pending`；控件移除后同一 ref 为 stale、快照释放后为 stale；主线程挂起的应用约 1.26 s 返回 `backend_timeout`。
+- 只读 smoke（`semantic_smoke`，前台或 `BUCKY_SEMANTIC_TITLE`）：
+
+| 窗口 | 访问 / 返回 | 大纲 | 耗时 |
+| --- | --- | --- | --- |
+| 系统设置（辅助功能页） | 181 / 123 | 7.2 KB | 35–52 ms |
+| Chrome 知乎问答页（后台窗口） | 578 / 137 | 9.8 KB | 52–91 ms |
+| Claude 桌面应用（Electron） | 1357 / 337 | 32 KiB 上限，`max_text_bytes` | 113–130 ms |
+
+  Chrome 页面在按角色限定 `select` / `expand` 之前为 324 行、29.7 KB。两个 Chromium 系应用在首次采样时就已有网页 `document`，本次没有触发重采样。
+
+- 实机 DV：`computer_dv` harness（真实 NodeExecutor 加 Driver），macOS 15.8.1、Apple silicon，主屏 1620×1080、1× 缩放，display id 3（harness 默认 binding 为 `display:1`，请求需显式给出 `binding_id`）。Accessibility 与屏幕录制授予 Claude Code 的进程身份。期间确认本机 Jarvis 自执行器打开后没有桌面操作。
+
+| 场景 | 结果 |
+| --- | --- |
+| TextEdit 输入与菜单保存 | 通过。auto 选 semantic（15 行）。`keypress(element)` Cmd+↓ 后 `type(element)` 写入中文；菜单栏 File `invoke` 0.41 s，反馈树列出菜单项（未展开的 Open Recent 不展开）；Save `invoke` 后磁盘内容与编辑器一致；`set_value` 替换整个文本并回读一致 |
+| 设置复选框 | 经菜单 TextEdit › Settings… 打开设置窗口：标签页、单选为 `selected`，复选框为 `checked`，文本框以标签命名。`click(element)` 两次切换 “Smart links”，回读 checked → 未选中，已复原 |
+| 后台窗口与遮挡 | `scope` 观察被设置窗口部分遮住的 note.txt 窗口；对被遮住的文本区 `click(element)` 返回 `element_obscured` / `not_started`；`invoke` 设置窗口的关闭按钮；Chrome 在前台时对 TextEdit 窗口 `type(element)`，先激活 TextEdit 再输入 |
+| 长文档输入 | 300 行文档的 `type(element)` 起初返回 `focus_unverifiable`（执行状态 `partial`）；改 probe 后通过 |
+| Finder 选中与改名 | 列表视图（行、单元格、可写文件名框）。`click(element)` 选中行，`keypress(element)` Enter 进入改名；改名框起初不在树中，加入“孤立焦点元素作为根”后可见；`set_value` 写入 “gamma 改名.txt”，Enter 后磁盘上已改名 |
+| Chrome 标签页 | 对 Gmail 标签页 `invoke`，0.27 s 切换且不移动鼠标，反馈树含 Gmail 的标签列表与 Archive / Report spam / Delete / Move to 工具栏；再 `click(element)` 原标签页复原 |
+| hybrid 与坐标 | Chrome 窗口 hybrid 观察，按大纲 bounds 从截图裁剪 5 个元素（刷新按钮、书签星标、标签页、知乎链接、新标签页），均与控件像素对齐；树与截图分别带采样时间（相差 154 ms） |
+| 菜单分隔线 | 原生侧不再对无名称、禁用的菜单项报 `AXPress` 后，File 菜单从 38 行降到 34 行，分隔线不再出现 |
+
+截图次数：除 hybrid 场景外为 0；另有一次 visual 观察用于查看意外出现的系统对话框（DV 中误用 osascript 触发的自动化授权提示，由用户关闭，与 Driver 无关）。
+
+### 8.4 未完成与风险
+
+- **Windows 未重新编译**：本次在 macOS 上实施，`native_windows.cpp` 的入口改名与 Rust 侧 `native_semantic` 的共用没有在 Windows 上编译。需要在 Windows 上跑 `cargo test -p computer_driver`、MSVC `/W4 /WX` 自测编译与 `--uia`。
+- **未执行的场景**：Retina 或缩放显示（本机为 1×，bounds 换算只有单元测试覆盖）、多显示器、锁屏、其他用户的窗口（`accessible:false`）、真实应用上 auto 回落 visual、Chromium 的重采样路径、真实应用中打开模态对话框的 invoke（只有自测覆盖）、Gmail 移到垃圾箱（涉及用户邮件，未执行）。
+- **私有 API**：`_AXUIElementGetWindow` 是私有但长期稳定的符号，SDK 中有导出；不可用时按 frame 匹配，同一应用两个 frame 完全相同的窗口可能对应错。
+- **Chromium 无障碍开销**：`AXManualAccessibility` 打开后，在该应用进程的生命周期内都保持开启，带来渲染进程的额外开销，与 Windows 上 UIA 客户端出现时的行为相同。
+- **Chrome 网页没有 invoke**：网页链接和按钮只能 `click(element)`，因此需要可见且未被遮挡。
+- **隐藏的备选菜单项**：AppKit 会暴露按住 Option 才显示的备选项（如 Close / Close All 位置相同），大纲中两者都会出现。
+- **pending 判断依赖应用的 AX 实现**：应用若在主线程以外处理 AX 请求，嵌套循环判断可能把尚未执行的按下当成已送达；本次测试的 AppKit、Chrome、Electron 都在主线程处理 AX 请求。

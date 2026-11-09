@@ -15,7 +15,7 @@
 >
 > 下文所有 `buckyos computer` 命令均待实现，不能当作当前可执行命令。复选框按完整交付条目记录，仅在对应实现、检查和证据齐备后勾选；daemon 子集的实现及验证进度单独记录，不据此推定完整链路已通过。
 
-> daemon 实施进展：本仓库已实现共享 Computer 协议、复用 Executor 账本的执行入口、macOS 14+ 和 Windows 当前用户会话原生驱动。Windows 提供前台 `.exe` 宿主、ZIP 打包入口、Win32/GDI 主显示器 visual/auto 观察、点击、Unicode 输入、按键、按行滚动与 delay 等待；不提供 Session 0 服务、semantic/hybrid、drag 或像素滚动。Windows x64 已通过相关单元/生命周期测试、真实只读截图和静态 CRT debug 构建及导入核验，release 发行归档尚未构建。实际支持范围及证据见 [macOS ComputerUse](../arch/agent_daemon.md#macos-computeruse)、[Windows ComputerUse](../arch/agent_daemon.md#windows-computeruse) 与 [本机验证入口](../arch/agent_daemon.md#本机验证入口)。本草案仍是完整交付目标；下文的上层 CLI、图片桥接和 T1–T6 整体验收不能据 daemon 子集实现勾选完成，Windows 真实桌面输入与完整 Agent loop 尚未验收。
+> daemon 实施进展：本仓库已实现共享 Computer 协议、复用 Executor 账本的执行入口、macOS 14+ 和 Windows 当前用户会话原生驱动。Windows 提供前台 `.exe` 宿主、ZIP 打包入口、Win32/GDI 主显示器 visual/auto 观察、点击、Unicode 输入、按键、按行滚动与 delay 等待；不提供 Session 0 服务、drag 或像素滚动。Windows（UI Automation）与 macOS（Accessibility）都提供语义树：semantic/hybrid、element target 与 `invoke`/`set_value`（§3.3、§6、§7）。Windows x64 已通过相关单元/生命周期测试、真实只读截图和静态 CRT debug 构建及导入核验，release 发行归档尚未构建。实际支持范围及证据见 [macOS ComputerUse](../arch/agent_daemon.md#macos-computeruse)、[Windows ComputerUse](../arch/agent_daemon.md#windows-computeruse) 与 [本机验证入口](../arch/agent_daemon.md#本机验证入口)。本草案仍是完整交付目标；下文的上层 CLI、图片桥接和 T1–T6 整体验收不能据 daemon 子集实现勾选完成，Windows 真实桌面输入与完整 Agent loop 尚未验收。
 
 ## 0. 已确定的决策
 
@@ -142,7 +142,7 @@ capabilities / policy_version / expires_at
 
 默认模式随 binding 配置，每次 `observe --mode` 或动作 `feedback_mode` 可以覆盖。首期不必增加有状态的 `set_mode` CLI；减少跨调用的隐式状态。
 
-实现状态（2026-11-08，[UIA 语义观察 TODO](../../notepads/computer-use-uia-semantic-todo.md)）：Windows Driver 支持全部四种模式；macOS 仍为 visual/auto，`accessibility` 报 unsupported，浏览器语义后端未实施。动作的 `feedback_mode` 默认为 `auto`，Driver 不在 binding 上记住上一次的模式。auto 在语义可用、且前台窗口树至少有 10 个返回节点和 5 个可操作节点时选 semantic，否则选 visual；`selection_reason` 为 `semantic_available`、`tree_sparse`、`window_inaccessible`、`accessibility_unavailable`、`backend_timeout` 等。显式 semantic/hybrid 在稀疏或不可访问的窗口上仍返回窗口列表与 coverage，后端失败时报错。
+实现状态（2026-11-09，[UIA 语义观察 TODO](../../notepads/computer-use-uia-semantic-todo.md) §7、§8）：Windows（UIA）与 macOS（AX）Driver 都支持全部四种模式，浏览器语义后端未实施。动作的 `feedback_mode` 默认为 `auto`，Driver 不在 binding 上记住上一次的模式。auto 在语义可用、且前台窗口树至少有 10 个返回节点和 5 个可操作节点时选 semantic，否则选 visual；`selection_reason` 为 `semantic_available`、`tree_sparse`、`window_inaccessible`、`accessibility_unavailable`、`backend_timeout` 等。显式 semantic/hybrid 在稀疏或不可访问的窗口上仍返回窗口列表与 coverage，后端失败时报错。
 
 ## 4. CLI 合同
 
@@ -365,7 +365,7 @@ semantic 模式附带格式、文本/结构化节点、引用、coverage 和 tru
 | 动作 | `focus` `invoke` `set_value` `toggle` `select` `expand` `collapse` `scroll_into_view` |
 | id | Windows AutomationId；macOS AXIdentifier；浏览器 DOM `id` |
 
-Windows UIA 的 ControlType / AriaRole / pattern 到通用名的映射与单元测试在 `src/kernel/computer_driver/src/semantic.rs`；macOS AX 与浏览器后端实施时复用这张表，并实测确认各自映射。大纲省略几乎每个元素都有的 `scroll_into_view`（第二阶段命令），记录中仍保留。
+Windows UIA 的 ControlType / AriaRole / pattern 与 macOS AX 的 role / subrole 到通用名的映射与单元测试都在 `src/kernel/computer_driver/src/semantic.rs`；两个原生后端报告同一套 pattern / state 位。浏览器后端实施时复用这套通用名并实测确认映射。大纲省略几乎每个元素都有的 `scroll_into_view`（第二阶段命令），记录中仍保留。
 
 `surface_epoch` 表示交互面身份代次；`interaction_revision` 表示已知的交互变化，不声称覆盖所有动画、DOM 或外部输入。
 
@@ -396,6 +396,7 @@ type FocusTarget = {
 - 如果宿主缩放图片，应固定交付版本并维护映射及尺寸；不能让模型看到缩放图却按原图坐标执行。
 - focus 至少核验授权桌面、Surface 和代次；能获取焦点节点/输入上下文时也须核验。弱焦点保护在能力中明确报告。
 - 元素失败不自动猜坐标，坐标失效不自动猜同名元素。
+- 当前实现（macOS AX）：ref 映射到快照保存的 AXUIElement 及其 pid、角色和所在窗口；动作前重新读取属性，元素失效（`kAXErrorInvalidUIElement`）或角色变化即 `stale_element`；pointer 命令沿祖先的 scroll area / web area 求可见部分，用 AX 命中测试判断遮挡。其余规则与 Windows 相同。
 - 当前实现（Windows UIA）：`ref` 为观察内短 id（`e1`、`e2`…），只对该 `observation_id` 有效；Driver 记录 ref → 缓存的 UIA 元素、RuntimeId、pid 和顶层 HWND。动作前重新解析：元素仍存在、RuntimeId 与进程一致、顶层窗口未换主；pointer 命令另要求不在 offscreen、点在主屏内且未被其他顶层窗口遮挡。失败返回 `stale_element`（或 `element_offscreen`、`element_out_of_bounds`、`element_obscured`、`element_disabled`、`element_action_unsupported`），不退化为坐标。`wait_for` 暂不接受 element 目标。
 
 ### 6.3 有效性规则
@@ -426,7 +427,7 @@ type FocusTarget = {
 | `invoke` | element。执行元素的默认动作（UIA Invoke、AX Press、DOM 激活），不移动鼠标，可用于部分遮挡或不在可视区的元素 |
 | `set_value` | element、value（≤16 KiB）。替换整个值（即 `semantic.fill`），执行后回读，回读不一致报 `value_mismatch` |
 
-语义动作分两阶段：第一阶段为 element 目标的 click/type/keypress/scroll 与 `invoke`、`set_value`（Windows 已实现）；第二阶段视实测效果再加 `toggle`、`select`、`expand`、`collapse`、`scroll_into_view`。每个语义命令只对观察中声明了该动作的元素开放，归入 `computer_act`，只读授权不能调用。`click(element)` 在元素可点击点做物理点击，不等同于 invoke；`type`/`keypress(element)` 先经通用 `focus` 聚焦并回读焦点，再输入；`scroll(element)` 在元素中心滚动。通用动作在各平台的映射：
+语义动作分两阶段：第一阶段为 element 目标的 click/type/keypress/scroll 与 `invoke`、`set_value`（Windows、macOS 已实现）；第二阶段视实测效果再加 `toggle`、`select`、`expand`、`collapse`、`scroll_into_view`。每个语义命令只对观察中声明了该动作的元素开放，归入 `computer_act`，只读授权不能调用。`click(element)` 在元素可点击点做物理点击，不等同于 invoke；`type`/`keypress(element)` 先经通用 `focus` 聚焦并回读焦点，再输入；`scroll(element)` 在元素中心滚动。通用动作在各平台的映射：
 
 | 通用动作 | Windows UIA | macOS AX | 浏览器 |
 | --- | --- | --- | --- |
@@ -438,7 +439,9 @@ type FocusTarget = {
 | `expand`、`collapse` | ExpandCollapsePattern | 设置 `AXExpanded` / `AXDisclosing` | 激活带 `aria-expanded` 的控件 |
 | `scroll_into_view` | ScrollItemPattern.ScrollIntoView | `AXScrollToVisible` | `element.scrollIntoView()` |
 
-UIA 调用超时且已开始执行时，元素动作的执行状态为 `unknown`，按原 operation 查询，不盲目重试。
+macOS 第一阶段的 `focus`（目标应用不在前台时先激活应用并提升窗口）、`invoke`、`set_value` 已于 2026-11-09 实测；第二阶段各行仍是待实测的规划。实测中 Chrome 的网页节点不声明 `AXPress`，这类链接和按钮只能 `click(element)`。
+
+UIA 调用超时且已开始执行时，元素动作的执行状态为 `unknown`，按原 operation 查询，不盲目重试。macOS 的 `AXPress` 打开模态对话框或菜单时，应用要到它们结束才应答；若此时应用仍应答其他请求，Driver 按已送达处理（执行状态 completed，结果带 `pending`），否则超时同样记为 `unknown`。
 
 补充约束：
 

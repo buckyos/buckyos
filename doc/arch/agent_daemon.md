@@ -1,6 +1,6 @@
 # Agent Daemon：Linux/macOS/Windows 接入与执行协议
 
-当前支持独立 Linux/macOS/Windows 当前用户宿主。macOS 14+ 提供同一进程内的 ScreenCaptureKit、Accessibility 和 Quartz 桌面驱动；Windows 提供 Win32/GDI 截图、原生输入和 UI Automation 语义树（semantic/hybrid、element target、invoke/set_value）；Linux 的桌面能力仍为 unsupported。三者均不依赖 Docker、BuckyOSApp、目标机网关或 Device DID。macOS 的 AX 语义树与浏览器语义后端、`buckyos computer` CLI 和 shell 命令的图片结果桥接尚未交付；Windows daemon 的实现范围不等于完整 Agent 桌面闭环已验收。
+当前支持独立 Linux/macOS/Windows 当前用户宿主。macOS 14+ 提供同一进程内的 ScreenCaptureKit 截图、Quartz 输入和 Accessibility（AX）语义树；Windows 提供 Win32/GDI 截图、原生输入和 UI Automation 语义树；两者的语义树都支持 semantic/hybrid、element target 与 invoke/set_value。Linux 的桌面能力仍为 unsupported。三者均不依赖 Docker、BuckyOSApp、目标机网关或 Device DID。浏览器语义后端、`buckyos computer` CLI 和 shell 命令的图片结果桥接尚未交付；daemon 的实现范围不等于完整 Agent 桌面闭环已验收。
 
 ## 使用与构建
 
@@ -123,7 +123,9 @@ macOS 的 `interactive_session_id` 使用 `getaudit_addr` 返回的 audit sessio
 
 结果在 `op.result.computer`，外层 `op.state` 保持 Executor 合同；内层 `operation_state`、`execution.state` 和 `feedback.state` 分别说明操作、输入与截图事实。比如输入成功但截图失败：`execution.state=completed`、`feedback.state=failed`，不能重发输入。查询、等待和取消复用 `query(wait_ms)` / `cancel`；取消请求已接受不能等同输入已停止。新 generation 可在核验同 executor/profile/store 后查询旧操作，未知结果不自动重放。
 
-visual 返回 PNG；semantic 返回控件树（`observation.semantic`：`outline-v1` 大纲文本、顶层窗口列表与 coverage），走控制帧，单个载荷上限 256 KiB，不使用 content channel；hybrid 同时返回两者并各带采样时间；auto 在语义可用且前台窗口树有足够可操作节点时选 semantic，否则选 visual，`selection_reason` 写明原因（`semantic_available`、`tree_sparse`、`window_inaccessible`、`accessibility_unavailable` 等）。动作的 `feedback_mode` 默认 auto，不在 binding 上记住模式。语义平台支持见下文 Windows 一节；macOS 仍只有 visual/auto，`accessibility` 报 unsupported。move/drag、text/element_state 等待和 `delivery=keys` 明确不支持。type 在现有光标/选区输入 Unicode 文本，不清空、不追加 Enter、不使用剪贴板；keypress 区分 Control 与 Meta。截图尺寸和逻辑显示坐标分别保存，point 必须是截图内整数坐标。focus 输入要求能重新核验焦点元素及其所属显示器，无法核验即拒绝。
+visual 返回 PNG；semantic 返回控件树（`observation.semantic`：`outline-v1` 大纲文本、顶层窗口列表与 coverage），走控制帧，单个载荷上限 256 KiB，不使用 content channel；hybrid 同时返回两者并各带采样时间；auto 在语义可用且前台窗口树有足够可操作节点时选 semantic，否则选 visual，`selection_reason` 写明原因（`semantic_available`、`tree_sparse`、`window_inaccessible`、`accessibility_unavailable` 等）。动作的 `feedback_mode` 默认 auto，不在 binding 上记住模式。语义树的平台实现见下一段（macOS AX）与 [Windows ComputerUse](#windows-computeruse)（UIA）。move/drag、text/element_state 等待和 `delivery=keys` 明确不支持。type 在现有光标/选区输入 Unicode 文本，不清空、不追加 Enter、不使用剪贴板；keypress 区分 Control 与 Meta。截图尺寸和逻辑显示坐标分别保存，point 必须是截图内整数坐标。focus 输入要求能重新核验焦点元素及其所属显示器，无法核验即拒绝。
+
+macOS 的语义观察使用 Accessibility（AX），与输入共用辅助功能权限，不需要屏幕录制。AX 调用是对目标进程的同步 IPC，由 Rust 阻塞任务直接调用；每个元素设 messaging timeout（不超过 1 秒），快照整体 3 秒，目标进程无响应时返回已遍历部分并标 `backend_timeout`。窗口列表来自 CGWindowList（主屏 on-screen 的普通窗口，标题拿不到时用 AX 标题），窗口身份为 CGWindowID；`accessible` 表示窗口属于当前用户。默认观察 AX 焦点应用的焦点窗口；对前台应用另返回打开的上下文菜单和菜单栏（未展开的子菜单不展开），以及不在任何窗口内的焦点元素（如 Finder 改名框）。AX 没有 offscreen 属性：以主屏为可见区，经 scroll area、web area 求交，可见部分为空的节点只计入 coverage。`invoke` 对应 `AXPress`，`set_value` 对应可写 `AXValue`，focus 对应可写 `AXFocused`；`select`、`expand` 只对行、单选/标签页与 combobox/popup 等声明，其他角色只显示为 true 的状态（Chromium 在每个节点上都报 `AXSelected`/`AXExpanded`）。元素 ref 映射到快照保存的 AXUIElement，动作前重新读取，元素失效或角色变化返回 `stale_element`；`click`/`scroll(element)` 用 AX 命中测试判断遮挡；`type`/`keypress(element)` 的 focus 在目标应用不在前台时先激活应用并提升窗口。`AXPress` 打开模态对话框或菜单时，应用要到它们结束才应答；若 0.5 秒内未应答但应用仍响应其他请求，按已送达处理（结果带 `pending`，执行状态 completed），否则超时记为 `unknown`。Chromium/Electron 在观察时被设置 `AXManualAccessibility` 以开启网页无障碍，没有 `document` 时重采样一次；Chrome 的网页链接和按钮不声明 `AXPress`，用 `click(element)`。焦点核验使用焦点元素被其窗口裁剪后的可见部分。
 
 每个桌面使用跨 daemon 进程锁和共享交互 revision；观察与输入串行。每个输入步骤校验取消、执行截止、桌面代次、锁屏、焦点和系统权限，按键/鼠标 down/up 在同一原生调用中配对。管理重连、授权变化、暂停/恢复使旧观察失效。显示布局和焦点窗口变化也会拒绝旧观察；人的键鼠操作（包括鼠标移动和按住的键）不使观察失效，也不暂停或拒绝动作。这些检查不能消除 GUI 自身的检查—执行竞争，应用业务成功仍需新观察验证。
 
@@ -187,9 +189,21 @@ if ($LASTEXITCODE -ne 0) { throw 'Native desktop test compilation failed' }
 
 默认仅探测会话、截图和拒绝无效输入。显式传 `--input` 才创建本进程 EDIT 测试窗口，并测试 Unicode、组合键、点击和滚动；拿不到该窗口焦点时退出码 2 表示输入阶段跳过，不能记为通过。传 `--uia` 创建含按钮、输入框、复选框的测试窗口（不需要前台、不发送键鼠输入），检查 UIA 树中能找到三者、元素解析给出可点击点、Invoke 触发按钮、SetValue 写入中文文本、控件销毁后同一 ref 返回 stale，并对另一线程上挂起的窗口快照，要求在截止时间内返回。2026-11-08 在本机（Windows 11，5120×1440 主屏）`--uia` 通过：快照 15 ms，挂起窗口约 1 s 返回 `backend_timeout`。
 
-语义树的只读 smoke 同样默认 ignored：`cargo test -p computer_driver --lib windows_semantic_smoke -- --ignored --nocapture` 打印前台窗口（或环境变量 `BUCKY_SEMANTIC_TITLE` 指定标题的窗口）的窗口列表、大纲与 coverage，不发送输入。本机 Chrome 首次观察只有浏览器外壳（47 节点、3.5 KB 大纲、29 ms），Chrome 启用网页无障碍后同一窗口为 149 节点、10.8 KB 大纲、约 38 ms。
+语义树的只读 smoke 同样默认 ignored，两平台共用：`cargo test -p computer_driver --lib semantic_smoke -- --ignored --nocapture` 打印前台窗口（或环境变量 `BUCKY_SEMANTIC_TITLE` 指定标题的窗口）的窗口列表、大纲与 coverage，不发送输入。本机 Chrome 首次观察只有浏览器外壳（47 节点、3.5 KB 大纲、29 ms），Chrome 启用网页无障碍后同一窗口为 149 节点、10.8 KB 大纲、约 38 ms。
 
 实机 DV 用 `cargo run -p computer_driver --example computer_dv -- <port> <输出目录>`：真实 NodeExecutor 加真实 Driver，经 `127.0.0.1:<port>` 每次接收一个 Computer 请求（一行 JSON，可省略 `binding_id`），返回与 agent `computer` 工具给模型相同的文本，截图存到输出目录。它会真实地点击、输入，只在可以交给它的桌面上运行，并先确认本机没有其他 Agent 正在操作桌面。2026-11-08 的场景结果见 [UIA 语义观察 TODO](../../notepads/computer-use-uia-semantic-todo.md) §7.5。当前 Windows 本机独立 MSVC `/W4 /WX` 编译、默认只读 probe/PNG capture、无效输入拒绝、最终派发 guard 拒绝合法按键且不产生输入事件，以及心跳断档后持续禁用驱动的检查已通过；`--input` 因前台窗口限制跳过，真实输入闭环仍未验收。
+
+macOS 语义后端的原生自测由子进程显示含按钮、文本框、复选框和模态按钮的测试窗口，父进程只经 AX 观察和操作（AX 请求发给自身进程会在调用线程上处理，不是 Driver 的路径），不发送键鼠事件，聚焦文本框会激活测试窗口；缺辅助功能权限返回 77。检查快照与窗口列表、invoke、Unicode `set_value` 回读、复选框状态、focus、打开模态面板的 invoke 按已送达返回、移除控件后 stale，以及主线程挂起时在截止时间内返回 `backend_timeout`：
+
+```sh
+xcrun --sdk macosx clang -fobjc-arc -fblocks -O2 -Wall -Werror -mmacosx-version-min=14.0 \
+  test/agent_daemon/ax_macos.m -o /tmp/buckyos-ax-selftest \
+  -framework Foundation -framework AppKit -framework ApplicationServices \
+  -framework CoreGraphics -framework ImageIO -framework ScreenCaptureKit -framework Carbon
+/tmp/buckyos-ax-selftest
+```
+
+2026-11-09 在 macOS 15.8.1（Apple silicon）上 17 项通过，模态 invoke 约 0.5 秒返回，挂起应用约 1.3 秒返回；只读 smoke 与 `computer_dv` 的场景结果见 [UIA 语义观察 TODO](../../notepads/computer-use-uia-semantic-todo.md) §8。macOS 的主显示器 ID 通常不是 1，`computer_dv` 请求需显式给出 `binding_id`。
 
 已登录且授予屏幕录制权限的 Mac 可执行只读原生截图 smoke；它验证 PNG 尺寸后丢弃像素，不发送点击/按键。缺权限或会话返回 77，不自动弹出申请：
 
@@ -213,7 +227,7 @@ URL 有效期约束整个在线生命周期。daemon 根据服务端时间建立
 
 管理连接失效时暂停新操作、关闭数据流并重新接入；不重放已接收的命令。到期、撤销、SIGINT、SIGTERM 或显式 stop 停止接单，取消受管进程组并退出。普通数据流断开不自动取消已接受操作，后续通过相同账本查询。无法确定是否完成时保持 Unknown，不把离线当成功或已取消。
 
-Linux capability 把 command/file 的支持与就绪分开；ui/accessibility/capture/input 永远为 `unsupported`。macOS 的 doctor 和 Computer inspect 动态探测用户会话、锁屏、屏幕录制和输入权限；不自动申请权限，不触发授权弹窗。Windows 动态核验当前交互会话、默认输入桌面及焦点目标。在线能力变化在心跳中更新。`ui.*` 不是 Computer 协议入口。
+Linux capability 把 command/file 的支持与就绪分开；ui/accessibility/capture/input 永远为 `unsupported`。macOS 的 doctor 和 Computer inspect 动态探测用户会话、锁屏、屏幕录制和输入权限（语义观察与输入共用辅助功能权限）；不自动申请权限，不触发授权弹窗。Windows 动态核验当前交互会话、默认输入桌面及焦点目标。在线能力变化在心跳中更新。`ui.*` 不是 Computer 协议入口。
 
 ## 本地数据与更新
 

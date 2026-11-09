@@ -1,4 +1,4 @@
-#include "../../src/kernel/buckyos_agent_daemon/src/computer/native.m"
+#include "../../src/kernel/computer_driver/src/native.m"
 
 int main(void) {
     BuckyDesktop desktop;

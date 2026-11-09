@@ -1317,11 +1317,11 @@ static int take_json(const std::shared_ptr<UiaJob> &job, int status, char **json
     return UR_OK;
 }
 
-extern "C" int bucky_uia_status() {
+extern "C" int bucky_semantic_status() {
     try { return initialize() && uia_ready() ? UR_OK : UR_UNAVAILABLE; } catch (...) { return UR_UNAVAILABLE; }
 }
 
-extern "C" int bucky_uia_snapshot(uint64_t root, uint32_t root_pid, uint32_t max_nodes, uint32_t budget_ms, char **json, size_t *length) {
+extern "C" int bucky_semantic_snapshot(uint64_t root, uint32_t root_pid, uint32_t max_nodes, uint32_t budget_ms, char **json, size_t *length) {
     if (!json || !length) return UR_FAILED;
     *json = nullptr;
     *length = 0;
@@ -1337,7 +1337,7 @@ extern "C" int bucky_uia_snapshot(uint64_t root, uint32_t root_pid, uint32_t max
     } catch (...) { return UR_FAILED; }
 }
 
-extern "C" int bucky_uia_element(uint64_t snapshot, uint32_t index, uint32_t op, const uint16_t *text, size_t text_length,
+extern "C" int bucky_semantic_element(uint64_t snapshot, uint32_t index, uint32_t op, const uint16_t *text, size_t text_length,
                                  uint32_t timeout_ms, char **json, size_t *length) {
     if (!json || !length || (text_length && !text) || op > 3) return UR_FAILED;
     *json = nullptr;
@@ -1351,7 +1351,7 @@ extern "C" int bucky_uia_element(uint64_t snapshot, uint32_t index, uint32_t op,
     } catch (...) { return UR_FAILED; }
 }
 
-extern "C" void bucky_uia_retain(uint64_t snapshot, const uint32_t *indices, size_t count) {
+extern "C" void bucky_semantic_retain(uint64_t snapshot, const uint32_t *indices, size_t count) {
     try {
         std::vector<uint32_t> keep(indices, indices + (indices ? count : 0));
         auto job = std::make_shared<UiaJob>();
@@ -1370,7 +1370,7 @@ extern "C" void bucky_uia_retain(uint64_t snapshot, const uint32_t *indices, siz
     } catch (...) {}
 }
 
-extern "C" void bucky_uia_release(uint64_t snapshot) {
+extern "C" void bucky_semantic_release(uint64_t snapshot) {
     try {
         auto job = std::make_shared<UiaJob>();
         job->run = [snapshot] {
@@ -1473,7 +1473,7 @@ static int test_uia_call(const std::function<int(char **, size_t *)> &call, std:
 }
 
 static int uia_self_test(const BuckyDesktop &desktop) {
-    if (bucky_uia_status() != 0) { std::puts("UI Automation is unavailable"); return 1; }
+    if (bucky_semantic_status() != 0) { std::puts("UI Automation is unavailable"); return 1; }
     DpiScope dpi;
     WNDCLASSW cls{};
     cls.lpfnWndProc = test_uia_proc;
@@ -1494,7 +1494,7 @@ static int uia_self_test(const BuckyDesktop &desktop) {
     pump_test(200);
     std::string tree, reply;
     ULONGLONG started = GetTickCount64();
-    int code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_snapshot(reinterpret_cast<uintptr_t>(window), GetCurrentProcessId(), 400, 3000, json, length); }, tree);
+    int code = test_uia_call([&](char **json, size_t *length) { return bucky_semantic_snapshot(reinterpret_cast<uintptr_t>(window), GetCurrentProcessId(), 400, 3000, json, length); }, tree);
     std::printf("snapshot code=%d bytes=%zu elapsed=%llums\n", code, tree.size(), static_cast<unsigned long long>(GetTickCount64() - started));
     size_t id_at = tree.rfind("\"snapshot\":");
     uint64_t snapshot = id_at == std::string::npos ? 0 : std::strtoull(tree.c_str() + id_at + 11, nullptr, 10);
@@ -1504,14 +1504,14 @@ static int uia_self_test(const BuckyDesktop &desktop) {
     bool passed = code == 0 && snapshot && button_node > 0 && check_node > 0 && edit_node > 0
         && tree.find("\"ct\":50002") != std::string::npos && tree.find("\"ct\":50032") != std::string::npos;
     std::printf("tree: button=%d edit=%d checkbox=%d\n", button_node, edit_node, check_node);
-    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_element(snapshot, static_cast<uint32_t>(button_node), 0, nullptr, 0, 3000, json, length); }, reply);
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_semantic_element(snapshot, static_cast<uint32_t>(button_node), 0, nullptr, 0, 3000, json, length); }, reply);
     passed = passed && code == 0 && reply.find("\"pt\":[") != std::string::npos && reply.find("\"off\":false") != std::string::npos;
-    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_element(snapshot, static_cast<uint32_t>(button_node), 2, nullptr, 0, 3000, json, length); }, reply);
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_semantic_element(snapshot, static_cast<uint32_t>(button_node), 2, nullptr, 0, 3000, json, length); }, reply);
     pump_test(100);
     std::printf("invoke code=%d clicked=%u\n", code, test_invoked);
     passed = passed && code == 0 && test_invoked == 1;
     const wchar_t *value = L"uia 中文 value";
-    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_element(snapshot, static_cast<uint32_t>(edit_node), 3, reinterpret_cast<const uint16_t *>(value),
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_semantic_element(snapshot, static_cast<uint32_t>(edit_node), 3, reinterpret_cast<const uint16_t *>(value),
         std::wcslen(value), 3000, json, length); }, reply);
     pump_test(50);
     wchar_t text[64]{};
@@ -1520,11 +1520,11 @@ static int uia_self_test(const BuckyDesktop &desktop) {
     passed = passed && code == 0 && std::wcscmp(text, value) == 0 && reply.find("\"v\":") != std::string::npos;
     DestroyWindow(button);
     pump_test(50);
-    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_element(snapshot, static_cast<uint32_t>(button_node), 2, nullptr, 0, 3000, json, length); }, reply);
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_semantic_element(snapshot, static_cast<uint32_t>(button_node), 2, nullptr, 0, 3000, json, length); }, reply);
     pump_test(50);
     std::printf("destroyed element code=%d clicked=%u\n", code, test_invoked);
     passed = passed && code == 1 && test_invoked == 1;
-    bucky_uia_release(snapshot);
+    bucky_semantic_release(snapshot);
     HungWindow hung;
     hung.x = static_cast<int>(desktop.x) + 160;
     hung.y = static_cast<int>(desktop.y) + 160;
@@ -1535,7 +1535,7 @@ static int uia_self_test(const BuckyDesktop &desktop) {
     PostMessageW(hung.window, WM_APP, 0, 0);
     Sleep(100);
     started = GetTickCount64();
-    code = test_uia_call([&](char **json, size_t *length) { return bucky_uia_snapshot(reinterpret_cast<uintptr_t>(hung.window), GetCurrentProcessId(), 400, 3000, json, length); }, tree);
+    code = test_uia_call([&](char **json, size_t *length) { return bucky_semantic_snapshot(reinterpret_cast<uintptr_t>(hung.window), GetCurrentProcessId(), 400, 3000, json, length); }, tree);
     ULONGLONG elapsed = GetTickCount64() - started;
     size_t reason = tree.find("\"reason\":");
     std::printf("hung window snapshot code=%d elapsed=%llums %s\n", code, static_cast<unsigned long long>(elapsed),

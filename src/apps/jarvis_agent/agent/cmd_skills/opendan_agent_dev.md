@@ -15,9 +15,11 @@ Windows runs the foreground `buckyos_agent_daemon.exe`, uses PowerShell for comm
 stores its ledger under `%LOCALAPPDATA%\buckyos-agent-daemon` by default. Its desktop driver supports
 the primary display with visual/semantic/hybrid/auto observations, click, Unicode type, keypress, line
 scrolling, delay waits, and UI Automation element targets with invoke/set_value. Dragging and pixel
-scrolling are unsupported. Do not run it in Session 0. The semantic implementation entry points are
-`src/kernel/computer_driver/src/semantic.rs` (common names, UIA mapping, outline),
-`desktop.rs` (observe/auto, element resolution) and the UIA worker in `native_windows.cpp`.
+scrolling are unsupported. Do not run it in Session 0. macOS offers the same semantic observation and
+element targets through Accessibility. The semantic implementation entry points are
+`src/kernel/computer_driver/src/semantic.rs` (common names, UIA and AX mappings, outline),
+`desktop.rs` (observe/auto, element resolution), the UIA worker in `native_windows.cpp` and the AX
+backend in `native.m` (both export `bucky_semantic_*`).
 Desktop grants, local pause/resume and recovery are documented in `doc/arch/agent_daemon.md`.
 On Windows, node startup and OpenDAN helpers launch console tools without opening a console window;
 use the service logs and command stdout/stderr for diagnostics. Rust launch sites reuse

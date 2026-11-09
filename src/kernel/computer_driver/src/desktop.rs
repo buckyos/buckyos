@@ -14,6 +14,8 @@ use buckyos_api::*;
 use node_executor::{Actor, ComputerContext, ComputerDriver, ComputerOutput};
 use serde_json::{json, Value};
 
+use crate::semantic::{PAT_FOCUSABLE, PAT_INVOKE, PAT_VALUE, ST_DISABLED, ST_READONLY};
+
 const OBSERVATION_TTL: Duration = Duration::from_secs(30);
 const MAX_OBSERVATIONS: usize = 64;
 
@@ -70,10 +72,8 @@ extern "C" {
         guard: Option<unsafe extern "C" fn(*const std::ffi::c_void, *const Desktop) -> i32>,
         context: *const std::ffi::c_void,
     );
-    #[cfg(windows)]
-    fn bucky_uia_status() -> i32;
-    #[cfg(windows)]
-    fn bucky_uia_snapshot(
+    fn bucky_semantic_status() -> i32;
+    fn bucky_semantic_snapshot(
         root: u64,
         root_pid: u32,
         max_nodes: u32,
@@ -81,8 +81,7 @@ extern "C" {
         json: *mut *mut u8,
         length: *mut usize,
     ) -> i32;
-    #[cfg(windows)]
-    fn bucky_uia_element(
+    fn bucky_semantic_element(
         snapshot: u64,
         index: u32,
         op: u32,
@@ -92,15 +91,13 @@ extern "C" {
         json: *mut *mut u8,
         length: *mut usize,
     ) -> i32;
-    #[cfg(windows)]
-    fn bucky_uia_retain(snapshot: u64, indices: *const u32, count: usize);
-    #[cfg(windows)]
-    fn bucky_uia_release(snapshot: u64);
+    fn bucky_semantic_retain(snapshot: u64, indices: *const u32, count: usize);
+    fn bucky_semantic_release(snapshot: u64);
 }
 
-/// Synchronous calls into the native UIA worker; run them in blocking tasks.
-#[cfg(windows)]
-mod native_uia {
+/// Synchronous calls into the native semantic backend (Windows: the UIA
+/// worker, macOS: Accessibility); run them in blocking tasks.
+mod native_semantic {
     use super::*;
 
     pub(super) const OP_RESOLVE: u32 = 0;
@@ -111,7 +108,7 @@ mod native_uia {
     fn take(code: i32, json: *mut u8, length: usize) -> Result<Vec<u8>, i32> {
         let bytes =
             (!json.is_null()).then(|| unsafe { std::slice::from_raw_parts(json, length).to_vec() });
-        unsafe { bucky_desktop_free(json.cast()) };
+        unsafe { free_capture(json) };
         if code != 0 {
             return Err(code);
         }
@@ -119,17 +116,17 @@ mod native_uia {
     }
 
     pub(super) fn ready() -> bool {
-        unsafe { bucky_uia_status() == 0 }
+        unsafe { bucky_semantic_status() == 0 }
     }
 
     pub(super) fn snapshot(
         root: u64,
         root_pid: u32,
         budget_ms: u32,
-    ) -> Result<crate::semantic::uia::Snapshot, i32> {
+    ) -> Result<crate::semantic::Snapshot, i32> {
         let (mut json, mut length) = (std::ptr::null_mut(), 0);
         let code = unsafe {
-            bucky_uia_snapshot(
+            bucky_semantic_snapshot(
                 root,
                 root_pid,
                 COMPUTER_SEMANTIC_MAX_NODES as u32,
@@ -151,7 +148,7 @@ mod native_uia {
         let text: Vec<u16> = text.encode_utf16().collect();
         let (mut json, mut length) = (std::ptr::null_mut(), 0);
         let code = unsafe {
-            bucky_uia_element(
+            bucky_semantic_element(
                 snapshot,
                 index,
                 op,
@@ -166,16 +163,15 @@ mod native_uia {
     }
 
     pub(super) fn retain(snapshot: u64, indices: &[u32]) {
-        unsafe { bucky_uia_retain(snapshot, indices.as_ptr(), indices.len()) }
+        unsafe { bucky_semantic_retain(snapshot, indices.as_ptr(), indices.len()) }
     }
 
     pub(super) fn release(snapshot: u64) {
-        unsafe { bucky_uia_release(snapshot) }
+        unsafe { bucky_semantic_release(snapshot) }
     }
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
-fn uia_failure(code: i32) -> &'static str {
+fn semantic_failure(code: i32) -> &'static str {
     match code {
         1 => "stale_element",
         2 | 8 => "backend_timeout",
@@ -188,39 +184,32 @@ fn uia_failure(code: i32) -> &'static str {
 }
 
 fn semantic_supported() -> bool {
-    #[cfg(windows)]
-    return native_uia::ready();
-    #[cfg(not(windows))]
-    false
+    native_semantic::ready()
 }
 
 const AUTO_MIN_NODES: u32 = 10;
-#[cfg_attr(not(windows), allow(dead_code))]
 const CHROMIUM_RESAMPLE_MS: u64 = 500;
 const AUTO_MIN_ACTIONABLE: usize = 5;
 
 /// Releases the native element handles of one semantic observation.
-#[cfg_attr(not(windows), allow(dead_code))]
 struct SnapshotHandle(u64);
 
 impl Drop for SnapshotHandle {
     fn drop(&mut self) {
-        #[cfg(windows)]
         if self.0 != 0 {
-            native_uia::release(self.0);
+            native_semantic::release(self.0);
         }
     }
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 struct ElementRecord {
     index: u32,
     actions: Vec<ComputerElementAction>,
 }
 
 /// ref → backend identity of one semantic observation (Windows: the cached
-/// UIA element, RuntimeId, pid and top-level window kept by the worker).
-#[cfg_attr(not(windows), allow(dead_code))]
+/// UIA element, RuntimeId, pid and top-level window kept by the worker;
+/// macOS: the AXUIElement, its pid, role and window).
 struct SemanticRecord {
     handle: SnapshotHandle,
     root: (u64, u32),
@@ -228,7 +217,6 @@ struct SemanticRecord {
     windows: HashMap<String, (u64, u32)>,
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 struct SemanticTree {
     payload: ComputerSemantic,
     record: SemanticRecord,
@@ -295,27 +283,21 @@ fn on_display(desktop: &Desktop, x: f64, y: f64) -> bool {
         && y < desktop.y + desktop.logical_height
 }
 
-#[cfg(windows)]
-fn build_tree(
-    raw: crate::semantic::uia::Snapshot,
-    desktop: &Desktop,
-    captured_at_ms: u64,
-) -> SemanticTree {
-    use crate::semantic;
+fn build_tree(raw: crate::semantic::Snapshot, desktop: &Desktop, captured_at_ms: u64) -> SemanticTree {
+    use crate::semantic::{self, RawNode};
     let nodes: Vec<_> = raw
         .nodes
         .iter()
-        .map(|node| semantic::uia::node(node, screen_bounds(desktop, node.b)))
+        .map(|node| node.semantic(screen_bounds(desktop, node.rect())))
         .collect();
     let outline = semantic::outline(&nodes, &semantic::Limits::default());
-    let class = raw.nodes.first().map(|n| n.cls.clone()).unwrap_or_default();
-    let web_pending = class.starts_with("Chrome_WidgetWin")
+    let web_pending = raw.chromium()
         && !outline
             .refs
             .iter()
             .any(|(_, i)| nodes[*i].role == ComputerRole::Document);
     let kept: Vec<u32> = outline.refs.iter().map(|(_, i)| *i as u32).collect();
-    native_uia::retain(raw.snapshot, &kept);
+    native_semantic::retain(raw.snapshot, &kept);
     let elements = outline
         .refs
         .iter()
@@ -337,7 +319,7 @@ fn build_tree(
         .enumerate()
         .map(|(i, window)| {
             let reference = format!("w{}", i + 1);
-            windows.insert(reference.clone(), (window.hwnd, window.pid));
+            windows.insert(reference.clone(), (window.id, window.pid));
             ComputerWindow {
                 window_ref: reference,
                 title: semantic::plain(&window.title),
@@ -502,6 +484,14 @@ fn input_reason() -> &'static str {
     }
 }
 
+fn accessibility_reason() -> &'static str {
+    if cfg!(windows) {
+        "ui_automation_unavailable"
+    } else {
+        "accessibility_permission_required"
+    }
+}
+
 fn capture_reason() -> &'static str {
     if cfg!(windows) {
         "desktop_capture_unavailable"
@@ -561,14 +551,7 @@ fn native_capabilities(desktop: &Desktop, paused: bool, semantic: bool) -> Compu
             true,
             state.or((desktop.input == 0).then_some(input_reason())),
         ),
-        accessibility: if cfg!(windows) {
-            capability(
-                true,
-                state.or((!semantic).then_some("ui_automation_unavailable")),
-            )
-        } else {
-            capability(false, Some("semantic_observation_unsupported"))
-        },
+        accessibility: capability(true, state.or((!semantic).then_some(accessibility_reason()))),
         observation_modes,
         commands: commands.into_iter().map(str::to_owned).collect(),
         focus_guard: focus_guard().into(),
@@ -1158,59 +1141,52 @@ impl DesktopComputer {
     }
 
     /// The control tree of the scoped window. Chromium enables its renderer
-    /// accessibility only after a UIA client appears, so a sparse first tree
-    /// of a Chromium window is sampled once more.
+    /// accessibility only after an accessibility client appears (Windows: a
+    /// UIA client, macOS: `AXManualAccessibility`), so a first tree of a
+    /// Chromium window without its web document is sampled once more.
     async fn semantic_tree(
         &self,
         context: &ComputerContext,
         desktop: &Desktop,
         scope: Scope,
     ) -> Result<SemanticTree, &'static str> {
-        #[cfg(windows)]
-        {
-            let started = Instant::now();
-            let budget = COMPUTER_SEMANTIC_SNAPSHOT_MS.min(context.execution_timeout_ms);
-            let mut scope = scope;
-            for attempt in 0..2 {
-                let (root, pid) = match scope {
-                    Scope::Foreground => (0, 0),
-                    Scope::Window(root, pid) | Scope::Prefer(root, pid) => (root, pid),
-                };
-                let raw = tokio::task::spawn_blocking(move || {
-                    native_uia::snapshot(root, pid, budget as u32)
-                })
-                .await
-                .map_err(|_| "semantic_failed")?;
-                let raw = match raw {
-                    Err(1) if matches!(scope, Scope::Prefer(..)) => {
-                        scope = Scope::Foreground;
-                        continue;
-                    }
-                    Err(1) => return Err("stale_window"),
-                    Err(code) => return Err(uia_failure(code)),
-                    Ok(raw) => raw,
-                };
-                let tree = build_tree(raw, desktop, node_executor::now_ms());
-                let retry = attempt == 0
-                    && tree.web_pending
-                    && started.elapsed() + Duration::from_millis(CHROMIUM_RESAMPLE_MS + budget)
-                        < Duration::from_millis(context.execution_timeout_ms);
-                if !retry {
-                    return Ok(tree);
+        let started = Instant::now();
+        let budget = COMPUTER_SEMANTIC_SNAPSHOT_MS.min(context.execution_timeout_ms);
+        let mut scope = scope;
+        for attempt in 0..2 {
+            let (root, pid) = match scope {
+                Scope::Foreground => (0, 0),
+                Scope::Window(root, pid) | Scope::Prefer(root, pid) => (root, pid),
+            };
+            let raw = tokio::task::spawn_blocking(move || {
+                native_semantic::snapshot(root, pid, budget as u32)
+            })
+            .await
+            .map_err(|_| "semantic_failed")?;
+            let raw = match raw {
+                Err(1) if matches!(scope, Scope::Prefer(..)) => {
+                    scope = Scope::Foreground;
+                    continue;
                 }
-                drop(tree);
-                tokio::time::sleep(Duration::from_millis(CHROMIUM_RESAMPLE_MS)).await;
-                if let Some(error) = self.stopped(context, self.epoch.load(Ordering::Acquire)) {
-                    return Err(error);
-                }
+                Err(1) => return Err("stale_window"),
+                Err(code) => return Err(semantic_failure(code)),
+                Ok(raw) => raw,
+            };
+            let tree = build_tree(raw, desktop, node_executor::now_ms());
+            let retry = attempt == 0
+                && tree.web_pending
+                && started.elapsed() + Duration::from_millis(CHROMIUM_RESAMPLE_MS + budget)
+                    < Duration::from_millis(context.execution_timeout_ms);
+            if !retry {
+                return Ok(tree);
             }
-            Err("semantic_failed")
+            drop(tree);
+            tokio::time::sleep(Duration::from_millis(CHROMIUM_RESAMPLE_MS)).await;
+            if let Some(error) = self.stopped(context, self.epoch.load(Ordering::Acquire)) {
+                return Err(error);
+            }
         }
-        #[cfg(not(windows))]
-        {
-            let _ = (context, desktop, scope);
-            Err("accessibility_unavailable")
-        }
+        Err("semantic_failed")
     }
 
     async fn observe(
@@ -1420,87 +1396,78 @@ impl DesktopComputer {
         let Some((semantic, element)) = element_target(record, request)? else {
             return Ok(None);
         };
-        #[cfg(not(windows))]
-        {
-            let _ = (context, desktop, semantic, element);
-            Err("stale_element")
-        }
-        #[cfg(windows)]
-        {
-            use crate::semantic::uia::*;
-            let (snapshot, index, timeout) = (semantic.handle.0, element.index, element_timeout(context));
-            let state = tokio::task::spawn_blocking(move || {
-                native_uia::element(snapshot, index, native_uia::OP_RESOLVE, "", timeout)
-            })
-            .await
-            .map_err(|_| "element_action_failed")?
-            .map_err(uia_failure)?;
-            let bits = |key: &str| state[key].as_u64().unwrap_or(0) as u32;
-            let flag = |key: &str| state[key].as_bool().unwrap_or(true);
-            let (states, patterns) = (bits("st"), bits("pat"));
-            let rect: Vec<f64> = state["b"]
-                .as_array()
-                .map(|v| v.iter().filter_map(Value::as_f64).collect())
-                .unwrap_or_default();
-            let pointer = |x: f64, y: f64, covered: bool| -> Result<(f64, f64), &'static str> {
-                if flag("off") {
-                    Err("element_offscreen")
-                } else if !on_display(desktop, x, y) {
-                    Err("element_out_of_bounds")
-                } else if covered {
-                    Err("element_obscured")
-                } else {
-                    Ok((x, y))
+        let (snapshot, index, timeout) = (semantic.handle.0, element.index, element_timeout(context));
+        let state = tokio::task::spawn_blocking(move || {
+            native_semantic::element(snapshot, index, native_semantic::OP_RESOLVE, "", timeout)
+        })
+        .await
+        .map_err(|_| "element_action_failed")?
+        .map_err(semantic_failure)?;
+        let bits = |key: &str| state[key].as_u64().unwrap_or(0) as u32;
+        let flag = |key: &str| state[key].as_bool().unwrap_or(true);
+        let (states, patterns) = (bits("st"), bits("pat"));
+        let rect: Vec<f64> = state["b"]
+            .as_array()
+            .map(|v| v.iter().filter_map(Value::as_f64).collect())
+            .unwrap_or_default();
+        let pointer = |x: f64, y: f64, covered: bool| -> Result<(f64, f64), &'static str> {
+            if flag("off") {
+                Err("element_offscreen")
+            } else if !on_display(desktop, x, y) {
+                Err("element_out_of_bounds")
+            } else if covered {
+                Err("element_obscured")
+            } else {
+                Ok((x, y))
+            }
+        };
+        let required = |pattern: u32| -> Result<(f64, f64), &'static str> {
+            if states & ST_DISABLED != 0 {
+                Err("element_disabled")
+            } else if patterns & pattern == 0 {
+                Err("element_action_unsupported")
+            } else {
+                Ok((0.0, 0.0))
+            }
+        };
+        let point = match request {
+            ComputerRequest::Click { .. } => {
+                let at: Vec<f64> = state["pt"]
+                    .as_array()
+                    .map(|v| v.iter().filter_map(Value::as_f64).collect())
+                    .unwrap_or_default();
+                if at.len() != 2 {
+                    return Err("element_out_of_bounds");
                 }
-            };
-            let required = |pattern: u32| -> Result<(f64, f64), &'static str> {
-                if states & ST_DISABLED != 0 {
-                    Err("element_disabled")
-                } else if patterns & pattern == 0 {
-                    Err("element_action_unsupported")
-                } else {
-                    Ok((0.0, 0.0))
+                pointer(at[0], at[1], flag("obscured"))?
+            }
+            ComputerRequest::Scroll { .. } => {
+                if rect.len() != 4 {
+                    return Err("element_out_of_bounds");
                 }
-            };
-            let point = match request {
-                ComputerRequest::Click { .. } => {
-                    let at: Vec<f64> = state["pt"]
-                        .as_array()
-                        .map(|v| v.iter().filter_map(Value::as_f64).collect())
-                        .unwrap_or_default();
-                    if at.len() != 2 {
-                        return Err("element_out_of_bounds");
-                    }
-                    pointer(at[0], at[1], flag("obscured"))?
+                pointer(
+                    (rect[0] + rect[2] / 2.0).floor(),
+                    (rect[1] + rect[3] / 2.0).floor(),
+                    flag("center_obscured"),
+                )?
+            }
+            ComputerRequest::Type { .. } | ComputerRequest::Keypress { .. } => {
+                required(PAT_FOCUSABLE)?
+            }
+            ComputerRequest::Invoke { .. } => required(PAT_INVOKE)?,
+            ComputerRequest::SetValue { .. } => {
+                if states & ST_READONLY != 0 {
+                    return Err("element_readonly");
                 }
-                ComputerRequest::Scroll { .. } => {
-                    if rect.len() != 4 {
-                        return Err("element_out_of_bounds");
-                    }
-                    pointer(
-                        (rect[0] + rect[2] / 2.0).floor(),
-                        (rect[1] + rect[3] / 2.0).floor(),
-                        flag("center_obscured"),
-                    )?
-                }
-                ComputerRequest::Type { .. } | ComputerRequest::Keypress { .. } => {
-                    required(PAT_FOCUSABLE)?
-                }
-                ComputerRequest::Invoke { .. } => required(PAT_INVOKE)?,
-                ComputerRequest::SetValue { .. } => {
-                    if states & ST_READONLY != 0 {
-                        return Err("element_readonly");
-                    }
-                    required(PAT_VALUE)?
-                }
-                _ => return Err("command_unsupported"),
-            };
-            Ok(Some(Resolved {
-                record: semantic.clone(),
-                index,
-                point,
-            }))
-        }
+                required(PAT_VALUE)?
+            }
+            _ => return Err("command_unsupported"),
+        };
+        Ok(Some(Resolved {
+            record: semantic.clone(),
+            index,
+            point,
+        }))
     }
 
     async fn element_op(
@@ -1510,26 +1477,18 @@ impl DesktopComputer {
         op: u32,
         value: &str,
     ) -> Result<Value, (&'static str, ComputerExecutionState)> {
-        #[cfg(windows)]
+        let (snapshot, index, timeout) =
+            (resolved.record.handle.0, resolved.index, element_timeout(context));
+        let value = value.to_owned();
+        match tokio::task::spawn_blocking(move || {
+            native_semantic::element(snapshot, index, op, &value, timeout)
+        })
+        .await
         {
-            let (snapshot, index, timeout) =
-                (resolved.record.handle.0, resolved.index, element_timeout(context));
-            let value = value.to_owned();
-            match tokio::task::spawn_blocking(move || {
-                native_uia::element(snapshot, index, op, &value, timeout)
-            })
-            .await
-            {
-                Ok(Ok(reply)) => Ok(reply),
-                Ok(Err(2)) => Err(("backend_timeout", ComputerExecutionState::Unknown)),
-                Ok(Err(code)) => Err((uia_failure(code), ComputerExecutionState::NotStarted)),
-                Err(_) => Err(("element_action_failed", ComputerExecutionState::Unknown)),
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (context, resolved, op, value);
-            Err(("command_unsupported", ComputerExecutionState::NotStarted))
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(2)) => Err(("backend_timeout", ComputerExecutionState::Unknown)),
+            Ok(Err(code)) => Err((semantic_failure(code), ComputerExecutionState::NotStarted)),
+            Err(_) => Err(("element_action_failed", ComputerExecutionState::Unknown)),
         }
     }
 
@@ -1589,7 +1548,7 @@ impl DesktopComputer {
                 return Err(("focus_changed", ComputerExecutionState::NotStarted));
             }
             let reply = self
-                .element_op(context, resolved, native_focus_op(), "")
+                .element_op(context, resolved, native_semantic::OP_FOCUS, "")
                 .await?;
             let after = probe();
             if reply["focused"] != Value::Bool(true) || after.focus == 0 || after.focus_on_display == 0
@@ -1719,8 +1678,10 @@ impl DesktopComputer {
                 let resolved = resolved.ok_or(("stale_element", progress(false)))?;
                 check(desktop, false)?;
                 let (op, value) = match request {
-                    ComputerRequest::SetValue { value, .. } => (native_set_value_op(), value.as_str()),
-                    _ => (native_invoke_op(), ""),
+                    ComputerRequest::SetValue { value, .. } => {
+                        (native_semantic::OP_SET_VALUE, value.as_str())
+                    }
+                    _ => (native_semantic::OP_INVOKE, ""),
                 };
                 let reply = self.element_op(context, resolved, op, value).await?;
                 if let ComputerRequest::SetValue { value, .. } = request {
@@ -1756,27 +1717,6 @@ impl DesktopComputer {
         }
         Ok(())
     }
-}
-
-fn native_focus_op() -> u32 {
-    #[cfg(windows)]
-    return native_uia::OP_FOCUS;
-    #[cfg(not(windows))]
-    1
-}
-
-fn native_invoke_op() -> u32 {
-    #[cfg(windows)]
-    return native_uia::OP_INVOKE;
-    #[cfg(not(windows))]
-    2
-}
-
-fn native_set_value_op() -> u32 {
-    #[cfg(windows)]
-    return native_uia::OP_SET_VALUE;
-    #[cfg(not(windows))]
-    3
 }
 
 #[async_trait]
@@ -2235,7 +2175,7 @@ mod tests {
     #[test]
     fn semantic_modes_and_commands_follow_the_backend() {
         let caps = native_capabilities(&Desktop::default(), false, false);
-        assert_eq!(caps.accessibility.supported, cfg!(windows));
+        assert!(caps.accessibility.supported);
         assert!(!caps.accessibility.ready);
         assert!(!caps.capture.ready);
         assert!(!caps.input.ready);
@@ -2251,7 +2191,7 @@ mod tests {
             ..Desktop::default()
         };
         let caps = native_capabilities(&ready, false, true);
-        assert_eq!(caps.accessibility.ready, cfg!(windows));
+        assert!(caps.accessibility.ready);
         assert!(caps
             .observation_modes
             .contains(&ComputerObservationMode::Semantic));
@@ -2261,11 +2201,14 @@ mod tests {
                 .accessibility
                 .reason
                 .as_deref(),
-            Some(if cfg!(windows) {
-                "paused"
-            } else {
-                "semantic_observation_unsupported"
-            })
+            Some("paused")
+        );
+        assert_eq!(
+            native_capabilities(&ready, false, false)
+                .accessibility
+                .reason
+                .as_deref(),
+            Some(accessibility_reason())
         );
     }
 
@@ -2568,27 +2511,26 @@ mod tests {
 
     /// `BUCKY_SEMANTIC_TITLE=<title substring>` picks a window from the
     /// window list instead of the foreground window.
-    #[cfg(windows)]
     #[test]
-    #[ignore = "requires an unlocked Windows interactive desktop; reads UI Automation without input"]
-    fn windows_semantic_smoke() {
+    #[ignore = "requires an unlocked interactive desktop with UI Automation / Accessibility; reads the control tree without input"]
+    fn semantic_smoke() {
         let desktop = probe();
         assert_eq!(desktop.ready, 1, "desktop is unavailable: {desktop:?}");
-        assert!(native_uia::ready(), "UI Automation is unavailable");
-        let first = native_uia::snapshot(0, 0, 3000).expect("foreground snapshot");
+        assert!(native_semantic::ready(), "the accessibility backend is unavailable");
+        let first = native_semantic::snapshot(0, 0, 3000).expect("foreground snapshot");
         let scope = std::env::var("BUCKY_SEMANTIC_TITLE").ok().map(|title| {
             first
                 .windows
                 .iter()
                 .find(|w| w.title.contains(&title))
-                .map(|w| (w.hwnd, w.pid))
+                .map(|w| (w.id, w.pid))
                 .expect("no listed window has that title")
         });
         for attempt in 0..2 {
             let started = Instant::now();
             let raw = match scope {
-                Some((root, pid)) => native_uia::snapshot(root, pid, 3000).expect("window snapshot"),
-                None => native_uia::snapshot(0, 0, 3000).expect("foreground snapshot"),
+                Some((root, pid)) => native_semantic::snapshot(root, pid, 3000).expect("window snapshot"),
+                None => native_semantic::snapshot(0, 0, 3000).expect("foreground snapshot"),
             };
             let elapsed = started.elapsed();
             let tree = build_tree(raw, &desktop, 0);

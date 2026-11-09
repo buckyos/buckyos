@@ -92,8 +92,10 @@ buckyos system info                                 # BuckyOS version, build_ver
   Windows supports the primary display, visual/semantic/hybrid/auto observations, click, Unicode type,
   keypress, line scrolling, delay waits and, through UI Automation, element targets with invoke/set_value;
   `inspect` reports `accessibility` readiness. Windows of a higher integrity level (Task Manager, an
-  elevated terminal) are listed `accessible:false` without a control tree. macOS stays visual/auto with
-  `accessibility` unsupported; dragging and pixel scrolling are unsupported on Windows.
+  elevated terminal) are listed `accessible:false` without a control tree. macOS offers the same observation
+  modes and element targets through Accessibility: semantic observation needs only the Accessibility grant
+  (the one input already needs), not Screen Recording; Chrome web links and buttons offer no `invoke`, so
+  click them as elements. Dragging is unsupported; pixel scrolling is unsupported on Windows.
   The owner can run `buckyos_agent_daemon pause|resume --executor <id>`; request acceptance is not
   cancellation confirmation. Inspect `instances[].capabilities` in local status, query the original operation,
   and take a new observation after resuming. Never replace the original store or replay uncertain input.

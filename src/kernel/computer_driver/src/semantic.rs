@@ -1,13 +1,15 @@
 //! Semantic observation shared by every backend: nodes use the common role,
 //! state and action names (`buckyos_api::ComputerRole` …), are pruned and
 //! budgeted in breadth-first order, and are printed as `outline-v1` text.
-//! The Windows UI Automation mapping to those names lives in [`uia`].
-#![cfg_attr(not(windows), allow(dead_code))]
+//! The native backends report pattern/state bits ([`PAT_INVOKE`] …) and a
+//! platform role: Windows UI Automation is mapped in [`uia`], macOS
+//! Accessibility in [`ax`].
 
 use buckyos_api::{
     ComputerBounds, ComputerElementAction, ComputerElementState, ComputerRole,
     COMPUTER_SEMANTIC_MAX_DEPTH, COMPUTER_SEMANTIC_MAX_NODES, COMPUTER_SEMANTIC_MAX_TEXT_BYTES,
 };
+use serde::Deserialize;
 
 const NAME_CHARS: usize = 160;
 const VALUE_CHARS: usize = 120;
@@ -250,41 +252,144 @@ pub(crate) fn plain(text: &str) -> String {
     clean(text, NAME_CHARS).replace("\\\"", "\"").replace("\\\\", "\\")
 }
 
+/// Pattern and state bits reported by the native backends (`native_windows.cpp`,
+/// `native.m`); both use this layout.
+pub const PAT_INVOKE: u32 = 1 << 0;
+pub const PAT_VALUE: u32 = 1 << 1;
+pub const PAT_TOGGLE: u32 = 1 << 2;
+pub const PAT_SELECTION_ITEM: u32 = 1 << 3;
+pub const PAT_EXPAND_COLLAPSE: u32 = 1 << 4;
+pub const PAT_SCROLL_ITEM: u32 = 1 << 5;
+pub const PAT_FOCUSABLE: u32 = 1 << 6;
+
+pub const ST_DISABLED: u32 = 1 << 0;
+pub const ST_FOCUSED: u32 = 1 << 1;
+pub const ST_READONLY: u32 = 1 << 2;
+pub const ST_SELECTED: u32 = 1 << 3;
+pub const ST_CHECKED: u32 = 1 << 4;
+pub const ST_MIXED: u32 = 1 << 5;
+pub const ST_EXPANDED: u32 = 1 << 6;
+pub const ST_COLLAPSED: u32 = 1 << 7;
+pub const ST_PARTIAL: u32 = 1 << 8;
+pub const ST_DIALOG: u32 = 1 << 9;
+
+pub fn states(role: ComputerRole, bits: u32) -> Vec<ComputerElementState> {
+    use ComputerElementState::*;
+    let mut states = Vec::new();
+    for (bit, state) in [
+        (ST_DISABLED, Disabled),
+        (ST_FOCUSED, Focused),
+        (ST_SELECTED, Selected),
+        (ST_CHECKED, Checked),
+        (ST_MIXED, Mixed),
+        (ST_EXPANDED | ST_PARTIAL, Expanded),
+        (ST_COLLAPSED, Collapsed),
+    ] {
+        if bits & bit != 0 {
+            states.push(state);
+        }
+    }
+    if bits & ST_READONLY != 0 && matches!(role, ComputerRole::Textbox | ComputerRole::Combobox) {
+        states.push(Readonly);
+    }
+    states
+}
+
+pub fn actions(patterns: u32, states: u32) -> Vec<ComputerElementAction> {
+    use ComputerElementAction::*;
+    let mut actions = Vec::new();
+    for (bit, action) in [
+        (PAT_FOCUSABLE, Focus),
+        (PAT_INVOKE, Invoke),
+        (PAT_TOGGLE, Toggle),
+        (PAT_SELECTION_ITEM, Select),
+        (PAT_SCROLL_ITEM, ScrollIntoView),
+    ] {
+        if patterns & bit != 0 {
+            actions.push(action);
+        }
+    }
+    if patterns & PAT_VALUE != 0 && states & ST_READONLY == 0 {
+        actions.push(SetValue);
+    }
+    if patterns & PAT_EXPAND_COLLAPSE != 0 {
+        if states & (ST_COLLAPSED | ST_PARTIAL) != 0 {
+            actions.push(Expand);
+        }
+        if states & (ST_EXPANDED | ST_PARTIAL) != 0 {
+            actions.push(Collapse);
+        }
+    }
+    actions.sort();
+    actions
+}
+
+fn editable_value(role: ComputerRole, value: &Option<String>) -> Option<String> {
+    value
+        .clone()
+        .filter(|_| matches!(role, ComputerRole::Textbox | ComputerRole::Combobox | ComputerRole::Slider))
+}
+
+/// A top-level window of the window list; `id` is the native window identity
+/// (Windows HWND, macOS CGWindowID).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawWindow {
+    #[serde(alias = "hwnd")]
+    pub id: u64,
+    pub pid: u32,
+    pub title: String,
+    pub process: String,
+    pub bounds: [i64; 4],
+    pub foreground: bool,
+    pub accessible: bool,
+}
+
+/// One native snapshot: the window list, the scoped window's nodes in
+/// breadth-first order (index = element index for later element calls) and
+/// the handle that keeps their native elements.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawSnapshot<N> {
+    pub root: u64,
+    pub root_pid: u32,
+    pub windows: Vec<RawWindow>,
+    pub nodes: Vec<N>,
+    pub visited: u32,
+    pub truncated: bool,
+    pub reason: String,
+    pub snapshot: u64,
+    /// The scoped app hosts Chromium web content whose accessibility the
+    /// backend has just asked for (macOS `AXManualAccessibility`).
+    #[serde(default)]
+    pub web: bool,
+}
+
+pub trait RawNode {
+    /// Native screen rectangle `[left, top, width, height]`.
+    fn rect(&self) -> [i64; 4];
+    fn semantic(&self, bounds: ComputerBounds) -> SemanticNode;
+    /// The root of a Chromium/Electron window.
+    fn chromium_root(&self) -> bool {
+        false
+    }
+}
+
+impl<N: RawNode> RawSnapshot<N> {
+    /// Whether the scoped window renders Chromium web content.
+    pub fn chromium(&self) -> bool {
+        self.web || self.nodes.first().is_some_and(RawNode::chromium_root)
+    }
+}
+
+#[cfg(windows)]
+pub type Snapshot = RawSnapshot<uia::Node>;
+#[cfg(target_os = "macos")]
+pub type Snapshot = RawSnapshot<ax::Node>;
+
 /// Windows UI Automation: control types, patterns and states mapped to the
-/// common names. Pattern/state bits match `native_windows.cpp`.
+/// common names.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod uia {
     use super::*;
-    use serde::Deserialize;
-
-    pub const PAT_INVOKE: u32 = 1 << 0;
-    pub const PAT_VALUE: u32 = 1 << 1;
-    pub const PAT_TOGGLE: u32 = 1 << 2;
-    pub const PAT_SELECTION_ITEM: u32 = 1 << 3;
-    pub const PAT_EXPAND_COLLAPSE: u32 = 1 << 4;
-    pub const PAT_SCROLL_ITEM: u32 = 1 << 5;
-    pub const PAT_FOCUSABLE: u32 = 1 << 6;
-
-    pub const ST_DISABLED: u32 = 1 << 0;
-    pub const ST_FOCUSED: u32 = 1 << 1;
-    pub const ST_READONLY: u32 = 1 << 2;
-    pub const ST_SELECTED: u32 = 1 << 3;
-    pub const ST_CHECKED: u32 = 1 << 4;
-    pub const ST_MIXED: u32 = 1 << 5;
-    pub const ST_EXPANDED: u32 = 1 << 6;
-    pub const ST_COLLAPSED: u32 = 1 << 7;
-    pub const ST_PARTIAL: u32 = 1 << 8;
-    pub const ST_DIALOG: u32 = 1 << 9;
-
-    #[derive(Debug, Clone, Deserialize)]
-    pub struct Window {
-        pub hwnd: u64,
-        pub pid: u32,
-        pub title: String,
-        pub process: String,
-        pub bounds: [i64; 4],
-        pub foreground: bool,
-        pub accessible: bool,
-    }
 
     #[derive(Debug, Clone, Deserialize)]
     pub struct Node {
@@ -300,18 +405,6 @@ pub(crate) mod uia {
         pub b: [i64; 4],
         #[serde(default)]
         pub v: Option<String>,
-    }
-
-    #[derive(Debug, Clone, Deserialize)]
-    pub struct Snapshot {
-        pub root: u64,
-        pub root_pid: u32,
-        pub windows: Vec<Window>,
-        pub nodes: Vec<Node>,
-        pub visited: u32,
-        pub truncated: bool,
-        pub reason: String,
-        pub snapshot: u64,
     }
 
     fn aria_role(aria: &str) -> Option<ComputerRole> {
@@ -387,57 +480,6 @@ pub(crate) mod uia {
         }
     }
 
-    pub fn states(role: ComputerRole, bits: u32) -> Vec<ComputerElementState> {
-        use ComputerElementState::*;
-        let mut states = Vec::new();
-        for (bit, state) in [
-            (ST_DISABLED, Disabled),
-            (ST_FOCUSED, Focused),
-            (ST_SELECTED, Selected),
-            (ST_CHECKED, Checked),
-            (ST_MIXED, Mixed),
-            (ST_EXPANDED | ST_PARTIAL, Expanded),
-            (ST_COLLAPSED, Collapsed),
-        ] {
-            if bits & bit != 0 {
-                states.push(state);
-            }
-        }
-        if bits & ST_READONLY != 0 && matches!(role, ComputerRole::Textbox | ComputerRole::Combobox) {
-            states.push(Readonly);
-        }
-        states
-    }
-
-    pub fn actions(patterns: u32, states: u32) -> Vec<ComputerElementAction> {
-        use ComputerElementAction::*;
-        let mut actions = Vec::new();
-        for (bit, action) in [
-            (PAT_FOCUSABLE, Focus),
-            (PAT_INVOKE, Invoke),
-            (PAT_TOGGLE, Toggle),
-            (PAT_SELECTION_ITEM, Select),
-            (PAT_SCROLL_ITEM, ScrollIntoView),
-        ] {
-            if patterns & bit != 0 {
-                actions.push(action);
-            }
-        }
-        if patterns & PAT_VALUE != 0 && states & ST_READONLY == 0 {
-            actions.push(SetValue);
-        }
-        if patterns & PAT_EXPAND_COLLAPSE != 0 {
-            if states & (ST_COLLAPSED | ST_PARTIAL) != 0 {
-                actions.push(Expand);
-            }
-            if states & (ST_EXPANDED | ST_PARTIAL) != 0 {
-                actions.push(Collapse);
-            }
-        }
-        actions.sort();
-        actions
-    }
-
     pub fn node(raw: &Node, bounds: ComputerBounds) -> SemanticNode {
         let role = role(raw.ct, &raw.aria, &raw.cls, raw.hl, raw.st, raw.pat);
         SemanticNode {
@@ -445,20 +487,124 @@ pub(crate) mod uia {
             role,
             name: raw.n.clone(),
             id: raw.aid.clone(),
-            value: raw
-                .v
-                .clone()
-                .filter(|_| matches!(role, ComputerRole::Textbox | ComputerRole::Combobox | ComputerRole::Slider)),
+            value: editable_value(role, &raw.v),
             states: states(role, raw.st),
             actions: actions(raw.pat, raw.st),
             bounds,
+        }
+    }
+
+    impl RawNode for Node {
+        fn rect(&self) -> [i64; 4] {
+            self.b
+        }
+
+        fn semantic(&self, bounds: ComputerBounds) -> SemanticNode {
+            node(self, bounds)
+        }
+
+        fn chromium_root(&self) -> bool {
+            self.cls.starts_with("Chrome_WidgetWin")
+        }
+    }
+}
+
+/// macOS Accessibility: AX role/subrole mapped to the common roles. The
+/// native layer derives the pattern/state bits from AX attributes and
+/// actions (AXPress, settable AXValue/AXFocused, AXSelected, AXExpanded …).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod ax {
+    use super::*;
+
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct Node {
+        pub p: i64,
+        pub r: String,
+        #[serde(default)]
+        pub sr: String,
+        pub n: String,
+        #[serde(default)]
+        pub id: String,
+        pub pat: u32,
+        pub st: u32,
+        pub b: [i64; 4],
+        #[serde(default)]
+        pub v: Option<String>,
+    }
+
+    pub fn role(role: &str, subrole: &str) -> ComputerRole {
+        use ComputerRole::*;
+        match (role, subrole) {
+            ("AXWindow", "AXDialog" | "AXSystemDialog") | ("AXSheet" | "AXPopover", _) => Dialog,
+            ("AXGroup", "AXApplicationDialog" | "AXApplicationAlertDialog") => Dialog,
+            ("AXWindow", _) => Window,
+            ("AXWebArea", _) | ("AXGroup", "AXDocument") => Document,
+            ("AXGroup" | "AXRadioGroup", _) => Group,
+            ("AXToolbar", _) => Toolbar,
+            ("AXHeading", _) => Heading,
+            ("AXCheckBox", "AXSwitch") => Switch,
+            ("AXCheckBox", "AXToggle") => Button,
+            ("AXCheckBox", _) => Checkbox,
+            ("AXButton" | "AXMenuButton" | "AXDisclosureTriangle" | "AXColorWell" | "AXDockItem", _) => {
+                Button
+            }
+            ("AXLink", _) => Link,
+            ("AXRadioButton", "AXTabButton") => Tab,
+            ("AXRadioButton", _) => Radio,
+            ("AXTabGroup", _) => Tablist,
+            ("AXMenu", _) => Menu,
+            ("AXMenuBar", _) => Menubar,
+            ("AXMenuItem" | "AXMenuBarItem", _) => Menuitem,
+            ("AXTextField" | "AXTextArea" | "AXDateField" | "AXTimeField", _) => Textbox,
+            ("AXComboBox" | "AXPopUpButton", _) => Combobox,
+            ("AXSlider", _) => Slider,
+            ("AXList", _) => List,
+            ("AXOutline" | "AXBrowser", _) => Tree,
+            ("AXRow", "AXOutlineRow") => Treeitem,
+            ("AXRow", _) => Row,
+            ("AXTable" | "AXGrid", _) => Table,
+            ("AXCell", _) => Cell,
+            ("AXImage", _) => Image,
+            ("AXStaticText", _) => Text,
+            _ => Generic,
+        }
+    }
+
+    pub fn node(raw: &Node, bounds: ComputerBounds) -> SemanticNode {
+        let mut role = role(&raw.r, &raw.sr);
+        let actions = actions(raw.pat, raw.st);
+        let bare = raw.n.is_empty() && !actions.iter().any(listed);
+        if bare && role == ComputerRole::Menuitem {
+            role = ComputerRole::Generic;
+        } else if bare && role == ComputerRole::Cell && raw.st == 0 {
+            role = ComputerRole::Group;
+        }
+        SemanticNode {
+            parent: usize::try_from(raw.p).ok(),
+            role,
+            name: raw.n.clone(),
+            id: raw.id.clone(),
+            value: editable_value(role, &raw.v),
+            states: states(role, raw.st),
+            actions,
+            bounds,
+        }
+    }
+
+    impl RawNode for Node {
+        fn rect(&self) -> [i64; 4] {
+            self.b
+        }
+
+        fn semantic(&self, bounds: ComputerBounds) -> SemanticNode {
+            node(self, bounds)
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::uia::*;
+    use super::uia::{role, Node};
     use super::*;
     use ComputerElementAction as A;
     use ComputerRole as R;
@@ -663,5 +809,92 @@ mod tests {
         );
         assert_eq!(clean("\u{200E}11/\u{200E}8/2026 \u{200F}\u{200E}10:22 PM", 160), "11/8/2026 10:22 PM");
         assert_eq!(plain("a \"b\"\n c"), "a \"b\" c");
+    }
+
+    /// AX roles `native.m` treats as meaningful (`ax_meaningful`); every other
+    /// AX role must map to a container role here.
+    const AX_MEANINGFUL: &[&str] = &[
+        "AXWindow", "AXSheet", "AXPopover", "AXWebArea", "AXToolbar", "AXHeading", "AXCheckBox",
+        "AXButton", "AXMenuButton", "AXDisclosureTriangle", "AXColorWell", "AXDockItem", "AXLink",
+        "AXRadioButton", "AXTabGroup", "AXMenu", "AXMenuBar", "AXMenuItem", "AXMenuBarItem",
+        "AXTextField", "AXTextArea", "AXDateField", "AXTimeField", "AXComboBox", "AXPopUpButton",
+        "AXSlider", "AXList", "AXOutline", "AXBrowser", "AXRow", "AXTable", "AXGrid", "AXCell",
+    ];
+
+    #[test]
+    fn ax_roles_map_to_common_roles() {
+        assert_eq!(ax::role("AXRadioButton", "AXTabButton"), R::Tab);
+        assert_eq!(ax::role("AXRadioButton", ""), R::Radio);
+        assert_eq!(ax::role("AXTabGroup", ""), R::Tablist);
+        assert_eq!(ax::role("AXTextField", "AXSearchField"), R::Textbox);
+        assert_eq!(ax::role("AXTextField", "AXSecureTextField"), R::Textbox);
+        assert_eq!(ax::role("AXTextArea", ""), R::Textbox);
+        assert_eq!(ax::role("AXPopUpButton", ""), R::Combobox);
+        assert_eq!(ax::role("AXCheckBox", "AXSwitch"), R::Switch);
+        assert_eq!(ax::role("AXCheckBox", "AXToggle"), R::Button);
+        assert_eq!(ax::role("AXCheckBox", ""), R::Checkbox);
+        assert_eq!(ax::role("AXMenuBarItem", ""), R::Menuitem);
+        assert_eq!(ax::role("AXRow", "AXOutlineRow"), R::Treeitem);
+        assert_eq!(ax::role("AXRow", "AXTableRow"), R::Row);
+        assert_eq!(ax::role("AXWindow", "AXStandardWindow"), R::Window);
+        assert_eq!(ax::role("AXWindow", "AXDialog"), R::Dialog);
+        assert_eq!(ax::role("AXSheet", ""), R::Dialog);
+        assert_eq!(ax::role("AXGroup", "AXApplicationDialog"), R::Dialog);
+        assert_eq!(ax::role("AXWebArea", ""), R::Document);
+        assert_eq!(ax::role("AXGroup", "AXLandmarkNavigation"), R::Group);
+        assert_eq!(ax::role("AXStaticText", ""), R::Text);
+        assert_eq!(ax::role("AXScrollArea", ""), R::Generic);
+        for role in [
+            "AXGroup", "AXRadioGroup", "AXStaticText", "AXImage", "AXScrollArea", "AXSplitGroup",
+            "AXLayoutArea", "AXLayoutItem", "AXUnknown", "AXColumn", "AXScrollBar", "AXSplitter",
+            "AXValueIndicator", "AXProgressIndicator", "AXBusyIndicator", "AXLevelIndicator",
+            "AXIncrementor", "AXMatte", "AXRuler", "AXGrowArea", "AXHandle", "AXHelpTag",
+        ] {
+            assert!(!AX_MEANINGFUL.contains(&role));
+            assert!(matches!(ax::role(role, ""), R::Generic | R::Group | R::Text | R::Image), "{role}");
+        }
+        for role in AX_MEANINGFUL {
+            assert!(
+                !matches!(ax::role(role, ""), R::Generic | R::Group | R::Text | R::Image),
+                "native ax_meaningful() must agree for {role}"
+            );
+        }
+    }
+
+    #[test]
+    fn ax_nodes_drop_separators_and_bare_cells() {
+        let raw: ax::Node = serde_json::from_value(serde_json::json!({
+            "p": 3, "r": "AXMenuItem", "sr": "", "n": "", "pat": 0, "st": ST_DISABLED, "b": [0, 0, 10, 1]
+        }))
+        .unwrap();
+        let separator = ax::node(&raw, ComputerBounds::default());
+        assert_eq!((separator.role, separator.parent), (R::Generic, Some(3)));
+        let save = ax::node(
+            &ax::Node { n: "Save…".into(), pat: PAT_INVOKE, st: 0, ..raw.clone() },
+            ComputerBounds::default(),
+        );
+        assert_eq!((save.role, save.actions), (R::Menuitem, vec![A::Invoke]));
+        let cell = ax::Node { r: "AXCell".into(), st: 0, ..raw.clone() };
+        assert_eq!(ax::node(&cell, ComputerBounds::default()).role, R::Group);
+        let selected = ax::Node { st: ST_SELECTED, ..cell };
+        assert_eq!(ax::node(&selected, ComputerBounds::default()).role, R::Cell);
+        let field = ax::node(
+            &ax::Node {
+                r: "AXTextField".into(),
+                sr: "AXSearchField".into(),
+                n: "Search".into(),
+                id: "search".into(),
+                pat: PAT_VALUE | PAT_FOCUSABLE,
+                st: ST_FOCUSED,
+                v: Some("spam".into()),
+                ..raw.clone()
+            },
+            ComputerBounds::default(),
+        );
+        assert_eq!(field.value.as_deref(), Some("spam"));
+        assert_eq!(field.actions, vec![A::Focus, A::SetValue]);
+        assert_eq!(field.states, vec![ComputerElementState::Focused]);
+        let link = ax::Node { r: "AXLink".into(), v: Some("https://x".into()), pat: PAT_INVOKE, ..raw };
+        assert_eq!(ax::node(&link, ComputerBounds::default()).value, None);
     }
 }
