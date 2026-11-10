@@ -204,7 +204,7 @@ xagent runtime baseline [--level standard|extended] [--json] [--check]
 
   `provides` 是系统对“哪个包提供哪个命令”的全部知识来源（§3.9.3）。`requires` 是包级依赖，装 B 自动带 A；`conflicts` 处理同名命令（两个包提供同一命令必须显式 conflicts，目录里不能同时启用）。包不声明 `writes`：扩展包只写 `tools/store/<id>` 与 `tools/bin`，这是格式约束不是声明。
 - **`ext-core`** 是目录里第一个包，内容就是 §3.1 的核心清单；`EXTENDED_TOOLS` 常量与它的 `provides` 一致性测试绑定。今天的 `publish/exttool/` seed 镜像变成 `ext-core` 的 Linux payload 构建脚本（§3.9.2）。
-- Agent 层（第三层）不是扩展包：skill 自装走 skills TODO 的 `install.toml`，不进这个体系。
+- Agent 层（第三层）不是扩展包：skill 自装走 skills TODO 的 `install.toml`，不进这个体系。 **2026-11-09（[runtime TODO](opendan-agent-runtime-lifecycle-todo.md) 裁决 28，owner）：这一条被推翻。skill 不能带二进制，带 bin 的 skill 就是一个扩展包（包里顺手带了 skill），第三层取消。owner 已定（runtime TODO §7.2 待定 1）：扩展包格式不改，不往里放 skill；skill 包依赖扩展包，做 ext tool 的人顺手再发一个 skills pikg，依赖沿用 §3.9.3 的 `commands` → `provides` 反推。**
 
 #### 3.9.2 列表、期望状态与构建发布
 

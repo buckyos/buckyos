@@ -238,11 +238,12 @@ Skills 的接口（分组、停用、安装计划、读 goal skill 正文）由 
   - 新增 `runtimes.remove {runtime_id}`：拒绝私有及其别名；删掉 `settings.runtimes[id]`，`default_runtime_id` 指向它时一并清空；随后立即重新投影（同 `runtimes.settings_set` 的做法）。归入 `is_operation`。
   - opendan 这条路径改完 settings 不会触发调度器刷新（control_panel 的 `agent.update` 会），节点上给这个 Agent 的执行权限要等调度器下一轮才收回。实施时量一下停用和移除后的延迟，记入 §8；不可接受就补上刷新。
   - `home.rs` 的 runtime 设置今天没有测试，本项补上：停用再启用后默认仍在；停用别名被拒；移除后记录退役、默认清空；移除私有被拒。
+  - runtime TODO 的 R19 会把 `runtimes.settings_set` 的参数收成 `{runtime_id, enabled?, default?}`（去掉 `computer`、`baseline`、`grant`），并让设备 runtime 的“启用”经 control panel 做独占检查（同一台设备同时只有一个 Agent 启用，那份文档的 §10）。本项和 R19 改同一个函数，先做本项。
 - [ ] **RT2 首页列表瘦身与详情页。** 依赖 RT1、HM1。
   - 首页每行只有名称、一行说明、启停开关。分三类显示：Provider（`connector.type == 'native'`，无开关，标“始终启用”）、Owner 默认（`runtime_id == configured_default_runtime_id`）、其他已分配（settings 里有条目）。settings 里没有条目的 `host` 占位记录不显示。Lite 下私有 runtime 同时是 Owner 的机器，只显示一行并加标注。
-  - 列表末尾是折叠的“历史”：`retired` 的记录，显示名称、最后使用时间和用过它的 Session 数，点进详情只读。
-  - `#/runtime/<id>` 承接 `RuntimeCard` 现有的全部内容和操作（检查、设为默认、基线、ComputerUse、扩展包、工具检查、用量与最近 Session）。`runtimes.ext_tools` 只在详情页请求。
-  - 停用是可逆的，开关直接生效，不弹确认（runtime TODO R-D1 要求停用前给影响清单，等它的 R7）。
+  - 列表末尾是折叠的“历史”：`retired` 的记录，显示名称、最后使用时间和用过它的 Session 数，点进详情只读。到期的 runtime 不进历史：它仍在当前列表里，标“已到期”，续期后恢复（runtime TODO 裁决 26）。
+  - `#/runtime/<id>` 承接 `RuntimeCard` 现有的全部内容和操作（检查、设为默认、基线、ComputerUse、扩展包、工具检查、用量与最近 Session）。runtime 自己的配置（权限、ComputerUse 档位、声明基线、期限）在这里只读显示，改它要去 Desktop 的 Settings → Agent Runtimes：它们是 runtime 的声明，不按 Agent 设（runtime TODO 裁决 24、§7.2 推定 2、§10）。所以详情页上的操作只剩检查、设为默认、启停和移除，`RuntimeCard` 现有的基线与 ComputerUse 两个下拉改成只读。`runtimes.ext_tools` 只在详情页请求。
+  - 停用是可逆的。按 runtime TODO 裁决 27：它的 R7（`runtimes.impact`）里没有活跃 Session 和 pending 且点名这个 runtime 的 Todo 时，开关直接生效；有就先列出再确认。绑定的工作区只显示，不拦。R7 落地前开关直接生效。
   - 重写 `tests/e2e/home.spec.ts` 里断言 runtime 卡片的两条用例和 `mock.ts` 的对应数据。验收对应规划场景“Owner 没有 Default Runtime”：只见 Provider 一行；停用后条目仍在、可重新启用，默认标记不丢。
 - [ ] **RT3 “添加 Runtime”引导与深链。** 首页 Runtime 区块的“添加 Runtime”打开说明：设备在 Desktop 的 runtime 目录里添加，并在那里分配给 Agent；这里只管这个 Agent 用不用它。按钮跳到 `${profile.desktop_url}/?settings=<page>`（在桌面窗口里要跳出 frame，做法同 `messageHubHref` 的 `outerTarget`）；Zone 外没有 `desktop_url` 时只显示说明。目标页面是 runtime TODO E5 的目录页；它落地前先指向 Settings → Cluster（Add device 现在在那里）。Desktop 侧在 `DesktopRoute.tsx` 处理 `?settings=<page>`，仿照 `?agent_setup`；`SettingsAppPanel` 从 launch payload 取初始页面传给 `SettingsShell`（它今天把当前页存在本地 state 里，没有初始页入参）。验收：从 Agent 首页点击后 Desktop 打开 Settings 并停在目标页。
 - [ ] **RT4 从 Agent 移除 runtime。**（D4，§2.1 第 3 条）依赖 RT1、RT2。
@@ -331,7 +332,7 @@ Skills 的分组、停用、安装器都归 skills TODO（D5–D7），本单只
 - [ ] **DX3 cmd_skills 联动。** 按 `AGENTS.md` 的表逐项核对并在提交说明里写结论：`ui_core`（`/stop` 语义、暂停）、`opendan_agent_dev`（Session 行为、新增的服务方法）。本单不改 skill 的安装 kRPC 和 AgentRoot 布局。
 - [ ] **DX4 回写关联 TODO。** 这一项只改文档，可以最先做。
   - skills TODO：把 §4.4 的“移交给 skills TODO 的界面要求”四条写进去（主要是 S14），注明 SK1 的占位页已按 `group` / `enabled` 字段预留。
-  - runtime TODO：在 R-E6 / E6 注明 Agent 首页的形态按规划改为“瘦列表（三类）+ 详情页 + 历史”，由本单 RT1–RT4 实施；在 E5 注明 Agent 首页“添加 Runtime”会深链到目录页；在 R-D1 / R-D3 注明 Agent 视角的“删除”是 `runtimes.remove`。
+  - runtime TODO：在 R-E6 / E6 注明 Agent 首页的形态按规划改为“瘦列表（三类）+ 详情页 + 历史”，由本单 RT1–RT4 实施；在 E5 注明 Agent 首页“添加 Runtime”会深链到目录页；在 R-D1 / R-D3 注明 Agent 视角的“删除”是 `runtimes.remove`。（2026-11-09 已回写：那份文档的 §9.2，以及 R-E6、R-D1、R-D3、E5、E6 各行的状态列。它的裁决 24、26、27 和 §7.2 的答复已写回本单的 RT1、RT2。）
 
 ## 5. 顺序与并行
 

@@ -6,7 +6,13 @@
 
 目标：把现有的 cmd_skills / goal_skills 两类机制整理成脑图中的四类（ui / work / plan / goal），补齐“谁选、何时选、选了之后如何反馈”的闭环，并把安装、禁用/卸载、导入、发行和 self-improve 的入口做实。原则沿用已定裁决：skill 是捷径不是规定；Work 的手册创建时选定、运行中不调；同一 Session 内系统提示词前缀不变（provider prompt cache）；新增能力不改公共 tool schema。
 
-## 0. 实施状态（2026-11-09，未提交）
+## 0. 实施状态（2026-11-09；已提交 `174dc06f7`，websdk `1052876`）
+
+> **2026-11-09 新裁决（实施之后；[runtime TODO](opendan-agent-runtime-lifecycle-todo.md) 裁决 28 与 §7.2，owner）：skill 不能带二进制，只是纯文本；这是分发的安全边界。安装脚本也不保留：安装 skill 就是确定性的复制。带命令的东西做成扩展包；skill 包依赖扩展包，做 ext tool 的人顺手再发一个 skills pikg。**
+>
+> 这推翻了本文“work skill 可以带 `tools/<name>/bin` 和 `install.toml`”的设计（§2.1、§3.6.1 C / D、裁决 10 / 12 / 13）。owner 的结论是删除：S18–S20 里已经实现的 cmd 安装拆掉，S21 取消，下面的偏差 2、5 随之失效。**本文正文还没有按它回写**，任务先记在这里。
+>
+> **S24 拆除 skill 自带命令。** skill 包只剩 `SKILL.md` 与 `references/`，安装 = 校验 + 复制。要动的地方：`skills.rs`（`tools/` 布局、`install.toml`、安装计划里的脚本风险、`install_cmd` / `check_commands`、按 runtime 的安装状态）、`runtime/mod.rs` 的 `skill_tool_dirs`、`api.rs` 的 `skill_runtime`、`home.rs` / `service.rs` 的 `skills.install_cmd` 等方法、websdk `skill.ts` 的 `install-cmd` / `check`、lint（改为拒绝 `tools/` 和非文本文件）、Skills 页的落点与确认文案、`test/skills_pikg_sample/skills/tools/`、`skill_authoring` / `opendan_agent_dev` 手册、`doc/sdk/skill-dev-quickstart.md`、`AGENTS.md`。拆完以后，安装计划里与脚本有关的风险项、按 runtime 的安装状态、落点选择都没有了；手册依赖的命令仍由 `commands` 加扩展包目录的 `provides` 给出推荐（扩展包 X5，不变）。runtime 一侧同步做那份文档的 R17、R19。
 
 §1 / §1.1 记的是实施前的现状，留作对照；当前行为以代码为准。落点：`src/frame/lib_opendan/src/skills.rs`（布局、状态文件、lint、安装计划与风险、`install.toml`、草稿、改写）、`protocol/behavior.rs`（`SkillKind` / `SkillScope` / 状态类型、`[capabilities] cmd_skills`）、`state/behaviors.rs`（冻结规则）、`api.rs`（点名校验、使用记录、skill 落点级）、`src/frame/opendan/src/{home.rs,service.rs}`（owner 方法与权限）、`../buckyos-websdk/cli/modules/{skill.ts,skill_lint.ts,pikg.ts}`、`src/frame/opendan/web/src/pages/Skills.tsx`、`src/apps/jarvis_agent/agent/`（手册迁移、三份 plan skill、`skill_select_rule.inc`、`skill_import` / `skill_crystallize` / `skill_authoring`）。kRPC 一览在 `src/frame/opendan/README.md`「Skills」。
 
