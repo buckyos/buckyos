@@ -167,6 +167,19 @@ fn config_merge_resolves_source_paths_and_resets_kind() {
         RuntimeRegistry::from_config(&no_profile),
         Err(XllmError::Config { .. })
     ));
+    let mut device = node.clone();
+    device.remote_node = Some(RemoteNodeConfig {
+        node_did: None,
+        executor_id: Some("201714c8-71f9-40b6-86de-ea82b0ef9cdd".into()),
+        profile_id: Some("default".into()),
+    });
+    assert!(device.validate(true).is_ok());
+    let mut both = device.clone();
+    both.remote_node.as_mut().unwrap().node_did = Some("did:web:ood1.test.buckyos.io".into());
+    assert!(matches!(both.validate(true), Err(XllmError::Config { .. })));
+    let mut neither = device.clone();
+    neither.remote_node.as_mut().unwrap().executor_id = None;
+    assert!(matches!(neither.validate(true), Err(XllmError::Config { .. })));
     for (workdir, ok) in [(r"C:\Users\devtest\ws", true), ("ws", false), (r"C:ws", false)] {
         let mut windows_node = node.clone();
         windows_node.workdir = Some(workdir.into());

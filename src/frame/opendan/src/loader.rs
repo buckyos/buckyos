@@ -716,7 +716,10 @@ pub async fn mark_runtime_sessions(agent: &dyn AgentStateClient, notify: Option<
         }
     };
     let now = libopendan::now_ms();
-    for r in runtimes {
+    for mut r in runtimes {
+        if let Ok(Some(checked)) = libopendan::runtime::lookup_rechecked(agent, &r.runtime_id).await {
+            r = checked;
+        }
         let reason = runtime_unusable(&r, now);
         let marked = match agent.sessions().mark_runtime(&r.runtime_id, reason.as_deref()).await {
             Ok(marked) => marked,

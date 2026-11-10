@@ -2,7 +2,7 @@
 
 > 2026-11-04，三轮迭代合并。第一轮从 [skills 体系改进计划 §3.6.1](opendan-skills-system-todo.md) 的“cmd 装到哪个 runtime”出发整理 runtime 的创建 / 使用 / 更新 / 删除；第二轮用脑图加了用户视角与能力视角两个分类；第三轮（§0）确定 **Agent 工作模型**：私有 runtime 永远在、chat 只知道两台、plan 看全表，并据此把 `kind` 换成 connector + caps + grant（§1）。范围因此从“runtime 登记的生命周期”扩成“Agent 怎么用 runtime”。第四轮（§0.6、§4.6）核对用户添加 runtime 的入口，改成“用户级目录 → 分配给 Agent → Agent 首页看当前与历史”两步。相关：[AgentRuntime 设计 §6.4](<../doc/llm_context/AgentRuntime 设计.md>)、[Agent State Protocol §10](<../doc/opendan/protocol/Agent State Protocol.md>)、[Session Directory Protocol §9](<../doc/opendan/protocol/Session Directory Protocol.md>)、[Session Runtime](<../doc/opendan/OpenDAN Agent-Session-Runtime.md>)、[primary-runtime TODO](opendan-primary-runtime-tools-todo.md)、[object-url TODO](done/agent-object-url-todo.md)（路径解释 D1–D3）。上一版（只有生命周期 + 两视角）的内容全部并入，编号 R-C / R-U / R-M / R-D 保持不变，新增 R-W（工作模型）与 R-K（记录模型）。
 >
-> **2026-11-09 第二次实施（未提交）**：§9.3 的任务已实施，记录、与本文不同的决定、验证和未验证项在 §11；§4、§6、§9.3 各表的状态列停在实施前，以 §11 为准。
+> **2026-11-09 第二次实施**：§9.3 的任务已实施（已提交 `35e72ce06`，websdk `bd6a159`），记录、与本文不同的决定、验证和未验证项在 §11；§4、§6、§9.3 各表的状态列停在实施前，以 §11 为准。**当晚在本机 Zone 上做了 DV（§12）**：修了 5 处（未提交），另有 8 个问题等 owner 裁决（§12.3）。
 >
 > **2026-11-09 状态**：P0 / P1 已提交（`c88404aaf`，实施记录在 §8）。之后[扩展包 TODO](opendan-exttools-cross-platform-todo.md) 一、二期和 [skills TODO](opendan-skills-system-todo.md) 的实施做掉了 R4、R13、R16，[Agent UI 升级 TODO](agent-ui-upgrade-todo.md) 的裁决 D3 / D4 改了 Agent 首页一侧的分工。§1、§3、§4、§6 的状态列已按当天的代码更新；剩余任务、与另外两单的分工、验证状态见 §9；**§7.1 的 8 条裁决和 §7.2 的 8 条答复都已回写**。两轮答复叠起来之后的模型在 §10，前文与它冲突的地方以它为准；§7.3 的两点也已确认，目前没有待定的设计问题。§0.4、§2 的“现状”是实施前的快照，留作对照；§0.6 的变化标在行内。
 
@@ -803,3 +803,63 @@ P0 / P1 各项的状态取自 §8.1，这次只抽查了入口是否还在（`ca
 - 容器里的 OpenDAN 要重建 aios 镜像才有这些改动；`buckyos-build.py` 没有跑。
 - UI TODO 的 RT2、RT3、RT4 界面没做；opendan WebUI 的 Session 页徽标文字是硬编码英文（那两页本来就没接 i18n）。
 - E3（ssh）按裁决 23 不做。
+
+## 12. 真实 Zone DV（2026-11-09 晚）
+
+环境：本机开发 Zone（`/opt/buckyos`，`35e72ce06` 构建，`local/aios-test` 镜像），owner `devtest`，Agent `jarvis`（容器）。`host` 是节点 ood1（Linux，激活时选的账号 `lzc`）。form B 设备 `dv-device`：本机以 `lzc` 前台运行 `buckyos_agent_daemon`，roots `/home/lzc/dvdev`，期限 3 小时。驱动方式：owner 的 kRPC、源码运行的 `buckyos` CLI、Desktop 页面（Vite 代理到本机 Zone + Playwright 截图），以及 6 次真实对话（消耗 LLM token）。
+
+### 12.1 通过的
+
+| 项 | 做法与结果 |
+| --- | --- |
+| E1 目录 | `agent.runtime_catalog` 列出节点与设备、`assigned_to`、设备的在线与期限 |
+| E1 策略 | `node.owner_agents_set {baseline: extended}`：调度器推新 profile，执行器 `describe` 报新基线，host 的 check 约 9 秒后变为 `extended` 并核验通过。ComputerUse 一项见 12.2 第 3 条 |
+| R19 / RT1 | `agent.update` 的分配只收 `enabled`；`runtimes.settings_set` 设默认、停用、启用；私有及别名不能停用、不能移除；移除后再分配，`usage` 保留（host 特例见 12.3 第 2 条） |
+| R7 | `runtimes.impact` 列出进行中的 Session 与 Workspace；停用有进行中 Session、移除有 Workspace 时，没有 `confirm` 被服务端拒绝，信息里带数量 |
+| M1 / M3 / W6 | 真实对话：chat 恒私有；“在我电脑上跑” → `--runtime <owner 默认>` 的 work（单机 session，cwd 为 `<home>/.opendan/<agent>/sessions/<sid>`，以 `lzc` 执行）；点名别的机器 → `plan_simple` → Todo `--runtime host` / `--runtime exec-…` |
+| E4 | 登记表条目带 `runtime_id`，`sessions.query {runtime_id}` 可过滤；建 Workspace 记进 `usage.workspaces` |
+| R12 | host 上建 Workspace 成功；有期限的设备上被拒（`runtime_no_workspace`，信息给出去处） |
+| R11 | 签发不选 Agent → daemon 上线 → 目录里未分配 → 分配 → 投影 `exec-<id>`，`grant` 来自 login / describe（ops、roots、`expires_at_ms`），平台 linux / x86_64 / bash；基线核验如实报出设备缺标准命令（设备没有 `$BUCKYOS_ROOT`）。需要 12.2 第 1、2 条 |
+| E2 | 分配并启用后 Agent 能登录设备（principal 按分配推导）；revoke：CLI 非交互且没有 `--yes` 返回 `CONFIRMATION_REQUIRED` 并带分配与影响清单，`--yes` 后 daemon 收到 `access URL revoked` 退出，Agent settings 里移除，记录转 `retired`、保留 `usage`、进历史，设备上未结束的 Session 标记改为 “removed from this agent” |
+| R8 + R14 | 设备掉线后，绑在它上面未结束的 Session 被标记 `runtime_unavailable`（带原因），owner 收到一条系统通知；设备恢复后标记自动消失（需要 12.2 第 5 条） |
+| E5 | Desktop 设置 → Agent Runtimes 页在真实 Zone 上正确显示节点策略、设备（在线、期限）、分配 |
+| E7 | 源码运行的 CLI：`runtime list / revoke`、`agent runtime list / enable / disable` |
+
+### 12.2 DV 中修的（未提交，已部署到本机 Zone）
+
+1. **容器里的 Agent 连不上设备**（`agent_tool/src/runtime/executor.rs`）。控制面板给的流路由 `ws_url` 是 `wss://<zone host>/…`，容器内这个域名解析到容器自己。改为把路由的路径接到 Agent 调 control-panel 的同一个服务地址上（http → ws），与现有 kRPC 同一条路、同样带 bearer。单测 `the_stream_route_goes_to_the_agents_own_control_panel_origin`。
+2. **设备上的 check 与 Session 绑定报 `remote_node.node_did must be a device DID`**（`agent_tool/src/runtime/mod.rs` `RuntimeConfig::validate`）。R11 给 `RemoteNodeConfig` 加了 `executor_id`，校验仍只认 `node_did`。改为二者恰好有一个。单测在 `runtime/tests.rs`。
+3. **ComputerUse 档位与实际能力不一致**（`node_executor/src/stream.rs`、`buckyos-api` `ComputerAccess::of_ops`）。`describe` 的 `computer` 按 profile 的 ops 推出；没有桌面驱动的 Linux 节点上把策略设为 `observe`，记录写 `computer: observe` 而 `grant.ops` 里没有任何 computer 操作，plan 表和 chat 两行会照此告诉模型。改为按实际 caps（profile ∩ 本机能力）推出，`ExecutorProfile::computer()` 与它共用一个函数。
+4. **Zone 重启后设备 daemon 退出且不再恢复**（`control_panel/src/agent_daemon.rs`）。设备配置的 `generation` 只在内存里递增，控制面板重启后退回 `record.device.generation`；daemon 把更小的代数当成过期配置忽略，旧租约已过，于是报 `executor configuration is not ready`（终止型错误）退出。E2 之后每次分配、启停都会改 revision，所以很容易触发。改为没有上一份配置时取 `max(签发时的代数, now_ms)`。单测 `a_restarted_control_panel_never_sends_an_older_generation`；DV：分配并启停后重启 Zone，daemon 在第 8 次重连时上线并保持在线（修复前同样场景退出）。
+5. **恢复后标记不消失**（`opendan/src/loader.rs` `mark_runtime_sessions`）。监视循环只读记录，记成不可用的 runtime 之后没人再探测，要等有人使用或手动 check；新启用的 host 若第一次探测早于执行器拿到 profile，也会一直显示不可用（本次开头就遇到了）。改为每轮对每条记录走 `lookup_rechecked`（已有的“不可用的节点再问一次”，带节流）。DV：设备重新上线约 20 秒后标记自动清除。
+
+验证：`cargo test -- --test-threads=1`：`buckyos-api`、`node_executor`、`control_panel`、`opendan` 全过；`agent_tool --lib` 369 过，3 个 `grep_tool` 失败（本机没有 `rg`，§8.2 已记）。
+
+### 12.3 待 owner 裁决
+
+1. **Linux 上原生运行时，私有 runtime 以 root 执行（严重）。** owner 把默认 runtime 设为本节点的 host 时，调度器按 10-25 的 Desktop Lite 规则（`buckyos-api` `native_agent_node`）把 Agent Service 改成宿主机原生进程，Linux 上它是 root。node_daemon 只在 Windows、macOS 桌面模式、或激活时选的账号就是 node_daemon 自己的账号时，才把 host 并进私有（`app_loader.rs` 设 `OPENDAN_NATIVE_NODE_DID` 处）；选了普通账号时不并：host 经执行器以 `lzc` 执行，私有却在 root 进程里直接执行。实测 chat 里跑 `id` 得到 `uid=0(root)`。W1 之前原生模式下私有不可用，所以这是 W1 带来的。可选：(a) 有容器的节点不走原生；(b) 原生时私有的命令也经本机执行器、用该 Agent 的 profile（`run_as`）；(c) 原生 opendan 降权到激活时选的账号。另外，同一规则使“停用默认的 host”会把 Agent 从原生切回容器（服务重启），反之亦然。
+2. **host 移除后不进历史。** settings 里没有 host 时，投影会补一条 “Not assigned” 的内建占位（`protocol/runtime.rs` `builtin_runtimes` 末尾），所以 host 的记录永远是 `active`，Agent 首页和 CLI 都把它算作当前；其它 runtime 移除后转 `retired`。这个占位是否还要？
+3. **绑定失败的 Session 永远停在 `created`。** 设备的 roots 不含账户 home 时（Desktop 签发对话框里 roots 是随手填的工作目录，很常见），R-K5 拒绝绑定；supervisor 卸载它，但既不结束它，也不把原因交回父 plan，plan 一直 “waiting for 1 sub session(s)”。这类设备实际上承载不了单机 session，只能 `agent-session run / copy`。要定两件事：绑定失败是否以失败结束并交回原因；设备的 Session 目录规则是否改（放在第一个 root 下 / 签发时要求 roots 含 home / 冻结时预检，让 R-U11 的 `block_reason` 生效）。
+4. **停用 runtime 会立刻中断进行中的命令。** 调度器撤掉 profile，执行中的命令返回 `the executor has no valid authorization snapshot`，work 随即以失败结束；确认提示却说 “they are not moved”。改文案，还是改成等命令结束再撤？
+5. **“不应答”只在使用时才发现。** 可用的 runtime 没有定期探活，设备掉线要等下次使用或 check 才标记。`check` 会在目标机上跑一遍基线核验，不适合每轮跑；要做需要一个只做 login / describe 的轻探测。
+6. **系统 `buckyos` CLI 启动即报错**（宿主机和容器里都是）：`Module not found …/libexec/buckyos-tool/src/internal/command_args.ts`。websdk `0502a60`（11-07 xllm）让 `cli/core/argv.ts` 引用 `src/internal/command_args.ts`，npm 包的 `files` 不含 `src/`，容器也只挂 `cli`、`dist`。不是本单引入，但 Agent 里的 `buckyos` 命令全部不可用。修法：websdk `files` 加上该文件，同时 node_daemon `BUCKYOS_TOOL_MOUNT_ENTRIES` 加挂；或者把该文件挪到 `cli/` 下。
+7. **Agent 整个卡死（既有，10-03）。** `state/registry.rs` 投递输入时在 tokio 线程上阻塞地 `flock(post.lock)`，并持锁跨过后面几个 await。plan 被停时级联 stop 子 Session，与我对同一子 Session 的 `session.stop` 同时到达，同一进程第二次加锁阻塞，kRPC 与对话全部无响应（`/proc/locks` 里持有者与等待者都是本进程），只能重启容器。建议改为 `try_lock` 加异步等待或 `spawn_blocking`。
+8. **owner 停不了 work Session（既有）。** kRPC `session.stop` 对 work 报 `has no input queue`，`xagent ctl stop` 也一样；进行中的 work 每 30 秒被 `task_watch` 唤醒跑一轮 LLM。
+
+小问题（不需要裁决）：
+- 原生模式下，私有 runtime 的基线在 Linux 上学不到（只经桌面驱动的 describe 学），一直是 `standard`；Loader 每分钟报一次 `$BUCKYOS_ROOT … lacks …/instance (deployment error)`，而宿主机上本来就没有 `instance/`。
+- 设备在 Agent 侧的记录名是 `exec-<uuid>`（目录里叫 `dv-device`），owner 通知的标题也是它；通知原因里带着给 Agent 看的 “see `executor_list`”。
+- Loader 日志在探测失败时仍写 “runtime X RuntimeUnavailable, standard tools complete”。
+- `buckyos agent runtime default` 的帮助写 “where new work of the Agent runs”，与 M3（work 缺省私有）不符；`xagent --help` 里 runtime 的 `update` / `unregister` 各列了两遍。
+- 设备 daemon 前台模式的重连预算是 8 次，本机一次 Zone 重启就用到了第 8 次。
+- Desktop 没有 `?settings=<page>` 深链（RT3 的事，预期内）。
+
+### 12.4 没验的
+
+- R-U11（Todo 点名的 runtime 不可用时进 `block_reason`）：这次没有 plan 在 runtime 不可用时派发 Todo。
+- 设备独占（`runtime_in_use`、换人）：只有一个 Agent。
+- R14 的“到期”：只验了掉线，到期走同一条标记路径。
+- opendan WebUI 的 runtime 卡片与 Session 页徽标；Desktop 的签发、分配对话框（只截了列表页）。
+- Windows / macOS。
+
+DV 留下的状态：`dv-device` 已 revoke；jarvis 的默认是私有，host 已分配并启用；host 上有 Workspace `dv-ws`（`/home/lzc/dvws`）；节点策略已还原（基线未设置、ComputerUse 关）。

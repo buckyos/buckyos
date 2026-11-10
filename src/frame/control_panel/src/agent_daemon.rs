@@ -201,6 +201,14 @@ pub(crate) async fn owner_devices(
 /// (`AgentSettings.runtimes`; a device is used by one Agent at a time). The
 /// snapshot is rebuilt every heartbeat, so a changed assignment reaches the
 /// daemon without a new URL.
+fn config_generation(previous: Option<&ExecutorConfig>, revision: &str, issued: u64, now: u64) -> u64 {
+    match previous {
+        Some(config) if config.revision == revision => config.generation,
+        Some(config) => config.generation.saturating_add(1),
+        None => issued.max(now),
+    }
+}
+
 async fn snapshot(
     record: &Record,
     previous: Option<&ExecutorConfig>,
@@ -288,15 +296,7 @@ async fn snapshot(
         profile.principals = vec![user.clone().unwrap_or_else(|| UNASSIGNED_PRINCIPAL.to_string())];
     }
     let revision = executor_revision(&(device.clone(), &bindings));
-    let generation = previous
-        .map(|config| {
-            if config.revision == revision {
-                config.generation
-            } else {
-                config.generation.saturating_add(1)
-            }
-        })
-        .unwrap_or(record.device.generation);
+    let generation = config_generation(previous, &revision, record.device.generation, now_ms());
     let deadline = now_ms()
         .saturating_add(AGENT_DAEMON_LEASE_MS)
         .min(record.device.expires_at_ms.unwrap_or(u64::MAX));
@@ -1131,6 +1131,17 @@ mod tests {
             )]),
             limits: ExecutorLimits::default(),
         }
+    }
+
+    #[test]
+    fn a_restarted_control_panel_never_sends_an_older_generation() {
+        let mut sent = configuration();
+        sent.generation = 1_000_000;
+        assert_eq!(config_generation(Some(&sent), "sha256:test", 1, 5), 1_000_000);
+        assert_eq!(config_generation(Some(&sent), "sha256:assigned", 1, 5), 1_000_001);
+        let after_restart = config_generation(None, "sha256:assigned", 1, now_ms());
+        assert!(after_restart > 1_000_001);
+        assert_eq!(config_generation(None, "sha256:test", u64::MAX, 5), u64::MAX);
     }
 
     fn connection(generation: u64) -> Connection {

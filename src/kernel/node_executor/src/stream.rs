@@ -809,7 +809,7 @@ async fn describe(
             buckyos_root: inner.buckyos_root.as_ref().map(|root| root.to_string_lossy().to_string()),
             desktop: inner.computer.as_ref().map(|driver| driver.capabilities()),
             baseline: grant.profile.baseline,
-            computer: grant.profile.computer(),
+            computer: buckyos_api::ComputerAccess::of_ops(&grant.caps),
         },
     })
 }

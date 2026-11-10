@@ -41,13 +41,16 @@ impl ExecutorDirectory {
         })
     }
 
-    async fn call(&self, method: &str, params: Value, token: String) -> Result<Value, String> {
-        let endpoint = buckyos_api::get_buckyos_api_runtime()
+    async fn endpoint(&self) -> Result<String, String> {
+        buckyos_api::get_buckyos_api_runtime()
             .map_err(|e| e.to_string())?
             .get_zone_service_url("control-panel", false)
             .await
-            .map_err(|e| e.to_string())?;
-        let rpc = kRPC::kRPC::new_with_timeout_secs(&endpoint, Some(token), 15);
+            .map_err(|e| e.to_string())
+    }
+
+    async fn call(&self, method: &str, params: Value, token: String) -> Result<Value, String> {
+        let rpc = kRPC::kRPC::new_with_timeout_secs(&self.endpoint().await?, Some(token), 15);
         rpc.call(method, params).await.map_err(|e| e.to_string())
     }
 
@@ -81,6 +84,19 @@ impl ExecutorDirectory {
     }
 }
 
+fn route_url(control_panel: &str, path: &str) -> Option<reqwest::Url> {
+    let mut url = reqwest::Url::parse(control_panel).ok()?;
+    let scheme = match url.scheme() {
+        "https" => "wss",
+        "http" => "ws",
+        _ => return None,
+    };
+    url.set_scheme(scheme).ok()?;
+    url.set_path(path);
+    url.set_query(None);
+    Some(url)
+}
+
 pub struct WssExecutorConnector {
     directory: Arc<ExecutorDirectory>,
     target: ExecutorTarget,
@@ -107,14 +123,14 @@ impl NodeExecutorConnector for WssExecutorConnector {
         {
             return Err(error("stale executor route".into()));
         }
-        let url =
-            reqwest::Url::parse(&route.ws_url).map_err(|_| error("invalid route URL".into()))?;
-        let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
-        if url.scheme() != "wss" && !(url.scheme() == "ws" && loopback) {
-            return Err(error("executor route requires WSS".into()));
-        }
-        let mut request = route
-            .ws_url
+        let path = reqwest::Url::parse(&route.ws_url)
+            .map_err(|_| error("invalid route URL".into()))?
+            .path()
+            .to_string();
+        let url = route_url(&self.directory.endpoint().await.map_err(error)?, &path)
+            .ok_or_else(|| error("invalid control-panel URL".into()))?;
+        let mut request = url
+            .as_str()
             .into_client_request()
             .map_err(|_| error("invalid route URL".into()))?;
         request.headers_mut().insert(
@@ -378,4 +394,23 @@ pub fn executor_tools(run: RunBindingSlot) -> Vec<Arc<dyn AgentTool>> {
             run,
         })),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::route_url;
+
+    #[test]
+    fn the_stream_route_goes_to_the_agents_own_control_panel_origin() {
+        let path = "/kapi/control-panel/executor/route/abc";
+        assert_eq!(
+            route_url("http://host.docker.internal:4020/kapi/control-panel", path).unwrap().as_str(),
+            "ws://host.docker.internal:4020/kapi/control-panel/executor/route/abc"
+        );
+        assert_eq!(
+            route_url("https://test.buckyos.io/kapi/control-panel?x=1", path).unwrap().as_str(),
+            "wss://test.buckyos.io/kapi/control-panel/executor/route/abc"
+        );
+        assert!(route_url("file:///kapi/control-panel", path).is_none());
+    }
 }

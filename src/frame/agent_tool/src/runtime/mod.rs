@@ -190,10 +190,26 @@ impl RuntimeConfig {
                         .remote_node
                         .as_ref()
                         .ok_or_else(|| bad("remote_node.node_did is required".into()))?;
-                    let did = n.node_did.as_deref().unwrap_or("");
                     let profile = n.profile_id.as_deref().unwrap_or("");
-                    if !did.starts_with("did:") || did.chars().any(|c| c.is_whitespace()) {
-                        return Err(bad("remote_node.node_did must be a device DID".into()));
+                    match (
+                        n.node_did.as_deref().filter(|d| !d.is_empty()),
+                        n.executor_id.as_deref().filter(|e| !e.is_empty()),
+                    ) {
+                        (Some(did), None) => {
+                            if !did.starts_with("did:") || did.chars().any(|c| c.is_whitespace()) {
+                                return Err(bad("remote_node.node_did must be a device DID".into()));
+                            }
+                        }
+                        (None, Some(executor_id)) => {
+                            if executor_id.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                                return Err(bad("remote_node.executor_id is invalid".into()));
+                            }
+                        }
+                        _ => {
+                            return Err(bad(
+                                "remote_node takes either node_did (a node) or executor_id (a device)".into(),
+                            ))
+                        }
                     }
                     if !buckyos_api::is_valid_profile_id(profile) {
                         return Err(bad("remote_node.profile_id is required".into()));

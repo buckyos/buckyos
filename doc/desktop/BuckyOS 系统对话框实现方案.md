@@ -1,1312 +1,514 @@
-# BuckyOS 系统对话框实现方案
+# BuckyOS 系统对话框实现方案：文件选择器（sysdlg/select）
 
-## 1. 背景
-
-BuckyOS 中的文件选择器并不是简单的下拉框或列表组件，而是一个接近完整应用的复杂交互界面，通常包含：
-
-- 目录导航与面包屑
-- 文件和目录列表
-- 单选、多选与复选框
-- 搜索、排序、筛选
-- 文件预览
-- 最近访问、收藏、共享空间等入口
-- 权限、登录态与错误处理
-- 移动端安全区、返回手势和软键盘适配
-
-典型使用场景是：用户正在聊天、写邮件或编辑文档，点击“添加附件”，临时打开 BuckyOS 文件选择器；选择完成后，返回原界面继续当前操作。
-
-这类交互的关键要求是：
-
-1. 不离开当前页面，不破坏宿主应用的状态。
-2. 视觉和交互上接近系统原生文件选择器。
-3. 文件选择器与宿主页面之间尽量隔离，避免样式、依赖、事件和状态冲突。
-4. 能够被不同技术栈、不同域名的 Web 应用统一接入。
-5. 在桌面浏览器、移动浏览器和 WebView 中均能稳定工作。
+> 文档状态：v2（设计稿，未实施）
+> 日期：2026-11-09。按现有的系统对话框、App Frame、Preview 嵌入和 NFSP 重写，取代 2026-06 的初版（初版见 Git 历史，差异见 §14）。同日按 owner 裁决补充：尽力返回对象 ID、可选的本机来源（§4、§5.2、§13.1）
+> 上游需求：[BuckyOS Sys Dlg](../../product/BuckyOS%20Sys%20Dlg.md) 的 `sysdlg/select`
+> 关联协议：App Frame Protocol 与 Preview 嵌入（[Text Editor readme](../../src/apps/text_editor/readme.md) §7，实现在 `buckyos-websdk/src/app-frame.ts`）、[内容扩展](../sdk/context%20ext.md)、[nfs_server README](../../src/frame/nfs_server/README.md)、[混合 SSO 技术契约](../arch/verify-hub/混合SSO技术契约.md) §11
+> 读者：Desktop、buckyos-websdk、系统应用和第三方 App 的开发者，以及按本文实施的 Code Agent
 
 ---
 
-## 2. 方案结论
+## 1. 目标与范围
 
-采用以下结构：
+**产品目标：系统只有一个文件选择器。** 任何应用需要用户挑文件、挑目录，或者决定把文件存到哪里时，都拉起同一个系统对话框，不各写一套。内容主要来自 Zone；调用方允许时也可以来自本机。
 
-```text
-宿主页面
-└── BuckyOS Dialog SDK 动态插入全屏 Overlay Shell
-    └── iframe
-        └── 独立运行的 BuckyOS File Picker React App
+典型场景：用户正在聊天、写文档或安装应用，点“添加附件”“打开”“另存为”，选择器临时出现；选完后回到原界面，原界面的草稿、滚动位置和焦点都还在。
+
+要求：
+
+1. 不离开当前页面，不卸载调用方的界面。
+2. 各处看到的是同一个选择器，行为一致。
+3. 调用方一次调用拿到结果，不关心自己是运行在桌面窗口里还是独立标签页里。
+4. 调用方声明来源：只能选 Zone 里的内容，或者也可以选本机的文件和文件夹。
+5. Zone 里的内容返回引用、对象 ID（有就带）和展示信息；本机的文件返回浏览器的 `File` 对象。任何路径上都不复制文件内容。
+6. 桌面和移动端都可用。
+
+本文不做的事：
+
+- **不上传本机文件，也不自己浏览本机目录。** 选本机内容时弹出的是操作系统的选择器，选中的 `File` 原样交给调用方；上传、导入仍由调用方完成。见 §5.2。
+- **不发放访问授权。** 调用方拿到引用后用自己的会话读写。原因和后续演进见 §9。
+- **不定义 jump 的 `saveas` 页面。** 那是外站把内容存进用户 Zone 的另一个入口，它内部可以复用本文的 save 模式，页面本身不在本文范围。
+- 不替代 `sysdlg/share`、`sysdlg/app_installer` 等已有对话框。
+
+---
+
+## 2. 现状（2026-11）
+
+### 2.1 已有的基础
+
+| 能力 | 位置 | 和本文的关系 |
+|---|---|---|
+| 系统对话框入口 `useSystemDialog().open(path, params)`，已登记 `sysdlg/app_installer`、`sysdlg/share`、`sysdlg/entity_info` | [sysdlg/index.tsx](../../src/frame/desktop/src/sysdlg/index.tsx) | `sysdlg/select` 登记在这里 |
+| 按窗口呈现的对话框层（`DesktopWindowContainer`、`MobileWindowSheet` 各包一层 `WindowDialogProvider`） | [dialogs.tsx](../../src/frame/desktop/src/desktop/windows/dialogs.tsx) | 选择器画在调用方的窗口里，不盖住别的窗口 |
+| App Frame Protocol（`buckyos.app-frame`）：Shell 与桌面窗口内跨源 App 之间的消息协议 | `buckyos-websdk/src/app-frame.ts`，Shell 侧在 [WebAppFramePanel.tsx](../../src/frame/desktop/src/app/web-frame/WebAppFramePanel.tsx) | 第三方 App 经它请求选择器。先例是 `content.open target:"chooser"`：App 发请求，Shell 画“打开方式”选择器 |
+| Preview 嵌入（`buckyos.preview-embed`）：App 在自己页面里嵌入系统组件页 `/embed/preview` | 同上，页面在 [PreviewEmbedApp.tsx](../../src/frame/desktop/src/app/preview/embed/PreviewEmbedApp.tsx) | 独立标签页里的 App 照这个写法嵌入选择器 |
+| 内容引用 `TransferableContentRef`（`cyfs:///…` 路径或对象 ID）、`ContentHints`（name / mime / size）、`ContentSelector` 与 `matchSelector` | `buckyos-websdk/src/content.ts` | 选择器的起始位置、过滤条件和返回值都用这些类型 |
+| File Browser 的数据层：按位置读目录（`useFolderList`）、侧栏根目录、搜索、新建目录 | [filebrowser/data/](../../src/frame/desktop/src/app/filebrowser/data/) | 选择器直接复用，不另写目录读取 |
+
+### 2.2 缺的部分
+
+`sysdlg/select` 在产品文档里只有一句话，没有参数、没有实现。系统里现在有三个各自为政的“选择器”：
+
+| 位置 | 现状 |
+|---|---|
+| App Service 安装向导的“从 Personal Server 选择”（[FilePickerDialog.tsx](../../src/frame/desktop/src/app/app-service/components/installer/FilePickerDialog.tsx)） | 写死的三个示例文件。真实环境里选了只会报 `realDeviceOnly` |
+| File Browser 的 [MoveTargetDialog.tsx](../../src/frame/desktop/src/app/filebrowser/dialogs/MoveTargetDialog.tsx) | 能选目标目录，也能勾选已有文件加入集合，只在 File Browser 内部用 |
+| Text Editor 的“打开”和“另存为” | 编辑器自带的简易位置选择器，readme §8.9 写明 P1 换成系统选择器 |
+
+MessageHub、HomeStation、AI Workspace 添加文件的入口都只有浏览器原生选择器，不能选 Zone 里已有的文件。
+
+---
+
+## 3. 方案总览
+
+选择器是 Desktop 里的一个 React 组件 `SelectDialog`。调用方有三种，各走一条路径，最终呈现的是同一个组件：
+
+```mermaid
+flowchart LR
+  A["Desktop 内置应用"] -->|"useSystemDialog"| D["SelectDialog"]
+  B["桌面窗口里的 App<br/>（跨源 iframe）"] -->|"App Frame：sysdlg.open"| S["Shell"]
+  S -->|"useSystemDialog"| D
+  C["独立标签页里的 App"] -->|"内嵌系统页<br/>/embed/sysdlg/select"| D
 ```
 
-即：
+| 路径 | 调用方 | 机制 | 阶段 |
+|---|---|---|---|
+| A | Desktop 内置应用（App Service、MessageHub、HomeStation、File Browser、桌面窗口里的 AI Workspace） | 同一个 React 应用内直接调用 | 一 |
+| B | 桌面窗口里的第三方 App（Text Editor 等） | App 经 App Frame 发请求，Shell 在该窗口上画对话框，结果原路返回 | 二 |
+| C | 独立标签页里的 App（没有 Shell） | App 页面盖一层全屏浮层，里面是 Zone 系统入口提供的选择器页面 | 三 |
 
-- **SDK 负责对话框外壳和生命周期。**
-- **iframe 负责承载完整文件选择器应用。**
-- **宿主页面不发生路由跳转。**
-- **选择结果通过受控的 `postMessage` 协议返回。**
-- **调用方以 Promise 形式获得结果。**
-
-推荐的调用方式：
+对 App 开发者，B 和 C 是同一个 SDK 调用，SDK 自己判断走哪条：
 
 ```ts
-const files = await buckyos.dialog.openFilePicker({
+const result = await frame.selectContent({
+  mode: 'open',
   multiple: true,
-  accept: ["image/*", "application/pdf"],
-});
+  accept: [{ mime: ['image/*', 'application/pdf'] }],
+})
+if (result.action === 'selected') attach(result.items)
 ```
-
-用户取消时返回明确的取消结果或抛出可识别的取消异常；用户确认后返回轻量的 `FileRef`，而不是直接传输文件二进制内容。
 
 ---
 
-## 3. 为什么不采用其他方案
+## 4. 对话框契约
 
-### 3.1 不使用页面跳转
+类型放在 websdk（`buckyos/content`），Desktop 和 App 用同一份定义。Desktop 侧另有 zod schema 做运行时校验。
 
-不推荐：
-
-```text
-/chat
-  → /file-picker
-  → /chat
-```
-
-页面跳转可能导致以下问题：
-
-- 聊天草稿丢失
-- 消息列表滚动位置丢失
-- 当前输入框焦点丢失
-- React 页面被卸载后，内存状态丢失
-- 返回时需要额外恢复页面状态
-- 移动端浏览器可能重新加载前一个页面
-- WebView 的历史栈行为不完全一致
-
-即使通过全局状态、Session Storage 或路由缓存恢复，也会显著增加宿主应用的实现复杂度。
-
-### 3.2 不依赖 `window.open`
-
-不推荐：
+### 4.1 参数
 
 ```ts
-window.open(pickerUrl);
-```
-
-原因包括：
-
-- 移动端通常不会表现为桌面上的独立小窗口
-- 部分浏览器和 WebView 会拦截弹窗
-- 新窗口的关闭和回传控制不稳定
-- iOS Safari 的窗口、标签页和登录态行为较难统一
-- 用户容易失去原页面上下文
-- 无法稳定实现“系统选择器覆盖当前应用”的体验
-
-### 3.3 不把复杂 Picker 直接挂到宿主 React 树中
-
-纯 DOM Overlay 或直接加载 React 组件可以工作，但对于跨应用 SDK 存在较高冲突风险：
-
-- CSS Reset、字体、主题变量相互影响
-- 宿主和 Picker 的 React 版本可能不同
-- Redux、Router、国际化等上下文相互耦合
-- 全局键盘事件和 Pointer 事件冲突
-- Portal、Focus Trap、弹窗层级相互影响
-- 依赖包重复或版本不兼容
-- 宿主应用可能使用 Shadow DOM、微前端或自定义渲染环境
-
-因此，复杂文件选择器优先作为独立 Web App 运行在 iframe 内。
-
----
-
-## 4. 总体架构
-
-### 4.1 组件划分
-
-```text
-BuckyOS System Dialog
-├── Dialog SDK
-│   ├── Overlay Manager
-│   ├── iframe Manager
-│   ├── Message Channel
-│   ├── Focus Manager
-│   ├── Scroll Lock
-│   ├── Back/Escape Handler
-│   └── Lifecycle Manager
-│
-└── File Picker App
-    ├── Directory Navigator
-    ├── File List
-    ├── Search / Sort / Filter
-    ├── Selection Model
-    ├── Preview
-    ├── Authentication
-    ├── Confirm / Cancel
-    └── Error and Loading UI
-```
-
-### 4.2 DOM 结构
-
-SDK 打开对话框后，在宿主页面的 `document.body` 下插入独立根节点：
-
-```html
-<body>
-  <div id="app">
-    <!-- 宿主应用 -->
-  </div>
-
-  <div
-    id="buckyos-dialog-root"
-    data-buckyos-dialog="file-picker"
-    role="dialog"
-    aria-modal="true"
-  >
-    <div class="buckyos-dialog-backdrop"></div>
-
-    <div class="buckyos-dialog-surface">
-      <iframe
-        title="BuckyOS 文件选择器"
-        src="https://picker.buckyos.com/"
-      ></iframe>
-    </div>
-  </div>
-</body>
-```
-
-对话框关闭后，SDK 应完整移除该节点，并恢复宿主页面此前的滚动、焦点和可访问性状态。
-
----
-
-## 5. Overlay Shell 设计
-
-### 5.1 Overlay 的职责
-
-Overlay Shell 只负责宿主侧能力，不实现文件选择器内部业务：
-
-- 创建与销毁全屏覆盖层
-- 保证最高层级显示
-- 锁定宿主页面滚动
-- 保存和恢复焦点
-- 管理背景页面的交互隔离
-- 处理 `Escape`
-- 协调浏览器返回键
-- 显示 iframe 初始加载状态
-- 处理 iframe 加载失败和超时
-- 建立可信通信通道
-- 将结果转换为 Promise 返回
-
-### 5.2 推荐样式
-
-```css
-.buckyos-dialog-root {
-  position: fixed;
-  inset: 0;
-  z-index: 2147483647;
-  display: flex;
-  width: 100%;
-  height: 100dvh;
-  overflow: hidden;
-  overscroll-behavior: contain;
-  isolation: isolate;
-}
-
-.buckyos-dialog-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.42);
-}
-
-.buckyos-dialog-surface {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  background: #fff;
-  overflow: hidden;
-}
-
-.buckyos-dialog-surface iframe {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: transparent;
+interface SelectDialogParams {
+  /** open：选已有的文件；folder：选一个目录；save：选目录并给出文件名。缺省 open。 */
+  mode?: 'open' | 'folder' | 'save'
+  title?: string
+  confirmLabel?: string
+  /** 起始位置。给目录就打开它；给文件就打开它所在的目录并选中它。 */
+  start?: TransferableContentRef
+  /** open：是否多选。 */
+  multiple?: boolean
+  /** open 且多选：最多选几项。 */
+  limit?: number
+  /** open：可选条目的条件，命中任意一条即可选。 */
+  accept?: ContentSelector[]
+  /** folder：只允许选可以写入的目录。 */
+  writable?: boolean
+  /** save：建议的文件名。 */
+  suggestedName?: string
+  /** open、folder：是否也允许选本机的文件或文件夹。缺省 false，只能选 Zone 里的内容。 */
+  allowLocal?: boolean
 }
 ```
 
-移动端默认使用真正的全屏 Surface；桌面端可以根据产品要求使用全屏或有限尺寸的居中窗口。
+| 字段 | 限制与语义 |
+|---|---|
+| `title`、`confirmLabel` | 分别最多 80、40 字符。缺省按模式显示“选择文件”“选择文件夹”“保存到” |
+| `start` | 只接受 `cyfs-path`。缺省时用该调用方上次确认的目录（记在本机），再缺省是当前用户的 home。位置不存在或无权访问时退回 home，不报错 |
+| `limit` | 1–500，缺省 100 |
+| `accept` | 最多 16 条。用 `matchSelector(selector, contentDescriptor(source, { name, size }))` 判断，`mime` 按扩展名推断，不读文件内容。不命中的文件照常显示但不可选；目录始终可以进入 |
+| `suggestedName` | 须通过 File Browser 的 `entryNameSchema`，不合法时忽略 |
+| `allowLocal` | 为 true 时对话框多一个“本机”入口（§5.2）。`save` 模式忽略它；带 `writable` 的 `folder` 也忽略它，因为本机目录不能作为写入目标 |
 
-### 5.3 移动端高度
+模式之外的字段被忽略（例如 `save` 模式下的 `multiple`）。未知字段被拒绝。
 
-优先使用：
-
-```css
-height: 100dvh;
-```
-
-而不是仅使用：
-
-```css
-height: 100vh;
-```
-
-`100dvh` 能更好地适应移动浏览器地址栏的展开和收起。
-
-为兼容旧环境，可以提供回退：
-
-```css
-height: 100vh;
-height: 100dvh;
-```
-
----
-
-## 6. SDK API 设计
-
-### 6.1 基础接口
+### 4.2 结果
 
 ```ts
-interface OpenFilePickerOptions {
-  multiple?: boolean;
-  accept?: string[];
-  startLocation?: FileLocationRef;
-  maxSelection?: number;
-  allowDirectories?: boolean;
-  showPreview?: boolean;
-  title?: string;
-  locale?: string;
-  theme?: "light" | "dark" | "system";
-  signal?: AbortSignal;
+/** Zone 里的一个文件或目录。 */
+interface ZoneContent {
+  origin: 'zone'
+  kind: 'file' | 'folder'
+  /** 用户选中的引用。从目录里选的是 cyfs-path，会随文件修改而变化。 */
+  source: TransferableContentRef
+  /** 确认那一刻该内容的对象 ID。拿得到就带，拿不到就没有这个字段。 */
+  objId?: string
+  /** 展示信息：name、mime、size。目录没有 size。 */
+  hints: ContentHints
 }
 
-interface FileRef {
-  id: string;
-  name: string;
-  kind: "file" | "directory";
-  mimeType?: string;
-  size?: number;
-  modifiedAt?: string;
-  source: "buckyos";
-  objectUrl?: string;
-  thumbnailUrl?: string;
-  metadata?: Record<string, unknown>;
+/** 本机的一个文件。 */
+interface LocalFile {
+  origin: 'local'
+  kind: 'file'
+  file: File
+  hints: ContentHints
 }
 
-interface FilePickerResult {
-  files: FileRef[];
+/** 本机的一个文件夹：它下面的全部文件，各带相对路径（以文件夹名开头）。 */
+interface LocalFolder {
+  origin: 'local'
+  kind: 'folder'
+  name: string
+  files: Array<{ file: File; relativePath: string }>
 }
 
-interface BuckyOSDialog {
-  openFilePicker(
-    options?: OpenFilePickerOptions
-  ): Promise<FilePickerResult>;
-}
+type SelectedContent = ZoneContent | LocalFile | LocalFolder
+
+type SelectDialogResult =
+  | { action: 'selected'; items: SelectedContent[] }
+  | { action: 'save'; parent: TransferableContentRef; name: string; overwrite: boolean }
+  | { action: 'cancelled' }
 ```
 
-调用示例：
+- `open` 返回 `selected`，`items` 按用户选择的先后排列。`folder` 返回 `selected`，只有一项，`kind` 为 `folder`。
+- 一次结果里的条目要么全部来自 Zone，要么全部来自本机，不混合（§5.2）。没有设 `allowLocal` 的调用方只会收到 `origin: 'zone'` 的条目。
+- `save` 返回目标目录 `parent` 和文件名 `name`。`overwrite: true` 表示确认时该名字已存在，并且用户在对话框里同意了覆盖。选择器不创建也不写入文件；调用方写入时仍要自己处理目标在此期间发生的变化（NFSP `open_write` 会返回 `target.exists`）。
+- 用户取消、按 Esc、关掉对话框都返回 `cancelled`。取消不是错误，Promise 正常完成。
+- 结果里没有 token 和下载地址。`File` 是浏览器对本机文件的句柄，跨窗口传递时不复制内容。
+
+### 4.3 对象 ID
+
+`source` 和 `objId` 是两回事：`source` 指向“这个位置上的文件”，以后内容变了它跟着变；`objId` 是确认那一刻的内容，不可变。要回写的调用方（编辑器）用 `source`，要固定一份内容的调用方（消息附件、安装包）用 `objId`。
+
+**选择器尽力返回 `objId`**：目录列表里带了对象 ID 就带出，不为了拿到它而额外计算或等待。等 `cyfs:///` 接上分布式文件系统的底层后，每个文件都有对象 ID，这个字段就总是存在。
+
+**没有 `objId` 时，调用方用 helper 计算。** websdk 提供：
 
 ```ts
-try {
-  const result = await buckyos.dialog.openFilePicker({
-    multiple: true,
-    maxSelection: 10,
-    accept: ["image/*", "application/pdf"],
-  });
-
-  attachFiles(result.files);
-} catch (error) {
-  if (error instanceof BuckyOSDialogCancelledError) {
-    return;
-  }
-
-  showError("无法打开文件选择器");
-}
+/** 返回条目的对象 ID：已有就直接返回，没有就计算并登记到 Zone。 */
+ensureObjId(item: ZoneContent | LocalFile, options?): Promise<{ objId: string; release(): void }>
 ```
 
-### 6.2 不返回二进制文件
+- `ZoneContent` 且已有 `objId`：直接返回。
+- `ZoneContent` 没有 `objId`：读出文件内容，经 `ndm.importFiles` 和 `ndm.ensureUploaded` 登记，得到 FileObject 的 ID。
+- `LocalFile`：同样经 `ndm` 登记，和现在各应用处理本机文件的做法一样。
+- `release()` 释放登记时占用的导入 session，调用方在对象被自己的业务引用之后调用（约定同 `ndm.releaseImportSession`）。
 
-iframe 与宿主之间不应通过 `postMessage` 直接传输大文件内容。
+现状与限制，实施时要处理：
 
-推荐返回：
-
-- 文件对象 ID
-- 文件名
-- MIME 类型
-- 大小
-- 缩略图 URL
-- 授权后的临时访问引用
-- BuckyOS ObjectRef / FileRef
-
-文件真正发送、上传或读取时，由宿主通过 BuckyOS API 使用该引用继续处理。
-
-### 6.3 并发策略
-
-默认同一页面仅允许一个系统对话框处于打开状态。
-
-第二次调用可以选择：
-
-1. 拒绝并返回 `DialogAlreadyOpenError`
-2. 排队等待
-3. 关闭前一个再打开新对话框
-
-第一阶段推荐使用“拒绝重复打开”，行为最明确。
+- nfs_server 现在只在文件已有完整哈希时给出 `obj_id`，形式是内容哈希 `sha256:<hex>`；文件一旦被修改这个值就清空。而安装器和消息附件要的是 FileObject 的 ID。两者是否等价、选择器现在该不该把 `sha256:` 形式的值放进 `objId`，见 §13 Q7。在这一点定下来之前，按“现在基本都要走 helper”来估计工作量。
+- helper 首版在浏览器里完成：要把 Zone 里的文件读到浏览器再登记，大文件代价高。底层接上之后选择器直接给出 `objId`，这条路径自然不再经过。
+- 目录的对象 ID（DirObject）现在拿不到，helper 首版只支持文件。
 
 ---
 
-## 7. iframe 通信协议
+## 5. 选择器界面（SelectDialog）
 
-### 7.1 基本原则
+组件位置：`src/frame/desktop/src/sysdlg/select/`。它是纯组件：输入 `SelectDialogParams` 和一个可选的调用方名称，输出 `SelectDialogResult`，不知道自己经哪条路径被拉起。
 
-通信协议必须具备：
+### 5.1 Zone 里的内容
 
-- 固定命名空间
-- 协议版本
-- 唯一会话 ID
-- 唯一请求 ID
-- 严格的 origin 校验
-- 明确的消息类型
-- 明确的成功、取消和错误结果
-- 防止其他 iframe 或页面伪造消息
+**数据。** 复用 File Browser 的数据层，不直接调用 NFSP：目录内容用 `useFolderList`，根目录列表用侧栏数据源，新建目录用 `folderOps().createFolder`。使用前调用 `installFileBrowserData()`（可重复调用）。
 
-### 7.2 消息结构
+**对象 ID。** File Browser 的数据层现在不取也不保存对象 ID。需要给 NFSP 列表请求加上 `ident` 属性组，并在 `FileEntry` 上增加可选的 `objId`，选择器确认时原样放进结果（§4.3）。
+
+**位置。**
+
+- `open`：全部可浏览的位置，包括目录、“最近”等视图（`view://`）和集合（`collection://`）。
+- `folder`、`save`：只显示真实目录。`save` 和带 `writable` 的 `folder` 只有当前目录可写（`capabilities.acceptsContent`）时才能确认。
+
+**布局。** 桌面是居中的对话框（`presentation: 'modal'`，`size: 'lg'`）：左侧根目录，右侧面包屑和列表，底部是已选数量与“取消 / 确认”；`save` 模式底部多一个文件名输入框。移动端用 `sheet`，根目录收进顶部的下拉。`fullscreen` 只对系统应用的窗口开放（`resolveWindowDialogPermissions`），所以只在 `canPresent('fullscreen')` 为真时使用，否则会抛 `WindowDialogPermissionError`。
+
+**交互。**
+
+- 单选时点文件即选中，双击或回车确认；多选时每行有复选框，达到 `limit` 后其余条目不可选并提示上限。
+- 进入子目录不清空已选。已选项按引用记录，和当前列表加载了多少无关。
+- `save` 确认时对“目录 + 文件名”做一次存在性检查，不依赖已加载的分页；已存在则在对话框内询问是否覆盖。
+- `folder` 和 `save` 提供“新建文件夹”。
+- 大目录按 `useFolderList` 的分页加载（`ensureRange`、`hasMore`），不一次取完。
+- 目录加载失败在列表区显示原因和“重试”，不关闭对话框。登录失效时提示重新登录，重新登录后回到原目录，已选项保留。
+- 移动端返回键先回到上一级目录，已在起始目录时等于取消。输入框聚焦时确认按钮不能被软键盘挡住。
+- 键盘可以完成全部操作；列表项有明确的选中状态；加载与错误用 live region 播报。
+
+搜索（复用 File Browser 的搜索数据源）和预览不在第一阶段。
+
+### 5.2 本机的文件和文件夹
+
+调用方传了 `allowLocal: true` 时，根目录列表最上面多一个“本机”入口。浏览器不允许网页列出本机目录，所以选择器不自己画本机的文件列表，而是交给操作系统的选择器：
+
+1. 用户点“本机”，选择器在自己的文档里触发 `<input type="file">`（`folder` 模式用 `webkitdirectory`），弹出操作系统的选择器。`open` 且 `multiple` 时允许多选；`accept` 换算成 `<input>` 的 `accept` 属性（MIME 模式和扩展名）。
+2. 用户在系统选择器里选完，对话框立即以这些本机条目结束，不需要再点一次“确认”。此前在 Zone 里勾选的条目被放弃，结果不混合两种来源。
+3. 用户在系统选择器里取消，回到对话框，之前的状态不变。
+4. 选中的文件超过 `limit`，或者有文件不满足 `accept`（含 `maxSize`）时，留在对话框里提示原因，不返回部分结果。
+
+选择器对本机内容只做转交：不读内容、不上传、不计算对象 ID。调用方拿到 `File` 后照原来的方式处理（导入解析、`ndm` 登记、上传到某个目录），或者用 `ensureObjId`（§4.3）。
+
+实现上的约束：
+
+- **必须用 `<input type="file">`，不用 `showOpenFilePicker` / `showDirectoryPicker`。** 后者返回的句柄不能跨源传递，而路径 B、C 的结果要从系统页面传给另一个源的 App。`File` 对象可以跨源传递（Preview 嵌入已经在用同样的方式传 `Blob`），浏览器不复制内容。
+- **相对路径显式携带。** 跨窗口传递后不能依赖 `File.webkitRelativePath`，所以 `LocalFolder.files` 的每一项自带 `relativePath`。
+- **文件夹选择的已知限制**，和 MessageHub、AI Workspace 现在遇到的一样：`webkitdirectory` 拿不到空目录；不支持的环境（iPhone 等粗指针设备）不显示本机文件夹的入口，`folder` 模式下此时等于没有“本机”。
+- **不做“一打开对话框就直接弹系统选择器”。** 浏览器只在用户刚操作过的文档里允许弹出文件选择器，而用户最初的点击发生在调用方的文档里：路径 C 下这次操作不会算到系统页头上，路径 B 下也只在很短的时间内有效。统一要求用户在对话框里点一次“本机”。
+
+**什么时候用。** `allowLocal` 适合两种来源都要的入口，例如 AI Workspace 的导入。它比直接放一个原生选择器按钮多一次点击，所以以本机为主的入口（聊天里拍照、发图）可以保留直达原生选择器的按钮，另放一个“从 Zone 选择”。
+
+---
+
+## 6. 路径 A：Desktop 内调用
+
+在 [sysdlg/index.tsx](../../src/frame/desktop/src/sysdlg/index.tsx) 增加：
 
 ```ts
-interface BuckyOSDialogMessage<T = unknown> {
-  namespace: "buckyos.system-dialog";
-  version: 1;
-  dialogId: string;
-  type: string;
-  payload?: T;
-}
+export const SELECT_DIALOG_PATH = 'sysdlg/select' as const
+// useSystemDialog().open(SELECT_DIALOG_PATH, params): Promise<SelectDialogResult>
 ```
 
-### 7.3 建议消息类型
+和 `sysdlg/entity_info` 一样，参数先过 zod schema，对话框被关掉时返回 `{ action: 'cancelled' }` 而不是 `undefined`。只做应用内调用，这一阶段没有独立 URL。
 
-宿主发送给 iframe：
+---
 
-```text
-host:init
-host:close-request
-host:theme-change
-host:locale-change
+## 7. 路径 B：App Frame（Shell 代画）
+
+### 7.1 消息
+
+在 App Frame Protocol v1 里新增一对消息。信封、握手和来源校验不变。
+
+| type | 方向 | payload |
+|---|---|---|
+| `sysdlg.open` | App 发给 Shell，带 `id` | `{ path: 'sysdlg/select', params: SelectDialogParams }` |
+| `sysdlg.openResult` | Shell 发给 App，带 `replyTo` | `{ ok: true, result: SelectDialogResult }` 或 `{ ok: false, code }` |
+
+消息按 `path` 通用，以后其他系统对话框（人员选择、分享）要对 App 开放时复用它，不再各加一条消息。Shell 维护一张允许 App 拉起的对话框名单，本文只放入 `sysdlg/select`。见 §13 Q5。
+
+结果里的本机条目带着 `File` 对象，随 `postMessage` 的结构化克隆传给 App，不需要额外的传输通道。
+
+Shell 在 `frame.init.shellCapabilities` 里加入 `'sysdlg/select'`。App 据此判断当前 Shell 是否支持。
+
+```mermaid
+sequenceDiagram
+  participant A as App（iframe）
+  participant S as Shell（WebAppFramePanel）
+  participant D as SelectDialog
+  A->>S: sysdlg.open {path, params}
+  Note over S: 校验 path 在名单内、params 合法、该窗口没有未完成的请求
+  S->>D: useSystemDialog().open（画在该窗口上）
+  D->>S: SelectDialogResult
+  S->>A: sysdlg.openResult {ok: true, result}
 ```
 
-iframe 发送给宿主：
+### 7.2 Shell 侧规则
 
-```text
-picker:ready
-picker:selection-change
-picker:confirm
-picker:cancel
-picker:error
-picker:request-close
-```
+- **校验。** `path` 不在名单内回 `unsupported`；`params` 过不了 schema 回 `invalid_params`。App 是不可信输入方，所有长度和数量上限都在这里执行。
+- **一个窗口同时只有一个由 App 拉起的对话框。** 上一个还没结束时再请求，回 `busy`。
+- **显示调用方。** 对话框标题下显示发起请求的 App 名称（取自 Shell 自己的应用清单，不取 App 传来的任何文字）。
+- **焦点。** 对话框打开时焦点在 Shell 文档里，Esc 由 Shell 处理。关闭后 Shell 把焦点交还给该窗口的 iframe；需要精确恢复光标的 App 在收到结果后自己聚焦。
+- **返回键。** 对话框打开期间，移动端返回键先交给对话框，不转发 `frame.back`。
+- 窗口被关闭时对话框随窗口一起消失，不需要回复。
 
-### 7.4 初始化流程
+### 7.3 SDK
 
-```text
-1. SDK 创建 Overlay 和 iframe
-2. iframe 页面加载
-3. iframe 向宿主发送 picker:ready
-4. SDK 校验 source、origin、dialogId
-5. SDK 发送 host:init
-6. Picker 进入可交互状态
-```
-
-初始化消息示例：
+`AppFrameClient` 新增：
 
 ```ts
-iframe.contentWindow?.postMessage(
-  {
-    namespace: "buckyos.system-dialog",
-    version: 1,
-    dialogId,
-    type: "host:init",
-    payload: {
-      multiple: true,
-      accept: ["image/*"],
-      maxSelection: 10,
-      locale: "zh-CN",
-      theme: "system",
-    },
-  },
-  PICKER_ORIGIN
-);
+selectContent(params?: SelectDialogParams): Promise<SelectDialogResult>
 ```
 
-### 7.5 结果回传
+- 已握手且 `shellCapabilities` 含 `'sysdlg/select'`：发 `sysdlg.open`，等 `sysdlg.openResult`。用户操作没有时限，这个请求不设超时；`dispose()` 时以 `closed` 拒绝。
+- 未嵌入 Shell：走路径 C（第三阶段实现前以 `unsupported` 拒绝）。
+- 收到的 `result` 先校验形状（Zone 条目用 `isTransferableRef`、`readContentHints`；本机条目检查 `file instanceof File`），不合格以 `protocol` 拒绝。没有请求 `allowLocal` 却收到本机条目，同样按 `protocol` 处理。
 
-```ts
-window.parent.postMessage(
-  {
-    namespace: "buckyos.system-dialog",
-    version: 1,
-    dialogId,
-    type: "picker:confirm",
-    payload: {
-      files: selectedFiles,
-    },
-  },
-  HOST_ORIGIN
-);
-```
-
-### 7.6 校验要求
-
-宿主收到消息时至少校验：
-
-```ts
-function isTrustedPickerMessage(
-  event: MessageEvent,
-  iframe: HTMLIFrameElement,
-  expectedOrigin: string,
-  dialogId: string
-): boolean {
-  const message = event.data;
-
-  return (
-    event.origin === expectedOrigin &&
-    event.source === iframe.contentWindow &&
-    message?.namespace === "buckyos.system-dialog" &&
-    message?.version === 1 &&
-    message?.dialogId === dialogId
-  );
-}
-```
-
-绝对不要使用：
-
-```ts
-postMessage(data, "*");
-```
-
-除非在一个极其受限、无法获得目标 origin 的特殊启动阶段，并且后续立即切换到确定的 origin。
-
-### 7.7 推荐使用 MessageChannel
-
-在握手完成后，可以通过 `MessageChannel` 建立每个对话框独享的通信通道：
-
-```ts
-const channel = new MessageChannel();
-
-iframe.contentWindow?.postMessage(
-  {
-    namespace: "buckyos.system-dialog",
-    version: 1,
-    dialogId,
-    type: "host:connect",
-  },
-  PICKER_ORIGIN,
-  [channel.port2]
-);
-
-channel.port1.onmessage = handlePickerMessage;
-```
-
-这样可以减少全局 `window.message` 监听带来的冲突，也更容易隔离多个实例。
+`AppFrameHost` 新增可选回调 `onSystemDialog(path, params): Promise<{ ok: true; result } | { ok: false; code }>`，由 `WebAppFramePanel` 实现。
 
 ---
 
-## 8. 生命周期
+## 8. 路径 C：独立标签页（内嵌系统页）
 
-### 8.1 状态机
+App 直接在浏览器标签页里打开时没有 Shell。这时 SDK 在 App 页面上盖一层全屏浮层，里面是一个 iframe，加载 Zone 系统入口的 `/embed/sysdlg/select`。这个页面只渲染 `SelectDialog`，不加载桌面外壳，做法与 `/embed/preview` 相同。
 
-```text
-idle
-  ↓ open()
-mounting
-  ↓ iframe created
-loading
-  ↓ picker:ready
-active
-  ├── picker:confirm → closing → closed
-  ├── picker:cancel  → closing → closed
-  ├── host abort     → closing → closed
-  └── error          → closing → closed
-```
+**协议 `buckyos.sysdlg-embed` v1**，握手照搬 `buckyos.preview-embed`：
 
-### 8.2 清理要求
+1. SDK 生成 nonce，iframe 地址为 `<systemOrigin>/embed/sysdlg/select#bse=<nonce>&po=<App 的 origin>`。
+2. 系统页只在 `po` 属于本 Zone 时工作（`originInZone`），向父页面发 `embed.hello { nonce }`。
+3. SDK 校验来源窗口、origin 和 nonce 后发 `embed.init { nonce, params, theme, locale }`。
+4. 系统页用自己在 Zone 根域的会话读目录，用户确认或取消后发 `embed.result { result }`。
 
-无论成功、取消、异常或外部中止，都必须执行统一清理：
+消息里不带任何 token。所有消息都用确切的 origin 作为 `targetOrigin`。
 
-- 移除 `message` 监听器
-- 关闭 `MessagePort`
-- 清理加载超时计时器
-- 移除 iframe
-- 移除 Overlay 根节点
-- 恢复 `body` 样式
-- 恢复背景节点的 `inert` 或 `aria-hidden`
-- 恢复打开前获得焦点的元素
-- 移除 `popstate`、`keydown` 等监听器
-- 解除 SDK 的“对话框已打开”状态
+`allowLocal` 在这条路径上同样可用：“本机”入口在系统页自己的文档里触发 `<input type="file">`，选中的 `File` 随 `embed.result` 传回 App。
 
-推荐将清理函数设计为幂等操作，避免多条结束路径造成重复清理。
+**SDK 的浮层负责：**
+
+- 在 `document.body` 下插入根节点，`position: fixed; inset: 0`，高度用 `100dvh`（带 `100vh` 回退），关闭时完整移除。
+- 锁定页面滚动并在关闭时恢复原来的内联样式和滚动位置；iOS 上不能只设 `overflow: hidden`。
+- 记录打开前的焦点元素，关闭后恢复。
+- 浮层打开期间 App 的其余内容不可交互（`inert`，不支持时用 `aria-hidden` 加事件拦截）。
+- 同一页面同时只开一个，重复调用以 `busy` 拒绝。
+- iframe 加载失败或 10 秒内没有握手时，在浮层里显示“无法加载文件选择器”和“重试 / 取消”。
+- 所有结束路径（确认、取消、失败、`AbortSignal`）走同一个幂等的清理函数。
+
+**已知限制。**
+
+- Zone 根域没有会话时，iframe 里会出现根域的登录页，和 `/embed/preview` 现在的表现一样。
+- 浮层在 App 的页面里，App 可以遮挡或覆盖它。在选择器不发放授权的前提下这不构成问题，见 §9。
+- 只接受本 Zone 内的页面嵌入。外站不能用这条路径。
 
 ---
 
-## 9. 宿主页面状态保护
+## 9. 信任与安全
 
-采用 DOM Overlay 而不是路由跳转后，宿主 React 页面不会卸载，因此以下状态可以自然保留：
+**谁可信。** 选择器是系统界面，用当前用户在 Zone 根域的会话工作。调用它的 App 是不可信的一方。因此校验的重点是 Shell 和系统页如何对待 App 传来的参数，以及 App 能不能冒充、遮挡或诱导用户。
 
-- 聊天输入草稿
-- 当前会话
-- 消息列表滚动位置
-- 已输入的富文本内容
-- 页面内临时状态
-- React Context
-- Redux / Zustand 状态
-- 当前路由
-- 未提交表单
+**现在选择器不是权限边界。** nfs_server 的文件面只认用户会话，不区分 token 是签给哪个 App 的（[auth.rs](../../src/frame/nfs_server/src/auth.rs)）；`grant` / `revoke` 可以签发和撤销，但数据面还不凭它放行（nfs_server README“后续接入”第 1 项）。也就是说，用户登录过的 Web App 本来就能读写该用户能访问的全部文件。在这个前提下：
 
-但是，仍需处理滚动和焦点。
+- 对 Zone 里的内容，选择器只返回引用、对象 ID 和展示信息，调用方用自己的会话读写。它没有给调用方任何原本没有的访问能力。
+- 调用方因此多知道的只有“用户选了哪几项”。
+- 对本机内容，调用方得到的是用户在系统选择器里亲手选中的那些 `File`，和它自己放一个 `<input type="file">` 得到的一样多。
 
-### 9.1 滚动锁定
+**规则。**
 
-不要只使用简单的：
+1. 结果和消息里不带 token、Cookie 或可直接下载的地址。
+2. 路径 B：Shell 只接受来自该窗口 iframe、origin 等于该 App 源、且已完成握手的消息（App Frame 现有规则）。参数全部过 schema。
+3. 路径 C：系统页只接受本 Zone 内的嵌入方；SDK 只接受来自该 iframe、origin 等于系统入口、nonce 匹配的消息。
+4. 文件名、路径只作为文本渲染。
+5. 调用方名称取自系统自己的应用清单（路径 B）或嵌入方的 origin（路径 C），不取调用方传来的文字。`title` 是调用方可控的文字，和调用方名称分开显示。
 
-```ts
-document.body.style.overflow = "hidden";
-```
-
-在 iOS 上，这可能导致页面位置变化。推荐保存当前滚动位置：
-
-```ts
-const scrollY = window.scrollY;
-
-Object.assign(document.body.style, {
-  position: "fixed",
-  top: `-${scrollY}px`,
-  left: "0",
-  right: "0",
-  width: "100%",
-});
-
-function restoreBodyScroll() {
-  document.body.style.position = "";
-  document.body.style.top = "";
-  document.body.style.left = "";
-  document.body.style.right = "";
-  document.body.style.width = "";
-  window.scrollTo(0, scrollY);
-}
-```
-
-SDK 应保存宿主原来的内联样式，并在关闭时原样恢复，不能假设这些属性之前为空。
-
-### 9.2 背景交互隔离
-
-对话框打开后，宿主内容不应被点击或被辅助技术继续聚焦。
-
-优先使用：
-
-```html
-<div id="app" inert></div>
-```
-
-对于不支持 `inert` 的环境，可以配合：
-
-- `aria-hidden="true"`
-- Overlay 拦截指针事件
-- 焦点保护逻辑
-
-关闭时恢复原属性值。
-
-### 9.3 焦点恢复
-
-打开时记录：
-
-```ts
-const previouslyFocused =
-  document.activeElement instanceof HTMLElement
-    ? document.activeElement
-    : null;
-```
-
-关闭后：
-
-```ts
-previouslyFocused?.focus({ preventScroll: true });
-```
-
-如果原元素已被卸载，则将焦点恢复到触发附件选择的按钮或宿主应用根节点。
+**以后要让“选中即授权”时。** 前提是 nfs_server 完成 App 主体鉴权并让数据面认 grant。届时在 `SelectedContent` 上增加授权信息，并且**只经路径 A、B 发放**：这两条路径的对话框画在 Shell 的文档里，App 无法遮挡，也无法替用户点击。路径 C 的浮层在 App 自己的页面里，不能作为授权依据。见 §13 Q2。
 
 ---
 
-## 10. 移动端交互
+## 10. 错误模型
 
-### 10.1 视觉结构
+`cancelled` 是正常结果，不是错误。下面这些才以拒绝的方式返回，对象带 `code`：
 
-移动端推荐：
+| code | 含义 | 出现的路径 |
+|---|---|---|
+| `unsupported` | 当前环境没有可用的选择器：Shell 不支持该对话框，或不在 Shell 内且没有可用的系统入口 | B、C |
+| `invalid_params` | 参数没有通过校验 | A、B、C |
+| `busy` | 同一窗口或页面已有一个未完成的请求 | B、C |
+| `closed` | 请求未完成时连接被销毁（`dispose()`、页面卸载、`AbortSignal`） | B、C |
+| `load_failed` | 系统页加载失败或握手超时，且用户选择了取消 | C |
+| `protocol` | 收到的结果形状不合法 | B、C |
 
-```text
-┌────────────────────────────┐
-│ 取消      选择文件      完成 │
-├────────────────────────────┤
-│ 路径 / 搜索 / 过滤           │
-├────────────────────────────┤
-│                            │
-│ 文件与目录列表               │
-│                            │
-├────────────────────────────┤
-│ 已选择 3 项                  │
-└────────────────────────────┘
-```
-
-整个 Picker 占满可视区域，看起来像系统临时界面，但技术上仍然留在当前宿主页面上。
-
-### 10.2 安全区
-
-Picker iframe 内部应适配：
-
-```css
-padding-top: env(safe-area-inset-top);
-padding-right: env(safe-area-inset-right);
-padding-bottom: env(safe-area-inset-bottom);
-padding-left: env(safe-area-inset-left);
-```
-
-页面建议设置：
-
-```html
-<meta
-  name="viewport"
-  content="width=device-width, initial-scale=1, viewport-fit=cover"
-/>
-```
-
-### 10.3 返回键
-
-返回行为建议按以下优先级处理：
-
-1. 如果 Picker 内部有预览页或子目录历史，先返回 Picker 内部上一层。
-2. 如果已在 Picker 根级，浏览器返回键用于取消并关闭 Picker。
-3. 不应直接让返回键离开宿主页面。
-
-一种实现方式是在打开时压入临时 history state：
-
-```ts
-history.pushState(
-  { buckyosDialog: dialogId },
-  "",
-  window.location.href
-);
-```
-
-监听 `popstate` 后发出关闭请求。
-
-需要注意：
-
-- 不修改宿主 URL。
-- 关闭对话框时只清理自己压入的 history 状态。
-- 避免与 React Router、Vue Router 等宿主路由产生不可预测的竞争。
-- 如果无法安全接管历史栈，则优先由 Picker 内部提供明确的“取消”按钮，不强制劫持返回键。
-
-在 App WebView 中，应优先使用宿主提供的返回键桥接。
-
-### 10.4 软键盘
-
-搜索框聚焦后，软键盘会改变 iframe 的可视区域。Picker 内部应：
-
-- 使用弹性布局，而非固定像素高度
-- 监听 `visualViewport`
-- 保证搜索结果和确认按钮可见
-- 避免把关键操作固定在被键盘遮挡的位置
-- 在关闭前主动让输入框失焦
+选择器内部的错误（目录读取失败、无权限、登录失效）在对话框里处理，不关闭对话框，也不传给调用方。
 
 ---
 
-## 11. React 实现策略
+## 11. 实施计划
 
-### 11.1 SDK 不依赖 React
+三个阶段各自可以独立交付，每个阶段都有真实的调用方。
 
-SDK 应使用原生 DOM 和 TypeScript 实现，以便接入：
+### 阶段一：Desktop 内可用
 
-- React
-- Vue
-- Svelte
-- 原生 JavaScript
-- 微前端
-- 第三方网站
+| 编号 | 内容 | 位置 |
+|---|---|---|
+| W1 | `SelectDialogParams`、`SelectedContent`、`SelectDialogResult` 类型和结果校验函数 | websdk `src/content.ts` |
+| W2 | `ensureObjId` helper（§4.3），首版只支持文件 | websdk |
+| D1 | 参数与结果的 zod schema | Desktop `sysdlg/select/schemas.ts` |
+| D2 | File Browser 数据层带出对象 ID：列表请求加 `ident` 组，`FileEntry` 增加可选的 `objId` | Desktop `app/filebrowser/data/` |
+| D3 | `SelectDialog` 组件：三种模式，浏览 Zone（§5.1），“本机”入口（§5.2） | Desktop `sysdlg/select/` |
+| D4 | 在 `useSystemDialog` 登记 `SELECT_DIALOG_PATH` | Desktop `sysdlg/index.tsx` |
+| D5 | App Service 安装向导改用 `sysdlg/select`（`accept` 限 `.pikg`），删除 `FilePickerDialog.tsx` 和示例数据 | Desktop `app/app-service/` |
+| D6 | AI Workspace 的导入入口（插入目录的“从文件…”、数据树的导入）改用 `sysdlg/select`，`allowLocal: true`。本机条目照旧处理；Zone 条目经 NFSP 读出内容后走同一套导入 | Desktop `app/aiworkspace/` |
+| D7 | 补全产品文档 `sysdlg/select` 一节（参数、结果、流程） | `product/BuckyOS Sys Dlg.md` |
 
-SDK 不应要求宿主安装特定 React 版本。
+D5 的说明：安装器的 staging 只接受 FileObject 的对象 ID（`apps.staging.finalize { source_obj_id }`）。Zone 里的 `.pikg` 有 `objId` 就直接用，没有就经 `ensureObjId` 取得。安装包可能超过 1 GB，首版 helper 要把它读到浏览器再登记，这条路径的耗时需要实测。
 
-### 11.2 Picker 是独立 React App
+D6 只覆盖桌面窗口里的 AI Workspace（路径 A）。`aiws-<id>.<zone>` 自有源页面没有 Shell，要等阶段三。
 
-文件选择器业务继续使用 React 实现，但作为独立应用构建：
+### 阶段二：桌面窗口里的 App 可用
 
-```text
-packages/
-├── dialog-sdk/
-│   ├── src/
-│   └── dist/
-│
-├── file-picker-app/
-│   ├── src/
-│   └── dist/
-│
-└── dialog-protocol/
-    ├── types.ts
-    └── validators.ts
-```
+| 编号 | 内容 | 位置 |
+|---|---|---|
+| W3 | `sysdlg.open` / `sysdlg.openResult`，`AppFrameClient.selectContent`，`AppFrameHost.onSystemDialog` | websdk `src/app-frame.ts` |
+| D8 | `shellCapabilities` 加 `'sysdlg/select'`，实现 `onSystemDialog`（名单、校验、单窗口单请求、调用方名称、焦点） | Desktop `WebAppFramePanel.tsx` |
+| T1 | “打开”和“另存为”在桌面窗口内改用 `selectContent`。独立标签页暂时保留自带的位置选择器 | `src/apps/text_editor/` |
+| D9 | MessageHub 回形针菜单增加“从 Zone 选择”，原有的本机入口保留 | Desktop `app/messagehub/` |
+| — | 同步 Text Editor readme §7.3（消息表）、§8.9；按 AGENTS 的 cmd_skills 联动表检查 `buckyos_app_dev` 手册是否要补 `selectContent` | 文档 |
 
-其中：
+D9 的说明：消息附件是不可变对象。文件用 `objId`，没有时用 `ensureObjId`。从 Zone 里选整个文件夹作为附件需要 DirObject 的 ID，现在拿不到，首版只支持选文件。
 
-- `dialog-sdk`：发布为 npm 包或静态 SDK。
-- `file-picker-app`：独立部署到 BuckyOS 服务。
-- `dialog-protocol`：供 SDK 与 Picker 共同使用的类型和协议定义。
+### 阶段三：独立标签页可用，收敛其余选择器
 
-### 11.3 不共享运行时状态
-
-SDK 和 iframe 内 React App 不直接共享：
-
-- React Context
-- Redux Store
-- DOM 节点
-- JS 对象引用
-- 全局变量
-
-所有交互通过协议完成。
-
-这样可以显著降低跨应用耦合。
+| 编号 | 内容 | 位置 |
+|---|---|---|
+| W4 | `buckyos.sysdlg-embed` 协议和浮层；`selectContent` 的独立标签页分支 | websdk `src/app-frame.ts` |
+| D10 | `/embed/sysdlg/select` 组件页（`main.tsx` 里和 `/embed/preview` 并列的分支） | Desktop |
+| T2 | 删除自带的位置选择器 | `src/apps/text_editor/` |
+| D11 | File Browser 的目标目录选择和“添加已有文件”改用 `SelectDialog`，删除 `MoveTargetDialog`。移动时“不能选被移动目录自身及其子目录”需要一个排除参数，到这一步再加 | Desktop `app/filebrowser/` |
+| — | HomeStation、AI Workspace 的 `aiws-<id>.<zone>` 自有源页面按需接入 | Desktop |
 
 ---
 
-## 12. iframe 配置
+## 12. 验收与测试
 
-### 12.1 sandbox
+**阶段一。**
 
-可以根据 Picker 所需能力设置：
+- 三种模式在 mock 运行时和真实 Zone 下都能完成选择；取消返回 `cancelled`。
+- `accept` 不命中的文件不可选；多选达到 `limit` 后不能再选；`save` 遇到同名文件会询问并在结果里给出 `overwrite: true`。
+- 超过一页的目录能继续加载；跨目录的已选项不丢。
+- 没有 `allowLocal` 时没有“本机”入口。有 `allowLocal` 时能选本机文件；`folder` 模式能选本机文件夹，得到带相对路径的文件列表；在系统选择器里取消会回到对话框，之前的状态不变。
+- 目录列表带对象 ID 的文件，结果里有 `objId`；没有的文件经 `ensureObjId` 得到 FileObject 的 ID。
+- 安装向导能从 Zone 里选中 `.pikg` 并进入检查流程；仓库里不再有 `FilePickerDialog`。
+- AI Workspace 从同一个入口既能导入本机文件，也能导入 Zone 里的文件，两者导入结果一致。
+- 关闭对话框后，调用方窗口的内容、滚动位置和焦点不变。
 
-```html
-<iframe
-  sandbox="
-    allow-scripts
-    allow-forms
-    allow-same-origin
-    allow-downloads
-    allow-popups-to-escape-sandbox
-  "
-></iframe>
-```
+**阶段二。**
 
-具体权限应遵循最小授权原则。
+- websdk 单测：`sysdlg.open` 的请求与应答配对、未握手和缺少能力时以 `unsupported` 拒绝、`dispose()` 以 `closed` 拒绝、非法结果以 `protocol` 拒绝。
+- Text Editor 的测试 harness（模拟 Shell）覆盖打开和另存为。
+- Desktop e2e：第三方 App 窗口里拉起选择器，对话框只盖住该窗口；非法参数回 `invalid_params`；重复请求回 `busy`；标题下显示的是系统清单里的 App 名称。
+- 第三方 App 窗口里选本机文件：App 收到的 `File` 名称、大小正确，能读出内容。
+- 移动端布局：返回键先回上级目录再取消，不会关掉 App 窗口。
 
-需要谨慎评估：
+**阶段三。**
 
-- 是否需要下载
-- 是否需要打开新窗口
-- 是否需要剪贴板
-- 是否需要摄像头或麦克风
-- 是否需要浏览器文件上传
-- 是否需要 WebAuthn
-- 是否需要同源 Cookie
+- 独立标签页里拉起、确认、取消后，App 页面的滚动位置、输入草稿、焦点和 `body` 样式恢复原状，没有残留的 iframe 和事件监听。
+- 嵌入方不在本 Zone 时系统页不工作。
+- iframe 加载失败时显示重试和取消。
+- 浏览器覆盖：桌面 Chrome、Safari、Firefox，iOS Safari，Android Chrome。
 
-不需要的能力不要加入。
-
-### 12.2 Permissions Policy
-
-可以通过 `allow` 属性限制能力：
-
-```html
-<iframe
-  allow="
-    clipboard-read 'none';
-    clipboard-write 'none';
-    camera 'none';
-    microphone 'none';
-    geolocation 'none'
-  "
-></iframe>
-```
-
-如果 Picker 未来需要某项能力，应按产品需求显式开启，而不是默认全部开放。
-
-### 12.3 加载失败
-
-SDK 应处理：
-
-- DNS 或网络失败
-- iframe 页面加载超时
-- Picker 初始化失败
-- 登录态失效
-- 协议版本不兼容
-- 跨域策略错误
-
-建议在 Overlay Shell 中提供轻量错误页：
-
-```text
-无法加载 BuckyOS 文件选择器
-
-[重试] [取消]
-```
+每个阶段完成后，在对应的 UI_DATAMODEL 或 readme 里记录未实测的浏览器和环境。
 
 ---
 
-## 13. 登录态与授权
+## 13. 裁决记录与待裁决
 
-### 13.1 同站部署
+### 13.1 已裁决（owner，2026-11-09）
 
-理想情况下，宿主和 Picker 部署在可共享安全登录态的同站域名下，例如：
+| 编号 | 问题 | 裁决 | 落在 |
+|---|---|---|---|
+| Q3 | 返回路径还是不可变对象 | 两者都给：`source` 是用户选中的引用，`objId` 尽力返回。`cyfs:///` 接上分布式文件系统的底层后必定有对象 ID；现在拿不到时由应用层用 helper 计算 | §4.2、§4.3 |
+| Q4 | 本机文件要不要进系统选择器 | 要，由调用方决定。有的应用只能选 Zone 里的内容，有的两种来源都要（例如 AI Workspace 的导入） | `allowLocal`，§5.2 |
 
-```text
-app.example.com
-picker.example.com
-```
+### 13.2 待裁决
 
-但不要依赖所有浏览器都允许第三方 Cookie。
+本文按每条的“建议”写成。裁决不同的话，对应章节要改。
 
-### 13.2 推荐短期会话票据
-
-宿主 SDK 可以先向 BuckyOS 服务请求一次性的 Picker Session：
-
-```text
-宿主应用
-  → BuckyOS API：创建 Picker Session
-  ← sessionId / short-lived token
-  → iframe URL 或 host:init 消息
-```
-
-票据应具备：
-
-- 短有效期
-- 一次性或有限次数使用
-- 明确的宿主 origin
-- 明确的用户和权限范围
-- 明确的可访问存储空间
-- 明确的文件类型与数量限制
-
-不要把长期访问令牌放在 iframe URL 中。
-
-### 13.3 登录失效
-
-Picker 检测到未登录时，可以在 iframe 内显示登录流程，但应尽量避免再创建第二层弹窗。
-
-登录成功后，Picker 恢复此前的目录位置与选中状态。
+| 编号 | 问题 | 建议 | 影响 |
+|---|---|---|---|
+| Q1 | 这份文档与产品文档的关系 | 产品文档 `sysdlg/select` 一节只留参数、结果和流程（D7），实现细节留在本文 | 文档 |
+| Q2 | 选择器要不要成为授权点（用户选中，App 才获得该文件的访问权） | 现在不做。等 nfs_server 完成 App 主体鉴权和 grant 数据面后再加，并且只经路径 A、B 发放 | §9、§4.2 |
+| Q5 | App Frame 用通用的 `sysdlg.open` 加名单，还是只给文件选择器加一条专用消息 | 通用消息加名单。人员选择、分享以后对第三方开放时不用再改协议 | §7.1 |
+| Q6 | 独立标签页用内嵌页还是弹出新窗口 | 内嵌页，和 `/embed/preview` 一致。弹出窗口只在以后需要支持根域无会话的场景时再考虑 | §8 |
+| Q7 | 现在 `objId` 里放什么。nfs_server 给的是内容哈希 `sha256:<hex>`，只有部分文件有；安装器和消息附件要的是 FileObject 的 ID | 只放调用方能直接使用的 FileObject / DirObject ID。nfs_server 现在给的内容哈希不放进去，调用方统一走 `ensureObjId`，等底层接上后再由选择器直接带出 | §4.3、D2、D5、D9 |
+| Q8 | 选了本机内容后，是立即结束对话框，还是把本机条目和 Zone 条目放在一起再确认 | 立即结束，结果不混合两种来源。实现简单，少一次点击；需要混合时用户再打开一次 | §4.2、§5.2 |
 
 ---
 
-## 14. 安全要求
-
-必须满足：
-
-1. SDK 固定或显式配置可信 Picker origin。
-2. 所有 `message` 事件校验 `origin`。
-3. 校验 `event.source === iframe.contentWindow`。
-4. 校验 `namespace`、`version` 和 `dialogId`。
-5. 消息 Payload 使用运行时 Schema 校验。
-6. 不使用 `eval` 或动态注入不可信脚本。
-7. FileRef 不包含超出调用方权限的真实存储路径。
-8. 临时访问 URL 需要短有效期。
-9. Picker Session 与宿主 origin 绑定。
-10. iframe 使用合适的 CSP、sandbox 和 Permissions Policy。
-11. 文件名、路径和元数据展示必须防止 XSS。
-12. 关闭对话框后立即销毁会话和通信端口。
-13. 对确认操作防止重复提交。
-14. 对超大选择数量设置服务端和客户端双重限制。
-
----
-
-## 15. 可访问性
-
-Overlay 根节点：
-
-```html
-role="dialog"
-aria-modal="true"
-aria-label="BuckyOS 文件选择器"
-```
-
-建议满足：
-
-- 打开后将焦点移入 Picker。
-- 背景内容不可聚焦。
-- 键盘用户可完成目录浏览、选择、确认和取消。
-- `Escape` 可以取消，但不能误关闭未确认的重要操作。
-- 列表项具备明确的选中状态。
-- 图标按钮具备可读的 `aria-label`。
-- 错误和加载状态使用适当的 Live Region。
-- 关闭后焦点恢复到原附件按钮。
-
-iframe 自身是独立焦点上下文，Picker App 内仍需要实现完整焦点管理。
-
----
-
-## 16. 性能策略
-
-### 16.1 预连接
-
-宿主可以在用户较可能使用附件功能时进行：
-
-```html
-<link rel="preconnect" href="https://picker.buckyos.com" />
-```
-
-也可以在附件按钮进入视口或首次悬停时预加载必要资源。
-
-### 16.2 不常驻复杂 iframe
-
-默认不建议在页面启动时就常驻隐藏 iframe，原因包括：
-
-- 长期占用内存
-- 后台网络和定时器开销
-- 登录态和协议状态更难管理
-- 多宿主页面同时存在时浪费资源
-
-推荐按需创建，关闭即销毁。
-
-如果实际测量显示首次打开耗时不可接受，可以引入受控预热机制。
-
-### 16.3 大目录列表
-
-Picker App 内部应考虑：
-
-- 虚拟列表
-- 分页或增量加载
-- 缩略图懒加载
-- 搜索防抖
-- 目录请求取消
-- 浏览历史缓存
-- 选中状态与列表数据解耦
-
----
-
-## 17. 错误模型
-
-建议定义：
-
-```ts
-class BuckyOSDialogError extends Error {
-  code: string;
-}
-
-class BuckyOSDialogCancelledError extends BuckyOSDialogError {}
-class BuckyOSDialogLoadError extends BuckyOSDialogError {}
-class BuckyOSDialogProtocolError extends BuckyOSDialogError {}
-class BuckyOSDialogAlreadyOpenError extends BuckyOSDialogError {}
-class BuckyOSDialogAbortedError extends BuckyOSDialogError {}
-class BuckyOSDialogPermissionError extends BuckyOSDialogError {}
-```
-
-宿主应能够区分：
-
-- 用户主动取消
-- 网络失败
-- SDK 加载失败
-- 权限不足
-- 登录失效
-- 协议不兼容
-- 外部 AbortSignal 中止
-
-用户主动取消不应记录为系统异常。
-
----
-
-## 18. 核心伪代码
-
-```ts
-export async function openFilePicker(
-  options: OpenFilePickerOptions = {}
-): Promise<FilePickerResult> {
-  if (activeDialog) {
-    throw new BuckyOSDialogAlreadyOpenError();
-  }
-
-  const dialogId = crypto.randomUUID();
-  const snapshot = captureHostState();
-
-  const overlay = createOverlay(dialogId);
-  const iframe = createPickerIframe();
-
-  activeDialog = { dialogId, overlay, iframe };
-
-  document.body.appendChild(overlay);
-  lockHostPage(snapshot);
-  overlay.querySelector(".buckyos-dialog-surface")?.appendChild(iframe);
-
-  return new Promise<FilePickerResult>((resolve, reject) => {
-    let settled = false;
-
-    const finish = (
-      action: () => void
-    ) => {
-      if (settled) return;
-      settled = true;
-
-      cleanup();
-      action();
-    };
-
-    const onMessage = (event: MessageEvent) => {
-      if (
-        !isTrustedPickerMessage(
-          event,
-          iframe,
-          PICKER_ORIGIN,
-          dialogId
-        )
-      ) {
-        return;
-      }
-
-      const message = event.data;
-
-      switch (message.type) {
-        case "picker:ready":
-          sendInitMessage(iframe, dialogId, options);
-          break;
-
-        case "picker:confirm":
-          finish(() => {
-            resolve(validatePickerResult(message.payload));
-          });
-          break;
-
-        case "picker:cancel":
-          finish(() => {
-            reject(new BuckyOSDialogCancelledError());
-          });
-          break;
-
-        case "picker:error":
-          finish(() => {
-            reject(toDialogError(message.payload));
-          });
-          break;
-      }
-    };
-
-    const onAbort = () => {
-      finish(() => {
-        reject(new BuckyOSDialogAbortedError());
-      });
-    };
-
-    const cleanup = () => {
-      window.removeEventListener("message", onMessage);
-      options.signal?.removeEventListener("abort", onAbort);
-      overlay.remove();
-      restoreHostPage(snapshot);
-      activeDialog = null;
-    };
-
-    window.addEventListener("message", onMessage);
-    options.signal?.addEventListener("abort", onAbort, {
-      once: true,
-    });
-  });
-}
-```
-
-生产实现还应加入：
-
-- 加载超时
-- MessageChannel
-- Schema 校验
-- focus 和 history 管理
-- iframe load/error 处理
-- 幂等清理
-- 遥测与日志
-
----
-
-## 19. 桌面端与移动端差异
-
-架构保持一致，只调整 Surface 展示方式。
-
-### 移动端
-
-```text
-全屏 Overlay
-全屏 iframe
-顶部取消与完成
-适配安全区
-支持返回手势
-```
-
-### 桌面端
-
-可选：
-
-```text
-居中大尺寸对话框
-或全屏工作区
-```
-
-例如：
-
-```css
-@media (min-width: 768px) {
-  .buckyos-dialog-root {
-    padding: 32px;
-  }
-
-  .buckyos-dialog-surface {
-    max-width: 1180px;
-    max-height: 860px;
-    margin: auto;
-    border-radius: 16px;
-    box-shadow:
-      0 24px 80px rgba(0, 0, 0, 0.28);
-  }
-}
-```
-
-不过文件浏览空间需求较大，桌面端也可以默认接近全屏。
-
----
-
-## 20. 测试矩阵
-
-至少覆盖：
-
-### 浏览器
-
-- iOS Safari
-- Android Chrome
-- 桌面 Chrome
-- 桌面 Safari
-- Firefox
-- Edge
-
-### 容器环境
-
-- 普通浏览器
-- PWA
-- iOS WKWebView
-- Android WebView
-- BuckyOS 自有客户端 WebView
-
-### 宿主状态
-
-- 页面已滚动
-- 输入框内有草稿
-- 软键盘已打开
-- 宿主已有 Modal
-- 宿主使用 React Router
-- 宿主使用 CSS Transform
-- 宿主有高 z-index 元素
-- 页面处于横屏
-- 浏览器地址栏展开和收起
-
-### Picker 行为
-
-- 单选
-- 多选
-- 取消
-- 确认
-- 目录切换
-- 搜索
-- 登录过期
-- 网络中断
-- iframe 加载失败
-- 协议版本不一致
-- 重复点击打开按钮
-- 选择数量达到上限
-- 文件权限在选择期间变化
-
-### 恢复验证
-
-关闭后验证：
-
-- 宿主页面滚动位置不变
-- 聊天草稿不变
-- 当前路由不变
-- 焦点回到附件按钮
-- `body` 样式恢复
-- 背景页面重新可交互
-- 没有残留事件监听器
-- 没有残留 iframe
-- 浏览器返回行为正常
-
----
-
-## 21. 分阶段实现建议
-
-### 第一阶段：最小可用版本
-
-- 原生 DOM SDK
-- 全屏 Overlay
-- iframe File Picker
-- `postMessage` 通信
-- origin、source、dialogId 校验
-- Promise API
-- 确认、取消、加载失败
-- body 滚动锁定
-- 焦点恢复
-- 移动端 `100dvh` 和安全区适配
-
-### 第二阶段：稳定性增强
-
-- MessageChannel
-- 协议 Schema 校验
-- 加载超时和重试
-- AbortSignal
-- history / WebView 返回键支持
-- 统一错误码
-- 主题和语言同步
-- 登录会话票据
-- 完整可访问性
-
-### 第三阶段：平台化
-
-- 通用 `buckyos.dialog.open()` API
-- 支持文件选择、目录选择、分享、授权等系统对话框
-- 统一对话框协议
-- SDK 多版本兼容
-- 遥测、性能指标与故障监控
-- 桌面端尺寸策略
-- 预热和资源缓存
-
----
-
-## 22. 可扩展为统一系统对话框框架
-
-文件选择器可以作为第一个系统对话框，后续统一成：
-
-```ts
-buckyos.dialog.open({
-  type: "file-picker",
-  options: {
-    multiple: true,
-  },
-});
-```
-
-未来可扩展：
-
-```text
-file-picker
-directory-picker
-save-file
-share
-permission
-account-selector
-device-selector
-app-selector
-```
-
-每种对话框复用：
-
-- Overlay Shell
-- iframe 生命周期
-- 通信协议
-- 安全策略
-- 焦点与滚动管理
-- 错误处理
-- 移动端适配
-
-而业务 UI 作为不同的 iframe App 独立演进。
-
----
-
-## 23. 最终决策
-
-BuckyOS 文件选择器采用：
-
-> **宿主页面内的全屏临时 Overlay + 独立 iframe Picker App + Promise SDK + 安全消息协议。**
-
-它在用户体验上类似系统本地文件选择器，但不会离开当前页面，也不会卸载宿主应用。
-
-该方案相较于页面跳转、`window.open` 和直接挂载复杂 React 组件，能够更好地满足：
-
-- 状态不丢失
-- 移动端稳定
-- 跨应用接入
-- 样式和依赖隔离
-- 安全边界清晰
-- 文件选择器独立迭代
-- 后续扩展为 BuckyOS 统一系统对话框平台
+## 14. 相对初版的变化
+
+初版（2026-06）写在系统对话框、App Frame 和 NFSP 落地之前。保留的是它的目标和这些结论：不跳转页面、选择器与调用方隔离、不经消息复制文件内容、同一时间只开一个、取消与错误可区分。改掉的部分：
+
+| 初版 | 本版 | 原因 |
+|---|---|---|
+| 所有调用方都用“宿主页面浮层 + iframe” | 三条路径；浮层 + iframe 只用于独立标签页 | 调用方多数在 Desktop 内或桌面窗口里，Shell 可以直接画 |
+| 新建 `buckyos.system-dialog` 协议和 `dialog-sdk` 等三个包 | 扩展 App Frame，照 Preview 嵌入的握手；代码放 websdk 和 Desktop | 已有两套同类协议，握手方式已经过验证 |
+| Picker 部署在 `picker.buckyos.com` | Zone 系统入口的 `/embed/sysdlg/select` | 每个 Zone 自己提供系统页面，没有中心域名 |
+| 自定义 `FileRef` | `TransferableContentRef` + `ContentHints` | 系统已有统一的内容引用 |
+| 短期会话票据经 URL 或消息传给 Picker | 系统页用自己的根域会话 | 现有原则是消息里不带任何凭证 |
+| 安全要求以宿主校验 Picker 为主 | 以系统对待不可信的调用方为主 | 选择器是系统页面，调用方才是不可信的一方 |
+| iframe 加 `sandbox` | 不加 | `sandbox` 用来限制被嵌入页，这里被嵌入的是系统页；加了还会破坏 Cookie 和 SSO |
+| 返回“授权后的临时访问引用” | 不发放授权 | 后端数据面还不认 grant |
+| 取消时抛 `CancelledError` | 返回 `{ action: 'cancelled' }` | 与 `sysdlg/entity_info` 等已有对话框一致 |
+| 握手后切换到 MessageChannel | 不用 | 现有协议用 nonce 加确切 origin，够用 |
+| 另存为、选目录放在远期扩展 | 第一阶段就有 `save`、`folder` 模式 | Text Editor 和安装器现在就需要 |
+| 第三方网站直接嵌入 | 不支持；外站走混合 SSO 的 jump | 跨站点嵌入拿不到用户在 Zone 的会话 |

@@ -133,6 +133,14 @@ pub enum ComputerAccess {
 }
 
 impl ComputerAccess {
+    pub fn of_ops<'a>(ops: impl IntoIterator<Item = &'a ExecutorOp>) -> Self {
+        ops.into_iter().fold(ComputerAccess::None, |access, op| match op {
+            ExecutorOp::ComputerAct => ComputerAccess::Control,
+            ExecutorOp::ComputerObserve | ExecutorOp::ComputerInspect => access.max(ComputerAccess::Observe),
+            _ => access,
+        })
+    }
+
     pub fn allows(self, op: ExecutorOp) -> bool {
         match op {
             ExecutorOp::ComputerInspect | ExecutorOp::ComputerObserve => self >= ComputerAccess::Observe,
@@ -188,13 +196,7 @@ pub struct ExecutorProfile {
 impl ExecutorProfile {
     /// The most ComputerUse the profile's operations allow.
     pub fn computer(&self) -> ComputerAccess {
-        if self.ops.contains(&ExecutorOp::ComputerAct) {
-            ComputerAccess::Control
-        } else if self.ops.contains(&ExecutorOp::ComputerObserve) || self.ops.contains(&ExecutorOp::ComputerInspect) {
-            ComputerAccess::Observe
-        } else {
-            ComputerAccess::None
-        }
+        ComputerAccess::of_ops(&self.ops)
     }
 
     pub fn ops_set(&self) -> BTreeSet<ExecutorOp> {
@@ -701,6 +703,9 @@ mod tests {
         assert!(profile.ops.contains(&ExecutorOp::ComputerObserve));
         assert!(!profile.ops.contains(&ExecutorOp::ComputerAct));
         assert_eq!((profile.computer(), profile.baseline), (ComputerAccess::Observe, Some(crate::RuntimeBaseline::Extended)));
+        let headless: Vec<ExecutorOp> = profile.ops.iter().copied().filter(|op| !op.is_computer()).collect();
+        assert_eq!(ComputerAccess::of_ops(&headless), ComputerAccess::None);
+        assert_eq!(ComputerAccess::of_ops(&[ExecutorOp::ComputerAct, ExecutorOp::ComputerInspect]), ComputerAccess::Control);
         assert!(profile.ops.contains(&ExecutorOp::Mkdir) && profile.ops.contains(&ExecutorOp::Stat));
         assert!(profile.ops.contains(&ExecutorOp::Rename) && profile.ops.contains(&ExecutorOp::Remove));
         profile.validate(&owner_agent_profile_id("did:web:jarvis.test.buckyos.io")).unwrap();
