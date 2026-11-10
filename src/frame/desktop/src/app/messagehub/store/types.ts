@@ -130,6 +130,8 @@ export interface MessageHubStore {
   forward(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined): Promise<void>
   /** Remove a message from the owner's own view of the session; other participants keep it. */
   deleteMessage(context: MessageHubContext, sessionId: string, message: MessageObject): Promise<void>
+  /** Remove every message the session holds now from the owner's own view; the session, its settings and other participants' copies stay. */
+  clearHistory(context: MessageHubContext, sessionId: string): Promise<void>
   runtimeFor(context: MessageHubContext, sessionId: string): RuntimeState[]
   clearTransient(ownerDid: string): void
   title(context: MessageHubContext, session: Session): string

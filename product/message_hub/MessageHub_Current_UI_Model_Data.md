@@ -84,7 +84,7 @@ type SessionBinding =
 
 - 同一实体下的连接按实例与端点区分，同一实例多个远端上下文各有 Session。
 - Alice seed 包含 Telegram Personal、Telegram Work 两个实例，Work 中含 General / Design 两个会话。
-- 原生连接默认允许各类实体创建会话，New Session 包含系统内其他用户；外部连接仍受策略和平台能力限制。多连接必须在表单中选择。
+- 原生连接默认允许各类实体创建会话，实体列表的「发起聊天」可搜到系统内其他用户；外部连接仍受策略和平台能力限制。新建会话的表单默认选原生连接，其它连接需要在表单中选择。
 - `defaultSession()` / `ensureDefaultSession()` 统一选择及按需创建默认会话：选择最近活跃的 active 会话，Agent 仅选择原生会话并排除 tunnel，置顶不影响选择；创建前检查后续分页，并合并同一实体的并发请求。
 - 创建 tunnel Session 还要求 `supportsMultipleSessions && canCreateRemoteSession`；Personal seed 不满足此条件，Work 满足。
 - `discoverConnection()` 按 owner、实例、端点和远端上下文幂等登记默认空 Session；重复发现和旧删除标记不会重新加载 seed。
@@ -258,8 +258,9 @@ hover、focus-within 和触屏均能访问处理入口。对话框有 Tab 焦点
 | 发送 | `msg.post_send`，`to` 来自绑定，登记 / topic 会话带 `thread.topic`；附件经 NDM TUS 上传 + `put_object` 后写入 `refs[].target.data_obj` |
 | 附件读取 | `GET /kapi/msg-center/objects/{obj_id}[/content]`（Bearer 会话 token），Blob URL 缓存 |
 | 生命周期 | `msg.archive_session` / `msg.restore_session` / `msg.delete_session`（删除同时清本地草稿 / 偏好 / reader） |
-| 创建 | `msg.create_session`（native 绑定；tunnel 创建因无能力声明始终 `platform_read_only`） |
-| 偏好 | `ui.title` / `ui.pinned` / `ui.muted` → `ui_session.update_state(owner)`；`showActions`、草稿、创建策略为 viewer 本地 IndexedDB |
+| 清空聊天记录 | `msg.clear_session`（未登记的会话先 `msg.create_session` 登记，保留为空会话）；会话、标题与偏好保留，本地时间线清空并取消置顶消息 |
+| 创建 | `msg.create_session`（native 绑定；tunnel 创建因无能力声明始终 `platform_read_only`）；Session 侧栏的对话框填名称、可选描述、连接（native 显示为 Named Message Protocol，默认选中） |
+| 偏好 | `ui.title` / `ui.description` / `ui.pinned` / `ui.muted` → `ui_session.update_state(owner)`；`showActions`、草稿、创建策略为 viewer 本地 IndexedDB |
 | 运行态 | `ui_session.list_state(session_id)`（无 owner 的旧 KV）：typing 30s、status_line 10min 内有效，成员固定为 owner |
 | 权限 | 观察者全部只读；tunnel 默认只读 + 风险确认；群按 `group.check_access(group.post_message)`；native 由 `post_send` 校验 |
 | 刷新 | 20s 轮询摘要与当前会话尾页；kevent `/obj/msg-center/owners/<owner>/sessions/**` 作为额外信号 |

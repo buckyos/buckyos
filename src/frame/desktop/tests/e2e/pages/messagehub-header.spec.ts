@@ -65,7 +65,7 @@ test('+ holds the new entries and ⋮ the rest; Escape closes a menu back to its
   await openHub(page)
   await page.getByTestId('hub-create-menu').click()
   const create = page.getByRole('menu', { name: 'New' })
-  await expect(create.getByRole('menuitem')).toHaveText(['New Session', 'New group', 'Join group'])
+  await expect(create.getByRole('menuitem')).toHaveText(['New chat', 'New group', 'Join group'])
   await page.keyboard.press('Escape')
   await expect(create).toHaveCount(0)
   await expect(page.getByTestId('hub-create-menu')).toBeFocused()
@@ -78,8 +78,8 @@ test('+ holds the new entries and ⋮ the rest; Escape closes a menu back to its
   await page.getByRole('button', { name: 'Expand list' }).click()
   await expect(page.getByTestId('entity-list-header')).toBeVisible()
   await page.getByTestId('hub-create-menu').click()
-  await page.getByRole('menuitem', { name: 'New Session', exact: true }).click()
-  await expect(page.getByRole('dialog')).toBeVisible()
+  await page.getByRole('menuitem', { name: 'New chat', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: 'New chat' })).toBeVisible()
 })
 
 test('mark all as read clears every badge and persists, including muted and archived chats; new messages become unread', async ({ page }) => {

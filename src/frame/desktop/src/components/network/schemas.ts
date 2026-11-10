@@ -112,6 +112,26 @@ export const addFriendResultSchema = z.discriminatedUnion('action', [
 ])
 export type AddFriendResult = z.infer<typeof addFriendResultSchema>
 
+// ── EntityInfo ──
+
+export const entityInfoInputSchema = z.object({
+  did: didSchema,
+  /** What the host already shows for the DID, used until msg-center answers. */
+  name: z.string().max(256).optional(),
+  avatar: z.string().max(4096).optional(),
+  kind: lookupKindSchema.optional(),
+  /** Offer “Send message”; choosing it closes the dialog and the host opens the conversation. */
+  canMessage: z.boolean().default(true),
+})
+export type EntityInfoInput = z.input<typeof entityInfoInputSchema>
+export type EntityInfoParams = z.output<typeof entityInfoInputSchema>
+
+export const entityInfoResultSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('message'), person: pickedPersonSchema }),
+  cancelledSchema,
+])
+export type EntityInfoResult = z.infer<typeof entityInfoResultSchema>
+
 // ── JoinGroupDialog ──
 
 export const joinGroupInputSchema = z.object({

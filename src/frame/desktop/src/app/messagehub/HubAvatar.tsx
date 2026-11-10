@@ -6,6 +6,7 @@ import { presentUnresolvedDid } from '../../presentation/model'
 import { useDidPresentation } from '../../presentation/useDidPresentation'
 import type { MessageHubStore } from './store/types'
 import type { EntityType, MessageHubContext } from './types'
+import { senderTone } from './senderTone'
 
 const typeColors: Record<EntityType, string> = {
   person: 'var(--cp-accent)',
@@ -99,4 +100,38 @@ export function MemberAvatar({
   return entity || did === context.ownerDid
     ? <HubAvatar type={type} name={name} avatar={store.avatarOf(context, did)} size={size} />
     : <UnknownMemberAvatar did={did} type={type} name={name} size={size} />
+}
+
+/** A sender's own picture, else the initial of their name (an Agent: its glyph) on their colour. */
+export function SenderPicture({ did, type = 'person', name, avatar, size }: { did: string; type?: EntityType; name: string; avatar?: string; size: number }) {
+  return (
+    <span className="relative inline-flex shrink-0" style={{ width: size, height: size }} data-testid="hub-avatar" data-avatar={avatar ? 'image' : 'default'}>
+      <ObjectAvatar title={name} icons={[avatar]} size={size} tone={senderTone(did)} fallbackIcon={type === 'agent' ? <Bot size={Math.round(size * 0.5)} /> : undefined} decorative />
+    </span>
+  )
+}
+
+function UnknownSenderPicture({ did, name, size }: { did: string; name: string; size: number }) {
+  const presentation = useDidPresentation(did, 'user') ?? presentUnresolvedDid(did, 'user', 'loading')
+  return <SenderPicture did={did} name={name} avatar={presentation.icons[0]} size={size} />
+}
+
+/** The picture beside a sender's bubbles in a group conversation: a contact's, or the member's DID document's. */
+export function SenderAvatar({
+  store,
+  context,
+  did,
+  name,
+  size = 32,
+}: {
+  store: Pick<MessageHubStore, 'findEntity' | 'avatarOf'>
+  context: MessageHubContext
+  did: string
+  name: string
+  size?: number
+}) {
+  const entity = store.findEntity(context, did)
+  return entity || did === context.ownerDid
+    ? <SenderPicture did={did} type={entity?.type} name={name} avatar={store.avatarOf(context, did)} size={size} />
+    : <UnknownSenderPicture did={did} name={name} size={size} />
 }

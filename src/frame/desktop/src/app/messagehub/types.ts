@@ -169,6 +169,8 @@ export interface SessionAccess {
 
 export interface SessionPreferences {
   title: string
+  /** The owner's own description of the session (`ui.description`). */
+  description: string
   pinned: boolean
   muted: boolean
   showActions: boolean

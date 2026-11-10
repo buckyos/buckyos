@@ -1,4 +1,4 @@
-import { createContext } from 'react'
+import { createContext, type ReactNode } from 'react'
 import type { DID } from 'buckyos'
 import type { MessageObject } from '../../protocol/msgobj'
 import type { GroupInvitationView, ReadReceipt } from '../../types'
@@ -34,6 +34,10 @@ export interface ConversationMessageActions {
   acceptOwnerTransfer?: (message: MessageObject) => Promise<void>
   acceptSessionInvitation?: (message: MessageObject) => Promise<void>
   openEntity?: (did: DID) => void
+  /** The sender's picture beside a peer's bubbles; given for group conversations only. */
+  senderAvatar?: (did: DID, name: string) => ReactNode
+  /** Opens the profile of a participant whose picture was clicked. */
+  openProfile?: (did: DID, name: string) => void
   /** MsgObject v2 relations (`relates_to`): edit / recall / delete / react / reply. */
   relations?: {
     capabilities: (message: MessageObject) => MessageRelationCapabilities

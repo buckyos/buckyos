@@ -1259,6 +1259,41 @@ impl MessageCenter {
         Ok(state)
     }
 
+    /// Clear the history for this owner only: the visibility watermark moves
+    /// to the newest record the session holds now (never backwards), while
+    /// registration, lifecycle, title and the owner's UI state stay. Unlike a
+    /// delete the watermark is not raised to the current time, so a message
+    /// that arrives next is visible whatever the sender's clock says. A
+    /// registered session stays listed while empty; one known only from its
+    /// records is listed again with its next message.
+    pub(crate) async fn clear_session_internal(
+        &self,
+        owner: DID,
+        session_id: String,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        let session_id = normalize_session_id(&session_id)?;
+        let mut state = self.load_or_default_state(&owner, &session_id).await?;
+        if let Some(newest) = self
+            .msg_box_db
+            .session_max_record_key(&owner, &session_id)
+            .await?
+        {
+            let current = state.delete_watermark_sort_key.map(|sort_key| {
+                (
+                    sort_key,
+                    state.delete_watermark_record_id.clone().unwrap_or_default(),
+                )
+            });
+            if current.as_ref().is_none_or(|current| &newest > current) {
+                state.delete_watermark_sort_key = Some(newest.0);
+                state.delete_watermark_record_id = Some(newest.1);
+            }
+        }
+        state.updated_at_ms = Self::now_ms();
+        self.msg_box_db.upsert_owner_session(&state).await?;
+        Ok(state)
+    }
+
     /// Delete for this owner only: move the visibility watermark past every
     /// record that exists now, drop registration and the owner's UI state.
     /// Per-record `RecipientState`, other owners' references and the shared

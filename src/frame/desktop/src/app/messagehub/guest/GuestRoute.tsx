@@ -11,7 +11,7 @@ import { denialAdjustText, denialText } from '../../../sso/denial'
 import { FirstPasswordPrompt } from '../../../sso/FirstPasswordPrompt'
 import { IdentityCard } from '../../../sso/IdentityCard'
 import { identityDisplayName } from '../../../sso/identity'
-import { HubAvatar } from '../HubAvatar'
+import { HubAvatar, SenderPicture } from '../HubAvatar'
 import { hubButtonClass, hubPrimaryButtonClass } from '../SessionDialogs'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
 import { ConversationHistoryPane, type ConversationHistoryPaneHandle } from '../conversation/history/ConversationHistoryPane'
@@ -259,6 +259,7 @@ function GuestConversation({ hub, snapshot, session }: { hub: GuestHub; snapshot
       : Promise.reject(Error('not-found'))
     return {
       displayName: hub.nameOf,
+      senderAvatar: (did: string, name: string) => <SenderPicture did={did} name={name} size={32} />,
       relations: canSend ? {
         capabilities: () => ({ reply: !answerState, react: true, edit: false, redact: false, recall: false }),
         reply: (message: MessageObject) => setRelation({ kind: 'reply', message }),

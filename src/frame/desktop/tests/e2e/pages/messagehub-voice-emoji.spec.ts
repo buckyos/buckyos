@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { createNamedSession } from '../fixtures/messagehub'
 import { MOCK_VOICE_NOTE } from '../../../src/app/messagehub/mock/objects'
 
 declare global {
@@ -24,12 +25,7 @@ test.use({
 async function openSession(page: Page, title: string) {
   await page.goto(`/messagehub?entityId=${encodeURIComponent(CODER)}`)
   await expect(page.getByRole('button', { name: 'Sessions', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'New Session', exact: true }).last().click()
-  const dialog = page.getByRole('dialog')
-  await dialog.getByLabel('Title (optional)', { exact: true }).fill(title)
-  await dialog.getByRole('combobox', { name: 'Connection', exact: true }).selectOption('native')
-  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-  await expect(dialog).toHaveCount(0)
+  await createNamedSession(page, title)
   await expect(page.getByTestId('conversation-history')).toHaveAttribute('data-raw-count', '0')
   return page.evaluate(({ context, entity }) => window.__messageHubMock.sessions(context, entity)[0].id, { context: OWN, entity: CODER })
 }

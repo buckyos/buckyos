@@ -19,13 +19,13 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess, rememberLocalObject, resetObjectCaches } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import {
-  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
+  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, cancelGroupOwnerTransfer, checkGroupAccess, clearSession, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInvite, revokeGroupInviteLink, transferGroupOwner, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionMessageItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, groupSessionId } from '../groupModel'
 import { editsOf, effectiveContent, messageObjId, threadMessagesOf } from '../conversation/history/relations'
 import { messageVoice, type MessageObject } from '../protocol/msgobj'
-import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
+import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { sessionExtensions } from '../extensions/model'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
@@ -85,7 +85,7 @@ interface OwnerData {
   invitationStates: Map<string, GroupInvitationView['state']>
   /** Group DIDs of local group sessions already looked up in `group.list_by_member`. */
   groupLookups: Set<string>
-  prefs: Record<string, { title: string; pinned: boolean; muted: boolean; pinnedMessage?: PinnedMessage | null }>
+  prefs: Record<string, { title: string; description: string; pinned: boolean; muted: boolean; pinnedMessage?: PinnedMessage | null }>
   prefsLoaded: Set<string>
   version: number
   projected?: { version: number; value: ProjectedOwner }
@@ -542,7 +542,7 @@ export class MessageHubApiStore implements MessageHubStore {
     const choices = new Map<string, ConnectionChoice>()
     if (!entity || entityId === UNASSIGNED_ENTITY_ID) return []
     const known = this.projected(context).sessionsByEntity.get(entityId) ?? []
-    if (entity.domain !== 'external' || known.some(session => session.binding.kind === 'native')) choices.set('native', { id: 'native', binding: { kind: 'native', targetDid: entityId }, label: 'BuckyOS' })
+    if (entity.domain !== 'external' || known.some(session => session.binding.kind === 'native')) choices.set('native', { id: 'native', binding: { kind: 'native', targetDid: entityId }, label: NATIVE_CONNECTION_LABEL })
     for (const session of known) {
       if (session.binding.kind === 'tunnel') choices.set(session.binding.tunnelInstanceId, { id: session.binding.tunnelInstanceId, binding: session.binding, label: session.binding.connectionName })
     }
@@ -581,7 +581,11 @@ export class MessageHubApiStore implements MessageHubStore {
     const groupDid = this.groupOfSession(context, sessionId)
     const hosted = groupDid !== undefined && this.owner(context.ownerDid).groups[groupDid]?.hosted === true
     const unavailable = translate('messagehub.messageUnavailable', 'Message unavailable')
-    return items.map(item => {
+    // A page requested before the history was cleared may still arrive: what the watermark hides is dropped here too.
+    const state = this.owner(context.ownerDid).summaries.find(summary => summary.session_id === sessionId)?.state
+    const hiddenTo = state?.delete_watermark_sort_key
+    const visible = hiddenTo === undefined ? items : items.filter(item => item.sort_key > hiddenTo || (item.sort_key === hiddenTo && item.record_id > (state?.delete_watermark_record_id ?? '')))
+    return visible.map(item => {
       const message = itemToMessage(item, context.ownerDid, sessionId, this.senderName(context, item.from), unavailable)
       if (hosted) message.ui_group_session = sessionId
       return message
@@ -902,7 +906,7 @@ export class MessageHubApiStore implements MessageHubStore {
     if (reason || !binding) throw new Error(reason ?? 'binding_unknown')
     if (binding.kind !== 'native') throw new Error('platform_read_only')
     const data = this.owner(context.ownerDid)
-    if (entity.type === 'group') return this.createGroupSessionFor(context, entity.id, values.title)
+    if (entity.type === 'group') return this.createGroupSessionFor(context, entity.id, values.title, values.description ?? '')
     const epoch = data.epoch
     const state = await createSession({ owner: context.ownerDid, peer_did: entity.id, title: values.title || undefined, binding: { kind: 'native', targetDid: binding.targetDid }, origin: 'manual' })
     if (data.epoch !== epoch) throw new Error('context_changed')
@@ -910,18 +914,20 @@ export class MessageHubApiStore implements MessageHubStore {
     data.histories.set(viewerSessionKey(context, state.session_id), { ...emptyHistory, loaded: true })
     data.historyStatus.set(state.session_id, 'ready')
     this.bump(data)
+    // The session exists from here on: a description that could not be saved is not a failed creation (it can be set in the session details).
+    if (values.description) await this.updatePreferences(context, state.session_id, { description: values.description }).catch(error => console.warn('MessageHub session description not saved.', error))
     const session = this.projected(context).sessions.find(item => item.id === state.session_id)
     if (!session) throw new Error('session_missing')
     return session
   }
 
   /** A new session of a hosted group is a named Group Session (`group.create_session`), visible to its members. */
-  private async createGroupSessionFor(context: MessageHubContext, groupDid: string, title: string): Promise<Session> {
+  private async createGroupSessionFor(context: MessageHubContext, groupDid: string, title: string, description: string): Promise<Session> {
     const data = this.owner(context.ownerDid)
     if (!data.groups[groupDid]?.hosted) throw new Error('platform_read_only')
     let result
     try {
-      result = await createGroupSession(groupDid, { ...(title ? { title } : {}), idempotency_key: crypto.randomUUID() })
+      result = await createGroupSession(groupDid, { ...(title ? { title } : {}), ...(description ? { description } : {}), idempotency_key: crypto.randomUUID() })
     } catch (error) {
       throw new Error(`rejected: ${groupErrorReason(error)}`)
     }
@@ -968,7 +974,7 @@ export class MessageHubApiStore implements MessageHubStore {
       const entries = await listUiSessionState(sessionId, context.ownerDid)
       const prefs = { ...defaultPreferences }
       for (const entry of entries) this.applyPref(prefs, entry)
-      data.prefs[sessionId] = { title: prefs.title, pinned: prefs.pinned, muted: prefs.muted, pinnedMessage: prefs.pinnedMessage }
+      data.prefs[sessionId] = { title: prefs.title, description: prefs.description, pinned: prefs.pinned, muted: prefs.muted, pinnedMessage: prefs.pinnedMessage }
       this.bump(data)
     } catch (error) {
       data.prefsLoaded.delete(sessionId)
@@ -978,6 +984,7 @@ export class MessageHubApiStore implements MessageHubStore {
 
   private applyPref(prefs: SessionPreferences, entry: UiSessionStateEntry) {
     if (entry.key === 'ui.title' && typeof entry.value === 'string' && entry.value.trim().length <= 64) prefs.title = entry.value.trim()
+    if (entry.key === 'ui.description' && typeof entry.value === 'string' && entry.value.trim().length <= 500) prefs.description = entry.value.trim()
     if (entry.key === 'ui.pinned' && typeof entry.value === 'boolean') prefs.pinned = entry.value
     if (entry.key === 'ui.muted' && typeof entry.value === 'boolean') prefs.muted = entry.value
     if (entry.key === 'ui.pinned_message') { const pin = pinnedMessageSchema.safeParse(entry.value); prefs.pinnedMessage = pin.success ? pin.data : null }
@@ -995,7 +1002,7 @@ export class MessageHubApiStore implements MessageHubStore {
   }
 
   async updatePreferences(context: MessageHubContext, sessionId: string, patch: Partial<SessionPreferences>) {
-    if (Object.keys(patch).some(key => !['title', 'pinned', 'muted', 'showActions', 'pinnedMessage'].includes(key))) throw new Error('permission_denied')
+    if (Object.keys(patch).some(key => !['title', 'description', 'pinned', 'muted', 'showActions', 'pinnedMessage'].includes(key))) throw new Error('permission_denied')
     const data = this.owner(context.ownerDid)
     if (patch.showActions !== undefined) {
       if (typeof patch.showActions !== 'boolean') throw new Error('invalid_input')
@@ -1010,7 +1017,7 @@ export class MessageHubApiStore implements MessageHubStore {
       presentationSchema.parse(merged)
       if (merged.pinnedMessage) pinnedMessageSchema.parse(merged.pinnedMessage)
       for (const [key, value] of Object.entries(ownerPatch)) await updateUiSessionState(sessionId, key === 'pinnedMessage' ? 'ui.pinned_message' : `ui.${key}`, value ?? null, context.ownerDid)
-      data.prefs[sessionId] = { title: merged.title, pinned: merged.pinned, muted: merged.muted, pinnedMessage: merged.pinnedMessage ?? null }
+      data.prefs[sessionId] = { title: merged.title, description: merged.description, pinned: merged.pinned, muted: merged.muted, pinnedMessage: merged.pinnedMessage ?? null }
       data.prefsLoaded.add(sessionId)
     }
     this.bump(data)
@@ -1179,6 +1186,35 @@ export class MessageHubApiStore implements MessageHubStore {
     if (meta) await updateRecordState(meta.recordId, 'DELETED')
     data.histories.set(key, removeMessage(data.histories.get(key) ?? emptyHistory, messageIdOf(message)))
     if (this.preferences(context, sessionId).pinnedMessage?.id === messageObjId(message)) await this.updatePreferences(context, sessionId, { pinnedMessage: null })
+    this.bump(data)
+  }
+
+  /**
+   * `msg.clear_session` moves the owner's visibility watermark past the
+   * records the session holds now. An empty session is listed only while it
+   * is registered, so one known from its records alone is registered first,
+   * with the peer and origin those records gave it.
+   */
+  async clearHistory(context: MessageHubContext, sessionId: string) {
+    this.requireOwn(context)
+    const data = this.owner(context.ownerDid)
+    const summary = data.summaries.find(item => item.session_id === sessionId)
+    const session = this.projected(context).sessions.find(item => item.id === sessionId)
+    if (!summary || !session) throw new Error('session_missing')
+    const epoch = data.epoch
+    const peer = session.binding.kind === 'native' ? session.binding.targetDid : session.binding.kind === 'tunnel' ? session.binding.endpointDid : undefined
+    if (!summary.state?.registered && peer) {
+      const origin = this.findEntity(context, session.entityId)?.type === 'group' ? 'group' : session.origin === 'unknown' ? undefined : session.origin
+      await createSession({ owner: context.ownerDid, peer_did: peer, session_id: sessionId, ...(origin ? { origin } : {}) })
+    }
+    const state = await clearSession(context.ownerDid, sessionId)
+    if (data.epoch !== epoch) return
+    const current = data.summaries.find(item => item.session_id === sessionId)
+    if (current) Object.assign(current, { state, last_record: undefined, unread_count: 0, request_count: 0 })
+    const key = viewerSessionKey(context, sessionId)
+    data.histories.set(key, { ...emptyHistory, loaded: true, revision: (data.histories.get(key)?.revision ?? 0) + 1 })
+    data.historyStatus.set(sessionId, 'ready')
+    if (this.preferences(context, sessionId).pinnedMessage) await this.updatePreferences(context, sessionId, { pinnedMessage: null }).catch(error => console.warn('MessageHub pinned message not cleared.', error))
     this.bump(data)
   }
 

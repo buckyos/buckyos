@@ -3034,6 +3034,16 @@ impl MsgCenterHandler for MessageCenter {
         self.delete_session_internal(owner, session_id).await
     }
 
+    async fn handle_clear_session(
+        &self,
+        owner: DID,
+        session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<OwnerSessionState, RPCErrors> {
+        self.authorize_owner_write(&ctx, &owner).await?;
+        self.clear_session_internal(owner, session_id).await
+    }
+
     async fn handle_get_session_state(
         &self,
         owner: DID,

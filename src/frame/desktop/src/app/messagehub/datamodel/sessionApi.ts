@@ -296,6 +296,8 @@ export const createSession = (input: { owner: DID; peer_did: DID; title?: string
 export const archiveSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.archive_session', { owner, session_id: sessionId })
 export const restoreSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.restore_session', { owner, session_id: sessionId })
 export const deleteSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.delete_session', { owner, session_id: sessionId })
+/** Hides the records the session holds now from the owner; the session itself, its title and UI state stay. */
+export const clearSession = (owner: DID, sessionId: string) => call<OwnerSessionState>('msg.clear_session', { owner, session_id: sessionId })
 
 /* ── Records ── */
 
@@ -494,7 +496,7 @@ export const revokeGroupInviteLink = (groupDid: DID, token: string, idempotencyK
 export const acceptGroupInvitation = (groupDid: DID, invitationId: string, memberDid?: DID) => call<GroupMemberRecord & { sync_pending?: boolean }>('group.accept_invitation', { group_did: groupDid, invitation_id: invitationId, ...(memberDid ? { member_did: memberDid } : {}) })
 /** Asks to join (open / request_and_approve policy) or joins through an invite link token. */
 export const requestGroupJoin = (groupDid: DID, invite?: string) => call<GroupMemberRecord>('group.request_join', { group_did: groupDid, ...(invite ? { invite } : {}) })
-export const createGroupSession = (groupDid: DID, input: { title?: string; idempotency_key: string }) => call<{ group_did: DID; session_id: string; session: string; revision: string }>('group.create_session', { group_did: groupDid, ...input })
+export const createGroupSession = (groupDid: DID, input: { title?: string; description?: string; idempotency_key: string }) => call<{ group_did: DID; session_id: string; session: string; revision: string }>('group.create_session', { group_did: groupDid, ...input })
 export const updateGroupSession = (groupDid: DID, sessionId: string, expectedRevision: string, input: { add_members?: DID[]; membership?: unknown }, idempotencyKey: string) => call<{ revision: string }>('group.update_session', { group_did: groupDid, session_id: sessionId, expected_revision: expectedRevision, ...input, ...key(idempotencyKey) })
 export const archiveGroupSession = (groupDid: DID, sessionId: string, expectedRevision: string, idempotencyKey: string) => call<{ revision: string; lifecycle: string }>('group.archive_session', { group_did: groupDid, session_id: sessionId, expected_revision: expectedRevision, ...key(idempotencyKey) })
 export const deleteGroupSession = (groupDid: DID, sessionId: string, expectedRevision: string, idempotencyKey: string) => call<{ revision: string; lifecycle: string }>('group.delete_session', { group_did: groupDid, session_id: sessionId, expected_revision: expectedRevision, ...key(idempotencyKey) })

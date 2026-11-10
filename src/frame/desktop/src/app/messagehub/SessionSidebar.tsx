@@ -1,7 +1,7 @@
 import { Archive, MessageSquare, MoreHorizontal, Send, SquarePen, X } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { useMessageHubClock } from './store'
-import { relativeActivity } from './sessionModel'
+import { NATIVE_CONNECTION_LABEL, relativeActivity } from './sessionModel'
 import type { Session } from './types'
 
 interface SessionSidebarProps {
@@ -20,12 +20,14 @@ interface SessionSidebarProps {
   creationReason?: string
   titleFor?: (session: Session) => string
   statusFor?: (session: Session) => string
+  /** The session's description, shown under its title. */
+  descriptionFor?: (session: Session) => string
   /** A short chip next to the title, e.g. "has guests" for a Group Session with external members. */
   badgeFor?: (session: Session) => string | undefined
   showHeader?: boolean
 }
 
-export function SessionSidebar({ sessions, activeSessionId, onSelectSession, onClose, onCreate, onManage, onToggleArchived, archived = false, archivedCount = 0, archivedUnread = 0, canManage = false, creationReason, titleFor = session => session.title, statusFor, badgeFor, showHeader = true }: SessionSidebarProps) {
+export function SessionSidebar({ sessions, activeSessionId, onSelectSession, onClose, onCreate, onManage, onToggleArchived, archived = false, archivedCount = 0, archivedUnread = 0, canManage = false, creationReason, titleFor = session => session.title, statusFor, descriptionFor, badgeFor, showHeader = true }: SessionSidebarProps) {
   const { t } = useI18n()
   const now = useMessageHubClock()
   return <div className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="session-sidebar">
@@ -41,8 +43,8 @@ export function SessionSidebar({ sessions, activeSessionId, onSelectSession, onC
       {sessions.length === 0 && <p className="p-3 text-sm text-[color:var(--cp-muted)]">{t('messagehub.noSessions')}</p>}
       {sessions.map(session => <div key={session.id} data-testid="session-row" data-session-id={session.id} className="group mb-1 flex items-center rounded-lg" style={{ background: session.id === activeSessionId ? 'color-mix(in srgb, var(--cp-accent) 10%, transparent)' : undefined }}>
         <button type="button" onClick={() => onSelectSession(session.id)} aria-current={session.id === activeSessionId ? 'true' : undefined} className="flex min-h-11 min-w-0 flex-1 items-center gap-2 p-2 text-left">
-          <span role="img" aria-label={session.source ?? 'BuckyOS'} className="shrink-0 text-[color:var(--cp-accent)]">{session.binding.kind === 'tunnel' ? <Send size={14} /> : <MessageSquare size={14} />}</span>
-          <span className="min-w-0 flex-1"><span className={`block truncate text-sm ${session.id === activeSessionId ? 'font-semibold' : 'font-medium'}`}>{titleFor(session)}{statusFor?.(session) && <span role="img" aria-label={statusFor(session)} className="ml-1 text-[color:var(--cp-accent)]">•••</span>}</span>{session.binding.kind === 'tunnel' && <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{session.binding.connectionName}</span>}</span>
+          <span role="img" aria-label={session.binding.kind === 'native' ? NATIVE_CONNECTION_LABEL : session.source ?? session.binding.kind} className="shrink-0 text-[color:var(--cp-accent)]">{session.binding.kind === 'tunnel' ? <Send size={14} /> : <MessageSquare size={14} />}</span>
+          <span className="min-w-0 flex-1"><span className={`block truncate text-sm ${session.id === activeSessionId ? 'font-semibold' : 'font-medium'}`}>{titleFor(session)}{statusFor?.(session) && <span role="img" aria-label={statusFor(session)} className="ml-1 text-[color:var(--cp-accent)]">•••</span>}</span>{session.binding.kind === 'tunnel' && <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{session.binding.connectionName}</span>}{descriptionFor?.(session) && <span className="block truncate text-[11px] text-[color:var(--cp-muted)]" data-testid="session-description">{descriptionFor(session)}</span>}</span>
           {badgeFor?.(session) && <span className="shrink-0 rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent)_12%,transparent)] px-1.5 text-[11px] leading-[18px] text-[color:var(--cp-accent)]" data-testid="session-badge">{badgeFor(session)}</span>}
           {(session.requestCount ?? 0) > 0 && <span className="shrink-0 rounded-full bg-[color:color-mix(in_srgb,var(--cp-warning)_16%,transparent)] px-1.5 text-[11px] leading-[18px] text-[color:color-mix(in_srgb,var(--cp-warning)_70%,var(--cp-text))]" title={t('messagehub.requests')}>{t('messagehub.requestShort')}</span>}
           {session.unreadCount > 0 && <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[color:var(--cp-accent)] px-1.5 text-[11px] font-semibold text-white">{session.unreadCount}</span>}

@@ -4,14 +4,18 @@ import { NOTIFY_CATEGORIES, type MessageObject } from './protocol/msgobj'
 import { isHiddenRelationMessage } from './conversation/history/relations'
 import type { Entity, MessageHubContext, Session, SessionAccess, SessionBinding, SessionPreferences } from './types'
 
-export const createSessionSchema = z.object({ entityId: z.string().min(1), title: z.string().trim().max(64), connection: z.string().min(1) })
+export const createSessionSchema = z.object({ entityId: z.string().min(1), title: z.string().trim().max(64), description: z.string().trim().max(500).optional(), connection: z.string().min(1) })
+/** The new-session dialog: the entity is the one whose session list it was opened from. */
+export const newSessionFormSchema = z.object({ title: z.string().trim().min(1).max(64), description: z.string().trim().max(500), connection: z.string().min(1) })
+/** Display name of the native connection (MsgObject over the Named Message Protocol). */
+export const NATIVE_CONNECTION_LABEL = 'Named Message Protocol'
 export const sharedStateSchema = z.object({ title: z.string().trim().max(64), description: z.string().trim().max(500) })
 /** Group Sessions also carry an announcement (`group.update_shared_state`, at most 1024 chars). */
 export const groupSharedStateSchema = sharedStateSchema.extend({ announcement: z.string().trim().max(1024).optional() })
 export const memberStateSchema = z.object({ nickname: z.string().trim().max(64) })
-export const presentationSchema = z.object({ title: z.string().trim().max(64), pinned: z.boolean(), muted: z.boolean() })
+export const presentationSchema = z.object({ title: z.string().trim().max(64), description: z.string().trim().max(500), pinned: z.boolean(), muted: z.boolean() })
 export const pinnedMessageSchema = z.object({ id: z.string().min(1), text: z.string().max(2000), senderDid: z.string(), createdAt: z.number() })
-export const defaultPreferences: SessionPreferences = { title: '', pinned: false, muted: false, showActions: true }
+export const defaultPreferences: SessionPreferences = { title: '', description: '', pinned: false, muted: false, showActions: true }
 export const sessionKey = (ownerDid: string, sessionId: string) => JSON.stringify([ownerDid, sessionId])
 export const viewerSessionKey = (context: MessageHubContext, sessionId: string) => JSON.stringify([context.viewerDid, context.ownerDid, sessionId])
 export const isActionMessage = (message: MessageObject) => message.kind === 'event' && message.content.machine?.intent === 'buckyos.action_log'
@@ -49,6 +53,13 @@ export function selectDefaultSession(entity: Entity, sessions: Session[]): Sessi
 }
 export function sessionTitle(session: Session, preferences: SessionPreferences) {
   return preferences.title || session.shared.title || session.title
+}
+export function sessionDescription(session: Session, preferences: SessionPreferences) {
+  return preferences.description || session.shared.description
+}
+/** The session of an entity that saw the latest activity, among its active ones. */
+export function latestActiveSession(sessions: Session[]): Session | null {
+  return sessions.filter(session => session.lifecycle === 'active').sort((a, b) => b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))[0] ?? null
 }
 export function sessionAccess(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess {
   const own = context.mode === 'self' && context.viewerDid === context.ownerDid && session.ownerDid === context.ownerDid

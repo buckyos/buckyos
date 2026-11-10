@@ -20,12 +20,16 @@ import { CreateGroupForm } from './GroupDialogs'
 import { resolveMessageHubContext, type MessageHubContextRequest, type SharedLaunch } from './launch'
 import { ShareIntake } from './ShareIntake'
 import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime, type OutgoingPayload } from './store'
-import { creationReason, viewerSessionKey } from './sessionModel'
+import { creationReason, latestActiveSession, sessionDescription, viewerSessionKey } from './sessionModel'
 import { usePaneResizer } from './paneResize'
 import { WindowDialogProvider, useWindowDialog } from '../../desktop/windows/dialogs'
 import { SessionDetails } from './SessionDetails'
 import { CreateSessionForm, ManageSessionForm, hubButtonClass } from './SessionDialogs'
-import type { MessageHubContext, Session } from './types'
+import { NewChatForm, type NewChatTarget } from './NewChatDialog'
+import { ProfileDetails } from './ProfileDetails'
+import { confirmGroupAction } from './confirmDialog'
+import { ENTITY_INFO_DIALOG_PATH, useSystemDialog, type EntityInfoDialogParams } from '../../sysdlg'
+import type { Entity, MessageHubContext, Session } from './types'
 import { SessionSidebar } from './SessionSidebar'
 import { useNetworkDialogs } from '../../components/network/dialogs'
 import {
@@ -146,6 +150,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const store = useMessageHubStore()
   const dialog = useWindowDialog()
   const dialogs = useNetworkDialogs()
+  const systemDialog = useSystemDialog()
   const mediaHost = useMessageMediaHost()
   const identity = useHubIdentity(context)
   const networkOnline = useNetworkOnline()
@@ -200,7 +205,8 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const [showSessionSidebar, setShowSessionSidebar] = useState(false)
   // A message link only applies to the session it names: without that session the message is not looked up elsewhere.
   const [linkedMessageId] = useState(() => initialMessageId && findRequestedSession(resolvedInitialEntityId) ? initialMessageId : null)
-  const [detailsTarget, setDetailsTarget] = useState<'entity' | 'session' | 'message' | null>(() => linkedMessageId && isDesktop && linkedMessageDetails ? 'message' : null)
+  const [detailsTarget, setDetailsTarget] = useState<'entity' | 'session' | 'message' | 'profile' | null>(() => linkedMessageId && isDesktop && linkedMessageDetails ? 'message' : null)
+  const [profile, setProfile] = useState<EntityInfoDialogParams | null>(null)
   const [detailMessageId, setDetailMessageId] = useState<string | null>(linkedMessageId)
   const [detailWorklog, setDetailWorklog] = useState<(WorklogDestination & { request: number }) | null>(null)
   const showDetails = detailsTarget !== null
@@ -278,13 +284,17 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     const choices = store.connections(context, selectedEntity.id)
     return choices.some(choice => !creationReason(context, selectedEntity, store.policy(context, selectedEntity.id), choice.binding)) ? undefined : creationReason(context, selectedEntity, store.policy(context, selectedEntity.id), choices[0]?.binding)
   })() : undefined
-  const openCreate = (entityId: string | null = selectedEntityId) => {
+  const openCreate = () => {
+    const entity = selectedEntity
+    if (!entity) return
     const epoch = ++contextEpoch.current, trigger = document.activeElement
     setDefaultSessionError(false)
-    void dialog.open({ title: t('messagehub.newSession'), size: 'sm', dismissible: false, renderBody: controls => <CreateSessionForm context={context} entityId={entityId} onCancel={() => { contextEpoch.current++; controls.close() }} onCreated={session => {
+    void dialog.open({ title: `${t('messagehub.newSession')}: ${entity.name}`, size: 'sm', dismissible: false, renderBody: controls => <CreateSessionForm context={context} entityId={entity.id} onCancel={() => { contextEpoch.current++; controls.close() }} onCreated={session => {
       controls.close()
       if (contextEpoch.current !== epoch) return
       setSelectedEntityId(session.entityId); setSelectedSessionId(session.id); setArchived(false); setDetailsTarget(null); setMobileView('conversation')
+      // The touch layout's session list covers the conversation the new session opens in.
+      if (!isDesktop) setShowSessionSidebar(false)
     }} /> }).then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
   }
   const openManage = (session: Session) => {
@@ -296,9 +306,10 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     }} /> }).then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
   }
   const sidebarProps = {
-    onCreate: () => openCreate(), onManage: openManage, onToggleArchived: () => { contextEpoch.current++; setArchived(value => !value); setSelectedSessionId(null); setDetailsTarget(null); setDefaultSessionError(false) }, archived,
+    onCreate: openCreate, onManage: openManage, onToggleArchived: () => { contextEpoch.current++; setArchived(value => !value); setSelectedSessionId(null); setDetailsTarget(null); setDefaultSessionError(false) }, archived,
     archivedCount: archivedSessions.length, archivedUnread: archivedSessions.reduce((sum, session) => sum + session.unreadCount, 0), canManage, creationReason: createReason, titleFor: (session: Session) => store.title(context, session),
     statusFor: (session: Session) => store.runtimeFor(context, session.id).map(state => t(`messagehub.runtime.${state.status}`)).join(' · '),
+    descriptionFor: (session: Session) => sessionDescription(session, store.preferences(context, session.id)) || (selectedEntity?.type === 'group' ? store.groupSession(context, selectedEntity.id, session.id)?.description ?? '' : ''),
     badgeFor: (session: Session) => selectedEntity?.type === 'group' && store.groupSession(context, selectedEntity.id, session.id)?.hasGuests ? t('messagehub.group.hasGuests') : undefined,
   }
 
@@ -318,6 +329,31 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
       }
     }
   )
+
+  /** Opens an entity on the session that saw its latest activity; its default session when it has none yet. */
+  const enterEntity = (id: string) => {
+    const epoch = ++contextEpoch.current
+    const latest = latestActiveSession(store.sessions(context, id, 'active'))
+    setArchived(false)
+    setSelectedEntityId(id)
+    setSelectedSessionId(latest?.id ?? null)
+    setDefaultSessionError(false)
+    if (!latest) resolveDefaultSession(id, epoch)
+    setDetailsTarget(null)
+    setShowSessionSidebar(false)
+    if (!isDesktop) setMobileView('conversation')
+  }
+
+  const openNewChat = () => {
+    const trigger = document.activeElement
+    void dialog.open<NewChatTarget>({ title: t('messagehub.newChat'), size: 'sm', dismissible: false, renderBody: controls => <NewChatForm context={context} onCancel={() => controls.close()} onEnter={target => controls.close(target)} /> }).then((target) => {
+      if (!target) { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus(); return }
+      if (!target.listed) store.addPeer(context, target.id, { name: target.name, type: target.type === 'agent' ? 'agent' : 'person' })
+      setSearchQuery('')
+      setFilter('all')
+      enterEntity(target.id)
+    })
+  }
 
   const openCreateGroup = (members: string[] = []) => {
     const trigger = document.activeElement
@@ -360,6 +396,23 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
 
     setMobileView('conversation')
   }, [isDesktop])
+
+  /** A participant's profile: a details page on the touch layout, the system's entity info dialog on the desktop one. */
+  const openProfile = (did: string, name: string) => {
+    const entity = store.findEntity(context, did)
+    const type = entity?.type ?? 'person'
+    const params: EntityInfoDialogParams = { did, name: entity?.name ?? name, avatar: store.avatarOf(context, did), kind: type === 'agent' ? 'agent' : type === 'group' ? 'group' : 'user', canMessage: canManage && did !== context.ownerDid && (Boolean(entity) || canOpenPeer(did)) }
+    if (!isDesktop) { setProfile(params); setDetailsTarget('profile'); setMobileView('details'); return }
+    const trigger = document.activeElement
+    void systemDialog.open(ENTITY_INFO_DIALOG_PATH, params).then((result) => {
+      if (result.action === 'message') messageProfile(result.person.did, result.person.name, result.person.kind === 'agent' ? 'agent' : type)
+      else if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus()
+    })
+  }
+  const messageProfile = (did: string, name: string, type: Entity['type']) => {
+    if (!store.findEntity(context, did)) store.addPeer(context, did, { name, type: type === 'agent' ? 'agent' : 'person' })
+    handleSelectEntity(did)
+  }
 
   const handleSelectSession = (id: string) => {
     contextEpoch.current++; setSelectedSessionId(id); setDefaultSessionError(false)
@@ -426,7 +479,11 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     onOpenMessage: openMessageDetails,
     focusMessageId: activeSession && activeSession.id === initialSessionId ? linkedMessageId : null,
     onForward: openForward,
-    context, access, title: activeSession ? store.title(context, activeSession) : '', onCreate: () => openCreate(), creationReason: createReason,
+    context, access, title: activeSession ? store.title(context, activeSession) : '', creationReason: createReason,
+    muted: activeSession ? store.preferences(context, activeSession.id).muted : false,
+    onToggleMute: canManage ? () => { void toggleMute() } : undefined,
+    onClearHistory: canManage ? () => { void clearHistory() } : undefined,
+    onOpenProfile: openProfile,
     defaultSessionError, onRetryDefaultSession: () => { if (selectedEntityId) handleSelectEntity(selectedEntityId) },
     historyStatus: activeSession ? store.historyStatus(context, activeSession.id) : 'ready' as const,
     hasOlder: activeSession ? store.hasOlder(context, activeSession.id) : false,
@@ -440,26 +497,49 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
     onDraftChange: (value: string) => { if (activeSession) return store.saveDraft(context, activeSession.id, value) },
     showActions: activeSession ? store.preferences(context, activeSession.id).showActions : true,
   }
-  const detailsPane = detailsTarget === 'message' && activeSession && selectedEntity && detailMessageId ? <MessageDetails key={`${viewerSessionKey(context, activeSession.id)}:${detailMessageId}`} context={context} entityId={selectedEntity.id} sessionId={activeSession.id} messageId={detailMessageId} initialWorklog={detailWorklog ?? undefined} reader={messageReader} displayName={did => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false)} onClose={handleCloseDetails} /> : detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} onCreateGroup={canManage ? openCreateGroup : undefined} /> : null
+  const detailsPane = detailsTarget === 'profile' && profile ? <ProfileDetails key={profile.did} params={{ canMessage: true, ...profile }} onMessage={profile.canMessage === false ? undefined : person => messageProfile(person.did, person.name, person.kind === 'agent' ? 'agent' : 'person')} onClose={handleCloseDetails} /> : detailsTarget === 'message' && activeSession && selectedEntity && detailMessageId ? <MessageDetails key={`${viewerSessionKey(context, activeSession.id)}:${detailMessageId}`} context={context} entityId={selectedEntity.id} sessionId={activeSession.id} messageId={detailMessageId} initialWorklog={detailWorklog ?? undefined} reader={messageReader} displayName={did => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false)} onClose={handleCloseDetails} /> : detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} onCreateGroup={canManage ? openCreateGroup : undefined} /> : null
   const entityListExtras = { hasMore: store.hasMoreEntities(context), onLoadMore: () => store.loadMoreEntities(context), onCreateGroup: canManage ? () => openCreateGroup() : undefined }
-  const newSessionLabel = t('messagehub.newSession')
+  const newChatLabel = t('messagehub.newChat')
   const newGroupLabel = t('messagehub.group.create')
   const createItems: HeaderMenuItem[] = [
-    { key: 'session', label: newSessionLabel, icon: <MessageSquarePlus size={16} />, onSelect: () => openCreate(null), disabled: !canManage, testId: 'new-session' },
+    { key: 'chat', label: newChatLabel, icon: <MessageSquarePlus size={16} />, onSelect: openNewChat, disabled: !canManage, testId: 'new-chat' },
     { key: 'group', label: newGroupLabel, icon: <Users size={16} />, onSelect: () => openCreateGroup(), disabled: !canManage, testId: 'new-group' },
     { key: 'join', label: t('messagehub.group.joinGroup'), icon: <LogIn size={16} />, onSelect: () => { void openJoinGroup() }, disabled: !canManage, testId: 'join-group' },
   ]
+  const reportFailure = (title: string, body: string) => {
+    if (contextActive.current) void dialog.open({
+      title, size: 'sm',
+      renderBody: () => <p role="alert" className="text-sm">{body}</p>,
+      renderActions: controls => <button type="button" className={hubButtonClass} onClick={() => controls.close()}>{t('messagehub.close')}</button>,
+    })
+  }
+  const toggleMute = async () => {
+    if (!activeSession || !canManage) return
+    const muted = store.preferences(context, activeSession.id).muted
+    try {
+      await store.updatePreferences(context, activeSession.id, { muted: !muted })
+    } catch {
+      reportFailure(t(muted ? 'messagehub.unmute' : 'messagehub.mute'), t('messagehub.sessionMenu.failed'))
+    }
+  }
+  const clearHistory = async () => {
+    const session = activeSession
+    if (!session || !canManage) return
+    const title = t('messagehub.sessionMenu.clearHistory')
+    if (!await confirmGroupAction(dialog, t, { title, body: t('messagehub.sessionMenu.clearHistoryConfirm', undefined, { name: store.title(context, session) }), confirm: title })) return
+    try {
+      await store.clearHistory(context, session.id)
+    } catch {
+      reportFailure(title, t('messagehub.sessionMenu.failed'))
+    }
+  }
   const markAllRead = async () => {
     if (!canManage || markingAllRead) return
     setMarkingAllRead(true)
     try {
       await store.markAllRead(context)
     } catch {
-      if (contextActive.current) void dialog.open({
-        title: t('messagehub.header.markAllRead'), size: 'sm',
-        renderBody: () => <p role="alert" className="text-sm">{t('messagehub.header.markAllReadFailed')}</p>,
-        renderActions: controls => <button type="button" className={hubButtonClass} onClick={() => controls.close()}>{t('messagehub.close')}</button>,
-      })
+      reportFailure(t('messagehub.header.markAllRead'), t('messagehub.header.markAllReadFailed'))
     } finally {
       if (contextActive.current) setMarkingAllRead(false)
     }
@@ -729,7 +809,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
             isSessionSidebarOpen={showSessionSidebar}
           />
         ) : (
-          <EmptyConversation action={<div className="flex flex-wrap justify-center gap-2"><button className={`${hubButtonClass} flex items-center gap-2`} type="button" disabled={!canManage} onClick={() => openCreate(null)}><SquarePen size={16} />{newSessionLabel}</button><button className={`${hubButtonClass} flex items-center gap-2`} type="button" disabled={!canManage} onClick={() => openCreateGroup()}><Users size={16} />{newGroupLabel}</button></div>} />
+          <EmptyConversation action={<div className="flex flex-wrap justify-center gap-2"><button className={`${hubButtonClass} flex items-center gap-2`} type="button" disabled={!canManage} onClick={openNewChat}><SquarePen size={16} />{newChatLabel}</button><button className={`${hubButtonClass} flex items-center gap-2`} type="button" disabled={!canManage} onClick={() => openCreateGroup()}><Users size={16} />{newGroupLabel}</button></div>} />
         )}
       </div>
 

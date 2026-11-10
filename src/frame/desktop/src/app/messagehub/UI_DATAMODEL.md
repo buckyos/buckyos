@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.16（2026-10-19：Telegram 式语音消息（`MsgObject.voice`）、Composer 表情面板与纯 emoji 大字显示，见 §3.5.1 / §3.5.2 / §3.5.7 / §4.2）；v0.15（2026-10-17：My Network 升级 M6 — 选人、入群、加好友、关系操作改用 `components/network/` 公共组件；`access_level` 的 `friend` 改名 `allow`；未知 DID 作为待建会话的实体打开（`addPeer`）；好友请求卡片，见 §3.7 / §4.6）；v0.14（2026-10-12：实体列表标题栏改为 编辑 / 身份与未读总数（同步状态） / + / ⋮，编辑模式批量置顶与静音，store `syncStatus`，见 §4.1.1）；v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.17（2026-11-09：群聊发送者头像与资料入口、会话头的搜索与 ⋮ 菜单（编辑信息 / 静音 / 清空聊天记录）、列表「发起聊天」与会话列表「新建会话」分开、`ui.description`、`msg.clear_session`，见 §3.5.8 / §4.1.2 / §4.4 / §4.5 / §5.3.1 / §9.2）；v0.16（2026-10-19：Telegram 式语音消息（`MsgObject.voice`）、Composer 表情面板与纯 emoji 大字显示，见 §3.5.1 / §3.5.2 / §3.5.7 / §4.2）；v0.15（2026-10-17：My Network 升级 M6 — 选人、入群、加好友、关系操作改用 `components/network/` 公共组件；`access_level` 的 `friend` 改名 `allow`；未知 DID 作为待建会话的实体打开（`addPeer`）；好友请求卡片，见 §3.7 / §4.6）；v0.14（2026-10-12：实体列表标题栏改为 编辑 / 身份与未读总数（同步状态） / + / ⋮，编辑模式批量置顶与静音，store `syncStatus`，见 §4.1.1）；v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -69,6 +69,9 @@ UI DataModel 层（本文档定义，UI 需求驱动）
 | Panel C 实体详情 | `EntityDetails` | `EntityDetail` + owner / entity 创建策略 |
 | Panel C 会话详情 | `SessionDetails` | `Session` + `SessionAccess` + `SessionPreferences` |
 | 创建 / 归档 / 删除 | `SessionDialogs` | Zod 输入模型 + WindowDialogProvider |
+| 发起聊天 | `NewChatDialog` | `Entity[]` + `contact.lookup` 候选，见 §4.1.2 |
+| 会话内搜索 | `conversation/search/ConversationSearchBar` | 已加载时间线的行 + `loadOlder`，见 §5.3.1 |
+| 参与者资料 | 系统对话框 `sysdlg/entity_info`（桌面）/ `ProfileDetails`（触屏详情页） | `components/network/EntityInfo`，见 §3.5.8 |
 
 ### 1.4a 2026-09-06 已落地原型（本节时间口径优先）
 
@@ -88,9 +91,9 @@ UI DataModel 层（本文档定义，UI 需求驱动）
 | 生命周期 | `active` / `archived`；删除保留时间水位与最小来源信息，移除本地历史引用、文本 / 文件草稿与偏好 |
 | 持久化 | `messagehub-prototype-v1` IndexedDB 保存小型 Session 元数据和 mock 消息差量；长 seed 沿用现有 IndexedDB reader |
 | 临时状态 | 带 member DID 与过期时间的运行态、绑定版本对应的写入确认均仅存在内存，刷新 / 切换 owner 清除 |
-| 详情目标 | `detailsTarget: 'entity' | 'session' | null`，会话详情跟随当前有效 Session；移动详情覆盖 Conversation，保持其挂载；桌面端会话侧栏与详情仅在聊天区仍有 480px（`CONVERSATION_MIN_READING_WIDTH`）时并排，否则改为覆盖抽屉（先让详情成为抽屉） |
-| 创建输入 | `createSessionSchema`: entityId、trim 后最多 64 字符 title、显式连接选择；当前只创建 chat |
-| 编辑输入 | `sharedStateSchema`（title / description 64 / 500 字符）、`memberStateSchema`（nickname 64 字符）、`presentationSchema`（title / pinned / muted） |
+| 详情目标 | `detailsTarget: 'entity' | 'session' | 'message' | 'profile' | null`，会话详情跟随当前有效 Session；`profile` 只在触屏布局出现（§3.5.8）；移动详情覆盖 Conversation，保持其挂载；桌面端会话侧栏与详情仅在聊天区仍有 480px（`CONVERSATION_MIN_READING_WIDTH`）时并排，否则改为覆盖抽屉（先让详情成为抽屉） |
+| 创建输入 | store 入参 `createSessionSchema`: entityId、trim 后最多 64 字符 title、可选 description（最多 500）、连接；对话框用 `newSessionFormSchema`（title 必填，见 §4.1.2）；当前只创建 chat |
+| 编辑输入 | `sharedStateSchema`（title / description 64 / 500 字符）、`memberStateSchema`（nickname 64 字符）、`presentationSchema`（title / description / pinned / muted） |
 | 操作状态 | 初始化 loading / error / retry；创建、编辑、管理和发送具有 pending / error，成功提交后才发布 store 结果 |
 | 批量已读 | 自己的“更多”菜单提供“全部标为已读”，覆盖归档、静音及未加载会话；真实 store 分页收集未读记录后持久化为 READ，再刷新摘要，失败时提示重试；Agent 观察模式不可用 |
 | Action 过滤 | `SessionPreferences.showActions` 默认 true；开关位于会话详情的“偏好设置”；只能在 projection 过滤，不删除原始消息，不改业务状态 |
@@ -933,6 +936,22 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
 - 未做：录音后试听再发送、肤色选择、中文关键词搜索、贴纸 / GIF、回应面板复用完整表情集、跨设备同步最近表情与已播放状态、
   自动连播下一条语音、Safari 播放 WebM/Opus 的兼容转码。
 
+#### 3.5.8 群聊发送者头像与资料（2026-11-09）
+
+- **头像**：群会话里，别人的每一段连续消息（`continuesMessageRun`：同一发送者、间隔小于 5 分钟）的第一条左侧显示发送者头像（32px），
+  同一段后续消息保留同宽空位，气泡左缘对齐；自己的消息仍靠右、不带头像；私聊不显示。行由 `renderers.tsx` 的 `MessageRow` 统一包装，
+  文本、表情、语音、附件、撤回占位、通知与群通知卡片都走它。
+- **图片来源**（`HubAvatar.tsx` 的 `SenderAvatar`）：发送者是 owner 列表里的实体或 owner 自己时用 `store.avatarOf`；否则读对方 DID 文档
+  （`useDidPresentation`）。没有图片时显示名称首字（Agent 显示 Agent 图标），底色由 DID 稳定哈希到一组主题色（`senderTone.ts`），
+  同一个人在同一会话里颜色不变，没有头像图片的成员也能分辨。
+- **注入方式**：渲染器不直接依赖 store，经 `ConversationMessageActions.senderAvatar(did, name)` 取头像节点、`openProfile(did, name)` 响应点击；
+  `ConversationView` 只在群会话提供 `senderAvatar`。访客页（`guest/GuestRoute.tsx`）只有名称，提供首字头像、不提供资料入口。
+- **点击头像**：桌面布局打开系统对话框 `sysdlg/entity_info`（`useSystemDialog().open(ENTITY_INFO_DIALOG_PATH, { did, name?, avatar?, kind?, canMessage })`，
+  契约见 [`components/network/UI_DATAMODEL.md`](../../components/network/UI_DATAMODEL.md) §7）；触屏布局进入详情页（`detailsTarget = 'profile'`，
+  `ProfileDetails` 内嵌同一个 `EntityInfo`，关闭回到会话）。面板显示头像、名称、DID（可复制）、类型与 Zone、关系徽标与可达性，
+  提供「发消息」和 `RelationActions`（加好友 / 允许消息 / 屏蔽…）。「发消息」：不在列表里的 DID 先 `addPeer`，再按默认会话规则打开与对方的会话；
+  观察模式与本人不提供。
+
 ### 3.6 会话时间线投影模型
 
 当前原型接口如下（`conversation/history/types.ts`）；真实接入需补 §6.6 的记录更新与分页能力：
@@ -1089,13 +1108,50 @@ mock store 同规则）。这些账号的会话仍可经 `entityById` / launch c
   浏览器离线 → “等待网络…”；`store.syncStatus(context) === 'connecting'` → “连接中…”。
   真实 store 在会话列表刷新（`refreshSummaries`）失败后置为 `connecting`，下一次成功刷新恢复 `online`；
   浏览器 `online` 事件会立刻补一次刷新。mock 用 `configure({ sync })` 切换。
-- **`+`**：新建会话、新建群聊；观察模式（`canManage` 为假）整组禁用。
+- **`+`**：发起聊天（§4.1.2）、新建群聊、加入群；观察模式（`canManage` 为假）整组禁用。
 - **`⋮`**：返回桌面（仅独立路由）、媒体设置、收起列表（仅桌面布局）。
 - **编辑模式**：编辑按钮切换（再次点击或 Esc 退出），行首出现选择圈，点行即选择，顶部显示已选数量，
   底部操作条为 置顶 / 静音（所选全部已置顶 / 已静音时变为取消）。没有任何 Session 的实体不可选。
   写入的是 Session 个人偏好（§4.4 `ui.pinned` / `ui.muted`）：置顶只写实体的默认会话（实体在任一会话置顶时即置顶，
   这样不打乱其它会话的排序）；取消置顶、静音、取消静音写该实体的全部会话（实体在全部会话静音时才算静音）。
   观察模式不提供编辑。没有后端接口按会话批量标记已读，因此暂无“标为已读”。
+
+#### 4.1.2 发起聊天与新建会话（2026-11-09）
+
+两个入口，职责分开：
+
+| 入口 | 位置 | 对话框 | 结果 |
+|---|---|---|---|
+| 发起聊天 | 实体列表标题栏 `+` 菜单、空会话页 | `NewChatForm`：只有一个搜索框和实体列表 | 进入所选实体**最近一次活动**的会话 |
+| 新建会话 | Session 侧栏顶部（会话头不再有新建按钮） | `CreateSessionForm`：会话名称、可选描述、连接 | 在当前实体下登记一个新会话 |
+
+**发起聊天**（`NewChatDialog.tsx`）：
+
+- 打开即聚焦搜索框。候选 = owner 的实体（含子实体，`entitySearch.ts` 的 `rankEntities`）+ `contact.lookup`（`kinds: ['user', 'agent']`，
+  去掉已在列表中的、本人和不可达的；空输入时即本 Zone 用户）。lookup 只显示对应当前输入的结果。
+- 模糊匹配：名称按「整串 > 前缀 > 子串（越靠前越好，词首加分）> 字母按序出现在一小段内」打分，DID 只做子串匹配；
+  多个词都要命中；同分保持列表原顺序（置顶、最近活动）。不做拼音匹配。
+- 每行：头像 + 两行（名称；类型 · 状态 / Zone · DID，未在列表中的注明「尚无会话」）。始终有一项被选中（默认第一项），
+  ↑/↓ 移动，Enter 或「进入」确认，双击某行直接进入；输入变化后选中项回到第一项。
+- 进入：不在列表中的先 `addPeer`；取该实体 active 会话中 `lastActiveAt` 最大的一个（`latestActiveSession`），没有会话时走默认会话规则
+  （`ensureDefaultSession`，按需创建 native 会话）。这与点击实体行不同：实体行打开默认会话（群为主会话、Agent 为最近的 native 会话）。
+
+**新建会话**（`SessionDialogs.tsx`）：
+
+```ts
+export const newSessionFormSchema = z.object({
+  title: z.string().trim().min(1).max(64),      // 会话名称，必填
+  description: z.string().trim().max(500),      // 可选
+  connection: z.string().min(1),
+})
+```
+
+- 实体就是打开 Session 侧栏的那个实体，对话框标题带实体名，不再选择实体。
+- 连接默认选 native，显示名为 `NATIVE_CONNECTION_LABEL = 'Named Message Protocol'`（会话详情与侧栏的连接名同样使用它，不再显示 BuckyOS）；
+  native 在该实体上不能创建时才默认到第一个可创建的连接。所选连接不可创建时显示原因并禁用「创建」。
+- 描述：群会话随 `group.create_session { description }` 成为共享说明；其它会话后端没有共享状态，写入 owner 自己的 `ui.description`（§4.4）。
+  显示取 `sessionDescription`：个人描述优先，其次共享说明；出现在会话详情标题下和 Session 侧栏标题下。
+- 触屏布局创建成功后收起 Session 抽屉。默认会话（`ensureDefaultSession`）仍以空名称创建，不经过此对话框。
 
 ### 4.2 Composer 草稿
 
@@ -1220,6 +1276,8 @@ export type EntityNotePatch = z.infer<typeof entityNotePatchSchema>
 export const uiSessionStateSchema = z.object({
   /** 仅当前用户的个人显示标题覆盖。 */
   'ui.title': z.string().trim().min(1).max(64).optional(),
+  /** 仅当前用户的会话描述（§4.1.2）；群会话的共享说明不在这里。 */
+  'ui.description': z.string().trim().min(1).max(500).optional(),
   'ui.pinned': z.boolean().optional(),
   'ui.muted': z.boolean().optional(),
   /** 置顶消息快照（§3.3.6）；`null` 表示未置顶。 */
@@ -1259,6 +1317,7 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
 | 归档 | 移出活动列表，保留每条消息阅读状态、未读计数、历史与草稿 |
 | 恢复 | 使用原 Session 引用、历史及活动时间，重新进入活动列表 |
 | 彻底删除 | 移除当前 owner 的 Session 可见历史引用、草稿及相关个人偏好，不删除其它 owner 的引用或联系人 / 连接 |
+| 清空聊天记录 | 只移除当前 owner 的可见历史：会话本身、登记、标题、置顶 / 静音等个人偏好和草稿都保留，其它参与者的记录不受影响 |
 | 新消息 | 有效普通消息可以解除归档；删除水位后的有效新消息可按连接规则形成新可见历史，旧消息重放不能复活已删内容 |
 
 当前 `msg.update_record_state` 只处理单条记录。`ARCHIVED` 仍进入 list_sessions/list_session，
@@ -1268,6 +1327,13 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
 已实现：`msg.archive_session` / `msg.restore_session` / `msg.delete_session` / `msg.get_session_state` 以 `owner_sessions`
 持久保存生命周期与删除水位 `(sort_key, record_id)`，`msg.list_sessions` / `msg.list_session` 与未读、请求计数均在水位之后统计；
 新 `chat` / `group_msg` / `deliver` 记录提交后自动解除归档。手工创建走 `msg.create_session`（registered 行，空历史可列出）。
+清空聊天记录（2026-11-09，`msg.clear_session`）：与删除共用可见性水位，但水位只推进到会话**现有最新记录**的 `(sort_key, record_id)`，
+不抬到当前时间，因此清空后紧接着到达的消息不受发送方时钟影响都可见；重放的旧消息仍被隐藏。登记、生命周期、标题和 `ui_session` 状态不动。
+已登记的会话清空后以空会话留在列表里；只凭记录存在的会话（未登记）清空后没有可见记录，要等下一条消息才重新出现，
+所以 UI 的 `clearHistory` 对未登记会话先用其归属的 peer（native 的 `targetDid` / tunnel 的 `endpointDid`）与 origin（群为 `group`）调用
+`msg.create_session { session_id }` 登记，再清空。成功后本地清空该会话的时间线并取消置顶消息；清空前发出、之后才返回的分页结果按水位过滤，不会把旧消息带回来。
+入口在会话头 ⋮ 菜单，执行前确认；通知会话（`sysnotify:*`）与观察模式不提供。
+
 后端需持久保存 owner 范围的生命周期、删除水位与最小连接来源，提供幂等的会话级操作及并发新消息处理。
 删除的不可恢复范围是该 owner 的本地历史引用；不可变对象还可能被其它 mailbox/delivery 引用，
 对象回收必须单独按共享引用处理，不能承诺清除所有物理副本。操作成功后再清理本地缓存，
@@ -1285,7 +1351,7 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
 
 当前改变联系人准入并不会迁移旧 REQUEST_BOX 记录；请求计数仍按记录统计，横幅只按关系决定是否出现。群发言、成员管理等权限仍通过 GroupMgr 判断，不能从好友关系或 native 连接推导。
 
-**新联系人与未知 DID**：store `addPeer(context, did, { name?, type? })` 把没有会话的 DID 列为实体（api：`OwnerData.peers` 进入投影，非 tunnel DID 视为 `managed`；mock：同样记在内存，有会话后从会话恢复）。launch / 路由带陌生 DID（例如 My Network 的「发消息」）时先 `addPeer` 再按默认会话规则创建 native 会话；「新建会话」对话框可展开公共 `FindPeople` 按名称或 DID 找人，选中后同样 `addPeer` 并作为目标。
+**新联系人与未知 DID**：store `addPeer(context, did, { name?, type? })` 把没有会话的 DID 列为实体（api：`OwnerData.peers` 进入投影，非 tunnel DID 视为 `managed`；mock：同样记在内存，有会话后从会话恢复）。launch / 路由带陌生 DID（例如 My Network 的「发消息」）时先 `addPeer` 再按默认会话规则创建 native 会话；「发起聊天」对话框（§4.1.2）里经 `contact.lookup` 找到的人、群聊里点头像后「发消息」的人，同样先 `addPeer` 再打开。
 
 ---
 
@@ -1406,7 +1472,7 @@ export interface MessageHubViewState {
 
   /* 面板可见性 */
   showSessionSidebar: boolean
-  detailsTarget: 'entity' | 'session' | null
+  detailsTarget: 'entity' | 'session' | 'message' | 'profile' | null
   archived: boolean
 
   /* 布局态（仅桌面端有意义，应持久化到本地） */
@@ -1436,6 +1502,23 @@ export interface MessageHubLayoutState {
 pointercancel / 失去 pointer capture / 窗口 blur / 页面隐藏都会结束拖动并恢复 body 的
 cursor 与 user-select，Escape 恢复拖动前宽度；分隔条是 `role="separator"`（非 button，
 pointerdown 已 preventDefault，不抢焦点），支持 ←/→ 键盘调整。
+
+#### 5.3.1 会话头：搜索与 ⋮ 菜单（2026-11-09）
+
+会话头从左到右：返回（触屏）/ Session 列表 / 实体与会话标题 / 搜索 / `⋮`。新建会话的按钮已移到 Session 侧栏（§4.1.2）。
+
+- **`⋮` 菜单**（复用 `EntityListHeader.tsx` 的 `HeaderMenu`）：编辑信息（打开会话详情）、静音 / 取消静音（写当前会话的 `ui.muted`，
+  静音时标题旁显示静音图标）、清空聊天记录（危险色，确认后执行，见 §4.5；会话没有消息时禁用）。观察模式只有「编辑信息」；
+  通知会话没有「清空聊天记录」。没有当前会话时不显示菜单。
+- **搜索**（参照 Telegram，`ConversationSearchBar`）：点击后搜索条取代会话头，输入框自动聚焦；关闭（← / Esc）后焦点回到搜索按钮。
+  搜索的是当前会话已加载时间线的**行**（折叠后的消息）：编辑后的正文、附件名、通知卡片标题；不搜索状态行、Action Log、好友 / 群通知卡片、
+  已撤回和不可读的消息。查询按空白分词，全部命中才算（大小写与全半角不敏感，`search/model.ts`）。
+  输入停顿 200ms 后定位到**最新**一条命中（`scrollToMessage`，居中并闪烁高亮）；`↑` / Enter 到更早一条，`↓` / Shift+Enter 到更新一条，
+  计数显示 `n/m`（最新一条为 1）。
+- **更早的历史**：后端没有搜索接口，更早的页按需读取。已在最早一条命中上再按 `↑`（或当前已加载范围内没有命中）且 `hasOlder` 时，
+  逐页 `loadOlder` 直到出现新的命中或历史读完；一步最多读 20 页，之后再按继续。只要还有未读入的历史，计数后带 `+`，没有命中时显示「暂未找到」而不是「没有结果」。
+  搜索期间新到的消息会加入命中列表，当前定位不变。
+- 通知会话（`sysnotify:*`）用自己的筛选条，不提供搜索。搜索状态属于组件内部，不进入 `MessageHubViewState`，切换会话即重置。
 
 ---
 
@@ -1702,8 +1785,9 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 转发消息 | `msg.post_send` | 目标 Session 的新消息，正文与 `data_obj` 引用取自原消息 |
 | 置顶消息 | `ui_session.update_state` | `{ owner, session_id, key: 'ui.pinned_message', value: PinnedMessage \| null }` |
 | 会话归档 / 恢复 / 彻底删除 | `msg.archive_session` / `msg.restore_session` / `msg.delete_session` | `{ owner, session_id }`；保留阅读状态、删除水位和共享对象引用，见 4.5 |
+| 清空聊天记录 | `msg.clear_session`（未登记的会话先 `msg.create_session`） | `{ owner, session_id }`；返回 `OwnerSessionState`，水位推进到现有最新记录，见 4.5 |
 | 手工创建空会话 | `msg.create_session` | `{ owner, peer_did, title?, binding?, session_id? }`；返回 `OwnerSessionState` |
-| 个人显示标题 / 置顶 / 静音 | `ui_session.update_state` | `{ owner, session_id, key, value }`，带 `owner` 走 owner 范围表；草稿仅存 viewer 本地 |
+| 个人显示标题 / 描述 / 置顶 / 静音 | `ui_session.update_state` | `{ owner, session_id, key, value }`，带 `owner` 走 owner 范围表；草稿仅存 viewer 本地 |
 | 编辑备注 / 标签 / 访问级别 | `contact.update_contact` | `ContactPatch` |
 | 拉黑 | `contact.block_contact` | |
 | 临时授权 | `contact.grant_temporary_access` | |
@@ -1716,7 +1800,7 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 邀请链接 | `group.create_invite_link` / `group.revoke_invite_link` | `{ group_did, expires_at_ms?, max_uses?, require_approval? }` → `{ token }`；`{ group_did, token }` |
 | 接受邀请 | `group.accept_invitation` | `{ group_did, invitation_id, member_did? }`；`member_did` 仅 Agent 的 owner 代为接受时传 |
 | 申请 / 链接入群 | `group.request_join` | `{ group_did, invite? }`；返回成员记录（`state` 为 `active` 或 `pending_admin_approval`） |
-| 新建 / 修改 / 归档 / 删除群会话 | `group.create_session` / `group.update_session` / `group.archive_session` / `group.delete_session` | `{ group_did, title?, idempotency_key }`；其余带 `session_id` 与记录 `expected_revision`，`update_session` 可带 `add_members` |
+| 新建 / 修改 / 归档 / 删除群会话 | `group.create_session` / `group.update_session` / `group.archive_session` / `group.delete_session` | `{ group_did, title?, description?, idempotency_key }`；其余带 `session_id` 与记录 `expected_revision`，`update_session` 可带 `add_members` |
 | 会话参与者 | `group.list_session_members` | `{ group_did, session_id? }` → `{ items: [{ member_did, kind, role?, entity_kind?, state }], complete, revision }` |
 | 会话成员 / Guest | `group.remove_session_member` / `group.leave_session` / `group.invite_session_guest` / `group.accept_session_invitation` | `{ group_did, session_id, member_did?, expected_revision?, idempotency_key? }`；接受为 `{ group_did, session_id }` |
 | 共享状态 / 成员状态 | `group.get_shared_state` + `group.update_shared_state` / `group.get_member_state` + `group.update_member_state` | `{ group_did, session_id?, expected_revision, set: { title | description | announcement | nickname }, unset: [...], idempotency_key }` |

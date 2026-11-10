@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { crc32, deflateSync } from 'node:zlib'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { createNamedSession, openSessionDetails } from '../fixtures/messagehub'
 
 /**
  * MessageHub against a real zone (UI_DATAMODEL §9.4 subset from the UI):
@@ -54,6 +55,18 @@ async function login(page: Page, request: APIRequestContext, baseURL: string): P
   return String(result.session_token)
 }
 
+/** Opens the Agent through the list's "New chat", then registers a named session from its session list. */
+async function createAgentSession(page: Page, title: string) {
+  await page.getByTestId('hub-create-menu').click()
+  await page.getByRole('menuitem', { name: 'New chat', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'New chat' })
+  await dialog.getByTestId('new-chat-search').fill(agentDid)
+  await expect(dialog.getByRole('option', { selected: true })).toHaveAttribute('data-entity-id', agentDid)
+  await dialog.getByRole('button', { name: 'Open', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await createNamedSession(page, title)
+}
+
 test.describe('MessageHub on a real zone', () => {
   test.skip(!enabled, 'Set MESSAGEHUB_REAL_E2E=1 with a proxied dev server (see playwright.real.config.ts).')
 
@@ -105,13 +118,7 @@ test.describe('MessageHub on a real zone', () => {
     const token = await login(page, request, baseURL!)
     await page.goto('/messagehub')
     await expect(page.getByRole('heading', { name: 'MessageHub' })).toBeVisible()
-    await page.getByTestId('hub-create-menu').click()
-    await page.getByRole('menuitem', { name: 'New Session', exact: true }).click()
-    const dialog = page.getByRole('dialog')
-    await dialog.getByLabel('Entity').selectOption(agentDid)
-    await dialog.getByLabel('Title (optional)').fill('UI 验收')
-    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-    await expect(dialog).toHaveCount(0)
+    await createAgentSession(page, 'UI 验收')
     await expect(page.getByText('Start a conversation', { exact: true })).toBeVisible()
     const text = `MessageHub UI 验收 ${Date.now()}`
     await page.locator('textarea').fill(text)
@@ -185,8 +192,7 @@ test.describe('MessageHub on a real zone (mobile and attachments)', () => {
     await expect(page.getByTestId('conversation-history')).toBeVisible()
     await expect.poll(async () => Number(await page.getByTestId('conversation-history').getAttribute('data-raw-count'))).toBeGreaterThan(0)
     await page.screenshot({ path: 'test-results-real/real-observer-375.png' })
-    await page.getByRole('button', { name: 'Session details', exact: true }).last().click()
-    await expect(page.getByTestId('session-details')).toBeVisible()
+    await openSessionDetails(page)
     await page.getByTestId('session-details').getByRole('button', { name: 'Close', exact: true }).click()
     await expect(page.getByTestId('conversation-history')).toBeVisible()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
@@ -197,13 +203,7 @@ test.describe('MessageHub on a real zone (mobile and attachments)', () => {
     page.on('pageerror', error => errors.push(error.message))
     const token = await login(page, request, baseURL!)
     await page.goto('/messagehub')
-    await page.getByTestId('hub-create-menu').click()
-    await page.getByRole('menuitem', { name: 'New Session', exact: true }).click()
-    const dialog = page.getByRole('dialog')
-    await dialog.getByLabel('Entity').selectOption(agentDid)
-    await dialog.getByLabel('Title (optional)').fill('附件验收')
-    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-    await expect(dialog).toHaveCount(0)
+    await createAgentSession(page, '附件验收')
     const sessionId = await page.evaluate(() => {
       const store = (window as unknown as { __messageHubStore: { defaultContext(): unknown; sessions(context: unknown): Array<{ id: string; shared: { title: string } }> } }).__messageHubStore
       return store.sessions(store.defaultContext()).find(session => session.shared.title === '附件验收')?.id ?? null
@@ -246,13 +246,7 @@ test.describe('MessageHub on a real zone (mobile and attachments)', () => {
     const token = await login(page, request, baseURL!)
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/messagehub')
-    await page.getByTestId('hub-create-menu').click()
-    await page.getByRole('menuitem', { name: 'New Session', exact: true }).click()
-    const dialog = page.getByRole('dialog')
-    await dialog.getByLabel('Entity').selectOption(agentDid)
-    await dialog.getByLabel('Title (optional)').fill('图片占位验收')
-    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-    await expect(dialog).toHaveCount(0)
+    await createAgentSession(page, '图片占位验收')
     const sessionId = await page.evaluate(() => {
       const store = (window as unknown as { __messageHubStore: { defaultContext(): unknown; sessions(context: unknown): Array<{ id: string; shared: { title: string } }> } }).__messageHubStore
       return store.sessions(store.defaultContext()).find(session => session.shared.title === '图片占位验收')?.id ?? null

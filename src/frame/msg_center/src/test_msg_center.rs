@@ -2285,6 +2285,154 @@ mod owner_session_tests {
             .is_empty());
     }
 
+    #[tokio::test]
+    async fn clear_session_hides_history_and_keeps_the_session() {
+        let (center, _tmp) = new_center("clear").await;
+        let owner = DID::new("bns", "clear-owner");
+        let peer = DID::new("bns", "clear-peer");
+        grant(&center, &peer, &owner, "clear").await;
+
+        // A registered session: cleared, it stays listed with its title and UI state.
+        let created = center
+            .handle_create_session(
+                MsgCenterCreateSessionReq {
+                    owner: owner.clone(),
+                    peer_did: peer.clone(),
+                    session_id: None,
+                    title: Some("Plans".to_string()),
+                    binding: None,
+                    origin: None,
+                },
+                ctx(),
+            )
+            .await
+            .unwrap();
+        let named = created.session_id.clone();
+        for (text, at, key) in [("one", 6_000_000, "clear-1"), ("two", 6_001_000, "clear-2")] {
+            let mut msg = chat_at(&peer, vec![owner.clone()], text, at);
+            msg.to_session = Some(named.clone());
+            inbound(&center, msg, "clear", key).await;
+        }
+        center
+            .handle_update_owner_ui_session_state(
+                owner.clone(),
+                named.clone(),
+                "ui.muted".into(),
+                json!(true),
+                ctx(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(timeline_len(&center, &owner, &named).await, 2);
+
+        let cleared = center
+            .handle_clear_session(owner.clone(), named.clone(), ctx())
+            .await
+            .unwrap();
+        assert!(cleared.registered);
+        assert_eq!(cleared.title.as_deref(), Some("Plans"));
+        assert_eq!(cleared.delete_watermark_sort_key, Some(6_001_000));
+        assert!(cleared.deleted_at_ms.is_none());
+        assert_eq!(timeline_len(&center, &owner, &named).await, 0);
+        let page = list(
+            &center,
+            &owner,
+            SessionListLifecycleFilter::Active,
+            SessionListOrder::Activity,
+            None,
+            None,
+        )
+        .await;
+        let summary = page
+            .items
+            .iter()
+            .find(|item| item.session_id == named)
+            .unwrap();
+        assert_eq!(summary.unread_count, 0);
+        assert!(summary.last_record.is_none());
+        assert_eq!(
+            center
+                .handle_list_owner_ui_session_state(owner.clone(), named.clone(), ctx())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // A replay of a cleared message stays hidden; the next message shows
+        // even when its sender's clock is behind this node's.
+        let mut replay = chat_at(&peer, vec![owner.clone()], "one", 6_000_000);
+        replay.to_session = Some(named.clone());
+        inbound(&center, replay, "clear", "clear-replay").await;
+        assert_eq!(timeline_len(&center, &owner, &named).await, 0);
+        let mut next = chat_at(&peer, vec![owner.clone()], "three", 6_002_000);
+        next.to_session = Some(named.clone());
+        inbound(&center, next, "clear", "clear-3").await;
+        assert_eq!(timeline_len(&center, &owner, &named).await, 1);
+
+        // Clearing again moves the watermark forward only.
+        let again = center
+            .handle_clear_session(owner.clone(), named.clone(), ctx())
+            .await
+            .unwrap();
+        assert_eq!(again.delete_watermark_sort_key, Some(6_002_000));
+        assert_eq!(timeline_len(&center, &owner, &named).await, 0);
+
+        // A session known only from its records leaves the list until its next message.
+        let direct = format!("dm:{}", peer.to_string());
+        inbound(
+            &center,
+            chat_at(&peer, vec![owner.clone()], "hi", 6_003_000),
+            "clear",
+            "clear-dm-1",
+        )
+        .await;
+        let cleared = center
+            .handle_clear_session(owner.clone(), direct.clone(), ctx())
+            .await
+            .unwrap();
+        assert!(!cleared.registered);
+        let listed = |page: &buckyos_api::SessionSummaryPage| {
+            page.items.iter().any(|item| item.session_id == direct)
+        };
+        assert!(!listed(
+            &list(
+                &center,
+                &owner,
+                SessionListLifecycleFilter::All,
+                SessionListOrder::Activity,
+                None,
+                None
+            )
+            .await
+        ));
+        inbound(
+            &center,
+            chat_at(&peer, vec![owner.clone()], "back", 6_004_000),
+            "clear",
+            "clear-dm-2",
+        )
+        .await;
+        assert!(listed(
+            &list(
+                &center,
+                &owner,
+                SessionListLifecycleFilter::All,
+                SessionListOrder::Activity,
+                None,
+                None
+            )
+            .await
+        ));
+        assert_eq!(timeline_len(&center, &owner, &direct).await, 1);
+
+        // An unknown session is not created by a clear.
+        assert!(center
+            .handle_clear_session(owner.clone(), "missing".to_string(), ctx())
+            .await
+            .is_err());
+    }
+
     // ---- authorization -------------------------------------------------
 
     const TEST_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----

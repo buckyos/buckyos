@@ -93,6 +93,28 @@ function rowClass(isSelf: boolean, continued: boolean): string {
   return `flex ${isSelf ? 'justify-end' : 'justify-start'} ${continued ? 'pt-0.5' : 'pt-3'}`
 }
 
+/**
+ * One message row. In a group a peer's run starts with its sender's picture,
+ * and the rest of the run stays aligned under it.
+ */
+function MessageRow({ message, isSelf, context, children }: { message: MessageObject; isSelf: boolean; context: MessageRenderContext; children: React.ReactNode }) {
+  const { t } = useI18n()
+  const { senderAvatar, openProfile } = useContext(ConversationMessageActionsContext)
+  if (!context.isGroup || isSelf || !senderAvatar) return <div className={rowClass(isSelf, context.continued)}>{children}</div>
+  const name = getMessageSenderName(message)
+  const picture = context.continued ? null : senderAvatar(message.from, name)
+  return (
+    <div className={`${rowClass(false, context.continued)} gap-2`}>
+      <div className="w-8 shrink-0" data-testid="message-avatar-slot">
+        {picture && openProfile ? (
+          <button type="button" className="mh-sender-avatar" onClick={() => openProfile(message.from, name)} aria-label={t('messagehub.message.openProfile', undefined, { name })} title={name} data-testid="message-avatar" data-did={message.from}>{picture}</button>
+        ) : picture ? <span className="mh-sender-avatar" data-testid="message-avatar" data-did={message.from}>{picture}</span> : null}
+      </div>
+      <div className="flex min-w-0 flex-1 justify-start">{children}</div>
+    </div>
+  )
+}
+
 type MessageRenderer = (
   message: MessageObject,
   context: MessageRenderContext,
@@ -199,7 +221,8 @@ function useBubbleActions(message: MessageObject): React.HTMLAttributes<HTMLDivE
   }
 }
 
-function TextMessage({ message, context: { isGroup, selfDid, continued, peerMarkdown } }: { message: MessageObject; context: MessageRenderContext }) {
+function TextMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
+  const { isGroup, selfDid, continued, peerMarkdown } = context
   const actions = useBubbleActions(message)
   const format = effectiveContent(message).format ?? 'text/plain'
   const isSelf = message.from === selfDid
@@ -208,7 +231,7 @@ function TextMessage({ message, context: { isGroup, selfDid, continued, peerMark
   const asMarkdown = format === 'text/markdown' || (peerMarkdown && !isSelf && format === 'text/plain')
 
   return (
-    <div className={rowClass(isSelf, continued)}>
+    <MessageRow message={message} isSelf={isSelf} context={context}>
       <div
         className={`mh-bubble ${bubbleWidthClass} min-w-[80px]`}
         style={bubbleStyle(isSelf, continued)}
@@ -234,7 +257,7 @@ function TextMessage({ message, context: { isGroup, selfDid, continued, peerMark
         )}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={selfDid} />
       </div>
-    </div>
+    </MessageRow>
   )
 }
 
@@ -244,12 +267,13 @@ function isBigEmoji(message: MessageObject): boolean {
   return isTextFormat(content.format) && !(content.refs?.length) && emojiOnlyCount(content.content ?? '') > 0
 }
 
-function BigEmojiMessage({ message, context: { isGroup, selfDid, continued } }: { message: MessageObject; context: MessageRenderContext }) {
+function BigEmojiMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
+  const { isGroup, selfDid, continued } = context
   const actions = useBubbleActions(message)
   const isSelf = message.from === selfDid
   const text = displayedContent(message).trim()
   return (
-    <div className={rowClass(isSelf, continued)}>
+    <MessageRow message={message} isSelf={isSelf} context={context}>
       <div className={`mh-bubble ${bubbleWidthClass} flex flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-emoji" data-message-id={messageObjId(message)} {...actions}>
         {!isSelf && isGroup && !continued ? <p className="mb-1 text-[13px] font-semibold" style={{ color: 'var(--cp-accent)' }}>{getMessageSenderName(message)}</p> : null}
         <ReplyQuote message={message} />
@@ -258,7 +282,7 @@ function BigEmojiMessage({ message, context: { isGroup, selfDid, continued } }: 
           <MessageFooter message={message} isSelf={isSelf} deliveryStatus={getMessageDeliveryStatus(message)} selfDid={selfDid} frameless />
         </div>
       </div>
-    </div>
+    </MessageRow>
   )
 }
 
@@ -280,7 +304,7 @@ function VoiceMessage({ message, context }: { message: MessageObject; context: M
   const caption = displayedContent(message).trim()
   const upload = outgoingUpload(message)
   return (
-    <div className={rowClass(isSelf, context.continued)}>
+    <MessageRow message={message} isSelf={isSelf} context={context}>
       <div className={`mh-bubble ${bubbleWidthClass} min-w-[200px]`} style={bubbleStyle(isSelf, context.continued)} data-testid="message-voice" data-message-id={messageObjId(message)} {...actions}>
         {!isSelf && context.isGroup && !context.continued ? <p className="mb-1 text-[13px] font-semibold" style={{ color: 'var(--cp-accent)' }}>{getMessageSenderName(message)}</p> : null}
         <ReplyQuote message={message} />
@@ -289,7 +313,7 @@ function VoiceMessage({ message, context }: { message: MessageObject; context: M
         {caption ? <p className={`${bodyTextClass} mt-1.5 whitespace-pre-wrap break-words`}><LinkifiedText text={caption} /></p> : null}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={getMessageDeliveryStatus(message)} selfDid={context.selfDid} />
       </div>
-    </div>
+    </MessageRow>
   )
 }
 
@@ -518,12 +542,12 @@ function RedactedMessage({ message, context }: { message: MessageObject; context
   const isSelf = message.from === context.selfDid
   const redacted = messageRelations(message)?.redacted
   const who = redacted?.by === message.from ? (isSelf ? t('messagehub.you') : displayName?.(message.from) ?? getMessageSenderName(message)) : displayName?.(redacted?.by ?? '') ?? redacted?.by ?? ''
-  return <div className={rowClass(isSelf, context.continued)}>
+  return <MessageRow message={message} isSelf={isSelf} context={context}>
     <div className={`mh-bubble ${bubbleWidthClass} min-w-[80px]`} style={{ ...bubbleStyle(isSelf, context.continued), opacity: 0.7 }} data-testid="message-redacted" {...actions}>
       <p className="text-[13px] italic">{t(redacted?.by === message.from ? 'messagehub.message.redacted' : 'messagehub.message.deletedBy', undefined, { name: who })}</p>
       <MessageFooter message={message} isSelf={isSelf} deliveryStatus={undefined} selfDid={context.selfDid} />
     </div>
-  </div>
+  </MessageRow>
 }
 
 /**
@@ -660,7 +684,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const progress = upload ? <UploadProgress upload={upload} alignEnd={isSelf} /> : null
   if (frameless) {
     return (
-      <div className={rowClass(isSelf, context.continued)}>
+      <MessageRow message={message} isSelf={isSelf} context={context}>
         <div className={`mh-bubble ${bubbleWidthClass} flex min-w-[160px] flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-media" data-message-id={messageObjId(message)} {...actions}>
           {sender}
           <ReplyQuote message={message} />
@@ -671,11 +695,11 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
             <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} frameless />
           </div>
         </div>
-      </div>
+      </MessageRow>
     )
   }
   return (
-    <div className={rowClass(isSelf, context.continued)}>
+    <MessageRow message={message} isSelf={isSelf} context={context}>
       <div
         className={`mh-bubble ${bubbleWidthClass} min-w-[160px]`}
         style={bubbleStyle(isSelf, context.continued)}
@@ -690,7 +714,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
         {caption.length > 0 ? <div className={`${bodyTextClass} mt-2 whitespace-pre-wrap break-words`}>{captionBody}</div> : null}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} />
       </div>
-    </div>
+    </MessageRow>
   )
 }
 
@@ -727,13 +751,16 @@ function MessageRef({ item, id, objectContext, isSelf, index, onKind }: { item: 
 
 function renderFallbackMessage(
   message: MessageObject,
-  { selfDid, continued }: MessageRenderContext,
+  context: MessageRenderContext,
 ) {
+  const { selfDid, continued } = context
   const isSelf = message.from === selfDid
 
   return (
-    <div
-      className={rowClass(isSelf, continued)}
+    <MessageRow
+      message={message}
+      isSelf={isSelf}
+      context={context}
       key={`${message.from}:${message.created_at_ms}:fallback`}
     >
       <div
@@ -747,7 +774,7 @@ function renderFallbackMessage(
           {displayedContent(message)}
         </pre>
       </div>
-    </div>
+    </MessageRow>
   )
 }
 
@@ -839,9 +866,9 @@ function NotifyMessage({ message, context }: { message: MessageObject; context: 
   const data = messageNotify(message)
   if (!data) return null
   return (
-    <div className={rowClass(false, context.continued)}>
+    <MessageRow message={message} isSelf={false} context={context}>
       <NotifyCard message={message} data={data} className={`${bubbleWidthClass} w-[420px] min-w-[240px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} footer={<MessageFooter message={message} isSelf={false} mode="card" />} />
-    </div>
+    </MessageRow>
   )
 }
 
@@ -877,7 +904,7 @@ function FriendRequestMessage({ message, context }: { message: MessageObject; co
   const primaryClass = 'min-h-11 rounded-lg px-3 text-sm font-semibold text-white disabled:opacity-50 md:min-h-9'
   const secondaryClass = 'min-h-11 rounded-lg border px-3 text-sm disabled:opacity-50 md:min-h-9'
   return (
-    <div className={rowClass(outgoing, context.continued)}>
+    <MessageRow message={message} isSelf={outgoing} context={context}>
       <div className={`${bubbleWidthClass} w-72 min-w-[220px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} data-testid="friend-notice" data-state={state ?? 'unknown'}>
         <div className="flex items-center gap-2.5">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ background: 'color-mix(in srgb, var(--cp-accent) 16%, transparent)', color: 'var(--cp-accent)' }} aria-hidden><UserPlus size={17} /></span>
@@ -898,7 +925,7 @@ function FriendRequestMessage({ message, context }: { message: MessageObject; co
         {error ? <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
         <MessageFooter message={message} isSelf={outgoing} mode="card" />
       </div>
-    </div>
+    </MessageRow>
   )
 }
 
@@ -932,7 +959,7 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
   const secondaryClass = 'min-h-11 rounded-lg border px-3 text-sm disabled:opacity-50 md:min-h-9'
   const pendingLabel = (key: string) => t(state === 'pending' ? 'messagehub.saving' : key)
   return (
-    <div className={rowClass(false, context.continued)}>
+    <MessageRow message={message} isSelf={false} context={context}>
       <div className={`${bubbleWidthClass} w-72 min-w-[220px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} data-testid="group-notice" data-action={notice.action} data-state={view.state ?? (state === 'done' ? outcome : undefined)}>
         <div className="flex items-center gap-2.5">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ background: 'color-mix(in srgb, var(--cp-warning) 18%, transparent)', color: 'var(--cp-warning)' }} aria-hidden><Users size={17} /></span>
@@ -981,6 +1008,6 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
         {agentGroupDisabled && invitation?.memberDid ? <AgentGroupSettingsLink agentDid={invitation.memberDid} name={nameOf(invitation.memberDid)} /> : null}
         <MessageFooter message={message} isSelf={false} mode="card" />
       </div>
-    </div>
+    </MessageRow>
   )
 }

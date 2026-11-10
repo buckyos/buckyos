@@ -13,6 +13,8 @@ export interface HeaderMenuItem {
   icon: ReactNode
   onSelect: () => void
   disabled?: boolean
+  /** A destructive entry, shown in the danger colour. */
+  danger?: boolean
   testId?: string
 }
 
@@ -23,7 +25,8 @@ export interface HubIdentity {
   type: EntityType
 }
 
-function HeaderMenu({ label, icon, items, testId }: { label: string; icon: ReactNode; items: HeaderMenuItem[]; testId: string }) {
+/** An icon button that opens a menu below it; `buttonClassName` replaces the list title bar's bare icon size. */
+export function HeaderMenu({ label, icon, items, testId, buttonClassName = headerButtonClass }: { label: string; icon: ReactNode; items: HeaderMenuItem[]; testId: string; buttonClassName?: string }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -60,7 +63,7 @@ function HeaderMenu({ label, icon, items, testId }: { label: string; icon: React
         aria-label={label}
         title={label}
         onClick={() => setOpen(value => !value)}
-        className={headerButtonClass}
+        className={buttonClassName}
         data-testid={testId}
       >
         {icon}
@@ -80,9 +83,10 @@ function HeaderMenu({ label, icon, items, testId }: { label: string; icon: React
               disabled={item.disabled}
               data-testid={item.testId}
               className="flex min-h-11 w-full items-center gap-2.5 whitespace-nowrap px-3 text-left text-[13px] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)] disabled:opacity-40 md:min-h-9"
+              style={item.danger ? { color: 'var(--cp-danger)' } : undefined}
               onClick={() => { setOpen(false); trigger.current?.focus(); item.onSelect() }}
             >
-              <span className="flex w-4 shrink-0 justify-center" style={{ color: 'var(--cp-muted)' }} aria-hidden>{item.icon}</span>
+              <span className="flex w-4 shrink-0 justify-center" style={{ color: item.danger ? 'var(--cp-danger)' : 'var(--cp-muted)' }} aria-hidden>{item.icon}</span>
               {item.label}
             </button>
           ))}

@@ -158,6 +158,11 @@ export const networkEn: Record<string, string> = {
   'network.addFriend.outcome.request_failed': 'The request could not be delivered to {{name}}. Send them your share link through another channel.',
   'network.addFriend.outcome.saved': '{{name}} is saved in your contacts.',
   'network.profile.zone': 'Zone {{zone}}',
+  'network.entityInfo.title': 'Profile',
+  'network.entityInfo.you': 'You',
+  'network.entityInfo.verified': 'Verified',
+  'network.entityInfo.sendMessage': 'Send message',
+  'network.entityInfo.relationship': 'Relationship',
 
   'network.action.add_friend': 'Add friend',
   'network.action.accept_request': 'Accept',
@@ -379,6 +384,11 @@ export const networkZh: Record<string, string> = {
   'network.addFriend.outcome.request_failed': '请求无法送达 {{name}}。请改用其它渠道发送你的分享链接。',
   'network.addFriend.outcome.saved': '已把 {{name}} 保存为联系人。',
   'network.profile.zone': 'Zone {{zone}}',
+  'network.entityInfo.title': '资料',
+  'network.entityInfo.you': '你自己',
+  'network.entityInfo.verified': '已验证',
+  'network.entityInfo.sendMessage': '发消息',
+  'network.entityInfo.relationship': '关系',
 
   'network.action.add_friend': '加好友',
   'network.action.accept_request': '接受',

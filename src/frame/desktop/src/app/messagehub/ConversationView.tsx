@@ -1,13 +1,17 @@
 import {
   ArrowLeft,
+  Bell,
+  BellOff,
+  Eraser,
   FileUp,
   Lock,
   Loader2,
   Menu,
   MoreVertical,
+  Pencil,
   Pin,
+  Search,
   Ticket,
-  SquarePen,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useI18n } from '../../i18n/provider'
@@ -39,7 +43,9 @@ import { useMessageHubRuntime, useMessageHubStore } from './store'
 import { RequestBanner } from './RelationPanel'
 import { friendlyDidName } from './api/projection'
 import { parseGroupNotice, withinWindow } from './groupModel'
-import { HubAvatar } from './HubAvatar'
+import { HubAvatar, SenderAvatar } from './HubAvatar'
+import { HeaderMenu, type HeaderMenuItem } from './EntityListHeader'
+import { ConversationSearchBar } from './conversation/search/ConversationSearchBar'
 
 interface ConversationViewProps {
   entity: Entity
@@ -56,8 +62,15 @@ interface ConversationViewProps {
   access?: SessionAccess | null
   title?: string
   onOpenSessionDetails?: () => void
-  onCreate?: () => void
   creationReason?: string
+  /** The session's notifications are muted for the owner. */
+  muted?: boolean
+  /** The session menu's mute / unmute; without it the entry is not offered. */
+  onToggleMute?: () => void
+  /** The session menu's "Clear history" (the host confirms); without it the entry is not offered. */
+  onClearHistory?: () => void
+  /** Opens the profile of a participant whose picture was clicked in a group conversation. */
+  onOpenProfile?: (did: string, name: string) => void
   defaultSessionError?: boolean
   onRetryDefaultSession?: () => void
   draft?: string
@@ -98,7 +111,7 @@ export function ConversationView({
   onSendMessage,
   onQueueChange,
   onResend,
-  context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, defaultSessionError, onRetryDefaultSession, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true,
+  context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, creationReason, muted = false, onToggleMute, onClearHistory, onOpenProfile, defaultSessionError, onRetryDefaultSession, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true,
   leadingPane = null,
   isSessionSidebarOpen = false,
   otherSessionsUnread = 0,
@@ -180,6 +193,8 @@ export function ConversationView({
       acceptOwnerTransfer: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.transferId ? store.acceptGroupOwnerTransfer(context, parsed.groupDid, parsed.transferId) : Promise.reject(Error('transfer-mismatch'))) : undefined,
       acceptSessionInvitation: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.sessionId ? store.acceptGroupSessionInvitation(context, parsed.groupDid, parsed.sessionId) : Promise.reject(Error('not-found'))) : undefined,
       openEntity: onOpenEntity,
+      senderAvatar: isGroup ? (did: DID, name: string) => <SenderAvatar store={store} context={context} did={did} name={name} /> : undefined,
+      openProfile: onOpenProfile,
       // Relations are plain messages with `relates_to`, so a direct session
       // offers reactions, replies and delete requests too; edits follow group rules.
       relations: isOwner && sessionId ? {
@@ -213,7 +228,7 @@ export function ConversationView({
       handleNotify: isOwner,
       answerFriendRequests: isOwner,
     }
-  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onForward, onOpenMessage, pinnedId, t, answerState]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onOpenProfile, onForward, onOpenMessage, pinnedId, t, answerState]) // eslint-disable-line react-hooks/exhaustive-deps
   const askerName = answerState ? messageActions.displayName(answerState.question.from) : ''
   const answer = useMemo<ComposerAnswer | null>(() => answerState ? { ...answerState, askerName } : null, [answerState, askerName])
 
@@ -222,6 +237,21 @@ export function ConversationView({
     historyPaneRef.current?.scrollToMessage(focusMessageId)
     void store.locateMessage(context, sessionId, focusMessageId).catch(() => false)
   }, [focusMessageId, sessionId, store, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A notification session lists cards under its own filter; the search is for conversations.
+  const [searching, setSearching] = useState(false)
+  const searchButtonRef = useRef<HTMLButtonElement>(null)
+  const focusSearchHit = useCallback((messageId: string) => historyPaneRef.current?.scrollToMessage(messageId), [])
+  const closeSearch = useCallback(() => {
+    setSearching(false)
+    requestAnimationFrame(() => searchButtonRef.current?.focus())
+  }, [])
+  const mutedMark = muted ? <BellOff size={13} className="shrink-0 text-[color:var(--cp-muted)]" role="img" aria-label={t('messagehub.sessionMenu.muted')} data-testid="session-muted" /> : null
+  const menuItems: HeaderMenuItem[] = session ? [
+    { key: 'edit-info', label: t('messagehub.sessionMenu.editInfo'), icon: <Pencil size={16} />, onSelect: () => onOpenSessionDetails?.(), disabled: !onOpenSessionDetails, testId: 'session-menu-edit-info' },
+    ...(onToggleMute ? [{ key: 'mute', label: t(muted ? 'messagehub.unmute' : 'messagehub.mute'), icon: muted ? <Bell size={16} /> : <BellOff size={16} />, onSelect: onToggleMute, disabled: !isOwner, testId: 'session-menu-mute' }] : []),
+    ...(onClearHistory && !notifyCategory ? [{ key: 'clear-history', label: t('messagehub.sessionMenu.clearHistory'), icon: <Eraser size={16} />, onSelect: onClearHistory, disabled: !isOwner || messageReader.totalCount === 0, danger: true, testId: 'session-menu-clear-history' }] : []),
+  ] : []
 
   // Observe body height to compute composer max (50% of conversation body)
   useEffect(() => {
@@ -304,6 +334,9 @@ export function ConversationView({
       onDrop={handleDrop}
       style={{ background: 'var(--cp-message-canvas)' }}
     >
+      {searching && session && !notifyCategory ? (
+        <ConversationSearchBar reader={historyReader} hasOlder={hasOlder} onLoadOlder={onLoadOlder} onFocus={focusSearchHit} onClose={closeSearch} />
+      ) : (
       <div
         className="flex items-center gap-1 px-2 py-1.5 flex-shrink-0 md:gap-2 md:px-3"
         style={{
@@ -325,19 +358,20 @@ export function ConversationView({
         <button onClick={onOpenSessionSidebar} aria-label={t('messagehub.sessions')} title={otherSessionsUnread > 0 ? t('messagehub.otherSessionsUnread', '{{count}} unread in other sessions', { count: otherSessionsUnread }) : t('messagehub.sessions')} className="relative flex min-h-11 min-w-11 items-center justify-center" style={{ color: isSessionSidebarOpen ? 'var(--cp-accent)' : 'var(--cp-muted)' }} type="button"><Menu size={18} />{otherSessionsUnread > 0 && <span data-testid="other-sessions-unread" className="absolute right-0.5 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[color:var(--cp-accent)] px-1 text-[10px] font-semibold leading-none text-white">{otherSessionsUnread}</span>}</button>
         <div className="min-w-0 flex-1">
           {/* On touch layouts the whole title block is one entity target; session
-              details stay on the ⋮ button. */}
+              details open from the ⋮ menu. */}
           <button onClick={onOpenDetails} className="flex min-h-11 w-full min-w-0 flex-col justify-center text-left md:hidden" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`}>
-            <span className="flex max-w-full items-center gap-1.5"><HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={20} systemNotify={entity.systemNotify} /><span className="truncate text-base font-semibold">{entity.name}</span></span>
+            <span className="flex max-w-full items-center gap-1.5"><HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={20} systemNotify={entity.systemNotify} /><span className="truncate text-base font-semibold">{entity.name}</span>{mutedMark}</span>
             <span className="block max-w-full truncate text-xs text-[color:var(--cp-muted)]">{subtitle}</span>
           </button>
-          <button onClick={onOpenDetails} className="hidden max-w-full items-center gap-1.5 text-left md:flex" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`} title={t('messagehub.entityDetails')}><HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={22} systemNotify={entity.systemNotify} /><span className="truncate text-[15px] font-semibold">{entity.name}</span></button>
+          <button onClick={onOpenDetails} className="hidden max-w-full items-center gap-1.5 text-left md:flex" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`} title={t('messagehub.entityDetails')}><HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={22} systemNotify={entity.systemNotify} /><span className="truncate text-[15px] font-semibold">{entity.name}</span>{mutedMark}</button>
           <button onClick={onOpenSessionDetails} disabled={!session} type="button" className="hidden max-w-full truncate text-xs text-[color:var(--cp-muted)] md:block" aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')}>{subtitle}</button>
           <div role="status" data-testid="session-runtime" className="truncate text-xs text-[color:var(--cp-accent)]">{runtime.map(state => `${state.memberDid === context.ownerDid ? t('messagehub.you') : session?.members[state.memberDid]?.nickname || entity.name} · ${t(`messagehub.runtime.${state.status}`)}${state.statusLine ? ` · ${state.statusLine}` : ''}`).join(' · ')}</div>
         </div>
         {refreshing ? <span role="status" className="flex min-w-0 max-w-28 items-center gap-1.5 text-xs text-[color:var(--cp-muted)]" data-testid="conversation-refresh-status"><Loader2 size={14} className="shrink-0 animate-spin" aria-hidden /><span className="truncate">{t('states.loading')}</span></span> : null}
-        {onCreate && <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40"><SquarePen size={18} /></button>}
-        <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
+        {session && !notifyCategory ? <button ref={searchButtonRef} type="button" onClick={() => setSearching(true)} title={t('messagehub.search.open')} aria-label={t('messagehub.search.open')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)]" data-testid="conversation-search-open"><Search size={18} /></button> : null}
+        <HeaderMenu label={t('messagehub.sessionMenu.label')} icon={<MoreVertical size={18} />} items={menuItems} testId="session-menu" buttonClassName="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40" />
       </div>
+      )}
       {session ? <RequestBanner entity={entity} context={context} requestCount={requestCount} /> : null}
 
       {notifyCategory ? <div role="group" aria-label={t('messagehub.notify.filter.label')} className="flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-3 py-1.5" data-testid="notify-filter">

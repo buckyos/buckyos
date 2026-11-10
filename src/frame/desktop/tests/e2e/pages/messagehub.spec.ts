@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { closeSessionList, createNamedSession, newSessionButton, openNewSession, openSessionDetails } from '../fixtures/messagehub'
 
 async function getComposerMetrics(page: Page) {
   return page.evaluate(() => {
@@ -148,30 +149,22 @@ async function openHub(page: import('@playwright/test').Page, entityId = CODER) 
   await expect(page.getByRole('button', { name: 'Sessions', exact: true })).toBeVisible()
 }
 async function createSession(page: import('@playwright/test').Page, title: string) {
-  await page.getByRole('button', { name: 'New Session', exact: true }).last().click()
-  const dialog = page.getByRole('dialog')
-  await dialog.getByLabel('Title (optional)', { exact: true }).fill(title)
-  await dialog.getByRole('combobox', { name: 'Connection', exact: true }).selectOption('native')
-  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
-  await expect(dialog).toHaveCount(0)
+  await createNamedSession(page, title)
   await expect(page.getByTestId('conversation-history')).toHaveAttribute('data-raw-count', '0')
   return page.evaluate(({ context, entity }) => window.__messageHubMock.sessions(context, entity)[0].id, { context: OWN, entity: CODER })
 }
 async function details(page: import('@playwright/test').Page) {
-  await page.getByRole('button', { name: 'Session details', exact: true }).last().click()
-  await expect(page.getByTestId('session-details')).toBeVisible()
-  return page.getByTestId('session-details')
+  return openSessionDetails(page)
 }
 
-test('New Session includes native users and selecting an empty user creates one reusable default', async ({ page }) => {
+test('New chat lists native users and selecting an empty user creates one reusable default', async ({ page }) => {
   await openHub(page)
   await page.getByTestId('hub-create-menu').click()
-  await page.getByRole('menuitem', { name: 'New Session', exact: true }).click()
-  const dialog = page.getByRole('dialog')
-  const target = dialog.getByRole('combobox').first()
-  await expect(target.locator('option', { hasText: 'Bob Zhang' })).toHaveCount(1)
-  await target.selectOption('did:buckyos:person:bob')
-  await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeEnabled()
+  await page.getByRole('menuitem', { name: 'New chat', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'New chat' })
+  await dialog.getByTestId('new-chat-search').fill('bob')
+  await expect(dialog.getByRole('option', { selected: true })).toContainText('Bob Zhang')
+  await expect(dialog.getByRole('button', { name: 'Open', exact: true })).toBeEnabled()
   await dialog.getByRole('button', { name: 'Cancel' }).click()
   await page.evaluate(async context => {
     const store = window.__messageHubMock
@@ -186,19 +179,19 @@ test('New Session includes native users and selecting an empty user creates one 
   expect(await page.evaluate(context => window.__messageHubMock.sessions(context, 'did:buckyos:person:bob').length, OWN)).toBe(1)
 })
 
-test('New Session finds someone new by DID and starts a conversation with them', async ({ page }) => {
+test('New chat finds someone new by DID and starts a conversation with them', async ({ page }) => {
   await openHub(page)
   await page.getByTestId('hub-create-menu').click()
-  await page.getByRole('menuitem', { name: 'New Session', exact: true }).click()
-  const dialog = page.getByRole('dialog')
-  await dialog.getByTestId('new-session-find').locator('summary').click()
-  await dialog.getByLabel('Find people').fill('did:bns:nora')
-  await dialog.getByTestId('find-people-result').filter({ hasText: 'Nora' }).getByRole('button', { name: 'Choose' }).click()
-  await expect(dialog.getByRole('combobox').first()).toHaveValue('did:bns:nora')
-  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'New chat', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'New chat' })
+  await dialog.getByTestId('new-chat-search').fill('did:bns:nora')
+  const found = dialog.getByRole('option', { selected: true })
+  await expect(found).toContainText('Nora')
+  await expect(found).toHaveAttribute('data-listed', 'false')
+  await dialog.getByRole('button', { name: 'Open', exact: true }).click()
   await expect(dialog).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Entity details: Nora' }).last()).toBeVisible()
-  expect(await page.evaluate(context => window.__messageHubMock.sessions(context, 'did:bns:nora').length, OWN)).toBe(1)
+  await expect.poll(() => page.evaluate(context => window.__messageHubMock.sessions(context, 'did:bns:nora').length, OWN)).toBe(1)
 })
 
 test('agent entity entry creates a missing default and skips pinned or tunnel sessions', async ({ page }) => {
@@ -268,9 +261,10 @@ for (const width of [1440, 375]) {
     page.on('pageerror', error => errors.push(error.message))
     await page.setViewportSize({ width, height: 900 })
     await openHub(page)
-    await page.getByRole('button', { name: 'New Session', exact: true }).last().click()
+    const restoreList = await openNewSession(page)
     await page.screenshot({ path: `test-results/messagehub-create-${width}.png` })
     await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
+    await restoreList()
     const first = await createSession(page, 'Release review')
     await expect(page.getByText('Start a conversation', { exact: true })).toBeVisible()
     await page.locator('textarea').fill('First message in its own session')
@@ -379,16 +373,17 @@ test('status, Action logs, clock ticks and delivery changes do not reorder sessi
 
 test('failed creation and deletion retain input, selection and data, and block duplicate submits', async ({ page }) => {
   await openHub(page)
-  await page.getByRole('button', { name: 'New Session', exact: true }).last().click()
+  const restoreList = await openNewSession(page)
   const dialog = page.getByRole('dialog')
-  await dialog.getByLabel('Title (optional)').fill('Retryable')
-  await dialog.getByRole('combobox', { name: 'Connection', exact: true }).selectOption('native')
+  await dialog.getByLabel('Session name').fill('Retryable')
+  await expect(dialog.getByRole('combobox', { name: 'Connection', exact: true })).toHaveValue('native')
   await page.evaluate(() => window.__messageHubMock.configure({ failNext: 'mock_failure', delayMs: 100 }))
   await dialog.getByRole('button', { name: 'Create', exact: true }).click()
   await expect(dialog.getByRole('alert')).toBeVisible()
-  await expect(dialog.getByLabel('Title (optional)')).toHaveValue('Retryable')
+  await expect(dialog.getByLabel('Session name')).toHaveValue('Retryable')
   await dialog.getByRole('button', { name: 'Create', exact: true }).dblclick()
   await expect(dialog).toHaveCount(0)
+  await restoreList()
   expect(await page.evaluate(context => window.__messageHubMock.sessions(context).filter(session => session.shared.title === 'Retryable').length, OWN)).toBe(1)
   const panel = await details(page)
   await panel.getByRole('button', { name: 'Manage session', exact: true }).click()
@@ -402,22 +397,28 @@ test('failed creation and deletion retain input, selection and data, and block d
 
 test('tunnel writing, explicit creation policy, connection limits and binding isolation', async ({ page }) => {
   await openHub(page, ALICE)
-  await page.getByRole('button', { name: 'New Session', exact: true }).last().click()
+  const restoreList = await openNewSession(page)
+  // The native connection is the default; a tunnel needs the entity's explicit policy.
+  await expect(page.getByRole('dialog').getByRole('combobox', { name: 'Connection', exact: true })).toHaveValue('native')
+  await expect(page.getByRole('dialog').getByRole('combobox', { name: 'Connection', exact: true }).locator('option:checked')).toHaveText('Named Message Protocol')
   await page.getByRole('dialog').getByRole('combobox', { name: 'Connection', exact: true }).selectOption('telegram-work')
   await expect(page.getByRole('dialog').getByRole('button', { name: 'Create', exact: true })).toBeDisabled()
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
+  await restoreList()
   await page.getByRole('button', { name: 'Entity details: Alice Chen' }).click()
   await page.getByLabel('Allow manual sessions with this entity').selectOption('allow')
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await page.getByRole('button', { name: 'Close', exact: true }).last().click()
-  await page.getByRole('button', { name: 'New Session', exact: true }).last().click()
+  const restoreAgain = await openNewSession(page)
   const dialog = page.getByRole('dialog')
-  await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeDisabled()
+  await expect(dialog.getByRole('combobox', { name: 'Connection', exact: true })).toHaveValue('native')
   await dialog.getByRole('combobox', { name: 'Connection', exact: true }).selectOption('telegram-personal')
   await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeDisabled()
   await dialog.getByRole('combobox', { name: 'Connection', exact: true }).selectOption('telegram-work')
-  await dialog.getByLabel('Title (optional)').fill('External review')
+  await dialog.getByLabel('Session name').fill('External review')
   await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await restoreAgain()
   await expect(page.locator('textarea')).toHaveCount(0)
   const panel = await details(page)
   await expect(panel.getByLabel('Shared title', { exact: true })).toBeDisabled()
@@ -476,7 +477,8 @@ for (const width of [1440, 375]) {
     await page.goto(`/messagehub?entityId=${encodeURIComponent(ALICE)}&ownerDid=${encodeURIComponent(CODER)}&mode=observe`)
     await expect(page.getByTestId('owner-banner')).toContainText('Read only')
     await expect(page.locator('textarea')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: 'New Session', exact: true }).last()).toBeDisabled()
+    await expect(await newSessionButton(page)).toBeDisabled()
+    await closeSessionList(page)
     const panel = await details(page)
     await expect(panel.getByLabel('Shared title', { exact: true })).toBeDisabled()
     await expect(panel.getByRole('button', { name: 'Manage session', exact: true })).toBeDisabled()
@@ -526,10 +528,9 @@ test('last session deletion leaves entity intact; non-selected management preser
 
 test('cancelled delayed creation does not change a newer selection and refresh retains registered session', async ({ page }) => {
   await openHub(page)
-  await page.getByRole('button', { name: 'New Session', exact: true }).last().click()
+  await openNewSession(page)
   const dialog = page.getByRole('dialog')
-  await dialog.getByLabel('Title (optional)').fill('Delayed session')
-  await dialog.getByRole('combobox', { name: 'Connection', exact: true }).selectOption('native')
+  await dialog.getByLabel('Session name').fill('Delayed session')
   await page.evaluate(() => window.__messageHubMock.configure({ delayMs: 1200 }))
   await dialog.getByRole('button', { name: 'Create', exact: true }).click()
   await dialog.getByRole('button', { name: 'Cancel' }).click()
@@ -738,7 +739,8 @@ test('touch controls have names and 44px targets; message status is readable tex
     page.getByRole('button', { name: 'Back to conversation list', exact: true }),
     page.getByRole('button', { name: 'Sessions', exact: true }),
     page.getByRole('button', { name: /^Entity details:/ }),
-    page.getByRole('button', { name: 'Session details', exact: true }),
+    page.getByRole('button', { name: 'Search messages', exact: true }),
+    page.getByRole('button', { name: 'Session menu', exact: true }),
     composer.getByRole('button', { name: 'Add attachment', exact: true }),
     composer.getByRole('button', { name: 'Emoji', exact: true }),
     // An empty input offers a voice message in place of Send.

@@ -8,7 +8,7 @@ import type { ConversationMessageReader } from '../conversation/history/types'
 import { notifyCategoryFromSessionId } from 'buckyos'
 import { getMessageStableId, messageNotify, messageVoice, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
-import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
+import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { createGroupSchema, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, inviteBlocked, participating, withinWindow } from '../groupModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupRole, type GroupSessionInfo, type GroupSessionParticipant, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
@@ -448,7 +448,7 @@ export class MessageHubMockStore implements MessageHubStore {
     const entity = this.lookup(entityId)
     const choices = new Map<string, ConnectionChoice>()
     const known = [...Object.values(this.snapshot.sessions), ...Object.values(this.snapshot.deleted).map(deleted => deleted.session)].filter(session => session.ownerDid === context.ownerDid && session.entityId === entityId)
-    if (entity && (entity.type === 'agent' || entity.source === 'buckyos' || entity.domain === 'managed' || known.some(session => session.binding.kind === 'native'))) choices.set('native', { id: 'native', binding: { kind: 'native', targetDid: entityId }, label: 'BuckyOS' })
+    if (entity && (entity.type === 'agent' || entity.source === 'buckyos' || entity.domain === 'managed' || known.some(session => session.binding.kind === 'native'))) choices.set('native', { id: 'native', binding: { kind: 'native', targetDid: entityId }, label: NATIVE_CONNECTION_LABEL })
     for (const session of known) {
       if (session.binding.kind === 'tunnel') choices.set(session.binding.tunnelInstanceId, { id: session.binding.tunnelInstanceId, binding: session.binding, label: session.binding.connectionName })
     }
@@ -519,7 +519,7 @@ export class MessageHubMockStore implements MessageHubStore {
       const reason = creationReason(context, entity, this.policy(context, entity.id), binding)
       if (reason || !binding) throw Error(reason)
       const now = this.now(), id = crypto.randomUUID()
-      const session: Session = { id, ownerDid: context.ownerDid, entityId: entity.id, title: entity.name, type: 'chat', binding: binding.kind === 'tunnel' ? { ...binding, remoteContextId: id } : binding, source: binding.kind === 'tunnel' ? binding.connectionName.split(' · ')[0].toLowerCase() : 'buckyos', origin: 'manual', lifecycle: 'active', createdAt: now, lastActiveAt: now, unreadCount: 0, shared: { title: values.title, description: '', updatedAt: now }, members: { [context.ownerDid]: { nickname: 'Me', updatedAt: now }, [entity.id]: { nickname: entity.name, updatedAt: now } } }
+      const session: Session = { id, ownerDid: context.ownerDid, entityId: entity.id, title: entity.name, type: 'chat', binding: binding.kind === 'tunnel' ? { ...binding, remoteContextId: id } : binding, source: binding.kind === 'tunnel' ? binding.connectionName.split(' · ')[0].toLowerCase() : 'buckyos', origin: 'manual', lifecycle: 'active', createdAt: now, lastActiveAt: now, unreadCount: 0, shared: { title: values.title, description: values.description ?? '', updatedAt: now }, members: { [context.ownerDid]: { nickname: 'Me', updatedAt: now }, [entity.id]: { nickname: entity.name, updatedAt: now } } }
       next.sessions[sessionKey(context.ownerDid, id)] = session
       return session
     })
@@ -542,7 +542,7 @@ export class MessageHubMockStore implements MessageHubStore {
   updatePreferences(context: MessageHubContext, id: string, patch: Partial<SessionPreferences>) {
     return this.mutate(next => {
       const session = this.requireSession(next, context, id)
-      if (Object.keys(patch).some(key => !['title', 'pinned', 'muted', 'showActions', 'pinnedMessage'].includes(key))) throw Error('permission_denied')
+      if (Object.keys(patch).some(key => !['title', 'description', 'pinned', 'muted', 'showActions', 'pinnedMessage'].includes(key))) throw Error('permission_denied')
       if (Object.keys(patch).some(key => key !== 'showActions')) this.requireOwn(context)
       const seed = next.seedFlags?.[session.entityId]
       if (seed && ('pinned' in patch || 'muted' in patch)) next.seedFlags = { ...next.seedFlags, [session.entityId]: { ...seed, ...('pinned' in patch ? { isPinned: undefined } : {}), ...('muted' in patch ? { isMuted: undefined } : {}) } }
@@ -750,6 +750,18 @@ export class MessageHubMockStore implements MessageHubStore {
       next.hidden[key] = [...(next.hidden[key] ?? []), getMessageStableId(message, 0)]
       const prefsKey = viewerSessionKey(context, id)
       if (next.preferences[prefsKey]?.pinnedMessage?.id === messageObjId(message)) next.preferences[prefsKey] = { ...next.preferences[prefsKey], pinnedMessage: null }
+    })
+  }
+  clearHistory(context: MessageHubContext, id: string) {
+    return this.mutate(next => {
+      this.requireOwn(context)
+      const session = this.requireSession(next, context, id), key = sessionKey(context.ownerDid, id)
+      next.withoutSeed[key] = true
+      delete next.messages[key]; delete next.delivery[key]; delete next.hidden[key]
+      session.lastMessage = undefined
+      session.unreadCount = 0
+      const prefsKey = viewerSessionKey(context, id)
+      if (next.preferences[prefsKey]?.pinnedMessage) next.preferences[prefsKey] = { ...next.preferences[prefsKey], pinnedMessage: null }
     })
   }
   sendMessage(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined, localId?: string, extra?: (next: Snapshot) => void) {

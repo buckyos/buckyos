@@ -615,7 +615,11 @@ UI 目标字段见 [UI DataModel §3.3](../../src/frame/desktop/src/app/messageh
 
 实现：`owner_sessions(owner, session_id, lifecycle, registered, origin, peer_did, binding_json, title,
 archived_at_ms, delete_watermark_sort_key, delete_watermark_record_id, deleted_at_ms, ...)`；
-RPC `msg.create_session` / `msg.archive_session` / `msg.restore_session` / `msg.delete_session` / `msg.get_session_state`。
+RPC `msg.create_session` / `msg.archive_session` / `msg.restore_session` / `msg.delete_session` / `msg.clear_session` / `msg.get_session_state`。
+`msg.clear_session { owner, session_id }`（2026-11-09）只清空该 owner 的可见历史：删除水位推进到会话现有最新记录的 `(sort_key, record_id)`（只进不退，
+不像 `delete_session` 那样抬到当前时间，所以随后到达的消息不论发送方时钟如何都可见），`registered`、`lifecycle`、`title` 与 `owner_ui_session_states` 保持不变，
+返回 `OwnerSessionState`。已登记的会话清空后仍作为空会话列出；只凭记录存在的会话清空后没有可见记录，下一条消息到达时重新列出，
+需要保留为空会话的客户端先用 `msg.create_session { session_id }` 登记。没有状态行也没有可见记录的会话返回错误，不会被创建。授权与其它生命周期写操作相同（owner 本人）。
 `list_sessions` 支持 `lifecycle` 过滤与 `order_by: activity`（按 chat / group_msg / deliver 记录的 `sort_key` 排序并给同口径游标），
 摘要新增 `last_activity_ms` / `request_count` / `lifecycle` / `state`；`list_session` 与摘要都只统计删除水位之后的记录。
 新普通消息提交后自动解除归档。`ui_session.*` 带 `owner` 时读写 `owner_ui_session_states`；不带 `owner` 时，用户 / App / Agent 调用者取其自己的 mailbox owner（同样落在 `owner_ui_session_states`、按 owner 授权），只有 Zone 服务、设备与进程内调用使用全局 `ui_session_states`（资源 `obj://msg-center/ui-state`）。

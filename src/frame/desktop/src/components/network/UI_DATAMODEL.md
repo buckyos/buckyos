@@ -1,6 +1,6 @@
 # Network 公共组件 UI DataModel
 
-- 文档版本：v0.2（2026-10-17，M6：后端定稿后的错误码、`msg.list_sessions` 消息请求、`group.list_by_member` 的 `member` / `invitations`、PeoplePicker `candidates` 与内嵌模式、mock 宿主桥）；v0.1（M0/M4）
+- 文档版本：v0.3（2026-11-09，`EntityInfo` 与系统对话框 `sysdlg/entity_info`，见 §7）；v0.2（2026-10-17，M6：后端定稿后的错误码、`msg.list_sessions` 消息请求、`group.list_by_member` 的 `member` / `invitations`、PeoplePicker `candidates` 与内嵌模式、mock 宿主桥）；v0.1（M0/M4）
 - 模块位置：`src/frame/desktop/src/components/network/`（组织方式同 `components/ContentPreview.tsx` + `components/preview/`）
 - 上游：[My Network 升级 TODO](../../../../../../notepads/done/my-network-upgrade-todo.md) §3.1–§3.6、[My Network PRD](../../../../../../product/my_networks/My_Network_PRD.md) §6.2–§6.4、§11.3
 - 后端契约：websdk `src/msg_center_client.ts` 的 “Relationships (msg_contact.rs)” 一节；buckyos-api `msg_contact.rs`；`group.*` 见 msg-center `group_service.rs`
@@ -15,7 +15,7 @@ msg-center (contact.* / group.* / msg.list_sessions / msg.list_session / kevent)
       └─ networkCache          cache.ts：只缓存返回结果、共享在途请求、按变更事件重载；没有规则
           └─ hooks.ts          useNetworkResource / useLookup / useRequests / useOwnerDid
               └─ relation.ts   §3.3 显示规则、可用动作、tag 分类、错误码 → 文案、Requests 聚合（纯函数）
-                  └─ 组件       FindPeople / PeoplePicker / AddFriendDialog / JoinGroupDialog / RelationBadge / RelationActions
+                  └─ 组件       FindPeople / PeoplePicker / AddFriendDialog / JoinGroupDialog / RelationBadge / RelationActions / EntityInfo
                       └─ dialogs.tsx  useNetworkDialogs()：以 WindowDialog 弹出，结果以 Promise 返回
 ```
 
@@ -197,7 +197,20 @@ addFriendResultSchema = { action: 'done', outcome: 'friends' | 'request_pending'
 joinGroupInputSchema  = { input? }                                       // 群 DID / BNS 名 / 邀请链接
 joinGroupFormSchema   = { input: string 1–2048 }
 joinGroupResultSchema = { action: 'joined', groupDid, name, state: 'active' | 'pending_admin_approval' } | { action: 'cancelled' }
+
+// EntityInfo → /sysdlg/entity_info（已登记为系统对话框）
+entityInfoInputSchema  = { did, name?, avatar?, kind?, canMessage = true }   // name / avatar / kind：宿主已有的展示信息，msg-center 回答前先用它
+entityInfoResultSchema = { action: 'message', person } | { action: 'cancelled' }
 ```
+
+`EntityInfo`（`EntityInfo.tsx`）是通用的实体资料面板：任何地方点到一个人、Agent 或群的 DID 时用它，不各自拼资料卡。
+
+- 数据：`contacts` 中的记录 + `contact.lookup(did)` 的候选 + 好友请求列表；名称 / 头像按「联系人记录 > lookup > 宿主给的提示 > DID 文档」取（`usePersonPresentation`）。
+- 内容：头像、名称、DID（可复制）、类型与 Zone、`RelationBadge`、可达性、已验证标记、联系人备注；「发消息」；`RelationActions`（不含移出分组）。
+  本人只显示「你自己」，没有关系动作与「发消息」；群不显示关系徽标与关系动作。lookup 没有结果时仍按宿主提示显示，并给出 lookup 的原因文案。
+- 打开方式：`useSystemDialog().open(ENTITY_INFO_DIALOG_PATH, params)`（`sysdlg/index.tsx`）。选择「发消息」时对话框以 `{ action: 'message', person }` 关闭，
+  打开哪个会话由宿主决定（MessageHub 在当前窗口切到与对方的会话）；关闭返回 `{ action: 'cancelled' }`。需要整页呈现的宿主（MessageHub 的触屏详情页）直接内嵌 `EntityInfo`，
+  用 `onMessage` 接收同一个动作。
 
 用户 tag 校验 `userTagSchema`：trim、1–64 字符、`contactTagKind(name) === 'user'`（不能是 `zone_user` / `zone_agent`，也不能形如 `<app>.<name>`）。
 
