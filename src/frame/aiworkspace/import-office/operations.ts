@@ -62,20 +62,3 @@ export function buildDocOperations(plan: DocPlan, target: DocTarget): BuiltDoc {
   }
   return { ops, blocks, missing: plan.segments.length - shown.length }
 }
-
-const enc = new TextEncoder()
-
-/** Commits of at most `maxOps` operations and about `maxBytes` of JSON (a rich text Block can be large). */
-export function sizedBatches<T>(ops: T[], maxOps = 2000, maxBytes = 6 * 1024 * 1024): T[][] {
-  const out: T[][] = []
-  let current: T[] = []
-  let bytes = 0
-  for (const op of ops) {
-    const size = enc.encode(JSON.stringify(op)).length
-    if (current.length && (current.length >= maxOps || bytes + size > maxBytes)) { out.push(current); current = []; bytes = 0 }
-    current.push(op)
-    bytes += size
-  }
-  if (current.length) out.push(current)
-  return out
-}

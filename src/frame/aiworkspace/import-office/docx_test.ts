@@ -3,7 +3,7 @@
  * schema; then the rules one by one, the operations, and the sub-documents of §5.3. Run: `deno test -A`. */
 
 import { ImportReport } from '../import-drawio/convert.ts'
-import { buildDocOperations, convertDocx, openPackage, sizedBatches, splitDoc, validateDoc, type AstNode, type DocPlan, type DocxOptions, type RasterRequest } from './mod.ts'
+import { buildDocOperations, convertDocx, openPackage, splitDoc, validateDoc, type AstNode, type DocPlan, type DocxOptions, type RasterRequest } from './mod.ts'
 import { assert, counter, equal, fixture, golden, soffice, toPdf } from './test_util.ts'
 
 async function convert(path: string, options: Partial<DocxOptions> = {}): Promise<{ plan: DocPlan; report: ImportReport }> {
@@ -133,6 +133,4 @@ Deno.test('operations: data in the content folder, Cells on the page in order, t
   equal(built.blocks.length, 4)
   const missing = buildDocOperations(plan, { surfaceId: 'sf', contentFolderId: 'c', afterKey: null, contentAfterKey: null, assets: new Map(), newId: counter() })
   equal(missing.missing, 1)
-  equal(sizedBatches([1, 2, 3, 4, 5], 2).map((b) => b.length), [2, 2, 1])
-  equal(sizedBatches(['a'.repeat(10), 'b'.repeat(10), 'c'], 10, 20).map((b) => b.length), [1, 2])
 })

@@ -184,6 +184,83 @@
       }
     },
     {
+      "method": "doc.stage",
+      "params": {
+        "epoch": "string",
+        "idempotency_key": "string",
+        "operations": [
+          {
+            "op": "string",
+            "records": [
+              {
+                "record_id": "string",
+                "values": {
+                  "n": "number",
+                  "title": "string"
+                }
+              }
+            ],
+            "source_id": "string"
+          }
+        ],
+        "part": "number",
+        "workspace_id": "string"
+      },
+      "result": {
+        "digest": "string",
+        "expires_at": "string",
+        "ok": "boolean",
+        "operations": "number",
+        "part": "number"
+      }
+    },
+    {
+      "method": "doc.commit",
+      "params": {
+        "epoch": "string",
+        "idempotency_key": "string",
+        "operations": [
+          {
+            "op": "string",
+            "records": [
+              {
+                "record_id": "string",
+                "values": {
+                  "n": "number",
+                  "title": "string"
+                }
+              }
+            ],
+            "source_id": "string"
+          }
+        ],
+        "protocol_version": "string",
+        "session_id": "string",
+        "staged": [
+          "string"
+        ],
+        "workspace_id": "string"
+      },
+      "result": {
+        "commit_id": "string",
+        "replayed": "boolean",
+        "seq": "number",
+        "server_ops": [],
+        "status": "string",
+        "touched": [
+          {
+            "change": "string",
+            "entity_id": "string",
+            "rev": "number",
+            "selector": {
+              "kind": "string",
+              "record_id": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
       "method": "doc.read",
       "params": {
         "entity_id": "string",
@@ -846,6 +923,8 @@
       },
       "result": {
         "bytes": "number",
+        "commit_part_bytes": "number",
+        "commit_parts": "number",
         "ok": "boolean",
         "removed": "number"
       }

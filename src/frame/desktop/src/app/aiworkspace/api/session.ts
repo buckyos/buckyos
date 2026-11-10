@@ -44,6 +44,9 @@ export interface CommitOptions {
   idempotencyKey?: string
   /** Replica session: stored with the pending row so the edit can be shown again after a restart. */
   meta?: PendingMeta
+  /** A Commit sent in several requests: told before request `part` of `total` goes out (the last one writes). Not
+   * told by a replica session, which sends later. */
+  onPart?: (part: number, total: number) => void
 }
 
 export type ImportedAsset = { kind: 'file'; name: string; object_id: string; size: number } | { kind: 'dir'; name: string; children: ImportedAsset[] }
@@ -607,7 +610,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
       return Promise.resolve({ status: 'rejected', code: 'BACKEND_UNREACHABLE', retryable: true, detail, errors: [{ code: 'BACKEND_UNREACHABLE', detail }], idempotency_key: key })
     }
     const request = this.request(operations, key, options)
-    return this.deliver(key, () => this.client.commit(request), { kind: 'commit', request })
+    return this.deliver(key, () => this.client.commit(request, options?.onPart), { kind: 'commit', request })
   }
 
   undoCommit(commitId: string, options?: { mode?: 'all_or_nothing' | 'partial'; planDigest?: string }): Promise<CommitOutcome> {

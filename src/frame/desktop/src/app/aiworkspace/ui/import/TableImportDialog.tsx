@@ -302,12 +302,12 @@ function TableImportDialog({ request, onClose, onDone }: { request: TableImportR
             {running && progress && (
               <div className="aiws-pdf-progress" data-testid="aiws-table-progress">
                 <progress max={Math.max(1, progress.total)} value={progress.done} />
-                <span className="aiws-muted">{progress.stage === 'commit' ? t('aiworkspace.import.progress', { done: progress.done, total: progress.total }) : t(progress.stage === 'upload' ? 'aiworkspace.import.progressUpload' : 'aiworkspace.import.progressPlan')}</span>
+                <span className="aiws-muted">{progress.stage === 'commit' ? t('aiworkspace.import.progress', { total: progress.total }) : progress.stage === 'send' ? t('aiworkspace.import.progressSend', { done: progress.done + 1, total: progress.total }) : t(progress.stage === 'upload' ? 'aiworkspace.import.progressUpload' : 'aiworkspace.import.progressPlan')}</span>
               </div>
             )}
             <div className="aiws-dialog-actions">
               {running ? (
-                <button type="button" data-testid="aiws-table-cancel" onClick={() => abort.current?.abort()}>{t('aiworkspace.common.cancel')}</button>
+                <button type="button" data-testid="aiws-table-cancel" disabled={progress.stage === 'send' || progress.stage === 'commit'} onClick={() => abort.current?.abort()}>{t('aiworkspace.common.cancel')}</button>
               ) : (
                 <>
                   <button type="button" className="is-primary" autoFocus data-testid="aiws-table-start" disabled={problem !== null} onClick={() => { void start() }}>{t('aiworkspace.import.start', { count: rowsTotal })}</button>

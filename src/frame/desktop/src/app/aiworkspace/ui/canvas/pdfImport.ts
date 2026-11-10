@@ -2,14 +2,14 @@
  * text, pictures and shapes taken apart by the shared converter (`@pdf/*`), what cannot be taken apart as a raster
  * under them — laid out in a grid, plus a presentation path with one cut step per page on a black stage. This file
  * is the browser host: it reads pages with pdf.js, encodes pictures, renders the rasters through pdf.js's operator
- * filter, uploads (3 at a time, each content once), then commits in batches of 2 000 operations.
+ * filter, uploads (3 at a time, each content once), then writes everything as one Commit.
  *
  *   1 inspect   page count, first page size and picture, what the first page would become (the dialog's estimate)
- *   2 convert   page by page, with progress; cancelling before the first commit leaves the workspace untouched
- *   3 commit    the canvas, its content folder and the original file; the pages; the path
- * A page that fails to convert is kept whole as a picture; a refused batch stops the import and says how far it got. */
+ *   2 convert   page by page, with progress; cancelling leaves the workspace untouched
+ *   3 commit    the canvas, its content folder, the original file, the pages and the path: one Commit, one undo
+ * A page that fails to convert is kept whole as a picture; a refused Commit leaves nothing behind. */
 
-import { allocateKeys, batches, buildOperations, ImportReport, type ImportOp, type UploadedAsset } from '@drawio/mod'
+import { allocateKeys, buildOperations, ImportReport, type ImportOp, type UploadedAsset } from '@drawio/mod'
 import { keysAfter } from '@drawio/keys'
 import { convertPdfPage, defaultColumns, extractPage, gridOrigins, OPS, pageScale, readBookmarks, stageOf, type EncodedImage, type ImageRequest, type PdfConvertOptions, type PdfjsDocument, type PdfjsPage, type PdfPage, type PdfPagePlan, type PdfOperatorList, type RasterRequest, type RasterResult } from '@pdf/mod'
 import { randomId } from '../../api/ids'
@@ -18,6 +18,7 @@ import { aiwsT } from '../../i18n'
 import { createPathOp } from '../../presentation/pathOps'
 import type { WorkspaceStore } from '../../state/store'
 import { openPdfDocument, renderOperators, renderPage, type PDFDocumentProxy, type PDFPageProxy } from '../media/pdfDoc'
+import { submitImport, type ImportCommitProgress } from '../import/submitImport'
 import type { ImportOutcome } from './drawioImport'
 import type { PdfImportSource } from './pdfImportRequest'
 import { createSurfaceOps } from './surfaceOps'
@@ -210,7 +211,7 @@ export async function inspectPdf(bytes: Uint8Array, signal?: AbortSignal): Promi
   }
 }
 
-export interface PdfImportProgress { stage: 'convert' | 'upload' | 'commit'; done: number; total: number }
+export type PdfImportProgress = { stage: 'convert' | 'upload'; done: number; total: number } | ImportCommitProgress
 
 /** Upload pictures by content (each distinct content once, a few at a time). */
 export class Uploader {
@@ -314,14 +315,14 @@ export async function importPdf(store: WorkspaceStore, source: PdfImportSource, 
   close()
   if (signal.aborted) return { ...outcome, error: aiwsT('aiworkspace.pdf.cancelled') }
 
-  // ---- commit: the canvas, its folder and the original; then the pages; then the path
+  // ---- one Commit: the canvas, its folder and the original, the pages, the path
   const title = name.slice(0, 120)
   const { ops: surfaceOps, surfaceId } = createSurfaceOps(store, title, 'free')
   const folderId = `${surfaceId}-content`
   const firstOps: Operation[] = [...surfaceOps]
   let contentAfter: string | null = null
   if (choices.keepOriginal) {
-    progress({ stage: 'commit', done: 0, total: 1 })
+    progress({ stage: 'upload', done: 0, total: 1 })
     let original: { object_id: string } | null = source.original ?? source.asset ?? null
     let posterId: string | null = null
     try {
@@ -340,22 +341,15 @@ export async function importPdf(store: WorkspaceStore, source: PdfImportSource, 
     }
   }
   const label = aiwsT('aiworkspace.pdf.importLabel', { name })
-  const first = await store.submit({ editId: `import:pdf:${surfaceId}`, label, operations: firstOps })
-  if (first.status !== 'accepted' && first.status !== 'saved_locally') {
-    return { ...outcome, error: aiwsT('aiworkspace.pdf.error.canvasFailed', { reason: first.status === 'rejected' || first.status === 'conflict' ? first.code : first.status }) }
-  }
-  outcome.surfaceId = surfaceId
   const sizes = plans.map((p) => p.pageSize ?? { w: p.bounds.w, h: p.bounds.h })
   const origins = gridOrigins(sizes, Math.max(1, Math.min(choices.columns, 12)))
   const all: ImportOp[] = []
   const frames: { id: string; page: number }[] = []
-  const pageOf = new Map<string, number>()
   const keys = allocateKeys(plans, assets, null, contentAfter)
   for (const [i, plan] of plans.entries()) {
     const origin = { x: origins[i].x + MARGIN, y: origins[i].y + MARGIN }
     const built = buildOperations(plan, { parentId: surfaceId, origin, afterKey: null, contentFolderId: folderId, contentAfterKey: contentAfter, assets, keys: keys[i] })
     const groupId = built.ids.get(plan.id)!
-    for (const o of [...built.objects, ...built.lines]) pageOf.set(o.entity_id, i)
     all.push(...built.objects, ...built.lines)
     const frameId = built.ids.get(`${plan.id}~frame`)
     if (frameId) frames.push({ id: frameId, page: i })
@@ -363,26 +357,19 @@ export async function importPdf(store: WorkspaceStore, source: PdfImportSource, 
     const b = { x: origin.x, y: origin.y, w: sizes[i].w, h: sizes[i].h }
     outcome.bounds = outcome.bounds ? { x: Math.min(outcome.bounds.x, b.x), y: Math.min(outcome.bounds.y, b.y), w: Math.max(outcome.bounds.x + outcome.bounds.w, b.x + b.w) - Math.min(outcome.bounds.x, b.x), h: Math.max(outcome.bounds.y + outcome.bounds.h, b.y + b.h) - Math.min(outcome.bounds.y, b.y) } : b
   }
-  const parts = batches(all)
-  let committedPages = 0
-  for (const [k, operations] of parts.entries()) {
-    progress({ stage: 'commit', done: k, total: parts.length })
-    const result = await store.submit({ editId: `import:pdf:${surfaceId}:${k}`, label: parts.length > 1 ? aiwsT('aiworkspace.pdf.importBatchLabel', { name, part: k + 1, parts: parts.length }) : label, operations: operations as unknown as Operation[] })
-    if (result.status !== 'accepted' && result.status !== 'saved_locally') {
-      const reason = result.status === 'rejected' || result.status === 'conflict' ? (result.detail ? aiwsT('aiworkspace.canvas.codeWithDetail', { code: result.code, detail: String(result.detail) }) : result.code) : result.status
-      return { ...outcome, error: aiwsT('aiworkspace.pdf.error.stopped', { pages: committedPages, reason }) }
-    }
-    // pages wholly written so far (a page's operations end in this batch or before)
-    const lastPage = pageOf.get(operations.at(-1)!.entity_id) ?? 0
-    committedPages = k === parts.length - 1 ? plans.length : lastPage
-  }
+  let pathId: string | null = null
+  const operations: Operation[] = [...firstOps, ...(all as unknown as Operation[])]
   if (choices.createPath && frames.length) {
     const steps: ShowStep[] = frames.map((f) => ({ id: randomId('st'), target: { kind: 'frame', entity_id: f.id }, transition: 'cut' }))
     const path = createPathOp(store, title, 'presentation', { stage: stageOf(sizes), background: '#000000', steps })
-    const result = await store.submit({ editId: `import:pdf:${surfaceId}:path`, label: aiwsT('aiworkspace.pdf.pathLabel', { name }), operations: [path.op] })
-    if (result.status === 'accepted' || result.status === 'saved_locally') outcome.pathId = path.id
-    else report.add('pdf_path_failed', 'The presentation path could not be created', title)
+    operations.push(path.op)
+    pathId = path.id
   }
+  if (signal.aborted) return { ...outcome, created: [], bounds: null, error: aiwsT('aiworkspace.pdf.cancelled') }
+  const failed = await submitImport(store, { editId: `import:pdf:${surfaceId}`, label, operations }, 'pages', progress)
+  if (failed) return { ...outcome, created: [], bounds: null, error: aiwsT('aiworkspace.pdf.error.failed', { reason: failed }) }
+  outcome.surfaceId = surfaceId
+  outcome.pathId = pathId
   report.objects = counts.text + counts.images + counts.shapes
   outcome.summary = aiwsT('aiworkspace.pdf.summary', {
     pages: aiwsT('aiworkspace.drawio.count.pages', { count: plans.length }), text: aiwsT('aiworkspace.pdf.count.text', { count: counts.text }),

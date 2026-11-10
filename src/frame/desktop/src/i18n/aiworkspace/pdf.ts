@@ -1,6 +1,7 @@
 /* AI Workspace text: PDF import (PDF 导入方案 §5) — the dialog, progress, the summary and the report's words. */
 
 export const en: Record<string, string> = {
+  'aiworkspace.pdf.error.failed': 'The import was not written, and nothing was left behind: {{reason}}',
   'aiworkspace.pdf.askTitle': 'A PDF file',
   'aiworkspace.pdf.askText': '“{{name}}” can go on the canvas as a file, or be taken apart into editable pages (text, pictures and shapes) on a new canvas with a presentation path.',
   'aiworkspace.pdf.askPages': 'Import as editable pages…',
@@ -28,7 +29,6 @@ export const en: Record<string, string> = {
   'aiworkspace.pdf.columns': 'Pages per row',
   'aiworkspace.pdf.progress.convert': 'Converting page {{done}} of {{total}}…',
   'aiworkspace.pdf.progress.upload': 'Storing the pictures of page {{done}} of {{total}}…',
-  'aiworkspace.pdf.progress.commit': 'Writing part {{done}} of {{total}}…',
   'aiworkspace.pdf.start': 'Import {{count}} pages',
   'aiworkspace.pdf.start_one': 'Import 1 page',
   'aiworkspace.pdf.pageTitle': 'Page {{n}}',
@@ -36,11 +36,7 @@ export const en: Record<string, string> = {
   'aiworkspace.pdf.cancelled': 'The import was cancelled; nothing was written.',
   'aiworkspace.pdf.error.password': 'This PDF is protected by a password, which is not supported.',
   'aiworkspace.pdf.error.unreadable': 'The PDF cannot be read: {{reason}}',
-  'aiworkspace.pdf.error.canvasFailed': 'The new canvas could not be created ({{reason}}).',
-  'aiworkspace.pdf.error.stopped': 'The import stopped after {{pages}} pages: {{reason}}',
   'aiworkspace.pdf.importLabel': 'Import PDF “{{name}}”',
-  'aiworkspace.pdf.importBatchLabel': 'Import PDF “{{name}}” ({{part}}/{{parts}})',
-  'aiworkspace.pdf.pathLabel': 'Presentation path of “{{name}}”',
   'aiworkspace.pdf.summary': '{{pages}}: {{text}}, {{images}}, {{shapes}}; {{rasters}}.',
   'aiworkspace.pdf.count.text': '{{count}} text objects',
   'aiworkspace.pdf.count.text_one': '1 text object',
@@ -72,10 +68,10 @@ export const en: Record<string, string> = {
   'aiworkspace.pdf.report.glyphRaster': 'Text with uneditable glyphs retained in page images',
   'aiworkspace.pdf.report.pageFailed': 'Pages that could not be taken apart imported whole as pictures',
   'aiworkspace.pdf.report.originalMissing': 'The original PDF could not be stored',
-  'aiworkspace.pdf.report.pathFailed': 'The presentation path could not be created',
 }
 
 export const zh: Record<string, string> = {
+  'aiworkspace.pdf.error.failed': '导入没有写入，画布上什么都没有留下：{{reason}}',
   'aiworkspace.pdf.askTitle': 'PDF 文件',
   'aiworkspace.pdf.askText': '「{{name}}」可以作为文件放到画布上，也可以拆成可编辑的页面（文字、图片、图形）放到一张新画布上，并建好演讲路径。',
   'aiworkspace.pdf.askPages': '导入为可编辑页面…',
@@ -102,18 +98,13 @@ export const zh: Record<string, string> = {
   'aiworkspace.pdf.columns': '每行页数',
   'aiworkspace.pdf.progress.convert': '正在转换第 {{done}} / {{total}} 页…',
   'aiworkspace.pdf.progress.upload': '正在保存第 {{done}} / {{total}} 页的图片…',
-  'aiworkspace.pdf.progress.commit': '正在写入第 {{done}} / {{total}} 批…',
   'aiworkspace.pdf.start': '导入 {{count}} 页',
   'aiworkspace.pdf.pageTitle': '第 {{n}} 页',
   'aiworkspace.pdf.imageMissing': '图片（未能保存）',
   'aiworkspace.pdf.cancelled': '导入已取消，没有写入任何内容。',
   'aiworkspace.pdf.error.password': '这个 PDF 有密码保护，暂不支持。',
   'aiworkspace.pdf.error.unreadable': '无法读取这个 PDF：{{reason}}',
-  'aiworkspace.pdf.error.canvasFailed': '新画布创建失败（{{reason}}）。',
-  'aiworkspace.pdf.error.stopped': '导入在第 {{pages}} 页后停止：{{reason}}',
   'aiworkspace.pdf.importLabel': '导入 PDF「{{name}}」',
-  'aiworkspace.pdf.importBatchLabel': '导入 PDF「{{name}}」（{{part}}/{{parts}}）',
-  'aiworkspace.pdf.pathLabel': '「{{name}}」的演讲路径',
   'aiworkspace.pdf.summary': '{{pages}}：{{text}}、{{images}}、{{shapes}}；{{rasters}}。',
   'aiworkspace.pdf.count.text': '{{count}} 段文字',
   'aiworkspace.pdf.count.shapes': '{{count}} 个图形',
@@ -142,5 +133,4 @@ export const zh: Record<string, string> = {
   'aiworkspace.pdf.report.glyphRaster': '含不可编辑字形的文字保留在页面图片中',
   'aiworkspace.pdf.report.pageFailed': '无法拆解的页整页按图片导入',
   'aiworkspace.pdf.report.originalMissing': '原 PDF 文件未能保存',
-  'aiworkspace.pdf.report.pathFailed': '演讲路径未能创建',
 }

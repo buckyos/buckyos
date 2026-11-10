@@ -8,7 +8,8 @@ import type {
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, HostedExecConfig, Publication, Referrer,
   ExtBuildResult, ExtExportResult, ExtMigration, ExtPackResult, LibraryPackage, TemplateSpec,
 } from './types'
-import { parseAccessDenial, type AccessDenial } from 'buckyos'
+import { commitWithParts, parseAccessDenial, type AccessDenial } from 'buckyos'
+import { testHooks } from './testHooks'
 import type { Transport } from './transport'
 
 type Ws = { workspace_id: string }
@@ -107,8 +108,13 @@ export class AiwsClient {
   restoreVersion(ws: Ws, entity_id: string, content_rev: number) { return this.call<Result<{ operations: Operation[]; derived: DerivedRecord | null }>>('doc.restore_version', { ...ws, entity_id, content_rev }) }
 
   // ---- writes
-  commit(request: CommitRequest) { return this.call<CommitResult>('doc.commit', request as unknown as Record<string, unknown>) }
-  prepare(request: CommitRequest) { return this.call<PrepareResult>('doc.prepare', request as unknown as Record<string, unknown>) }
+  /** One Commit whatever its size: a large one is sent in parts (`doc.stage`) and assembled by the service. */
+  commit(request: CommitRequest, onPart?: (part: number, total: number) => void) {
+    return commitWithParts<CommitResult>((method, params) => this.call(method, params), request as unknown as Record<string, unknown>, { onPart, partBytes: testHooks()?.commitPartBytes })
+  }
+  prepare(request: CommitRequest) {
+    return commitWithParts<PrepareResult>((method, params) => this.call(method, params), request as unknown as Record<string, unknown>, { method: 'doc.prepare' })
+  }
   getSubmission(ws: Ws, epoch: string, idempotency_key: string) {
     return this.call<Result<{ status: 'accepted' | 'not_found'; result?: CommitResult }>>('doc.get_submission', { ...ws, epoch, idempotency_key })
   }

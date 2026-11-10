@@ -22,10 +22,10 @@ pptx.ts        PresentationML → page plans (§4): masters, layouts, placeholde
                charts / SmartArt / OLE, backgrounds
 subdoc.ts      one-object docx / pptx (§5.3) for LibreOffice to draw; a stored-zip writer
 plan.ts        the plans, the raster request, picture names
-operations.ts  a docx plan → commit operations (flow page Blocks); batches by count and size
+operations.ts  a docx plan → commit operations (flow page Blocks); one Commit per import
 mod.ts         the public entry
 tools/presets.ts   rebuilds presets.ts
-tools/import.ts    the Deno host of the Agent command: a file → plans → commits through an AiWorkspace client
+tools/import.ts    the Deno host of the Agent command: a file → plans → one Commit through an AiWorkspace client
 ```
 
 What the editable path cannot draw — charts, SmartArt without its saved drawing, OLE objects without a preview,

@@ -144,9 +144,3 @@ export function buildOperations(plan: PagePlan, target: BuildTarget): BuiltPage 
   return { objects, lines, topLevel, ids }
 }
 
-/** Split operations into commits of at most `size` (draw.io 导入 TODO §3: 2 000 per batch, under the core's 10 000). */
-export function batches<T>(ops: T[], size = 2000): T[][] {
-  const out: T[][] = []
-  for (let i = 0; i < ops.length; i += size) out.push(ops.slice(i, i + size))
-  return out
-}

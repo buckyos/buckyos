@@ -252,23 +252,23 @@ Deno.test('sqlite: tables, views, affinity', async () => {
 })
 const isSqliteKind = (b: Uint8Array) => tabularKind('shop.bin', b) === 'sqlite'
 
-Deno.test('operations: batches, ids in row order, the Block', () => {
+Deno.test('operations: one list, ids in row order, the Block', () => {
   const plan: TablePlan = { title: 't', fields: [{ field_id: 'c1', name: 'a', type: 'text' }], titleFieldId: 'c1', records: Array.from({ length: 2501 }, (_, i) => ({ c1: String(i) })), report: { list: () => [] } as never }
   let n = 0
-  const ops = tableOperations(plan, { folderId: 'f', afterKey: null, name: 'T', block: { parentId: 's', afterKey: 'a', placement: { x: 1, y: 2, w: 3, h: 4 } }, newId: (p) => `${p}${(n++).toString().padStart(12, '0')}`, rowsPerCommit: 1000, recordsPerOp: 300 })
-  equal(ops.commits.map((c) => [c.firstRow, c.rows, c.operations.length]), [[0, 1000, 6], [1000, 1000, 4], [2000, 501, 2]])
-  equal(ops.commits[0].operations.slice(0, 2).map((o) => [o.op, o.type_id, o.parent_id]), [['entity.create', 'buckyos.table-source', 'f'], ['entity.create', 'buckyos.cell', 's']])
-  const ids = ops.commits.flatMap((c) => c.operations.filter((o) => o.op === 'table.insert_records').flatMap((o) => (o.records as { record_id: string }[]).map((r) => r.record_id)))
+  const ops = tableOperations(plan, { folderId: 'f', afterKey: null, name: 'T', block: { parentId: 's', afterKey: 'a', placement: { x: 1, y: 2, w: 3, h: 4 } }, newId: (p) => `${p}${(n++).toString().padStart(12, '0')}`, recordsPerOp: 300 })
+  equal(ops.operations.slice(0, 2).map((o) => [o.op, o.type_id, o.parent_id]), [['entity.create', 'buckyos.table-source', 'f'], ['entity.create', 'buckyos.cell', 's']])
+  equal(ops.operations.slice(2).map((o) => [o.op, (o.records as unknown[]).length]), [...Array.from({ length: 8 }, () => ['table.insert_records', 300]), ['table.insert_records', 101]])
+  const ids = ops.operations.filter((o) => o.op === 'table.insert_records').flatMap((o) => (o.records as { record_id: string }[]).map((r) => r.record_id))
   equal(ids.length, 2501)
   equal([...ids].sort(), ids, 'ids sort in row order')
   assert(ids.every((id) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)))
   equal(recordIds(3, () => 'rabc').length, 3)
-  // wordy rows: commits end before the byte budget (the service takes 8 MiB per request)
+  // wordy rows: an operation ends before its byte budget, so a Commit sent in parts can be cut between operations
   const wordy: TablePlan = { ...plan, records: Array.from({ length: 100 }, () => ({ c1: '字'.repeat(1000) })) }
-  const split = tableOperations(wordy, { folderId: 'f', afterKey: null, name: 'T', commitBytes: 40_000 })
-  equal(split.commits.map((c) => c.rows), [13, 13, 13, 13, 13, 13, 13, 9])
-  assert(split.commits.every((c) => new TextEncoder().encode(JSON.stringify(c.operations)).length < 40_000 + 3100))
-  equal(tableOperations({ ...plan, records: [] }, { folderId: 'f', afterKey: null, name: 'T' }).commits.length, 1, 'an empty table is still created')
+  const split = tableOperations(wordy, { folderId: 'f', afterKey: null, name: 'T', opBytes: 40_000 })
+  equal(split.operations.slice(1).map((o) => (o.records as unknown[]).length), [13, 13, 13, 13, 13, 13, 13, 9])
+  assert(split.operations.every((o) => new TextEncoder().encode(JSON.stringify(o)).length < 40_000 + 200))
+  equal(tableOperations({ ...plan, records: [] }, { folderId: 'f', afterKey: null, name: 'T' }).operations.length, 1, 'an empty table is still created')
   equal(uniqueName('Sales', new Set(['Sales', 'Sales (2)'])), 'Sales (3)')
   equal(uniqueName('a/b\u0001c', new Set()), 'a b c')
 })

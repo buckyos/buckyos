@@ -21,6 +21,8 @@ interface TestHooks {
   commits?: number
   /** The outline model's current entities (incremental structure, phase two §9.3). */
   outline?: () => unknown[]
+  /** Send Commits in parts of this many bytes (a small import then goes through `doc.stage` like a large one). */
+  commitPartBytes?: number
   /** A show's stage (第三期规划 §9): the camera of the Surface on stage, and the transitions it ran with their timings. */
   stage?: { view: () => { x: number; y: number; zoom: number; surfaceId: string | null }; transitions: { kind: string; step: string; startedAt: number; arrivedAt: number | null; frames: number[] }[] }
 }

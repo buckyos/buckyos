@@ -1,8 +1,8 @@
 /* The browser host of the table importer (表格数据导入 TODO §3.4, §3.5): the wizard's grids and choices become plans
- * (`@table/plan`, every value checked by the core's own `normalize_value` through WASM), then commits — one per
- * 20 000 rows, the first creating the TableSource (in the canvas's content folder or the chosen data folder) and, on
- * a canvas, its table Block — with progress and a cancel that leaves nothing behind before the first commit. The
- * original file can be kept as an asset next to the table. */
+ * (`@table/plan`, every value checked by the core's own `normalize_value` through WASM), then one Commit: the
+ * TableSources (in the canvas's content folder or the chosen data folder) with all their rows and, on a canvas, their
+ * table Blocks. Cancelling or a refused Commit leaves nothing behind; undo takes the import back whole. The original
+ * file can be kept as an asset next to the table. */
 
 import { ImportReport } from '@drawio/convert'
 import { blockSize, planTable, tableOperations, TableLimitError, uniqueName, type Grid, type Json as TableJson, type TableChoices, type TablePlan } from '@table/mod'
@@ -12,11 +12,13 @@ import type { Operation } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import type { ImportOutcome } from '../canvas/drawioImport'
+import { submitImport } from './submitImport'
 import type { TableDestination } from './tableImportRequest'
 
 export interface ImportPart { key: string; label: string; grid: Grid; choices: TableChoices }
 
-export interface TableImportProgress { stage: 'plan' | 'upload' | 'commit'; done: number; total: number }
+/** `send`: request `done + 1` of `total` of a large Commit is going up; `commit`: the service is writing. */
+export interface TableImportProgress { stage: 'plan' | 'upload' | 'send' | 'commit'; done: number; total: number }
 
 /** The core's own check of a value for a field (WASM `normalize_value`). */
 export function wasmValidate(store: WorkspaceStore) {
@@ -26,8 +28,6 @@ export function wasmValidate(store: WorkspaceStore) {
 }
 
 const GAP = 40
-
-const ok = (status: string) => status === 'accepted' || status === 'saved_locally'
 
 export async function runTableImport(store: WorkspaceStore, parts: ImportPart[], destination: TableDestination, options: {
   name: string
@@ -50,7 +50,7 @@ export async function runTableImport(store: WorkspaceStore, parts: ImportPart[],
       throw error
     }
   }
-  if (options.signal.aborted) return { ...outcome, error: aiwsT('aiworkspace.import.cancelled', { rows: 0, total: plans.reduce((n, p) => n + p.plan.records.length, 0) }) }
+  if (options.signal.aborted) return { ...outcome, error: aiwsT('aiworkspace.import.cancelled') }
   for (const { part, plan } of plans) {
     for (const note of plan.report.list()) {
       const existing = report.notes.get(note.kind)
@@ -99,30 +99,24 @@ export async function runTableImport(store: WorkspaceStore, parts: ImportPart[],
       x += sizes[i].w + GAP
     }
     const ops = tableOperations(plan, { folderId, afterKey: folderKey, name, block })
-    folderKey = (ops.commits[0].operations[0].order_key as string) ?? folderKey
+    folderKey = (ops.operations[0].order_key as string) ?? folderKey
     return { plan, ops }
   })
   if (keepOp) keepOp.order_key = store.core.order_key_between(folderKey ?? undefined, undefined)
-  // 4 commits
+  // 4 one Commit: every table with its rows and the kept file — all of it, or nothing
   const total = built.reduce((n, b) => n + b.plan.records.length, 0)
-  let done = 0
-  for (const [i, { plan, ops }] of built.entries()) {
-    for (const [k, commit] of ops.commits.entries()) {
-      if (options.signal.aborted) return { ...outcome, error: aiwsT('aiworkspace.import.cancelled', { rows: done, total }) }
-      options.onProgress({ stage: 'commit', done, total })
-      const operations = [...commit.operations, ...(i === 0 && k === 0 && keepOp ? [keepOp] : [])] as unknown as Operation[]
-      const label = ops.commits.length > 1 ? aiwsT('aiworkspace.import.labelPart', { name: plan.title, part: k + 1, parts: ops.commits.length }) : aiwsT('aiworkspace.import.label', { name: plan.title })
-      let result
-      try { result = await store.submit({ editId: `table-import:${ops.sourceId}:${k}`, label, operations }) } catch (error) { return { ...outcome, error: aiwsT('aiworkspace.import.stopped', { rows: done, total, reason: describeError(error) }) } }
-      if (!ok(result.status)) {
-        const reason = result.status === 'rejected' || result.status === 'conflict' ? (result.detail ? `${result.code}: ${String(result.detail)}` : result.code) : result.status
-        return { ...outcome, error: aiwsT('aiworkspace.import.stopped', { rows: done, total, reason }) }
-      }
-      if (k === 0 && ops.cellId) outcome.created.push(ops.cellId)
-      done += commit.rows
-    }
+  if (options.signal.aborted) return { ...outcome, error: aiwsT('aiworkspace.import.cancelled') }
+  const operations = [...built.flatMap((b) => b.ops.operations), ...(keepOp ? [keepOp] : [])] as unknown as Operation[]
+  const label = aiwsT('aiworkspace.import.label', { name: built.length === 1 ? built[0].plan.title : options.name })
+  let failed: string | null
+  try {
+    failed = await submitImport(store, { editId: `table-import:${built[0]?.ops.sourceId ?? ''}`, label, operations }, 'files', (p) => options.onProgress(p.stage === 'commit' ? { stage: 'send', done: p.done, total: p.total } : { stage: 'commit', done: 0, total }))
+  } catch (error) {
+    failed = describeError(error)
   }
-  options.onProgress({ stage: 'commit', done, total })
+  if (failed) return { ...outcome, bounds: null, error: aiwsT('aiworkspace.import.failed', { reason: failed }) }
+  for (const { ops } of built) if (ops.cellId) outcome.created.push(ops.cellId)
+  options.onProgress({ stage: 'commit', done: total, total })
   outcome.summary = aiwsT('aiworkspace.import.summary', { tables: aiwsT('aiworkspace.import.count.tables', { count: built.length }), rows: aiwsT('aiworkspace.import.count.rows', { count: total }) })
   return outcome
 }

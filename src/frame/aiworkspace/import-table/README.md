@@ -17,10 +17,10 @@ format.ts      number formats → date / datetime / time / money / percent; Exce
 currency.ts    ISO codes, names, symbols; `$` and `¥` per column (Q12)
 infer.ts       column types (boolean → number → decimal → date → datetime → currency → select → text), shaping
 plan.ts        header detection, field names, the wizard's choices, the plan (fields, records, report)
-operations.ts  plan → commits (entity.create + table.insert_records ≤ 500; ≤ 20 000 rows and 6 MiB per commit)
+operations.ts  plan → operations (entity.create + table.insert_records ≤ 500 records / 1 MiB each; one Commit per import)
 files.ts       which file is a table (extension, magic numbers); the picker's accept list
 mod.ts         the public entry
-tools/import.ts       the Deno host: a file → grids → plans → commits through an AiWorkspace client; dry run alone
+tools/import.ts       the Deno host: a file → grids → plans → one Commit through an AiWorkspace client; dry run alone
 tools/sqlite_deno.ts  the SQLite query function on node:sqlite
 ```
 

@@ -530,7 +530,7 @@ impl Service {
             local
                 .execute_batch(
                     "DELETE FROM grants; DELETE FROM share_entries; DELETE FROM publications; DELETE FROM referrers; DELETE FROM locks; \
-                     DELETE FROM lock_events; DELETE FROM staged_assets; DELETE FROM user_state; DELETE FROM runs; DELETE FROM local_meta;",
+                     DELETE FROM lock_events; DELETE FROM staged_assets; DELETE FROM staged_commits; DELETE FROM user_state; DELETE FROM runs; DELETE FROM local_meta;",
                 )
                 .map_err(db_err)?;
             local.execute("INSERT INTO grants (subject, scope_entity_id, capabilities) VALUES (?1, '', ?2)", params![owner, CapSet::ALL.0]).map_err(db_err)?;

@@ -1,6 +1,6 @@
 /* The Deno host of the table importer (表格数据导入 TODO §8): a CSV / TSV / xlsx / SQLite file on disk → the same
  * grids, inference and plans the Desktop wizard makes with its defaults (and the few choices an Agent can pass) →
- * commits of the TableSource and its records through any client with `call` and `commit` (the websdk's
+ * one Commit of the TableSources and their records through any client with `call` and `commit` (the websdk's
  * AiWorkspaceClient). No WASM here: the service checks every value and its refusal is reported as it is.
  *
  *   deno run -A tools/import.ts <file> [--header auto|yes|no] [--sheet <name> | --all-sheets] [--table <name>]…
@@ -86,9 +86,9 @@ export interface CommitClient {
 
 export interface Imported { entity_id: string; name: string; rows: number }
 
-/** Commit the plans under `parentId` (a data folder, by default the data root): names made unique among its
- * children, every table its own commits (≤ 20 000 rows / 6 MiB each). Stops at the first refused commit. */
-export async function commitPlans(client: CommitClient, workspaceId: string, plans: FilePlan[], parentId = 'data', progress?: (text: string) => void): Promise<{ imported: Imported[]; error?: { code: string; detail: string; table: string; rows_done: number } }> {
+/** Commit the plans under `parentId` (a data folder, by default the data root) as one Commit: names made unique among
+ * its children; every table is there, or none is. `client.commit` sends a large Commit in parts. */
+export async function commitPlans(client: CommitClient, workspaceId: string, plans: FilePlan[], parentId = 'data', progress?: (text: string) => void): Promise<{ imported: Imported[]; error?: { code: string; detail: string } }> {
   const info = await client.call('ws.get_info', { workspace_id: workspaceId })
   const epoch = String(info.epoch)
   const outline = (await client.call('doc.outline', { workspace_id: workspaceId })).entities as { entity_id: string; parent_id?: string; order_key?: string; name?: string; deleted?: boolean }[]
@@ -97,22 +97,22 @@ export async function commitPlans(client: CommitClient, workspaceId: string, pla
   const taken = new Set(siblings.map((e) => e.name).filter((n): n is string => Boolean(n)))
   let afterKey = siblings.at(-1)?.order_key ?? null
   const imported: Imported[] = []
+  const operations: Record<string, unknown>[] = []
   for (const { plan } of plans) {
     const name = uniqueName(plan.title, taken)
     taken.add(name)
     const ops = tableOperations(plan, { folderId: parentId, afterKey, name })
-    afterKey = (ops.commits[0].operations[0].order_key as string) ?? afterKey
-    let done = 0
-    for (const [k, commit] of ops.commits.entries()) {
-      progress?.(`${name}: rows ${commit.firstRow + 1}–${commit.firstRow + commit.rows} of ${plan.records.length}`)
-      const result = await client.commit(workspaceId, { protocol_version: '1.0', epoch, idempotency_key: `import-table/${ops.sourceId}/${k}`, session_id: 'import-table', operations: commit.operations })
-      if (result.status !== 'accepted') {
-        const error = (result.errors as { code?: string; detail?: string }[] | undefined)?.[0]
-        return { imported, error: { code: String(result.code ?? error?.code ?? result.status), detail: String(result.detail ?? error?.detail ?? JSON.stringify(result).slice(0, 400)), table: name, rows_done: done } }
-      }
-      done += commit.rows
-    }
-    imported.push({ entity_id: ops.sourceId, name, rows: done })
+    afterKey = (ops.operations[0].order_key as string) ?? afterKey
+    operations.push(...ops.operations)
+    imported.push({ entity_id: ops.sourceId, name, rows: plan.records.length })
+  }
+  if (imported.length === 0) return { imported }
+  const rows = imported.reduce((n, t) => n + t.rows, 0)
+  progress?.(`${imported.length} table(s), ${rows} rows: one commit`)
+  const result = await client.commit(workspaceId, { protocol_version: '1.0', epoch, idempotency_key: `import-table/${imported[0].entity_id}`, session_id: 'import-table', operations })
+  if (result.status !== 'accepted') {
+    const error = (result.errors as { code?: string; detail?: string }[] | undefined)?.[0]
+    return { imported: [], error: { code: String(result.code ?? error?.code ?? result.status), detail: String(result.detail ?? error?.detail ?? JSON.stringify(result).slice(0, 400)) } }
   }
   return { imported }
 }

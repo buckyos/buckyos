@@ -278,3 +278,17 @@ CREATE TABLE staged_assets (
   bucket_version INTEGER NOT NULL
 ) WITHOUT ROWID;
 "#;
+
+/// Tables of `local.sqlite` that came after the first format: made on every open.
+pub const LOCAL_ADDED_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS staged_commits (
+  principal  TEXT NOT NULL,
+  idem_key   TEXT NOT NULL,
+  part       INTEGER NOT NULL,
+  ops_json   TEXT NOT NULL,
+  bytes      INTEGER NOT NULL,
+  digest     TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (principal, idem_key, part)
+) WITHOUT ROWID;
+"#;

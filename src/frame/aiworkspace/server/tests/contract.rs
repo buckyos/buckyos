@@ -102,6 +102,24 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     let accepted = s.rpc("doc.commit", commit(&ws, &epoch, "c1", ops)).await;
     let head = accepted["seq"].as_u64().unwrap();
     s.rpc("doc.get_submission", wsp(json!({ "epoch": epoch, "idempotency_key": "c1" }))).await;
+    // a Commit sent in parts: the staged part comes first, the final request names its digest
+    let rec = |id: &str, key: &str| json!({ "op": "table.insert_records", "source_id": "t1", "records": [{ "record_id": id, "values": { "title": key, "n": 2 } }] });
+    let part = s.rpc("doc.stage", wsp(json!({ "epoch": epoch, "idempotency_key": "c-parts", "part": 0, "operations": [rec("p0", "a")] }))).await;
+    let mut parted = commit(&ws, &epoch, "c-parts", json!([rec("p1", "b")]));
+    parted["staged"] = json!([part["digest"]]);
+    let r = s.rpc("doc.commit", parted).await;
+    assert_eq!(r["status"], "accepted", "{r}");
+    // one request stays under the kRPC body limit, a staged part included
+    let over = "x".repeat(Limits::default().max_commit_bytes + 128 * 1024);
+    let status = s
+        .http
+        .post(&s.base)
+        .json(&json!({ "method": "doc.stage", "params": wsp(json!({ "epoch": epoch, "idempotency_key": "c-over", "part": 0, "operations": [{ "op": "noop", "pad": over }] })), "sys": [9002, "tok-alice"] }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
     s.rpc("doc.read", wsp(json!({ "entity_id": "t1" }))).await;
     s.rpc("doc.resolve", wsp(json!({ "reference": { "entity_id": "t1", "mode": "live" } }))).await;
     s.rpc("doc.query", wsp(json!({ "source_id": "t1", "limit": 10 }))).await;

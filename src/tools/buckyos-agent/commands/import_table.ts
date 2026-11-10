@@ -20,6 +20,9 @@ inference as the Desktop's import wizard. Run with --dry-run first and read the 
 and types, row count, sample records and what changed on the way (empty rows, formulas, BLOB
 columns…). Do not infer types yourself or write table.insert_records by hand.
 
+The import is one Commit: written whole or not at all, undone in one step. One Commit holds at most
+32 MiB / 50 000 operations; a larger file is refused (LIMIT_EXCEEDED) — split it and import the parts.
+
 Files: .csv .tsv .txt (tab-separated) .xlsx .xlsm .sqlite .sqlite3 .db
   (.xls, .numbers and .ods are refused: save as .xlsx or CSV)
 
@@ -79,7 +82,7 @@ export async function run(argv: string[]): Promise<never> {
     emitAndExit(errorResult(TOOL, `${TOOL} => failed`, msg, { error: msg }), EXIT_IO_FAILED);
   }
   if (outcome.error) {
-    emitAndExit(errorResult(TOOL, `${TOOL} => refused`, `${outcome.error.table}: ${outcome.error.code} ${outcome.error.detail}`, { workspace_id: workspace!, imported: outcome.imported as unknown as JsonValue, error: outcome.error as unknown as JsonValue }), EXIT_IO_FAILED);
+    emitAndExit(errorResult(TOOL, `${TOOL} => refused`, `${outcome.error.code} ${outcome.error.detail} (nothing was written)`, { workspace_id: workspace!, imported: outcome.imported as unknown as JsonValue, error: outcome.error as unknown as JsonValue }), EXIT_IO_FAILED);
   }
 
   // 6) emit

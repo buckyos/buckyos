@@ -1,10 +1,10 @@
 # Session Control Protocol（Session 控制）
 
-版本 3 · 2026-10-03；2026-10-11 增加 `stop.scope`、`goal_skills` 与 Goal Session 的结束；2026-11-10 汇总已实现的 pause / resume、控制作用域与级联规则，校正取消确认及终态拒绝说明。本次整理不改变总线 schema 或命令字段。
+版本 3 · 2026-10-03；2026-10-11 增加 `stop.scope`、`goal_skills` 与 Goal Session 的结束；2026-11-10 汇总已实现的 pause / resume、控制作用域与级联规则，校正取消确认及终态拒绝说明；同日增加 §9（owner 从用户角度给出的有效语义与控制的对应）和 §8 的宿主重启恢复现状。这两次整理都不改变总线 schema 或命令字段。
 
 本文是 Session 控制语义的统一入口，由 `libopendan` 的 `src/protocol/input.rs::ControlCommand`、`src/runner/{inputs,drive,outcome,goal}.rs` 反写。输入信封与消费规则见 [Session Input Protocol](<Session Input Protocol.md>)，持久字段、提交与恢复见 [Session Directory Protocol](<Session Directory Protocol.md>)，Goal 对象及授权见 [Agent State Protocol](<Agent State Protocol.md>) §9。架构约束见 [Session 架构设计 §12.12](<../OpenDAN Agent Session架构设计.md#1212-宿主装载运行状态与中断>)。
 
-[Agent UI 升级 TODO](../../../notepads/agent-ui-upgrade-todo.md) 中的控制变更尚未实施，不能直接当作本文已有行为；实施时必须同步修改本协议、共享类型、调用方和验证用例。
+[Agent UI 升级 TODO](../../../notepads/agent-ui-upgrade-todo.md) 中的控制变更尚未实施，不能直接当作本文已有行为；实施时必须同步修改本协议、共享类型、调用方和验证用例。§9 里标为“未支持”的各项同样是目标，不是已有行为。
 
 ## 1. 控制对象与边界
 
@@ -18,7 +18,7 @@
 
 `stop` 结束所指定范围内的执行；`pause` 保留未完成的执行，等待 `resume`。协议没有独立的 Session `cancel` 命令，也没有用 stop / cancel 区分“优雅停止 / 强制杀死”的约定。界面的“取消”、聊天命令别名以及外部 Task 的取消接口必须明确映射到哪个对象与操作。
 
-停止、暂停、Goal 休眠、归档、卸载执行者和撤销产物不是同一件事。停止不删除历史，也不撤销已经发生的文件修改或外部副作用；撤销能力由具体工具和授权决定。
+停止、暂停、Goal 休眠、归档、卸载执行者和撤销产物不是同一件事。停止不删除历史，也不撤销已经发生的文件修改或外部副作用；撤销能力由具体工具和授权决定。所以控制能给用户的只有“不再推理”：已经执行的工具和它造成的影响都留着，没有哪条控制能让一条输入像没发生过（§9 的推论）。
 
 ## 2. 投递与提交
 
@@ -109,3 +109,34 @@ Goal Session 的终止由 Goal 生命周期驱动，不是另一个 `ControlComm
 - **无队列 Session**：不接受队列型控制。`decide` 可由决定者在 `artifact:<aid>` 锁下直接操作产物列表（Agent State Protocol §6）。“所有 Session 都有控制队列”是 UI TODO 中待实施的变更。
 - **聊天与按钮**：斜杠命令不由 Session 解析，msg bridge 在入队前按登记表与发送者身份转成 control。UI 的“停止回答”应明确选择 Turn 作用域；命令名、按钮名和 TaskMgr 的“取消”字样都不能替代作用域。各入口当前映射与改动计划见 UI TODO §1.7、§2.4。
 - **任务服务**：外部取消 / 暂停要转为经过授权的控制请求，再由 Session 报告实际状态；不能只修改 TaskMgr 的显示状态。当前 opendan 对暂停 Turn 仍上报 Running / Waiting 并在 message 写 `paused: …`，TaskMgr Paused 状态桥接属于 UI TODO SC3。
+- **宿主重启后的恢复**：宿主启动后第一次扫描登记表（`host/mod.rs` 的 `Supervisor::tick`），为它驱动的每个未结束 Session 重新起驱动循环；停在 run 中途的从检查点继续，与 resume 走同一条恢复路径（§5）。整个过程不经过控制命令，也不需要用户确认。断电、崩溃、正常重启都是这一条路径，协议里没有“异常中断”这种状态。用户暂停过的 Session 重启后仍是暂停的（`state.paused` 是持久字段）。这次扫描只看本宿主驱动的 Session，由别的宿主驱动的不在其中。目标语义见 §9 第 4 项。
+
+## 9. 用户语义与控制的对应（owner，2026-11-10）
+
+owner 从用户角度给出的有效语义。本节把每一项对到前面各节的控制，并标出现状。标为“未支持”的是目标，实施时回写 §3–§8。
+
+| # | 用户遇到的情况 | 用户想要 | 对应的控制 | 现状 |
+|---|---|---|---|---|
+| 1a | 发出消息后发现不对，例如关键信息输错了 | 立刻停止推理，马上能输入下一条；旧输入留在历史里，没有 Agent 的回复 | 对 UI Session 发 `stop(scope=turn)`（§4） | 控制已有，在飞的推理和工具会被打断。入口还没改：`/stop` 和 TaskMgr 取消今天发的是 session 范围，会结束整个 UI Session |
+| 1b | 同上 | 立刻停止，并删掉这条输错的消息，相当于没输入过 | 1a 加“撤回输入” | 未支持。没有撤回输入的控制；worklog 不改写，下一个 Turn 的历史由它重建 |
+| 2a | 看到后台 Work Session 做错了 | 发消息纠正它的方向 | 向这个 Work 的队列投 `msg`（Session Input Protocol §3） | 有队列并且收 msg 的 Work 可以。聊天里直接建的 simple Work 没有队列，收不到 |
+| 2b | 同上 | 先停下它的推理（省 token），发消息，再恢复 | `pause` → `msg` → `resume`（§5） | 前提同 2a。pause 在下一个推理边界生效；恢复后先跑完被打断的那一批，再接收消息（Session Input Protocol §3） |
+| 2c | 同上 | 终止这个后台任务；之后可能再发消息触发新的任务 | 对这个 Work 发 `stop(scope=session)`（§4、§7） | 已有，连同它未结束的子 Session。没有队列的 Work 由宿主停止（§8） |
+| 3 | Goal 没有效果 | 停用（休眠）或删除，不再推理 | Goal 状态置 `paused` 或 `archived`（§6） | 已有。置 `paused` 不打断正在进行的 Activation，它会跑到自然结束 |
+| 4 | 断电后恢复 | 断电前正在工作的 Session 都变成“异常中断（可恢复）”，由用户手工恢复，按任务树恢复；也可以配置成自动恢复 | 没有对应的控制 | 未支持。今天宿主启动后全部自动接着跑（§8） |
+
+推论（owner）：所有控制都做不到“消除一条错误输入带来的影响”。工具用了就是用了，能做到的只有停止推理、省下 token。§1 的边界与此一致。
+
+按这份语义读前面各节：
+
+- **停止要立刻生效。** 现有的 stop 就是打断，不等在飞的调用返回（§4），不用改。
+- **停止后历史里留下的不只是旧输入。** 这个 Turn 已经做过的推理步骤和工具结果都在 worklog 里，下一条消息到来时模型看得到，知道自己做过什么。这与推论一致。
+- **前台消息只有停止，没有暂停。** 清单里暂停只出现在后台 Work（2b）。按此 pause 保持 Session 级，不需要“只暂停当前消息”的形态，也不需要不级联的选项。这一条是整理者从清单推出的，待 owner 确认：UI TODO 的 D8、D10、SC1 里有“暂停当前消息”。
+- **2a、2b 要求后台 Work 收得到消息。** UI TODO §2.1 推定 7 定的是“今天没有队列的 Work 有了队列以后只收控制命令”，与此相反，要改。`input_policy` 的 `supplement_only` 只有定义，Runner 没有实现。
+
+需要补协议的四处，方案都没有定：
+
+1. **撤回输入（1b）。** 分两种情形。消息还在队列里、没有被消费：可以直接丢弃，真正等于没输入。已经开了 Turn：只能是停止，加一条“用户撤回了这条输入”的记录，并在时间线上撤回这条消息；Turn 里已经执行的步骤仍留在历史里。
+2. **休眠是否同时结束当前的 Activation（3）。** “不再推理”按字面是立刻停，今天置 `paused` 之后当前 Activation 会跑完。可以由入口在置 `paused` 之后补一条 turn 范围的 stop。
+3. **异常中断与恢复（4）。** 要定五件事：哪些算“正在工作”（有打开的 Turn 的，还是所有未结束的）；正常重启（升级、重建容器）是否和断电同样处理，宿主今天分不出这两种；这个状态怎么表示（建议由宿主写入 `state.paused` 并带专门的原因，resume 和登记表投影都能沿用）；按任务树恢复时 resume 怎样级联（今天只恢复原因是“父级被暂停”的子 Session）；自动恢复的配置放在哪里。
+4. **后台 Work 的输入策略（2a、2b）。** 哪些 Work 收用户消息、由谁投（用户直接投，还是经 UI Session 的 Agent 转交），在 Session Input Protocol 里定。

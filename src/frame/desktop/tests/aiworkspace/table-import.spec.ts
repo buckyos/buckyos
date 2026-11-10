@@ -1,6 +1,6 @@
 /* Table data import (notepads/done/aiworkspace-table-import-todo.md §11, TI-01 – TI-12): pasted spreadsheet HTML and TSV,
  * CSV / xlsx / SQLite files through the drop, the insert catalog and the main menu, the wizard's header switch, types,
- * currencies and invalid values, flow pages and undo, more than 20 000 rows, and aiws's own "copy as table".
+ * currencies and invalid values, flow pages and undo, more than 20 000 rows in one Commit, and aiws's own "copy as table".
  * The fixtures are those of the shared importer (src/frame/aiworkspace/fixtures/table). Screenshots go to
  * test-results/aiworkspace-table/. */
 
@@ -302,26 +302,35 @@ test('TI-10 a SQLite file: its tables listed and chosen, BLOB columns left out, 
   expect((await rows(api, ws, tables[1].entity_id))[0].values.c6).toBe('9007199254740993')
 })
 
-test('TI-11 more than 20 000 rows: two commits with progress; cancelled during the first, the import says how far it got', async ({ page, api }) => {
+test('TI-11 more than 20 000 rows: one Commit; one undo removes the table with every row, one redo brings it back', async ({ page, api }) => {
   test.setTimeout(240_000)
   const ws = await canvasWorkspace(api, `ti-11 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
+  const head = await api.headSeq(ALICE, ws.workspace_id)
   const csv = Buffer.from(['n,label', ...Array.from({ length: 20_001 }, (_, i) => `${i},row ${i}`)].join('\n'))
   await chooseFile(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-table'), 'big.csv', csv)
   const dialog = wizard(page)
   await expect(dialog.getByTestId('aiws-table-start')).toHaveText('导入 20001 行')
   await dialog.getByTestId('aiws-table-start').click()
-  await expect(dialog.getByTestId('aiws-table-progress')).toContainText('正在导入', { timeout: 60_000 })
+  await expect(dialog.getByTestId('aiws-table-progress')).toContainText('正在写入 20001 行', { timeout: 60_000 })
+  // nothing to cancel once the Commit is on its way: it is written whole, or not at all
+  await expect(dialog.getByTestId('aiws-table-cancel')).toBeDisabled()
   await page.screenshot({ path: `${SHOTS}/ti11-progress.png` })
-  await dialog.getByTestId('aiws-table-cancel').click()
-  const report = page.getByTestId('aiws-import-report')
-  await expect(report.getByTestId('aiws-import-error')).toContainText('已取消，导入了 20001 行中的 20000 行', { timeout: 120_000 })
-  await report.getByTestId('aiws-import-report-close').click()
+  await expect(dialog).toHaveCount(0, { timeout: 120_000 })
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
   const [source] = await tablesIn(api, ws)
-  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: source.entity_id, limit: 1 })).total).toBe(20_000)
+  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: source.entity_id, limit: 1 })).total).toBe(20_001)
   // rows keep the file's order (record ids sort in row order)
   const first = await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: source.entity_id, limit: 3 })
   expect(first.rows.map((r: Json) => r.values.c1)).toEqual([0, 1, 2])
+  const report = page.getByTestId('aiws-import-report')
+  if (await report.isVisible()) await report.getByTestId('aiws-import-report-close').click()
+  await page.getByTestId('aiws-undo').click()
+  await expect.poll(async () => (await tablesIn(api, ws)).length, { timeout: 60_000 }).toBe(0)
+  await page.getByTestId('aiws-redo').click()
+  await expect.poll(async () => (await tablesIn(api, ws)).length, { timeout: 60_000 }).toBe(1)
+  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: source.entity_id, limit: 1 })).total).toBe(20_001)
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 3)
 })
 
 test('TI-12 "copy as table" in a table view, pasted on another canvas: the wizard prefilled with the types and options', async ({ page, api }) => {

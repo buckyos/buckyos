@@ -80,6 +80,7 @@ Table: assets（doc.sqlite，进入离线副本）
 | bucket_version | INTEGER | YES | 绑定版本；NULL = 已解绑（undo / 版本恢复答 RESOURCE_RECLAIMED） |
 
 Table: staged_assets（local.sqlite）：object_id、media_type、size、principal、expires_at、bucket_key、bucket_version（NOT NULL）。
+Table: staged_commits（local.sqlite，打开时 `CREATE TABLE IF NOT EXISTS`）：principal、idem_key、part、ops_json、bytes、digest、expires_at；主键 (principal, idem_key, part)。分块提交的暂存块（`doc.stage`），1 小时过期，`bytes` 计入 `usage.staged`；最终 `doc.commit` 求值后删除，`sweep` / `ws.clear_staged` 清理。
 Table: snapshots（doc.sqlite）：snapshot_id、content_root、seq、kind、created_at、created_by、bucket_key、bucket_version（NULL = 已释放，`{epoch, seq}` 引用答 VERSION_NOT_RETAINED）。
 Table: entity_versions（doc.sqlite）：… kind、created_at、bucket_key、bucket_version（`generated` 行指向其 Commit 的版本保留集；`checkpoint` 行经快照保留，为 NULL）。
 local_meta.show_clones：正在运行的演示克隆 id（JSON 数组，按文件夹是否存在计数，`MAX_CLONES`）。

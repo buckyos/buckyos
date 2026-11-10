@@ -1,15 +1,17 @@
 /* Importing draw.io into the canvas (draw.io 导入 TODO §3): read the file (any carrier), convert each page with the
- * shared module, upload its pictures, then commit objects before lines in batches of 2 000 operations under one
- * import label. One page lands on the free canvas being shown (centred in the view, or at a drop point); several
+ * shared module, upload its pictures, then write everything — new canvases, objects before lines — as one Commit
+ * (one undo step; a refused one leaves nothing behind). One page lands on the free canvas being shown (centred in the view, or at a drop point); several
  * pages — or a flow page as target — become new free canvases named after the pages, with their background and
  * page size. What could not be kept is collected in the report the canvas shows afterwards. */
 
-import { buildOperations, batches, convertPage, ImportReport, readDrawio, type ConvertOptions, type DrawioPage, type PagePlan, type UploadedAsset } from '@drawio/mod'
+import { allocateKeys, buildOperations, convertPage, ImportReport, readDrawio, type ConvertOptions, type DrawioPage, type PagePlan, type UploadedAsset } from '@drawio/mod'
 import { decodeStencilStyle, stencilToSvg } from '@drawio/stencil'
 import { describeError } from '../../api/session'
 import { aiwsT } from '../../i18n'
 import type { Json, Operation } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
+import { submitImport } from '../import/submitImport'
+import { uniqueName } from '@table/operations'
 import { Emitter } from '../../state/emitter'
 import { formatErrorText, imageFallbackText } from './drawioText'
 import { libraryShape } from './stencilLibrary'
@@ -128,13 +130,22 @@ export async function importDrawio(store: WorkspaceStore, input: { name: string;
   let firstBase: { x: number; y: number } | null = null
   const totalW = library ? plans.reduce((w, p) => w + p.bounds.w + MARGIN, -MARGIN) : 0
   const label = aiwsT('aiworkspace.drawio.importLabel', { name })
+  // several plans on the current canvas share its keys: one allocation for all of them
+  const currentFolder = intoCurrent ? store.outline.get(target.surfaceId!)?.content_folder_id ?? '' : ''
+  const currentKeys = intoCurrent ? allocateKeys(plans, assets, lastKey(store, target.surfaceId!), lastKey(store, currentFolder)) : null
+  // several new canvases in one Commit: each after the one before, names unique among them too
+  const takenNames = new Set([...store.outline.childrenOf('surfaces'), ...store.outline.childrenOf('canvas-content')].map((e) => e.name).filter((n): n is string => Boolean(n)))
+  let surfaceKey = lastKey(store, 'surfaces')
+  let folderKey = lastKey(store, 'canvas-content')
+  const operations: Operation[] = []
+  const lines: Operation[] = []
   for (const [i, plan] of plans.entries()) {
     let surfaceId: string
     let contentFolderId: string
     let origin: { x: number; y: number }
     if (intoCurrent) {
       surfaceId = target.surfaceId!
-      contentFolderId = store.outline.get(surfaceId)?.content_folder_id ?? ''
+      contentFolderId = currentFolder
       const w = library ? totalW : plan.bounds.w
       let base = target.at ?? { x: Math.round(target.center.x - w / 2), y: Math.round(target.center.y - plan.bounds.h / 2) }
       if (!target.at && i === 0 && target.clear) base = target.clear({ ...base, w, h: plan.bounds.h })
@@ -144,24 +155,26 @@ export async function importDrawio(store: WorkspaceStore, input: { name: string;
       row += plan.bounds.w + MARGIN
     } else {
       const config: Record<string, Json> = { ...(plan.background ? { background: plan.background } : {}), ...(plan.pageSize ? { page_size: plan.pageSize } : {}) }
-      const { ops, surfaceId: created } = createSurfaceOps(store, plan.name.slice(0, 120) || `${name} ${i + 1}`, 'free')
-      const surfaceOp = ops.find((op) => op.op === 'entity.create' && op.entity_id === created) as (Operation & { payload: Record<string, Json> }) | undefined
-      if (surfaceOp && Object.keys(config).length) surfaceOp.payload.config = config
-      const result = await store.submit({ editId: `import:${created}`, label: aiwsT('aiworkspace.drawio.importNewCanvasLabel', { name, canvas: plan.name }), operations: ops })
-      if (result.status !== 'accepted' && result.status !== 'saved_locally') return { ...outcome, error: aiwsT('aiworkspace.drawio.newCanvasFailed', { reason: result.status === 'rejected' || result.status === 'conflict' ? result.code : result.status }) }
+      const title = plan.name.slice(0, 120) || `${name} ${i + 1}`
+      const { ops, surfaceId: created } = createSurfaceOps(store, title, 'free')
+      const entityName = uniqueName(title, takenNames)
+      takenNames.add(entityName)
+      surfaceKey = store.core.order_key_between(surfaceKey ?? undefined, undefined)
+      folderKey = store.core.order_key_between(folderKey ?? undefined, undefined)
+      for (const op of ops) {
+        if (op.op !== 'entity.create') continue
+        op.name = entityName
+        op.order_key = op.entity_id === created ? surfaceKey : folderKey
+        if (op.entity_id === created && Object.keys(config).length) (op.payload as Record<string, Json>).config = config
+      }
+      operations.push(...ops)
       surfaceId = created
       contentFolderId = `${created}-content`
       origin = { x: MARGIN, y: MARGIN }
     }
-    const built = buildOperations(plan, { parentId: surfaceId, origin, afterKey: lastKey(store, surfaceId), contentFolderId, contentAfterKey: lastKey(store, contentFolderId), assets })
-    const parts = [...batches(built.objects), ...batches(built.lines)]
-    for (const [k, operations] of parts.entries()) {
-      const result = await store.submit({ editId: `import:${surfaceId}:${i}:${k}`, label: parts.length > 1 ? aiwsT('aiworkspace.drawio.importBatchLabel', { name, part: k + 1, parts: parts.length }) : label, operations: operations as unknown as Operation[] })
-      if (result.status !== 'accepted' && result.status !== 'saved_locally') {
-        const reason = result.status === 'rejected' || result.status === 'conflict' ? (result.detail ? aiwsT('aiworkspace.canvas.codeWithDetail', { code: result.code, detail: String(result.detail) }) : result.code) : result.status
-        return { ...outcome, error: aiwsT('aiworkspace.drawio.importStopped', { part: k + 1, parts: parts.length, reason }) }
-      }
-    }
+    const built = buildOperations(plan, { parentId: surfaceId, origin, afterKey: null, contentFolderId, contentAfterKey: null, assets, ...(currentKeys ? { keys: currentKeys[i] } : {}) })
+    operations.push(...(built.objects as unknown as Operation[]))
+    lines.push(...(built.lines as unknown as Operation[]))
     if (outcome.surfaceId === null || outcome.surfaceId === surfaceId) {
       outcome.surfaceId = surfaceId
       outcome.created.push(...built.topLevel)
@@ -169,6 +182,8 @@ export async function importDrawio(store: WorkspaceStore, input: { name: string;
       outcome.bounds = outcome.bounds ? { x: Math.min(outcome.bounds.x, b.x), y: Math.min(outcome.bounds.y, b.y), w: Math.max(outcome.bounds.x + outcome.bounds.w, b.x + b.w) - Math.min(outcome.bounds.x, b.x), h: Math.max(outcome.bounds.y + outcome.bounds.h, b.y + b.h) - Math.min(outcome.bounds.y, b.y) } : b
     }
   }
+  const failed = await submitImport(store, { editId: `import:drawio:${outcome.surfaceId}`, label, operations: [...operations, ...lines] }, 'files')
+  if (failed) return { ...outcome, surfaceId: null, created: [], bounds: null, error: aiwsT('aiworkspace.drawio.importFailed', { reason: failed }) }
   return outcome
 }
 

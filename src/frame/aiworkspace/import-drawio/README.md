@@ -21,7 +21,7 @@ stencil.ts     mxStencil XML → SVG shape body (colours as CSS variables) and t
 svg.ts         SVG body cleaning (no scripts, events, foreignObject, external references); pasted SVG → recolourable shape
 keys.ts        ids and order keys by the core's rules (`keysAfter` keeps thousands of siblings short)
 convert.ts     a draw.io page → import plan (objects, lines, pictures) + report of what was not kept
-operations.ts  an import plan → commit operations (objects before lines, parents before children, batches of 2 000)
+operations.ts  an import plan → commit operations (objects before lines, parents before children; one Commit per import)
 export.ts      a canvas (Surface BlockTree) → .drawio, starting from the style an import kept in config.drawio
 mod.ts         the public entry
 tools/build_stencils.ts   builds the library packs in src/frame/desktop/public/aiworkspace/stencils/

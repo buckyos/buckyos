@@ -1,11 +1,7 @@
-/* A table plan → commit operations (表格数据导入 TODO §3.4): the TableSource with its fields (and a table Block when
- * the import lands on a canvas), then `table.insert_records` of at most 500 records each. Up to 20 000 rows go in one
- * commit (one undo step); more are split into further commits, the first one creating the table.
- *
- * Measured (T0, 2026-10-30, standalone aiworkspace, debug build): 20 000 rows × 20 columns (10 texts of ~14
- * characters, 5 numbers, 5 decimals) is a 7.8 MiB request, accepted in 8.9 s; a 12.4 MB one is refused with 413 —
- * the service takes at most `Limits.max_commit_bytes` (8 MiB) per request. So a commit also ends before its
- * operations pass 6 MiB (JSON, UTF-8): wide or wordy tables get smaller commits than 20 000 rows.
+/* A table plan → the operations of its import (表格数据导入 TODO §3.4): the TableSource with its fields (and a table
+ * Block when the import lands on a canvas), then `table.insert_records` of at most 500 records / 1 MiB each. An import
+ * is one Commit (one undo step) whatever its size: the client sends a large Commit in parts (`doc.stage`), which is
+ * why one operation stays well under a part.
  *
  * Record ids are one random prefix per import plus the row number in fixed-width base 36: a table without sorting
  * lists records by id, so the rows keep the order they had in the source. */
@@ -14,10 +10,9 @@ import { keysAfter, randomId } from '../import-drawio/keys.ts'
 import type { Json } from './infer.ts'
 import type { TablePlan } from './plan.ts'
 
-export const ROWS_PER_COMMIT = 20_000
 export const RECORDS_PER_OP = 500
-/** Operations per commit at most (UTF-8 JSON), under the service's 8 MiB request limit with room for the envelope. */
-export const COMMIT_BYTES = 6 * 1024 * 1024
+/** One `table.insert_records` at most (UTF-8 JSON): a part of a Commit sent in parts is 6 MiB. */
+export const OP_BYTES = 1024 * 1024
 
 export type TableOp = { op: string; [key: string]: Json | undefined }
 
@@ -30,13 +25,11 @@ export interface TableTarget {
   /** A table Block showing it (a canvas import): its parent, the last order key there, its placement (free canvas). */
   block?: { parentId: string; afterKey: string | null; orderKey?: string; placement?: Record<string, number> | null; title?: string }
   newId?: (prefix: string) => string
-  rowsPerCommit?: number
   recordsPerOp?: number
-  commitBytes?: number
+  opBytes?: number
 }
 
-export interface TableCommit { operations: TableOp[]; firstRow: number; rows: number }
-export interface TableOps { sourceId: string; cellId: string | null; commits: TableCommit[] }
+export interface TableOps { sourceId: string; cellId: string | null; operations: TableOp[] }
 
 /** Names are 1–128 characters without `/` or control characters (`core/src/id.rs`), unique among siblings. */
 export function uniqueName(base: string, taken: Set<string>): string {
@@ -57,7 +50,6 @@ export function recordIds(count: number, newId: (prefix: string) => string = ran
 export function tableOperations(plan: TablePlan, target: TableTarget): TableOps {
   const newId = target.newId ?? randomId
   const sourceId = newId('s')
-  const perCommit = target.rowsPerCommit ?? ROWS_PER_COMMIT
   const perOp = target.recordsPerOp ?? RECORDS_PER_OP
   const head: TableOp[] = [{
     op: 'entity.create', entity_id: sourceId, type_id: 'buckyos.table-source', parent_id: target.folderId, order_key: keysAfter(target.afterKey, 1)[0], name: target.name,
@@ -74,25 +66,20 @@ export function tableOperations(plan: TablePlan, target: TableTarget): TableOps 
     })
   }
   const ids = recordIds(plan.records.length, newId)
-  const budget = target.commitBytes ?? COMMIT_BYTES
-  const commits: TableCommit[] = []
-  let operations: TableOp[] = [...head]
-  let bytes = utf8Length(JSON.stringify(head))
-  let first = 0
+  const budget = target.opBytes ?? OP_BYTES
+  const operations: TableOp[] = [...head]
+  let bytes = 0
   let batch: { record_id: string; values: Record<string, Json> }[] = []
-  const flushOp = () => { if (batch.length) { operations.push({ op: 'table.insert_records', source_id: sourceId, records: batch as unknown as Json }); batch = [] } }
-  const flushCommit = (end: number) => { flushOp(); commits.push({ operations, firstRow: first, rows: end - first }); operations = []; bytes = 0; first = end }
+  const flushOp = () => { if (batch.length) { operations.push({ op: 'table.insert_records', source_id: sourceId, records: batch as unknown as Json }); batch = []; bytes = 0 } }
   for (let i = 0; i < plan.records.length; i++) {
     const record = { record_id: ids[i], values: plan.records[i] }
     const size = utf8Length(JSON.stringify(record)) + 1
-    // a commit ends at 20 000 rows or before its operations pass the byte budget (never empty)
-    if (i > first && (i - first >= perCommit || bytes + size > budget)) flushCommit(i)
-    if (batch.length >= perOp) flushOp()
+    if (batch.length >= perOp || (batch.length > 0 && bytes + size > budget)) flushOp()
     batch.push(record)
     bytes += size
   }
-  flushCommit(plan.records.length)
-  return { sourceId, cellId, commits }
+  flushOp()
+  return { sourceId, cellId, operations }
 }
 
 /** UTF-8 length of a string. */

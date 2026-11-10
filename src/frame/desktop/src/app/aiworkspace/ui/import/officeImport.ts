@@ -9,11 +9,11 @@
  *             page's content folder (like a PDF import)
  *   faithful  the original uploaded, LibreOffice makes a PDF of it, the PDF importer takes over with the original as
  *             its file (§5.2, Q12)
- * Cancelling before the first commit leaves the workspace untouched; a refused batch stops and says how far it got. */
+ * Every import is one Commit: cancelling or a refused Commit leaves the workspace untouched, undo takes it back whole. */
 
-import { allocateKeys, batches, buildOperations, ImportReport, type ImportOp, type UploadedAsset } from '@drawio/mod'
+import { allocateKeys, buildOperations, ImportReport, type ImportOp, type UploadedAsset } from '@drawio/mod'
 import { keysAfter } from '@drawio/keys'
-import { buildDocOperations, fileBaseOf, sizedBatches, type CropRequest, type DocPlan, type EncodedImage, type OfficePagePlan, type RasterRequest } from '@office/mod'
+import { buildDocOperations, fileBaseOf, type CropRequest, type DocPlan, type EncodedImage, type OfficePagePlan, type RasterRequest } from '@office/mod'
 import { gridOrigins, stageOf } from '@pdf/layout'
 import { NfspClient } from 'buckyos/nfsp'
 import { randomId } from '../../api/ids'
@@ -26,6 +26,7 @@ import type { ImportOutcome } from '../canvas/drawioImport'
 import { ASSET_LIMIT, Uploader } from '../canvas/pdfImport'
 import { createSurfaceOps } from '../canvas/surfaceOps'
 import type { OfficeImportSource } from './officeImportRequest'
+import { submitImport, type ImportCommitProgress } from './submitImport'
 import type { DocxJob, OfficeReaderRequest, OfficeReaderResponse, ReportData, SlideJob } from './officeReader.worker'
 
 export { ASSET_LIMIT }
@@ -51,7 +52,7 @@ export interface OfficeImportChoices {
   columns: number
 }
 
-export interface OfficeImportProgress { stage: 'read' | 'convert' | 'draw' | 'upload' | 'commit'; done: number; total: number }
+export type OfficeImportProgress = { stage: 'read' | 'convert' | 'draw' | 'upload'; done: number; total: number } | ImportCommitProgress
 
 export function defaultChoices(inspection: OfficeInspection | null, bytes: number): OfficeImportChoices {
   const shown = inspection ? inspection.slides.filter((s) => !s.hidden).length : 0
@@ -266,11 +267,6 @@ function mergeReport(into: ImportReport, from: ReportData) {
   into.images += from.images
 }
 
-const failure = (result: { status: string; code?: string; detail?: unknown }) => (result.status === 'rejected' || result.status === 'conflict'
-  ? (result.detail ? aiwsT('aiworkspace.canvas.codeWithDetail', { code: result.code ?? '', detail: String(result.detail) }) : result.code ?? result.status)
-  : result.status)
-const committed = (result: { status: string }) => result.status === 'accepted' || result.status === 'saved_locally'
-
 const PLACEHOLDERS = () => ({
   image: aiwsT('aiworkspace.office.placeholder.image'), chart: aiwsT('aiworkspace.office.placeholder.chart'), smartart: aiwsT('aiworkspace.office.placeholder.smartart'),
   ole: aiwsT('aiworkspace.office.placeholder.ole'), media: aiwsT('aiworkspace.office.placeholder.media'), object: aiwsT('aiworkspace.office.placeholder.object'),
@@ -333,17 +329,10 @@ async function importDocx(store: WorkspaceStore, reader: OfficeReader, source: O
   outcome.name = title
   const { ops: surfaceOps, surfaceId } = createSurfaceOps(store, title, 'flow')
   const label = aiwsT('aiworkspace.office.importLabel', { name: title })
-  progress({ stage: 'commit', done: 0, total: 1 })
-  const first = await store.submit({ editId: `import:office:${surfaceId}`, label, operations: surfaceOps })
-  if (!committed(first)) return { ...outcome, error: aiwsT('aiworkspace.office.error.pageFailed', { reason: failure(first) }) }
-  outcome.surfaceId = surfaceId
   const built = buildDocOperations(plan, { surfaceId, contentFolderId: `${surfaceId}-content`, afterKey: null, contentAfterKey: null, assets, original })
-  const parts = sizedBatches(built.ops)
-  for (const [k, operations] of parts.entries()) {
-    progress({ stage: 'commit', done: k, total: parts.length })
-    const result = await store.submit({ editId: `import:office:${surfaceId}:${k}`, label: parts.length > 1 ? aiwsT('aiworkspace.office.importBatchLabel', { name: title, part: k + 1, parts: parts.length }) : label, operations: operations as unknown as Operation[] })
-    if (!committed(result)) return { ...outcome, error: aiwsT('aiworkspace.office.error.stopped', { part: k + 1, parts: parts.length, reason: failure(result) }) }
-  }
+  const failed = await submitImport(store, { editId: `import:office:${surfaceId}`, label, operations: [...surfaceOps, ...(built.ops as unknown as Operation[])] }, 'files', progress)
+  if (failed) return { ...outcome, error: aiwsT('aiworkspace.office.error.failed', { reason: failed }) }
+  outcome.surfaceId = surfaceId
   outcome.created = built.blocks
   report.objects = built.blocks.length
   const texts = plan.segments.filter((s) => s.kind === 'richtext').length
@@ -399,10 +388,6 @@ async function importPptx(store: WorkspaceStore, reader: OfficeReader, source: O
     }
   }
   const label = aiwsT('aiworkspace.office.importLabel', { name })
-  progress({ stage: 'commit', done: 0, total: 1 })
-  const first = await store.submit({ editId: `import:office:${surfaceId}`, label, operations: firstOps })
-  if (!committed(first)) return { ...outcome, error: aiwsT('aiworkspace.office.error.pageFailed', { reason: failure(first) }) }
-  outcome.surfaceId = surfaceId
   const sizes = plans.map((p) => p.pageSize ?? { w: p.bounds.w, h: p.bounds.h })
   const origins = gridOrigins(sizes, Math.max(1, Math.min(choices.columns, 12)))
   const all: ImportOp[] = []
@@ -419,19 +404,18 @@ async function importPptx(store: WorkspaceStore, reader: OfficeReader, source: O
     const b = { x: origin.x, y: origin.y, w: sizes[i].w, h: sizes[i].h }
     outcome.bounds = outcome.bounds ? { x: Math.min(outcome.bounds.x, b.x), y: Math.min(outcome.bounds.y, b.y), w: Math.max(outcome.bounds.x + outcome.bounds.w, b.x + b.w) - Math.min(outcome.bounds.x, b.x), h: Math.max(outcome.bounds.y + outcome.bounds.h, b.y + b.h) - Math.min(outcome.bounds.y, b.y) } : b
   }
-  const parts = batches(all)
-  for (const [k, operations] of parts.entries()) {
-    progress({ stage: 'commit', done: k, total: parts.length })
-    const result = await store.submit({ editId: `import:office:${surfaceId}:${k}`, label: parts.length > 1 ? aiwsT('aiworkspace.office.importBatchLabel', { name, part: k + 1, parts: parts.length }) : label, operations: operations as unknown as Operation[] })
-    if (!committed(result)) return { ...outcome, error: aiwsT('aiworkspace.office.error.stopped', { part: k + 1, parts: parts.length, reason: failure(result) }) }
-  }
+  let pathId: string | null = null
+  const operations: Operation[] = [...firstOps, ...(all as unknown as Operation[])]
   if (choices.createPath && frames.length) {
     const steps: ShowStep[] = frames.map((id) => ({ id: randomId('st'), target: { kind: 'frame', entity_id: id }, transition: 'cut' }))
     const path = createPathOp(store, name, 'presentation', { stage: stageOf(sizes), background: '#000000', steps })
-    const result = await store.submit({ editId: `import:office:${surfaceId}:path`, label: aiwsT('aiworkspace.office.pathLabel', { name }), operations: [path.op] })
-    if (committed(result)) outcome.pathId = path.id
-    else report.add('office_path_failed', 'The presentation path could not be created', name)
+    operations.push(path.op)
+    pathId = path.id
   }
+  const failed = await submitImport(store, { editId: `import:office:${surfaceId}`, label, operations }, 'pages', progress)
+  if (failed) return { ...outcome, created: [], bounds: null, error: aiwsT('aiworkspace.office.error.failed', { reason: failed }) }
+  outcome.surfaceId = surfaceId
+  outcome.pathId = pathId
   report.objects = counts.text + counts.images + counts.shapes + counts.placeholders
   outcome.summary = aiwsT('aiworkspace.office.summarySlides', {
     pages: aiwsT('aiworkspace.drawio.count.pages', { count: plans.length }), text: aiwsT('aiworkspace.pdf.count.text', { count: counts.text }),

@@ -369,6 +369,19 @@ URL 大表采用源的分页/版本协议，不把本地 TableSource 定义的 `
 7. **`epoch`（历史代次）**：每个 Workspace 有一个 `epoch`（`ep_` + 26 位 base32），在创建时生成，并且**每当它的提交历史被替换时重新生成**（以 `restore` 语义导入，§4.4）。`seq`、所有 `rev`、幂等记录、变化流位置都只在一个 `epoch` 内有意义。`ws.get_info`、`get_changes`、`wait_changes`、`replica.bootstrap` 的响应和 kevent 唤醒提示都带当前 `epoch`；`commit`、`prepare`、`undo`、`get_changes`、`get_submission` 的请求必须带调用方所依据的 `epoch`，与当前不一致 → `EPOCH_MISMATCH`（不可重试）。它使“同一个 `workspace_id` 被恢复成另一段历史”对所有旧客户端显式可见，而不是让旧的 `seq` 和 `rev` 在新历史里被误解释。
 5. `origin` 取值 `human`、`agent`、`program`、`import`、`system`，只进入历史和事件，不影响授权。可信主体、接收时间、`seq`、`commit_id` 由后台填写。
 6. `undo_group` 可选，由调用方给出，用于把一次用户可理解的动作标成一个撤销单位；一个 Commit 就是最小撤销单位，`undo_group` 只是给 UI 的分组提示，后台不做跨 Commit 的原子撤销。
+8. **分块提交（`staged`，2026-11-10）**：一个 Commit 在服务端始终是一个事务、一个撤销单位，但不必装进一次请求。单次请求仍限 8 MiB；超过的 Commit 由客户端把 `operations` 切块，前几块用 `doc.stage` 暂存，最后一块随 `doc.commit` 发出，并在 `staged` 里按顺序列出各暂存块的摘要：
+
+   ```
+   doc.stage  { workspace_id, epoch, idempotency_key, part, operations }
+     → { ok: true, part, digest, operations: <个数>, expires_at }
+   doc.commit { ...原请求字段, staged: ["<part 0 的 digest>", "<part 1 的 digest>", …], operations: [最后一块] }
+   ```
+
+   - `doc.stage` 按 `(可信主体, idempotency_key, part)` 存放（`part` 从 0 起），同一块重发即覆盖；`digest = sha256(JCS(operations))` 由服务端计算，客户端原样带回。准入与 `doc.commit` 的入口检查相同（`workspace_id`、`epoch`、有访问权、配额、演示锁、已结束的 session），不做逐操作检查。暂存块保留 1 小时，计入 `staged` 用量，由 `sweep` 和 `ws.clear_staged` 释放。
+   - 服务端按顺序拼接“暂存块 0..N-1 + 本次 `operations`”，得到完整请求后走同一条管线：一个事务、一个 `commit_id`、一个变化流事件。`request_digest` 的对象是最终请求（含 `staged` 列表），所以内容绑定在幂等键上；接受后重发同一最终请求，即使暂存块已删除也照常重放。
+   - 列出的块缺失或过期：`SNAPSHOT_EXPIRED` + `sub_code: STAGED_PARTS_MISSING`（可重试，客户端重新暂存全部块）。块的摘要与请求所列不一致：`IDEMPOTENCY_MISMATCH`。拼装后超过上限（§5：32 MiB、50 000 个操作）：`LIMIT_EXCEEDED`。
+   - 消费：最终 `doc.commit` 求值之后，无论结果是 accepted、conflict 还是 rejected（含重放），该键的暂存块都被删除。`doc.prepare` 接受同样的 `staged`，只拼装、不消费。
+   - 撤销 / 重做的补偿 Commit 在服务端内部生成，不经过 HTTP，只受拼装后上限约束。
 
 响应三态：
 
@@ -391,7 +404,7 @@ URL 大表采用源的分页/版本协议，不把本地 TableSource 定义的 `
 - 一次响应报告本批**全部**可检测的冲突，而不是遇到第一个就返回，便于 UI 一次呈现。
 - `server_ops`：后台在接受时为该 Commit 生成的、客户端需要应用的内容。第一期只有一种：块级富文本操作在后台执行后产生的 CRDT 更新（§3.3.5）。
 
-**`prepare`**：与 `commit` 相同的请求体，执行 §2.5.2 的第 1–3 步和第 4 步的只读复核，返回将要发生的 `touched`、冲突或错误、以及 `request_digest`。【裁决】后台不保存候选状态；`prepare` 之后的 `commit` 重新发送完整请求。迁移类操作（§3.4.6）的预检报告通过 `prepare` 返回。资产是唯一有后台暂存状态的东西（§3.6）。
+**`prepare`**：与 `commit` 相同的请求体，执行 §2.5.2 的第 1–3 步和第 4 步的只读复核，返回将要发生的 `touched`、冲突或错误、以及 `request_digest`。【裁决】后台不保存候选状态；`prepare` 之后的 `commit` 重新发送完整请求。迁移类操作（§3.4.6）的预检报告通过 `prepare` 返回。有后台暂存状态的只有两样：资产（§3.6）和分块提交的暂存块（上文第 8 条）。
 
 **两种提交策略（客户端行为）**：
 
@@ -1651,7 +1664,7 @@ example.bcanvas/                      # 展开目录；打包时为不压缩或 
 
 这些路由用 `Authorization: Bearer <session token>` 鉴权，与 kRPC 用同一套令牌校验。
 
-限额缺省值（配置项，写入服务 settings）：单个 Commit 请求体 ≤ 8 MiB、操作数 ≤ 10 000、`table.set_values` 项数 ≤ 50 000；`doc.query` 的 `limit` ≤ 1000；`doc.get_changes` 的 `limit` ≤ 500 个提交或 8 MiB；`doc.wait_changes` 的超时 ≤ 30 s。超限统一返回 `LIMIT_EXCEEDED` 并指出是哪一项。
+限额缺省值（配置项，写入服务 settings）：单次请求体（`doc.commit`、`doc.stage`）≤ 8 MiB；拼装后的单个 Commit ≤ 32 MiB、操作数 ≤ 50 000（§2.6 第 8 条）、`table.set_values` 项数 ≤ 50 000；`doc.query` 的 `limit` ≤ 1000；`doc.get_changes` 的 `limit` ≤ 500 个提交或 8 MiB；`doc.wait_changes` 的超时 ≤ 30 s。超限统一返回 `LIMIT_EXCEEDED` 并指出是哪一项。
 
 ### 5.1 错误码
 

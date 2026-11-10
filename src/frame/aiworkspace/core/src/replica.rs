@@ -232,6 +232,10 @@ impl Replica {
     /// the pending list (the caller persists that row before reporting
     /// "saved on this device").
     pub fn submit_local(&mut self, request: &Value) -> Value {
+        if request.to_string().len() > self.limits.max_commit_total_bytes {
+            let error = WsError::limit(format!("commit exceeds {} bytes", self.limits.max_commit_total_bytes));
+            return CommitFailure::Rejected { error, op_index: None }.to_json();
+        }
         let mut stored = request.clone();
         // versions produced by earlier pending submissions are provisional: remember the dependency, not the number
         let confirmed = self.confirmed_seq;

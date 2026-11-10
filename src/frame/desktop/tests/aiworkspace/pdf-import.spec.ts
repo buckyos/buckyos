@@ -286,3 +286,71 @@ test('PI-04 layout overflow preserves the opaque background and all text in one 
   expect(pixels.gray).toBeGreaterThan(10000)
   await page.screenshot({ path: `${SHOTS}/pi04-overflow-background.png` })
 })
+
+test('PI-05 an import is one Commit, sent in parts: a refused one leaves nothing; one undo takes it back, one redo restores it', async ({ page, api }) => {
+  test.setTimeout(120_000)
+  const ws = await canvasWorkspace(api, `pi-05 ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  // parts of 4 KB: this three-page import goes through `doc.stage` the way a 30 MB one does
+  await page.evaluate(() => {
+    const w = window as unknown as { __aiwsTestHooks?: Record<string, unknown> }
+    w.__aiwsTestHooks ??= { editors: {} }
+    w.__aiwsTestHooks.commitPartBytes = 4096
+  })
+  const sent: string[] = []
+  let refuse = true
+  await page.route('**/kapi/aiworkspace', async (route) => {
+    let body: Json = null
+    try { body = route.request().postDataJSON() } catch { /* not JSON */ }
+    if (body?.method === 'doc.stage' || body?.method === 'doc.commit') sent.push(body.method)
+    if (refuse && body?.method === 'doc.commit' && Array.isArray(body.params?.staged)) {
+      await route.fulfill({ json: { result: { status: 'rejected', code: 'QUOTA_LIMIT', retryable: false, detail: 'the workspace is full', errors: [{ code: 'QUOTA_LIMIT', retryable: false, detail: 'the workspace is full' }] }, sys: [body.sys?.[0]] } })
+      return
+    }
+    await route.continue()
+  })
+  const start = async () => {
+    const chooser = page.waitForEvent('filechooser')
+    await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')
+    await (await chooser).setFiles({ name: 'deck.pdf', mimeType: 'application/pdf', buffer: deck() })
+    const dialog = page.getByTestId('aiws-pdf-dialog')
+    await expect(dialog.getByTestId('aiws-pdf-pages')).toContainText('共 3 页')
+    await dialog.getByTestId('aiws-pdf-start').click()
+    await expect(dialog).toHaveCount(0, { timeout: 60_000 })
+  }
+  const live = async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => !e.deleted)
+  const before = await live()
+  const head = await api.headSeq(ALICE, ws.workspace_id)
+
+  // the final commit is refused: no canvas, no pages, no path — and nothing to undo
+  await start()
+  const report = page.getByTestId('aiws-import-report')
+  await expect(report.getByTestId('aiws-import-error')).toContainText('导入没有写入')
+  await expect(report.getByTestId('aiws-import-error')).toContainText('QUOTA_LIMIT')
+  await report.getByTestId('aiws-import-report-close').click()
+  expect(sent.filter((m) => m === 'doc.stage').length).toBeGreaterThan(1)
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
+  expect((await live()).map((e: Json) => e.entity_id).sort()).toEqual(before.map((e: Json) => e.entity_id).sort())
+
+  // accepted: every part, one Commit
+  refuse = false
+  sent.length = 0
+  await start()
+  await expect.poll(async () => (await live()).filter((e: Json) => e.kind === 'surface').length).toBe(2)
+  expect(sent.filter((m) => m === 'doc.commit')).toHaveLength(1)
+  expect(sent.filter((m) => m === 'doc.stage').length).toBeGreaterThan(1)
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
+  const imported = await live()
+  expect(imported.some((e: Json) => e.type_id === 'buckyos.show-path')).toBe(true)
+  await report.getByTestId('aiws-import-report-close').click()
+  await expect(page.getByTestId('aiws-undo')).toHaveText(/撤销 1/)
+
+  // one undo: the canvas, its pages, the kept file and the path are gone together
+  await page.getByTestId('aiws-undo').click()
+  await expect.poll(async () => (await live()).map((e: Json) => e.entity_id).sort()).toEqual(before.map((e: Json) => e.entity_id).sort())
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 2)
+  // one redo: all of it back
+  await page.getByTestId('aiws-redo').click()
+  await expect.poll(async () => (await live()).map((e: Json) => e.entity_id).sort()).toEqual(imported.map((e: Json) => e.entity_id).sort())
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 3)
+})

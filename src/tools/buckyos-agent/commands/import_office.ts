@@ -24,6 +24,9 @@ report. Charts, SmartArt without its saved drawing, EMF / WMF pictures and formu
 pictures: here they stay boxes (pptx) or are left out (docx) and are reported — for those, suggest importing on
 the Desktop, where the content server's LibreOffice draws them (or "Import as it looks").
 
+The import is one Commit: written whole or not at all, undone in one step. One Commit holds at most
+32 MiB / 50 000 operations; a larger file is refused (LIMIT_EXCEEDED) — split it and import the parts.
+
 Files: .docx .docm .pptx .pptm (save .doc / .ppt / .odt / .odp as one of these first)
 
 Options:
@@ -96,7 +99,7 @@ export async function run(argv: string[]): Promise<never> {
   }
   const report = plan.report.list().map((n) => ({ kind: n.kind, count: n.count, samples: n.samples, message: n.message })) as unknown as JsonValue;
   if (outcome.error) {
-    emitAndExit(errorResult(TOOL, `${TOOL} => refused`, `${outcome.error.step}: ${outcome.error.code} ${outcome.error.detail}`, { workspace_id: workspace!, committed: outcome.committed as unknown as JsonValue, error: outcome.error as unknown as JsonValue }), EXIT_IO_FAILED);
+    emitAndExit(errorResult(TOOL, `${TOOL} => refused`, `${outcome.error.code} ${outcome.error.detail} (nothing was written)`, { workspace_id: workspace!, committed: outcome.committed as unknown as JsonValue, error: outcome.error as unknown as JsonValue }), EXIT_IO_FAILED);
   }
 
   // 5) emit

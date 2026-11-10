@@ -17,7 +17,7 @@ export function PdfImportHost() {
 }
 
 const mm = (pt: number) => Math.round((pt * 25.4) / 72)
-const PROGRESS: Record<PdfImportProgress['stage'], string> = { convert: 'aiworkspace.pdf.progress.convert', upload: 'aiworkspace.pdf.progress.upload', commit: 'aiworkspace.pdf.progress.commit' }
+const PROGRESS: Record<PdfImportProgress['stage'], string> = { convert: 'aiworkspace.pdf.progress.convert', upload: 'aiworkspace.pdf.progress.upload', commit: 'aiworkspace.import.progressSend', write: 'aiworkspace.import.progressWrite' }
 
 function ImportPdfDialog({ request, onClose }: { request: PdfImportRequest; onClose: () => void }) {
   useOverlayMounted()
@@ -150,7 +150,7 @@ function ImportPdfDialog({ request, onClose }: { request: PdfImportRequest; onCl
             )}
             <div className="aiws-dialog-actions">
               {running ? (
-                <button type="button" data-testid="aiws-pdf-cancel" disabled={progress?.stage === 'commit'} onClick={() => abort.current?.abort()}>{t('aiworkspace.common.cancel')}</button>
+                <button type="button" data-testid="aiws-pdf-cancel" disabled={progress?.stage === 'commit' || progress?.stage === 'write'} onClick={() => abort.current?.abort()}>{t('aiworkspace.common.cancel')}</button>
               ) : (
                 <>
                   <button type="button" className="is-primary" autoFocus data-testid="aiws-pdf-start" disabled={choices.from > choices.to} onClick={() => { void start() }}>{t('aiworkspace.pdf.start', { count: choices.to - choices.from + 1 })}</button>

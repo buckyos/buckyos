@@ -5,7 +5,7 @@
 
 use crate::docdb::{apply_changes, db_err, meta_get, meta_set, DocCache, SqlCtx, WriteStats};
 use crate::objects::{bucket_id, ObjectStore, ASSETS, OBJECTS};
-use crate::schema::{DOC_DDL, LOCAL_DDL, STORAGE_SCHEMA_VERSION};
+use crate::schema::{DOC_DDL, LOCAL_ADDED_DDL, LOCAL_DDL, STORAGE_SCHEMA_VERSION};
 use aiworkspace_core::access::{Access, Cap, CapSet};
 use aiworkspace_core::canonical::{canonical_json, sha256_hex};
 use aiworkspace_core::id::{check_id, check_idempotency_key, is_prefixed_id, prefixed_id};
@@ -26,6 +26,8 @@ pub const WISH_AICC_WORKSPACE_OWNER: &str = "workspace_owner";
 pub const WISH_AICC_CURRENT_USER: &str = "current_user";
 
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+/// How long a part of a Commit waits for its final `doc.commit`.
+pub const STAGED_COMMIT_TTL_MS: i64 = 3600 * 1000;
 pub const LOCK_LEASE_MS: i64 = 60_000;
 pub const LOCK_IDLE_MS: i64 = 600_000;
 pub const COMPACT_UPDATES: i64 = 200;
@@ -478,6 +480,7 @@ impl Workspace {
         }
         let doc = open_db(&dir.join("doc.sqlite"), true)?;
         let local = open_db(&dir.join("local.sqlite"), false)?;
+        local.execute_batch(LOCAL_ADDED_DDL).map_err(db_err)?;
         let get = |k: &str| -> WsResult<String> {
             meta_get(&doc, k)?.ok_or_else(|| WsError::io(format!("workspace_meta.{k} missing")))
         };
@@ -556,7 +559,8 @@ impl Workspace {
     pub fn clear_staged(&mut self, caller: &Caller) -> WsResult<Value> {
         self.require_ws(caller, Cap::Manage)?;
         let (removed, bytes) = self.drop_staged(None)?;
-        Ok(json!({ "ok": true, "removed": removed, "bytes": bytes }))
+        let (parts, part_bytes) = self.drop_staged_commits(None)?;
+        Ok(json!({ "ok": true, "removed": removed, "bytes": bytes, "commit_parts": parts, "commit_part_bytes": part_bytes }))
     }
 
     /// Unbind and forget the staged uploads no asset row took over (all, or those expired by `now`).
@@ -582,6 +586,83 @@ impl Workspace {
         }
         self.add_usage("staged", -bytes)?;
         Ok((removed, bytes))
+    }
+
+    /// Forget staged Commit parts (all, or those expired by `now`) and give their bytes back.
+    fn drop_staged_commits(&self, expired_by: Option<&str>) -> WsResult<(u64, i64)> {
+        let cond = if expired_by.is_some() { "WHERE expires_at <= ?1" } else { "WHERE ?1 IS NULL" };
+        let (n, bytes): (u64, i64) = self
+            .local
+            .query_row(&format!("SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM staged_commits {cond}"), [expired_by], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db_err)?;
+        self.local.execute(&format!("DELETE FROM staged_commits {cond}"), [expired_by]).map_err(db_err)?;
+        self.add_usage("staged", -bytes)?;
+        Ok((n, bytes))
+    }
+
+    /// The parts of one key are consumed by its final `doc.commit`, whatever the outcome.
+    fn consume_staged(&self, principal: &str, idem_key: &str) {
+        let bytes: i64 = self
+            .local
+            .query_row("SELECT COALESCE(SUM(bytes), 0) FROM staged_commits WHERE principal = ?1 AND idem_key = ?2", params![principal, idem_key], |r| r.get(0))
+            .unwrap_or(0);
+        if bytes == 0 {
+            return;
+        }
+        let _ = self.local.execute("DELETE FROM staged_commits WHERE principal = ?1 AND idem_key = ?2", params![principal, idem_key]);
+        let _ = self.add_usage("staged", -bytes);
+    }
+
+    /// `doc.stage { workspace_id, epoch, idempotency_key, part, operations }`: hold part `part` of a Commit too
+    /// large for one request. Admission is that of `doc.commit`; the operations are judged by the final commit.
+    pub fn stage_commit(&mut self, caller: &Caller, req: &Value) -> WsResult<Value> {
+        let get = |k: &str| req.get(k).and_then(Value::as_str);
+        if get("workspace_id") != Some(self.workspace_id.as_str()) {
+            return Err(WsError::invalid_op("workspace_id does not match"));
+        }
+        self.check_epoch(get("epoch").unwrap_or(""))?;
+        let key = get("idempotency_key").ok_or_else(|| WsError::invalid_op("idempotency_key required"))?;
+        aiworkspace_core::id::check_idempotency_key(key)?;
+        let part = req.get("part").and_then(Value::as_u64).filter(|p| *p < 64).ok_or_else(|| WsError::invalid_op("part must be 0..63"))?;
+        let ops = req.get("operations").and_then(Value::as_array).filter(|a| !a.is_empty()).ok_or_else(|| WsError::invalid_op("operations must be a non-empty array"))?;
+        if ops.len() > self.limits.max_ops {
+            return Err(WsError::limit(format!("more than {} operations", self.limits.max_ops)));
+        }
+        if self.access(caller)?.is_empty() {
+            return Err(WsError::not_found("workspace not found"));
+        }
+        if let Some(lock) = self.show_lock() {
+            return Err(Self::show_locked_error(&lock));
+        }
+        if self.session_events && self.session_closed() {
+            return Err(WsError::sub(Code::PermissionDenied, "SESSION_CLOSED", "the session has ended: its workspace is a record now"));
+        }
+        let ops_json = Value::Array(ops.clone()).to_string();
+        let digest = sha256_hex(canonical_json(&req["operations"])?.as_bytes());
+        let bytes = ops_json.len() as i64;
+        let old: i64 = self
+            .local
+            .query_row("SELECT bytes FROM staged_commits WHERE principal = ?1 AND idem_key = ?2 AND part = ?3", params![caller.principal, key, part as i64], |r| r.get(0))
+            .optional()
+            .map_err(db_err)?
+            .unwrap_or(0);
+        let held: i64 = self
+            .local
+            .query_row("SELECT COALESCE(SUM(bytes), 0) FROM staged_commits WHERE principal = ?1 AND idem_key = ?2", params![caller.principal, key], |r| r.get(0))
+            .map_err(db_err)?;
+        if (held - old + bytes) as usize > self.limits.max_commit_total_bytes {
+            return Err(WsError::limit(format!("commit exceeds {} bytes", self.limits.max_commit_total_bytes)));
+        }
+        self.check_quota((bytes - old).max(0) as u64, false)?;
+        let expires = format_utc_ms((self.clock)() + STAGED_COMMIT_TTL_MS);
+        self.local
+            .execute(
+                "INSERT OR REPLACE INTO staged_commits (principal, idem_key, part, ops_json, bytes, digest, expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![caller.principal, key, part as i64, ops_json, bytes, digest, expires],
+            )
+            .map_err(db_err)?;
+        self.add_usage("staged", bytes - old)?;
+        Ok(json!({ "ok": true, "part": part, "digest": digest, "operations": ops.len(), "expires_at": expires }))
     }
 
     /// Unbind history-only assets: purged ones (`ended_seq = 0`) at once, the others once their last live
@@ -619,6 +700,7 @@ impl Workspace {
             return Ok(json!({ "staged": 0, "history": 0 }));
         }
         let (staged, _) = self.drop_staged(Some(&self.now()))?;
+        self.drop_staged_commits(Some(&self.now()))?;
         let history = self.release_history((self.clock)())?;
         Ok(json!({ "staged": staged, "history": history }))
     }
@@ -1234,10 +1316,14 @@ impl Workspace {
 
     /// `doc.commit`: always answers with the three-state result.
     pub fn commit(&mut self, req: &Value, caller: &Caller, opts: &CommitOpts) -> Value {
-        match self.commit_inner(req, caller, opts, false) {
+        let out = match self.commit_inner(req, caller, opts, false) {
             Ok(v) => v,
             Err(f) => f.to_json(),
+        };
+        if let Some(key) = req.get("idempotency_key").and_then(Value::as_str) {
+            self.consume_staged(&caller.principal, key);
         }
+        out
     }
 
     /// `doc.prepare`: steps 1–3 and the read-only part of step 4. Nothing is stored.
@@ -1262,8 +1348,13 @@ impl Workspace {
             return Err(reject(WsError::invalid_op("workspace_id does not match")));
         }
         self.check_epoch(&req.epoch).map_err(reject)?;
-        if req_json.to_string().len() > MAX_REQUEST_BYTES {
-            return Err(reject(WsError::limit("commit request exceeds 8 MiB")));
+        let request_bytes = req_json.to_string().len();
+        // a compensating Commit (undo / redo) carries the content it restores plus its expectations: whatever was
+        // accepted must stay undoable, so it gets twice the room of a request
+        let room = if opts.undoes.is_some() { 2 } else { 1 };
+        let max_bytes = self.limits.max_commit_total_bytes * room;
+        if request_bytes > max_bytes {
+            return Err(reject(WsError::limit(format!("commit exceeds {max_bytes} bytes"))));
         }
         let digest = CommitRequest::digest(req_json).map_err(reject)?;
         // the identity the Commit is written as (D08): the caller, or a run's execution identity
@@ -1292,7 +1383,8 @@ impl Workspace {
             return Err(reject(WsError::not_found("workspace not found")));
         }
         // the quota is checked before anything is planned (D19); the request size is the reservation
-        self.check_quota(req_json.to_string().len() as u64, opts.maintenance).map_err(reject)?;
+        // (staged parts were reserved when they were staged)
+        self.check_quota(request_bytes as u64, opts.maintenance).map_err(reject)?;
         // a presented Workspace is closed for writes, from every session (third phase §8.1)
         if let Some(lock) = self.show_lock() {
             return Err(reject(Self::show_locked_error(&lock)));
@@ -1318,6 +1410,36 @@ impl Workspace {
         // origin is the server's reading of who writes (D08); what the client wrote is ignored
         let origin = derive_origin(caller, opts, req.run_id.is_some());
         let mut req = req;
+        if !req.staged.is_empty() {
+            // the parts `doc.stage` holds come first: the assembled request is what gets planned
+            let mut st = self
+                .local
+                .prepare("SELECT part, ops_json, bytes, digest FROM staged_commits WHERE principal = ?1 AND idem_key = ?2 AND expires_at > ?3 ORDER BY part")
+                .map_err(|e| reject(db_err(e)))?;
+            let parts: Vec<(i64, String, i64, String)> = st
+                .query_map(params![caller.principal, req.idempotency_key, now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .and_then(|rows| rows.collect())
+                .map_err(|e| reject(db_err(e)))?;
+            drop(st);
+            let mut total = request_bytes;
+            let mut operations: Vec<Value> = Vec::new();
+            for (i, want) in req.staged.iter().enumerate() {
+                let Some((_, ops_json, bytes, digest)) = parts.iter().find(|p| p.0 == i as i64) else {
+                    return Err(reject(WsError::sub(Code::SnapshotExpired, "STAGED_PARTS_MISSING", format!("staged part {i} is missing or expired; stage the parts again"))));
+                };
+                if digest != want {
+                    return Err(reject(WsError::new(Code::IdempotencyMismatch, format!("staged part {i} is not the one this request names"))));
+                }
+                total += *bytes as usize;
+                if total > max_bytes {
+                    return Err(reject(WsError::limit(format!("commit exceeds {max_bytes} bytes"))));
+                }
+                let list: Vec<Value> = serde_json::from_str(ops_json).map_err(|e| reject(WsError::io(e.to_string())))?;
+                operations.extend(list);
+            }
+            operations.append(&mut req.operations);
+            req.operations = operations;
+        }
         req.origin = origin.to_string();
         let req = &req;
         let env = PlanEnv {
@@ -1332,7 +1454,7 @@ impl Workspace {
             schema_checks: !opts.import,
             replay: false,
             peer_id: self.peer_id,
-            limits: self.limits.clone(),
+            limits: Limits { max_ops: self.limits.max_ops * room, ..self.limits.clone() },
         };
         // 2–3. plan on an overlay; the authoritative state is not touched
         let (ops, changes, lock_targets, reports, warnings, read_denied) = {

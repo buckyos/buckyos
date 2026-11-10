@@ -476,6 +476,7 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("doc.query", "stable"),
     ("doc.prepare", "stable"),
     ("doc.commit", "stable"),
+    ("doc.stage", "stable"),
     ("doc.get_submission", "stable"),
     ("doc.undo", "stable"),
     ("doc.get_changes", "stable"),
@@ -658,6 +659,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "doc.get_collab_state" => state.with_ws(ws_id()?, |ws| ws.get_collab_state(caller, s(p, "entity_id")?))?,
         "doc.prepare" => state.with_ws(ws_id()?, |ws| Ok(ws.prepare(p, caller)))?,
         "doc.commit" => state.with_ws(ws_id()?, |ws| Ok(ws.commit(p, caller, &CommitOpts::default())))?,
+        "doc.stage" => state.with_ws(ws_id()?, |ws| ws.stage_commit(caller, p))?,
         "doc.get_submission" => state.with_ws(ws_id()?, |ws| ws.get_submission(caller, s(p, "epoch")?, s(p, "idempotency_key")?))?,
         "doc.undo" => state.with_ws(ws_id()?, |ws| Ok(ws.undo(caller, p)))?,
         "doc.get_changes" => state.with_ws(ws_id()?, |ws| {

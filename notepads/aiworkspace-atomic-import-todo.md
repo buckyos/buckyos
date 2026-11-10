@@ -2,7 +2,7 @@
 
 日期：2026-11-10
 
-状态：**方案待 owner 过目；§3 裁决项未另行裁决时按建议值实施。未开工。** 前置修复（导入排序键逐页增长超过 64 字符，见 §1.5）已于 11-10 改好，未提交。
+状态：**M0–M5 已于 2026-11-10 实施（未提交）；§3 裁决项 owner 未另行裁决，按建议值实施。M6 没有在 DV Test 上做，改在本机用 release 后端跑了 dk10000 全书（§7.4）。** 实施结果、与方案的偏差和未验证项见 §7。
 
 ## 0. 起因与目标
 
@@ -178,8 +178,10 @@ cargo test -p aiworkspace -- --test-threads=1
 deno test -A   # import-drawio、import-office、import-pdf、import-table
 # Desktop（在 buckyos/src/frame/desktop）
 node_modules/.bin/tsc -p tsconfig.app.json --noEmit && pnpm lint
-pnpm test:e2e tests/aiworkspace/pdf-import.spec.ts tests/aiworkspace/office-import.spec.ts tests/aiworkspace/table-import.spec.ts tests/aiworkspace/offline.spec.ts
+node_modules/.bin/playwright test -c playwright.aiworkspace.config.ts tests/aiworkspace/pdf-import.spec.ts tests/aiworkspace/office-import.spec.ts tests/aiworkspace/drawio.spec.ts tests/aiworkspace/table-import.spec.ts tests/aiworkspace/offline.spec.ts
+# （`pnpm test:e2e` 用默认配置，testDir 是 tests/e2e，跑不到这些用例）
 # websdk（在 buckyos-websdk）
+pnpm build   # Desktop 从 dist 取 SDK
 pnpm test
 ```
 
@@ -191,3 +193,72 @@ pnpm test
 - 排序键空间耗尽时的兄弟重排（`ORDER_KEY_EXHAUSTED`）。
 
 ## 7. 实施回写（code agent 填写）
+
+状态：2026-11-10 实施完成，buckyos 与 buckyos-websdk 两个仓库均未提交、未部署到 DV。
+
+### 7.1 落点
+
+| 部分 | 位置 |
+| --- | --- |
+| 上限与请求字段 | `core/src/plan.rs`：`Limits.max_ops` 50 000、`Limits.max_commit_total_bytes` 32 MiB、`CommitRequest.staged`；`core/src/replica.rs` 的 `submit_local` 在本地按同一上限检查大小 |
+| 暂存表 | `store/src/schema.rs` 的 `LOCAL_ADDED_DDL`（`staged_commits`），`Workspace::open` 每次执行 `CREATE TABLE IF NOT EXISTS`，已有的 Workspace 不需要迁移 |
+| 暂存、拼装、消费 | `store/src/workspace.rs`：`stage_commit`（`doc.stage`）、`commit_inner` 里幂等检查之后的拼装、`consume_staged`（`commit()` 返回前执行）、`drop_staged_commits`（`sweep` 和 `ws.clear_staged`）；演示克隆和 session 克隆清空该表（`show.rs`、`session/mod.rs`） |
+| 方法注册 | `server/src/lib.rs`：`METHOD_LEVELS` 加 `doc.stage`（stable），分发到 `stage_commit` |
+| TS 分块 | websdk `src/aiworkspace_client.ts`：`commitWithParts`、`splitCommitOperations`、`commitOverLimit` 和三个常量；`AiWorkspaceClient.commit` / `prepare` 改用它；`src/browser.ts` 补了 `export * from './aiworkspace_client'`（浏览器入口原先不导出这个模块，Desktop 拿不到） |
+| Desktop 客户端 | `api/client.ts` 的 `commit` / `prepare`；`CommitOptions.onPart`、`SubmitOptions.onPart` 把分块进度传到导入对话框 |
+| 导入器 | 公用的 `ui/import/submitImport.ts`（超限检查、一次 `store.submit`、进度）；`pdfImport.ts`、`officeImport.ts`（docx 与 pptx）、`drawioImport.ts`、`tableImport.ts`；Agent 侧 `import-office/tools/import.ts`、`import-table/tools/import.ts` |
+| 测试 | `store/tests/staged.rs`（5 个）、`server/tests/contract.rs`（`doc.stage` 的契约步骤和 413）、websdk `tests/aiws_commit_parts.test.ts`（7 个）、Desktop e2e：`pdf-import.spec.ts` PI-05、`table-import.spec.ts` TI-11（改写）、`offline.spec.ts` 最后一个用例 |
+
+### 7.2 与方案的偏差（请 owner 过目）
+
+1. **补偿 Commit 的上限是请求的两倍。** §2.2 写的是撤销 / 重做也按 `max_commit_total_bytes` 判断。重做的补偿 Commit 带着完整内容和版本期望，会比原请求略大；按同一上限判断时，一个贴着上限被接受的导入可能撤销后无法重做。实现里 `opts.undoes` 存在时字节和操作数上限都乘 2。
+2. **`doc.stage` 自己也检查总量。** 同一个键已暂存的字节加上本块超过 32 MiB 时，`doc.stage` 直接报 `LIMIT_EXCEEDED`，不等到最终提交；`part` 限制在 0–63。
+3. **消费的范围比方案宽。** 任何一次非 dry-run 的 `doc.commit` 返回前，都会删除该调用者在这个幂等键下的暂存块，包括在入口检查就被拒的请求（例如 `epoch` 不符）。客户端每次发送都重新暂存全部块，所以不影响重试。
+4. **`ws.clear_staged` 的返回值多了两个字段**：`commit_parts`、`commit_part_bytes`（契约 fixture 已重新录制）。
+5. **draw.io 多页文件也是一个 Commit。** 多页时要在同一个 Commit 里建几张画布，导入器自己给后面的画布分配排序键和不重名的名字（`createSurfaceOps` 只看当前大纲）。
+6. **表格导入：一次导入的多张表合成一个 Commit**，不是每张表一个；`table.insert_records` 每个操作除了 500 条记录的上限，还加了 1 MiB 的字节上限（`OP_BYTES`），保证操作之间总能切块。Agent 工具 `commitPlans` 的错误对象去掉了 `table`、`rows_done` 两个字段（已无意义）。
+7. **表格导入对话框在发送和写入阶段禁用“取消”**，与 PDF、Office 一致。此前 TI-11 测的是“第一批提交期间取消，报告进度”，这个场景不存在了。
+8. **删除的文案键**除 §2.4 列出的之外，还有 `aiworkspace.pdf.error.canvasFailed`、`aiworkspace.office.error.pageFailed`、`aiworkspace.drawio.newCanvasFailed`、`aiworkspace.drawio.importStopped`、`aiworkspace.import.labelPart`、报告项 `office_path_failed`。新增 `*.error.failed` / `aiworkspace.drawio.importFailed` / `aiworkspace.import.failed`（“导入没有写入，什么都没有留下”）、`aiworkspace.import.overLimit.*`、`aiworkspace.import.progressSend` / `progressWrite`。
+9. **测试钩子** `__aiwsTestHooks.commitPartBytes`：让 e2e 用很小的块走 `doc.stage` 路径。只在测试钩子启用时生效。
+
+### 7.3 验证
+
+| 检查 | 结果 |
+| --- | --- |
+| `cargo test -p aiworkspace-core -- --test-threads=1` | 通过 |
+| `cargo test -p aiworkspace-store -- --test-threads=1` | 通过（含 `staged.rs`：拼装、重放、缺块 / 过期 / 摘要不符、他人的块、conflict 后已消费、拼装后超限、`prepare` 不消费、`sweep` 与 `clear_staged`、10 MiB 的 Commit 撤销再重做、副本 `apply_remote` 应用该事件、副本本地超限） |
+| `cargo test -p aiworkspace -- --test-threads=1` | 通过（契约 fixture 重新录制，差异只有新增的 `doc.stage` 步骤和 `ws.clear_staged` 的两个字段） |
+| `deno test -A`：import-drawio / import-office / import-pdf / import-table | 34 / 47 / 36 / 33 通过 |
+| websdk `jest` | 新增 7 个通过；全量 1178 通过、1 个失败：`file_meta.test.ts` 的 “real samples › dk10000.pdf”，它把 `media_samples` 里的文件都当图片，与本单无关 |
+| Desktop `tsc --noEmit` | 通过 |
+| Desktop `pnpm lint` | 4 个错误，改动前后相同（`ai-center/.../RequestFields.tsx` 等，与本单无关） |
+| Desktop e2e（`playwright.aiworkspace.config.ts`）：pdf-import、table-import、office-import、drawio、offline | 48 个通过 |
+
+e2e 覆盖到的行为：PI-05 用 4 KB 的块导入三页 PDF，最终提交被注入拒绝时画布、页面、路径都没有留下，`head_seq` 不变；放行后是多次 `doc.stage` 加一次 `doc.commit`，撤销栈一项，撤销一次回到导入前，重做一次恢复。TI-11 导入 20 001 行，一个 Commit，撤销、重做各一次。离线副本用例：表格导入先存本地，发送循环分块送出，结算后撤销一次撤回。
+
+### 7.4 dk10000 全书实测（本机，release 后端，standalone aiworkspace + nfs_server，Chromium）
+
+dk10000.pdf 是 403 页（§1.4 按 806 页估算有误）。可编辑模式、不保留原件（文件 272 MB，超过 32 MiB 的资产上限）。
+
+| 项 | 值 |
+| --- | --- |
+| 结果 | 403 页：8 412 段文字、1 942 张图片、94 个图形；13 997 个操作，一个 Commit |
+| 转换加上传图片 | 约 255 s |
+| 请求 | `doc.stage` 6.29 MB（0.29 s）+ `doc.commit` 2.54 MB（1.92 s），合计 8.8 MB |
+| 变化流事件 | 1 个，26.0 MB，`doc.get_changes` 0.98 s |
+| 撤销 / 重做 | `doc.undo` 1.68 s / 1.17 s；界面从点击到大纲变化 1.8 s / 1.9 s |
+| 用量 | 内容 6.8 MB，资产 321 MB，暂存 0 |
+| 另一个窗口 | 同一 Workspace 的第二个窗口保持连接；没有切到新画布去看显示 |
+
+按这组数据，Q1 的 32 MiB / 50 000 余量充足：这本书用了上限的 28%（字节）和 28%（操作数）。
+
+### 7.5 没有做、没有验证的
+
+- **M6 的 DV（test.buckyos.io）没有做**：没有部署，Zone 网关链路上的 8 MiB 请求、真实身份、第二个浏览器显示新画布、离线副本下导入这本书，都没有验证。
+- **副本模式下带图片的导入会被本地拒绝**（`DEPENDENCY_UNAVAILABLE: asset … has not been uploaded`）：副本的本地规划不知道刚上传的暂存资产。改动前就是这样（旧流程第一个 Commit 就带原件的 asset-ref），只是现在整次导入一起被拒。本单没有处理，需要另立项。
+- `doc.prepare` 分块时暂存的块不被消费，要等 1 小时过期，期间计入 `staged` 用量。
+- 最终提交失败后，`store.submit` 照旧把这次输入留在“修改状态”列表里（需要处理），里面是整次导入的操作。
+- 撤销在“部分可撤”的路径上逐个试探逆操作（`undo_inner`），两万个操作时会很慢；没有测。
+- WASM 包（`desktop/src/app/aiworkspace/wasm/aiworkspace_wasm_bg.wasm`）已用 wasm-bindgen 0.2.130 重建，因为 core 的上限和请求字段变了；本机为此装了 rustup 的 `wasm32-unknown-unknown` target。
+- Agent 命令 `import_table` / `import_office` 只做了 `deno check`，没有对真实服务跑；它们用的 websdk 来自 `rootfs/libexec/buckyos-tool/dist`，要重新构建后才带分块提交。
+- 只测了 Chromium。

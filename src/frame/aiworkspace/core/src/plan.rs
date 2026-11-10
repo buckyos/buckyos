@@ -19,6 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone)]
 pub struct Limits {
     pub max_ops: usize,
+    /// One assembled Commit (staged parts + the final request), and a compensating Commit.
+    pub max_commit_total_bytes: usize,
     pub max_set_values: usize,
     pub max_migrate_rows: usize,
     pub max_inverse_bytes: usize,
@@ -28,7 +30,8 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Limits {
-            max_ops: 10_000,
+            max_ops: 50_000,
+            max_commit_total_bytes: 32 * 1024 * 1024,
             max_set_values: 50_000,
             max_migrate_rows: 100_000,
             max_inverse_bytes: 64 * 1024 * 1024,
@@ -84,6 +87,9 @@ pub struct CommitRequest {
     pub message: Option<String>,
     #[serde(default)]
     pub preconditions: Vec<Value>,
+    /// Digests of the parts `doc.stage` holds for this key, in order; they come before `operations`.
+    #[serde(default)]
+    pub staged: Vec<String>,
     pub operations: Vec<Value>,
 }
 

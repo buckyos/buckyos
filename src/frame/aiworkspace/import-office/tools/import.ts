@@ -10,10 +10,10 @@
 
 import { ImportReport, type Json } from '../../import-drawio/convert.ts'
 import { keyBetween, keysAfter, randomId } from '../../import-drawio/keys.ts'
-import { allocateKeys, batches, buildOperations, type ImportOp, type UploadedAsset } from '../../import-drawio/operations.ts'
+import { allocateKeys, buildOperations, type ImportOp, type UploadedAsset } from '../../import-drawio/operations.ts'
 import { gridOrigins, stageOf } from '../../import-pdf/layout.ts'
 import { uniqueName } from '../../import-table/operations.ts'
-import { buildDocOperations, sizedBatches } from '../operations.ts'
+import { buildDocOperations } from '../operations.ts'
 import { officeKind, OfficeError, openPackage } from '../package.ts'
 import type { DocPlan, OfficePagePlan } from '../plan.ts'
 import { convertDocx } from '../docx.ts'
@@ -119,36 +119,29 @@ export async function commitOffice(client: OfficeClient, workspaceId: string, pl
     { op: 'entity.create', entity_id: folderId, type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: keyBetween(lastKey('canvas-content'), null), name, payload: { kind: 'folder', title: plan.title, system: 'surface_content', surface_id: surfaceId } },
     { op: 'entity.create', entity_id: surfaceId, type_id: 'buckyos.container', parent_id: 'surfaces', order_key: keyBetween(lastKey('surfaces'), null), name, payload: { kind: 'surface', layout: { mode: flow ? 'flow' : 'free' }, title: plan.title, content_folder_id: folderId } },
   ]
-  let n = 0
-  const submit = async (operations: ImportOp[], step: string) => {
-    const result = await client.commit(workspaceId, { protocol_version: '1.0', epoch, idempotency_key: `import-office/${surfaceId}/${n++}`, session_id: 'import-office', operations })
+  // one Commit for the whole import (the client sends a large one in parts): it is there as a whole, or not at all
+  const submit = async (operations: ImportOp[]) => {
+    progress?.(`commit: ${operations.length} operations`)
+    const result = await client.commit(workspaceId, { protocol_version: '1.0', epoch, idempotency_key: `import-office/${surfaceId}`, session_id: 'import-office', operations })
     if (result.status === 'accepted') return null
     const error = (result.errors as { code?: string; detail?: string }[] | undefined)?.[0]
-    return { code: String(result.code ?? error?.code ?? result.status), detail: String(result.detail ?? error?.detail ?? JSON.stringify(result).slice(0, 400)), step }
+    return { code: String(result.code ?? error?.code ?? result.status), detail: String(result.detail ?? error?.detail ?? JSON.stringify(result).slice(0, 400)), step: 'commit' }
   }
   if (flow) {
-    const first = await submit(surfaceOps, 'page')
-    if (first) return { committed: null, error: first }
     const built = buildDocOperations(plan.doc, { surfaceId, contentFolderId: folderId, afterKey: null, contentAfterKey: null, assets, original })
-    const parts = sizedBatches(built.ops)
-    for (const [k, ops] of parts.entries()) {
-      progress?.(`commit ${k + 1} of ${parts.length}`)
-      const error = await submit(ops, `content ${k + 1}/${parts.length}`)
-      if (error) return { committed: { surface_id: surfaceId, content_folder_id: folderId, path_id: null, blocks: [], images: assets.size, missing_images: built.missing }, error }
-    }
+    const error = await submit([...surfaceOps, ...built.ops])
+    if (error) return { committed: null, error }
     return { committed: { surface_id: surfaceId, content_folder_id: folderId, path_id: null, blocks: built.blocks, images: [...assets.values()].filter(Boolean).length, missing_images: built.missing } }
   }
-  // slides: the canvas with the original in its folder, then the pages in a grid, then the path
+  // slides: the canvas with the original in its folder, the pages in a grid, the path
   let contentAfter: string | null = null
   if (original) {
     contentAfter = keysAfter(null, 1)[0]
     surfaceOps.push({ op: 'entity.create', entity_id: randomId('d'), type_id: 'buckyos.asset-ref', parent_id: folderId, order_key: contentAfter, payload: { object_id: original.object_id, file_name: original.file_name.slice(0, 255) } })
   }
-  const first = await submit(surfaceOps, 'page')
-  if (first) return { committed: null, error: first }
   const sizes = plan.pages.map((p) => p.pageSize ?? { w: p.bounds.w, h: p.bounds.h })
   const origins = gridOrigins(sizes)
-  const all: ImportOp[] = []
+  const all: ImportOp[] = [...surfaceOps]
   const frames: string[] = []
   const groups: string[] = []
   const keys = allocateKeys(plan.pages, assets, null, contentAfter)
@@ -160,21 +153,14 @@ export async function commitOffice(client: OfficeClient, workspaceId: string, pl
     if (frame) frames.push(frame)
     groups.push(groupId)
   }
-  const parts = batches(all)
-  for (const [k, ops] of parts.entries()) {
-    progress?.(`commit ${k + 1} of ${parts.length}`)
-    const error = await submit(ops, `pages ${k + 1}/${parts.length}`)
-    if (error) return { committed: { surface_id: surfaceId, content_folder_id: folderId, path_id: null, pages: [], images: assets.size, missing_images: 0 }, error }
-  }
   let pathId: string | null = null
   if (options.createPath !== false && frames.length) {
-    const id = randomId('p')
+    pathId = randomId('p')
     const steps = frames.map((f) => ({ id: randomId('st'), target: { kind: 'frame', entity_id: f }, transition: 'cut' }))
-    const op: ImportOp = { op: 'entity.create', entity_id: id, type_id: 'buckyos.show-path', parent_id: 'shows', order_key: keyBetween(lastKey('shows'), null), payload: { title: plan.title, purpose: 'presentation', stage: stageOf(sizes), background: '#000000', steps } as unknown as Record<string, Json> }
-    const error = await submit([op], 'path')
-    if (error) plan.report.add('office_path_failed', 'The presentation path could not be created', error.code)
-    else pathId = id
+    all.push({ op: 'entity.create', entity_id: pathId, type_id: 'buckyos.show-path', parent_id: 'shows', order_key: keyBetween(lastKey('shows'), null), payload: { title: plan.title, purpose: 'presentation', stage: stageOf(sizes), background: '#000000', steps } as unknown as Record<string, Json> })
   }
+  const error = await submit(all)
+  if (error) return { committed: null, error }
   return { committed: { surface_id: surfaceId, content_folder_id: folderId, path_id: pathId, pages: groups, images: [...assets.values()].filter(Boolean).length, missing_images: 0 } }
 }
 

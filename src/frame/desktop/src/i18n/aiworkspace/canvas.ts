@@ -1,6 +1,7 @@
 /* AI Workspace text: canvas (see src/app/aiworkspace/i18n.ts). English first; the Chinese table has the same keys. */
 
 export const en: Record<string, string> = {
+  'aiworkspace.drawio.importFailed': 'The import was not written, and nothing was left behind: {{reason}}',
   // drawio module
   'aiworkspace.drawio.anchor.n': 'top',
   'aiworkspace.drawio.anchor.nne': 'top, right of center',
@@ -64,9 +65,6 @@ export const en: Record<string, string> = {
   'aiworkspace.drawio.unreadable': 'Could not read this draw.io file: {{reason}}',
   'aiworkspace.drawio.importLabel': 'Import draw.io “{{name}}”',
   'aiworkspace.drawio.importNewCanvasLabel': 'Import draw.io “{{name}}”: new canvas “{{canvas}}”',
-  'aiworkspace.drawio.newCanvasFailed': 'Could not create the canvas ({{reason}})',
-  'aiworkspace.drawio.importBatchLabel': 'Import draw.io “{{name}}” ({{part}}/{{parts}})',
-  'aiworkspace.drawio.importStopped': 'The import stopped at batch {{part}}/{{parts}}: {{reason}}',
   // ImportReportDialog
   'aiworkspace.drawio.count.pages': '{{count}} pages',
   'aiworkspace.drawio.count.pages_one': '{{count}} page',
@@ -458,6 +456,7 @@ export const en: Record<string, string> = {
 }
 
 export const zh: Record<string, string> = {
+  'aiworkspace.drawio.importFailed': '导入没有写入，什么都没有留下：{{reason}}',
   // drawio module
   'aiworkspace.drawio.anchor.n': '上',
   'aiworkspace.drawio.anchor.nne': '上偏右',
@@ -521,9 +520,6 @@ export const zh: Record<string, string> = {
   'aiworkspace.drawio.unreadable': '读不出这个 draw.io 文件：{{reason}}',
   'aiworkspace.drawio.importLabel': '导入 draw.io「{{name}}」',
   'aiworkspace.drawio.importNewCanvasLabel': '导入 draw.io「{{name}}」：新建画布「{{canvas}}」',
-  'aiworkspace.drawio.newCanvasFailed': '新建画布没有成功（{{reason}}）',
-  'aiworkspace.drawio.importBatchLabel': '导入 draw.io「{{name}}」（{{part}}/{{parts}}）',
-  'aiworkspace.drawio.importStopped': '导入在第 {{part}}/{{parts}} 批停止：{{reason}}',
   // ImportReportDialog
   'aiworkspace.drawio.count.pages': '{{count}} 页',
   'aiworkspace.drawio.count.objects': '{{count}} 个对象',

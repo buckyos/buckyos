@@ -22,7 +22,7 @@ export function OfficeImportHost() {
 const mm = (pt: number) => Math.round((pt * 25.4) / 72)
 const PROGRESS: Record<OfficeImportProgress['stage'], string> = {
   read: 'aiworkspace.office.progress.read', convert: 'aiworkspace.office.progress.convert', draw: 'aiworkspace.office.progress.draw',
-  upload: 'aiworkspace.office.progress.upload', commit: 'aiworkspace.office.progress.commit',
+  upload: 'aiworkspace.office.progress.upload', commit: 'aiworkspace.import.progressSend', write: 'aiworkspace.import.progressWrite',
 }
 
 function ImportOfficeDialog({ request, onClose }: { request: OfficeImportRequest; onClose: () => void }) {
@@ -164,7 +164,7 @@ function ImportOfficeDialog({ request, onClose }: { request: OfficeImportRequest
             )}
             <div className="aiws-dialog-actions">
               {running ? (
-                <button type="button" data-testid="aiws-office-cancel" disabled={progress?.stage === 'commit'} onClick={() => abort.current?.abort()}>{t('aiworkspace.common.cancel')}</button>
+                <button type="button" data-testid="aiws-office-cancel" disabled={progress?.stage === 'commit' || progress?.stage === 'write'} onClick={() => abort.current?.abort()}>{t('aiworkspace.common.cancel')}</button>
               ) : (
                 <>
                   <button type="button" className="is-primary" autoFocus data-testid="aiws-office-start" disabled={choices.mode === 'faithful' ? libreOffice !== true : !inspection} onClick={() => { void start(choices.mode) }}>{t('aiworkspace.office.start')}</button>

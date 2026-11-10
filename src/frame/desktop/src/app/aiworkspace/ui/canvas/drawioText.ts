@@ -54,7 +54,7 @@ const REPORT: Record<string, string> = {
   pdf_complex_whole: 'aiworkspace.pdf.report.complexWhole', pdf_effects: 'aiworkspace.pdf.report.effects', pdf_svg_too_large: 'aiworkspace.pdf.report.svgTooLarge',
   pdf_raster_parts: 'aiworkspace.pdf.report.rasterParts', pdf_paint_order: 'aiworkspace.pdf.report.paintOrder', pdf_glyph_raster: 'aiworkspace.pdf.report.glyphRaster', pdf_page_failed: 'aiworkspace.pdf.report.pageFailed',
   pdf_text_layout_limit: 'aiworkspace.pdf.report.textLayoutLimit',
-  pdf_original_missing: 'aiworkspace.pdf.report.originalMissing', pdf_path_failed: 'aiworkspace.pdf.report.pathFailed',
+  pdf_original_missing: 'aiworkspace.pdf.report.originalMissing',
   // table import (表格数据导入 TODO §7): the importer's codes
   table_empty_rows: 'aiworkspace.import.report.emptyRows', table_merged_header: 'aiworkspace.import.report.mergedHeader', table_merged_cells: 'aiworkspace.import.report.mergedCells',
   table_formula: 'aiworkspace.import.report.formula', table_error_cells: 'aiworkspace.import.report.errorCells', table_time_only: 'aiworkspace.import.report.timeOnly',
@@ -107,7 +107,6 @@ const OFFICE_REPORT: Record<string, string> = {
   pptx_notes_dropped: 'aiworkspace.office.report.pptx_notes_dropped',
   pptx_hidden_skipped: 'aiworkspace.office.report.pptx_hidden_skipped',
   office_original_missing: 'aiworkspace.office.report.office_original_missing',
-  office_path_failed: 'aiworkspace.office.report.office_path_failed',
 }
 
 export function reportNoteText(note: ReportNote, t: Translate = aiwsT): string {
