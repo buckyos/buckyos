@@ -48,7 +48,7 @@ pub struct SessionTemplate {
     pub objective: Option<String>,
     /// `agent.toml [session.<class>] default_cmd_skills`: the command
     /// manuals a session of this class takes when its creator chooses none
-    /// (`cmd_skills/<name>.md`).
+    /// (`cmd_skills/<name>/SKILL.md`).
     pub default_cmd_skills: Vec<String>,
     /// `agent.toml [session.<class>] tick_secs`: how often the session's
     /// `timer:` subscriptions tick while it waits for its work (0: never).
@@ -89,6 +89,22 @@ impl Default for MaintenanceDefaults {
     }
 }
 
+/// `agent.toml [session.goal.crystallize]`: the agent's skill crystallization Goal — it reads the work sessions the
+/// usage record points at, revises the manuals that are the agent's own, and leaves drafts for the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrystallizeDefaults {
+    /// Seed and run the built-in `skill_crystallize` Goal (off: no seeding; an existing Goal gets no session).
+    pub enabled: bool,
+    /// Behavior of its Goal Session (`None`: the class default).
+    pub behavior: Option<String>,
+}
+
+impl Default for CrystallizeDefaults {
+    fn default() -> Self {
+        Self { enabled: false, behavior: Some("skill_crystallize".to_string()) }
+    }
+}
+
 /// `agent.toml [session.goal]` defaults of every Goal (`budget`,
 /// `min_interval_secs`, `maintenance`), over the built-in ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +112,7 @@ pub struct GoalDefaults {
     pub budget: GoalBudget,
     pub min_interval_secs: u64,
     pub maintenance: MaintenanceDefaults,
+    pub crystallize: CrystallizeDefaults,
 }
 
 impl Default for GoalDefaults {
@@ -115,6 +132,7 @@ impl Default for GoalDefaults {
             },
             min_interval_secs: 60,
             maintenance: MaintenanceDefaults::default(),
+            crystallize: CrystallizeDefaults::default(),
         }
     }
 }
@@ -243,6 +261,17 @@ impl SessionTemplate {
     /// The template of `class`: the built-in one (`work` for an unknown
     /// class) with the overrides of `agent.toml [session.<class>]`.
     pub fn load(class: &str, agent_root: Option<&Path>) -> Result<Self> {
+        let mut t = Self::load_package(class, agent_root)?;
+        // The owner's UI set (`skills.ui_set`) takes the place of the package's for new conversations.
+        if t.kind == SessionKind::Ui {
+            if let Some(names) = agent_root.and_then(crate::skills::ui_override) {
+                t.default_cmd_skills = names;
+            }
+        }
+        Ok(t)
+    }
+
+    fn load_package(class: &str, agent_root: Option<&Path>) -> Result<Self> {
         let over = agent_root
             .map(|r| r.join("agent.toml"))
             .filter(|p| p.is_file())
@@ -391,6 +420,23 @@ impl SessionTemplate {
                     g.maintenance.behavior =
                         Some(v.as_str().ok_or_else(|| bad("maintenance.behavior"))?.to_string())
                             .filter(|b| !b.trim().is_empty());
+                }
+            }
+            if let Some(c) = over.get("crystallize") {
+                let c = c.as_table().ok_or_else(|| bad("crystallize"))?;
+                for key in c.keys() {
+                    if !matches!(key.as_str(), "enabled" | "behavior") {
+                        return Err(OpenDanError::InvalidArgument(format!(
+                            "agent.toml [session.{class}.crystallize]: unknown key `{key}`"
+                        )));
+                    }
+                }
+                if let Some(v) = c.get("enabled") {
+                    g.crystallize.enabled = v.as_bool().ok_or_else(|| bad("crystallize.enabled"))?;
+                }
+                if let Some(v) = c.get("behavior") {
+                    g.crystallize.behavior =
+                        Some(v.as_str().ok_or_else(|| bad("crystallize.behavior"))?.to_string()).filter(|b| !b.trim().is_empty());
                 }
             }
         }

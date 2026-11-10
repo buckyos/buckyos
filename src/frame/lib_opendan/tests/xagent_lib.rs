@@ -1412,6 +1412,66 @@ async fn system_text_of(sd: &SessionDir) -> String {
         .unwrap()
 }
 
+/// A plan chooses manuals for its Todos and takes none itself (skills system TODO S07): the names given to it are
+/// candidates it sees once, its prompt has no `## Commands`, and work it creates gets only what is named for it.
+#[tokio::test]
+async fn a_plan_sees_candidates_and_hands_on_nothing() {
+    use libopendan::runner::{InputMaterial, SessionAssembler};
+    let env = Env::new();
+    write_catalog(&env);
+    write(
+        &env.agent_root.join("behaviors/planner.toml"),
+        "[prompt]\nmode = \"function_call\"\nsystem = \"PLANNER\"\n[capabilities]\ncmd_skills = \"candidates\"\n",
+    );
+    write(&env.agent_root.join("cmd_skills/admin/SKILL.md"), "---\ndescription: settings <and> diagnosis\n---\nADMIN manual");
+    write(&env.agent_root.join("cmd_skills/image/SKILL.md"), "---\ndescription: images\n---\nIMAGE manual");
+    write(&env.agent_root.join("cmd_skills/off/SKILL.md"), "---\ndescription: off\n---\nOFF manual");
+    libopendan::skills::set_enabled(&env.agent_root, SkillKind::Work, "off", false, None, APP).unwrap();
+    let agent = env.agent();
+    let ch = env.channels();
+    let mut ui = frozen_spec("conversation");
+    ui.policy.max_sub_sessions = 32;
+    ui.policy.max_session_depth = 4;
+    let ui = env.create_work(ui).await;
+    let sub = |key: &str, behavior: Option<&str>, names: Option<&[&str]>| SubSessionSpec {
+        objective: "child".into(),
+        key: Some(key.into()),
+        behavior: behavior.map(str::to_string),
+        cmd_skills: names.map(|n| n.iter().map(|s| s.to_string()).collect()),
+        report: ReportMode::None,
+        ..Default::default()
+    };
+    let plan = create_sub_session(agent.as_ref(), APP, ui.sid(), sub("plan", Some("planner"), Some(&["admin", "image"])), ch.as_ref()).await.unwrap();
+    let cfg = plan.config().unwrap();
+    let frozen = cfg.prompt.frozen.clone().unwrap();
+    assert!(frozen.cmd_skills.is_empty() && cfg.prompt.cmd_skills.is_empty(), "a plan freezes no manual");
+    assert_eq!(frozen.skill_candidates.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["admin", "image"]);
+    assert!(!system_text_of(&plan).await.contains("## Commands"));
+    assert!(libopendan::skills::load_state(&env.agent_root).unwrap().usage.is_empty(), "a plan is not counted as work done with or without a manual");
+
+    // Its first input names them; later inputs do not repeat them.
+    let material = InputMaterial { hook: "on_init".into(), runtime_status: json!({"kind": "native"}), ..Default::default() };
+    let mut state = plan.state().unwrap();
+    let first = BehaviorAssembler::default().render_input(&cfg, &state, &cfg.prompt.templates, &material).await.unwrap().unwrap_or_default();
+    assert!(first.contains("<skill_candidates>\n- admin: settings &lt;and&gt; diagnosis\n- image: images\n</skill_candidates>"), "{first}");
+    state.bootstrap_done = true;
+    let later = BehaviorAssembler::default().render_input(&cfg, &state, &cfg.prompt.templates, &material).await.unwrap().unwrap_or_default();
+    assert!(!later.contains("skill_candidates"), "{later}");
+
+    // A disabled candidate is left out without a word; one named for a work is refused.
+    let err = create_sub_session(agent.as_ref(), APP, ui.sid(), sub("plan-off", Some("planner"), Some(&["off"])), ch.as_ref()).await.unwrap_err();
+    assert!(err.to_string().contains("work skill `off` is off: disabled by owner"), "{err}");
+
+    // The plan's work: nothing is inherited, a Todo's choice is all it gets.
+    let bare = create_sub_session(agent.as_ref(), APP, plan.sid(), sub("t1", Some("do"), None), ch.as_ref()).await.unwrap();
+    assert!(skill_names(&bare).is_empty(), "no --skill, no manual");
+    let chosen = create_sub_session(agent.as_ref(), APP, plan.sid(), sub("t2", Some("do"), Some(&["image"])), ch.as_ref()).await.unwrap();
+    assert_eq!(skill_names(&chosen), ["image"]);
+    let usage = libopendan::skills::load_state(&env.agent_root).unwrap().usage;
+    assert_eq!(usage[libopendan::skills::USAGE_NONE].recent_sessions, [bare.sid().to_string()]);
+    assert_eq!(usage["work:image"].frozen, 1);
+}
+
 /// A Zone host's sessions name the objects they start from (agent-object-url TODO A5): stable lines in the
 /// system text, before the commands; a host whose `read` cannot reach objects names none.
 #[tokio::test]
@@ -1448,14 +1508,14 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
     write_catalog(&env);
     write(&env.agent_root.join("behaviors/explore.toml"), "[prompt]\nmode = \"behavior\"\nsystem = \"EXPLORE\"\n");
     write(
-        &env.agent_root.join("cmd_skills/admin.md"),
+        &env.agent_root.join("cmd_skills/admin/SKILL.md"),
         "---\nname: admin\ndescription: settings and diagnosis\nrequires: the buckyos command\n---\nADMIN-V1 manual\n",
     );
-    write(&env.agent_root.join("cmd_skills/image.md"), "---\ndescription: images\n---\nIMAGE-V1 manual");
-    write(&env.agent_root.join("cmd_skills/ui_core.md"), "UI manual");
+    write(&env.agent_root.join("cmd_skills/image/SKILL.md"), "---\ndescription: images\n---\nIMAGE-V1 manual");
+    write(&env.agent_root.join("cmd_skills/ui_core/SKILL.md"), "---\nscope: ui\n---\nUI manual");
     let agent = env.agent();
     let ch = env.channels();
-    let listed = agent.behaviors().skills(Some(SkillKind::Cmd)).await.unwrap();
+    let listed = agent.behaviors().skills(Some(SkillKind::Work)).await.unwrap();
     assert_eq!(listed.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["admin", "image", "ui_core"]);
     assert_eq!(listed[0].description, "settings and diagnosis");
     assert_eq!(listed[0].requires, "the buckyos command");
@@ -1492,7 +1552,7 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
     assert!(!system_text_of(&plain).await.contains("## Commands"));
 
     let err = create("bad1", ui.sid().into(), Some(&["nope"])).await.unwrap_err();
-    assert!(err.to_string().contains("no cmd_skill `nope`") && err.to_string().contains("admin, image, ui_core"), "{err}");
+    assert!(err.to_string().contains("no work skill `nope`"), "{err}");
     let err = create("bad2", ui.sid().into(), Some(&["a", "b", "c", "d", "e", "f", "g", "h", "i"])).await.unwrap_err();
     assert!(err.to_string().contains("at most 8"), "{err}");
     let err = create("bad3", ui.sid().into(), Some(&["admin", "admin"])).await.unwrap_err();
@@ -1533,7 +1593,7 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
     assert_eq!(skill_names(&SessionDir::open(&d2).unwrap()), ["admin", "image"]);
 
     // Changing a manual: the running Work keeps its frozen text.
-    write(&env.agent_root.join("cmd_skills/admin.md"), "ADMIN-V2 manual");
+    write(&env.agent_root.join("cmd_skills/admin/SKILL.md"), "ADMIN-V2 manual");
     assert!(system_text_of(&w1).await.contains("ADMIN-V1 manual"));
     let w4 = create("w4", ui.sid().into(), Some(&["admin"])).await.unwrap();
     assert!(system_text_of(&w4).await.contains("ADMIN-V2 manual"));
@@ -1544,8 +1604,9 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
         package: "extra-skills".into(),
         version: "1.0.0".into(),
         pikg_digest: None,
+        imported_from: None,
         files: [(
-            "cmd_skills/extra.md".to_string(),
+            "cmd_skills/extra/SKILL.md".to_string(),
             libopendan::skills::SkillFile {
                 content: base64::engine::general_purpose::STANDARD.encode("---\ndescription: extra\n---\nEXTRA manual"),
                 executable: false,
@@ -1554,13 +1615,13 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
         .into_iter()
         .collect(),
     };
-    let r = agent.behaviors().install_skills(&pkg, false, APP).await.unwrap();
+    let r = libopendan::skills::install(&env.agent_root, &pkg, false, APP, None).unwrap();
     assert_eq!(r.skills[0].origin, "installed");
     let w5 = create("w5", ui.sid().into(), Some(&["admin", "extra"])).await.unwrap();
     assert!(system_text_of(&w5).await.contains("### extra\nEXTRA manual"));
-    agent.behaviors().remove_skill(SkillKind::Cmd, "extra", APP).await.unwrap();
+    libopendan::skills::remove(&env.agent_root, SkillKind::Work, "extra", APP).unwrap();
     let err = create("w6", ui.sid().into(), Some(&["extra"])).await.unwrap_err();
-    assert!(err.to_string().contains("no cmd_skill `extra`"), "{err}");
+    assert!(err.to_string().contains("no work skill `extra`"), "{err}");
     assert!(system_text_of(&w5).await.contains("EXTRA manual"), "frozen before the removal");
     // An inherited manual removed since is left out, not an error.
     let w7 = create("w7", w5.sid().into(), None).await.unwrap();

@@ -1039,54 +1039,74 @@ fn skill_pikg(path: &Path, files: &[(&str, &str, u32)]) {
     zip.finish().unwrap();
 }
 
-/// `skill list | install | remove` and `create-worksession --cmd-skill`
-/// (opendan-builtin-cmd-skills-todo I01, I08): a skill PIKG installs its
-/// manuals and commands, a Work created afterwards takes the ones chosen,
-/// an unknown name is refused, and a removed skill cannot be chosen again.
+/// `skill list` and `create-worksession --cmd-skill` (skills system TODO S01 / S03 / S10 / S23): the owner installs a
+/// skill PIKG (the Agent has no `skill install` / `skill remove`), a Work created afterwards takes the manuals chosen,
+/// an unknown, disabled or conversation-only one is refused, the host counts what was frozen, and a removed skill
+/// cannot be chosen again.
 #[test]
-fn skills_are_installed_listed_chosen_and_removed() {
+fn skills_are_installed_by_the_owner_listed_chosen_and_counted() {
+    use libopendan::skills;
     let cli = Cli::new();
     let root = cli.root.join("agent_root");
-    std::fs::create_dir_all(root.join("cmd_skills")).unwrap();
-    std::fs::write(root.join("cmd_skills/admin.md"), "---\ndescription: settings\n---\nADMIN manual").unwrap();
+    let manual = |name: &str, text: &str| {
+        std::fs::create_dir_all(root.join("cmd_skills").join(name)).unwrap();
+        std::fs::write(root.join("cmd_skills").join(name).join("SKILL.md"), text).unwrap();
+    };
+    manual("admin", "---\ndescription: settings\n---\nADMIN manual");
+    manual("chat", "---\ndescription: conversation commands\nscope: ui\n---\nCHAT manual");
     let pikg = cli.root.join("hello-skills-0.1.0.pikg");
     skill_pikg(
         &pikg,
         &[
-            ("cmd_skills/hello.md", "---\nname: hello\ndescription: say hello\nrequires: nothing\n---\nRun `hello`.", 0o644),
+            ("cmd_skills/hello/SKILL.md", "---\nname: hello\ndescription: say hello\nrequires: nothing\n---\nRun `hello`.", 0o644),
+            ("cmd_skills/hello/references/more.md", "More.", 0o644),
             ("tools/hello/bin/hello", "#!/bin/sh\necho hello\n", 0o755),
-            ("goal_skills/greet.md", "---\ndescription: greet daily\n---\nGreet.", 0o644),
+            ("goal_skills/greet/SKILL.md", "---\ndescription: greet daily\n---\nGreet.", 0o644),
+            ("plan_skills/steps/SKILL.md", "---\ndescription: cut work into steps\n---\nCut by risk.", 0o644),
         ],
     );
-    let (code, v, err) = cli.run(&["skill", "install", pikg.to_str().unwrap()]);
-    assert_eq!(code, 0, "{v} {err}");
-    assert_eq!(v["package"], "hello-skills");
-    assert!(v["skills"].as_array().unwrap().iter().all(|s| s["install"]["pikg_digest"].as_str().unwrap().starts_with("sha256:")));
+    // The Agent's own command line installs and removes nothing.
+    for sub in ["install", "remove"] {
+        let (code, _, err) = cli.run(&["skill", sub, pikg.to_str().unwrap()]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("the owner's") && err.contains("buckyos skill"), "{err}");
+    }
+    assert!(!root.join("cmd_skills/hello").exists());
+
+    // The owner's path: read the package, look at the plan, install what the plan said.
+    let package = skills::read_pikg(&pikg).unwrap();
+    let plan = skills::plan(&root, &package, &[], None).unwrap();
+    assert_eq!(plan.risk.level, "low", "{:?}", plan.risk.findings);
+    assert_eq!(plan.runtime_id.as_deref(), Some("private"));
+    let accepted = skills::Accepted { level: plan.risk.level.clone(), plan_digest: plan.plan_digest.clone() };
+    let report = skills::install(&root, &package, false, "did:bns:owner", Some(&accepted)).unwrap();
+    assert_eq!(report.package, "hello-skills");
+    assert!(report.skills.iter().all(|s| s.install.as_ref().unwrap().pikg_digest.as_ref().unwrap().starts_with("sha256:")));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(root.join("tools/hello/bin/hello")).unwrap().permissions().mode();
         assert!(mode & 0o111 != 0, "commands stay executable");
     }
-    let (code, v, _) = cli.run(&["skill", "list", "--json"]);
-    assert_eq!(code, 0);
-    let names: Vec<(String, String, String)> = v
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| (s["kind"].as_str().unwrap().into(), s["name"].as_str().unwrap().into(), s["origin"].as_str().unwrap().into()))
-        .collect();
+    let listed = |args: &[&str]| -> Vec<(String, String, String)> {
+        let mut all = vec!["skill", "list", "--json"];
+        all.extend_from_slice(args);
+        let (code, v, err) = cli.run(&all);
+        assert_eq!(code, 0, "{err}");
+        v.as_array().unwrap().iter().map(|s| (s["kind"].as_str().unwrap().into(), s["name"].as_str().unwrap().into(), s["origin"].as_str().unwrap().into())).collect()
+    };
+    let t = |k: &str, n: &str, o: &str| (k.to_string(), n.to_string(), o.to_string());
     assert_eq!(
-        names,
-        [
-            ("cmd".to_string(), "admin".to_string(), "local".to_string()),
-            ("cmd".into(), "hello".into(), "installed".into()),
-            ("goal".into(), "greet".into(), "installed".into()),
-        ]
+        listed(&[]),
+        [t("work", "admin", "local"), t("work", "chat", "local"), t("work", "hello", "installed"), t("plan", "steps", "installed"), t("goal", "greet", "installed")]
     );
+    assert_eq!(listed(&["--kind", "plan"]), [t("plan", "steps", "installed")]);
+    assert_eq!(listed(&["--kind", "work", "--scope", "work"]), [t("work", "admin", "local"), t("work", "hello", "installed")]);
+    assert_eq!(listed(&["--scope", "ui"]), [t("work", "chat", "local")]);
+    let (code, _, err) = cli.run(&["skill", "list", "--kind", "cmd"]);
+    assert_eq!(code, 2, "the kind is called work: {err}");
     // Installed again: the same package updates its own skills.
-    let (code, _, err) = cli.run(&["skill", "install", pikg.to_str().unwrap()]);
-    assert_eq!(code, 0, "{err}");
+    skills::install(&root, &package, false, "did:bns:owner", Some(&accepted)).unwrap();
 
     let parent = cli.create(&["--objective", "parent work"]);
     let create = |extra: &[&str]| {
@@ -1101,15 +1121,51 @@ fn skills_are_installed_listed_chosen_and_removed() {
     let frozen = child.config().unwrap().prompt.frozen.unwrap();
     assert_eq!(frozen.cmd_skills.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["hello", "admin"]);
     assert_eq!(frozen.cmd_skills[0].text, "Run `hello`.");
+    assert!(frozen.cmd_skills[0].installed_on.is_empty(), "its commands are on the private runtime, where this work runs");
     let (code, _, err) = create(&["--cmd-skill", "nope", "--key", "c2"]);
     assert_eq!(code, 2, "{err}");
-    assert!(err.contains("no cmd_skill `nope`"), "{err}");
+    assert!(err.contains("no work skill `nope`"), "{err}");
+    let (code, _, err) = create(&["--cmd-skill", "chat", "--key", "c2b"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("conversation manual"), "{err}");
+    let (code, _, err) = create(&["--cmd-skill", "steps", "--key", "c2c"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("is a plan skill") && err.contains("plan_skills/steps/SKILL.md"), "{err}");
 
-    let (code, v, err) = cli.run(&["skill", "remove", "hello"]);
+    // The host counted the work: one with both manuals, none without any yet.
+    let state = skills::load_state(&root).unwrap();
+    assert_eq!(state.usage["work:hello"].frozen, 1);
+    assert_eq!(state.usage["work:admin"].recent_sessions, [child.sid().to_string()]);
+    let none_before = state.usage.get(skills::USAGE_NONE).map(|u| u.frozen).unwrap_or(0);
+    let (code, v, _) = create(&["--key", "c-none"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(skills::load_state(&root).unwrap().usage[skills::USAGE_NONE].frozen, none_before + 1, "a work without a manual is counted too");
+    let out = cli.command(&["skill", "list", "--stats"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.lines().any(|l| l.starts_with("hello ") && l.contains("frozen 1 times")), "{text}");
+    assert!(text.lines().any(|l| l.starts_with("steps ") && l.contains("read: $OPENDAN_AGENT_ROOT/plan_skills/steps/SKILL.md")), "{text}");
+
+    // Disabled by the owner: not listed, refused when named, the earlier Work keeps it.
+    skills::set_enabled(&root, SkillKind::Work, "admin", false, Some("not now"), "did:bns:owner").unwrap();
+    assert!(listed(&[]).iter().all(|s| s.1 != "admin"));
+    assert!(listed(&["--all"]).iter().any(|s| s.1 == "admin"));
+    let (code, _, err) = create(&["--cmd-skill", "admin", "--key", "c-off"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("disabled by owner: not now"), "{err}");
+    // A Work hands its manuals on, without the one that is off now.
+    let out = cli
+        .command(&["create-worksession", "--title", "grandchild", "--objective", "g", "--report", "none", "--key", "g1"])
+        .env("OPENDAN_SESSION_ID", child.sid())
+        .output()
+        .unwrap();
+    let (code, v, err) = parse(out);
     assert_eq!(code, 0, "{v} {err}");
-    assert!(!root.join("tools/hello").exists() && !root.join("cmd_skills/hello.md").exists());
-    let (code, _, err) = cli.run(&["skill", "remove", "admin"]);
-    assert_eq!(code, 2, "a skill that was not installed is not removed here: {err}");
+    let grandchild = SessionDir::open(v["path"].as_str().unwrap()).unwrap().config().unwrap().prompt.frozen.unwrap();
+    assert_eq!(grandchild.cmd_skills.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["hello"]);
+
+    skills::remove(&root, SkillKind::Work, "hello", "did:bns:owner").unwrap();
+    assert!(!root.join("tools/hello").exists() && !root.join("cmd_skills/hello").exists());
+    assert!(skills::remove(&root, SkillKind::Work, "admin", "did:bns:owner").is_err(), "a skill that was not installed is not removed");
     let (code, _, err) = create(&["--cmd-skill", "hello", "--key", "c3"]);
     assert_eq!(code, 2, "{err}");
     let frozen = child.config().unwrap().prompt.frozen.unwrap();
@@ -1117,8 +1173,17 @@ fn skills_are_installed_listed_chosen_and_removed() {
 
     // Not a skill package.
     std::fs::write(cli.root.join("bad.pikg"), "not a zip").unwrap();
-    let (code, _, err) = cli.run(&["skill", "install", cli.root.join("bad.pikg").to_str().unwrap()]);
-    assert_eq!(code, 2, "{err}");
+    assert!(skills::read_pikg(&cli.root.join("bad.pikg")).is_err());
+
+    // The agent rewrites the text of a manual that is its own; the old text stays.
+    manual("mine", "---\ndescription: old\n---\nold body");
+    let new = cli.root.join("new.md");
+    std::fs::write(&new, "---\ndescription: new\n---\nnew body").unwrap();
+    let (code, v, err) = cli.run(&["skill", "revise", "mine", "--file", new.to_str().unwrap(), "--reason", "two works had to guess step 2"]);
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["revised"]["description"], "new");
+    assert_eq!(std::fs::read_dir(root.join("cmd_skills/mine/revisions")).unwrap().count(), 1);
+    assert_eq!(skills::load_state(&root).unwrap().audit.last().unwrap().action, "revise");
 }
 
 /// `create-worksession --title` is required like `--objective`, and kept
@@ -1196,4 +1261,43 @@ fn windows_agent_session_is_a_program_every_caller_runs() {
         let written = std::fs::read_dir(target(how)).map(|d| d.count()).unwrap_or(0);
         assert!(written > 0, "`{how}` did not run agent-session with its argument");
     }
+}
+
+/// The manuals and methods that ship with Jarvis pass the same check an owner's install runs (skills system TODO S06):
+/// the directory layout, fixed words in the front matter, plan skills without commands, and `commands` that name what
+/// the shell blocks run.
+#[test]
+fn the_built_in_skills_pass_the_package_check() {
+    use libopendan::skills;
+    let package_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/jarvis_agent/agent");
+    let package = skills::read_package_dir(&package_root, "jarvis", "").unwrap();
+    assert!(package.files.keys().any(|p| p == "cmd_skills/ui_core/SKILL.md"), "{:?}", package.files.keys().collect::<Vec<_>>());
+    let findings = skills::lint_package(&package);
+    let serious: Vec<String> = findings
+        .iter()
+        .filter(|f| matches!(f.level.as_str(), "error") || matches!(f.code.as_str(), "undeclared_commands" | "unused_commands" | "plan_depends_on_commands" | "no_description"))
+        .map(|f| format!("{} {}: {}", f.code, f.place, f.note))
+        .collect();
+    assert!(serious.is_empty(), "{}", serious.join("\n"));
+    let root = tempfile::tempdir().unwrap();
+    let plan = skills::plan(root.path(), &package, &[], None).unwrap();
+    let scope = |name: &str| plan.skills.iter().find(|s| s.meta.name == name && s.meta.kind == SkillKind::Work).map(|s| s.meta.scope);
+    assert_eq!(scope("ui_core"), Some(SkillScope::Ui));
+    assert_eq!(scope("share"), Some(SkillScope::UiWork));
+    assert_eq!(scope("skill_authoring"), Some(SkillScope::Work));
+    for name in ["plan_software_change", "plan_content_production", "plan_research"] {
+        let skill = plan.skills.iter().find(|s| s.meta.name == name).unwrap_or_else(|| panic!("plan skill {name}"));
+        assert_eq!(skill.meta.kind, SkillKind::Plan);
+        assert!(skill.meta.size <= skills::PLAN_MANUAL_WARN_BYTES, "{name}: {} bytes", skill.meta.size);
+    }
+    // The sample skill package of the repository is in the same layout and reads as the CLI packed it.
+    let sample = skills::read_pikg(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test/skills_pikg_sample/dapp_dist/hello-skills-0.1.0.pikg")).unwrap();
+    let sample_plan = skills::plan(root.path(), &sample, &[], None).unwrap();
+    assert_eq!(
+        sample_plan.skills.iter().map(|s| (s.meta.kind, s.meta.name.as_str())).collect::<Vec<_>>(),
+        [(SkillKind::Work, "hello"), (SkillKind::Plan, "hello_plan")]
+    );
+    assert_eq!(sample_plan.risk.level, "low", "{:?}", sample_plan.risk.findings);
+    let ui = plan.skills.iter().find(|s| s.meta.name == "ui_core").unwrap();
+    assert!(ui.meta.size <= skills::UI_MANUAL_WARN_BYTES, "ui_core: {} bytes go into every conversation", ui.meta.size);
 }

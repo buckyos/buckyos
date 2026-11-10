@@ -112,3 +112,13 @@ max_works = 24
 enabled = true
 decision = "off"
 behavior = "memory_maintenance"
+
+# The agent's skill maintenance Goal (lifecycle maintain, built in, key
+# `builtin:skill_crystallize`): reads recent work sessions by the usage the
+# host records (`.meta/skills_state.json`), revises local and imported
+# manuals, writes drafts under `skills_drafts/` and recommends cleanups.
+# It installs nothing: the owner installs drafts on the Skills page. Off
+# until the owner turns it on.
+[session.goal.crystallize]
+enabled = false
+behavior = "skill_crystallize"

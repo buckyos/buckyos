@@ -116,6 +116,18 @@ pub struct StateService {
     pub sessions: Option<Arc<SessionService>>,
     /// The Agent's DID Object Provider (`/kapi/<agent_id>/obj`).
     pub objects: std::sync::OnceLock<buckyos_http_server::DIDObjectHttpServer<buckyos_api::KrpcObjectProvider>>,
+    /// What the service needs to start a work of its own (`skills.import`). `None`: this host starts none.
+    pub work: Option<WorkStarter>,
+}
+
+/// Where and as whom the service creates a work session.
+pub struct WorkStarter {
+    pub sessions_dir: std::path::PathBuf,
+    pub channels: Arc<dyn libopendan::channel::InputChannelFactory>,
+    /// Base `.llm_context` of the sessions the Loader creates.
+    pub llm_context: Value,
+    /// The Loader's own principal: the driver of the sessions it creates.
+    pub driver: String,
 }
 
 fn param<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T, OpenDanError> {
@@ -283,6 +295,38 @@ impl StateService {
         Ok(json!({ "index": index }))
     }
 
+    /// `skills.import`: start the work that turns the owner's text into a draft. It installs nothing; the draft waits
+    /// on the Skills page.
+    async fn import_skills(&self, who: &str, params: &Value) -> Result<Value, OpenDanError> {
+        let starter = self
+            .work
+            .as_ref()
+            .ok_or_else(|| OpenDanError::InvalidArgument("this host starts no work sessions: skills.import needs the Agent Loader".into()))?;
+        let import = self.home.skills_import_inbox(self.agent.as_ref(), params)?;
+        let template = libopendan::SessionTemplate::load("work", self.agent.agent_root())?;
+        let mut spec = template.spec("Turn a text the owner handed in into skill drafts: one draft directory under skills_drafts/ with a draft.json, verified against the runtime it is for. Nothing is installed; the owner installs the draft.");
+        spec.title = Some(match &import.name {
+            Some(name) => format!("Import skill {name}"),
+            None => "Import skill".to_string(),
+        });
+        spec.prompt.behavior = Some("skill_import".to_string());
+        spec.prompt.cmd_skills = vec!["skill_authoring".to_string()];
+        spec.require_cmd_skills = true;
+        spec.prompt.llm_context = starter.llm_context.clone();
+        spec.driver = Some(starter.driver.clone());
+        spec.via = "opendan".to_string();
+        spec.owner = Some(who.to_string());
+        spec.workspace = None;
+        spec.freeze = true;
+        spec.input_channel = Some(libopendan::InputChannel::None);
+        spec.prompt.initial_inputs = vec![PostedInput::text(who, self.agent.agent_did(), import.message())?];
+        let sd = libopendan::create_session(&starter.sessions_dir, spec, self.agent.as_ref(), &starter.driver, starter.channels.as_ref()).await?;
+        let sid = sd.sid().to_string();
+        self.host(&sid, "skills.import").await;
+        log::info!("skills: import {} started by {who} as session {sid}", import.inbox);
+        Ok(json!({ "session_id": sid, "inbox": import.inbox }))
+    }
+
     /// New input reached a session of this agent: make sure it is advanced
     /// (a session someone else drives is theirs to advance).
     async fn host(&self, sid: &str, reason: &str) {
@@ -362,6 +406,13 @@ impl StateService {
             "home.workspaces" => self.home.workspaces(self.agent.as_ref()).await,
             "skills.status" => self.home.skills_status(self.agent.as_ref(), params).await,
             "skills.install_plan" => self.home.skills_install_plan(self.agent.as_ref(), params).await,
+            "skills.install" => self.home.skills_install(self.agent.as_ref(), params, who).await,
+            "skills.remove" => self.home.skills_remove(self.agent.as_ref(), params, who).await,
+            "skills.import" => self.import_skills(who, params).await,
+            "skills.state" | "skills.ui_get" | "skills.ui_set" | "skills.set_enabled" | "skills.drafts" | "skills.draft_file"
+            | "skills.draft_discard" | "skills.install_cmd" | "skills.check" => {
+                self.home.skills_call(self.agent.as_ref(), method, params, who).await
+            }
             "runtimes.settings" => self.home.runtime_settings(self.agent.as_ref()).await,
             "runtimes.settings_set" => {
                 let settings = self.home.set_runtime_settings(self.agent.as_ref(), params).await?;
@@ -424,6 +475,13 @@ fn authorize_agent_method(
     target_owner: &str,
     method: &str,
 ) -> Result<(), RPCErrors> {
+    // What an Agent may do is the owner's to widen: no Agent — this one included, whatever its permission mode —
+    // installs, removes or switches skills.
+    if is_owner_only(method) && (mode.is_some() || caller.app_id().as_str() == target_app_id) {
+        return Err(RPCErrors::NoPermission(format!(
+            "{method} is the owner's: an Agent does not change which skills an Agent has (the Skills page, or `buckyos skill` as the owner)"
+        )));
+    }
     if mode != Some(AgentPermissionMode::ReadOnly) || is_read(method) {
         return Ok(());
     }
@@ -437,6 +495,21 @@ fn authorize_agent_method(
     Err(RPCErrors::NoPermission(format!(
         "read-only Agent cannot call {method} on this Agent"
     )))
+}
+
+/// Skill methods only the owner calls (never an Agent's own App identity).
+fn is_owner_only(method: &str) -> bool {
+    matches!(
+        method,
+        "skills.install"
+            | "skills.remove"
+            | "skills.set_enabled"
+            | "skills.ui_set"
+            | "skills.import"
+            | "skills.draft_discard"
+            | "skills.install_cmd"
+            | "skills.check"
+    )
 }
 
 fn is_read(method: &str) -> bool {
@@ -470,6 +543,10 @@ fn is_read(method: &str) -> bool {
             | "behaviors.cmd_skill"
             | "skills.list"
             | "skills.install_plan"
+            | "skills.state"
+            | "skills.ui_get"
+            | "skills.drafts"
+            | "skills.draft_file"
             | "runtimes.ext_tools"
             | "goals.list"
             | "goals.get"
@@ -503,6 +580,14 @@ fn is_operation(method: &str) -> bool {
             | "agent.profile_set"
             | "runtimes.settings_set"
             | "skills.status"
+            | "skills.install"
+            | "skills.remove"
+            | "skills.set_enabled"
+            | "skills.ui_set"
+            | "skills.import"
+            | "skills.draft_discard"
+            | "skills.install_cmd"
+            | "skills.check"
             | "goals.activate"
             | "goals.post"
     )
@@ -640,7 +725,7 @@ mod permission_tests {
             "artifacts.versions", "artifacts.list", "workspaces.lookup", "workspaces.query",
             "workspaces.list", "workspaces.runtime_impact", "runtimes.list", "runtimes.lookup",
             "behaviors.identity", "behaviors.get", "behaviors.list", "behaviors.revision",
-            "behaviors.cmd_skill", "skills.list", "skills.install_plan", "runtimes.ext_tools", "goals.list", "goals.get", "goals.revision",
+            "behaviors.cmd_skill", "skills.list", "skills.install_plan", "skills.state", "skills.ui_get", "skills.drafts", "skills.draft_file", "runtimes.ext_tools", "goals.list", "goals.get", "goals.revision",
             "goals.changes", "goals.state", "goals.epoch_state", "goals.activations",
             "goals.schedule", "notify.state", "notify.list", "session.read", "session.worklog", "session.work_cards",
             "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status",
@@ -660,7 +745,7 @@ mod permission_tests {
             "workspaces.archive", "workspaces.unregister", "workspaces.set_runtime_available",
             "runtimes.register", "runtimes.update", "runtimes.check", "runtimes.unregister", "runtimes.note_usage",
             "goals.create", "goals.revise", "goals.set_status", "goals.reopen", "goals.restart",
-            "notify.send", "notify.cancel", "notify.answer", "skills.install", "skills.remove", "skills.status", "runtimes.ext_tools_check",
+            "notify.send", "notify.cancel", "notify.answer", "skills.note_frozen", "skills.revise", "skills.status", "runtimes.ext_tools_check",
             "session.stop", "session.decide", "session.post", "goals.activate", "goals.post",
         ] {
             assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, OWN_APP), "{method}");
@@ -670,6 +755,24 @@ mod permission_tests {
         assert!(authorize_agent_method(
             Some(AgentPermissionMode::ReadOnly), &caller, OWN_APP, "alice", "session.post"
         ).is_err());
+    }
+
+    #[test]
+    fn no_agent_changes_which_skills_an_agent_has() {
+        for method in [
+            "skills.install", "skills.remove", "skills.set_enabled", "skills.ui_set", "skills.import",
+            "skills.draft_discard", "skills.install_cmd", "skills.check",
+        ] {
+            for mode in [Some(AgentPermissionMode::ReadOnly), Some(AgentPermissionMode::ReadWrite)] {
+                for target in [OWN_APP, OTHER_APP] {
+                    assert!(!authorize(mode, method, target), "{method} by an Agent ({mode:?}) on {target}");
+                }
+            }
+            // The Agent's own App identity is an Agent even when its permission record cannot be found.
+            assert!(!authorize(None, method, OWN_APP), "{method} by the Agent's own App");
+            // An App of the owner that is no Agent (the desktop, the CLI's App) acts for the owner.
+            assert!(authorize(None, method, OTHER_APP), "{method} by an owner App");
+        }
     }
 
     #[test]

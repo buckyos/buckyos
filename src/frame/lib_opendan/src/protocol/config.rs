@@ -415,7 +415,7 @@ pub struct PromptSection {
     /// Behaviors and identity frozen from the agent's catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen: Option<super::behavior::FrozenPrompt>,
-    /// The cmd_skills of the session (`<agent_root>/cmd_skills/<name>.md`,
+    /// The cmd_skills of the session (`<agent_root>/cmd_skills/<name>/SKILL.md`,
     /// at most [`super::behavior::MAX_CMD_SKILLS`]): chosen when the session
     /// is created (`agent.toml [session.<class>] default_cmd_skills`,
     /// `create-worksession --cmd-skill`), frozen with the behaviors
@@ -458,6 +458,20 @@ pub struct PromptSection {
     /// runner default (0.30).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_target_ratio: Option<f32>,
+}
+
+impl PromptSection {
+    /// The entry behavior only chooses manuals for the work it plans: the ones named for it are candidates
+    /// (`frozen.skill_candidates`), not its own.
+    pub fn entry_takes_candidates(&self) -> bool {
+        match (&self.behavior, &self.frozen) {
+            (Some(entry), Some(frozen)) => frozen
+                .behaviors
+                .get(entry)
+                .is_some_and(|b| b.capabilities.cmd_skills == super::behavior::CmdSkillsUse::Candidates),
+            _ => false,
+        }
+    }
 }
 
 /// How a behavior is entered when a hand-over (`next_behavior`) or a

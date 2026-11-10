@@ -8,16 +8,16 @@
   "author": "did:bns:devtest",
   "owner": "did:bns:devtest",
   "controller": "did:bns:devtest",
-  "create_time": 1792195200,
-  "last_update_time": 1792195200,
-  "exp": 1949875200,
+  "create_time": 1794278021,
+  "last_update_time": 1794278021,
+  "exp": 1951958021,
   "categories": [
     "agent_skills"
   ],
   "pkg_list": {
     "agent_skills": {
       "pkg_id": "all.agent_skills.hello-skills.devtest.bns.did#0.1.0",
-      "pkg_objid": "pkg:09aa22b7e786ae9619cafbf114695ae549cb612a40a3bd4688eea22d5b1b696a",
+      "pkg_objid": "pkg:2f20a6c9942ee4526470d455840afbb78e2d4b5a9eeeb508539574bfec97747f",
       "required": true
     }
   },

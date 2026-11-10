@@ -12,6 +12,7 @@ import HomePage from './pages/Home'
 import LoaderPage from './pages/Loader'
 import SessionDetailPage from './pages/SessionDetail'
 import SessionsPage from './pages/Sessions'
+import SkillsPage from './pages/Skills'
 
 const subscribeHash = (notify: () => void) => {
   window.addEventListener('hashchange', notify)
@@ -21,6 +22,7 @@ const readHash = () => window.location.hash
 
 const TABS = [
   { id: 'sessions', label: 'Sessions' },
+  { id: 'skills', label: 'Skills' },
   { id: 'agent', label: 'Agent State' },
   { id: 'loader', label: 'Loader' },
 ]
@@ -107,6 +109,8 @@ export default function App() {
         <SessionDetailPage key={arg} sid={decodeURIComponent(arg)} />
       ) : page === 'goal' && arg ? (
         <GoalDetailPage key={arg} goalId={decodeURIComponent(arg)} />
+      ) : tab === 'skills' ? (
+        <SkillsPage />
       ) : tab === 'agent' ? (
         <AgentStatePage />
       ) : tab === 'loader' ? (

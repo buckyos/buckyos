@@ -8,12 +8,20 @@ import type {
   GoalSchedule,
   GoalState,
   HostedStatus,
+  InstallPlan,
   KnownRuntime,
   KnownWorkspace,
   RuntimeSettings,
   RegistryEntry,
   SessionDetail,
   SessionState,
+  PlannedSkill,
+  SkillAudit,
+  SkillDraft,
+  SkillFinding,
+  SkillMeta,
+  SkillSource,
+  UiSkills,
   WorklogEntry,
 } from './types'
 
@@ -718,6 +726,140 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     }
   }
 
+  const skill = (kind: SkillMeta['kind'], name: string, description: string, extra: Partial<SkillMeta> = {}): SkillMeta => ({
+    kind, name, description, origin: 'package', baseline: 'standard', size: 2400, enabled: true, ...extra,
+  })
+  const skills: SkillMeta[] = [
+    skill('work', 'ui_core', 'What a conversation can do: sessions, reports, notifications.', { scope: 'ui', size: 6700, usage: { frozen: 31, last_ms: ago(400), recent_sessions: [UI] } }),
+    skill('work', 'share', 'Publish a file or a folder and hand out the link.', { scope: 'ui,work', size: 1900, references: ['references/acl.md'], usage: { frozen: 3, last_ms: ago(86400 * 2) } }),
+    skill('work', 'aigc_audio', 'Speech and music: TTS, transcription, cutting and joining audio.', {
+      requires: 'an AICC provider with a speech model; ffmpeg only for cutting and joining', commands: ['ffmpeg', 'ffprobe'], size: 4100,
+      usage: { frozen: 2, last_ms: ago(86400), recent_sessions: [WORK_RUNNING] },
+    }),
+    skill('work', 'doc_convert', 'Convert documents between Markdown, DOCX and PDF; OCR for scans.', {
+      requires: 'the extended environment (pandoc, tesseract)', baseline: 'extended', commands: ['pandoc', 'tesseract'], size: 3300,
+    }),
+    skill('work', 'win_registry', 'Read and repair Windows registry settings.', { platforms: ['windows'], requires: 'a Windows runtime', size: 1500 }),
+    skill('work', 'yt_fetch', 'Download a video and its subtitles for offline summarising.', {
+      origin: 'installed', tools: ['yt-fetch'], size: 2100,
+      install: { package: 'media-skills', version: '0.2.0', digest: 'sha256:9a41c0de', installed_at_ms: ago(86400 * 3), installed_by: OWNER },
+      install_state: {
+        status: 'enabled', pinned_runtime: 'private',
+        risk: { level: 'high', accepted_by: OWNER, accepted_at_ms: ago(86400 * 3), plan_digest: 'sha256:11aa' },
+        runtimes: { private: { status: 'stale', at_ms: ago(7200), commands: ['yt-fetch', 'yt-dlp'], error: 'yt-dlp: not found after the container restarted', op_id: 'op-3f', volatile: true } },
+      },
+    }),
+    skill('work', 'old_invoice_flow', 'How invoices were filed before the accounting tool changed.', {
+      origin: 'imported', size: 900, enabled: false, disabled: { at_ms: ago(86400 * 9), by: OWNER, reason: 'the accounting tool changed' },
+      install: { package: 'imported-old-invoice-flow', version: '', digest: 'sha256:77b2', installed_at_ms: ago(86400 * 30), installed_by: OWNER, imported_from: { digest: 'sha256:5d10', runtime_id: 'private', platform: 'linux' } },
+    }),
+    skill('plan', 'research_report', 'How to split a research question into parallel work and one written report.', { size: 2800, usage: { frozen: 5, last_ms: ago(86400 * 4) } }),
+  ]
+  const skillAudit: SkillAudit[] = [
+    { at_ms: ago(86400 * 9), by: OWNER, action: 'disable', skill: 'work:old_invoice_flow', note: 'the accounting tool changed' },
+    { at_ms: ago(86400 * 3), by: OWNER, action: 'install', skill: 'work:yt_fetch', note: 'media-skills 0.2.0' },
+    { at_ms: ago(7200), by: 'goal:skill_crystallize', action: 'revise', skill: 'work:old_invoice_flow', note: 'body rewritten from 3 sessions; previous text in revisions/' },
+  ]
+  const audit = (action: string, skillKey?: string, note?: string) => {
+    skillAudit.push({ at_ms: Date.now(), by: OWNER, action, ...(skillKey ? { skill: skillKey } : {}), ...(note ? { note } : {}) })
+  }
+  const findSkill = (kind: string, name: string): SkillMeta => {
+    const found = skills.find((s) => s.kind === kind && s.name === name)
+    if (!found) throw new OpenDanError('not_found', `no ${kind} skill ${name}`)
+    return found
+  }
+  let uiNames: string[] | null = null
+  const uiCandidates = () => skills.filter((s) => s.kind === 'work' && s.enabled && s.scope?.split(',').includes('ui')).map((s) => s.name)
+  const uiSkills = (): UiSkills => {
+    const names = uiNames ?? ['ui_core']
+    return {
+      names: [...names],
+      source: uiNames ? 'state' : 'template',
+      total_bytes: names.reduce((sum, n) => sum + (skills.find((s) => s.kind === 'work' && s.name === n)?.size ?? 0), 0),
+      available: uiCandidates().filter((n) => !names.includes(n)),
+    }
+  }
+  const drafts: (Omit<SkillDraft, 'files'> & { texts: Record<string, string> })[] = [
+    {
+      slug: 'meeting-minutes',
+      draft: {
+        imported_from: { digest: 'sha256:c41f09', runtime_id: 'private', platform: 'linux' },
+        split: 'one work skill; the template section became references/template.md',
+        verified: [{ command: 'pandoc', present: false }, { command: 'ffmpeg', present: true }],
+        risk: 'The manual makes the agent transcribe recordings and mail the minutes to every attendee. Sending the mail cannot be undone.',
+      },
+      skills: [skill('work', 'meeting_minutes', 'Turn a meeting recording into minutes and send them round.', { origin: 'local', commands: ['ffmpeg', 'pandoc'], baseline: 'extended', platforms: ['linux'], size: 1800 })],
+      texts: {
+        'draft.json': '{\n  "imported_from": {"digest": "sha256:c41f09", "runtime_id": "private", "platform": "linux"}\n}',
+        'cmd_skills/meeting_minutes/SKILL.md': '---\nname: meeting_minutes\ndescription: Turn a meeting recording into minutes and send them round.\ncommands: ffmpeg, pandoc\n---\n\n1. Transcribe the recording.\n2. Write the minutes.\n3. Mail them to the attendees.\n',
+      },
+      updated_at_ms: ago(1800),
+    },
+    { slug: 'broken-notes', draft: null, skills: [], texts: { 'notes.txt': 'unfinished' }, updated_at_ms: ago(86400), error: 'draft.json is missing' },
+  ]
+  // What the real service works out from the files: one skill per manual.
+  const planOf = (source: SkillSource, runtimeId?: string): InstallPlan => {
+    const draft = 'draft' in source ? drafts.find((d) => d.slug === source.draft) : undefined
+    if ('draft' in source && !draft) throw new OpenDanError('not_found', `no draft ${source.draft}`)
+    const paths = draft ? Object.keys(draft.texts) : Object.keys('package' in source ? source.package.files : {})
+    const packageName = draft ? `imported-${draft.slug}` : 'package' in source ? source.package.package : ''
+    const version = 'package' in source ? source.package.version : ''
+    const dirs: Record<string, SkillMeta['kind']> = { cmd_skills: 'work', plan_skills: 'plan', goal_skills: 'goal' }
+    const planned = paths.flatMap((path): PlannedSkill[] => {
+      const [dir, name, file, ...rest] = path.split('/')
+      if (!dirs[dir] || !name || rest.length || file !== 'SKILL.md') return []
+      const kind = dirs[dir]
+      const existing = skills.find((s) => s.kind === kind && s.name === name)
+      const scripts = paths.filter((p) => p.startsWith(`tools/${name}/setup/`)).map((p) => p.split('/')[3].replace(/\..*$/, ''))
+      const tools = paths.filter((p) => p.startsWith(`tools/${name}/bin/`)).map((p) => p.split('/')[3])
+      const known = draft?.skills.find((s) => s.kind === kind && s.name === name)
+      return [{
+        ...(known ?? skill(kind, name, `Skill ${name} of ${packageName}`, { size: 1200 })),
+        origin: draft ? 'imported' : 'installed',
+        ...(tools.length ? { tools } : {}),
+        ...(existing ? { replaces: existing.origin } : {}),
+        ...(scripts.length ? { install_scripts: scripts, check_commands: tools } : {}),
+      }]
+    })
+    if (!planned.length) throw new OpenDanError('invalid_argument', 'the package holds no skill')
+    const withTools = paths.some((p) => p.startsWith('tools/'))
+    const withScript = planned.some((s) => s.install_scripts?.length)
+    const targets = withTools ? runtimes.map((r) => ({
+      runtime_id: r.runtime_id, os: r.caps.os, install: r.grant.install, private: r.connector.type === 'native',
+      ...(r.grant.install === 'none' ? { refused: `runtime \`${r.runtime_id}\` grants \`none\`: the owner changes the grant in the runtime directory, or picks another runtime` } : {}),
+    })) : []
+    const target = withTools ? targets.find((x) => x.runtime_id === (runtimeId ?? 'private')) : undefined
+    const findings: SkillFinding[] = [
+      ...planned.filter((s) => s.replaces).map((s): SkillFinding => ({ code: 'replaces_skill', level: 'medium', where: `${s.kind}:${s.name}`, note: `takes the place of the ${s.replaces} skill of the same name` })),
+      ...planned.filter((s) => s.scope?.split(',').includes('ui')).map((s): SkillFinding => ({ code: 'ui_scope', level: 'medium', where: `${s.kind}:${s.name}`, note: 'its scope includes `ui`: once the owner adds it to the UI set it goes into the prompt of every conversation' })),
+      ...planned.filter((s) => s.install_scripts?.length).map((s): SkillFinding => ({ code: 'system_install', level: 'high', where: `tools/${s.name}/install.toml`, note: `runs an install script on the runtime (${s.install_scripts!.join(', ')})` })),
+      ...(draft ? [{ code: 'imported_text', level: 'medium', where: packageName, note: 'written by the agent from a text the owner gave it: nobody signed it' } satisfies SkillFinding] : []),
+      ...(target?.refused ? [{ code: 'install_target', level: 'block', where: target.runtime_id, note: target.refused } satisfies SkillFinding] : []),
+      ...(target && !target.refused && !target.private && withScript ? [{ code: 'owner_machine', level: 'high', where: target.runtime_id, note: `the install script runs on \`${target.runtime_id}\`: a machine the owner uses, not the agent's own` } satisfies SkillFinding] : []),
+    ]
+    const digest = `sha256:mock-${paths.length}-${paths.join('|').length}`
+    return {
+      package: packageName,
+      version,
+      digest,
+      plan_digest: `sha256:plan-${packageName}-${version}-${paths.length}`,
+      skills: planned,
+      risk: { level: findings.some((f) => f.level === 'high') ? 'high' : findings.some((f) => f.level === 'medium') ? 'medium' : 'low', findings },
+      ...(target ? { runtime_id: target.runtime_id } : {}),
+      ...(targets.length ? { targets } : {}),
+      ...(target?.refused ? { blocked: [target.refused] } : {}),
+      command_status: planned.filter((s) => s.kind === 'work').map((s) => ({
+        name: s.name,
+        commands: s.commands ?? [],
+        status: {
+          state: s.commands?.includes('pandoc') ? 'partial' as const : 'ready' as const,
+          commands: Object.fromEntries((s.commands ?? []).map((c) => [c, { present: c !== 'pandoc' }])),
+          ...(s.commands?.includes('pandoc') ? { recommended_packages: [{ id: 'ext-docs', version: '0.3.1', provides: ['pandoc'] }] } : {}),
+        },
+      })),
+    }
+  }
+
   return {
     source: 'mock',
     login: { lost: () => false, subscribe: () => () => {} },
@@ -1155,6 +1297,184 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       const g = findGoal(goalId)
       if (!(g.def.status === 'active' || g.def.status === 'paused')) throw new OpenDanError('invalid_argument', `goal ${goalId} is ${g.def.status}: only a live goal restarts`)
       return openEpoch(g, 'restarted', reason, carryState ? 'all' : 'facts')
+    },
+
+    skills: async () => {
+      await delay()
+      return structuredClone(skills)
+    },
+
+    skillsState: async () => {
+      await delay()
+      return {
+        disabled: Object.fromEntries(skills.filter((s) => s.disabled).map((s) => [`${s.kind}:${s.name}`, s.disabled!])),
+        ...(uiNames ? { ui_cmd_skills: [...uiNames] } : {}),
+        usage: { ...Object.fromEntries(skills.filter((s) => s.usage).map((s) => [`${s.kind}:${s.name}`, s.usage!])), none: { frozen: 4, last_ms: ago(5400), recent_sessions: [WORK_FAILED] } },
+        audit: structuredClone(skillAudit),
+      }
+    },
+
+    uiSkills: async () => {
+      await delay()
+      return uiSkills()
+    },
+
+    skillsStatus: async (runtimeId = 'private') => {
+      await new Promise((resolve) => window.setTimeout(resolve, 400))
+      const runtime = runtimes.find((r) => r.runtime_id === runtimeId)
+      if (!runtime) throw new OpenDanError('invalid_argument', `no runtime \`${runtimeId}\``)
+      const onPrivate = runtime.connector.type === 'native'
+      return {
+        runtime_id: runtime.runtime_id,
+        skills: skills.filter((s) => s.kind === 'work').map((s) => {
+          const unmet = s.platforms?.length && !s.platforms.includes(runtime.caps.os)
+            ? `works on ${s.platforms.join(', ')} only (this runtime is ${runtime.caps.os})`
+            : s.baseline === 'extended' && runtime.caps.baseline !== 'extended' ? 'needs the extended environment, and this runtime declares standard' : undefined
+          const commands = Object.fromEntries((s.commands ?? []).map((c) => [c, c === 'pandoc' || (!onPrivate && c === 'tesseract')
+            ? { present: false }
+            : { present: true, provided_by: c === 'ffmpeg' ? 'system' : 'exttools' }]))
+          const missing = Object.entries(commands).filter(([, c]) => !c.present).map(([name]) => name)
+          const install = s.install_state?.runtimes?.[runtime.runtime_id]
+          return {
+            name: s.name,
+            ...(s.scope ? { scope: s.scope } : {}),
+            enabled: s.enabled,
+            ...(s.requires ? { requires: s.requires } : {}),
+            ...(unmet ? { unmet } : {}),
+            commands: {
+              state: missing.length ? 'partial' as const : Object.values(commands).some((c) => c.present && c.provided_by === 'system') ? 'ready_system' as const : 'ready' as const,
+              commands,
+              ...(missing.includes('pandoc') ? { recommended_packages: [{ id: 'ext-docs', version: '0.3.1', requires_chain: ['ext-core'], provides: ['pandoc'] }] } : {}),
+              ...(missing.includes('tesseract') ? { no_package: ['tesseract'] } : {}),
+            },
+            ...(install ? { install: structuredClone(install) } : {}),
+          }
+        }),
+      }
+    },
+
+    skillInstallPlan: async (source, runtimeId) => {
+      await delay()
+      return planOf(source, runtimeId)
+    },
+
+    skillDrafts: async () => {
+      await delay()
+      return drafts.map(({ texts, ...draft }) => structuredClone({ ...draft, files: Object.keys(texts) }))
+    },
+
+    skillDraftFile: async (slug, file) => {
+      await delay()
+      const text = drafts.find((d) => d.slug === slug)?.texts[file]
+      if (text === undefined) throw new OpenDanError('not_found', `draft ${slug} has no file ${file}`)
+      return { text }
+    },
+
+    installSkills: async (source, planDigest, runtimeId, replace = false) => {
+      await delay()
+      const plan = planOf(source, runtimeId)
+      if (plan.plan_digest !== planDigest) throw new OpenDanError('invalid_argument', 'the package is not the one that was planned (plan_digest differs)')
+      if (plan.blocked?.length) throw new OpenDanError('invalid_argument', plan.blocked[0])
+      if (plan.skills.some((s) => s.replaces) && !replace) throw new OpenDanError('invalid_argument', 'a skill of the same name is installed (replace)')
+      const origin = 'draft' in source ? 'imported' as const : 'installed' as const
+      for (const planned of plan.skills) {
+        const meta: SkillMeta & Partial<PlannedSkill> = { ...planned }
+        delete meta.replaces
+        delete meta.check_commands
+        delete meta.install_scripts
+        const at = skills.findIndex((s) => s.kind === meta.kind && s.name === meta.name)
+        const installed: SkillMeta = {
+          ...meta,
+          origin,
+          install: { package: plan.package, version: plan.version, digest: plan.digest, installed_at_ms: Date.now(), installed_by: OWNER },
+          ...(plan.runtime_id ? { install_state: { status: 'enabled', pinned_runtime: plan.runtime_id, runtimes: { [plan.runtime_id]: { status: 'ok', at_ms: Date.now(), commands: meta.tools ?? [] } } } } : {}),
+        }
+        if (at >= 0) skills[at] = installed
+        else skills.push(installed)
+        audit('install', `${meta.kind}:${meta.name}`, `${plan.package} ${plan.version}`.trim())
+      }
+      if ('draft' in source) drafts.splice(drafts.findIndex((d) => d.slug === source.draft), 1)
+      return { package: plan.package, version: plan.version, digest: plan.digest, skills: plan.skills }
+    },
+
+    removeSkill: async (kind, name) => {
+      await delay()
+      const skill = findSkill(kind, name)
+      if (skill.origin !== 'installed' && skill.origin !== 'imported') throw new OpenDanError('invalid_argument', `${name} is a ${skill.origin} skill: disable it instead`)
+      skills.splice(skills.indexOf(skill), 1)
+      if (uiNames) uiNames = uiNames.filter((n) => n !== name)
+      audit('remove', `${kind}:${name}`)
+      return structuredClone(skill)
+    },
+
+    setSkillEnabled: async (kind, name, enabled, reason) => {
+      await delay()
+      const skill = findSkill(kind, name)
+      skill.enabled = enabled
+      skill.disabled = enabled ? undefined : { at_ms: Date.now(), by: OWNER, ...(reason ? { reason } : {}) }
+      audit(enabled ? 'enable' : 'disable', `${kind}:${name}`, reason)
+      return structuredClone(skill)
+    },
+
+    setUiSkills: async (names) => {
+      await delay()
+      const candidates = uiCandidates()
+      const unknown = names?.find((n) => !candidates.includes(n))
+      if (unknown) throw new OpenDanError('invalid_argument', `\`${unknown}\` is not an enabled work skill whose scope includes ui`)
+      uiNames = names ? [...names] : null
+      audit('ui_set', undefined, names ? names.join(', ') : 'back to the template')
+      return uiSkills()
+    },
+
+    installSkillCommands: async (name, runtimeId) => {
+      await delay()
+      const skill = findSkill('work', name)
+      const runtime = runtimes.find((r) => r.runtime_id === runtimeId)
+      if (!runtime) throw new OpenDanError('invalid_argument', `no runtime \`${runtimeId}\``)
+      if (runtime.grant.install === 'none') throw new OpenDanError('forbidden', `runtime \`${runtimeId}\` grants no installation`)
+      const state = (skill.install_state ??= { status: 'installing', runtimes: {} })
+      ;(state.runtimes ??= {})[runtimeId] = { status: 'ok', at_ms: Date.now(), commands: skill.tools ?? [] }
+      state.status = 'enabled'
+      state.pinned_runtime ??= runtimeId
+      delete state.error
+      skill.enabled = !skill.disabled
+      audit('install_cmd', `work:${name}`, runtimeId)
+      return structuredClone(state)
+    },
+
+    checkSkillCommands: async (name, runtimeId = 'private') => {
+      await delay()
+      const skill = findSkill('work', name)
+      const record = skill.install_state?.runtimes?.[runtimeId]
+      if (!skill.install_state || !record) throw new OpenDanError('invalid_argument', `${name} has no commands installed on \`${runtimeId}\``)
+      record.at_ms = Date.now()
+      return structuredClone(skill.install_state)
+    },
+
+    importSkill: async (request) => {
+      await delay()
+      if (!request.text.trim()) throw new OpenDanError('invalid_argument', 'no text to import')
+      const slug = request.name?.trim() || `import-${drafts.length + 1}`
+      const scope = request.scope && request.scope !== 'work' ? request.scope : undefined
+      const kind = scope === 'plan' ? 'plan' as const : 'work' as const
+      const dir = kind === 'plan' ? 'plan_skills' : 'cmd_skills'
+      drafts.push({
+        slug,
+        draft: { imported_from: { digest: 'sha256:mock', runtime_id: 'private', platform: 'linux' }, risk: 'Mock import: nothing was analysed.', verified: [] },
+        skills: [{ kind, name: slug, ...(scope && kind === 'work' ? { scope } : {}), description: request.text.trim().split('\n')[0].slice(0, 80), origin: 'local', size: request.text.length, enabled: true }],
+        texts: { 'draft.json': '{}', [`${dir}/${slug}/SKILL.md`]: request.text },
+        updated_at_ms: Date.now(),
+      })
+      return { session_id: WORK_RUNNING, inbox: { index: 1 } }
+    },
+
+    discardSkillDraft: async (slug) => {
+      await delay()
+      const at = drafts.findIndex((d) => d.slug === slug)
+      if (at < 0) throw new OpenDanError('not_found', `no draft ${slug}`)
+      drafts.splice(at, 1)
+      audit('draft_discard', undefined, slug)
+      return {}
     },
   }
 }

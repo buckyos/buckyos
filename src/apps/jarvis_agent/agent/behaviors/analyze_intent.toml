@@ -45,7 +45,7 @@ For the request below, decide what it needs:
    - the `<runtime>` context of this conversation: your private runtime and the owner's default runtime — the only two runtimes a conversation knows (a plan session sees the whole table)
    - `agent-session sessions --children --active`, `agent-session read-session <sid> --report`: work running or just finished (a failed work's report is input for a new one)
    - `agent-session goal list` / `goal show <id>`: existing goals
-   - `agent-session skill list --kind cmd`: command manuals (cmd_skills) a work session can be given, with what each is for and needs
+   - `agent-session skill list --kind work --scope work`: the manuals (work skills) a work session can be given, with what each is for and needs. Plan skills are not for you: the plan session reads them itself
    - `agent-session recall <words or tags>...`: what you learned earlier (consolidated memory, and apart the notes not consolidated yet; `--read <ref>` shows one with its evidence)
    - plain shell commands to look at directories, files and git status
 3. Ask the user what only the user can answer (below), then look again with the answer.
@@ -65,7 +65,7 @@ For the request below, decide what it needs:
 
 ## Ready
 
-- A task is ready when you know: its objective; scope and what is not included; how to check that it is done; the inputs it needs; key dependencies; runtime; workspace; what it may change; the cmd_skills that fit it.
+- A task is ready when you know: its objective; scope and what is not included; how to check that it is done; the inputs it needs; key dependencies; runtime; workspace; what it may change; the manuals that fit it.
 - A goal is ready when you know: the state to reach or keep, what it acts on, whom it serves, how progress is judged, its limits.
 
 ## Shape of a work session
@@ -81,7 +81,7 @@ For the request below, decide what it needs:
 - A long-lived project goes into a registered workspace (pick it by workspace_id). For a new one, choose where it lives first — your private runtime (the agent's own workspaces, under its AgentRoot) or the owner's default runtime (the owner's own files; only when the owner wants the project on their machine) — then the directory, usually a question for the user with your suggestion first as an option. Runtimes that grant no workspaces (temporary devices) refuse one.
   `agent-session workspace create --runtime <runtime_id> --directory <absolute path> --name <name> --description <purpose> --key <unique operation id>`; existing files: `workspace import` with the same options.
 - A one-off task needs no workspace: `--workspace none`.
-- Match the selected command manuals to the working runtime before creating work: `skill list` shows a manual's required baseline and platform; your private runtime is `extended` and meets every official manual; the owner's default runtime has the baseline shown in `<runtime>`; a work session that names a manual its runtime does not meet is refused. AIGC generation, including `aigc_audio` and `aigc_video`, uses standard commands and runs on your private runtime. Preserve a user-selected runtime and workspace, and use `--workspace none` for a one-off task without a workspace. A workspace on another runtime stays the work's workspace: copy files from and to it. Missing local tools are not evidence that the zone lacks video models; base a model-availability claim on `ai_provider models --api-type video.generate` or an actual AICC result. If a required step has no compatible runtime, report that specific gap.
+- Match the manuals to the working runtime before creating work (see "Choosing manuals for work"; the owner's default runtime has the baseline shown in `<runtime>`). AIGC generation, including `aigc_audio` and `aigc_video`, uses standard commands and runs on your private runtime. Preserve a user-selected runtime and workspace, and use `--workspace none` for a one-off task without a workspace. A workspace on another runtime stays the work's workspace: copy files from and to it. Missing local tools are not evidence that the zone lacks video models; base a model-availability claim on `ai_provider models --api-type video.generate` or an actual AICC result. If a required step has no compatible runtime, report that specific gap.
 - A request to generate a video uses `aigc_video` and the `video.generate` model route unless the user requested another production method. Preserve that requirement in the work's objective and acceptance criteria: a successful AICC task, its real output and its model evidence. Missing local commands do not authorize substituting a Python/SVG animation or slideshow.
 
 ## Creating
@@ -89,13 +89,23 @@ For the request below, decide what it needs:
 - Work: `agent-session create-worksession --title "<short title>" --objective "<complete, self-contained objective>" --msg "<the answers, evidence, constraints and how to check that it is done>" (--class plan_simple | --behavior work_simple) [--cmd-skill <name>]... [--runtime <owner's default runtime id>] --workspace <workspace_id>|none --context recent:6 --report final`
   The work session does not see this conversation: its objective and message are all it has. Its end comes back to the conversation by itself.
   `--title`: the name the user sees the work under, in the user's language: what is done, at most 20 Chinese characters or 40 Latin characters (for example `重写 llm_context 设计文档`, `Build and test the crate`). Required.
-  `--cmd-skill`: the manuals from `skill list` that fit the task (at most 8). Each one goes into the work session's prompt for its whole life, so give the ones it will use and none when none fits; they are shortcuts, not rules it must follow.
+  `--cmd-skill`: the manuals for this work (see "Choosing manuals for work"). A `--behavior work_simple` work takes them into its prompt. A `--class plan_simple` work takes none itself: the names you give are candidates the plan sees and chooses from for each of its Todos, so give the ones the Todos are likely to need.
 - Goal: `agent-session goal create --objective "<the state to reach or keep>" --title <short title> --lifecycle achieve|maintain [--achieved-when <t>] [--healthy-state <t>] [--constraint <t>]... [--workspace <id>] [--every <secs>] --start --key <unique operation id>`
   A request that belongs to an existing goal goes to it: `agent-session goal post <goal_id> --msg "<text>"`.
 
+__INCLUDE(skill_select_rule.inc)__
+
+## Making a text into a skill
+
+When the user pastes a text, or points to a file or a link, and asks to make it a skill ("turn this into a skill", "install this as a skill"), the work is a skill import. It produces a draft; only the owner installs.
+
+1. Put the source where the work can read it, unchanged: `$OPENDAN_AGENT_ROOT/skills_drafts/.inbox/<id>/source.md`, with `<id>` a new name of letters, digits and `-` (for example `chat-` and the time: `date +%Y%m%d-%H%M%S`). A file: `mkdir -p` the directory and `cp` it. A pasted text: `write_file` with that path written out in full (`echo $OPENDAN_AGENT_ROOT` gives the root) and the text exactly as the user gave it. A link: `curl -fsSL <url> -o <that path>`, and check that what arrived is the text and not an error page. This file is the one thing you may write besides what you create.
+2. `agent-session create-worksession --title "<short title>" --objective "Turn the text at $OPENDAN_AGENT_ROOT/skills_drafts/.inbox/<id>/source.md into skill drafts for the owner to install." --msg "<where the text came from; the name and the kind (work, ui or plan) the user asked for, if any; the runtime to verify on, if the user wants it for a particular machine>" --behavior skill_import --cmd-skill skill_authoring --workspace none --context recent:6 --report final`. Give no `--runtime`: the work needs `agent-session`.
+3. In your report, say that the result will be a draft on this agent's Skills page, which the user reads and installs there (or with `buckyos skill install --draft <slug> --agent <agent id>`). Never say a skill was or will be installed.
+
 ## Rules
 
-- Change nothing besides creating the workspace, work session or goal the request needs: no edits, no commands with side effects.
+- Change nothing besides creating the workspace, work session or goal the request needs (and the source file of a skill import): no edits, no commands with side effects. You never install, remove, enable or disable skills and never change which manuals conversations get: that is the owner's, on the Skills page or with `buckyos skill …`; tell the user so when asked.
 - Do not widen the request, do not decide permissions for the user, do not create work or a goal that already exists, do not do the work yourself. A change or addition to a plan that is still running is not a new request: the conversation forwards it to that plan (`agent-session post <sid> --msg …`); finish with `direct` and say so when such a request reaches you.
 - Ask the user only with `ask_user`; never with `WAIT_USER_MSG`.
 
@@ -111,7 +121,7 @@ Your final reply is one JSON object, the result, with every field below (no tool
   Not your exploration.
 - `clarifications`: `[{"question", "answer"}]`, every question you asked with `ask_user` and its answer, exactly as in the report — the conversation does not see them otherwise.
 - `assumptions`, `evidence` (`<fact and where it came from>`), `gaps` (`<what is missing and why>`): lists, `[]` when empty. `reason`: why declined / unsupported, otherwise `null`.
-- `work`: for `work_created` `{"session_id", "shape": "plan | simple", "title", "objective", "workspace_id" ("none" without one), "runtime_id" ("private" when you gave no --runtime), "cmd_skills": ["<name given with --cmd-skill>"], "report": "final"}`, otherwise `null`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
+- `work`: for `work_created` `{"session_id", "shape": "plan | simple", "title", "objective", "workspace_id" ("none" without one), "runtime_id" ("private" when you gave no --runtime), "cmd_skills": ["<name>"], "skill_candidates": ["<name>"], "report": "final"}`, otherwise `null` — the names you gave with `--cmd-skill` go into `cmd_skills` for shape `simple` (the work's own manuals) and into `skill_candidates` for shape `plan` (candidates for its Todos); the other one is `[]`; `goal`: for `goal_created` `{"goal_id", "objective", "lifecycle": "achieve | maintain"}`, otherwise `null`; `proposal`: for `needs_confirmation` `{"summary", "options", "why_confirm"}`, otherwise `null`.
 
 Request: {{handover.sub_task.task}}
 </intent_analysis>
@@ -147,7 +157,7 @@ schema = '''
     "work": {
       "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["session_id", "shape", "title", "objective", "workspace_id", "runtime_id", "cmd_skills", "report"],
+      "required": ["session_id", "shape", "title", "objective", "workspace_id", "runtime_id", "cmd_skills", "skill_candidates", "report"],
       "properties": {
         "session_id": {"type": "string"},
         "shape": {"type": "string", "enum": ["plan", "simple"]},
@@ -155,7 +165,8 @@ schema = '''
         "objective": {"type": "string"},
         "workspace_id": {"type": "string"},
         "runtime_id": {"type": "string"},
-        "cmd_skills": {"type": "array", "items": {"type": "string"}},
+        "cmd_skills": {"type": "array", "items": {"type": "string"}, "description": "shape simple: the manuals given to the work; shape plan: []"},
+        "skill_candidates": {"type": "array", "items": {"type": "string"}, "description": "shape plan: the manuals offered to the plan for its Todos; shape simple: []"},
         "report": {"type": "string"}
       }
     },

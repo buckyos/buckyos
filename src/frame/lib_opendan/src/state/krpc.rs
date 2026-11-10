@@ -138,8 +138,8 @@ pub fn is_write(method: &str) -> bool {
             | "notify.send"
             | "notify.cancel"
             | "notify.answer"
-            | "skills.install"
-            | "skills.remove"
+            | "skills.note_frozen"
+            | "skills.revise"
     )
 }
 
@@ -378,20 +378,18 @@ pub async fn serve_call(
             Ok(kind) => agent.behaviors().skills(kind).await.and_then(out),
             Err(e) => Err(e),
         },
-        "skills.install" => match (
-            arg::<crate::skills::SkillPackage>(params, "package"),
-            arg::<Option<bool>>(params, "replace"),
-        ) {
-            (Ok(pkg), Ok(replace)) => agent
-                .behaviors()
-                .install_skills(&pkg, replace.unwrap_or(false), who)
-                .await
-                .and_then(out),
+        "skills.note_frozen" => match (arg::<Vec<String>>(params, "names"), arg::<String>(params, "session_id")) {
+            (Ok(names), Ok(sid)) => agent.behaviors().note_skills_frozen(&names, &sid).await.and_then(out),
             (Err(e), _) | (_, Err(e)) => Err(e),
         },
-        "skills.remove" => match (arg::<SkillKind>(params, "kind"), arg::<String>(params, "name")) {
-            (Ok(kind), Ok(name)) => agent.behaviors().remove_skill(kind, &name, who).await.and_then(out),
-            (Err(e), _) | (_, Err(e)) => Err(e),
+        "skills.revise" => match (
+            arg::<SkillKind>(params, "kind"),
+            arg::<String>(params, "name"),
+            arg::<String>(params, "text"),
+            arg::<String>(params, "reason"),
+        ) {
+            (Ok(kind), Ok(name), Ok(text), Ok(reason)) => agent.behaviors().revise_skill(kind, &name, &text, &reason, who).await.and_then(out),
+            (Err(e), _, _, _) | (_, Err(e), _, _) | (_, _, Err(e), _) | (_, _, _, Err(e)) => Err(e),
         },
         "goals.list" => agent.goals().list().await.and_then(out),
         "goals.get" => match arg::<String>(params, "goal_id") {
@@ -769,16 +767,11 @@ impl BehaviorCatalog for KrpcAgentStateClient {
     async fn skills_status(&self, runtime_id: Option<&str>) -> Result<serde_json::Value> {
         self.call("skills.status", json!({ "runtime_id": runtime_id })).await
     }
-    async fn install_skills(
-        &self,
-        pkg: &crate::skills::SkillPackage,
-        replace: bool,
-        _who: &str,
-    ) -> Result<crate::skills::InstallReport> {
-        self.call("skills.install", json!({ "package": pkg, "replace": replace })).await
+    async fn note_skills_frozen(&self, names: &[String], session_id: &str) -> Result<()> {
+        self.call("skills.note_frozen", json!({ "names": names, "session_id": session_id })).await
     }
-    async fn remove_skill(&self, kind: SkillKind, name: &str, _who: &str) -> Result<SkillMeta> {
-        self.call("skills.remove", json!({ "kind": kind, "name": name })).await
+    async fn revise_skill(&self, kind: SkillKind, name: &str, text: &str, reason: &str, _who: &str) -> Result<SkillMeta> {
+        self.call("skills.revise", json!({ "kind": kind, "name": name, "text": text, "reason": reason })).await
     }
 }
 

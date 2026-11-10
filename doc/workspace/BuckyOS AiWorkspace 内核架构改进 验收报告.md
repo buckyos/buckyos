@@ -21,9 +21,9 @@
 | M0 | 错误码目录、不变量/决定性契约测试、`doc.get_submission`、执行上下文与 AICC 归属修正（T0-6） | `core/src/error.rs`、`schemas/error-codes.json`、`core/tests/`、`server/src/wish/llm.rs`、`agent_tool/src/xllm.rs` |
 | M1 | FORMAT 1.0 / PROTOCOL 1.0 / DDL v4：对象实体与 `buckyos.dir`、自有数据（`owns`+`bind`、`entity.clone`）、引用对象、固定版本解析、版本矩阵 | `core/src/{model,types,plan,read,materialize}.rs`、`store/src/schema.rs`、`schemas/*.json`、`fixtures/` |
 | M2 | 服务级 GC、历史保留期、配额准入与维护通道、崩溃恢复、放映克隆 | `store/src/service.rs`、`store/src/workspace.rs`、`store/src/show.rs` |
-| M3 | 执行上下文、`proc.*` 执行器协议（claim / heartbeat / report / tool / program / files）、阶段宿主、本地（浏览器）执行器、Agent 执行器 CLI 与手册、托管配置 | `server/src/wish/{exec,stages,mod}.rs`、Desktop `executor/`、websdk `cli/modules/aiws.ts`、`cmd_skills/aiworkspace_run.md` |
+| M3 | 执行上下文、`proc.*` 执行器协议（claim / heartbeat / report / tool / program / files）、阶段宿主、本地（浏览器）执行器、Agent 执行器 CLI 与手册、托管配置 | `server/src/wish/{exec,stages,mod}.rs`、Desktop `executor/`、websdk `cli/modules/aiws.ts`、`cmd_skills/aiworkspace_run/SKILL.md` |
 | M4 | Source（`source{kind, mode, …}`）、服务侧刷新、按路径发布、引用登记、`/kapi/aiworkspace/pub/…` 与预渲染、子域路由 | `core/src/types.rs`、`store/src/source.rs`、`server/src/source.rs`、`rootfs/etc/boot_gateway.yaml`、scheduler |
-| M5 | 草稿协议、进入编辑即取锁、公式显示与物化、复制画布与 `data.pin`、手册 `aiworkspace_template_dev`、本报告 | Desktop `state/drafts.ts`、`state/locks.ts`、`ui/formula.ts`、`ui/canvas/surfaceOps.ts`、`cmd_skills/aiworkspace_template_dev.md` |
+| M5 | 草稿协议、进入编辑即取锁、公式显示与物化、复制画布与 `data.pin`、手册 `aiworkspace_template_dev`、本报告 | Desktop `state/drafts.ts`、`state/locks.ts`、`ui/formula.ts`、`ui/canvas/surfaceOps.ts`、`cmd_skills/aiworkspace_template_dev/SKILL.md` |
 | 联动 | `buckyos-api` `aiworkspace_client.rs`（设置项）、WASM 产物、Desktop 类型与 i18n、README 协议表、AGENTS.md 手册表 | 各处 |
 
 ## 3. 后台验收

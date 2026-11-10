@@ -88,7 +88,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         (--title: a short name of the work, at most 60 chars, shown where the work is listed;
          --cmd-skill: up to 8 manuals from `skill list`, fixed for the session's life; none given: a work
          session inherits its parent work's, a conversation's or a goal's are not inherited; its end comes back as input)
-  skill list [--kind cmd|goal] [--json] | skill install <x.pikg | dir> [--replace] | skill remove <name> [--kind cmd|goal]
+  skill list [--kind work|plan|goal] [--scope ui|work] [--all] [--stats] [--json]   (installing, removing, disabling: the owner's — Skills page or `buckyos skill`)
+  skill revise <name> --file <new SKILL.md> --reason <why> [--kind work|plan|goal]   rewrite the text of a manual that is not a package's; the old text is kept
   skill status [--runtime <id>] [--json]   the commands each manual relies on, on that runtime, and the extension package that would bring what is missing
   post <sid> --msg <t>
   todo add <title> (--content <t> | --content - | --content-file <path>) [--accept <criterion>]... [--scope <t>] [--evidence <t>]... [--skill <cmd_skill>]...
@@ -1509,16 +1510,13 @@ fn cmd_skills_arg(a: &Args, flag: &str) -> Option<Vec<String>> {
 fn skill_kind(a: &Args) -> R<Option<SkillKind>> {
     match a.get("kind").as_deref() {
         None => Ok(None),
-        Some("cmd") => Ok(Some(SkillKind::Cmd)),
-        Some("goal") => Ok(Some(SkillKind::Goal)),
-        Some(k) => Err(bad(format!("bad --kind {k} (cmd | goal)"))),
+        Some(k) => SkillKind::parse(k).map(Some).ok_or_else(|| bad(format!("bad --kind {k} (work | plan | goal)"))),
     }
 }
 
-/// `skill list [--kind cmd|goal] [--json]` / `skill install <x.pikg | dir> [--replace]`
-/// / `skill remove <name> [--kind cmd|goal]`: the agent's skills. A new
-/// session takes the manuals installed when it is created; running sessions
-/// keep theirs.
+/// `skill list [--kind work|plan|goal] [--scope ui|work] [--all] [--stats] [--json]` / `skill status` /
+/// `skill revise`: the agent's skills. Installing, removing, disabling and the UI set are the owner's (the Skills page,
+/// `buckyos skill …`). A new session takes the manuals as they are when it is created; running sessions keep theirs.
 async fn cmd_skill_status(c: &Ctx, a: &Args) -> R<i32> {
     let report = c.agent.behaviors().skills_status(a.get("runtime").as_deref()).await?;
     if a.has("json") {
@@ -1527,76 +1525,128 @@ async fn cmd_skill_status(c: &Ctx, a: &Args) -> R<i32> {
     }
     println!("runtime {}", report["runtime_id"].as_str().unwrap_or(""));
     for skill in report["skills"].as_array().cloned().unwrap_or_default() {
-        let status = &skill["status"];
-        let state = match status["state"].as_str() {
-            Some("ready") => "ready".to_string(),
-            Some("ready_system") => "ready (system)".to_string(),
-            _ => {
-                let missing: Vec<String> = status["commands"]
-                    .as_object()
-                    .map(|c| c.iter().filter(|(_, v)| v["present"] == false).map(|(k, _)| k.clone()).collect())
-                    .unwrap_or_default();
-                let packages: Vec<&str> = status["recommended_packages"].as_array().map(|p| p.iter().filter_map(|x| x["id"].as_str()).collect()).unwrap_or_default();
-                let advice = if packages.is_empty() { String::new() } else { format!("; extension package: {}", packages.join(", ")) };
-                format!("partial (missing {}{advice})", missing.join(", "))
+        let status = &skill["commands"];
+        let state = if let Some(unmet) = skill["unmet"].as_str() {
+            format!("not available here: {unmet}")
+        } else {
+            match status["state"].as_str() {
+                Some("ready") => "ready".to_string(),
+                Some("ready_system") => "ready (system)".to_string(),
+                _ => {
+                    let missing: Vec<String> = status["commands"]
+                        .as_object()
+                        .map(|c| c.iter().filter(|(_, v)| v["present"] == false).map(|(k, _)| k.clone()).collect())
+                        .unwrap_or_default();
+                    let packages: Vec<&str> = status["recommended_packages"].as_array().map(|p| p.iter().filter_map(|x| x["id"].as_str()).collect()).unwrap_or_default();
+                    let advice = if packages.is_empty() { String::new() } else { format!("; extension package: {}", packages.join(", ")) };
+                    format!("partial (missing {}{advice})", missing.join(", "))
+                }
             }
         };
-        println!("{:<24} {state}", skill["name"].as_str().unwrap_or(""));
+        let off = skill["off"].as_str().map(|why| format!(" — OFF: {why}")).unwrap_or_default();
+        println!("{:<24} {state}{off}", skill["name"].as_str().unwrap_or(""));
     }
     Ok(0)
 }
 
 async fn cmd_skill(mut a: Args) -> R<i32> {
-    let sub = a.next("list | status | install | remove")?;
+    let sub = a.next("list | status | revise")?;
     let c = ctx(&a, None, false).await?;
     match sub.as_str() {
         "status" => return cmd_skill_status(&c, &a).await,
         "list" => {
-            let skills = c.agent.behaviors().skills(skill_kind(&a)?).await?;
+            let scope = match a.get("scope").as_deref() {
+                None => None,
+                Some("ui") => Some(true),
+                Some("work") => Some(false),
+                Some(s) => return Err(bad(format!("bad --scope {s} (ui | work)"))),
+            };
+            let skills: Vec<SkillMeta> = c
+                .agent
+                .behaviors()
+                .skills(skill_kind(&a)?)
+                .await?
+                .into_iter()
+                .filter(|s| a.has("all") || s.enabled)
+                .filter(|s| match scope {
+                    None => true,
+                    Some(ui) => s.kind == SkillKind::Work && if ui { s.scope.ui() } else { s.scope.work() },
+                })
+                .collect();
             if a.has("json") {
                 print(&skills);
                 return Ok(0);
             }
             if skills.is_empty() {
-                println!("no skills installed");
+                println!("no skills");
             }
             for s in &skills {
-                let mut line = format!("{}  [{}] {}", s.name, s.kind.as_str(), s.description);
-                if s.baseline != buckyos_api::RuntimeBaseline::Standard || !s.platforms.is_empty() {
-                    line.push_str(&format!(" — needs: {} environment", s.baseline.as_str()));
-                    if !s.platforms.is_empty() {
-                        line.push_str(&format!(" on {}", s.platforms.join(", ")));
-                    }
-                }
-                if !s.requires.is_empty() {
-                    line.push_str(&format!(" — requires: {}", s.requires));
-                }
-                if !s.tools.is_empty() {
-                    line.push_str(&format!(" — commands: {}", s.tools.join(", ")));
-                }
-                if let Some(i) = &s.install {
-                    line.push_str(&format!(" — from {} {}", i.package, i.version));
-                }
-                println!("{line}");
+                println!("{}", skill_line(s, a.has("stats")));
             }
             Ok(0)
         }
-        "install" => {
-            let path = PathBuf::from(a.next("<skill package: .pikg file or directory>")?);
-            let pkg = crate::skills::read_source(&path)?;
-            let r = c.agent.behaviors().install_skills(&pkg, a.has("replace"), &c.who).await?;
-            print(&r);
-            Ok(0)
-        }
-        "remove" => {
+        "revise" => {
             let name = a.next("<name>")?;
-            let kind = skill_kind(&a)?.unwrap_or(SkillKind::Cmd);
-            let m = c.agent.behaviors().remove_skill(kind, &name, &c.who).await?;
-            print(&json!({ "removed": m }));
+            let kind = skill_kind(&a)?.unwrap_or(SkillKind::Work);
+            let path = a.get("file").ok_or_else(|| bad("skill revise <name> --file <new SKILL.md> --reason <why>"))?;
+            let reason = a.get("reason").filter(|r| !r.trim().is_empty()).ok_or_else(|| bad("--reason says what the sessions that used the manual showed"))?;
+            let text = std::fs::read_to_string(&path).map_err(|e| bad(format!("{path}: {e}")))?;
+            let who = env_sid().map(|sid| format!("session:{sid}")).unwrap_or_else(|| c.who.clone());
+            let m = c.agent.behaviors().revise_skill(kind, &name, &text, &reason, &who).await?;
+            print(&json!({ "revised": m }));
             Ok(0)
         }
-        other => Err(bad(format!("unknown skill command `{other}` (list | install | remove)"))),
+        "install" | "remove" | "disable" | "enable" | "ui" | "ui-add" | "ui-remove" => Err(bad(format!(
+            "skill {sub} is the owner's: tell the user to open the agent's Skills page, or to run `buckyos skill {} … --agent <agent id>`",
+            if sub == "ui" { "ui-add" } else { sub.as_str() }
+        ))),
+        other => Err(bad(format!("unknown skill command `{other}` (list | status | revise)"))),
     }
+}
+
+/// One skill as `skill list` prints it.
+fn skill_line(s: &SkillMeta, stats: bool) -> String {
+    let kind = match (s.kind, s.scope) {
+        (SkillKind::Work, SkillScope::Ui) => "ui".to_string(),
+        (SkillKind::Work, SkillScope::UiWork) => "ui,work".to_string(),
+        (kind, _) => kind.as_str().to_string(),
+    };
+    let mut line = format!("{}  [{kind}] {}", s.name, s.description);
+    if s.baseline != buckyos_api::RuntimeBaseline::Standard || !s.platforms.is_empty() {
+        line.push_str(&format!(" — needs: {} environment", s.baseline.as_str()));
+        if !s.platforms.is_empty() {
+            line.push_str(&format!(" on {}", s.platforms.join(", ")));
+        }
+    }
+    if !s.requires.is_empty() {
+        line.push_str(&format!(" — requires: {}", s.requires));
+    }
+    if !s.tools.is_empty() {
+        line.push_str(&format!(" — commands: {}", s.tools.join(", ")));
+    }
+    if let Some(install) = s.install_state.as_ref().filter(|i| !i.runtimes.is_empty()) {
+        line.push_str(&format!(" — installed on: {}", install.ok_runtimes().join(", ")));
+    }
+    if !s.references.is_empty() {
+        line.push_str(&format!(" — references: {}/{}/{}/ ({})", s.kind.dir(), s.name, SKILL_REFERENCES, s.references.len()));
+    }
+    if s.kind != SkillKind::Work {
+        line.push_str(&format!(" — read: $OPENDAN_AGENT_ROOT/{}", s.kind.manual(&s.name)));
+    }
+    if let Some(i) = &s.install {
+        line.push_str(&format!(" — from {} {}", i.package, i.version));
+    }
+    line.push_str(&format!(" — {} bytes", s.size));
+    if let Some(why) = s.why_off() {
+        line.push_str(&format!(" — OFF: {why}"));
+    }
+    if stats {
+        match &s.usage {
+            Some(u) => line.push_str(&format!(" — frozen {} times, last {}", u.frozen, u.last_ms)),
+            None => line.push_str(" — never frozen"),
+        }
+    }
+    line
 }
 
 // ---------------------------------------------------------------------------
@@ -1677,23 +1727,7 @@ async fn check_todo_skills(c: &Ctx, names: &[String]) -> R<()> {
     if names.is_empty() {
         return Ok(());
     }
-    crate::state::check_cmd_skill_names(names)?;
-    let installed: Vec<String> = c
-        .agent
-        .behaviors()
-        .skills(Some(SkillKind::Cmd))
-        .await?
-        .into_iter()
-        .map(|m| m.name)
-        .collect();
-    for n in names {
-        if !installed.contains(n) {
-            return Err(bad(format!(
-                "--skill {n}: the agent has no such cmd_skill (installed: {}; see `agent-session skill list`)",
-                installed.join(", ")
-            )));
-        }
-    }
+    crate::state::check_named_skills(c.agent.behaviors(), names).await.map_err(|e| bad(format!("--skill: {e}")))?;
     Ok(())
 }
 
@@ -3042,12 +3076,6 @@ async fn remote_main(remote: crate::session_context::SessionClient, cmd: String,
         println!("{}", resp.text);
         return Ok(resp.exit_code());
     }
-    if cmd == "skill" && argv.first().map(String::as_str) == Some("install") {
-        return Err(bad(
-            "skill install reads the package where the command runs, and this runtime is not the agent's: \
-install it from a session on the agent's own runtime, or with `buckyos skill install`",
-        ));
-    }
     let (argv, stdin) = inline_files(argv)?;
     let mut full = vec![cmd];
     full.extend(argv);
@@ -3092,7 +3120,7 @@ async fn real_main() -> R<i32> {
     let extra: &[&str] = match (cmd.as_str(), argv.first().map(String::as_str)) {
         ("status", _) => &["run"],
         ("todo", _) => &["json", "clear-accept"],
-        ("skill", _) => &["json", "replace"],
+        ("skill", _) => &["json", "all", "stats"],
         ("runtime", Some("baseline")) => &["json", "check", "overlay"],
         ("runtime", Some("check")) => &["full"],
         ("workspace" | "runtime", Some("list")) | ("sessions", _) | ("recall", _) => &["json"],

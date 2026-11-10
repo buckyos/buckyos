@@ -16,9 +16,9 @@ commands: deno, node
 - A write is a Commit: `doc.commit { protocol_version: "1.1", workspace_id, epoch, idempotency_key, session_id, operations: [...] }` (`"1.0"` is still accepted, without Block-controls). `epoch` comes from `ws.get_info`; keep your `idempotency_key` — resending the same key never writes twice (`doc.get_submission` tells you what happened).
 
 #### Shortest path (a workspace with a table and a canvas)
-```bash
-# a Deno script using the websdk; run it with: deno run -A build.ts
-import { buckyos } from "buckyos"            # or the local dist/node.mjs
+```ts
+// a Deno script using the websdk; run it with: deno run -A build.ts
+import { buckyos } from "buckyos"            // or the local dist/node.mjs
 const aiws = buckyos.getAiWorkspaceClient()
 const ws = (await aiws.call("ws.create", { title: "季度经营" })).workspace_id
 const { epoch } = await aiws.info(ws)

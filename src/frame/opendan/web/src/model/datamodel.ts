@@ -13,6 +13,7 @@ import type {
   GoalStatus,
   MemoryQueryResult,
   IdentityText,
+  InstallPlan,
   KnownRuntime,
   RuntimeExtTools,
   KnownWorkspace,
@@ -22,7 +23,16 @@ import type {
   RuntimeSettingPatch,
   RuntimeSettings,
   SessionDetail,
+  SkillDraft,
+  SkillImportRequest,
+  SkillInstallState,
+  SkillKind,
+  SkillMeta,
+  SkillSource,
+  SkillsState,
+  SkillsStatus,
   UiBinding,
+  UiSkills,
   UsageByModel,
   WorkspaceCreateRequest,
   WorkspaceImportRequest,
@@ -95,6 +105,27 @@ export interface OpenDanDataModel {
   setGoalStatus(goalId: string, status: GoalStatus, reason?: string): Promise<GoalDefinition>
   reopenGoal(goalId: string, reason: string, freshState?: boolean): Promise<GoalDefinition>
   restartGoal(goalId: string, reason: string, carryState?: boolean): Promise<GoalDefinition>
+
+  skills(): Promise<SkillMeta[]>
+  skillsState(): Promise<SkillsState>
+  uiSkills(): Promise<UiSkills>
+  /** Probes the runtime (default: the private one): it can take seconds. */
+  skillsStatus(runtimeId?: string): Promise<SkillsStatus>
+  /** What installing would do; nothing is written. */
+  skillInstallPlan(source: SkillSource, runtimeId?: string): Promise<InstallPlan>
+  skillDrafts(): Promise<SkillDraft[]>
+  skillDraftFile(slug: string, file: string): Promise<{ text: string }>
+  // Owner only.
+  installSkills(source: SkillSource, planDigest: string, runtimeId?: string, replace?: boolean): Promise<unknown>
+  removeSkill(kind: SkillKind, name: string): Promise<unknown>
+  setSkillEnabled(kind: SkillKind, name: string, enabled: boolean, reason?: string): Promise<SkillMeta>
+  /** `null`: back to the agent package's set. */
+  setUiSkills(names: string[] | null): Promise<UiSkills>
+  installSkillCommands(name: string, runtimeId: string): Promise<SkillInstallState>
+  checkSkillCommands(name: string, runtimeId?: string): Promise<SkillInstallState>
+  /** The agent writes a draft from the text; it appears in `skillDrafts` when the session is done. */
+  importSkill(request: SkillImportRequest): Promise<{ session_id: string; inbox?: unknown }>
+  discardSkillDraft(slug: string): Promise<unknown>
 }
 
 export class OpenDanError extends Error {

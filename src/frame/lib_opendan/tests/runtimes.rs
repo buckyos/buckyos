@@ -533,3 +533,125 @@ async fn a_desktop_found_unavailable_is_probed_again() {
     assert_eq!(again.caps.desktop_error, Some(live));
     assert!(again.checked_at_ms.unwrap() > 1);
 }
+
+/// Skills system TODO S19 / S20: a skill that installs commands of its own is not taken by any session until one
+/// runtime has them; the installation runs its script there, checks what it must leave behind and records the outcome;
+/// a session elsewhere is told where the commands are, and a work that names no runtime goes to them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_skill_installs_its_commands_on_a_runtime_before_it_is_enabled() {
+    use libopendan::skills::{self, SkillFile, SkillPackage};
+    let env = Env::new();
+    let agent = env.agent();
+    let runtimes = agent.runtimes().ensure_builtin(&builtin(&env.root), APP).await.unwrap();
+    let root = env.agent_root.clone();
+    let package = |name: &str, command: &str, script: &str| SkillPackage {
+        package: format!("{name}-skills"),
+        version: "1.0.0".into(),
+        files: [
+            (format!("cmd_skills/{name}/SKILL.md"), SkillFile::of(format!("---\ndescription: {name}\ncommands: {command}\n---\nRun `{command}`.").as_bytes(), false)),
+            (
+                format!("tools/{name}/install.toml"),
+                SkillFile::of(
+                    b"[install.linux]\nscript = \"setup.sh\"\nwrites = [\"<agent_root>/tools\"]\n[install.macos]\nscript = \"setup.sh\"\nwrites = [\"<agent_root>/tools\"]\n",
+                    false,
+                ),
+            ),
+            (format!("tools/{name}/setup.sh"), SkillFile::of(script.as_bytes(), true)),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let good = package("tool", "skilltest-tool", "mkdir -p bin && printf '#!/bin/sh\\necho hi\\n' > bin/skilltest-tool && chmod +x bin/skilltest-tool\n");
+    let plan = skills::plan(&root, &good, &runtimes, None).unwrap();
+    assert_eq!(plan.runtime_id.as_deref(), Some("private"));
+    assert!(plan.blocked.is_empty(), "{:?}", plan.blocked);
+    assert_eq!(plan.risk.level, "high", "an install script is the owner's to read");
+    assert!(!plan.risk.findings.iter().any(|f| f.code == "volatile_writes"));
+    let on_host = skills::plan(&root, &good, &runtimes, Some("host")).unwrap();
+    assert!(!on_host.blocked.is_empty(), "a runtime that is not available or grants no installation takes no commands");
+
+    let report = skills::install(&root, &good, false, "did:bns:owner", None).unwrap();
+    assert_eq!(report.pending_commands, ["tool"]);
+    let parent = env.create_work(work_spec("parent")).await;
+    let ch = env.channels();
+    let sub = |key: &str, names: &[&str], runtime: Option<&str>| SubSessionSpec {
+        objective: "child".into(),
+        key: Some(key.into()),
+        cmd_skills: Some(names.iter().map(|n| n.to_string()).collect()),
+        runtime_id: runtime.map(str::to_string),
+        ..Default::default()
+    };
+    let err = create_sub_session(agent.as_ref(), APP, parent.sid(), sub("early", &["tool"], None), ch.as_ref()).await.unwrap_err();
+    assert!(err.to_string().contains("still being installed"), "{err}");
+
+    let state = skills::install_commands(agent.as_ref(), "tool", "private", "did:bns:owner").await.unwrap();
+    assert_eq!(state.status, SkillInstallStatus::Enabled, "{state:?}");
+    let private = &state.runtimes["private"];
+    assert_eq!((private.status, private.commands.clone(), private.volatile), (SkillRuntimeStatus::Ok, vec!["skilltest-tool".to_string()], false));
+    assert!(libopendan::runtime::runtime_op(agent.as_ref(), private.op_id.as_deref().unwrap()).unwrap().is_some(), "the script's output is kept");
+    assert_eq!(state.pinned_runtime.as_deref(), Some("private"));
+    assert!(agent.runtimes().lookup("private").await.unwrap().unwrap().usage.skill_commands.contains(&"skilltest-tool".to_string()));
+    let work = create_sub_session(agent.as_ref(), APP, parent.sid(), sub("now", &["tool"], None), ch.as_ref()).await.unwrap();
+    let cfg = work.config().unwrap();
+    assert_eq!(cfg.runtime.frozen.as_ref().unwrap().runtime_id, "private");
+    assert!(cfg.prompt.frozen.unwrap().cmd_skills[0].installed_on.is_empty());
+    assert_eq!(skills::check_commands(agent.as_ref(), "tool", None, "o").await.unwrap().runtimes["private"].status, SkillRuntimeStatus::Ok);
+
+    // A script that fails leaves the skill off, with the reason.
+    let bad = package("broken", "skilltest-broken", "echo no luck >&2\nexit 3\n");
+    skills::install(&root, &bad, false, "did:bns:owner", None).unwrap();
+    let state = skills::install_commands(agent.as_ref(), "broken", "private", "did:bns:owner").await.unwrap();
+    assert_eq!(state.status, SkillInstallStatus::Failed);
+    assert!(state.runtimes["private"].error.as_ref().unwrap().contains("exited with 3"), "{state:?}");
+    let broken = agent.behaviors().skills(Some(SkillKind::Work)).await.unwrap().into_iter().find(|s| s.name == "broken").unwrap();
+    assert!(broken.why_off().unwrap().contains("not installed on any runtime"), "{:?}", broken.why_off());
+    // One that runs but leaves no command behind is no better.
+    let empty = package("empty", "skilltest-empty", "true\n");
+    skills::install(&root, &empty, false, "did:bns:owner", None).unwrap();
+    let state = skills::install_commands(agent.as_ref(), "empty", "private", "did:bns:owner").await.unwrap();
+    assert!(state.runtimes["private"].error.as_ref().unwrap().contains("still has no skilltest-empty"), "{state:?}");
+
+    // Commands that are on another runtime only: a work there is where a work without `--runtime` goes; a work
+    // elsewhere takes the manual and is told where the commands are.
+    skills::update_state(&root, |s| {
+        let install = s.install.get_mut("work:tool").unwrap();
+        let entry = install.runtimes.remove("private").unwrap();
+        install.runtimes.insert("host".into(), entry);
+        install.pinned_runtime = Some("host".into());
+        Ok(())
+    })
+    .unwrap();
+    // (A child inherits its parent's runtime first: the skill's place only decides for a work nothing else decides for.)
+    let top = |names: &[&str]| {
+        let mut spec = work_spec("top");
+        spec.prompt.cmd_skills = names.iter().map(|n| n.to_string()).collect();
+        spec.require_cmd_skills = true;
+        spec.freeze = true;
+        spec
+    };
+    let err = libopendan::create_session(&env.app_dir, top(&["tool"]), agent.as_ref(), APP, ch.as_ref()).await.unwrap_err();
+    assert!(err.to_string().contains("runtime `host`"), "the work follows the skill's commands, and host is not available here: {err}");
+    let inherited = create_sub_session(agent.as_ref(), APP, parent.sid(), sub("inherits", &["tool"], None), ch.as_ref()).await.unwrap();
+    assert_eq!(inherited.config().unwrap().runtime.frozen.unwrap().runtime_id, "private");
+    let elsewhere = create_sub_session(agent.as_ref(), APP, parent.sid(), sub("elsewhere", &["tool"], Some("private")), ch.as_ref()).await.unwrap();
+    let frozen = elsewhere.config().unwrap().prompt.frozen.unwrap();
+    assert_eq!(frozen.cmd_skills[0].installed_on, ["host"]);
+    use libopendan::runner::SessionAssembler;
+    let system = libopendan::runner::DefaultAssembler::default().system_text(&elsewhere.config().unwrap(), None).await.unwrap();
+    assert!(system.contains("The commands `tool` installs are on `host` only; this session runs on `private`."), "{system}");
+
+    // Two manuals whose commands are on different runtimes: the creator names the runtime.
+    skills::update_state(&root, |s| {
+        let mut other = s.install["work:tool"].clone();
+        let entry = other.runtimes.remove("host").unwrap();
+        other.runtimes.insert("studio".into(), entry);
+        other.pinned_runtime = Some("studio".into());
+        other.status = SkillInstallStatus::Enabled;
+        s.install.insert("work:empty".into(), other);
+        Ok(())
+    })
+    .unwrap();
+    let err = libopendan::create_session(&env.app_dir, top(&["tool", "empty"]), agent.as_ref(), APP, ch.as_ref()).await.unwrap_err();
+    assert!(err.to_string().contains("different runtimes"), "{err}");
+}

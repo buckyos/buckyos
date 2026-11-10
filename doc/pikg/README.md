@@ -14,7 +14,7 @@
 | 应用配置声明 | [App 包配置](../sdk/app-package-config.md) | permissions、service_config_tips 的当前形状与消费边界 |
 | 系统构建集成 | [Module type/format](../CI/module_build_type_and_format.md) | builder/formatter、PIKG rootfs 落位 |
 | SDK/Tool 分发 | [WebSDK distribution](https://github.com/buckyos/buckyos-websdk/blob/main/doc/distribution.md) | npm 与系统入口、runtime、产物完整性和更新归属 |
-| Agent skill 生命周期 | [OpenDAN 开发指南](../sdk/OpenDAN_Agent_Dev_Guide.md) | cmd_skills/goal_skills、安装接口、Session 冻结 |
+| Agent skill 生命周期 | [OpenDAN 开发指南](../sdk/OpenDAN_Agent_Dev_Guide.md) | work / ui / plan / goal skill、owner 安装与草稿、Session 冻结 |
 | 扩展工具包（`app_type=ext_tools`） | [PIKG 格式 §5.1](format.md) | `ext-manifest.json`、按平台的子包键、payload 布局；期望状态与安装见 [扩展包 TODO](../../notepads/opendan-exttools-cross-platform-todo.md) |
 | AI Workspace 控件包（`app_type=aiws`） | [aiworkspace README “Extension controls”](../../src/frame/aiworkspace/README.md) | AIWS 清单、`component.json`、`ext.install` 本机库与引入；设计见 [扩展实现思路](../workspace/BuckyOS%20AI%20Workspace%20扩展实现思路.md) §6.9 |
 
@@ -23,8 +23,8 @@
 ## 2. 教程与样例
 
 - 开发普通 App：[快速入门](../sdk/app-dev-quickstart.md)，结合 [Installer 样例](../../test/app_installer_test/pikg_samples/README.md)。
-- 开发 Agent：[Agent 手册](../../src/apps/jarvis_agent/agent/cmd_skills/opendan_agent_dev.md) 与 [Jarvis](../../src/apps/jarvis_agent/README.md)。
-- 独立 skill 包：[最小样例](../../test/skills_pikg_sample/README.md)。
+- 开发 Agent：[Agent 手册](../../src/apps/jarvis_agent/agent/cmd_skills/opendan_agent_dev/SKILL.md) 与 [Jarvis](../../src/apps/jarvis_agent/README.md)。
+- 独立 skill 包：[skill 开发快速上手](../sdk/skill-dev-quickstart.md) 与 [最小样例](../../test/skills_pikg_sample/README.md)。
 - AI Workspace 控件包：`buckyos pikg init --kind aiws-controls` 生成带一个 declarative 控件的骨架；从 Workspace 导出用 `buckyos aiws ext-export --pikg`，Agent 手册见 `aiworkspace_template_dev.md` “控件开发”。
 - 扩展工具包：`buckyos pikg init --kind ext-tools` 生成本机平台的骨架，`pikg doctor --catalog <目录>` 校验；官方包样例 [ext-core](../../publish/exttool/ext-core)。
 - 运行安装测试：[Installer DV](../../test/app_installer_test/README.md)。带日期旧结果已移出当前步骤。
@@ -66,10 +66,10 @@
 ### 应用、Agent 手册与样例
 
 - [src/apps/jarvis_agent/README.md](../../src/apps/jarvis_agent/README.md)
-- [src/apps/jarvis_agent/agent/cmd_skills/buckyos_app_dev.md](../../src/apps/jarvis_agent/agent/cmd_skills/buckyos_app_dev.md)
-- [src/apps/jarvis_agent/agent/cmd_skills/buckyos_dev_release.md](../../src/apps/jarvis_agent/agent/cmd_skills/buckyos_dev_release.md)
-- [src/apps/jarvis_agent/agent/cmd_skills/opendan_agent_dev.md](../../src/apps/jarvis_agent/agent/cmd_skills/opendan_agent_dev.md)
-- [src/apps/jarvis_agent/agent/cmd_skills/ui_core.md](../../src/apps/jarvis_agent/agent/cmd_skills/ui_core.md)
+- [src/apps/jarvis_agent/agent/cmd_skills/buckyos_app_dev/SKILL.md](../../src/apps/jarvis_agent/agent/cmd_skills/buckyos_app_dev/SKILL.md)
+- [src/apps/jarvis_agent/agent/cmd_skills/buckyos_dev_release/SKILL.md](../../src/apps/jarvis_agent/agent/cmd_skills/buckyos_dev_release/SKILL.md)
+- [src/apps/jarvis_agent/agent/cmd_skills/opendan_agent_dev/SKILL.md](../../src/apps/jarvis_agent/agent/cmd_skills/opendan_agent_dev/SKILL.md)
+- [src/apps/jarvis_agent/agent/cmd_skills/ui_core/SKILL.md](../../src/apps/jarvis_agent/agent/cmd_skills/ui_core/SKILL.md)
 - [src/apps/sys_test/README.md](../../src/apps/sys_test/README.md)
 - [src/apps/text_editor/readme.md](../../src/apps/text_editor/readme.md)
 - [src/frame/opendan/README.md](../../src/frame/opendan/README.md)
@@ -78,7 +78,7 @@
 - [test/app_installer_test/pikg_samples/agent/agent/dist/prompts/self.md](../../test/app_installer_test/pikg_samples/agent/agent/dist/prompts/self.md)
 - [test/app_installer_test/pikg_samples/content-open-handler/README.md](../../test/app_installer_test/pikg_samples/content-open-handler/README.md)
 - [test/skills_pikg_sample/README.md](../../test/skills_pikg_sample/README.md)
-- [test/skills_pikg_sample/skills/cmd_skills/hello.md](../../test/skills_pikg_sample/skills/cmd_skills/hello.md)
+- [test/skills_pikg_sample/skills/cmd_skills/hello/SKILL.md](../../test/skills_pikg_sample/skills/cmd_skills/hello/SKILL.md)
 
 ### 产品、交互与讨论设计
 

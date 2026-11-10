@@ -90,7 +90,7 @@
       "type": "object"
     },
     "BaselineCheck": {
-      "description": "The last check of a runtime's standard tools ([`crate::baseline`]): only a hint, the declaration decides (Q5).",
+      "description": "The last check of a runtime's tools ([`crate::baseline`]) against what it declares: only a hint, the declaration decides (Q5).",
       "properties": {
         "checked_at_ms": {
           "format": "uint64",
@@ -104,9 +104,28 @@
             "null"
           ]
         },
+        "ext": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExtCheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "level": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RuntimeBaseline"
+            }
+          ],
+          "default": "standard",
+          "description": "The declaration checked against."
+        },
         "missing": {
           "default": [],
-          "description": "Standard commands not found on the runtime's PATH.",
+          "description": "Commands of that level not found on the runtime's PATH.",
           "items": {
             "type": "string"
           },
@@ -114,6 +133,22 @@
         },
         "ok": {
           "type": "boolean"
+        },
+        "resolved": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ResolvedCommand"
+          },
+          "default": {},
+          "description": "Where each command found is, standard and extended.",
+          "type": "object"
+        },
+        "unmanaged": {
+          "default": [],
+          "description": "Standard commands found outside `$BUCKYOS_ROOT`: not the standard ones.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -194,6 +229,14 @@
         "call_intent": {
           "description": "Every native function call carries a non-empty `intent` argument: why the call is made now and what it should yield.",
           "type": "boolean"
+        },
+        "cmd_skills": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CmdSkillsUse"
+            }
+          ],
+          "description": "What a session entered with this behavior does with the manuals named for it: `frozen` (default) takes them into its prompt; `candidates` (a plan) only sees their names, to choose from for its Todos."
         },
         "tool_whitelist": {
           "description": "Tools offered as native functions (`None`: the session's tools). An entry is a tool name or `group:<builtin group>`.",
@@ -520,8 +563,22 @@
       "type": "object"
     },
     "CmdSkill": {
-      "description": "`prompt.frozen.cmd_skills[]`: a command manual of the session, frozen with its behaviors (`cmd_skills/<name>.md` without its front matter).",
+      "description": "`prompt.frozen.cmd_skills[]`: a command manual of the session, frozen with its behaviors (`cmd_skills/<name>/SKILL.md` without its front matter).",
       "properties": {
+        "installed_on": {
+          "description": "The skill installs commands of its own and they are not on the session's runtime: where they are.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "missing_commands": {
+          "description": "Commands the manual relies on that the session's runtime was found without when the session froze.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "name": {
           "type": "string"
         },
@@ -534,6 +591,13 @@
         "text"
       ],
       "type": "object"
+    },
+    "CmdSkillsUse": {
+      "enum": [
+        "frozen",
+        "candidates"
+      ],
+      "type": "string"
     },
     "CompletionPolicy": {
       "enum": [
@@ -982,6 +1046,65 @@
         }
       ]
     },
+    "ExtCheck": {
+      "description": "The extended layer of a runtime, whatever it declares.",
+      "properties": {
+        "missing": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/definitions/ExtStatus"
+        },
+        "system": {
+          "default": [],
+          "description": "Extended commands that are there but not from an extension package.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "ExtStatus": {
+      "oneOf": [
+        {
+          "description": "Every extended tool, all from extension packages.",
+          "enum": [
+            "ok"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Some extended tools are missing.",
+          "enum": [
+            "partial"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "None of them is there.",
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Every extended tool, some from the machine or the Agent.",
+          "enum": [
+            "system"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "FrozenPrompt": {
       "description": "`prompt.frozen`: what the session took from the behavior catalog when it was constructed. Later catalog changes never reach the session; a behavior used for the first time afterwards is added once (`control_applied{behavior_frozen}` in the worklog).",
       "properties": {
@@ -1020,6 +1143,13 @@
             }
           ],
           "default": {}
+        },
+        "skill_candidates": {
+          "description": "A plan's candidates: manuals its creator suggests for the Todos. Shown in its first input, never frozen into its own prompt and never handed on.",
+          "items": {
+            "$ref": "#/definitions/SkillCandidate"
+          },
+          "type": "array"
         },
         "unavailable_cmd_skills": {
           "description": "cmd_skills named for the session that its session-runtime does not meet (baseline, platform): not frozen, reported with the reason.",
@@ -1356,7 +1486,7 @@
           "type": "string"
         },
         {
-          "description": "System-wide packages (ExtTools, package managers).",
+          "description": "A skill's `install.toml` may also write outside the Agent's own directory. Never `$BUCKYOS_ROOT/tools`: extension packages are installed by node_daemon.",
           "enum": [
             "system"
           ],
@@ -1400,6 +1530,30 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "NativeComputerConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "$ref": "#/definitions/ComputerAccess"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "node_did": {
+          "type": "string"
+        },
+        "profile_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "access",
+        "endpoint",
+        "node_did",
+        "profile_id"
+      ],
       "type": "object"
     },
     "ObserveScope": {
@@ -1590,7 +1744,7 @@
           ]
         },
         "cmd_skills": {
-          "description": "The cmd_skills of the session (`<agent_root>/cmd_skills/<name>.md`, at most [`super::behavior::MAX_CMD_SKILLS`]): chosen when the session is created (`agent.toml [session.<class>] default_cmd_skills`, `create-worksession --cmd-skill`), frozen with the behaviors (`frozen.cmd_skills`) and rendered as `## Commands`.",
+          "description": "The cmd_skills of the session (`<agent_root>/cmd_skills/<name>/SKILL.md`, at most [`super::behavior::MAX_CMD_SKILLS`]): chosen when the session is created (`agent.toml [session.<class>] default_cmd_skills`, `create-worksession --cmd-skill`), frozen with the behaviors (`frozen.cmd_skills`) and rendered as `## Commands`.",
           "items": {
             "type": "string"
           },
@@ -1714,6 +1868,46 @@
       },
       "type": "object"
     },
+    "ProvidedBy": {
+      "description": "Who provides a command found on a runtime.",
+      "oneOf": [
+        {
+          "description": "The standard layer: under `$BUCKYOS_ROOT`, outside `tools/`.",
+          "enum": [
+            "buckyos_root"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "An extension package: under `$BUCKYOS_ROOT/tools`.",
+          "enum": [
+            "exttools"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The Agent's own (`tools/<skill>/bin`).",
+          "enum": [
+            "agent"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Beside a development build of the program: serves as a standard helper, and views say so.",
+          "enum": [
+            "dev"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The machine's own PATH.",
+          "enum": [
+            "system"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ReportMode": {
       "description": "What a parent receives from a sub session without subscribing: the registry state stays the truth, these events only accelerate.",
       "oneOf": [
@@ -1739,6 +1933,32 @@
           "type": "string"
         }
       ]
+    },
+    "ResolvedCommand": {
+      "description": "Where a check found a command. `version` comes from a full check only.",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "provided_by": {
+          "$ref": "#/definitions/ProvidedBy"
+        },
+        "stub": {
+          "description": "A full check found it does not run (exit 126 / 127): it counts as missing.",
+          "type": "boolean"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "provided_by"
+      ],
+      "type": "object"
     },
     "RuntimeBaseline": {
       "description": "Declared environment baseline of an execution runtime: `standard` has the core Agent tools and BuckyOS access, `extended` adds build tool chains and heavy tools. Declared by whoever registers the runtime, never probed.",
@@ -1774,10 +1994,23 @@
             }
           ]
         },
+        "buckyos_root": {
+          "description": "`$BUCKYOS_ROOT` of that machine as its executor reports it; a machine without a managed install has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "desktop": {
           "default": false,
           "description": "A desktop session the executor can observe or control.",
           "type": "boolean"
+        },
+        "desktop_error": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "identity_mode": {
           "description": "`current_user` / `switch_user`: how a node executes.",
@@ -1813,6 +2046,22 @@
         {
           "description": "This process's own environment.",
           "properties": {
+            "aliases": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "computer": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/NativeComputerConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "enum": [
                 "native"
@@ -2311,6 +2560,21 @@
       ],
       "type": "object"
     },
+    "SkillCandidate": {
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "StopScope": {
       "description": "What a `stop` ends.",
       "enum": [
@@ -2492,6 +2756,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "resolved": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ResolvedCommand"
+          },
+          "default": {},
+          "description": "Where each command found is.",
+          "type": "object"
         }
       },
       "required": [

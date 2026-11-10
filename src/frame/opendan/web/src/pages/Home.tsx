@@ -24,6 +24,7 @@ import {
 } from '../model'
 import { ErrorBox } from '../ui'
 import { GoalList } from './Goals'
+import { SkillsCard } from './Skills'
 import { RuntimeList, WorkspaceList } from './Workspaces'
 
 const AVATAR_SIZE = 192
@@ -478,6 +479,7 @@ export default function HomePage() {
             <AgentCard profile={profile.data} />
             <Overview entries={sessions.data} />
             <GoalList />
+            <SkillsCard />
             <WorkspaceList entries={sessions.data} />
             <RuntimeList />
           </div>

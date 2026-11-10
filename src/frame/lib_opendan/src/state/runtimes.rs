@@ -431,6 +431,7 @@ impl RuntimeRegistry for FsRuntimes {
                 }
                 record.usage.last_used_at_ms = Some(now);
             }
+            RuntimeUsageEvent::SkillCommandRemoved { name } => record.usage.skill_commands.retain(|c| c != name),
         }
         self.write(&record)
     }

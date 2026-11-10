@@ -906,3 +906,184 @@ export interface GoalSchedule {
   gate?: MaintenanceGate
   updated_at_ms?: number
 }
+
+/** Skills (`libopendan::skills`, `protocol::SkillMeta`). */
+export type SkillKind = 'work' | 'plan' | 'goal'
+export type SkillOrigin = 'package' | 'installed' | 'imported' | 'local'
+
+export interface SkillDisabled {
+  at_ms: number
+  by: string
+  reason?: string
+}
+
+/** How often sessions were created with a manual. */
+export interface SkillUsage {
+  frozen: number
+  last_ms: number
+  recent_sessions?: string[]
+}
+
+/** The commands of a skill on one runtime. */
+export interface SkillRuntimeInstall {
+  status: 'ok' | 'failed' | 'stale'
+  at_ms?: number
+  commands?: string[]
+  error?: string | null
+  op_id?: string | null
+  volatile?: boolean
+}
+
+export interface SkillInstallState {
+  status: 'installing' | 'enabled' | 'failed' | 'disabled'
+  risk?: { level: string; accepted_by: string; accepted_at_ms: number; plan_digest: string } | null
+  runtimes?: Record<string, SkillRuntimeInstall>
+  pinned_runtime?: string | null
+  error?: string | null
+}
+
+export interface SkillInstallRecord {
+  package: string
+  version: string
+  digest: string
+  pikg_digest?: string | null
+  installed_at_ms: number
+  installed_by: string
+  imported_from?: unknown
+}
+
+export interface SkillMeta {
+  kind: SkillKind
+  name: string
+  /** `ui` | `ui,work`; absent: work. */
+  scope?: string
+  description: string
+  requires?: string
+  origin: SkillOrigin
+  install?: SkillInstallRecord | null
+  tools?: string[]
+  baseline?: RuntimeBaseline
+  platforms?: string[]
+  commands?: string[]
+  /** Bytes of the manual's body. */
+  size: number
+  references?: string[]
+  enabled: boolean
+  disabled?: SkillDisabled | null
+  usage?: SkillUsage | null
+  install_state?: SkillInstallState | null
+}
+
+export interface SkillAudit {
+  at_ms: number
+  by: string
+  action: string
+  skill?: string
+  note?: string
+}
+
+/** `.meta/skills_state.json`. */
+export interface SkillsState {
+  disabled?: Record<string, SkillDisabled>
+  ui_cmd_skills?: string[] | null
+  /** By `<kind>:<name>`; `none`: work created without any manual. */
+  usage?: Record<string, SkillUsage>
+  install?: Record<string, SkillInstallState>
+  audit?: SkillAudit[]
+}
+
+/** The manuals every new conversation takes. */
+export interface UiSkills {
+  names: string[]
+  source: 'state' | 'template'
+  total_bytes: number
+  available?: string[]
+}
+
+export interface SkillCommandsStatus {
+  /** `ready_system`: complete, some from the owner's own installation. */
+  state: 'ready' | 'ready_system' | 'partial'
+  commands: Record<string, { present: boolean; provided_by?: string | null }>
+  recommended_packages?: { id: string; version: string; requires_chain?: string[]; provides: string[] }[]
+  no_package?: string[]
+}
+
+/** One work skill on one runtime (`skills.status`). */
+export interface SkillRuntimeStatus {
+  name: string
+  scope?: string
+  enabled?: boolean
+  requires?: string
+  /** Why a session on this runtime does not take it. */
+  unmet?: string | null
+  commands: SkillCommandsStatus
+  install?: SkillRuntimeInstall | null
+}
+
+export interface SkillsStatus {
+  runtime_id: string
+  skills: SkillRuntimeStatus[]
+}
+
+export interface SkillPackage {
+  package: string
+  version: string
+  pikg_digest?: string
+  files: Record<string, { content: string; executable: boolean }>
+}
+
+/** What `skills.install_plan` / `skills.install` take: a package, or a draft on the AgentRoot. */
+export type SkillSource = { package: SkillPackage } | { draft: string }
+
+export interface SkillFinding {
+  code: string
+  level: 'error' | 'block' | 'high' | 'medium' | 'low'
+  where: string
+  note: string
+}
+
+export interface PlannedSkill extends SkillMeta {
+  /** Origin of the skill of the same name it would replace. */
+  replaces?: string | null
+  check_commands?: string[]
+  install_scripts?: string[]
+}
+
+export interface InstallTarget {
+  runtime_id: string
+  os: string
+  install: InstallGrant
+  private: boolean
+  refused?: string | null
+}
+
+export interface InstallPlan {
+  package: string
+  version: string
+  digest: string
+  plan_digest: string
+  skills: PlannedSkill[]
+  risk: { level: 'low' | 'medium' | 'high'; findings: SkillFinding[] }
+  /** Where the commands go (absent: the package installs none). */
+  runtime_id?: string | null
+  targets?: InstallTarget[]
+  blocked?: string[]
+  command_status?: { name: string; commands: string[]; status: SkillCommandsStatus }[]
+}
+
+export interface SkillDraft {
+  slug: string
+  /** `draft.json`: `imported_from`, how the text was split, what was verified, the risk text. */
+  draft: unknown
+  skills: SkillMeta[]
+  files: string[]
+  updated_at_ms: number
+  error?: string | null
+}
+
+export interface SkillImportRequest {
+  text: string
+  name?: string
+  scope?: string
+  source?: string
+}

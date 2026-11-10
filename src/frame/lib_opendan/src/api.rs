@@ -169,6 +169,38 @@ pub const RUNTIME_RECHECK_MS: u64 = 5_000;
 /// part: it keeps its own runtime and directory. The choice is frozen into
 /// `runtime.frozen` before anything else happens; a registered runtime that
 /// is not usable now is refused, never replaced.
+/// Where the commands the named manuals installed themselves are, when that is not the private runtime: the one
+/// runtime a skill has them on, or its pinned one when several do. Skills pointing at different runtimes are refused:
+/// the creator names the runtime.
+async fn skill_runtime(agent: &dyn AgentStateClient, names: &[String]) -> Result<Option<String>> {
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let skills = agent.behaviors().skills(Some(SkillKind::Work)).await?;
+    let mut places: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for skill in skills.iter().filter(|s| names.contains(&s.name)) {
+        let Some(install) = &skill.install_state else { continue };
+        let ok = install.ok_runtimes();
+        let place = match ok.as_slice() {
+            [] => continue,
+            [one] => one.to_string(),
+            _ => match install.pinned_runtime.as_deref().filter(|p| ok.contains(p)) {
+                Some(pinned) => pinned.to_string(),
+                None => continue,
+            },
+        };
+        places.entry(place).or_default().push(skill.name.clone());
+    }
+    match places.len() {
+        0 => Ok(None),
+        1 => Ok(places.into_keys().next().filter(|id| id != PRIVATE_RUNTIME)),
+        _ => Err(OpenDanError::Bind(format!(
+            "the manuals have their commands on different runtimes ({}): name the runtime of this work, or give it manuals of one runtime",
+            places.iter().map(|(id, names)| format!("{} on `{id}`", names.join(", "))).collect::<Vec<_>>().join("; ")
+        ))),
+    }
+}
+
 pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec) -> Result<()> {
     let explicit = spec
         .runtime
@@ -187,6 +219,10 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
     let (runtime_id, selected_by) = match (explicit, inherited) {
         (Some(e), _) => (e, RuntimeSelection::Explicit),
         (None, Some(i)) if !chat => (i, RuntimeSelection::Inherited),
+        (None, None) if !chat => match skill_runtime(agent, &spec.prompt.cmd_skills).await? {
+            Some(id) => (id, RuntimeSelection::Skill),
+            None => (PRIVATE_RUNTIME.to_string(), RuntimeSelection::Private),
+        },
         _ => (PRIVATE_RUNTIME.to_string(), RuntimeSelection::Private),
     };
     let frozen = match crate::runtime::lookup_rechecked(agent, &runtime_id).await? {
@@ -313,6 +349,9 @@ pub async fn create_session(
         });
     }
     let agent_did = agent.agent_did().to_string();
+    if spec.require_cmd_skills {
+        crate::state::check_named_skills(agent.behaviors(), &spec.prompt.cmd_skills).await?;
+    }
     freeze_runtime(agent, &mut spec).await?;
     // The entry behavior may only read the workspace (a plan): its binding
     // is narrowed, the grant it hands on to its sub sessions is not.
@@ -494,6 +533,16 @@ pub async fn create_session(
     let readme = render_readme(&config);
     // ACL: no file-level ACL exists yet (§1.5); `acl` is recorded only.
     let (sd, publish) = SessionDir::publish_new(parent_dir, &config, created, &readme)?;
+    // The host counts what work was created with (`skills_state.json` `usage`): the manuals it froze, or none. A plan
+    // only chooses for its Todos and is not counted.
+    if publish != Publish::AlreadyExists && spec.kind == SessionKind::Work {
+        if let Some(frozen) = config.prompt.frozen.as_ref().filter(|_| !config.prompt.entry_takes_candidates()) {
+            let names: Vec<String> = frozen.cmd_skills.iter().map(|c| c.name.clone()).collect();
+            if let Err(e) = agent.behaviors().note_skills_frozen(&names, &sid).await {
+                log::warn!("session {sid}: skill usage not counted: {e}");
+            }
+        }
+    }
     let existing = sd.config()?;
     if publish == Publish::AlreadyExists
         && !((spec.idempotency_key.is_some() || spec.kind == SessionKind::Ui)
@@ -659,7 +708,8 @@ pub struct SubSessionSpec {
     pub behavior: Option<String>,
     /// The sub session's cmd_skills, chosen now (at most
     /// [`MAX_CMD_SKILLS`]). `None`: a Work parent's frozen choice (the
-    /// manuals still installed), else the template's default.
+    /// manuals still installed and on; a plan freezes none, so its Todos
+    /// take only what it names), else the template's default.
     #[serde(default)]
     pub cmd_skills: Option<Vec<String>>,
     #[serde(default)]
@@ -1026,9 +1076,10 @@ pub async fn create_sub_session(
             };
             let installed: Vec<String> = agent
                 .behaviors()
-                .skills(Some(SkillKind::Cmd))
+                .skills(Some(SkillKind::Work))
                 .await?
                 .into_iter()
+                .filter(|m| m.enabled && m.scope.work())
                 .map(|m| m.name)
                 .collect();
             chosen.into_iter().filter(|n| installed.contains(n)).collect()

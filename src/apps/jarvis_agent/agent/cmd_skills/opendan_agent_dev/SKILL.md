@@ -1,6 +1,6 @@
 ---
 name: opendan_agent_dev
-description: Develop OpenDAN Agents — AgentRootFS layout, agent.toml, behaviors, cmd_skills and TypeScript CLI tools on the buckyos SDK, sessions and report artifacts, debugging, packaging an Agent template PIKG, registering it and creating an Agent from it, and extending agents with skill packages.
+description: Develop OpenDAN Agents — AgentRootFS layout, agent.toml, behaviors, work and plan skills and TypeScript CLI tools on the buckyos SDK, sessions and report artifacts, debugging, packaging an Agent template PIKG, registering it and creating an Agent from it, and where skill packages and skill drafts fit.
 requires: an OpenDAN session (agent-session on PATH) and the buckyos command; registering templates and creating Agents is done by the owner (Control Panel/Desktop or host CLI); host debugging needs the BuckyOS repo
 baseline: standard
 commands: deno, node
@@ -44,7 +44,7 @@ operation_call_id and original store_id; do not replay commands. A different sto
 the previous machine's ledger. See `doc/arch/agent_daemon.md`.
 
 #### When to use
-Making a new Agent template or changing one (identity text, behaviors, session classes), writing a cmd_skill with its commands, packaging/installing skill packages, or explaining how Agents, templates and Apps relate. Packaging, test installs, waiting for tasks and publish limits are shared with Apps and live in `buckyos_dev_release`; when it is not in this session, read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_dev_release.md`. Ordinary Apps are `buckyos_app_dev`.
+Making a new Agent template or changing one (identity text, behaviors, session classes), writing a work skill with its commands, packaging skill packages, or explaining how Agents, templates and Apps relate. Packaging, test installs, waiting for tasks and publish limits are shared with Apps and live in `buckyos_dev_release`; when it is not in this session, read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_dev_release/SKILL.md`. Ordinary Apps are `buckyos_app_dev`.
 
 #### The pieces
 - Template = a PIKG with `categories:["agent"]` (`app_type agent`), sub package `agent` (the AgentRootFS files) and optionally `agent_skills`; it needs a `www` http endpoint (Jarvis: inner_port 4060). Jarvis is the built-in one (`bundled:jarvis.buckyos.bns.did`); your own package working copy is readable at `/opt/buckyos/bin/<agent_id>/`.
@@ -55,11 +55,11 @@ Making a new Agent template or changing one (identity text, behaviors, session c
 #### Before you start
 ```
 ls $OPENDAN_AGENT_ROOT; cat $OPENDAN_AGENT_ROOT/agent.toml
-agent-session skill list            # installed cmd/goal skills: name, description, requires, origin
+agent-session skill list            # work / ui / plan / goal skills: name, description, what each needs, origin (--kind work|plan|goal, --scope ui|work)
 ```
 
 #### AgentRootFS and agent.toml
-Files: `agent.toml`, `role.md` + `self.md` (identity text), `behaviors/<name>.toml` (`__INCLUDE(rel/path)__` for shared `.inc`), `cmd_skills/<name>.md`, `goal_skills/`, `tools/`, `i18n/<lang>.toml` (`[outbound]` texts). The fastest start is a copy of the Jarvis package, trimmed. Shape of `agent.toml` (sections are strict, unknown keys fail):
+Files: `agent.toml`, `role.md` + `self.md` (identity text), `behaviors/<name>.toml` (`__INCLUDE(rel/path)__` for shared `.inc`), `cmd_skills/<name>/SKILL.md`, `plan_skills/<name>/SKILL.md`, `goal_skills/<name>/SKILL.md`, `tools/<name>/bin`, `i18n/<lang>.toml` (`[outbound]` texts). The fastest start is a copy of the Jarvis package, trimmed. Shape of `agent.toml` (sections are strict, unknown keys fail):
 ```toml
 [runtime]
 language = "en"
@@ -78,7 +78,7 @@ sid_strategy = "per_peer"
 enabled = false
 [session.ui]
 default_behavior = "chat_route"
-default_cmd_skills = ["ui_core"]   # ≤ 8, files in cmd_skills/
+default_cmd_skills = ["ui_core"]   # ≤ 8, cmd_skills/<name>/SKILL.md with scope ui; the owner's set (`buckyos skill ui-add`) replaces it
 [session.work]
 default_behavior = "plan"          # Work manuals come from create-worksession --cmd-skill
 completion = "explicit_report"     # only report(is_end=true) finishes a work session
@@ -99,7 +99,9 @@ Run limits in `[llm_context]` (or a session's `llm_context`): `timeout` (seconds
 `behaviors/<name>.toml`: `[meta] name` (= file name), `objective`, `next`; `[prompt] mode = "function_call"|"behavior"`, `system`, `on_init`…; `[capabilities] tool_whitelist` / `action_whitelist` (`group:bash`, `group:bash_core`, `report`, `behavior:<name>`); `[capabilities] call_intent = true` (function_call only: every native call must carry a non-empty `intent` argument — added as required to each function's schema, checked before the call runs, kept in the worklog, removed before the tool gets the arguments); `{{ background_context }}` in an input template (`on_init` / `on_input` / `on_context_switch`) places the background: what changed since it was last shown — semi-subscription state, the new output of the tasks the session follows (only what is new, at most 2 KB per task), the Memory clues of a UI or Work session's batch (`hint: …`, `noted, not yet consolidated: …`, revisions; a clue counts as shown only when the input contains its line, otherwise it comes again; `{{ hints }}` lists the same lines) — as a `<<background_context>>` block; semi-subscription is never a message of its own, so a template that does not place it leaves the session blind to it (the built-in templates place it); `[capabilities] workspace = "read_only"` (a session entered with the behavior only reads its workspace); standard tools (`read`, `read_file`, `write_file`, `edit_file`, `shell`) take an optional `intent` without `call_intent`, shown as the Turn's progress (the Turn task's message and, while the Turn is open, the session's `one_line_status`; a call without one shows `running <tool>`); `[budget]`: `max_tool_iterations` counts tool batches and is runaway protection, not a work quota — a multi-Turn Work refills it every Turn; with a fifth left the model gets one `<<budget>>` line (never a worklog entry); used up, an explicit-report function call run keeps only `report` (and `ask_user` where it is a function; `wrap_up_tools = [...]` sets the list) for at most 2 batches, any other tool then fails the run (`budget_exhausted`); `max_wallclock_ms` / `max_total_tokens` override the wallclock / token cap of the whole run and are normally left out; `[model] preferred` (`llm.chat`, `llm.plan`, `llm.code`, `llm.swift`); `[entry] mode`; `[tool]` to expose a behavior as a tool; `[reply] schema`. Copy `work_simple.toml` (one bounded task; its `on_input` template shows how to word a task's end, a Todo update, a tick and the nudge) or `plan_simple.toml` (TodoList plan; its `on_input` words a work session's end, a forwarded user message and a tick). Try a change with a throw-away Work: `agent-session create-worksession --title "<t>" --objective "<t>" --behavior <name>` (its end comes back as your input; `agent-session read-session <sid> --worklog 50` shows it running); a parse or reference error comes back at creation.
 
 #### cmd_skills and their commands
-- `cmd_skills/<name>.md`: front matter `name`/`description`/`requires`/`commands` (one line each; `commands: ffmpeg, jq` names what the manual relies on, so `buckyos skill status` can say what is missing and which extension package brings it, and it never blocks anything), body with `####` headings; the whole body goes into the system prompt of sessions that chose it, frozen for their life. A Work picks ≤ 8 at creation: `agent-session create-worksession --title "<t>" --objective "<t>" --cmd-skill <name> [--cmd-skill …]`; a child Work inherits its parent Work's choice.
+- Work skill = `cmd_skills/<name>/SKILL.md` (+ optional `references/*.md`, read on demand with `read $OPENDAN_AGENT_ROOT/cmd_skills/<name>/references/<file>`): front matter `name`/`description`/`requires`/`commands`/`scope`/`baseline`/`platforms`, one line each. `commands: ffmpeg, jq` names what the manual relies on beyond the standard layer, so `agent-session skill status` / `buckyos skill status` can say what is missing and which extension package brings it; it never blocks anything. `scope: work` (default) is for work sessions, `scope: ui` for conversations only, `scope: ui, work` for both; a ui skill (`ui_core`) is a work skill with that scope. Body with `####` headings; the whole body goes into the system prompt of sessions that chose it, frozen for their life. A Work picks ≤ 8 at creation: `agent-session create-worksession --title "<t>" --objective "<t>" --cmd-skill <name> [--cmd-skill …]`; a child of a `work_simple` / `explore` Work inherits its choice, a plan's Todo gets only what `todo add --skill` names. A single `.md` file directly under `cmd_skills/` is not a skill.
+- Plan skill = `plan_skills/<name>/SKILL.md`: a method for splitting, ordering and accepting one kind of objective, read by `plan_simple` in its first Turn. Front matter `name`/`description` only (no `scope`, no `commands`); no concrete commands and no named work skills in the body. Never given with `--cmd-skill`.
+- A behavior with `[capabilities] cmd_skills = "candidates"` (`plan_simple`) freezes no manual: the names its creator gave with `--cmd-skill` appear in its first input as `<skill_candidates>`.
 - Commands of a skill: executables in `tools/<name>/bin/`, on PATH for sessions that chose `<name>`; `$OPENDAN_AGENT_ROOT/tools/` itself is on PATH for every session.
 - TS + SDK is the preferred way to reach BuckyOS: the model is `/opt/buckyos/bin/opendan/buckyos-agent/` (`commands/gen_image.ts` = annotated 6-step recipe: argv → typed request → `initRuntime()` login → call → fetch results → one `AgentToolResult` JSON; helpers in `lib/`). A small skill command:
 ```sh
@@ -142,15 +144,9 @@ There is no `pikg init --kind agent`. Leave `.meta/`, `state/`, `sessions/`, `me
 - Check: wait for `agent.create.status` to report `ready`, then verify the new Agent answers its first message in Message Center. Readiness includes msg-center contact synchronization even without Telegram; `msg_center_reload_failed` at `start` is retryable with `agent.create.retry` after restoring msg-center. `agent.get` shows `template installed:<app_id>`, `loaded_version` and the selected `permission_mode`, its AgentRoot has a fresh `.meta/identity.json`. Verify read-only user data and writable AgentRoot in the deployed container; host debugging uses host process permissions.
 
 #### Extend with skill packages
-```
-mkdir -p skills/cmd_skills skills/tools/<name>/bin        # skills/cmd_skills/<name>.md, skills/tools/<name>/bin/<cmd>
-buckyos --non-interactive pikg init . --name <pkg> --owner did:bns:<owner> --kind agent-skills --source ./skills
-buckyos pikg build ./dapp_meta && buckyos pikg pack ./dapp_dist
-agent-session skill install ./dapp_dist/<pkg>-<ver>.pikg     # or a skills/ dir; --replace for name clashes
-buckyos skill install <pikg> --agent <agent_id>               # same from outside (owner), also list|remove
-agent-session skill remove <name> [--kind cmd|goal]
-```
-Installed files go to `cmd_skills/`, `goal_skills/`, `tools/<name>/` and `.meta/skills.json` (package, version, digest); a `tools/<name>` without a matching manual is refused. Sessions created afterwards see the change; running ones keep their frozen text. A template can also ship skills as its own `agent_skills` sub package; ship commands inside a skill package.
+Only the owner installs, removes, disables and enables skills, and edits the set conversations get: on the agent's Skills page (OpenDAN WebUI) or with `buckyos skill install|remove|disable|enable|ui-add|ui-remove … --agent <agent_id>`. An Agent has `agent-session skill list|status|revise` and no install command; when a user asks for a skill, tell them the page or the command. What an Agent can produce is a draft under `$OPENDAN_AGENT_ROOT/skills_drafts/<slug>/` (behavior `skill_import`, manual `skill_authoring`), which the owner reads and installs.
+
+Writing a skill, trying it from a directory, lint rules, `tools/<name>/install.toml`, packaging (`buckyos pikg init --kind agent-skills`) and publishing: read `doc/sdk/skill-dev-quickstart.md` in the BuckyOS repo (https://github.com/buckyos/buckyos/blob/main/doc/sdk/skill-dev-quickstart.md); the format reference inside an Agent is the `skill_authoring` manual. A template can also ship skills as its own `agent_skills` sub package.
 
 #### Debug
 - Inside: `agent-session sessions --children --active`, `read-session`, your logs under `/opt/buckyos/logs/`.

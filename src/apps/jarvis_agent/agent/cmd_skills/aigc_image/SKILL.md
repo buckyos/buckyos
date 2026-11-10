@@ -3,7 +3,7 @@ name: aigc_image
 description: Generate and edit images through the zone's AI models — text to image, edit or restyle from a reference image, masked inpaint, upscale, background removal — check the files and hand them over.
 requires: the buckyos-agent commands on PATH (gen_image, edit_image, …: aios agent container, or a node's agent-tools) and an AICC provider that serves the image method; results are kept in the Agent's `artifacts` bucket, which only read_write Agents may write
 baseline: standard
-commands: magick, identify, convert
+commands: magick, identify, convert, deno
 ---
 #### When to use
 - Make a new picture from a description (`gen_image`), change an existing one (`edit_image`), repaint a marked region (`inpaint_image`), enlarge it (`upscale_image`), cut out the subject (`remove_bg`).

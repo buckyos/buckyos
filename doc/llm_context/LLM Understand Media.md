@@ -89,7 +89,7 @@
 
 ### 2.1 Agent 可见面
 
-实际入口是 Session helper 命令，Agent 经 `shell` 调用（手册见 [ui_core.md](src/apps/jarvis_agent/agent/cmd_skills/ui_core.md)）：
+实际入口是 Session helper 命令，Agent 经 `shell` 调用（手册见 [ui_core.md](src/apps/jarvis_agent/agent/cmd_skills/ui_core/SKILL.md)）：
 
 ```text
 llm_understand_media <file | object id | url> [--goal <text>] [options]

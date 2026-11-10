@@ -60,20 +60,35 @@ MCP 和进程内 host tool 也遵循同一方向：优先由 CLI 客户端或宿
 |---|---|---|
 | 人也会用的系统、App、发布、Agent 管理命令 | websdk `cli/modules/*.ts`（`buckyos` 命令，唯一源码真相源） | `/opt/buckyos/libexec/buckyos-tool/cli/`（宿主同版本只读挂载），SDK 类型 `dist/node.d.ts` |
 | Agent 专用的配方类工具（AIGC、媒体合成等） | `src/tools/buckyos-agent`（每个命令是 6 步配方，`commands/gen_image.ts` 是范本） | 容器：`/opt/buckyos/bin/opendan/buckyos-agent/`，`deno.json` 的 `buckyos` 指向挂载的 SDK；宿主节点：`$BUCKYOS_ROOT/libexec/buckyos-agent/`，由 `bin/agent-tools/` 下的 `opendan` 入口用 Tool 自带的 Deno 运行 |
-| 某个 cmd_skill 自带的命令 | skill 包的 `tools/<skill>/bin` | `$OPENDAN_AGENT_ROOT/tools/<skill>/bin`，只在选了该 cmd_skill 的 Session PATH 上 |
+| 某个 work skill 自带的命令 | skill 包的 `tools/<skill>/bin`（要装到 runtime 上的外部命令由 `tools/<skill>/install.toml` 描述） | `$OPENDAN_AGENT_ROOT/tools/<skill>/bin`，只在选了该手册的 Session PATH 上 |
 
 xllm 等 runtime 层能力保留 Rust 实现。Agent 派生的脚本写到 `$OPENDAN_AGENT_ROOT/tools/`（在 PATH 上、长期保留）或当前 Session 目录（一次性），TS 脚本用 `deno run --config <安装态 deno.json>` 复用 SDK 映射，不改只读安装副本。命令能被发现不代表当前身份有权限或 provider 支持；手册要说明真实的拒绝 / 不支持结果。
 
-### 2.4 cmd_skills：随 Session 冻结的命令手册
+### 2.4 skills：work / ui / plan / goal
 
-cmd_skill 是一类事的命令手册（`cmd_skills/<name>.md`，front matter 写 `name` / `description` / `requires` / `baseline` / `platforms` / `commands`）加可选的命令（`tools/<name>/bin`）。它是捷径不是规定：手册写“可以这样做、这样做更快更稳”，Agent 有更合适的做法时可以不用。`commands: ffmpeg, ffprobe` 只写手册依赖的命令名：系统据此告诉 owner 缺什么、启用哪个扩展包能补上（`buckyos skill status`），缺命令永远不阻止安装或使用，用户自己装的同名命令同样算有。
+skill 分四类，都是 `<目录>/<name>/SKILL.md` 加可选的 `references/`（按需 `read`，不进系统提示）。直接放在 `cmd_skills/` 下的单个 `.md` 文件不是 skill。
 
-- 适用环境：`baseline: standard | extended`（缺省 standard）说明手册在哪种 session-runtime 上有效——standard 只用标准环境的命令（清单见 `xagent runtime baseline`：`agent-session`、`llm_understand_media`、`agent_tool xllm`、`xagent`、`buckyos`、`aicc-tool` 及其媒体命令），用到 ffmpeg、ImageMagick 等扩展工具（`xagent runtime baseline --level extended`）的写 `extended`，构建工具链等清单外的依赖也写 `extended` 并在正文说明；`platforms: linux, macos, windows`（逗号分隔，缺省全部）。`requires` 仍是给人读的说明，具体工具名写在正文，由 Agent 运行时自查。这两个字段不是这几个固定词时安装被拒。
-- 生效：Session 创建冻结 cmd_skills 时按其 session-runtime 声明的基线与平台过滤（Workspace 的 runtime 不参与）；不满足的手册不注入，在 `## Commands` 末尾列出原因。Work / Todo 显式点名的手册不满足时直接拒绝创建（Todo 留在 pending 并记下原因）；继承来的在子 Session 的 runtime 上重新解析。容器声明为 extended，节点 runtime 由 owner 在 Agent 设置里声明（缺省 standard）。
+| 类别 | 位置 | 读者 | 怎么用上 |
+|---|---|---|---|
+| work skill | `cmd_skills/<name>/SKILL.md`，`scope: work`（缺省） | Work Session（`work_simple` / `explore`） | 创建者点名（`create-worksession --cmd-skill`、Todo 的 `--skill`），正文整篇冻结进 `## Commands` |
+| ui skill | `cmd_skills/<name>/SKILL.md`，`scope: ui` 或 `ui, work` | UI / 群聊 Session | owner 定的 UI 集合（缺省 `agent.toml [session.<class>] default_cmd_skills`），Session 创建时冻结 |
+| plan skill | `plan_skills/<name>/SKILL.md` | `plan_simple` | plan 在首轮分析时 `skill list --kind plan` 后按需 `read`，最多 2 份；不进系统提示，不能被 `--cmd-skill` 点名 |
+| goal skill | `goal_skills/<name>/SKILL.md` | Goal Session | Goal 自己登记的方法引用 |
 
-- 选择：Work 在创建时选定，最多 8 个（`agent-session create-worksession --cmd-skill <name>`，可重复），由意图分析、Goal、plan session（Todo 的 `--skill`）从 `agent-session skill list` 中挑选；未指定时子 Work 继承父 Work 的选择，UI 的 `ui_core` 与 Goal 的 goal_skills 不会自动注入 Work。UI Session 用 `agent.toml [session.<class>] default_cmd_skills`。
-- 装配：选中的手册按顺序整篇进入系统段末尾的 `## Commands`，随 Session 冻结；运行中不切换、不追加，安装 / 更新 / 删除只影响之后创建的 Session。
-- 安装：skill 包是 `app_type = agent_skills` 的 PIKG（`buckyos pikg init --kind agent-skills`），`agent_skills` 子包内分 `cmd_skills/`、`goal_skills/`、`tools/`。用户用 `buckyos skill install <x.pikg> --agent <agent_id>`（opendan kRPC `skills.install`），Agent 用 `agent-session skill install <x.pikg | dir>`；安装记录在 `.meta/skills.json`，Agent 模板升级不覆盖、不删除已安装的 skill。Agent 模板也可以在自己的 PIKG 里带 `agent_skills` 子包，随模板同步。
+对外的 kind 是 `work | plan | goal`（`skill list --kind`、kRPC、`skills_state.json` 的 key 前缀）；ui skill 的 kind 也是 `work`，靠 `scope` 区分。目录名 `cmd_skills/`、参数 `--cmd-skill` / `todo add --skill`、配置键 `default_cmd_skills` 保持原名。
+
+work skill 是一类事的命令手册加可选的命令（`tools/<name>/bin`）。它是捷径不是规定：手册写“可以这样做、这样做更快更稳”，Agent 有更合适的做法时可以不用。plan skill 是拆解、排序、验收一类目标的方法，不写具体命令，也不点名具体的 work skill（写“这一步交给带 X 类手册的 Todo”）。
+
+- front matter：`name` / `description` / `requires` / `commands` / `scope` / `baseline` / `platforms`，一行一个。`description` 同时写“做什么”和“何时用”，选择方只看它。`commands: ffmpeg, ffprobe` 只写手册依赖的命令名（shell 内建、标准层命令、手册自带的 `tools/<name>/bin` 不写）：系统据此告诉 owner 缺什么、启用哪个扩展包能补上（`buckyos skill status`、`agent-session skill status`），缺命令不阻止安装或使用，用户自己装的同名命令同样算有。`scope` 只有 work skill 能写，取 `work`（缺省）/ `ui` / `ui, work`。plan / goal skill 写 `scope` 或 `commands` 是错误。`requires` 是给人读的说明。
+- 适用环境：`baseline: standard | extended`（缺省 standard）说明手册在哪种 session-runtime 上有效——standard 只用标准环境的命令（清单见 `xagent runtime baseline`：`agent-session`、`llm_understand_media`、`agent_tool xllm`、`xagent`、`buckyos`、`aicc-tool` 及其媒体命令），用到 ffmpeg、ImageMagick 等扩展工具（`xagent runtime baseline --level extended`）的写 `extended`，构建工具链等清单外的依赖也写 `extended` 并在正文说明；`platforms: linux, macos, windows`（逗号分隔，缺省全部）。这些字段不是固定词时安装被拒。
+- 选择：Work 的手册在创建时选定，最多 8 个，由意图分析、Goal、plan session 从 `agent-session skill list --kind work --scope work` 中挑选；三处的选择规则是同一段 `behaviors/skill_select_rule.inc`。`work_simple` / `explore` 的子 Work 未指定时继承父 Work 的选择。`plan_simple` 声明了 `[capabilities] cmd_skills = "candidates"`：给它的 `--cmd-skill` 不冻结，只在首个输入里以 `<skill_candidates>` 列出（`- name: description`），它创建的 Todo 不继承任何手册，只拿 `todo add --skill` 点名的。Work 不能点名 `scope: ui` 的手册；对话只取 scope 含 `ui` 的。
+- 生效：Session 创建冻结手册时按其 session-runtime 声明的基线与平台过滤（Workspace 的 runtime 不参与）；不满足的手册不注入，在 `## Commands` 末尾列出原因。Work / Todo 显式点名的手册不满足、已被禁用或只属于对话时拒绝创建（Todo 进入 blocked 并记下原因）；继承来的在子 Session 的 runtime 上重新解析。容器声明为 extended，节点 runtime 由 owner 在 Agent 设置里声明（缺省 standard）。
+- 装配：选中的手册按顺序整篇进入系统段末尾的 `## Commands`，随 Session 冻结；运行中不切换、不追加，安装 / 更新 / 禁用 / 删除只影响之后创建的 Session。
+- 安装、删除、禁用和 UI 集合只归 owner：Agent 的 Skills 页（OpenDAN WebUI），或 `buckyos skill install|remove|disable|enable --agent <agent_id>`、`buckyos skill ui-add|ui-remove|ui-list --agent <agent_id>`。`buckyos skill install` 的来源是 `.pikg`、目录（作者试用）、URL / Catalog DID 或 `--draft <slug>`；安装前给出风险清单并要求确认。禁用的 skill 不出现在 `skill list`（`--all` 除外），被点名时拒绝。安装记录在 `.meta/skills.json`，状态（禁用、UI 集合、使用计数、安装落点）在 `.meta/skills_state.json`；Agent 模板升级不覆盖、不删除已安装的 skill。Agent 模板也可以在自己的 PIKG 里带 `agent_skills` 子包，随模板同步。
+- Agent 一侧只有 `agent-session skill list [--kind work|plan|goal] [--scope ui|work] [--all] [--stats] [--json]`、`skill status [--runtime <id>]` 和 `skill revise <name> --file <新 SKILL.md> --reason <原因>`。`revise` 只改来源为 `local` / `imported` 的手册的正文与 `description`，旧文本留在 `<目录>/<name>/revisions/<ms>.md`；改 `scope` / `commands` / `baseline` / `platforms`，或改来源为 `package` / `installed` 的手册，都要走草稿。用户要求安装或删除时，Agent 告诉用户到 Skills 页或用 `buckyos skill install <source> --agent <agent_id>`，不代为执行；用户要把手册加进对话时同样只给出 `buckyos skill ui-add <name> --agent <agent_id>`。
+- 草稿：Agent 产出的 skill 一律是 `$OPENDAN_AGENT_ROOT/skills_drafts/<slug>/`，布局同 skill 包，外加 `draft.json`（来源与摘要、拆分说明、命令核验结果、风险说明）。来源有两个：`skill_import` 行为（owner 用 `buckyos skill import` 或 Skills 页交来的文本落在 `skills_drafts/.inbox/<id>/source.md`；对话里用户说“把这段做成 skill”时由意图分析创建同样的 Work，带手册 `skill_authoring`），以及缺省关闭的内置 Goal `skill_crystallize`（`agent.toml [session.goal.crystallize]`，按 `skills_state.json` 的使用记录读近期 Work，修正手册、提炼新手册、建议禁用）。owner 在 Skills 页查看后确认安装，或 `buckyos skill install --draft <slug> --agent <agent_id>`；装上的草稿来源记为 `imported`。
+- 使用记录由宿主在冻结时计数（`usage["work:<name>"]`，没有手册的 Work 记在 `usage["none"]`），report 不带 skill 字段。
+- 编写与发行：见 [skill 开发快速上手](skill-dev-quickstart.md)。
 - 维护：手册是对应功能的交付物，改 CLI / 协议 / 运行路径时同步更新，见仓库根 `AGENTS.md` 的“cmd_skills 联动维护”。
 
 ## 3. xllm 是最小可用层
@@ -210,8 +225,8 @@ Jarvis 已不再有 behavior loop 的 Session（2026-11-02 删除 `plan` / `do`�
 | shell 执行与 CLI 结果转发 | [llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs) |
 | Agent CLI 命令与分发 | [agent_tool_cli_dev](../../src/frame/agent_tool_cli_dev/src/lib.rs) |
 | Session CLI | [xagent.rs](../../src/frame/lib_opendan/src/bin/xagent.rs) |
-| cmd_skills / goal_skills 的列表、安装、删除 | [skills.rs](../../src/frame/lib_opendan/src/skills.rs)、[behaviors.rs](../../src/frame/lib_opendan/src/state/behaviors.rs)（冻结） |
-| Jarvis 内置 cmd_skills | [cmd_skills/](../../src/apps/jarvis_agent/agent/cmd_skills/) |
+| skills（work / plan / goal）的列表、安装、禁用、草稿、修订 | [skills.rs](../../src/frame/lib_opendan/src/skills.rs)、[behaviors.rs](../../src/frame/lib_opendan/src/state/behaviors.rs)（冻结） |
+| Jarvis 内置 skills | [cmd_skills/](../../src/apps/jarvis_agent/agent/cmd_skills/)、[plan_skills/](../../src/apps/jarvis_agent/agent/plan_skills/) |
 | 访问 BuckyOS 的 Agent 工具（TS + websdk） | [buckyos-agent](../../src/tools/buckyos-agent/readme.md)、websdk `cli/modules/` |
 | 当前报告与子 context 控制 | [reports.rs](../../src/frame/lib_opendan/src/runner/reports.rs)、[tools.rs](../../src/frame/lib_opendan/src/runner/tools.rs) |
 

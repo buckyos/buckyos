@@ -33,10 +33,10 @@ fn lab(baseline: RuntimeBaseline, default: bool) -> RuntimeRegister {
 }
 
 fn skill(env: &Env, name: &str, front: &str) {
-    let dir = env.agent_root.join("cmd_skills");
+    let dir = env.agent_root.join("cmd_skills").join(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
-        dir.join(format!("{name}.md")),
+        dir.join("SKILL.md"),
         format!("---\nname: {name}\ndescription: {name} things\n{front}---\nRun `{name}`.\n"),
     )
     .unwrap();
@@ -252,14 +252,14 @@ async fn cmd_skills_follow_the_session_runtimes_declared_baseline() {
     assert_eq!(frozen.unavailable_cmd_skills[0].name, "media");
 
     // `skill list` shows what each needs; installing a bad value is refused.
-    let listed = agent.behaviors().skills(Some(SkillKind::Cmd)).await.unwrap();
+    let listed = agent.behaviors().skills(Some(SkillKind::Work)).await.unwrap();
     let media = listed.iter().find(|s| s.name == "media").unwrap();
     assert_eq!(media.baseline, RuntimeBaseline::Extended);
     assert_eq!(listed.iter().find(|s| s.name == "other_platform").unwrap().platforms, [other_platform]);
     let pkg = libopendan::skills::SkillPackage {
         package: "bad".into(),
         files: [(
-            "cmd_skills/bad.md".to_string(),
+            "cmd_skills/bad/SKILL.md".to_string(),
             libopendan::skills::SkillFile {
                 content: base64::Engine::encode(
                     &base64::engine::general_purpose::STANDARD,
@@ -271,7 +271,7 @@ async fn cmd_skills_follow_the_session_runtimes_declared_baseline() {
         .into(),
         ..Default::default()
     };
-    let err = libopendan::skills::install(&env.agent_root, &pkg, false, APP).unwrap_err();
+    let err = libopendan::skills::install(&env.agent_root, &pkg, false, APP, None).unwrap_err();
     assert!(err.to_string().contains("huge"), "{err}");
 }
 

@@ -75,6 +75,14 @@
           "description": "Every native function call carries a non-empty `intent` argument: why the call is made now and what it should yield.",
           "type": "boolean"
         },
+        "cmd_skills": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CmdSkillsUse"
+            }
+          ],
+          "description": "What a session entered with this behavior does with the manuals named for it: `frozen` (default) takes them into its prompt; `candidates` (a plan) only sees their names, to choose from for its Todos."
+        },
         "tool_whitelist": {
           "description": "Tools offered as native functions (`None`: the session's tools). An entry is a tool name or `group:<builtin group>`.",
           "items": {
@@ -276,6 +284,13 @@
         }
       },
       "type": "object"
+    },
+    "CmdSkillsUse": {
+      "enum": [
+        "frozen",
+        "candidates"
+      ],
+      "type": "string"
     },
     "ContextMode": {
       "description": "How a behavior is entered when a hand-over (`next_behavior`) or a `call_behavior` tool call names it. Decided by the target behavior, never by the session as a whole; there is no default mode.",

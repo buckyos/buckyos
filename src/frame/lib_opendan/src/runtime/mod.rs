@@ -1225,6 +1225,11 @@ pub async fn check_commands(record: &RuntimeRecord, ops_dir: &Path, commands: &[
     }
 }
 
+/// `<account home>/.opendan/<agent>` on the node runtime `record`: where the agent's own files there go.
+pub async fn node_agent_dir_for(agent: &dyn crate::state::AgentStateClient, record: &RuntimeRecord) -> Option<String> {
+    node_agent_dir_of(record, agent.agent_id(), &runtime_ops_dir(agent).ok()?).await
+}
+
 /// `<account home>/.opendan/<agent>` on the node of `record`.
 async fn node_agent_dir_of(record: &RuntimeRecord, agent_id: &str, ops_dir: &Path) -> Option<String> {
     let config = node_config_of(&record.runtime_id, &record.exec()?).ok()?;

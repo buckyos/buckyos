@@ -559,6 +559,15 @@ impl Blocks {
                 }
                 s.push_str("</runtimes>\n");
             }
+            // A plan: the manuals its creator suggests for the Todos (names only; `skill list` has the rest).
+            let candidates = cfg.prompt.frozen.as_ref().map(|f| f.skill_candidates.as_slice()).unwrap_or_default();
+            if !candidates.is_empty() && !state.bootstrap_done {
+                s.push_str("<skill_candidates>\n");
+                for c in candidates {
+                    s.push_str(&format!("- {}: {}\n", c.name, esc(&c.description)));
+                }
+                s.push_str("</skill_candidates>\n");
+            }
             s
         };
         Self {
@@ -680,6 +689,19 @@ fn commands_section(cfg: &SessionConfig, ui: bool) -> String {
             s.push_str(&format!(
                 "This runtime has no `{}`: the steps that need them cannot run here. The owner can enable an extension package that provides them (`buckyos ext-tools list`), or they can be installed on this runtime some other way.\n\n",
                 k.missing_commands.join("`, `")
+            ));
+        }
+        if !k.installed_on.is_empty() {
+            let runtime_id = cfg.runtime.runtime_id();
+            s.push_str(&format!(
+                "The commands `{}` installs are on `{}` only; this session runs on `{runtime_id}`.{}\n\n",
+                k.name,
+                k.installed_on.join("`, `"),
+                if cfg.runtime.frozen.as_ref().is_some_and(|f| !f.is_node()) {
+                    format!(" Run them there with `agent-session run --runtime {} -- <command>`.", k.installed_on[0])
+                } else {
+                    String::new()
+                }
             ));
         }
     }

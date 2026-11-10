@@ -193,7 +193,7 @@ pub struct SyncReport {
 }
 
 pub fn ensure_layout(agent_root: &Path) -> Result<()> {
-    for rel in ["", ".meta", "behaviors", "cmd_skills", "goal_skills", "tools", "memory", "notebook", "workspace", "sessions"] {
+    for rel in ["", ".meta", "behaviors", "cmd_skills", "plan_skills", "goal_skills", "skills_drafts", "tools", "memory", "notebook", "workspace", "sessions"] {
         let dir = agent_root.join(rel);
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     }
@@ -353,10 +353,11 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("behaviors/do.toml")).unwrap(), "v2");
         // Still preserved on the next start, and files the agent created
         // itself are never touched.
-        fs::write(root.join("cmd_skills/mine.md"), "x").unwrap();
+        fs::create_dir_all(root.join("cmd_skills/mine")).unwrap();
+        fs::write(root.join("cmd_skills/mine/SKILL.md"), "x").unwrap();
         let r = sync_from_package(&pkg, &root).unwrap();
         assert_eq!((r.unchanged, r.preserved), (1, 1));
-        assert!(root.join("cmd_skills/mine.md").is_file());
+        assert!(root.join("cmd_skills/mine/SKILL.md").is_file());
     }
 
     fn identity(did: &str, doc: Option<&str>) -> RootIdentity {
@@ -371,9 +372,9 @@ mod tests {
         use base64::Engine;
         let dir = tempfile::tempdir().unwrap();
         let (pkg, root) = (dir.path().join("pkg"), dir.path().join("root"));
-        fs::create_dir_all(pkg.join("cmd_skills")).unwrap();
+        fs::create_dir_all(pkg.join("cmd_skills/demo")).unwrap();
         fs::create_dir_all(pkg.join("tools/demo/bin")).unwrap();
-        fs::write(pkg.join("cmd_skills/demo.md"), "package demo").unwrap();
+        fs::write(pkg.join("cmd_skills/demo/SKILL.md"), "package demo").unwrap();
         fs::write(pkg.join("tools/demo/bin/demo"), "package tool").unwrap();
         ensure_layout(&root).unwrap();
         let file = |t: &str| libopendan::skills::SkillFile {
@@ -384,17 +385,18 @@ mod tests {
             package: "demo-skills".into(),
             version: "1.0.0".into(),
             pikg_digest: None,
+            imported_from: None,
             files: [
-                ("cmd_skills/demo.md".to_string(), file("installed demo")),
+                ("cmd_skills/demo/SKILL.md".to_string(), file("installed demo")),
                 ("tools/demo/bin/demo".to_string(), file("installed tool")),
             ]
             .into_iter()
             .collect(),
         };
-        libopendan::skills::install(&root, &skill, false, "owner").unwrap();
+        libopendan::skills::install(&root, &skill, false, "owner", None).unwrap();
         let r = sync_from_package(&pkg, &root).unwrap();
         assert_eq!(r.preserved, 2);
-        assert_eq!(fs::read_to_string(root.join("cmd_skills/demo.md")).unwrap(), "installed demo");
+        assert_eq!(fs::read_to_string(root.join("cmd_skills/demo/SKILL.md")).unwrap(), "installed demo");
         assert_eq!(fs::read_to_string(root.join("tools/demo/bin/demo")).unwrap(), "installed tool");
         assert!(root.join("goal_skills").is_dir());
     }

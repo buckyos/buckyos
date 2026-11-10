@@ -181,5 +181,21 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
       call('goals.reopen', { goal_id: goalId, request: { reason, fresh_state: freshState } }),
     restartGoal: (goalId, reason, carryState = false) =>
       call('goals.restart', { goal_id: goalId, request: { reason, carry_state: carryState } }),
+    skills: () => call('skills.list'),
+    skillsState: () => call('skills.state'),
+    uiSkills: () => call('skills.ui_get'),
+    skillsStatus: (runtimeId) => call('skills.status', runtimeId ? { runtime_id: runtimeId } : {}),
+    skillInstallPlan: (source, runtimeId) => call('skills.install_plan', { ...source, ...(runtimeId ? { runtime_id: runtimeId } : {}) }),
+    skillDrafts: () => call('skills.drafts'),
+    skillDraftFile: (slug, file) => call('skills.draft_file', { slug, file }),
+    installSkills: (source, planDigest, runtimeId, replace = false) =>
+      call('skills.install', { ...source, plan_digest: planDigest, ...(runtimeId ? { runtime_id: runtimeId } : {}), ...(replace ? { replace: true } : {}) }),
+    removeSkill: (kind, name) => call('skills.remove', { kind, name }),
+    setSkillEnabled: (kind, name, enabled, reason) => call('skills.set_enabled', { kind, name, enabled, ...(reason ? { reason } : {}) }),
+    setUiSkills: (names) => call('skills.ui_set', { names }),
+    installSkillCommands: (name, runtimeId) => call('skills.install_cmd', { name, runtime_id: runtimeId }),
+    checkSkillCommands: (name, runtimeId) => call('skills.check', { name, ...(runtimeId ? { runtime_id: runtimeId } : {}) }),
+    importSkill: (request) => call('skills.import', { ...request }),
+    discardSkillDraft: (slug) => call('skills.draft_discard', { slug }),
   }
 }

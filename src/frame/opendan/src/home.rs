@@ -270,55 +270,236 @@ impl Home {
         Ok(settings)
     }
 
-    /// `skills.status`: each cmd_skill's commands on a runtime, and which extension package would bring what is missing.
-    /// The check runs now, so a package that just went active or away shows at once. The package catalog is the Zone's: an
-    /// Agent that cannot reach it still knows what is missing, only not what would bring it.
+    /// `skills.status`: every work skill against one runtime — whether a session there would take it (`unmet`: its
+    /// baseline or platform), the commands its manual relies on and which extension package would bring what is missing,
+    /// and where the commands it installs itself are. The check runs now, so a package that just went active or away
+    /// shows at once. The package catalog is the Zone's: an Agent that cannot reach it still knows what is missing, only
+    /// not what would bring it.
     pub async fn skills_status(&self, agent: &dyn AgentStateClient, params: &Value) -> Result<Value, OpenDanError> {
         let runtime_id = text_param(params, "runtime_id")?.filter(|id| !id.is_empty()).unwrap_or_else(|| "private".to_string());
-        let skills = agent.behaviors().skills(Some(SkillKind::Cmd)).await?;
+        let skills = agent.behaviors().skills(Some(SkillKind::Work)).await?;
         let mut wanted: Vec<String> = skills.iter().flat_map(|s| s.commands.iter().cloned()).collect();
         wanted.sort();
         wanted.dedup();
         let record = agent.runtimes().check(&runtime_id, &wanted, false).await?;
-        let mut resolved = record.caps.baseline_check.as_ref().map(|b| b.resolved.clone()).unwrap_or_default();
-        if let Some(tools) = record.caps.tools_check.as_ref() {
-            resolved.extend(tools.resolved.clone());
-        }
+        let resolved = resolved_of(&record);
         let (catalog, desired) = zone_ext_tools().await;
         let reports: Vec<Value> = skills
             .iter()
-            .filter(|s| !s.commands.is_empty())
-            .map(|s| json!({"name": s.name, "status": libopendan::skills::commands_status(&s.commands, &resolved, &catalog, &desired)}))
+            .map(|s| {
+                json!({
+                    "name": s.name,
+                    "scope": s.scope,
+                    "enabled": s.enabled,
+                    "off": s.why_off(),
+                    "requires": s.requires,
+                    "unmet": s.unmet_on(record.caps.baseline, &record.caps.platform.os),
+                    "commands": libopendan::skills::commands_status(&s.commands, &resolved, &catalog, &desired),
+                    "install": s.install_state.as_ref().and_then(|i| i.runtimes.get(&record.runtime_id)),
+                    "installed_on": s.install_state.as_ref().map(|i| i.ok_runtimes()),
+                })
+            })
             .collect();
-        Ok(json!({"runtime_id": record.runtime_id, "skills": reports}))
+        Ok(json!({"runtime_id": record.runtime_id, "baseline": record.caps.baseline, "platform": record.caps.platform.os, "skills": reports}))
     }
 
-    /// `skills.install_plan`: before a skill package goes in, what its manuals rely on against a runtime. Advice only: an
-    /// install never fails for a missing command.
-    pub async fn skills_install_plan(&self, agent: &dyn AgentStateClient, params: &Value) -> Result<Value, OpenDanError> {
-        let package: libopendan::skills::SkillPackage = serde_json::from_value(params.get("package").cloned().unwrap_or(Value::Null))
+    /// The package of a call: sent whole (`package`), or a draft on the AgentRoot (`draft`).
+    fn skill_package(agent: &dyn AgentStateClient, params: &Value) -> Result<(libopendan::skills::SkillPackage, Option<String>), OpenDanError> {
+        if let Some(slug) = text_param(params, "draft")?.filter(|s| !s.is_empty()) {
+            return Ok((libopendan::skills::read_draft(&skills_root(agent)?, &slug)?, Some(slug)));
+        }
+        let package = serde_json::from_value(params.get("package").cloned().unwrap_or(Value::Null))
             .map_err(|e| OpenDanError::InvalidArgument(format!("param `package`: {e}")))?;
-        let runtime_id = text_param(params, "runtime_id")?.filter(|id| !id.is_empty()).unwrap_or_else(|| "private".to_string());
-        let mut skills = Vec::new();
-        for (path, file) in &package.files {
-            let Some(name) = path.strip_prefix("cmd_skills/").and_then(|p| p.strip_suffix(".md")) else { continue };
-            let text = String::from_utf8(file.bytes()?).map_err(|_| OpenDanError::InvalidArgument(format!("{path} is not UTF-8 text")))?;
-            skills.push(libopendan::protocol::skill_meta(SkillKind::Cmd, name, &text));
+        Ok((package, None))
+    }
+
+    async fn plan_of(
+        agent: &dyn AgentStateClient,
+        package: &libopendan::skills::SkillPackage,
+        draft: Option<&str>,
+        runtime_id: Option<&str>,
+    ) -> Result<libopendan::skills::InstallPlan, OpenDanError> {
+        let root = skills_root(agent)?;
+        let runtimes = agent.runtimes().list().await?;
+        let mut plan = libopendan::skills::plan(&root, package, &runtimes, runtime_id)?;
+        // What the agent wrote about its own draft is part of what the owner reads before saying yes.
+        if let Some(slug) = draft {
+            let meta: Value = fsutil::read_json_opt(&root.join(libopendan::skills::DRAFTS_DIR).join(slug).join(libopendan::skills::DRAFT_META))?.unwrap_or(Value::Null);
+            if let Some(risk) = meta.get("risk").and_then(Value::as_str).filter(|r| !r.trim().is_empty()) {
+                plan.risk.findings.push(libopendan::skills::SkillFinding {
+                    code: "author_note".into(),
+                    level: "low".into(),
+                    place: slug.to_string(),
+                    note: risk.trim().to_string(),
+                });
+            }
         }
-        let mut wanted: Vec<String> = skills.iter().flat_map(|s| s.commands.iter().cloned()).collect();
-        wanted.sort();
-        wanted.dedup();
-        let record = agent.runtimes().lookup(&runtime_id).await?.ok_or_else(|| OpenDanError::InvalidArgument(format!("no runtime `{runtime_id}`")))?;
-        let mut resolved = record.caps.baseline_check.as_ref().map(|b| b.resolved.clone()).unwrap_or_default();
-        if let Some(tools) = record.caps.tools_check.as_ref() {
-            resolved.extend(tools.resolved.clone());
-        }
+        Ok(plan)
+    }
+
+    /// `skills.install_plan`: what installing a package (or a draft) would do, what a reader should know before saying
+    /// yes, and what its manuals rely on against the runtime its commands would go to. Nothing is written.
+    pub async fn skills_install_plan(&self, agent: &dyn AgentStateClient, params: &Value) -> Result<Value, OpenDanError> {
+        let (package, draft) = Self::skill_package(agent, params)?;
+        let runtime_id = text_param(params, "runtime_id")?.filter(|id| !id.is_empty());
+        let plan = Self::plan_of(agent, &package, draft.as_deref(), runtime_id.as_deref()).await?;
+        let against = plan.runtime_id.clone().or(runtime_id).unwrap_or_else(|| "private".to_string());
+        let record = agent.runtimes().lookup(&against).await?;
+        let resolved = record.as_ref().map(resolved_of).unwrap_or_default();
         let (catalog, desired) = zone_ext_tools().await;
-        let reports: Vec<Value> = skills
+        let command_status: Vec<Value> = plan
+            .skills
             .iter()
-            .map(|s| json!({"name": s.name, "commands": s.commands, "status": libopendan::skills::commands_status(&s.commands, &resolved, &catalog, &desired)}))
+            .filter(|s| s.meta.kind == SkillKind::Work)
+            .map(|s| json!({"name": s.meta.name, "commands": s.meta.commands, "status": libopendan::skills::commands_status(&s.meta.commands, &resolved, &catalog, &desired)}))
             .collect();
-        Ok(json!({"runtime_id": record.runtime_id, "skills": reports}))
+        let mut out = serde_json::to_value(&plan).map_err(|e| OpenDanError::Other(e.to_string()))?;
+        out["command_status"] = json!(command_status);
+        out["checked_runtime_id"] = json!(record.map(|r| r.runtime_id));
+        Ok(out)
+    }
+
+    /// `skills.install` (owner): install what the owner saw the plan of. The files go onto the AgentRoot; the commands
+    /// of a skill that installs its own go onto the chosen runtime and are checked there, and only then is that skill
+    /// taken by new sessions. A draft is gone once it is installed.
+    pub async fn skills_install(&self, agent: &dyn AgentStateClient, params: &Value, who: &str) -> Result<Value, OpenDanError> {
+        let (package, draft) = Self::skill_package(agent, params)?;
+        let root = skills_root(agent)?;
+        let runtime_id = text_param(params, "runtime_id")?.filter(|id| !id.is_empty());
+        let plan = Self::plan_of(agent, &package, draft.as_deref(), runtime_id.as_deref()).await?;
+        let given = text_param(params, "plan_digest")?.unwrap_or_default();
+        if given != plan.plan_digest {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "plan_digest `{given}` is not the plan of this package ({}): ask for the plan again (`skills.install_plan`) and confirm what it says",
+                plan.plan_digest
+            )));
+        }
+        if !plan.blocked.is_empty() {
+            return Err(OpenDanError::InvalidArgument(format!("not installed: {}", plan.blocked.join("; "))));
+        }
+        let replace = params.get("replace").and_then(Value::as_bool).unwrap_or(false);
+        let accepted = libopendan::skills::Accepted { level: plan.risk.level.clone(), plan_digest: plan.plan_digest.clone() };
+        let report = libopendan::skills::install(&root, &package, replace, who, Some(&accepted))?;
+        log::info!(
+            "skills: {} {} ({}) installed by {who}, risk {}: {}",
+            report.package,
+            report.version,
+            report.digest,
+            plan.risk.level,
+            report.skills.iter().map(|s| format!("{}:{}", s.kind.as_str(), s.name)).collect::<Vec<_>>().join(", ")
+        );
+        let mut installs = serde_json::Map::new();
+        if let Some(target) = &plan.runtime_id {
+            for name in &report.pending_commands {
+                let state = libopendan::skills::install_commands(agent, name, target, who).await?;
+                installs.insert(name.clone(), json!(state));
+            }
+            // Commands that came in `tools/<name>/bin` only are on the private runtime already; another target gets them too.
+            if !is_private_runtime(target) {
+                for skill in report.skills.iter().filter(|s| !s.tools.is_empty() && !report.pending_commands.contains(&s.name)) {
+                    let state = libopendan::skills::install_commands(agent, &skill.name, target, who).await?;
+                    installs.insert(skill.name.clone(), json!(state));
+                }
+            }
+        }
+        if let Some(slug) = &draft {
+            libopendan::skills::discard_draft(&root, slug, who, true)?;
+        }
+        let names: Vec<(SkillKind, String)> = report.skills.iter().map(|s| (s.kind, s.name.clone())).collect();
+        let mut out = serde_json::to_value(&report).map_err(|e| OpenDanError::Other(e.to_string()))?;
+        out["skills"] = json!(libopendan::skills::list(&root, None)?.into_iter().filter(|m| names.contains(&(m.kind, m.name.clone()))).collect::<Vec<_>>());
+        out["plan"] = json!(plan);
+        out["install"] = Value::Object(installs);
+        Ok(out)
+    }
+
+    /// `skills.remove` (owner): the uninstall script of what it installed runs first, where it was installed.
+    pub async fn skills_remove(&self, agent: &dyn AgentStateClient, params: &Value, who: &str) -> Result<Value, OpenDanError> {
+        let (kind, name) = skill_ref(params)?;
+        let root = skills_root(agent)?;
+        if kind == SkillKind::Work && libopendan::skills::load_record(&root)?.installed.contains_key(&libopendan::skills::key(kind, &name)) {
+            libopendan::skills::uninstall_commands(agent, &name).await;
+        }
+        let removed = libopendan::skills::remove(&root, kind, &name, who)?;
+        log::info!("skills: {}:{name} removed by {who}", kind.as_str());
+        Ok(json!(removed))
+    }
+
+    /// The owner's other skill methods, all on the AgentRoot files.
+    pub async fn skills_call(&self, agent: &dyn AgentStateClient, method: &str, params: &Value, who: &str) -> Result<Value, OpenDanError> {
+        use libopendan::skills;
+        let root = skills_root(agent)?;
+        let out = |v: Value| Ok(v);
+        match method {
+            "skills.state" => out(json!(skills::load_state(&root)?)),
+            "skills.ui_get" => out(json!(skills::ui_skills(&root)?)),
+            "skills.ui_set" => {
+                let names: Option<Vec<String>> = serde_json::from_value(params.get("names").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| OpenDanError::InvalidArgument(format!("param `names`: {e}")))?;
+                out(json!(skills::set_ui_skills(&root, names, who)?))
+            }
+            "skills.set_enabled" => {
+                let (kind, name) = skill_ref(params)?;
+                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| OpenDanError::InvalidArgument("param `enabled` is true | false".into()))?;
+                let reason = text_param(params, "reason")?;
+                out(json!(skills::set_enabled(&root, kind, &name, enabled, reason.as_deref(), who)?))
+            }
+            "skills.drafts" => out(json!(skills::list_drafts(&root)?)),
+            "skills.draft_file" => {
+                let slug = required(params, "slug")?;
+                let file = required(params, "file")?;
+                out(json!({ "text": skills::read_draft_file(&root, &slug, &file)? }))
+            }
+            "skills.draft_discard" => {
+                let slug = required(params, "slug")?;
+                skills::discard_draft(&root, &slug, who, false)?;
+                out(json!({ "discarded": slug }))
+            }
+            "skills.install_cmd" => {
+                let name = required(params, "name")?;
+                let runtime_id = required(params, "runtime_id")?;
+                out(json!(skills::install_commands(agent, &name, &runtime_id, who).await?))
+            }
+            "skills.check" => {
+                let name = required(params, "name")?;
+                let runtime_id = text_param(params, "runtime_id")?.filter(|id| !id.is_empty());
+                out(json!(skills::check_commands(agent, &name, runtime_id.as_deref(), who).await?))
+            }
+            other => Err(OpenDanError::InvalidArgument(format!("unknown method `{other}`"))),
+        }
+    }
+
+    /// `skills.import` (owner): keep the text where a work session can read it. The session that turns it into a draft
+    /// is the caller's to start.
+    pub fn skills_import_inbox(&self, agent: &dyn AgentStateClient, params: &Value) -> Result<SkillImport, OpenDanError> {
+        const MAX_SOURCE_BYTES: usize = 512 * 1024;
+        let text = params.get("text").and_then(Value::as_str).unwrap_or_default();
+        if text.trim().is_empty() {
+            return Err(OpenDanError::InvalidArgument("param `text` is the text to turn into skills".into()));
+        }
+        if text.len() > MAX_SOURCE_BYTES {
+            return Err(OpenDanError::InvalidArgument(format!("the text is larger than {} KiB: split it", MAX_SOURCE_BYTES / 1024)));
+        }
+        let name = text_param(params, "name")?.filter(|n| !n.is_empty());
+        if let Some(name) = &name {
+            libopendan::ids::validate_session_id(name).map_err(|_| OpenDanError::InvalidArgument(format!("bad skill name `{name}`")))?;
+        }
+        let scope = text_param(params, "scope")?.filter(|s| !s.is_empty());
+        if let Some(scope) = &scope {
+            if !["work", "ui", "plan"].contains(&scope.as_str()) {
+                return Err(OpenDanError::InvalidArgument(format!("scope `{scope}` is not work | ui | plan")));
+            }
+        }
+        let id = libopendan::ids::new_runner_id();
+        let inbox = format!("{}/.inbox/{id}/source.md", libopendan::skills::DRAFTS_DIR);
+        fsutil::atomic_replace(&skills_root(agent)?.join(&inbox), text.as_bytes())?;
+        Ok(SkillImport {
+            inbox,
+            name,
+            scope,
+            source: text_param(params, "source")?.filter(|s| !s.is_empty()),
+            runtime_id: text_param(params, "runtime_id")?.filter(|s| !s.is_empty()),
+        })
     }
 
     pub async fn workspaces(&self, agent: &dyn AgentStateClient) -> Result<Value, OpenDanError> {
@@ -343,6 +524,63 @@ impl Home {
             "last_error": record.last_error,
         })).collect::<Vec<_>>()))
     }
+}
+
+/// A text the owner handed in to be made into skills.
+pub struct SkillImport {
+    /// AgentRoot-relative path of the text.
+    pub inbox: String,
+    pub name: Option<String>,
+    pub scope: Option<String>,
+    pub source: Option<String>,
+    pub runtime_id: Option<String>,
+}
+
+impl SkillImport {
+    /// The first message of the work that writes the draft.
+    pub fn message(&self) -> String {
+        let mut text = format!("Turn the text at $OPENDAN_AGENT_ROOT/{} into skill drafts for the owner to install.", self.inbox);
+        if let Some(source) = &self.source {
+            text.push_str(&format!("\nIt came from: {source}."));
+        }
+        if let Some(name) = &self.name {
+            text.push_str(&format!("\nThe owner asks for the name `{name}` (the draft slug, and the skill's name when it becomes one skill)."));
+        }
+        if let Some(scope) = &self.scope {
+            text.push_str(&format!("\nThe owner asks for a {scope} skill; say so in draft.json if the text does not fit that."));
+        }
+        if let Some(runtime_id) = &self.runtime_id {
+            text.push_str(&format!("\nVerify its commands on runtime `{runtime_id}` (`agent-session run --runtime {runtime_id} -- command -v <cmd>`): the skill is for that machine."));
+        }
+        text
+    }
+}
+
+fn skills_root(agent: &dyn AgentStateClient) -> Result<std::path::PathBuf, OpenDanError> {
+    agent
+        .agent_root()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| OpenDanError::InvalidArgument("skills are managed where the AgentRoot is".into()))
+}
+
+fn required(params: &Value, name: &str) -> Result<String, OpenDanError> {
+    text_param(params, name)?.filter(|v| !v.is_empty()).ok_or_else(|| OpenDanError::InvalidArgument(format!("param `{name}` is required")))
+}
+
+fn skill_ref(params: &Value) -> Result<(SkillKind, String), OpenDanError> {
+    let kind = match params.get("kind") {
+        None | Some(Value::Null) => SkillKind::Work,
+        Some(v) => serde_json::from_value(v.clone()).map_err(|_| OpenDanError::InvalidArgument("param `kind` is work | plan | goal".into()))?,
+    };
+    Ok((kind, required(params, "name")?))
+}
+
+fn resolved_of(record: &RuntimeRecord) -> BTreeMap<String, ResolvedCommand> {
+    let mut resolved = record.caps.baseline_check.as_ref().map(|b| b.resolved.clone()).unwrap_or_default();
+    if let Some(tools) = record.caps.tools_check.as_ref() {
+        resolved.extend(tools.resolved.clone());
+    }
+    resolved
 }
 
 /// The Zone's extension package catalog and desired state, from control-panel. Empty outside a Zone or when it does not

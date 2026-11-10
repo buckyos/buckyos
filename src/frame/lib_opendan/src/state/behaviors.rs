@@ -25,41 +25,32 @@ pub trait BehaviorCatalog: Send + Sync {
     async fn list(&self) -> Result<Vec<BehaviorMeta>>;
     /// Version of the catalog as a whole (audit of a freeze).
     async fn revision(&self) -> Result<String>;
-    /// The manual of a cmd_skill (`cmd_skills/<name>.md`, front matter
-    /// included). `None`: the agent has no such cmd_skill.
+    /// The manual of a work skill (`cmd_skills/<name>/SKILL.md`, front matter
+    /// included). `None`: the agent has no such work skill.
     async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
         let _ = name;
         Ok(None)
     }
-    /// The agent's skills of `kind` (`None`: both), by name.
+    /// The agent's skills of `kind` (`None`: all), by name, with whether new sessions may take each.
     async fn skills(&self, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
         let _ = kind;
         Ok(Vec::new())
+    }
+    /// A session was created with these manuals (none: a work without any): the host counts it (`skills.note_frozen`).
+    async fn note_skills_frozen(&self, names: &[String], session_id: &str) -> Result<()> {
+        let _ = (names, session_id);
+        Ok(())
+    }
+    /// Replace the text of a manual that is not a package's, keeping what it was (`skills.revise`).
+    async fn revise_skill(&self, kind: SkillKind, name: &str, text: &str, reason: &str, who: &str) -> Result<SkillMeta> {
+        let _ = (kind, name, text, reason, who);
+        Err(OpenDanError::InvalidArgument("this agent state does not revise skills".into()))
     }
     /// The commands each cmd_skill relies on, against `runtime_id` (`None`: the private runtime), and which extension
     /// package would bring what is missing (`skills.status`).
     async fn skills_status(&self, runtime_id: Option<&str>) -> Result<serde_json::Value> {
         let _ = runtime_id;
         Err(crate::error::OpenDanError::InvalidArgument("skills.status needs the Agent Service".to_string()))
-    }
-    /// Install the skills of a skill package (`skills.install`).
-    async fn install_skills(
-        &self,
-        pkg: &crate::skills::SkillPackage,
-        replace: bool,
-        who: &str,
-    ) -> Result<crate::skills::InstallReport> {
-        let _ = (pkg, replace, who);
-        Err(OpenDanError::InvalidArgument(
-            "this agent state does not install skills".into(),
-        ))
-    }
-    /// Remove an installed skill (`skills.remove`).
-    async fn remove_skill(&self, kind: SkillKind, name: &str, who: &str) -> Result<SkillMeta> {
-        let _ = (kind, name, who);
-        Err(OpenDanError::InvalidArgument(
-            "this agent state does not remove skills".into(),
-        ))
     }
 }
 
@@ -68,7 +59,7 @@ const MAX_INCLUDE_DEPTH: usize = 8;
 /// What the owner adds to the package's role, appended to it.
 pub const ROLE_SUPPLEMENT_FILE: &str = ".meta/role_supplement.md";
 
-/// `<agent_root>/cmd_skills/<name>.md`: command manuals a session takes
+/// `<agent_root>/cmd_skills/<name>/SKILL.md`: the manuals a session takes
 /// when it is created (`prompt.cmd_skills`).
 pub const CMD_SKILLS_DIR: &str = "cmd_skills";
 
@@ -232,39 +223,20 @@ impl BehaviorCatalog for FsBehaviorCatalog {
     }
 
     async fn cmd_skill(&self, name: &str) -> Result<Option<String>> {
-        crate::ids::validate_session_id(name)
-            .map_err(|_| OpenDanError::InvalidArgument(format!("bad cmd_skill name `{name}`")))?;
-        let path = self.root.join(CMD_SKILLS_DIR).join(format!("{name}.md"));
-        if !path.is_file() {
-            return Ok(None);
-        }
-        Ok(Some(read_trimmed(&path)))
+        crate::skills::manual_text(&self.root, SkillKind::Work, name)
     }
 
     async fn skills(&self, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
         crate::skills::list(&self.root, kind)
     }
 
-    async fn install_skills(
-        &self,
-        pkg: &crate::skills::SkillPackage,
-        replace: bool,
-        who: &str,
-    ) -> Result<crate::skills::InstallReport> {
-        let r = crate::skills::install(&self.root, pkg, replace, who)?;
-        log::info!(
-            "skills: {} {} ({}) installed by {who}: {}",
-            r.package,
-            r.version,
-            r.digest,
-            r.skills.iter().map(|s| format!("{}:{}", s.kind.as_str(), s.name)).collect::<Vec<_>>().join(", ")
-        );
-        Ok(r)
+    async fn note_skills_frozen(&self, names: &[String], session_id: &str) -> Result<()> {
+        crate::skills::note_frozen(&self.root, names, session_id)
     }
 
-    async fn remove_skill(&self, kind: SkillKind, name: &str, who: &str) -> Result<SkillMeta> {
-        let m = crate::skills::remove(&self.root, kind, name)?;
-        log::info!("skills: {}:{name} removed by {who}", kind.as_str());
+    async fn revise_skill(&self, kind: SkillKind, name: &str, text: &str, reason: &str, who: &str) -> Result<SkillMeta> {
+        let m = crate::skills::revise(&self.root, kind, name, text, reason, who)?;
+        log::info!("skills: {}:{name} revised by {who}: {reason}", kind.as_str());
         Ok(m)
     }
 
@@ -275,10 +247,13 @@ impl BehaviorCatalog for FsBehaviorCatalog {
             self.root.join(ROLE_SUPPLEMENT_FILE),
             self.root.join("self.md"),
         ];
-        for d in [self.dir(), self.root.join("i18n"), self.root.join(CMD_SKILLS_DIR)] {
+        for d in [self.dir(), self.root.join("i18n")] {
             if let Ok(rd) = std::fs::read_dir(d) {
                 files.extend(rd.flatten().map(|e| e.path()));
             }
+        }
+        if let Ok(rd) = std::fs::read_dir(self.root.join(CMD_SKILLS_DIR)) {
+            files.extend(rd.flatten().map(|e| e.path().join(SKILL_MANUAL)));
         }
         files.sort();
         for f in files {
@@ -352,7 +327,7 @@ impl BehaviorCatalog for MemBehaviorCatalog {
     }
 
     async fn skills(&self, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
-        if kind == Some(SkillKind::Goal) {
+        if kind.is_some_and(|k| k != SkillKind::Work) {
             return Ok(Vec::new());
         }
         Ok(self
@@ -362,7 +337,7 @@ impl BehaviorCatalog for MemBehaviorCatalog {
             .iter()
             .map(|(n, t)| SkillMeta {
                 origin: "package".into(),
-                ..skill_meta(SkillKind::Cmd, n, t)
+                ..skill_meta(SkillKind::Work, n, t)
             })
             .collect())
     }
@@ -398,33 +373,60 @@ pub async fn freeze_config(
         behaviors: BTreeMap::new(),
         cmd_skills: Vec::new(),
         unavailable_cmd_skills: Vec::new(),
+        skill_candidates: Vec::new(),
     };
-    // The session's command manuals are frozen with its behaviors: a
-    // cmd_skill the agent does not have is a configuration error; one its
-    // session-runtime does not meet (declared baseline, platform) is left
-    // out and reported, never injected.
+    // The session's manuals are frozen with its behaviors: one the agent does not have is a configuration error;
+    // one that is off (disabled by the owner, commands not installed) is left out without a word; one its
+    // session-runtime does not meet (declared baseline, platform) is left out and reported, never injected. A session
+    // whose entry behavior only chooses manuals for others (a plan) freezes none: it sees their names as candidates.
     check_cmd_skill_names(&cfg.prompt.cmd_skills)?;
+    let candidates_only = match &cfg.prompt.behavior {
+        Some(entry) => catalog.get(entry).await?.is_some_and(|b| b.capabilities.cmd_skills == CmdSkillsUse::Candidates),
+        None => false,
+    };
+    let known = if cfg.prompt.cmd_skills.is_empty() { Vec::new() } else { catalog.skills(Some(SkillKind::Work)).await? };
+    let ui = cfg.session.kind == SessionKind::Ui;
     let runtime = cfg
         .runtime
         .frozen
         .as_ref()
         .map(|f| (f.baseline(), f.caps.platform.os.clone(), f.runtime_id.clone()));
     for name in &cfg.prompt.cmd_skills {
+        let meta = known.iter().find(|s| &s.name == name);
         let Some(text) = catalog.cmd_skill(name).await? else {
-            let known: Vec<String> = catalog
-                .skills(Some(SkillKind::Cmd))
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| s.name)
-                .collect();
-            return Err(OpenDanError::InvalidArgument(format!(
-                "the agent has no cmd_skill `{name}` (installed: {}; see `agent-session skill list`)",
-                if known.is_empty() { "none".to_string() } else { known.join(", ") }
-            )));
+            let other = catalog.skills(None).await.unwrap_or_default().into_iter().find(|s| &s.name == name && s.kind != SkillKind::Work);
+            return Err(OpenDanError::InvalidArgument(match other {
+                Some(other) => format!(
+                    "`{name}` is a {} skill: it is read when needed (`{}`), never given to a session as a manual",
+                    other.kind.as_str(),
+                    other.kind.manual(name)
+                ),
+                None => format!(
+                    "the agent has no work skill `{name}` (installed: {}; see `agent-session skill list`)",
+                    if known.is_empty() { "none".to_string() } else { known.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ") }
+                ),
+            }));
         };
+        let parsed = skill_meta(SkillKind::Work, name, &text);
+        let meta = meta.unwrap_or(&parsed);
+        if !meta.enabled {
+            continue;
+        }
+        if candidates_only {
+            frozen.skill_candidates.push(SkillCandidate { name: name.clone(), description: meta.description.clone() });
+            continue;
+        }
+        if ui && !meta.scope.ui() {
+            log::warn!("session {}: `{name}` is a work manual (scope: work), left out of the conversation", cfg.session.session_id);
+            continue;
+        }
+        if !ui && !meta.scope.work() {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "`{name}` is a conversation manual (scope: ui): work takes manuals whose scope includes `work`"
+            )));
+        }
         if let Some((baseline, platform, runtime_id)) = &runtime {
-            if let Some(reason) = skill_meta(SkillKind::Cmd, name, &text).unmet_on(*baseline, platform) {
+            if let Some(reason) = parsed.unmet_on(*baseline, platform) {
                 frozen.unavailable_cmd_skills.push(UnavailableCmdSkill {
                     name: name.clone(),
                     reason: format!("{reason} (runtime `{runtime_id}`)"),
@@ -436,12 +438,20 @@ pub async fn freeze_config(
             .runtime
             .frozen
             .as_ref()
-            .map(|f| crate::skills::known_missing_commands(&skill_meta(SkillKind::Cmd, name, &text).commands, &f.caps))
+            .map(|f| crate::skills::known_missing_commands(&parsed.commands, &f.caps))
             .unwrap_or_default();
+        // Commands the skill installed itself are on the runtimes recorded for it, not everywhere.
+        let installed_on = match (&meta.install_state, &runtime) {
+            (Some(install), Some((_, _, runtime_id))) if !install.ok_runtimes().contains(&runtime_id.as_str()) => {
+                install.ok_runtimes().into_iter().map(str::to_string).collect()
+            }
+            _ => Vec::new(),
+        };
         frozen.cmd_skills.push(CmdSkill {
             name: name.clone(),
             text: split_front_matter(&text).1.to_string(),
             missing_commands,
+            installed_on,
         });
     }
     let mut next = cfg.clone();
@@ -458,9 +468,45 @@ pub async fn freeze_config(
         queue.extend(b.meta.next.iter().cloned());
         frozen.behaviors.insert(name, b);
     }
+    if candidates_only {
+        next.prompt.cmd_skills.clear();
+    }
     next.prompt.frozen = Some(frozen);
     next.behaviors().map_err(OpenDanError::InvalidArgument)?;
     *cfg = next;
+    Ok(())
+}
+
+/// Manuals a creator names for a work (`--cmd-skill`, a Todo's `--skill`): each is a work skill the agent has, on, and
+/// for work. What its runtime does not meet is found when the session is frozen.
+pub async fn check_named_skills(catalog: &dyn BehaviorCatalog, names: &[String]) -> Result<()> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    check_cmd_skill_names(names)?;
+    let all = catalog.skills(None).await?;
+    for name in names {
+        let Some(skill) = all.iter().find(|s| &s.name == name && s.kind == SkillKind::Work) else {
+            return Err(OpenDanError::InvalidArgument(match all.iter().find(|s| &s.name == name) {
+                Some(other) => format!(
+                    "`{name}` is a {} skill: it is read when needed (`{}`), never given to a session as a manual",
+                    other.kind.as_str(),
+                    other.kind.manual(name)
+                ),
+                None => format!(
+                    "the agent has no work skill `{name}` (see `agent-session skill list --kind work --scope work`)"
+                ),
+            }));
+        };
+        if let Some(why) = skill.why_off() {
+            return Err(OpenDanError::InvalidArgument(format!("work skill `{name}` is off: {why}")));
+        }
+        if !skill.scope.work() {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "`{name}` is a conversation manual (scope: ui): work takes manuals whose scope includes `work`"
+            )));
+        }
+    }
     Ok(())
 }
 

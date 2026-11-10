@@ -468,6 +468,7 @@ pub enum RuntimeUsageEvent {
     Session { session_id: String },
     Workspace,
     SkillCommand { name: String },
+    SkillCommandRemoved { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

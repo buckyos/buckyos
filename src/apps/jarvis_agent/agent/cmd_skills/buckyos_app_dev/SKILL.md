@@ -6,13 +6,13 @@ baseline: extended
 commands: node, npm, deno, uv, python3, curl
 ---
 #### When to use
-Writing or converting an App that runs in a Zone: a web page/SPA, a small HTTP service in Python or TypeScript, or an existing Docker image; then installing and upgrading it for testing. The shared steps (build vs system build, `pikg` details, the three install paths, waiting for tasks, publish limits, error codes, evidence) are in `buckyos_dev_release`; when that manual is not in this session, read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_dev_release.md`. Agents and skill packages are `opendan_agent_dev`.
+Writing or converting an App that runs in a Zone: a web page/SPA, a small HTTP service in Python or TypeScript, or an existing Docker image; then installing and upgrading it for testing. The shared steps (build vs system build, `pikg` details, the three install paths, waiting for tasks, publish limits, error codes, evidence) are in `buckyos_dev_release`; when that manual is not in this session, read `$OPENDAN_AGENT_ROOT/cmd_skills/buckyos_dev_release/SKILL.md`. Agents and skill packages are `opendan_agent_dev`.
 
 #### Choose the shape
 | kind (`pikg init --kind`) | runs as | sub package | good for |
 | --- | --- | --- | --- |
 | `static-web` | files served by the zone gateway at `http://<host>.<zone>/`, no process | `web` | pages/SPAs; user data through the SDK in the user's storage (the built-in Text Editor works this way) |
-| `script` | aios worker container: Python (`requirements.txt`/`pyproject.toml` → uv venv) or TypeScript (`deno.json`/`main.ts` → `deno run --allow-all`) | `script` | small services without your own image; entry from `buckyos_script.json` `{"entry":"main.py"}` |
+| `script` | aios worker container: Python (`python3`; `requirements.txt`/`pyproject.toml` → uv venv) or TypeScript (`deno.json`/`main.ts` → `deno run --allow-all`) | `script` | small services without your own image; entry from `buckyos_script.json` `{"entry":"main.py"}` |
 | `docker` | your local image, one container per instance | `amd64_docker_image` / `aarch64_docker_image` | anything with its own runtime; the image arch has to match the node |
 | `ext-tools` | nothing runs: tools every Agent on a machine shares (`ext-manifest.json`, `payload/<platform>/`). Published with `app publish` (or an existing `.pikg` with `ext-tools import`), enabled for the Zone by its admin; `app install` refuses it | `ext_tools_<os>_<arch>`, one per platform | a command set several Agents need; format in doc/pikg/format.md §5.1 |
 | `aiws-controls` | nothing runs: installed into the user's AI Workspace control library (no AppSpec, no process) | `aiws` (the bundle: `aiws-manifest.json` + `controls/<name>/…`) | AI Workspace controls; develop them in a workspace first (`aiworkspace_template_dev`, “Controls”) and export with `buckyos aiws ext-export --pikg` |

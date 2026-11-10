@@ -38,7 +38,7 @@ Native sessions whose owner permits desktop access also expose the `computer` to
 ```sh
 agent_tool xllm "Classify the sentiment of: '…' (positive/negative/mixed, one-sentence reason)"
 agent_tool xllm --file notes.txt "List the decisions and open questions"   # --file repeatable, order kept
-some_command | agent_tool xllm "Summarize the errors in this log"         # stdin becomes material
+<command> | agent_tool xllm "Summarize the errors in this log"           # stdin becomes material
 agent_tool xllm --system "Translate to French. Output the translation." "…"
 agent_tool xllm --output answer.md "…"                                    # save instead of print
 agent_tool xllm --tools --max-tool-iterations 4 --timeout 300 "…"         # file tools + shell in the work dir

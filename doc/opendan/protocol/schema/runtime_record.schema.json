@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
     "BaselineCheck": {
-      "description": "The last check of a runtime's standard tools ([`crate::baseline`]): only a hint, the declaration decides (Q5).",
+      "description": "The last check of a runtime's tools ([`crate::baseline`]) against what it declares: only a hint, the declaration decides (Q5).",
       "properties": {
         "checked_at_ms": {
           "format": "uint64",
@@ -16,9 +16,28 @@
             "null"
           ]
         },
+        "ext": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExtCheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "level": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RuntimeBaseline"
+            }
+          ],
+          "default": "standard",
+          "description": "The declaration checked against."
+        },
         "missing": {
           "default": [],
-          "description": "Standard commands not found on the runtime's PATH.",
+          "description": "Commands of that level not found on the runtime's PATH.",
           "items": {
             "type": "string"
           },
@@ -26,6 +45,22 @@
         },
         "ok": {
           "type": "boolean"
+        },
+        "resolved": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ResolvedCommand"
+          },
+          "default": {},
+          "description": "Where each command found is, standard and extended.",
+          "type": "object"
+        },
+        "unmanaged": {
+          "default": [],
+          "description": "Standard commands found outside `$BUCKYOS_ROOT`: not the standard ones.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -91,6 +126,65 @@
         }
       ]
     },
+    "ExtCheck": {
+      "description": "The extended layer of a runtime, whatever it declares.",
+      "properties": {
+        "missing": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/definitions/ExtStatus"
+        },
+        "system": {
+          "default": [],
+          "description": "Extended commands that are there but not from an extension package.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "ExtStatus": {
+      "oneOf": [
+        {
+          "description": "Every extended tool, all from extension packages.",
+          "enum": [
+            "ok"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Some extended tools are missing.",
+          "enum": [
+            "partial"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "None of them is there.",
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Every extended tool, some from the machine or the Agent.",
+          "enum": [
+            "system"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "InstallGrant": {
       "description": "What an Agent may install on a runtime.",
       "oneOf": [
@@ -108,13 +202,103 @@
           "type": "string"
         },
         {
-          "description": "System-wide packages (ExtTools, package managers).",
+          "description": "A skill's `install.toml` may also write outside the Agent's own directory. Never `$BUCKYOS_ROOT/tools`: extension packages are installed by node_daemon.",
           "enum": [
             "system"
           ],
           "type": "string"
         }
       ]
+    },
+    "NativeComputerConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "$ref": "#/definitions/ComputerAccess"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "node_did": {
+          "type": "string"
+        },
+        "profile_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "access",
+        "endpoint",
+        "node_did",
+        "profile_id"
+      ],
+      "type": "object"
+    },
+    "ProvidedBy": {
+      "description": "Who provides a command found on a runtime.",
+      "oneOf": [
+        {
+          "description": "The standard layer: under `$BUCKYOS_ROOT`, outside `tools/`.",
+          "enum": [
+            "buckyos_root"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "An extension package: under `$BUCKYOS_ROOT/tools`.",
+          "enum": [
+            "exttools"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The Agent's own (`tools/<skill>/bin`).",
+          "enum": [
+            "agent"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Beside a development build of the program: serves as a standard helper, and views say so.",
+          "enum": [
+            "dev"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The machine's own PATH.",
+          "enum": [
+            "system"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ResolvedCommand": {
+      "description": "Where a check found a command. `version` comes from a full check only.",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "provided_by": {
+          "$ref": "#/definitions/ProvidedBy"
+        },
+        "stub": {
+          "description": "A full check found it does not run (exit 126 / 127): it counts as missing.",
+          "type": "boolean"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "provided_by"
+      ],
+      "type": "object"
     },
     "RuntimeAvailability": {
       "enum": [
@@ -158,10 +342,23 @@
             }
           ]
         },
+        "buckyos_root": {
+          "description": "`$BUCKYOS_ROOT` of that machine as its executor reports it; a machine without a managed install has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "desktop": {
           "default": false,
           "description": "A desktop session the executor can observe or control.",
           "type": "boolean"
+        },
+        "desktop_error": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "identity_mode": {
           "description": "`current_user` / `switch_user`: how a node executes.",
@@ -197,6 +394,22 @@
         {
           "description": "This process's own environment.",
           "properties": {
+            "aliases": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "computer": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/NativeComputerConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "enum": [
                 "native"
@@ -405,6 +618,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "resolved": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ResolvedCommand"
+          },
+          "default": {},
+          "description": "Where each command found is.",
+          "type": "object"
         }
       },
       "required": [
@@ -450,7 +671,7 @@
     },
     "default": {
       "default": false,
-      "description": "The owner's default runtime (`default_runtime_id`): the machine the owner means by \"my computer\" and where the owner's absolute paths are read; never where a chat runs.",
+      "description": "The owner's default runtime (`default_runtime_id`): the machine the owner means by \"my computer\" and where the owner's absolute paths are read; it may also be the private runtime.",
       "type": "boolean"
     },
     "desc": {

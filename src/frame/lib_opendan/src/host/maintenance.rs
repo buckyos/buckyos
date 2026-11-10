@@ -79,6 +79,36 @@ pub fn memory_maintenance_create(behavior: Option<String>, owner: &str) -> GoalC
     }
 }
 
+/// The seeded definition of the skill crystallization Goal: once a day it reads the work the usage record points at
+/// and improves the agent's manuals — its own directly, the others as drafts for the owner.
+pub fn skill_crystallize_create(behavior: Option<String>, owner: &str) -> GoalCreate {
+    GoalCreate {
+        key: Some(BUILTIN_SKILL_CRYSTALLIZE_KEY.to_string()),
+        title: Some("Skill crystallization".to_string()),
+        objective: "Keep the agent's skills in step with what its work shows: revise manuals that led work astray or left steps out, turn kinds of work that recur without a manual into draft skills, and point out manuals nothing uses.".to_string(),
+        scope: GoalScope::default(),
+        lifecycle: GoalLifecycle::Maintain,
+        achieved_when: None,
+        healthy_state: Some("Manuals say what the recent work that used them actually had to do; recurring work without a manual has a draft waiting for the owner; unused or misleading manuals are reported.".to_string()),
+        distance_evaluation: "Work sessions frozen with each manual since it was last looked at, work created without any manual, manuals not used for 60 days, drafts waiting for the owner.".to_string(),
+        constraints: vec![
+            "Only the text of manuals that are the agent's own (origin local or imported) is rewritten, with `agent-session skill revise`; the earlier text is kept.".to_string(),
+            "A package's manual, a change to scope / commands / baseline / platforms, new commands and every new skill go to skills_drafts/ for the owner; nothing is installed, disabled or added to the UI set.".to_string(),
+            "A judgement about a manual rests on work sessions actually read in this activation.".to_string(),
+        ],
+        initial_skills: Vec::new(),
+        beneficiaries: Vec::new(),
+        budget: GoalBudget {
+            activation: ActivationBudget { max_total_tokens: Some(300_000), max_runs: Some(6) },
+            period: PeriodBudget { window_secs: Some(86_400), max_total_tokens: Some(600_000), max_activations: Some(2), max_works: Some(0) },
+        },
+        schedule: GoalScheduleSpec { every_secs: Some(86_400), min_interval_secs: Some(3_600), start_on_create: false },
+        behavior,
+        owner: Some(owner.to_string()),
+        extensions: [(OPENDAN_EXTENSION.to_string(), OpendanGoalExtension::skill_crystallize().to_value())].into_iter().collect(),
+    }
+}
+
 /// Seed the built-in Goal once per Agent (the deterministic key makes a
 /// repeat return the same Goal), and lift the host's marks of an older
 /// policy version without touching what the owner may have changed.

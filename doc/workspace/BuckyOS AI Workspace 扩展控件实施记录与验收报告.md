@@ -29,7 +29,7 @@
 | websdk / CLI | `src/aiws_ext.ts`、`src/aiworkspace_client.ts`、`src/{index,node}.ts`、`package.json` / `vite.config.ts`（子路径 `buckyos/aiws_ext`）；`cli/modules/{aiws,pikg,pikg_protocol,share}.ts`；测试 `tests/aiws_ext.test.ts`（6）、`cli/tests/{aiws_test,pikg_test}.ts`（+4） |
 | Desktop | `ui/extensions/{ExtensionsDialog,InstanceForm}.tsx`、`ui/extensions/{controlSources,controls,extEvents}.ts`、`ui/extensions/declarative.tsx`（命名绑定）、`ui/canvas/{InsertCatalog.tsx,catalog.ts,CanvasView.tsx}`、`ui/sources/DataDetail.tsx`、`ui/shell/{MainMenu.tsx,WorkspaceShell.tsx,shellContext.ts}`、`api/{client,session,types}.ts`、`offline/replicaSession.ts`、`state/outline.ts`；文案 `i18n/aiworkspace/ext.ts`（en + zh）及 `canvas/data/shell.ts` |
 | Desktop 测试 | `tests/aiworkspace/extensions.spec.ts`（e2e）、`tests/dv/aiworkspace.extensions.spec.ts`（真实 Zone）、`tests/aiworkspace/start-backend.mjs`（`library` 桶）、`tests/datamodel/aiworkspace-i18n.test.ts`（新区域） |
-| 手册与文档 | `src/apps/jarvis_agent/agent/cmd_skills/{aiworkspace_template_dev,aiworkspace_run,buckyos_app_dev,buckyos_dev_release}.md`；`doc/pikg/{format,README}.md`；websdk `doc/modules/pikg.md`；设计文档 §8 状态 |
+| 手册与文档 | `src/apps/jarvis_agent/agent/cmd_skills/{aiworkspace_template_dev,aiworkspace_run,buckyos_app_dev,buckyos_dev_release}/SKILL.md`；`doc/pikg/{format,README}.md`；websdk `doc/modules/pikg.md`；设计文档 §8 状态 |
 
 ## 3. 实现中的调整
 

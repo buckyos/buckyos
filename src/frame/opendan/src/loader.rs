@@ -454,6 +454,12 @@ impl Loader {
                         }
                     },
                     objects: std::sync::OnceLock::new(),
+                    work: Some(crate::service::WorkStarter {
+                        sessions_dir: env.agent_root.join("sessions"),
+                        channels: env.channels.clone(),
+                        llm_context: config.llm_context.clone(),
+                        driver: env.who.clone(),
+                    }),
                     home: Home::new(
                         env.records.clone(),
                         env.owner_did.as_ref().map(|d| d.to_string()),

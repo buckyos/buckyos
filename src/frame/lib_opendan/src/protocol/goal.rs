@@ -59,6 +59,9 @@ pub const OPENDAN_EXTENSION: &str = "opendan";
 pub const BUILTIN_MEMORY_MAINTENANCE: &str = "memory_maintenance";
 /// `GoalCreate.key` the host seeds it with (unique per Agent directory).
 pub const BUILTIN_MEMORY_MAINTENANCE_KEY: &str = "builtin:memory_maintenance";
+/// `extensions.opendan.builtin` of the agent's skill crystallization Goal (off unless the owner switches it on).
+pub const BUILTIN_SKILL_CRYSTALLIZE: &str = "skill_crystallize";
+pub const BUILTIN_SKILL_CRYSTALLIZE_KEY: &str = "builtin:skill_crystallize";
 /// Capability that opens the `memory_consolidation_begin/commit` host tools
 /// and binds the drive to the consolidation lease.
 pub const CAP_MEMORY_CONSOLIDATION: &str = "memory_consolidation";
@@ -101,6 +104,10 @@ impl OpendanGoalExtension {
 
     pub fn has_capability(&self, cap: &str) -> bool {
         self.capabilities.iter().any(|c| c == cap)
+    }
+
+    pub fn skill_crystallize() -> Self {
+        Self { builtin: Some(BUILTIN_SKILL_CRYSTALLIZE.to_string()), policy_version: 1, capabilities: Vec::new(), records_perception: true }
     }
 
     pub fn is_builtin(&self, name: &str) -> bool {

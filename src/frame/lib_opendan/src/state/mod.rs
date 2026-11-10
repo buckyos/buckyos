@@ -32,7 +32,7 @@ pub use activity::{
 };
 pub use artifacts::{nearest_valid_base, DecideResult};
 pub use behaviors::{
-    check_cmd_skill_names, freeze_behavior, freeze_config, parse_behavior, BehaviorCatalog,
+    check_cmd_skill_names, check_named_skills, freeze_behavior, freeze_config, parse_behavior, BehaviorCatalog,
     FsBehaviorCatalog, MemBehaviorCatalog, CMD_SKILLS_DIR, ROLE_SUPPLEMENT_FILE,
 };
 pub use cognition::NotebookNote;

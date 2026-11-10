@@ -249,13 +249,21 @@ Goal 不存在 → `not_found`；Goal 已结束（achieved / archived）→ `goa
 
 ### Skills
 
-Agent State 门面的 `skills.*`：Agent 的 cmd_skills（`cmd_skills/<name>.md` + `tools/<name>/bin`）与 goal_skills（`goal_skills/<name>.md`）。服务挂在 `/kapi/opendan` 与 `/kapi/<agent_id>`（经 NodeGateway 可达）；用户侧 CLI 是 `buckyos skill list|install|remove --agent <agent_id>`，Agent 在 Session 里用 `agent-session skill …`（直接读写 AgentRoot；节点 session-runtime 上经 `session.helper` 转发，`skill install` 读不到控制侧的包，须在 Agent 自己的 runtime 上执行）。`skill list` 的每项带 `baseline`（`standard | extended`）与 `platforms`：Session 冻结 cmd_skills 时按其 session-runtime 声明的基线与平台过滤，不满足的不注入并在 `## Commands` 末尾列出原因。
+Agent 的 skills：work / ui skill（`cmd_skills/<name>/SKILL.md` + 可选 `references/`、`tools/<name>/`）、plan skill（`plan_skills/<name>/SKILL.md`）、goal skill（`goal_skills/<name>/SKILL.md`）。服务挂在 `/kapi/opendan` 与 `/kapi/<agent_id>`（经 NodeGateway 可达）。**只有 owner 能装、删、禁用和改 UI 集合**：入口是本服务的 WebUI Skills 页与 `buckyos skill … --agent <agent_id>`；任何 Agent 的 App 身份（含本 Agent 自己，不论权限模式）调下表的 owner 方法都被拒。Agent 在 Session 里只有 `agent-session skill list | status | revise`。Session 冻结手册时：被禁用或命令尚未装好的不取、点名时拒绝；`scope: ui` 的只进对话；不满足 session-runtime 基线 / 平台的不注入并在 `## Commands` 末尾列出原因；plan（行为声明 `[capabilities] cmd_skills = "candidates"`）不冻结手册，只在首个输入里看到 `<skill_candidates>`。状态记在 `.meta/skills_state.json`（`disabled` / `ui_cmd_skills` / `usage` / `install` / `audit`），安装记录在 `.meta/skills.json`。实现在 `libopendan::skills` 与 `src/home.rs`。
 
 | method | params | 说明 |
 |---|---|---|
-| `skills.list` | `{kind?: cmd \| goal}` | `SkillMeta[]`：`kind`、`name`、front matter 的 `description` / `requires`、`origin`（`package` / `installed` / `local`）、`install`（来源包、版本、内容 digest、`pikg_digest`、时间与安装者）、`tools` |
-| `skills.install` | `{package: {package, version, pikg_digest?, files: {<rel>: {content: base64, executable}}}, replace?}` | 文件只能是 `cmd_skills/<n>.md`、`goal_skills/<n>.md`、`tools/<cmd_skill>/…`；同名的模板 skill、本地 skill 或其他包的 skill 拒绝，`replace` 才替换；同一包再装即更新。记录写 `.meta/skills.json`，模板同步不覆盖也不删除已安装的 skill |
-| `skills.remove` | `{kind, name}` | 只删已安装的 skill（模板自带的会在下次同步回来） |
+| `skills.list` | `{kind?: work \| plan \| goal}` | `SkillMeta[]`：`kind`、`name`、`scope`、front matter 的 `description` / `requires` / `commands` / `baseline` / `platforms`、`origin`（`package` / `installed` / `imported` / `local`）、`install`、`tools`、`size`、`references`、`enabled`、`disabled`、`usage`、`install_state` |
+| `skills.state` / `skills.ui_get` | `{}` | 状态文件全文；UI 集合 `{names, source: state \| template, total_bytes, available}` |
+| `skills.status` | `{runtime_id?}` | 每个 work / ui skill 一条：`unmet`（基线 / 平台不满足的原因）、`commands`（`ready \| ready_system \| partial`、逐命令 `present / provided_by`、`recommended_packages`、`no_package`）、`install`（自装命令在该 runtime 上的记录）。当场探测，不落盘 |
+| `skills.install_plan` | `{package \| draft, runtime_id?}` | 不落盘：`skills`（含 `replaces`）、`risk {level, findings[{code, level, where, note}]}`、`plan_digest`、命令落点 `runtime_id` 与候选 `targets`、`blocked`、`command_status` |
+| `skills.install`（owner） | `{package \| draft, plan_digest, runtime_id?, replace?}` | `plan_digest` 不符或 `blocked` 非空拒绝。文件只能是 `<cmd_skills\|plan_skills\|goal_skills>/<n>/SKILL.md`、其 `references/…` 与 `tools/<work skill>/…`；带 `tools/<n>/install.toml` 的在落点 runtime 上跑脚本并核验命令，任一 runtime `ok` 后才启用。草稿装完即删，来源记为 `imported` |
+| `skills.remove`（owner） | `{kind, name}` | 只删已安装的（模板自带的用禁用）；先在装过的 runtime 上跑 `[uninstall.<os>]` |
+| `skills.set_enabled` / `skills.ui_set`（owner） | `{kind, name, enabled, reason?}` / `{names \| null}` | 禁用任何来源的 skill；设置新对话的手册集合（`scope` 含 `ui`、已启用，`null` 回到模板缺省） |
+| `skills.install_cmd` / `skills.check`（owner） | `{name, runtime_id}` / `{name, runtime_id?}` | 把自装命令追加装到另一个 runtime；重新核验（丢了的标 `stale`） |
+| `skills.import`（owner） | `{text, name?, scope?, source?, runtime_id?}` | 文本写入 `skills_drafts/.inbox/<id>/source.md`，起一个 `skill_import` Work 产出草稿；不安装。返回 `{session_id, inbox}` |
+| `skills.drafts` / `skills.draft_file` / `skills.draft_discard`（owner 才能丢弃） | `{}` / `{slug, file}` / `{slug}` | `skills_drafts/<slug>/` 下等 owner 确认的草稿 |
+| `skills.note_frozen` / `skills.revise` | Agent State 门面 | 冻结时宿主累计使用记录；Agent 改写自己的手册（`local` / `imported`）正文，旧文留在 `revisions/` |
 
 新建 Session 读取当时已安装的手册，运行中的 Session 保持冻结正文。模板 PIKG 若带 `agent_skills` 子包，node-daemon 以 `BUCKYOS_AGENT_SKILLS_PKG_DIR` 只读挂入，Loader 启动时与 `agent` 子包一样同步进 AgentRoot（模板 pinned 时不同步）。
 

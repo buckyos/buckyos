@@ -85,6 +85,24 @@ pub struct BehaviorCapabilities {
     /// workspace; the work sessions of its Todos write it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<super::config::WorkspaceAccess>,
+    /// What a session entered with this behavior does with the manuals named for it: `frozen` (default) takes them
+    /// into its prompt; `candidates` (a plan) only sees their names, to choose from for its Todos.
+    #[serde(default, skip_serializing_if = "CmdSkillsUse::is_frozen")]
+    pub cmd_skills: CmdSkillsUse,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CmdSkillsUse {
+    #[default]
+    Frozen,
+    Candidates,
+}
+
+impl CmdSkillsUse {
+    fn is_frozen(&self) -> bool {
+        *self == CmdSkillsUse::Frozen
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -195,7 +213,7 @@ impl BehaviorReply {
 pub const MAX_CMD_SKILLS: usize = 8;
 
 /// `prompt.frozen.cmd_skills[]`: a command manual of the session, frozen
-/// with its behaviors (`cmd_skills/<name>.md` without its front matter).
+/// with its behaviors (`cmd_skills/<name>/SKILL.md` without its front matter).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CmdSkill {
     pub name: String,
@@ -203,32 +221,186 @@ pub struct CmdSkill {
     /// Commands the manual relies on that the session's runtime was found without when the session froze.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_commands: Vec<String>,
+    /// The skill installs commands of its own and they are not on the session's runtime: where they are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub installed_on: Vec<String>,
 }
 
-/// Kind of an installed skill: a command manual (`cmd_skills/`) or a
-/// method a Goal uses (`goal_skills/`).
+/// Kind of a skill: a manual a work or UI session is given (`cmd_skills/`), a method a plan reads (`plan_skills/`), or
+/// a method a Goal uses (`goal_skills/`). Each skill is `<dir>/<name>/SKILL.md` with optional `references/`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillKind {
     #[default]
-    Cmd,
+    Work,
+    Plan,
     Goal,
 }
 
+/// The manual file of a skill inside its directory.
+pub const SKILL_MANUAL: &str = "SKILL.md";
+/// Files a manual points at, read on demand.
+pub const SKILL_REFERENCES: &str = "references";
+
 impl SkillKind {
+    pub const ALL: [SkillKind; 3] = [SkillKind::Work, SkillKind::Plan, SkillKind::Goal];
+
     pub fn as_str(self) -> &'static str {
         match self {
-            SkillKind::Cmd => "cmd",
+            SkillKind::Work => "work",
+            SkillKind::Plan => "plan",
             SkillKind::Goal => "goal",
         }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == text)
     }
 
     /// Directory of the AgentRoot holding skills of this kind.
     pub fn dir(self) -> &'static str {
         match self {
-            SkillKind::Cmd => "cmd_skills",
+            SkillKind::Work => "cmd_skills",
+            SkillKind::Plan => "plan_skills",
             SkillKind::Goal => "goal_skills",
         }
+    }
+
+    /// AgentRoot-relative path of the manual of skill `name`.
+    pub fn manual(self, name: &str) -> String {
+        format!("{}/{name}/{SKILL_MANUAL}", self.dir())
+    }
+}
+
+/// Which sessions a work skill is for (front matter `scope`): work sessions (`--cmd-skill`, a Todo's `--skill`), UI
+/// sessions (the owner's UI set), or both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum SkillScope {
+    #[default]
+    #[serde(rename = "work")]
+    Work,
+    #[serde(rename = "ui")]
+    Ui,
+    #[serde(rename = "ui,work")]
+    UiWork,
+}
+
+impl SkillScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkillScope::Work => "work",
+            SkillScope::Ui => "ui",
+            SkillScope::UiWork => "ui,work",
+        }
+    }
+
+    pub fn ui(self) -> bool {
+        self != SkillScope::Work
+    }
+
+    pub fn work(self) -> bool {
+        self != SkillScope::Ui
+    }
+
+    fn is_work(&self) -> bool {
+        *self == SkillScope::Work
+    }
+}
+
+/// Why and by whom a skill was disabled (`.meta/skills_state.json`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillDisabled {
+    #[serde(default)]
+    pub at_ms: u64,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// How often sessions were created with a manual (`usage["none"]`: work created without any).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillUsage {
+    #[serde(default)]
+    pub frozen: u64,
+    #[serde(default)]
+    pub last_ms: u64,
+    /// The latest sessions, newest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_sessions: Vec<String>,
+}
+
+/// Where the commands a skill installs by itself (`tools/<name>/`) stand.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillInstallStatus {
+    Installing,
+    #[default]
+    Enabled,
+    Failed,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillRuntimeStatus {
+    #[default]
+    Ok,
+    Failed,
+    Stale,
+}
+
+/// The commands of a skill on one runtime.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillRuntimeInstall {
+    pub status: SkillRuntimeStatus,
+    #[serde(default)]
+    pub at_ms: u64,
+    /// The commands the installation checked there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// `state/runtime_ops/<op_id>.json`: output of the script or the check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_id: Option<String>,
+    /// Written outside what the runtime keeps: checked again after a restart.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub volatile: bool,
+}
+
+/// What the owner accepted when a skill went in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillRiskAccepted {
+    pub level: String,
+    #[serde(default)]
+    pub accepted_by: String,
+    #[serde(default)]
+    pub accepted_at_ms: u64,
+    #[serde(default)]
+    pub plan_digest: String,
+}
+
+/// `.meta/skills_state.json` `install[<kind>:<name>]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillInstallState {
+    pub status: SkillInstallStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<SkillRiskAccepted>,
+    /// By canonical runtime id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub runtimes: BTreeMap<String, SkillRuntimeInstall>,
+    /// Where a session naming the skill runs when nothing else decides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_runtime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl SkillInstallState {
+    /// Runtimes its commands are installed on and found working.
+    pub fn ok_runtimes(&self) -> Vec<&str> {
+        self.runtimes.iter().filter(|(_, r)| r.status == SkillRuntimeStatus::Ok).map(|(id, _)| id.as_str()).collect()
     }
 }
 
@@ -238,13 +410,17 @@ impl SkillKind {
 pub struct SkillMeta {
     pub kind: SkillKind,
     pub name: String,
+    /// Work skills: the sessions it is for (front matter `scope`).
+    #[serde(default, skip_serializing_if = "SkillScope::is_work")]
+    pub scope: SkillScope,
     /// What the skill is for (front matter `description`).
     #[serde(default)]
     pub description: String,
     /// What it needs before it works (front matter `requires`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub requires: String,
-    /// `package` (the agent package) | `installed` (`skills.install`).
+    /// `package` (the agent package) | `installed` (a skill package) | `imported` (a draft the owner installed) |
+    /// `local` (a file on the AgentRoot nothing records).
     #[serde(default)]
     pub origin: String,
     /// An installed skill: the package it came from.
@@ -266,6 +442,26 @@ pub struct SkillMeta {
     /// would bring it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// Bytes of the manual's body: what a session that takes it carries in its prompt.
+    #[serde(default)]
+    pub size: u64,
+    /// Files under `references/`, read on demand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+    /// Off: no new session takes it (the owner disabled it, or its commands are not installed anywhere yet).
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<SkillDisabled>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SkillUsage>,
+    /// A skill that installs commands of its own: where they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_state: Option<SkillInstallState>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn standard_baseline() -> buckyos_api::RuntimeBaseline {
@@ -275,8 +471,9 @@ fn standard_baseline() -> buckyos_api::RuntimeBaseline {
 impl Default for SkillMeta {
     fn default() -> Self {
         Self {
-            kind: SkillKind::Cmd,
+            kind: SkillKind::Work,
             name: String::new(),
+            scope: SkillScope::Work,
             description: String::new(),
             requires: String::new(),
             origin: String::new(),
@@ -285,6 +482,12 @@ impl Default for SkillMeta {
             baseline: standard_baseline(),
             platforms: Vec::new(),
             commands: Vec::new(),
+            size: 0,
+            references: Vec::new(),
+            enabled: true,
+            disabled: None,
+            usage: None,
+            install_state: None,
         }
     }
 }
@@ -311,6 +514,56 @@ impl SkillMeta {
         }
         None
     }
+}
+
+impl SkillMeta {
+    /// Why no new session takes this skill (`None`: it may).
+    pub fn why_off(&self) -> Option<String> {
+        if self.enabled {
+            return None;
+        }
+        Some(match (&self.disabled, &self.install_state) {
+            (Some(d), _) if d.reason.is_empty() => "disabled by owner".to_string(),
+            (Some(d), _) => format!("disabled by owner: {}", d.reason),
+            (None, Some(i)) => match i.status {
+                SkillInstallStatus::Installing => "its commands are still being installed".to_string(),
+                _ => format!("its commands are not installed on any runtime{}", i.error.as_ref().map(|e| format!(": {e}")).unwrap_or_default()),
+            },
+            (None, None) => "not enabled".to_string(),
+        })
+    }
+}
+
+/// The `scope` of a work skill's front matter: `work` (default) | `ui` | `ui,work`.
+pub fn skill_scope(fields: &BTreeMap<String, String>) -> std::result::Result<SkillScope, String> {
+    let (mut ui, mut work) = (false, false);
+    for word in fields.get("scope").map(String::as_str).unwrap_or_default().split(',') {
+        match word.trim() {
+            "" => {}
+            "ui" => ui = true,
+            "work" => work = true,
+            other => return Err(format!("scope `{other}` is not ui | work")),
+        }
+    }
+    Ok(match (ui, work) {
+        (true, true) => SkillScope::UiWork,
+        (true, false) => SkillScope::Ui,
+        _ => SkillScope::Work,
+    })
+}
+
+/// What the front matter of a manual of `kind` must hold: fixed words only, and what only a work skill may declare.
+pub fn check_front_matter(kind: SkillKind, fields: &BTreeMap<String, String>) -> std::result::Result<(), String> {
+    skill_requirements(fields)?;
+    skill_scope(fields)?;
+    if kind != SkillKind::Work {
+        for key in ["scope", "commands"] {
+            if fields.get(key).is_some_and(|v| !v.trim().is_empty()) {
+                return Err(format!("a {} skill declares no `{key}`: it names no commands and is read, not frozen", kind.as_str()));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The `baseline` and `platforms` of a skill's front matter; an error names
@@ -356,6 +609,9 @@ pub struct SkillInstallRecord {
     pub installed_at_ms: u64,
     #[serde(default)]
     pub installed_by: String,
+    /// A draft the owner installed (`skill import`, crystallization): what it was made from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_from: Option<serde_json::Value>,
 }
 
 /// Split a skill manual into its front matter (`---` lines around
@@ -397,9 +653,12 @@ pub fn skill_meta(kind: SkillKind, name: &str, text: &str) -> SkillMeta {
         log::warn!("skill {name}: {e}; taken as baseline extended");
         (buckyos_api::RuntimeBaseline::Extended, Vec::new())
     });
+    let body = split_front_matter(text).1;
     SkillMeta {
         kind,
         name: name.to_string(),
+        scope: if kind == SkillKind::Work { skill_scope(&fields).unwrap_or_default() } else { SkillScope::Work },
+        size: body.len() as u64,
         description: fields.get("description").cloned().unwrap_or_default(),
         requires: fields.get("requires").cloned().unwrap_or_default(),
         baseline,
@@ -410,7 +669,7 @@ pub fn skill_meta(kind: SkillKind, name: &str, text: &str) -> SkillMeta {
 }
 
 /// `commands: ffmpeg, ffprobe` of a manual; what is no command name is left out.
-fn skill_commands_of(fields: &BTreeMap<String, String>) -> Vec<String> {
+pub fn skill_commands_of(fields: &BTreeMap<String, String>) -> Vec<String> {
     let mut commands: Vec<String> = fields
         .get("commands")
         .map(String::as_str)
@@ -686,6 +945,17 @@ pub struct FrozenPrompt {
     /// meet (baseline, platform): not frozen, reported with the reason.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unavailable_cmd_skills: Vec<UnavailableCmdSkill>,
+    /// A plan's candidates: manuals its creator suggests for the Todos. Shown in its first input, never frozen into
+    /// its own prompt and never handed on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_candidates: Vec<SkillCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillCandidate {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// A cmd_skill a session did not take, and why.

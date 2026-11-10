@@ -1397,7 +1397,8 @@ async fn the_jarvis_package_loads_and_answers() {
         // The UI reply is structured (`[reply]` of chat_route).
         serde_json::json!({ "reply": "你好", "topic": null, "artifacts": [] }).to_string()
     });
-    let mut env = w.env(llm, free_port()).await;
+    let port = free_port();
+    let mut env = w.env(llm, port).await;
     env.package_root = Some(package);
     let loader = Loader::start(env).await.unwrap();
     assert_eq!(loader.config.language, "zh");
@@ -1494,6 +1495,70 @@ async fn the_jarvis_package_loads_and_answers() {
     // A work session of the package is a plan session by default.
     let template = SessionTemplate::load("work", loader.agent.agent_root()).unwrap();
     assert_eq!(template.default_behavior.as_deref(), Some("plan_simple"));
+    // Skills of the package (skills system TODO): three kinds in the directory layout, a plan that only chooses
+    // manuals, the owner's methods over the service, and an import that starts a draft-writing work and installs nothing.
+    let plan = loader.agent.behaviors().get("plan_simple").await.unwrap().unwrap();
+    assert_eq!(plan.capabilities.cmd_skills, CmdSkillsUse::Candidates);
+    for name in ["skill_import", "skill_crystallize"] {
+        assert!(loader.agent.behaviors().get(name).await.unwrap().is_some(), "{name}");
+    }
+    assert!(!libopendan::goal::defaults(loader.agent.agent_root(), libopendan::goal::GOAL_CLASS).crystallize.enabled, "crystallization is the owner's to switch on");
+    let listed = rpc(port, "skills.list", json!({ "kind": "plan" })).await.unwrap();
+    let mut plans: Vec<&str> = listed.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+    plans.sort();
+    assert_eq!(plans, ["plan_content_production", "plan_research", "plan_software_change"]);
+    let ui_set = rpc(port, "skills.ui_get", json!({})).await.unwrap();
+    assert_eq!((ui_set["names"].clone(), ui_set["source"].clone()), (json!(["ui_core"]), json!("template")));
+    assert!(ui_set["available"].as_array().unwrap().contains(&json!("share")), "{ui_set}");
+    let status = rpc(port, "skills.status", json!({})).await.unwrap();
+    let status_of = |name: &str| status["skills"].as_array().unwrap().iter().find(|s| s["name"] == name).cloned().unwrap_or_else(|| panic!("{name} in {status}"));
+    assert_eq!(status_of("share")["commands"]["state"], "ready", "a manual without `commands` is listed too");
+    assert!(status_of("aigc_video")["commands"]["commands"].get("ffmpeg").is_some());
+
+    // Install the repository's sample package as the owner: plan first, then what the plan said.
+    use base64::Engine;
+    let sample = libopendan::skills::read_pikg(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../test/skills_pikg_sample/dapp_dist/hello-skills-0.1.0.pikg")).unwrap();
+    let planned = rpc(port, "skills.install_plan", json!({ "package": sample })).await.unwrap();
+    assert_eq!((planned["risk"]["level"].clone(), planned["runtime_id"].clone()), (json!("low"), json!("private")), "{planned}");
+    let refused = rpc(port, "skills.install", json!({ "package": sample, "plan_digest": "sha256:other" })).await.unwrap_err();
+    assert!(refused.to_string().contains("not the plan of this package"), "{refused}");
+    let installed = rpc(port, "skills.install", json!({ "package": sample, "plan_digest": planned["plan_digest"] })).await.unwrap();
+    assert_eq!(installed["skills"].as_array().unwrap().len(), 2, "{installed}");
+    assert!(w.root.join("cmd_skills/hello/SKILL.md").is_file() && w.root.join("plan_skills/hello_plan/SKILL.md").is_file());
+    let off = rpc(port, "skills.set_enabled", json!({ "name": "hello", "enabled": false, "reason": "trying" })).await.unwrap();
+    assert_eq!(off["enabled"], false);
+    let added = rpc(port, "skills.ui_set", json!({ "names": ["ui_core", "share"] })).await.unwrap();
+    assert_eq!(added["source"], "state");
+    assert_eq!(SessionTemplate::load("ui", loader.agent.agent_root()).unwrap().default_cmd_skills, ["ui_core", "share"]);
+    rpc(port, "skills.remove", json!({ "kind": "work", "name": "hello" })).await.unwrap();
+    assert!(!w.root.join("cmd_skills/hello").exists() && !w.root.join("tools/hello").exists());
+    assert!(rpc(port, "skills.remove", json!({ "kind": "work", "name": "ui_core" })).await.is_err(), "a package's manual is disabled, not removed");
+
+    // A draft on the AgentRoot is installed by its slug and is gone afterwards.
+    let draft = w.root.join("skills_drafts/howto");
+    std::fs::create_dir_all(draft.join("cmd_skills/howto")).unwrap();
+    std::fs::write(draft.join("cmd_skills/howto/SKILL.md"), "---\nname: howto\ndescription: how to do it\n---\nSteps.").unwrap();
+    std::fs::write(draft.join("draft.json"), json!({ "imported_from": { "digest": "sha256:1", "runtime_id": "private", "platform": "linux" }, "risk": "Reads files only." }).to_string()).unwrap();
+    let drafts = rpc(port, "skills.drafts", json!({})).await.unwrap();
+    assert_eq!(drafts[0]["slug"], "howto");
+    let planned = rpc(port, "skills.install_plan", json!({ "draft": "howto" })).await.unwrap();
+    let codes: Vec<&str> = planned["risk"]["findings"].as_array().unwrap().iter().map(|f| f["code"].as_str().unwrap()).collect();
+    assert!(codes.contains(&"imported_text") && codes.contains(&"author_note"), "{codes:?}");
+    let installed = rpc(port, "skills.install", json!({ "draft": "howto", "plan_digest": planned["plan_digest"] })).await.unwrap();
+    assert_eq!(installed["skills"][0]["origin"], "imported");
+    assert!(!draft.exists());
+
+    let import = rpc(port, "skills.import", json!({ "text": "# How to tidy notes\n1. list them\n2. merge duplicates\n", "name": "tidy_notes", "source": "notes.md" })).await.unwrap();
+    let inbox = import["inbox"].as_str().unwrap();
+    assert!(std::fs::read_to_string(w.root.join(inbox)).unwrap().contains("merge duplicates"));
+    let entry = loader.agent.sessions().lookup(import["session_id"].as_str().unwrap()).await.unwrap().unwrap();
+    let cfg = SessionDir::open(&entry.location).unwrap().config().unwrap();
+    assert_eq!(cfg.prompt.behavior.as_deref(), Some("skill_import"));
+    assert_eq!(cfg.prompt.frozen.as_ref().unwrap().cmd_skills.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["skill_authoring"]);
+    let first = serde_json::to_string(&cfg.prompt.initial_inputs).unwrap();
+    assert!(first.contains(inbox) && first.contains("tidy_notes"), "{first}");
+    assert!(!w.root.join("cmd_skills/tidy_notes").exists(), "an import installs nothing");
+    let _ = base64::engine::general_purpose::STANDARD.encode("");
     loader.shutdown().await;
 }
 
@@ -1809,9 +1874,9 @@ async fn loaded_info(w: &World) -> buckyos_api::AgentRuntimeInfo {
 async fn a_pinned_template_keeps_the_agentroot() {
     let mut w = World::new();
     let package = w._tmp.path().join("package");
-    std::fs::create_dir_all(package.join("cmd_skills")).unwrap();
+    std::fs::create_dir_all(package.join("cmd_skills/tip")).unwrap();
     std::fs::write(package.join("role.md"), "role v1").unwrap();
-    std::fs::write(package.join("cmd_skills/tip.md"), "tip v1").unwrap();
+    std::fs::write(package.join("cmd_skills/tip/SKILL.md"), "tip v1").unwrap();
     // Pinned from the start: the first load still installs the template.
     w.settings.template_auto_update = false;
     async fn start(w: &World, package: &std::path::Path, version: &str) -> Loader {
@@ -1830,7 +1895,7 @@ async fn a_pinned_template_keeps_the_agentroot() {
 
     // A new package version does not reach a pinned agent.
     std::fs::write(package.join("role.md"), "role v2").unwrap();
-    std::fs::write(package.join("cmd_skills/tip.md"), "tip v2").unwrap();
+    std::fs::write(package.join("cmd_skills/tip/SKILL.md"), "tip v2").unwrap();
     let mut stale = info.clone();
     stale.loaded_at = 0;
     w.records
@@ -1839,7 +1904,7 @@ async fn a_pinned_template_keeps_the_agentroot() {
         .unwrap();
     let loader = start(&w, &package, "2.0.0").await;
     assert_eq!(std::fs::read_to_string(w.root.join("role.md")).unwrap(), "role v1");
-    assert_eq!(std::fs::read_to_string(w.root.join("cmd_skills/tip.md")).unwrap(), "tip v1");
+    assert_eq!(std::fs::read_to_string(w.root.join("cmd_skills/tip/SKILL.md")).unwrap(), "tip v1");
     let started = Instant::now();
     let reloaded = loop {
         let now = records::info(w.records.as_ref()).await.unwrap().unwrap();

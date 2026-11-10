@@ -333,6 +333,8 @@ pub struct GoalHost {
     answers_checked: Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// The built-in consolidation Goal was seeded by this process.
     seeded: AtomicBool,
+    /// The skill crystallization Goal was.
+    seeded_crystallize: AtomicBool,
 }
 
 fn push(list: &mut Vec<GoalEventRecord>, r: GoalEventRecord) {
@@ -358,6 +360,7 @@ impl GoalHost {
             answered: Mutex::new(std::collections::BTreeSet::new()),
             answers_checked: Mutex::new(std::collections::HashMap::new()),
             seeded: AtomicBool::new(false),
+            seeded_crystallize: AtomicBool::new(false),
         }
     }
 
@@ -365,12 +368,19 @@ impl GoalHost {
     /// `[session.goal.maintenance] enabled` (idempotent across restarts by
     /// its key; a failure is retried at the next tick).
     async fn seed_builtin(&self, sup: &Supervisor) {
-        if self.seeded.load(Ordering::SeqCst) {
-            return;
-        }
         let agent = sup.host.agent.as_ref();
         let d = defaults(agent.agent_root(), &self.options.class);
-        if !d.maintenance.enabled {
+        if d.crystallize.enabled && !self.seeded_crystallize.load(Ordering::SeqCst) {
+            let create = maintenance::skill_crystallize_create(d.crystallize.behavior.clone(), agent.agent_did());
+            match agent.goals().create(&create, &crate::state::GoalCaller::owner(agent.agent_did())).await {
+                Ok(g) => {
+                    log::info!("goals: skill crystallization goal {}", g.goal_id);
+                    self.seeded_crystallize.store(true, Ordering::SeqCst);
+                }
+                Err(e) => self.error(BUILTIN_SKILL_CRYSTALLIZE, format!("seeding: {e}")),
+            }
+        }
+        if self.seeded.load(Ordering::SeqCst) || !d.maintenance.enabled {
             return;
         }
         match maintenance::seed(agent.goals(), agent.agent_did(), &d.maintenance).await {
@@ -558,7 +568,9 @@ impl GoalHost {
         let agent = sup.host.agent.as_ref();
         let goals = agent.goals();
         let builtin = goal.is_builtin(BUILTIN_MEMORY_MAINTENANCE);
-        if builtin && !defaults(agent.agent_root(), &self.options.class).maintenance.enabled {
+        let switched_off = (builtin && !defaults(agent.agent_root(), &self.options.class).maintenance.enabled)
+            || (goal.is_builtin(BUILTIN_SKILL_CRYSTALLIZE) && !defaults(agent.agent_root(), &self.options.class).crystallize.enabled);
+        if switched_off {
             // Switched off: no session, no checks; the Goal and the
             // cognitions stay as they are.
             let mut schedule = schedule_of(goals, &goal.goal_id).await?;
