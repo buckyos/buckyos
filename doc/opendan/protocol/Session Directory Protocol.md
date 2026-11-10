@@ -2,6 +2,8 @@
 
 版本 6 · 2026-10-10（2026-10-16 补 TodoList：`todos.json`、`todo_view_rev`；2026-11-02 删 Todo 执行器的 `call.todo` / `entry.todo`，补 `paused` / `resume_run`；同日补 `retry`（可重试错误的退避与上限）与窗口上限）· 由 `libopendan` 反写（`src/protocol/{config,behavior,report,state,summary,worklog,misc,input}.rs`）。Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)；本文的 Turn 规则均为当前实现。
 
+本文定义持久字段、状态提交与恢复。stop / pause / resume 的控制语义、Goal 生命周期与子工作级联统一见 [Session Control Protocol](<Session Control Protocol.md>)；下文保留这些行为对应的存储表示，不另设控制规则。
+
 ## 1. 目录结构
 
 ```text
@@ -224,7 +226,7 @@ Schema：`schema/session_state.schema.json`。
 - `outbox`（出站，驱动者配置了出站 sink 时才产生）：Turn 关闭的那次提交里，由 `reply` 给出信封、sink 填内容，生成完整的 MsgObject 连同幂等键写入，`status = pending`；`created_at_ms` 在这里定死。提交之后驱动者把 `pending` 条目按序交给 sink：成功 → `sent`（记 `msg_id` / `deliveries`）；被拒 → `failed`（记 `error`，不重试）；没送到 → 保持 `pending`，`attempts + 1`，退避后由之后的 drive 原样重发（同一个键、同一个 MsgObject，ObjId 不变）。发送失败不让 Turn 失败，也不阻塞后续输入；排在它后面的条目等它。`channels.outbound` 存在而 `reply` 的 `to / to_session / kind` 与它不一致时，条目直接记为 `failed`（`route_mismatch`），不发送。有父 Session 的 Session、以及回复对象是 Agent 自己时不产生条目。已结束（`sent` / `failed`）的条目保留最近 16 条供展示。
 - `outbox[].purpose`（可缺省，缺省为 `reply`）与占位：`reply` 是 Turn 的回复作为独立消息；`placeholder` 是 Turn 进行中发出的占位（键 `<sid>:<turn>:placeholder`）；`final_edit` 是以 `relates_to = {rel: edit, target: <占位 ObjId>}` 替换占位的回复。占位只在 Turn 绑定了 task、由消息打开、打开超过 `placeholder_delay`（默认 3 秒）或已发生首次工具调用、且 sink 给出占位消息（宿主有文案、目标可编辑）时产生。Turn 关闭时：占位从未交给 sink（`pending` 且 `attempts = 0`）则撤销占位、回复照常独立发出；否则回复是 `final_edit`，sink 没有正文可给时用结束摘要收尾。占位被拒或放弃后，同一 Turn 的 `final_edit` 改回 `reply`。Turn 的 task id 以顶层扩展字段 `agent_task = {task_id}` 写在锚点消息上（占位，或没有占位时的回复本身），edit 不带。
 - `turn_tasks`（驱动者配置了 task 钩子 `TurnTaskSink` 时才产生）：`{turn, task_id, has_msg, opened_at_ms, placeholder?, closed?, summary?, error?, reported}`。Turn 打开后幂等创建 task（键 = `(session_id, turn)`）并写入绑定；关闭 Turn 的那次提交写 `closed`（TurnStatus）与结果摘要；task 服务收下终态后 `reported = true`，没送到则由之后的 drive 重试。绑定独立于 outbox 的清理，已上报的保留最近 64 条。task 创建失败的 Turn 没有绑定，也就没有占位，回复照常。子 Session 的 `origin.parent_task` 取自创建它时父 Session 打开的 Turn 的绑定，它的每个 Turn 的 task 都以此为父。
-- `run_state` 迁移：`created → ready ⇄ running ⇄ waiting → finished`；进入 finished 后不能回到 running。stop / decide 只能由驱动者执行，其它参与方投递 control。
+- `run_state` 迁移：`created → ready ⇄ running ⇄ waiting → finished`；进入 finished 后不能回到 running。`paused` 是独立的控制字段，不是 `run_state` 的一个值；run.json 的 `status = paused` 也可能只是等待依赖或上下文交接，不能据此判定 Session 被用户暂停。控制只能由驱动者执行，其它参与方投递 control，作用域与合法状态见 [Session Control Protocol](<Session Control Protocol.md>)。
 - `goal`（Goal Session）：首次推进时从 `state/goals/<id>/state.json` 载入（文件不存在 → 初始 Goal State；文件仍是更早的 epoch → 宿主尚未准备，拒绝推进）。之后 Goal State 只在本 Session 的提交里改变（`state.rev + 1`）：打开 Activation 的 receipt（`extra.goal_activation`）写入 `activation`；消费某个 Work 的结束（`_child` finished）把它记入 `state.absorbed` 与 `activation.absorbed`；`control(goal_skills)` 改 `state.current_skills`；关闭 Turn 的那次提交取出 `activation`、按 Goal 结果更新 Goal State、把 Activation 记录放进 `unwritten`。提交之后驱动者发布（`write_state`，再按 `(epoch, seq)` 追加 `unwritten`），最后提交 `published_rev` 与清空的 `unwritten`；中途崩溃由之后的 drive 补写，只写一次、不重新推理（fixture 16）。`ending` 由 Goal 的状态闸门写入（Goal 归档 / 达成 / 进入新 epoch），随后按 `stop_requested` 的路径在下一个提交点结束 Session（`outcome` 取 `ending.outcome`；`cascade = false` 时不向子 Session 投递 stop）。
 
 **逻辑 Turn**（当前实现）：Turn = AgentSession 的一次逻辑 Input → result，与 run、`LLMContext` Outcome、输入批次 `(run_id, input_seq)` 都不一一对应，不能用 run 数或 Outcome 数推算 Turn 数。
@@ -264,7 +266,7 @@ Schema：`schema/session_state.schema.json`。
 | assistant_message | 同上（只用于 function call run） | run_id, turn, assistant, tool_calls[{call_id, tool, args(键排序), effect}]：一次模型 response（一个 Round）及其原生工具调用；不是 Step |
 | step | 同上（只用于 behavior run） | run_id, turn, step_index, behavior?, assistant, actions[{call_id, tool, args(键排序), effect}], correction?（解析失败 / 策略拒绝产生的合成纠错 Step 为 true，缺省 false） |
 | action_result | 同上 | run_id, turn, call_id, status(ok/error/unresolved/cancelled), result：原生工具结果（function call，`[not executed]` / `[unresolved…` 记为 unresolved，`[cancelled]` 记为 cancelled）或 action 结果（behavior） |
-| outcome | run 结束 / 挂起 / 保活 / 中途重写 | run_id, turn, kind（run 结束：done/wait/process_done/budget/error/stopped；run 为它启动的工作保活：wait；process 挂起：suspended；中途重写：context_rewritten）, next_behavior?, report?。保留 run 的其它结果（上下文上限暂停、中断、可重试错误）不写 outcome |
+| outcome | run 结束 / 挂起 / 保活 / 中途重写 | run_id, turn, kind（run 结束：done/wait/process_done/budget/error/stopped；run 为它启动的工作保活：wait；显式暂停：paused；process 挂起：suspended；中途重写：context_rewritten）, next_behavior?, report?。其它可恢复挂起的快照与恢复规则见 §7、§10；outcome 描述本段执行的结局，不单独决定 Session 是否暂停或 Turn 是否关闭 |
 | turn_ended | 关闭 Turn 的同一次提交 | run_id（stop 时没有 run 则为空串）, turn, status(completed/failed/budget_exhausted/stopped), at_ms |
 | compaction | 生成新 summary.json | summary_start_seq, made_by |
 | decide | 应用 decide | decision, by, report |

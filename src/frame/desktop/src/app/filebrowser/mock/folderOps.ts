@@ -63,5 +63,11 @@ export function registerMockFolderOps() {
       }, target, options)
     },
     downloadUrl() { return null },
+    async readContent(path) {
+      await mockDelay(20, 60)
+      const entry = mockEntryByPath(path)
+      if (!entry || entry.kind === 'folder') throw operationError('NOT_FOUND', 'This file no longer exists')
+      return new Blob([`mock content of ${path}\n`])
+    },
   })
 }

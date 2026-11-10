@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import { selectDialog, selectGoto } from '../fixtures/selectDialog'
 
 async function setup(page: Page) {
   await page.setViewportSize({ width: 1440, height: 1000 })
@@ -37,9 +38,8 @@ test('mock recursive failure discloses children and retry reuses completed copie
   })
   await win.getByRole('cell', { name: 'copy-tree', exact: true }).click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Copy to…', exact: true }).click()
-  const target = page.getByTestId('target-dialog')
-  await target.getByRole('textbox', { name: 'Destination' }).fill('/home/Pictures')
-  await target.getByRole('button', { name: 'Go', exact: true }).click()
+  const target = selectDialog(page)
+  await selectGoto(target, '/home/Pictures')
   await target.getByRole('button', { name: 'Copy here', exact: true }).click()
   await expect(win.getByTestId('batch-results')).toContainText('2 failed')
   const before = await page.evaluate(async () => (await import('/src/app/filebrowser/mock/' + 'data.ts')).mockEntryByPath('/home/Pictures/copy-tree/A.txt').id)

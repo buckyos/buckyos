@@ -128,7 +128,89 @@ type ShareDialogResult =
 
 ## sysdlg/select
 
-选择一个系统中已经保存的 File / NamedObject
+系统唯一的文件选择器：应用需要用户挑文件、挑文件夹，或者决定把文件存到哪里时，都拉起它。内容主要来自 Zone；
+调用方允许时也可以来自本机。它不离开当前页面，选完后原界面的草稿、滚动位置和焦点都还在。实现见
+[BuckyOS 系统对话框实现方案](../doc/desktop/BuckyOS%20系统对话框实现方案.md)。
+
+### 拉起方式
+
+| 调用方 | 调用 |
+|---|---|
+| Desktop 内置应用 | `useSystemDialog().open('sysdlg/select', params)` |
+| 桌面窗口里的 App、独立标签页里的 App | SDK 的 `AppFrameClient.selectContent(params)`。在桌面窗口里由 Shell 在该窗口上画对话框；在独立标签页里，SDK 在 App 页面上盖一层系统页 `/embed/sysdlg/select` |
+
+没有独立 URL。外站不能拉起它。
+
+### 拉起参数
+
+```ts
+interface SelectDialogParams {
+  /** open：选已有的文件；folder：选一个文件夹；save：选文件夹并给出文件名。缺省 open。 */
+  mode?: 'open' | 'folder' | 'save'
+  title?: string
+  confirmLabel?: string
+  /** 起始位置。给文件夹就打开它；给文件就打开它所在的文件夹并选中它。 */
+  start?: TransferableContentRef
+  multiple?: boolean
+  limit?: number
+  accept?: ContentSelector[]
+  writable?: boolean
+  exclude?: TransferableContentRef[]
+  suggestedName?: string
+  allowLocal?: boolean
+}
+```
+
+| 参数 | 限制与语义 |
+|---|---|
+| title、confirmLabel | 分别最多 80、40 字符。缺省按模式显示“选择文件”“选择文件夹”“保存到” |
+| start | 只接受 `cyfs:///…` 路径。缺省是该调用方上次确认的文件夹，再缺省是 home。位置不存在或无权访问时退回 home |
+| multiple、limit | 只用于 open。`limit` 1–500，缺省 100 |
+| accept | 只用于 open，最多 16 条，命中任意一条即可选。按扩展名推断类型，不读文件内容。不命中的文件照常显示但不可选 |
+| writable | 只用于 folder：只允许选可以写入的文件夹 |
+| exclude | 用于 folder、save，最多 1000 条：这些文件夹及其下面的位置不能作为目标（移动文件夹时排除它自身） |
+| suggestedName | 只用于 save：建议的文件名，不合法时忽略 |
+| allowLocal | 用于 open、folder：是否也允许选本机的文件或文件夹。缺省 false。save 和带 `writable` 的 folder 忽略它 |
+
+模式之外的字段被忽略，未知字段被拒绝。
+
+### 流程
+
+- 左侧是可浏览的位置，右侧是当前位置的路径和列表。open 可以浏览文件夹、“最近”和集合；folder、save 只显示真实
+  文件夹，并且只有可写时才能确认。
+- 多选跨文件夹保留；达到 `limit` 后其余条目不可选。
+- save 确认时检查“文件夹 + 文件名”是否已存在，已存在则在对话框内询问是否替换。选择器不创建也不写入文件。
+- folder 和 save 可以新建文件夹。
+- 传了 `allowLocal` 时多一个“本机”入口：点它弹出操作系统的选择器，选完后对话框立即以这些本机条目结束，此前在
+  Zone 里勾选的条目被放弃。选择器不读取、不上传本机文件。
+- 另一个 App 拉起时，标题下显示该 App 的名称（取自系统的应用清单）。
+- 取消、按 Esc、关掉对话框都返回 `cancelled`。
+
+### Dialog 返回值
+
+```ts
+type SelectDialogResult =
+  | { action: 'selected'; items: SelectedContent[] }
+  | { action: 'save'; parent: TransferableContentRef; name: string; overwrite: boolean }
+  | { action: 'cancelled' }
+
+type SelectedContent =
+  | { origin: 'zone'; kind: 'file' | 'folder'; source: TransferableContentRef; objId?: string; hints: ContentHints }
+  | { origin: 'local'; kind: 'file'; file: File; hints: ContentHints }
+  | { origin: 'local'; kind: 'folder'; name: string; files: Array<{ file: File; relativePath: string }> }
+```
+
+- 一次结果里的条目要么全部来自 Zone，要么全部来自本机。没有设 `allowLocal` 的调用方只会收到 Zone 条目。
+- `source` 是用户选中的位置，以后内容变了它跟着变；`objId` 是确认那一刻的内容，拿得到才有。目前只有本身就是对象
+  的条目带 `objId`；需要对象 ID 的调用方用 SDK 的 `ensureObjId`。
+- `save` 的 `overwrite: true` 表示该名字已存在并且用户同意替换。写入由调用方完成。
+- 返回值不包含 token 和下载地址。选择器不发放访问授权：调用方用自己的会话读写选中的内容。
+
+### 已知缺口
+
+- Zone 文件的 `ensureObjId` 依赖 nfs_server 的 `snapshot`，尚未提供；因此 App Service 安装向导和 MessageHub 的
+  “从 Zone 选择”还没有接入。
+- 搜索和预览不在这一版。
 
 ## sysdlg/request_do
 

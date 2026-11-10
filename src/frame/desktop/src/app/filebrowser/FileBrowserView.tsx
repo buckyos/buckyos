@@ -49,12 +49,12 @@ import { DeleteDialog, ConflictDialog, BatchResults } from './dialogs/OperationD
 import type { DeleteRequest } from './dialogs/OperationDialogs'
 import { operationFeedback, useOperationFeedback } from './data/operationFeedback'
 import type { BatchTask } from './data/operationFeedback'
-import { MoveTargetDialog } from './dialogs/MoveTargetDialog'
 import { PermissionsDialog } from './dialogs/PermissionsDialog'
 import type { PermissionsRequest } from './dialogs/PermissionsDialog'
-import type { TargetRequest } from './dialogs/MoveTargetDialog'
 import { commandState } from './menu/commands'
-import { SHARE_DIALOG_PATH, useSystemDialog } from '../../sysdlg'
+import { SELECT_DIALOG_PATH, SHARE_DIALOG_PATH, useSystemDialog } from '../../sysdlg'
+import type { SelectedContent } from 'buckyos/content'
+import { classifyFileKind } from './data/fileKinds'
 import './filebrowser.css'
 import type { FileItem } from './data/FolderReader'
 import { installFileBrowserData } from './data/install'
@@ -165,7 +165,6 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null)
   const { batchTask, conflictRequest } = useOperationFeedback()
   const { setBatchTask } = operationFeedback
-  const [targetRequest, setTargetRequest] = useState<TargetRequest | null>(null)
   const [permissionsRequest, setPermissionsRequest] = useState<PermissionsRequest | null>(null)
   const systemDialog = useSystemDialog()
   const busyRef = useRef(false)
@@ -665,13 +664,31 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
   }
 
   const moveSelected = (pane: BrowserPane, entries: FileEntry[], target: string, clip?: ClipboardState | null) => runBatch(pane, entries.map(itemOf), 'move', target, clip)
-  const requestCopy = (pane: BrowserPane, entries: FileEntry[]) => setTargetRequest({ entries, copy: true, initial: dfsPathOf(pane.currentUrl) ?? '/home', submit: (path) => void runBatch(pane, entries.map(itemOf), 'copy', path) })
-  const requestMove = (pane: BrowserPane, entries: FileEntry[]) => setTargetRequest({ entries, initial: dfsPathOf(pane.currentUrl) ?? '/home', submit: (path) => void moveSelected(pane, entries, path) })
+  const zonePath = (item: SelectedContent) => item.origin === 'zone' && item.source.kind === 'cyfs-path' ? item.source.path.slice('cyfs://'.length) : null
+  const pickDestination = async (pane: BrowserPane, entries: FileEntry[], copy: boolean): Promise<string | null> => {
+    const result = await systemDialog.open(SELECT_DIALOG_PATH, {
+      mode: 'folder', writable: true,
+      start: { kind: 'cyfs-path', path: normalizeCyfsPath(dfsPathOf(pane.currentUrl) ?? '/home') },
+      title: `${copy ? t('filebrowser.actions.copyTo', 'Copy to') : t('filebrowser.actions.moveTo', 'Move to')} · ${entries.length}`,
+      confirmLabel: copy ? t('filebrowser.operation.copyHere', 'Copy here') : t('filebrowser.operation.moveHere', 'Move here'),
+      exclude: entries.filter((entry) => entry.kind === 'folder' && entry.path.startsWith('/')).slice(0, 1000).map((entry) => ({ kind: 'cyfs-path' as const, path: normalizeCyfsPath(entry.path) })),
+    }, { id: 'files' })
+    return result.action === 'selected' ? zonePath(result.items[0]) : null
+  }
+  const requestCopy = (pane: BrowserPane, entries: FileEntry[]) => { void pickDestination(pane, entries, true).then((path) => { if (path) void runBatch(pane, entries.map(itemOf), 'copy', path) }) }
+  const requestMove = (pane: BrowserPane, entries: FileEntry[]) => { void pickDestination(pane, entries, false).then((path) => { if (path) void moveSelected(pane, entries, path) }) }
   const requestExisting = (pane: BrowserPane) => {
     const url = pane.currentUrl
-    setTargetRequest({ entries: [], initial: '/home', references: true, submit: (_, entries) => {
-      if (entries?.length) void runBatch(pane, entries.map(itemOf), 'add-ref', url)
-    } })
+    void systemDialog.open(SELECT_DIALOG_PATH, {
+      mode: 'open', multiple: true, title: t('filebrowser.operation.addExisting', 'Add existing files'), confirmLabel: t('filebrowser.operation.addReferences', 'Add references'),
+    }, { id: 'files-references' }).then((result) => {
+      if (result.action !== 'selected') return
+      const entries = result.items.flatMap((item): FileEntry[] => {
+        const path = zonePath(item)
+        return path ? [{ id: path, name: item.origin === 'zone' && item.hints.name || path.split('/').pop() || path, kind: classifyFileKind(path), path, modifiedAt: '', sizeBytes: item.origin === 'zone' ? item.hints.size : undefined }] : []
+      })
+      if (entries.length) void runBatch(pane, entries.map(itemOf), 'add-ref', url)
+    })
   }
   const pasteInto = (pane: BrowserPane) => {
     if (!clipboard) return
@@ -1045,7 +1062,7 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
   } : null)
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
-    if ((event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"], [role="dialog"]') || namePrompt || deleteRequest || targetRequest || conflictRequest) return
+    if ((event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"], [role="dialog"]') || namePrompt || deleteRequest || conflictRequest) return
     const pane = focusedPane
     const items = [...pane.selectedItemsMap.values()]
     const ctx = contextFor(pane, items)
@@ -1115,7 +1132,6 @@ export function FileBrowserView({ windowId, openRequest }: { windowId?: string; 
     <DeleteDialog request={deleteRequest} onClose={() => setDeleteRequest(null)} />
     <ConflictDialog request={conflictRequest?.ownerId === windowId ? conflictRequest : null} />
     <CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} />
-    {targetRequest && <MoveTargetDialog request={targetRequest} onClose={() => setTargetRequest(null)} />}
     {permissionsRequest && <PermissionsDialog key={permissionsRequest.path} request={permissionsRequest} onClose={() => setPermissionsRequest(null)} />}
     <BatchResults task={batchTask?.ownerId === windowId ? batchTask : null} onClose={() => setBatchTask(null)} />
     {dragTarget && <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-[color:var(--cp-accent)] bg-[color:var(--cp-surface)]/90 p-6">{t('filebrowser.operation.dropDestination', 'Drop into {{path}}', { path: displayPath(dragTarget) })}</div>}

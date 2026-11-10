@@ -97,6 +97,8 @@ export interface StoryEntry {
 export interface FileEntry {
   copyRef?: string
   id: FileEntryId
+  /** Object ID of the content, only when the entry itself is an object (the listing carried one). */
+  objId?: string
   operations?: import('./data/schemas').EntryOperations
   /** The signed-in user's effective permission, when the backend reports it. */
   accessLevel?: import('./data/permissions').AccessLevel

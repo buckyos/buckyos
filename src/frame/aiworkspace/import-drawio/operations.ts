@@ -21,6 +21,26 @@ export interface BuildTarget {
   /** Uploaded images by plan image key; absent or null → the item's fallback. */
   assets: Map<string, UploadedAsset | null>
   newId?: (prefix: string) => string
+  /** A multi-page import's keys for this page (from `allocateKeys`): replace `afterKey` / `contentAfterKey`. */
+  keys?: PageKeys
+}
+
+/** One page's order keys: its top-level items and its image data, in plan order. */
+export interface PageKeys { top: string[]; content: string[] }
+
+/** The images of a plan that become data entities (the rest fall back to shapes). */
+const uploadedImages = (plan: PagePlan, assets: Map<string, UploadedAsset | null>) =>
+  plan.items.filter((i) => i.type === 'asset' && i.image && assets.get(i.image.key))
+
+/** The keys of a multi-page import, one allocation per parent for all pages. Keying each page after the last key
+ * of the page before grows the keys by about a character every two pages: past the core's 64 after ~130 pages
+ * with pictures (the content folder) or ~320 pages (the Surface), and every batch after that is refused. */
+export function allocateKeys(plans: PagePlan[], assets: Map<string, UploadedAsset | null>, afterKey: string | null, contentAfterKey: string | null): PageKeys[] {
+  const needs = plans.map((plan) => ({ top: plan.items.filter((i) => i.parent === null).length, content: uploadedImages(plan, assets).length }))
+  const top = keysAfter(afterKey, needs.reduce((n, p) => n + p.top, 0))
+  const content = keysAfter(contentAfterKey, needs.reduce((n, p) => n + p.content, 0))
+  let t = 0, c = 0
+  return needs.map((need) => ({ top: top.slice(t, (t += need.top)), content: content.slice(c, (c += need.content)) }))
 }
 
 /** An operation of the commit API (`entity.create`); typed loosely here, checked by the core. */
@@ -64,11 +84,11 @@ export function buildOperations(plan: PagePlan, target: BuildTarget): BuiltPage 
   for (const item of plan.items) { const list = siblings.get(item.parent) ?? []; list.push(item); siblings.set(item.parent, list) }
   const orderKey = new Map<string, string>()
   for (const [parent, list] of siblings) {
-    const keys = keysAfter(parent === null ? target.afterKey : null, list.length)
+    const keys = parent === null && target.keys ? target.keys.top : keysAfter(parent === null ? target.afterKey : null, list.length)
     list.forEach((item, i) => orderKey.set(item.key, keys[i]))
   }
-  const images = plan.items.filter((i) => i.type === 'asset' && i.image && target.assets.get(i.image.key))
-  const contentKeys = keysAfter(target.contentAfterKey, images.length)
+  const images = uploadedImages(plan, target.assets)
+  const contentKeys = target.keys?.content ?? keysAfter(target.contentAfterKey, images.length)
   const absOf = (key: string | null): Point => {
     if (key === null) return { x: 0, y: 0 }
     const p = byKey.get(key)

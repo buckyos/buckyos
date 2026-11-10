@@ -51,6 +51,7 @@ export interface WindowDialogApi {
   ) => Promise<TResult | undefined>
   permissions: WindowDialogPermissions
   stackDepth: number
+  surface: WindowDialogSurface
 }
 
 export interface WindowDialogPermissions {
@@ -326,6 +327,7 @@ export function WindowDialogProvider({
         }),
       permissions: stablePermissions,
       stackDepth,
+      surface,
     }),
     [stablePermissions, stackDepth, surface],
   )
@@ -347,6 +349,11 @@ export function WindowDialogProvider({
       </>
     </WindowDialogContext.Provider>
   )
+}
+
+/** The window's dialog layer, or null on a page that has none (a Workspace's own-origin page, an embed page). */
+export function useOptionalWindowDialog() {
+  return useContext(WindowDialogContext)
 }
 
 export function useWindowDialog() {

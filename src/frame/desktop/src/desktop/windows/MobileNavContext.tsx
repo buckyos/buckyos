@@ -13,7 +13,7 @@ interface MobileNavState {
 }
 
 interface MobileNavController {
-  setBackHandler: (handler: (() => void) | null) => void
+  setBackHandler: (id: symbol, handler: (() => void) | null, remove?: boolean) => void
   setTitleOverride: (override: MobileTitleOverride | null) => void
 }
 
@@ -32,13 +32,18 @@ const MobileNavControllerContext = createContext<MobileNavController>({
  * Provider that lives in DesktopRoute, shared between StatusBar and MobileWindowSheet.
  */
 export function MobileNavProvider({ children }: { children: React.ReactNode }) {
-  const handlerRef = useRef<(() => void) | null>(null)
+  // Registered handlers in mount order; the latest one (a dialog over an app) handles Back.
+  const handlersRef = useRef<Array<{ id: symbol; handler: (() => void) | null }>>([])
   const [canGoBack, setCanGoBack] = useState(false)
   const [titleOverride, setTitleOverrideState] = useState<MobileTitleOverride | null>(null)
 
-  const setBackHandler = useCallback((handler: (() => void) | null) => {
-    handlerRef.current = handler
-    setCanGoBack(handler !== null)
+  const setBackHandler = useCallback((id: symbol, handler: (() => void) | null, remove = false) => {
+    const slots = handlersRef.current
+    const index = slots.findIndex((slot) => slot.id === id)
+    if (remove) { if (index >= 0) slots.splice(index, 1) }
+    else if (index >= 0) slots[index].handler = handler
+    else slots.push({ id, handler })
+    setCanGoBack(slots.some((slot) => slot.handler !== null))
   }, [])
 
   const setTitleOverride = useCallback((override: MobileTitleOverride | null) => {
@@ -46,7 +51,7 @@ export function MobileNavProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const goBack = useCallback(() => {
-    handlerRef.current?.()
+    handlersRef.current.findLast((slot) => slot.handler !== null)?.handler?.()
   }, [])
 
   // Both context values must be referentially stable across re-renders of the
@@ -85,10 +90,12 @@ export function useMobileNavState() {
 export function useMobileBackHandler(handler: (() => void) | null) {
   const { setBackHandler } = useContext(MobileNavControllerContext)
 
+  const [id] = useState(() => Symbol('back'))
+
+  useEffect(() => () => setBackHandler(id, null, true), [id, setBackHandler])
   useEffect(() => {
-    setBackHandler(handler)
-    return () => setBackHandler(null)
-  }, [handler, setBackHandler])
+    setBackHandler(id, handler)
+  }, [handler, id, setBackHandler])
 }
 
 /**

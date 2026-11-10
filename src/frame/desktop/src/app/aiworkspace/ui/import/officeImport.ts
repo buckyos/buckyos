@@ -11,7 +11,7 @@
  *             its file (§5.2, Q12)
  * Cancelling before the first commit leaves the workspace untouched; a refused batch stops and says how far it got. */
 
-import { batches, buildOperations, ImportReport, type ImportOp, type UploadedAsset } from '@drawio/mod'
+import { allocateKeys, batches, buildOperations, ImportReport, type ImportOp, type UploadedAsset } from '@drawio/mod'
 import { keysAfter } from '@drawio/keys'
 import { buildDocOperations, fileBaseOf, sizedBatches, type CropRequest, type DocPlan, type EncodedImage, type OfficePagePlan, type RasterRequest } from '@office/mod'
 import { gridOrigins, stageOf } from '@pdf/layout'
@@ -407,13 +407,11 @@ async function importPptx(store: WorkspaceStore, reader: OfficeReader, source: O
   const origins = gridOrigins(sizes, Math.max(1, Math.min(choices.columns, 12)))
   const all: ImportOp[] = []
   const frames: string[] = []
-  let afterKey: string | null = null
+  const keys = allocateKeys(plans, assets, null, contentAfter)
   for (const [i, plan] of plans.entries()) {
     const origin = { x: origins[i].x + MARGIN, y: origins[i].y + MARGIN }
-    const built = buildOperations(plan, { parentId: surfaceId, origin, afterKey, contentFolderId: folderId, contentAfterKey: contentAfter, assets })
+    const built = buildOperations(plan, { parentId: surfaceId, origin, afterKey: null, contentFolderId: folderId, contentAfterKey: contentAfter, assets, keys: keys[i] })
     const groupId = built.ids.get(plan.id)!
-    afterKey = built.objects.find((o) => o.entity_id === groupId)?.order_key ?? afterKey
-    for (const o of built.objects) if (o.parent_id === folderId) contentAfter = o.order_key
     all.push(...built.objects, ...built.lines)
     const frameId = built.ids.get(`${plan.id}~frame`)
     if (frameId) frames.push(frameId)

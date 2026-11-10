@@ -9,7 +9,7 @@ import App from './App.tsx'
 import { consumePendingSiteDataReset } from './app/settings/siteDataReset'
 import { isMockRuntime } from './runtime'
 import { isPublicRoute } from './publicRoutes'
-import { PREVIEW_EMBED_PATH } from 'buckyos/app-frame'
+import { PREVIEW_EMBED_PATH, SELECT_EMBED_PATH } from 'buckyos/app-frame'
 import { isPortalRoot } from './app/homestation/links'
 import { registerDesktopServiceWorker } from './serviceWorker'
 import { setPresentationViewer } from './presentation/zone'
@@ -23,6 +23,7 @@ function viewerKey(identity: CurrentIdentity): string | null {
 }
 
 const isPreviewEmbedRoute = (pathname: string) => pathname.replace(/\/+$/, '') === PREVIEW_EMBED_PATH
+const isSelectEmbedRoute = (pathname: string) => pathname.replace(/\/+$/, '') === SELECT_EMBED_PATH
 
 async function bootstrap() {
   const didRedirect = await consumePendingSiteDataReset()
@@ -79,6 +80,17 @@ async function bootstrap() {
     createRoot(document.getElementById('root')!).render(
       <StrictMode>
         <PreviewEmbedApp />
+      </StrictMode>,
+    )
+    return
+  }
+
+  // A standalone App tab frames the system file picker over itself: only the dialog, without the Desktop shell.
+  if (isSelectEmbedRoute(window.location.pathname)) {
+    const { SelectEmbedApp } = await import('./sysdlg/select/SelectEmbedApp')
+    createRoot(document.getElementById('root')!).render(
+      <StrictMode>
+        <SelectEmbedApp />
       </StrictMode>,
     )
     return

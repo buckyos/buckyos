@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useWindowDialog } from '../desktop/windows/dialogs'
+import { useOptionalWindowDialog, useWindowDialog, type WindowDialogApi } from '../desktop/windows/dialogs'
+import { useMemo } from 'react'
 import { useI18n } from '../i18n/provider'
 import {
   AppInstaller,
@@ -8,6 +9,9 @@ import {
 import { ShareDialog, SHARE_DIALOG_PATH, type ShareDialogParams, type ShareDialogResult } from './ShareDialog'
 import { EntityInfo } from '../components/network/EntityInfo'
 import { entityInfoInputSchema, type EntityInfoInput, type EntityInfoResult } from '../components/network/schemas'
+import { SELECT_DIALOG_PATH, type SelectDialogParams, type SelectDialogResult } from 'buckyos/content'
+import { SelectDialog } from './select/SelectDialog'
+import { parseSelectDialogParams } from './select/schemas'
 
 export {
   AppInstallerRoute,
@@ -25,6 +29,15 @@ export const ENTITY_INFO_DIALOG_PATH = 'sysdlg/entity_info' as const
 export type EntityInfoDialogParams = EntityInfoInput
 export type EntityInfoDialogResult = EntityInfoResult
 
+/** The system file picker: choose files, a folder, or where to save. Cancelling resolves with `{ action: 'cancelled' }`. */
+export { SELECT_DIALOG_PATH, type SelectDialogParams, type SelectDialogResult }
+export interface SelectDialogCaller {
+  /** Keys the "last used folder". */
+  id?: string
+  /** Shown under the title when another App asked for the dialog; taken from the system's own app list. */
+  name?: string
+}
+
 export type AppInstallerDialogParams = AppInstallerInternalParams
 
 export type AppInstallerDialogResult =
@@ -33,7 +46,36 @@ export type AppInstallerDialogResult =
   | { action: 'close' }
   | { action: 'view-app'; serviceId: string }
 
-export type SystemDialogPath = typeof APP_INSTALLER_DIALOG_PATH | typeof SHARE_DIALOG_PATH | typeof ENTITY_INFO_DIALOG_PATH
+export type SystemDialogPath = typeof APP_INSTALLER_DIALOG_PATH | typeof SHARE_DIALOG_PATH | typeof ENTITY_INFO_DIALOG_PATH | typeof SELECT_DIALOG_PATH
+
+type Translate = ReturnType<typeof useI18n>['t']
+
+// Throws a ZodError for parameters outside the contract (`invalid_params` for an App caller).
+function openSelectDialog(windowDialog: WindowDialogApi, t: Translate, params?: SelectDialogParams, caller?: SelectDialogCaller): Promise<SelectDialogResult> {
+  const input = parseSelectDialogParams(params)
+  const title = input.title ?? t(`sysdlg.select.title.${input.mode}`)
+  const mobile = windowDialog.surface === 'mobile'
+  return windowDialog.open<SelectDialogResult>({
+    ariaLabel: title,
+    title,
+    description: caller?.name ? t('sysdlg.select.requestedBy', 'Requested by {{name}}', { name: caller.name }) : undefined,
+    presentation: mobile ? 'sheet' : 'modal',
+    size: 'lg',
+    dismissible: true,
+    closeOnBackdrop: false,
+    renderBody: ({ close }) => <SelectDialog input={input} callerId={caller?.id} compact={mobile} onDone={close} />,
+  }).then(result => result ?? { action: 'cancelled' })
+}
+
+/**
+ * The system file picker for UI that also runs where there is no Desktop window (AI Workspace on a Workspace's own
+ * origin): null there, so the caller keeps its own entry.
+ */
+export function useSelectContent(): ((params?: SelectDialogParams, caller?: SelectDialogCaller) => Promise<SelectDialogResult>) | null {
+  const windowDialog = useOptionalWindowDialog()
+  const { t } = useI18n()
+  return useMemo(() => windowDialog ? (params, caller) => openSelectDialog(windowDialog, t, params, caller) : null, [windowDialog, t])
+}
 
 export function useSystemDialog() {
   const windowDialog = useWindowDialog()
@@ -42,11 +84,15 @@ export function useSystemDialog() {
   function open(path: typeof APP_INSTALLER_DIALOG_PATH, params: AppInstallerDialogParams): Promise<AppInstallerDialogResult | undefined>
   function open(path: typeof SHARE_DIALOG_PATH, params: ShareDialogParams): Promise<ShareDialogResult | undefined>
   function open(path: typeof ENTITY_INFO_DIALOG_PATH, params: EntityInfoDialogParams): Promise<EntityInfoDialogResult>
+  function open(path: typeof SELECT_DIALOG_PATH, params?: SelectDialogParams, caller?: SelectDialogCaller): Promise<SelectDialogResult>
   function open(
     path: SystemDialogPath,
-    params: AppInstallerDialogParams | ShareDialogParams | EntityInfoDialogParams,
-  ): Promise<AppInstallerDialogResult | ShareDialogResult | EntityInfoDialogResult | undefined> {
+    params?: AppInstallerDialogParams | ShareDialogParams | EntityInfoDialogParams | SelectDialogParams,
+    caller?: SelectDialogCaller,
+  ): Promise<AppInstallerDialogResult | ShareDialogResult | EntityInfoDialogResult | SelectDialogResult | undefined> {
     switch (path) {
+      case SELECT_DIALOG_PATH:
+        return openSelectDialog(windowDialog, t, params as SelectDialogParams | undefined, caller)
       case ENTITY_INFO_DIALOG_PATH: {
         const input = entityInfoInputSchema.parse(params)
         return windowDialog.open<EntityInfoDialogResult>({

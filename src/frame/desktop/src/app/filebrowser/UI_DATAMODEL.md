@@ -1122,6 +1122,7 @@ recursive children and directories, including partial directories, rather than o
 | Wire field / source | UI projection | Rule |
 |---|---|---|
 | Native `stat/list.target.copy_ref` | `FileEntry.copyRef` | Serialized signed identity, separate from a collection's long-lived Ref; no file bytes |
+| Native `list.target.attrs.obj_id` (`ident` group) | `FileEntry.objId` | Only when the entry itself is an object (an object-bucket projection). The whole-file digest nfs_server still returns for plain files (`sha256:`) is dropped. Read by the system file picker (`sysdlg/select`) |
 | `copy_capabilities.supported` plus authenticated schema probe | `FolderWriteOps.supportsCopy/copyUnavailableReason` | Open commands only after the service and TaskMgr schema are ready |
 | `copy_submit.task_id` | `BatchTask.taskId` | Returned immediately; the task outlives the NFSP hello session and browser page |
 | Task progress `{journal:{version,task_id},summary}` | Aggregate counts, copied bytes, progress | Durable summary/checkpoint; detailed records remain server-side |

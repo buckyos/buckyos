@@ -10,7 +10,7 @@
 
 import { ImportReport, type Json } from '../../import-drawio/convert.ts'
 import { keyBetween, keysAfter, randomId } from '../../import-drawio/keys.ts'
-import { batches, buildOperations, type ImportOp, type UploadedAsset } from '../../import-drawio/operations.ts'
+import { allocateKeys, batches, buildOperations, type ImportOp, type UploadedAsset } from '../../import-drawio/operations.ts'
 import { gridOrigins, stageOf } from '../../import-pdf/layout.ts'
 import { uniqueName } from '../../import-table/operations.ts'
 import { buildDocOperations, sizedBatches } from '../operations.ts'
@@ -151,12 +151,10 @@ export async function commitOffice(client: OfficeClient, workspaceId: string, pl
   const all: ImportOp[] = []
   const frames: string[] = []
   const groups: string[] = []
-  let afterKey: string | null = null
+  const keys = allocateKeys(plan.pages, assets, null, contentAfter)
   for (const [i, page] of plan.pages.entries()) {
-    const built = buildOperations(page, { parentId: surfaceId, origin: { x: origins[i].x + MARGIN, y: origins[i].y + MARGIN }, afterKey, contentFolderId: folderId, contentAfterKey: contentAfter, assets })
+    const built = buildOperations(page, { parentId: surfaceId, origin: { x: origins[i].x + MARGIN, y: origins[i].y + MARGIN }, afterKey: null, contentFolderId: folderId, contentAfterKey: contentAfter, assets, keys: keys[i] })
     const groupId = built.ids.get(page.id)!
-    afterKey = built.objects.find((o) => o.entity_id === groupId)?.order_key ?? afterKey
-    for (const o of built.objects) if (o.parent_id === folderId) contentAfter = o.order_key
     all.push(...built.objects, ...built.lines)
     const frame = built.ids.get(`${page.id}~frame`)
     if (frame) frames.push(frame)

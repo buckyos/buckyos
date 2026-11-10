@@ -79,6 +79,9 @@ const BY_CODE: Record<string, ErrorShape> = {
 /** Normalize any thrown value from the NFSP client stack into a UiError. */
 export function nfspToUiError(err: unknown): UiError {
   if (isUiErrorLike(err)) return err
+  if (err instanceof NfspError && err.details.reason === 'unauthenticated') {
+    return { code: 'UNAUTHENTICATED', messageKey: 'filebrowser.error.unauthenticated', fallback: 'Your session has ended — sign in again', retryable: true, details: { code: err.code } }
+  }
   const code = backendCodeOf(err)
   if (code !== null) {
     const shape = BY_CODE[code] ?? {

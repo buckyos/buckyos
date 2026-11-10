@@ -167,6 +167,9 @@ export function mapEntryToItem(entry: Entry, context: EntryMapContext): FileItem
   if (typeof target.attrs?.size === 'number' && target.kind === 'file') {
     fileEntry.sizeBytes = target.attrs.size
   }
+  // nfs_server still puts a whole-file digest (`sha256:`) here for plain files; that is not an object ID.
+  const objId = target.attrs?.obj_id
+  if (typeof objId === 'string' && objId && !objId.startsWith('sha256:')) fileEntry.objId = objId
   const thumbnail = target.attrs?.access_urls?.find((url) => url.kind === 'thumbnail')
   if (thumbnail) fileEntry.thumbnailUrl = absoluteUrl(thumbnail.url)
   const publicUrl = publicUrlOf(target.attrs)

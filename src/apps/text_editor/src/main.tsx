@@ -104,6 +104,7 @@ async function start(): Promise<void> {
   workspace.onLogin = relogin
   workspace.systemOrigin = system
   workspace.onOpenWith = ({ request, hints }) => frame.openContent(request, 'chooser', { hints })
+  workspace.selectContent = params => frame.selectContent(params, { theme: workspace!.theme === 'dark' ? 'dark' : 'light', locale: workspace!.locale })
   root.render(<App workspace={workspace} />)
   workspace.subscribe(() => {
     const title = `${workspace!.active?.name ?? t('title')} — Text Editor`

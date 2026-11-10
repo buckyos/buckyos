@@ -34,6 +34,7 @@ import { RelationsPanel } from '../sources/RelationsPanel'
 import { AnnotationsPanel } from '../shell/AnnotationsPanel'
 import type { CanvasCommands, Command } from '../shell/MainMenu'
 import { MainToolbar } from '../shell/MainToolbar'
+import { useImportPicker } from '../shell/importPicker'
 import { useOverlayOpen } from '../shell/popover'
 import { ViewToolbar } from '../shell/ViewToolbar'
 import { CANVAS_SIDE_TABS, useCanvasMode, useShell, type SideTab } from '../shell/shellContext'
@@ -822,6 +823,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
 
   // ---- draw.io import, dropped and pasted files (draw.io 导入 TODO §2.3, §2.4, §3)
   const importBusy = useRef(false)
+  const pickImport = useImportPicker()
   const importInput = useRef<HTMLInputElement>(null)
   const canCreateSurfaces = store.session.info().capabilities.includes('structure')
   const importReason = !isFree && !canCreateSurfaces ? t('aiworkspace.canvas.reason.noCreateCanvas') : insertReason
@@ -1446,6 +1448,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               return (
               <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree && !intoNode} onClose={() => setCatalog(null)} onImport={importReason === null && !intoNode ? () => { setCatalog(null); importCommand.run() } : undefined}
                 onImportTable={tableReason === null && !intoNode ? () => { setCatalog(null); importTableAt(catalog.world ?? null) } : undefined}
+                pickImport={pickImport ? (folder) => pickImport(folder).catch((error) => { store.notify('error', t('aiworkspace.data.tree.uploadFailed', { error: describeError(error) })); return null }) : undefined}
                 onImportAssets={insertReason === null && !intoNode ? async (files, folder, signal) => {
                   try {
                     const items = await store.session.importAssets(files, folder, signal)

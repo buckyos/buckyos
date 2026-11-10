@@ -28,7 +28,7 @@ Workspace 改造新增稳定 ID、Agent State 登记和不可变执行快照；�
 | [Session Directory Protocol](<Session Directory Protocol.md>) | 目录结构、session_config / state / summary / worklog / static / binding / runs、逻辑 Turn 的打开 / 继续 / 关闭、提交顺序、恢复规则、sid 规则 |
 | [Lease Protocol](<Lease Protocol.md>) | 推进权与各类锁、锁文件内容、接管前的执行核对 |
 | [Session Input Protocol](<Session Input Protocol.md>) | Agent 输入：总线记录（`opendan.session_input/3`）、MsgObject 消息与 AgentEvent、校验与拒绝、路由、消费进度、半订阅状态、Input 链路与内建渲染、receipt 与提交、bridge、长任务等待、Sub Session 的创建 / 汇报 / 等待 |
-| [Session Control Protocol](<Session Control Protocol.md>) | Session 控制：stop / decide / subscribe / unsubscribe / activity / perceive；驱动者自己的停止请求 |
+| [Session Control Protocol](<Session Control Protocol.md>) | 控制语义统一入口：stop 的 Turn / Session 作用域、pause / resume、Goal 调度暂停与终止、子工作级联、外部 Task 取消确认；decide / goal_skills / subscribe / unsubscribe / activity / perceive；驱动者停止与界面映射 |
 | [Agent State Protocol](<Agent State Protocol.md>) | AgentRoot 布局、登记表、活动视图、感知、认知边界、产物列表与 decide、behavior 目录（含 `[tool]`）与 Session 模板、Goals（定义 / 修订 / Goal State / Activation 记录 / epoch / 计划进度、写者与权限）、Runtime 登记 |
 | [Agent Workspace Protocol](<Agent Workspace Protocol.md>) | 稳定身份、Known Workspaces、位置修订、固定绑定、本地写锁及交接、CLI、旧目录导入与能力边界 |
 

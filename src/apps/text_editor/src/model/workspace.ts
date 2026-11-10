@@ -1,4 +1,4 @@
-import { contentRefString, contentDescriptor, type OpenRequest, type TransferableContentRef, type TransferableSessionContext } from 'buckyos/content'
+import { contentRefString, contentDescriptor, parentSource, SystemDialogError, type OpenRequest, type SelectDialogParams, type SelectDialogResult, type TransferableContentRef, type TransferableSessionContext } from 'buckyos/content'
 import type { PreviewEmbedOpenWith } from 'buckyos/app-frame'
 import { ContentError, decodeText, encodeText, FULL_FEATURE_LIMIT } from '../fs/codec.ts'
 import { sourceKey, splitPath, isMissing, errorCategory, SaveConflict, SaveError, type DocumentStore, type ErrorCategory } from '../fs/documentStore.ts'
@@ -49,8 +49,9 @@ export class Workspace {
   choice?: Choice; recoveries: RecoveryRecord[] = []; abandoned: BufferRecord[] = []; recent: TransferableContentRef[] = []
   sessionLost = false; sessionLostMuted = false
   onLogin?: () => Promise<void>
-  panel?: 'recovery' | 'buffers' | 'settings' | 'quick' | 'location'
-  locationAction?: (path: string) => Promise<void>
+  panel?: 'recovery' | 'buffers' | 'settings' | 'quick'
+  /** The system file picker (`sysdlg/select`), set by the host: the shell draws it in a Desktop window, a standalone tab frames the system page. */
+  selectContent?: (params: SelectDialogParams) => Promise<SelectDialogResult>
   store: DocumentStore; buffers: BufferStore; recovery: RecoveryStore; local: LocalStore; settingsStore: SettingsStore
   origin: { device: string; windowId: string } = { device: '', windowId: crypto.randomUUID() }
   revision = 0
@@ -242,7 +243,7 @@ export class Workspace {
   }
   async save(doc = this.active, options: Parameters<typeof saveDocument>[2] = {}): Promise<boolean> {
     if (!doc || doc.saving || doc.mutating || doc.preview) return false
-    if ((!doc.source || doc.readOnly || doc.source.kind === 'object-id') && !options.path) { this.chooseLocation(path => this.save(doc, { path }).then(() => {})); return false }
+    if ((!doc.source || doc.readOnly || doc.source.kind === 'object-id') && !options.path) { this.chooseSaveLocation(doc); return false }
     doc.saving = true; doc.disk = 'saving'; this.emit()
     try {
       let text = doc.text
@@ -274,7 +275,7 @@ export class Workspace {
       const answer = await this.ask(e.kind, e.kind === 'deleted' ? ['recreate', 'saveAs', 'cancel'] : e.kind === 'lease-busy' ? ['retry', 'saveAs', 'cancel'] : e.kind === 'copy-failed' ? ['overwrite', 'cancel'] : options.path && options.path !== sourceKey(doc.source) ? ['overwrite', 'overwriteCopy', 'saveAs', 'cancel'] : ['reload', 'overwrite', 'overwriteCopy', 'saveAs', 'cancel'])
       doc.saving = false
       if (answer === 'reload') await this.reload(doc)
-      if (answer === 'saveAs') this.chooseLocation(path => this.save(doc, { path }).then(() => {}))
+      if (answer === 'saveAs') this.chooseSaveLocation(doc)
       if (['overwrite', 'overwriteCopy', 'retry', 'recreate'].includes(answer)) return this.save(doc, { ...options, overwrite: answer.startsWith('overwrite'), conflictCopy: answer === 'overwriteCopy', recreate: answer === 'recreate' })
       return false
     } finally { doc.saving = false; this.emit() }
@@ -420,6 +421,33 @@ export class Workspace {
     source.tabs = source.tabs.filter(t => t !== tab); target.tabs = target.tabs.filter(t => t.doc !== doc)
     const at = target.tabs.findIndex(t => t.doc === before); target.tabs.splice(at < 0 ? target.tabs.length : at, 0, tab); target.active = doc; this.activeGroup = to; this.emit()
   }
-  chooseLocation(action: (path: string) => Promise<void>): void { this.locationAction = action; this.panel = 'location'; this.emit() }
+  private async pick(params: SelectDialogParams, doc = this.active): Promise<SelectDialogResult | undefined> {
+    const parent = doc?.source ? parentSource(doc.source) : undefined
+    try {
+      if (!this.selectContent) throw new SystemDialogError('unsupported')
+      return await this.selectContent({ ...params, start: parent?.kind === 'cyfs-path' ? parent : { kind: 'cyfs-path', path: this.home } })
+    } catch (e) {
+      // `busy` and `closed` need no message: a picker is already open, or this window is going away.
+      const code = e instanceof SystemDialogError ? e.code : undefined
+      if (code !== 'busy' && code !== 'closed') this.notify(code ? 'pickerUnavailable' : e instanceof Error ? e.message : String(e))
+      return undefined
+    }
+  }
+  /** Asks in the system file picker where to save `doc`, then saves it there. The picker has already asked about replacing an existing file. */
+  chooseSaveLocation(doc = this.active): void {
+    if (!doc) return
+    this.run((async () => {
+      const result = await this.pick({ mode: 'save', suggestedName: doc.name }, doc)
+      if (result?.action === 'save' && result.parent.kind === 'cyfs-path') await this.save(doc, { path: `${result.parent.path.replace(/\/$/, '')}/${result.name}`, overwrite: result.overwrite || undefined })
+    })())
+  }
+  /** Opens the files chosen in the system file picker. */
+  chooseOpen(): void {
+    this.run((async () => {
+      const result = await this.pick({ mode: 'open', multiple: true, limit: 20 })
+      if (result?.action !== 'selected') return
+      for (const item of result.items) if (item.origin === 'zone' && item.kind === 'file') await this.open({ requestId: crypto.randomUUID(), source: item.source })
+    })())
+  }
   async updateSettings(settings: Settings): Promise<void> { await this.settingsStore.save(settings); this.settings = settings; this.emit() }
 }

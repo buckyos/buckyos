@@ -7,6 +7,8 @@
 
 Memory 内容规则见[《Agent Memory 认知管理需求》](<Agent Memory 认知管理需求.md>)：§2 定义使用边界（Memory 不承载正确性、不作 Session 间通信通道、认知只由整理 Goal 写入），§4.4—§4.6 定义什么值得记录为感知，§5.6—§5.9 定义综合与认知形成条件。本文定义使用方职责与运行方式，两者共同约束 Memory 整理 Goal。
 
+Session 控制的具体合同统一见 [Session Control Protocol](<protocol/Session Control Protocol.md>)：stop 的作用域、pause / resume、Goal 调度暂停、子工作级联与取消确认。本文 §12.12 保留架构约束；[Agent UI 升级 TODO](../../notepads/agent-ui-upgrade-todo.md) §2.4 单列拟议变更与现有合同的差异，不把未实施的界面规划当作现有协议。
+
 ## 设计摘要
 
 OpenDAN 将 Agent 的主要 Session 工作模式划分为 **UI Session、Work Session 和 Goal Session**。分类依据不是简单的“有没有用户输入”，也不是单纯的运行时长，而是每一种 Session 承担的责任、持有的上下文以及任务边界。
@@ -443,7 +445,7 @@ Work 失败不代表已经产生的外部影响消失。Context Fork、Session �
 复杂的 Work 以 plan session 进行（Jarvis：`[session.work] default_behavior = "plan_simple"`；对话创建时用 `--class plan_simple`，带输入队列、`tick_secs = 600`）。它只读（behavior 的 `[capabilities] workspace = "read_only"`：Workspace 绑定只读、不取写者租约），只维护 TodoList；每个 Todo 的执行是一个独立的 work session（`work_simple` / `explore`，读写继承的 Workspace），宿主在 Todo 的前置都完成时立刻创建它，不需要 plan 派发（[Agent TodoList](Agent%20TodoList.md)）。
 
 - **输入种类**：首条（目标与 runtime 上下文）；work session 结束或需要回答（`poll_children`）；用户消息（对话 `agent-session post <plan sid> --msg …` 转发，只发给 plan，不发给它的 work session）；tick；runner 的纠正。每个输入打开一个 Turn，plan 在其中决定列表与运行中的工作要不要改。
-- **控制命令**：除 `stop` / `decide` / `subscribe` / … 外，Session 接受 `pause` / `resume`（`xagent ctl <sid> pause|resume [--reason]`）。pause = 不再推理：不打开新 Turn（输入积压在队列与在跟任务里，不产生 tick），运行中的 run 在下一个推理边界停在检查点，Turn 保持打开；在跟的任务按 OS 进程语义继续。resume = 从检查点续推理，或由积压的输入打开下一个 Turn。暂停沿子 Session 级联（只恢复因级联而暂停的）。登记表 `status.paused`，Turn task 显示 `paused: <原因>`。
+- **控制命令**：Session 接受 `pause` / `resume`（`xagent ctl <sid> pause|resume [--reason]`）。暂停推理并保留当前 Turn / 检查点，外部 task 继续；恢复、子 Session 级联、无队列限制与状态投影统一按 [Session Control Protocol](<protocol/Session Control Protocol.md>) §5、§7—§8，不在此另定一套语义。
 - **plan 对运行中工作的影响只经 Todo**：`todo update`（work session 以 `todo:<id>` / `updated` 事件收到完整的新任务，这是它唯一能收到的外部变化，它的队列不是 inbox）、`todo pause|resume|stop`（宿主转成对该 work session 的控制命令）。
 - **结束**：只有 `report(is_end=true)`；宿主不检查 TodoList 是否收敛，验证由验证 Todo 承担。结束时仍在跑的 work session 被停止，attempt 记为 `stopped`。
 
@@ -1156,11 +1158,13 @@ Memory 也可以通过 Topic 发现相关变化，但不必把它和外部对象
 
 #### 12.12.3 中断与外部副作用
 
-普通事件不抢占执行；stop / cancel 等控制请求走独立通道，并持久记录请求、执行结果与原因。系统应区分停止模型生成、阻止下一步调用、请求取消已发出的外部 Task，以及终止 Session，不能把一个停止信号当作这些动作都已完成。
+普通事件不抢占执行；停止等控制请求走 Runner 的独立处理路径，并持久记录请求、执行结果与原因。这里的独立是处理语义，不要求独立的物理队列；现有协议与 msg / event 共用输入总线。系统应区分停止模型生成、阻止下一步调用、请求取消已发出的外部 Task，以及终止 Session，不能把一个停止信号当作这些动作都已完成。具体命令见 [Session Control Protocol](<protocol/Session Control Protocol.md>)；当前没有独立的 Session `cancel` 原语。
 
 在可提交的边界停止时，保存检查点、已完成工具结果与待处理输入。需要立即中断时，也应保留进行中调用的证据；对无法确认已经取消的调用记录未知或仍在执行，不能批量填成“已取消”来凑齐工具结果。两种方式都不会撤销已经发生的副作用。
 
-父 Session 暂停或停止时，子 Session 与外部 Task 是否级联处理，需要按创建关系、任务归属和授权声明策略并记录结果；不能默认所有子工作都已停，也不能让父级消失后无人承担剩余工作。暂停恢复不得重置预算或丢失调用身份。
+父 Session 暂停或停止时，子 Session 与外部 Task 是否级联处理，需要按创建关系、任务归属和授权声明策略并记录结果；不能默认所有子工作都已停，也不能让父级消失后无人承担剩余工作。现有默认级联及 Goal Work 特例见 Session Control Protocol §7。暂停恢复保留调用身份与累计用量，不补充当前 Turn 的工具额度；连续执行墙钟按 Session Directory Protocol §7 重新计时。
+
+Goal 对象的暂停禁止后续 Activation，当前 Activation 可自然结束；Session pause 则挂起当前推理并保留 Turn。现有 Goal Session 的 stop 只结束当前 Activation，不修改 Goal 的调度状态。Goal 的“休眠 / 唤醒”文案不能替代这两个层次的操作定义。
 
 ### 12.13 Task 服务映射与状态同步
 
@@ -1615,7 +1619,7 @@ Context Fork、Work 执行、Final Report、已有 Task 等待和 Agent Memory �
 | Topic 与半订阅成本 | 默认每个受控输入批次提供观察机会；Memory 入口是来信文本与 topic，旁路维护暂不做；不额外唤醒 | Topic 更新条件、变化幅度与间隔阈值、优先级、增量读取与显式关闭配置。 |
 | 事件 Coalesce / Override | 状态合并与语义覆盖分开，保留独立要求、版本与来源 | 各事件类型的状态维度、终态和纠正关系；迟到与跨版本事件的处理。 |
 | 订阅与业务超时 | Runtime 绑定意图、通道与运行机会，轮询不直接等于推理 | 动态订阅恢复、取消后的已入队事件、漏通知核对与业务超时的具体策略。 |
-| 暂停、停止与子工作 | 区分停止推理、取消工具与 Session 终止，保留真实副作用 | 可恢复暂停的接口、父子级联策略、工具取消确认与未知结果处置。 |
+| 暂停、停止与子工作 | 区分停止推理、取消工具与 Session 终止；已有控制合同统一见 Session Control Protocol | UI TODO §2.4 的变更：前台不级联暂停、所有 Session 的控制入口、友好停止与 Goal 休眠的映射；外部工具取消确认与未知结果处置仍需按执行器能力验证。 |
 | 持久恢复与配置演进 | 按提交证据和配置版本恢复，不重放未知副作用 | 多存储或跨节点提交协议、模板与工具配置更新、历史格式的显式处理。 |
 | 归档与 GC | 空闲卸载不删除逻辑状态，终态仍可查询与交付 | 保留期、引用保护、未交付输出与审计材料的清理条件。 |
 | 输出与报告交付 | 稳定身份、先持久登记再发送，区分接收与结果吸收 | 多接收方进度、外部通道幂等保证、长期失败与补偿策略。 |

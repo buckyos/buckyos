@@ -31,7 +31,7 @@ function EntryIcon({ entry }: { entry: CatalogEntry }) {
   return <span className="aiws-catalog-entry-icon" data-group={entry.group}><Icon size={20} aria-hidden="true" /></span>
 }
 
-export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert, onImport, onImportAssets, onImportTable }: {
+export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClose, onInsert, onImport, onImportAssets, onImportTable, pickImport }: {
   initialTab?: CatalogTab
   initialKey?: string
   /** "Import draw.io…" (draw.io 导入 TODO §3), when importing is possible here. */
@@ -39,6 +39,8 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
   /** The table entry's "From a file…" (表格数据导入 TODO §5.1): straight to the file picker and the wizard. */
   onImportTable?: () => void
   onImportAssets?: (files: File[], folder: boolean, signal: AbortSignal) => Promise<void>
+  /** Chooses the files in the system file picker (this device or the Zone); without it the native inputs are used. */
+  pickImport?: (folder: boolean) => Promise<File[] | null>
   /** A free Surface: the entry can also be placed by a click on the canvas. */
   canPlace: boolean
   onClose: () => void
@@ -94,10 +96,10 @@ export function InsertCatalog({ initialTab = 'all', initialKey, canPlace, onClos
             {(onImport || onImportAssets) && <div className="aiws-catalog-imports" aria-busy={importing}>
               {onImport && <button type="button" data-testid="aiws-catalog-import-drawio" disabled={importing} onClick={onImport}><ArrowDownToLine size={16} aria-hidden="true" />{t('aiworkspace.canvas.catalog.importDrawio')}</button>}
               {onImportAssets && <>
-                <button type="button" disabled={importing} onClick={() => filesRef.current?.click()}><FileUp size={16} aria-hidden="true" />{t('aiworkspace.data.tree.importFiles')}</button>
+                <button type="button" disabled={importing} data-testid="aiws-catalog-pick-files" onClick={() => { if (pickImport) void pickImport(false).then((files) => { if (files?.length) void importAssets(files, false) }); else filesRef.current?.click() }}><FileUp size={16} aria-hidden="true" />{t('aiworkspace.data.tree.importFiles')}</button>
                 <input ref={filesRef} type="file" hidden multiple disabled={importing} data-testid="aiws-catalog-import-files" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) void importAssets(files, false) }} />
-                {'webkitdirectory' in document.createElement('input') && <>
-                  <button type="button" disabled={importing} onClick={() => folderRef.current?.click()}><FolderUp size={16} aria-hidden="true" />{t('aiworkspace.data.tree.importFolder')}</button>
+                {(pickImport || 'webkitdirectory' in document.createElement('input')) && <>
+                  <button type="button" disabled={importing} data-testid="aiws-catalog-pick-folder" onClick={() => { if (pickImport) void pickImport(true).then((files) => { if (files?.length) void importAssets(files, true) }); else folderRef.current?.click() }}><FolderUp size={16} aria-hidden="true" />{t('aiworkspace.data.tree.importFolder')}</button>
                   <input ref={folderRef} type="file" hidden multiple disabled={importing} {...{ webkitdirectory: '' }} data-testid="aiws-catalog-import-folder" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) void importAssets(files, true) }} />
                 </>}
                 {importing && <button type="button" onClick={() => importController.current?.abort()}>{t('aiworkspace.common.cancel')}</button>}

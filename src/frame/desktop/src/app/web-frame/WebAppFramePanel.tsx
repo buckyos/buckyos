@@ -12,6 +12,10 @@ import { isMockRuntime } from '../../runtime'
 import { useAppText } from '../../presentation/appText'
 import { useAppLaunch } from './launch'
 import { AppLaunchStatus } from './AppLaunchStatus'
+import { SELECT_DIALOG_PATH, useSystemDialog, type SelectDialogParams } from '../../sysdlg'
+
+/** System dialogs an App may ask the shell to show over its window (`sysdlg.open`). */
+const APP_DIALOGS: ReadonlySet<string> = new Set([SELECT_DIALOG_PATH])
 export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: AppContentLoaderProps) {
   const iframe = useRef<HTMLIFrameElement>(null)
   const title = useAppText()(app).title
@@ -38,8 +42,9 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
   const appLaunch = useAppLaunch(app.appInstanceId ?? app.id, src)
   const frameUrl = appLaunch.outcome?.kind === 'ready' ? appLaunch.outcome.url : undefined
   const unopenable = !src || appLaunch.outcome?.kind === 'invalid_target'
-  const latest = useRef({ request, themeMode, locale })
-  useEffect(() => { latest.current = { request, themeMode, locale } }, [request, themeMode, locale])
+  const systemDialog = useSystemDialog()
+  const latest = useRef({ request, themeMode, locale, title, systemDialog })
+  useEffect(() => { latest.current = { request, themeMode, locale, title, systemDialog } }, [request, themeMode, locale, title, systemDialog])
   useEffect(() => {
     if (unopenable && request) { desktopUIStore.setSnackbar(`Unable to open with ${title}`); openPreview({ source: request.source, session: request.session }) }
   }, [unopenable, request, title])
@@ -47,7 +52,7 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
     if (!origin || !windowId || !frameUrl) return
     const { request, themeMode, locale } = latest.current
     const frame = new AppFrameHost({ target: () => iframe.current?.contentWindow ?? null, origin,
-      init: { nonce, windowId, theme: { mode: themeMode }, locale, formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', launch: request, shellCapabilities: ['content.open', 'beforeClose', 'back'] },
+      init: { nonce, windowId, theme: { mode: themeMode }, locale, formFactor: matchMedia('(max-width: 900px)').matches ? 'mobile' : 'desktop', launch: request, shellCapabilities: ['content.open', 'beforeClose', 'back', SELECT_DIALOG_PATH] },
       onTitle: (title, dirty) => desktopUIStore.updateWindow(windowId, { title: `${dirty ? '● ' : ''}${title}` }),
       onRequestClose: () => desktopUIStore.closeWindow(windowId, true),
       onContentOpen: (next, target, { newWindow, hints }) => {
@@ -56,6 +61,16 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
         if (target === 'preview') openPreview(req)
         else if (target === 'chooser') requestOpenWith({ source: next.source, session: next.session, name: hints.name ?? contentDescriptor(next.source).name ?? '', mediaType: hints.mime, size: hints.size, exclude: requester, origin: req.origin })
         else void openContent(req, { name: hints.name, mime: hints.mime, size: hints.size })
+      },
+      // The App is untrusted: the path must be on the list, the parameters must pass the dialog's schema, and the
+      // name shown as the requester is the system's own. One dialog at a time per window is enforced by the host.
+      onSystemDialog: async (path, params) => {
+        if (!APP_DIALOGS.has(path)) return { ok: false, code: 'unsupported' }
+        let pending
+        try { pending = latest.current.systemDialog.open(SELECT_DIALOG_PATH, params as SelectDialogParams, { id: app.appInstanceId ?? app.id, name: latest.current.title }) }
+        catch { return { ok: false, code: 'invalid_params' } }
+        try { return { ok: true, result: await pending } }
+        finally { iframe.current?.focus() }
       },
     })
     host.current = frame; appFrames.set(windowId, { host: frame, handlerKey: payload?.handlerKey })

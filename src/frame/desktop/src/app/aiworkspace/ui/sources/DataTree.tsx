@@ -3,6 +3,7 @@
  * folder, move, and deletion with the pre-check that names only visible referrers. Blocks are not
  * shown here; pure UI Blocks are managed on the canvas. */
 
+import { useImportPicker } from '../shell/importPicker'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { randomId } from '../../api/ids'
 import { describeError } from '../../api/session'
@@ -153,6 +154,12 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
     tableImports.open({ source: { kind: 'file', name: file.name, bytes }, step: ask ? 'ask' : 'wizard', destination: { folderId: target.entity_id },
       insertAsFile: ask ? () => { void importFiles([file], false, true) } : undefined, finish: (outcome) => { if (!outcome.error) onSelect(null) } })
   }
+  const pickImport = useImportPicker()
+  const pickAndImport = async (folder: boolean) => {
+    if (!pickImport || importing) return
+    try { const files = await pickImport(folder); if (files?.length) await importFiles(files, folder) }
+    catch (error) { store.notify('error', t('aiworkspace.data.tree.uploadFailed', { error: describeError(error) })) }
+  }
   const importFiles = async (files: File[], folder: boolean, asFiles = false) => {
     if (!target || importing) return
     // a single table file asks: a table, or a file
@@ -224,9 +231,13 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
           <input aria-label={t('aiworkspace.data.tree.titleField')} placeholder={t('aiworkspace.data.tree.titlePlaceholder')} value={title} onChange={(event) => setTitle(event.target.value)} />
           <button type="submit" data-testid="aiws-new-data">{t('aiworkspace.data.tree.create')}</button>
           <label className="aiws-link">{t('aiworkspace.data.tree.image')}<input type="file" hidden accept="image/*" data-testid="aiws-new-image" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void addImage(file) }} /></label>
-          <label className="aiws-link">{t('aiworkspace.data.tree.importFiles')}<input type="file" hidden multiple disabled={importing} data-testid="aiws-import-files" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, false) }} /></label>
+          {pickImport
+            ? <button type="button" className="aiws-link" disabled={importing} data-testid="aiws-pick-files" onClick={() => { void pickAndImport(false) }}>{t('aiworkspace.data.tree.importFiles')}</button>
+            : <label className="aiws-link">{t('aiworkspace.data.tree.importFiles')}<input type="file" hidden multiple disabled={importing} data-testid="aiws-import-files" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, false) }} /></label>}
           <label className="aiws-link">{t('aiworkspace.data.tree.importTable')}<input type="file" hidden accept={TABULAR_ACCEPT} data-testid="aiws-datatree-import-table" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importTable(file, false) }} /></label>
-          {'webkitdirectory' in document.createElement('input') && <label className="aiws-link">{t('aiworkspace.data.tree.importFolder')}<input type="file" hidden multiple disabled={importing} {...{ webkitdirectory: '' }} data-testid="aiws-import-folder" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, true) }} /></label>}
+          {pickImport
+            ? <button type="button" className="aiws-link" disabled={importing} data-testid="aiws-pick-folder" onClick={() => { void pickAndImport(true) }}>{t('aiworkspace.data.tree.importFolder')}</button>
+            : 'webkitdirectory' in document.createElement('input') && <label className="aiws-link">{t('aiworkspace.data.tree.importFolder')}<input type="file" hidden multiple disabled={importing} {...{ webkitdirectory: '' }} data-testid="aiws-import-folder" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void importFiles(files, true) }} /></label>}
           <span className="aiws-muted">{t('aiworkspace.data.tree.folderLimit')}</span>
           {linkError && <div className="aiws-error" role="alert" data-testid="aiws-new-link-error">{linkError}</div>}
           {importing && <button type="button" onClick={() => importController.current?.abort()}>{t('aiworkspace.common.cancel')}</button>}

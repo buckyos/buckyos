@@ -6,9 +6,7 @@ import { DocumentEditor } from '../editor/setup.ts'
 import { languages } from '../editor/languages.ts'
 import { extractOutline, type OutlineItem } from '../editor/outline/index.ts'
 import { Workspace, dirty, type EditorDocument, type Group } from '../model/workspace.ts'
-import { isMissing } from '../fs/documentStore.ts'
 import { translate } from '../i18n/index.ts'
-import type { Entry } from 'buckyos/nfsp'
 import { PreviewEmbed, type PreviewEmbedState } from 'buckyos/app-frame'
 
 export const controllers = new Map<string, DocumentEditor>()
@@ -61,8 +59,8 @@ export function App({ workspace: w }: { workspace: Workspace }) {
     const timer = setTimeout(() => setOutline(doc && !doc.largeFile && controllers.has(doc.id) ? extractOutline(controllers.get(doc.id)!.state) : []), 250)
     return () => clearTimeout(timer)
   }, [w.revision, cursor, doc?.id, w.theme, w.locale])
-  const openLocation = () => w.chooseLocation(path => w.open({ requestId: crypto.randomUUID(), source: { kind: 'cyfs-path', path } }))
-  const saveAs = () => w.chooseLocation(path => w.save(w.active, { path }).then(() => {}))
+  const openLocation = () => w.chooseOpen()
+  const saveAs = () => w.chooseSaveLocation()
   const action = (fn: () => void) => { fn(); setMenu(false) }
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -160,24 +158,13 @@ export function App({ workspace: w }: { workspace: Workspace }) {
 function Panel({ workspace: w }: { workspace: Workspace }) {
   const t = (key: string) => translate(w.locale, key)
   const [query, setQuery] = useState('')
-  const [path, setPath] = useState(() => { const parent = w.active?.source ? parentSource(w.active.source) : undefined; return parent?.kind === 'cyfs-path' ? parent.path : w.home })
-  const [name, setName] = useState(w.active?.name ?? '')
-  const [entries, setEntries] = useState<Entry[]>([])
-  const [missing, setMissing] = useState(false)
-  useEffect(() => {
-    if (w.panel !== 'location') return
-    let current = true
-    w.store.list(path).then(list => { if (current) { setEntries(list); setMissing(false) } }, e => { if (!current) return; setEntries([]); if (isMissing(e)) setMissing(true); else w.notify(String(e instanceof Error ? e.message : e)) })
-    return () => { current = false }
-  }, [path, w.panel, w])
   const close = () => { w.panel = undefined; w.emit() }
   const fuzzy = (value: string) => { let i = 0; const q = query.toLowerCase(); for (const c of value.toLowerCase()) if (c === q[i]) i++; return i === q.length }
   return <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) close() }}><section className="dialog panel" role="dialog" aria-modal="true" aria-label={t(w.panel!)}><header><h2>{t(w.panel!)}</h2><button onClick={close} aria-label={t('cancel')}>×</button></header>
     {w.panel === 'quick' && <><input autoFocus placeholder={t('quick')} value={query} onChange={e => setQuery(e.target.value)} />{w.items.filter(i => fuzzy(i.title)).map(i => <button className="record" key={contentRefString(i.source)} onClick={() => { w.run(w.open({ requestId: crypto.randomUUID(), source: i.source, session: w.session })); close() }}>{i.title}</button>)}</>}
-    {w.panel === 'location' && <><label>{t('path')}<input value={path} onChange={e => setPath(e.target.value)} /></label><button onClick={() => { const parent = path.slice(0, path.lastIndexOf('/')); if (parent.length >= 7) setPath(parent) }}>{t('parent')}</button>{missing && <p className="muted" role="note">{t('folderWillBeCreated')}</p>}<div className="directory">{entries.map(e => <button key={e.name} onClick={() => e.target.kind === 'dir' ? setPath(`${path}/${e.name}`) : setName(e.name)}>{e.target.kind === 'dir' ? '▸ ' : ''}{e.name}</button>)}</div><label>{t('filename')}<input autoFocus value={name} onChange={e => setName(e.target.value)} /></label><button className="primary" disabled={!name || /[\/\\]/.test(name) || name === '.' || name === '..'} onClick={() => { const action = w.locationAction; close(); if (action) w.run(action(`${path.replace(/\/$/, '')}/${name}`)) }}>{t('choose')}</button></>}
     {w.panel === 'settings' && <><div className="settings-grid">{(['fontSize', 'tabSize'] as const).map(key => <label key={key}>{t(key)}<input type="number" min={key === 'fontSize' ? 8 : 1} max={key === 'fontSize' ? 40 : 8} value={w.settings[key]} onChange={e => w.run(w.updateSettings({ ...w.settings, [key]: Math.max(key === 'fontSize' ? 8 : 1, Math.min(key === 'fontSize' ? 40 : 8, Number(e.target.value))) }))} /></label>)}<label>{t('wordWrap')}<select value={w.settings.wordWrap} onChange={e => w.run(w.updateSettings({ ...w.settings, wordWrap: e.target.value as 'auto' }))}>{['auto', 'on', 'off'].map(v => <option key={v} value={v}>{t(v)}</option>)}</select></label>{(['insertSpaces', 'lineNumbers', 'renderWhitespace', 'autoReloadClean', 'restoreSession', 'closeKeepsChanges', 'trimTrailingWhitespaceOnSave', 'ensureFinalNewline'] as const).map(key => <label key={key}><input type="checkbox" checked={w.settings[key]} onChange={e => w.run(w.updateSettings({ ...w.settings, [key]: e.target.checked }))} />{t(key === 'renderWhitespace' ? 'whitespace' : key)}</label>)}{(['discarded', 'takenOver'] as const).map(key => <label key={key}>{t(`${key}Days`)}<input type="number" min="0" value={w.settings.recoveryRetentionDays[key]} onChange={e => w.run(w.updateSettings({ ...w.settings, recoveryRetentionDays: { ...w.settings.recoveryRetentionDays, [key]: Math.max(0, Number(e.target.value)) } }))} /></label>)}</div></>}
     {w.panel === 'buffers' && <>{!w.abandoned.length && <p>{t('emptyBuffers')}</p>}{w.abandoned.map(b => <div className="record" key={b.key}><strong>{b.header.displayName}</strong><small>{b.header.source ? contentRefString(b.header.source) : ''}<br />{b.header.origin.device} · {new Date(b.header.updatedAt).toLocaleString(w.locale)}</small><div><button disabled={b.active} title={b.active ? t('buffer-in-use') : undefined} onClick={() => w.run(w.restoreBuffer(b))}>{t('restore')}</button><button onClick={() => { if (b.header.source) w.run(w.open({ requestId: crypto.randomUUID(), source: b.header.source }, false, false)); close() }}>{t('disk')}</button><button disabled={b.active} onClick={() => w.run(w.discardBuffer(b))}>{t('deleteBuffer')}</button></div></div>)}</>}
-    {w.panel === 'recovery' && <><p className="muted">{(w.recoveries.reduce((n, r) => n + r.size, 0) / 1024).toFixed(1)} KiB</p><button onClick={() => w.run((async () => { if (await w.ask('confirmDelete', ['clear', 'cancel']) === 'clear') { for (const r of w.recoveries) await w.recovery.remove(r); await w.refreshRecords() } })())}>{t('clear')}</button>{!w.recoveries.length && <p>{t('emptyRecovery')}</p>}{w.recoveries.map(r => <div className="record" key={r.id}><strong>{r.entry.displayName}</strong><small>{r.entry.source ? contentRefString(r.entry.source) : ''}<br />{r.entry.reason} · {new Date(r.entry.createdAt).toLocaleString(w.locale)}</small><div><button onClick={() => w.run(w.openRecovery(r))}>{t('open')}</button><button onClick={() => w.run(w.openRecovery(r, true))}>{t('restore')}</button><button onClick={() => w.run((async () => { await w.openRecovery(r); w.chooseLocation(path => w.save(w.active, { path }).then(() => {})) })())}>{t('saveAs')}</button><button onClick={() => w.run((async () => { if (await w.ask('confirmDelete', ['remove', 'cancel']) === 'remove') { await w.recovery.remove(r); await w.refreshRecords() } })())}>{t('remove')}</button></div></div>)}</>}
+    {w.panel === 'recovery' && <><p className="muted">{(w.recoveries.reduce((n, r) => n + r.size, 0) / 1024).toFixed(1)} KiB</p><button onClick={() => w.run((async () => { if (await w.ask('confirmDelete', ['clear', 'cancel']) === 'clear') { for (const r of w.recoveries) await w.recovery.remove(r); await w.refreshRecords() } })())}>{t('clear')}</button>{!w.recoveries.length && <p>{t('emptyRecovery')}</p>}{w.recoveries.map(r => <div className="record" key={r.id}><strong>{r.entry.displayName}</strong><small>{r.entry.source ? contentRefString(r.entry.source) : ''}<br />{r.entry.reason} · {new Date(r.entry.createdAt).toLocaleString(w.locale)}</small><div><button onClick={() => w.run(w.openRecovery(r))}>{t('open')}</button><button onClick={() => w.run(w.openRecovery(r, true))}>{t('restore')}</button><button onClick={() => w.run((async () => { await w.openRecovery(r); w.chooseSaveLocation() })())}>{t('saveAs')}</button><button onClick={() => w.run((async () => { if (await w.ask('confirmDelete', ['remove', 'cancel']) === 'remove') { await w.recovery.remove(r); await w.refreshRecords() } })())}>{t('remove')}</button></div></div>)}</>}
   </section></div>
 }
 export function handleBack(w: Workspace): boolean {

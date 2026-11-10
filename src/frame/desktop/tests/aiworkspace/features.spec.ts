@@ -19,7 +19,9 @@ test('named imports preserve folder structure and workspace asset bytes after re
   writeFileSync(join(root, 'nested', 'same.txt'), contents)
   writeFileSync(join(root, 'empty.txt'), '')
   try {
-    await page.getByTestId('aiws-import-folder').setInputFiles(root)
+    // the folder is chosen in the system file picker, from this device
+    await page.getByTestId('aiws-pick-folder').click()
+    await page.getByTestId('select-local-input').setInputFiles(root)
     await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder').length).toBe(1)
     const entities = await api.outline(ALICE, ws.workspace_id)
     const directory = entities.find(e => e.name === '资料 folder')
@@ -42,7 +44,8 @@ test('named imports preserve folder structure and workspace asset bytes after re
     await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder').length).toBe(1)
     await page.getByTestId('aiws-top-canvas').click()
     await page.getByTestId('aiws-tool-catalog').click()
-    await page.getByTestId('aiws-catalog-import-folder').setInputFiles(root)
+    await page.getByTestId('aiws-catalog-pick-folder').click()
+    await page.getByTestId('select-local-input').setInputFiles(root)
     await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder').length).toBe(2)
     const canvasEntities = await api.outline(ALICE, ws.workspace_id)
     const importedGroup = canvasEntities.find(e => e.kind === 'group' && e.title === '资料 folder')

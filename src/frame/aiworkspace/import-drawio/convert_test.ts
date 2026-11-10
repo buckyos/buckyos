@@ -3,7 +3,7 @@
  * ordered and keyed as the core requires, and an export read back gives the same layout and bindings.
  * Run: `deno test -A` in this folder. */
 
-import { buildOperations, convertPage, exportDiagram, ImportReport, readDrawio, type ExportNode, type PagePlan, type ResolvedStencil } from './mod.ts'
+import { allocateKeys, buildOperations, convertPage, exportDiagram, ImportReport, readDrawio, type ExportNode, type PagePlan, type ResolvedStencil, type UploadedAsset } from './mod.ts'
 import { keysAfter } from './keys.ts'
 import { htmlLabel, fillPlaceholders } from './html.ts'
 import { parseStyle, resolveStyle } from './style.ts'
@@ -128,6 +128,35 @@ Deno.test('order keys for thousands of siblings stay short, sorted and valid', (
     for (let i = 0; i < n; i++) {
       assert(keys[i] > 'zz1' && keys[i].length <= 12 && !keys[i].endsWith('0'), `bad key ${keys[i]}`)
       if (i) assert(keys[i - 1] < keys[i], `unsorted at ${i}`)
+    }
+  }
+})
+
+Deno.test('a many-page import keys every page from one allocation: keys stay short and in page order', () => {
+  // the shape of a PDF page: one group on the Surface holding a frame and six pictures, the data in the content folder
+  const rect = { x: 0, y: 0, w: 10, h: 10 }
+  const assets = new Map<string, UploadedAsset | null>()
+  const plans: PagePlan[] = Array.from({ length: 800 }, (_, p) => {
+    const items: PagePlan['items'] = [{ key: `p${p}`, parent: null, type: 'group', rect, rotation: 0, config: {} }, { key: `p${p}~frame`, parent: `p${p}`, type: 'frame', rect, rotation: 0, config: {} }]
+    for (let k = 0; k < 6; k++) {
+      const image = { key: `img${p}_${k}`, name: 'x.png', mediaType: 'image/png' }
+      assets.set(image.key, k === 5 ? null : { object_id: `cyfile:${p}_${k}`, file_name: 'x.png' }) // one picture could not be uploaded
+      items.push({ key: `p${p}_${k}`, parent: `p${p}`, type: 'asset', rect, rotation: 0, config: {}, image })
+    }
+    return { id: `p${p}`, name: '', background: null, pageSize: null, items, bounds: rect, images: [] }
+  })
+  const contentAfter = keysAfter(null, 1)[0] // the original file goes first
+  const keys = allocateKeys(plans, assets, null, contentAfter)
+  const top: string[] = [], content: string[] = []
+  for (const [i, plan] of plans.entries()) {
+    const built = buildOperations(plan, { parentId: 'sf', origin: { x: 0, y: 0 }, afterKey: null, contentFolderId: 'sf-content', contentAfterKey: contentAfter, assets, keys: keys[i] })
+    for (const o of built.objects) if (o.parent_id === 'sf') top.push(o.order_key); else if (o.parent_id === 'sf-content') content.push(o.order_key)
+  }
+  equal([top.length, content.length], [800, 800 * 5])
+  for (const list of [top, [contentAfter, ...content]]) {
+    for (const [i, key] of list.entries()) {
+      assert(key.length <= 8 && /^[0-9a-z]+$/.test(key) && !key.endsWith('0'), `bad key ${key}`)
+      if (i) assert(list[i - 1] < key, `unsorted at ${i}: ${list[i - 1]} ${key}`)
     }
   }
 })

@@ -9,7 +9,7 @@
  *   3 commit    the canvas, its content folder and the original file; the pages; the path
  * A page that fails to convert is kept whole as a picture; a refused batch stops the import and says how far it got. */
 
-import { batches, buildOperations, ImportReport, type ImportOp, type UploadedAsset } from '@drawio/mod'
+import { allocateKeys, batches, buildOperations, ImportReport, type ImportOp, type UploadedAsset } from '@drawio/mod'
 import { keysAfter } from '@drawio/keys'
 import { convertPdfPage, defaultColumns, extractPage, gridOrigins, OPS, pageScale, readBookmarks, stageOf, type EncodedImage, type ImageRequest, type PdfConvertOptions, type PdfjsDocument, type PdfjsPage, type PdfPage, type PdfPagePlan, type PdfOperatorList, type RasterRequest, type RasterResult } from '@pdf/mod'
 import { randomId } from '../../api/ids'
@@ -350,13 +350,11 @@ export async function importPdf(store: WorkspaceStore, source: PdfImportSource, 
   const all: ImportOp[] = []
   const frames: { id: string; page: number }[] = []
   const pageOf = new Map<string, number>()
-  let afterKey: string | null = null
+  const keys = allocateKeys(plans, assets, null, contentAfter)
   for (const [i, plan] of plans.entries()) {
     const origin = { x: origins[i].x + MARGIN, y: origins[i].y + MARGIN }
-    const built = buildOperations(plan, { parentId: surfaceId, origin, afterKey, contentFolderId: folderId, contentAfterKey: contentAfter, assets })
+    const built = buildOperations(plan, { parentId: surfaceId, origin, afterKey: null, contentFolderId: folderId, contentAfterKey: contentAfter, assets, keys: keys[i] })
     const groupId = built.ids.get(plan.id)!
-    afterKey = built.objects.find((o) => o.entity_id === groupId)?.order_key ?? afterKey
-    for (const o of built.objects) if (o.parent_id === folderId) contentAfter = o.order_key
     for (const o of [...built.objects, ...built.lines]) pageOf.set(o.entity_id, i)
     all.push(...built.objects, ...built.lines)
     const frameId = built.ids.get(`${plan.id}~frame`)

@@ -82,5 +82,12 @@ export function registerNfspFolderOps() {
     downloadUrl(entry) {
       return entry.kind === 'folder' ? null : nfspClient().raw.readUrl(entry.id, { download: true, name: entry.name })
     },
+    readContent(path) {
+      return run(async () => {
+        const entry = await statEntry(parentOf(path), path.slice(path.lastIndexOf('/') + 1))
+        if (!entry || entry.kind === 'folder') throw operationError('NOT_FOUND', 'This file no longer exists')
+        return (await nfspClient().raw.readFile(entry.id)).blob()
+      })
+    },
   })
 }

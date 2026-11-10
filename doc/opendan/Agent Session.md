@@ -6,6 +6,7 @@
 - [§6 Work Session](<OpenDAN Agent Session架构设计.md#6-work-session有界执行明确失败与结果交付>)：创建与初始化、有界执行、Task 修订与 Final Report。
 - [§11.6 持久状态](<OpenDAN Agent Session架构设计.md#116-持久状态与恢复依据>)、[§11.7 输入提交与恢复](<OpenDAN Agent Session架构设计.md#117-输入提交与崩溃恢复>)、[§11.8 Behavior 与模板合同](<OpenDAN Agent Session架构设计.md#118-behavior上下文切换与模板合同>)。
 - [§12.12 宿主装载、状态与中断](<OpenDAN Agent Session架构设计.md#1212-宿主装载运行状态与中断>)、[§12.13 Task 服务映射](<OpenDAN Agent Session架构设计.md#1213-task-服务映射与状态同步>)。
+- [Session Control Protocol](<protocol/Session Control Protocol.md>)：stop 的 Turn / Session 作用域、pause / resume、Goal 调度暂停、子工作级联与取消确认的统一协议入口；输入和持久状态文档引用此处。UI TODO 中尚未实施的变更不作为当前协议。
 - [§14.7 Runtime / Workspace 绑定](<OpenDAN Agent Session架构设计.md#147-runtime-与-workspace-绑定>)、[§14.8 回复与报告投递](<OpenDAN Agent Session架构设计.md#148-回复报告与可靠投递>)。
 - [§15.6 原设计整合与迁移](<OpenDAN Agent Session架构设计.md#156-原-session-设计的整合与迁移>)：旧类型、目录、输入消费、恢复及 driver 配置与现有实现的差异。
 

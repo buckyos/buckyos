@@ -518,6 +518,7 @@ sequenceDiagram
 | `window.setTitle` | `{ title, dirty? }` | Shell 更新窗口标题；`dirty` 在标题前显示未保存标记 |
 | `window.requestClose` | `{}` | App 已完成自己的确认流程，请求关闭窗口 |
 | `content.open` | `{ request: { source, session?, mode? }, target: "default"\|"preview"\|"chooser", newWindow?, hints?: { name?, mime?, size? } }` | 请求 Shell 用解析结果 / Preview / 系统“打开方式”选择器打开内容。Shell 补全 `origin`（发起 App 与窗口），每个窗口每 10 s 最多 5 次。它只让 Shell 打开窗口，不授予任何数据访问。`chooser` 由系统列出候选、处理选择并启动应用，**不再提供发起 App 自己的任何 handler**（`text` 与 `any-as-text` 都按 AppId 排除，系统内没有 Text Editor 专用分支）；取消、无候选、启动失败都不改变发起 App 的状态。App 不维护应用列表、不拼 App URL。SDK：`AppFrameClient.openContent(request, target, { hints })`；未嵌入时用构造参数 `systemOrigin` 在新标签页打开 `systemOpenUrl()` 生成的 Zone 根域入口（`/?open=&intent=&name=&mime=&size=&from=<AppId>`，Desktop 用 `parseSystemOpen()` 解析） |
+| `sysdlg.open` | `{ path: "sysdlg/select", params: SelectDialogParams }`，带 `id` | 请求 Shell 在本窗口上画系统对话框，目前名单里只有文件选择器。Shell 校验 `path` 和 `params` 后以 `sysdlg.openResult`（带 `replyTo`）应答：`{ ok: true, result }` 或 `{ ok: false, code }`，`code` 为 `unsupported` / `invalid_params` / `busy`。一个窗口同时只有一个；用户操作没有时限，请求不设超时。Shell 在 `frame.init.shellCapabilities` 里以 `"sysdlg/select"` 声明支持。SDK 入口是 `AppFrameClient.selectContent()`，契约见 `doc/desktop/BuckyOS 系统对话框实现方案.md` |
 
 ### 7.4 关闭守卫
 
@@ -790,8 +791,11 @@ interface RecoveryEntry {
 ### 8.9 另存为与新建
 
 - **新建**：`Alt+N` 或起始页“新建”，得到 `untitled:<n>` 文档，首次修改即创建 `untitled.<bufferId>.buf` 缓冲区，首次保存进入另存为。
-- **另存为**：P0 由编辑器内置的轻量位置选择器完成（以当前目录为起点，用 NFSP `list` 浏览目录并输入文件名）。目标已存在时先确认覆盖，确认后被覆盖的目标文件先存入恢复区（`side: disk`，原因 `conflict-overwrite`）；写入使用 `open_write({ parent_ref, name })`，并检查 `target.exists` 与确认结果一致，避免静默覆盖。成功后文档关联到新路径，原缓冲区删除。
-- P1 改为系统级文件选择器，经 App Frame 调用（`product/BuckyOS Sys Dlg.md` 已把“类似文件选择窗口的系统窗口”作为系统组件方向，`sysdlg/share` 已实现）。
+- **打开与另存为**：都用系统文件选择器（`sysdlg/select`），经 SDK 的 `AppFrameClient.selectContent()` 调用，编辑器没有自己的位置选择器。在桌面窗口里由 Shell 在本窗口上画对话框（§7.3 的 `sysdlg.open`）；独立标签页里 SDK 在页面上盖一层系统页 `/embed/sysdlg/select`。起始位置是当前文档所在的目录，没有文档时是 home。
+  - 打开：`mode: 'open'`，可多选（最多 20 个），逐个打开。
+  - 另存为：`mode: 'save'`，建议名是当前文档名。目标已存在时由选择器询问是否替换，结果带 `overwrite: true`；编辑器据此覆盖，被覆盖的目标文件先存入恢复区（`side: disk`，原因 `conflict-overwrite`）。选择器确认之后目标才出现或又变了的，仍走保存冲突流程（§8.7）。
+  - 选择器只能选已存在的目录（可以在里面新建文件夹）。保存时沿途缺失的目录仍由保存流程创建（§8.7），这只在目标路径不是来自选择器时才会发生。
+  - 拿不到选择器（Shell 不支持、系统页加载失败并取消）时提示“这里无法使用系统文件选择器”，文档保持未保存。
 
 ### 8.10 外部变化感知
 
@@ -979,7 +983,7 @@ macOS 上非保留键用 `⌘` 替代 `Ctrl`；`⌥` 组合在 macOS 输入时�
 
 ### 9.11 起始页与工作区恢复
 
-- **起始页**（无 OpenRequest 时）：新建、打开（同 §8.9 的位置选择器）、最近文件（本地记录，最多 20 条）、**未保存的修改**（数据区全部缓冲区，§8.6）、**恢复区**入口（§8.8）。
+- **起始页**（无 OpenRequest 时）：新建、打开（同 §8.9，系统文件选择器）、最近文件（本地记录，最多 20 条）、**未保存的修改**（数据区全部缓冲区，§8.6）、**恢复区**入口（§8.8）。
 - **工作区恢复**（设置项，默认开）：用 Web Locks（`te.session-owner`）选出一个“主窗口”，只有主窗口恢复上次的标签与布局，并持续把工作区快照（标签、布局、导航区状态）写入本地 IndexedDB；其它窗口是临时窗口，不覆盖快照。工作区快照是本设备的界面状态；跨设备找回修改靠服务端缓冲区，不依赖工作区快照。
 - 同一文件在两个编辑器窗口中各自打开时各有缓冲区，互不同步，以保存时的 etag 冲突兜底，被替换的版本进入恢复区（P1 用 BroadcastChannel 提示“已在另一窗口打开”）。
 
@@ -1108,7 +1112,7 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 
 - N2–N4、N6，按次授权 grant（§9.10），完成 V9 验证；
 - `grid-4` 布局、代码大纲、冲突对比与合并视图、恢复区条目对比、Session 内全文查找、命令面板；
-- 系统文件选择器（App Frame）；打开方式选择器（`content.open target:"chooser"`，v0.4 已实现，§7.3）；
+- 系统文件选择器（`sysdlg.open`，已实现，§7.3、§8.9）；打开方式选择器（`content.open target:"chooser"`，v0.4 已实现，§7.3）；
 - D7–D9，`icon` 意图，新 Handler 接管类型时的通知；
 - 无扩展名文件的有界探测；旧编码保存；重命名跟踪；Markdown 渲染预览分屏；文件夹树模式；缓冲区增量写入（避免大文件每次全量上传）。
 

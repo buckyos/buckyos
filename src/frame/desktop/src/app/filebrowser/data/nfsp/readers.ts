@@ -35,7 +35,7 @@ import {
   refIdOf,
 } from './mapping'
 
-const LIST_WANT: WantGroup[] = ['base', 'access']
+const LIST_WANT: WantGroup[] = ['base', 'ident', 'access']
 
 const PROVISIONAL_FOLDER: LocationCapabilities = {
   kind: 'folder',
@@ -298,7 +298,7 @@ export function registerNfspReaders() {
     const path = dfsPathOf(targetUrl)
     if (!path) return null
     await ensureSession()
-    const info = await nfspClient().resolve(path, ['base', 'access'])
+    const info = await nfspClient().resolve(path, ['base', 'ident', 'access'])
     if (!info) return null
     const name = path.split('/').filter(Boolean).pop() ?? path
     const item = mapEntryToItem(
@@ -312,6 +312,7 @@ export function registerNfspReaders() {
           attrs: {
             size: info.size,
             mtime: info.mtime,
+            obj_id: info.obj_id,
             access_urls: info.access_urls,
           },
         },

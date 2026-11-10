@@ -26,6 +26,24 @@ addEventListener('message', async e => {
 })
 document.querySelector('#openwith').onclick = () => post('embed.openWith', { request: { source: init.source }, hints: { name: init.source.path.split('/').pop(), size: 3 } })
 </script>`
+// A stand-in for the system file picker page (`/embed/sysdlg/select`): speaks buckyos.sysdlg-embed by hand and answers
+// with what the test types, so the editor's standalone path is exercised without the Desktop.
+const PICKER = `<!doctype html><title>Picker embed harness</title><pre id="params" data-testid="fake-picker"></pre>
+<input id="parent" aria-label="Parent"><input id="name" aria-label="Name"><label><input id="overwrite" type="checkbox">Overwrite</label>
+<button id="save">Answer save</button><button id="open">Answer open</button><button id="cancel">Answer cancel</button><script>
+const params = new URLSearchParams(location.hash.slice(1)); const nonce = params.get('bse'); const parentOrigin = params.get('po')
+const post = (type, payload) => parent.postMessage({ protocol: 'buckyos.sysdlg-embed', version: 1, type, payload }, parentOrigin)
+const hello = setInterval(() => post('embed.hello', { nonce }), 250); post('embed.hello', { nonce })
+addEventListener('message', e => {
+  const m = e.data; if (e.source !== parent || e.origin !== parentOrigin || m?.protocol !== 'buckyos.sysdlg-embed' || m.type !== 'embed.init' || m.payload.nonce !== nonce) return
+  clearInterval(hello); document.querySelector('#params').textContent = JSON.stringify(m.payload.params)
+  document.querySelector('#parent').value = m.payload.params.start?.path ?? ''; document.querySelector('#name').value = m.payload.params.suggestedName ?? ''
+})
+const value = id => document.querySelector(id).value
+document.querySelector('#save').onclick = () => post('embed.result', { result: { action: 'save', parent: { kind: 'cyfs-path', path: value('#parent') }, name: value('#name'), overwrite: document.querySelector('#overwrite').checked } })
+document.querySelector('#open').onclick = () => post('embed.result', { result: { action: 'selected', items: [{ origin: 'zone', kind: 'file', source: { kind: 'cyfs-path', path: value('#parent') + '/' + value('#name') }, hints: { name: value('#name') } }] } })
+document.querySelector('#cancel').onclick = () => post('embed.result', { result: { action: 'cancelled' } })
+</script>`
 const normalize = path => path?.replace(/^cyfs:\/\//, '').replace(/\/$/, '') || '/'
 const ref = path => ({ type: 'live', node_id: path })
 const info = path => {
@@ -48,6 +66,7 @@ const server = http.createServer(async (req, res) => {
   // The next `count` commit_file answers are lost after the commit was applied (the client sees a network error).
   if (path === '/test/drop-commits') { dropCommits = JSON.parse(data).count; return send({}) }
   if (path === '/embed/preview') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(EMBED) }
+  if (path === '/embed/sysdlg/select') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(PICKER) }
   if (path.startsWith('/bucket/v1/')) {
     const id = path.slice('/bucket/v1/'.length)
     if (req.method === 'PUT') {

@@ -1,7 +1,7 @@
 # BuckyOS 系统对话框实现方案：文件选择器（sysdlg/select）
 
-> 文档状态：v2（设计稿，未实施）
-> 日期：2026-11-09。按现有的系统对话框、App Frame、Preview 嵌入和 NFSP 重写，取代 2026-06 的初版（初版见 Git 历史，差异见 §14）。同日按 owner 裁决补充：尽力返回对象 ID、可选的本机来源（§4、§5.2、§13.1）
+> 文档状态：v2.1（已实施阶段一至三；D5、D9 等 nfs_server 的 `snapshot`，见 §11.4）
+> 日期：2026-11-09。按现有的系统对话框、App Frame、Preview 嵌入和 NFSP 重写，取代 2026-06 的初版（初版见 Git 历史，差异见 §14）。同日按 owner 裁决补充：尽力返回对象 ID、可选的本机来源（§4、§5.2、§13.1）。2026-11-10 实施：§13.2 的待裁决项按建议值；新增 `exclude` 参数（§4.1）和 `embed.error` 消息（§8）；实施状态与未验证项见 §11.4
 > 上游需求：[BuckyOS Sys Dlg](../../product/BuckyOS%20Sys%20Dlg.md) 的 `sysdlg/select`
 > 关联协议：App Frame Protocol 与 Preview 嵌入（[Text Editor readme](../../src/apps/text_editor/readme.md) §7，实现在 `buckyos-websdk/src/app-frame.ts`）、[内容扩展](../sdk/context%20ext.md)、[nfs_server README](../../src/frame/nfs_server/README.md)、[混合 SSO 技术契约](../arch/verify-hub/混合SSO技术契约.md) §11
 > 读者：Desktop、buckyos-websdk、系统应用和第三方 App 的开发者，以及按本文实施的 Code Agent
@@ -32,7 +32,9 @@
 
 ---
 
-## 2. 现状（2026-11）
+## 2. 现状（2026-11，实施前）
+
+本节记录实施前的情况，是方案的出发点。实施后的状态见 §11.4。
 
 ### 2.1 已有的基础
 
@@ -112,6 +114,8 @@ interface SelectDialogParams {
   accept?: ContentSelector[]
   /** folder：只允许选可以写入的目录。 */
   writable?: boolean
+  /** folder、save：不能作为目标的目录，连同它们下面的所有位置。 */
+  exclude?: TransferableContentRef[]
   /** save：建议的文件名。 */
   suggestedName?: string
   /** open、folder：是否也允许选本机的文件或文件夹。缺省 false，只能选 Zone 里的内容。 */
@@ -125,6 +129,7 @@ interface SelectDialogParams {
 | `start` | 只接受 `cyfs-path`。缺省时用该调用方上次确认的目录（记在本机），再缺省是当前用户的 home。位置不存在或无权访问时退回 home，不报错 |
 | `limit` | 1–500，缺省 100 |
 | `accept` | 最多 16 条。用 `matchSelector(selector, contentDescriptor(source, { name, size }))` 判断，`mime` 按扩展名推断，不读文件内容。不命中的文件照常显示但不可选；目录始终可以进入 |
+| `exclude` | 最多 1000 条，只接受 `cyfs-path`。列表里这些目录不能进入，位于其中时不能确认。File Browser 移动、复制文件夹时用它排除被操作的目录自身 |
 | `suggestedName` | 须通过 File Browser 的 `entryNameSchema`，不合法时忽略 |
 | `allowLocal` | 为 true 时对话框多一个“本机”入口（§5.2）。`save` 模式忽略它；带 `writable` 的 `folder` 也忽略它，因为本机目录不能作为写入目标 |
 
@@ -330,7 +335,7 @@ App 直接在浏览器标签页里打开时没有 Shell。这时 SDK 在 App 页
 1. SDK 生成 nonce，iframe 地址为 `<systemOrigin>/embed/sysdlg/select#bse=<nonce>&po=<App 的 origin>`。
 2. 系统页只在 `po` 属于本 Zone 时工作（`originInZone`），向父页面发 `embed.hello { nonce }`。
 3. SDK 校验来源窗口、origin 和 nonce 后发 `embed.init { nonce, params, theme, locale }`。
-4. 系统页用自己在 Zone 根域的会话读目录，用户确认或取消后发 `embed.result { result }`。
+4. 系统页用自己在 Zone 根域的会话读目录，用户确认或取消后发 `embed.result { result }`。`params` 没有通过校验时发 `embed.error { code: 'invalid_params' }`，SDK 关闭浮层并以该 `code` 拒绝。
 
 消息里不带任何 token。所有消息都用确切的 origin 作为 `targetOrigin`。
 
@@ -437,6 +442,39 @@ D9 的说明：消息附件是不可变对象。有 `objId` 就直接用，没�
 | D11 | File Browser 的目标目录选择和“添加已有文件”改用 `SelectDialog`，删除 `MoveTargetDialog`。移动时“不能选被移动目录自身及其子目录”需要一个排除参数，到这一步再加 | Desktop `app/filebrowser/` |
 | — | HomeStation、AI Workspace 的 `aiws-<id>.<zone>` 自有源页面按需接入 | Desktop |
 
+### 11.4 实施状态（2026-11-10）
+
+| 编号 | 状态 | 说明 |
+|---|---|---|
+| W1、W3、W4 | 已实施 | websdk `src/content.ts`、`src/app-frame.ts`。错误类型是 `SystemDialogError`（带 `code`） |
+| W2 | 部分 | `src/content_objid.ts`。本机条目走 `ndm`；Zone 条目已有 `objId` 时直接返回，没有时以 `unsupported` 拒绝，等 nfs_server 的 `snapshot` |
+| D1–D4 | 已实施 | `sysdlg/select/schemas.ts`、`SelectDialog.tsx`，登记在 `sysdlg/index.tsx` |
+| D5 | 顺延 | 依赖 `snapshot`。`FilePickerDialog.tsx` 和示例数据仍在 |
+| D6 | 已实施 | 数据树和插入目录的“导入文件 / 导入文件夹”。Zone 条目经 `folderOps().readContent` 读成 `File` 后走同一套导入（`sysdlg/select/zoneFiles.ts`）；Zone 文件夹一次最多 2000 个文件 |
+| D7 | 已实施 | `product/BuckyOS Sys Dlg.md` |
+| D8 | 已实施 | `WebAppFramePanel.tsx`。单窗口单请求在 `AppFrameHost` 里执行 |
+| T1、T2 | 已实施 | 编辑器的打开和另存为在两种环境下都走 `selectContent`，自带的位置选择器已删除 |
+| D9 | 顺延 | 依赖 `snapshot` |
+| D10 | 已实施 | `sysdlg/select/SelectEmbedApp.tsx`，`main.tsx` 的 `/embed/sysdlg/select` 分支 |
+| D11 | 已实施 | `MoveTargetDialog` 已删除，移动、复制的目标和“添加已有文件”改用 `SelectDialog` |
+| HomeStation、AI Workspace 自有源页面 | 未做 | 按需接入。AI Workspace 在自有源页面上没有窗口对话框层，仍用原生的文件输入（`useSelectContent()` 返回 null） |
+
+实施时定下、和正文不完全一样的地方：
+
+- **移动端返回键。** `MobileNavContext` 原来只记一个返回处理函数，对话框登记会顶掉 App 的。改成按登记顺序排的栈，最后登记的（对话框）先处理；路径 B 因此不需要在 `WebAppFramePanel` 里单独判断。
+- **Esc。** 窗口对话框层本身不处理 Esc，由 `SelectDialog` 处理：有“是否替换”的询问时先关询问，否则取消。
+- **File Browser 少了两样东西。** 旧的目标对话框可以直接输入路径，也有“最近的目标”列表；系统选择器没有路径输入框，“上次的目录”只在调用方不给 `start` 时用。旧的“添加已有文件”能勾选文件夹作为引用，现在 `open` 模式只能选文件。
+- **登录失效。** nfs_server 对未登录返回 `PERMISSION_DENIED` 加 `reason: unauthenticated`，File Browser 数据层把它映射成单独的 `UNAUTHENTICATED`，选择器据此显示“重新登录”（在新标签页打开登录页）和“重试”。
+
+未验证：
+
+- 真实 Zone 上没有跑过：三种模式的选择、路径 B（真实的第三方 App 窗口）、路径 C（真实的跨子域嵌入和根域会话）、登录失效后的恢复、对象桶投影条目带出 `objId`。验证全部在 mock 运行时（Desktop）和测试 harness（Text Editor）里完成；AI Workspace 的本机文件夹导入用真实的 aiworkspace 后端跑过。
+- AI Workspace 从 Zone 导入文件、文件夹没有自动化用例（它的用例跑在真实后端加 mock 桌面上，mock 的文件内容是占位文本）。
+- `ensureObjId` 的本机分支没有单独的用例，它只是组合了 `ndm.importFiles` 和 `ndm.ensureUploaded`。
+- 浏览器：只跑了桌面 Chromium。Safari、Firefox、iOS Safari、Android Chrome 都没有实测，其中浮层的滚动锁定（iOS）、`inert` 的回退、软键盘不遮挡确认按钮、跨源传递 `File` 需要在这些环境里确认。
+- 移动端布局只经 File Browser 的触摸用例走过（sheet 布局、位置下拉、确认）；返回键“先回上级再取消”没有用例。
+- File Browser 的 NFSP 复制用例（`filebrowser.copy.nfsp.spec.ts`）按新的选择器改了写法，但没有跑（需要单独的 nfs_server 夹具）。
+
 ---
 
 ## 12. 验收与测试
@@ -482,9 +520,9 @@ D9 的说明：消息附件是不可变对象。有 `objId` 就直接用，没�
 | Q4 | 本机文件要不要进系统选择器 | 要，由调用方决定。有的应用只能选 Zone 里的内容，有的两种来源都要（例如 AI Workspace 的导入） | `allowLocal`，§5.2 |
 | Q7 | nfs_server 现在给的 `obj_id` 是整文件摘要，不是调用方要的 ID，怎么办 | 单独立项。nfs_server 只有后端是分布式文件系统时才能零成本给出 FileObject ID，在那之前普通文件一律不返回；需要时用 `ensureObjId`，由服务端 `snapshot` 实现，同一文件第二次求值走缓存 | §4.3，[nfs-server-file-objid-todo](../../notepads/nfs-server-file-objid-todo.md) |
 
-### 13.2 待裁决
+### 13.2 按建议实施（owner，2026-11-10）
 
-本文按每条的“建议”写成。裁决不同的话，对应章节要改。
+实施时 owner 指示这些项目都按建议值。
 
 | 编号 | 问题 | 建议 | 影响 |
 |---|---|---|---|

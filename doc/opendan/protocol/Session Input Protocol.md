@@ -2,7 +2,7 @@
 
 版本 3（`opendan.session_input/3`）· 2026-10-03 · 由 `libopendan` 反写（`src/protocol/input.rs`、`src/channel/{mod,kmsg}.rs`、`src/runner/{inputs,input_view,assembler,receipts,live,drive,children}.rs`、`src/bridge/`）。§10（Sub Session）与内部输入源 `_bootstrap` / `_child` 随 session_config/5 加入。
 
-总线上的记录有三种：`msg`、`event`（Agent 的输入）和 `control`（Session 控制，见 [Session Control Protocol](<Session Control Protocol.md>)）。本文说明记录的线格式、接收方如何处理、输入如何成为上下文里的 user 消息，以及崩溃后如何恢复。输入批次与逻辑 Turn 的关系见 [Session Directory Protocol](<Session Directory Protocol.md>) §4。机器可读样例与逐字节渲染结果在 `fixtures/14_input_bus/`。
+总线上的记录有三种：`msg`、`event`（Agent 的输入）和 `control`（Session 控制）。本文说明记录的线格式、接收方如何处理、输入如何成为上下文里的 user 消息，以及崩溃后如何恢复。控制命令的作用域、生效边界、终态与级联规则统一由 [Session Control Protocol](<Session Control Protocol.md>) 定义；本文只保留控制对输入路由与等待的影响。输入批次与逻辑 Turn 的关系见 [Session Directory Protocol](<Session Directory Protocol.md>) §4。机器可读样例与逐字节渲染结果在 `fixtures/14_input_bus/`。
 
 ## 1. 通道
 
@@ -358,8 +358,8 @@ loop 里不等待，任何等待都是 task。
   正文最多 16 KB（16×1024 字符），更长的截断并注明用 task id 读全文。它不伪装成工具结果：调用当初已经有了“仍在运行”的结果，模型凭 `call_id` 与 task id 把两者对上。
 - 查不到的 task（进程内 task 换了进程、没有 task 管理器认识它）按 `unknown` 交回，由 LLM 判断，不重建、不重放任务。
 - **run 结束后的 task**：run 结束而 Session 未 finished 时，仍在运行的 task（`host.extra.tasks` 与 resolver 报告的）记入 `state.watched_tasks`，之后同样以 task 结果输入交回，可能开启新 Turn。finished 的 Session 清空 `watched_tasks`，不因 task 完成而重开。
-- stop：本 Turn 可取消的 task（resolver 报告在运行的，以及 run 记录的）被取消，run 以 Stopped 结束。工具执行期间由监视任务查看队列中的 stop 并打断运行（只查看，不消费、不写 state）。
-- pause / resume（`control(pause | resume, reason?)`）：pause 记入 `state.paused = {at_ms, reason, by, in_run}`，Session 不再推理：不打开新 Turn（到达的 msg / event 留在队列，task 的结束留在 `watched_tasks`，不产生 tick），运行中的 run 在下一个推理边界（在飞行的调用返回、检查点写入之后）以中断原因 `session paused` 停下，run 保留在检查点、Turn 保持打开（worklog `outcome.kind = paused`，`in_run = true`）。在跟的 task 按 OS 进程语义继续。resume 清除 `paused`；被暂停在 Turn 内的 run 置 `state.resume_run`，下一次推进从检查点接着推理（与崩溃恢复同一路径），Turn 之间暂停的则由积压的输入打开下一个 Turn。登记表 `status.paused`；暂停中的 Session 不报 `needs_input`。对已结束的 Session 是空操作（`applied: false`）。
+- **stop 与 task**：监视任务只查看队列中的 stop，消费与提交仍由驱动者完成。停止 Turn 不证明其外部 task 已取消；Turn / Session 的停止范围、取消覆盖与结果、未知副作用的处理见 [Session Control Protocol](<Session Control Protocol.md>)。
+- **pause / resume 与输入**：Session 暂停时不推理、不打开新 Turn、不产生 tick；msg / event 留在队列，task 结果留待 `watched_tasks` 后续查询，控制命令仍由 Runner 处理。在跟的 task 继续执行。resume 后按检查点继续原 Turn，或由积压输入打开下一 Turn；控制语义见 [Session Control Protocol](<Session Control Protocol.md>)，`paused` / `resume_run` 的持久字段见 [Session Directory Protocol](<Session Directory Protocol.md>) §4。
 - 经外部服务创建任务的工具以 run 与 call 的稳定身份导出幂等键（如 shell 交给 Zone TaskMgr 的 `shell:<run_id>:<call_id>`）；shell 命令的环境里有 `XLLM_RUN_ID` / `XLLM_CALL_ID`。
 - 崩溃恢复：调用中途崩溃时，恢复从派发前的检查点再派发它，由 runtime 的工具管理器按 `call_id` 找回（Session Directory Protocol §10）；run 的终态已落盘而 state 尚未提交时，重做的结束从 run.json 的 `host.extra.tasks` 取回仍需跟踪的 task；保活决定（`host.extra.kept`）同样按记录重做。task 结果只交付一次。
 - **向用户提问**：提问是一个普通的 task。websdk 命令 `ask_user <question> [--option <id>=<label>]... [--allow-text] [--expires <secs>]`（`src/tools/buckyos-agent`）发出一条 `input` 系统通知，即 Zone TaskMgr 上的 `human.input/v1` 任务（幂等键 `ask:<run_id>:<call_id>`，取自 `XLLM_RUN_ID` / `XLLM_CALL_ID`，所以它必须是一条独立的 shell 命令），返回该 task 的 pending 结果（`pending_reason = user_input`）；回答是 task 的结果，按上面的规则以 `<<task_result>>` 交回，过期 / 撤销也是它的终态。Session 不解析问题，也不把下一条消息当作答案：提问期间用户发来的消息照常是新输入。Goal 不用它提问，问题写进 Goal 结果的 `questions`（§3）。
@@ -375,6 +375,6 @@ Sub Session 是 `origin.parent_session` 指向父的普通 Session：自己的�
 - **没有“等一个子 Session”**：`agent-session wait` 与 `create-worksession --wait` 已删除（调用时返回说明）。Session 在 loop 之外跟进它的子 Session：模型结束回复即可，多 Turn Work 的 run 为需要汇报的子保活（`wait_children`），子的结束以 `_child` 的 `finished` 事件作为下一条输入。宿主的 resolver 仍能回答 `session:<sid>` 形式的 task（只读登记表，立即回答），但没有命令再产生它。
 - **plan 发给 Todo 的 work session 的事件**：plan session 的 Todo 由宿主派出的 work session 带输入队列（`SubSessionSpec.queued`；不是 inbox，等待策略仍是 `finish_failed`）。plan 的 `todo update` 向运行中的 attempt 投一条 `event`：`source = todo:<todo_id>`、`event = updated`、`seq = Todo 的 rev`、`summary = "Todo Tx was updated (<字段>): <原因>"`（≤ 1 KiB）、`data_ref = <plan sid>#<todo_id>@<attempt>`、key `<plan sid>:<todo_id>:<attempt>#updated@<rev>`。有 `origin.parent_session` 的 Session 把 `source.kind = todo` 的事件当作 Active 输入接收（不需要订阅）；取入批次时宿主按 `data_ref` 读 plan 的列表，把 Todo 当前的完整任务接在 summary 后。模板变量 `is_todo_update`、`todo_id`。work session 在这类事件取入之前提交的 `report(is_end=true)` 被拒绝（可修正）。
 - **父结束规则**：见 [Session Directory Protocol](<Session Directory Protocol.md>) §4 的 `wait_children` 与保活。`run`、`serve` 与等待循环在 `wait_children` 或 `watched_tasks` 非空（或 runner 的纠正待取）时轮询登记表 / resolver，不以“没有输入队列”为返回依据。
-- **stop 级联**：父被 stop 或结束（结束时只针对需要汇报的子）时，对未结束且有输入队列的子投递 `stop`；没有队列的子由驱动它的宿主以驱动者自己的停止请求结束（`host::stopped_from_above`；见 [Session Control Protocol](<Session Control Protocol.md>)）。子被 stop 只在父那里表现为一次 `finished`（outcome stopped）。
-- **pause 级联**：父被 `pause` 时，对未结束且有输入队列的子投递 `pause`（reason `parent session <sid> was paused`）；父 `resume` 时只对因这次级联而暂停的子投递 `resume`。
+- **停止与级联**：`stop(scope=turn)` 不停止子 Session；父 Session 终止时按 [Session Control Protocol](<Session Control Protocol.md>) 的归属与级联规则处理，有队列的子通过 control、无队列的子通过宿主停止请求处理。子被 stop 在父处表现为一次 `finished`（outcome stopped）。
+- **暂停与级联**：有队列的子可接收级联 pause；父 resume 只恢复因该父暂停的子，具体资格与来源判定见 [Session Control Protocol](<Session Control Protocol.md>)。子暂停不等于 `finished`，不合成结束输入。
 - **推进**：子由其驱动者身份的托管进程推进（参考实现 `host::ChildDriver`：轮询登记表，为每个未结束、未被驱动的子按其自己的配置装配 runtime 后 `drive(Idle)`，各持自己的 lease）。宿主进程退出只停止这些任务，不改变已提交状态；重启后从登记表重新接管。

@@ -40,6 +40,8 @@ export interface FolderWriteOps {
   deleteEntries(entries: FileEntry[], options?: BatchOptions): Promise<OperationResult[]>
   moveEntries(entries: FileEntry[], toParentPath: string, options?: BatchOptions): Promise<OperationResult[]>
   downloadUrl(entry: FileEntry): string | null
+  /** The bytes of the file at a DFS path, read with the user's session. */
+  readContent(path: string): Promise<Blob>
 }
 
 export function operationError(code: string, fallback: string): UiError {
@@ -106,7 +108,7 @@ const unsupported = () => Promise.reject(operationError('UNSUPPORTED', 'File ope
 const noOps: FolderWriteOps = {
   supportsCopy: false,
   nameExists: unsupported, statEntry: unsupported, createFolder: unsupported,
-  renameEntry: unsupported, deleteEntries: unsupported, moveEntries: unsupported, copyEntries: unsupported, downloadUrl: () => null,
+  renameEntry: unsupported, deleteEntries: unsupported, moveEntries: unsupported, copyEntries: unsupported, downloadUrl: () => null, readContent: unsupported,
 }
 let active: FolderWriteOps = noOps
 export function registerFolderOps(ops: FolderWriteOps): () => void {
