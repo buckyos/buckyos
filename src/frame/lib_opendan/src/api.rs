@@ -213,6 +213,9 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
                     record.grant.ops
                 )));
             }
+            if record.connector.is_node() {
+                crate::runtime::check_node_placement(agent, &record).await?;
+            }
             FrozenRuntime {
                 runtime_id: record.runtime_id.clone(),
                 connector: record.connector.clone(),

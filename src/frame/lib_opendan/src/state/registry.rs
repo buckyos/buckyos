@@ -714,14 +714,19 @@ impl SessionRegistry for FsRegistry {
                     });
                 }
                 let lock_path = sd.state_dir().join(POST_LOCK_FILE);
-                let file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .truncate(false)
-                    .write(true)
-                    .open(&lock_path)
-                    .map_err(|e| OpenDanError::io(&lock_path, e))?;
-                fs2::FileExt::lock_exclusive(&file)
-                    .map_err(|e| OpenDanError::io(&lock_path, e))?;
+                let give_up = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                let lock = loop {
+                    if let Some(lock) = crate::lock::FileLock::try_acquire(&lock_path)? {
+                        break lock;
+                    }
+                    if std::time::Instant::now() >= give_up {
+                        return Err(OpenDanError::Busy {
+                            resource: lock_path.display().to_string(),
+                            holder: None,
+                        });
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                };
                 // Re-read under the lock.
                 let state = sd.state()?;
                 let stats = client.get_queue_stats(&queue).await.map_err(missing)?;
@@ -735,7 +740,7 @@ impl SessionRegistry for FsRegistry {
                         pending,
                     });
                 }
-                Some(file)
+                Some(lock)
             }
             // The directory is not readable from here (another host): the
             // consumer still validates every record.

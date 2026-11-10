@@ -4353,6 +4353,8 @@ mod tests {
         let host = AgentCreateRequest::parse(&explicit).unwrap().settings_with_runtimes(&kv, OWNER).await.unwrap();
         assert_eq!(host.effective_default_runtime(), "host", "the owner may choose the host");
         let view = crate::agent_runtimes::directory_view(&offers, Some(&host), true, &[]);
+        assert_eq!(view["agent_service"]["mode"], "container", "with containers the private runtime stays the container");
+        let view = crate::agent_runtimes::directory_view(&offers, Some(&host), false, &[]);
         assert_eq!(view["agent_service"], json!({"mode": "native", "node_id": "ood1"}));
 
         // No node runs containers: the host is the default, a container

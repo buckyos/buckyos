@@ -646,10 +646,47 @@ impl agent_tool::runtime::node::NodeExecutorConnector for NoNode {
     }
 }
 
+struct LabNode;
+
+#[async_trait]
+impl agent_tool::runtime::node::NodeExecutorConnector for LabNode {
+    async fn connect(&self, _node: &str) -> std::io::Result<Box<dyn agent_tool::runtime::node::NodeIo>> {
+        use tokio::io::AsyncWriteExt;
+        let (client, mut server) = tokio::io::duplex(1 << 16);
+        tokio::spawn(async move {
+            let mut profile = serde_json::Value::Null;
+            while let Ok(Some(buckyos_api::ExecutorFrame::Control(bytes))) = buckyos_api::read_executor_frame(&mut server).await {
+                let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let id = &request["request_id"];
+                let response = match request["type"].as_str().unwrap() {
+                    "login" => {
+                        profile = request["profile"].clone();
+                        json!({"type":"login_ok", "request_id":id, "posture":"normal", "principal":AGENT, "app_instance_id":"jarvis@alice",
+                            "caps":["open_stream","describe","exec","read","write","mkdir","stat","query","cancel"],
+                            "limits":buckyos_api::ExecutorLimits::default(), "revision":"one", "generation":1,
+                            "auth_valid_until_ms":u64::MAX, "token_expires_at_ms":u64::MAX, "store_id":"lab-ledger", "server_epoch":"one"})
+                    }
+                    "describe" => json!({"type":"describe_ok", "request_id":id,
+                        "target":{"node_did":"did:web:lab.test.buckyos.io", "profile_id":profile, "uid":1000, "gid":1000,
+                            "workdir":request["workdir"], "workdir_roots":["/lab"], "store_id":"lab-ledger", "protocol_version":1},
+                        "info":{"os":"linux", "arch":"x86_64", "hostname":"lab", "shell":"bash", "time_ms":1, "home":"/lab/home", "identity_mode":"current_user"}}),
+                    other => json!({"type":"error", "request_id":id, "error":{"code":"capability", "message":format!("lab node: no {other}")}}),
+                };
+                server.write_all(&buckyos_api::encode_executor_control(&response).unwrap()).await.unwrap();
+            }
+        });
+        Ok(Box::new(client))
+    }
+
+    async fn session_token(&self) -> std::result::Result<String, String> {
+        Ok("test-session".into())
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_owner_switches_assigned_runtimes_and_work_in_progress_is_told() {
     use buckyos_api::{AgentRuntimeSettings, AgentRuntimeTarget};
-    libopendan::runtime::set_node_connector(Arc::new(NoNode));
+    libopendan::runtime::set_node_connector(Arc::new(LabNode));
     let mut w = World::new();
     w.settings.runtimes.insert(
         "node-lab".into(),
@@ -681,20 +718,42 @@ async fn the_owner_switches_assigned_runtimes_and_work_in_progress_is_told() {
     entry.runtime_id = Some("node-lab".into());
     entry.title = Some("render on the lab".into());
     entry.status = SessionStatus::created(libopendan::now_ms());
+    let mut idle = entry.clone();
+    idle.session_id = "work-20260101-899".into();
+    idle.idempotency_key = Some("idle-on-the-lab".into());
+    loader.agent.sessions().register(idle, WHO).await.unwrap();
+
+    // Created but never started: switching the runtime off cuts nothing off.
+    let impact = rpc(port, "runtimes.impact", json!({"runtime_id": "node-lab"})).await.unwrap();
+    assert_eq!((impact["blocking"].as_bool(), impact["active_sessions"].as_array().map(Vec::len)), (Some(false), Some(1)));
+    entry.status.run_state = RunState::Running;
     loader.agent.sessions().register(entry, WHO).await.unwrap();
 
     let impact = rpc(port, "runtimes.impact", json!({"runtime_id": "node-lab"})).await.unwrap();
     assert_eq!((impact["blocking"].as_bool(), impact["owner_default"].as_bool()), (Some(true), Some(true)));
-    assert_eq!(impact["active_sessions"][0]["session_id"], "work-20260101-900");
-    assert_eq!(impact["active_sessions"][0]["title"], "render on the lab");
+    assert_eq!(impact["running_sessions"], json!(["work-20260101-900"]));
+    assert_eq!(impact["active_sessions"].as_array().map(Vec::len), Some(2));
     assert_eq!(rpc(port, "runtimes.impact", json!({"runtime_id": "private"})).await.unwrap()["active_sessions"], json!([]));
 
-    // Work in progress is shown before the runtime is taken away.
-    let refused = rpc(port, "runtimes.settings_set", json!({"runtime_id": "node-lab", "enabled": false})).await.unwrap_err();
-    assert!(refused.to_string().contains("confirm_required") && refused.to_string().contains("1 session(s)"), "{refused}");
-    let off = rpc(port, "runtimes.settings_set", json!({"runtime_id": "node-lab", "enabled": false, "confirm": true})).await.unwrap();
-    assert_eq!(off["runtimes"]["node-lab"]["enabled"], false);
-    assert_eq!((off["default_runtime_id"].as_str(), off["configured_default_runtime_id"].as_str()), (Some("private"), Some("node-lab")), "a default that is off keeps its place");
+    // A runtime is not taken away from sessions in progress on it.
+    for (method, params) in [
+        ("runtimes.settings_set", json!({"runtime_id": "node-lab", "enabled": false})),
+        ("runtimes.settings_set", json!({"runtime_id": "node-lab", "enabled": false, "confirm": true})),
+        ("runtimes.remove", json!({"runtime_id": "node-lab"})),
+    ] {
+        let refused = rpc(port, method, params).await.unwrap_err().to_string();
+        assert!(refused.contains("sessions_in_progress") && refused.contains("work-20260101-900"), "{refused}");
+    }
+    assert_eq!(rpc(port, "runtimes.settings", json!({})).await.unwrap()["runtimes"]["node-lab"]["enabled"], true);
+
+    // Switched off past the agent (the control panel's `agent.update`): a
+    // default that is off keeps its place.
+    let mut changed = records::settings(w.records.as_ref()).await.unwrap();
+    changed.runtimes.get_mut("node-lab").unwrap().enabled = false;
+    records::set_settings(w.records.as_ref(), &changed).await.unwrap();
+    opendan::loader::project_runtimes(loader.agent.as_ref(), loader.agent.agent_root().unwrap(), &changed, WHO).await;
+    let off = rpc(port, "runtimes.settings", json!({})).await.unwrap();
+    assert_eq!((off["default_runtime_id"].as_str(), off["configured_default_runtime_id"].as_str()), (Some("private"), Some("node-lab")));
     let record = loader.agent.runtimes().lookup("node-lab").await.unwrap().unwrap();
     assert!(!record.usable() && record.lifecycle == RuntimeLifecycle::Active);
 
@@ -722,9 +781,13 @@ async fn the_owner_switches_assigned_runtimes_and_work_in_progress_is_told() {
     }
     assert!(rpc(port, "runtimes.settings_set", json!({"runtime_id": "node-other", "enabled": true})).await.unwrap_err().to_string().contains("not assigned"));
 
-    // Removed from the agent: gone from its settings with the default, kept as history.
-    assert!(rpc(port, "runtimes.remove", json!({"runtime_id": "node-lab"})).await.unwrap_err().to_string().contains("confirm_required"));
-    let removed = rpc(port, "runtimes.remove", json!({"runtime_id": "node-lab", "confirm": true})).await.unwrap();
+    // Removed past the agent: gone from its settings with the default, kept as history.
+    let mut changed = records::settings(w.records.as_ref()).await.unwrap();
+    changed.runtimes.remove("node-lab");
+    changed.default_runtime_id = None;
+    records::set_settings(w.records.as_ref(), &changed).await.unwrap();
+    opendan::loader::project_runtimes(loader.agent.as_ref(), loader.agent.agent_root().unwrap(), &changed, WHO).await;
+    let removed = rpc(port, "runtimes.settings", json!({})).await.unwrap();
     assert_eq!(removed["runtimes"], json!({}));
     assert_eq!((removed["default_runtime_id"].as_str(), removed["configured_default_runtime_id"].as_str()), (Some("private"), None));
     let retired = loader.agent.runtimes().lookup("node-lab").await.unwrap().unwrap();
@@ -736,6 +799,35 @@ async fn the_owner_switches_assigned_runtimes_and_work_in_progress_is_told() {
     spec.runtime.requirement.runtime_id = Some("node-lab".into());
     let refused = create_session(&w.root.join("sessions"), spec, loader.agent.as_ref(), WHO, w.channels().as_ref()).await.unwrap_err();
     assert!(refused.to_string().contains("retired"), "{refused}");
+    loader.shutdown().await;
+}
+
+/// The owner stops a work session, which has no input queue: the Loader
+/// interrupts its driver and it ends as stopped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owner_stops_a_work_session_without_a_queue() {
+    let w = World::new();
+    let asked = Arc::new(AtomicBool::new(false));
+    let seen = asked.clone();
+    let llm = Llm::new(move |_, _| {
+        seen.store(true, Ordering::SeqCst);
+        "TOOL:sleep 20".to_string()
+    });
+    let port = free_port();
+    let loader = Loader::start(w.env(llm, port).await).await.unwrap();
+    until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
+    let work = new_work(loader.agent.as_ref(), &w, "a long job").await;
+    assert!(loader.agent.sessions().lookup(work.sid()).await.unwrap().unwrap().input_queue.is_none());
+    until("the work runs its command", || asked.load(Ordering::SeqCst)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    let stopped = rpc(port, "session.stop", json!({ "sid": work.sid(), "reason": "enough" })).await.unwrap();
+    assert_eq!(stopped["stopped"], true);
+    until("stopped", || finished(&work)).await;
+    assert!(started.elapsed() < Duration::from_secs(15), "the command was interrupted, not waited for");
+    assert_eq!(work.state().unwrap().outcome, Some(Outcome::Stopped));
+    let again = rpc(port, "session.stop", json!({ "sid": work.sid() })).await.unwrap_err();
+    assert!(again.to_string().contains("finished"), "{again}");
     loader.shutdown().await;
 }
 
@@ -1542,16 +1634,11 @@ async fn the_jarvis_package_loads_and_answers() {
     );
     let simple = loader.agent.behaviors().get("work_simple").await.unwrap().unwrap();
     assert_eq!(simple.capabilities.tool_whitelist.as_deref(), Some(&["group:bash".to_string(), "report".to_string()][..]));
-    // The built-in runtimes are registered before anything runs.
+    // The private runtime is registered before anything runs; nothing else
+    // is assigned to this agent.
     let runtimes = loader.agent.runtimes().list().await.unwrap();
     let ids: Vec<_> = runtimes.iter().map(|r| (r.runtime_id.as_str(), r.availability)).collect();
-    assert_eq!(
-        ids,
-        [
-            ("private", libopendan::protocol::RuntimeAvailability::Available),
-            ("host", libopendan::protocol::RuntimeAvailability::RuntimeUnavailable)
-        ]
-    );
+    assert_eq!(ids, [("private", libopendan::protocol::RuntimeAvailability::Available)]);
     // Both conversations reply under a contract; the analysis returns its
     // result under its own, listing the questions it asked.
     for name in ["chat_route", "groupchat_route"] {

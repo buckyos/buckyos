@@ -31,13 +31,14 @@ pub const APP: &str = "app:app2@alice";
 pub struct MockNode {
     pub roots: Vec<String>,
     pub home: String,
+    pub caps: Vec<&'static str>,
 }
 
 #[async_trait]
 impl agent_tool::runtime::node::NodeExecutorConnector for MockNode {
     async fn connect(&self, _node: &str) -> std::io::Result<Box<dyn agent_tool::runtime::node::NodeIo>> {
         use tokio::io::AsyncWriteExt;
-        let (roots, home) = (self.roots.clone(), self.home.clone());
+        let (roots, home, caps) = (self.roots.clone(), self.home.clone(), self.caps.clone());
         let (client, mut server) = tokio::io::duplex(1 << 16);
         tokio::spawn(async move {
             let mut profile = Value::Null;
@@ -51,7 +52,7 @@ impl agent_tool::runtime::node::NodeExecutorConnector for MockNode {
                         profile = request["profile"].clone();
                         json!({"type":"login_ok", "request_id":id, "posture":"normal",
                             "principal":AGENT, "app_instance_id":"app2@alice",
-                            "caps":["open_stream","describe","exec","read","write","edit","mkdir","stat","rename","remove","query","cancel"],
+                            "caps":caps,
                             "limits":buckyos_api::ExecutorLimits::default(), "revision":"one", "generation":1,
                             "auth_valid_until_ms":u64::MAX, "token_expires_at_ms":u64::MAX,
                             "store_id":"mock-ledger", "server_epoch":"one"})
@@ -77,9 +78,14 @@ impl agent_tool::runtime::node::NodeExecutorConnector for MockNode {
 
 /// Install [`MockNode`] as this process's node connector.
 pub fn mock_node(roots: &[&str], home: &str) {
+    mock_node_with_caps(roots, home, &["open_stream", "describe", "exec", "read", "write", "edit", "mkdir", "stat", "rename", "remove", "query", "cancel"]);
+}
+
+pub fn mock_node_with_caps(roots: &[&str], home: &str, caps: &[&'static str]) {
     libopendan::runtime::set_node_connector(Arc::new(MockNode {
         roots: roots.iter().map(|r| r.to_string()).collect(),
         home: home.to_string(),
+        caps: caps.to_vec(),
     }));
 }
 

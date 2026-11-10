@@ -145,7 +145,7 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     runtimeSettings: () => call('runtimes.settings'),
     setRuntimeSetting: (patch) => call('runtimes.settings_set', { ...patch }),
     runtimeImpact: (runtimeId) => call('runtimes.impact', { runtime_id: runtimeId }),
-    removeRuntime: (runtimeId, confirm = false) => call('runtimes.remove', { runtime_id: runtimeId, ...(confirm ? { confirm: true } : {}) }),
+    removeRuntime: (runtimeId) => call('runtimes.remove', { runtime_id: runtimeId }),
     sessions: () => call('sessions.query'),
     activeSessions: () => call('activity.active', { limit: 50 }),
     session: (sid, worklog = 40) => call('session.read', { sid, worklog }),

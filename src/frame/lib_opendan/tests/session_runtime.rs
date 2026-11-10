@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use buckyos_api::RuntimeBaseline;
 use common::*;
-use libopendan::api::{create_sub_session, SubSessionSpec, SubWorkspace};
+use libopendan::api::{create_session, create_sub_session, SubSessionSpec, SubWorkspace};
 use libopendan::protocol::*;
 use libopendan::runner::{drive, StopWhen};
 use libopendan::session_context::{is_session_method, HelperOutput, SessionService, TokenKey};
@@ -70,6 +70,120 @@ async fn native_owner_alias_freezes_to_private_and_keeps_workspace_local() {
     assert_eq!(view["private"]["id"], "private");
     assert_eq!(view["owner_default"]["id"], "private");
     assert_eq!(libopendan::runtime::workspace_view(&cfg).unwrap()["same_runtime"], true);
+}
+
+/// A device issued for one work directory: the agent's directory goes under
+/// that root when the account home lies outside it; a runtime that does not
+/// allow creating directories is refused when the session is created.
+#[tokio::test]
+async fn a_node_session_is_placed_where_it_can_be_or_refused_at_creation() {
+    let env = Env::new();
+    let agent = env.agent();
+    mock_node(&["/lab"], "/home/u");
+    agent.runtimes().register(&lab(RuntimeBaseline::Standard, true), APP).await.unwrap();
+    let mut spec = work_spec("on the lab");
+    spec.runtime.requirement.runtime_id = Some("lab".into());
+    let sd = env.create_work(spec.clone()).await;
+    assert_eq!(sd.config().unwrap().runtime.runtime_id(), "lab");
+    let record = agent.runtimes().lookup("lab").await.unwrap().unwrap();
+    let target = libopendan::runtime::open_node_target(&record, &env.root.join("ops")).await.unwrap();
+    assert_eq!(
+        libopendan::runtime::node_agent_dir(&target, "lab", agent.agent_id()).unwrap(),
+        format!("/lab/.opendan/{}", agent.agent_id())
+    );
+
+    mock_node_with_caps(&["/lab"], "/home/u", &["open_stream", "describe", "exec", "read", "write", "query", "cancel"]);
+    spec.idempotency_key = Some("again".into());
+    let refused = create_session(&env.app_dir, spec, agent.as_ref(), APP, env.channels().as_ref()).await.unwrap_err();
+    assert!(refused.to_string().contains("does not allow creating directories"), "{refused}");
+}
+
+struct Device;
+
+#[async_trait::async_trait]
+impl agent_tool::runtime::node::NodeExecutorConnector for Device {
+    async fn connect(&self, _executor: &str) -> std::io::Result<Box<dyn agent_tool::runtime::node::NodeIo>> {
+        use tokio::io::AsyncWriteExt;
+        let (client, mut server) = tokio::io::duplex(1 << 16);
+        tokio::spawn(async move {
+            let mut ops = std::collections::HashMap::<String, serde_json::Value>::new();
+            while let Ok(Some(buckyos_api::ExecutorFrame::Control(bytes))) = buckyos_api::read_executor_frame(&mut server).await {
+                let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let id = &request["request_id"];
+                let response = match request["type"].as_str().unwrap() {
+                    "login" => serde_json::json!({"type":"login_ok", "request_id":id, "posture":"normal", "principal":AGENT, "app_instance_id":"app2@alice",
+                        "caps":["open_stream","describe","exec","read","write","mkdir","stat","query","cancel"],
+                        "limits":buckyos_api::ExecutorLimits::default(), "revision":"one", "generation":1,
+                        "auth_valid_until_ms":u64::MAX, "token_expires_at_ms":u64::MAX, "store_id":"laptop-ledger", "server_epoch":"one"}),
+                    "describe" => serde_json::json!({"type":"describe_ok", "request_id":id,
+                        "target":{"node_did":"", "executor_id":"laptop", "profile_id":"default", "uid":1000, "gid":1000,
+                            "workdir":request["workdir"], "workdir_roots":["/work"], "store_id":"laptop-ledger", "protocol_version":1},
+                        "info":{"os":"linux", "arch":"x86_64", "hostname":"laptop", "shell":"bash", "time_ms":1, "home":"/home/friend", "identity_mode":"current_user"}}),
+                    "mkdir" => {
+                        let op = serde_json::json!({"op_id":request["op_id"], "kind":"mkdir", "state":"succeeded", "accepted_at_ms":1,
+                            "result":{"state":"succeeded", "file":{"path":request["path"], "size":0, "hash":"", "path_type":"directory"}, "finished_at_ms":2}});
+                        ops.insert(request["op_id"].as_str().unwrap().into(), op.clone());
+                        serde_json::json!({"type":"accepted", "request_id":id, "op":op})
+                    }
+                    "query" => serde_json::json!({"type":"query_ok", "request_id":id, "op":ops[request["op_id"].as_str().unwrap()], "chunk":null}),
+                    other => serde_json::json!({"type":"error", "request_id":id, "error":{"code":"capability", "message":format!("device: no {other}")}}),
+                };
+                server.write_all(&buckyos_api::encode_executor_control(&response).unwrap()).await.unwrap();
+            }
+        });
+        Ok(Box::new(client))
+    }
+
+    async fn session_token(&self) -> std::result::Result<String, String> {
+        Ok("device-session".into())
+    }
+
+    fn executor_target(&self) -> Option<agent_tool::runtime::executor::ExecutorTarget> {
+        Some(agent_tool::runtime::executor::ExecutorTarget {
+            executor_id: "laptop".into(),
+            generation: 1,
+            profile_id: "default".into(),
+            store_id: "laptop-ledger".into(),
+        })
+    }
+}
+
+struct Devices;
+
+#[async_trait::async_trait]
+impl libopendan::runtime::ExecutorResolver for Devices {
+    async fn resolve(&self, _executor_id: &str, _profile_id: &str) -> libopendan::Result<libopendan::runtime::ExecutorRoute> {
+        Ok(libopendan::runtime::ExecutorRoute { connector: std::sync::Arc::new(Device), profile_id: "default".into(), expires_at_ms: None })
+    }
+}
+
+/// A session on a device (form B) binds through its executor's route, also
+/// where the host already has a node connector (the Loader does).
+#[tokio::test]
+async fn a_device_session_binds_through_its_executor_route() {
+    let env = Env::new();
+    let agent = env.agent();
+    mock_node(&["/lab"], "/lab/home");
+    libopendan::runtime::set_executor_resolver(std::sync::Arc::new(Devices));
+    let mut settings = buckyos_api::AgentSettings::default();
+    settings.runtimes.insert(
+        "exec-laptop".into(),
+        buckyos_api::AgentRuntimeSettings {
+            enabled: true,
+            target: buckyos_api::AgentRuntimeTarget::Executor { executor_id: "laptop".into(), profile_id: None },
+        },
+    );
+    let registers = libopendan::protocol::builtin_runtimes(&settings, AGENT, &PrivateRuntimeInfo::default());
+    agent.runtimes().ensure_builtin(&registers, APP).await.unwrap();
+    let mut spec = work_spec("on the laptop");
+    spec.runtime.requirement.runtime_id = Some("exec-laptop".into());
+    let sd = env.create_work(spec).await;
+    let cfg = sd.config().unwrap();
+    let mut deps = agent_tool::xllm::XllmDeps::default();
+    deps.node_executor = Some(std::sync::Arc::new(MockNode { roots: vec!["/lab".into()], home: "/lab/home".into(), caps: vec![] }));
+    libopendan::runtime::runtime_for_session(&sd, &cfg, agent.as_ref(), None, &deps)
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
 }
 
 #[tokio::test]

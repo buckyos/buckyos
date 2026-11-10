@@ -397,14 +397,15 @@ pub(crate) async fn unassign_device(kv: &dyn AgentKv, owner: &str, executor_id: 
     Ok(changed)
 }
 
-/// How an Agent with `settings` runs its Agent Service: natively on the
-/// node of its default runtime when that is an open node runtime of the
-/// owner (the scheduler's `native_agent_node`), else in its container.
-pub(crate) fn agent_service_view(offers: &[NodeRuntimeOffer], settings: &AgentSettings) -> Value {
+/// How an Agent with `settings` runs its Agent Service: in a product
+/// without containers, natively on the node of its default runtime when
+/// that is an open node runtime of the owner (the scheduler's
+/// `native_agent_node`); else in its container.
+pub(crate) fn agent_service_view(offers: &[NodeRuntimeOffer], settings: &AgentSettings, container_available: bool) -> Value {
     let default = settings.effective_default_runtime();
     match settings.runtimes.get(default).map(|r| &r.target) {
         Some(AgentRuntimeTarget::Node { node_id, .. })
-            if offers.iter().any(|o| !o.is_device() && &o.node_id == node_id && !o.closed) =>
+            if !container_available && offers.iter().any(|o| !o.is_device() && &o.node_id == node_id && !o.closed) =>
         {
             json!({"mode": "native", "node_id": node_id})
         }
@@ -489,7 +490,7 @@ pub(crate) fn directory_view(
         "host_by_default": host_default,
     });
     if let Some(settings) = settings {
-        view["agent_service"] = agent_service_view(offers, settings);
+        view["agent_service"] = agent_service_view(offers, settings, container_available);
     }
     view
 }

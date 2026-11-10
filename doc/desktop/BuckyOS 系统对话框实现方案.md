@@ -179,25 +179,26 @@ type SelectDialogResult =
 
 `source` 和 `objId` 是两回事：`source` 指向“这个位置上的文件”，以后内容变了它跟着变；`objId` 是确认那一刻的内容，不可变。要回写的调用方（编辑器）用 `source`，要固定一份内容的调用方（消息附件、安装包）用 `objId`。
 
-**选择器尽力返回 `objId`**：目录列表里带了对象 ID 就带出，不为了拿到它而额外计算或等待。等 `cyfs:///` 接上分布式文件系统的底层后，每个文件都有对象 ID，这个字段就总是存在。
+**选择器尽力返回 `objId`**：目录列表里带了对象 ID 就带出，不为了拿到它而额外计算或等待。
 
-**没有 `objId` 时，调用方用 helper 计算。** websdk 提供：
+现在基本拿不到。owner 已裁决（2026-11-09）：nfs_server 只有在后端是分布式文件系统时才能零成本给出 FileObject ID，在那之前普通文件一律不返回。它现在放在 `ident.obj_id` 里的整文件摘要 `sha256:<hex>` 不是对象 ID，会被去掉，见 [nfs-server-file-objid-todo](../../notepads/nfs-server-file-objid-todo.md)。所以目前只有本身就是对象的条目（对象桶投影出来的文件）带 `objId`；等 `cyfs:///` 接上分布式文件系统的底层后，这个字段才总是存在。
+
+**没有 `objId` 时，调用方用 helper 求值。** websdk 提供：
 
 ```ts
-/** 返回条目的对象 ID：已有就直接返回，没有就计算并登记到 Zone。 */
+/** 返回条目的对象 ID：已有就直接返回，没有就求出来并登记到 Zone。 */
 ensureObjId(item: ZoneContent | LocalFile, options?): Promise<{ objId: string; release(): void }>
 ```
 
-- `ZoneContent` 且已有 `objId`：直接返回。
-- `ZoneContent` 没有 `objId`：读出文件内容，经 `ndm.importFiles` 和 `ndm.ensureUploaded` 登记，得到 FileObject 的 ID。
-- `LocalFile`：同样经 `ndm` 登记，和现在各应用处理本机文件的做法一样。
-- `release()` 释放登记时占用的导入 session，调用方在对象被自己的业务引用之后调用（约定同 `ndm.releaseImportSession`）。
+| 条目 | 做法 | 第二次求值 |
+|---|---|---|
+| `ZoneContent`，已有 `objId` | 直接返回 | — |
+| `ZoneContent`，没有 `objId` | 调 nfs_server 的 `snapshot` 方法，在服务端读文件、分块、写入 NamedStore，并把对象授权给调用方。内容不经过浏览器 | 服务端有缓存：文件的大小、修改时间和名字都没变时直接返回上次的 ID，不重读内容。缓存对所有设备和应用生效 |
+| `LocalFile` | 经 `ndm.importFiles` 和 `ndm.ensureUploaded` 登记，和现在各应用处理本机文件的做法一样 | `ndm` 已有 QCID 快速路径：同一个应用登记过相同内容时，不再算完整哈希，也不上传 |
 
-现状与限制，实施时要处理：
-
-- nfs_server 现在只在文件已有完整哈希时给出 `obj_id`，形式是内容哈希 `sha256:<hex>`；文件一旦被修改这个值就清空。而安装器和消息附件要的是 FileObject 的 ID。两者是否等价、选择器现在该不该把 `sha256:` 形式的值放进 `objId`，见 §13 Q7。在这一点定下来之前，按“现在基本都要走 helper”来估计工作量。
-- helper 首版在浏览器里完成：要把 Zone 里的文件读到浏览器再登记，大文件代价高。底层接上之后选择器直接给出 `objId`，这条路径自然不再经过。
-- 目录的对象 ID（DirObject）现在拿不到，helper 首版只支持文件。
+- `release()`：本机条目释放登记时占用的导入 session（约定同 `ndm.releaseImportSession`），调用方在对象被自己的业务引用之后调用。Zone 条目的保留由服务端按期限管理，`release()` 不做事。
+- Zone 条目只有这一种实现，不提供“把文件读到浏览器再登记”的过渡做法。因此依赖 `ensureObjId` 的入口（安装向导 D5、消息附件 D9）要等 nfs_server 的 `snapshot` 就绪。
+- 目录：`snapshot` 支持目录，返回 DirObject 的 ID。本机文件夹不经这个 helper，调用方照旧用 `ndm.importDirectory`。
 
 ---
 
@@ -401,16 +402,16 @@ App 直接在浏览器标签页里打开时没有 Shell。这时 SDK 在 App 页
 | 编号 | 内容 | 位置 |
 |---|---|---|
 | W1 | `SelectDialogParams`、`SelectedContent`、`SelectDialogResult` 类型和结果校验函数 | websdk `src/content.ts` |
-| W2 | `ensureObjId` helper（§4.3），首版只支持文件 | websdk |
+| W2 | `ensureObjId` helper（§4.3）。本机条目可以先做；Zone 条目依赖 nfs_server 的 `snapshot` | websdk |
 | D1 | 参数与结果的 zod schema | Desktop `sysdlg/select/schemas.ts` |
-| D2 | File Browser 数据层带出对象 ID：列表请求加 `ident` 组，`FileEntry` 增加可选的 `objId` | Desktop `app/filebrowser/data/` |
+| D2 | File Browser 数据层带出对象 ID：列表请求加 `ident` 组，`FileEntry` 增加可选的 `objId`。目前只有对象桶投影的条目有值；nfs_server TODO 第一步完成前，要滤掉 `sha256:` 形式的值 | Desktop `app/filebrowser/data/` |
 | D3 | `SelectDialog` 组件：三种模式，浏览 Zone（§5.1），“本机”入口（§5.2） | Desktop `sysdlg/select/` |
 | D4 | 在 `useSystemDialog` 登记 `SELECT_DIALOG_PATH` | Desktop `sysdlg/index.tsx` |
 | D5 | App Service 安装向导改用 `sysdlg/select`（`accept` 限 `.pikg`），删除 `FilePickerDialog.tsx` 和示例数据 | Desktop `app/app-service/` |
 | D6 | AI Workspace 的导入入口（插入目录的“从文件…”、数据树的导入）改用 `sysdlg/select`，`allowLocal: true`。本机条目照旧处理；Zone 条目经 NFSP 读出内容后走同一套导入 | Desktop `app/aiworkspace/` |
 | D7 | 补全产品文档 `sysdlg/select` 一节（参数、结果、流程） | `product/BuckyOS Sys Dlg.md` |
 
-D5 的说明：安装器的 staging 只接受 FileObject 的对象 ID（`apps.staging.finalize { source_obj_id }`）。Zone 里的 `.pikg` 有 `objId` 就直接用，没有就经 `ensureObjId` 取得。安装包可能超过 1 GB，首版 helper 要把它读到浏览器再登记，这条路径的耗时需要实测。
+D5 的说明：安装器的 staging 只接受 FileObject 的对象 ID（`apps.staging.finalize { source_obj_id }`）。Zone 里的 `.pikg` 有 `objId` 就直接用，没有就经 `ensureObjId` 取得。所以 D5 依赖 nfs_server 的 `snapshot`（[TODO](../../notepads/nfs-server-file-objid-todo.md) 第二步），未就绪时本项顺延，不阻塞阶段一的其余任务。
 
 D6 只覆盖桌面窗口里的 AI Workspace（路径 A）。`aiws-<id>.<zone>` 自有源页面没有 Shell，要等阶段三。
 
@@ -424,7 +425,7 @@ D6 只覆盖桌面窗口里的 AI Workspace（路径 A）。`aiws-<id>.<zone>` �
 | D9 | MessageHub 回形针菜单增加“从 Zone 选择”，原有的本机入口保留 | Desktop `app/messagehub/` |
 | — | 同步 Text Editor readme §7.3（消息表）、§8.9；按 AGENTS 的 cmd_skills 联动表检查 `buckyos_app_dev` 手册是否要补 `selectContent` | 文档 |
 
-D9 的说明：消息附件是不可变对象。文件用 `objId`，没有时用 `ensureObjId`。从 Zone 里选整个文件夹作为附件需要 DirObject 的 ID，现在拿不到，首版只支持选文件。
+D9 的说明：消息附件是不可变对象。有 `objId` 就直接用，没有时用 `ensureObjId`，同样依赖 nfs_server 的 `snapshot`。`snapshot` 支持目录，所以从 Zone 里选整个文件夹作为附件也走这条路。
 
 ### 阶段三：独立标签页可用，收敛其余选择器
 
@@ -446,8 +447,9 @@ D9 的说明：消息附件是不可变对象。文件用 `objId`，没有时用
 - `accept` 不命中的文件不可选；多选达到 `limit` 后不能再选；`save` 遇到同名文件会询问并在结果里给出 `overwrite: true`。
 - 超过一页的目录能继续加载；跨目录的已选项不丢。
 - 没有 `allowLocal` 时没有“本机”入口。有 `allowLocal` 时能选本机文件；`folder` 模式能选本机文件夹，得到带相对路径的文件列表；在系统选择器里取消会回到对话框，之前的状态不变。
-- 目录列表带对象 ID 的文件，结果里有 `objId`；没有的文件经 `ensureObjId` 得到 FileObject 的 ID。
-- 安装向导能从 Zone 里选中 `.pikg` 并进入检查流程；仓库里不再有 `FilePickerDialog`。
+- 目录列表带对象 ID 的条目，结果里有 `objId`；普通文件没有。
+- `ensureObjId`：本机文件得到 FileObject 的 ID。nfs_server 的 `snapshot` 就绪后，Zone 文件也得到 FileObject 的 ID，对同一个没变的文件第二次调用不重读内容。
+- 安装向导能从 Zone 里选中 `.pikg` 并进入检查流程；仓库里不再有 `FilePickerDialog`（依赖 `snapshot`，随 D5 顺延）。
 - AI Workspace 从同一个入口既能导入本机文件，也能导入 Zone 里的文件，两者导入结果一致。
 - 关闭对话框后，调用方窗口的内容、滚动位置和焦点不变。
 
@@ -478,6 +480,7 @@ D9 的说明：消息附件是不可变对象。文件用 `objId`，没有时用
 |---|---|---|---|
 | Q3 | 返回路径还是不可变对象 | 两者都给：`source` 是用户选中的引用，`objId` 尽力返回。`cyfs:///` 接上分布式文件系统的底层后必定有对象 ID；现在拿不到时由应用层用 helper 计算 | §4.2、§4.3 |
 | Q4 | 本机文件要不要进系统选择器 | 要，由调用方决定。有的应用只能选 Zone 里的内容，有的两种来源都要（例如 AI Workspace 的导入） | `allowLocal`，§5.2 |
+| Q7 | nfs_server 现在给的 `obj_id` 是整文件摘要，不是调用方要的 ID，怎么办 | 单独立项。nfs_server 只有后端是分布式文件系统时才能零成本给出 FileObject ID，在那之前普通文件一律不返回；需要时用 `ensureObjId`，由服务端 `snapshot` 实现，同一文件第二次求值走缓存 | §4.3，[nfs-server-file-objid-todo](../../notepads/nfs-server-file-objid-todo.md) |
 
 ### 13.2 待裁决
 
@@ -489,7 +492,6 @@ D9 的说明：消息附件是不可变对象。文件用 `objId`，没有时用
 | Q2 | 选择器要不要成为授权点（用户选中，App 才获得该文件的访问权） | 现在不做。等 nfs_server 完成 App 主体鉴权和 grant 数据面后再加，并且只经路径 A、B 发放 | §9、§4.2 |
 | Q5 | App Frame 用通用的 `sysdlg.open` 加名单，还是只给文件选择器加一条专用消息 | 通用消息加名单。人员选择、分享以后对第三方开放时不用再改协议 | §7.1 |
 | Q6 | 独立标签页用内嵌页还是弹出新窗口 | 内嵌页，和 `/embed/preview` 一致。弹出窗口只在以后需要支持根域无会话的场景时再考虑 | §8 |
-| Q7 | 现在 `objId` 里放什么。nfs_server 给的是内容哈希 `sha256:<hex>`，只有部分文件有；安装器和消息附件要的是 FileObject 的 ID | 只放调用方能直接使用的 FileObject / DirObject ID。nfs_server 现在给的内容哈希不放进去，调用方统一走 `ensureObjId`，等底层接上后再由选择器直接带出 | §4.3、D2、D5、D9 |
 | Q8 | 选了本机内容后，是立即结束对话框，还是把本机条目和 Zone 条目放在一起再确认 | 立即结束，结果不混合两种来源。实现简单，少一次点击；需要混合时用户再打开一次 | §4.2、§5.2 |
 
 ---

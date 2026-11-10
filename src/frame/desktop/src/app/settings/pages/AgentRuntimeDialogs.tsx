@@ -78,7 +78,9 @@ export function AddDeviceDialog({ open, agents, onClose, onIssued }: {
   const [error, setError] = useState<string | null>(null)
 
   const create = async () => {
-    const ops = mode === 'read_only' ? ['open_stream', 'describe', 'read', 'query', 'cancel'] : ['open_stream', 'describe', 'exec', 'read', 'write', 'edit', 'query', 'cancel']
+    const ops = mode === 'read_only'
+      ? ['open_stream', 'describe', 'read', 'stat', 'query', 'cancel']
+      : ['open_stream', 'describe', 'exec', 'read', 'write', 'edit', 'mkdir', 'stat', 'rename', 'remove', 'query', 'cancel']
     if (computer !== 'none') ops.push('computer_inspect', 'computer_observe')
     if (computer === 'control' && mode === 'read_write') ops.push('computer_act')
     setBusy(true)
@@ -201,6 +203,45 @@ export function EditNodeDialog({ runtime, onClose }: { runtime: AgentRuntimeCata
   )
 }
 
+/** `runtimes.impact` of an Agent's own service: what the Agent still has going on a runtime. */
+interface RuntimeImpact {
+  runtime_id: string
+  blocking: boolean
+  running_sessions: string[]
+  active_sessions: Array<{ session_id: string; title?: string | null }>
+}
+
+/** What `agentId` runs on `runtimeId`: a runtime is not taken away from sessions in progress on it. `null` while unknown. */
+function useRuntimeImpact(agents: AgentEntry[], agentId?: string, runtimeId?: string): RuntimeImpact | null {
+  const [found, setFound] = useState<{ key: string; impact: RuntimeImpact } | null>(null)
+  const agentDid = agents.find((entry) => entry.agent_id === agentId)?.agent_did
+  const key = `${agentDid ?? ''}|${runtimeId ?? ''}`
+  useEffect(() => {
+    if (!agentDid || !runtimeId || isMockRuntime()) return
+    let live = true
+    void agentServiceClient(agentDid)
+      .then((client) => client.call<RuntimeImpact, Record<string, unknown>>('runtimes.impact', { runtime_id: runtimeId }))
+      .then((result) => { if (live && result) setFound({ key, impact: result }) })
+      .catch(() => undefined)
+    return () => { live = false }
+  }, [agentDid, runtimeId, key])
+  return found?.key === key ? found.impact : null
+}
+
+function SessionsInProgress({ impact, agent }: { impact: RuntimeImpact | null; agent: string }) {
+  const { t } = useI18n()
+  if (!impact?.blocking) return null
+  const sessions = impact.active_sessions.filter((session) => impact.running_sessions.includes(session.session_id))
+  return (
+    <Alert severity="warning" data-testid="settings-runtime-in-use">
+      <p>{t('settings.runtimes.sessionsInProgress', 'Sessions of {{agent}} still run on it. Stop them or let them finish first:', { agent })}</p>
+      <ul className="list-disc pl-5">
+        {sessions.map((session) => <li key={session.session_id} className="break-all">{session.title || session.session_id} ({session.session_id})</li>)}
+      </ul>
+    </Alert>
+  )
+}
+
 export function AssignRuntimeDialog({ runtime, agents, agentName, reload, onClose }: {
   runtime: AgentRuntimeCatalogEntry
   agents: AgentEntry[]
@@ -214,6 +255,8 @@ export function AssignRuntimeDialog({ runtime, agents, agentName, reload, onClos
   const [error, setError] = useState<string | null>(null)
   /** The other Agent that has this device switched on, as the server refused the assignment. */
   const [inUse, setInUse] = useState<AgentRuntimeAssignment | null>(null)
+  const inUseImpact = useRuntimeImpact(agents, inUse?.agent_id, inUse?.runtime_id)
+  const inUseBusy = inUseImpact?.blocking === true
 
   const assign = async (takeFrom?: AgentRuntimeAssignment) => {
     setBusy(true)
@@ -259,7 +302,7 @@ export function AssignRuntimeDialog({ runtime, agents, agentName, reload, onClos
       <DialogActions>
         <Button disabled={busy} onClick={() => onClose(Boolean(inUse))}>{t('settings.common.cancel', 'Cancel')}</Button>
         {inUse ? (
-          <Button variant="contained" color="warning" disabled={busy || !agent} onClick={() => void assign(inUse)} data-testid="settings-runtime-assign-switch">
+          <Button variant="contained" color="warning" disabled={busy || !agent || inUseBusy} onClick={() => void assign(inUse)} data-testid="settings-runtime-assign-switch">
             {t('settings.runtimes.switchAndAssign', 'Switch it off for {{agent}} and assign here', { agent: agentName(inUse.agent_id) })}
           </Button>
         ) : (
@@ -270,15 +313,18 @@ export function AssignRuntimeDialog({ runtime, agents, agentName, reload, onClos
   )
 }
 
-export function UnassignRuntimeDialog({ runtime, assignment, agentName, onClose }: {
+export function UnassignRuntimeDialog({ runtime, assignment, agents, agentName, onClose }: {
   runtime: AgentRuntimeCatalogEntry
   assignment: AgentRuntimeAssignment
+  agents: AgentEntry[]
   agentName: (agentId: string) => string
   onClose: (changed?: boolean) => void
 }) {
   const { t } = useI18n()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const impact = useRuntimeImpact(agents, assignment.agent_id, assignment.runtime_id)
+  const running = impact?.blocking === true
 
   const unassign = async () => {
     setBusy(true)
@@ -295,20 +341,14 @@ export function UnassignRuntimeDialog({ runtime, assignment, agentName, onClose 
       <DialogContent className="space-y-3">
         {error ? <Alert severity="error">{error}</Alert> : null}
         <p className="text-sm">{t('settings.runtimes.unassignHint', 'The Agent stops using this runtime. Its history of the runtime is kept by the Agent, and the runtime itself is not changed.')}</p>
+        <SessionsInProgress impact={impact} agent={agentName(assignment.agent_id)} />
       </DialogContent>
       <DialogActions>
         <Button disabled={busy} onClick={() => onClose()}>{t('settings.common.cancel', 'Cancel')}</Button>
-        <Button variant="contained" color="error" disabled={busy} onClick={() => void unassign()} data-testid="settings-runtime-unassign-ok">{t('settings.runtimes.unassign', 'Unassign')}</Button>
+        <Button variant="contained" color="error" disabled={busy || running} onClick={() => void unassign()} data-testid="settings-runtime-unassign-ok">{t('settings.runtimes.unassign', 'Unassign')}</Button>
       </DialogActions>
     </Dialog>
   )
-}
-
-/** `runtimes.impact` of an Agent's own service: what the Agent still has going on a runtime. */
-interface RuntimeImpact {
-  runtime_id: string
-  active_sessions: Array<{ session_id: string; title?: string | null }>
-  pending_todos: Array<{ session_id: string; todo_id: string; title?: string | null }>
 }
 
 export function RemoveDeviceDialog({ runtime, action, agents, agentName, onClose }: {
@@ -321,20 +361,9 @@ export function RemoveDeviceDialog({ runtime, action, agents, agentName, onClose
   const { t } = useI18n()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [impact, setImpact] = useState<RuntimeImpact | null>(null)
   const user = runtime.assigned_to.find((item) => item.enabled)
-  const userDid = agents.find((entry) => entry.agent_id === user?.agent_id)?.agent_did
-  const userRuntimeId = user?.runtime_id
-
-  useEffect(() => {
-    if (!userDid || !userRuntimeId || isMockRuntime()) return
-    let live = true
-    void agentServiceClient(userDid)
-      .then((client) => client.call<RuntimeImpact, Record<string, unknown>>('runtimes.impact', { runtime_id: userRuntimeId }))
-      .then((result) => { if (live && result) setImpact(result) })
-      .catch(() => undefined)
-    return () => { live = false }
-  }, [userDid, userRuntimeId])
+  const impact = useRuntimeImpact(agents, user?.agent_id, user?.runtime_id)
+  const running = impact?.blocking === true
 
   const remove = async () => {
     if (!runtime.executor_id) return
@@ -347,8 +376,6 @@ export function RemoveDeviceDialog({ runtime, action, agents, agentName, onClose
   }
 
   const name = runtime.name || runtime.runtime_id
-  const sessions = impact?.active_sessions ?? []
-  const todos = impact?.pending_todos ?? []
   return (
     <Dialog open onClose={busy ? undefined : () => onClose()} fullWidth maxWidth="sm" data-testid="settings-runtime-remove">
       <DialogTitle>{action === 'delete' ? t('settings.runtimes.deleteTitle', 'Delete device “{{name}}”?', { name }) : t('settings.runtimes.revokeTitle', 'Revoke access of “{{name}}”?', { name })}</DialogTitle>
@@ -373,26 +400,11 @@ export function RemoveDeviceDialog({ runtime, action, agents, agentName, onClose
         ) : (
           <p>{t('settings.runtimes.removeUnassigned', 'No Agent is assigned to it.')}</p>
         )}
-        {sessions.length > 0 ? (
-          <>
-            <p>{t('settings.runtimes.impactSessions', 'Sessions of {{agent}} still running on it:', { agent: agentName(user?.agent_id ?? '') })}</p>
-            <ul className="list-disc pl-5">
-              {sessions.map((session) => <li key={session.session_id} className="break-all">{session.title || session.session_id} <span style={{ color: 'var(--cp-muted)' }}>({session.session_id})</span></li>)}
-            </ul>
-          </>
-        ) : null}
-        {todos.length > 0 ? (
-          <>
-            <p>{t('settings.runtimes.impactTodos', 'Unfinished to-dos that need it:')}</p>
-            <ul className="list-disc pl-5">
-              {todos.map((todo) => <li key={`${todo.session_id}:${todo.todo_id}`} className="break-all">{todo.title || todo.todo_id}</li>)}
-            </ul>
-          </>
-        ) : null}
+        <SessionsInProgress impact={impact} agent={agentName(user?.agent_id ?? '')} />
       </DialogContent>
       <DialogActions>
         <Button disabled={busy} onClick={() => onClose()}>{t('settings.common.cancel', 'Cancel')}</Button>
-        <Button variant="contained" color="error" disabled={busy} onClick={() => void remove()} data-testid="settings-runtime-remove-ok">
+        <Button variant="contained" color="error" disabled={busy || running} onClick={() => void remove()} data-testid="settings-runtime-remove-ok">
           {action === 'delete' ? t('settings.runtimes.delete', 'Delete') : t('settings.runtimes.revoke', 'Revoke')}
         </Button>
       </DialogActions>

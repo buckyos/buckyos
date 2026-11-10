@@ -366,6 +366,11 @@ impl StateService {
                 // A Goal Session only stops its open Activation; the session
                 // itself ends with its Goal.
                 let scope = param::<Option<StopScope>>(params, "scope")?.unwrap_or_default();
+                let queued = self.agent.sessions().lookup(&sid).await?.is_some_and(|e| e.input_queue.is_some());
+                if !queued && scope.is_session() {
+                    self.supervisor.stop(&sid).await?;
+                    return Ok(json!({ "index": null, "stopped": true }));
+                }
                 self.post_control(who, &sid, ControlCommand::Stop { reason, scope }).await
             }
             "session.decide" => {

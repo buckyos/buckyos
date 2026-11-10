@@ -65,6 +65,31 @@ async fn stop_before_any_run_finishes_without_inference() {
     assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Stopped));
 }
 
+/// Producers in one process wait for the session's post lock without
+/// blocking the runtime's thread: concurrent posts on a single-threaded
+/// runtime all land.
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_posts_in_one_process_all_land() {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("x")).await;
+    let agent = env.agent();
+    let mut posts = tokio::task::JoinSet::new();
+    for i in 0..8 {
+        let agent = agent.clone();
+        let sid = sd.sid().to_string();
+        posts.spawn(async move {
+            libopendan::post_input(agent.as_ref(), &sid, &PostedInput::text(APP, "did:test:agent", &format!("m{i}")).unwrap()).await
+        });
+    }
+    let indices = tokio::time::timeout(std::time::Duration::from_secs(20), posts.join_all())
+        .await
+        .expect("no producer is stuck on the lock");
+    let mut indices: Vec<u64> = indices.into_iter().map(|r| r.unwrap()).collect();
+    indices.sort();
+    indices.dedup();
+    assert_eq!(indices.len(), 8);
+}
+
 fn camera_subscription(mode: SubscriptionMode) -> Subscription {
     Subscription {
         id: "s2".into(),

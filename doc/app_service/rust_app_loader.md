@@ -340,7 +340,7 @@ Rust App Loader 需要支持：
 
 ### 9.3.1 原生 Agent Service（`RuntimeType::NativeAgent`）
 
-zone owner 的 Agent 把默认 runtime 设为某个节点的 `host`（`AgentRuntimeTarget::Node`），且该节点的执行器开启并对 owner Agent 开放（`owner_agents`）时，这个 Agent 的 Agent Service 不在 `paios/aios` 容器里，而是 node_daemon 管理的原生进程。判断只有一处：`buckyos_api::native_agent_node`；调度器据此把实例放到那个节点（`node_affinity = node:<id>`，`need_container = false`），并在节点配置里写 `apps/<instance>/run_mode = "native"`（缺省 `container`，不写出）。默认 runtime 在 host 与 container 之间切换，`run_mode` 随之改写，AppLoader 以另一种方式重启 Agent Service。
+产品不带容器（`system/product` 的 `capabilities.container = false`，即 Lite 版）、zone owner 的 Agent 把默认 runtime 设为某个节点的 `host`（`AgentRuntimeTarget::Node`），且该节点的执行器开启并对 owner Agent 开放（`owner_agents`）时，这个 Agent 的 Agent Service 不在 `paios/aios` 容器里，而是 node_daemon 管理的原生进程。判断只有一处：`buckyos_api::native_agent_node`；调度器据此把实例放到那个节点（`node_affinity = node:<id>`，`need_container = false`），并在节点配置里写 `apps/<instance>/run_mode = "native"`（缺省 `container`，不写出）。默认 runtime 在 host 与 container 之间切换，`run_mode` 随之改写，AppLoader 以另一种方式重启 Agent Service。带容器的产品（Full 版，Linux 一定是）里 Agent 的私有 runtime 永远是它的容器，owner 默认 runtime 只表示“我的电脑”指哪台机器，不改变 Agent Service 在哪运行。
 
 AppLoader 只看 `run_mode`，与节点是否支持容器无关：
 

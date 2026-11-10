@@ -115,33 +115,19 @@ test('runtimes show their declared environment and what their tool check found',
   expect(errors).toEqual([])
 })
 
-test('disabling a runtime with work in progress asks first and keeps the owner default', async ({ page }) => {
+test('a runtime with sessions in progress is not disabled: the sessions are shown', async ({ page }) => {
   const errors = await open(page)
   const host = page.getByTestId('known-runtimes').getByTestId('runtime-host')
   await host.getByTestId('runtime-toggle').click()
   const dialog = page.getByTestId('runtime-impact')
+  await expect(dialog).toContainText("“Owner's desktop” is in use")
   await expect(dialog.getByTestId('runtime-impact-sessions')).toContainText('Summarize last week')
   await expect(dialog.getByTestId('runtime-impact-sessions').getByRole('link')).toHaveAttribute('href', `#/session/${WORK_RUNNING}`)
-  await expect(dialog.getByTestId('runtime-impact-todos')).toContainText('Write the weekly report')
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: 'Disable', exact: true })).toHaveCount(0)
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(dialog).toHaveCount(0)
   await expect(host.getByTestId('runtime-toggle')).toHaveText('Disable')
   await expect(host.getByTestId('runtime-default')).toHaveText('Owner’s default')
-
-  // The mock refuses `enabled: false` without `confirm: true` while the session runs.
-  await host.getByTestId('runtime-toggle').click()
-  await dialog.getByRole('button', { name: 'Disable', exact: true }).click()
-  await expect(dialog).toHaveCount(0)
-  await expect(host.getByRole('alert')).toHaveCount(0)
-  await expect(host).toContainText('Not usable yet')
-  await expect(host.getByTestId('runtime-default')).toHaveText('Owner’s default (off)')
-
-  // The session that is on it says why it cannot go on.
-  await page.evaluate(() => { window.location.hash = '#/sessions' })
-  await expect(page.getByTestId(`session-row-${WORK_RUNNING}`)).toContainText('runtime unavailable')
-  await expect(page.getByTestId(`session-row-${WORK_RUNNING}`)).toContainText('is not enabled for this agent')
-  await page.getByTestId(`session-row-${WORK_RUNNING}`).getByRole('link', { name: WORK_RUNNING }).click()
-  await expect(page.getByText('runtime unavailable')).toBeVisible()
   expect(errors).toEqual([])
 })
 

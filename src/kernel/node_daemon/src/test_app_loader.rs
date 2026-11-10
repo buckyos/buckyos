@@ -1283,7 +1283,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .contains(&"<agent-bootstrap-script>".to_string()));
     // Host Tool scripts are mounted read-only for the image's `buckyos`
     // launcher; the host Deno runtime is not.
-    for entry in ["cli", "dist", "package.json", "distribution.json"] {
+    for entry in ["cli", "dist", "src", "package.json", "distribution.json"] {
         let mount = format!("<buckyos_tool>/{entry}:/opt/buckyos/libexec/buckyos-tool/{entry}:ro");
         assert!(start.commands[1].args.contains(&mount), "missing {mount}");
     }

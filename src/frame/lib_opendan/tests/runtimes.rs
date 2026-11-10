@@ -18,7 +18,15 @@ fn state(path: &Path) -> FsAgentStateClient {
 }
 
 fn builtin(_path: &Path) -> Vec<RuntimeRegister> {
-    builtin_runtimes(&Default::default(), "did:test:agent", &PrivateRuntimeInfo::default())
+    let mut settings = buckyos_api::AgentSettings::default();
+    settings.runtimes.insert(
+        "host".into(),
+        buckyos_api::AgentRuntimeSettings {
+            enabled: false,
+            target: buckyos_api::AgentRuntimeTarget::Node { node_id: "ood1".into(), node_did: "did:web:ood1.test.buckyos.io".into() },
+        },
+    );
+    builtin_runtimes(&settings, "did:test:agent", &PrivateRuntimeInfo::default())
 }
 
 /// V01 / V02: the host creates the built-in runtimes once; what the owner
@@ -310,7 +318,7 @@ impl agent_tool::runtime::node::NodeExecutorConnector for LateNode {
                     "login" => {
                         profile = request["profile"].clone();
                         json!({"type":"login_ok", "request_id":id, "posture":"normal",
-                        "principal":"did:test:agent", "app_instance_id":"app2@alice", "caps":["read","stat","exec"],
+                        "principal":"did:test:agent", "app_instance_id":"app2@alice", "caps":["read","stat","exec","mkdir"],
                         "limits":buckyos_api::ExecutorLimits::default(), "revision":"one", "generation":1,
                         "auth_valid_until_ms":u64::MAX, "token_expires_at_ms":u64::MAX,
                         "store_id":"late-ledger", "server_epoch":"one"})
@@ -393,7 +401,7 @@ async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
     assert_eq!((frozen.caps.baseline, frozen.grant.computer), (record.caps.baseline, record.grant.computer));
     agent.runtimes().ensure_builtin(&registers, APP).await.unwrap();
     let kept = agent.runtimes().lookup("host").await.unwrap().unwrap();
-    assert_eq!((kept.caps.baseline, kept.grant.computer, kept.grant.ops.len()), (buckyos_api::RuntimeBaseline::Extended, buckyos_api::ComputerAccess::Observe, 3));
+    assert_eq!((kept.caps.baseline, kept.grant.computer, kept.grant.ops.len()), (buckyos_api::RuntimeBaseline::Extended, buckyos_api::ComputerAccess::Observe, 4));
 
     // `agent-session run` and `copy` get the same second chance.
     up.store(false, Ordering::SeqCst);
@@ -575,7 +583,7 @@ async fn a_runtime_taken_from_the_agent_is_retired_and_comes_back_when_assigned_
     let retired = projected.iter().find(|r| r.runtime_id == "exec-lab").unwrap();
     assert!(retired.lifecycle == RuntimeLifecycle::Retired && !retired.usable() && !retired.enabled);
     assert_eq!(retired.usage.last_session_id.as_deref(), Some("work-1"));
-    assert!(state.runtimes().lookup("host").await.unwrap().unwrap().lifecycle == RuntimeLifecycle::Active, "the host placeholder is never retired");
+    assert!(state.runtimes().lookup("host").await.unwrap().is_none(), "nothing is projected for a runtime never assigned");
     let revision = retired.revision;
     state.runtimes().ensure_builtin(&project(&settings), "host").await.unwrap();
     assert_eq!(state.runtimes().lookup("exec-lab").await.unwrap().unwrap().revision, revision, "retired once");

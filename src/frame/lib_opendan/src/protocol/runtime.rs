@@ -584,8 +584,8 @@ pub struct PrivateRuntimeInfo {
 
 /// The runtimes of an agent as the system configures them: its private
 /// runtime (always present and usable, declared `extended` in the aios
-/// container), the owner's desktop `host`, and every further runtime
-/// assigned to the agent in its settings. What a node or device runtime
+/// container) and every runtime assigned to the agent in its settings
+/// (`host` among them when the owner's desktop is assigned). What a node or device runtime
 /// allows (roots, operations, ComputerUse, declared baseline, term) and its
 /// platform are learned from it (`login`, `describe`) when it is checked.
 pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &PrivateRuntimeInfo) -> Vec<RuntimeRegister> {
@@ -631,9 +631,7 @@ pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &Pri
         baseline: if private.native_service { RuntimeBaseline::Standard } else { RuntimeBaseline::Extended },
         grant: RuntimeGrant::private(),
     }];
-    let mut has_host = false;
     for (id, rs) in &settings.runtimes {
-        has_host |= id == HOST_RUNTIME;
         if aliases.contains(id) {
             continue;
         }
@@ -665,18 +663,6 @@ pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &Pri
             desc,
             enabled: rs.enabled,
             default: default == *id,
-            baseline: RuntimeBaseline::Standard,
-            grant: RuntimeGrant::default(),
-        });
-    }
-    if !has_host {
-        out.push(RuntimeRegister {
-            runtime_id: HOST_RUNTIME.into(),
-            connector: RuntimeConnector::NodeExecutor { node_did: None, executor_id: None, profile_id: String::new() },
-            name: "Owner's desktop".into(),
-            desc: "The owner's desktop. Not assigned to this agent: the node has no `owner_agents` policy, or the agent's settings do not list `host`.".into(),
-            enabled: false,
-            default: false,
             baseline: RuntimeBaseline::Standard,
             grant: RuntimeGrant::default(),
         });

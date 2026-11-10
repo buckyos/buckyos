@@ -221,7 +221,7 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 | `session.decide` | `{sid, decision: accept \| discard, note?}` | `control(decide)` |
 | `session.post` | `{sid, text}` | 以调用方身份向有队列的 Session 投一条文本消息 |
 
-返回 `{index}`（`session.post` 另带 `key`）。投递后服务端让 Supervisor 装载该 Session。三个操作都要求 Session 有输入队列；没有队列的 Session（如一次性的 work session）返回 `channel` 错误，它的产物验收走 `artifacts.decide`。`session.stop` 另收 `scope: session | turn`（缺省 `session`）；对 Goal Session 任何 stop 都只结束当前 Activation。
+返回 `{index}`（`session.post` 另带 `key`）。投递后服务端让 Supervisor 装载该 Session。`decide` 与 `post` 要求 Session 有输入队列；没有队列的 Session（如 work session）返回 `channel` 错误，它的产物验收走 `artifacts.decide`。session 范围的 `stop` 对没有队列、由本进程驱动的 Session 改由 Supervisor 打断它的驱动（与父 Session 被停时一样：Turn 以 stopped 关闭、Session 结束），返回 `{index: null, stopped: true}`。`session.stop` 另收 `scope: session | turn`（缺省 `session`）；对 Goal Session 任何 stop 都只结束当前 Activation。
 
 ### Session 进程（session token）
 
@@ -275,9 +275,9 @@ Agent 的 skills：work / ui skill（`cmd_skills/<name>/SKILL.md` + 可选 `refe
 | `usage.models` | – | `{now_ms, since_ms, models: [{model, hour, day, all}]}`，`hour` / `day` / `all` 为 `{input, output, total}` |
 | `ui.bindings` | – | `[{session_id, to, to_session, kind}]` |
 | `runtimes.settings` | – | 这个 Agent 被分配的 runtime：`{runtimes: {<id>: {enabled, target}}, default_runtime_id, configured_default_runtime_id}`。`default_runtime_id` 是当前生效的 owner 默认（配置的那台被停用时落到私有），`configured_default_runtime_id` 是 owner 配置的值 |
-| `runtimes.settings_set` | `{runtime_id, enabled?, default?, confirm?}` | 启用 / 停用一台已分配的 runtime、设 owner 默认。runtime 允许什么（目录、操作、ComputerUse、基线、期限）是 runtime 自己的配置，不在这里改；分配由 control panel 做（`agent.update`）。私有 runtime 及其别名不能停用；停用默认 runtime 不清默认。上面有进行中的 Session 或等着在它上面跑的 Todo 时，没有 `confirm: true` 会被拒绝（`confirm_required: …`）。启用设备 runtime 经 control panel 的 `agent.runtime_enable`（同一台设备同时只有一个 Agent 启用）。返回新的 `runtimes.settings` |
-| `runtimes.remove` | `{runtime_id, confirm?}` | 从这个 Agent 移除一台已分配的 runtime：记录转 `retired` 留作历史，runtime 本身还在 owner 的目录里，可以再分配。拒绝私有 runtime 及其别名；上面有进行中的 Session、等待的 Todo 或 Workspace 时要 `confirm: true`。返回新的 `runtimes.settings` |
-| `runtimes.impact` | `{runtime_id}` | 停用或移除会碰到什么：`{runtime_id, owner_default, blocking, active_sessions[{session_id, kind, class, title, run_state}], pending_todos[{session_id, todo_id, title, status}], workspaces[{workspace_id, name, directory, lifecycle}], usage}`。`blocking`：有进行中的 Session 或等待的 Todo |
+| `runtimes.settings_set` | `{runtime_id, enabled?, default?}` | 启用 / 停用一台已分配的 runtime、设 owner 默认。runtime 允许什么（目录、操作、ComputerUse、基线、期限）是 runtime 自己的配置，不在这里改；分配由 control panel 做（`agent.update`）。私有 runtime 及其别名不能停用；停用默认 runtime 不清默认。上面有正在运行的 Session（见 `runtimes.impact` 的 `running_sessions`）时停用被拒绝（`sessions_in_progress: …`，列出这些 Session），没有绕过的参数：先停止它们或等它们结束。等着在它上面跑的 Todo 不拦，派发时进 `block_reason`。启用设备 runtime 经 control panel 的 `agent.runtime_enable`（同一台设备同时只有一个 Agent 启用）。返回新的 `runtimes.settings` |
+| `runtimes.remove` | `{runtime_id}` | 从这个 Agent 移除一台已分配的 runtime：记录转 `retired` 留作历史，runtime 本身还在 owner 的目录里，可以再分配。拒绝私有 runtime 及其别名；上面有进行中的 Session 时同样拒绝（`sessions_in_progress`），Workspace 与等待的 Todo 不拦。返回新的 `runtimes.settings` |
+| `runtimes.impact` | `{runtime_id}` | 停用或移除会碰到什么：`{runtime_id, owner_default, blocking, running_sessions[sid], active_sessions[{session_id, kind, class, title, run_state}], pending_todos[{session_id, todo_id, title, status}], workspaces[{workspace_id, name, directory, lifecycle}], usage}`。`active_sessions` 是绑在它上面、没结束的全部 Session；`running_sessions` 是其中已经开始运行、且这台 runtime 当前可用的那些（停用会中断它们）；`blocking` = `running_sessions` 不空，这时停用和移除被拒绝 |
 | `home.workspaces` | – | Agent State 中全部已知 Workspace 的展示字段，包含归档和不可访问记录，不输出私有备注与策略引用 |
 
 - 资料：读写系统配置里的 Agent `profile`（与 control_panel 的 `agent.profile.*` 是同一份）；没有昵称时 `display_name` 是 Agent 用户名（AgentId 的第一段）。`agent.profile_set` 只改传入的字段，传空字符串清除该字段。`display_name` ≤ 64 字符，`bio` ≤ 500 字符，`avatar` 是图片 data URL，≤ 128 KiB。`owner_did` 是 AgentSpec 里的 Owner DID（`--dev` 取 `--owner-did`），`desktop_url`（zone 桌面的地址，MessageHub 在其 `/messagehub`）在 `--dev` 形态下为 `null`。

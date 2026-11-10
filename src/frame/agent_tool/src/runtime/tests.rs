@@ -180,6 +180,12 @@ fn config_merge_resolves_source_paths_and_resets_kind() {
     let mut neither = device.clone();
     neither.remote_node.as_mut().unwrap().executor_id = None;
     assert!(matches!(neither.validate(true), Err(XllmError::Config { .. })));
+    let mut merged = RuntimeConfig { kind: Some("remote_node".into()), ..Default::default() };
+    merged.merge_over(&device);
+    assert_eq!(merged.remote_node, device.remote_node, "a device stays a device through a merge");
+    merged.merge_over(&node);
+    assert_eq!(merged.remote_node.as_ref().unwrap().executor_id, None);
+    assert!(merged.validate(true).is_ok());
     for (workdir, ok) in [(r"C:\Users\devtest\ws", true), ("ws", false), (r"C:ws", false)] {
         let mut windows_node = node.clone();
         windows_node.workdir = Some(workdir.into());

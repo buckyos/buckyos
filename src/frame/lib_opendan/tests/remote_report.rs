@@ -44,7 +44,7 @@ impl NodeExecutorConnector for Node {
                         assert_eq!(request["token"], "test-session");
                         assert_eq!(request["profile"], "media");
                         json!({"type":"login_ok", "request_id":id, "posture":"normal",
-                            "principal":AGENT, "app_instance_id":"app2@alice", "caps":["read","stat","exec"],
+                            "principal":AGENT, "app_instance_id":"app2@alice", "caps":["read","stat","exec","mkdir"],
                             "limits":ExecutorLimits::default(), "revision":"one", "generation":1,
                             "auth_valid_until_ms":u64::MAX, "token_expires_at_ms":u64::MAX,
                             "store_id":"test-ledger", "server_epoch":"one"})

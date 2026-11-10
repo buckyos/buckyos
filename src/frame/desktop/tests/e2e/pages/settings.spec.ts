@@ -248,7 +248,7 @@ test.describe('settings', () => {
     await expect(device).toContainText('/home/alice/work · Read only · ComputerUse: Disabled · Standard environment')
     await expect(device.getByTestId('settings-runtime-assignment-assistant.alice')).toContainText('On')
     const stored = await page.evaluate(() => JSON.parse(window.localStorage.getItem('buckyos.mock.control-panel.v1') ?? '{}'))
-    expect(stored.executor_devices[0].profiles.default).toEqual({ workdir_roots: ['/home/alice/work'], ops: ['open_stream', 'describe', 'read', 'query', 'cancel'], baseline: 'standard' })
+    expect(stored.executor_devices[0].profiles.default).toEqual({ workdir_roots: ['/home/alice/work'], ops: ['open_stream', 'describe', 'read', 'stat', 'query', 'cancel'], baseline: 'standard' })
     const runtimeId = `exec-${stored.executor_devices[0].executor_id}`
     expect(stored.agents[0].settings.runtimes[runtimeId]).toEqual({ enabled: true, target: { kind: 'executor', executor_id: stored.executor_devices[0].executor_id } })
 

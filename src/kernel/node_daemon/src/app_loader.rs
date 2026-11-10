@@ -57,7 +57,7 @@ const WORKER_CONTAINER_EXTTOOL_ROOT: &str = "/opt/buckyos/tools";
 /// the image's own Deno, so `runtime/` (a host binary) is never mounted.
 const BUCKYOS_TOOL_RELATIVE_DIR: &str = "libexec/buckyos-tool";
 const WORKER_CONTAINER_BUCKYOS_TOOL_ROOT: &str = "/opt/buckyos/libexec/buckyos-tool";
-const BUCKYOS_TOOL_MOUNT_ENTRIES: [&str; 4] = ["cli", "dist", "package.json", "distribution.json"];
+const BUCKYOS_TOOL_MOUNT_ENTRIES: [&str; 5] = ["cli", "dist", "src", "package.json", "distribution.json"];
 /// Read-only view of the agent's installed `pkg_list.agent_skills` sub package.
 const WORKER_CONTAINER_AGENT_SKILLS_ROOT: &str = "/mnt/buckyos/agent_skills";
 const NODE_GATEWAY_PORT: u16 = 3180;

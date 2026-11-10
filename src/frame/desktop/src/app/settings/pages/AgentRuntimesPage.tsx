@@ -284,7 +284,7 @@ export function AgentRuntimesPage() {
       />
       {dialog?.kind === 'edit' ? <EditNodeDialog runtime={dialog.runtime} onClose={close} /> : null}
       {dialog?.kind === 'assign' ? <AssignRuntimeDialog runtime={dialog.runtime} agents={ownAgents} agentName={agentName} reload={load} onClose={close} /> : null}
-      {dialog?.kind === 'unassign' ? <UnassignRuntimeDialog runtime={dialog.runtime} assignment={dialog.assignment} agentName={agentName} onClose={close} /> : null}
+      {dialog?.kind === 'unassign' ? <UnassignRuntimeDialog runtime={dialog.runtime} assignment={dialog.assignment} agents={agents} agentName={agentName} onClose={close} /> : null}
       {dialog?.kind === 'remove' ? <RemoveDeviceDialog runtime={dialog.runtime} action={dialog.action} agents={agents} agentName={agentName} onClose={close} /> : null}
       <IssuedDeviceDialog issued={issued} onClose={() => setIssued(null)} />
     </div>

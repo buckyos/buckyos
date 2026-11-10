@@ -2293,8 +2293,8 @@ pub(crate) mod app_lifecycle_tests {
         }
     }
 
-    /// The zone owner's Agent whose default runtime is the node's host
-    /// runtime: no container is needed (also on a node without containers),
+    /// In a product without containers, the zone owner's Agent whose default
+    /// runtime is the node's host runtime: no container is needed,
     /// it is pinned to that node and its instance runs natively; switching
     /// the default back to the container flips the instance in place.
     #[test]
@@ -2355,6 +2355,7 @@ pub(crate) mod app_lifecycle_tests {
                 ("devices/node1/info".to_string(), serde_json::to_string(&device).unwrap()),
                 (buckyos_api::user_app_spec_key("alice", spec.app_id()), serde_json::to_string(&spec).unwrap()),
                 (buckyos_api::ZONE_OWNER_USER_ID_KEY.to_string(), json!("alice").to_string()),
+                (buckyos_api::PRODUCT_PROFILE_KEY.to_string(), include_str!("../../../product/lite.json").to_string()),
                 (
                     buckyos_api::agent_settings_key("alice", &agent_id),
                     serde_json::to_string(&settings(Some("host"))).unwrap(),

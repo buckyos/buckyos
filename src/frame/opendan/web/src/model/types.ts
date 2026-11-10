@@ -420,16 +420,15 @@ export interface RuntimeSettingPatch {
   runtime_id: string
   enabled?: boolean
   default?: boolean
-  /** Goes on although work is in progress on the runtime. */
-  confirm?: boolean
 }
 
 /** `runtimes.impact`: what switching a runtime off or removing it touches. */
 export interface RuntimeImpact {
   runtime_id: string
   owner_default: boolean
-  /** Something is in progress on it. */
+  /** Sessions that started run on it and it is usable: it cannot be switched off or removed now. */
   blocking: boolean
+  running_sessions: string[]
   active_sessions: { session_id: string; kind: SessionKind; class: string; title: string; run_state: string }[]
   pending_todos: { session_id: string; todo_id: string; title: string; status: string }[]
   workspaces: { workspace_id: string; name: string; directory: string; lifecycle: string }[]

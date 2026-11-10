@@ -222,8 +222,9 @@ impl Home {
     }
 
     /// `runtimes.impact {runtime_id}`: what switching a runtime off or
-    /// removing it touches. `blocking`: something is in progress on it
-    /// (sessions that are not finished, Todos waiting to run there).
+    /// removing it touches. `blocking`: sessions that started run on it and
+    /// it is usable, so switching it off would cut them off: it cannot be
+    /// switched off or removed now.
     pub async fn runtime_impact(&self, agent: &dyn AgentStateClient, params: &Value) -> Result<Value, OpenDanError> {
         let asked = required(params, "runtime_id")?;
         let record = agent.runtimes().lookup(&asked).await?.ok_or_else(|| OpenDanError::NotFound(format!("runtime {asked}")))?;
@@ -235,9 +236,17 @@ impl Home {
             .into_iter()
             .filter(|e| e.status.run_state != RunState::Finished)
             .collect();
-        let sessions: Vec<Value> = open
+        let on_it: Vec<&RegistryEntry> = open
             .iter()
             .filter(|e| e.runtime_id.as_deref().is_some_and(|r| record.names(r)))
+            .collect();
+        let running: Vec<&str> = on_it
+            .iter()
+            .filter(|e| record.usable() && e.status.run_state != RunState::Created)
+            .map(|e| e.session_id.as_str())
+            .collect();
+        let sessions: Vec<Value> = on_it
+            .iter()
             .map(|e| json!({
                 "session_id": e.session_id,
                 "kind": e.kind,
@@ -267,7 +276,8 @@ impl Home {
         Ok(json!({
             "runtime_id": id,
             "owner_default": record.default,
-            "blocking": !sessions.is_empty() || !todos.is_empty(),
+            "blocking": !running.is_empty(),
+            "running_sessions": running,
             "active_sessions": sessions,
             "pending_todos": todos,
             "workspaces": workspaces,
@@ -275,27 +285,24 @@ impl Home {
         }))
     }
 
-    /// What is in progress on a runtime must be seen before it is taken
-    /// away: without `confirm: true` the change is refused while there is
-    /// any (`all`: also for workspaces bound to it).
-    async fn confirmed(&self, agent: &dyn AgentStateClient, runtime_id: &str, params: &Value, verb: &str, all: bool) -> Result<(), OpenDanError> {
-        if params.get("confirm").and_then(Value::as_bool).unwrap_or(false) {
-            return Ok(());
-        }
-        let Ok(impact) = self.runtime_impact(agent, &json!({ "runtime_id": runtime_id })).await else {
-            return Ok(());
-        };
-        let count = |key: &str| impact[key].as_array().map(Vec::len).unwrap_or(0);
-        let (sessions, todos, workspaces) = (count("active_sessions"), count("pending_todos"), count("workspaces"));
-        if sessions + todos == 0 && (!all || workspaces == 0) {
+    /// A runtime is not taken away from sessions in progress on it.
+    async fn not_in_use(&self, agent: &dyn AgentStateClient, runtime_id: &str, verb: &str) -> Result<(), OpenDanError> {
+        let impact = self.runtime_impact(agent, &json!({ "runtime_id": runtime_id })).await?;
+        let sessions: Vec<&str> = impact["running_sessions"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if sessions.is_empty() {
             return Ok(());
         }
         Err(OpenDanError::InvalidArgument(format!(
-            "confirm_required: runtime `{runtime_id}` has {sessions} session(s) in progress, {todos} Todo(s) waiting to run on it and {workspaces} workspace(s); they are not moved. Show them (`runtimes.impact`) and {verb} with `confirm: true`"
+            "sessions_in_progress: runtime `{runtime_id}` has {} session(s) in progress ({}); stop them or let them finish, then {verb}",
+            sessions.len(),
+            sessions.join(", ")
         )))
     }
 
-    /// `runtimes.settings_set {runtime_id, enabled?, default?, confirm?}`:
+    /// `runtimes.settings_set {runtime_id, enabled?, default?}`:
     /// whether this agent uses a runtime it was assigned, and the owner's
     /// default. What a runtime allows is its own configuration and is not
     /// changed here; assigning a runtime is the control panel's
@@ -317,7 +324,7 @@ impl Home {
                     invalid(format!("runtime `{key}` is not assigned to this agent; the owner assigns runtimes in the runtime directory (control panel `agent.update`)"))
                 })?;
                 if entry.enabled && !enabled {
-                    self.confirmed(agent, &key, params, "switch it off", false).await?;
+                    self.not_in_use(agent, &key, "switch it off").await?;
                 }
                 if !entry.enabled && enabled && matches!(entry.target, buckyos_api::AgentRuntimeTarget::Executor { .. }) {
                     // A device is used by one agent at a time: only the
@@ -344,7 +351,7 @@ impl Home {
         Ok(settings)
     }
 
-    /// `runtimes.remove {runtime_id, confirm?}`: take an assigned runtime
+    /// `runtimes.remove {runtime_id}`: take an assigned runtime
     /// away from this agent. Its record is kept as `retired` for its
     /// history; the runtime itself stays in the owner's directory and can
     /// be assigned again. Returns the new settings.
@@ -359,7 +366,7 @@ impl Home {
         if !settings.runtimes.contains_key(&key) {
             return Err(OpenDanError::InvalidArgument(format!("runtime `{key}` is not assigned to this agent")));
         }
-        self.confirmed(agent, &key, params, "remove it", true).await?;
+        self.not_in_use(agent, &key, "remove it").await?;
         settings.runtimes.remove(&key);
         if settings.default_runtime_id.as_deref() == Some(&key) {
             settings.default_runtime_id = None;

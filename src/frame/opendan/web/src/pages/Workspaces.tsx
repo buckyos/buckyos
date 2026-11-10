@@ -71,23 +71,23 @@ function RuntimeSelect({ value, onChange, runtimes }: { value: string; onChange:
 
 function Dialog({ title, onSubmit, children, busy, onClose, label, testId }: {
   title: string
-  onSubmit: () => void
+  onSubmit?: () => void
   children: React.ReactNode
   busy: boolean
   onClose: () => void
-  label: string
+  label?: string
   testId?: string
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
       <form role="dialog" aria-modal="true" aria-label={title} data-testid={testId}
         className="home max-h-[92dvh] w-full overflow-y-auto rounded-t-2xl border border-line bg-panel p-5 sm:max-w-md sm:rounded-2xl"
-        onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
+        onSubmit={(event) => { event.preventDefault(); onSubmit?.() }}>
         <h3 className="text-base font-semibold">{title}</h3>
         {children}
         <div className="flex gap-2">
-          <button type="button" className="tap flex-1 border border-line" onClick={onClose} disabled={busy}>{t('cancel')}</button>
-          <button type="submit" className="tap flex-1 bg-accent text-panel" disabled={busy}>{label}</button>
+          <button type="button" className="tap flex-1 border border-line" onClick={onClose} disabled={busy}>{t(onSubmit ? 'cancel' : 'close')}</button>
+          {onSubmit && <button type="submit" className="tap flex-1 bg-accent text-panel" disabled={busy}>{label}</button>}
         </div>
       </form>
     </div>
@@ -406,12 +406,11 @@ function RuntimeCard({ runtime, chosen, configuredDefault, refresh }: {
       setBusy(false)
     }
   }
-  const disable = (confirm?: boolean) => dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, enabled: false, ...(confirm ? { confirm } : {}) })
   const toggle = () => run(async () => {
     if (!chosen?.enabled) return dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, enabled: true })
     const found = await dataModel.runtimeImpact(runtime.runtime_id)
     if (found.blocking) setImpact(found)
-    else await disable()
+    else await dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, enabled: false })
   })
   const isPrivate = runtime.connector.type === 'native'
   const retired = runtime.lifecycle === 'retired'
@@ -487,21 +486,13 @@ function RuntimeCard({ runtime, chosen, configuredDefault, refresh }: {
         </button>}
       </div>
       <p className="mt-2 text-xs text-mute" data-testid="runtime-config-hint">{t('runtimeConfigHint')}</p>
-      {impact && <Dialog title={t('runtimeDisableTitle', { name: runtime.name })} label={t('runtimeDisable')} busy={busy} testId="runtime-impact"
-        onClose={() => setImpact(null)} onSubmit={() => void run(async () => { await disable(true); setImpact(null) })}>
-        <p className="my-3 text-sm text-mute">{t('runtimeDisableHint')}</p>
-        {impact.active_sessions.length > 0 && <div className="mb-3 text-sm" data-testid="runtime-impact-sessions">
-          <div className="text-xs text-mute">{t('runtimeImpactSessions', { count: impact.active_sessions.length })}</div>
-          {impact.active_sessions.map((session) => <a key={session.session_id} href={sessionHref(session.session_id)}
+      {impact && <Dialog title={t('runtimeInUseTitle', { name: runtime.name })} busy={busy} testId="runtime-impact"
+        onClose={() => setImpact(null)}>
+        <p className="my-3 text-sm text-mute">{t('runtimeInUseHint')}</p>
+        {impact.running_sessions.length > 0 && <div className="mb-3 text-sm" data-testid="runtime-impact-sessions">
+          <div className="text-xs text-mute">{t('runtimeImpactSessions', { count: impact.running_sessions.length })}</div>
+          {impact.active_sessions.filter((session) => impact.running_sessions.includes(session.session_id)).map((session) => <a key={session.session_id} href={sessionHref(session.session_id)}
             className="block break-words text-accent">{session.title || session.session_id} · {session.run_state}</a>)}
-        </div>}
-        {impact.pending_todos.length > 0 && <div className="mb-3 text-sm" data-testid="runtime-impact-todos">
-          <div className="text-xs text-mute">{t('runtimeImpactTodos', { count: impact.pending_todos.length })}</div>
-          {impact.pending_todos.map((todo) => <div key={`${todo.session_id}/${todo.todo_id}`} className="break-words">{todo.title || todo.todo_id} · {todo.status}</div>)}
-        </div>}
-        {impact.workspaces.length > 0 && <div className="mb-3 text-sm" data-testid="runtime-impact-workspaces">
-          <div className="text-xs text-mute">{t('runtimeImpactWorkspaces', { count: impact.workspaces.length })}</div>
-          {impact.workspaces.map((workspace) => <div key={workspace.workspace_id} className="break-all">{workspace.name} · <span className="font-mono text-xs">{workspace.directory}</span></div>)}
         </div>}
         <ErrorBox error={error} />
       </Dialog>}

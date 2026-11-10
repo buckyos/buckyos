@@ -46,7 +46,7 @@ Rust 服务和备份脚本支持 `BUCKYOS_SECURITY_ROOT`；显式目标目录的
 Agent 容器另有两组只读 bind mount(普通 script 容器没有):
 
 ```
-/opt/buckyos/libexec/buckyos-tool/{cli,dist,package.json,distribution.json}
+/opt/buckyos/libexec/buckyos-tool/{cli,dist,src,package.json,distribution.json}
                           => $buckyos_root/libexec/buckyos-tool/ 同名项,宿主 BuckyOS Tool 脚本与 SDK
 /mnt/buckyos/agent_skills => 已安装的 pkg_list.agent_skills 子包(仅声明了该子包时)
 ```

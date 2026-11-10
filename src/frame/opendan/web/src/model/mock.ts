@@ -689,7 +689,8 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     return {
       runtime_id: runtime.runtime_id,
       owner_default: runtime.default,
-      blocking: open.length + todos.length > 0,
+      blocking: runtime.availability === 'available' && open.some((e) => e.status.run_state !== 'created'),
+      running_sessions: runtime.availability === 'available' ? open.filter((e) => e.status.run_state !== 'created').map((e) => e.session_id) : [],
       active_sessions: open.map((e) => ({ session_id: e.session_id, kind: e.kind, class: e.class, title: e.objective, run_state: e.status.run_state })),
       pending_todos: todos,
       workspaces: workspaces.filter((w) => w.location.runtime_id === runtime.runtime_id)
@@ -697,11 +698,10 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       usage: structuredClone(runtime.usage),
     }
   }
-  const confirmed = (runtimeId: string, confirm: boolean | undefined, verb: string) => {
-    if (confirm) return
+  const notInUse = (runtimeId: string, verb: string) => {
     const impact = impactOf(runtimeId)
     if (!impact.blocking) return
-    throw new OpenDanError('invalid_argument', `confirm_required: runtime \`${impact.runtime_id}\` has ${impact.active_sessions.length} session(s) in progress, ${impact.pending_todos.length} Todo(s) waiting to run on it and ${impact.workspaces.length} workspace(s); they are not moved. Show them (\`runtimes.impact\`) and ${verb} with \`confirm: true\``)
+    throw new OpenDanError('invalid_argument', `sessions_in_progress: runtime \`${impact.runtime_id}\` has ${impact.running_sessions.length} session(s) in progress (${impact.running_sessions.join(', ')}); stop them or let them finish, then ${verb}`)
   }
   const withRuntimeMark = (e: RegistryEntry): RegistryEntry => {
     const runtime = e.status.run_state !== 'finished' && runtimes.find((r) => r.runtime_id === e.runtime_id)
@@ -1042,7 +1042,7 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       const entry = runtimeSettings.runtimes[settingId]
       if (settingId !== 'container' && !entry) throw new OpenDanError('invalid_argument', `runtime ${patch.runtime_id} is not one of this agent's runtimes`)
       if (entry && patch.enabled !== undefined) {
-        if (!patch.enabled && entry.enabled) confirmed(patch.runtime_id, patch.confirm, 'switch it off')
+        if (!patch.enabled && entry.enabled) notInUse(patch.runtime_id, 'switch it off')
         entry.enabled = patch.enabled
       }
       if (patch.default === true) runtimeSettings.configured_default_runtime_id = settingId
@@ -1056,11 +1056,11 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       return impactOf(runtimeId)
     },
 
-    removeRuntime: async (runtimeId, confirm) => {
+    removeRuntime: async (runtimeId) => {
       await delay()
       const record = findRuntime(runtimeId)
       if (record.connector.type === 'native') throw new OpenDanError('invalid_argument', 'the private runtime cannot be removed')
-      confirmed(runtimeId, confirm, 'remove it')
+      notInUse(runtimeId, 'remove it')
       delete runtimeSettings.runtimes[record.runtime_id]
       if (runtimeSettings.configured_default_runtime_id === record.runtime_id) runtimeSettings.configured_default_runtime_id = null
       record.lifecycle = 'retired'

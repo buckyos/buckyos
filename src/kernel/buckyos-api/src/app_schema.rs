@@ -720,13 +720,17 @@ impl AgentSettings {
 /// (AppId == AgentId) chose as its default: its Agent Service runs natively
 /// there instead of in a paios container (native-agent-service TODO §2).
 /// `input` is the system-config view the scheduler works on. `None`: the
-/// Agent belongs to another user, its default runtime is not a node runtime,
-/// or that node is not open to the owner's Agents.
+/// product has containers (an Agent's private runtime is then always its
+/// container), the Agent belongs to another user, its default runtime is
+/// not a node runtime, or that node is not open to the owner's Agents.
 pub fn native_agent_node(
     input: &std::collections::HashMap<String, String>,
     owner_user_id: &str,
     app_id: &AppId,
 ) -> Option<String> {
+    if crate::ProductProfile::from_system_config(input).map_or(true, |p| p.container_enabled()) {
+        return None;
+    }
     let zone_owner = input.get(ZONE_OWNER_USER_ID_KEY).map(|raw| {
         serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.trim().trim_matches('"').to_string())
     })?;
@@ -881,12 +885,16 @@ mod tests {
                 (ZONE_OWNER_USER_ID_KEY.to_string(), "\"devtest\"".to_string()),
                 (agent_settings_key("devtest", &agent), serde_json::to_string(&settings).unwrap()),
                 (crate::node_settings_key("ood1"), node(open)),
+                (crate::PRODUCT_PROFILE_KEY.to_string(), include_str!("../../../product/lite.json").to_string()),
             ])
         };
         let mut on_host = AgentSettings::default();
         on_host.runtimes.insert(HOST_RUNTIME_ID.into(), host(true));
         on_host.default_runtime_id = Some(HOST_RUNTIME_ID.into());
         assert_eq!(native_agent_node(&input(on_host.clone(), true), "devtest", &app).as_deref(), Some("ood1"));
+        let mut full = input(on_host.clone(), true);
+        full.remove(crate::PRODUCT_PROFILE_KEY);
+        assert_eq!(native_agent_node(&full, "devtest", &app), None, "a product with containers keeps the Agent in its container");
         assert_eq!(native_agent_node(&input(on_host.clone(), false), "devtest", &app), None, "node closed");
         assert_eq!(native_agent_node(&input(on_host.clone(), true), "alice", &app), None, "not the zone owner");
         let mut enabled_only = on_host.clone();

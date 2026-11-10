@@ -867,6 +867,33 @@ impl Supervisor {
         Ok(())
     }
 
+    pub async fn stop(&self, sid: &str) -> Result<()> {
+        let entry = self
+            .host
+            .agent
+            .sessions()
+            .lookup(sid)
+            .await?
+            .ok_or_else(|| crate::error::OpenDanError::NotFound(format!("session {sid}")))?;
+        if entry.driver.principal != self.host.who {
+            return Err(crate::error::OpenDanError::NotDriver {
+                session_id: sid.to_string(),
+                principal: self.host.who.clone(),
+                driver: entry.driver.principal,
+            });
+        }
+        if entry.status.run_state == RunState::Finished {
+            return Err(crate::error::OpenDanError::SessionFinished(sid.to_string()));
+        }
+        if let Some(slot) = self.slots.lock().expect("slots").get(sid).filter(|s| s.running()) {
+            slot.stop.request();
+            return Ok(());
+        }
+        let sd = SessionDir::open(&entry.location)?;
+        self.start(sd, &entry.class, "stop", true);
+        Ok(())
+    }
+
     fn reap(&self) {
         let mut slots = self.slots.lock().expect("slots");
         for (sid, slot) in slots.iter_mut() {

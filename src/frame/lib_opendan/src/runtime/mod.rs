@@ -206,29 +206,22 @@ pub async fn open_node_target_of(runtime_id: &str, config: &RuntimeConfig, ops_d
 const NODE_SESSIONS_DIR: &str = "sessions";
 
 /// The directory of this agent on a node: `<account home>/.opendan/<agent_id>`
-/// (directory convention). The executor's account home must lie inside
-/// the granted roots.
+/// (directory convention), or `<first granted root>/.opendan/<agent_id>`
+/// when the account home lies outside the granted roots (a device issued
+/// for one work directory).
 pub fn node_agent_dir(target: &RemoteNodeTarget, runtime_id: &str, agent_id: &str) -> Result<String> {
-    let home = target
-        .described()
-        .info
-        .home
-        .clone()
-        .filter(|h| !h.trim().is_empty())
-        .ok_or_else(|| {
-            OpenDanError::Bind(format!(
-                "runtime `{runtime_id}`: its executor reports no account home, so the agent's directory there (<home>/.opendan/{agent_id}) cannot be placed"
-            ))
-        })?;
+    let home = target.described().info.home.clone().filter(|h| !h.trim().is_empty());
     let roots = target.workdir_roots();
     let grant = RuntimeGrant { roots: roots.iter().map(PathBuf::from).collect(), ..Default::default() };
-    if !grant.within_roots(&home) {
-        return Err(OpenDanError::Bind(format!(
-            "runtime `{runtime_id}`: the account home {home} is outside the granted roots ({}); ask the administrator to include it",
-            roots.join(", ")
-        )));
-    }
-    Ok(target_join(&home, &[".opendan", agent_id]))
+    let base = match home {
+        Some(home) if grant.within_roots(&home) => home,
+        _ => roots.first().cloned().ok_or_else(|| {
+            OpenDanError::Bind(format!(
+                "runtime `{runtime_id}`: its executor reports no account home and grants no directory, so the agent's directory there cannot be placed"
+            ))
+        })?,
+    };
+    Ok(target_join(&base, &[".opendan", agent_id]))
 }
 
 /// Join path parts below `base` with the separator of the target OS (a
@@ -540,7 +533,8 @@ pub async fn runtime_for_session(
         config.baseline = Some(frozen.baseline());
         config.workdir = Some(node_workdir(sd, agent, &frozen.runtime_id, &config).await?);
         let mut deps = deps.clone();
-        if deps.node_executor.is_none() {
+        let device = config.remote_node.as_ref().and_then(|n| n.executor_id.as_deref()).is_some_and(|e| !e.is_empty());
+        if deps.node_executor.is_none() || device {
             let (connector, resolved, _) = connector_for(&frozen.runtime_id, &config).await?;
             deps.node_executor = Some(connector);
             config = resolved;
@@ -1193,6 +1187,25 @@ pub async fn check_commands(record: &RuntimeRecord, ops_dir: &Path, commands: &[
             error: Some(e.to_string()),
         },
     }
+}
+
+pub async fn check_node_placement(agent: &dyn crate::state::AgentStateClient, record: &RuntimeRecord) -> Result<()> {
+    let Ok(ops_dir) = runtime_ops_dir(agent) else {
+        return Ok(());
+    };
+    let exec = record
+        .exec()
+        .ok_or_else(|| OpenDanError::Bind(format!("runtime `{}` is not enabled", record.runtime_id)))?;
+    let config = node_config_of(&record.runtime_id, &exec)?;
+    let target = open_node_target_of(&record.runtime_id, &config, &ops_dir).await?;
+    node_agent_dir(&target, &record.runtime_id, agent.agent_id())?;
+    if !target.caps().contains(&buckyos_api::ExecutorOp::Mkdir) {
+        return Err(OpenDanError::Bind(format!(
+            "runtime `{}` does not allow creating directories, so a session's directory cannot be made there; use it from a private session (`agent-session run` / `copy`)",
+            record.runtime_id
+        )));
+    }
+    Ok(())
 }
 
 /// `<account home>/.opendan/<agent>` on the node of `record`.

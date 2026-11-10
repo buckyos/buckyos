@@ -2,7 +2,7 @@
 
 > 2026-11-04，三轮迭代合并。第一轮从 [skills 体系改进计划 §3.6.1](opendan-skills-system-todo.md) 的“cmd 装到哪个 runtime”出发整理 runtime 的创建 / 使用 / 更新 / 删除；第二轮用脑图加了用户视角与能力视角两个分类；第三轮（§0）确定 **Agent 工作模型**：私有 runtime 永远在、chat 只知道两台、plan 看全表，并据此把 `kind` 换成 connector + caps + grant（§1）。范围因此从“runtime 登记的生命周期”扩成“Agent 怎么用 runtime”。第四轮（§0.6、§4.6）核对用户添加 runtime 的入口，改成“用户级目录 → 分配给 Agent → Agent 首页看当前与历史”两步。相关：[AgentRuntime 设计 §6.4](<../doc/llm_context/AgentRuntime 设计.md>)、[Agent State Protocol §10](<../doc/opendan/protocol/Agent State Protocol.md>)、[Session Directory Protocol §9](<../doc/opendan/protocol/Session Directory Protocol.md>)、[Session Runtime](<../doc/opendan/OpenDAN Agent-Session-Runtime.md>)、[primary-runtime TODO](opendan-primary-runtime-tools-todo.md)、[object-url TODO](done/agent-object-url-todo.md)（路径解释 D1–D3）。上一版（只有生命周期 + 两视角）的内容全部并入，编号 R-C / R-U / R-M / R-D 保持不变，新增 R-W（工作模型）与 R-K（记录模型）。
 >
-> **2026-11-09 第二次实施**：§9.3 的任务已实施（已提交 `35e72ce06`，websdk `bd6a159`），记录、与本文不同的决定、验证和未验证项在 §11；§4、§6、§9.3 各表的状态列停在实施前，以 §11 为准。**当晚在本机 Zone 上做了 DV（§12）**：修了 5 处（未提交），另有 8 个问题等 owner 裁决（§12.3）。
+> **2026-11-09 第二次实施**：§9.3 的任务已实施（已提交 `35e72ce06`，websdk `bd6a159`），记录、与本文不同的决定、验证和未验证项在 §11；§4、§6、§9.3 各表的状态列停在实施前，以 §11 为准。**当晚在本机 Zone 上做了 DV（§12）**：修了 5 处（已提交 `b6c57704a`），另有 8 个问题经 owner 裁决（§12.3）后实施（§12.5，未提交）。
 >
 > **2026-11-09 状态**：P0 / P1 已提交（`c88404aaf`，实施记录在 §8）。之后[扩展包 TODO](opendan-exttools-cross-platform-todo.md) 一、二期和 [skills TODO](opendan-skills-system-todo.md) 的实施做掉了 R4、R13、R16，[Agent UI 升级 TODO](agent-ui-upgrade-todo.md) 的裁决 D3 / D4 改了 Agent 首页一侧的分工。§1、§3、§4、§6 的状态列已按当天的代码更新；剩余任务、与另外两单的分工、验证状态见 §9；**§7.1 的 8 条裁决和 §7.2 的 8 条答复都已回写**。两轮答复叠起来之后的模型在 §10，前文与它冲突的地方以它为准；§7.3 的两点也已确认，目前没有待定的设计问题。§0.4、§2 的“现状”是实施前的快照，留作对照；§0.6 的变化标在行内。
 
@@ -825,7 +825,7 @@ P0 / P1 各项的状态取自 §8.1，这次只抽查了入口是否还在（`ca
 | E5 | Desktop 设置 → Agent Runtimes 页在真实 Zone 上正确显示节点策略、设备（在线、期限）、分配 |
 | E7 | 源码运行的 CLI：`runtime list / revoke`、`agent runtime list / enable / disable` |
 
-### 12.2 DV 中修的（未提交，已部署到本机 Zone）
+### 12.2 DV 中修的（已提交 `b6c57704a`）
 
 1. **容器里的 Agent 连不上设备**（`agent_tool/src/runtime/executor.rs`）。控制面板给的流路由 `ws_url` 是 `wss://<zone host>/…`，容器内这个域名解析到容器自己。改为把路由的路径接到 Agent 调 control-panel 的同一个服务地址上（http → ws），与现有 kRPC 同一条路、同样带 bearer。单测 `the_stream_route_goes_to_the_agents_own_control_panel_origin`。
 2. **设备上的 check 与 Session 绑定报 `remote_node.node_did must be a device DID`**（`agent_tool/src/runtime/mod.rs` `RuntimeConfig::validate`）。R11 给 `RemoteNodeConfig` 加了 `executor_id`，校验仍只认 `node_did`。改为二者恰好有一个。单测在 `runtime/tests.rs`。
@@ -846,6 +846,15 @@ P0 / P1 各项的状态取自 §8.1，这次只抽查了入口是否还在（`ca
 7. **Agent 整个卡死（既有，10-03）。** `state/registry.rs` 投递输入时在 tokio 线程上阻塞地 `flock(post.lock)`，并持锁跨过后面几个 await。plan 被停时级联 stop 子 Session，与我对同一子 Session 的 `session.stop` 同时到达，同一进程第二次加锁阻塞，kRPC 与对话全部无响应（`/proc/locks` 里持有者与等待者都是本进程），只能重启容器。建议改为 `try_lock` 加异步等待或 `spawn_blocking`。
 8. **owner 停不了 work Session（既有）。** kRPC `session.stop` 对 work 报 `has no input queue`，`xagent ctl stop` 也一样；进行中的 work 每 30 秒被 `task_watch` 唤醒跑一轮 LLM。
 
+**owner 裁决（11-09 当晚）**，实施见 12.5：
+
+1. Linux 下必定有容器，所以 Agent 的私有 runtime 就是容器：只有不带容器的产品（Lite）才原生运行。
+2. 按建议：设备的 Agent 目录在账户 home 不在 roots 内时放到第一个 root 下；建 Session 时预检目标能否放置，放不了就当场失败（Todo 走 R-U11 的 `block_reason`），不再留下永远 `created` 的 Session。
+3. 不要占位。这个概念的正式名称是 owner default runtime（由 `default_runtime_id` 决定，没有设就是私有），不是一台特殊的 `host`。
+4. 简单一点：有在用的 Session 就不让停用（也不让移除），不再有 `confirm`。
+5. 当网络错误处理：不加定期探活，用到时连不上就是连不上。
+6. 7. 8. 修。
+
 小问题（不需要裁决）：
 - 原生模式下，私有 runtime 的基线在 Linux 上学不到（只经桌面驱动的 describe 学），一直是 `standard`；Loader 每分钟报一次 `$BUCKYOS_ROOT … lacks …/instance (deployment error)`，而宿主机上本来就没有 `instance/`。
 - 设备在 Agent 侧的记录名是 `exec-<uuid>`（目录里叫 `dv-device`），owner 通知的标题也是它；通知原因里带着给 Agent 看的 “see `executor_list`”。
@@ -863,3 +872,45 @@ P0 / P1 各项的状态取自 §8.1，这次只抽查了入口是否还在（`ca
 - Windows / macOS。
 
 DV 留下的状态：`dv-device` 已 revoke；jarvis 的默认是私有，host 已分配并启用；host 上有 Workspace `dv-ws`（`/home/lzc/dvws`）；节点策略已还原（基线未设置、ComputerUse 关）。
+
+### 12.5 按裁决实施（11-09 当晚，未提交）
+
+| 裁决 | 落点 | 做法 |
+| --- | --- | --- |
+| 1 原生只在 Lite | `buckyos-api` `native_agent_node`；`control_panel` `agent_service_view`；`rust_app_loader.md`、Agent State Protocol | `system/product` 带容器（缺省 Full）时直接返回 `None`；控制面板展示的 `agent_service.mode` 同理。调度器那条测试的输入改成 Lite 产品，`app_schema` 测试补 Full 不原生的断言 |
+| 2 设备 Session 目录与预检 | `lib_opendan` `runtime/mod.rs` `node_agent_dir`、`check_node_placement`；`api.rs` `freeze_runtime`；Agent State / Session Directory Protocol | home 在 roots 内用 `<home>/.opendan/<agent>`，否则用 `<第一个 root>/.opendan/<agent>`；节点 / 设备 runtime 在冻结时 login + describe 一次并算出目录，失败即 Bind 错误。已经建好、之后才绑定失败的 Session（例如 roots 后来改了）仍会停在 `created`，没有处理 |
+| 3 去掉 host 占位 | `protocol/runtime.rs` `builtin_runtimes` | settings 里没有的 runtime 不再投影；移除 host 后它和其它 runtime 一样转 `retired`、进历史 |
+| 4 有进行中的 Session 不让停用 | `opendan/home.rs`（`not_in_use`）；websdk `cli/modules/runtime.ts`；opendan WebUI `Workspaces.tsx`、mock；Desktop `AgentRuntimeDialogs.tsx`；README | `runtimes.settings_set {enabled:false}` 与 `runtimes.remove` 遇到未结束的 Session 报 `sessions_in_progress: …`（列出 sid），没有绕过的参数；`confirm` 取消；`impact.blocking` 只看 Session。CLI：`agent runtime disable` 直接提交、`runtime unassign` / `revoke` 先取影响，有 Session 报 `SESSIONS_IN_PROGRESS`（`--yes` 不能绕过；revoke 不在用时仍要确认）。WebUI：停用遇到 Session 只弹说明并列出，没有“仍要停用”。Desktop：取消分配、撤销 / 删除设备、“替原 Agent 关掉再分配”三处先向正在用它的 Agent 取影响，有 Session 时列出并禁用按钮。控制面板自己的 `agent.update` / `executor.device.*` 不查 Session（它看不到），直接调这些接口仍会中断进行中的命令 |
+| 5 网络错误 | — | 不改代码；R8 的“不应答”标记只在用到它时发生 |
+| 6 系统 CLI | websdk `package.json` `files`；`node_daemon` `BUCKYOS_TOOL_MOUNT_ENTRIES`（加 `src`）与测试；`path_usage.md` | npm 包带上 `src/internal/command_args.ts`，容器挂 `libexec/buckyos-tool/src`。打包冒烟测试只跑 Node 入口，没有覆盖 Deno 源码入口，这个缺口没补 |
+| 7 `post.lock` 卡死 | `state/registry.rs` `post_input` | 改用 `lock::FileLock::try_acquire`（有进程内持有表）加 20 ms 异步重试，30 秒拿不到报 `Busy`；不再在 tokio 线程上阻塞 |
+| 8 停 work | `host/mod.rs` `Supervisor::stop`；`opendan/service.rs` `session.stop`；README | 没有队列的 Session 收到 session 范围的 stop 时，由 Supervisor 请求它的 `StopSignal`（没在跑就带着 stop 启动一次），与父 Session 被停时同一条路：run 中断、Turn 以 stopped 关闭、Session 结束。返回 `{index: null, stopped: true}`。Agent UI TODO 的 SC1–SC8（pause / resume、turn 范围的 stop 等）仍未实施 |
+
+另：CLI `agent runtime default` 的帮助改为 owner default runtime 的含义。
+
+**复验中又修的（同样未提交）：**
+
+| 问题 | 落点 | 做法 |
+| --- | --- | --- |
+| “在用”口径：卡在 `created` 的 Session（或 runtime 已不可用时的 Session）会把 runtime 锁住，而它自己又停不掉 | `opendan/home.rs` `runtime_impact`；CLI 不变；WebUI、Desktop、mock | `blocking` 只算已经开始运行（不是 `created`）且 runtime 当前可用的 Session，另给 `running_sessions`；客户端只列这些。停用这时不会中断任何东西，之后 R8 照常标记 |
+| Desktop 签发的读写设备没有 `mkdir`，设备上的 Session 建不了目录 | Desktop `AgentRuntimeDialogs.tsx`；`runtime/mod.rs` `check_node_placement` | 读写档补 `mkdir / stat / rename / remove`，只读档补 `stat`；预检同时要求 `mkdir`，不给就在创建时报“does not allow creating directories” |
+| 设备 Session 绑定报 `remote_node.profile_id is required` | `runtime/mod.rs` `runtime_for_session` | Loader 的 deps 已带节点连接器，设备从不走 `connector_for`；改为设备总是经执行器路由解析 |
+| 设备 Session 跑 xllm 时报 `remote_node takes either node_did … or executor_id` | `agent_tool/runtime/mod.rs` `merge_over` | 合并配置时丢了 `executor_id`；补上，`node_did` 与 `executor_id` 互斥覆盖 |
+| CLI 报 opendan 错误时末尾带 `"}` | websdk `cli/modules/runtime.ts` `reasonText` | 先从 JSON 包装里取 `message` 再截原因 |
+
+测试：`agent_tool` runtime、`libopendan`（`runtimes`、`session_runtime` 新增 `a_node_session_is_placed_where_it_can_be_or_refused_at_creation`、`a_device_session_binds_through_its_executor_route`，`runner_more` 新增 `concurrent_posts_in_one_process_all_land`）、`opendan --test loader`（新增 `the_owner_stops_a_work_session_without_a_queue`，runtime 那条改用会应答的模拟节点）、`buckyos-api`、`scheduler`、`control_panel`、`node_daemon`、websdk CLI 163 条、opendan WebUI e2e、Desktop 相关 e2e。WebUI 的 `goals.spec.ts` 在本地时间接近午夜时失败（“下一次机会”跨天后显示日期），与本次无关。
+
+**本机 Zone 复验（11-09 深夜到 11-10 凌晨）：**
+- 系统 `buckyos` 在宿主机和容器里都能运行。
+- owner default 设为 host 之后 jarvis 仍在容器里，控制面板 `agent_service.mode = container`。
+- host 上有运行中的 work 时，kRPC 停用（带 `confirm` 也不行）、kRPC 移除、CLI `agent runtime disable`、CLI `runtime unassign` 全被拒（`sessions_in_progress` / `SESSIONS_IN_PROGRESS`），命令照常在跑。
+- `session.stop` 对这条无队列的 work 3 秒内生效：`stopped`，host 上的 `sleep 600` 被终止。之后停用、移除 host 直接成功，host 转 `retired` 进历史。
+- 停 plan 的同时停它的子 Session（之前把 Agent 卡死的场景）：两条立即返回，Agent 正常。
+- device2（旧操作集，没有 `mkdir`）上卡在 `created` 的 Session 不再挡 revoke；device3（新操作集）上 plan 建的单机 session 在设备的 `/home/lzc/dvdev/.opendan/<agent>/sessions/<sid>` 下运行，`cat` 返回 `hello from device`。
+- 设备 daemon 两次挺过 Zone 重启（配置代数修复）。
+
+**新发现、没有处理：**
+- 从私有 Session 里 `agent-session run --runtime <设备>` 在容器里报 `BuckyOSRuntime is not initialized`：命令在 `session.helper` 起的 xagent 子进程里执行，那里没有 BuckyOS 运行时，解析不了设备路由（节点 runtime 不受影响）。修法要么让服务端执行 `runtime_exec`（Agent State 加一个方法），要么让子进程能拿到控制面板地址与 token，需要定。
+- 对具体 runtime `agent-session run` 必须给 `--cwd`，模型第一次常常漏掉；plan 若要求“只执行一次”就不会重试。可以考虑缺省用该 runtime 上 Agent 的目录。
+- 设备 daemon 在控制面板正常关闭连接（Zone 停止）时直接退出，只有连接被异常断开时才重连。
+- 已经建好、之后才绑定不上的 Session 仍然停不掉也结束不了（新口径下它们不再挡停用 / 移除，但会一直留在列表里）。

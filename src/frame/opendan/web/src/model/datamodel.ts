@@ -75,7 +75,7 @@ export interface OpenDanDataModel {
   runtimeSettings(): Promise<RuntimeSettings>
   setRuntimeSetting(patch: RuntimeSettingPatch): Promise<RuntimeSettings>
   runtimeImpact(runtimeId: string): Promise<RuntimeImpact>
-  removeRuntime(runtimeId: string, confirm?: boolean): Promise<RuntimeSettings>
+  removeRuntime(runtimeId: string): Promise<RuntimeSettings>
 
   sessions(): Promise<RegistryEntry[]>
   activeSessions(): Promise<ActiveSession[]>

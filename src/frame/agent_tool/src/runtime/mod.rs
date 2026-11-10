@@ -273,6 +273,11 @@ impl RuntimeConfig {
             let b = self.remote_node.get_or_insert_with(Default::default);
             if n.node_did.is_some() {
                 b.node_did = n.node_did.clone();
+                b.executor_id = None;
+            }
+            if n.executor_id.is_some() {
+                b.executor_id = n.executor_id.clone();
+                b.node_did = None;
             }
             if n.profile_id.is_some() {
                 b.profile_id = n.profile_id.clone();
