@@ -84,6 +84,12 @@ pub trait SessionRegistry: Send + Sync {
     async fn update_location(&self, lease: &Lease, sid: &str, location: &Path) -> Result<()>;
     /// Mark entries whose location vanished as unreachable (never deletes).
     async fn verify(&self) -> Result<Vec<String>>;
+    /// Host only: mark the unfinished sessions frozen to `runtime_id` with
+    /// why it cannot be used now (`None`: it can again, the marks go).
+    /// Returns the sessions that were not marked before.
+    async fn mark_runtime(&self, _runtime_id: &str, _reason: Option<&str>) -> Result<Vec<RegistryEntry>> {
+        Ok(Vec::new())
+    }
     /// Post an input to a session's kmsg queue (+ wake event).
     /// Append a record to the session's input bus. Refused with
     /// `input_full` while the bus holds [`MAX_PENDING_INPUTS`] records that

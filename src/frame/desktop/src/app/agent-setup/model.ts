@@ -233,6 +233,8 @@ export interface AgentSetupDraft {
   /** Runs on the owner's `host` (true) or in its container (false); null:
    * the machine's default (`runsOnHost`). */
   hostRuntimeEnabled: boolean | null
+  /** The other open runtimes (nodes, devices) assigned to the new Agent. */
+  extraRuntimeIds: string[]
   allowGroup: boolean
   homestation: boolean
   autoShareResults: boolean
@@ -262,6 +264,7 @@ export function newAgentSetupDraft(source: AgentSetupSource, idempotencyKey: str
     roleSupplement: '',
     permissionMode: 'read_write',
     hostRuntimeEnabled: null,
+    extraRuntimeIds: [],
     allowGroup: false,
     homestation: true,
     autoShareResults: true,
@@ -298,6 +301,7 @@ export function parseAgentSetupDraft(raw: unknown, source: AgentSetupSource): Ag
     roleSupplement: stringField(value.roleSupplement, base.roleSupplement),
     permissionMode: value.permissionMode === 'read_only' ? 'read_only' : 'read_write',
     hostRuntimeEnabled: typeof value.hostRuntimeEnabled === 'boolean' ? value.hostRuntimeEnabled : null,
+    extraRuntimeIds: Array.isArray(value.extraRuntimeIds) ? value.extraRuntimeIds.filter((id): id is string => typeof id === 'string') : [],
     allowGroup: boolField(value.allowGroup, base.allowGroup),
     homestation: boolField(value.homestation, base.homestation),
     autoShareResults: boolField(value.autoShareResults, base.autoShareResults),
@@ -336,7 +340,19 @@ export function applyTemplateToDraft(draft: AgentSetupDraft, template: AgentTemp
   }
 }
 
-type RuntimeChoiceDirectory = Pick<AgentRuntimeDirectory, 'container_available' | 'host_by_default'> | null
+type RuntimeChoiceDirectory = (Pick<AgentRuntimeDirectory, 'container_available' | 'host_by_default'> & { runtimes?: AgentRuntimeOffer[] }) | null
+
+export const HOST_RUNTIME_ID = 'host'
+
+/** The open runtimes of the directory other than `host`: further nodes and the owner's devices. */
+export function extraRuntimeOffers(directory: RuntimeChoiceDirectory): AgentRuntimeOffer[] {
+  return (directory?.runtimes ?? []).filter((offer) => offer.runtime_id !== HOST_RUNTIME_ID && !offer.closed && !offer.withdrawn)
+}
+
+/** The extra runtimes the draft assigns: still open, and a device only while no other Agent has it switched on. */
+export function chosenExtraRuntimes(draft: Pick<AgentSetupDraft, 'extraRuntimeIds'>, directory: RuntimeChoiceDirectory): AgentRuntimeOffer[] {
+  return extraRuntimeOffers(directory).filter((offer) => !offer.in_use_by && draft.extraRuntimeIds.includes(offer.runtime_id))
+}
 
 /** Whether the owner chooses between `host` and the container: the host is
  * open to their Agents and some node runs containers. */
@@ -372,8 +388,11 @@ export function buildAgentCreateRequest(
     },
     role_supplement: draft.roleSupplement.trim(),
     permission_mode: draft.permissionMode,
-    runtimes: { host: enableHost ? { enabled: true, computer: host.computer_max } : null },
-    default_runtime_id: enableHost ? 'host' : 'container',
+    runtimes: {
+      [HOST_RUNTIME_ID]: enableHost ? { enabled: true } : null,
+      ...Object.fromEntries(chosenExtraRuntimes(draft, directory).map((offer) => [offer.runtime_id, { enabled: true }])),
+    },
+    default_runtime_id: enableHost ? HOST_RUNTIME_ID : 'container',
     allow_group: draft.allowGroup,
     allow_other_users: false,
     homestation: draft.homestation,

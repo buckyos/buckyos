@@ -133,6 +133,7 @@ async fn checks_and_commands_see_the_same_layers_of_a_host() {
         profiles: BTreeMap::from([(
             "dev".into(),
             ExecutorProfile {
+                baseline: None,
                 run_as: None,
                 workdir_roots: vec![work.to_string_lossy().to_string()],
                 env: BTreeMap::from([("PATH".into(), format!("{}:/usr/bin:/bin", system.display()))]),

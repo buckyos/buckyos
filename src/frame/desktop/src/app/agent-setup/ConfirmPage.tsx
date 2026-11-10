@@ -17,6 +17,7 @@ export function ConfirmPage({
   avatarFallback,
   host,
   onHost,
+  extraRuntimes,
 }: {
   draft: AgentSetupDraft
   bio: string
@@ -27,11 +28,12 @@ export function ConfirmPage({
   avatarFallback?: string
   host: AgentRuntimeOffer | null
   onHost: boolean
+  extraRuntimes: AgentRuntimeOffer[]
 }) {
   const { t } = useI18n()
   const [roleOpen, setRoleOpen] = useState(false)
   const hostRow = onHost && host
-    ? t('agentSetup.confirm.hostDesktop', undefined, { name: host.name || host.node_id || 'host', computer: t(`agentSetup.confirm.computer.${host.computer_max}`) })
+    ? t('agentSetup.confirm.hostDesktop', undefined, { name: host.name || host.node_id || 'host', computer: t(`agentSetup.confirm.computer.${host.computer}`) })
     : t('agentSetup.confirm.hostContainer')
   const yes = t('agentSetup.yes')
   const no = t('agentSetup.no')
@@ -108,6 +110,9 @@ export function ConfirmPage({
             [t('agentSetup.confirm.version'), template?.version ?? '-'],
             [t('agentSetup.template.autoUpdate'), draft.templateAutoUpdate ? yes : no],
             [t('agentSetup.confirm.host'), hostRow],
+            ...(extraRuntimes.length > 0
+              ? [[t('agentSetup.runtimes.title'), extraRuntimes.map((offer) => offer.name || offer.node_id || offer.runtime_id).join(', ')] as [string, string]]
+              : []),
           ]}
         />
       </Section>

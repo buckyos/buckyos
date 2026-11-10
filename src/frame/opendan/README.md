@@ -249,18 +249,17 @@ Goal 不存在 → `not_found`；Goal 已结束（achieved / archived）→ `goa
 
 ### Skills
 
-Agent 的 skills：work / ui skill（`cmd_skills/<name>/SKILL.md` + 可选 `references/`、`tools/<name>/`）、plan skill（`plan_skills/<name>/SKILL.md`）、goal skill（`goal_skills/<name>/SKILL.md`）。服务挂在 `/kapi/opendan` 与 `/kapi/<agent_id>`（经 NodeGateway 可达）。**只有 owner 能装、删、禁用和改 UI 集合**：入口是本服务的 WebUI Skills 页与 `buckyos skill … --agent <agent_id>`；任何 Agent 的 App 身份（含本 Agent 自己，不论权限模式）调下表的 owner 方法都被拒。Agent 在 Session 里只有 `agent-session skill list | status | revise`。Session 冻结手册时：被禁用或命令尚未装好的不取、点名时拒绝；`scope: ui` 的只进对话；不满足 session-runtime 基线 / 平台的不注入并在 `## Commands` 末尾列出原因；plan（行为声明 `[capabilities] cmd_skills = "candidates"`）不冻结手册，只在首个输入里看到 `<skill_candidates>`。状态记在 `.meta/skills_state.json`（`disabled` / `ui_cmd_skills` / `usage` / `install` / `audit`），安装记录在 `.meta/skills.json`。实现在 `libopendan::skills` 与 `src/home.rs`。
+Agent 的 skills：work / ui skill（`cmd_skills/<name>/SKILL.md` + 可选 `references/`）、plan skill（`plan_skills/<name>/SKILL.md`）、goal skill（`goal_skills/<name>/SKILL.md`）。服务挂在 `/kapi/opendan` 与 `/kapi/<agent_id>`（经 NodeGateway 可达）。**只有 owner 能装、删、禁用和改 UI 集合**：入口是本服务的 WebUI Skills 页与 `buckyos skill … --agent <agent_id>`；任何 Agent 的 App 身份（含本 Agent 自己，不论权限模式）调下表的 owner 方法都被拒。Agent 在 Session 里只有 `agent-session skill list | status | revise`。Session 冻结手册时：被禁用或命令尚未装好的不取、点名时拒绝；`scope: ui` 的只进对话；不满足 session-runtime 基线 / 平台的不注入并在 `## Commands` 末尾列出原因；plan（行为声明 `[capabilities] cmd_skills = "candidates"`）不冻结手册，只在首个输入里看到 `<skill_candidates>`。状态记在 `.meta/skills_state.json`（`disabled` / `ui_cmd_skills` / `usage` / `install` / `audit`），安装记录在 `.meta/skills.json`。实现在 `libopendan::skills` 与 `src/home.rs`。
 
 | method | params | 说明 |
 |---|---|---|
-| `skills.list` | `{kind?: work \| plan \| goal}` | `SkillMeta[]`：`kind`、`name`、`scope`、front matter 的 `description` / `requires` / `commands` / `baseline` / `platforms`、`origin`（`package` / `installed` / `imported` / `local`）、`install`、`tools`、`size`、`references`、`enabled`、`disabled`、`usage`、`install_state` |
+| `skills.list` | `{kind?: work \| plan \| goal}` | `SkillMeta[]`：`kind`、`name`、`scope`、front matter 的 `description` / `requires` / `commands` / `baseline` / `platforms`、`origin`（`package` / `installed` / `imported` / `local`）、`install`、`size`、`references`、`enabled`、`disabled`、`usage`、`install_state` |
 | `skills.state` / `skills.ui_get` | `{}` | 状态文件全文；UI 集合 `{names, source: state \| template, total_bytes, available}` |
-| `skills.status` | `{runtime_id?}` | 每个 work / ui skill 一条：`unmet`（基线 / 平台不满足的原因）、`commands`（`ready \| ready_system \| partial`、逐命令 `present / provided_by`、`recommended_packages`、`no_package`）、`install`（自装命令在该 runtime 上的记录）。当场探测，不落盘 |
-| `skills.install_plan` | `{package \| draft, runtime_id?}` | 不落盘：`skills`（含 `replaces`）、`risk {level, findings[{code, level, where, note}]}`、`plan_digest`、命令落点 `runtime_id` 与候选 `targets`、`blocked`、`command_status` |
-| `skills.install`（owner） | `{package \| draft, plan_digest, runtime_id?, replace?}` | `plan_digest` 不符或 `blocked` 非空拒绝。文件只能是 `<cmd_skills\|plan_skills\|goal_skills>/<n>/SKILL.md`、其 `references/…` 与 `tools/<work skill>/…`；带 `tools/<n>/install.toml` 的在落点 runtime 上跑脚本并核验命令，任一 runtime `ok` 后才启用。草稿装完即删，来源记为 `imported` |
-| `skills.remove`（owner） | `{kind, name}` | 只删已安装的（模板自带的用禁用）；先在装过的 runtime 上跑 `[uninstall.<os>]` |
+| `skills.status` | `{runtime_id?}` | 每个 work / ui skill 一条：`unmet`（基线 / 平台不满足的原因）、`commands`（`ready \| ready_system \| partial`、逐命令 `present / provided_by`、`recommended_packages`、`no_package`）。当场探测，不落盘 |
+| `skills.install_plan` | `{package \| draft, runtime_id?}` | 不落盘：`skills`（含 `replaces`）、`risk {level, findings[{code, level, where, note}]}`、`plan_digest`、`command_status`（手册的 `commands` 对 `runtime_id` 那台 runtime 的核对，缺省私有） |
+| `skills.install`（owner） | `{package \| draft, plan_digest, replace?}` | `plan_digest` 不符拒绝。skill 是纯文本：文件只能是 `<cmd_skills\|plan_skills\|goal_skills>/<n>/SKILL.md` 与其 `references/…`，都是 UTF-8 文本；带 `tools/` 的包被拒绝（命令做成扩展包）。安装就是校验加复制，装完即启用。草稿装完即删，来源记为 `imported` |
+| `skills.remove`（owner） | `{kind, name}` | 只删已安装的（模板自带的用禁用） |
 | `skills.set_enabled` / `skills.ui_set`（owner） | `{kind, name, enabled, reason?}` / `{names \| null}` | 禁用任何来源的 skill；设置新对话的手册集合（`scope` 含 `ui`、已启用，`null` 回到模板缺省） |
-| `skills.install_cmd` / `skills.check`（owner） | `{name, runtime_id}` / `{name, runtime_id?}` | 把自装命令追加装到另一个 runtime；重新核验（丢了的标 `stale`） |
 | `skills.import`（owner） | `{text, name?, scope?, source?, runtime_id?}` | 文本写入 `skills_drafts/.inbox/<id>/source.md`，起一个 `skill_import` Work 产出草稿；不安装。返回 `{session_id, inbox}` |
 | `skills.drafts` / `skills.draft_file` / `skills.draft_discard`（owner 才能丢弃） | `{}` / `{slug, file}` / `{slug}` | `skills_drafts/<slug>/` 下等 owner 确认的草稿 |
 | `skills.note_frozen` / `skills.revise` | Agent State 门面 | 冻结时宿主累计使用记录；Agent 改写自己的手册（`local` / `imported`）正文，旧文留在 `revisions/` |
@@ -275,12 +274,17 @@ Agent 的 skills：work / ui skill（`cmd_skills/<name>/SKILL.md` + 可选 `refe
 | `agent.profile_set` | `{display_name?, avatar?, bio?}` | 同 `agent.profile` |
 | `usage.models` | – | `{now_ms, since_ms, models: [{model, hour, day, all}]}`，`hour` / `day` / `all` 为 `{input, output, total}` |
 | `ui.bindings` | – | `[{session_id, to, to_session, kind}]` |
+| `runtimes.settings` | – | 这个 Agent 被分配的 runtime：`{runtimes: {<id>: {enabled, target}}, default_runtime_id, configured_default_runtime_id}`。`default_runtime_id` 是当前生效的 owner 默认（配置的那台被停用时落到私有），`configured_default_runtime_id` 是 owner 配置的值 |
+| `runtimes.settings_set` | `{runtime_id, enabled?, default?, confirm?}` | 启用 / 停用一台已分配的 runtime、设 owner 默认。runtime 允许什么（目录、操作、ComputerUse、基线、期限）是 runtime 自己的配置，不在这里改；分配由 control panel 做（`agent.update`）。私有 runtime 及其别名不能停用；停用默认 runtime 不清默认。上面有进行中的 Session 或等着在它上面跑的 Todo 时，没有 `confirm: true` 会被拒绝（`confirm_required: …`）。启用设备 runtime 经 control panel 的 `agent.runtime_enable`（同一台设备同时只有一个 Agent 启用）。返回新的 `runtimes.settings` |
+| `runtimes.remove` | `{runtime_id, confirm?}` | 从这个 Agent 移除一台已分配的 runtime：记录转 `retired` 留作历史，runtime 本身还在 owner 的目录里，可以再分配。拒绝私有 runtime 及其别名；上面有进行中的 Session、等待的 Todo 或 Workspace 时要 `confirm: true`。返回新的 `runtimes.settings` |
+| `runtimes.impact` | `{runtime_id}` | 停用或移除会碰到什么：`{runtime_id, owner_default, blocking, active_sessions[{session_id, kind, class, title, run_state}], pending_todos[{session_id, todo_id, title, status}], workspaces[{workspace_id, name, directory, lifecycle}], usage}`。`blocking`：有进行中的 Session 或等待的 Todo |
 | `home.workspaces` | – | Agent State 中全部已知 Workspace 的展示字段，包含归档和不可访问记录，不输出私有备注与策略引用 |
 
 - 资料：读写系统配置里的 Agent `profile`（与 control_panel 的 `agent.profile.*` 是同一份）；没有昵称时 `display_name` 是 Agent 用户名（AgentId 的第一段）。`agent.profile_set` 只改传入的字段，传空字符串清除该字段。`display_name` ≤ 64 字符，`bio` ≤ 500 字符，`avatar` 是图片 data URL，≤ 128 KiB。`owner_did` 是 AgentSpec 里的 Owner DID（`--dev` 取 `--owner-did`），`desktop_url`（zone 桌面的地址，MessageHub 在其 `/messagehub`）在 `--dev` 形态下为 `null`。
 - 用量：汇总登记表里各 Session 的 `usage.jsonl`（[Session Directory Protocol](../../../doc/opendan/protocol/Session%20Directory%20Protocol.md) §4），按 `all.total` 降序；`hour` / `day` 是最近 1 小时 / 24 小时。`model` 是 AICC 路由最终选中的模型，取不到时是请求里的模型别名。没有 `usage.jsonl` 的旧 Session 不计入，`since_ms` 是最早一条记录的时间。
 - `ui.bindings`：UI Session 的回复去向（`session_config.json` 的 `channels.outbound`）。WebUI 据此把 Session 链接到 MessageHub：对方是 owner 时打开 owner 自己与 Agent 的会话（`/messagehub?entityId=<agent>&sessionId=<to_session | dm:<agent>>`），否则以观察模式打开 Agent 的会话（`ownerDid=<agent>&mode=observe&entityId=<对方>&sessionId=<收件箱会话>`）。没有绑定会话的 Session（work、self_check 等）在 WebUI 里进入自己的详情页。
 - 首页的 Runtime 卡片直接读 `runtimes.list`：名称、id、可用性、是否内建、建议根目录、不可用原因。
+- runtime 停用、被移除、到期或不再应答时，Loader 给还没结束、冻结在它上面的 Session 打上标记（`sessions.query` 条目的 `runtime_unavailable`，值是原因）并通知 owner 一次；Session 不会被迁到别的 runtime，runtime 恢复可用后标记消失。条目的 `runtime_id` 是 Session 冻结到的 runtime，`sessions.query` 的 `query.runtime_id` 按它过滤。
 - `home.workspaces` 从 Workspace Manager 查询已知目录，不按 Session 是否使用过或本机目录是否存在过滤。首页展示稳定 ID、Runtime、目录、使用属性、生命周期、最近可用性检查、错误与冲突，按稳定 ID 关联 Session 和产物。检查访问调用 `workspaces.check`；重新定位调用 `workspaces.discover` 并同时提交目标 ID 和预期登记修订，失败保留原登记。重新定位只供新的 Session 使用，既有 Session 的绑定保持不变。
 
 ### Loader 状态

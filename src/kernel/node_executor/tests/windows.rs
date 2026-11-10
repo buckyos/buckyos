@@ -94,6 +94,7 @@ async fn setup() -> Env {
         profiles: BTreeMap::from([(
             "dev".into(),
             ExecutorProfile {
+                baseline: None,
                 run_as: None,
                 workdir_roots: vec![work.to_string_lossy().to_string()],
                 env: BTreeMap::from([("NX_PROFILE".into(), "from-profile".into())]),

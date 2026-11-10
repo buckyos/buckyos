@@ -1,4 +1,7 @@
-import { Code, FolderLock, Globe, HardDrive, KeyRound, Network, Package, Palette, Settings, Shield } from 'lucide-react'
+import { Code, FolderLock, Globe, HardDrive, KeyRound, Laptop, Network, Package, Palette, Settings, Shield } from 'lucide-react'
+
+/** Stable id of the Agent Runtimes page; other apps open Settings on it (`openSettings`). */
+export const AGENT_RUNTIMES_SETTINGS_PAGE = 'agent-runtimes'
 
 export const settingsPageGroups = [
   {
@@ -55,6 +58,13 @@ export const settingsPageDefinitions = [
     label: 'Cluster Manager',
   },
   {
+    key: AGENT_RUNTIMES_SETTINGS_PAGE,
+    group: 'network-security',
+    icon: Laptop,
+    labelKey: 'settings.nav.agentRuntimes',
+    label: 'Agent Runtimes',
+  },
+  {
     key: 'privacy',
     group: 'network-security',
     icon: Shield,
@@ -95,6 +105,10 @@ export const settingsPageDefinitions = [
 
 export type SettingsPage = (typeof settingsPageDefinitions)[number]['key']
 export type SettingsPageGroup = (typeof settingsPageGroups)[number]['key']
+
+export function isSettingsPage(value: unknown): value is SettingsPage {
+  return settingsPageDefinitions.some((item) => item.key === value)
+}
 
 export function getSettingsPageDefinition(page: SettingsPage) {
   return settingsPageDefinitions.find((item) => item.key === page) ?? settingsPageDefinitions[0]

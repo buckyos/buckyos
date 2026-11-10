@@ -8,12 +8,11 @@ import {
   type ArtifactHead,
   type ComputerAccess,
   type ExtCheck,
-  type InstallGrant,
   type KnownRuntime,
   type KnownWorkspace,
   type RegistryEntry,
+  type RuntimeImpact,
   type WorkspaceLocation,
-  type RuntimeBaseline,
 } from '../model'
 import { ErrorBox } from '../ui'
 
@@ -32,12 +31,6 @@ const connectorLabel: Record<KnownRuntime['connector']['type'], TextKey> = {
   ssh: 'runtimeConnectorSsh',
 }
 
-const installLabel: Record<InstallGrant, TextKey> = {
-  none: 'runtimeInstallNone',
-  agent_bin: 'runtimeInstallAgentBin',
-  system: 'runtimeInstallSystem',
-}
-
 const computerLabel: Record<ComputerAccess, TextKey> = {
   none: 'computerNone',
   observe: 'computerObserve',
@@ -46,12 +39,17 @@ const computerLabel: Record<ComputerAccess, TextKey> = {
 
 const inputClass = 'mt-1 block min-h-11 w-full rounded-xl border border-line bg-bg px-3 text-base text-fg'
 
+const WRITE_OPS = ['exec', 'write', 'edit', 'mkdir', 'rename', 'remove']
+const isReadOnly = (runtime: KnownRuntime) => runtime.grant.ops.length > 0 && !runtime.grant.ops.some((op) => WRITE_OPS.includes(op))
+const mayHoldWorkspaces = (runtime: KnownRuntime) =>
+  runtime.lifecycle === 'active' && runtime.enabled && runtime.availability === 'available' && !isReadOnly(runtime) && runtime.grant.expires_at_ms == null
+
 /** The runtimes a workspace can be placed on now. */
 function useAvailableRuntimes() {
   const runtimes = useQuery(['runtimes.list'], () => dataModel.runtimes())
   return {
     all: runtimes.data ?? [],
-    available: (runtimes.data ?? []).filter((runtime) => runtime.availability === 'available' && runtime.lifecycle === 'active' && runtime.grant.workspace),
+    available: (runtimes.data ?? []).filter(mayHoldWorkspaces),
     refresh: () => runtimes.mutate(),
   }
 }
@@ -384,14 +382,17 @@ function RuntimeExtPackages({ runtimeId }: { runtimeId: string }) {
   )
 }
 
-function RuntimeCard({ runtime, chosen, refresh }: {
+function RuntimeCard({ runtime, chosen, configuredDefault, refresh }: {
   runtime: KnownRuntime
   /** The owner's setting for this runtime on the agent, when there is one. */
-  chosen: { enabled: boolean; computer: ComputerAccess; baseline?: RuntimeBaseline | null } | null
+  chosen: { enabled: boolean } | null
+  /** The owner's default, also while it is switched off. */
+  configuredDefault: boolean
   refresh: () => Promise<unknown>
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>()
+  const [impact, setImpact] = useState<RuntimeImpact | null>(null)
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true)
     setError(undefined)
@@ -405,6 +406,13 @@ function RuntimeCard({ runtime, chosen, refresh }: {
       setBusy(false)
     }
   }
+  const disable = (confirm?: boolean) => dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, enabled: false, ...(confirm ? { confirm } : {}) })
+  const toggle = () => run(async () => {
+    if (!chosen?.enabled) return dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, enabled: true })
+    const found = await dataModel.runtimeImpact(runtime.runtime_id)
+    if (found.blocking) setImpact(found)
+    else await disable()
+  })
   const isPrivate = runtime.connector.type === 'native'
   const retired = runtime.lifecycle === 'retired'
   const { caps, grant, usage } = runtime
@@ -435,26 +443,24 @@ function RuntimeCard({ runtime, chosen, refresh }: {
         <span className={clsx(runtime.availability === 'available' ? 'text-ok' : 'text-warn')}>
           {t(retired ? 'runtimeRetired' : runtimeAvailability[runtime.availability])}
         </span>
-        {runtime.default && <span className="text-accent" data-testid="runtime-default">{t('runtimeDefault')}</span>}
+        {(runtime.default || configuredDefault) && <span className="text-accent" data-testid="runtime-default">{t(runtime.default ? 'runtimeDefault' : 'runtimeDefaultOff')}</span>}
         {runtime.builtin && <span>{t('runtimeBuiltin')}</span>}
-        {<span>{t('runtimeComputer')}: {t(computerLabel[grant.computer ?? 'none'])}</span>}
+        <span data-testid="runtime-computer">{t('runtimeComputer')}: {t(computerLabel[grant.computer ?? 'none'])}</span>
         <span data-testid="runtime-baseline">{t(caps.baseline === 'extended' ? 'runtimeBaselineExtended' : 'runtimeBaselineStandard')}</span>
         {caps.os && <span className="font-mono">{caps.os}{caps.shell ? ` · ${caps.shell}` : ''}{caps.identity_mode ? ` · ${caps.identity_mode}` : ''}</span>}
         {caps.desktop && <span>{t('runtimeDesktop')}</span>}
-        <span>{t('runtimeInstall')}: {t(installLabel[grant.install ?? 'none'])}</span>
-        {!grant.workspace && <span>{t('runtimeNoWorkspaces')}</span>}
-        {grant.ops.length > 0 && !grant.ops.some((op) => ['exec', 'write', 'edit', 'mkdir', 'rename', 'remove'].includes(op)) && <span>{t('runtimeReadOnly')}</span>}
+        {!mayHoldWorkspaces(runtime) && <span>{t('runtimeNoWorkspaces')}</span>}
+        {isReadOnly(runtime) && <span>{t('runtimeReadOnly')}</span>}
         {grant.expires_at_ms != null && <span className="text-warn">{t('runtimeExpires', { time: new Date(grant.expires_at_ms).toLocaleString() })}</span>}
       </div>
       {grant.roots.length > 0 && <dl className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
         <dt className="text-mute">{t('runtimeRoots')}</dt>
         <dd className="break-all font-mono">{grant.roots.join(' · ')}</dd>
       </dl>}
-      {(usage.sessions_total > 0 || usage.workspaces > 0 || usage.skill_commands.length > 0) &&
+      {(usage.sessions_total > 0 || usage.workspaces > 0) &&
         <p className="mt-1 text-xs text-mute" data-testid="runtime-usage">
           {t('runtimeUsage', { sessions: String(usage.sessions_total), workspaces: String(usage.workspaces) })}
           {usage.last_session_id && <> · <a className="font-mono text-accent" href={sessionHref(usage.last_session_id)}>{usage.last_session_id}</a></>}
-          {usage.skill_commands.length > 0 && <> · {t('runtimeSkillCommands')}: {usage.skill_commands.join(', ')}</>}
         </p>}
       {runtime.last_error && runtime.availability !== 'available' &&
         <p className="mt-2 break-words text-xs text-warn">{runtime.last_error}</p>}
@@ -468,33 +474,37 @@ function RuntimeCard({ runtime, chosen, refresh }: {
         <p className="mt-1 break-words text-xs text-mute" data-testid="runtime-dev-helpers">{t('runtimeDevHelpers', { tools: devHelpers.join(', ') })}</p>}
       {caps.tools_check && caps.tools_check.present.length > 0 &&
         <p className="mt-1 break-words text-xs text-mute">{t('runtimeCommandsVerified', { tools: caps.tools_check.present.join(', ') })}</p>}
-      <ErrorBox error={error} />
+      {!impact && <ErrorBox error={error} />}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button className="tap border border-line text-xs" disabled={busy} onClick={() => void run(() => dataModel.checkRuntime(runtime.runtime_id))}>{t('runtimeCheck')}</button>
         {chosen && !isPrivate && <button className="tap border border-line text-xs" disabled={busy} data-testid="runtime-toggle"
-          onClick={() => void run(() => dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, enabled: !chosen.enabled }))}>
+          onClick={() => void toggle()}>
           {t(chosen.enabled ? 'runtimeDisable' : 'runtimeEnable')}
         </button>}
         {!runtime.default && !retired && (isPrivate || chosen?.enabled) && <button className="tap border border-line text-xs" disabled={busy} data-testid="runtime-make-default"
           onClick={() => void run(() => dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, default: true }))}>
           {t('runtimeMakeDefault')}
         </button>}
-        {chosen && <label className="text-xs text-mute">
-          {t('runtimeBaseline')}
-          <select className="ml-1 rounded-lg border border-line bg-bg px-2 py-1 text-xs text-fg" value={chosen.baseline ?? 'standard'} disabled={busy}
-            data-testid="runtime-baseline-select"
-            onChange={(event) => void run(() => dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, baseline: event.target.value as RuntimeBaseline }))}>
-            {(['standard', 'extended'] as RuntimeBaseline[]).map((value) => <option key={value} value={value}>{t(value === 'extended' ? 'runtimeBaselineExtended' : 'runtimeBaselineStandard')}</option>)}
-          </select>
-        </label>}
-        {chosen && <label className="text-xs text-mute">
-          {t('runtimeComputer')}
-          <select className="ml-1 rounded-lg border border-line bg-bg px-2 py-1 text-xs text-fg" value={chosen.computer} disabled={busy}
-            onChange={(event) => void run(() => dataModel.setRuntimeSetting({ runtime_id: runtime.runtime_id, computer: event.target.value as ComputerAccess }))}>
-            {(['none', 'observe', 'control'] as ComputerAccess[]).map((value) => <option key={value} value={value}>{t(computerLabel[value])}</option>)}
-          </select>
-        </label>}
       </div>
+      <p className="mt-2 text-xs text-mute" data-testid="runtime-config-hint">{t('runtimeConfigHint')}</p>
+      {impact && <Dialog title={t('runtimeDisableTitle', { name: runtime.name })} label={t('runtimeDisable')} busy={busy} testId="runtime-impact"
+        onClose={() => setImpact(null)} onSubmit={() => void run(async () => { await disable(true); setImpact(null) })}>
+        <p className="my-3 text-sm text-mute">{t('runtimeDisableHint')}</p>
+        {impact.active_sessions.length > 0 && <div className="mb-3 text-sm" data-testid="runtime-impact-sessions">
+          <div className="text-xs text-mute">{t('runtimeImpactSessions', { count: impact.active_sessions.length })}</div>
+          {impact.active_sessions.map((session) => <a key={session.session_id} href={sessionHref(session.session_id)}
+            className="block break-words text-accent">{session.title || session.session_id} · {session.run_state}</a>)}
+        </div>}
+        {impact.pending_todos.length > 0 && <div className="mb-3 text-sm" data-testid="runtime-impact-todos">
+          <div className="text-xs text-mute">{t('runtimeImpactTodos', { count: impact.pending_todos.length })}</div>
+          {impact.pending_todos.map((todo) => <div key={`${todo.session_id}/${todo.todo_id}`} className="break-words">{todo.title || todo.todo_id} · {todo.status}</div>)}
+        </div>}
+        {impact.workspaces.length > 0 && <div className="mb-3 text-sm" data-testid="runtime-impact-workspaces">
+          <div className="text-xs text-mute">{t('runtimeImpactWorkspaces', { count: impact.workspaces.length })}</div>
+          {impact.workspaces.map((workspace) => <div key={workspace.workspace_id} className="break-all">{workspace.name} · <span className="font-mono text-xs">{workspace.directory}</span></div>)}
+        </div>}
+        <ErrorBox error={error} />
+      </Dialog>}
     </li>
   )
 }
@@ -513,8 +523,11 @@ export function RuntimeList() {
       <p className="mb-3 text-xs text-mute">{t('runtimeModelHint')}</p>
       <ErrorBox error={runtimes.error ?? settings.error} />
       {records.length > 0 ? <ul className="divide-y divide-line">
-        {records.map((runtime) => <RuntimeCard key={runtime.runtime_id} runtime={runtime}
-          chosen={settings.data?.runtimes[runtime.connector.type === 'native' ? (runtime.connector.aliases?.[0] ?? runtime.runtime_id) : runtime.runtime_id] ?? null} refresh={refresh} />)}
+        {records.map((runtime) => {
+          const settingId = runtime.connector.type === 'native' ? (runtime.connector.aliases?.[0] ?? runtime.runtime_id) : runtime.runtime_id
+          return <RuntimeCard key={runtime.runtime_id} runtime={runtime} chosen={settings.data?.runtimes[settingId] ?? null}
+            configuredDefault={settings.data?.configured_default_runtime_id === settingId} refresh={refresh} />
+        })}
       </ul> : !runtimes.error && <p className="py-2 text-sm text-mute">{t(runtimes.isLoading ? 'loading' : 'noRuntimes')}</p>}
     </section>
   )

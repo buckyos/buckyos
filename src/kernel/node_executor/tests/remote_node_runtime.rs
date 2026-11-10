@@ -92,6 +92,7 @@ fn snapshot(work: &Path) -> ExecutorConfig {
         profiles: BTreeMap::from([(
             "dev".into(),
             ExecutorProfile {
+                baseline: None,
                 run_as: Some(ExecutorRunAs { uid: NOBODY, gid: NOBODY }),
                 workdir_roots: vec![work.to_string_lossy().to_string()],
                 env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),

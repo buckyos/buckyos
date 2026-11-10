@@ -7,6 +7,6 @@
   "runtime_id": "rt-fixture-native",
   "connector": "native",
   "workdir": "${FIXTURE_ROOT}/app/ui-notify",
-  "bound_at_ms": 1793864757431,
-  "bound_by": "rn-affaa79035d64426"
+  "bound_at_ms": 1794290475454,
+  "bound_by": "rn-4d7648092f384023"
 }

@@ -1,8 +1,70 @@
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { gzipSync } from 'node:zlib'
 import { expect, test, type Page } from '@playwright/test'
 
-// A skill PIKG built by `buckyos pikg pack`: `cmd_skills/hello/SKILL.md` and `tools/hello/bin/hello`.
+// A skill PIKG built by `buckyos pikg pack`: `cmd_skills/hello/SKILL.md` and `plan_skills/hello_plan/SKILL.md`.
 const SAMPLE_PIKG = fileURLToPath(new URL('../../../../../../test/skills_pikg_sample/dapp_dist/hello-skills-0.1.0.pikg', import.meta.url))
+
+const tarFile = (path: string, text: string) => {
+  const body = Buffer.from(text)
+  const header = Buffer.alloc(512)
+  header.write(path, 0)
+  header.write('0000644', 100)
+  header.write(body.length.toString(8).padStart(11, '0'), 124)
+  header.write('0', 156)
+  header.write('ustar', 257)
+  return Buffer.concat([header, body, Buffer.alloc((512 - (body.length % 512)) % 512)])
+}
+
+const zipStored = (files: [string, Buffer][]) => {
+  const locals: Buffer[] = []
+  const central: Buffer[] = []
+  let offset = 0
+  for (const [name, data] of files) {
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt32LE(data.length, 18)
+    local.writeUInt32LE(data.length, 22)
+    local.writeUInt16LE(name.length, 26)
+    const entry = Buffer.alloc(46)
+    entry.writeUInt32LE(0x02014b50, 0)
+    entry.writeUInt32LE(data.length, 20)
+    entry.writeUInt32LE(data.length, 24)
+    entry.writeUInt16LE(name.length, 28)
+    entry.writeUInt32LE(offset, 42)
+    locals.push(local, Buffer.from(name), data)
+    central.push(entry, Buffer.from(name))
+    offset += 30 + name.length + data.length
+  }
+  const directory = Buffer.concat(central)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50, 0)
+  end.writeUInt16LE(files.length, 8)
+  end.writeUInt16LE(files.length, 10)
+  end.writeUInt32LE(directory.length, 12)
+  end.writeUInt32LE(offset, 16)
+  return Buffer.concat([...locals, directory, end])
+}
+
+// A skill PIKG that still brings a command of its own.
+const toolsPikg = () => {
+  const payload = gzipSync(Buffer.concat([
+    tarFile('cmd_skills/hello/SKILL.md', '---\nname: hello\ndescription: Say hello.\n---\n\nRun `hello`.\n'),
+    tarFile('tools/hello/bin/hello', '#!/bin/sh\necho hello\n'),
+    Buffer.alloc(1024),
+  ]))
+  const app = { name: 'hello-tools', version: '0.1.0', app_type: 'agent_skills', pkg_list: { agent_skills: { pkg_objid: 'pkg:text' } } }
+  const meta = {
+    package_objects: { 'pkg:text': { size: payload.length } },
+    content_index: { text: { sub_pkg_name: 'agent_skills', path: 'agent_skills.tar.gz', digest: `sha256:${createHash('sha256').update(payload).digest('hex')}` } },
+  }
+  return {
+    name: 'hello-tools-0.1.0.pikg',
+    mimeType: 'application/zip',
+    buffer: zipStored([['APPDOC.json', Buffer.from(JSON.stringify(app))], ['PACKAGE_META.json', Buffer.from(JSON.stringify(meta))], ['agent_skills.tar.gz', payload]]),
+  }
+}
 
 const open = async (page: Page, hash = '#/skills') => {
   const errors: string[] = []
@@ -48,18 +110,14 @@ test('skills are grouped by kind with the availability of the selected runtime',
   await expect(audio).toContainText('owner’s own installation')
   await expect(page.getByTestId('skill-availability-ui_core')).toContainText('The manual names no commands.')
 
-  // A skill that installs commands of its own: where they stand, and the two actions.
-  const fetch = page.getByTestId('skill-install-yt_fetch')
-  await expect(fetch).toContainText('stale')
-  await expect(fetch).toContainText('volatile')
-  await expect(fetch).toContainText('yt-dlp: not found')
-  await fetch.getByRole('button', { name: 'Install commands here' }).click()
-  await expect(fetch).toContainText('ok')
-  await expect(fetch).not.toContainText('stale')
+  // A skill is text: nothing of its own is installed on a runtime, so there is nothing to install or re-check.
+  await expect(page.getByTestId('skill-availability-yt_fetch')).toContainText('Commands complete')
+  await expect(page.getByTestId('skill-install-yt_fetch')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Install commands here' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Re-check' })).toHaveCount(0)
 
   await page.getByTestId('skills-runtime-select').selectOption('host')
   await expect(page.getByTestId('skill-availability-doc_convert')).toContainText('needs the extended environment')
-  await expect(page.getByTestId('skill-install-yt_fetch')).toContainText('not installed on this runtime')
   expect(errors).toEqual([])
 })
 
@@ -111,17 +169,23 @@ test('a .pikg file is read in the browser, planned, confirmed and installed', as
   await page.getByTestId('skills-pikg-input').setInputFiles({ name: 'broken.pikg', mimeType: 'application/zip', buffer: Buffer.from('not a zip at all, just text') })
   await expect(page.getByTestId('skills-install').getByRole('alert')).toContainText('not a skill package')
 
-  await page.getByTestId('skills-pikg-input').setInputFiles(SAMPLE_PIKG)
+  // A package that brings a command is passed on as it is: the service's refusal is what the owner reads.
+  await page.getByTestId('skills-pikg-input').setInputFiles(toolsPikg())
   const dialog = page.getByTestId('skill-plan-dialog')
+  await expect(dialog.getByRole('alert')).toContainText('`tools/hello/bin/hello`: a skill is text only')
+  await expect(dialog.getByTestId('plan-confirm')).toHaveCount(0)
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+
+  await page.getByTestId('skills-pikg-input').setInputFiles(SAMPLE_PIKG)
   await expect(dialog).toContainText('Install hello-skills 0.1.0?')
   await expect(dialog.getByTestId('plan-skills')).toContainText('work:hello')
   await expect(dialog.getByTestId('plan-skills')).toContainText('plan:hello_plan')
-  await expect(dialog.getByTestId('plan-skills')).toContainText('Commands it brings: hello')
+  await expect(dialog.getByTestId('plan-skills')).not.toContainText('Commands it brings')
   await expect(dialog.getByTestId('plan-risk')).toHaveText('Low')
-  await expect(dialog.getByLabel('Where its commands are installed')).toHaveValue('private')
-  // The owner's machine grants no installation: it is not offered, with the reason.
-  await expect(dialog.getByLabel('Where its commands are installed').locator('option')).toHaveCount(1)
-  await expect(dialog).toContainText('grants `none`')
+  // Installing copies text: there is no runtime to choose.
+  await expect(dialog.locator('select')).toHaveCount(0)
+  await expect(dialog).not.toContainText('Where its commands are installed')
+  await expect(dialog.getByTestId('plan-text-only')).toContainText('checks the text and copies it')
   await dialog.getByTestId('plan-confirm').click()
   await expect(page.getByTestId('skills-notice')).toHaveText('Installed: hello, hello_plan')
   const hello = page.getByTestId('skill-work-hello')
@@ -154,7 +218,8 @@ test('drafts are viewed, installed after the plan, or discarded; an import start
   await minutes.getByRole('button', { name: 'Install' }).click()
   const dialog = page.getByTestId('skill-plan-dialog')
   await expect(dialog.getByTestId('plan-findings')).toContainText('imported_text')
-  await expect(dialog).toContainText('The package installs no commands')
+  await expect(dialog.getByTestId('plan-text-only')).toContainText('no script runs and no command is installed')
+  await expect(dialog.locator('select')).toHaveCount(0)
   await expect(dialog).toContainText('Missing: pandoc')
   await dialog.getByTestId('plan-confirm').click()
   await expect(page.getByTestId('skill-work-meeting_minutes')).toContainText('Imported')

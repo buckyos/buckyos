@@ -60,7 +60,7 @@ MCP 和进程内 host tool 也遵循同一方向：优先由 CLI 客户端或宿
 |---|---|---|
 | 人也会用的系统、App、发布、Agent 管理命令 | websdk `cli/modules/*.ts`（`buckyos` 命令，唯一源码真相源） | `/opt/buckyos/libexec/buckyos-tool/cli/`（宿主同版本只读挂载），SDK 类型 `dist/node.d.ts` |
 | Agent 专用的配方类工具（AIGC、媒体合成等） | `src/tools/buckyos-agent`（每个命令是 6 步配方，`commands/gen_image.ts` 是范本） | 容器：`/opt/buckyos/bin/opendan/buckyos-agent/`，`deno.json` 的 `buckyos` 指向挂载的 SDK；宿主节点：`$BUCKYOS_ROOT/libexec/buckyos-agent/`，由 `bin/agent-tools/` 下的 `opendan` 入口用 Tool 自带的 Deno 运行 |
-| 某个 work skill 自带的命令 | skill 包的 `tools/<skill>/bin`（要装到 runtime 上的外部命令由 `tools/<skill>/install.toml` 描述） | `$OPENDAN_AGENT_ROOT/tools/<skill>/bin`，只在选了该手册的 Session PATH 上 |
+| 手册要用、标准层没有的命令 | 做成扩展包（`app_type = ext_tools` 的 pikg）；skill 是纯文本，不带命令也不带安装脚本，只在 `commands` 里写命令名 | 节点的 `$BUCKYOS_ROOT/tools`，由 node_daemon 按 Zone 的期望状态安装（`buckyos ext-tools`） |
 
 xllm 等 runtime 层能力保留 Rust 实现。Agent 派生的脚本写到 `$OPENDAN_AGENT_ROOT/tools/`（在 PATH 上、长期保留）或当前 Session 目录（一次性），TS 脚本用 `deno run --config <安装态 deno.json>` 复用 SDK 映射，不改只读安装副本。命令能被发现不代表当前身份有权限或 provider 支持；手册要说明真实的拒绝 / 不支持结果。
 
@@ -77,9 +77,9 @@ skill 分四类，都是 `<目录>/<name>/SKILL.md` 加可选的 `references/`�
 
 对外的 kind 是 `work | plan | goal`（`skill list --kind`、kRPC、`skills_state.json` 的 key 前缀）；ui skill 的 kind 也是 `work`，靠 `scope` 区分。目录名 `cmd_skills/`、参数 `--cmd-skill` / `todo add --skill`、配置键 `default_cmd_skills` 保持原名。
 
-work skill 是一类事的命令手册加可选的命令（`tools/<name>/bin`）。它是捷径不是规定：手册写“可以这样做、这样做更快更稳”，Agent 有更合适的做法时可以不用。plan skill 是拆解、排序、验收一类目标的方法，不写具体命令，也不点名具体的 work skill（写“这一步交给带 X 类手册的 Todo”）。
+work skill 是一类事的命令手册，纯文本（`SKILL.md` 加可选的 `references/`），安装就是复制。它是捷径不是规定：手册写“可以这样做、这样做更快更稳”，Agent 有更合适的做法时可以不用。plan skill 是拆解、排序、验收一类目标的方法，不写具体命令，也不点名具体的 work skill（写“这一步交给带 X 类手册的 Todo”）。
 
-- front matter：`name` / `description` / `requires` / `commands` / `scope` / `baseline` / `platforms`，一行一个。`description` 同时写“做什么”和“何时用”，选择方只看它。`commands: ffmpeg, ffprobe` 只写手册依赖的命令名（shell 内建、标准层命令、手册自带的 `tools/<name>/bin` 不写）：系统据此告诉 owner 缺什么、启用哪个扩展包能补上（`buckyos skill status`、`agent-session skill status`），缺命令不阻止安装或使用，用户自己装的同名命令同样算有。`scope` 只有 work skill 能写，取 `work`（缺省）/ `ui` / `ui, work`。plan / goal skill 写 `scope` 或 `commands` 是错误。`requires` 是给人读的说明。
+- front matter：`name` / `description` / `requires` / `commands` / `scope` / `baseline` / `platforms`，一行一个。`description` 同时写“做什么”和“何时用”，选择方只看它。`commands: ffmpeg, ffprobe` 只写手册依赖的命令名（shell 内建、标准层命令不写）：系统据此告诉 owner 缺什么、启用哪个扩展包能补上（`buckyos skill status`、`agent-session skill status`），缺命令不阻止安装或使用，用户自己装的同名命令同样算有。`scope` 只有 work skill 能写，取 `work`（缺省）/ `ui` / `ui, work`。plan / goal skill 写 `scope` 或 `commands` 是错误。`requires` 是给人读的说明。
 - 适用环境：`baseline: standard | extended`（缺省 standard）说明手册在哪种 session-runtime 上有效——standard 只用标准环境的命令（清单见 `xagent runtime baseline`：`agent-session`、`llm_understand_media`、`agent_tool xllm`、`xagent`、`buckyos`、`aicc-tool` 及其媒体命令），用到 ffmpeg、ImageMagick 等扩展工具（`xagent runtime baseline --level extended`）的写 `extended`，构建工具链等清单外的依赖也写 `extended` 并在正文说明；`platforms: linux, macos, windows`（逗号分隔，缺省全部）。这些字段不是固定词时安装被拒。
 - 选择：Work 的手册在创建时选定，最多 8 个，由意图分析、Goal、plan session 从 `agent-session skill list --kind work --scope work` 中挑选；三处的选择规则是同一段 `behaviors/skill_select_rule.inc`。`work_simple` / `explore` 的子 Work 未指定时继承父 Work 的选择。`plan_simple` 声明了 `[capabilities] cmd_skills = "candidates"`：给它的 `--cmd-skill` 不冻结，只在首个输入里以 `<skill_candidates>` 列出（`- name: description`），它创建的 Todo 不继承任何手册，只拿 `todo add --skill` 点名的。Work 不能点名 `scope: ui` 的手册；对话只取 scope 含 `ui` 的。
 - 生效：Session 创建冻结手册时按其 session-runtime 声明的基线与平台过滤（Workspace 的 runtime 不参与）；不满足的手册不注入，在 `## Commands` 末尾列出原因。Work / Todo 显式点名的手册不满足、已被禁用或只属于对话时拒绝创建（Todo 进入 blocked 并记下原因）；继承来的在子 Session 的 runtime 上重新解析。容器声明为 extended，节点 runtime 由 owner 在 Agent 设置里声明（缺省 standard）。

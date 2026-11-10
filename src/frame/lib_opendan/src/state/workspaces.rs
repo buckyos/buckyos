@@ -338,6 +338,33 @@ impl FsWorkspaces {
         Ok(registered.is_some_and(|r| r.connector.is_node() && r.usable()))
     }
 
+    /// A workspace is kept and written to: the runtime it is created on has
+    /// to take writes and must not have a term.
+    fn hosts_workspaces(&self, runtime_id: &str) -> Result<()> {
+        if let Some(record) = self.runtime_record(runtime_id)? {
+            if let Some(why) = record.grant.no_workspace() {
+                return Err(invalid(
+                    "runtime_no_workspace",
+                    format!(
+                        "{}: {why}; keep the workspace on a lasting runtime (the private one, or the owner's `host`) and move files with `agent-session copy`",
+                        record.runtime_id
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Count a workspace that was not registered before in its runtime's usage.
+    async fn note_created(&self, fresh: bool, record: &WorkspaceRecord) {
+        if fresh {
+            let runtimes = super::runtimes::FsRuntimes::new(self.layout.clone());
+            if let Err(e) = super::RuntimeRegistry::note_usage(&runtimes, &record.location.runtime_id, &RuntimeUsageEvent::Workspace).await {
+                log::warn!("workspace {}: usage of runtime {} not recorded: {e}", record.workspace_id, record.location.runtime_id);
+            }
+        }
+    }
+
     fn unavailable(&self, runtime_id: &str) -> OpenDanError {
         match self.runtime_record(runtime_id).ok().flatten() {
             None if !is_private_runtime(runtime_id) => invalid(
@@ -790,6 +817,7 @@ impl WorkspaceManager for FsWorkspaces {
         if let Some(record) = self.runtime_record(&request.location.runtime_id)?.filter(|_| !is_private_runtime(&request.location.runtime_id)) {
             request.location.runtime_id = record.runtime_id;
         }
+        self.hosts_workspaces(&request.location.runtime_id)?;
         let _lock = self.lock()?;
         let id = self.operation_id(&request.operation_id, who)?;
         let url = request_url(&request.url)?;
@@ -926,20 +954,25 @@ impl WorkspaceManager for FsWorkspaces {
                 "another operation initialized this directory",
             ));
         }
-        self.register_metadata(
-            &metadata,
-            location,
-            None,
-            who,
-            "created",
-            request.usage,
-            request.source_session.clone(),
-            request.policy_ref.clone(),
-        )
-        .await
+        let fresh = self.read(&metadata.workspace_id)?.is_none();
+        let record = self
+            .register_metadata(
+                &metadata,
+                location,
+                None,
+                who,
+                "created",
+                request.usage,
+                request.source_session.clone(),
+                request.policy_ref.clone(),
+            )
+            .await?;
+        self.note_created(fresh, &record).await;
+        Ok(record)
     }
 
     async fn import(&self, request: &WorkspaceImport, who: &str) -> Result<WorkspaceRecord> {
+        self.hosts_workspaces(&request.location.runtime_id)?;
         let _lock = self.lock()?;
         let id = self.operation_id(&request.operation_id, who)?;
         let url = request_url(&request.url)?;
@@ -978,17 +1011,21 @@ impl WorkspaceManager for FsWorkspaces {
                 .await?
             }
         };
-        self.register_metadata(
-            &metadata,
-            location,
-            request.expected_revision,
-            who,
-            "imported",
-            request.usage,
-            request.source_session.clone(),
-            request.policy_ref.clone(),
-        )
-        .await
+        let fresh = self.read(&metadata.workspace_id)?.is_none();
+        let record = self
+            .register_metadata(
+                &metadata,
+                location,
+                request.expected_revision,
+                who,
+                "imported",
+                request.usage,
+                request.source_session.clone(),
+                request.policy_ref.clone(),
+            )
+            .await?;
+        self.note_created(fresh, &record).await;
+        Ok(record)
     }
 
     async fn discover(&self, request: &WorkspaceDiscover, who: &str) -> Result<WorkspaceRecord> {

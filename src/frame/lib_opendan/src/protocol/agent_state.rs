@@ -133,10 +133,19 @@ pub struct RegistryEntry {
     /// The Goal a Goal Session works for, or that created a Work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_id: Option<String>,
+    /// The runtime the session was frozen to (where its `shell` runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
     pub status: SessionStatus,
     /// `verify` marks entries whose location disappeared (never deleted).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unreachable: bool,
+    /// The session is not finished and its runtime cannot be used now
+    /// (switched off, removed, expired, not answering): why. The session is
+    /// never moved to another runtime; the mark goes when the runtime is
+    /// usable again or the session ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_unavailable: Option<String>,
     /// Location changes (session moved); last write wins, driver only.
     #[serde(default)]
     pub location_rev: u64,
@@ -353,6 +362,9 @@ pub struct RegistryQuery {
     /// Sessions of a Goal: its Goal Sessions (every epoch) and its Work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_id: Option<String>,
+    /// Sessions frozen to this runtime (an alias names the same runtime).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
 }
 
 impl Default for RegistryQuery {
@@ -365,6 +377,7 @@ impl Default for RegistryQuery {
             artifact_id: None,
             pending_decision: None,
             goal_id: None,
+            runtime_id: None,
         }
     }
 }

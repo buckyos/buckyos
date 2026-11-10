@@ -14,6 +14,7 @@
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-kill/input",
   "agent_access": "full",
   "objective": "long command",
+  "runtime_id": "private",
   "status": {
     "rev": 2,
     "run_state": "running",
@@ -23,16 +24,16 @@
     "turn_open": true,
     "activity": {
       "summary": "long command",
-      "heartbeat_ms": 1793864756001
+      "heartbeat_ms": 1794290473998
     },
     "last_runner": {
-      "runner_id": "rn-90e9a04ece0c4a74",
+      "runner_id": "rn-4d98ab88b95f49a3",
       "host": "${FIXTURE_HOST}",
-      "pid": 233778,
+      "pid": 2054956,
       "lock_epoch": 1,
-      "at_ms": 1793864756003
+      "at_ms": 1794290474000
     },
-    "updated_at_ms": 1793864756001
+    "updated_at_ms": 1794290473998
   },
   "location_rev": 0
 }

@@ -762,8 +762,6 @@ pub enum RuntimeSelection {
     Explicit,
     /// The parent session's frozen runtime.
     Inherited,
-    /// Where the commands of a named cmd_skill are installed.
-    Skill,
     /// The agent's private runtime: every chat, and any session nobody
     /// placed elsewhere.
     Private,

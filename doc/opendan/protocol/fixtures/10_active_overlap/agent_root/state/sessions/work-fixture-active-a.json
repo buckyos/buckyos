@@ -23,6 +23,7 @@
       "ws:snake/src/"
     ]
   },
+  "runtime_id": "private",
   "status": {
     "rev": 2,
     "run_state": "running",
@@ -37,19 +38,19 @@
           "kind": "path",
           "ref": "ws:snake/src/",
           "mode": "write",
-          "since_ms": 1793864756533
+          "since_ms": 1794290474526
         }
       ],
-      "heartbeat_ms": 1793864756533
+      "heartbeat_ms": 1794290474526
     },
     "last_runner": {
-      "runner_id": "rn-b24766005b454e1f",
+      "runner_id": "rn-77f695d00302489a",
       "host": "${FIXTURE_HOST}",
-      "pid": 234333,
+      "pid": 2055320,
       "lock_epoch": 1,
-      "at_ms": 1793864756534
+      "at_ms": 1794290474527
     },
-    "updated_at_ms": 1793864756533
+    "updated_at_ms": 1794290474526
   },
   "location_rev": 0
 }

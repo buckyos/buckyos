@@ -97,6 +97,7 @@ impl Fixture {
             profiles: BTreeMap::from([(
                 "dev".into(),
                 ExecutorProfile {
+                    baseline: None,
                     run_as,
                     workdir_roots: vec![TEST_ROOT.into()],
                     env: BTreeMap::new(),

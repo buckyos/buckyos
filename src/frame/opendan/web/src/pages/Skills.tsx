@@ -30,7 +30,6 @@ const ORIGIN_LABEL: Record<SkillMeta['origin'], TextKey> = {
 }
 const FINDING_TONE: Record<SkillFinding['level'], string> = { error: 'bad', block: 'bad', high: 'bad', medium: 'waiting', low: 'finished' }
 const RISK_LABEL: Record<InstallPlan['risk']['level'], TextKey> = { low: 'skRiskLow', medium: 'skRiskMedium', high: 'skRiskHigh' }
-const INSTALL_TONE: Record<string, string> = { ok: 'ok', failed: 'bad', stale: 'waiting' }
 
 const fmtBytes = (n: number): string => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`)
 const hasUi = (scope?: string) => Boolean(scope?.split(',').some((part) => part.trim() === 'ui'))
@@ -88,16 +87,8 @@ function CommandsDetail({ status }: { status: SkillCommandsStatus }) {
 }
 
 /** The three levels of §3.6.2: not available / some steps lack commands / commands complete. */
-function Availability({ skill, status, loading, runtimeId, run }: {
-  skill: SkillMeta
-  status?: SkillRuntimeStatus
-  loading: boolean
-  runtimeId: string
-  run: (action: () => Promise<unknown>) => void
-}) {
+function Availability({ skill, status, loading }: { skill: SkillMeta; status?: SkillRuntimeStatus; loading: boolean }) {
   const requires = status?.requires ?? skill.requires
-  const install = status?.install
-  const ownCommands = Boolean(skill.install_state || install)
   const declared = status ? Object.keys(status.commands.commands).length : 0
   return (
     <div className="min-w-[14rem] text-xs" data-testid={`skill-availability-${skill.name}`}>
@@ -122,39 +113,18 @@ function Availability({ skill, status, loading, runtimeId, run }: {
         </>
       )}
       {requires && <div className="mt-0.5 text-mute">{t('skRequires')}: {requires}</div>}
-      {ownCommands && (
-        <div className="mt-1" data-testid={`skill-install-${skill.name}`}>
-          <span className="text-mute">{t('skOwnCommands')}: </span>
-          {install ? (
-            <>
-              <Badge value={install.status} tone={INSTALL_TONE[install.status]} />
-              {install.volatile && <span className="ml-1 text-warn">{t('skVolatile')}</span>}
-              {install.commands?.length ? <Mono className="ml-1">{install.commands.join(', ')}</Mono> : null}
-              {install.error && <div className="text-bad">{install.error}</div>}
-            </>
-          ) : (
-            <span>{status ? t('skNotInstalledHere') : '–'}</span>
-          )}
-          <div className="mt-1 flex flex-wrap gap-1">
-            <button className="btn" onClick={() => run(() => dataModel.installSkillCommands(skill.name, runtimeId))}>{t('skInstallCommands')}</button>
-            {install && <button className="btn" onClick={() => run(() => dataModel.checkSkillCommands(skill.name, runtimeId))}>{t('skRecheck')}</button>}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
 
-function SkillRow({ skill, status, statusLoading, runtimeId, busy, run, ask }: {
+function SkillRow({ skill, status, statusLoading, busy, run, ask }: {
   skill: SkillMeta
   status?: SkillRuntimeStatus
   statusLoading: boolean
-  runtimeId: string
   busy: boolean
   run: (action: () => Promise<unknown>) => void
   ask: (request: ConfirmRequest) => void
 }) {
-  const state = skill.install_state
   const removable = skill.origin === 'installed' || skill.origin === 'imported'
   const title = `${t(KIND_LABEL[skill.kind])} · ${skill.name}`
   return (
@@ -169,12 +139,6 @@ function SkillRow({ skill, status, statusLoading, runtimeId, busy, run, ask }: {
             {skill.disabled.reason ? `: ${skill.disabled.reason}` : ''}
           </div>
         )}
-        {state && state.status !== 'enabled' && (
-          <div className={clsx('text-xs', state.status === 'failed' ? 'text-bad' : 'text-warn')}>
-            {t('skInstallStatus')}: {state.status}{state.error ? ` · ${state.error}` : ''}
-          </div>
-        )}
-        {skill.tools?.length ? <div className="text-xs text-mute">{t('skTools')}: <Mono>{skill.tools.join(', ')}</Mono></div> : null}
       </td>
       <td className="whitespace-nowrap"><Mono>{skill.scope ?? (skill.kind === 'work' ? 'work' : '–')}</Mono></td>
       <td className="whitespace-nowrap text-xs">
@@ -197,7 +161,7 @@ function SkillRow({ skill, status, statusLoading, runtimeId, busy, run, ask }: {
       </td>
       <td>
         {skill.kind === 'work'
-          ? <Availability skill={skill} status={status} loading={statusLoading} runtimeId={runtimeId} run={run} />
+          ? <Availability skill={skill} status={status} loading={statusLoading} />
           : <span className="text-xs text-mute">{skill.requires ? `${t('skRequires')}: ${skill.requires}` : '–'}</span>}
       </td>
       <td>
@@ -277,21 +241,15 @@ interface PlanRequest {
   ignored?: string[]
 }
 
-/** §3.6.1 B: what the package holds, what it replaces, the risks and where its commands go; then the owner says yes. */
+/** §3.6.1 B: what the package holds, what it replaces and the risks; then the owner says yes. */
 function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClose: () => void; onDone: (plan: InstallPlan) => void }) {
-  const [runtime, setRuntime] = useState<string>()
-  const plan = useQuery(['skills.install_plan', request.key, runtime ?? ''], () => dataModel.skillInstallPlan(request.source, runtime), false)
+  const plan = useQuery(['skills.install_plan', request.key], () => dataModel.skillInstallPlan(request.source), false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const data = plan.data
   const stale = plan.isValidating || plan.isLoading
   const replaced = data?.skills.filter((s) => s.replaces) ?? []
-  const ownerMachine = data?.risk.findings.filter((f) => f.code === 'owner_machine') ?? []
   const notInstallable = data?.risk.findings.some((f) => f.level === 'error') ?? false
-  const blocked = data?.blocked ?? []
-  const targets = data?.targets ?? []
-  const choices = targets.filter((x) => !x.refused || x.runtime_id === data?.runtime_id)
-  const refused = targets.filter((x) => x.refused && x.runtime_id !== data?.runtime_id)
   const partial = data?.command_status?.filter((c) => c.status.state === 'partial') ?? []
 
   const install = async () => {
@@ -299,7 +257,7 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
     setBusy(true)
     setError(null)
     try {
-      await dataModel.installSkills(request.source, data.plan_digest, data.runtime_id ?? undefined, replaced.length > 0)
+      await dataModel.installSkills(request.source, data.plan_digest, replaced.length > 0)
       onDone(data)
       onClose()
     } catch (e) {
@@ -320,18 +278,6 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
             <div className="mb-2 text-mute">
               <Mono>{`${data.package} ${data.version}`.trim()}</Mono> · <Mono>{data.digest}</Mono>
             </div>
-            {ownerMachine.map((f) => (
-              <div key={f.where} className="mb-2 rounded border border-bad px-3 py-2 text-sm text-bad" role="alert" data-testid="plan-owner-machine">
-                <strong>{t('skOwnerMachine')}</strong>
-                <div className="text-xs">{f.note}</div>
-              </div>
-            ))}
-            {blocked.length > 0 && (
-              <div className="mb-2 rounded border border-bad px-3 py-2 text-bad" role="alert" data-testid="plan-blocked">
-                <strong>{t('skBlocked')}</strong>
-                <ul className="list-disc pl-4">{blocked.map((why) => <li key={why}>{why}</li>)}</ul>
-              </div>
-            )}
             <h4 className="mb-1 font-semibold text-mute">{t('skPlanSkills')}</h4>
             <ul className="mb-2" data-testid="plan-skills">
               {data.skills.map((s) => (
@@ -341,15 +287,14 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
                   {s.replaces && <span className="ml-1.5 text-warn" data-testid="plan-replaces">{t('skReplaces', { origin: s.replaces })}</span>}
                   <div className="text-mute">{s.description}</div>
                   {s.requires && <div className="text-mute">{t('skRequires')}: {s.requires}</div>}
-                  {s.tools?.length ? <div>{t('skTools')}: <Mono>{s.tools.join(', ')}</Mono></div> : null}
-                  {s.check_commands?.length ? <div>{t('skCheckCommands')}: <Mono>{s.check_commands.join(', ')}</Mono></div> : null}
-                  {s.install_scripts?.length ? <div className="text-warn">{t('skInstallScripts')}: <Mono>{s.install_scripts.join(', ')}</Mono></div> : null}
                 </li>
               ))}
             </ul>
             {partial.length > 0 && (
               <>
-                <h4 className="mb-1 font-semibold text-mute">{t('skPartial')}</h4>
+                <h4 className="mb-1 font-semibold text-mute">
+                  {t('skPartial')}{data.checked_runtime_id ? ` · ${data.checked_runtime_id}` : ''}
+                </h4>
                 <ul className="mb-2">
                   {partial.map((c) => (
                     <li key={c.name} className="mb-1"><Mono>{c.name}</Mono><CommandsDetail status={c.status} /></li>
@@ -372,30 +317,14 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
             ) : (
               <Empty>{t('skNoFindings')}</Empty>
             )}
-            <h4 className="mb-1 font-semibold text-mute">{t('skTarget')}</h4>
-            {data.runtime_id ? (
-              <div className="mb-2">
-                <select className="input" aria-label={t('skTarget')} value={data.runtime_id} disabled={busy || stale} onChange={(e) => setRuntime(e.target.value)}>
-                  {(choices.length ? choices : [{ runtime_id: data.runtime_id, os: '', install: 'none' as const, private: false }]).map((x) => (
-                    <option key={x.runtime_id} value={x.runtime_id}>
-                      {x.runtime_id}{x.os ? ` · ${x.os}` : ''}{x.private ? ` · ${t('runtimePrivate')}` : ''}
-                    </option>
-                  ))}
-                </select>
-                {refused.map((x) => (
-                  <div key={x.runtime_id} className="mt-1 text-mute"><Mono>{x.runtime_id}</Mono>: {x.refused}</div>
-                ))}
-              </div>
-            ) : (
-              <p className="mb-2 text-mute">{t('skNoCommandsToInstall')}</p>
-            )}
+            <p className="mb-2 text-mute" data-testid="plan-text-only">{t('skInstallTextOnly')}</p>
             {request.ignored?.length ? <p className="mb-2 text-mute">{t('skIgnoredFiles', { n: request.ignored.length })}</p> : null}
           </div>
         )}
         <ErrorBox error={error} />
         <div className="flex justify-end gap-2">
           <button className="btn" onClick={onClose} disabled={busy}>{t('cancel')}</button>
-          {data && blocked.length === 0 && !notInstallable && (
+          {data && !notInstallable && (
             <button className={clsx('btn', data.risk.level === 'high' ? 'border-bad text-bad' : 'border-accent text-accent')}
               onClick={() => void install()} disabled={busy || stale} data-testid="plan-confirm">
               {t(replaced.length ? 'skInstallReplace' : 'skInstall')}
@@ -733,7 +662,7 @@ export default function SkillsPage() {
                 <tbody>
                   {rows.map((skill) => (
                     <SkillRow key={skill.name} skill={skill} status={byName.get(skill.name)} statusLoading={status.isValidating || status.isLoading}
-                      runtimeId={statusRuntime} busy={busy} run={run} ask={ask} />
+                      busy={busy} run={run} ask={ask} />
                   ))}
                 </tbody>
               </table>

@@ -8,6 +8,7 @@ import {
   canCancelCreation,
   classifyAgentError,
   computeAgentGuideState,
+  extraRuntimeOffers,
   creationStepPhases,
   isTelegramBotToken,
   isValidAgentName,
@@ -179,10 +180,10 @@ Deno.test('host creation follows the offer and preserves an explicit opt-out', (
   const draft = newAgentSetupDraft('users_agents', 'host-key')
   const host: AgentRuntimeOffer = {
     runtime_id: 'host', kind: 'node', node_id: 'ood1', node_did: 'did:dev:ood1',
-    computer_max: 'observe', closed: false, computer: 'none', enabled: false,
+    closed: false, computer: 'observe', baseline: 'standard', assigned: false, enabled: false, in_use_by: null,
   }
   const enabled = buildAgentCreateRequest(draft, '', host)
-  assertEquals(enabled.runtimes, { host: { enabled: true, computer: 'observe' } }, 'use the node computer grant')
+  assertEquals(enabled.runtimes, { host: { enabled: true } }, 'an assignment carries no permissions')
   assertEquals(enabled.default_runtime_id, 'host', 'host is the new session default')
   const restored = parseAgentSetupDraft({ ...draft, hostRuntimeEnabled: false }, 'users_agents')!
   const disabled = buildAgentCreateRequest(restored, '', host)
@@ -190,13 +191,27 @@ Deno.test('host creation follows the offer and preserves an explicit opt-out', (
   assertEquals(disabled.default_runtime_id, 'container', 'opt-out resets the default')
   assertEquals(buildAgentCreateRequest(draft, '', { ...host, closed: true }).runtimes, { host: null }, 'a closed node never gets enabled')
   assertEquals(buildAgentCreateRequest(draft, '').runtimes, { host: null }, 'no offered host never gets enabled')
+  const device = (id: string, patch: Partial<AgentRuntimeOffer> = {}): AgentRuntimeOffer => ({
+    runtime_id: `exec-${id}`, kind: 'executor', executor_id: id, closed: false, computer: 'none', baseline: 'standard',
+    assigned: false, enabled: false, in_use_by: null, ...patch,
+  })
+  const directory = {
+    container_available: true, host_by_default: true,
+    runtimes: [host, device('free'), device('busy', { in_use_by: 'other.alice' }), device('revoked', { closed: true }), { ...host, runtime_id: 'node-ood2', node_id: 'ood2' }],
+  }
+  assertEquals(extraRuntimeOffers(directory).map((offer) => offer.runtime_id), ['exec-free', 'exec-busy', 'node-ood2'], 'every open runtime beyond the host is listed')
+  const picked = parseAgentSetupDraft({ ...draft, extraRuntimeIds: ['exec-free', 'exec-busy', 'exec-revoked', 'node-ood2', 7] }, 'users_agents')!
+  assertEquals(buildAgentCreateRequest(picked, '', host, directory).runtimes, {
+    host: { enabled: true }, 'exec-free': { enabled: true }, 'node-ood2': { enabled: true },
+  }, 'a device in use or closed is not assigned')
+  assertEquals(buildAgentCreateRequest(draft, '', host, directory).runtimes, { host: { enabled: true } }, 'extra runtimes are opt-in')
 })
 
 Deno.test('the machine decides the default, the owner the choice', () => {
   const draft = newAgentSetupDraft('users_agents', 'choice-key')
   const host: AgentRuntimeOffer = {
     runtime_id: 'host', kind: 'node', node_id: 'ood1', node_did: 'did:dev:ood1', os: 'linux',
-    computer_max: 'none', closed: false, computer: 'none', enabled: false,
+    closed: false, computer: 'none', baseline: 'standard', assigned: false, enabled: false, in_use_by: null,
   }
   const linux = { container_available: true, host_by_default: false }
   assertEquals(canChooseRuntime(host, linux), true, 'host and containers: the owner chooses')

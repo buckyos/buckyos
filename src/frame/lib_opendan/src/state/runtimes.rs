@@ -1,6 +1,6 @@
 //! Runtime registrations of an agent (`state/runtimes/<runtime_id>.json`):
 //! the runtimes its sessions and workspaces may use, whether this host can
-//! use them now, and what the agent may do there. Writes hold the
+//! use them now, and what each runtime allows. Writes hold the
 //! `runtimes` lock; updates are compare-and-set on `revision`.
 
 use std::path::PathBuf;
@@ -122,7 +122,7 @@ impl FsRuntimes {
     fn observe(&self, record: &mut RuntimeRecord) {
         let now = crate::now_ms();
         let (availability, error) = if record.lifecycle == RuntimeLifecycle::Retired {
-            (RuntimeAvailability::RuntimeUnavailable, Some("retired: withdrawn, expired or unregistered; kept for its history".to_string()))
+            (RuntimeAvailability::RuntimeUnavailable, Some("retired: removed from this agent, revoked or unregistered; kept for its history".to_string()))
         } else if record.is_private() {
             if record.runtime_host != crate::runtime::native_host_id() {
                 (RuntimeAvailability::RuntimeUnavailable, Some("registered by another host".to_string()))
@@ -138,7 +138,7 @@ impl FsRuntimes {
             (
                 RuntimeAvailability::RuntimeUnavailable,
                 Some(format!(
-                    "the grant on `{}` expired at {}; a renewed daemon URL or grant makes it usable again",
+                    "access to `{}` expired at {}; it is usable again once its daemon URL is renewed",
                     record.runtime_id,
                     record.grant.expires_at_ms.unwrap_or_default()
                 )),
@@ -166,12 +166,13 @@ impl FsRuntimes {
         record.checked_at_ms = Some(now);
     }
 
-    /// Ask a node runtime's executor whether it accepts this agent now:
-    /// login + describe through the host's connector. The executor's roots
-    /// (unless the owner narrowed them), ops and platform become the
-    /// record's.
+    /// Ask a runtime's executor whether it accepts this agent now and what
+    /// it allows: login + describe through the host's connector. Its roots,
+    /// operations, ComputerUse, declared baseline, term and platform become
+    /// the record's. The private runtime of a native service asks the local
+    /// executor the same about the owner's desktop.
     async fn probe(&self, record: &mut RuntimeRecord) {
-        if let RuntimeConnector::Native { computer, .. } = &record.connector {
+        if let RuntimeConnector::Native { computer, .. } = &mut record.connector {
             record.caps.buckyos_root = crate::baseline::buckyos_root().map(|r| r.display().to_string());
             record.caps.identity_mode = Some("current_user".into());
             record.caps.desktop = false;
@@ -181,6 +182,9 @@ impl FsRuntimes {
                     Ok(described) => {
                         let desktop = described.info.desktop.as_ref();
                         let flag = |path| desktop.and_then(|d| d.pointer(path)).and_then(serde_json::Value::as_bool).unwrap_or(false);
+                        config.access = described.info.computer;
+                        record.grant.computer = described.info.computer;
+                        record.caps.baseline = described.info.baseline.unwrap_or(buckyos_api::RuntimeBaseline::Standard);
                         record.caps.desktop = flag("/ui/supported");
                         let ready = match config.access {
                             buckyos_api::ComputerAccess::None => record.caps.desktop,
@@ -204,11 +208,15 @@ impl FsRuntimes {
         match crate::runtime::open_node_target(record, &ops_dir).await {
             Ok(target) => {
                 let roots: Vec<PathBuf> = target.workdir_roots().iter().map(PathBuf::from).collect();
-                if record.grant.roots.is_empty() || record.grant.roots.iter().any(|r| !roots.contains(r)) {
+                if record.builtin || record.grant.roots.is_empty() || record.grant.roots.iter().any(|r| !roots.contains(r)) {
                     record.grant.roots = roots;
                 }
                 record.grant.ops = target.caps().to_vec();
                 let info = &target.described().info;
+                record.grant.computer = info.computer;
+                if record.builtin || info.baseline.is_some() {
+                    record.caps.baseline = info.baseline.unwrap_or(buckyos_api::RuntimeBaseline::Standard);
+                }
                 record.caps.platform = RuntimePlatform::reported(&info.os, &info.arch, &info.shell);
                 record.caps.identity_mode = info.identity_mode.clone();
                 record.caps.buckyos_root = info.buckyos_root.clone();
@@ -218,8 +226,8 @@ impl FsRuntimes {
                     .and_then(|d| d.pointer("/ui/supported"))
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
-                if let Some(expires) = target.expires_at_ms() {
-                    record.grant.expires_at_ms = Some(expires);
+                if record.builtin || target.expires_at_ms().is_some() {
+                    record.grant.expires_at_ms = target.expires_at_ms();
                 }
                 record.availability = RuntimeAvailability::Available;
                 record.last_error = None;
@@ -268,7 +276,7 @@ impl FsRuntimes {
     /// record (`full`: also their versions); writes it when anything changed.
     async fn check_record(&self, mut record: RuntimeRecord, commands: &[String], full: bool) -> Result<RuntimeRecord> {
         let identity = |r: &RuntimeRecord| {
-            (r.availability, r.last_error.clone(), r.grant.clone(), r.caps.clone())
+            (r.availability, r.last_error.clone(), r.grant.clone(), r.caps.clone(), r.connector.clone())
         };
         let before = identity(&record);
         self.observe(&mut record);
@@ -425,13 +433,6 @@ impl RuntimeRegistry for FsRuntimes {
                 record.usage.workspaces += 1;
                 record.usage.last_used_at_ms = Some(now);
             }
-            RuntimeUsageEvent::SkillCommand { name } => {
-                if !record.usage.skill_commands.contains(name) {
-                    record.usage.skill_commands.push(name.clone());
-                }
-                record.usage.last_used_at_ms = Some(now);
-            }
-            RuntimeUsageEvent::SkillCommandRemoved { name } => record.usage.skill_commands.retain(|c| c != name),
         }
         self.write(&record)
     }
@@ -452,32 +453,39 @@ impl RuntimeRegistry for FsRuntimes {
             };
             let mut record = match existing {
                 // What the owner changed of the private runtime (name, desc)
-                // stays; how the host reaches a runtime, whether it is on,
-                // the default and what the agent may do there are the
-                // system's. Roots, ops and platform a node reported stay
-                // unless its connector changed.
+                // stays; how the host reaches a runtime, whether it is on and
+                // the default are the system's. What a runtime allows and
+                // what it is (grant, caps) were learned from it and stay
+                // until it is reached another way.
                 Some(mut r) => {
                     let before = r.clone();
-                    let reconnected = r.connector != req.connector;
-                    r.connector = req.connector.clone();
+                    let mut connector = req.connector.clone();
+                    if let (
+                        RuntimeConnector::Native { computer: Some(next), .. },
+                        RuntimeConnector::Native { computer: Some(learned), .. },
+                    ) = (&mut connector, &r.connector)
+                    {
+                        if (&next.endpoint, &next.node_did, &next.profile_id) == (&learned.endpoint, &learned.node_did, &learned.profile_id) {
+                            next.access = learned.access;
+                        }
+                    }
+                    let same_desktop = matches!((&connector, &r.connector),
+                        (RuntimeConnector::Native { computer: a, .. }, RuntimeConnector::Native { computer: b, .. }) if a == b);
+                    let reconnected = if r.is_private() { !same_desktop } else { r.connector != connector };
+                    r.connector = connector;
                     r.enabled = req.enabled;
                     r.builtin = true;
                     r.default = req.default;
                     r.lifecycle = RuntimeLifecycle::Active;
-                    r.caps.baseline = req.baseline;
-                    let learned_roots = std::mem::take(&mut r.grant.roots);
-                    let learned_ops = std::mem::take(&mut r.grant.ops);
-                    r.grant = req.grant.clone();
-                    if !reconnected && !r.is_private() {
-                        if r.grant.roots.is_empty() {
-                            r.grant.roots = learned_roots;
-                        }
-                        r.grant.ops = learned_ops;
-                    }
-                    if reconnected {
-                        r.caps = RuntimeCaps { baseline: req.baseline, ..Default::default() };
-                    }
                     if r.is_private() {
+                        let learned = (!reconnected && matches!(&r.connector, RuntimeConnector::Native { computer: Some(_), .. }))
+                            .then(|| (r.grant.computer, r.caps.baseline));
+                        r.grant = req.grant.clone();
+                        r.caps.baseline = req.baseline;
+                        if let Some((computer, baseline)) = learned {
+                            r.grant.computer = computer;
+                            r.caps.baseline = baseline;
+                        }
                         if matches!(&r.connector, RuntimeConnector::Native { aliases, .. } if !aliases.is_empty()) {
                             r.name = req.name.clone();
                         }
@@ -485,6 +493,10 @@ impl RuntimeRegistry for FsRuntimes {
                         r.caps.platform = RuntimePlatform::local();
                         r.desc = req.desc.clone();
                     } else {
+                        if reconnected {
+                            r.grant = req.grant.clone();
+                            r.caps = RuntimeCaps { baseline: req.baseline, ..Default::default() };
+                        }
                         r.name = req.name.clone();
                         r.desc = req.desc.clone();
                     }
@@ -512,9 +524,6 @@ impl RuntimeRegistry for FsRuntimes {
                             record.usage.last_used_at_ms = previous.usage.last_used_at_ms;
                             record.usage.last_session_id = previous.usage.last_session_id;
                         }
-                        record.usage.skill_commands.extend(previous.usage.skill_commands);
-                        record.usage.skill_commands.sort();
-                        record.usage.skill_commands.dedup();
                     }
                 }
             }
@@ -525,6 +534,21 @@ impl RuntimeRegistry for FsRuntimes {
                     if path.exists() { std::fs::remove_file(&path).map_err(|e| OpenDanError::io(&path, e))?; }
                 }
             }
+            out.push(record);
+        }
+        // A runtime the settings no longer list was removed from this agent:
+        // its record stays for its history.
+        for mut record in self.all()? {
+            if !record.builtin || record.lifecycle == RuntimeLifecycle::Retired || out.iter().any(|r| r.names(&record.runtime_id)) {
+                continue;
+            }
+            record.lifecycle = RuntimeLifecycle::Retired;
+            record.enabled = false;
+            record.default = false;
+            self.observe(&mut record);
+            record.revision += 1;
+            record.updated_at_ms = crate::now_ms();
+            self.write(&record)?;
             out.push(record);
         }
         Ok(out)

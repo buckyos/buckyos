@@ -2,7 +2,9 @@ import type { AppContentLoaderProps } from '../types'
 import { SettingsStoreContext } from './hooks/use-settings-store'
 import { globalSettingsStore } from './data/store'
 import { SettingsShell } from './components/layout/SettingsShell'
-import type { SettingsPage } from './components/layout/navigation'
+import { AGENT_RUNTIMES_SETTINGS_PAGE, type SettingsPage } from './components/layout/navigation'
+import { settingsLaunchSchema } from './launch'
+import { AgentRuntimesPage } from './pages/AgentRuntimesPage'
 import { GeneralPage } from './pages/GeneralPage'
 import { AppearancePage } from './pages/AppearancePage'
 import { ClusterManagerPage } from './pages/ClusterManagerPage'
@@ -26,6 +28,8 @@ function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppConte
       return <ZonePage />
     case 'cluster':
       return <ClusterManagerPage />
+    case AGENT_RUNTIMES_SETTINGS_PAGE:
+      return <AgentRuntimesPage />
     case 'ext-tools':
       return <ExtToolsPage />
     case 'privacy':
@@ -42,9 +46,10 @@ function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppConte
 }
 
 export function SettingsAppPanel(props: AppContentLoaderProps) {
+  const launch = settingsLaunchSchema.safeParse(props.launch?.payload)
   return (
     <SettingsStoreContext.Provider value={globalSettingsStore}>
-      <SettingsShell>
+      <SettingsShell key={props.launch?.requestId ?? 'default'} initialPage={launch.success ? launch.data.page : undefined}>
         {(page) => <PageRouter page={page} appProps={props} />}
       </SettingsShell>
     </SettingsStoreContext.Provider>

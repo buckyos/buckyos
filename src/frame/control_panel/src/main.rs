@@ -163,6 +163,8 @@ impl RpcAuthPrincipal {
                     | "agent.get"
                     | "agent.profile.get"
                     | "agent.runtime_directory"
+                    | "agent.runtime_catalog"
+                    | "agent.runtime_enable"
                     | "system.overview"
                     | "system.buckyos_info.get"
                     | "system.product.get"
@@ -1340,6 +1342,9 @@ impl ControlPanelServer {
             "agent.delete" => Box::pin(self.handle_agent_delete(req, principal)),
             "agent.profile.get" => Box::pin(self.handle_agent_profile_get(req, principal)),
             "agent.runtime_directory" => Box::pin(self.handle_agent_runtime_directory(req, principal)),
+            "agent.runtime_catalog" => Box::pin(self.handle_agent_runtime_catalog(req, principal)),
+            "agent.runtime_enable" => Box::pin(self.handle_agent_runtime_enable(req, principal)),
+            "node.owner_agents_set" => Box::pin(self.handle_node_owner_agents_set(req, principal)),
             "agent.profile.set" => Box::pin(self.handle_agent_profile_set(req, principal)),
             "agent.set_msg_tunnel" => Box::pin(self.handle_agent_set_msg_tunnel(req, principal)),
             "agent.remove_msg_tunnel" => {

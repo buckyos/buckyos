@@ -172,6 +172,35 @@ async fn records() -> Result<Vec<Record>, RPCErrors> {
     Ok(result)
 }
 
+/// The principal of a device nobody uses now: no Agent has this DID, so
+/// nothing can log in.
+const UNASSIGNED_PRINCIPAL: &str = "did:unassigned";
+
+/// The devices `owner` issued a daemon URL for, each with whether it can be
+/// used now (not revoked, not expired).
+pub(crate) async fn owner_devices(
+    kv: &dyn crate::agent_mgr::AgentKv,
+    owner: &str,
+) -> Result<Vec<(AgentDaemonDevice, bool)>, RPCErrors> {
+    let mut devices = Vec::new();
+    for id in kv.list(RECORD_ROOT).await.unwrap_or_default() {
+        let Some(record) = crate::agent_mgr::get_value::<Record>(kv, &format!("{RECORD_ROOT}/{id}")).await else {
+            continue;
+        };
+        if record.device.owner_user_id == owner {
+            let active = record.active(now_ms());
+            devices.push((record.device, active));
+        }
+    }
+    devices.sort_by(|a, b| (a.0.created_at_ms, &a.0.executor_id).cmp(&(b.0.created_at_ms, &b.0.executor_id)));
+    Ok(devices)
+}
+
+/// What the daemon of a device enforces: its record, with the one Agent it
+/// is assigned to and switched on for as the principal of its profiles
+/// (`AgentSettings.runtimes`; a device is used by one Agent at a time). The
+/// snapshot is rebuilt every heartbeat, so a changed assignment reaches the
+/// daemon without a new URL.
 async fn snapshot(
     record: &Record,
     previous: Option<&ExecutorConfig>,
@@ -198,14 +227,25 @@ async fn snapshot(
         specs.push(spec);
     }
     let mut bindings = BTreeMap::new();
+    let mut user: Option<String> = None;
     for spec in &specs {
         let did = spec.agent_did.to_string();
-        if !record
-            .device
-            .profiles
-            .values()
-            .any(|profile| profile.principals.contains(&did))
-        {
+        let settings = match client.get(&agent_settings_key(owner, &spec.agent_id)).await {
+            Ok(raw) => Some(serde_json::from_str::<AgentSettings>(&raw.value).map_err(failure)?),
+            Err(SystemConfigError::KeyNotFound(_)) => None,
+            Err(error) => return Err(failure(error)),
+        };
+        let uses = settings.as_ref().is_some_and(|settings| {
+            settings.runtimes.values().any(|runtime| {
+                runtime.enabled
+                    && matches!(&runtime.target, AgentRuntimeTarget::Executor { executor_id, .. } if executor_id == &record.device.executor_id)
+            })
+        });
+        if !uses {
+            continue;
+        }
+        if user.is_some() {
+            log::warn!("device {} is switched on for more than one Agent; {did} is left out", record.device.executor_id);
             continue;
         }
         let instance = &spec.binding.target_app_instance_id;
@@ -218,15 +258,7 @@ async fn snapshot(
         {
             continue;
         }
-        let enabled = match client.get(&agent_settings_key(owner, &spec.agent_id)).await {
-            Ok(raw) => {
-                serde_json::from_str::<AgentSettings>(&raw.value)
-                    .map_err(failure)?
-                    .enabled
-            }
-            Err(SystemConfigError::KeyNotFound(_)) => true,
-            Err(error) => return Err(failure(error)),
-        };
+        let enabled = settings.is_none_or(|settings| settings.enabled);
         let installed = match client
             .get(&user_app_spec_key(owner, instance.app_id()))
             .await
@@ -239,7 +271,7 @@ async fn snapshot(
             Err(error) => return Err(failure(error)),
         };
         bindings.insert(
-            did,
+            did.clone(),
             ExecutorPrincipalBinding {
                 app_instance_id: instance.clone(),
                 agent_generation: spec.generation,
@@ -249,8 +281,13 @@ async fn snapshot(
                 permission_mode: spec.permission_mode,
             },
         );
+        user = Some(did);
     }
-    let revision = executor_revision(&(record.device.clone(), &bindings));
+    let mut device = record.device.clone();
+    for profile in device.profiles.values_mut() {
+        profile.principals = vec![user.clone().unwrap_or_else(|| UNASSIGNED_PRINCIPAL.to_string())];
+    }
+    let revision = executor_revision(&(device.clone(), &bindings));
     let generation = previous
         .map(|config| {
             if config.revision == revision {
@@ -270,8 +307,8 @@ async fn snapshot(
         auth_valid_until_ms: deadline,
         allowed_devices: Vec::new(),
         principal_bindings: bindings,
-        profiles: record.device.profiles.clone(),
-        limits: record.device.limits.clone(),
+        profiles: device.profiles,
+        limits: device.limits,
     })
 }
 
@@ -327,6 +364,17 @@ async fn verified_session(token: &str) -> Result<AgentDaemonSession, RPCErrors> 
 }
 
 impl AgentDaemonHub {
+    /// The devices whose daemon is connected and ready now.
+    pub(crate) async fn online_ids(&self) -> std::collections::HashSet<String> {
+        self.connections
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, connection)| connection.live())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     async fn disconnect(&self, id: &str, generation: u64) {
         if let Some(connection) = self.connections.lock().await.get_mut(id) {
             if connection.generation == generation {
@@ -447,7 +495,7 @@ impl ControlPanelServer {
                         if name.is_empty() || name.len() > 128 {
                             return Err(invalid("device name must be 1..128 bytes"));
                         }
-                        let profiles: BTreeMap<String, ExecutorProfile> = serde_json::from_value(
+                        let mut profiles: BTreeMap<String, ExecutorProfile> = serde_json::from_value(
                             req.params
                                 .get("profiles")
                                 .cloned()
@@ -457,8 +505,13 @@ impl ControlPanelServer {
                         if profiles.is_empty() || profiles.len() > 32 {
                             return Err(invalid("1..32 profiles are required"));
                         }
-                        for (id, profile) in &profiles {
+                        // What the device allows is fixed here; who uses it
+                        // is an assignment (`agent.update`), never part of
+                        // the issued profile.
+                        for (id, profile) in &mut profiles {
+                            profile.principals = vec![UNASSIGNED_PRINCIPAL.to_string()];
                             profile.validate(id).map_err(invalid)?;
+                            profile.principals.clear();
                             if profile.run_as.is_some() {
                                 return Err(invalid(
                                     "lightweight executors run as the current OS user",
@@ -486,21 +539,6 @@ impl ControlPanelServer {
                             },
                             credential_sha256: digest(&credential),
                         };
-                        let config = snapshot(&record, None).await?;
-                        if record
-                            .device
-                            .profiles
-                            .values()
-                            .flat_map(|profile| &profile.principals)
-                            .any(|did| {
-                                !config
-                                    .principal_bindings
-                                    .get(did)
-                                    .is_some_and(|binding| binding.enabled && binding.app_installed)
-                            })
-                        {
-                            return Err(invalid("all principals must identify enabled, installed Agents owned by the caller"));
-                        }
                         let output = self.executor_issued(&record, &credential)?;
                         save_record(&record).await?;
                         output
@@ -513,6 +551,16 @@ impl ControlPanelServer {
                         if record.device.owner_user_id != principal.owner_user_id {
                             return Err(forbidden());
                         }
+                        // A device taken back is taken away from its Agents:
+                        // their records of it stay as history.
+                        let unassign = req.method != "executor.device.issue";
+                        let unassigned = if unassign {
+                            let kv = crate::agent_mgr::ZoneKv::connect().await?;
+                            crate::agent_runtimes::unassign_device(&kv, &record.device.owner_user_id, &id).await?
+                        } else {
+                            Vec::new()
+                        };
+                        let unassigned: Vec<String> = unassigned.iter().map(ToString::to_string).collect();
                         if req.method == "executor.device.delete" {
                             config_client()
                                 .await?
@@ -520,7 +568,7 @@ impl ControlPanelServer {
                                 .await
                                 .map_err(failure)?;
                             self.agent_daemon.revoke(&id).await;
-                            json!({})
+                            json!({ "unassigned": unassigned })
                         } else {
                             record.device.generation += 1;
                             let credential = secret();
@@ -535,7 +583,7 @@ impl ControlPanelServer {
                             let output = if record.device.enabled {
                                 self.executor_issued(&record, &credential)?
                             } else {
-                                json!({})
+                                json!({ "unassigned": unassigned })
                             };
                             save_record(&record).await?;
                             self.agent_daemon.revoke(&id).await;
@@ -1073,6 +1121,7 @@ mod tests {
             profiles: BTreeMap::from([(
                 "default".into(),
                 ExecutorProfile {
+                    baseline: None,
                     run_as: None,
                     workdir_roots: vec!["/tmp".into()],
                     env: BTreeMap::new(),

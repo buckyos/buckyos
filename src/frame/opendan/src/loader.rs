@@ -553,6 +553,7 @@ impl Loader {
             env.settings.clone(),
             env.who.clone(),
             env.options.poll_interval.saturating_mul(6).max(Duration::from_secs(15)),
+            env.notify.clone(),
         )));
         match &env.tasks {
             Some(service) => {
@@ -683,9 +684,71 @@ pub async fn check_runtimes(agent: Arc<dyn AgentStateClient>) {
     }
 }
 
-/// The owner changes an agent's runtimes (enable the host, pick a default,
-/// adjust ComputerUse) while the agent runs: the projection follows the
-/// settings. Existing sessions keep what they froze.
+/// Why a runtime cannot be used now (`None`: it can).
+fn runtime_unusable(r: &libopendan::protocol::RuntimeRecord, now_ms: u64) -> Option<String> {
+    use libopendan::protocol::RuntimeLifecycle;
+    if r.lifecycle == RuntimeLifecycle::Retired {
+        Some(format!("runtime `{}` was removed from this agent", r.runtime_id))
+    } else if r.is_private() {
+        None
+    } else if !r.enabled {
+        Some(format!("runtime `{}` was switched off for this agent", r.runtime_id))
+    } else if r.grant.expired_at(now_ms) {
+        Some(format!("access to runtime `{}` expired; it works again once its daemon URL is renewed", r.runtime_id))
+    } else if !r.usable() {
+        Some(format!("runtime `{}` is not available: {}", r.runtime_id, r.last_error.clone().unwrap_or_else(|| "it does not answer".into())))
+    } else {
+        None
+    }
+}
+
+/// Sessions that are not finished keep the runtime they froze: when it is
+/// switched off, removed, expired or stops answering they are marked
+/// (`runtime_unavailable` of their registry entry) and the owner is told
+/// once. Nothing is moved to another runtime; the marks go when the runtime
+/// is usable again.
+pub async fn mark_runtime_sessions(agent: &dyn AgentStateClient, notify: Option<&dyn libopendan::notify::NotifyHost>) {
+    let runtimes = match agent.runtimes().list().await {
+        Ok(r) => r,
+        Err(e) => {
+            log::debug!("loader: runtimes not listed ({e}); session marks stay");
+            return;
+        }
+    };
+    let now = libopendan::now_ms();
+    for r in runtimes {
+        let reason = runtime_unusable(&r, now);
+        let marked = match agent.sessions().mark_runtime(&r.runtime_id, reason.as_deref()).await {
+            Ok(marked) => marked,
+            Err(e) => {
+                log::warn!("loader: sessions on runtime {} not marked: {e}", r.runtime_id);
+                continue;
+            }
+        };
+        let (Some(reason), false) = (reason, marked.is_empty()) else { continue };
+        let names = marked.iter().map(|e| format!("{} ({})", e.title.clone().unwrap_or_else(|| e.objective.clone()), e.session_id)).collect::<Vec<_>>();
+        log::warn!("loader: {reason}; {} session(s) in progress on it: {}", marked.len(), names.join(", "));
+        let Some(notify) = notify else { continue };
+        let request = libopendan::notify::NotifySendReq::notice(
+            "",
+            format!("Runtime `{}` is not usable", r.name),
+            format!(
+                "{reason}. {} session(s) were in progress on it and are not moved to another runtime: {}. Make the runtime usable again, or stop them.",
+                marked.len(),
+                names.join("; ")
+            ),
+            format!("runtime-unusable:{}:{}", r.runtime_id, marked.iter().map(|e| e.session_id.as_str()).collect::<Vec<_>>().join(",")),
+        );
+        if let Err(e) = notify.send(request).await {
+            log::warn!("loader: owner not told that {reason}: {e}");
+        }
+    }
+}
+
+/// The owner changes an agent's runtimes (assign one, switch one on or off,
+/// pick a default) while the agent runs: the projection follows the
+/// settings. Existing sessions keep what they froze; the ones whose runtime
+/// went away are marked.
 async fn watch_runtime_settings(
     records: Arc<dyn AgentRecords>,
     agent: Arc<dyn AgentStateClient>,
@@ -693,9 +756,11 @@ async fn watch_runtime_settings(
     mut last: AgentSettings,
     who: String,
     every: Duration,
+    notify: Option<Arc<dyn libopendan::notify::NotifyHost>>,
 ) {
     loop {
         tokio::time::sleep(every).await;
+        mark_runtime_sessions(agent.as_ref(), notify.as_deref()).await;
         let current = match records::settings(records.as_ref()).await {
             Ok(s) => s,
             Err(e) => {

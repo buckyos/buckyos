@@ -67,6 +67,9 @@ export interface RegistryEntry {
   scope?: { objects?: string[]; paths?: string[] }
   status: SessionStatus
   unreachable?: boolean
+  /** The runtime an unfinished session is on, and why it cannot be used now. */
+  runtime_id?: string
+  runtime_unavailable?: string
   location_rev: number
 }
 
@@ -257,9 +260,8 @@ export interface WorkspaceBinding extends WorkspaceRef {
   location: WorkspaceLocation
 }
 
-/** A runtime the agent's sessions and workspaces may use (`state/runtimes/`, record version 4). */
+/** A runtime the agent's sessions and workspaces may use (`state/runtimes/`, record version 5). */
 export type ComputerAccess = 'none' | 'observe' | 'control'
-export type InstallGrant = 'none' | 'agent_bin' | 'system'
 
 /** How a runtime is reached: the record's only type tag. */
 export type RuntimeConnector =
@@ -318,13 +320,11 @@ export interface RuntimeCaps {
   tools_check?: ToolsCheck | null
 }
 
-/** What this agent may do there: the node policy narrowed by the owner, with the daemon URL's term. */
+/** What this runtime allows: its own configuration, with the daemon URL's term. */
 export interface RuntimeGrant {
   ops: string[]
   roots: string[]
   computer: ComputerAccess
-  install: InstallGrant
-  workspace: boolean
   expires_at_ms?: number | null
 }
 
@@ -333,7 +333,6 @@ export interface RuntimeUsage {
   last_used_at_ms?: number | null
   last_session_id?: string | null
   workspaces: number
-  skill_commands: string[]
 }
 
 export interface KnownRuntime {
@@ -408,29 +407,33 @@ export interface RuntimeExtTools {
   packages: Record<string, { version: string; origin: 'seed' | 'desired'; commands: Record<string, string> }>
 }
 
-/** `AgentSettings.runtimes` as the owner chose them for this agent. */
 export type RuntimeBaseline = 'standard' | 'extended'
 
-/** The owner's grant beyond the node policy (`AgentRuntimeSettings.grant`). */
-export interface RuntimeGrantSetting {
-  install?: InstallGrant
-  workspace?: boolean | null
-  roots?: string[]
-  expires_at_ms?: number | null
-}
-
 export interface RuntimeSettings {
-  runtimes: Record<string, { enabled: boolean; computer: ComputerAccess; target: unknown; baseline?: RuntimeBaseline | null; grant?: RuntimeGrantSetting | null }>
+  runtimes: Record<string, { enabled: boolean; target: unknown }>
   default_runtime_id: string
+  /** The owner's choice; it stays while that runtime is switched off. */
+  configured_default_runtime_id: string | null
 }
 
 export interface RuntimeSettingPatch {
   runtime_id: string
   enabled?: boolean
-  computer?: ComputerAccess
-  baseline?: RuntimeBaseline | null
   default?: boolean
-  grant?: RuntimeGrantSetting | null
+  /** Goes on although work is in progress on the runtime. */
+  confirm?: boolean
+}
+
+/** `runtimes.impact`: what switching a runtime off or removing it touches. */
+export interface RuntimeImpact {
+  runtime_id: string
+  owner_default: boolean
+  /** Something is in progress on it. */
+  blocking: boolean
+  active_sessions: { session_id: string; kind: SessionKind; class: string; title: string; run_state: string }[]
+  pending_todos: { session_id: string; todo_id: string; title: string; status: string }[]
+  workspaces: { workspace_id: string; name: string; directory: string; lifecycle: string }[]
+  usage: RuntimeUsage
 }
 
 export interface ArtifactHead {
@@ -924,22 +927,8 @@ export interface SkillUsage {
   recent_sessions?: string[]
 }
 
-/** The commands of a skill on one runtime. */
-export interface SkillRuntimeInstall {
-  status: 'ok' | 'failed' | 'stale'
-  at_ms?: number
-  commands?: string[]
-  error?: string | null
-  op_id?: string | null
-  volatile?: boolean
-}
-
 export interface SkillInstallState {
-  status: 'installing' | 'enabled' | 'failed' | 'disabled'
   risk?: { level: string; accepted_by: string; accepted_at_ms: number; plan_digest: string } | null
-  runtimes?: Record<string, SkillRuntimeInstall>
-  pinned_runtime?: string | null
-  error?: string | null
 }
 
 export interface SkillInstallRecord {
@@ -961,7 +950,6 @@ export interface SkillMeta {
   requires?: string
   origin: SkillOrigin
   install?: SkillInstallRecord | null
-  tools?: string[]
   baseline?: RuntimeBaseline
   platforms?: string[]
   commands?: string[]
@@ -1013,11 +1001,12 @@ export interface SkillRuntimeStatus {
   name: string
   scope?: string
   enabled?: boolean
+  /** Switched off by the owner. */
+  off?: boolean
   requires?: string
   /** Why a session on this runtime does not take it. */
   unmet?: string | null
   commands: SkillCommandsStatus
-  install?: SkillRuntimeInstall | null
 }
 
 export interface SkillsStatus {
@@ -1029,7 +1018,7 @@ export interface SkillPackage {
   package: string
   version: string
   pikg_digest?: string
-  files: Record<string, { content: string; executable: boolean }>
+  files: Record<string, { content: string }>
 }
 
 /** What `skills.install_plan` / `skills.install` take: a package, or a draft on the AgentRoot. */
@@ -1045,16 +1034,6 @@ export interface SkillFinding {
 export interface PlannedSkill extends SkillMeta {
   /** Origin of the skill of the same name it would replace. */
   replaces?: string | null
-  check_commands?: string[]
-  install_scripts?: string[]
-}
-
-export interface InstallTarget {
-  runtime_id: string
-  os: string
-  install: InstallGrant
-  private: boolean
-  refused?: string | null
 }
 
 export interface InstallPlan {
@@ -1064,11 +1043,9 @@ export interface InstallPlan {
   plan_digest: string
   skills: PlannedSkill[]
   risk: { level: 'low' | 'medium' | 'high'; findings: SkillFinding[] }
-  /** Where the commands go (absent: the package installs none). */
-  runtime_id?: string | null
-  targets?: InstallTarget[]
-  blocked?: string[]
   command_status?: { name: string; commands: string[]; status: SkillCommandsStatus }[]
+  /** The runtime the manuals' commands were checked on. */
+  checked_runtime_id?: string
 }
 
 export interface SkillDraft {

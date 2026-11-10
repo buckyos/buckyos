@@ -440,18 +440,10 @@ pub async fn freeze_config(
             .as_ref()
             .map(|f| crate::skills::known_missing_commands(&parsed.commands, &f.caps))
             .unwrap_or_default();
-        // Commands the skill installed itself are on the runtimes recorded for it, not everywhere.
-        let installed_on = match (&meta.install_state, &runtime) {
-            (Some(install), Some((_, _, runtime_id))) if !install.ok_runtimes().contains(&runtime_id.as_str()) => {
-                install.ok_runtimes().into_iter().map(str::to_string).collect()
-            }
-            _ => Vec::new(),
-        };
         frozen.cmd_skills.push(CmdSkill {
             name: name.clone(),
             text: split_front_matter(&text).1.to_string(),
             missing_commands,
-            installed_on,
         });
     }
     let mut next = cfg.clone();

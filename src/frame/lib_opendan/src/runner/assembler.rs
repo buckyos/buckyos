@@ -691,19 +691,6 @@ fn commands_section(cfg: &SessionConfig, ui: bool) -> String {
                 k.missing_commands.join("`, `")
             ));
         }
-        if !k.installed_on.is_empty() {
-            let runtime_id = cfg.runtime.runtime_id();
-            s.push_str(&format!(
-                "The commands `{}` installs are on `{}` only; this session runs on `{runtime_id}`.{}\n\n",
-                k.name,
-                k.installed_on.join("`, `"),
-                if cfg.runtime.frozen.as_ref().is_some_and(|f| !f.is_node()) {
-                    format!(" Run them there with `agent-session run --runtime {} -- <command>`.", k.installed_on[0])
-                } else {
-                    String::new()
-                }
-            ));
-        }
     }
     if !unavailable.is_empty() {
         s.push_str("Not available on this session's runtime (work that needs them goes to a session on a runtime that has them):\n");

@@ -14,6 +14,7 @@
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-summary/input",
   "agent_access": "full",
   "objective": "long history",
+  "runtime_id": "private",
   "status": {
     "rev": 0,
     "run_state": "created",
@@ -24,7 +25,7 @@
       "summary": "",
       "heartbeat_ms": 0
     },
-    "updated_at_ms": 1793864756579
+    "updated_at_ms": 1794290474574
   },
   "location_rev": 0
 }

@@ -7,6 +7,6 @@
   "runtime_id": "rt-fixture-native",
   "connector": "native",
   "workdir": "${FIXTURE_ROOT}/app/work-fixture-report",
-  "bound_at_ms": 1793864757048,
-  "bound_by": "rn-6aa5c917c55d4b35"
+  "bound_at_ms": 1794290475056,
+  "bound_by": "rn-860a2a07b1194c7d"
 }

@@ -1609,7 +1609,6 @@ async fn work_sessions_take_the_cmd_skills_chosen_at_creation() {
             "cmd_skills/extra/SKILL.md".to_string(),
             libopendan::skills::SkillFile {
                 content: base64::engine::general_purpose::STANDARD.encode("---\ndescription: extra\n---\nEXTRA manual"),
-                executable: false,
             },
         )]
         .into_iter()

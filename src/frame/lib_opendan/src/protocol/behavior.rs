@@ -221,9 +221,6 @@ pub struct CmdSkill {
     /// Commands the manual relies on that the session's runtime was found without when the session froze.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_commands: Vec<String>,
-    /// The skill installs commands of its own and they are not on the session's runtime: where they are.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub installed_on: Vec<String>,
 }
 
 /// Kind of a skill: a manual a work or UI session is given (`cmd_skills/`), a method a plan reads (`plan_skills/`), or
@@ -330,45 +327,6 @@ pub struct SkillUsage {
     pub recent_sessions: Vec<String>,
 }
 
-/// Where the commands a skill installs by itself (`tools/<name>/`) stand.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SkillInstallStatus {
-    Installing,
-    #[default]
-    Enabled,
-    Failed,
-    Disabled,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SkillRuntimeStatus {
-    #[default]
-    Ok,
-    Failed,
-    Stale,
-}
-
-/// The commands of a skill on one runtime.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct SkillRuntimeInstall {
-    pub status: SkillRuntimeStatus,
-    #[serde(default)]
-    pub at_ms: u64,
-    /// The commands the installation checked there.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub commands: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// `state/runtime_ops/<op_id>.json`: output of the script or the check.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub op_id: Option<String>,
-    /// Written outside what the runtime keeps: checked again after a restart.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub volatile: bool,
-}
-
 /// What the owner accepted when a skill went in.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SkillRiskAccepted {
@@ -381,27 +339,11 @@ pub struct SkillRiskAccepted {
     pub plan_digest: String,
 }
 
-/// `.meta/skills_state.json` `install[<kind>:<name>]`.
+/// `.meta/skills_state.json` `install[<kind>:<name>]`: what the owner accepted when the skill was installed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SkillInstallState {
-    pub status: SkillInstallStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk: Option<SkillRiskAccepted>,
-    /// By canonical runtime id.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub runtimes: BTreeMap<String, SkillRuntimeInstall>,
-    /// Where a session naming the skill runs when nothing else decides it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pinned_runtime: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-impl SkillInstallState {
-    /// Runtimes its commands are installed on and found working.
-    pub fn ok_runtimes(&self) -> Vec<&str> {
-        self.runtimes.iter().filter(|(_, r)| r.status == SkillRuntimeStatus::Ok).map(|(id, _)| id.as_str()).collect()
-    }
 }
 
 /// A skill as `skill list` shows it: the front matter of its manual and
@@ -426,9 +368,6 @@ pub struct SkillMeta {
     /// An installed skill: the package it came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install: Option<SkillInstallRecord>,
-    /// Commands it brings (`tools/<name>/bin`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools: Vec<String>,
     /// The environment it works in (front matter `baseline`): a session
     /// whose session-runtime declares less does not take it.
     #[serde(default = "standard_baseline")]
@@ -448,14 +387,14 @@ pub struct SkillMeta {
     /// Files under `references/`, read on demand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<String>,
-    /// Off: no new session takes it (the owner disabled it, or its commands are not installed anywhere yet).
+    /// Off: no new session takes it (the owner disabled it).
     #[serde(default = "yes")]
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled: Option<SkillDisabled>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<SkillUsage>,
-    /// A skill that installs commands of its own: where they are.
+    /// An installed skill: what the owner accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_state: Option<SkillInstallState>,
 }
@@ -478,7 +417,6 @@ impl Default for SkillMeta {
             requires: String::new(),
             origin: String::new(),
             install: None,
-            tools: Vec::new(),
             baseline: standard_baseline(),
             platforms: Vec::new(),
             commands: Vec::new(),
@@ -522,14 +460,9 @@ impl SkillMeta {
         if self.enabled {
             return None;
         }
-        Some(match (&self.disabled, &self.install_state) {
-            (Some(d), _) if d.reason.is_empty() => "disabled by owner".to_string(),
-            (Some(d), _) => format!("disabled by owner: {}", d.reason),
-            (None, Some(i)) => match i.status {
-                SkillInstallStatus::Installing => "its commands are still being installed".to_string(),
-                _ => format!("its commands are not installed on any runtime{}", i.error.as_ref().map(|e| format!(": {e}")).unwrap_or_default()),
-            },
-            (None, None) => "not enabled".to_string(),
+        Some(match &self.disabled {
+            Some(d) if !d.reason.is_empty() => format!("disabled by owner: {}", d.reason),
+            _ => "disabled by owner".to_string(),
         })
     }
 }

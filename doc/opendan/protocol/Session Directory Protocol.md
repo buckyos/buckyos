@@ -96,8 +96,9 @@ Schema：`schema/session_config.schema.json`。要点：
   "runtime": { "requirement": { "runtime_id": null, "tools": ["node"], "app_tools": [] },
                "tool_plan": null, "env": {},
                "frozen": { "runtime_id": "host", "connector": { "type": "node_executor", "node_did": "did:dev:…", "profile_id": "agent-…" },
-                           "revision": 3, "selected_by": "explicit | inherited | default", "computer": "observe",
-                           "baseline": "standard | extended", "platform": { "os": "macos", "arch": "aarch64", "shell": "zsh" } } },
+                           "revision": 3, "selected_by": "explicit | inherited | private",
+                           "caps": { "os": "macos", "arch": "aarch64", "shell": "zsh", "baseline": "standard | extended" },
+                           "grant": { "ops": ["exec", "read", "…"], "roots": ["/Users/owner"], "computer": "observe", "expires_at_ms": null } } },
   "workspace": null | { "workspace_id": "ws-…", "access": "read_write" },
   "workspace_binding": null | { "workspace_id": "ws-…", "revision": 1, "location_revision": 1, "runtime_host": "host:…", "location": { "runtime_id": "local", "directory": "/abs" }, "access": "read_write" },
   "artifact_id": null,
@@ -439,7 +440,7 @@ XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校�
 { "schema": "opendan.binding/6", "runtime_id": "rt-…", "connector": "native | node_executor", "target": {"host":"host:…", "uid":"1000"}, "workdir": "/abs", "workspace": null, "bound_at_ms": 0, "bound_by": "rn-…" }
 ```
 
-- `runtime.frozen`（2026-11-04 起为**工作 runtime**，[runtime 工作模型 TODO](../../../notepads/opendan-agent-runtime-lifecycle-todo.md) §0.3）：创建时由 `api::freeze_runtime` 一次解析并冻结的工作 runtime——`shell()` 在哪执行。UI / chat 类 Session 恒为私有 runtime（`selected_by: private`）；其它 Session 取显式 `--runtime`（`explicit`）> 继承父 Session（`inherited`）> 私有（`private`）；owner 的默认 runtime 不参与。冻结的是 `runtime_id`、`connector`（`native | node_executor | ssh`）、`revision`、`caps`（声明的 `baseline`、已知平台）与 `grant`，恢复与重试只用它。`connector` 为 `node_executor` 的 Session 经 Node Executor 执行，binding 的 `workdir` 是节点上的目录（`C:\…` 等按目标 OS 书写，控制侧不 canonicalize），`target` 含 node_did / profile_id / store_id / workdir_roots / identity_mode。幂等重建比较 `runtime.runtime_id()`：同 idempotency key 换 runtime 是冲突。
+- `runtime.frozen`（2026-11-04 起为**工作 runtime**，[runtime 工作模型 TODO](../../../notepads/opendan-agent-runtime-lifecycle-todo.md) §0.3）：创建时由 `api::freeze_runtime` 一次解析并冻结的工作 runtime——`shell()` 在哪执行。UI / chat 类 Session 恒为私有 runtime（`selected_by: private`）；其它 Session 取显式 `--runtime`（`explicit`）> 继承父 Session（`inherited`）> 私有（`private`）；owner 的默认 runtime 不参与。冻结的是 `runtime_id`、`connector`（`native | node_executor | ssh`）、`revision`、`caps`（声明的 `baseline`、已知平台）与 `grant`（这台 runtime 允许什么：`ops / roots / computer / expires_at_ms`），恢复与重试只用它。登记表条目的 `runtime_id` 是它的副本。`connector` 为 `node_executor` 的 Session 经 Node Executor 执行，binding 的 `workdir` 是节点上的目录（`C:\…` 等按目标 OS 书写，控制侧不 canonicalize），`target` 含 node_did / profile_id / store_id / workdir_roots / identity_mode。幂等重建比较 `runtime.runtime_id()`：同 idempotency key 换 runtime 是冲突。
 - **两种 Session 形态**：工作 runtime 为私有的 Session 是多 runtime session——有 `agent-session`，可经 `agent-session run --runtime <id|workspace> [--cwd] [--timeout] -- <cmd>`（单条命令，`--` 后多个词是命令和它的参数，一个词是交给目标 shell 的命令行；走宿主的 `runtime_exec`，记录在 Session 的 `state/runtime_ops/<op_id>.json` 与 Agent 的 `state/runtime_ops/`）与 `agent-session copy` 访问任何已登记且可用的 runtime；工作 runtime 为其它 runtime 的 Session 是单机 session——只有 runtime 层工具（`shell / read / write …`），节点上**不安装** `agent-session` helper，不能访问别的 runtime，它要的材料由创建者事先放到位（或 workspace 就在那台机器上）。binding 不为此升版。
 
 - 首次推进时用不覆盖发布写入（`link` / `renameat2(NOREPLACE)`），之后不变；runtime_id 不同必须拒绝（RuntimeMismatch），发生在任何推理之前。

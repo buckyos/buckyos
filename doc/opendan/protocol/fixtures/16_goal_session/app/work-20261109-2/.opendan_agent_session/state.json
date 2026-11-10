@@ -1,0 +1,69 @@
+{
+  "acceptance": "pending",
+  "activity": {
+    "heartbeat_ms": 0,
+    "summary": ""
+  },
+  "bootstrap_done": true,
+  "finished_at_ms": 1794290475291,
+  "inputs": {
+    "_bootstrap": {
+      "acked_index": 1
+    }
+  },
+  "last_error": {
+    "kind": "missing_end_report",
+    "message": "an explicit final report is required; this session has no input queue",
+    "recoverable": false
+  },
+  "last_run": "20261109-200115-30113a",
+  "live_run": null,
+  "one_line_status": "finished: answer",
+  "outcome": "failed",
+  "perception_seq": 0,
+  "recent_keys": [
+    "cymsg:22016870c84d1b0d4689b172d3b594ee30c0b0a48343e2250a7960341cd2ddd0",
+    "nudge:1:1"
+  ],
+  "reply": {
+    "kind": "chat",
+    "reply_to": "cymsg:22016870c84d1b0d4689b172d3b594ee30c0b0a48343e2250a7960341cd2ddd0",
+    "route": "message",
+    "to": "did:bns:jarvis.alice",
+    "to_session": null,
+    "tunnel": null
+  },
+  "reported_rev": 4,
+  "result": {
+    "answer": "answer",
+    "answer_ref": "report.md",
+    "goal": {
+      "activation_seq": 0,
+      "at_ms": 1794290475160,
+      "epoch": 1,
+      "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+      "revision": 1
+    }
+  },
+  "rev": 5,
+  "run_state": "finished",
+  "schema": "opendan.session_state/6",
+  "stop_requested": false,
+  "topic": {
+    "title": ""
+  },
+  "turn_seq": 1,
+  "turns_completed": 0,
+  "updated_at_ms": 1794290475291,
+  "worklog": {
+    "committed_bytes": 3128,
+    "committed_seq": 10
+  },
+  "writer": {
+    "host": "${FIXTURE_HOST}",
+    "lock_epoch": 1,
+    "pid": 2054445,
+    "principal": "app:app2@alice",
+    "runner_id": "rn-6827f790ef1444e6"
+  }
+}

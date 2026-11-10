@@ -33,7 +33,7 @@ async fn builtin_runtimes_are_created_once_and_kept() {
     let container = &r[0];
     assert_eq!((container.availability, container.builtin), (RuntimeAvailability::Available, true));
     assert_eq!(container.exec(), Some(json!({ "kind": "native" })));
-    assert!(container.connector.is_native() && container.grant.workspace && !container.grant.read_only());
+    assert!(container.connector.is_native() && container.grant.no_workspace().is_none() && !container.grant.read_only());
     assert_eq!(container.registered_by, "host");
     let host = &r[1];
     assert_eq!(host.availability, RuntimeAvailability::RuntimeUnavailable);
@@ -117,7 +117,7 @@ async fn the_private_runtime_says_who_provides_a_command() {
     let temp = tempfile::tempdir().unwrap();
     let state = state(temp.path());
     state.runtimes().ensure_builtin(&builtin(temp.path()), "host").await.unwrap();
-    let skill_bin = temp.path().join("agent/tools/lint/bin");
+    let skill_bin = temp.path().join("agent/tools");
     std::fs::create_dir_all(&skill_bin).unwrap();
     for (name, body) in [("real-tool", "echo 'real-tool 9.9'"), ("stub-tool", "echo 'not bundled' >&2; exit 127")] {
         let path = skill_bin.join(name);
@@ -318,7 +318,8 @@ impl agent_tool::runtime::node::NodeExecutorConnector for LateNode {
                     "describe" => json!({"type":"describe_ok", "request_id":id,
                         "target":{"node_did":"did:web:ood1.test.buckyos.io", "profile_id":profile, "uid":65534, "gid":65534,
                             "workdir":request["workdir"], "workdir_roots":["/srv/host-runtime"], "store_id":"late-ledger", "protocol_version":1},
-                        "info":{"os":"linux", "arch":"x86_64", "hostname":"ood1", "shell":"bash", "time_ms":1, "identity_mode":"switch_user"}}),
+                        "info":{"os":"linux", "arch":"x86_64", "hostname":"ood1", "shell":"bash", "time_ms":1, "identity_mode":"switch_user",
+                            "baseline":"extended", "computer":"observe"}}),
                     other => panic!("unexpected executor operation: {other}"),
                 };
                 server.write_all(&buckyos_api::encode_executor_control(&response).unwrap()).await.unwrap();
@@ -349,13 +350,10 @@ async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
         "host".into(),
         buckyos_api::AgentRuntimeSettings {
             enabled: true,
-            computer: Default::default(),
             target: buckyos_api::AgentRuntimeTarget::Node {
                 node_id: "ood1".into(),
                 node_did: "did:web:ood1.test.buckyos.io".into(),
             },
-            baseline: None,
-            grant: None,
         },
     );
     settings.default_runtime_id = Some("host".into());
@@ -388,6 +386,14 @@ async fn a_node_runtime_refused_at_start_is_used_once_its_executor_answers() {
     let record = agent.runtimes().lookup("host").await.unwrap().unwrap();
     assert_eq!(record.availability, RuntimeAvailability::Available);
     assert!(connects.load(Ordering::SeqCst) > tries);
+    // What the runtime allows is what it says of itself, and a new
+    // projection of the same settings keeps it.
+    assert_eq!((record.caps.baseline, record.grant.computer), (buckyos_api::RuntimeBaseline::Extended, buckyos_api::ComputerAccess::Observe));
+    assert_eq!(record.grant.roots, vec![std::path::PathBuf::from("/srv/host-runtime")]);
+    assert_eq!((frozen.caps.baseline, frozen.grant.computer), (record.caps.baseline, record.grant.computer));
+    agent.runtimes().ensure_builtin(&registers, APP).await.unwrap();
+    let kept = agent.runtimes().lookup("host").await.unwrap().unwrap();
+    assert_eq!((kept.caps.baseline, kept.grant.computer, kept.grant.ops.len()), (buckyos_api::RuntimeBaseline::Extended, buckyos_api::ComputerAccess::Observe, 3));
 
     // `agent-session run` and `copy` get the same second chance.
     up.store(false, Ordering::SeqCst);
@@ -422,10 +428,7 @@ async fn a_natively_run_agent_service_keeps_its_private_runtime() {
         "host".into(),
         buckyos_api::AgentRuntimeSettings {
             enabled: true,
-            computer: Default::default(),
             target: buckyos_api::AgentRuntimeTarget::Node { node_id: "ood1".into(), node_did: "did:web:ood1.test.buckyos.io".into() },
-            baseline: Some(buckyos_api::RuntimeBaseline::Extended),
-            grant: None,
         },
     );
     settings.default_runtime_id = Some("host".into());
@@ -450,9 +453,9 @@ async fn a_natively_run_agent_service_keeps_its_private_runtime() {
     assert_eq!(private.exec(), Some(json!({ "kind": "native" })));
     assert!(private.default && private.desc.contains("natively"));
     assert_eq!(state.runtimes().list().await.unwrap().len(), 1);
-    assert_eq!(private.caps.baseline, buckyos_api::RuntimeBaseline::Extended, "the host's declaration");
+    assert_eq!(private.caps.baseline, buckyos_api::RuntimeBaseline::Standard, "the node's declaration is learned from its executor");
     let host = state.runtimes().lookup("host").await.unwrap().unwrap();
-    assert!(host.default && host.grant.workspace);
+    assert!(host.default && host.grant.no_workspace().is_none());
     assert_eq!(host.runtime_id, "private");
     assert_eq!(host, private);
     state.runtimes().ensure_builtin(&project(false), "host").await.unwrap();
@@ -534,124 +537,80 @@ async fn a_desktop_found_unavailable_is_probed_again() {
     assert!(again.checked_at_ms.unwrap() > 1);
 }
 
-/// Skills system TODO S19 / S20: a skill that installs commands of its own is not taken by any session until one
-/// runtime has them; the installation runs its script there, checks what it must leave behind and records the outcome;
-/// a session elsewhere is told where the commands are, and a work that names no runtime goes to them.
-#[cfg(unix)]
+/// A runtime the owner took away from the agent keeps its record as history
+/// and comes back when it is assigned again; a default that is switched off
+/// keeps its place.
 #[tokio::test]
-async fn a_skill_installs_its_commands_on_a_runtime_before_it_is_enabled() {
-    use libopendan::skills::{self, SkillFile, SkillPackage};
+async fn a_runtime_taken_from_the_agent_is_retired_and_comes_back_when_assigned_again() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(temp.path());
+    let lab = |enabled: bool| buckyos_api::AgentRuntimeSettings {
+        enabled,
+        target: buckyos_api::AgentRuntimeTarget::Executor { executor_id: "5f0c2b9e-7a1d-4c53-9d0e-0b6a3c1f2e44".into(), profile_id: None },
+    };
+    let mut settings = buckyos_api::AgentSettings::default();
+    settings.runtimes.insert("exec-lab".into(), lab(true));
+    settings.default_runtime_id = Some("exec-lab".into());
+    let project = |settings: &buckyos_api::AgentSettings| builtin_runtimes(settings, "did:test:agent", &PrivateRuntimeInfo::default());
+    state.runtimes().ensure_builtin(&project(&settings), "host").await.unwrap();
+    state.runtimes().note_usage("exec-lab", &RuntimeUsageEvent::Session { session_id: "work-1".into() }).await.unwrap();
+    state.runtimes().note_usage("exec-lab", &RuntimeUsageEvent::Workspace).await.unwrap();
+    let on = state.runtimes().lookup("exec-lab").await.unwrap().unwrap();
+    assert!(on.default && on.enabled && on.lifecycle == RuntimeLifecycle::Active);
+    assert_eq!(on.connector.executor_id(), Some("5f0c2b9e-7a1d-4c53-9d0e-0b6a3c1f2e44"));
+    assert_eq!((on.usage.sessions_total, on.usage.workspaces), (1, 1));
+
+    // Switched off: still the configured default, which counts again once it is on.
+    settings.runtimes.insert("exec-lab".into(), lab(false));
+    assert!(settings.validate_runtimes().is_ok());
+    state.runtimes().ensure_builtin(&project(&settings), "host").await.unwrap();
+    let off = state.runtimes().lookup("exec-lab").await.unwrap().unwrap();
+    assert!(!off.default && !off.usable() && off.lifecycle == RuntimeLifecycle::Active);
+    assert!(state.runtimes().lookup("private").await.unwrap().unwrap().default);
+
+    // Taken away: retired, with its history.
+    settings.runtimes.remove("exec-lab");
+    settings.default_runtime_id = None;
+    let projected = state.runtimes().ensure_builtin(&project(&settings), "host").await.unwrap();
+    let retired = projected.iter().find(|r| r.runtime_id == "exec-lab").unwrap();
+    assert!(retired.lifecycle == RuntimeLifecycle::Retired && !retired.usable() && !retired.enabled);
+    assert_eq!(retired.usage.last_session_id.as_deref(), Some("work-1"));
+    assert!(state.runtimes().lookup("host").await.unwrap().unwrap().lifecycle == RuntimeLifecycle::Active, "the host placeholder is never retired");
+    let revision = retired.revision;
+    state.runtimes().ensure_builtin(&project(&settings), "host").await.unwrap();
+    assert_eq!(state.runtimes().lookup("exec-lab").await.unwrap().unwrap().revision, revision, "retired once");
+
+    // Assigned again: the same record, active.
+    settings.runtimes.insert("exec-lab".into(), lab(true));
+    state.runtimes().ensure_builtin(&project(&settings), "host").await.unwrap();
+    let back = state.runtimes().lookup("exec-lab").await.unwrap().unwrap();
+    assert!(back.lifecycle == RuntimeLifecycle::Active && back.enabled);
+    assert_eq!(back.usage.sessions_total, 1);
+}
+
+/// Sessions that are not finished are marked when their runtime cannot be
+/// used, once; the mark goes when it can again. The sessions list says which
+/// runtime a session is on and filters by it.
+#[tokio::test]
+async fn unfinished_sessions_are_marked_when_their_runtime_goes_away() {
     let env = Env::new();
     let agent = env.agent();
-    let runtimes = agent.runtimes().ensure_builtin(&builtin(&env.root), APP).await.unwrap();
-    let root = env.agent_root.clone();
-    let package = |name: &str, command: &str, script: &str| SkillPackage {
-        package: format!("{name}-skills"),
-        version: "1.0.0".into(),
-        files: [
-            (format!("cmd_skills/{name}/SKILL.md"), SkillFile::of(format!("---\ndescription: {name}\ncommands: {command}\n---\nRun `{command}`.").as_bytes(), false)),
-            (
-                format!("tools/{name}/install.toml"),
-                SkillFile::of(
-                    b"[install.linux]\nscript = \"setup.sh\"\nwrites = [\"<agent_root>/tools\"]\n[install.macos]\nscript = \"setup.sh\"\nwrites = [\"<agent_root>/tools\"]\n",
-                    false,
-                ),
-            ),
-            (format!("tools/{name}/setup.sh"), SkillFile::of(script.as_bytes(), true)),
-        ]
-        .into(),
-        ..Default::default()
-    };
-    let good = package("tool", "skilltest-tool", "mkdir -p bin && printf '#!/bin/sh\\necho hi\\n' > bin/skilltest-tool && chmod +x bin/skilltest-tool\n");
-    let plan = skills::plan(&root, &good, &runtimes, None).unwrap();
-    assert_eq!(plan.runtime_id.as_deref(), Some("private"));
-    assert!(plan.blocked.is_empty(), "{:?}", plan.blocked);
-    assert_eq!(plan.risk.level, "high", "an install script is the owner's to read");
-    assert!(!plan.risk.findings.iter().any(|f| f.code == "volatile_writes"));
-    let on_host = skills::plan(&root, &good, &runtimes, Some("host")).unwrap();
-    assert!(!on_host.blocked.is_empty(), "a runtime that is not available or grants no installation takes no commands");
+    agent.runtimes().ensure_builtin(&builtin(&env.root), APP).await.unwrap();
+    let sd = env.create_work(work_spec("stays where it was frozen")).await;
+    let entry = agent.sessions().lookup(sd.sid()).await.unwrap().unwrap();
+    assert_eq!(entry.runtime_id.as_deref(), Some("private"));
+    assert!(entry.runtime_unavailable.is_none());
+    let on = |runtime: &str| RegistryQuery { runtime_id: Some(runtime.into()), ..Default::default() };
+    assert_eq!(agent.sessions().query(&on("container")).await.unwrap().len(), 1, "an alias names the same runtime");
+    assert!(agent.sessions().query(&on("host")).await.unwrap().is_empty());
 
-    let report = skills::install(&root, &good, false, "did:bns:owner", None).unwrap();
-    assert_eq!(report.pending_commands, ["tool"]);
-    let parent = env.create_work(work_spec("parent")).await;
-    let ch = env.channels();
-    let sub = |key: &str, names: &[&str], runtime: Option<&str>| SubSessionSpec {
-        objective: "child".into(),
-        key: Some(key.into()),
-        cmd_skills: Some(names.iter().map(|n| n.to_string()).collect()),
-        runtime_id: runtime.map(str::to_string),
-        ..Default::default()
-    };
-    let err = create_sub_session(agent.as_ref(), APP, parent.sid(), sub("early", &["tool"], None), ch.as_ref()).await.unwrap_err();
-    assert!(err.to_string().contains("still being installed"), "{err}");
-
-    let state = skills::install_commands(agent.as_ref(), "tool", "private", "did:bns:owner").await.unwrap();
-    assert_eq!(state.status, SkillInstallStatus::Enabled, "{state:?}");
-    let private = &state.runtimes["private"];
-    assert_eq!((private.status, private.commands.clone(), private.volatile), (SkillRuntimeStatus::Ok, vec!["skilltest-tool".to_string()], false));
-    assert!(libopendan::runtime::runtime_op(agent.as_ref(), private.op_id.as_deref().unwrap()).unwrap().is_some(), "the script's output is kept");
-    assert_eq!(state.pinned_runtime.as_deref(), Some("private"));
-    assert!(agent.runtimes().lookup("private").await.unwrap().unwrap().usage.skill_commands.contains(&"skilltest-tool".to_string()));
-    let work = create_sub_session(agent.as_ref(), APP, parent.sid(), sub("now", &["tool"], None), ch.as_ref()).await.unwrap();
-    let cfg = work.config().unwrap();
-    assert_eq!(cfg.runtime.frozen.as_ref().unwrap().runtime_id, "private");
-    assert!(cfg.prompt.frozen.unwrap().cmd_skills[0].installed_on.is_empty());
-    assert_eq!(skills::check_commands(agent.as_ref(), "tool", None, "o").await.unwrap().runtimes["private"].status, SkillRuntimeStatus::Ok);
-
-    // A script that fails leaves the skill off, with the reason.
-    let bad = package("broken", "skilltest-broken", "echo no luck >&2\nexit 3\n");
-    skills::install(&root, &bad, false, "did:bns:owner", None).unwrap();
-    let state = skills::install_commands(agent.as_ref(), "broken", "private", "did:bns:owner").await.unwrap();
-    assert_eq!(state.status, SkillInstallStatus::Failed);
-    assert!(state.runtimes["private"].error.as_ref().unwrap().contains("exited with 3"), "{state:?}");
-    let broken = agent.behaviors().skills(Some(SkillKind::Work)).await.unwrap().into_iter().find(|s| s.name == "broken").unwrap();
-    assert!(broken.why_off().unwrap().contains("not installed on any runtime"), "{:?}", broken.why_off());
-    // One that runs but leaves no command behind is no better.
-    let empty = package("empty", "skilltest-empty", "true\n");
-    skills::install(&root, &empty, false, "did:bns:owner", None).unwrap();
-    let state = skills::install_commands(agent.as_ref(), "empty", "private", "did:bns:owner").await.unwrap();
-    assert!(state.runtimes["private"].error.as_ref().unwrap().contains("still has no skilltest-empty"), "{state:?}");
-
-    // Commands that are on another runtime only: a work there is where a work without `--runtime` goes; a work
-    // elsewhere takes the manual and is told where the commands are.
-    skills::update_state(&root, |s| {
-        let install = s.install.get_mut("work:tool").unwrap();
-        let entry = install.runtimes.remove("private").unwrap();
-        install.runtimes.insert("host".into(), entry);
-        install.pinned_runtime = Some("host".into());
-        Ok(())
-    })
-    .unwrap();
-    // (A child inherits its parent's runtime first: the skill's place only decides for a work nothing else decides for.)
-    let top = |names: &[&str]| {
-        let mut spec = work_spec("top");
-        spec.prompt.cmd_skills = names.iter().map(|n| n.to_string()).collect();
-        spec.require_cmd_skills = true;
-        spec.freeze = true;
-        spec
-    };
-    let err = libopendan::create_session(&env.app_dir, top(&["tool"]), agent.as_ref(), APP, ch.as_ref()).await.unwrap_err();
-    assert!(err.to_string().contains("runtime `host`"), "the work follows the skill's commands, and host is not available here: {err}");
-    let inherited = create_sub_session(agent.as_ref(), APP, parent.sid(), sub("inherits", &["tool"], None), ch.as_ref()).await.unwrap();
-    assert_eq!(inherited.config().unwrap().runtime.frozen.unwrap().runtime_id, "private");
-    let elsewhere = create_sub_session(agent.as_ref(), APP, parent.sid(), sub("elsewhere", &["tool"], Some("private")), ch.as_ref()).await.unwrap();
-    let frozen = elsewhere.config().unwrap().prompt.frozen.unwrap();
-    assert_eq!(frozen.cmd_skills[0].installed_on, ["host"]);
-    use libopendan::runner::SessionAssembler;
-    let system = libopendan::runner::DefaultAssembler::default().system_text(&elsewhere.config().unwrap(), None).await.unwrap();
-    assert!(system.contains("The commands `tool` installs are on `host` only; this session runs on `private`."), "{system}");
-
-    // Two manuals whose commands are on different runtimes: the creator names the runtime.
-    skills::update_state(&root, |s| {
-        let mut other = s.install["work:tool"].clone();
-        let entry = other.runtimes.remove("host").unwrap();
-        other.runtimes.insert("studio".into(), entry);
-        other.pinned_runtime = Some("studio".into());
-        other.status = SkillInstallStatus::Enabled;
-        s.install.insert("work:empty".into(), other);
-        Ok(())
-    })
-    .unwrap();
-    let err = libopendan::create_session(&env.app_dir, top(&["tool", "empty"]), agent.as_ref(), APP, ch.as_ref()).await.unwrap_err();
-    assert!(err.to_string().contains("different runtimes"), "{err}");
+    let marked = agent.sessions().mark_runtime("private", Some("switched off")).await.unwrap();
+    assert_eq!(marked.iter().map(|e| e.session_id.as_str()).collect::<Vec<_>>(), [sd.sid()]);
+    assert_eq!(agent.sessions().lookup(sd.sid()).await.unwrap().unwrap().runtime_unavailable.as_deref(), Some("switched off"));
+    assert!(agent.sessions().mark_runtime("private", Some("switched off")).await.unwrap().is_empty(), "told once");
+    assert!(agent.sessions().mark_runtime("private", Some("expired")).await.unwrap().is_empty(), "a new reason is no new mark");
+    assert_eq!(agent.sessions().lookup(sd.sid()).await.unwrap().unwrap().runtime_unavailable.as_deref(), Some("expired"));
+    assert!(agent.sessions().mark_runtime("host", Some("off")).await.unwrap().is_empty());
+    agent.sessions().mark_runtime("private", None).await.unwrap();
+    assert!(agent.sessions().lookup(sd.sid()).await.unwrap().unwrap().runtime_unavailable.is_none());
 }

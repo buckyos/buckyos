@@ -253,30 +253,10 @@ pub struct SessionEnvCtx {
     pub input_queue: Option<String>,
     pub trace_id: String,
     pub extra_env: Vec<(String, String)>,
-    /// The session's frozen cmd_skills: their commands
-    /// (`<agent_root>/tools/<name>/bin`) come first on PATH.
-    pub cmd_skills: Vec<String>,
     /// The session's workspace: where it is, beside the working directory.
     pub workspace: Option<WorkspaceBinding>,
 }
 
-/// `<agent_root>/tools/<name>/bin` of each cmd_skill that brings commands.
-pub fn skill_tool_dirs(agent_root: &Path, cmd_skills: &[String]) -> Vec<PathBuf> {
-    cmd_skills
-        .iter()
-        .map(|n| agent_root.join(crate::skills::TOOLS_DIR).join(n).join("bin"))
-        .filter(|d| d.is_dir())
-        .collect()
-}
-
-/// The names of the session's frozen cmd_skills.
-pub fn frozen_cmd_skills(cfg: &SessionConfig) -> Vec<String> {
-    cfg.prompt
-        .frozen
-        .as_ref()
-        .map(|f| f.cmd_skills.iter().map(|c| c.name.clone()).collect())
-        .unwrap_or_default()
-}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEnv {
     pub runtime_id: String,
@@ -685,13 +665,11 @@ pub fn runtime_entry(r: &RuntimeRecord) -> serde_json::Value {
         "default": r.default,
         "private": r.is_private(),
         "computer": r.grant.computer.as_str(),
-        "install": r.grant.install,
         "read_only": r.grant.read_only(),
-        "workspace": r.grant.workspace,
+        "workspace": r.grant.no_workspace().is_none(),
         "roots": r.grant.roots,
         "desktop": r.caps.desktop,
         "desktop_error": r.caps.desktop_error,
-        "skill_commands": r.usage.skill_commands,
         "desc": r.desc,
     });
     if let Some(t) = &r.caps.tools_check {
@@ -733,7 +711,7 @@ pub fn runtime_line(r: &RuntimeRecord) -> String {
     if r.grant.read_only() {
         flags.push("read-only".to_string());
     }
-    if !r.grant.workspace {
+    if r.grant.no_workspace().is_some() {
         flags.push("no workspaces".to_string());
     }
     if r.caps.desktop {
@@ -749,12 +727,8 @@ pub fn runtime_line(r: &RuntimeRecord) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
-    let install = serde_json::to_value(r.grant.install)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default();
     let mut line = format!(
-        "- {}: {} — {}; {}; {}; {}; computer: {}; install: {}{}",
+        "- {}: {} — {}; {}; {}; {}; computer: {}{}",
         r.runtime_id,
         one_line(&r.name),
         r.connector.as_str(),
@@ -762,7 +736,6 @@ pub fn runtime_line(r: &RuntimeRecord) -> String {
         r.caps.baseline.as_str(),
         availability,
         r.grant.computer.as_str(),
-        install,
         if flags.is_empty() { String::new() } else { format!(" [{}]", flags.join(", ")) },
     );
     if !r.grant.roots.is_empty() {
@@ -773,9 +746,6 @@ pub fn runtime_line(r: &RuntimeRecord) -> String {
     }
     if let Some(t) = r.caps.tools_check.as_ref().filter(|t| !t.present.is_empty()) {
         line.push_str(&format!("; commands: {}", t.present.join(", ")));
-    }
-    if !r.usage.skill_commands.is_empty() {
-        line.push_str(&format!("; skill commands: {}", r.usage.skill_commands.join(", ")));
     }
     if !r.desc.is_empty() {
         line.push_str(&format!(" — {}", one_line(&r.desc)));
@@ -929,7 +899,7 @@ pub async fn bind_or_verify(
     }
     bin_overlay::prepare(&sd.runtime_bin_dir(), plan)?;
     bin_overlay::verify(&sd.runtime_bin_dir(), plan)?;
-    let layers = if node { Vec::new() } else { session_layers(sd, cfg, agent_root) };
+    let layers = if node { Vec::new() } else { session_layers(sd, agent_root) };
     let windows_target = node && desc.capabilities.os == "windows";
     let tools: Vec<&str> = cfg.runtime.requirement.tools.iter().map(String::as_str).collect();
     if !tools.is_empty() {
@@ -1225,11 +1195,6 @@ pub async fn check_commands(record: &RuntimeRecord, ops_dir: &Path, commands: &[
     }
 }
 
-/// `<account home>/.opendan/<agent>` on the node runtime `record`: where the agent's own files there go.
-pub async fn node_agent_dir_for(agent: &dyn crate::state::AgentStateClient, record: &RuntimeRecord) -> Option<String> {
-    node_agent_dir_of(record, agent.agent_id(), &runtime_ops_dir(agent).ok()?).await
-}
-
 /// `<account home>/.opendan/<agent>` on the node of `record`.
 async fn node_agent_dir_of(record: &RuntimeRecord, agent_id: &str, ops_dir: &Path) -> Option<String> {
     let config = node_config_of(&record.runtime_id, &record.exec()?).ok()?;
@@ -1448,14 +1413,7 @@ pub async fn runtime_exec(
         if !dir.is_absolute() || !dir.is_dir() {
             return Err(OpenDanError::InvalidArgument(format!("--cwd {} is not an existing absolute directory on the private runtime", dir.display())));
         }
-        let mut layers = Vec::new();
-        if let Some(root) = agent.agent_root() {
-            if root.join("tools").is_dir() {
-                layers.push(root.join("tools"));
-            }
-        }
-        layers.extend(crate::baseline::managed_tool_dirs());
-        (private_runtime_of(&dir)?, dir.display().to_string(), layers)
+        (private_runtime_of(&dir)?, dir.display().to_string(), crate::baseline::managed_tool_dirs())
     } else {
         let dir = cwd
             .filter(|c| !c.trim().is_empty())
@@ -1605,7 +1563,6 @@ pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<
     if binding.connector != "node_executor" {
         layers.push(ctx.session_dir.join(RUNTIME_DIR).join("bin"));
         if let Some(root) = &ctx.agent_root {
-            layers.extend(skill_tool_dirs(root, &ctx.cmd_skills));
             if root.join("tools").is_dir() {
                 layers.push(root.join("tools"));
             }
@@ -1623,12 +1580,10 @@ pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<
     })
 }
 
-/// PATH layers of a local session: the session bin, the frozen cmd_skills'
-/// commands, the agent's tools.
-fn session_layers(sd: &SessionDir, cfg: &SessionConfig, agent_root: Option<&Path>) -> Vec<PathBuf> {
+/// PATH layers of a local session: the session bin, the agent's tools.
+fn session_layers(sd: &SessionDir, agent_root: Option<&Path>) -> Vec<PathBuf> {
     let mut layers = vec![sd.runtime_bin_dir()];
     if let Some(root) = agent_root {
-        layers.extend(skill_tool_dirs(root, &frozen_cmd_skills(cfg)));
         if root.join("tools").is_dir() {
             layers.push(root.join("tools"));
         }

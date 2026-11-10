@@ -157,15 +157,15 @@ fn owner_agent_profiles(
             warn!("executor: runtime settings of {} are inconsistent; not mapped", spec.agent_id);
             continue;
         }
-        let Some((_, runtime)) = agent_settings.node_runtime(node_id) else {
+        if agent_settings.node_runtime(node_id).is_none() {
             continue;
-        };
+        }
         let agent_did = spec.agent_did.to_string();
         let profile_id = owner_agent_profile_id(&agent_did);
         if settings.profiles.contains_key(&profile_id) {
             continue;
         }
-        let profile = policy.profile_for(&agent_did, runtime.computer);
+        let profile = policy.profile_for(&agent_did);
         if let Err(err) = profile.validate(&profile_id) {
             warn!("executor: derived profile {profile_id} rejected: {err}");
             continue;
@@ -488,6 +488,7 @@ mod tests {
                 profiles: BTreeMap::from([(
                     "dev".to_string(),
                     ExecutorProfile {
+                        baseline: None,
                         run_as: Some(ExecutorRunAs { uid: 1001, gid: 1001 }),
                         workdir_roots: vec!["/home/devtest/ws".into()],
                         env: BTreeMap::new(),
@@ -602,25 +603,23 @@ mod tests {
             env: BTreeMap::new(),
             ops: Vec::new(),
             computer: ComputerAccess::Control,
+            baseline: None,
             run_as: None,
         });
         input.insert("nodes/ood1/settings".into(), serde_json::to_string(&settings).unwrap());
-        let runtime = |computer: ComputerAccess| AgentSettings {
+        let runtime = || AgentSettings {
             runtimes: BTreeMap::from([(
                 "host".to_string(),
                 AgentRuntimeSettings {
                     enabled: true,
-                    computer,
                     target: AgentRuntimeTarget::Node { node_id: "ood1".into(), node_did: device_did.clone() },
-                    baseline: None,
-                    grant: None,
                 },
             )]),
             default_runtime_id: Some("host".into()),
             ..AgentSettings::default()
         };
-        input.insert(agent_settings_key("devtest", &jarvis.agent_id), serde_json::to_string(&runtime(ComputerAccess::Observe)).unwrap());
-        input.insert(agent_settings_key("devtest", &helper.agent_id), serde_json::to_string(&runtime(ComputerAccess::Control)).unwrap());
+        input.insert(agent_settings_key("devtest", &jarvis.agent_id), serde_json::to_string(&runtime()).unwrap());
+        input.insert(agent_settings_key("devtest", &helper.agent_id), serde_json::to_string(&runtime()).unwrap());
 
         let (actions, changed) = update_executor_snapshots(&input, NOW);
         assert!(changed);
@@ -632,14 +631,13 @@ mod tests {
         assert!(config.profiles[&jarvis_profile].run_as.is_none());
         let j = config.granted_ops(&jarvis_profile, &jarvis.agent_did.to_string());
         let h = config.granted_ops(&helper_profile, &helper.agent_did.to_string());
-        assert!(j.contains(&ExecutorOp::Exec) && j.contains(&ExecutorOp::ComputerObserve) && !j.contains(&ExecutorOp::ComputerAct));
-        assert!(h.contains(&ExecutorOp::ComputerAct));
+        assert!(j.contains(&ExecutorOp::Exec) && j.contains(&ExecutorOp::ComputerAct), "the node's ComputerUse is every Agent's");
+        assert_eq!(j, h);
         assert!(config.granted_ops(&helper_profile, &jarvis.agent_did.to_string()).is_empty());
 
         // The owner switches jarvis' host off: only jarvis loses its profile.
-        let mut off = runtime(ComputerAccess::Observe);
+        let mut off = runtime();
         off.runtimes.get_mut("host").unwrap().enabled = false;
-        off.default_runtime_id = None;
         input.insert(agent_settings_key("devtest", &jarvis.agent_id), serde_json::to_string(&off).unwrap());
         let actions = update_executor_snapshots(&input, NOW + 1_000).0;
         let config = apply(&mut input, &actions).unwrap();

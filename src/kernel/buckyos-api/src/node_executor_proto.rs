@@ -440,6 +440,12 @@ pub struct ExecutorRuntimeInfo {
     /// injected; absent on hosts without ComputerUse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desktop: Option<serde_json::Value>,
+    /// The environment the profile is declared to provide (absent: standard).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<crate::RuntimeBaseline>,
+    /// The most ComputerUse the profile's operations allow.
+    #[serde(default)]
+    pub computer: crate::ComputerAccess,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

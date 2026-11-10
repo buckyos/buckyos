@@ -268,6 +268,7 @@ impl Fixture {
             profiles: BTreeMap::from([(
                 "desktop".into(),
                 ExecutorProfile {
+                    baseline: None,
                     run_as: None,
                     workdir_roots: vec![dir.path().display().to_string()],
                     env: BTreeMap::new(),

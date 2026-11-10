@@ -1122,6 +1122,7 @@ impl AgentCreateRequest {
         crate::agent_runtimes::apply_update(
             kv,
             owner,
+            None,
             &mut settings,
             self.runtimes.as_ref(),
             self.default_runtime_id.as_ref(),
@@ -3161,7 +3162,7 @@ impl ControlPanelServer {
         if let Some(auto_share_results) = auto_share_results {
             settings.auto_share_results = auto_share_results;
         }
-        crate::agent_runtimes::apply_update(&kv, &owner, &mut settings, runtimes, default_runtime_id).await?;
+        crate::agent_runtimes::apply_update(&kv, &owner, Some(&agent_id), &mut settings, runtimes, default_runtime_id).await?;
         // Without a container runtime the Agent Service has nowhere else to
         // run: the default stays on a node runtime.
         if settings.effective_default_runtime() == buckyos_api::CONTAINER_RUNTIME_ID
@@ -3190,7 +3191,8 @@ impl ControlPanelServer {
 
     // ── agent.runtime_directory ──────────────────────────────────────────
 
-    /// The nodes the caller's Agents may run on, and one Agent's choice.
+    /// The runtimes the caller may assign (nodes and devices), and one
+    /// Agent's assignments.
     pub(crate) async fn handle_agent_runtime_directory(
         &self,
         req: RPCRequest,
@@ -3198,22 +3200,28 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         let kv = ZoneKv::connect().await?;
-        let (owner, settings) = match req.params.get("agent_id").filter(|v| !v.is_null()) {
+        let (owner, agent, settings) = match req.params.get("agent_id").filter(|v| !v.is_null()) {
             Some(_) => {
                 let agent_id = Self::param_agent_id(&req)?;
                 let (owner, _, _) = Self::locate_agent(&kv, principal, &agent_id, false).await?;
                 let settings = get_value::<AgentSettings>(&kv, &agent_settings_key(&owner, &agent_id)).await;
-                (owner, settings)
+                (owner, Some(agent_id), settings)
             }
-            None => (principal.owner_user_id.clone(), None),
+            None => (principal.owner_user_id.clone(), None, None),
         };
         let offers = crate::agent_runtimes::runtime_directory(&kv, &owner).await?;
         let container_available = crate::agent_runtimes::container_available(&kv).await;
+        let others: Vec<_> = crate::agent_runtimes::assignments(&kv, &owner)
+            .await
+            .into_iter()
+            .filter(|(other, _)| Some(other) != agent.as_ref())
+            .collect();
         Ok(RPCResponse::new(
             RPCResult::Success(crate::agent_runtimes::directory_view(
                 &offers,
                 settings.as_ref(),
                 container_available,
+                &others,
             )),
             req.seq,
         ))
@@ -4091,6 +4099,7 @@ mod tests {
             executor: Some(ExecutorSettings {
                 enabled: true,
                 owner_agents: Some(OwnerAgentsPolicy {
+                    baseline: None,
                     enabled: true,
                     workdir_roots: vec!["/home/devtest/workspace".into()],
                     env: BTreeMap::new(),
@@ -4123,7 +4132,6 @@ mod tests {
             .unwrap();
         assert!(settings.runtime_enabled("host"));
         assert_eq!(settings.effective_default_runtime(), "host");
-        assert_eq!(settings.runtimes["host"].computer, ComputerAccess::Observe);
         assert_eq!(
             settings.runtimes["host"].target,
             AgentRuntimeTarget::Node {
@@ -4166,28 +4174,24 @@ mod tests {
             .runtime_enabled("host"));
         kv.put("nodes/ood1/settings", &node);
 
-        params["runtimes"] = json!({"host": {"enabled": true, "computer": "none"}});
+        params["runtimes"] = json!({"host": {"enabled": true}});
         params["default_runtime_id"] = json!("host");
         let enabled = AgentCreateRequest::parse(&params).unwrap();
         assert_ne!(disabled.fingerprint(), enabled.fingerprint());
         let settings = enabled.settings_with_runtimes(&kv, OWNER).await.unwrap();
         assert!(settings.runtime_enabled("host"));
-        assert_eq!(settings.runtimes["host"].computer, ComputerAccess::None);
         assert!(enabled
             .settings_with_runtimes(&kv, "other-user")
             .await
             .is_err());
 
-        params["runtimes"]["host"]["computer"] = json!("control");
-        assert!(AgentCreateRequest::parse(&params)
-            .unwrap()
-            .settings_with_runtimes(&kv, OWNER)
-            .await
-            .is_err());
+        // What a runtime allows is the runtime's, never set per Agent.
         for invalid in [
             json!(false),
             json!({"enabled": "false"}),
-            json!({"computer": "invalid"}),
+            json!({"enabled": true, "computer": "observe"}),
+            json!({"enabled": true, "baseline": "extended"}),
+            json!({"enabled": true, "grant": {}}),
         ] {
             params["runtimes"]["host"] = invalid;
             assert!(AgentCreateRequest::parse(&params)
@@ -4227,6 +4231,80 @@ mod tests {
         assert!(enabled.settings_with_runtimes(&kv, OWNER).await.is_err());
     }
 
+    /// A device joined by daemon URL is in the directory of the user who
+    /// issued it (no zone owner needed), is assigned like a node, and is on
+    /// for one Agent at a time; revoking it takes it away from its Agents.
+    #[tokio::test]
+    async fn a_device_is_assigned_from_the_directory_and_used_by_one_agent_at_a_time() {
+        use buckyos_api::{AgentRuntimeTarget, ExecutorOp};
+        const DEVICE: &str = "5f0c2b9e-7a1d-4c53-9d0e-0b6a3c1f2e44";
+        let kv = MemoryKv::default();
+        let device = |enabled: bool, expires_at_ms: Option<u64>| {
+            json!({
+                "device": {
+                    "executor_id": DEVICE, "name": "friend-pc", "owner_user_id": "alice", "enabled": enabled,
+                    "expires_at_ms": expires_at_ms, "generation": 1, "created_at_ms": 1,
+                    "limits": buckyos_api::ExecutorLimits::default(),
+                    "profiles": {"main": {
+                        "workdir_roots": ["/home/friend"], "baseline": "extended",
+                        "ops": [ExecutorOp::OpenStream, ExecutorOp::Describe, ExecutorOp::Read, ExecutorOp::Stat, ExecutorOp::ComputerObserve],
+                    }},
+                },
+                "credential_sha256": "sha",
+            })
+        };
+        kv.put(&format!("services/control_panel/agent_executors/{DEVICE}"), &device(true, None));
+        let id = crate::agent_runtimes::device_runtime_id(DEVICE);
+        let offers = crate::agent_runtimes::runtime_directory(&kv, "alice").await.unwrap();
+        assert_eq!(offers.len(), 1, "a user who is not the zone owner has devices only");
+        let offer = &offers[0];
+        assert_eq!((offer.runtime_id.as_str(), offer.read_only, offer.closed), (id.as_str(), true, false));
+        assert_eq!((offer.computer, offer.baseline), (buckyos_api::ComputerAccess::Observe, buckyos_api::RuntimeBaseline::Extended));
+        assert!(crate::agent_runtimes::runtime_directory(&kv, "bob").await.unwrap().is_empty(), "another user's device");
+
+        let jarvis = AgentId::parse("jarvis.test.buckyos.io").unwrap();
+        let helper = AgentId::parse("helper.test.buckyos.io").unwrap();
+        let assign = |enabled: bool| json!({ id.clone(): { "enabled": enabled } });
+        let mut first = AgentSettings::default();
+        assert!(crate::agent_runtimes::apply_update(&kv, "alice", Some(&jarvis), &mut first, Some(&assign(true)), Some(&json!(id))).await.unwrap());
+        assert_eq!(first.runtimes[&id].target, AgentRuntimeTarget::Executor { executor_id: DEVICE.into(), profile_id: None });
+        kv.put(&agent_settings_key("alice", &jarvis), &first);
+
+        // The other Agent may be assigned the device, but not switch it on.
+        let mut second = AgentSettings::default();
+        let refused = crate::agent_runtimes::apply_update(&kv, "alice", Some(&helper), &mut second, Some(&assign(true)), None).await.unwrap_err();
+        assert!(refused.to_string().contains("runtime_in_use") && refused.to_string().contains("jarvis.test.buckyos.io"), "{refused}");
+        let mut second = AgentSettings::default();
+        assert!(crate::agent_runtimes::apply_update(&kv, "alice", Some(&helper), &mut second, Some(&assign(false)), None).await.unwrap());
+        kv.put(&agent_settings_key("alice", &helper), &second);
+        assert!(!crate::agent_runtimes::apply_update(&kv, "alice", Some(&jarvis), &mut first.clone(), Some(&assign(true)), None).await.unwrap(), "already on for itself");
+
+        // Switched off for the first, the default stays configured; then the second takes it.
+        assert!(crate::agent_runtimes::apply_update(&kv, "alice", Some(&jarvis), &mut first, Some(&assign(false)), None).await.unwrap());
+        assert_eq!((first.default_runtime_id.as_deref(), first.effective_default_runtime()), (Some(id.as_str()), "container"));
+        kv.put(&agent_settings_key("alice", &jarvis), &first);
+        assert!(crate::agent_runtimes::apply_update(&kv, "alice", Some(&helper), &mut second, Some(&assign(true)), None).await.unwrap());
+        kv.put(&agent_settings_key("alice", &helper), &second);
+        let catalog = crate::agent_runtimes::catalog_view(&offers, &crate::agent_runtimes::assignments(&kv, "alice").await, &|_| false, true);
+        assert_eq!(
+            catalog["runtimes"][0]["assigned_to"],
+            json!([
+                {"agent_id": "helper.test.buckyos.io", "runtime_id": id, "enabled": true, "default": false},
+                {"agent_id": "jarvis.test.buckyos.io", "runtime_id": id, "enabled": false, "default": true},
+            ])
+        );
+
+        // An expired device cannot be switched on; one taken back is taken away from its Agents.
+        kv.put(&format!("services/control_panel/agent_executors/{DEVICE}"), &device(true, Some(1)));
+        let mut third = first.clone();
+        let closed = crate::agent_runtimes::apply_update(&kv, "alice", Some(&jarvis), &mut third, Some(&assign(true)), None).await.unwrap_err();
+        assert!(closed.to_string().contains("runtime_not_offered"), "{closed}");
+        let unassigned = crate::agent_runtimes::unassign_device(&kv, "alice", DEVICE).await.unwrap();
+        assert_eq!(unassigned.len(), 2);
+        let after: AgentSettings = kv.read(&agent_settings_key("alice", &jarvis));
+        assert!(after.runtimes.is_empty() && after.default_runtime_id.is_none() && after.validate_runtimes().is_ok());
+    }
+
     /// On a Linux node the owner's new Agent stays in its container (its
     /// Agent Service would otherwise run as the node's service user); the
     /// owner may still choose the host explicitly. Without any container
@@ -4247,6 +4325,7 @@ mod tests {
             executor: Some(ExecutorSettings {
                 enabled: true,
                 owner_agents: Some(OwnerAgentsPolicy {
+                    baseline: None,
                     enabled: true,
                     workdir_roots: vec!["/opt/buckyos/data/home/devtest/host-runtime".into()],
                     env: BTreeMap::new(),
@@ -4263,17 +4342,17 @@ mod tests {
         assert_eq!(settings.effective_default_runtime(), "container");
         assert!(!settings.runtime_enabled("host"));
         let offers = crate::agent_runtimes::runtime_directory(&kv, OWNER).await.unwrap();
-        let view = crate::agent_runtimes::directory_view(&offers, Some(&settings), true);
+        let view = crate::agent_runtimes::directory_view(&offers, Some(&settings), true, &[]);
         assert_eq!((view["container_available"].as_bool(), view["host_by_default"].as_bool()), (Some(true), Some(false)));
         assert_eq!(view["runtimes"][0]["os"], "linux");
         assert_eq!(view["agent_service"]["mode"], "container");
 
         let mut explicit = params.clone();
-        explicit["runtimes"] = json!({"host": {"enabled": true, "computer": "none"}});
+        explicit["runtimes"] = json!({"host": {"enabled": true}});
         explicit["default_runtime_id"] = json!("host");
         let host = AgentCreateRequest::parse(&explicit).unwrap().settings_with_runtimes(&kv, OWNER).await.unwrap();
         assert_eq!(host.effective_default_runtime(), "host", "the owner may choose the host");
-        let view = crate::agent_runtimes::directory_view(&offers, Some(&host), true);
+        let view = crate::agent_runtimes::directory_view(&offers, Some(&host), true, &[]);
         assert_eq!(view["agent_service"], json!({"mode": "native", "node_id": "ood1"}));
 
         // No node runs containers: the host is the default, a container

@@ -14,6 +14,7 @@
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-fork/input",
   "agent_access": "full",
   "objective": "research then answer",
+  "runtime_id": "private",
   "status": {
     "rev": 5,
     "run_state": "running",
@@ -23,16 +24,16 @@
     "turn_open": true,
     "activity": {
       "summary": "research then answer",
-      "heartbeat_ms": 1793864756919
+      "heartbeat_ms": 1794290474913
     },
     "last_runner": {
-      "runner_id": "rn-1bfbbfbdf0f445af",
+      "runner_id": "rn-665ffe6c76154c78",
       "host": "${FIXTURE_HOST}",
-      "pid": 234431,
+      "pid": 2055405,
       "lock_epoch": 1,
-      "at_ms": 1793864756920
+      "at_ms": 1794290474915
     },
-    "updated_at_ms": 1793864756919
+    "updated_at_ms": 1794290474913
   },
   "location_rev": 0
 }

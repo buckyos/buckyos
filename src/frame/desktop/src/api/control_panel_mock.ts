@@ -54,7 +54,9 @@ import type {
   AgentNameCheck,
   AgentPermissionMode,
   AgentProfile,
-  AgentRuntimeOffer,
+  AgentRuntimeChanges,
+  AgentRuntimeInfo,
+  ExecutorDevice,
   AgentSettings,
   AgentStatus,
   AgentTemplate,
@@ -115,6 +117,11 @@ interface MockAgent {
   installed: boolean
 }
 
+interface MockExecutorDevice extends ExecutorDevice {
+  owner_user_id: string
+  profiles: Record<string, { workdir_roots?: string[]; ops?: string[]; baseline?: 'standard' | 'extended' }>
+}
+
 interface MockState {
   zone: string
   zone_owner: string
@@ -123,7 +130,9 @@ interface MockState {
   user_names: string[]
   host_names: string[]
   templates: AgentTemplate[]
-  runtime_offers: AgentRuntimeOffer[]
+  /** The nodes open to the zone owner's Agents (`host` first). */
+  runtime_offers: AgentRuntimeInfo[]
+  executor_devices?: MockExecutorDevice[]
   /** A node of the zone runs Agent containers (default true). */
   container_available?: boolean
   /** `lite`: BuckyOS Desktop Lite, one Agent and no containers (default full). */
@@ -224,8 +233,8 @@ function defaultState(): MockState {
     templates: [jarvisTemplate],
     runtime_offers: [{
       runtime_id: 'host', kind: 'node', node_id: 'desktop', node_did: 'did:dev:desktop',
-      device_type: 'desktop', name: 'Alice’s computer', computer_max: 'control', os: 'windows',
-      workdir_roots: ['/home/alice'], closed: false, enabled: false, computer: 'none', baseline: 'standard',
+      device_type: 'desktop', executor_id: null, name: 'Alice’s computer', computer: 'control', os: 'windows',
+      workdir_roots: ['/home/alice'], read_only: false, baseline: 'standard', expires_at_ms: null, run_as: true, closed: false,
     }],
     agents: [
       {
@@ -439,6 +448,128 @@ function findAgent(state: MockState, agentId: string) {
   return agent
 }
 
+function effectiveDefaultRuntime(agent: MockAgent) {
+  const configured = agent.settings.configured_default_runtime_id
+  return configured && agent.settings.runtimes?.[configured]?.enabled ? configured : 'container'
+}
+
+/** The runtimes `owner` may assign: the nodes (zone owner only), then the devices the owner issued. */
+function runtimeOffers(state: MockState, owner: string): AgentRuntimeInfo[] {
+  const devices = (state.executor_devices ?? []).filter((device) => device.owner_user_id === owner).map((device): AgentRuntimeInfo => {
+    const profile = Object.values(device.profiles)[0] ?? {}
+    const ops = profile.ops ?? []
+    return {
+      runtime_id: `exec-${device.executor_id}`, kind: 'executor', node_id: '', node_did: '', device_type: '',
+      executor_id: device.executor_id, name: device.name,
+      computer: ops.includes('computer_act') ? 'control' : ops.includes('computer_observe') ? 'observe' : 'none',
+      workdir_roots: profile.workdir_roots ?? [],
+      read_only: !ops.some((op) => ['exec', 'write', 'edit'].includes(op)),
+      baseline: profile.baseline ?? 'standard',
+      expires_at_ms: device.expires_at_ms, run_as: false,
+      closed: !device.enabled || (device.expires_at_ms !== null && device.expires_at_ms <= Date.now()),
+      os: '',
+    }
+  })
+  return [...(owner === state.zone_owner ? state.runtime_offers : []), ...devices]
+}
+
+function isRuntimeTarget(offer: AgentRuntimeInfo, target: NonNullable<AgentSettings['runtimes']>[string]['target']) {
+  return target.kind === 'executor' ? offer.executor_id === target.executor_id : !offer.executor_id && offer.node_id === target.node_id
+}
+
+/** The Agent of `owner`, other than `except`, that has the device switched on. */
+function deviceUser(state: MockState, owner: string, executorId: string, except?: MockAgent) {
+  return state.agents.find((agent) => agent !== except && agent.owner_user_id === owner
+    && Object.values(agent.settings.runtimes ?? {}).some((runtime) => runtime.enabled && runtime.target.kind === 'executor' && runtime.target.executor_id === executorId))
+}
+
+function applyRuntimeChanges(state: MockState, agent: MockAgent, changes: unknown, defaultRuntimeId: unknown) {
+  const runtimes = { ...(agent.settings.runtimes ?? {}) }
+  if (changes !== undefined && changes !== null) {
+    if (typeof changes !== 'object' || Array.isArray(changes)) throw new MockRpcError('invalid_runtimes: runtimes must be an object')
+    const offers = runtimeOffers(state, agent.owner_user_id)
+    for (const [id, change] of Object.entries(changes as AgentRuntimeChanges)) {
+      if (change === null) {
+        delete runtimes[id]
+        continue
+      }
+      if (typeof change !== 'object' || typeof change.enabled !== 'boolean' || Object.keys(change).some((key) => key !== 'enabled')) {
+        throw new MockRpcError(`invalid_runtimes: runtime \`${id}\` takes \`enabled\` only`)
+      }
+      const offer = offers.find((item) => (runtimes[id] ? isRuntimeTarget(item, runtimes[id].target) : item.runtime_id === id))
+      if (!offer || (offer.closed && change.enabled)) throw new MockRpcError(`runtime_not_offered: ${id} is not open to this owner`)
+      const user = change.enabled && offer.executor_id ? deviceUser(state, agent.owner_user_id, offer.executor_id, agent) : undefined
+      if (user) throw new MockRpcError(`runtime_in_use: device ${offer.name} is in use by Agent ${user.agent_id}`)
+      runtimes[id] = {
+        enabled: change.enabled,
+        target: offer.executor_id
+          ? { kind: 'executor', executor_id: offer.executor_id }
+          : { kind: 'node', node_id: offer.node_id ?? '', node_did: offer.node_did ?? '' },
+      }
+    }
+  }
+  agent.settings.runtimes = runtimes
+  if (defaultRuntimeId !== undefined) {
+    const id = defaultRuntimeId === null || defaultRuntimeId === 'container' ? null : String(defaultRuntimeId)
+    if (id && !runtimes[id]) throw new MockRpcError(`invalid_runtimes: default runtime \`${id}\` is not assigned to this Agent`)
+    agent.settings.configured_default_runtime_id = id
+  }
+  agent.settings.default_runtime_id = effectiveDefaultRuntime(agent)
+}
+
+function unassignDevice(state: MockState, executorId: string): string[] {
+  const changed: string[] = []
+  for (const agent of state.agents) {
+    const ids = Object.entries(agent.settings.runtimes ?? {})
+      .filter(([, runtime]) => runtime.target.kind === 'executor' && runtime.target.executor_id === executorId)
+      .map(([id]) => id)
+    if (ids.length === 0) continue
+    applyRuntimeChanges(state, agent, Object.fromEntries(ids.map((id) => [id, null])), undefined)
+    if (agent.settings.configured_default_runtime_id && ids.includes(agent.settings.configured_default_runtime_id)) {
+      applyRuntimeChanges(state, agent, undefined, null)
+    }
+    changed.push(agent.agent_id)
+  }
+  return changed
+}
+
+function handleExecutorDevice(state: MockState, method: string, params: Record<string, unknown>): unknown {
+  requireAdmin(state)
+  const owner = state.account.user_id
+  const devices = state.executor_devices ?? (state.executor_devices = [])
+  if (method === 'executor.device.list') {
+    return { devices: devices.filter((device) => device.owner_user_id === owner).map((device) => ({ device, online: null })) }
+  }
+  const issued = (device: MockExecutorDevice) => {
+    const access_url = `wss://${state.zone}.web3.buckyos.ai/kapi/control-panel/executor/manage?executor_id=${device.executor_id}#mock-credential-for-desktop-preview-only`
+    return { device, access_url, start_command: `./start-buckyos-agent-daemon.sh '${access_url}'` }
+  }
+  if (method === 'executor.device.create') {
+    const profiles = Object.fromEntries(Object.entries((params.profiles ?? {}) as MockExecutorDevice['profiles']).map(([id, profile]) => [id, {
+      workdir_roots: profile.workdir_roots, ops: profile.ops, baseline: profile.baseline,
+    }]))
+    if (Object.keys(profiles).length === 0) throw new MockRpcError('profiles are required')
+    const device: MockExecutorDevice = {
+      executor_id: crypto.randomUUID(), name: stringParam(params, 'name'), owner_user_id: owner, enabled: true,
+      expires_at_ms: typeof params.expires_at_ms === 'number' ? params.expires_at_ms : null, profiles,
+    }
+    devices.push(device)
+    return issued(device)
+  }
+  const id = stringParam(params, 'executor_id')
+  const device = devices.find((item) => item.executor_id === id && item.owner_user_id === owner)
+  if (!device) throw new MockRpcError(`device '${id}' not found`)
+  if (method === 'executor.device.issue') {
+    device.enabled = true
+    device.expires_at_ms = typeof params.expires_at_ms === 'number' ? params.expires_at_ms : null
+    return issued(device)
+  }
+  const unassigned = unassignDevice(state, id)
+  if (method === 'executor.device.delete') state.executor_devices = devices.filter((item) => item !== device)
+  else device.enabled = false
+  return { unassigned }
+}
+
 function displayName(agent: MockAgent) {
   return agent.profile.display_name?.trim() || agent.name
 }
@@ -454,7 +585,13 @@ function toEntry(state: MockState, agent: MockAgent): AgentEntry {
     name: agent.name,
     display_name: displayName(agent),
     profile: { ...agent.profile },
-    settings: { ...agent.settings, msg_tunnels: agent.settings.msg_tunnels.map((tunnel) => ({ ...tunnel })) },
+    settings: {
+      ...agent.settings,
+      msg_tunnels: agent.settings.msg_tunnels.map((tunnel) => ({ ...tunnel })),
+      runtimes: agent.settings.runtimes ?? {},
+      default_runtime_id: effectiveDefaultRuntime(agent),
+      configured_default_runtime_id: agent.settings.configured_default_runtime_id ?? null,
+    },
     install: { ...agent.install },
     template: { ...agent.template },
     runtime: agent.installed
@@ -759,20 +896,12 @@ function createAgent(state: MockState, params: Record<string, unknown>) {
     step_started_at: now,
     installed: false,
   }
-  const host = state.account.user_id === state.zone_owner
-    ? state.runtime_offers.find((offer) => offer.runtime_id === 'host' && !offer.closed)
-    : undefined
-  const choice = request.runtimes?.host
-  const enableHost = host && choice !== null && choice?.enabled !== false
-  if (choice?.enabled && !host) throw new MockRpcError('runtime_not_offered: host is not open to this owner')
-  agent.settings.runtimes = enableHost ? {
-    host: {
-      enabled: true,
-      computer: choice?.computer ?? host.computer_max,
-      target: { kind: 'node', node_id: host.node_id!, node_did: host.node_did! },
-    },
-  } : {}
-  agent.settings.default_runtime_id = request.default_runtime_id ?? (enableHost ? 'host' : 'container')
+  const requested = request.runtimes ?? {}
+  const offers = runtimeOffers(state, state.account.user_id)
+  const host = offers.find((offer) => offer.runtime_id === 'host' && !offer.closed)
+  const changes: AgentRuntimeChanges = Object.fromEntries(Object.entries(requested).filter(([, change]) => change !== null))
+  if (host && !('host' in requested) && (host.os !== 'linux' || state.container_available === false)) changes.host = { enabled: true }
+  applyRuntimeChanges(state, agent, changes, request.default_runtime_id ?? (changes.host?.enabled ? 'host' : null))
   if (agent.settings.default_runtime_id === 'container' && state.container_available === false) {
     throw new MockRpcError('container_unavailable: no node of this zone runs Agent containers')
   }
@@ -1395,23 +1524,80 @@ function handle(state: MockState, method: string, params: Record<string, unknown
       const agent = typeof params.agent_id === 'string' ? findAgent(state, params.agent_id) : null
       const owner = agent?.owner_user_id ?? state.account.user_id
       const containerAvailable = state.container_available !== false
-      const host = owner === state.zone_owner ? state.runtime_offers.find((offer) => offer.runtime_id === 'host') : undefined
-      const defaultTarget = agent?.settings.runtimes?.[agent.settings.default_runtime_id ?? '']?.target
+      const offers = runtimeOffers(state, owner)
+      const host = offers.find((offer) => offer.runtime_id === 'host')
+      const settings = agent?.settings.runtimes ?? {}
+      const defaultTarget = agent ? settings[effectiveDefaultRuntime(agent)]?.target : undefined
       return {
         container_available: containerAvailable,
         host_by_default: Boolean(host && !host.closed && (host.os !== 'linux' || !containerAvailable)),
-        agent_service: owner === state.zone_owner && defaultTarget?.kind === 'node'
-          ? { mode: 'native', node_id: defaultTarget.node_id }
-          : { mode: 'container' },
-        runtimes: owner === state.zone_owner ? state.runtime_offers.map((offer) => ({
-          ...offer,
-          enabled: agent?.settings.runtimes?.[offer.runtime_id]?.enabled ?? false,
-          computer: agent?.settings.runtimes?.[offer.runtime_id]?.computer ?? 'none',
-        })) : [],
-        default_runtime_id: agent?.settings.default_runtime_id ?? null,
+        ...(agent ? {
+          agent_service: defaultTarget?.kind === 'node' && offers.some((offer) => !offer.closed && isRuntimeTarget(offer, defaultTarget))
+            ? { mode: 'native', node_id: defaultTarget.node_id }
+            : { mode: 'container' },
+        } : {}),
+        runtimes: [
+          ...offers.map((offer) => {
+            const chosen = Object.entries(settings).find(([, runtime]) => isRuntimeTarget(offer, runtime.target))
+            return {
+              ...offer,
+              runtime_id: chosen?.[0] ?? offer.runtime_id,
+              assigned: Boolean(chosen),
+              enabled: chosen?.[1].enabled ?? false,
+              in_use_by: offer.executor_id ? deviceUser(state, owner, offer.executor_id, agent ?? undefined)?.agent_id ?? null : null,
+            }
+          }),
+          ...Object.entries(settings).filter(([, runtime]) => !offers.some((offer) => isRuntimeTarget(offer, runtime.target))).map(([id, runtime]) => ({
+            runtime_id: id, ...runtime.target, closed: true, withdrawn: true, assigned: true, enabled: runtime.enabled,
+            computer: 'none', baseline: 'standard', in_use_by: null,
+          })),
+        ],
+        default_runtime_id: agent ? effectiveDefaultRuntime(agent) : null,
+        configured_default_runtime_id: agent?.settings.configured_default_runtime_id ?? null,
         container: 'container',
       }
     }
+    case 'agent.runtime_catalog': {
+      const owner = state.account.user_id
+      const offers = runtimeOffers(state, owner)
+      const host = offers.find((offer) => offer.runtime_id === 'host')
+      const containerAvailable = state.container_available !== false
+      return {
+        runtimes: offers.map((offer) => ({
+          ...offer,
+          online: offer.executor_id ? false : null,
+          assigned_to: state.agents.filter((agent) => agent.owner_user_id === owner).flatMap((agent) =>
+            Object.entries(agent.settings.runtimes ?? {}).filter(([, runtime]) => isRuntimeTarget(offer, runtime.target)).map(([id, runtime]) => ({
+              agent_id: agent.agent_id, runtime_id: id, enabled: runtime.enabled, default: agent.settings.configured_default_runtime_id === id,
+            }))),
+        })),
+        container: 'container',
+        container_available: containerAvailable,
+        host_by_default: Boolean(host && !host.closed && (host.os !== 'linux' || !containerAvailable)),
+      }
+    }
+    case 'node.owner_agents_set': {
+      requireAdmin(state)
+      if (state.account.user_id !== state.zone_owner) throw new MockRpcError('only the zone owner changes what a node allows Agents')
+      const nodeId = stringParam(params, 'node_id')
+      const node = state.runtime_offers.find((offer) => offer.node_id === nodeId)
+      if (!node) throw new MockRpcError('no_policy: this node is not open to Agents: no account for them was chosen when it was activated')
+      if (Array.isArray(params.workdir_roots)) {
+        const roots = params.workdir_roots.map(String)
+        if (roots.some((root) => !/^(\/|[A-Za-z]:[\\/])/.test(root))) throw new MockRpcError('invalid_policy: workdir_roots must be absolute paths')
+        node.workdir_roots = roots
+      }
+      if (typeof params.enabled === 'boolean') node.closed = !params.enabled
+      if (params.computer === 'none' || params.computer === 'observe' || params.computer === 'control') node.computer = params.computer
+      if ('baseline' in params) node.baseline = params.baseline === 'extended' ? 'extended' : 'standard'
+      return { runtime: { ...node } }
+    }
+    case 'executor.device.list':
+    case 'executor.device.create':
+    case 'executor.device.issue':
+    case 'executor.device.revoke':
+    case 'executor.device.delete':
+      return handleExecutorDevice(state, method, params)
     case 'agent.create': {
       // BuckyOS Desktop Lite runs one Agent: the run slot is taken until it is deleted.
       const holder = state.edition === 'lite' ? agentSlotHolder(state) : undefined
@@ -1435,6 +1621,7 @@ function handle(state: MockState, method: string, params: Record<string, unknown
       if (typeof params.allow_group === 'boolean') agent.settings.allow_group = params.allow_group
       if (typeof params.homestation === 'boolean') agent.settings.homestation = params.homestation
       if (typeof params.auto_share_results === 'boolean') agent.settings.auto_share_results = params.auto_share_results
+      if ('runtimes' in params || 'default_runtime_id' in params) applyRuntimeChanges(state, agent, params.runtimes, params.default_runtime_id)
       return toEntry(state, agent)
     }
     case 'agent.profile.get':

@@ -24,8 +24,8 @@ const SKILLS_STATE_LOCK: &str = ".meta/skills_state.lock";
 /// the files the package brought.
 const PACKAGE_MANIFEST: &str = ".meta/rootfs_sync.json";
 /// Commands of a work skill: `tools/<name>/bin`, and what installs more (`tools/<name>/install.toml`).
-pub const TOOLS_DIR: &str = "tools";
-pub const INSTALL_TOML: &str = "install.toml";
+/// A package directory skills never have: commands come from extension packages, not from skills.
+const TOOLS_DIR: &str = "tools";
 /// Skills waiting for the owner: `skills_drafts/<slug>/` laid out like a skill package, with `draft.json`.
 pub const DRAFTS_DIR: &str = "skills_drafts";
 pub const DRAFT_META: &str = "draft.json";
@@ -149,9 +149,6 @@ pub fn installed_paths(root: &Path) -> Result<Vec<String>> {
     for k in record.installed.keys() {
         let Some((kind, name)) = parse_key(k) else { continue };
         out.push(format!("{}/{name}/", kind.dir()));
-        if kind == SkillKind::Work {
-            out.push(format!("{TOOLS_DIR}/{name}/"));
-        }
     }
     Ok(out)
 }
@@ -176,14 +173,6 @@ fn names_in(dir: &Path) -> Vec<String> {
         .unwrap_or_default();
     names.sort();
     names
-}
-
-fn tools_of(root: &Path, name: &str) -> Vec<String> {
-    let mut tools: Vec<String> = std::fs::read_dir(root.join(TOOLS_DIR).join(name).join("bin"))
-        .map(|rd| rd.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    tools.sort();
-    tools
 }
 
 fn files_under(dir: &Path) -> Vec<String> {
@@ -238,14 +227,10 @@ pub fn list(root: &Path, kind: Option<SkillKind>) -> Result<Vec<SkillMeta>> {
             }
             .into();
             meta.references = files_under(&dir.join(&name).join(SKILL_REFERENCES));
-            if k == SkillKind::Work {
-                meta.tools = tools_of(root, &name);
-            }
             meta.disabled = state.disabled.get(&id).cloned();
             meta.usage = state.usage.get(&id).cloned();
             meta.install_state = state.install.get(&id).cloned();
-            meta.enabled = meta.disabled.is_none()
-                && meta.install_state.as_ref().is_none_or(|i| i.status == SkillInstallStatus::Enabled);
+            meta.enabled = meta.disabled.is_none();
             out.push(meta);
         }
     }
@@ -519,8 +504,8 @@ pub fn commands_status(
     SkillCommandsStatus { state, commands: states, recommended_packages: packages.into_values().collect(), no_package }
 }
 
-/// A skill package, unpacked: `cmd_skills/<name>/…`, `plan_skills/<name>/…`, `goal_skills/<name>/…` (each `SKILL.md`
-/// and optional `references/`) and `tools/<name>/…` for its work skills.
+/// A skill package, unpacked: `cmd_skills/<name>/…`, `plan_skills/<name>/…`, `goal_skills/<name>/…`, each `SKILL.md`
+/// and optional `references/`. Text only: a skill brings no command and no script.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillPackage {
     /// Name of the skill package (the PIKG's App name).
@@ -541,8 +526,6 @@ pub struct SkillPackage {
 pub struct SkillFile {
     /// Base64 of the bytes.
     pub content: String,
-    #[serde(default)]
-    pub executable: bool,
 }
 
 impl SkillFile {
@@ -553,9 +536,9 @@ impl SkillFile {
             .map_err(|e| OpenDanError::InvalidArgument(format!("file content is not base64: {e}")))
     }
 
-    pub fn of(bytes: &[u8], executable: bool) -> Self {
+    pub fn of(bytes: &[u8]) -> Self {
         use base64::Engine;
-        Self { content: base64::engine::general_purpose::STANDARD.encode(bytes), executable }
+        Self { content: base64::engine::general_purpose::STANDARD.encode(bytes) }
     }
 
     fn text(&self) -> Option<String> {
@@ -563,7 +546,7 @@ impl SkillFile {
     }
 }
 
-/// `sha256:<hex>` over the sorted `(path, executable, sha256(bytes))` lines
+/// `sha256:<hex>` over the sorted `(path, sha256(bytes))` lines
 /// of a package: the same content gives the same digest wherever it was
 /// packed.
 pub fn content_digest(files: &BTreeMap<String, SkillFile>) -> Result<String> {
@@ -571,7 +554,7 @@ pub fn content_digest(files: &BTreeMap<String, SkillFile>) -> Result<String> {
     let mut h = Sha256::new();
     for (path, f) in files {
         let bytes = f.bytes()?;
-        h.update(format!("{path}|{}|{}\n", u8::from(f.executable), hex::encode(Sha256::digest(&bytes))).as_bytes());
+        h.update(format!("{path}|{}\n", hex::encode(Sha256::digest(&bytes))).as_bytes());
     }
     Ok(format!("sha256:{}", hex::encode(h.finalize())))
 }
@@ -580,8 +563,8 @@ fn skill_dirs() -> [&'static str; 4] {
     [SkillKind::Work.dir(), SkillKind::Plan.dir(), SkillKind::Goal.dir(), TOOLS_DIR]
 }
 
-/// Read an unpacked skill package directory (its `cmd_skills/`, `plan_skills/`, `goal_skills/`, `tools/`; everything
-/// else is left out).
+/// Read an unpacked skill package directory (its `cmd_skills/`, `plan_skills/`, `goal_skills/`; a `tools/` is read so
+/// that the package is refused for it; everything else is left out).
 pub fn read_package_dir(dir: &Path, package: &str, version: &str) -> Result<SkillPackage> {
     let mut files = BTreeMap::new();
     for top in skill_dirs() {
@@ -592,14 +575,7 @@ pub fn read_package_dir(dir: &Path, package: &str, version: &str) -> Result<Skil
             }
             let p = dir.join(&rel);
             let bytes = std::fs::read(&p).map_err(|e| OpenDanError::io(&p, e))?;
-            #[cfg(unix)]
-            let executable = {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::metadata(&p).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
-            };
-            #[cfg(not(unix))]
-            let executable = false;
-            files.insert(rel, SkillFile::of(&bytes, executable));
+            files.insert(rel, SkillFile::of(&bytes));
         }
     }
     Ok(SkillPackage { package: package.to_string(), version: version.to_string(), pikg_digest: None, imported_from: None, files })
@@ -688,10 +664,9 @@ pub fn read_pikg(path: &Path) -> Result<SkillPackage> {
         if !skill_dirs().contains(&top) {
             continue;
         }
-        let executable = e.header().mode().map(|m| m & 0o111 != 0).unwrap_or(false);
         let mut bytes = Vec::new();
         e.read_to_end(&mut bytes).map_err(|e| bad(e.to_string()))?;
-        files.insert(rel, SkillFile::of(&bytes, executable));
+        files.insert(rel, SkillFile::of(&bytes));
     }
     Ok(SkillPackage {
         package: app["name"].as_str().unwrap_or_default().to_string(),
@@ -706,15 +681,19 @@ pub fn read_pikg(path: &Path) -> Result<SkillPackage> {
 fn place(path: &str) -> Result<(SkillKind, String)> {
     let bad = || {
         OpenDanError::InvalidArgument(format!(
-            "`{path}` is not a skill file: a skill package holds <cmd_skills|plan_skills|goal_skills>/<name>/SKILL.md, their references/… and tools/<work skill>/…"
+            "`{path}` is not a skill file: a skill package holds <cmd_skills|plan_skills|goal_skills>/<name>/SKILL.md and their references/…"
         ))
     };
     let parts: Vec<&str> = path.split('/').collect();
     if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") {
         return Err(bad());
     }
+    if parts[0] == TOOLS_DIR {
+        return Err(OpenDanError::InvalidArgument(format!(
+            "`{path}`: a skill is text only and brings no command or install script; publish the commands as an extension package and name them in the manual's `commands`"
+        )));
+    }
     let (kind, name) = match parts.as_slice() {
-        [dir, name, _, ..] if *dir == TOOLS_DIR => (SkillKind::Work, *name),
         [dir, name, rest @ ..] => {
             let kind = SkillKind::ALL.into_iter().find(|k| k.dir() == *dir).ok_or_else(bad)?;
             match rest {
@@ -728,61 +707,6 @@ fn place(path: &str) -> Result<(SkillKind, String)> {
     };
     crate::ids::validate_session_id(name).map_err(|_| bad())?;
     Ok((kind, name.to_string()))
-}
-
-/// `tools/<name>/install.toml`: how the commands a skill does not carry in `bin/` get onto a runtime.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InstallToml {
-    #[serde(default)]
-    pub check: InstallCheck,
-    /// By OS (`linux`, `macos`, `windows`).
-    #[serde(default)]
-    pub install: BTreeMap<String, InstallScript>,
-    #[serde(default)]
-    pub uninstall: BTreeMap<String, InstallScript>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InstallCheck {
-    /// Commands that must exist afterwards (absent: the manual's `commands`).
-    #[serde(default)]
-    pub commands: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InstallScript {
-    /// Relative to `tools/<name>/`.
-    pub script: String,
-    /// Where it writes: `<agent_root>/…` and `<instance_volume>/…` survive a restart of the container.
-    #[serde(default)]
-    pub writes: Vec<String>,
-}
-
-impl InstallToml {
-    pub fn parse(text: &str) -> std::result::Result<Self, String> {
-        let parsed: InstallToml = toml::from_str(text).map_err(|e| e.to_string())?;
-        for (os, script) in parsed.install.iter().chain(parsed.uninstall.iter()) {
-            if !SKILL_PLATFORMS.contains(&os.as_str()) {
-                return Err(format!("`{os}` is not one of {}", SKILL_PLATFORMS.join(", ")));
-            }
-            if script.script.starts_with('/') || script.script.split(['/', '\\']).any(|p| p == ".." || p.is_empty()) {
-                return Err(format!("script `{}` must be a path inside tools/<name>/", script.script));
-            }
-        }
-        Ok(parsed)
-    }
-
-    /// The commands the installation checks: its own list, else the manual's.
-    pub fn check_commands(&self, manual: &[String]) -> Vec<String> {
-        self.check.commands.clone().unwrap_or_else(|| manual.to_vec())
-    }
-
-    fn volatile(script: &InstallScript) -> bool {
-        script.writes.iter().any(|w| !w.starts_with("<agent_root>") && !w.starts_with("<instance_volume>"))
-    }
 }
 
 /// One thing a check of a skill package found.
@@ -910,11 +834,10 @@ struct PackageSkill<'a> {
     name: String,
     meta: SkillMeta,
     files: Vec<(&'a str, &'a SkillFile)>,
-    install: Option<InstallToml>,
 }
 
-/// The skills of a package with what makes each installable checked: layout, front matter, a manual per skill, no
-/// command of the standard layer. `findings` takes what is worth telling without refusing.
+/// The skills of a package with what makes each installable checked: layout, front matter, a manual per skill, every
+/// file text. `findings` takes what is worth telling without refusing.
 fn package_skills<'a>(pkg: &'a SkillPackage, findings: &mut Vec<SkillFinding>) -> Result<Vec<PackageSkill<'a>>> {
     let invalid = |m: String| OpenDanError::InvalidArgument(m);
     let mut grouped: BTreeMap<(SkillKind, String), Vec<(&str, &SkillFile)>> = BTreeMap::new();
@@ -922,12 +845,8 @@ fn package_skills<'a>(pkg: &'a SkillPackage, findings: &mut Vec<SkillFinding>) -
         let (kind, name) = place(path)?;
         grouped.entry((kind, name)).or_default().push((path.as_str(), f));
     }
-    if let Some(path) = pkg.files.keys().find(|path| {
-        path.strip_prefix(&format!("{TOOLS_DIR}/"))
-            .and_then(|rest| rest.split_once("/bin/"))
-            .is_some_and(|(_, command)| crate::baseline::STANDARD_TOOLS.iter().any(|t| t.name == command.split('.').next().unwrap_or(command)))
-    }) {
-        return Err(invalid(format!("{path}: a skill cannot bring a command of the standard layer: it would shadow the Agent's own")));
+    if let Some((path, _)) = pkg.files.iter().find(|(_, f)| f.text().is_none()) {
+        return Err(invalid(format!("{path} is not UTF-8 text: a skill is text only")));
     }
     if grouped.is_empty() {
         return Err(invalid(format!("package {} holds no skill (<cmd_skills|plan_skills|goal_skills>/<name>/SKILL.md)", pkg.package)));
@@ -936,11 +855,7 @@ fn package_skills<'a>(pkg: &'a SkillPackage, findings: &mut Vec<SkillFinding>) -
     for ((kind, name), files) in grouped {
         let manual = kind.manual(&name);
         let Some(file) = pkg.files.get(&manual) else {
-            return Err(invalid(if files.iter().all(|(p, _)| p.starts_with(TOOLS_DIR)) {
-                format!("tools/{name}/ belongs to no work skill: the package has no {manual}")
-            } else {
-                format!("{}/{name}/ has no {SKILL_MANUAL}", kind.dir())
-            }));
+            return Err(invalid(format!("{}/{name}/ has no {SKILL_MANUAL}", kind.dir())));
         };
         let text = file.text().ok_or_else(|| invalid(format!("{manual} is not UTF-8 text")))?;
         let (fields, body) = split_front_matter(&text);
@@ -949,21 +864,7 @@ fn package_skills<'a>(pkg: &'a SkillPackage, findings: &mut Vec<SkillFinding>) -
             return Err(invalid(format!("{manual}: front matter name `{}` differs from its directory", fields["name"])));
         }
         let mut meta = skill_meta(kind, &name, &text);
-        meta.tools = files.iter().filter_map(|(p, _)| p.strip_prefix(&format!("{TOOLS_DIR}/{name}/bin/"))).map(str::to_string).collect();
         meta.references = files.iter().filter_map(|(p, _)| p.strip_prefix(&format!("{}/{name}/{SKILL_REFERENCES}/", kind.dir()))).map(str::to_string).collect();
-        let install = match pkg.files.get(&format!("{TOOLS_DIR}/{name}/{INSTALL_TOML}")) {
-            Some(f) => {
-                let text = f.text().ok_or_else(|| invalid(format!("tools/{name}/{INSTALL_TOML} is not UTF-8 text")))?;
-                let parsed = InstallToml::parse(&text).map_err(|e| invalid(format!("tools/{name}/{INSTALL_TOML}: {e}")))?;
-                for script in parsed.install.values().chain(parsed.uninstall.values()) {
-                    if !pkg.files.contains_key(&format!("{TOOLS_DIR}/{name}/{}", script.script)) {
-                        return Err(invalid(format!("tools/{name}/{INSTALL_TOML}: the package has no tools/{name}/{}", script.script)));
-                    }
-                }
-                Some(parsed)
-            }
-            None => None,
-        };
         if meta.description.trim().is_empty() {
             findings.push(finding("no_description", "medium", &manual, "no `description`: whoever chooses manuals only sees the name"));
         }
@@ -976,9 +877,7 @@ fn package_skills<'a>(pkg: &'a SkillPackage, findings: &mut Vec<SkillFinding>) -
                     findings.push(finding("ui_manual_large", "low", &manual, format!("{} bytes: every conversation that takes it carries them (advised: at most {UI_MANUAL_WARN_BYTES})", meta.size)));
                 }
                 let used: BTreeSet<String> = texts.iter().flat_map(|t| commands_in_manual(t)).collect();
-                let known = |c: &String| {
-                    meta.tools.iter().any(|t| t == c || t.split('.').next() == Some(c.as_str())) || crate::baseline::STANDARD_TOOLS.iter().any(|t| t.name == c)
-                };
+                let known = |c: &String| crate::baseline::STANDARD_TOOLS.iter().any(|t| t.name == c);
                 let undeclared: Vec<String> = used.iter().filter(|c| !meta.commands.contains(c) && !known(c)).cloned().collect();
                 if !undeclared.is_empty() {
                     findings.push(finding("undeclared_commands", "low", &manual, format!("the manual runs {} without naming them in `commands`", undeclared.join(", "))));
@@ -1006,7 +905,7 @@ fn package_skills<'a>(pkg: &'a SkillPackage, findings: &mut Vec<SkillFinding>) -
             }
             SkillKind::Goal => {}
         }
-        out.push(PackageSkill { kind, name, meta, files, install });
+        out.push(PackageSkill { kind, name, meta, files });
     }
     Ok(out)
 }
@@ -1020,18 +919,6 @@ pub fn lint_package(pkg: &SkillPackage) -> Vec<SkillFinding> {
     findings
 }
 
-/// A runtime as an installation target.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstallTarget {
-    pub runtime_id: String,
-    pub os: String,
-    pub install: buckyos_api::InstallGrant,
-    pub private: bool,
-    /// Why the package's commands cannot go there (`None`: they can).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refused: Option<String>,
-}
-
 /// One skill of an install plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedSkill {
@@ -1040,12 +927,6 @@ pub struct PlannedSkill {
     /// The skill of the same name it would replace (its origin).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<String>,
-    /// Commands the installation checks on the runtime (`install.toml`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub check_commands: Vec<String>,
-    /// OSes it has an install script for.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub install_scripts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1066,15 +947,6 @@ pub struct InstallPlan {
     pub plan_digest: String,
     pub skills: Vec<PlannedSkill>,
     pub risk: InstallRisk,
-    /// Where the commands go (absent: the package installs none).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_id: Option<String>,
-    /// The runtimes the owner may choose instead.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub targets: Vec<InstallTarget>,
-    /// What stops the installation as planned (`block` findings).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocked: Vec<String>,
 }
 
 fn plan_digest(pkg: &SkillPackage, digest: &str) -> String {
@@ -1082,65 +954,9 @@ fn plan_digest(pkg: &SkillPackage, digest: &str) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(format!("{}\n{}\n{digest}\n", pkg.package, pkg.version).as_bytes())))
 }
 
-fn needs_grant(skill: &PackageSkill, os: &str) -> buckyos_api::InstallGrant {
-    use buckyos_api::InstallGrant as G;
-    if skill.install.as_ref().is_some_and(|i| i.install.contains_key(os)) {
-        G::System
-    } else if skill.files.iter().any(|(p, _)| p.starts_with(TOOLS_DIR)) {
-        G::AgentBin
-    } else {
-        G::None
-    }
-}
-
-fn grant_rank(grant: buckyos_api::InstallGrant) -> u8 {
-    use buckyos_api::InstallGrant as G;
-    match grant {
-        G::None => 0,
-        G::AgentBin => 1,
-        G::System => 2,
-    }
-}
-
-fn refusal(skill: &PackageSkill, runtime: &RuntimeRecord) -> Option<String> {
-    let os = runtime.caps.platform.os.as_str();
-    if !runtime.usable() {
-        return Some(format!("runtime `{}` is not available", runtime.runtime_id));
-    }
-    if let Some(why) = skill.meta.unmet_on(runtime.caps.baseline, os) {
-        return Some(format!("`{}` {why}", skill.name));
-    }
-    let needs = needs_grant(skill, os);
-    if grant_rank(runtime.grant.install) < grant_rank(needs) {
-        return Some(format!(
-            "`{}` needs `{}` installation ({}), and runtime `{}` grants `{}`: the owner changes the grant in the runtime directory, or picks another runtime",
-            skill.name,
-            install_grant_str(needs),
-            if needs == buckyos_api::InstallGrant::System { "it runs an install script" } else { "it brings commands" },
-            runtime.runtime_id,
-            install_grant_str(runtime.grant.install)
-        ));
-    }
-    None
-}
-
-fn install_grant_str(grant: buckyos_api::InstallGrant) -> &'static str {
-    use buckyos_api::InstallGrant as G;
-    match grant {
-        G::None => "none",
-        G::AgentBin => "agent_bin",
-        G::System => "system",
-    }
-}
-
-fn is_private(runtime: &RuntimeRecord) -> bool {
-    runtime.is_private()
-}
-
-/// Plan the installation of `pkg` into `root`: what it holds, what it replaces, what a reader should know before saying
-/// yes, and where its commands would go (`runtime_id`: the owner's choice, else the private runtime, else the first
-/// runtime that takes them). Nothing is written.
-pub fn plan(root: &Path, pkg: &SkillPackage, runtimes: &[RuntimeRecord], runtime_id: Option<&str>) -> Result<InstallPlan> {
+/// Plan the installation of `pkg` into `root`: what it holds, what it replaces and what a reader should know before
+/// saying yes. Nothing is written.
+pub fn plan(root: &Path, pkg: &SkillPackage) -> Result<InstallPlan> {
     if pkg.package.trim().is_empty() {
         return Err(OpenDanError::InvalidArgument("a skill package needs its name (pkg_name)".into()));
     }
@@ -1163,26 +979,18 @@ pub fn plan(root: &Path, pkg: &SkillPackage, runtimes: &[RuntimeRecord], runtime
             findings.push(finding("ui_scope", "medium", &key(skill.kind, &skill.name), "its scope includes `ui`: once the owner adds it to the UI set it goes into the prompt of every conversation"));
         }
         for (path, file) in &skill.files {
-            let Some(text) = file.text() else {
-                if path.starts_with(TOOLS_DIR) {
-                    findings.push(finding("binary_tool", "high", path, "not text: it cannot be read before it runs"));
-                }
-                continue;
-            };
-            let script = path.starts_with(TOOLS_DIR);
+            let Some(text) = file.text() else { continue };
             let lower = text.to_ascii_lowercase();
             let piped = lower.lines().any(|l| (l.contains("curl ") || l.contains("wget ")) && (l.contains("| sh") || l.contains("|sh") || l.contains("| bash") || l.contains("|bash")));
             if piped {
-                findings.push(finding("network_script", "high", path, "downloads a script and runs it (`curl … | sh`)"));
-            } else if script && (lower.contains("curl ") || lower.contains("wget ") || lower.contains("invoke-webrequest")) {
-                findings.push(finding("network_download", "medium", path, "downloads from the network"));
+                findings.push(finding("network_script", "high", path, "tells the agent to download a script and run it (`curl … | sh`)"));
             }
             let managers: Vec<&str> = ["apt-get ", "apt install", "brew install", "npm install -g", "npm i -g", "pip install", "pip3 install", "winget install", "choco install", "dnf install", "yum install", "apk add"]
                 .into_iter()
                 .filter(|m| lower.contains(m))
                 .collect();
             if !managers.is_empty() {
-                findings.push(finding("package_manager", if script { "high" } else { "medium" }, path, format!("uses a package manager ({})", managers.join(", ").replace("  ", " "))));
+                findings.push(finding("package_manager", "medium", path, format!("uses a package manager ({})", managers.join(", ").replace("  ", " "))));
             }
             if lower.lines().any(|l| l.split_whitespace().any(|w| w == "sudo")) {
                 findings.push(finding("privilege", "high", path, "asks for root (`sudo`)"));
@@ -1197,86 +1005,14 @@ pub fn plan(root: &Path, pkg: &SkillPackage, runtimes: &[RuntimeRecord], runtime
                 findings.push(finding("secrets", "medium", path, format!("reads secrets from the environment ({})", secrets.into_iter().collect::<Vec<_>>().join(", "))));
             }
         }
-        let check_commands = skill.install.as_ref().map(|i| i.check_commands(&skill.meta.commands)).unwrap_or_default();
-        if let Some(install) = &skill.install {
-            if !install.install.is_empty() {
-                findings.push(finding("system_install", "high", &format!("{TOOLS_DIR}/{}/{INSTALL_TOML}", skill.name), format!("runs an install script on the runtime ({})", install.install.keys().cloned().collect::<Vec<_>>().join(", "))));
-                let ext: Vec<&String> = check_commands.iter().filter(|c| crate::baseline::extended_commands().contains(&c.as_str())).collect();
-                if !ext.is_empty() {
-                    return Err(OpenDanError::InvalidArgument(format!(
-                        "tools/{}/{INSTALL_TOML}: {} come with ExtTools; a skill does not install them: declare `baseline: extended` in the manual instead",
-                        skill.name,
-                        ext.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
-                    )));
-                }
-            }
-            for (os, script) in &install.install {
-                if InstallToml::volatile(script) {
-                    findings.push(finding("volatile_writes", "medium", &format!("{TOOLS_DIR}/{}/{INSTALL_TOML}", skill.name), format!("[install.{os}] writes outside <agent_root> / <instance_volume> ({}): in a container it is gone after a restart and is checked again", if script.writes.is_empty() { "no `writes` declared".to_string() } else { script.writes.join(", ") })));
-                }
-            }
-        }
         let mut meta = skill.meta.clone();
         meta.origin = if pkg.imported_from.is_some() { "imported" } else { "installed" }.to_string();
-        planned.push(PlannedSkill {
-            meta,
-            replaces,
-            check_commands,
-            install_scripts: skill.install.as_ref().map(|i| i.install.keys().cloned().collect()).unwrap_or_default(),
-        });
+        planned.push(PlannedSkill { meta, replaces });
     }
     if pkg.imported_from.is_some() {
         findings.push(finding("imported_text", "medium", &pkg.package, "written by the agent from a text the owner gave it: nobody signed it"));
     } else if pkg.pikg_digest.is_none() {
         findings.push(finding("unpacked_source", "low", &pkg.package, "a directory, not a packed PIKG: there is no package digest to compare"));
-    }
-    // Where the commands go.
-    let with_commands: Vec<&PackageSkill> = skills.iter().filter(|s| s.files.iter().any(|(p, _)| p.starts_with(TOOLS_DIR))).collect();
-    let mut targets = Vec::new();
-    let mut chosen = None;
-    if !with_commands.is_empty() {
-        for runtime in runtimes.iter().filter(|r| r.lifecycle == RuntimeLifecycle::Active) {
-            targets.push(InstallTarget {
-                runtime_id: runtime.runtime_id.clone(),
-                os: runtime.caps.platform.os.clone(),
-                install: runtime.grant.install,
-                private: is_private(runtime),
-                refused: with_commands.iter().find_map(|s| refusal(s, runtime)),
-            });
-        }
-        chosen = match runtime_id.map(canonical_runtime) {
-            Some(id) => Some(id.to_string()),
-            None => targets
-                .iter()
-                .find(|t| t.private && t.refused.is_none())
-                .or_else(|| targets.iter().find(|t| t.refused.is_none()))
-                .map(|t| t.runtime_id.clone())
-                // A host that registered no runtimes has its own environment only.
-                .or_else(|| runtimes.is_empty().then(|| PRIVATE_RUNTIME.to_string())),
-        };
-        match &chosen {
-            Some(id) => {
-                if let Some(target) = targets.iter().find(|t| &t.runtime_id == id) {
-                    if let Some(why) = &target.refused {
-                        findings.push(finding("install_target", "block", id, why.clone()));
-                    }
-                    if !target.private && with_commands.iter().any(|s| needs_grant(s, &target.os) == buckyos_api::InstallGrant::System) {
-                        findings.push(finding("owner_machine", "high", id, format!("the install script runs on `{id}`: a machine the owner uses, not the agent's own")));
-                    }
-                } else if !runtimes.is_empty() {
-                    findings.push(finding("install_target", "block", id, format!("no runtime `{id}`")));
-                }
-            }
-            None => findings.push(finding(
-                "install_target",
-                "block",
-                &pkg.package,
-                format!(
-                    "no runtime takes its commands: {}; the owner opens one in the runtime directory",
-                    targets.iter().filter_map(|t| t.refused.clone()).collect::<Vec<_>>().join("; ")
-                ),
-            )),
-        }
     }
     let level = ["high", "medium"].into_iter().find(|l| findings.iter().any(|f| f.level == *l)).unwrap_or("low").to_string();
     Ok(InstallPlan {
@@ -1285,10 +1021,7 @@ pub fn plan(root: &Path, pkg: &SkillPackage, runtimes: &[RuntimeRecord], runtime
         plan_digest: plan_digest(pkg, &digest),
         digest,
         skills: planned,
-        blocked: findings.iter().filter(|f| f.level == "block").map(|f| f.note.clone()).collect(),
         risk: InstallRisk { level, findings },
-        runtime_id: chosen,
-        targets,
     })
 }
 
@@ -1303,9 +1036,6 @@ pub struct InstallReport {
     /// Skills of the same names it replaced (`replace`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replaced: Vec<String>,
-    /// Work skills whose commands still have to be installed on a runtime ([`install_commands`]).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_commands: Vec<String>,
 }
 
 /// What the owner accepted (`None`: an install without a plan, as tests and the Loader's own seeding do).
@@ -1319,8 +1049,7 @@ pub struct Accepted {
 /// name is taken by a skill of the agent package, a local one, or one
 /// installed from another package is refused unless `replace`; installing
 /// a package again updates its own skills. Sessions created before keep
-/// their frozen manuals. A work skill that brings commands in `tools/<name>/bin` only has them on the private runtime
-/// from here on; one with an `install.toml` stays `installing` until [`install_commands`] ran.
+/// their frozen manuals. Installing is checking and copying: nothing runs.
 pub fn install(root: &Path, pkg: &SkillPackage, replace: bool, who: &str, accepted: Option<&Accepted>) -> Result<InstallReport> {
     if pkg.package.trim().is_empty() {
         return Err(OpenDanError::InvalidArgument("a skill package needs its name (pkg_name)".into()));
@@ -1331,9 +1060,7 @@ pub fn install(root: &Path, pkg: &SkillPackage, replace: bool, who: &str, accept
     let mut replaced = Vec::new();
     for skill in &skills {
         let (kind, name) = (skill.kind, &skill.name);
-        let dir = root.join(kind.dir()).join(name);
-        let tools = root.join(TOOLS_DIR).join(name);
-        let taken = dir.exists() || (kind == SkillKind::Work && tools.exists());
+        let taken = root.join(kind.dir()).join(name).exists();
         let own = record.installed.get(&key(kind, name)).is_some_and(|r| r.package == pkg.package);
         if taken && !own {
             if !replace {
@@ -1357,29 +1084,16 @@ pub fn install(root: &Path, pkg: &SkillPackage, replace: bool, who: &str, accept
         let (kind, name) = (skill.kind, &skill.name);
         // What the skill had before goes; a manual the agent revised keeps its earlier texts.
         let manual_dir = root.join(kind.dir()).join(name);
-        let mut dirs = vec![manual_dir.clone()];
-        if kind == SkillKind::Work {
-            dirs.push(root.join(TOOLS_DIR).join(name));
-        }
-        for dir in dirs {
-            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if path == manual_dir.join(REVISIONS_DIR) {
-                    continue;
-                }
-                let removed = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
-                removed.map_err(|e| OpenDanError::io(&path, e))?;
+        for entry in std::fs::read_dir(&manual_dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path == manual_dir.join(REVISIONS_DIR) {
+                continue;
             }
+            let removed = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+            removed.map_err(|e| OpenDanError::io(&path, e))?;
         }
         for (path, f) in &skill.files {
-            let target = root.join(path);
-            crate::fsutil::atomic_replace(&target, &f.bytes()?)?;
-            #[cfg(unix)]
-            if f.executable {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
-                    .map_err(|e| OpenDanError::io(&target, e))?;
-            }
+            crate::fsutil::atomic_replace(&root.join(path), &f.bytes()?)?;
         }
         record.installed.insert(
             key(kind, name),
@@ -1394,21 +1108,7 @@ pub fn install(root: &Path, pkg: &SkillPackage, replace: bool, who: &str, accept
             },
         );
         let risk = accepted.map(|a| SkillRiskAccepted { level: a.level.clone(), accepted_by: who.to_string(), accepted_at_ms: now, plan_digest: a.plan_digest.clone() });
-        let has_tools = skill.files.iter().any(|(p, _)| p.starts_with(TOOLS_DIR));
-        let state = if !has_tools {
-            risk.map(|risk| SkillInstallState { status: SkillInstallStatus::Enabled, risk: Some(risk), ..Default::default() })
-        } else if skill.install.is_some() {
-            report.pending_commands.push(name.clone());
-            Some(SkillInstallState { status: SkillInstallStatus::Installing, risk, ..Default::default() })
-        } else {
-            Some(SkillInstallState {
-                status: SkillInstallStatus::Enabled,
-                risk,
-                runtimes: [(PRIVATE_RUNTIME.to_string(), SkillRuntimeInstall { status: SkillRuntimeStatus::Ok, at_ms: now, commands: skill.meta.tools.clone(), ..Default::default() })].into(),
-                pinned_runtime: Some(PRIVATE_RUNTIME.to_string()),
-                error: None,
-            })
-        };
+        let state = risk.map(|risk| SkillInstallState { risk: Some(risk) });
         states.push((key(kind, name), state));
     }
     save_record(root, &record)?;
@@ -1431,7 +1131,7 @@ pub fn install(root: &Path, pkg: &SkillPackage, replace: bool, who: &str, accept
     Ok(report)
 }
 
-/// Remove an installed skill (its directory, and the commands of a work skill).
+/// Remove an installed skill (its directory).
 /// A skill of the agent package is not removed here: the next package sync
 /// would bring it back (disable it instead).
 pub fn remove(root: &Path, kind: SkillKind, name: &str, who: &str) -> Result<SkillMeta> {
@@ -1444,14 +1144,9 @@ pub fn remove(root: &Path, kind: SkillKind, name: &str, who: &str) -> Result<Ski
             meta.origin
         )));
     }
-    let mut dirs = vec![root.join(kind.dir()).join(name)];
-    if kind == SkillKind::Work {
-        dirs.push(root.join(TOOLS_DIR).join(name));
-    }
-    for dir in dirs {
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).map_err(|e| OpenDanError::io(&dir, e))?;
-        }
+    let dir = root.join(kind.dir()).join(name);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| OpenDanError::io(&dir, e))?;
     }
     save_record(root, &record)?;
     let id = key(kind, name);
@@ -1467,208 +1162,6 @@ pub fn remove(root: &Path, kind: SkillKind, name: &str, who: &str) -> Result<Ski
         Ok(())
     })?;
     Ok(meta)
-}
-
-/// `tools/<name>/install.toml` of an installed work skill.
-pub fn install_toml(root: &Path, name: &str) -> Result<Option<InstallToml>> {
-    let path = root.join(TOOLS_DIR).join(name).join(INSTALL_TOML);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => InstallToml::parse(&text).map(Some).map_err(|e| OpenDanError::InvalidArgument(format!("{}: {e}", path.display()))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(OpenDanError::io(&path, e)),
-    }
-}
-
-fn script_command(windows: bool, script: &str) -> String {
-    if windows {
-        format!("powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\"", script.replace('/', "\\"))
-    } else {
-        format!("sh \"./{script}\"")
-    }
-}
-
-const INSTALL_TIMEOUT_MS: u64 = 15 * 60_000;
-
-/// Put the commands of the installed work skill `name` onto `runtime_id` and check them there: its `tools/<name>/`
-/// (already on the private runtime; copied to another one), then `install.toml`'s script for the runtime's OS, then
-/// the commands it must leave behind. The outcome is recorded in `install[work:<name>].runtimes[<id>]`; the skill is
-/// enabled once one runtime has them.
-pub async fn install_commands(agent: &dyn crate::state::AgentStateClient, name: &str, runtime_id: &str, who: &str) -> Result<SkillInstallState> {
-    let root = agent
-        .agent_root()
-        .ok_or_else(|| OpenDanError::InvalidArgument("installing skill commands needs the AgentRoot (the Agent Service does it)".into()))?
-        .to_path_buf();
-    let meta = find(&root, SkillKind::Work, name)?;
-    let tools = root.join(TOOLS_DIR).join(name);
-    if !tools.is_dir() {
-        return Err(OpenDanError::InvalidArgument(format!("work skill `{name}` brings no commands (no tools/{name}/)")));
-    }
-    let toml = install_toml(&root, name)?;
-    let runtime = crate::runtime::usable_runtime(agent, runtime_id).await?;
-    let id = runtime.runtime_id.clone();
-    let os = runtime.caps.platform.os.clone();
-    let windows = os == "windows";
-    let outcome: Result<SkillRuntimeInstall> = async {
-        let script = toml.as_ref().and_then(|t| t.install.get(&os));
-        let needs = if script.is_some() { buckyos_api::InstallGrant::System } else { buckyos_api::InstallGrant::AgentBin };
-        if let Some(why) = meta.unmet_on(runtime.caps.baseline, &os) {
-            return Err(OpenDanError::Bind(format!("`{name}` {why}")));
-        }
-        if grant_rank(runtime.grant.install) < grant_rank(needs) {
-            return Err(OpenDanError::Bind(format!(
-                "`{name}` needs `{}` installation and runtime `{id}` grants `{}`",
-                install_grant_str(needs),
-                install_grant_str(runtime.grant.install)
-            )));
-        }
-        let dir = if runtime.is_private() {
-            tools.display().to_string()
-        } else {
-            let base = crate::runtime::node_agent_dir_for(agent, &runtime).await.ok_or_else(|| {
-                OpenDanError::Bind(format!("runtime `{id}` has no Agent directory to put tools/{name}/ into"))
-            })?;
-            let sep = if windows { '\\' } else { '/' };
-            let dir = format!("{base}{sep}{TOOLS_DIR}{sep}{name}");
-            crate::runtime::runtime_put(agent, &id, &tools, &dir).await?;
-            dir
-        };
-        let mut install = SkillRuntimeInstall { status: SkillRuntimeStatus::Ok, at_ms: crate::now_ms(), ..Default::default() };
-        if let Some(script) = script {
-            let op = crate::runtime::runtime_exec(agent, &id, &script_command(windows, &script.script), Some(&dir), INSTALL_TIMEOUT_MS, Some("skill-install")).await?;
-            install.op_id = Some(op.op_id.clone());
-            install.volatile = InstallToml::volatile(script);
-            if op.exit_code != 0 || op.timed_out {
-                let tail: String = op.stderr.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-                return Err(OpenDanError::Other(format!(
-                    "{} {} (see state/runtime_ops/{}.json){}",
-                    script.script,
-                    if op.timed_out { "timed out".to_string() } else { format!("exited with {}", op.exit_code) },
-                    op.op_id,
-                    if tail.is_empty() { String::new() } else { format!(": {tail}") }
-                )));
-            }
-        }
-        let commands = match &toml {
-            Some(t) => t.check_commands(&meta.commands),
-            None => Vec::new(),
-        };
-        if !commands.is_empty() {
-            let checked = agent.runtimes().check(&id, &commands, false).await?;
-            let check = checked.caps.tools_check.unwrap_or_default();
-            if let Some(error) = check.error {
-                return Err(OpenDanError::Other(format!("checking {} on `{id}`: {error}", commands.join(", "))));
-            }
-            let missing: Vec<String> = commands.iter().filter(|c| !check.resolved.get(*c).is_some_and(|r| !r.stub)).cloned().collect();
-            if !missing.is_empty() {
-                return Err(OpenDanError::Other(format!("`{id}` still has no {}", missing.join(", "))));
-            }
-        }
-        install.commands = if commands.is_empty() { meta.tools.clone() } else { commands };
-        Ok(install)
-    }
-    .await;
-    let ok = outcome.is_ok();
-    let entry = match outcome {
-        Ok(install) => install,
-        Err(e) => SkillRuntimeInstall { status: SkillRuntimeStatus::Failed, at_ms: crate::now_ms(), error: Some(e.to_string()), ..Default::default() },
-    };
-    if ok {
-        for command in &entry.commands {
-            if let Err(e) = agent.runtimes().note_usage(&id, &RuntimeUsageEvent::SkillCommand { name: command.clone() }).await {
-                log::warn!("skills: usage of `{command}` on `{id}` not recorded: {e}");
-            }
-        }
-    }
-    let key = key(SkillKind::Work, name);
-    update_state(&root, |state| {
-        let install = state.install.entry(key.clone()).or_default();
-        install.error = entry.error.clone();
-        install.runtimes.insert(id.clone(), entry.clone());
-        let any_ok = !install.ok_runtimes().is_empty();
-        install.status = if any_ok { SkillInstallStatus::Enabled } else { SkillInstallStatus::Failed };
-        if any_ok {
-            install.error = None;
-        }
-        if ok && install.pinned_runtime.as_ref().is_none_or(|p| !install.runtimes.get(p).is_some_and(|r| r.status == SkillRuntimeStatus::Ok)) {
-            install.pinned_runtime = Some(id.clone());
-        }
-        let install = install.clone();
-        audit(state, who, "install_cmd", &key, &format!("{id}: {}", entry.error.clone().unwrap_or_else(|| "ok".into())));
-        Ok(install)
-    })
-}
-
-/// Check again the commands a skill installed on `runtime_id` (`None`: every runtime it is recorded on): a runtime
-/// that lost them is marked `stale`, one that has them again `ok`.
-pub async fn check_commands(agent: &dyn crate::state::AgentStateClient, name: &str, runtime_id: Option<&str>, who: &str) -> Result<SkillInstallState> {
-    let root = agent
-        .agent_root()
-        .ok_or_else(|| OpenDanError::InvalidArgument("checking skill commands needs the AgentRoot (the Agent Service does it)".into()))?
-        .to_path_buf();
-    find(&root, SkillKind::Work, name)?;
-    let key = key(SkillKind::Work, name);
-    let current = load_state(&root)?.install.get(&key).cloned().ok_or_else(|| OpenDanError::InvalidArgument(format!("work skill `{name}` installs no commands")))?;
-    let wanted = runtime_id.map(|id| canonical_runtime(id).to_string());
-    let mut results = Vec::new();
-    for (id, entry) in &current.runtimes {
-        if wanted.as_ref().is_some_and(|w| w != id) || entry.commands.is_empty() {
-            continue;
-        }
-        let missing = match agent.runtimes().check(id, &entry.commands, false).await {
-            Ok(record) => {
-                let check = record.caps.tools_check.unwrap_or_default();
-                match check.error {
-                    Some(error) => Some(error),
-                    None => {
-                        let missing: Vec<String> = entry.commands.iter().filter(|c| !check.resolved.get(*c).is_some_and(|r| !r.stub)).cloned().collect();
-                        (!missing.is_empty()).then(|| format!("no {}", missing.join(", ")))
-                    }
-                }
-            }
-            Err(e) => Some(e.to_string()),
-        };
-        results.push((id.clone(), missing));
-    }
-    update_state(&root, |state| {
-        let install = state.install.entry(key.clone()).or_default();
-        for (id, missing) in results {
-            if let Some(entry) = install.runtimes.get_mut(&id) {
-                entry.at_ms = crate::now_ms();
-                entry.status = if missing.is_some() { SkillRuntimeStatus::Stale } else { SkillRuntimeStatus::Ok };
-                entry.error = missing;
-            }
-        }
-        install.status = if install.ok_runtimes().is_empty() { SkillInstallStatus::Failed } else { SkillInstallStatus::Enabled };
-        let install = install.clone();
-        audit(state, who, "check_cmd", &key, "");
-        Ok(install)
-    })
-}
-
-/// Before a skill is removed: run its uninstall script on every runtime it was installed on, best effort.
-pub async fn uninstall_commands(agent: &dyn crate::state::AgentStateClient, name: &str) {
-    let Some(root) = agent.agent_root().map(Path::to_path_buf) else { return };
-    let Ok(Some(toml)) = install_toml(&root, name) else { return };
-    let Ok(state) = load_state(&root) else { return };
-    let Some(install) = state.install.get(&key(SkillKind::Work, name)) else { return };
-    for id in install.runtimes.keys() {
-        let Ok(runtime) = crate::runtime::usable_runtime(agent, id).await else { continue };
-        let os = runtime.caps.platform.os.clone();
-        let Some(script) = toml.uninstall.get(&os) else { continue };
-        let dir = if runtime.is_private() {
-            Some(root.join(TOOLS_DIR).join(name).display().to_string())
-        } else {
-            crate::runtime::node_agent_dir_for(agent, &runtime).await.map(|base| format!("{base}/{TOOLS_DIR}/{name}"))
-        };
-        match crate::runtime::runtime_exec(agent, id, &script_command(os == "windows", &script.script), dir.as_deref(), INSTALL_TIMEOUT_MS, Some("skill-uninstall")).await {
-            Ok(op) if op.exit_code == 0 => {}
-            Ok(op) => log::warn!("skills: uninstall of `{name}` on `{id}` exited with {} (state/runtime_ops/{}.json)", op.exit_code, op.op_id),
-            Err(e) => log::warn!("skills: uninstall of `{name}` on `{id}`: {e}"),
-        }
-        for command in install.runtimes.get(id).map(|r| r.commands.clone()).unwrap_or_default() {
-            let _ = agent.runtimes().note_usage(id, &RuntimeUsageEvent::SkillCommandRemoved { name: command }).await;
-        }
-    }
 }
 
 /// A draft waiting for the owner.
@@ -1840,18 +1333,23 @@ mod command_tests {
     }
 
     #[test]
-    fn a_skill_cannot_shadow_a_standard_command_but_may_shadow_an_extension_one() {
-        let root = std::env::temp_dir().join(format!("skills-shadow-{}", std::process::id()));
+    fn a_skill_is_text_only() {
+        let root = std::env::temp_dir().join(format!("skills-text-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let file = |text: &str| SkillFile { content: { use base64::Engine; base64::engine::general_purpose::STANDARD.encode(text) }, executable: true };
         let mut pkg = SkillPackage { package: "p".to_string(), version: "1".to_string(), ..Default::default() };
-        pkg.files.insert("cmd_skills/s/SKILL.md".to_string(), file("---\nname: s\n---\nbody\n"));
-        pkg.files.insert("tools/s/bin/xagent".to_string(), file("#!/bin/sh\n"));
-        let error = install(&root, &pkg, false, "t", None).unwrap_err().to_string();
-        assert!(error.contains("standard layer"), "{error}");
-        pkg.files.remove("tools/s/bin/xagent");
-        pkg.files.insert("tools/s/bin/ffmpeg".to_string(), file("#!/bin/sh\n"));
+        pkg.files.insert("cmd_skills/s/SKILL.md".to_string(), SkillFile::of(b"---\nname: s\n---\nbody\n"));
+        for path in ["tools/s/bin/mytool", "tools/s/install.toml"] {
+            pkg.files.insert(path.to_string(), SkillFile::of(b"#!/bin/sh\n"));
+            let error = install(&root, &pkg, false, "t", None).unwrap_err().to_string();
+            assert!(error.contains("text only") && error.contains("extension package"), "{error}");
+            assert_eq!(lint_package(&pkg)[0].code, "invalid_package");
+            pkg.files.remove(path);
+        }
+        pkg.files.insert("cmd_skills/s/references/logo.bin".to_string(), SkillFile::of(&[0xff, 0xfe, 0x00]));
+        assert!(install(&root, &pkg, false, "t", None).unwrap_err().to_string().contains("not UTF-8 text"));
+        pkg.files.remove("cmd_skills/s/references/logo.bin");
         assert!(install(&root, &pkg, false, "t", None).is_ok());
+        assert!(!root.join("tools").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -1861,7 +1359,7 @@ mod tests {
     use super::*;
 
     fn file(text: &str) -> SkillFile {
-        SkillFile::of(text.as_bytes(), false)
+        SkillFile::of(text.as_bytes())
     }
 
     fn pkg(name: &str, files: &[(&str, &str)]) -> SkillPackage {
@@ -1901,7 +1399,6 @@ mod tests {
             &[
                 ("cmd_skills/demo/SKILL.md", "---\ndescription: demo things\nrequires: nothing\n---\nRun `demo`. See references/more.md."),
                 ("cmd_skills/demo/references/more.md", "more"),
-                ("tools/demo/bin/demo", "#!/bin/sh\necho demo\n"),
                 ("goal_skills/watch/SKILL.md", "---\ndescription: watching\n---\nWatch."),
                 ("plan_skills/split/SKILL.md", "---\ndescription: splitting\n---\nSplit by risk."),
             ],
@@ -1913,15 +1410,13 @@ mod tests {
         let demo = work.iter().find(|m| m.name == "demo").unwrap();
         assert_eq!(demo.origin, "installed");
         assert_eq!(demo.description, "demo things");
-        assert_eq!(demo.tools, vec!["demo".to_string()]);
         assert_eq!(demo.references, vec!["more.md".to_string()]);
-        assert!(demo.enabled, "commands in tools/<name>/bin are on the private runtime as soon as they are copied");
-        assert_eq!(demo.install_state.as_ref().unwrap().ok_runtimes(), vec![PRIVATE_RUNTIME]);
+        assert!(demo.enabled && demo.install_state.is_none(), "installed without a plan: nothing was accepted");
         let ui = work.iter().find(|m| m.name == "ui_core").unwrap();
         assert_eq!((ui.origin.as_str(), ui.scope), ("local", SkillScope::Ui));
         assert_eq!(list(root, Some(SkillKind::Plan)).unwrap()[0].name, "split");
         assert_eq!(serde_json::to_value(demo).unwrap()["kind"], "work", "the kind is called work outside");
-        assert!(installed_paths(root).unwrap().contains(&"tools/demo/".to_string()));
+        assert!(installed_paths(root).unwrap().contains(&"cmd_skills/demo/".to_string()));
         assert!(installed_paths(root).unwrap().contains(&"plan_skills/split/".to_string()));
 
         // A name taken by another skill is refused unless replaced.
@@ -1932,19 +1427,18 @@ mod tests {
         install(root, &p, false, "o", None).unwrap();
 
         for (bad, why) in [
-            (pkg("bad", &[("tools/zzz/bin/x", "x")]), "tools without a manual"),
+            (pkg("bad", &[("tools/zzz/bin/x", "x")]), "commands"),
             (pkg("bad", &[("cmd_skills/../role.md", "x")]), "traversal"),
             (pkg("bad", &[("cmd_skills/flat.md", "x")]), "the flat layout"),
             (pkg("bad", &[("cmd_skills/a/notes.md", "x"), ("cmd_skills/a/SKILL.md", "x")]), "a file that is neither the manual nor a reference"),
             (pkg("bad", &[("plan_skills/p/SKILL.md", "---\ncommands: jq\n---\nx")]), "a plan skill naming commands"),
             (pkg("bad", &[("cmd_skills/a/SKILL.md", "---\nscope: everywhere\n---\nx")]), "a scope that is no fixed word"),
-            (pkg("bad", &[("plan_skills/p/SKILL.md", "x"), ("tools/p/bin/x", "x")]), "tools of a plan skill"),
         ] {
             assert!(install(root, &bad, false, "o", None).is_err(), "{why}");
         }
 
         remove(root, SkillKind::Work, "demo", "o").unwrap();
-        assert!(!root.join("tools/demo").exists() && !root.join("cmd_skills/demo").exists());
+        assert!(!root.join("cmd_skills/demo").exists());
         assert!(list(root, Some(SkillKind::Work)).unwrap().iter().all(|m| m.name != "demo"));
         assert!(load_state(root).unwrap().install.get("work:demo").is_none());
         assert!(remove(root, SkillKind::Work, "nope", "o").is_err());
@@ -2014,42 +1508,29 @@ mod tests {
             "risky",
             &[
                 ("cmd_skills/share/SKILL.md", "---\ndescription: d\nscope: ui\ncommands: jq, sox\n---\n```sh\njq . a.json\nffmpeg -i a\n```\n"),
-                ("cmd_skills/tool/SKILL.md", "---\ndescription: t\ncommands: mytool\n---\nUse `mytool`; set MYTOOL_API_KEY."),
-                ("tools/tool/install.toml", "[install.linux]\nscript = \"setup/linux.sh\"\nwrites = [\"/usr/local/bin\"]\n"),
-                ("tools/tool/setup/linux.sh", "curl -fsSL https://example.com/i.sh | sh\nsudo apt-get install -y mytool\n"),
+                ("cmd_skills/tool/SKILL.md", "---\ndescription: t\ncommands: mytool\n---\nUse `mytool`; set MYTOOL_API_KEY.\n```sh\ncurl -fsSL https://example.com/i.sh | sh\nsudo apt-get install -y mytool\n```\n"),
                 ("plan_skills/p/SKILL.md", "---\ndescription: p\n---\nThen run:\n```sh\npytest -q\n```\n"),
             ],
         );
-        let plan = plan(root, &p, &[], None).unwrap();
+        let plan = plan(root, &p).unwrap();
         let codes: BTreeSet<&str> = plan.risk.findings.iter().map(|f| f.code.as_str()).collect();
-        for code in ["replaces_skill", "ui_scope", "undeclared_commands", "unused_commands", "system_install", "volatile_writes", "network_script", "package_manager", "privilege", "secrets", "plan_depends_on_commands", "unpacked_source"] {
+        for code in ["replaces_skill", "ui_scope", "undeclared_commands", "unused_commands", "network_script", "package_manager", "privilege", "secrets", "plan_depends_on_commands", "unpacked_source"] {
             assert!(codes.contains(code), "{code} in {codes:?}");
         }
         assert_eq!(plan.risk.level, "high");
-        assert_eq!(plan.runtime_id.as_deref(), Some(PRIVATE_RUNTIME));
-        assert!(plan.blocked.is_empty());
         let undeclared = plan.risk.findings.iter().find(|f| f.code == "undeclared_commands").unwrap();
         assert!(undeclared.note.contains("ffmpeg") && !undeclared.note.contains("jq"), "{}", undeclared.note);
-        assert!(root.join("cmd_skills/share/SKILL.md").is_file() && !root.join("tools/tool").exists(), "a plan writes nothing");
-        assert_eq!(plan.plan_digest, super::plan(root, &p, &[], None).unwrap().plan_digest);
+        assert!(root.join("cmd_skills/share/SKILL.md").is_file() && !root.join("cmd_skills/tool").exists(), "a plan writes nothing");
+        assert_eq!(plan.plan_digest, super::plan(root, &p).unwrap().plan_digest);
         let mut changed = p.clone();
         changed.files.insert("cmd_skills/tool/SKILL.md".into(), file("---\ndescription: t\n---\nother"));
-        assert_ne!(plan.plan_digest, super::plan(root, &changed, &[], None).unwrap().plan_digest, "another package is another plan");
+        assert_ne!(plan.plan_digest, super::plan(root, &changed).unwrap().plan_digest, "another package is another plan");
 
-        // A script that would install what ExtTools provides is refused outright.
-        let ext = pkg("ext", &[
-            ("cmd_skills/v/SKILL.md", "---\ndescription: v\ncommands: ffmpeg\n---\nUse ffmpeg."),
-            ("tools/v/install.toml", "[install.linux]\nscript = \"i.sh\"\nwrites = [\"<instance_volume>/tools/bin\"]\n"),
-            ("tools/v/i.sh", "true\n"),
-        ]);
-        assert!(super::plan(root, &ext, &[], None).unwrap_err().to_string().contains("ExtTools"));
-
-        // With an install script the skill is not enabled until a runtime has its commands.
+        // Installing is copying: the skill is on at once, with what the owner accepted on record.
         let report = install(root, &p, true, "owner", Some(&Accepted { level: plan.risk.level.clone(), plan_digest: plan.plan_digest.clone() })).unwrap();
-        assert_eq!(report.pending_commands, ["tool"]);
+        assert_eq!(report.skills.len(), 3);
         let tool = list(root, Some(SkillKind::Work)).unwrap().into_iter().find(|m| m.name == "tool").unwrap();
-        assert!(!tool.enabled);
-        assert!(tool.why_off().unwrap().contains("still being installed"));
+        assert!(tool.enabled && tool.why_off().is_none());
         assert_eq!(tool.install_state.unwrap().risk.unwrap().level, "high");
     }
 
@@ -2092,7 +1573,7 @@ mod tests {
 
         let pkg = read_draft(root, "howto").unwrap();
         assert_eq!(pkg.package, "imported-howto");
-        let plan = plan(root, &pkg, &[], None).unwrap();
+        let plan = plan(root, &pkg).unwrap();
         assert!(plan.risk.findings.iter().any(|f| f.code == "imported_text"));
         install(root, &pkg, false, "did:bns:owner", None).unwrap();
         discard_draft(root, "howto", "did:bns:owner", true).unwrap();

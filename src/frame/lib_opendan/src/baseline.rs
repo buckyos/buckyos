@@ -341,7 +341,7 @@ impl CommandOrigin {
     }
 
     pub fn of(&self, path: &str) -> ProvidedBy {
-        let agent_tools = self.agent_root.as_ref().map(|r| format!("{}/{}", r.trim_end_matches(['/', '\\']), crate::skills::TOOLS_DIR));
+        let agent_tools = self.agent_root.as_ref().map(|r| format!("{}/tools", r.trim_end_matches(['/', '\\'])));
         if agent_tools.as_deref().is_some_and(|d| self.under(path, d)) || path.replace('\\', "/").contains("/.opendan/") {
             return ProvidedBy::Agent;
         }
@@ -524,18 +524,10 @@ pub fn resolve_locally(names: &[&str], before: &[PathBuf], path: Option<&std::ff
         .collect()
 }
 
-/// The directories of this machine where an Agent's own commands are, in PATH
-/// order: `tools/<skill>/bin` of every installed skill, then `tools`.
+/// The directory of this machine where an Agent's own commands are (`<agent_root>/tools`).
 pub fn agent_tool_dirs(agent_root: &Path) -> Vec<PathBuf> {
-    let tools = agent_root.join(crate::skills::TOOLS_DIR);
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&tools)
-        .map(|entries| entries.flatten().map(|e| e.path().join("bin")).filter(|d| d.is_dir()).collect())
-        .unwrap_or_default();
-    dirs.sort();
-    if tools.is_dir() {
-        dirs.push(tools);
-    }
-    dirs
+    let tools = agent_root.join("tools");
+    if tools.is_dir() { vec![tools] } else { Vec::new() }
 }
 
 /// The directory of this program: where a development build's helpers are.

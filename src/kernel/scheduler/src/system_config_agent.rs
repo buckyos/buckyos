@@ -2299,7 +2299,7 @@ pub(crate) mod app_lifecycle_tests {
     /// the default back to the container flips the instance in place.
     #[test]
     fn an_owner_agent_on_its_host_runtime_runs_natively() {
-        use buckyos_api::{AgentRuntimeSettings, AgentRuntimeTarget, AgentSettings, AppRunMode, ComputerAccess};
+        use buckyos_api::{AgentRuntimeSettings, AgentRuntimeTarget, AgentSettings, AppRunMode};
         for node_has_containers in [true, false] {
             let owner = DID::new("bns", "alice");
             let app_doc = AppDoc::builder(AppType::Agent, "jarvis", "0.7.0", "alice", &owner)
@@ -2345,10 +2345,7 @@ pub(crate) mod app_lifecycle_tests {
                     "host".to_string(),
                     AgentRuntimeSettings {
                         enabled: true,
-                        computer: ComputerAccess::None,
                         target: AgentRuntimeTarget::Node { node_id: "node1".into(), node_did: device.id.to_string() },
-                        baseline: None,
-                        grant: None,
                     },
                 )]),
                 default_runtime_id: default.map(str::to_string),

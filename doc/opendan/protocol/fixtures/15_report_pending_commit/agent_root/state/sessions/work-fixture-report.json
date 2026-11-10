@@ -14,6 +14,7 @@
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-report/input",
   "agent_access": "full",
   "objective": "submit the verified answer",
+  "runtime_id": "private",
   "status": {
     "rev": 2,
     "run_state": "running",
@@ -23,16 +24,16 @@
     "turn_open": true,
     "activity": {
       "summary": "submit the verified answer",
-      "heartbeat_ms": 1793864757075
+      "heartbeat_ms": 1794290475084
     },
     "last_runner": {
-      "runner_id": "rn-6aa5c917c55d4b35",
+      "runner_id": "rn-860a2a07b1194c7d",
       "host": "${FIXTURE_HOST}",
-      "pid": 234615,
+      "pid": 2055589,
       "lock_epoch": 1,
-      "at_ms": 1793864757076
+      "at_ms": 1794290475085
     },
-    "updated_at_ms": 1793864757075
+    "updated_at_ms": 1794290475084
   },
   "location_rev": 0
 }

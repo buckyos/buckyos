@@ -173,11 +173,30 @@ pub struct ExecutorProfile {
     pub workdir_roots: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// The Agents that may log in under the profile. A device joined by
+    /// daemon URL keeps none in its record: the control panel fills in the
+    /// one Agent the device is assigned to and switched on for.
+    #[serde(default)]
     pub principals: Vec<String>,
     pub ops: Vec<ExecutorOp>,
+    /// The environment this runtime is declared to provide (absent:
+    /// standard); `describe` reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<crate::RuntimeBaseline>,
 }
 
 impl ExecutorProfile {
+    /// The most ComputerUse the profile's operations allow.
+    pub fn computer(&self) -> ComputerAccess {
+        if self.ops.contains(&ExecutorOp::ComputerAct) {
+            ComputerAccess::Control
+        } else if self.ops.contains(&ExecutorOp::ComputerObserve) || self.ops.contains(&ExecutorOp::ComputerInspect) {
+            ComputerAccess::Observe
+        } else {
+            ComputerAccess::None
+        }
+    }
+
     pub fn ops_set(&self) -> BTreeSet<ExecutorOp> {
         self.ops.iter().copied().collect()
     }
@@ -292,8 +311,8 @@ impl ExecutorLimits {
 
 /// Node policy for the Agents of the node's owner (integration TODO §0 R4):
 /// whether they get a profile on this node without the administrator
-/// writing one per Agent, and what that profile grants at most. The
-/// scheduler multiplies it with each Agent's own runtime settings.
+/// writing one per Agent, and what that profile grants: this node as a
+/// runtime. Every Agent that enabled the node gets the same profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OwnerAgentsPolicy {
@@ -304,9 +323,12 @@ pub struct OwnerAgentsPolicy {
     /// Operations granted at most; empty means every operation.
     #[serde(default)]
     pub ops: Vec<ExecutorOp>,
-    /// ComputerUse granted at most (an Agent's own setting can only lower it).
+    /// ComputerUse granted.
     #[serde(default)]
     pub computer: ComputerAccess,
+    /// The environment the node is declared to provide (absent: standard).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<crate::RuntimeBaseline>,
     /// Form A-system nodes switch to this OS identity; desktop nodes omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_as: Option<ExecutorRunAs>,
@@ -323,6 +345,7 @@ impl OwnerAgentsPolicy {
             env: self.env.clone(),
             principals: vec!["did:owner-agents".into()],
             ops: self.effective_ops(),
+            baseline: self.baseline,
         };
         probe.validate("owner-agents")
     }
@@ -339,20 +362,15 @@ impl OwnerAgentsPolicy {
         ops.into_iter().collect()
     }
 
-    /// The profile of one owner Agent: the policy narrowed by the Agent's
-    /// ComputerUse setting.
-    pub fn profile_for(&self, agent_did: &str, computer: ComputerAccess) -> ExecutorProfile {
-        let computer = computer.min(self.computer);
+    /// The profile of one owner Agent on this node.
+    pub fn profile_for(&self, agent_did: &str) -> ExecutorProfile {
         ExecutorProfile {
             run_as: self.run_as.clone(),
             workdir_roots: self.workdir_roots.clone(),
             env: self.env.clone(),
             principals: vec![agent_did.to_string()],
-            ops: self
-                .effective_ops()
-                .into_iter()
-                .filter(|op| computer.allows(*op))
-                .collect(),
+            ops: self.effective_ops(),
+            baseline: self.baseline,
         }
     }
 }
@@ -604,6 +622,7 @@ mod tests {
             env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
             principals: vec!["did:web:jarvis.test.buckyos.io".into()],
             ops: vec![ExecutorOp::OpenStream, ExecutorOp::Exec, ExecutorOp::Read],
+            baseline: None,
         }
     }
 
@@ -657,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_agents_policy_opens_the_node_without_profiles_and_narrows_computer() {
+    fn owner_agents_policy_opens_the_node_without_profiles_and_sets_computer() {
         let mut settings = ExecutorSettings {
             enabled: true,
             allowed_devices: vec!["did:dev:a".into()],
@@ -668,6 +687,7 @@ mod tests {
                 env: BTreeMap::new(),
                 ops: Vec::new(),
                 computer: ComputerAccess::Observe,
+                baseline: Some(crate::RuntimeBaseline::Extended),
                 run_as: None,
             }),
             limits: ExecutorLimits::default(),
@@ -677,18 +697,16 @@ mod tests {
             .owner_agents
             .as_ref()
             .unwrap()
-            .profile_for("did:web:jarvis.test.buckyos.io", ComputerAccess::Control);
+            .profile_for("did:web:jarvis.test.buckyos.io");
         assert!(profile.ops.contains(&ExecutorOp::ComputerObserve));
         assert!(!profile.ops.contains(&ExecutorOp::ComputerAct));
+        assert_eq!((profile.computer(), profile.baseline), (ComputerAccess::Observe, Some(crate::RuntimeBaseline::Extended)));
         assert!(profile.ops.contains(&ExecutorOp::Mkdir) && profile.ops.contains(&ExecutorOp::Stat));
         assert!(profile.ops.contains(&ExecutorOp::Rename) && profile.ops.contains(&ExecutorOp::Remove));
         profile.validate(&owner_agent_profile_id("did:web:jarvis.test.buckyos.io")).unwrap();
-        let none = settings
-            .owner_agents
-            .as_ref()
-            .unwrap()
-            .profile_for("did:web:a", ComputerAccess::None);
-        assert!(!none.ops.iter().any(|op| op.is_computer()));
+        settings.owner_agents.as_mut().unwrap().computer = ComputerAccess::None;
+        let none = settings.owner_agents.as_ref().unwrap().profile_for("did:web:a");
+        assert!(!none.ops.iter().any(|op| op.is_computer()) && none.computer() == ComputerAccess::None);
 
         settings.owner_agents.as_mut().unwrap().enabled = false;
         assert!(settings.validate().is_err(), "closed policy and no profiles");

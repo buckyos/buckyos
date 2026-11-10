@@ -31,6 +31,7 @@ import {
   AGENT_SETUP_PAGES,
   applyTemplateToDraft,
   buildAgentCreateRequest,
+  chosenExtraRuntimes,
   classifyAgentError,
   draftDisplayName,
   isTelegramBotToken,
@@ -481,6 +482,7 @@ function WizardBody({
             avatarFallback={templateIcon}
             host={host}
             onHost={runsOnHost(effectiveDraft, host, directory)}
+            extraRuntimes={chosenExtraRuntimes(effectiveDraft, directory)}
           />
         </>
       )

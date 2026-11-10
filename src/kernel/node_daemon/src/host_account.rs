@@ -102,6 +102,7 @@ pub(crate) fn owner_agents_policy(account: &OsUser) -> OwnerAgentsPolicy {
     let home = account.home.to_string_lossy().into_owned();
     let is_root = runs_as_node_daemon(Some(account));
     OwnerAgentsPolicy {
+        baseline: None,
         enabled: true,
         workdir_roots: if is_root {
             vec![home, "/".to_string()]

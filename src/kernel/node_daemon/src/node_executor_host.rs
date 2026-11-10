@@ -303,6 +303,7 @@ async fn seed_owner_agents(node_host_name: &str, host_account: Option<&OsUser>) 
                 return Err("no absolute home directory for the interactive user".into());
             };
             OwnerAgentsPolicy {
+                baseline: None,
                 enabled: true,
                 workdir_roots: vec![home],
                 env: Default::default(),

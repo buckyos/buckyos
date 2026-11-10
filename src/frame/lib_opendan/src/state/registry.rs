@@ -214,6 +214,7 @@ impl FsRegistry {
             if *t == stamp {
                 let mut e = e.clone();
                 e.unreachable = self.layout.unreachable_mark(sid).exists();
+                e.runtime_unavailable = self.runtime_mark(sid);
                 return Ok(Some(e));
             }
         }
@@ -225,12 +226,18 @@ impl FsRegistry {
             .expect("registry cache")
             .insert(sid.to_string(), (stamp, entry.clone()));
         entry.unreachable = self.layout.unreachable_mark(sid).exists();
+        entry.runtime_unavailable = self.runtime_mark(sid);
         Ok(Some(entry))
+    }
+
+    fn runtime_mark(&self, sid: &str) -> Option<String> {
+        std::fs::read_to_string(self.layout.runtime_mark(sid)).ok()
     }
 
     fn write_entry(&self, entry: &RegistryEntry) -> Result<()> {
         let mut e = entry.clone();
         e.unreachable = false;
+        e.runtime_unavailable = None;
         self.cache
             .lock()
             .expect("registry cache")
@@ -270,6 +277,11 @@ impl FsRegistry {
         }
         if let Some(g) = &q.goal_id {
             if e.goal_id.as_deref() != Some(g.as_str()) {
+                return false;
+            }
+        }
+        if let Some(r) = &q.runtime_id {
+            if e.runtime_id.as_deref().map(crate::protocol::canonical_runtime) != Some(crate::protocol::canonical_runtime(r)) {
                 return false;
             }
         }
@@ -623,6 +635,27 @@ impl SessionRegistry for FsRegistry {
             } else {
                 fsutil::atomic_replace(&mark, crate::now_ms().to_string().as_bytes())?;
                 marked.push(e.session_id.clone());
+            }
+        }
+        Ok(marked)
+    }
+
+    async fn mark_runtime(&self, runtime_id: &str, reason: Option<&str>) -> Result<Vec<RegistryEntry>> {
+        let mut marked = Vec::new();
+        let on_runtime = RegistryQuery { runtime_id: Some(runtime_id.to_string()), ..Default::default() };
+        for mut e in self.query(&on_runtime).await? {
+            let mark = self.layout.runtime_mark(&e.session_id);
+            match reason.filter(|_| e.status.run_state != RunState::Finished) {
+                Some(reason) if e.runtime_unavailable.as_deref() != Some(reason) => {
+                    fsutil::atomic_replace(&mark, reason.as_bytes())?;
+                    if e.runtime_unavailable.replace(reason.to_string()).is_none() {
+                        marked.push(e);
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    let _ = std::fs::remove_file(&mark);
+                }
             }
         }
         Ok(marked)

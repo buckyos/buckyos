@@ -357,7 +357,6 @@ pub async fn run_helper(
         input_queue: cfg.channels.kmsg().map(|(_, q, _)| q.to_string()),
         trace_id: sid.to_string(),
         extra_env: cfg.runtime.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-        cmd_skills: crate::runtime::frozen_cmd_skills(&cfg),
         workspace: cfg.workspace_binding.clone(),
     };
     let mut env = crate::runtime::session_env_vars(&ctx, cfg.runtime.runtime_id()).await?;

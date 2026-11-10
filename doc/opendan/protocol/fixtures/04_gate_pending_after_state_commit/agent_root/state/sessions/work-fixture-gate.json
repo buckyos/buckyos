@@ -14,6 +14,7 @@
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-gate/input",
   "agent_access": "full",
   "objective": "x",
+  "runtime_id": "private",
   "status": {
     "rev": 2,
     "run_state": "running",
@@ -23,16 +24,16 @@
     "turn_open": true,
     "activity": {
       "summary": "x",
-      "heartbeat_ms": 1793864755801
+      "heartbeat_ms": 1794290473795
     },
     "last_runner": {
-      "runner_id": "rn-7927d838de5047b4",
+      "runner_id": "rn-eafabb1f1c4d4873",
       "host": "${FIXTURE_HOST}",
-      "pid": 233514,
+      "pid": 2054747,
       "lock_epoch": 1,
-      "at_ms": 1793864755802
+      "at_ms": 1794290473797
     },
-    "updated_at_ms": 1793864755801
+    "updated_at_ms": 1794290473795
   },
   "location_rev": 0
 }

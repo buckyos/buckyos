@@ -14,6 +14,7 @@
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-receipt/input",
   "agent_access": "full",
   "objective": "needs two messages",
+  "runtime_id": "private",
   "status": {
     "rev": 3,
     "run_state": "ready",
@@ -21,24 +22,24 @@
     "one_line_status": "working",
     "report_brief": "",
     "turn_open": true,
-    "retry_not_before_ms": 1793864786123,
+    "retry_not_before_ms": 1794290504119,
     "activity": {
       "summary": "needs two messages",
-      "heartbeat_ms": 1793864756112
+      "heartbeat_ms": 1794290474108
     },
     "last_runner": {
-      "runner_id": "rn-10bfee9d33e346eb",
+      "runner_id": "rn-7d0c96dd614d4183",
       "host": "${FIXTURE_HOST}",
-      "pid": 233017,
+      "pid": 2054445,
       "lock_epoch": 1,
-      "at_ms": 1793864756135
+      "at_ms": 1794290474131
     },
     "last_error": {
       "kind": "provider",
       "message": "llm provider failed (Transient): busy",
       "recoverable": true
     },
-    "updated_at_ms": 1793864756133
+    "updated_at_ms": 1794290474128
   },
   "location_rev": 0
 }

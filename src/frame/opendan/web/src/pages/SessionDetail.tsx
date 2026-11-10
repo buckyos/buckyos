@@ -262,6 +262,7 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
         {status.outcome && <Badge value={status.outcome} />}
         {status.acceptance !== 'n/a' && <Badge value={`acceptance: ${status.acceptance}`} tone={status.acceptance} />}
         {entry.unreachable && <Badge value="unreachable" tone="bad" />}
+        {entry.runtime_unavailable && <><Badge value="runtime unavailable" tone="waiting" /><span className="text-xs text-warn">{entry.runtime_unavailable}</span></>}
       </div>
       <ErrorBox error={error} />
       {data.note && <div className="mb-3 rounded border border-warn px-3 py-2 text-xs text-warn">{data.note}</div>}

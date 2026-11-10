@@ -1,4 +1,4 @@
-import { ChevronRight, Globe, Plus, RefreshCw, Server, ShieldCheck, Wifi } from 'lucide-react'
+import { ChevronRight, Globe, RefreshCw, Server, ShieldCheck, Wifi } from 'lucide-react'
 import { IconButton, Tooltip } from '@mui/material'
 import { useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
@@ -14,7 +14,6 @@ import { CollapsibleSection, InfoRow, ListCard, Section, SectionNote, StatusBadg
 import { CopyButton } from '../components/shared/CopyButton'
 import { formatBytes, formatDate, formatDateTime, formatRelative, formatUsage } from '../components/shared/format'
 
-import { AgentDevices } from './AgentDevices'
 
 type Translate = ReturnType<typeof useI18n>['t']
 
@@ -183,19 +182,10 @@ function DeviceRow({ device }: { device: ZoneDevice }) {
 
 function DevicesSection({ zone, status }: { zone: ZoneDevicesResponse | null; status: string }) {
   const { t } = useI18n()
-  const [notice, setNotice] = useState(false)
-
   return (
     <Section
       title={t('settings.cluster.nodesDevices', 'Nodes / Devices')}
       testId="settings-cluster-devices"
-      actions={
-        <Tooltip title={t('settings.cluster.addDevice', 'Add device')}>
-          <IconButton size="small" aria-label={t('settings.cluster.addDevice', 'Add device')} onClick={() => setNotice(true)} data-testid="settings-add-device">
-            <Plus size={16} />
-          </IconButton>
-        </Tooltip>
-      }
     >
       {zone ? (
         zone.devices.length > 0 ? (
@@ -210,7 +200,6 @@ function DevicesSection({ zone, status }: { zone: ZoneDevicesResponse | null; st
       ) : (
         <SectionNote>{t('settings.common.loading', 'Loading…')}</SectionNote>
       )}
-      <AgentDevices open={notice} onClose={() => setNotice(false)} />
     </Section>
   )
 }

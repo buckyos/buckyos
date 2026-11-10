@@ -1,14 +1,14 @@
 /* ── Step 1: identity (account profile) and Agent permissions ── */
 
 import { useState } from 'react'
-import { Alert, Button, CircularProgress, Switch, TextField } from '@mui/material'
+import { Alert, Button, Checkbox, CircularProgress, Switch, TextField } from '@mui/material'
 import { CheckCircle2, ChevronDown, ChevronRight, Waypoints, ShieldCheck, Users } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type { CurrentAccount } from '../../api/account'
 import { AvatarPicker } from './AvatarPicker'
 import type { NameCheckState, RuntimeDirectoryState } from './hooks'
 import type { AgentRuntimeOffer } from '../../api/user_mgr'
-import { canChooseRuntime, draftDisplayName, runsOnHost, type AgentSetupDraft, type ClassifiedAgentError } from './model'
+import { canChooseRuntime, draftDisplayName, extraRuntimeOffers, runsOnHost, type AgentSetupDraft, type ClassifiedAgentError } from './model'
 import { OptionCard, Section, StatusPill } from './ui'
 import { ObjectAvatar } from '../../presentation/ObjectIcon'
 import type { ObjectPresentation } from '../../presentation/model'
@@ -233,6 +233,12 @@ export function PermissionsPage({
   const { t } = useI18n()
   const directory = runtimeDirectory.status === 'ready' ? runtimeDirectory.directory : null
   const onHost = runsOnHost(draft, host, directory)
+  const extras = extraRuntimeOffers(directory)
+  const allows = (offer: AgentRuntimeOffer) => [
+    offer.workdir_roots?.length ? t('agentSetup.host.roots', undefined, { roots: offer.workdir_roots.join(', ') }) : null,
+    t(offer.read_only ? 'agentSetup.runtimes.readOnly' : 'agentSetup.runtimes.readWrite'),
+    t('agentSetup.runtimes.computer', undefined, { computer: t(`agentSetup.confirm.computer.${offer.computer}`) }),
+  ].filter(Boolean).join(' · ')
   return (
     <div className="space-y-4">
       <Section title={t('agentSetup.owner.title')} description={t('agentSetup.owner.description')}>
@@ -303,11 +309,46 @@ export function PermissionsPage({
             ) : onHost ? (
               <div className="mt-2 space-y-1 text-[12px] leading-5 text-[color:var(--cp-muted)]">
                 {directory?.container_available === false ? <p>{t('agentSetup.host.noContainer')}</p> : null}
-                <p>{t('agentSetup.host.node', undefined, { name: host.name || host.node_id || 'host', computer: t(`agentSetup.confirm.computer.${host.computer_max}`) })}</p>
+                <p>{t('agentSetup.host.node', undefined, { name: host.name || host.node_id || 'host', computer: t(`agentSetup.confirm.computer.${host.computer}`) })}</p>
                 {host.workdir_roots?.length ? <p className="break-all">{t('agentSetup.host.roots', undefined, { roots: host.workdir_roots.join(', ') })}</p> : null}
               </div>
             ) : null}
           </div>
+          {extras.length > 0 ? (
+            <div className="border-t pt-3" style={{ borderColor: 'var(--cp-border)' }} data-testid="agent-setup-extra-runtimes">
+              <div className="text-sm font-medium text-[color:var(--cp-text)]">{t('agentSetup.runtimes.title')}</div>
+              <p className="mt-1 text-[12px] leading-5 text-[color:var(--cp-muted)]">{t('agentSetup.runtimes.hint')}</p>
+              <div className="mt-2 space-y-1">
+                {extras.map((offer) => {
+                  const name = offer.name || offer.node_id || offer.runtime_id
+                  const inUse = Boolean(offer.in_use_by)
+                  return (
+                    <label key={offer.runtime_id} className="flex items-start gap-1" data-testid={`agent-setup-runtime-${offer.runtime_id}`}>
+                      <Checkbox
+                        size="small"
+                        checked={!inUse && draft.extraRuntimeIds.includes(offer.runtime_id)}
+                        disabled={inUse}
+                        onChange={(event) => update({
+                          extraRuntimeIds: event.target.checked
+                            ? [...draft.extraRuntimeIds.filter((id) => id !== offer.runtime_id), offer.runtime_id]
+                            : draft.extraRuntimeIds.filter((id) => id !== offer.runtime_id),
+                        })}
+                        slotProps={{ input: { 'aria-label': name } }}
+                      />
+                      <span className="min-w-0 pt-1.5">
+                        <span className="flex flex-wrap items-center gap-2 text-sm text-[color:var(--cp-text)]">
+                          {name}
+                          <StatusPill tone="muted">{t(offer.kind === 'executor' ? 'agentSetup.runtimes.device' : 'agentSetup.runtimes.node')}</StatusPill>
+                          {inUse ? <StatusPill tone="warning">{t('agentSetup.runtimes.inUse', undefined, { agent: offer.in_use_by ?? '' })}</StatusPill> : null}
+                        </span>
+                        <span className="block break-all text-[12px] leading-5 text-[color:var(--cp-muted)]">{allows(offer)}</span>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+          ) : null}
         </div>
       </Section>
 

@@ -11,6 +11,7 @@ import type {
   InstallPlan,
   KnownRuntime,
   KnownWorkspace,
+  RuntimeImpact,
   RuntimeSettings,
   RegistryEntry,
   SessionDetail,
@@ -151,6 +152,7 @@ const buildFixtures = () => {
     input_queue: `opendan/${WORK_RUNNING}/input`,
     artifact_id: 'art-weekly-report',
     workspace: { workspace_id: 'ws-downloads', access: 'read_write' },
+    runtime_id: 'host',
   })
   const pending = entry(WORK_PENDING, 'work', 'work.default', 'Rename photos by capture date', {
     rev: 48,
@@ -645,32 +647,67 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
   const allOps = ['open_stream', 'describe', 'exec', 'read', 'write', 'edit', 'mkdir', 'stat', 'rename', 'remove', 'computer_inspect', 'computer_observe', 'computer_act', 'query', 'cancel']
   const runtimes: KnownRuntime[] = [
     {
-      version: 4, runtime_id: 'private', name: 'Private runtime',
+      version: 5, runtime_id: 'private', name: 'Private runtime',
       desc: "Your own environment: the agent's container. Commands run directly; paths here are not the owner's host paths.",
       runtime_host: 'mock-host', connector: { type: 'native' }, enabled: true,
       caps: { os: 'linux', arch: 'x86_64', shell: 'bash', desktop: false, baseline: 'extended', baseline_check: { checked_at_ms: ago(60), level: 'extended', missing: ['pandoc'], ok: false, ext: { status: 'partial', missing: ['pandoc'], system: ['ffmpeg', 'python3'] } } },
-      grant: { ops: allOps, roots: [], computer: 'none', install: 'system', workspace: true },
+      grant: { ops: allOps, roots: [], computer: 'none' },
       availability: 'available', builtin: true, default: false, lifecycle: 'active',
-      usage: { sessions_total: 12, last_used_at_ms: ago(300), last_session_id: UI, workspaces: 2, skill_commands: [] },
+      usage: { sessions_total: 12, last_used_at_ms: ago(300), last_session_id: UI, workspaces: 2 },
       revision: 1, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(86400),
       checked_at_ms: ago(60), last_error: null,
     },
     {
-      version: 4, runtime_id: 'host', name: "Owner's desktop",
+      version: 5, runtime_id: 'host', name: "Owner's desktop",
       desc: "The owner's own machine (node `desktop`), shared with the owner: the owner's files and tools are here; commands and files go through its node executor.",
       runtime_host: 'mock-host', connector: { type: 'node_executor', node_did: 'did:dev:mock', profile_id: 'agent-0123456789ab' }, enabled: true,
       caps: { os: 'macos', arch: 'aarch64', shell: 'zsh', desktop: true, identity_mode: 'current_user', baseline: 'standard',
         baseline_check: { checked_at_ms: ago(60), level: 'standard', missing: ['aicc-tool', 'gen_image'], ok: false, ext: { status: 'partial', missing: ['pandoc', 'tesseract'], system: ['ffmpeg'] } } },
-      grant: { ops: allOps.filter((op) => op !== 'computer_act'), roots: ['/Users/devtest'], computer: 'observe', install: 'none', workspace: true },
+      grant: { ops: allOps.filter((op) => op !== 'computer_act'), roots: ['/Users/devtest'], computer: 'observe' },
       availability: 'available', builtin: true, default: true, lifecycle: 'active',
-      usage: { sessions_total: 1, last_used_at_ms: ago(370), last_session_id: WORK_RUNNING, workspaces: 1, skill_commands: [] },
+      usage: { sessions_total: 1, last_used_at_ms: ago(370), last_session_id: WORK_RUNNING, workspaces: 1 },
       revision: 3, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(600),
       checked_at_ms: ago(60), last_error: null,
     },
   ]
   const runtimeSettings: RuntimeSettings = {
-    runtimes: { host: { enabled: true, computer: 'observe', target: { kind: 'node', node_id: 'desktop', node_did: 'did:dev:mock' } } },
+    runtimes: { host: { enabled: true, target: { kind: 'node', node_id: 'desktop', node_did: 'did:dev:mock' } } },
     default_runtime_id: 'host',
+    configured_default_runtime_id: 'host',
+  }
+  const findRuntime = (runtimeId: string) => {
+    const runtime = runtimes.find((r) => r.runtime_id === runtimeId || (r.connector.type === 'native' && r.connector.aliases?.includes(runtimeId)))
+    if (!runtime) throw new OpenDanError('not_found', `runtime ${runtimeId} is not registered`)
+    return runtime
+  }
+  const impactOf = (runtimeId: string): RuntimeImpact => {
+    const runtime = findRuntime(runtimeId)
+    const open = fx.entries.filter((e) => e.status.run_state !== 'finished' && e.runtime_id === runtime.runtime_id)
+    const todos = open.some((e) => e.session_id === WORK_RUNNING)
+      ? [{ session_id: WORK_RUNNING, todo_id: 'todo-2', title: 'Write the weekly report', status: 'pending' }]
+      : []
+    return {
+      runtime_id: runtime.runtime_id,
+      owner_default: runtime.default,
+      blocking: open.length + todos.length > 0,
+      active_sessions: open.map((e) => ({ session_id: e.session_id, kind: e.kind, class: e.class, title: e.objective, run_state: e.status.run_state })),
+      pending_todos: todos,
+      workspaces: workspaces.filter((w) => w.location.runtime_id === runtime.runtime_id)
+        .map((w) => ({ workspace_id: w.workspace_id, name: w.name, directory: w.location.directory, lifecycle: w.lifecycle })),
+      usage: structuredClone(runtime.usage),
+    }
+  }
+  const confirmed = (runtimeId: string, confirm: boolean | undefined, verb: string) => {
+    if (confirm) return
+    const impact = impactOf(runtimeId)
+    if (!impact.blocking) return
+    throw new OpenDanError('invalid_argument', `confirm_required: runtime \`${impact.runtime_id}\` has ${impact.active_sessions.length} session(s) in progress, ${impact.pending_todos.length} Todo(s) waiting to run on it and ${impact.workspaces.length} workspace(s); they are not moved. Show them (\`runtimes.impact\`) and ${verb} with \`confirm: true\``)
+  }
+  const withRuntimeMark = (e: RegistryEntry): RegistryEntry => {
+    const runtime = e.status.run_state !== 'finished' && runtimes.find((r) => r.runtime_id === e.runtime_id)
+    return runtime && runtime.availability !== 'available'
+      ? { ...e, runtime_unavailable: runtime.last_error ?? `runtime \`${runtime.runtime_id}\` is not usable` }
+      : e
   }
   if (nativeRuntime) {
     const runtime = runtimes[0]
@@ -681,6 +718,20 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     runtime.caps = { ...runtimes[1].caps, baseline_check: { checked_at_ms: ago(60), level: 'standard', missing: [], ok: true, ext: { status: 'ok', missing: [], system: [] } } }
     runtime.grant.computer = 'observe'
     runtimes.splice(1)
+  }
+  const projectRuntimes = () => {
+    const asSetting = (r: KnownRuntime) => (r.connector.type === 'native' ? (r.connector.aliases?.[0] ?? 'container') : r.runtime_id)
+    const configured = runtimeSettings.configured_default_runtime_id
+    runtimeSettings.default_runtime_id = configured && runtimeSettings.runtimes[configured]?.enabled ? configured : 'container'
+    for (const r of runtimes) {
+      const chosen = runtimeSettings.runtimes[asSetting(r)]
+      r.default = runtimeSettings.default_runtime_id === asSetting(r)
+      if (chosen) {
+        r.enabled = chosen.enabled
+        r.availability = chosen.enabled ? 'available' : 'runtime_unavailable'
+        r.last_error = chosen.enabled ? null : `the \`${r.runtime_id}\` runtime is not enabled for this agent`
+      }
+    }
   }
   const availableRuntimeIds = () => runtimes.filter((r) => r.availability === 'available').map((r) => r.runtime_id).concat('local', 'container')
   const findWorkspace = (workspaceId: string) => {
@@ -741,13 +792,9 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     }),
     skill('work', 'win_registry', 'Read and repair Windows registry settings.', { platforms: ['windows'], requires: 'a Windows runtime', size: 1500 }),
     skill('work', 'yt_fetch', 'Download a video and its subtitles for offline summarising.', {
-      origin: 'installed', tools: ['yt-fetch'], size: 2100,
+      origin: 'installed', commands: ['yt-dlp'], size: 2100,
       install: { package: 'media-skills', version: '0.2.0', digest: 'sha256:9a41c0de', installed_at_ms: ago(86400 * 3), installed_by: OWNER },
-      install_state: {
-        status: 'enabled', pinned_runtime: 'private',
-        risk: { level: 'high', accepted_by: OWNER, accepted_at_ms: ago(86400 * 3), plan_digest: 'sha256:11aa' },
-        runtimes: { private: { status: 'stale', at_ms: ago(7200), commands: ['yt-fetch', 'yt-dlp'], error: 'yt-dlp: not found after the container restarted', op_id: 'op-3f', volatile: true } },
-      },
+      install_state: { risk: { level: 'medium', accepted_by: OWNER, accepted_at_ms: ago(86400 * 3), plan_digest: 'sha256:11aa' } },
     }),
     skill('work', 'old_invoice_flow', 'How invoices were filed before the accounting tool changed.', {
       origin: 'imported', size: 900, enabled: false, disabled: { at_ms: ago(86400 * 9), by: OWNER, reason: 'the accounting tool changed' },
@@ -802,6 +849,8 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     const draft = 'draft' in source ? drafts.find((d) => d.slug === source.draft) : undefined
     if ('draft' in source && !draft) throw new OpenDanError('not_found', `no draft ${source.draft}`)
     const paths = draft ? Object.keys(draft.texts) : Object.keys('package' in source ? source.package.files : {})
+    const tool = paths.find((path) => path.split('/')[0] === 'tools')
+    if (tool) throw new OpenDanError('invalid_argument', `\`${tool}\`: a skill is text only and brings no command or install script; publish the commands as an extension package and name them in the manual's \`commands\``)
     const packageName = draft ? `imported-${draft.slug}` : 'package' in source ? source.package.package : ''
     const version = 'package' in source ? source.package.version : ''
     const dirs: Record<string, SkillMeta['kind']> = { cmd_skills: 'work', plan_skills: 'plan', goal_skills: 'goal' }
@@ -810,32 +859,18 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       if (!dirs[dir] || !name || rest.length || file !== 'SKILL.md') return []
       const kind = dirs[dir]
       const existing = skills.find((s) => s.kind === kind && s.name === name)
-      const scripts = paths.filter((p) => p.startsWith(`tools/${name}/setup/`)).map((p) => p.split('/')[3].replace(/\..*$/, ''))
-      const tools = paths.filter((p) => p.startsWith(`tools/${name}/bin/`)).map((p) => p.split('/')[3])
       const known = draft?.skills.find((s) => s.kind === kind && s.name === name)
       return [{
         ...(known ?? skill(kind, name, `Skill ${name} of ${packageName}`, { size: 1200 })),
         origin: draft ? 'imported' : 'installed',
-        ...(tools.length ? { tools } : {}),
         ...(existing ? { replaces: existing.origin } : {}),
-        ...(scripts.length ? { install_scripts: scripts, check_commands: tools } : {}),
       }]
     })
     if (!planned.length) throw new OpenDanError('invalid_argument', 'the package holds no skill')
-    const withTools = paths.some((p) => p.startsWith('tools/'))
-    const withScript = planned.some((s) => s.install_scripts?.length)
-    const targets = withTools ? runtimes.map((r) => ({
-      runtime_id: r.runtime_id, os: r.caps.os, install: r.grant.install, private: r.connector.type === 'native',
-      ...(r.grant.install === 'none' ? { refused: `runtime \`${r.runtime_id}\` grants \`none\`: the owner changes the grant in the runtime directory, or picks another runtime` } : {}),
-    })) : []
-    const target = withTools ? targets.find((x) => x.runtime_id === (runtimeId ?? 'private')) : undefined
     const findings: SkillFinding[] = [
       ...planned.filter((s) => s.replaces).map((s): SkillFinding => ({ code: 'replaces_skill', level: 'medium', where: `${s.kind}:${s.name}`, note: `takes the place of the ${s.replaces} skill of the same name` })),
       ...planned.filter((s) => s.scope?.split(',').includes('ui')).map((s): SkillFinding => ({ code: 'ui_scope', level: 'medium', where: `${s.kind}:${s.name}`, note: 'its scope includes `ui`: once the owner adds it to the UI set it goes into the prompt of every conversation' })),
-      ...planned.filter((s) => s.install_scripts?.length).map((s): SkillFinding => ({ code: 'system_install', level: 'high', where: `tools/${s.name}/install.toml`, note: `runs an install script on the runtime (${s.install_scripts!.join(', ')})` })),
       ...(draft ? [{ code: 'imported_text', level: 'medium', where: packageName, note: 'written by the agent from a text the owner gave it: nobody signed it' } satisfies SkillFinding] : []),
-      ...(target?.refused ? [{ code: 'install_target', level: 'block', where: target.runtime_id, note: target.refused } satisfies SkillFinding] : []),
-      ...(target && !target.refused && !target.private && withScript ? [{ code: 'owner_machine', level: 'high', where: target.runtime_id, note: `the install script runs on \`${target.runtime_id}\`: a machine the owner uses, not the agent's own` } satisfies SkillFinding] : []),
     ]
     const digest = `sha256:mock-${paths.length}-${paths.join('|').length}`
     return {
@@ -845,9 +880,6 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       plan_digest: `sha256:plan-${packageName}-${version}-${paths.length}`,
       skills: planned,
       risk: { level: findings.some((f) => f.level === 'high') ? 'high' : findings.some((f) => f.level === 'medium') ? 'medium' : 'low', findings },
-      ...(target ? { runtime_id: target.runtime_id } : {}),
-      ...(targets.length ? { targets } : {}),
-      ...(target?.refused ? { blocked: [target.refused] } : {}),
       command_status: planned.filter((s) => s.kind === 'work').map((s) => ({
         name: s.name,
         commands: s.commands ?? [],
@@ -857,6 +889,7 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
           ...(s.commands?.includes('pandoc') ? { recommended_packages: [{ id: 'ext-docs', version: '0.3.1', provides: ['pandoc'] }] } : {}),
         },
       })),
+      checked_runtime_id: findRuntime(runtimeId ?? 'private').runtime_id,
     }
   }
 
@@ -989,8 +1022,7 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     }),
     checkRuntime: async (runtimeId) => {
       await delay()
-      const runtime = runtimes.find((r) => r.runtime_id === runtimeId)
-      if (!runtime) throw new OpenDanError('not_found', `runtime ${runtimeId} is not registered`)
+      const runtime = findRuntime(runtimeId)
       runtime.checked_at_ms = Date.now()
       if (runtime.runtime_id === 'private') {
         runtime.caps.baseline_check = { checked_at_ms: Date.now(), level: 'extended', missing: [], ok: true, ext: { status: 'system', missing: [], system: ['ffmpeg', 'python3'] } }
@@ -1009,26 +1041,32 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       const settingId = record?.connector.type === 'native' ? (record.connector.aliases?.[0] ?? 'container') : patch.runtime_id
       const entry = runtimeSettings.runtimes[settingId]
       if (settingId !== 'container' && !entry) throw new OpenDanError('invalid_argument', `runtime ${patch.runtime_id} is not one of this agent's runtimes`)
-      if (entry) {
-        if (patch.enabled !== undefined) entry.enabled = patch.enabled
-        if (patch.computer) entry.computer = patch.computer
-        if (patch.baseline !== undefined) entry.baseline = patch.baseline
+      if (entry && patch.enabled !== undefined) {
+        if (!patch.enabled && entry.enabled) confirmed(patch.runtime_id, patch.confirm, 'switch it off')
+        entry.enabled = patch.enabled
       }
-      const asSetting = (id: string) => (id === 'private' ? (nativeRuntime ? 'host' : 'container') : id)
-      if (patch.default === true) runtimeSettings.default_runtime_id = asSetting(patch.runtime_id)
-      if (patch.default === false && runtimeSettings.default_runtime_id === asSetting(patch.runtime_id)) runtimeSettings.default_runtime_id = 'container'
-      if (runtimeSettings.default_runtime_id !== 'container' && !runtimeSettings.runtimes[runtimeSettings.default_runtime_id]?.enabled) runtimeSettings.default_runtime_id = 'container'
-      for (const r of runtimes) {
-        const chosen = runtimeSettings.runtimes[asSetting(r.runtime_id)]
-        r.default = runtimeSettings.default_runtime_id === asSetting(r.runtime_id)
-        if (chosen) {
-          r.grant.computer = chosen.computer
-          r.caps.baseline = chosen.baseline ?? 'standard'
-          r.enabled = chosen.enabled
-          r.availability = chosen.enabled ? 'available' : 'runtime_unavailable'
-          r.last_error = chosen.enabled ? null : 'the `host` runtime is not enabled for this agent'
-        }
-      }
+      if (patch.default === true) runtimeSettings.configured_default_runtime_id = settingId
+      if (patch.default === false && runtimeSettings.configured_default_runtime_id === settingId) runtimeSettings.configured_default_runtime_id = null
+      projectRuntimes()
+      return structuredClone(runtimeSettings)
+    },
+
+    runtimeImpact: async (runtimeId) => {
+      await delay()
+      return impactOf(runtimeId)
+    },
+
+    removeRuntime: async (runtimeId, confirm) => {
+      await delay()
+      const record = findRuntime(runtimeId)
+      if (record.connector.type === 'native') throw new OpenDanError('invalid_argument', 'the private runtime cannot be removed')
+      confirmed(runtimeId, confirm, 'remove it')
+      delete runtimeSettings.runtimes[record.runtime_id]
+      if (runtimeSettings.configured_default_runtime_id === record.runtime_id) runtimeSettings.configured_default_runtime_id = null
+      record.lifecycle = 'retired'
+      record.enabled = false
+      record.availability = 'runtime_unavailable'
+      projectRuntimes()
       return structuredClone(runtimeSettings)
     },
 
@@ -1062,7 +1100,7 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
 
     sessions: async () => {
       await delay()
-      return structuredClone(fx.entries)
+      return structuredClone(fx.entries.map(withRuntimeMark))
     },
 
     activeSessions: async () => {
@@ -1087,7 +1125,7 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       const e = find(sid)
       return structuredClone({
         ...fx.details[sid],
-        entry: e,
+        entry: withRuntimeMark(e),
         worklog: (fx.worklogs[sid] ?? []).slice(-worklog),
         children: fx.entries.filter((c) => c.origin?.parent_session === sid).map((c) => c.session_id),
         hosted: fx.hostedList.find((h) => h.session_id === sid) ?? null,
@@ -1321,8 +1359,7 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
 
     skillsStatus: async (runtimeId = 'private') => {
       await new Promise((resolve) => window.setTimeout(resolve, 400))
-      const runtime = runtimes.find((r) => r.runtime_id === runtimeId)
-      if (!runtime) throw new OpenDanError('invalid_argument', `no runtime \`${runtimeId}\``)
+      const runtime = findRuntime(runtimeId)
       const onPrivate = runtime.connector.type === 'native'
       return {
         runtime_id: runtime.runtime_id,
@@ -1334,11 +1371,11 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
             ? { present: false }
             : { present: true, provided_by: c === 'ffmpeg' ? 'system' : 'exttools' }]))
           const missing = Object.entries(commands).filter(([, c]) => !c.present).map(([name]) => name)
-          const install = s.install_state?.runtimes?.[runtime.runtime_id]
           return {
             name: s.name,
             ...(s.scope ? { scope: s.scope } : {}),
             enabled: s.enabled,
+            off: !s.enabled,
             ...(s.requires ? { requires: s.requires } : {}),
             ...(unmet ? { unmet } : {}),
             commands: {
@@ -1347,7 +1384,6 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
               ...(missing.includes('pandoc') ? { recommended_packages: [{ id: 'ext-docs', version: '0.3.1', requires_chain: ['ext-core'], provides: ['pandoc'] }] } : {}),
               ...(missing.includes('tesseract') ? { no_package: ['tesseract'] } : {}),
             },
-            ...(install ? { install: structuredClone(install) } : {}),
           }
         }),
       }
@@ -1370,31 +1406,28 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       return { text }
     },
 
-    installSkills: async (source, planDigest, runtimeId, replace = false) => {
+    installSkills: async (source, planDigest, replace = false) => {
       await delay()
-      const plan = planOf(source, runtimeId)
+      const plan = planOf(source)
       if (plan.plan_digest !== planDigest) throw new OpenDanError('invalid_argument', 'the package is not the one that was planned (plan_digest differs)')
-      if (plan.blocked?.length) throw new OpenDanError('invalid_argument', plan.blocked[0])
       if (plan.skills.some((s) => s.replaces) && !replace) throw new OpenDanError('invalid_argument', 'a skill of the same name is installed (replace)')
       const origin = 'draft' in source ? 'imported' as const : 'installed' as const
       for (const planned of plan.skills) {
         const meta: SkillMeta & Partial<PlannedSkill> = { ...planned }
         delete meta.replaces
-        delete meta.check_commands
-        delete meta.install_scripts
         const at = skills.findIndex((s) => s.kind === meta.kind && s.name === meta.name)
         const installed: SkillMeta = {
           ...meta,
           origin,
           install: { package: plan.package, version: plan.version, digest: plan.digest, installed_at_ms: Date.now(), installed_by: OWNER },
-          ...(plan.runtime_id ? { install_state: { status: 'enabled', pinned_runtime: plan.runtime_id, runtimes: { [plan.runtime_id]: { status: 'ok', at_ms: Date.now(), commands: meta.tools ?? [] } } } } : {}),
+          install_state: { risk: { level: plan.risk.level, accepted_by: OWNER, accepted_at_ms: Date.now(), plan_digest: plan.plan_digest } },
         }
         if (at >= 0) skills[at] = installed
         else skills.push(installed)
         audit('install', `${meta.kind}:${meta.name}`, `${plan.package} ${plan.version}`.trim())
       }
       if ('draft' in source) drafts.splice(drafts.findIndex((d) => d.slug === source.draft), 1)
-      return { package: plan.package, version: plan.version, digest: plan.digest, skills: plan.skills }
+      return { package: plan.package, version: plan.version, digest: plan.digest, skills: plan.skills, plan }
     },
 
     removeSkill: async (kind, name) => {
@@ -1424,31 +1457,6 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       uiNames = names ? [...names] : null
       audit('ui_set', undefined, names ? names.join(', ') : 'back to the template')
       return uiSkills()
-    },
-
-    installSkillCommands: async (name, runtimeId) => {
-      await delay()
-      const skill = findSkill('work', name)
-      const runtime = runtimes.find((r) => r.runtime_id === runtimeId)
-      if (!runtime) throw new OpenDanError('invalid_argument', `no runtime \`${runtimeId}\``)
-      if (runtime.grant.install === 'none') throw new OpenDanError('forbidden', `runtime \`${runtimeId}\` grants no installation`)
-      const state = (skill.install_state ??= { status: 'installing', runtimes: {} })
-      ;(state.runtimes ??= {})[runtimeId] = { status: 'ok', at_ms: Date.now(), commands: skill.tools ?? [] }
-      state.status = 'enabled'
-      state.pinned_runtime ??= runtimeId
-      delete state.error
-      skill.enabled = !skill.disabled
-      audit('install_cmd', `work:${name}`, runtimeId)
-      return structuredClone(state)
-    },
-
-    checkSkillCommands: async (name, runtimeId = 'private') => {
-      await delay()
-      const skill = findSkill('work', name)
-      const record = skill.install_state?.runtimes?.[runtimeId]
-      if (!skill.install_state || !record) throw new OpenDanError('invalid_argument', `${name} has no commands installed on \`${runtimeId}\``)
-      record.at_ms = Date.now()
-      return structuredClone(skill.install_state)
     },
 
     importSkill: async (request) => {

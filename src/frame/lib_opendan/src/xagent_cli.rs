@@ -1621,12 +1621,6 @@ fn skill_line(s: &SkillMeta, stats: bool) -> String {
     if !s.requires.is_empty() {
         line.push_str(&format!(" — requires: {}", s.requires));
     }
-    if !s.tools.is_empty() {
-        line.push_str(&format!(" — commands: {}", s.tools.join(", ")));
-    }
-    if let Some(install) = s.install_state.as_ref().filter(|i| !i.runtimes.is_empty()) {
-        line.push_str(&format!(" — installed on: {}", install.ok_runtimes().join(", ")));
-    }
     if !s.references.is_empty() {
         line.push_str(&format!(" — references: {}/{}/{}/ ({})", s.kind.dir(), s.name, SKILL_REFERENCES, s.references.len()));
     }
@@ -2321,8 +2315,6 @@ async fn cmd_runtime(mut a: Args) -> R<i32> {
                                 ops: Vec::new(),
                                 roots: a.all("root").into_iter().map(PathBuf::from).collect(),
                                 computer: Default::default(),
-                                install: Default::default(),
-                                workspace: false,
                                 expires_at_ms: a.num("expires-at-ms")?,
                             },
                         },

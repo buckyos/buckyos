@@ -185,31 +185,6 @@
         }
       ]
     },
-    "InstallGrant": {
-      "description": "What an Agent may install on a runtime.",
-      "oneOf": [
-        {
-          "enum": [
-            "none"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Commands a skill brings, into the Agent's own bin.",
-          "enum": [
-            "agent_bin"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "A skill's `install.toml` may also write outside the Agent's own directory. Never `$BUCKYOS_ROOT/tools`: extension packages are installed by node_daemon.",
-          "enum": [
-            "system"
-          ],
-          "type": "string"
-        }
-      ]
-    },
     "NativeComputerConfig": {
       "additionalProperties": false,
       "properties": {
@@ -252,7 +227,7 @@
           "type": "string"
         },
         {
-          "description": "The Agent's own (`tools/<skill>/bin`).",
+          "description": "The Agent's own (`<agent_root>/tools`).",
           "enum": [
             "agent"
           ],
@@ -317,7 +292,7 @@
       "type": "string"
     },
     "RuntimeCaps": {
-      "description": "What the machine can do: learned when the runtime is checked, except `baseline`, which its registrar declares.",
+      "description": "What the machine can do: learned when the runtime is checked. `baseline` is what the runtime is declared to provide (a node's policy, a device's profile, the registrar of a hand-registered one).",
       "properties": {
         "arch": {
           "default": "",
@@ -494,7 +469,7 @@
       ]
     },
     "RuntimeGrant": {
-      "description": "What this agent may do on the runtime: the node policy narrowed by the owner, with the daemon URL's term. `roots` is the executor's boundary (empty: unlimited); the agent's directories follow the directory convention (`<owner home>/agents/<agent_id>` on the private runtime, `<account home>/.opendan/<agent_id>` on a node) and are not recorded.",
+      "description": "What the runtime allows: its own configuration (a node's `owner_agents` policy, a device's issued profile and term), learned when it is probed; never set per agent. `roots` is the executor's boundary (empty: unlimited); the agent's directories follow the directory convention (`<owner home>/agents/<agent_id>` on the private runtime, `<account home>/.opendan/<agent_id>` on a node) and are not recorded.",
       "properties": {
         "computer": {
           "allOf": [
@@ -512,17 +487,9 @@
             "null"
           ]
         },
-        "install": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/InstallGrant"
-            }
-          ],
-          "default": "none"
-        },
         "ops": {
           "default": [],
-          "description": "Executor operations granted; empty before the executor was asked.",
+          "description": "Executor operations allowed; empty before the executor was asked.",
           "items": {
             "$ref": "#/definitions/ExecutorOp"
           },
@@ -534,17 +501,12 @@
             "type": "string"
           },
           "type": "array"
-        },
-        "workspace": {
-          "default": false,
-          "description": "Long-lived workspaces may be created there.",
-          "type": "boolean"
         }
       },
       "type": "object"
     },
     "RuntimeLifecycle": {
-      "description": "`retired`: withdrawn, expired or unregistered; kept for its history, never a candidate.",
+      "description": "`retired`: removed from the agent, its device revoked or deleted, or unregistered; kept for its history, never a candidate. An expired runtime stays `active` and unavailable until it is renewed.",
       "enum": [
         "active",
         "retired"
@@ -574,16 +536,9 @@
           "minimum": 0.0,
           "type": "integer"
         },
-        "skill_commands": {
-          "default": [],
-          "description": "Skill commands installed there.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
         "workspaces": {
           "default": 0,
+          "description": "Workspaces created or imported there.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -592,7 +547,7 @@
       "type": "object"
     },
     "ToolsCheck": {
-      "description": "Commands beyond the standard tools verified to exist on a runtime (`check --commands`, skill installation).",
+      "description": "Commands beyond the standard tools verified to exist on a runtime (`check --commands`).",
       "properties": {
         "checked_at_ms": {
           "format": "uint64",
@@ -692,10 +647,8 @@
       ],
       "default": {
         "computer": "none",
-        "install": "none",
         "ops": [],
-        "roots": [],
-        "workspace": false
+        "roots": []
       }
     },
     "last_error": {
@@ -749,7 +702,6 @@
       ],
       "default": {
         "sessions_total": 0,
-        "skill_commands": [],
         "workspaces": 0
       }
     },

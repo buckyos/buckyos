@@ -410,12 +410,17 @@ impl StateService {
             "skills.remove" => self.home.skills_remove(self.agent.as_ref(), params, who).await,
             "skills.import" => self.import_skills(who, params).await,
             "skills.state" | "skills.ui_get" | "skills.ui_set" | "skills.set_enabled" | "skills.drafts" | "skills.draft_file"
-            | "skills.draft_discard" | "skills.install_cmd" | "skills.check" => {
+            | "skills.draft_discard" => {
                 self.home.skills_call(self.agent.as_ref(), method, params, who).await
             }
             "runtimes.settings" => self.home.runtime_settings(self.agent.as_ref()).await,
-            "runtimes.settings_set" => {
-                let settings = self.home.set_runtime_settings(self.agent.as_ref(), params).await?;
+            "runtimes.impact" => self.home.runtime_impact(self.agent.as_ref(), params).await,
+            "runtimes.settings_set" | "runtimes.remove" => {
+                let settings = if method == "runtimes.remove" {
+                    self.home.remove_runtime(self.agent.as_ref(), params).await?
+                } else {
+                    self.home.set_runtime_settings(self.agent.as_ref(), params).await?
+                };
                 // The projection follows the settings at once (the watcher
                 // would catch up later).
                 if let Some(root) = crate::home::agent_root_of(self.agent.as_ref()) {
@@ -507,8 +512,6 @@ fn is_owner_only(method: &str) -> bool {
             | "skills.ui_set"
             | "skills.import"
             | "skills.draft_discard"
-            | "skills.install_cmd"
-            | "skills.check"
     )
 }
 
@@ -566,6 +569,7 @@ fn is_read(method: &str) -> bool {
             | "ui.bindings"
             | "home.workspaces"
             | "runtimes.settings"
+            | "runtimes.impact"
             | "loader.status"
     )
 }
@@ -579,6 +583,7 @@ fn is_operation(method: &str) -> bool {
             | "session.post"
             | "agent.profile_set"
             | "runtimes.settings_set"
+            | "runtimes.remove"
             | "skills.status"
             | "skills.install"
             | "skills.remove"
@@ -586,8 +591,6 @@ fn is_operation(method: &str) -> bool {
             | "skills.ui_set"
             | "skills.import"
             | "skills.draft_discard"
-            | "skills.install_cmd"
-            | "skills.check"
             | "goals.activate"
             | "goals.post"
     )
@@ -728,7 +731,7 @@ mod permission_tests {
             "behaviors.cmd_skill", "skills.list", "skills.install_plan", "skills.state", "skills.ui_get", "skills.drafts", "skills.draft_file", "runtimes.ext_tools", "goals.list", "goals.get", "goals.revision",
             "goals.changes", "goals.state", "goals.epoch_state", "goals.activations",
             "goals.schedule", "notify.state", "notify.list", "session.read", "session.worklog", "session.work_cards",
-            "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status",
+            "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status", "runtimes.settings", "runtimes.impact",
         ] {
             for target in [OWN_APP, OTHER_APP] {
                 assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, target), "{method}");
@@ -761,7 +764,7 @@ mod permission_tests {
     fn no_agent_changes_which_skills_an_agent_has() {
         for method in [
             "skills.install", "skills.remove", "skills.set_enabled", "skills.ui_set", "skills.import",
-            "skills.draft_discard", "skills.install_cmd", "skills.check",
+            "skills.draft_discard",
         ] {
             for mode in [Some(AgentPermissionMode::ReadOnly), Some(AgentPermissionMode::ReadWrite)] {
                 for target in [OWN_APP, OTHER_APP] {

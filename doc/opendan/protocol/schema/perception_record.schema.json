@@ -222,7 +222,7 @@
       "type": "string"
     }
   },
-  "description": "One line of `state/perception/<sid>.jsonl` (Memory requirements A.5).\n\nRuntime records (`run_digest`, `task_outcome`, `task_discarded`) only feed consolidation; `observation` records are what Sessions write. After a consolidation disposes a record, cleanup keeps the line with its identity, key, source and `cleared` marker and drops the body.",
+  "description": "One line of `state/perception/<sid>.jsonl` (Memory requirements A.5).\n\nSessions write `observation` records (`ctl perceive`). The Runtime kinds (`run_digest`, `task_outcome`, `task_discarded`) are no longer written (2026-11-08): progress stays in the Task / Goal; lines of those kinds in existing files are still parsed but are neither material nor changes. After a consolidation disposes a record, cleanup keeps the line with its identity, key, source and `cleared` marker and drops the body.",
   "properties": {
     "anchors": {
       "anyOf": [
@@ -275,7 +275,7 @@
       ]
     },
     "kind": {
-      "description": "`run_digest | observation | task_outcome | task_discarded`.",
+      "description": "`observation`; legacy files also hold `run_digest | task_outcome | task_discarded`.",
       "type": "string"
     },
     "memory_intent": {

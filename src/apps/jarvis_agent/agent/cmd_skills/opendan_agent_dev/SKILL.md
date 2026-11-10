@@ -59,7 +59,7 @@ agent-session skill list            # work / ui / plan / goal skills: name, desc
 ```
 
 #### AgentRootFS and agent.toml
-Files: `agent.toml`, `role.md` + `self.md` (identity text), `behaviors/<name>.toml` (`__INCLUDE(rel/path)__` for shared `.inc`), `cmd_skills/<name>/SKILL.md`, `plan_skills/<name>/SKILL.md`, `goal_skills/<name>/SKILL.md`, `tools/<name>/bin`, `i18n/<lang>.toml` (`[outbound]` texts). The fastest start is a copy of the Jarvis package, trimmed. Shape of `agent.toml` (sections are strict, unknown keys fail):
+Files: `agent.toml`, `role.md` + `self.md` (identity text), `behaviors/<name>.toml` (`__INCLUDE(rel/path)__` for shared `.inc`), `cmd_skills/<name>/SKILL.md`, `plan_skills/<name>/SKILL.md`, `goal_skills/<name>/SKILL.md`, `tools/` (the Agent's own commands), `i18n/<lang>.toml` (`[outbound]` texts). The fastest start is a copy of the Jarvis package, trimmed. Shape of `agent.toml` (sections are strict, unknown keys fail):
 ```toml
 [runtime]
 language = "en"
@@ -102,20 +102,20 @@ Run limits in `[llm_context]` (or a session's `llm_context`): `timeout` (seconds
 - Work skill = `cmd_skills/<name>/SKILL.md` (+ optional `references/*.md`, read on demand with `read $OPENDAN_AGENT_ROOT/cmd_skills/<name>/references/<file>`): front matter `name`/`description`/`requires`/`commands`/`scope`/`baseline`/`platforms`, one line each. `commands: ffmpeg, jq` names what the manual relies on beyond the standard layer, so `agent-session skill status` / `buckyos skill status` can say what is missing and which extension package brings it; it never blocks anything. `scope: work` (default) is for work sessions, `scope: ui` for conversations only, `scope: ui, work` for both; a ui skill (`ui_core`) is a work skill with that scope. Body with `####` headings; the whole body goes into the system prompt of sessions that chose it, frozen for their life. A Work picks ≤ 8 at creation: `agent-session create-worksession --title "<t>" --objective "<t>" --cmd-skill <name> [--cmd-skill …]`; a child of a `work_simple` / `explore` Work inherits its choice, a plan's Todo gets only what `todo add --skill` names. A single `.md` file directly under `cmd_skills/` is not a skill.
 - Plan skill = `plan_skills/<name>/SKILL.md`: a method for splitting, ordering and accepting one kind of objective, read by `plan_simple` in its first Turn. Front matter `name`/`description` only (no `scope`, no `commands`); no concrete commands and no named work skills in the body. Never given with `--cmd-skill`.
 - A behavior with `[capabilities] cmd_skills = "candidates"` (`plan_simple`) freezes no manual: the names its creator gave with `--cmd-skill` appear in its first input as `<skill_candidates>`.
-- Commands of a skill: executables in `tools/<name>/bin/`, on PATH for sessions that chose `<name>`; `$OPENDAN_AGENT_ROOT/tools/` itself is on PATH for every session.
-- TS + SDK is the preferred way to reach BuckyOS: the model is `/opt/buckyos/bin/opendan/buckyos-agent/` (`commands/gen_image.ts` = annotated 6-step recipe: argv → typed request → `initRuntime()` login → call → fetch results → one `AgentToolResult` JSON; helpers in `lib/`). A small skill command:
+- A skill is text only: it brings no command, no script and no binary, and installing one only copies its `SKILL.md` and `references/`. Commands come from the standard layer, from extension packages the owner enables (`buckyos ext-tools`), or from the Agent package itself: executables in `$OPENDAN_AGENT_ROOT/tools/` are on PATH for every session of this Agent on its private runtime.
+- TS + SDK is the preferred way to reach BuckyOS: the model is `/opt/buckyos/bin/opendan/buckyos-agent/` (`commands/gen_image.ts` = annotated 6-step recipe: argv → typed request → `initRuntime()` login → call → fetch results → one `AgentToolResult` JSON; helpers in `lib/`). A small command of the Agent package:
 ```sh
 #!/bin/sh
-# tools/<name>/bin/<cmd>
-exec deno run --config /opt/buckyos/libexec/buckyos-tool/cli/deno.json --allow-net --allow-read --allow-write --allow-env "$(dirname "$0")/../src/<cmd>.ts" "$@"
+# tools/<cmd>
+exec deno run --config /opt/buckyos/libexec/buckyos-tool/cli/deno.json --allow-net --allow-read --allow-write --allow-env "$(dirname "$0")/src/<cmd>.ts" "$@"
 ```
-In `src/<cmd>.ts` the smallest call (it listed control-panel apps from the host with a user token; in a container it runs as your agent):
+In `tools/src/<cmd>.ts` the smallest call (it listed control-panel apps from the host with a user token; in a container it runs as your agent):
 ```ts
 import { buckyos } from "buckyos";
 const rpc = new buckyos.kRPCClient(`${Deno.env.get("BUCKYOS_TOOL_ENDPOINT")}/kapi/<service>`, Deno.env.get("BUCKYOS_APPCLIENT_SESSION_TOKEN"), Date.now());
 console.log(JSON.stringify(await rpc.call("<method>", {})));
 ```
-For login handling, results and errors reuse buckyos-agent `lib/` (`initRuntime()`, `emit()`) through that tool's `deno.json`. RPC names and params are in the CLI sources `/opt/buckyos/libexec/buckyos-tool/cli/modules/*.ts`. Print JSON on stdout, exit non-zero on failure. Keep the bin wrapper executable (`chmod +x`).
+For login handling, results and errors reuse buckyos-agent `lib/` (`initRuntime()`, `emit()`) through that tool's `deno.json`. RPC names and params are in the CLI sources `/opt/buckyos/libexec/buckyos-tool/cli/modules/*.ts`. Print JSON on stdout, exit non-zero on failure. Keep the wrapper executable (`chmod +x`).
 
 #### Sessions, workspace, deliverables
 `agent-session workspace list`, `runtime list` and `sessions` print compact, readable lists by default. Add `--json` when a script needs the full workspace/runtime records or structured session summaries; filters such as `--available`, `--children` and `--active` work in either format. `workspace get <id>` / `runtime get <id>` return a single complete record.
@@ -146,7 +146,7 @@ There is no `pikg init --kind agent`. Leave `.meta/`, `state/`, `sessions/`, `me
 #### Extend with skill packages
 Only the owner installs, removes, disables and enables skills, and edits the set conversations get: on the agent's Skills page (OpenDAN WebUI) or with `buckyos skill install|remove|disable|enable|ui-add|ui-remove … --agent <agent_id>`. An Agent has `agent-session skill list|status|revise` and no install command; when a user asks for a skill, tell them the page or the command. What an Agent can produce is a draft under `$OPENDAN_AGENT_ROOT/skills_drafts/<slug>/` (behavior `skill_import`, manual `skill_authoring`), which the owner reads and installs.
 
-Writing a skill, trying it from a directory, lint rules, `tools/<name>/install.toml`, packaging (`buckyos pikg init --kind agent-skills`) and publishing: read `doc/sdk/skill-dev-quickstart.md` in the BuckyOS repo (https://github.com/buckyos/buckyos/blob/main/doc/sdk/skill-dev-quickstart.md); the format reference inside an Agent is the `skill_authoring` manual. A template can also ship skills as its own `agent_skills` sub package.
+Writing a skill, trying it from a directory, lint rules, packaging (`buckyos pikg init --kind agent-skills`) and publishing: read `doc/sdk/skill-dev-quickstart.md` in the BuckyOS repo (https://github.com/buckyos/buckyos/blob/main/doc/sdk/skill-dev-quickstart.md); the format reference inside an Agent is the `skill_authoring` manual. A template can also ship skills as its own `agent_skills` sub package.
 
 #### Debug
 - Inside: `agent-session sessions --children --active`, `read-session`, your logs under `/opt/buckyos/logs/`.

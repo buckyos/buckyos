@@ -1,10 +1,16 @@
 ---
 name: hello
-description: Sample work skill for the skill PIKG install test — prints a greeting with the `hello` command. Use it to check that an installed skill's manual and command reach a work session.
-requires: The `hello` command of this skill on PATH (tools/hello/bin).
+description: Sample work skill for the skill PIKG install test — how to print a greeting. Use it to check that the manual of an installed skill reaches a work session.
+requires: Nothing beyond the shell of the runtime.
 scope: work
 baseline: standard
 ---
 # hello
 
-Run `hello [name]` to print a greeting. Success: it prints `hello, <name>` and exits 0.
+Print a greeting with the shell's own `echo`; when no name is given, greet `world`:
+
+```sh
+echo "hello, <name>"
+```
+
+Success: the output is the line `hello, <name>` and the exit code is 0.

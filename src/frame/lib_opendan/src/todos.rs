@@ -230,7 +230,10 @@ pub async fn dispatch(
     crate::fault::point("todo:after_dispatch_record");
     let created = match create_sub_session(agent, who, &parent_sid, sub, channels).await {
         Ok(sd) => sd,
-        Err(OpenDanError::InvalidArgument(reason)) => {
+        // What the Todo asks for cannot be had as it is (a bad parameter; a
+        // runtime that is off, expired, retired or read-only for work that
+        // writes): it waits with the reason until the plan changes it.
+        Err(OpenDanError::InvalidArgument(reason)) | Err(OpenDanError::Bind(reason)) => {
             lock.update(|l| l.withdraw_dispatch(todo_id, n, Some(&reason), crate::now_ms()))
                 .map_err(todo_error)?;
             return Ok(Scheduled::Blocked {

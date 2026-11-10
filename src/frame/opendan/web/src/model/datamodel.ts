@@ -20,12 +20,12 @@ import type {
   LoaderStatus,
   ProfilePatch,
   RegistryEntry,
+  RuntimeImpact,
   RuntimeSettingPatch,
   RuntimeSettings,
   SessionDetail,
   SkillDraft,
   SkillImportRequest,
-  SkillInstallState,
   SkillKind,
   SkillMeta,
   SkillSource,
@@ -74,6 +74,8 @@ export interface OpenDanDataModel {
   runtimeExtTools(runtimeId: string): Promise<RuntimeExtTools>
   runtimeSettings(): Promise<RuntimeSettings>
   setRuntimeSetting(patch: RuntimeSettingPatch): Promise<RuntimeSettings>
+  runtimeImpact(runtimeId: string): Promise<RuntimeImpact>
+  removeRuntime(runtimeId: string, confirm?: boolean): Promise<RuntimeSettings>
 
   sessions(): Promise<RegistryEntry[]>
   activeSessions(): Promise<ActiveSession[]>
@@ -111,18 +113,16 @@ export interface OpenDanDataModel {
   uiSkills(): Promise<UiSkills>
   /** Probes the runtime (default: the private one): it can take seconds. */
   skillsStatus(runtimeId?: string): Promise<SkillsStatus>
-  /** What installing would do; nothing is written. */
+  /** What installing would do; nothing is written. `runtimeId`: where the manuals' commands are checked. */
   skillInstallPlan(source: SkillSource, runtimeId?: string): Promise<InstallPlan>
   skillDrafts(): Promise<SkillDraft[]>
   skillDraftFile(slug: string, file: string): Promise<{ text: string }>
   // Owner only.
-  installSkills(source: SkillSource, planDigest: string, runtimeId?: string, replace?: boolean): Promise<unknown>
+  installSkills(source: SkillSource, planDigest: string, replace?: boolean): Promise<unknown>
   removeSkill(kind: SkillKind, name: string): Promise<unknown>
   setSkillEnabled(kind: SkillKind, name: string, enabled: boolean, reason?: string): Promise<SkillMeta>
   /** `null`: back to the agent package's set. */
   setUiSkills(names: string[] | null): Promise<UiSkills>
-  installSkillCommands(name: string, runtimeId: string): Promise<SkillInstallState>
-  checkSkillCommands(name: string, runtimeId?: string): Promise<SkillInstallState>
   /** The agent writes a draft from the text; it appears in `skillDrafts` when the session is done. */
   importSkill(request: SkillImportRequest): Promise<{ session_id: string; inbox?: unknown }>
   discardSkillDraft(slug: string): Promise<unknown>

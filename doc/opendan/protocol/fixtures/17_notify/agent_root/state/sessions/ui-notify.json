@@ -15,6 +15,7 @@
   "wake_event": "/opendan/jarvis.alice/session/ui-notify/input",
   "agent_access": "full",
   "objective": "chat with alice",
+  "runtime_id": "private",
   "status": {
     "rev": 2,
     "run_state": "created",
@@ -26,13 +27,13 @@
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-affaa79035d64426",
+      "runner_id": "rn-4d7648092f384023",
       "host": "${FIXTURE_HOST}",
-      "pid": 233017,
+      "pid": 2054445,
       "lock_epoch": 1,
-      "at_ms": 1793864757439
+      "at_ms": 1794290475462
     },
-    "updated_at_ms": 1793864757437
+    "updated_at_ms": 1794290475461
   },
   "location_rev": 0
 }

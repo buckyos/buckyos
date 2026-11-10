@@ -1,30 +1,30 @@
 {
   "schema_version": 1,
-  "tool_version": "0.7.172",
+  "tool_version": "0.7.173",
   "meta_root_id": "sha256:97a183e3b4849836b87a98ef50ef13e84ed105d362ad8d92e08d39272aebd235",
-  "source_fingerprint": "sha256:b628e50ef4816b916dd0de27249cfca3ad7a2727eba0a653fc5cf4af030a8d21",
-  "app_doc_object_id": "appdoc:aafc10d403ee5bc945e6896a375d7f4eac9a46ade257ed16c30f9092d3a495a5",
+  "source_fingerprint": "sha256:ce2a1983567ed972662a31228cb197c69cdcf0e4986ea89a39e6fca80abbbf37",
+  "app_doc_object_id": "appdoc:3d0426b12614bbb9f58012483366ad0dd3f28e621ed93235bbc438cf3a5e3fbf",
   "pikg_file": "hello-skills-0.1.0.pikg",
   "generated_files": {
     "APPDOC.json": {
       "size": 711,
-      "digest": "sha256:d8a8c7e82bcd16b578578acd80569483c4e993b68ecef3ab9536e3d90dbe1233"
+      "digest": "sha256:8ae04eb8ce2211e9f30c2fe04f6a24da42b776de3f54e8aa36e97aa06b4d04cb"
     },
     "PACKAGE_META.json": {
-      "size": 919,
-      "digest": "sha256:34950d496f84413e34835b86a4d9348f52423d2a79a667647ae0bdf01dee2421"
+      "size": 917,
+      "digest": "sha256:489e5b2b03c8bfb26292ae7b18c77dd3ac620aa60e80956af2c49f053de98eeb"
     },
     "agent_skills.tar.gz": {
-      "size": 1165,
-      "digest": "sha256:922d403ab08b992b10383d93dcfc463c1e7e5faa81681c44120aa29bbc70cc16"
+      "size": 998,
+      "digest": "sha256:711f0e4574033e9241258d166a3a2aaa83d32fe73ff2478d4d58291a7f1039c9"
     }
   },
   "subpackages": {
     "agent_skills": {
       "source_kind": "path",
-      "size": 1165,
-      "digest": "sha256:922d403ab08b992b10383d93dcfc463c1e7e5faa81681c44120aa29bbc70cc16",
-      "pkg_objid": "pkg:2f20a6c9942ee4526470d455840afbb78e2d4b5a9eeeb508539574bfec97747f"
+      "size": 998,
+      "digest": "sha256:711f0e4574033e9241258d166a3a2aaa83d32fe73ff2478d4d58291a7f1039c9",
+      "pkg_objid": "pkg:7f0cd7625c93ade7e0a321bec0e1088b7c99e590338d624be222711ab63c3bd5"
     }
   }
 }

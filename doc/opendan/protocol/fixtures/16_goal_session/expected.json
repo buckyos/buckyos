@@ -13,12 +13,12 @@
       ],
       "seq": 1,
       "works_absorbed": [
-        "work-20261104-2"
+        "work-20261109-2"
       ]
     },
     "goal_state": {
       "absorbed": [
-        "work-20261104-2"
+        "work-20261109-2"
       ],
       "activations": 1,
       "distance": "TODO.md has no finished items left"
@@ -50,9 +50,9 @@
       },
       "live_run": null,
       "runs_on_disk": [
-        "20261104-214557-3bc101"
+        "20261109-200115-604d47"
       ],
-      "session_id": "goal-20261104-1",
+      "session_id": "goal-20261109-1",
       "state": {
         "acceptance": "n/a",
         "inputs": {
@@ -60,7 +60,7 @@
             "acked_index": 1
           }
         },
-        "last_run": "20261104-214557-3bc101",
+        "last_run": "20261109-200115-604d47",
         "open_turn": null,
         "outcome": null,
         "process_stack": [],
@@ -79,9 +79,9 @@
     {
       "live_run": null,
       "runs_on_disk": [
-        "20261104-214557-ccf92f"
+        "20261109-200115-30113a"
       ],
-      "session_id": "work-20261104-2",
+      "session_id": "work-20261109-2",
       "state": {
         "acceptance": "pending",
         "inputs": {
@@ -89,7 +89,7 @@
             "acked_index": 1
           }
         },
-        "last_run": "20261104-214557-ccf92f",
+        "last_run": "20261109-200115-30113a",
         "open_turn": null,
         "outcome": "failed",
         "process_stack": [],

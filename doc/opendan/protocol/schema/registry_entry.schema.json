@@ -538,6 +538,20 @@
         "null"
       ]
     },
+    "runtime_id": {
+      "description": "The runtime the session was frozen to (where its `shell` runs).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "runtime_unavailable": {
+      "description": "The session is not finished and its runtime cannot be used now (switched off, removed, expired, not answering): why. The session is never moved to another runtime; the mark goes when the runtime is usable again or the session ends.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "scope": {
       "anyOf": [
         {

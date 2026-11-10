@@ -117,7 +117,6 @@ const readZipEntry = async (raw: Bytes, entries: Map<string, ZipEntry>, name: st
 
 interface TarFile {
   path: string
-  executable: boolean
   bytes: Bytes
 }
 
@@ -132,12 +131,10 @@ const readTarGz = async (payload: Bytes, limit: number): Promise<TarFile[]> => {
     const text = (at: number, length: number) => decoder.decode(block.subarray(at, at + length)).replace(/\0.*$/s, '')
     let raw: string
     let size: number
-    let mode: number
     try {
       const prefix = text(257, 6) === 'ustar' ? text(345, 155) : ''
       raw = prefix ? `${prefix}/${text(0, 100)}` : text(0, 100)
       size = Number.parseInt(text(124, 12).trim() || '0', 8)
-      mode = Number.parseInt(text(100, 8).trim() || '0', 8)
     } catch {
       throw bad('a tar header is not UTF-8')
     }
@@ -153,7 +150,7 @@ const readTarGz = async (payload: Bytes, limit: number): Promise<TarFile[]> => {
     }
     if (seen.has(path)) throw bad(`duplicate tar entry ${path}`)
     seen.add(path)
-    files.push({ path, executable: (mode & 0o111) !== 0, bytes: tar.slice(start, start + size) })
+    files.push({ path, bytes: tar.slice(start, start + size) })
   }
   return files
 }
@@ -204,7 +201,7 @@ export const readSkillPikg = async (file: Blob): Promise<ReadPikg> => {
       ignored.push(entry.path)
       continue
     }
-    files[entry.path] = { content: base64(entry.bytes), executable: entry.executable }
+    files[entry.path] = { content: base64(entry.bytes) }
   }
   if (Object.keys(files).length === 0) throw bad(`no file under ${SKILL_DIRS.join('/, ')}/`)
   return {

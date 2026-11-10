@@ -169,38 +169,6 @@ pub const RUNTIME_RECHECK_MS: u64 = 5_000;
 /// part: it keeps its own runtime and directory. The choice is frozen into
 /// `runtime.frozen` before anything else happens; a registered runtime that
 /// is not usable now is refused, never replaced.
-/// Where the commands the named manuals installed themselves are, when that is not the private runtime: the one
-/// runtime a skill has them on, or its pinned one when several do. Skills pointing at different runtimes are refused:
-/// the creator names the runtime.
-async fn skill_runtime(agent: &dyn AgentStateClient, names: &[String]) -> Result<Option<String>> {
-    if names.is_empty() {
-        return Ok(None);
-    }
-    let skills = agent.behaviors().skills(Some(SkillKind::Work)).await?;
-    let mut places: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for skill in skills.iter().filter(|s| names.contains(&s.name)) {
-        let Some(install) = &skill.install_state else { continue };
-        let ok = install.ok_runtimes();
-        let place = match ok.as_slice() {
-            [] => continue,
-            [one] => one.to_string(),
-            _ => match install.pinned_runtime.as_deref().filter(|p| ok.contains(p)) {
-                Some(pinned) => pinned.to_string(),
-                None => continue,
-            },
-        };
-        places.entry(place).or_default().push(skill.name.clone());
-    }
-    match places.len() {
-        0 => Ok(None),
-        1 => Ok(places.into_keys().next().filter(|id| id != PRIVATE_RUNTIME)),
-        _ => Err(OpenDanError::Bind(format!(
-            "the manuals have their commands on different runtimes ({}): name the runtime of this work, or give it manuals of one runtime",
-            places.iter().map(|(id, names)| format!("{} on `{id}`", names.join(", "))).collect::<Vec<_>>().join("; ")
-        ))),
-    }
-}
-
 pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec) -> Result<()> {
     let explicit = spec
         .runtime
@@ -219,10 +187,6 @@ pub async fn freeze_runtime(agent: &dyn AgentStateClient, spec: &mut SessionSpec
     let (runtime_id, selected_by) = match (explicit, inherited) {
         (Some(e), _) => (e, RuntimeSelection::Explicit),
         (None, Some(i)) if !chat => (i, RuntimeSelection::Inherited),
-        (None, None) if !chat => match skill_runtime(agent, &spec.prompt.cmd_skills).await? {
-            Some(id) => (id, RuntimeSelection::Skill),
-            None => (PRIVATE_RUNTIME.to_string(), RuntimeSelection::Private),
-        },
         _ => (PRIVATE_RUNTIME.to_string(), RuntimeSelection::Private),
     };
     let frozen = match crate::runtime::lookup_rechecked(agent, &runtime_id).await? {
@@ -593,6 +557,8 @@ pub async fn create_session(
                     .and_then(|o| o.goal.as_ref())
                     .map(|g| g.goal_id.clone())
             }),
+        runtime_id: existing.runtime.frozen.as_ref().map(|f| f.runtime_id.clone()),
+        runtime_unavailable: None,
         status: SessionStatus::created(crate::now_ms()),
         unreachable: false,
         location_rev: 0,

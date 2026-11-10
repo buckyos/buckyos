@@ -56,6 +56,11 @@ impl AgentLayout {
         self.sessions_dir().join(".unreachable").join(sid)
     }
 
+    /// Why the runtime an unfinished session was frozen to cannot be used now.
+    pub fn runtime_mark(&self, sid: &str) -> PathBuf {
+        self.sessions_dir().join(".runtime_unavailable").join(sid)
+    }
+
     pub fn perception_dir(&self) -> PathBuf {
         self.root.join("state").join("perception")
     }

@@ -31,9 +31,14 @@ buckyos system info                                 # BuckyOS version, build_ver
   --commands a,b --full` also runs them, for versions and to catch stubs. A node's agent tool directory is
   `$BUCKYOS_ROOT/bin/agent-tools` (laid out by node-daemon with `opendan install-agent-tools`); missing entries mean
   that node's install lacks OpenDAN, and a standard command found elsewhere (`provided_by: system`) is not the standard
-  one. `$BUCKYOS_ROOT/tools/bin` (extension tools) comes before it on PATH. The owner declares a runtime extended in the
-  Agent's runtime settings (OpenDAN WebUI or control-panel `agent.update {runtimes: {"<id>": {"baseline": "extended"}}}`);
-  a check never changes the declaration.
+  one. `$BUCKYOS_ROOT/tools/bin` (extension tools) comes before it on PATH. What a runtime allows (directories,
+  operations, desktop access, declared baseline, term) is the runtime's own configuration, never set per Agent: the
+  zone owner changes a node's in the Desktop's Settings → Agent Runtimes (control-panel `node.owner_agents_set
+  {node_id, enabled?, workdir_roots?, computer?, baseline?}`); a device joined by daemon URL has it fixed when it is
+  issued. An Agent's settings only say which runtimes it is assigned and whether each is on (`agent.update {runtimes:
+  {"<id>": {"enabled": true}}}`; a device is on for one Agent at a time). The owner's whole directory with who uses
+  what is `buckyos runtime list` (control-panel `agent.runtime_catalog`); `buckyos agent runtime list|enable|disable|
+  default --agent <agent_id>` is one Agent's side. A check never changes the declared baseline.
 - Container paths are not host paths. Your `/opt/buckyos/logs` is the host's `$BUCKYOS_ROOT/logs/apps/<instance-hash>/`;
   `/opt/buckyos/etc/` is the host's configuration directory mounted read-only. Host `security/`, `bin/`, other
   containers and processes are not visible to you. Startup credentials are in the host's `security/start_config.json`;

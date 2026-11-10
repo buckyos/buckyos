@@ -174,6 +174,9 @@ export default function SessionsPage() {
                   <td>
                     {entry.status.one_line_status || <span className="text-mute">{entry.objective}</span>}
                     {entry.status.last_error != null && <span className="ml-1"><Badge value="error" tone="bad" /></span>}
+                    {entry.runtime_unavailable && (
+                      <span className="ml-1 text-xs text-warn"><Badge value="runtime unavailable" tone="waiting" /> {entry.runtime_unavailable}</span>
+                    )}
                   </td>
                   <td>
                     <Mono>{entry.driver.principal}</Mono>

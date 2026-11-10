@@ -144,6 +144,8 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     runtimeExtTools: (runtimeId) => call('runtimes.ext_tools', { runtime_id: runtimeId }),
     runtimeSettings: () => call('runtimes.settings'),
     setRuntimeSetting: (patch) => call('runtimes.settings_set', { ...patch }),
+    runtimeImpact: (runtimeId) => call('runtimes.impact', { runtime_id: runtimeId }),
+    removeRuntime: (runtimeId, confirm = false) => call('runtimes.remove', { runtime_id: runtimeId, ...(confirm ? { confirm: true } : {}) }),
     sessions: () => call('sessions.query'),
     activeSessions: () => call('activity.active', { limit: 50 }),
     session: (sid, worklog = 40) => call('session.read', { sid, worklog }),
@@ -188,13 +190,11 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     skillInstallPlan: (source, runtimeId) => call('skills.install_plan', { ...source, ...(runtimeId ? { runtime_id: runtimeId } : {}) }),
     skillDrafts: () => call('skills.drafts'),
     skillDraftFile: (slug, file) => call('skills.draft_file', { slug, file }),
-    installSkills: (source, planDigest, runtimeId, replace = false) =>
-      call('skills.install', { ...source, plan_digest: planDigest, ...(runtimeId ? { runtime_id: runtimeId } : {}), ...(replace ? { replace: true } : {}) }),
+    installSkills: (source, planDigest, replace = false) =>
+      call('skills.install', { ...source, plan_digest: planDigest, ...(replace ? { replace: true } : {}) }),
     removeSkill: (kind, name) => call('skills.remove', { kind, name }),
     setSkillEnabled: (kind, name, enabled, reason) => call('skills.set_enabled', { kind, name, enabled, ...(reason ? { reason } : {}) }),
     setUiSkills: (names) => call('skills.ui_set', { names }),
-    installSkillCommands: (name, runtimeId) => call('skills.install_cmd', { name, runtime_id: runtimeId }),
-    checkSkillCommands: (name, runtimeId) => call('skills.check', { name, ...(runtimeId ? { runtime_id: runtimeId } : {}) }),
     importSkill: (request) => call('skills.import', { ...request }),
     discardSkillDraft: (slug) => call('skills.draft_discard', { slug }),
   }

@@ -110,6 +110,7 @@ fn chown(path: &Path, uid: u32) {
 
 fn profile(work: &Path, principals: Vec<String>, ops: &[ExecutorOp]) -> ExecutorProfile {
     ExecutorProfile {
+        baseline: None,
         run_as: Some(ExecutorRunAs { uid: NOBODY, gid: NOBODY }),
         workdir_roots: vec![work.to_string_lossy().to_string()],
         env: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),

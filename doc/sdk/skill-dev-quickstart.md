@@ -14,8 +14,6 @@ skills/
   cmd_skills/<name>/references/*.md   可选：按需读的细节
   plan_skills/<name>/SKILL.md         plan skill
   goal_skills/<name>/SKILL.md         goal skill
-  tools/<name>/bin/<command>          可选：work skill <name> 自带的命令
-  tools/<name>/install.toml           可选：需要装到 runtime 上的外部命令
 ```
 
 - work skill：一类事的命令手册。Work Session 创建时由创建者点名，正文整篇进入它的系统提示。
@@ -23,7 +21,7 @@ skills/
 - plan skill：拆解、排序、验收一类目标的方法。`plan_simple` 在建 TodoList 前按需读。不写命令。
 - goal skill：Goal 自己记下的方法。
 
-`<name>` 只用小写字母、数字、`_`、`-`，与目录名一致。直接放在 `cmd_skills/` 下的单个 `.md` 文件不是 skill。`tools/<name>` 必须有同名的 `cmd_skills/<name>/SKILL.md`。
+`<name>` 只用小写字母、数字、`_`、`-`，与目录名一致。直接放在 `cmd_skills/` 下的单个 `.md` 文件不是 skill。包里出现 `tools/` 目录或不是 UTF-8 文本的文件会被拒绝（§3）。
 
 ## 2. 写 SKILL.md
 
@@ -45,7 +43,7 @@ Run `hello [name]`. Success: it prints `hello, <name>` and exits 0.
 | `name` | 目录名 | 可省略；写了必须与目录一致 |
 | `description` | 一两句话 | 选择方只看这一行：同时写“做什么”和“何时用”，用请求里会出现的词 |
 | `requires` | 自由文本 | 给人读：账号、权限、服务、工具 |
-| `commands` | 逗号分隔的命令名，如 `commands: ffmpeg, ffprobe` | 正文运行的外部命令。shell 内建与常见 Unix 命令、标准层命令（`agent-session`、`buckyos`、`gen_image` 等，清单见 `xagent runtime baseline`）、自带的 `tools/<name>/bin` 不写。只用来告诉 owner 某台 runtime 缺什么，不拦安装和使用 |
+| `commands` | 逗号分隔的命令名，如 `commands: ffmpeg, ffprobe` | 正文运行的外部命令。shell 内建与常见 Unix 命令、标准层命令（`agent-session`、`buckyos`、`gen_image` 等，清单见 `xagent runtime baseline`）不写。只用来告诉 owner 某台 runtime 缺什么，不拦安装和使用 |
 | `scope` | `work`（缺省）/ `ui` / `ui, work` | 只有 work skill 能写 |
 | `baseline` | `standard`（缺省）/ `extended` | 用到标准层之外的命令（`ffmpeg`、`pandoc`、`python3`、`node` 等）写 `extended` |
 | `platforms` | `linux`、`macos`、`windows` | 逗号分隔；到处能用就不写 |
@@ -61,32 +59,17 @@ plan / goal skill 只写 `name`、`description`、`requires`；出现 `scope` �
 - 大小：ui skill 的 SKILL.md 不超过 16 KB（每个对话都带着它，越短越好），plan skill 不超过 3 KB；work skill 只留每次都用得上的内容。
 - plan skill 不出现具体命令、创建 Session 的命令或具体的 work skill 名，写“这一步交给带 X 类手册的 Todo”。
 
-## 3. 自带命令与 install.toml
+## 3. 手册依赖的命令
 
-`tools/<name>/bin/` 里的可执行文件只在选了 `<name>` 的 Session 的 PATH 上，不能与标准层命令同名。访问 BuckyOS 的命令优先用 TypeScript + buckyos-websdk 写，`bin/` 里放一个启动它的脚本（范本见开发指南 §2.3）。
+skill 是纯文本：包里只有 `SKILL.md` 和 `references/`，不带可执行文件，也不带安装脚本，安装就是校验加复制。这是分发的安全边界：装一个 skill 不会在任何 runtime 上运行或放置任何东西。
 
-手册依赖的命令既不在标准层、也不随包带着时，用 `tools/<name>/install.toml` 说明怎么核验和安装：
+手册依赖的命令只有三个来源：
 
-```toml
-[check]
-commands = ["mytool"]                      # 装完必须存在；不写则取 front matter 的 commands
+- 标准层命令（`agent-session`、`buckyos`、`gen_image` 等，清单见 `xagent runtime baseline`），每台 runtime 都有，不用写。
+- 扩展包提供的命令（`ffmpeg`、`pandoc`、`python3` 等）。扩展包由 Zone 管理员在 Desktop “设置 > 扩展工具”或 `buckyos ext-tools` 里启用，装到节点的 `$BUCKYOS_ROOT/tools`，全平台同一组命令。手册在 `commands` 里写命令名，用到标准层之外的命令时声明 `baseline: extended`。
+- 机器上已有的命令（owner 自己装的）。同样只在 `commands` 里写名字。
 
-[install.linux]
-script = "setup/linux.sh"                  # 相对 tools/<name>/；目标 runtime 要允许系统级安装
-writes = ["<instance_volume>/tools/bin"]   # 写到哪；不在 <agent_root> / <instance_volume> 下的，容器重启后会丢
-
-[install.windows]
-script = "setup/windows.ps1"
-
-[uninstall.linux]
-script = "setup/uninstall.sh"              # 可选；没有就只删 bin 副本
-```
-
-- `install` / `uninstall` 的键是 `linux`、`macos`、`windows`；脚本必须在包内。
-- 只有 `[check]` 没有 `[install.*]` 时只核验不安装。
-- 扩展包已经提供的命令（`ffmpeg`、`pandoc` 等）不由 skill 自己装：手册声明 `baseline: extended`。
-- 带 `install.toml` 的 skill 要在至少一台 runtime 上装好命令才会启用；缺省装到 Agent 的私有 runtime，owner 可以用 `buckyos skill install-cmd <name> --runtime <id> --agent <agent_id>` 追加，用 `buckyos skill check <name> --agent <agent_id>` 重新核验。
-- 安装脚本是风险最高的部分：下载、包管理器、`sudo` 都会出现在 owner 确认前看到的风险清单里。
+要随 skill 一起交付新命令时，把命令做成扩展包（`app_type = ext_tools` 的 pikg，见 [Session Runtime](<../opendan/OpenDAN Agent-Session-Runtime.md>) §3），再发一个依赖它的 skill pikg：skill 的 `commands` 写这些命令名，系统按扩展包目录的 `provides` 告诉 owner 启用哪个包能补上（`buckyos skill status`）。两个 pikg 各发各的。
 
 ## 4. 从目录试用
 
@@ -98,7 +81,7 @@ buckyos skill list --agent <agent_id> --kind work
 buckyos skill status --agent <agent_id>
 ```
 
-- `install` 先打印安装计划与风险清单（会装哪些 skill、覆盖谁、带哪些命令、lint 结果），确认后才写入；非交互环境加 `--yes`。
+- `install` 先打印安装计划与风险清单（会装哪些 skill、覆盖谁、手册依赖哪些命令、lint 结果），确认后才写入；非交互环境加 `--yes`。
 - `<agent_id>` 是完整的 AgentId（如 `jarvis.test.buckyos.io`），不是短名。
 - 安装只影响之后创建的 Session。试用时开一个新的 Work，让创建者点名这份手册；ui skill 还要 `buckyos skill ui-add <name> --agent <agent_id>`，然后等对话的 Session 重建。
 - 改了再装一遍即可；不用了 `buckyos skill remove <name> --agent <agent_id>`，临时关掉用 `buckyos skill disable <name> --agent <agent_id>`。
@@ -111,7 +94,7 @@ buckyos skill status --agent <agent_id>
 - 文件不在上面的目录布局里，或 skill 没有 `SKILL.md`；
 - front matter 的 `scope` / `baseline` / `platforms` 不是固定词，`name` 与目录不一致；
 - plan / goal skill 写了 `scope` 或 `commands`；
-- `tools/<name>` 没有同名手册，`bin/` 里的命令与标准层命令同名，`install.toml` 有未知键或指向包外的脚本。
+- 包里有 `tools/` 目录（命令、`install.toml`、脚本），或有不是 UTF-8 文本的文件：skill 是纯文本，命令做成扩展包。
 
 只警告的：
 
@@ -124,7 +107,7 @@ buckyos skill status --agent <agent_id>
 | `plan_depends_on_commands` | plan skill 正文有命令或点名了具体手册 |
 | `ui_scope` | 这份手册会进入对话的系统提示 |
 | `replaces_skill` | 与已装的 skill 同名，会覆盖 |
-| `system_install`、`volatile_writes`、`network_script`、`package_manager`、`privilege`、`secrets` | 安装脚本要系统权限、写到非持久位置、联网下载、用包管理器、提权、需要密钥 |
+| `network_script`、`package_manager`、`privilege`、`secrets` | 手册让 Agent 下载脚本并执行（`curl … \| sh`）、用包管理器、提权（`sudo`）、读取密钥类环境变量 |
 
 ## 6. 打包
 

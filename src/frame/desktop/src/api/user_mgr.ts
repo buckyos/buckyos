@@ -3,7 +3,7 @@ import type { AssignableUserType, ContactProjectionRule, UserType } from './user
 import { isMockRuntime } from '../runtime.ts'
 
 /** Agent and own-profile calls; the mock runtime answers them from an in-browser control panel. */
-async function callControlPanel<T>(
+export async function callControlPanel<T>(
   method: string,
   params: Record<string, unknown>,
   options: RpcCallOptions = {},
@@ -256,48 +256,61 @@ export interface AgentSettings {
   /** After a user task ends, the Agent posts a privacy-free note about it to its HomeStation. */
   auto_share_results?: boolean
   msg_tunnels: AgentMsgTunnelSummary[]
-  /** Execution runtimes beyond the Agent's container, by runtime id (`host` = the owner's desktop). */
+  /** The runtimes assigned to this Agent beyond its container, by runtime id (`host` = the owner's desktop). */
   runtimes?: Record<string, AgentRuntimeSetting>
-  /** The runtime new sessions start in (`container` when none is chosen). */
+  /** The runtime new sessions start in (`container` when none is chosen or the chosen one is off). */
   default_runtime_id?: string
+  /** The default as configured; it stays while that runtime is switched off. */
+  configured_default_runtime_id?: string | null
 }
 
 export type ComputerAccess = 'none' | 'observe' | 'control'
 
-/** What the owner declares a runtime provides: decides which cmd_skills its sessions take. */
+/** What a runtime is declared to provide: decides which cmd_skills its sessions take. */
 export type RuntimeBaseline = 'standard' | 'extended'
 
+/** Which Agent uses a runtime; what the runtime allows is the runtime's own configuration. */
 export interface AgentRuntimeSetting {
   enabled: boolean
-  computer: ComputerAccess
   target: { kind: 'node'; node_id: string; node_did: string } | { kind: 'executor'; executor_id: string }
-  baseline?: RuntimeBaseline | null
 }
 
-/** One machine the owner's Agents may run on (`agent.runtime_directory`). */
-export interface AgentRuntimeOffer {
+/** A runtime as it declares itself: a node, or a device joined by daemon URL (`exec-<executor_id>`). */
+export interface AgentRuntimeInfo {
   runtime_id: string
   kind: 'node' | 'executor'
   node_id?: string
   node_did?: string
   device_type?: string
+  executor_id?: string | null
   name?: string
-  computer_max: ComputerAccess
+  computer: ComputerAccess
   workdir_roots?: string[]
-  /** The policy exists but the administrator closed it. */
+  read_only?: boolean
+  baseline: RuntimeBaseline
+  expires_at_ms?: number | null
+  /** A node that executes as a chosen OS account. */
+  run_as?: boolean
+  /** A node whose policy is closed, or a device that is revoked or expired. */
   closed: boolean
   /** `linux | windows | apple` as the node reports it. */
   os?: string
-  /** The node no longer offers it (the Agent's setting still names it). */
-  withdrawn?: boolean
+}
+
+/** One runtime of the owner's directory as one Agent sees it (`agent.runtime_directory`). */
+export interface AgentRuntimeOffer extends AgentRuntimeInfo {
+  assigned: boolean
   enabled: boolean
-  computer: ComputerAccess
-  baseline: RuntimeBaseline
+  /** The other Agent that has this device switched on. */
+  in_use_by: string | null
+  /** No longer in the directory (the Agent's setting still names it). */
+  withdrawn?: boolean
 }
 
 export interface AgentRuntimeDirectory {
   runtimes: AgentRuntimeOffer[]
   default_runtime_id: string | null
+  configured_default_runtime_id?: string | null
   container: string
   /** A node of this zone runs Agent containers. */
   container_available?: boolean
@@ -308,6 +321,31 @@ export interface AgentRuntimeDirectory {
    * host default runtime, or in its container. */
   agent_service?: { mode: 'native' | 'container'; node_id?: string }
 }
+
+export interface AgentRuntimeAssignment {
+  agent_id: string
+  /** The Agent's own id for the runtime. */
+  runtime_id: string
+  enabled: boolean
+  default: boolean
+}
+
+export interface AgentRuntimeCatalogEntry extends AgentRuntimeInfo {
+  /** Devices only. */
+  online: boolean | null
+  assigned_to: AgentRuntimeAssignment[]
+}
+
+/** The caller's runtimes with who uses what (`agent.runtime_catalog`). */
+export interface AgentRuntimeCatalog {
+  runtimes: AgentRuntimeCatalogEntry[]
+  container: string
+  container_available?: boolean
+  host_by_default?: boolean
+}
+
+/** `{ "<id>": { enabled } | null }`: assign (on or off) or remove; a runtime entry takes nothing else. */
+export type AgentRuntimeChanges = Record<string, { enabled: boolean } | null>
 
 export interface AgentTemplateBinding {
   template_id: string
@@ -392,7 +430,7 @@ export interface AgentCreateRequest {
   template_auto_update: boolean
   desktop_entry?: AgentDesktopEntry
   msg_tunnel?: AgentMsgTunnelInput
-  runtimes?: Record<string, { enabled?: boolean; computer?: ComputerAccess } | null>
+  runtimes?: AgentRuntimeChanges
   default_runtime_id?: string | null
 }
 
@@ -842,8 +880,7 @@ export const updateAgent = async (input: {
   allowGroup?: boolean
   homestation?: boolean
   autoShareResults?: boolean
-  /** `{ "<id>": { enabled?, computer?, baseline? } | null }`; targets come from the directory, never from here. */
-  runtimes?: Record<string, { enabled?: boolean; computer?: ComputerAccess; baseline?: RuntimeBaseline | null } | null>
+  runtimes?: AgentRuntimeChanges
   /** `null` or `'container'`: the Agent's own environment. */
   defaultRuntimeId?: string | null
 }): Promise<{ data: AgentEntry | null; error: unknown }> => {
@@ -878,6 +915,73 @@ export const fetchAgentRuntimeDirectory = async (
   agentId?: string,
 ): Promise<{ data: AgentRuntimeDirectory | null; error: unknown }> =>
   callControlPanel<AgentRuntimeDirectory>('agent.runtime_directory', agentId ? { agent_id: agentId } : {})
+
+export const fetchAgentRuntimeCatalog = async (): Promise<{ data: AgentRuntimeCatalog | null; error: unknown }> =>
+  callControlPanel<AgentRuntimeCatalog>('agent.runtime_catalog', {})
+
+/** Zone owner only: what a node allows the owner's Agents. */
+export const setNodeOwnerAgents = async (input: {
+  nodeId: string
+  enabled?: boolean
+  workdirRoots?: string[]
+  computer?: ComputerAccess
+  baseline?: RuntimeBaseline | null
+}): Promise<{ data: { runtime: AgentRuntimeInfo | null } | null; error: unknown }> => {
+  const params: Record<string, unknown> = { node_id: input.nodeId }
+  if (input.enabled !== undefined) params.enabled = input.enabled
+  if (input.workdirRoots !== undefined) params.workdir_roots = input.workdirRoots
+  if (input.computer !== undefined) params.computer = input.computer
+  if (input.baseline !== undefined) params.baseline = input.baseline
+  return callControlPanel<{ runtime: AgentRuntimeInfo | null }>('node.owner_agents_set', params)
+}
+
+export interface ExecutorDevice {
+  executor_id: string
+  name: string
+  enabled: boolean
+  expires_at_ms: number | null
+}
+
+export interface ExecutorDeviceRow {
+  device: ExecutorDevice
+  online: { capabilities?: { platform?: string; ui?: { supported?: boolean; ready?: boolean } } } | null
+}
+
+export interface ExecutorDeviceIssued {
+  device: ExecutorDevice
+  access_url: string
+  start_command: string
+}
+
+export const fetchExecutorDevices = async (): Promise<{ data: { devices: ExecutorDeviceRow[] } | null; error: unknown }> =>
+  callControlPanel<{ devices: ExecutorDeviceRow[] }>('executor.device.list', {})
+
+/** A device's configuration is fixed when it is issued; who uses it is an assignment (`agent.update`). */
+export const createExecutorDevice = async (input: {
+  name: string
+  workdirRoots: string[]
+  ops: string[]
+  baseline: RuntimeBaseline
+  expiresAtMs: number | null
+}): Promise<{ data: ExecutorDeviceIssued | null; error: unknown }> =>
+  callControlPanel<ExecutorDeviceIssued>('executor.device.create', {
+    name: input.name,
+    profiles: { default: { workdir_roots: input.workdirRoots, ops: input.ops, env: {}, baseline: input.baseline } },
+    expires_at_ms: input.expiresAtMs,
+  })
+
+export const issueExecutorDevice = async (
+  executorId: string,
+  expiresAtMs: number | null,
+): Promise<{ data: ExecutorDeviceIssued | null; error: unknown }> =>
+  callControlPanel<ExecutorDeviceIssued>('executor.device.issue', { executor_id: executorId, expires_at_ms: expiresAtMs })
+
+/** Revoking or deleting a device also takes it away from its Agents (`unassigned`: their ids). */
+export const removeExecutorDevice = async (
+  action: 'revoke' | 'delete',
+  executorId: string,
+): Promise<{ data: { unassigned: string[] } | null; error: unknown }> =>
+  callControlPanel<{ unassigned: string[] }>(`executor.device.${action}`, { executor_id: executorId })
 
 export const fetchAgentProfile = async (
   agentId: string,

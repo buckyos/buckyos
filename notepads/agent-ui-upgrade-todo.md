@@ -426,3 +426,5 @@ deno test --no-check --config tests/datamodel/messagehub.deno.json --allow-all t
 ## 8. 实施记录
 
 （实施后填写：落点、与本单不同的决定、测试结果、未验证项。）
+
+- **2026-11-09，RT1 的后端已随 runtime TODO 实施（未提交）**，因为它是那边 R19 的前置：`configured_default_runtime_id`、停用不清默认、拒绝停用 / 移除私有及其别名、`runtimes.remove`、settings 里移除的条目转 `retired`。`runtimes.settings_set` 的参数已是 `{runtime_id, enabled?, default?, confirm?}`，`runtimes.impact` 也已有。用例在 `opendan/tests/loader.rs` 与 `lib_opendan/tests/runtimes.rs`。RT1 里“量一下 opendan 路径改完 settings 到节点收回权限的延迟”没有做。详见 [runtime TODO](opendan-agent-runtime-lifecycle-todo.md) §11。RT2 的一部分也已在 opendan WebUI 上：ComputerUse 与基线只读、停用前取影响清单；瘦列表、详情页、RT3、RT4 的界面仍未做。Desktop 目录页的页面 id 是 `agent-runtimes`，可用 `openSettings(page)` 打开，`?settings=<page>` 的 URL 深链（RT3）没做。

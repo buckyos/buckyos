@@ -15,6 +15,7 @@
   "agent_access": "full",
   "artifact_id": "demo",
   "objective": "x",
+  "runtime_id": "private",
   "status": {
     "rev": 4,
     "run_state": "finished",
@@ -27,13 +28,13 @@
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-30eeee0d557849d6",
+      "runner_id": "rn-ad9069950dbd434e",
       "host": "${FIXTURE_HOST}",
-      "pid": 233017,
+      "pid": 2054445,
       "lock_epoch": 1,
-      "at_ms": 1793864756317
+      "at_ms": 1794290474311
     },
-    "updated_at_ms": 1793864756312
+    "updated_at_ms": 1794290474307
   },
   "location_rev": 0
 }

@@ -1,6 +1,6 @@
 /* ── Agent detail page ── */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Alert, Button, Chip, CircularProgress, Switch } from '@mui/material'
 import { Bot, Home, MessageSquare, Radio, Settings2, Trash2, UserRound } from 'lucide-react'
@@ -9,6 +9,9 @@ import { desktopUIStore } from '../../../../models/DesktopUIDataModel'
 import { getMessageHubStore } from '../../../messagehub/store'
 import { openAgentSetup } from '../../../agent-setup/launch'
 import { errorMessage, statusTime } from '../../../agent-setup/model'
+import { fetchAgentRuntimeDirectory, type AgentRuntimeOffer } from '../../../../api/user_mgr'
+import { AGENT_RUNTIMES_SETTINGS_PAGE } from '../../../settings/components/layout/navigation'
+import { openSettings } from '../../../settings/launch'
 import { HeaderSection } from '../sections/HeaderSection'
 import { useUsersAgentsStore } from '../../hooks/use-users-agents-store'
 import { agentStatusLabelKey, agentStatusTone } from '../shared/agentLabels'
@@ -64,6 +67,22 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [directory, setDirectory] = useState<{ agentId: string; runtimes: AgentRuntimeOffer[] } | null>(null)
+  const runtimes = Object.entries(agent.settings?.runtimes ?? {})
+  const hasRuntimes = runtimes.length > 0
+  useEffect(() => {
+    if (!hasRuntimes) return
+    let live = true
+    void fetchAgentRuntimeDirectory(agent.id).then(({ data }) => { if (live && data) setDirectory({ agentId: agent.id, runtimes: data.runtimes }) })
+    return () => { live = false }
+  }, [agent.id, hasRuntimes])
+  const offerOf = (id: string) => (directory?.agentId === agent.id ? directory.runtimes.find((offer) => offer.assigned && offer.runtime_id === id) : undefined)
+  const runtimeName = (id: string) => {
+    const offer = offerOf(id)
+    return offer?.name || offer?.node_id || id
+  }
+  const defaultRuntime = agent.settings?.default_runtime_id
+  const configuredDefault = agent.settings?.configured_default_runtime_id
   const ready = agent.install?.state === 'ready'
   const unfinished = !ready
   const tone = toneColor[agentStatusTone(agent.status)]
@@ -253,14 +272,18 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
             [t('usersAgents.agent.role'), agent.settings?.role_supplement?.trim() || t('agentSetup.confirm.roleEmpty')],
             [t('usersAgents.agent.app'), agent.runtime?.app_instance_id ?? t('usersAgents.agent.appPending')],
             ...(agent.runtime ? [[t('usersAgents.agent.appState'), agent.runtime.state ?? t('usersAgents.agentStatus.unknown')] as [string, string]] : []),
-            [t('usersAgents.agent.defaultRuntime'), agent.settings?.default_runtime_id && agent.settings.default_runtime_id !== 'container'
-              ? agent.settings.default_runtime_id : t('usersAgents.agent.runtimeContainer')],
-            ...Object.entries(agent.settings?.runtimes ?? {}).map(([id, runtime]) => [
+            [t('usersAgents.agent.defaultRuntime'), `${defaultRuntime && defaultRuntime !== 'container' ? runtimeName(defaultRuntime) : t('usersAgents.agent.runtimeContainer')}${
+              configuredDefault && configuredDefault !== defaultRuntime ? ` · ${t('usersAgents.agent.defaultConfiguredOff', undefined, { name: runtimeName(configuredDefault) })}` : ''}`],
+            ...runtimes.map(([id, runtime]) => [
               t('usersAgents.agent.runtimeEntry', undefined, { id }),
-              `${runtime.enabled ? t('agentSetup.yes') : t('agentSetup.no')} · ${t(`agentSetup.confirm.computer.${runtime.computer}`)} · ${t(runtime.baseline === 'extended' ? 'usersAgents.agent.baselineExtended' : 'usersAgents.agent.baselineStandard')} · ${runtime.target.kind === 'node' ? runtime.target.node_id : runtime.target.executor_id}`,
+              `${runtimeName(id)} · ${t(runtime.target.kind === 'node' ? 'usersAgents.agent.runtimeNode' : 'usersAgents.agent.runtimeDevice')} · ${t(runtime.enabled ? 'usersAgents.agent.runtimeOn' : 'usersAgents.agent.runtimeOff')}`,
             ] as [string, string]),
           ]}
         />
+        <p className="mt-3 text-[12px] leading-5" style={{ color: 'var(--cp-muted)' }}>{t('usersAgents.agent.runtimesHint')}</p>
+        <Button className="mt-1" size="small" variant="outlined" onClick={() => openSettings(AGENT_RUNTIMES_SETTINGS_PAGE)} data-testid="agent-runtimes-manage">
+          {t('usersAgents.agent.runtimesManage')}
+        </Button>
       </Card>
 
       <Card icon={<Radio size={16} />} title={t('usersAgents.agent.channels')} testId="agent-channels">
@@ -290,6 +313,21 @@ export function AgentDetailPage({ agent, onRemoved }: { agent: AgentEntity; onRe
         {confirmDelete ? (
           <div className="mt-3 space-y-2">
             <p className="text-sm" style={{ color: 'var(--cp-text)' }}>{t('usersAgents.agent.deleteConfirm', undefined, { name: agent.displayName })}</p>
+            {hasRuntimes ? (
+              <div className="text-[12px] leading-5" style={{ color: 'var(--cp-text)' }} data-testid="agent-delete-runtimes">
+                <p>{t('usersAgents.agent.deleteRuntimes', undefined, { path: `.opendan/${agent.id}/` })}</p>
+                <ul className="mt-1 list-disc pl-5">
+                  {runtimes.map(([id]) => {
+                    const roots = offerOf(id)?.workdir_roots ?? []
+                    return (
+                      <li key={id} className="break-all">
+                        {runtimeName(id)} ({id}){roots.length > 0 ? ` · ${t('usersAgents.agent.deleteRuntimeRoots', undefined, { roots: roots.join(', ') })}` : ''}
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button size="small" variant="text" disabled={deleting} onClick={() => setConfirmDelete(false)}>{t('common.cancel')}</Button>
               <Button size="small" color="error" disabled={deleting} startIcon={deleting ? <CircularProgress size={13} color="inherit" /> : <Trash2 size={14} />} onClick={() => void remove()}>

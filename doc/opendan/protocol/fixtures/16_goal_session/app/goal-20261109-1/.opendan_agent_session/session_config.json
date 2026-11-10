@@ -1,0 +1,124 @@
+{
+  "schema": "opendan.session_config/7",
+  "config_rev": 1,
+  "session": {
+    "session_id": "goal-20261109-1",
+    "agent_did": "did:bns:jarvis.alice",
+    "kind": "goal",
+    "class": "goal",
+    "created_at_ms": 1794290475148,
+    "created_by": {
+      "principal": "app:app2@alice",
+      "via": "opendan"
+    },
+    "driver": {
+      "principal": "app:app2@alice"
+    },
+    "idempotency_key": "goal:g-k9ed545152f8cdfcc3d3f30bc:1",
+    "objective": "Pursue goal g-k9ed545152f8cdfcc3d3f30bc. Its current definition, state, open work and budget are given at the start of every activation (<goal_activation>); each activation observes, judges and acts within its budget, then ends with a final report.",
+    "end_condition": {
+      "type": "max_turns",
+      "detail": {
+        "n": 18446744073709551615
+      }
+    },
+    "input_policy": "any",
+    "acl": {
+      "agent_access": "full"
+    },
+    "policy": {
+      "completion": "natural",
+      "wait_user_msg": "end_turn",
+      "observe": "events_and_active",
+      "load_hints": true,
+      "max_process_depth": 4,
+      "max_sub_sessions": 4,
+      "max_session_depth": 2,
+      "tick_secs": 30,
+      "runtime_view": "work"
+    },
+    "goal": {
+      "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+      "epoch": 1
+    }
+  },
+  "prompt": {
+    "llm_context": {
+      "tools": {
+        "enabled": true
+      }
+    },
+    "history_render": {
+      "drop_kinds": [
+        "created",
+        "turn_started",
+        "input_batch",
+        "decide",
+        "compaction",
+        "input_rejected",
+        "event_dropped",
+        "turn_ended"
+      ]
+    }
+  },
+  "runtime": {
+    "requirement": {},
+    "frozen": {
+      "runtime_id": "private",
+      "connector": {
+        "type": "native"
+      },
+      "revision": 0,
+      "selected_by": "private",
+      "caps": {
+        "os": "linux",
+        "arch": "x86_64",
+        "shell": "bash",
+        "desktop": false,
+        "baseline": "extended"
+      },
+      "grant": {
+        "ops": [
+          "open_stream",
+          "describe",
+          "exec",
+          "read",
+          "write",
+          "edit",
+          "mkdir",
+          "stat",
+          "rename",
+          "remove",
+          "computer_inspect",
+          "computer_observe",
+          "computer_act",
+          "query",
+          "cancel"
+        ],
+        "roots": [],
+        "computer": "none"
+      }
+    }
+  },
+  "subscriptions": [
+    {
+      "id": "_goal_activation",
+      "mode": "active",
+      "source": {
+        "type": "system",
+        "id": "goal"
+      }
+    }
+  ],
+  "channels": {
+    "inputs": [
+      {
+        "kind": "kmsg",
+        "id": "q",
+        "queue": "app2::alice::opendan.session.5639ea782436b5cf1561553af5258541070019b3854d98358dde4355c3c5a35c",
+        "subscriber": "opendan.5639ea782436b5cf1561553af5258541070019b3854d98358dde4355c3c5a35c"
+      }
+    ],
+    "wake_event": "/opendan/jarvis.alice/session/goal-20261109-1/input"
+  }
+}

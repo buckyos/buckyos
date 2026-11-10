@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "ui",
     "class": "ui",
-    "created_at_ms": 1793864757403,
+    "created_at_ms": 1794290475425,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -92,9 +92,7 @@
           "cancel"
         ],
         "roots": [],
-        "computer": "none",
-        "install": "system",
-        "workspace": true
+        "computer": "none"
       }
     }
   },

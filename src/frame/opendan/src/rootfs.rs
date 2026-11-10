@@ -379,7 +379,6 @@ mod tests {
         ensure_layout(&root).unwrap();
         let file = |t: &str| libopendan::skills::SkillFile {
             content: base64::engine::general_purpose::STANDARD.encode(t),
-            executable: false,
         };
         let skill = libopendan::skills::SkillPackage {
             package: "demo-skills".into(),
@@ -388,16 +387,16 @@ mod tests {
             imported_from: None,
             files: [
                 ("cmd_skills/demo/SKILL.md".to_string(), file("installed demo")),
-                ("tools/demo/bin/demo".to_string(), file("installed tool")),
+                ("cmd_skills/demo/references/more.md".to_string(), file("installed reference")),
             ]
             .into_iter()
             .collect(),
         };
         libopendan::skills::install(&root, &skill, false, "owner", None).unwrap();
         let r = sync_from_package(&pkg, &root).unwrap();
-        assert_eq!(r.preserved, 2);
+        assert_eq!(r.preserved, 1);
         assert_eq!(fs::read_to_string(root.join("cmd_skills/demo/SKILL.md")).unwrap(), "installed demo");
-        assert_eq!(fs::read_to_string(root.join("tools/demo/bin/demo")).unwrap(), "installed tool");
+        assert_eq!(fs::read_to_string(root.join("tools/demo/bin/demo")).unwrap(), "package tool", "the Agent package's own tools are the package's");
         assert!(root.join("goal_skills").is_dir());
     }
 

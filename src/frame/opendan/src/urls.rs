@@ -102,7 +102,7 @@ mod tests {
         let agent = Arc::new(libopendan::FsAgentStateClient::open(dir.path().join("agent"), "did:web:jarvis.test.buckyos.io", None, None).unwrap());
         let mut settings = buckyos_api::AgentSettings::default();
         settings.runtimes.insert("host".into(), serde_json::from_value(json!({
-            "enabled": true, "computer": "control", "target": {"kind": "node", "node_id": "ood1", "node_did": "did:web:ood1.test.buckyos.io"}
+            "enabled": true, "target": {"kind": "node", "node_id": "ood1", "node_did": "did:web:ood1.test.buckyos.io"}
         })).unwrap());
         let builtin = builtin_runtimes(&settings, agent.agent_did(), &PrivateRuntimeInfo {
             native_service: true, native_node_did: Some("did:web:ood1.test.buckyos.io".into()),
@@ -138,7 +138,7 @@ mod tests {
         assert!(err.to_string().contains("no runtime of device node2"), "{err}");
 
         let record: RuntimeRecord = serde_json::from_value(json!({
-            "version": 4, "runtime_id": "lab", "name": "lab", "runtime_host": "h",
+            "version": 5, "runtime_id": "lab", "name": "lab", "runtime_host": "h",
             "connector": { "type": "node_executor", "node_did": "did:web:node2.test.buckyos.io", "profile_id": "p" },
             "availability": "available", "revision": 1, "registered_by": "x",
             "registered_at_ms": 1, "updated_at_ms": 1

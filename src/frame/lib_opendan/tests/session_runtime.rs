@@ -265,7 +265,6 @@ async fn cmd_skills_follow_the_session_runtimes_declared_baseline() {
                     &base64::engine::general_purpose::STANDARD,
                     "---\nbaseline: huge\n---\nx",
                 ),
-                executable: false,
             },
         )]
         .into(),

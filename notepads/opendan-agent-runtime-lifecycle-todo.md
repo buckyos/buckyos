@@ -2,6 +2,8 @@
 
 > 2026-11-04，三轮迭代合并。第一轮从 [skills 体系改进计划 §3.6.1](opendan-skills-system-todo.md) 的“cmd 装到哪个 runtime”出发整理 runtime 的创建 / 使用 / 更新 / 删除；第二轮用脑图加了用户视角与能力视角两个分类；第三轮（§0）确定 **Agent 工作模型**：私有 runtime 永远在、chat 只知道两台、plan 看全表，并据此把 `kind` 换成 connector + caps + grant（§1）。范围因此从“runtime 登记的生命周期”扩成“Agent 怎么用 runtime”。第四轮（§0.6、§4.6）核对用户添加 runtime 的入口，改成“用户级目录 → 分配给 Agent → Agent 首页看当前与历史”两步。相关：[AgentRuntime 设计 §6.4](<../doc/llm_context/AgentRuntime 设计.md>)、[Agent State Protocol §10](<../doc/opendan/protocol/Agent State Protocol.md>)、[Session Directory Protocol §9](<../doc/opendan/protocol/Session Directory Protocol.md>)、[Session Runtime](<../doc/opendan/OpenDAN Agent-Session-Runtime.md>)、[primary-runtime TODO](opendan-primary-runtime-tools-todo.md)、[object-url TODO](done/agent-object-url-todo.md)（路径解释 D1–D3）。上一版（只有生命周期 + 两视角）的内容全部并入，编号 R-C / R-U / R-M / R-D 保持不变，新增 R-W（工作模型）与 R-K（记录模型）。
 >
+> **2026-11-09 第二次实施（未提交）**：§9.3 的任务已实施，记录、与本文不同的决定、验证和未验证项在 §11；§4、§6、§9.3 各表的状态列停在实施前，以 §11 为准。
+>
 > **2026-11-09 状态**：P0 / P1 已提交（`c88404aaf`，实施记录在 §8）。之后[扩展包 TODO](opendan-exttools-cross-platform-todo.md) 一、二期和 [skills TODO](opendan-skills-system-todo.md) 的实施做掉了 R4、R13、R16，[Agent UI 升级 TODO](agent-ui-upgrade-todo.md) 的裁决 D3 / D4 改了 Agent 首页一侧的分工。§1、§3、§4、§6 的状态列已按当天的代码更新；剩余任务、与另外两单的分工、验证状态见 §9；**§7.1 的 8 条裁决和 §7.2 的 8 条答复都已回写**。两轮答复叠起来之后的模型在 §10，前文与它冲突的地方以它为准；§7.3 的两点也已确认，目前没有待定的设计问题。§0.4、§2 的“现状”是实施前的快照，留作对照；§0.6 的变化标在行内。
 
 ## 0. 工作模型（方向）
@@ -750,3 +752,54 @@ P0 / P1 各项的状态取自 §8.1，这次只抽查了入口是否还在（`ca
 | ssh 上提与 `add-ssh` | 裁决 23 | E3 本轮不做 |
 
 留下来的任务清单在 §9.3。
+
+## 11. 实施记录（2026-11-09，第二次；未提交）
+
+按 §9.3 的顺序做完了 R17 + R19、第一批和第二批。连带做了两件别的单里的事，因为它们是前置：skills TODO 的 S24（与 R17 是同一批代码）和 Agent UI TODO 的 RT1 后端（R19 改同一个函数）。
+
+### 11.1 改了什么
+
+| 任务 | 落点 | 说明 |
+| --- | --- | --- |
+| R17 + S24 | `lib_opendan`：`skills.rs`、`protocol/behavior.rs`、`state/behaviors.rs`、`runner/assembler.rs`、`api.rs`、`runtime/mod.rs`、`baseline.rs`；`opendan`：`home.rs`、`service.rs`；websdk `cli/modules/{skill,skill_lint,pikg}.ts`；`opendan/web` Skills 页；`test/skills_pikg_sample/` | skill 包只剩 `SKILL.md` 与 `references/`，都得是 UTF-8 文本；带 `tools/` 的包整包拒绝并说明“命令做成扩展包”。删掉：`install.toml`、`install_cmd` / `check`（kRPC 与 CLI）、按 runtime 的安装状态、`SkillMeta.tools`、`CmdSkill.installed_on`、`RuntimeSelection::Skill` 与 `skill_runtime`、Session PATH 的 skill `bin` 层、`runtime_exec` 前置的 `<agent_root>/tools`、`usage.skill_commands`。`SkillFile` 去掉 `executable`，内容摘要的行格式改为 `path|sha256`。`install_state` 只剩 owner 确认时的 `risk`。样例包重建 |
+| R19 | `buckyos-api`（`app_schema.rs`、`node_executor.rs`、`node_executor_proto.rs`）、`node_executor/stream.rs`、`scheduler/executor_auth.rs`、`lib_opendan`（`protocol/runtime.rs`、`state/runtimes.rs`）、`control_panel/agent_runtimes.rs`、`opendan/home.rs`、两个 WebUI | `AgentRuntimeSettings = {enabled, target}`，删 `AgentRuntimeGrant` / `InstallGrant`。`runtime_record` v5：`grant` 只有 `ops / roots / computer / expires_at_ms`。基线与 ComputerUse 的来源见 11.2 第 1 条 |
+| RT1 后端 | `app_schema.rs validate_runtimes`、`opendan/home.rs`、`state/runtimes.rs ensure_builtin`、`control_panel/agent_runtimes.rs apply_update` | 停用默认 runtime 不清 `default_runtime_id`；`runtimes.settings` 多 `configured_default_runtime_id`；拒绝停用 / 移除私有及其别名；`runtimes.remove`；settings 里移除的条目记录转 `retired`（再分配回到 `active`，`usage` 保留） |
+| R7 | `opendan/home.rs runtime_impact / confirmed`、`service.rs` | `runtimes.impact`。停用时有进行中的 Session 或等待的 Todo、移除时再加上有 Workspace，没有 `confirm: true` 服务端拒绝（`confirm_required: …`）；界面和 CLI 先取清单再带 `confirm` |
+| R8 + R14 | `lib_opendan`：登记表条目 `runtime_unavailable`（标记文件 `.runtime_unavailable/<sid>`）、`SessionRegistry::mark_runtime`；`opendan/loader.rs mark_runtime_sessions` | Loader 的 runtime 监视循环每一轮（不少于 15 秒）核一次：停用、移除、到期、不应答的 runtime 上还没结束的 Session 打标记，新打上的通知 owner 一次；恢复后标记消失。不迁移 |
+| R12 的尾巴 | `protocol/runtime.rs RuntimeGrant::no_workspace`、`state/workspaces.rs` | 只读或有期限的 runtime 上 `workspaces.create / import` 报 `runtime_no_workspace`，信息里给出去处 |
+| E4 的尾巴 | `protocol/agent_state.rs`、`state/registry.rs`、`state/workspaces.rs` | 登记表条目与 `RegistryQuery` 加 `runtime_id`；Workspace 创建 / 导入记进 `usage.workspaces` |
+| R-U11 | `lib_opendan/todos.rs dispatch` | Todo 点名的 runtime 不能用（`Bind` 错误）时，Todo 带原因进入 `block_reason`，等 plan 处理；以前是整轮调度报错 |
+| E1 | `control_panel/agent_runtimes.rs`、`main.rs` | `agent.runtime_catalog`（节点 + 设备，`assigned_to` 反查，设备带 `online`）；`node.owner_agents_set`（zone owner + Control Panel 管理会话；按 JSON 原样改 `enabled / workdir_roots / computer / baseline`，`run_as`、`env`、`ops` 和节点设置里别的字段不动；没有策略的节点报 `no_policy`） |
+| E2 | `control_panel/agent_daemon.rs`、`agent_runtimes.rs` | 设备记录不再存 `principals`；每次生成快照时取“启用了这台设备的那个 Agent”作为 principal（没有时用一个不存在的 DID，谁也登录不了）；`agent.update` 接受 `exec-<executor_id>`，启用时做独占检查（`runtime_in_use`）；`revoke / delete` 把设备从各 Agent 的 settings 里拿掉并返回 `unassigned`；新增 `agent.runtime_enable`（Agent 自己的服务用，见 11.2 第 3 条） |
+| E5、R-E7、R18、R-E9 | Desktop：`settings/pages/AgentRuntimesPage.tsx`、`AgentRuntimeDialogs.tsx`、`settings/launch.ts`、`agent-setup/*`、`AgentDetailPage.tsx` | 目录页的页面 id 是 `agent-runtimes`（`navigation.ts` 的 `AGENT_RUNTIMES_SETTINGS_PAGE`），`openSettings(page)` 打开；Add device 从 Cluster Manager 搬来，Agent 可选；分配 / 换人 / 取消分配；节点行可改策略；revoke / delete 前列出分配，并向启用它的 Agent 取 `runtimes.impact`。向导列出全部开放的 runtime，被占用的设备不可选，没有按 Agent 的 ComputerUse。Agent 删除确认框列出留有目录的 runtime |
+| E7 | websdk `cli/modules/runtime.ts`、`agent.ts` | `buckyos runtime list / assign / unassign / revoke`、`buckyos agent runtime list / enable / disable / default --agent <id>`；跳过确认用全局的 `--yes`（写在模块名之前） |
+| opendan WebUI | `Workspaces.tsx`、`Skills.tsx`、`Sessions.tsx`、`SessionDetail.tsx`、`model/*` | runtime 卡片上 ComputerUse 与基线只读；停用前取影响清单；Workspace 候选按派生规则；Session 上显示 runtime 不可用的原因。瘦列表 + 详情页（RT2）和移除入口（RT4）没有做，仍属 UI TODO |
+| 文档与手册 | Agent State Protocol §2、§10，Session Directory Protocol，`opendan/README.md`，`doc/sdk/skill-dev-quickstart.md`，`OpenDAN_Agent_Dev_Guide.md`，`AGENTS.md`，手册 `skill_authoring` / `opendan_agent_dev` / `buckyos_admin`，`behaviors/skill_import.toml` | schema 与黄金 fixtures 已重新生成 |
+
+### 11.2 与本文不同或本文没写的决定（待 owner 过目）
+
+1. **基线与 ComputerUse 走执行器的 `describe`。** §10 写的是“节点策略、设备记录各加一个 `baseline`”，没有说 Agent 一侧怎么拿到。做法：`ExecutorProfile` 加 `baseline`，`OwnerAgentsPolicy` 加 `baseline` 并带进派生的 profile；`describe` 的 `info` 多报 `baseline` 和 `computer`（由 profile 的 ops 推出）。记录里的 `caps.baseline`、`grant.computer` 因此要等第一次 check 之后才有值，之前是 `standard` / `none`。原生运行（Desktop Lite）的私有 runtime 同样向本机执行器学，`NativeComputerConfig.access` 从 `none` 起步。
+2. **设备只看第一个 profile。** 一台设备是一个 sandbox，目录里它“允许什么”取第一个 profile；Desktop 签发时固定用 `default` 这一个。
+3. **`agent.runtime_enable`。** 本文说“启用转给 control panel”，没有定接口。Agent 的服务用自己的 App 身份调 `agent.update` 会被只读权限模式挡住，所以加了这个窄方法：只能启用已经分配给自己的 runtime，只读 Agent 也能调。只有设备 runtime 走它；节点的启用仍在 opendan 本地写 settings。
+4. **确认放在服务端。** 裁决 27 写的是界面行为；现在 `runtimes.settings_set` / `runtimes.remove` 自己会拒绝没有 `confirm` 的调用，界面和 CLI 都按它走。
+5. **到期与 revoke。** 到期不动 settings（现算的不可用）；revoke / delete 会改各 Agent 的 settings，记录转 `retired`。
+6. **`<agent_root>/tools` 这一层留着。** 它是 Agent 包自己的命令目录，对本 Agent 的每个 Session 都在 PATH 上，与 skill 无关；拆掉的只是 `tools/<skill>/bin`。
+7. **`usage.active_sessions` 没有落盘。** R-E5 列了这个字段；进行中的 Session 由 `runtimes.impact` 现查，没有另存一份计数。
+8. **旧数据不迁移。** v4 的 runtime 记录读不出，内建的由宿主重写（`usage` 丢失），手工登记的要重新登记；settings 里旧的 `computer / baseline / grant` 字段会让 `AgentRuntimeSettings` 解析失败，要重写该 Agent 的 settings；已装的带 `tools/` 的 skill 的 `tools/<name>/` 目录不会被清理。
+
+### 11.3 验证
+
+- `cargo check --workspace --tests` 通过。`cargo test`（`--test-threads=1`）：`buckyos-api`、`scheduler`、`control_panel`、`node_daemon`、`node_executor`（非 root 部分）、`agent_tool`、`libopendan`、`opendan`。除下面 5 个外全部通过（`buckyos-api` 420、`scheduler` 104、`control_panel` 206、`node_daemon` 171、`node_executor` 43、`agent_tool` 368、`libopendan` 495、`opendan` 53）：`agent_tool` 的 3 个 `grep_tool` 用例（本机没有 `rg`，§8.2 已记）；`libopendan --test xagent_cli` 的 `a_sub_session_is_created_and_followed_through_the_shell_tool` 与 `xllm_takes_over_the_live_run_and_xagent_commits_its_end`，报 “Session tool directory …/src/tools/bin is unavailable”，是开发树里缺这个目录，那段路径逻辑（`managed_tool_dirs`）这次没有动；没有回到改动前的树上复核。
+- 新增 / 改写的用例：`runtimes.rs`（settings 里移除的 runtime 退役并可回来、默认停用后保留；进行中的 Session 被标记一次；节点自报的基线与 ComputerUse 被学到并在重新投影后保留）、`skills.rs`（纯文本规则）、`opendan/tests/loader.rs the_owner_switches_assigned_runtimes_and_work_in_progress_is_told`（settings / impact / confirm / remove / 标记与通知，经 kRPC）、`control_panel`（设备进目录、分配、独占、换人、到期不可启用、revoke 取消分配；目录与策略修改）、`buckyos-api`（策略的基线与 ComputerUse 进 profile；默认停用后的校验）。
+- OpenDAN WebUI：`pnpm check`、`pnpm lint` 通过；e2e 32 过 1 败，失败的 `home.spec.ts` “relocation keeps identity…” 改动前就失败。
+- Desktop：`pnpm check` 通过；`pnpm lint` 有 4 个错，都在没有动过的两个文件里；相关的 5 个 Playwright spec 47 过；其余 e2e 没跑。
+- websdk CLI：`deno task check` 通过，`test:cli` 162 过。`cli/dist` 没有重新构建。
+
+### 11.4 没做与没验证
+
+- **没有在真实 Zone 上跑过任何一项。** R11 的 DV（form B 设备的投影、绑定、执行）仍然没做，E2 建在它上面，所以设备这条线从签发到 Agent 执行只有单测和 mock。`node.owner_agents_set` 改完后调度器把新 profile 推到节点、执行器 `describe` 报出新基线这一整圈也没有实测。
+- 旧版本的 `buckyos_agent_daemon`（form B）不认 profile 里的 `baseline` 字段（`deny_unknown_fields`），带基线的设备要配新版 daemon。
+- opendan 一侧停用 / 移除节点 runtime 不触发调度器刷新（RT1 里要量的延迟），没有量。
+- 容器里的 OpenDAN 要重建 aios 镜像才有这些改动；`buckyos-build.py` 没有跑。
+- UI TODO 的 RT2、RT3、RT4 界面没做；opendan WebUI 的 Session 页徽标文字是硬编码英文（那两页本来就没接 i18n）。
+- E3（ssh）按裁决 23 不做。

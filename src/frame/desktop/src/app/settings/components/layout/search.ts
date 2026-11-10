@@ -47,6 +47,12 @@ export const settingsSearchTerms: Record<SettingsPage, ReadonlyArray<readonly [s
     ["settings.extTools.title", "Extension tools"],
     ["settings.extTools.provides", "Commands"],
   ],
+  'agent-runtimes': [
+    ["settings.runtimes.nodes", "Nodes"],
+    ["settings.runtimes.devices", "Devices"],
+    ["settings.cluster.addDevice", "Add device"],
+    ["settings.runtimes.assign", "Assign to Agent"],
+  ],
   'cluster': [
     ["settings.cluster.thisNode", "This node"],
     ["settings.cluster.deviceDid", "Device DID"],

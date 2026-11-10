@@ -6,11 +6,12 @@ import { useMobileBackHandler } from '../../../../desktop/windows/MobileNavConte
 import type { SettingsPage } from './navigation'
 
 interface SettingsShellProps {
+  initialPage?: SettingsPage
   children: (page: SettingsPage, navigate: (page: SettingsPage) => void) => React.ReactNode
 }
 
-export function SettingsShell({ children }: SettingsShellProps) {
-  const [currentPage, setCurrentPage] = useState<SettingsPage | null>(null)
+export function SettingsShell({ initialPage, children }: SettingsShellProps) {
+  const [currentPage, setCurrentPage] = useState<SettingsPage | null>(initialPage ?? null)
   const isMobile = useMediaQuery('(max-width: 767px)')
 
   // Mobile: null = show list, non-null = show detail page

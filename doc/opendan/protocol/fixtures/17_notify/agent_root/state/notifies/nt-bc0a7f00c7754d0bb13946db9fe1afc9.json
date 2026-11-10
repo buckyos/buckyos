@@ -1,0 +1,42 @@
+{
+  "view": {
+    "notify_id": "nt-bc0a7f00c7754d0bb13946db9fe1afc9",
+    "url": "/messagehub?notify=nt-bc0a7f00c7754d0bb13946db9fe1afc9",
+    "to_user": "alice",
+    "kind": "input",
+    "category": "agent",
+    "level": "timely",
+    "status": "open",
+    "prompt": {
+      "title": "Postgres or SQLite?",
+      "controls": [
+        {
+          "kind": "choice",
+          "id": "option",
+          "options": [
+            {
+              "value": "pg",
+              "label": "Postgres"
+            },
+            {
+              "value": "lite",
+              "label": "SQLite"
+            }
+          ],
+          "multiple": false,
+          "required": true
+        }
+      ]
+    },
+    "source": {
+      "app_id": "jarvis.alice",
+      "agent_did": "did:bns:jarvis.alice",
+      "session_id": "work-notify",
+      "call_id": "q1"
+    },
+    "created_at_ms": 1794290475415,
+    "task_id": "local-task-nt-bc0a7f00c7754d0bb13946db9fe1afc9"
+  },
+  "idempotency_key": "ask:work-notify-run:q1",
+  "notes": []
+}

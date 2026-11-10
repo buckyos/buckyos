@@ -25,10 +25,11 @@ test('Desktop Lite shows one native runtime with private and owner roles', async
   await expect(native).toContainText('local IPC')
   await expect(native.getByTestId('runtime-toggle')).toHaveCount(0)
   await expect(native.getByTestId('runtime-make-default')).toHaveCount(0)
-  await native.getByTestId('runtime-baseline-select').selectOption('extended')
-  await expect(native.getByTestId('runtime-baseline')).toHaveText('Extended environment')
-  await native.locator('select').last().selectOption('control')
-  await expect(native.locator('select').last()).toHaveValue('control')
+  // Desktop access and the environment are the runtime's own configuration: shown, not edited here.
+  await expect(native.getByTestId('runtime-baseline')).toHaveText('Standard environment')
+  await expect(native.getByTestId('runtime-computer')).toHaveText('Desktop access: Screenshots')
+  await expect(native.locator('select')).toHaveCount(0)
+  await expect(native.getByTestId('runtime-config-hint')).toContainText('Settings > Agent Runtimes')
   await expect(runtimes.locator('li')).toHaveCount(1)
 })
 
@@ -86,7 +87,8 @@ test('runtimes show their declared environment and what their tool check found',
   await expect(container).toContainText('Private runtime')
   await expect(container).toContainText('Available')
   await expect(container).toContainText('Built in')
-  await expect(container).toContainText('outside its own directory')
+  await expect(container).not.toContainText('May install')
+  await expect(container.getByTestId('runtime-computer')).toHaveText('Desktop access: None')
   await expect(container.getByTestId('runtime-baseline')).toHaveText('Extended environment')
   // What a declared extended environment lacks is said once, on the extension line.
   await expect(container.getByTestId('runtime-tool-check')).toHaveCount(0)
@@ -107,12 +109,39 @@ test('runtimes show their declared environment and what their tool check found',
   await expect(host.getByTestId('runtime-tool-check')).toHaveText('Tools missing: aicc-tool, gen_image')
   await expect(host.getByTestId('runtime-ext')).toHaveText('Extension tools: missing pandoc, tesseract')
   await expect(host.getByTestId('runtime-ext')).toHaveClass(/text-mute/)
-  // The owner declares the host extended; the check stays a hint.
-  await host.getByTestId('runtime-baseline-select').selectOption('extended')
-  await expect(host.getByTestId('runtime-baseline')).toHaveText('Extended environment')
-  await expect(host.getByTestId('runtime-tool-check')).toBeVisible()
+  await expect(host.getByTestId('runtime-computer')).toHaveText('Desktop access: Screenshots')
+  await expect(host.locator('select')).toHaveCount(0)
+  await expect(host.getByTestId('runtime-config-hint')).toContainText('Settings > Agent Runtimes')
+  expect(errors).toEqual([])
+})
+
+test('disabling a runtime with work in progress asks first and keeps the owner default', async ({ page }) => {
+  const errors = await open(page)
+  const host = page.getByTestId('known-runtimes').getByTestId('runtime-host')
   await host.getByTestId('runtime-toggle').click()
+  const dialog = page.getByTestId('runtime-impact')
+  await expect(dialog.getByTestId('runtime-impact-sessions')).toContainText('Summarize last week')
+  await expect(dialog.getByTestId('runtime-impact-sessions').getByRole('link')).toHaveAttribute('href', `#/session/${WORK_RUNNING}`)
+  await expect(dialog.getByTestId('runtime-impact-todos')).toContainText('Write the weekly report')
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(host.getByTestId('runtime-toggle')).toHaveText('Disable')
+  await expect(host.getByTestId('runtime-default')).toHaveText('Owner’s default')
+
+  // The mock refuses `enabled: false` without `confirm: true` while the session runs.
+  await host.getByTestId('runtime-toggle').click()
+  await dialog.getByRole('button', { name: 'Disable', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(host.getByRole('alert')).toHaveCount(0)
   await expect(host).toContainText('Not usable yet')
+  await expect(host.getByTestId('runtime-default')).toHaveText('Owner’s default (off)')
+
+  // The session that is on it says why it cannot go on.
+  await page.evaluate(() => { window.location.hash = '#/sessions' })
+  await expect(page.getByTestId(`session-row-${WORK_RUNNING}`)).toContainText('runtime unavailable')
+  await expect(page.getByTestId(`session-row-${WORK_RUNNING}`)).toContainText('is not enabled for this agent')
+  await page.getByTestId(`session-row-${WORK_RUNNING}`).getByRole('link', { name: WORK_RUNNING }).click()
+  await expect(page.getByText('runtime unavailable')).toBeVisible()
   expect(errors).toEqual([])
 })
 

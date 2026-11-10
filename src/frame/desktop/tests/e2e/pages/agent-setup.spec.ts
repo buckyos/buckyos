@@ -166,7 +166,7 @@ test.describe('Agent setup wizard', () => {
   for (const scenario of ['closed', 'uninitialized', 'non-owner'] as const) {
     test(`host access is unavailable for ${scenario}`, async ({ page }) => {
       await seedMock(page, scenario === 'closed' ? {
-        runtime_offers: [{ runtime_id: 'host', kind: 'node', name: 'Closed host', closed: true, computer_max: 'none', computer: 'none', enabled: false }],
+        runtime_offers: [{ runtime_id: 'host', kind: 'node', node_id: 'desktop', name: 'Closed host', closed: true, computer: 'none', baseline: 'standard' }],
       } : scenario === 'uninitialized' ? { runtime_offers: [] } : {
         account: { user_id: 'bob', user_name: 'Bob', user_type: 'user', did: 'did:bns:bob' },
       })
@@ -196,11 +196,69 @@ test.describe('Agent setup wizard', () => {
     await expect(wizard.getByTestId('agent-setup-next')).toBeEnabled()
   })
 
+  test('every open runtime is offered; the Agent page links to Settings and its delete confirmation names the runtimes', async ({ page }) => {
+    const device = (id: string, name: string, enabled = true) => ({
+      executor_id: id, name, owner_user_id: 'alice', enabled, expires_at_ms: null,
+      profiles: { default: { workdir_roots: [`/work/${id}`], ops: ['open_stream', 'describe', 'read', 'query', 'cancel'], baseline: 'standard' } },
+    })
+    await seedMock(page, { executor_devices: [device('free', 'Build box'), device('busy', 'Mac mini'), device('gone', 'Old box', false)] })
+    await page.goto('/?scenario=normal')
+    await expect.poll(() => page.evaluate((key) => {
+      const state = JSON.parse(window.localStorage.getItem(key) ?? '{}')
+      if (!state.agents?.[0]) return false
+      state.agents[0].settings.runtimes = { 'exec-busy': { enabled: true, target: { kind: 'executor', executor_id: 'busy' } } }
+      window.localStorage.setItem(key, JSON.stringify(state))
+      return true
+    }, MOCK_KEY)).toBe(true)
+
+    const wizard = await openGuideWizard(page)
+    await nextPage(wizard)
+    const extras = wizard.getByTestId('agent-setup-extra-runtimes')
+    await expect(extras).not.toContainText('Old box')
+    await expect(extras.getByTestId('agent-setup-runtime-exec-busy')).toContainText('In use by assistant.alice')
+    await expect(extras.getByTestId('agent-setup-runtime-exec-busy').getByRole('checkbox')).toBeDisabled()
+    const free = extras.getByTestId('agent-setup-runtime-exec-free')
+    await expect(free).toContainText('/work/free · Read only · Desktop access: none')
+    await expect(free.getByRole('checkbox')).not.toBeChecked()
+    await free.getByRole('checkbox').check()
+    await nextPage(wizard)
+    await nextPage(wizard)
+    await wizard.getByTestId('agent-setup-skip-channel').click()
+    await expect(wizard.getByTestId('agent-setup-confirm-runtime')).toContainText('Build box')
+    await wizard.getByTestId('agent-setup-create').click()
+    await expect(page.getByTestId('agent-setup-status-success')).toBeVisible({ timeout: 15_000 })
+    expect(await page.evaluate((key) => {
+      const state = JSON.parse(window.localStorage.getItem(key) ?? '{}')
+      return state.agents.find((item: { name: string }) => item.name === 'jarvis').settings.runtimes
+    }, MOCK_KEY)).toEqual({
+      host: { enabled: true, target: { kind: 'node', node_id: 'desktop', node_did: 'did:dev:desktop' } },
+      'exec-free': { enabled: true, target: { kind: 'executor', executor_id: 'free' } },
+    })
+    await page.getByTestId('agent-setup-close').click()
+
+    await page.getByTestId('desktop-app-agent-guide').click()
+    const detail = page.getByTestId('window-users-agents').getByTestId('agent-detail')
+    await expect(detail.getByTestId('agent-runtime')).toContainText('Alice’s computer · node · on')
+    await expect(detail.getByTestId('agent-runtime')).toContainText('Build box · device · on')
+    await detail.getByTestId('agent-delete').getByRole('button', { name: 'Delete Agent' }).click()
+    const kept = detail.getByTestId('agent-delete-runtimes')
+    await expect(kept).toContainText('.opendan/jarvis.alice/')
+    await expect(kept).toContainText('is not removed automatically')
+    await expect(kept).toContainText('Alice’s computer (host) · allowed directories: /home/alice')
+    await expect(kept).toContainText('Build box (exec-free) · allowed directories: /work/free')
+    await detail.getByTestId('agent-delete').getByRole('button', { name: 'Cancel' }).click()
+
+    await detail.getByTestId('agent-runtimes-manage').click()
+    const settings = page.getByTestId('window-settings')
+    await expect(settings.getByTestId('settings-agent-runtimes')).toBeVisible()
+    await expect(settings.getByTestId('settings-runtime-exec-free').getByTestId('settings-runtime-assignment-jarvis.alice')).toContainText('On')
+  })
+
   test('a Linux host defaults to the container and the owner may choose the host', async ({ page }) => {
     await seedMock(page, {
       runtime_offers: [{
         runtime_id: 'host', kind: 'node', node_id: 'ood1', node_did: 'did:dev:ood1', device_type: 'ood', name: 'ood1',
-        os: 'linux', computer_max: 'none', workdir_roots: ['/home/alice'], closed: false, enabled: false, computer: 'none',
+        os: 'linux', workdir_roots: ['/home/alice'], closed: false, computer: 'none', baseline: 'standard',
       }],
     })
     await page.goto('/?scenario=normal')

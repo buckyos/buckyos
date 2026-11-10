@@ -1414,7 +1414,6 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 agent_root: sh.agent_root.clone(),
                 input_queue: s.config.channels.kmsg().map(|(_, q, _)| q.to_string()),
                 trace_id: s.sid().to_string(),
-                cmd_skills: crate::runtime::frozen_cmd_skills(&s.config),
                 workspace: s.config.workspace_binding.clone(),
                 extra_env: s
                     .config

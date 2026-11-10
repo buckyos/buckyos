@@ -1,7 +1,7 @@
 //! Runtimes of an agent (`state/runtimes/<runtime_id>.json`): where its
 //! sessions and workspaces can run. A record says how a runtime is reached
-//! (`connector`), what the machine can do (`caps`), what this agent may do
-//! there (`grant`) and how the agent has used it (`usage`); executing in it
+//! (`connector`), what the machine can do (`caps`), what the runtime allows
+//! (`grant`) and how the agent has used it (`usage`); executing in it
 //! is the runtime layer's job (`agent_tool::runtime`).
 
 use std::collections::BTreeMap;
@@ -12,12 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use agent_tool::runtime::{Capabilities, RuntimeDescriptor};
-use buckyos_api::{
-    owner_agent_profile_id, AgentRuntimeTarget, AgentSettings, ComputerAccess, ExecutorOp, InstallGrant,
-    RuntimeBaseline,
-};
+use buckyos_api::{owner_agent_profile_id, AgentRuntimeTarget, AgentSettings, ComputerAccess, ExecutorOp, RuntimeBaseline};
 
-pub const RUNTIME_RECORD_VERSION: u32 = 4;
+pub const RUNTIME_RECORD_VERSION: u32 = 5;
 
 /// The agent's private runtime: the environment its Agent Service runs in
 /// (its aios container, or the host process when the service runs
@@ -187,7 +184,7 @@ pub enum ProvidedBy {
     BuckyosRoot,
     /// An extension package: under `$BUCKYOS_ROOT/tools`.
     Exttools,
-    /// The Agent's own (`tools/<skill>/bin`).
+    /// The Agent's own (`<agent_root>/tools`).
     Agent,
     /// Beside a development build of the program: serves as a standard helper,
     /// and views say so.
@@ -301,7 +298,7 @@ impl BaselineCheck {
 }
 
 /// Commands beyond the standard tools verified to exist on a runtime
-/// (`check --commands`, skill installation).
+/// (`check --commands`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ToolsCheck {
     pub checked_at_ms: u64,
@@ -316,8 +313,9 @@ pub struct ToolsCheck {
     pub error: Option<String>,
 }
 
-/// What the machine can do: learned when the runtime is checked, except
-/// `baseline`, which its registrar declares.
+/// What the machine can do: learned when the runtime is checked. `baseline`
+/// is what the runtime is declared to provide (a node's policy, a device's
+/// profile, the registrar of a hand-registered one).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeCaps {
     #[serde(flatten)]
@@ -363,25 +361,21 @@ impl Default for RuntimeCaps {
     }
 }
 
-/// What this agent may do on the runtime: the node policy narrowed by the
-/// owner, with the daemon URL's term. `roots` is the executor's boundary
-/// (empty: unlimited); the agent's directories follow the directory
-/// convention (`<owner home>/agents/<agent_id>` on the private runtime,
+/// What the runtime allows: its own configuration (a node's `owner_agents`
+/// policy, a device's issued profile and term), learned when it is probed;
+/// never set per agent. `roots` is the executor's boundary (empty:
+/// unlimited); the agent's directories follow the directory convention
+/// (`<owner home>/agents/<agent_id>` on the private runtime,
 /// `<account home>/.opendan/<agent_id>` on a node) and are not recorded.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeGrant {
-    /// Executor operations granted; empty before the executor was asked.
+    /// Executor operations allowed; empty before the executor was asked.
     #[serde(default)]
     pub ops: Vec<ExecutorOp>,
     #[serde(default)]
     pub roots: Vec<PathBuf>,
     #[serde(default)]
     pub computer: ComputerAccess,
-    #[serde(default)]
-    pub install: InstallGrant,
-    /// Long-lived workspaces may be created there.
-    #[serde(default)]
-    pub workspace: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<u64>,
 }
@@ -393,8 +387,6 @@ impl RuntimeGrant {
             ops: ExecutorOp::ALL.to_vec(),
             roots: Vec::new(),
             computer: ComputerAccess::None,
-            install: InstallGrant::System,
-            workspace: true,
             expires_at_ms: None,
         }
     }
@@ -410,6 +402,19 @@ impl RuntimeGrant {
 
     pub fn expired_at(&self, now_ms: u64) -> bool {
         self.expires_at_ms.is_some_and(|t| t <= now_ms)
+    }
+
+    /// Why no long-lived workspace is created on a runtime with this grant
+    /// (`None`: one may be): a workspace is kept and written to, so the
+    /// runtime has to take writes and must not have a term.
+    pub fn no_workspace(&self) -> Option<&'static str> {
+        if self.read_only() {
+            Some("it is read-only")
+        } else if self.expires_at_ms.is_some() {
+            Some("it is temporary (its access has a term)")
+        } else {
+            None
+        }
     }
 
     /// Whether `path` lies inside the granted roots (any path when there
@@ -435,8 +440,9 @@ pub enum RuntimeAvailability {
     PermissionDenied,
 }
 
-/// `retired`: withdrawn, expired or unregistered; kept for its history,
-/// never a candidate.
+/// `retired`: removed from the agent, its device revoked or deleted, or
+/// unregistered; kept for its history, never a candidate. An expired
+/// runtime stays `active` and unavailable until it is renewed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeLifecycle {
@@ -454,11 +460,9 @@ pub struct RuntimeUsage {
     pub last_used_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_session_id: Option<String>,
+    /// Workspaces created or imported there.
     #[serde(default)]
     pub workspaces: u64,
-    /// Skill commands installed there.
-    #[serde(default)]
-    pub skill_commands: Vec<String>,
 }
 
 /// One use of a runtime, noted in its `usage`.
@@ -467,8 +471,6 @@ pub struct RuntimeUsage {
 pub enum RuntimeUsageEvent {
     Session { session_id: String },
     Workspace,
-    SkillCommand { name: String },
-    SkillCommandRemoved { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -582,10 +584,10 @@ pub struct PrivateRuntimeInfo {
 
 /// The runtimes of an agent as the system configures them: its private
 /// runtime (always present and usable, declared `extended` in the aios
-/// container, the owner's `host` declaration when the service runs
-/// natively), the owner's desktop `host`, and every further runtime the
-/// owner enabled in the agent's settings. A node runtime's roots and
-/// platform are learned from the node (`describe`) when it is checked.
+/// container), the owner's desktop `host`, and every further runtime
+/// assigned to the agent in its settings. What a node or device runtime
+/// allows (roots, operations, ComputerUse, declared baseline, term) and its
+/// platform are learned from it (`login`, `describe`) when it is checked.
 pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &PrivateRuntimeInfo) -> Vec<RuntimeRegister> {
     let default = canonical_runtime(settings.effective_default_runtime()).to_string();
     let mut aliases: Vec<String> = settings.runtimes.iter().filter_map(|(id, rs)| {
@@ -597,19 +599,16 @@ pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &Pri
     }).collect();
     aliases.sort_by_key(|id| (id != &default, id != HOST_RUNTIME, id.clone()));
     let owner = aliases.iter().find_map(|id| settings.runtimes.get(id));
-    let computer = owner.and_then(|s| private.computer_endpoint.as_ref().map(|endpoint| {
+    // What the node's policy allows of its desktop is learned from the local
+    // executor when the runtime is checked (`access` starts at `none`).
+    let computer = owner.filter(|s| s.enabled).and_then(|_| private.computer_endpoint.as_ref().map(|endpoint| {
         agent_tool::runtime::computer::NativeComputerConfig {
             endpoint: endpoint.clone(),
             node_did: private.native_node_did.clone().unwrap_or_default(),
             profile_id: owner_agent_profile_id(agent_did),
-            access: if s.enabled { s.computer } else { ComputerAccess::None },
+            access: ComputerAccess::None,
         }
     }));
-    let mut grant = RuntimeGrant::private();
-    grant.computer = computer.as_ref().map(|c| c.access).unwrap_or_default();
-    let host_baseline = owner
-        .and_then(|h| h.baseline)
-        .unwrap_or(RuntimeBaseline::Standard);
     let mut out = vec![RuntimeRegister {
         runtime_id: PRIVATE_RUNTIME.into(),
         connector: RuntimeConnector::Native { aliases: aliases.clone(), computer },
@@ -627,9 +626,10 @@ pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &Pri
         enabled: true,
         default: default == PRIVATE_RUNTIME || aliases.contains(&default),
         // The aios image: the standard tools plus its toolchains and media
-        // tools (`build_aios` RUNTIME_PACKAGES, Node, Deno, uv).
-        baseline: if private.native_service { host_baseline } else { RuntimeBaseline::Extended },
-        grant,
+        // tools (`build_aios` RUNTIME_PACKAGES, Node, Deno, uv). A native
+        // service learns the node's declaration when it is checked.
+        baseline: if private.native_service { RuntimeBaseline::Standard } else { RuntimeBaseline::Extended },
+        grant: RuntimeGrant::private(),
     }];
     let mut has_host = false;
     for (id, rs) in &settings.runtimes {
@@ -637,7 +637,6 @@ pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &Pri
         if aliases.contains(id) {
             continue;
         }
-        let owner_grant = rs.grant.clone().unwrap_or_default();
         let (connector, name, desc) = match &rs.target {
             AgentRuntimeTarget::Node { node_id, node_did } => (
                 RuntimeConnector::node(node_did, agent_did),
@@ -666,15 +665,8 @@ pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &Pri
             desc,
             enabled: rs.enabled,
             default: default == *id,
-            baseline: rs.baseline.unwrap_or(RuntimeBaseline::Standard),
-            grant: RuntimeGrant {
-                ops: Vec::new(),
-                roots: owner_grant.roots.iter().map(PathBuf::from).collect(),
-                computer: rs.computer,
-                install: owner_grant.install,
-                workspace: owner_grant.workspace.unwrap_or(id == HOST_RUNTIME),
-                expires_at_ms: owner_grant.expires_at_ms,
-            },
+            baseline: RuntimeBaseline::Standard,
+            grant: RuntimeGrant::default(),
         });
     }
     if !has_host {
@@ -682,7 +674,7 @@ pub fn builtin_runtimes(settings: &AgentSettings, agent_did: &str, private: &Pri
             runtime_id: HOST_RUNTIME.into(),
             connector: RuntimeConnector::NodeExecutor { node_did: None, executor_id: None, profile_id: String::new() },
             name: "Owner's desktop".into(),
-            desc: "The owner's desktop. Not enabled for this agent: the node has no `owner_agents` policy, or the agent's settings do not list `host`.".into(),
+            desc: "The owner's desktop. Not assigned to this agent: the node has no `owner_agents` policy, or the agent's settings do not list `host`.".into(),
             enabled: false,
             default: false,
             baseline: RuntimeBaseline::Standard,
@@ -728,6 +720,11 @@ mod tests {
         g.roots = vec![PathBuf::from("/home/o"), PathBuf::from(r"C:\Users\o")];
         assert!(g.within_roots("/home/o/x") && g.within_roots(r"c:\users\o\d") && !g.within_roots("/home/other"));
         assert!(RuntimeGrant::default().can_exec() && !RuntimeGrant::default().read_only(), "unknown ops refuse nothing");
+        assert_eq!(g.no_workspace(), Some("it is read-only"));
+        let mut term = RuntimeGrant::private();
+        assert!(term.no_workspace().is_none());
+        term.expires_at_ms = Some(1);
+        assert!(term.no_workspace().unwrap().contains("temporary"));
     }
 
     #[test]

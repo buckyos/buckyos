@@ -270,6 +270,7 @@ mod harness {
                 profiles: BTreeMap::from([(
                     PROFILE.into(),
                     ExecutorProfile {
+                        baseline: None,
                         run_as: None,
                         workdir_roots: vec![ledger.path().display().to_string()],
                         env: BTreeMap::new(),

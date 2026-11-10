@@ -4,9 +4,10 @@
 
 ```text
 skills/cmd_skills/hello/SKILL.md        work skill
-skills/tools/hello/bin/hello            它自带的命令
 skills/plan_skills/hello_plan/SKILL.md  plan skill（不写命令）
 ```
+
+skill 是纯文本：包里只有 `SKILL.md` 和 `references/**`，都是 UTF-8 文本，不带命令也不带安装脚本；出现 `tools/` 或非文本文件时 `pikg doctor` 和 Agent 都会拒绝。手册用到的命令来自标准层或扩展包（`buckyos ext-tools`），在 front matter 的 `commands` 里写名字即可；`hello` 只用 shell 自带的 `echo`，所以不声明。
 
 在本目录使用已安装的项目 CLI，离线构建和校验：
 
@@ -28,6 +29,6 @@ npx buckyos skill list --agent <agent_id>
 npx buckyos skill list --agent <agent_id> --kind plan
 ```
 
-该路径调用 Agent 的 `skills.*` kRPC（先给出安装计划与风险清单，确认后写入），不调用普通 `app install`。Agent 自己没有安装命令，`agent-session skill` 只有 `list` / `status` / `revise`。已有 Session 的冻结手册不会因安装而替换，新 Session 才读取新版本。
+该路径调用 Agent 的 `skills.*` kRPC（先给出安装计划与风险清单，确认后写入；安装就是检查加复制，不运行任何东西），不调用普通 `app install`。Agent 自己没有安装命令，`agent-session skill` 只有 `list` / `status` / `revise`。已有 Session 的冻结手册不会因安装而替换，新 Session 才读取新版本。
 
-扩展时可在 `skills/` 中加入 `goal_skills/<name>/SKILL.md`、`cmd_skills/<name>/references/` 或 `tools/<name>/install.toml`。写法、lint 与发行见 [skill 开发快速上手](../../doc/sdk/skill-dev-quickstart.md)，机制见 [OpenDAN 开发指南](../../doc/sdk/OpenDAN_Agent_Dev_Guide.md) §2.4，PIKG 侧见 [PIKG 模块 §6.6](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md#7-agent-skill-包)；其他资料见 [PIKG 文档总览](../../doc/pikg/README.md)。
+扩展时可在 `skills/` 中加入 `goal_skills/<name>/SKILL.md` 或 `cmd_skills/<name>/references/`；需要自带命令时另做一个扩展包（`buckyos pikg init --kind ext-tools`），skill 只在 `commands` 里点名。写法、lint 与发行见 [skill 开发快速上手](../../doc/sdk/skill-dev-quickstart.md)，机制见 [OpenDAN 开发指南](../../doc/sdk/OpenDAN_Agent_Dev_Guide.md) §2.4，PIKG 侧见 [PIKG 模块 §6.6](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md#7-agent-skill-包)；其他资料见 [PIKG 文档总览](../../doc/pikg/README.md)。

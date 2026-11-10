@@ -1060,7 +1060,6 @@ fn skills_are_installed_by_the_owner_listed_chosen_and_counted() {
         &[
             ("cmd_skills/hello/SKILL.md", "---\nname: hello\ndescription: say hello\nrequires: nothing\n---\nRun `hello`.", 0o644),
             ("cmd_skills/hello/references/more.md", "More.", 0o644),
-            ("tools/hello/bin/hello", "#!/bin/sh\necho hello\n", 0o755),
             ("goal_skills/greet/SKILL.md", "---\ndescription: greet daily\n---\nGreet.", 0o644),
             ("plan_skills/steps/SKILL.md", "---\ndescription: cut work into steps\n---\nCut by risk.", 0o644),
         ],
@@ -1075,19 +1074,13 @@ fn skills_are_installed_by_the_owner_listed_chosen_and_counted() {
 
     // The owner's path: read the package, look at the plan, install what the plan said.
     let package = skills::read_pikg(&pikg).unwrap();
-    let plan = skills::plan(&root, &package, &[], None).unwrap();
+    let plan = skills::plan(&root, &package).unwrap();
     assert_eq!(plan.risk.level, "low", "{:?}", plan.risk.findings);
-    assert_eq!(plan.runtime_id.as_deref(), Some("private"));
     let accepted = skills::Accepted { level: plan.risk.level.clone(), plan_digest: plan.plan_digest.clone() };
     let report = skills::install(&root, &package, false, "did:bns:owner", Some(&accepted)).unwrap();
     assert_eq!(report.package, "hello-skills");
     assert!(report.skills.iter().all(|s| s.install.as_ref().unwrap().pikg_digest.as_ref().unwrap().starts_with("sha256:")));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(root.join("tools/hello/bin/hello")).unwrap().permissions().mode();
-        assert!(mode & 0o111 != 0, "commands stay executable");
-    }
+    assert!(!root.join("tools").exists(), "a skill brings text only");
     let listed = |args: &[&str]| -> Vec<(String, String, String)> {
         let mut all = vec!["skill", "list", "--json"];
         all.extend_from_slice(args);
@@ -1121,7 +1114,6 @@ fn skills_are_installed_by_the_owner_listed_chosen_and_counted() {
     let frozen = child.config().unwrap().prompt.frozen.unwrap();
     assert_eq!(frozen.cmd_skills.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["hello", "admin"]);
     assert_eq!(frozen.cmd_skills[0].text, "Run `hello`.");
-    assert!(frozen.cmd_skills[0].installed_on.is_empty(), "its commands are on the private runtime, where this work runs");
     let (code, _, err) = create(&["--cmd-skill", "nope", "--key", "c2"]);
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("no work skill `nope`"), "{err}");
@@ -1164,7 +1156,7 @@ fn skills_are_installed_by_the_owner_listed_chosen_and_counted() {
     assert_eq!(grandchild.cmd_skills.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["hello"]);
 
     skills::remove(&root, SkillKind::Work, "hello", "did:bns:owner").unwrap();
-    assert!(!root.join("tools/hello").exists() && !root.join("cmd_skills/hello").exists());
+    assert!(!root.join("cmd_skills/hello").exists());
     assert!(skills::remove(&root, SkillKind::Work, "admin", "did:bns:owner").is_err(), "a skill that was not installed is not removed");
     let (code, _, err) = create(&["--cmd-skill", "hello", "--key", "c3"]);
     assert_eq!(code, 2, "{err}");
@@ -1280,7 +1272,7 @@ fn the_built_in_skills_pass_the_package_check() {
         .collect();
     assert!(serious.is_empty(), "{}", serious.join("\n"));
     let root = tempfile::tempdir().unwrap();
-    let plan = skills::plan(root.path(), &package, &[], None).unwrap();
+    let plan = skills::plan(root.path(), &package).unwrap();
     let scope = |name: &str| plan.skills.iter().find(|s| s.meta.name == name && s.meta.kind == SkillKind::Work).map(|s| s.meta.scope);
     assert_eq!(scope("ui_core"), Some(SkillScope::Ui));
     assert_eq!(scope("share"), Some(SkillScope::UiWork));
@@ -1292,7 +1284,7 @@ fn the_built_in_skills_pass_the_package_check() {
     }
     // The sample skill package of the repository is in the same layout and reads as the CLI packed it.
     let sample = skills::read_pikg(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../test/skills_pikg_sample/dapp_dist/hello-skills-0.1.0.pikg")).unwrap();
-    let sample_plan = skills::plan(root.path(), &sample, &[], None).unwrap();
+    let sample_plan = skills::plan(root.path(), &sample).unwrap();
     assert_eq!(
         sample_plan.skills.iter().map(|s| (s.meta.kind, s.meta.name.as_str())).collect::<Vec<_>>(),
         [(SkillKind::Work, "hello"), (SkillKind::Plan, "hello_plan")]

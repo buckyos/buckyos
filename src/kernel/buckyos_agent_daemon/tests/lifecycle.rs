@@ -45,6 +45,7 @@ fn config(work: &Path, generation: u64) -> ExecutorConfig {
         profiles: BTreeMap::from([(
             "default".into(),
             ExecutorProfile {
+                baseline: None,
                 run_as: None,
                 workdir_roots: vec![work.to_str().unwrap().into()],
                 env: BTreeMap::new(),
