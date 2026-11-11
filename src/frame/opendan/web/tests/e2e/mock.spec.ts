@@ -62,8 +62,8 @@ test('stop asks for confirmation and finishes the session', async ({ page }) => 
 
   await ops.getByRole('button', { name: 'Stop' }).click()
   await dialog.getByLabel('Reason (optional)').fill('wrong folder')
-  await dialog.getByRole('button', { name: 'Stop session' }).click()
-  await expect(page.getByTestId('operation-result')).toContainText('stop posted')
+  await dialog.getByRole('button', { name: 'Stop', exact: true }).click()
+  await expect(page.getByTestId('operation-result')).toContainText('stop(session) posted')
   await expect(page.getByTestId('session-summary')).toContainText('Stopped: wrong folder')
   await expect(ops.getByRole('button', { name: 'Stop' })).toHaveCount(0)
 })
