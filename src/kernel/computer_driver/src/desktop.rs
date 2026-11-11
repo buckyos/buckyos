@@ -14,7 +14,11 @@ use buckyos_api::*;
 use node_executor::{Actor, ComputerContext, ComputerDriver, ComputerOutput};
 use serde_json::{json, Value};
 
-use crate::semantic::{PAT_FOCUSABLE, PAT_INVOKE, PAT_VALUE, ST_DISABLED, ST_READONLY};
+use crate::semantic::{
+    PAT_EXPAND_COLLAPSE, PAT_FOCUSABLE, PAT_INVOKE, PAT_SELECTION_ITEM, PAT_TOGGLE, PAT_VALUE,
+    ST_CHECKED, ST_COLLAPSED, ST_DISABLED, ST_EXPANDED, ST_MIXED, ST_PARTIAL, ST_READONLY,
+    ST_SELECTED,
+};
 
 const OBSERVATION_TTL: Duration = Duration::from_secs(30);
 const MAX_OBSERVATIONS: usize = 64;
@@ -104,6 +108,10 @@ mod native_semantic {
     pub(super) const OP_FOCUS: u32 = 1;
     pub(super) const OP_INVOKE: u32 = 2;
     pub(super) const OP_SET_VALUE: u32 = 3;
+    pub(super) const OP_TOGGLE: u32 = 4;
+    pub(super) const OP_SELECT: u32 = 5;
+    pub(super) const OP_EXPAND: u32 = 6;
+    pub(super) const OP_COLLAPSE: u32 = 7;
 
     fn take(code: i32, json: *mut u8, length: usize) -> Result<Vec<u8>, i32> {
         let bytes =
@@ -185,6 +193,31 @@ fn semantic_failure(code: i32) -> &'static str {
 
 fn semantic_supported() -> bool {
     native_semantic::ready()
+}
+
+/// toggle / select / expand / collapse run on the UIA backend; macOS AX does
+/// not perform them yet.
+const STATE_COMMANDS: bool = cfg!(windows);
+
+/// Whether a toggle/select/expand/collapse reply (`before` and `st` state
+/// bits) shows the element short of the state the command aims for: toggle
+/// changes the check state, the others leave it selected, expanded (also
+/// partially) or collapsed. A vanished element is not judged.
+fn state_mismatch(action: ComputerElementAction, reply: &Value) -> bool {
+    let bits = |key: &str| reply.get(key).and_then(Value::as_u64).map(|v| v as u32);
+    let (Some(before), Some(after)) = (bits("before"), bits("st")) else {
+        return false;
+    };
+    if reply["gone"] == Value::Bool(true) {
+        return false;
+    }
+    match action {
+        ComputerElementAction::Toggle => (before ^ after) & (ST_CHECKED | ST_MIXED) == 0,
+        ComputerElementAction::Select => after & ST_SELECTED == 0,
+        ComputerElementAction::Expand => after & (ST_EXPANDED | ST_PARTIAL) == 0,
+        ComputerElementAction::Collapse => after & ST_COLLAPSED == 0,
+        _ => false,
+    }
 }
 
 const AUTO_MIN_NODES: u32 = 10;
@@ -400,12 +433,10 @@ fn element_target<'a>(
     let semantic = record.semantic.as_ref().ok_or("stale_element")?;
     let element = semantic.elements.get(reference).ok_or("stale_element")?;
     let required = match request {
-        ComputerRequest::Invoke { .. } => Some(ComputerElementAction::Invoke),
-        ComputerRequest::SetValue { .. } => Some(ComputerElementAction::SetValue),
         ComputerRequest::Type { .. } | ComputerRequest::Keypress { .. } => {
             Some(ComputerElementAction::Focus)
         }
-        _ => None,
+        _ => request.element_action(),
     };
     if required.is_some_and(|action| !element.actions.contains(&action)) {
         return Err("element_action_unsupported");
@@ -541,6 +572,9 @@ fn native_capabilities(desktop: &Desktop, paused: bool, semantic: bool) -> Compu
             ComputerObservationMode::Hybrid,
         ]);
         commands.extend(["invoke", "set_value"]);
+        if STATE_COMMANDS {
+            commands.extend(["toggle", "select", "expand", "collapse"]);
+        }
     }
     ComputerCapabilities {
         capture: capability(
@@ -1461,6 +1495,11 @@ impl DesktopComputer {
                 }
                 required(PAT_VALUE)?
             }
+            ComputerRequest::Toggle { .. } if STATE_COMMANDS => required(PAT_TOGGLE)?,
+            ComputerRequest::Select { .. } if STATE_COMMANDS => required(PAT_SELECTION_ITEM)?,
+            ComputerRequest::Expand { .. } | ComputerRequest::Collapse { .. } if STATE_COMMANDS => {
+                required(PAT_EXPAND_COLLAPSE)?
+            }
             _ => return Err("command_unsupported"),
         };
         Ok(Some(Resolved {
@@ -1674,13 +1713,22 @@ impl DesktopComputer {
                     ));
                 }
             }
-            ComputerRequest::Invoke { .. } | ComputerRequest::SetValue { .. } => {
+            ComputerRequest::Invoke { .. }
+            | ComputerRequest::SetValue { .. }
+            | ComputerRequest::Toggle { .. }
+            | ComputerRequest::Select { .. }
+            | ComputerRequest::Expand { .. }
+            | ComputerRequest::Collapse { .. } => {
                 let resolved = resolved.ok_or(("stale_element", progress(false)))?;
                 check(desktop, false)?;
                 let (op, value) = match request {
                     ComputerRequest::SetValue { value, .. } => {
                         (native_semantic::OP_SET_VALUE, value.as_str())
                     }
+                    ComputerRequest::Toggle { .. } => (native_semantic::OP_TOGGLE, ""),
+                    ComputerRequest::Select { .. } => (native_semantic::OP_SELECT, ""),
+                    ComputerRequest::Expand { .. } => (native_semantic::OP_EXPAND, ""),
+                    ComputerRequest::Collapse { .. } => (native_semantic::OP_COLLAPSE, ""),
                     _ => (native_semantic::OP_INVOKE, ""),
                 };
                 let reply = self.element_op(context, resolved, op, value).await?;
@@ -1692,6 +1740,12 @@ impl DesktopComputer {
                     {
                         return Err(("value_mismatch", ComputerExecutionState::Completed));
                     }
+                }
+                if request
+                    .element_action()
+                    .is_some_and(|action| state_mismatch(action, &reply))
+                {
+                    return Err(("state_mismatch", ComputerExecutionState::Completed));
                 }
             }
             ComputerRequest::WaitFor {
@@ -2196,6 +2250,9 @@ mod tests {
             .observation_modes
             .contains(&ComputerObservationMode::Semantic));
         assert!(caps.commands.contains(&"set_value".to_string()));
+        for command in ["toggle", "select", "expand", "collapse"] {
+            assert_eq!(caps.commands.contains(&command.to_string()), cfg!(windows));
+        }
         assert_eq!(
             native_capabilities(&ready, true, true)
                 .accessibility
@@ -2312,10 +2369,13 @@ mod tests {
         assert!(element_target(&record, &element_request("type", "e2"))
             .unwrap()
             .is_some());
-        assert_eq!(
-            element_target(&record, &element_request("set_value", "e2")).err(),
-            Some("element_action_unsupported")
-        );
+        for command in ["set_value", "toggle", "select", "expand", "collapse"] {
+            assert_eq!(
+                element_target(&record, &element_request(command, "e2")).err(),
+                Some("element_action_unsupported"),
+                "{command}"
+            );
+        }
         assert_eq!(
             element_target(&record, &element_request("invoke", "e3")).err(),
             Some("stale_element")
@@ -2327,6 +2387,25 @@ mod tests {
         assert!(focus_input(&element_request("type", "e2")));
         assert!(!focus_input(&element_request("click", "e2")));
         assert!(!focus_input(&element_request("invoke", "e2")));
+        assert!(!focus_input(&element_request("toggle", "e2")));
+    }
+
+    #[test]
+    fn state_commands_judge_the_read_back_state() {
+        use ComputerElementAction::*;
+        let reply = |before: u32, after: u32, gone: bool| json!({"before": before, "st": after, "gone": gone});
+        assert!(!state_mismatch(Toggle, &reply(0, ST_CHECKED, false)));
+        assert!(!state_mismatch(Toggle, &reply(ST_CHECKED, ST_MIXED, false)));
+        assert!(state_mismatch(Toggle, &reply(ST_CHECKED, ST_CHECKED | ST_SELECTED, false)));
+        assert!(!state_mismatch(Select, &reply(0, ST_SELECTED, false)));
+        assert!(state_mismatch(Select, &reply(0, 0, false)));
+        assert!(!state_mismatch(Expand, &reply(ST_COLLAPSED, ST_EXPANDED, false)));
+        assert!(!state_mismatch(Expand, &reply(ST_COLLAPSED, ST_PARTIAL, false)));
+        assert!(state_mismatch(Expand, &reply(ST_COLLAPSED, ST_COLLAPSED, false)));
+        assert!(!state_mismatch(Collapse, &reply(ST_EXPANDED, ST_COLLAPSED, false)));
+        assert!(state_mismatch(Collapse, &reply(ST_EXPANDED, ST_EXPANDED, false)));
+        assert!(!state_mismatch(Collapse, &reply(ST_EXPANDED, ST_EXPANDED, true)));
+        assert!(!state_mismatch(Invoke, &json!({"gone": false, "st": 0})));
     }
 
     #[test]

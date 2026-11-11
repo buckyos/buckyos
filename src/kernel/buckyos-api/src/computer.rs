@@ -326,6 +326,49 @@ pub enum ComputerRequest {
         #[serde(default = "default_timeout")]
         execution_timeout_ms: u64,
     },
+    /// Flip a checkbox or switch (UIA Toggle, AX Press).
+    Toggle {
+        binding_id: String,
+        target: ComputerTarget,
+        #[serde(default)]
+        feedback: ComputerFeedback,
+        #[serde(default)]
+        feedback_mode: Option<ComputerObservationMode>,
+        #[serde(default = "default_timeout")]
+        execution_timeout_ms: u64,
+    },
+    /// Select a tab, list item, row or radio button (UIA SelectionItem).
+    Select {
+        binding_id: String,
+        target: ComputerTarget,
+        #[serde(default)]
+        feedback: ComputerFeedback,
+        #[serde(default)]
+        feedback_mode: Option<ComputerObservationMode>,
+        #[serde(default = "default_timeout")]
+        execution_timeout_ms: u64,
+    },
+    /// Expand a tree item, combobox or menu (UIA ExpandCollapse).
+    Expand {
+        binding_id: String,
+        target: ComputerTarget,
+        #[serde(default)]
+        feedback: ComputerFeedback,
+        #[serde(default)]
+        feedback_mode: Option<ComputerObservationMode>,
+        #[serde(default = "default_timeout")]
+        execution_timeout_ms: u64,
+    },
+    Collapse {
+        binding_id: String,
+        target: ComputerTarget,
+        #[serde(default)]
+        feedback: ComputerFeedback,
+        #[serde(default)]
+        feedback_mode: Option<ComputerObservationMode>,
+        #[serde(default = "default_timeout")]
+        execution_timeout_ms: u64,
+    },
 }
 
 impl ComputerRequest {
@@ -339,7 +382,11 @@ impl ComputerRequest {
             | Self::Scroll { binding_id, .. }
             | Self::WaitFor { binding_id, .. }
             | Self::Invoke { binding_id, .. }
-            | Self::SetValue { binding_id, .. } => binding_id,
+            | Self::SetValue { binding_id, .. }
+            | Self::Toggle { binding_id, .. }
+            | Self::Select { binding_id, .. }
+            | Self::Expand { binding_id, .. }
+            | Self::Collapse { binding_id, .. } => binding_id,
         }
     }
 
@@ -354,7 +401,25 @@ impl ComputerRequest {
             Self::WaitFor { .. } => "wait_for",
             Self::Invoke { .. } => "invoke",
             Self::SetValue { .. } => "set_value",
+            Self::Toggle { .. } => "toggle",
+            Self::Select { .. } => "select",
+            Self::Expand { .. } => "expand",
+            Self::Collapse { .. } => "collapse",
         }
+    }
+
+    /// The element action a semantic command performs; the target element's
+    /// observation must have declared it.
+    pub fn element_action(&self) -> Option<ComputerElementAction> {
+        Some(match self {
+            Self::Invoke { .. } => ComputerElementAction::Invoke,
+            Self::SetValue { .. } => ComputerElementAction::SetValue,
+            Self::Toggle { .. } => ComputerElementAction::Toggle,
+            Self::Select { .. } => ComputerElementAction::Select,
+            Self::Expand { .. } => ComputerElementAction::Expand,
+            Self::Collapse { .. } => ComputerElementAction::Collapse,
+            _ => return None,
+        })
     }
 
     pub fn required_op(&self) -> ExecutorOp {
@@ -395,6 +460,22 @@ impl ComputerRequest {
             | Self::SetValue {
                 execution_timeout_ms,
                 ..
+            }
+            | Self::Toggle {
+                execution_timeout_ms,
+                ..
+            }
+            | Self::Select {
+                execution_timeout_ms,
+                ..
+            }
+            | Self::Expand {
+                execution_timeout_ms,
+                ..
+            }
+            | Self::Collapse {
+                execution_timeout_ms,
+                ..
             } => *execution_timeout_ms,
         }
     }
@@ -408,7 +489,11 @@ impl ComputerRequest {
             | Self::Scroll { target, .. }
             | Self::WaitFor { target, .. }
             | Self::Invoke { target, .. }
-            | Self::SetValue { target, .. } => Some(target),
+            | Self::SetValue { target, .. }
+            | Self::Toggle { target, .. }
+            | Self::Select { target, .. }
+            | Self::Expand { target, .. }
+            | Self::Collapse { target, .. } => Some(target),
         }
     }
 
@@ -447,6 +532,26 @@ impl ComputerRequest {
                 ..
             }
             | Self::SetValue {
+                feedback,
+                feedback_mode,
+                ..
+            }
+            | Self::Toggle {
+                feedback,
+                feedback_mode,
+                ..
+            }
+            | Self::Select {
+                feedback,
+                feedback_mode,
+                ..
+            }
+            | Self::Expand {
+                feedback,
+                feedback_mode,
+                ..
+            }
+            | Self::Collapse {
                 feedback,
                 feedback_mode,
                 ..
@@ -559,9 +664,13 @@ impl ComputerRequest {
                     return Err("delay exceeds execution timeout".into());
                 }
             }
-            Self::Invoke { .. } => {
+            Self::Invoke { .. }
+            | Self::Toggle { .. }
+            | Self::Select { .. }
+            | Self::Expand { .. }
+            | Self::Collapse { .. } => {
                 if !element {
-                    return Err("invoke requires an element target".into());
+                    return Err(format!("{} requires an element target", self.command()));
                 }
             }
             Self::SetValue { value, .. } => {
@@ -606,6 +715,26 @@ impl ComputerRequest {
                 ..
             }
             | Self::SetValue {
+                feedback,
+                feedback_mode,
+                ..
+            }
+            | Self::Toggle {
+                feedback,
+                feedback_mode,
+                ..
+            }
+            | Self::Select {
+                feedback,
+                feedback_mode,
+                ..
+            }
+            | Self::Expand {
+                feedback,
+                feedback_mode,
+                ..
+            }
+            | Self::Collapse {
                 feedback,
                 feedback_mode,
                 ..
@@ -975,9 +1104,13 @@ mod tests {
         set_value["value"] = json!("x".repeat(COMPUTER_MAX_TEXT_BYTES + 1));
         let mut wait = element("wait_for");
         wait["condition"] = json!({"kind":"delay","duration_ms":10});
-        let mut invoke_point = click();
-        invoke_point["command"] = json!("invoke");
-        for invalid in [set_value, wait, invoke_point] {
+        let mut invalid = vec![set_value, wait];
+        for command in ["invoke", "toggle", "select", "expand", "collapse"] {
+            let mut point = click();
+            point["command"] = json!(command);
+            invalid.push(point);
+        }
+        for invalid in invalid {
             assert!(serde_json::from_value::<ComputerRequest>(invalid)
                 .unwrap()
                 .validate()
@@ -986,6 +1119,43 @@ mod tests {
         let mut misnamed = element("invoke");
         misnamed["target"] = json!({"kind":"element","observation_id":"obs","element_ref":"e1"});
         assert!(serde_json::from_value::<ComputerRequest>(misnamed).is_err());
+    }
+
+    #[test]
+    fn semantic_commands_are_named_after_their_element_action() {
+        for (command, action) in [
+            ("invoke", ComputerElementAction::Invoke),
+            ("set_value", ComputerElementAction::SetValue),
+            ("toggle", ComputerElementAction::Toggle),
+            ("select", ComputerElementAction::Select),
+            ("expand", ComputerElementAction::Expand),
+            ("collapse", ComputerElementAction::Collapse),
+        ] {
+            let mut value = element(command);
+            if command == "set_value" {
+                value["value"] = json!("x");
+            }
+            let request: ComputerRequest = serde_json::from_value(value).unwrap();
+            assert!(request.validate().is_ok(), "{command}");
+            assert_eq!((request.command(), request.element_action()), (command, Some(action)));
+            assert_eq!(action.as_str(), command);
+            assert_eq!(request.required_op(), ExecutorOp::ComputerAct);
+            assert_eq!(request.feedback().1, ComputerObservationMode::Auto);
+        }
+        assert_eq!(
+            serde_json::from_value::<ComputerRequest>(element("click"))
+                .unwrap()
+                .element_action(),
+            None
+        );
+        assert!(serde_json::from_value::<ComputerRequest>(element("scroll_into_view")).is_err());
+        let mut silent = element("toggle");
+        silent["feedback"] = json!("none");
+        silent["feedback_mode"] = json!("semantic");
+        assert!(serde_json::from_value::<ComputerRequest>(silent)
+            .unwrap()
+            .validate()
+            .is_err());
     }
 
     #[test]

@@ -798,7 +798,7 @@ P0-A（配置与权限）与 P0-B（Command Stream 最小闭环，Linux 形态 A
 - 容量：准入前按操作预留空间（exec 为 2×输出上限，文件为 max_file_bytes，Computer 为 max_computer_image_bytes），计入 max_records（含墓碑）与 max_store_bytes，超出 CapacityExceeded；GC 每 60 s 先写墓碑再删目录，墓碑不按 TTL 删除。
 - 非 root 的 daemon 只声明 open_stream/describe/query/cancel，exec/read/write/edit/mkdir/stat/rename/remove 返回 Capability。
 - `describe` 的 `target` 另带 `workdir_roots`（profile 的 roots：控制侧据此放 Session 默认目录 `<root0>/.opendan/<agent>/sessions/<sid>`），`info` 另带 `identity_mode`（`current_user | switch_user`）与注入 Driver 时的 `desktop`（`ui/capture/input/accessibility` readiness）：A-system 与 A-desktop 由此区分，不猜安装形态。
-- node_daemon 桌面模式（A-desktop）：`--desktop_daemon` 构建、平台有 Driver（macOS/Windows）且进程非 root 时，以 `CurrentUser` 打开并注入 `computer_driver` crate 的共享 Driver（与 agent-daemon 同一实现、同一用户会话输入协调锁）；Linux 与 root 场景保持 A-system。两平台的 Driver 都提供语义观察（semantic/hybrid/auto）、element target 与 `invoke`/`set_value`：Windows 基于 UI Automation，macOS 基于 Accessibility（与输入共用辅助功能权限），`desktop.accessibility` 报其就绪（行为与限制见 [agent_daemon.md](agent_daemon.md) 的 macOS 与 Windows ComputerUse 两节）。
+- node_daemon 桌面模式（A-desktop）：`--desktop_daemon` 构建、平台有 Driver（macOS/Windows）且进程非 root 时，以 `CurrentUser` 打开并注入 `computer_driver` crate 的共享 Driver（与 agent-daemon 同一实现、同一用户会话输入协调锁）；Linux 与 root 场景保持 A-system。两平台的 Driver 都提供语义观察（semantic/hybrid/auto）、element target 与 `invoke`/`set_value`，Windows 另提供 `toggle`/`select`/`expand`/`collapse`：Windows 基于 UI Automation，macOS 基于 Accessibility（与输入共用辅助功能权限），`desktop.accessibility` 报其就绪（行为与限制见 [agent_daemon.md](agent_daemon.md) 的 macOS 与 Windows ComputerUse 两节）。
 
 ### 17.5 gateway 与 Agent 侧
 

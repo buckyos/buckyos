@@ -10,6 +10,7 @@
 #include <oleauto.h>
 #include <dwmapi.h>
 #include <uiautomation.h>
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -1225,7 +1226,33 @@ static int refresh(Uia &u, UiaNode &node, IUIAutomationElement **fresh) {
     return UR_OK;
 }
 
-static int element_job(Uia &u, uint64_t snapshot_id, uint32_t index, uint32_t op, const std::wstring &text, std::string &json) {
+template <class Pattern, class Action>
+static HRESULT with_pattern(IUIAutomationElement *element, PATTERNID id, Action action) {
+    Pattern *pattern = nullptr;
+    HRESULT hr = element->GetCurrentPatternAs(id, __uuidof(Pattern), reinterpret_cast<void **>(&pattern));
+    if (SUCCEEDED(hr) && !pattern) hr = E_NOINTERFACE;
+    if (SUCCEEDED(hr)) hr = action(pattern);
+    if (pattern) pattern->Release();
+    return hr;
+}
+
+// Ops 4-7 (toggle, select, expand, collapse) and the state each one aims for.
+static HRESULT state_action(IUIAutomationElement *element, uint32_t op) {
+    if (op == 4) return with_pattern<IUIAutomationTogglePattern>(element, UIA_TogglePatternId, [](IUIAutomationTogglePattern *p) { return p->Toggle(); });
+    if (op == 5) return with_pattern<IUIAutomationSelectionItemPattern>(element, UIA_SelectionItemPatternId,
+        [](IUIAutomationSelectionItemPattern *p) { return p->Select(); });
+    return with_pattern<IUIAutomationExpandCollapsePattern>(element, UIA_ExpandCollapsePatternId,
+        [op](IUIAutomationExpandCollapsePattern *p) { return op == 6 ? p->Expand() : p->Collapse(); });
+}
+
+static bool state_reached(uint32_t op, uint32_t before, uint32_t after) {
+    if (op == 4) return (after & (ST_CHECKED | ST_MIXED)) != (before & (ST_CHECKED | ST_MIXED));
+    if (op == 5) return (after & ST_SELECTED) != 0;
+    if (op == 6) return (after & (ST_EXPANDED | ST_PARTIAL)) != 0;
+    return (after & ST_COLLAPSED) != 0;
+}
+
+static int element_job(Uia &u, uint64_t snapshot_id, uint32_t index, uint32_t op, const std::wstring &text, uint32_t timeout_ms, std::string &json) {
     auto found = u.snapshots.find(snapshot_id);
     if (found == u.snapshots.end() || index >= found->second.nodes.size()) return UR_STALE;
     UiaNode &node = found->second.nodes[index];
@@ -1298,6 +1325,24 @@ static int element_job(Uia &u, uint64_t snapshot_id, uint32_t index, uint32_t op
             } else SysFreeString(current);
         }
         if (pattern) pattern->Release();
+    } else if (op <= 7) {
+        hr = state_action(fresh, op);
+        if (SUCCEEDED(hr)) {
+            // Providers such as Chromium apply the action asynchronously:
+            // poll briefly for the aimed-for state before reading it back.
+            ULONGLONG until = GetTickCount64() + std::min(timeout_ms / 2, 300u);
+            uint32_t after = facts.states;
+            bool gone = false;
+            for (;;) {
+                IUIAutomationElement *current = nullptr;
+                if (refresh(u, node, &current) != UR_OK) { gone = true; break; }
+                after = read_facts(current).states;
+                current->Release();
+                if (state_reached(op, facts.states, after) || GetTickCount64() >= until) break;
+                Sleep(20);
+            }
+            json += "\"before\":" + std::to_string(facts.states) + ",\"st\":" + std::to_string(after) + ",\"gone\":" + (gone ? "true" : "false");
+        }
     } else {
         status = UR_FAILED;
     }
@@ -1339,14 +1384,14 @@ extern "C" int bucky_semantic_snapshot(uint64_t root, uint32_t root_pid, uint32_
 
 extern "C" int bucky_semantic_element(uint64_t snapshot, uint32_t index, uint32_t op, const uint16_t *text, size_t text_length,
                                  uint32_t timeout_ms, char **json, size_t *length) {
-    if (!json || !length || (text_length && !text) || op > 3) return UR_FAILED;
+    if (!json || !length || (text_length && !text) || op > 7) return UR_FAILED;
     *json = nullptr;
     *length = 0;
     try {
         auto job = std::make_shared<UiaJob>();
         UiaJob *raw = job.get();
         std::wstring value = text_length ? std::wstring(reinterpret_cast<const wchar_t *>(text), text_length) : std::wstring();
-        job->run = [raw, snapshot, index, op, value] { return element_job(uia(), snapshot, index, op, value, raw->json); };
+        job->run = [raw, snapshot, index, op, value, timeout_ms] { return element_job(uia(), snapshot, index, op, value, timeout_ms, raw->json); };
         return take_json(job, submit(job, timeout_ms, true), json, length);
     } catch (...) { return UR_FAILED; }
 }
@@ -1387,6 +1432,8 @@ extern "C" void bucky_semantic_release(uint64_t snapshot) {
 
 #ifdef BUCKY_DESKTOP_SELF_TEST
 #include <cstdio>
+#include <commctrl.h>
+#pragma comment(lib, "comctl32.lib")
 
 static WNDPROC test_edit_proc = nullptr;
 static unsigned test_clicks = 0, test_vertical = 0, test_horizontal = 0;
@@ -1489,7 +1536,22 @@ static int uia_self_test(const BuckyDesktop &desktop) {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(102)), cls.hInstance, nullptr);
     HWND check = CreateWindowExW(0, L"BUTTON", L"Bucky Check", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 96, 160, 28, window,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(103)), cls.hInstance, nullptr);
-    if (!button || !edit || !check) { DestroyWindow(window); return 1; }
+    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_TREEVIEW_CLASSES};
+    InitCommonControlsEx(&controls);
+    HWND tree_view = CreateWindowExW(0, WC_TREEVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_BORDER | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT
+        | TVS_SHOWSELALWAYS, 200, 96, 240, 110, window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(104)), cls.hInstance, nullptr);
+    auto add_item = [&](HTREEITEM parent, const wchar_t *name) {
+        TVINSERTSTRUCTW item{};
+        item.hParent = parent;
+        item.hInsertAfter = TVI_LAST;
+        item.item.mask = TVIF_TEXT;
+        item.item.pszText = const_cast<wchar_t *>(name);
+        return reinterpret_cast<HTREEITEM>(SendMessageW(tree_view, TVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&item)));
+    };
+    HTREEITEM folder = tree_view ? add_item(TVI_ROOT, L"Bucky Folder") : nullptr;
+    HTREEITEM other = tree_view ? add_item(TVI_ROOT, L"Bucky Other") : nullptr;
+    if (folder) add_item(folder, L"Bucky Leaf");
+    if (!button || !edit || !check || !folder || !other) { DestroyWindow(window); return 1; }
     ShowWindow(window, SW_SHOWNOACTIVATE);
     pump_test(200);
     std::string tree, reply;
@@ -1518,6 +1580,36 @@ static int uia_self_test(const BuckyDesktop &desktop) {
     GetWindowTextW(edit, text, 64);
     std::printf("set_value code=%d applied=%d\n", code, std::wcscmp(text, value) == 0);
     passed = passed && code == 0 && std::wcscmp(text, value) == 0 && reply.find("\"v\":") != std::string::npos;
+    int folder_node = find_test_node(tree, "\"n\":\"Bucky Folder\"");
+    int other_node = find_test_node(tree, "\"n\":\"Bucky Other\"");
+    auto state_op = [&](int target, uint32_t op) {
+        int status = test_uia_call([&](char **json, size_t *length) { return bucky_semantic_element(snapshot, static_cast<uint32_t>(target), op, nullptr, 0, 3000, json, length); }, reply);
+        pump_test(50);
+        size_t at = reply.find("\"st\":");
+        return std::make_pair(status, at == std::string::npos ? 0u : static_cast<uint32_t>(std::strtoul(reply.c_str() + at + 5, nullptr, 10)));
+    };
+    auto expanded_now = [&] { return (SendMessageW(tree_view, TVM_GETITEMSTATE, reinterpret_cast<WPARAM>(folder), TVIS_EXPANDED) & TVIS_EXPANDED) != 0; };
+    auto toggled = state_op(check_node, 4);
+    bool checked = SendMessageW(check, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    auto selected = state_op(other_node, 5);
+    bool chosen = reinterpret_cast<HTREEITEM>(SendMessageW(tree_view, TVM_GETNEXTITEM, TVGN_CARET, 0)) == other;
+    auto expanded = state_op(folder_node, 6);
+    bool opened = expanded_now();
+    auto collapsed = state_op(folder_node, 7);
+    bool closed = !expanded_now();
+    int unsupported = state_op(edit_node, 4).first;
+    std::printf("tree items: folder=%d other=%d\n", folder_node, other_node);
+    std::printf("toggle code=%d checked=%d st=%u\n", toggled.first, checked, toggled.second);
+    std::printf("select code=%d selected=%d st=%u\n", selected.first, chosen, selected.second);
+    std::printf("expand code=%d expanded=%d st=%u\n", expanded.first, opened, expanded.second);
+    std::printf("collapse code=%d collapsed=%d st=%u\n", collapsed.first, closed, collapsed.second);
+    std::printf("toggle without the pattern code=%d\n", unsupported);
+    passed = passed && folder_node > 0 && other_node > 0
+        && toggled.first == 0 && checked && (toggled.second & ST_CHECKED) != 0
+        && selected.first == 0 && chosen && (selected.second & ST_SELECTED) != 0
+        && expanded.first == 0 && opened && (expanded.second & ST_EXPANDED) != 0
+        && collapsed.first == 0 && closed && (collapsed.second & ST_COLLAPSED) != 0
+        && unsupported != 0 && unsupported != 2;
     DestroyWindow(button);
     pump_test(50);
     code = test_uia_call([&](char **json, size_t *length) { return bucky_semantic_element(snapshot, static_cast<uint32_t>(button_node), 2, nullptr, 0, 3000, json, length); }, reply);
