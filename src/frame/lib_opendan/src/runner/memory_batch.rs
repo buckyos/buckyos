@@ -264,7 +264,11 @@ pub fn line(c: &Change, corrections: &BTreeMap<String, String>) -> BackgroundLin
                         (HintState::Deleted, _) => "deleted".to_string(),
                         _ => "no longer current".to_string(),
                     };
-                    format!("hint withdrawn ({why}), do not rely on it: {stmt} ({note})")
+                    if h.state == HintState::Deleted {
+                        format!("hint withdrawn ({why}), do not rely on it ({})", h.reference)
+                    } else {
+                        format!("hint withdrawn ({why}), do not rely on it: {stmt} ({note})")
+                    }
                 }
                 HintState::Disputed => format!("hint disputed: {stmt} ({note})"),
                 HintState::ReviewPending | HintState::MayBeCorrected => {

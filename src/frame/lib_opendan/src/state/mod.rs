@@ -33,7 +33,7 @@ pub use activity::{
 pub use artifacts::{nearest_valid_base, DecideResult};
 pub use behaviors::{
     check_cmd_skill_names, check_named_skills, freeze_behavior, freeze_config, parse_behavior, BehaviorCatalog,
-    FsBehaviorCatalog, MemBehaviorCatalog, CMD_SKILLS_DIR, ROLE_SUPPLEMENT_FILE,
+    FsBehaviorCatalog, MemBehaviorCatalog, CMD_SKILLS_DIR, ROLE_SUPPLEMENT_FILE, frozen_changes, refrozen,
 };
 pub use cognition::NotebookNote;
 pub use connect::{
@@ -89,6 +89,13 @@ pub trait SessionRegistry: Send + Sync {
     /// Returns the sessions that were not marked before.
     async fn mark_runtime(&self, _runtime_id: &str, _reason: Option<&str>) -> Result<Vec<RegistryEntry>> {
         Ok(Vec::new())
+    }
+    /// Delete a finished Work / self_check session with everything below it
+    /// (all finished too): their directories and registry entries. Returns
+    /// the deleted session ids. What they left in the perception stream
+    /// stays (Memory cites it).
+    async fn delete(&self, _sid: &str) -> Result<Vec<String>> {
+        Err(crate::error::OpenDanError::InvalidArgument("this registry deletes no sessions".into()))
     }
     /// Post an input to a session's kmsg queue (+ wake event).
     /// Append a record to the session's input bus. Refused with

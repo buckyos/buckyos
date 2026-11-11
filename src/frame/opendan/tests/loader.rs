@@ -579,7 +579,8 @@ fn finished(sd: &SessionDir) -> bool {
 
 /// M1: sessions registered for this driver are hosted without anything
 /// touching them — those left over from before the start and those created
-/// while the Loader runs.
+/// while the Loader runs. A work left unfinished by an earlier process is
+/// not continued by itself: it is interrupted until its owner resumes it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn registered_sessions_are_hosted_and_recovered() {
     let w = World::new();
@@ -588,7 +589,20 @@ async fn registered_sessions_are_hosted_and_recovered() {
     assert_eq!(before.state().unwrap().run_state, RunState::Created);
 
     // A work session ends with its explicit final report.
-    let loader = w.start(Llm::new(|_, _| r#"CALL:report {"report": "done", "is_end": true}"#.into())).await;
+    let llm = Llm::new(|_, _| r#"CALL:report {"report": "done", "is_end": true}"#.into());
+    let loader = w.start(llm.clone()).await;
+    until("the work left unfinished is interrupted", || {
+        before.state().is_ok_and(|s| s.paused.as_ref().is_some_and(|p| p.source == PauseSource::Interrupted))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 0, "nothing is inferred before the resume");
+    loader
+        .agent
+        .sessions()
+        .post_input(before.sid(), &PostedInput::control(WHO, "resume-1", ControlCommand::Resume { reason: None }))
+        .await
+        .unwrap();
     until("recovered session finishes", || finished(&before)).await;
     let later = new_work(loader.agent.as_ref(), &w, "created while hosting").await;
     until("new session finishes", || finished(&later)).await;
@@ -802,10 +816,11 @@ async fn the_owner_switches_assigned_runtimes_and_work_in_progress_is_told() {
     loader.shutdown().await;
 }
 
-/// The owner stops a work session, which has no input queue: the Loader
-/// interrupts its driver and it ends as stopped.
+/// The owner pauses, resumes and stops a plain work session: its queue
+/// takes these controls (and no message); the stop interrupts the command
+/// in flight and the work ends as stopped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_owner_stops_a_work_session_without_a_queue() {
+async fn the_owner_controls_a_work_session_that_takes_no_message() {
     let w = World::new();
     let asked = Arc::new(AtomicBool::new(false));
     let seen = asked.clone();
@@ -817,12 +832,18 @@ async fn the_owner_stops_a_work_session_without_a_queue() {
     let loader = Loader::start(w.env(llm, port).await).await.unwrap();
     until("service answers", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()).await;
     let work = new_work(loader.agent.as_ref(), &w, "a long job").await;
-    assert!(loader.agent.sessions().lookup(work.sid()).await.unwrap().unwrap().input_queue.is_none());
+    assert!(loader.agent.sessions().lookup(work.sid()).await.unwrap().unwrap().input_queue.is_some());
     until("the work runs its command", || asked.load(Ordering::SeqCst)).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
+    let refused = rpc(port, "session.post", json!({ "sid": work.sid(), "text": "do it differently" })).await.unwrap_err();
+    assert!(refused.to_string().contains("takes no messages"), "{refused}");
+    let paused = rpc(port, "session.pause", json!({ "sid": work.sid(), "reason": "hold on" })).await.unwrap();
+    assert!(paused["index"].as_u64().is_some(), "{paused}");
+    let resumed = rpc(port, "session.resume", json!({ "sid": work.sid() })).await.unwrap();
+    assert!(resumed["index"].as_u64().is_some(), "{resumed}");
     let started = Instant::now();
     let stopped = rpc(port, "session.stop", json!({ "sid": work.sid(), "reason": "enough" })).await.unwrap();
-    assert_eq!(stopped["stopped"], true);
+    assert!(stopped["index"].as_u64().is_some(), "{stopped}");
     until("stopped", || finished(&work)).await;
     assert!(started.elapsed() < Duration::from_secs(15), "the command was interrupted, not waited for");
     assert_eq!(work.state().unwrap().outcome, Some(Outcome::Stopped));
@@ -1183,7 +1204,15 @@ async fn agent_state_over_krpc_matches_the_files() {
     let posted = rpc(port, "session.post", json!({ "sid": ui.sid(), "text": "second" })).await.unwrap();
     assert!(posted["key"].as_str().unwrap().starts_with("cymsg:"));
     until("second turn", || ui.state().map(|s| s.turns_completed == 2).unwrap_or(false)).await;
-    rpc(port, "session.stop", json!({ "sid": ui.sid(), "reason": "enough" })).await.unwrap();
+    // A conversation is not stopped: a stop is for the message in
+    // progress, and its context is dropped by archiving it.
+    let refused = rpc(port, "session.stop", json!({ "sid": ui.sid(), "reason": "enough" })).await.unwrap_err();
+    assert!(refused.to_string().contains("ui.rotate"), "{refused}");
+    let idle = rpc(port, "session.stop", json!({ "sid": ui.sid(), "scope": "turn" })).await.unwrap_err();
+    assert!(idle.to_string().contains("no Turn in progress"), "{idle}");
+    assert!(!ui.state().unwrap().is_finished());
+    let archived = rpc(port, "ui.rotate", json!({ "sid": ui.sid() })).await.unwrap();
+    assert_eq!(archived, json!({ "archived": ui.sid(), "finished": true }));
     until("stopped", || {
         ui.state().map(|s| s.outcome == Some(Outcome::Stopped)).unwrap_or(false)
     })
@@ -1204,6 +1233,10 @@ fn ui_entry(agent: &dyn AgentStateClient, route: &str) -> Option<RegistryEntry> 
     entries.into_iter().find(|e| e.route_key.as_deref() == Some(route))
 }
 
+fn read_worklog_len(sd: &SessionDir) -> usize {
+    sd.worklog().read_all_for_audit().map(|w| w.len()).unwrap_or(0)
+}
+
 fn futures_block<T>(f: impl std::future::Future<Output = T>) -> T {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(f))
 }
@@ -1214,7 +1247,8 @@ fn futures_block<T>(f: impl std::future::Future<Output = T>) -> T {
 async fn inbox_messages_are_answered_along_the_same_conversation() {
     let w = World::new();
     let llm = Llm::new(|req, n| format!("answer {n} to: {}", last_user(req).contains("hello")));
-    let loader = w.start(llm.clone()).await;
+    let port = free_port();
+    let loader = Loader::start(w.env(llm.clone(), port).await).await.unwrap();
     let session = format!("dm:{BOB}");
     let first = chat(BOB, "hello jarvis");
     let first_id = msg_key(&first);
@@ -1288,12 +1322,39 @@ async fn inbox_messages_are_answered_along_the_same_conversation() {
         .to_string();
     assert!(ui_entry(loader.agent.as_ref(), &sroute).is_none());
 
-    // `/stop` from the owner ends the session; the next message of that
-    // inbox opens the next generation.
+    // `/stop` (and `/cancel`) is for the message in progress: with nothing
+    // in progress the owner is told so and the conversation stays.
     w.mail.deliver(&session, chat(BOB, "/stop"));
-    until("stopped", || sd.state().map(|s| s.is_finished()).unwrap_or(false)).await;
+    until("told there is nothing to stop", || w.mail.sent().len() == 3).await;
+    assert_eq!(w.mail.sent()[2].1.content.content, "Nothing is in progress.");
+    assert!(!sd.state().unwrap().is_finished());
+    // `/clean` (and `/new`) saves the conversation and starts a new one
+    // with the next message; the old session stays readable.
+    w.mail.deliver(&session, chat(BOB, "/clean"));
+    until("archived", || sd.state().map(|s| s.is_finished()).unwrap_or(false)).await;
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Stopped));
+    until("told about the new conversation", || w.mail.sent().len() == 4).await;
+    assert!(w.mail.sent()[3].1.content.content.starts_with("Started a new conversation"));
+    w.mail.deliver(&session, chat(BOB, "/new"));
+    until("already new", || w.mail.sent().len() == 5).await;
+    assert_eq!(w.mail.sent()[4].1.content.content, "This is already a new conversation.");
     w.mail.deliver(&session, chat(BOB, "hello once more"));
-    until("reply of the next generation", || w.mail.sent().len() == 3).await;
+    until("reply of the next generation", || w.mail.sent().len() == 6).await;
+    assert!(read_worklog_len(&sd) > 0, "the archived conversation is kept");
+    // What the side panel reads: the conversation's session now and the
+    // generations before it.
+    let view = rpc(port, "ui.conversation", json!({ "peer_did": BOB, "session_id": session })).await.unwrap();
+    let generations = view["generations"].as_array().unwrap();
+    assert_eq!(generations.len(), 2, "{view}");
+    assert_eq!(generations[0]["session_id"], entry.session_id.as_str());
+    assert_eq!(generations[0]["outcome"], "stopped");
+    assert_eq!(view["current"]["session_id"], generations[1]["session_id"]);
+    assert_ne!(view["current"]["session_id"], entry.session_id.as_str());
+    assert_eq!(view["current"]["paused"], Value::Null);
+    assert_eq!(view["current"]["unfinished_works"], 0);
+    assert_eq!(view["current"]["prompt"]["current"], true, "{view}");
+    let tree = rpc(port, "session.work_tree", json!({ "sid": view["current"]["session_id"], "unfinished_only": true })).await.unwrap();
+    assert_eq!((tree["complete"].as_bool(), tree["sessions"].as_array().map(Vec::len)), (Some(true), Some(0)), "{tree}");
     let all: Vec<RegistryEntry> = loader
         .agent
         .sessions()
@@ -1304,6 +1365,63 @@ async fn inbox_messages_are_answered_along_the_same_conversation() {
         .filter(|e| e.route_key.as_deref() == Some(route.as_str()))
         .collect();
     assert_eq!(all.len(), 2);
+    loader.shutdown().await;
+}
+
+/// SC11 over the tunnel: the host restarts while a message is worked on —
+/// the conversation is interrupted, not continued; a message sent meanwhile
+/// waits and the owner is told once how to go on; `/resume` continues the
+/// interrupted Turn, then the waiting message is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_interrupts_the_message_in_progress_until_resume() {
+    let w = World::new();
+    let llm = Llm::new(move |req, n| {
+        if last_user(req).contains("the next thing") {
+            return "answer to the next thing".to_string();
+        }
+        // The host goes away while this command runs.
+        if n == 0 {
+            return "TOOL:sleep 4".to_string();
+        }
+        "answer to the long job".to_string()
+    });
+    let loader = w.start(llm.clone()).await;
+    let session = format!("dm:{BOB}");
+    w.mail.deliver(&session, chat(BOB, "a long job"));
+    let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session.clone()))
+        .unwrap()
+        .to_string();
+    until("the command is running", || llm.calls.load(Ordering::SeqCst) == 1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let entry = ui_entry(loader.agent.as_ref(), &route).unwrap();
+    let sd = SessionDir::open(&entry.location).unwrap();
+    loader.shutdown().await;
+    assert!(sd.state().unwrap().open_turn.is_some());
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 1);
+
+    let loader = w.start(llm.clone()).await;
+    until("interrupted", || {
+        sd.state().is_ok_and(|s| s.paused.as_ref().is_some_and(|p| p.source == PauseSource::Interrupted))
+    })
+    .await;
+    let calls = llm.calls.load(Ordering::SeqCst);
+    let sent = w.mail.sent().len();
+    w.mail.deliver(&session, chat(BOB, "the next thing"));
+    until("told about the interruption", || w.mail.sent().len() == sent + 1).await;
+    assert!(w.mail.sent()[sent].1.content.content.contains("/resume"), "{:?}", w.mail.sent()[sent].1.content.content);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(llm.calls.load(Ordering::SeqCst), calls, "nothing is inferred while interrupted");
+    assert_eq!(w.mail.sent().len(), sent + 1, "told once");
+
+    w.mail.deliver(&session, chat(BOB, "/resume"));
+    until("both answered", || {
+        let texts: Vec<String> = w.mail.sent().into_iter().map(|(_, m)| m.content.content).collect();
+        texts.iter().any(|t| t.contains("answer to the long job")) && texts.iter().any(|t| t.contains("answer to the next thing"))
+    })
+    .await;
+    assert!(w.mail.sent().iter().any(|(_, m)| m.content.content == "Resumed 1 interrupted session(s)."));
+    let st = sd.state().unwrap();
+    assert!(st.paused.is_none() && st.open_turn.is_none() && !st.is_finished(), "{st:?}");
     loader.shutdown().await;
 }
 
@@ -2332,7 +2450,7 @@ async fn sub_sessions_are_child_tasks_of_the_turn_that_created_them() {
 /// A cancel requested in TaskMgr stops the session through its own control
 /// protocol; the task ends as canceled and the placeholder is closed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_canceled_task_stops_its_session() {
+async fn a_canceled_task_stops_its_message_and_keeps_the_conversation() {
     let w = World::with_tasks();
     let tasks = w.tasks.clone().unwrap();
     let release = Arc::new(AtomicBool::new(false));
@@ -2364,13 +2482,15 @@ async fn a_canceled_task_stops_its_session() {
         .to_string();
     let entry = ui_entry(loader.agent.as_ref(), &route).unwrap();
     let sd = SessionDir::open(&entry.location).unwrap();
-    until("the session heard the stop", || {
-        sd.state().map(|s| s.stop_requested || s.is_finished()).unwrap_or(false)
+    release.store(true, Ordering::SeqCst);
+    until("the message is stopped", || {
+        sd.state().map(|s| s.open_turn.is_none() && s.turn_seq == 1).unwrap_or(false)
     })
     .await;
-    release.store(true, Ordering::SeqCst);
-    until("stopped", || finished(&sd)).await;
-    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Stopped));
+    // The task is the Turn of a conversation: canceling it stops that
+    // message, never the conversation.
+    let st = sd.state().unwrap();
+    assert!(!st.is_finished() && !st.stop_requested && !st.turn_stop_requested, "{st:?}");
     until("task canceled", || tasks.all().iter().any(|t| t.id == task_id && t.state == "canceled")).await;
     until("placeholder closed", || w.mail.sent().len() == 2).await;
     let (_, end) = w.mail.sent().remove(1);

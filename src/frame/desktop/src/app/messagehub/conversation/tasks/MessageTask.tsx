@@ -8,6 +8,7 @@ import { useMessageHubClock } from '../../store'
 import { messageObjId, messageRelations } from '../history/relations'
 import { getTaskWatch, useTaskChildren, useTaskEvents, useTaskExpanded, useTaskSummary, useTaskTree } from './index'
 import { taskAreaView, taskNodeState, toneColor, type TaskText, type TaskTone } from './taskView'
+import { TurnControls } from './TurnControls'
 
 /** `spin: false` stills the active spinner (a state that may be outdated). */
 export function ToneIcon({ tone, size = 15, spin = true }: { tone: TaskTone; size?: number; spin?: boolean }) {
@@ -51,11 +52,12 @@ export function MessageTaskArea({ message }: { message: MessageObject }) {
       <div className="flex items-start gap-2">
         <ToneIcon tone={view.tone} />
         <div className="min-w-0 flex-1" role="status">
-          <p className="truncate text-[13px] font-medium" data-testid="task-line-1">{text(view.label)}{view.activity ? ` · ${view.activity}` : ''}</p>
+          <p className="truncate text-[13px] font-medium" data-testid="task-line-1">{text(view.label)}{view.activity ? ` · ${text(view.activity)}` : ''}</p>
           {second ? <p className="truncate text-[12px] opacity-75" data-testid="task-line-2">{second}</p> : null}
         </div>
         <button type="button" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full hover:bg-[color:color-mix(in_srgb,var(--cp-text)_8%,transparent)]" aria-expanded={expanded} aria-label={expandLabel} title={expandLabel} onClick={() => setExpanded(!expanded)} data-testid="task-expand">{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</button>
       </div>
+      <TurnControls anchor={message} taskId={taskId} place="bubble" />
       {expanded ? <div className="mt-2 border-t pt-2" style={{ borderColor: 'color-mix(in srgb, currentColor 14%, transparent)' }}><TaskTree rootId={taskId} /></div> : null}
     </div>
   )

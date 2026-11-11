@@ -229,11 +229,12 @@ fn worklog(sd: &SessionDir) -> Vec<WorklogEntry> {
     sd.worklog().read_all_for_audit().unwrap()
 }
 
-/// E13 / E28: the default work session has no queue. Its first input is
-/// persisted by `new --no-run`, a later `run` (another process) consumes it
-/// and closes the Turn; nothing can be posted to it afterwards.
+/// E13 / E28: the queue of the default work session takes controls only.
+/// Its first input is persisted by `new --no-run`, a later `run` (another
+/// process) consumes it and closes the Turn; no message can be posted to it
+/// afterwards.
 #[test]
-fn new_no_run_then_run_a_work_session_without_a_queue() {
+fn new_no_run_then_run_a_work_session_that_takes_no_message() {
     let cli = Cli::new();
     let llm = MockLlm::start(|req, _| {
         assert!(last_user(req).contains("the note: buy milk"), "{}", last_user(req));
@@ -245,21 +246,24 @@ fn new_no_run_then_run_a_work_session_without_a_queue() {
     let lc = llm.llm_context(json!({}));
     let sd = cli.create(&["--objective", "summarize the note", "--llm-context", &lc, "--msg", "the note: buy milk"]);
     let cfg = sd.config().unwrap();
-    assert!(cfg.channels.kmsg().is_none());
+    assert!(cfg.channels.kmsg().is_some(), "every session has a queue for controls");
+    assert_eq!(cfg.session.input_policy, InputPolicy::None);
     assert_eq!(cfg.prompt.initial_inputs.len(), 1);
     assert!(cfg.prompt.frozen.is_some(), "frozen at creation (identity; no behavior)");
     assert!(sd.binding_opt().unwrap().is_none(), "nothing is bound before the first drive");
     assert_eq!(llm.count(), 0);
 
     let dir = sd.path().display().to_string();
-    // A session without a queue takes no delivery on `run` or `post`.
+    // It takes no message on `run` or `post`; a control reaches it.
     let (code, _, err) = cli.run(&["run", &dir, "--msg", "more"]);
-    assert_eq!(code, 2, "{err}");
-    assert!(err.contains("no input queue"), "{err}");
+    assert_ne!(code, 0, "{err}");
+    assert!(err.contains("takes no messages"), "{err}");
     let (code, _, err) = cli.run(&["post", sd.sid(), "--msg", "more"]);
-    assert_eq!(code, 2, "{err}");
-    let (code, _, err) = cli.run(&["ctl", sd.sid(), "stop"]);
-    assert_eq!(code, 2, "{err}");
+    assert_ne!(code, 0, "{err}");
+    let (code, _, err) = cli.run(&["ctl", sd.sid(), "pause", "--reason", "hold"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = cli.run(&["ctl", sd.sid(), "resume"]);
+    assert_eq!(code, 0, "{err}");
 
     let (code, v, err) = cli.run(&["run", &dir, "--poll-ms", "50"]);
     assert_eq!(code, 0, "{v} {err}");
@@ -363,8 +367,14 @@ fn ui_session_waits_for_input_and_control_is_separate() {
     assert_eq!((st.turn_seq, st.turns_completed), (turn + 1, 2));
     assert_eq!(st.activity.summary, "chatting");
 
+    // A conversation is not stopped (the control is refused); it ends when
+    // it is archived.
     let before = llm.count();
     let (code, _, err) = cli.run(&["ctl", &sid, "stop"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, v, err) = cli.run(&["run", &sid, "--poll-ms", "50"]);
+    assert_eq!((code, v["kind"].as_str()), (3, Some("idle")), "{v} {err}");
+    let (code, _, err) = cli.run(&["ctl", &sid, "stop", "--scope", "archive"]);
     assert_eq!(code, 0, "{err}");
     let (code, v, err) = cli.run(&["run", &sid, "--poll-ms", "50"]);
     assert_eq!(code, 4, "{v} {err}");
@@ -590,7 +600,9 @@ fn a_second_driver_is_busy_and_sigint_stops_the_session() {
 
 /// E9 / E27: resident hosting. A message posted while `serve` runs is
 /// handled without restarting anything; the host keeps the session while it
-/// waits; a queued `stop` ends the session and with it the serving loop.
+/// waits; archiving the conversation (`stop --scope archive`; a plain stop
+/// is refused by a conversation) ends the session and with it the serving
+/// loop.
 #[test]
 fn serve_handles_posted_input_until_the_session_is_stopped() {
     let cli = Cli::new();
@@ -617,7 +629,7 @@ fn serve_handles_posted_input_until_the_session_is_stopped() {
         sd.state().is_ok_and(|s| s.turns_completed == 1)
     });
     assert!(sd.state().unwrap().open_turn.is_none());
-    let (code, _, err) = cli.run(&["ctl", &sid, "stop"]);
+    let (code, _, err) = cli.run(&["ctl", &sid, "stop", "--scope", "archive"]);
     assert_eq!(code, 0, "{err}");
     let (code, v, err) = parse(child.wait_with_output().unwrap());
     assert_eq!(code, 4, "{v} {err}");

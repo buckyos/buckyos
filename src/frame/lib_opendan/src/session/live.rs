@@ -192,7 +192,7 @@ impl Session {
                     && self.config.session.goal.is_some(),
             ),
             turn_open: self.state.open_turn.is_some(),
-            paused: self.state.paused.is_some(),
+            paused: self.state.paused.as_ref().map(|p| p.source),
             retry_not_before_ms: self.state.retry.as_ref().map(|r| r.not_before_ms),
             activity: self.state.activity.clone(),
             last_runner: self.writer.as_ref().map(|w| crate::protocol::LastRunner {

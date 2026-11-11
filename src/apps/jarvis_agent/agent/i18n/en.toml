@@ -23,3 +23,14 @@ convert_failed = "I produced a reply but could not turn it into a message. Pleas
 accepted = "Got it — working on it…"
 stopped = "Stopped."
 finished = "Done."
+
+[commands]
+nothing_to_stop = "Nothing is in progress."
+cleaned = "Started a new conversation. The earlier one is kept and can still be looked up."
+already_new = "This is already a new conversation."
+clean_refused = "Background work started in this conversation is still running: {works}. Stop it or wait for it, then start a new conversation."
+clean_pending = "The earlier conversation is being closed; your next message starts a new one."
+resumed = "Resumed {count} interrupted session(s)."
+nothing_to_resume = "Nothing was interrupted."
+interrupted_notice = "I restarted while working on your last message, so it is on hold. Send /resume to go on with it, or /stop to drop it; this message waits until then."
+command_failed = "That did not work: {error}"

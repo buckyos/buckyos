@@ -6,7 +6,7 @@ import { registerObjectAccess, rememberLocalObject } from '../conversation/histo
 import { jpegName, normalizeImageFile } from '../conversation/input/imageNormalize'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import { notifyCategoryFromSessionId } from 'buckyos'
-import { getMessageStableId, messageNotify, messageVoice, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
+import { getMessageStableId, messageAgentTaskId, messageNotify, messageVoice, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { effectiveContent, foldMessageRelations, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, NATIVE_CONNECTION_LABEL, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { createGroupSchema, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, inviteBlocked, participating, withinWindow } from '../groupModel'
@@ -18,6 +18,7 @@ import { mockObjectAccess, registerMockUpload, registerMockDirectory } from './o
 import { mockAgentGroupAllowed } from '../../../api/control_panel_mock'
 import { MOCK_NOTIFY_SENDER, mockNotifyEntity, mockNotifyMessages, mockNotifySessions } from './notify'
 import { translate } from '../translate'
+import { mockAgentPanel } from './agentpanel'
 import { didDisplayName } from '../../../presentation/model'
 import type { ConnectionChoice, MessageHubStore, OutgoingPayload, OutgoingUpload, OwnerStatus, SyncStatus } from '../store/types'
 import { registerNetworkMockHost, type NetworkMockGroup } from '../../../components/network/mock/hosts'
@@ -219,6 +220,7 @@ export class MessageHubMockStore implements MessageHubStore {
   private peers = new Map<string, { name?: string; type?: 'person' | 'agent' }>()
   constructor() {
     if (import.meta.env.DEV && typeof window !== 'undefined') Object.assign(window, { __messageHubMock: this })
+    mockAgentPanel.onTurnEnded = (sessionId, taskId, text) => this.agentTurnEnded(sessionId, taskId, text)
     registerNetworkMockHost({
       people: () => this.entities(defaultContext)
         .flatMap(entity => [entity, ...(entity.children ?? [])])
@@ -444,6 +446,9 @@ export class MessageHubMockStore implements MessageHubStore {
     return entity ? selectDefaultSession(entity, this.sessions(context, entityId, 'active')) : null
   }
   ensureDefaultSession(context: MessageHubContext, entityId: string) { return ensureDefaultSession(this, context, entityId) }
+  isOwnAgent(context: MessageHubContext, id: string): boolean {
+    return context.mode === 'self' && context.ownerDid === context.viewerDid && context.ownerDid === MOCK_SELF_DID && id === MOCK_AGENT_OWNER
+  }
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[] {
     const entity = this.lookup(entityId)
     const choices = new Map<string, ConnectionChoice>()
@@ -508,6 +513,7 @@ export class MessageHubMockStore implements MessageHubStore {
     return this.mutate(next => { this.requireOwn(context); if (!this.lookup(entityId)) throw Error('binding_unknown'); next.policies[sessionKey(context.ownerDid, entityId)] = policy })
   }
   create(context: MessageHubContext, input: z.infer<typeof createSessionSchema>) {
+    const inheritMute = this.entities(context).find(item => item.id === input.entityId)?.isMuted === true
     return this.mutate(next => {
       this.requireOwn(context)
       const values = createSessionSchema.parse(input)
@@ -521,6 +527,7 @@ export class MessageHubMockStore implements MessageHubStore {
       const now = this.now(), id = crypto.randomUUID()
       const session: Session = { id, ownerDid: context.ownerDid, entityId: entity.id, title: entity.name, type: 'chat', binding: binding.kind === 'tunnel' ? { ...binding, remoteContextId: id } : binding, source: binding.kind === 'tunnel' ? binding.connectionName.split(' · ')[0].toLowerCase() : 'buckyos', origin: 'manual', lifecycle: 'active', createdAt: now, lastActiveAt: now, unreadCount: 0, shared: { title: values.title, description: values.description ?? '', updatedAt: now }, members: { [context.ownerDid]: { nickname: 'Me', updatedAt: now }, [entity.id]: { nickname: entity.name, updatedAt: now } } }
       next.sessions[sessionKey(context.ownerDid, id)] = session
+      if (inheritMute) next.preferences[viewerSessionKey(context, id)] = { ...defaultPreferences, ...next.preferences[viewerSessionKey(context, id)], muted: true }
       return session
     })
   }
@@ -623,6 +630,8 @@ export class MessageHubMockStore implements MessageHubStore {
       if (payload.mentions.all && !(group && this.groupInfo(group, context.ownerDid).can.mentionAll)) throw Error('rejected: capability-denied')
       message.mentions = payload.mentions
     }
+    // The seeded Agent takes the owner's redact of an input as its retraction and stops the Turn that handles it.
+    if (payload.relatesTo?.rel === 'redact' && session?.entityId === MOCK_AGENT_OWNER && context.ownerDid === MOCK_SELF_DID) mockAgentPanel.retract(id)
     if (payload.attachments.length > 0) return this.sendWithUploads(context, id, message, payload, confirmation)
     if (session && this.hookDenies(session, payload)) return this.rejectByHook(context, session, payload)
     return this.sendMessage(context, id, message, confirmation, canStage(payload) ? payload.localId : undefined)
@@ -1233,6 +1242,12 @@ export class MessageHubMockStore implements MessageHubStore {
   }
   /** Test hook: an invited member accepts. */
   /** A message arrives from the session's peer (an Agent's placeholder, its final edit, …). */
+  /** The seeded Agent replaces the placeholder of a Turn it stopped, as the final edit of any Turn does. */
+  private agentTurnEnded = (sessionId: string, taskId: string, text: string) => {
+    const anchor = this.timeline(MOCK_SELF_DID, sessionId).find(message => messageAgentTaskId(message) === taskId)
+    const target = anchor && messageObjId(anchor)
+    if (target) void this.simulateIncoming(sessionId, { content: { format: 'text/plain', content: text }, relates_to: { rel: 'edit', target } })
+  }
   simulateIncoming = (sessionId: string, message: Pick<MessageObject, 'content'> & Partial<MessageObject>) => this.mutate(next => {
     const session = next.sessions[sessionKey(MOCK_SELF_DID, sessionId)]
     if (!session) throw Error('not-found')

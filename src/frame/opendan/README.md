@@ -36,7 +36,10 @@ OpenDAN kRPC 对只读 Agent 的 App token 同样检查该授权：保留已有 
 - **AgentRoot 身份**：`.meta/identity.json` = `{agent_did, agent_doc_object_id}`。记录的是另一个 Agent，或同名删除后重建的 Agent（AgentDocument 不同），旧目录整体移到 `agents/.archived/<agent_id>-<毫秒时间戳>`，再从空目录初始化，不继承任何数据。没有身份文件的目录（手工准备的）直接认领。
 - **模板固定**：`template_auto_update = false` 且 AgentRoot 已从包同步过（有 `.meta/rootfs_sync.json`）时不再同步，日志里记一条；`info.template_version` 保持原值。否则照常同步，`template_version` 取本次部署的包版本（环境变量 `app_instance_config` 里 `agent` 包的 `#<version>`）。
 - **角色补充**：`settings.role_supplement` 写到 `.meta/role_supplement.md`（为空则删除），libopendan 的 behavior catalog 把它接在 `role.md` 之后，并计入 catalog revision。Session 创建时冻结身份文本，修改只对新 Session 生效。
-- **只放行 Owner**：消息的发送者是 `record.ingress.extra.principal_did`（msg-center 解析出的本人，例如 Telegram 账号背后的 Owner），没有时是 `record.from`。不是 Owner 的记录只标记已读：不建 Session、不调用 LLM、不回复。`/stop` 等命令也只有 Owner 能发。
+- **只放行 Owner**：消息的发送者是 `record.ingress.extra.principal_did`（msg-center 解析出的本人，例如 Telegram 账号背后的 Owner），没有时是 `record.from`。不是 Owner 的记录只标记已读：不建 Session、不调用 LLM、不回复。聊天命令和撤回也只有 Owner 的生效。
+- **聊天命令**（给没有界面的渠道用，Session 看不到它们）：`/stop`、`/cancel` 停止正在处理的这条消息（对当前 UI Session 投 `stop(scope=turn)`；对话和上下文留着，这条消息已经发起的 Work 不受影响；没有在处理的消息时回一句提示）。`/clean`、`/new` 归档当前 UI Session，下一条消息新建一代（同 `ui.rotate`；这个对话发起的 Work 还没结束时拒绝并列出它们）。`/resume` 恢复这个对话里被宿主重启中断的 Session：UI Session 自己被中断时恢复它（它名下一起中断的 Work 随之恢复），否则恢复它名下最靠上的那些。命令的回复文案在 Agent 包 `i18n/<lang>.toml` 的 `[commands]`，没有时用内置英文。
+- **撤回**：Owner 对一条消息发 redact（MessageHub 的“撤回 / 删除”）时，桥把它转成对当前 UI Session 的 `control(retract)`：还没被处理的输入直接丢弃；正在处理的，停止这个 Turn 并在历史里记下撤回；已经回复的不变。已经执行的步骤不会撤销。
+- **重启后的中断**：宿主重启前正在处理消息的 UI Session 重启后停在“异常中断”。这时到达的普通消息照常入队，并回一句提示（发 `/resume` 继续或 `/stop` 放弃），同一次中断只提示一次。
 - **群聊**：`allow_group = false` 时群消息只标记已读。`allow_group = true` 时只有 Owner 发出、且 `mentions.dids` 含 Agent DID 的群消息触发；触发时先把同一 mailbox 最近 20 条已读消息（不含 Agent 自己的）作为上下文（`delivery.context = true`，保留各自的发言者）按时间顺序投进 Session 队列，再投触发消息。上下文消息不单独组成输入批次、不构成请求，渲染时带 `context="true"`；Session 已经看过的按 ObjId 去重。Agent 包需要 `[[loader.ui]] on = "msg.group"` 规则。
 
 Goals（`[loader.goals] enabled`，缺省开启，没有 Goal 时没有开销）：Supervisor 带 `libopendan::host::goals::GoalHost`。每次巡检按 Goal 列表补建当前 epoch 的 Goal Session（`<agent_root>/sessions/`，`[llm_context]` 为基础配置，class `goal`）、投递 epoch 开始事件（`created` 需 `schedule.start_on_create`）、按本地计划（`every_secs`，`LocalScheduleBackend`）在准入（Goal active、距上次 Activation 不少于 `min_interval_secs`、周期上限未到）后投递定时运行机会，并处理 epoch 迁移（reopen / restart：旧 Session 由其状态闸门结束、Goal State 存档、新 Session 建立）与结束（archive / achieved）。Goal 本身与 Goal Session 的语义见 [Agent State Protocol](../../../doc/opendan/protocol/Agent%20State%20Protocol.md) §9。`[session.goal.maintenance] enabled = true` 时 GoalHost 另播种内置整理 Goal `memory_maintenance`，并对它的 start 事件与定时 fire 加 30 分钟 / 2 小时的确定性 gate（Agent State Protocol §9.7；`loader.status.modules` 里的 `memory_maintenance`）。一次 Activation 是 Goal Session 的一个 Turn，因此也是一个 TaskMgr task；TaskMgr 取消它（`CancelBridge` 投递 `stop{scope: turn}`）只结束这次 Activation。
@@ -94,7 +97,7 @@ cd src && ./debug_jarvis.sh            # 可选：[owner] --agent <agent_id> | -
 ```
 
 - 先要有一个用 Jarvis 模板创建的 Agent（桌面 Add Agent，或 `test/test_opendan/agent_target.ts --create <名字>`）。不指定 `--agent`（或 `$AGENT_ID`）时取 owner 名下第一个 ready 的 Agent，没有则取第一个已绑定的；列表来自 `rootfs/bin/service_debug.tsx agents <owner>`。
-- `cargo build`（debug）后以该 Agent 的构造 App 身份（AppId = AgentId）在前台运行，Agent 包直接读 `src/apps/jarvis_agent/agent`，WebUI 读 `frame/opendan/web/dist`（没有则用已安装的）。改了包里的提示词或 Rust 代码，Ctrl+C 再跑一次即可；已有 Session 冻结的 behavior 不变，发 `/stop` 开新一代 Session 才会用上新的。
+- `cargo build`（debug）后以该 Agent 的构造 App 身份（AppId = AgentId）在前台运行，Agent 包直接读 `src/apps/jarvis_agent/agent`，WebUI 读 `frame/opendan/web/dist`（没有则用已安装的）。改了包里的提示词或 Rust 代码，Ctrl+C 再跑一次即可；已有 Session 冻结的 behavior 不变，发 `/clean` 开新一代 Session 才会用上新的（对话的历史被压缩之后也会重新冻结）。重启后正在工作的 Session 停在“异常中断”，要手工恢复（首页的“全部恢复”、`/resume`、`xagent ctl <sid> resume`）。
 - 脚本先停掉 node-daemon 拉起的 `buckyos-app-*` 容器，再占住 app 的服务端口，容器因此起不来（node-daemon 日志里会持续有 `docker run` 失败，属于预期）。容器抢先回来时 opendan 拒绝启动，脚本再停一次容器并重试。Ctrl+C 退出后 node-daemon 会自己把容器拉回来。
 - 容器不在时 zone 网关没有到 app 的路由，WebUI 直接开 `http://127.0.0.1:<服务端口>/`，本机访问不需要登录（`--trust-loopback`）。
 - 消息收发、AICC、kmsg、kevent 都是真实服务：`test/test_opendan/test_agent_loader.ts` 可以直接用（`OPENDAN_URL=http://127.0.0.1:<服务端口>/kapi/opendan`）。
@@ -217,11 +220,21 @@ WebUI 通过同源 `/api/opendan` 访问托管本页面的 Agent，由 zone 网�
 
 | method | params | 说明 |
 |---|---|---|
-| `session.stop` | `{sid, reason?}` | `control(stop)` |
+| `session.stop` | `{sid, reason?, scope?: session \| turn}` | `control(stop)`。`turn`：针对消息的 stop，只关当前 Turn，没有打开的 Turn 时报错。`session`（缺省）：针对 Session 的 stop，按会话类型——Work / self_check 以 stopped 结束（连同未结束的子 Session），Goal Session 让它的 Goal 休眠，UI Session 报错（对话不能停，清空上下文用 `ui.rotate`） |
+| `session.pause` / `session.resume` | `{sid, reason?}` | `control(pause)` / `control(resume)`。暂停级联到未结束的子 Session；resume 也是恢复“异常中断”的入口，级联到同一次中断的子 Session |
 | `session.decide` | `{sid, decision: accept \| discard, note?}` | `control(decide)` |
-| `session.post` | `{sid, text}` | 以调用方身份向有队列的 Session 投一条文本消息 |
+| `session.post` | `{sid, text}` | 以调用方身份投一条文本消息。只收控制命令的 Session（纯 Work，`session.input_policy = none`）拒绝并说明 |
+| `ui.rotate` | `{sid}` | clean：归档这个 UI Session（投 `stop(scope=archive)`，旧会话以 stopped 结束、原样保留），同一对话的下一条消息新建一代。它名下还有未结束的 Work 时报错（`unfinished_works: …`）。返回 `{archived, finished}`；`finished: false` 表示等了 20 秒旧会话还在收尾 |
+| `sessions.delete` | `{sid}` | 门面方法。删除一个已结束的 Work / self_check 会话，连同它全部已结束的后代（目录和登记项；感知流不动）；有未结束的后代、或是 UI / Goal 会话时报错。返回 `{deleted: [sid…]}` |
 
-返回 `{index}`（`session.post` 另带 `key`）。投递后服务端让 Supervisor 装载该 Session。`decide` 与 `post` 要求 Session 有输入队列；没有队列的 Session（如 work session）返回 `channel` 错误，它的产物验收走 `artifacts.decide`。session 范围的 `stop` 对没有队列、由本进程驱动的 Session 改由 Supervisor 打断它的驱动（与父 Session 被停时一样：Turn 以 stopped 关闭、Session 结束），返回 `{index: null, stopped: true}`。`session.stop` 另收 `scope: session | turn`（缺省 `session`）；对 Goal Session 任何 stop 都只结束当前 Activation。
+返回 `{index}`（`session.post` 另带 `key`）。投递后服务端让 Supervisor 装载该 Session。每个 Session 都有输入队列，控制命令一律走它；收不收消息是另一回事（Session Control Protocol §8）。
+
+另有两个只读方法给会话侧面板用：
+
+| method | 参数 | 返回 |
+|---|---|---|
+| `ui.conversation` | `{peer_did, session_id?}` | `{current, generations}`。`generations` 是这个对话历代的 UI Session（`{session_id, created_at_ms, finished_at_ms?, outcome?}`，按创建时间）；`current` 是未结束的最新一代，没有时为 `null`：`{session_id, route_key, run_state, paused, needs_input, one_line_status, open_turn?: {turn, task_id}, unfinished_works, prompt: {frozen_at_ms, current, changed[]}}`。`paused` 是暂停来源（`user \| parent \| interrupted \| goal`）或 `null`。`prompt.changed` 列出与“现在新建一个同类会话会冻结到的内容”不同的项（`role.md`、`self.md`、`i18n`、`behaviors/<name>`、`cmd_skills/<name>`），算上了 owner 改过的 UI 集合和被禁用的手册。匹配规则：会话的回复去向是 `peer_did`，且 `to_session` 等于 `session_id`（`dm:` 开头的会话 id 也匹配没有绑定聊天会话的） |
+| `session.work_tree` | `{sid, unfinished_only?}` | `{agent_did, session_id, complete, sessions}`：这个 Session 名下的 Work 组成的树。节点是 `session.work_cards` 的卡片，多一个 `children`（不是 Todo 的子 Work）；plan 的 Todo 绑定的卡片同样往下展开，到第 4 层为止。暂停着的卡片带 `paused`（来源）。`unfinished_only` 时去掉整棵都已结束的分支（进行中的 plan 保留完整的 Todo 列表）；`complete` 为真表示名下没有未结束的工作 |
 
 ### Session 进程（session token）
 
@@ -279,12 +292,21 @@ Agent 的 skills：work / ui skill（`cmd_skills/<name>/SKILL.md` + 可选 `refe
 | `runtimes.remove` | `{runtime_id}` | 从这个 Agent 移除一台已分配的 runtime：记录转 `retired` 留作历史，runtime 本身还在 owner 的目录里，可以再分配。拒绝私有 runtime 及其别名；上面有进行中的 Session 时同样拒绝（`sessions_in_progress`），Workspace 与等待的 Todo 不拦。返回新的 `runtimes.settings` |
 | `runtimes.impact` | `{runtime_id}` | 停用或移除会碰到什么：`{runtime_id, owner_default, blocking, running_sessions[sid], active_sessions[{session_id, kind, class, title, run_state}], pending_todos[{session_id, todo_id, title, status}], workspaces[{workspace_id, name, directory, lifecycle}], usage}`。`active_sessions` 是绑在它上面、没结束的全部 Session；`running_sessions` 是其中已经开始运行、且这台 runtime 当前可用的那些（停用会中断它们）；`blocking` = `running_sessions` 不空，这时停用和移除被拒绝 |
 | `home.workspaces` | – | Agent State 中全部已知 Workspace 的展示字段，包含归档和不可访问记录，不输出私有备注与策略引用 |
+| `home.summary` | – | 首页概况和 MessageHub 面板共用的数字：`{sessions: {working, waiting, failed, interrupted, total}, memory: {perceptions, pending, cognitions, last_consolidation_at_ms}, goals: {active}, skills: {work, plan, goal, disabled}, runtimes: {enabled, unavailable}}` |
+| `memory.overview` | – | `{cognitions: {current}, perceptions: {total, pending}, last_consolidation_at_ms, maintenance_goal_id, recent: {cognitions: MemoryEntry[], perceptions: MemoryEntry[]}}`；`recent` 是最近添加的 5 条认知和 3 条感知 |
+| `memory.list` | `{layer: cognition \| perception, limit?, cursor?}` | `{entries: MemoryEntry[], next_cursor?}`，按添加时间倒序；`limit` 缺省 20、至多 100 |
+| `memory.read` | `{reference}` | 同 `cognition.read` 的 `MemoryRead`，不要 Session：认知（`item_x` / `item_x@N`）带来源视图，感知（`<sid>:<seq>`）带原记录 |
+| `memory.forget` | `{reference, expected_revision?, reason?}` | owner 删除一条：`{reference, layer, state, occasion_id, cleanup_pending?}`。只有 owner 能调 |
+| `deliveries.recent` | `{limit?, before?, route_key?}` | 交付索引（[Agent State Protocol](../../../doc/opendan/protocol/Agent%20State%20Protocol.md) §6.1）：`{entries: [{at_ms, name, obj_id, url?, mime?, size?, session_id, ui_session_id?, route_key?, source: report \| reply}], next_before?}`，新的在前；`limit` 缺省 20、至多 200；给 `route_key` 时只返回这个对话的 |
 
 - 资料：读写系统配置里的 Agent `profile`（与 control_panel 的 `agent.profile.*` 是同一份）；没有昵称时 `display_name` 是 Agent 用户名（AgentId 的第一段）。`agent.profile_set` 只改传入的字段，传空字符串清除该字段。`display_name` ≤ 64 字符，`bio` ≤ 500 字符，`avatar` 是图片 data URL，≤ 128 KiB。`owner_did` 是 AgentSpec 里的 Owner DID（`--dev` 取 `--owner-did`），`desktop_url`（zone 桌面的地址，MessageHub 在其 `/messagehub`）在 `--dev` 形态下为 `null`。
 - 用量：汇总登记表里各 Session 的 `usage.jsonl`（[Session Directory Protocol](../../../doc/opendan/protocol/Session%20Directory%20Protocol.md) §4），按 `all.total` 降序；`hour` / `day` 是最近 1 小时 / 24 小时。`model` 是 AICC 路由最终选中的模型，取不到时是请求里的模型别名。没有 `usage.jsonl` 的旧 Session 不计入，`since_ms` 是最早一条记录的时间。
 - `ui.bindings`：UI Session 的回复去向（`session_config.json` 的 `channels.outbound`）。WebUI 据此把 Session 链接到 MessageHub：对方是 owner 时打开 owner 自己与 Agent 的会话（`/messagehub?entityId=<agent>&sessionId=<to_session | dm:<agent>>`），否则以观察模式打开 Agent 的会话（`ownerDid=<agent>&mode=observe&entityId=<对方>&sessionId=<收件箱会话>`）。没有绑定会话的 Session（work、self_check 等）在 WebUI 里进入自己的详情页。
 - 首页的 Runtime 卡片直接读 `runtimes.list`：名称、id、可用性、是否内建、建议根目录、不可用原因。
 - runtime 停用、被移除、到期或不再应答时，Loader 给还没结束、冻结在它上面的 Session 打上标记（`sessions.query` 条目的 `runtime_unavailable`，值是原因）并通知 owner 一次；Session 不会被迁到别的 runtime，runtime 恢复可用后标记消失。条目的 `runtime_id` 是 Session 冻结到的 runtime，`sessions.query` 的 `query.runtime_id` 按它过滤。
+- `home.summary` 的 Session 计数口径：`working` = `run_state` 是 running / ready，或有打开的 Turn，或 waiting 且不是 `needs_input`（等自己发起的工作、Goal 等下一次机会）；`waiting` = 没结束且不是 working；`failed` = 以 failed 结束；`interrupted` = 因宿主重启停住、等人恢复的（登记表目前不带暂停来源，恒为 0）。Memory 的几项与 `memory.overview` 同源；`skills` 的三个数只算启用的，`disabled` 是停用总数；`runtimes.enabled` 是没退役且启用的，`unavailable` 是其中当前不可用的。
+- `memory.*` 是 owner 的视图，不按 Session 的授权过滤，每条带 `subjects`（它属于谁的范围）。`MemoryEntry = {layer, reference, summary, kind, state, at_ms, revised_at_ms?, revision?, subjects, session_id?, deletable, absorbed_into?, cleared?}`：认知的 `reference` 是 `item_x@N`，`state` 是 `active | disputed`，`at_ms` 是首个修订写入的时间，修订过的另带 `revised_at_ms`；感知的 `state` 是 `pending`（没处置过）/ `deferred` / `absorbed` / `duplicate` / `discarded`，`absorbed_into` 是承接它的认知引用（数组），正文已清理的带 `cleared: true`、`summary` 为空。计数口径：`cognitions.current` = 状态 active 或 disputed 且不是 salience（列表也只列这些）；`perceptions.total` = 正文没清理的；`perceptions.pending` = 其中还没有终态处置的（`pending` 与 `deferred`）。`last_consolidation_at_ms` 取内置整理 Goal（`maintenance_goal_id`）state 里的 `last_successful_consolidation_at_ms`，没有这个 Goal 时两项为 `null`。游标是排序位置（上一页最后一条），翻页期间写入的新条目不会让它失效。扫描结果按 Memory 的版本缓存，没有新的提交、感知或清理就不重读文件。
+- `memory.forget`：认知写一个 `deleted` 的新修订（历史修订保留，不能复活），`expected_revision`（或引用里的 `@N`）不是当前修订、或它已经删除时拒绝；没有终态处置的感知处置为 `discarded` 并清掉正文，已吸收 / 重复 / 已丢弃的拒绝，错误里带承接它的认知引用。服务在调用期间持有 `memory_consolidation` 租约：整理 Goal 正在运行时返回 `busy`，什么都不改。冲突的错误是 `kind: other`、`message` 以 `memory_conflict:` 开头。这是一次单独的提交（`produced_by.goal_run = owner:<调用者>`），不写整理 Goal 的 state，“最近整理时间”不动。读过被删认知的 Session 下一批收到 `hint withdrawn (deleted), do not rely on it (<引用>)`，不带原陈述。
 - `home.workspaces` 从 Workspace Manager 查询已知目录，不按 Session 是否使用过或本机目录是否存在过滤。首页展示稳定 ID、Runtime、目录、使用属性、生命周期、最近可用性检查、错误与冲突，按稳定 ID 关联 Session 和产物。检查访问调用 `workspaces.check`；重新定位调用 `workspaces.discover` 并同时提交目标 ID 和预期登记修订，失败保留原登记。重新定位只供新的 Session 使用，既有 Session 的绑定保持不变。
 
 ### Loader 状态

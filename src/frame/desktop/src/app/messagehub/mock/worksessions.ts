@@ -1,4 +1,4 @@
-import type { WorkCard, WorkCards, WorkTodo, WorkUsage } from '../conversation/worksessions/model'
+import { parseWorkCards, type WorkCard, type WorkCards, type WorkTodo, type WorkUsage } from '../conversation/worksessions/model'
 import type { WorkCardsSource } from '../conversation/worksessions/source'
 import type { WorkSessionInfo } from '../conversation/worklog/model'
 import { MOCK_AGENT_TASKS } from './data'
@@ -44,7 +44,9 @@ function seedCards(now: number): Map<string, WorkCards> {
   const page = (taskId: string, sessions: WorkCard[], complete = false): WorkCards => ({ agent_did: AGENT, session_id: MOCK_WORK_UI_SESSION, task_id: taskId, complete, sessions })
   const builds = card({ session_id: 'work-builds', title: 'Run both slow builds', state: 'running', created_at_ms: minutes(4.2), line: 'Watching the two cargo builds', usage: usage(86_400, 9_100, 12), model: 'gpt-6.1-sol@cliproxy' })
   const t01 = card({ session_id: 'work-docs-t01', title: 'Survey the current state', state: 'succeeded', created_at_ms: minutes(6), finished_at_ms: minutes(4.95), line: 'Found 3 places that disagree with the source', usage: usage(21_000, 2_300, 5), model: 'gpt-6.1-sol@cliproxy' })
-  const t02 = card({ session_id: 'work-docs-t02', title: 'Rewrite §3', state: 'running', created_at_ms: minutes(4.6), line: 'Editing doc/llm_context/LLM Context Design.md', usage: usage(40_000, 5_000, 9), model: 'gpt-6.1-sol@cliproxy' })
+  const t02 = card({ session_id: 'work-docs-t02', title: 'Rewrite §3', state: 'running', created_at_ms: minutes(4.6), line: 'Editing doc/llm_context/LLM Context Design.md', usage: usage(40_000, 5_000, 9), model: 'gpt-6.1-sol@cliproxy', children: [
+    card({ session_id: 'work-docs-t02-survey', shape: 'explore', title: 'Find every caller of the context API', state: 'running', created_at_ms: minutes(3.1), line: 'running grep', usage: usage(6_200, 480, 3), model: 'gpt-6.1-mini@cliproxy' }),
+  ] })
   const plan = withTodos(card({ session_id: 'plan-docs', title: 'Rewrite the llm_context design doc', state: 'running', created_at_ms: minutes(6.3), line: 'waiting for 1 sub session(s)', usage: usage(25_000, 1_800, 4), model: 'gpt-6.1-sol@cliproxy' }), [
     todo({ todo_id: 'T01', seq: 1, title: 'Survey the current state', status: 'completed', card: t01 }),
     todo({ todo_id: 'T02', seq: 2, title: 'Rewrite §3', status: 'running', card: t02 }),
@@ -90,6 +92,11 @@ export const mockWorkCards = {
   complete(taskId: string, complete = true) { const page = store().get(taskId); if (page) page.complete = complete },
 }
 
+/** The live cards of every Turn of a UI session, oldest Turn first (the mock Agent changes them in place). */
+export function mockSessionCards(uiSessionId: string): WorkCard[] {
+  return [...store().values()].filter(page => page.session_id === uiSessionId).flatMap(page => page.sessions).sort((a, b) => a.created_at_ms - b.created_at_ms)
+}
+
 export const mockWorkCardsSource: WorkCardsSource = async ({ agentDid, sessionId, taskId }) => {
   mockWorkCards.reads[taskId] = (mockWorkCards.reads[taskId] ?? 0) + 1
   await new Promise(resolve => setTimeout(resolve, 20))
@@ -97,15 +104,20 @@ export const mockWorkCardsSource: WorkCardsSource = async ({ agentDid, sessionId
   if (mockWorkCards.denied) throw Object.assign(Error('permission denied'), { code: 'NoPermission' })
   const page = store().get(taskId)
   if (!page || page.agent_did !== agentDid || page.session_id !== sessionId) return { agent_did: agentDid, session_id: sessionId, task_id: taskId, complete: false, sessions: [] }
-  return structuredClone(page)
+  // As the service answers it: a Todo's card carries nothing under it (the tree is `session.work_tree`).
+  return parseWorkCards(structuredClone(page)) ?? { agent_did: agentDid, session_id: sessionId, task_id: taskId, complete: false, sessions: [] }
 }
 
 function findCard(sessionId: string): WorkCard | undefined {
-  for (const page of store().values()) for (const item of page.sessions) {
-    if (item.session_id === sessionId) return item
-    const bound = item.todos?.items.find(entry => entry.card?.session_id === sessionId)?.card
-    if (bound) return bound
+  const search = (items: readonly WorkCard[]): WorkCard | undefined => {
+    for (const item of items) {
+      if (item.session_id === sessionId) return item
+      const below = search([...(item.todos?.items ?? []).flatMap(entry => entry.card ? [entry.card] : []), ...(item.children ?? [])])
+      if (below) return below
+    }
+    return undefined
   }
+  for (const page of store().values()) { const found = search(page.sessions); if (found) return found }
   return undefined
 }
 

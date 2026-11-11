@@ -16,6 +16,8 @@
 >
 > **S24 拆除 skill 自带命令。** skill 包只剩 `SKILL.md` 与 `references/`，安装 = 校验 + 复制。要动的地方：`skills.rs`（`tools/` 布局、`install.toml`、安装计划里的脚本风险、`install_cmd` / `check_commands`、按 runtime 的安装状态）、`runtime/mod.rs` 的 `skill_tool_dirs`、`api.rs` 的 `skill_runtime`、`home.rs` / `service.rs` 的 `skills.install_cmd` 等方法、websdk `skill.ts` 的 `install-cmd` / `check`、lint（改为拒绝 `tools/` 和非文本文件）、Skills 页的落点与确认文案、`test/skills_pikg_sample/skills/tools/`、`skill_authoring` / `opendan_agent_dev` 手册、`doc/sdk/skill-dev-quickstart.md`、`AGENTS.md`。拆完以后，安装计划里与脚本有关的风险项、按 runtime 的安装状态、落点选择都没有了；手册依赖的命令仍由 `commands` 加扩展包目录的 `provides` 给出推荐（扩展包 X5，不变）。runtime 一侧同步做那份文档的 R17、R19。
 
+> **2026-11-10：Skills 页与 [Agent UI 升级规划](<BuckyOS Agent UI 升级规划.md>) §3 在界面形态上的差距（手机样式、单个 skill 的详情页与正文、四组计数、折叠的“已停用”小节、安装入口合并）不在本文，也不在 [Agent UI 升级 TODO](agent-ui-upgrade-todo.md)，另立 [Skills 页界面形态 TODO](opendan-skills-page-ui-todo.md)（那份 TODO 的 D19）。**
+
 §1 / §1.1 记的是实施前的现状，留作对照；当前行为以代码为准。落点：`src/frame/lib_opendan/src/skills.rs`（布局、状态文件、lint、安装计划与风险、`install.toml`、草稿、改写）、`protocol/behavior.rs`（`SkillKind` / `SkillScope` / 状态类型、`[capabilities] cmd_skills`）、`state/behaviors.rs`（冻结规则）、`api.rs`（点名校验、使用记录、skill 落点级）、`src/frame/opendan/src/{home.rs,service.rs}`（owner 方法与权限）、`../buckyos-websdk/cli/modules/{skill.ts,skill_lint.ts,pikg.ts}`、`src/frame/opendan/web/src/pages/Skills.tsx`、`src/apps/jarvis_agent/agent/`（手册迁移、三份 plan skill、`skill_select_rule.inc`、`skill_import` / `skill_crystallize` / `skill_authoring`）。kRPC 一览在 `src/frame/opendan/README.md`「Skills」。
 
 | 任务 | 状态 | 说明 |

@@ -7,9 +7,14 @@
 //! - `session.read {sid, report?, worklog?}`: registry entry, state, worklog
 //!   tail, report, configuration summary, runs, hosting state. Read-only;
 //!   there is no write interface to a session directory.
-//! - `session.stop {sid, reason?}`, `session.decide {sid, decision, note?}`,
-//!   `session.post {sid, text}`: the three operations of the WebUI; each is
-//!   a record posted to the session's input bus, nothing else.
+//! - `session.stop {sid, reason?, scope?}`, `session.pause` / `session.resume
+//!   {sid, reason?}`, `session.decide {sid, decision, note?}`, `session.post
+//!   {sid, text}`: the operations of the WebUI; each is a record posted to
+//!   the session's input bus, nothing else. What a stop of the session means
+//!   follows its kind: a Work ends, a Goal Session's Goal goes dormant, a
+//!   conversation refuses (it is archived with `ui.rotate {sid}`).
+//! - `session.work_tree {sid, unfinished_only?}`, `ui.conversation {peer_did,
+//!   session_id?}`: what a conversation's side panel shows.
 //! - `loader.status`: hosting state, modules, recent errors.
 //! - `agent.profile`, `agent.profile_set`, `usage.models`, `ui.bindings`:
 //!   the home page ([`crate::home`]).
@@ -318,7 +323,6 @@ impl StateService {
         spec.owner = Some(who.to_string());
         spec.workspace = None;
         spec.freeze = true;
-        spec.input_channel = Some(libopendan::InputChannel::None);
         spec.prompt.initial_inputs = vec![PostedInput::text(who, self.agent.agent_did(), import.message())?];
         let sd = libopendan::create_session(&starter.sessions_dir, spec, self.agent.as_ref(), &starter.driver, starter.channels.as_ref()).await?;
         let sid = sd.sid().to_string();
@@ -360,18 +364,53 @@ impl StateService {
             "session.read" => self.read_session(params).await,
             "session.worklog" => self.read_worklog(params).await,
             "session.work_cards" => self.work_cards(params).await,
+            "session.work_tree" => {
+                let sid: String = param(params, "sid")?;
+                let unfinished_only = param::<Option<bool>>(params, "unfinished_only")?.unwrap_or(false);
+                let tree = libopendan::work_card::work_tree(self.agent.as_ref(), &sid, unfinished_only).await?;
+                serde_json::to_value(&tree).map_err(|e| OpenDanError::Other(format!("encode work tree: {e}")))
+            }
             "session.stop" => {
                 let sid: String = param(params, "sid")?;
                 let reason = param::<Option<String>>(params, "reason")?;
-                // A Goal Session only stops its open Activation; the session
-                // itself ends with its Goal.
                 let scope = param::<Option<StopScope>>(params, "scope")?.unwrap_or_default();
-                let queued = self.agent.sessions().lookup(&sid).await?.is_some_and(|e| e.input_queue.is_some());
-                if !queued && scope.is_session() {
-                    self.supervisor.stop(&sid).await?;
-                    return Ok(json!({ "index": null, "stopped": true }));
+                let entry = self.agent.sessions().lookup(&sid).await?
+                    .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
+                match (scope, entry.kind) {
+                    (StopScope::Session, SessionKind::Ui) => return Err(OpenDanError::InvalidArgument(format!(
+                        "session {sid} is a conversation: it is not stopped. Stop the message in progress (scope: turn), or start a new conversation (ui.rotate) to drop its context"
+                    ))),
+                    (StopScope::Archive, _) => return Err(OpenDanError::InvalidArgument(
+                        "a conversation is archived with ui.rotate".to_string(),
+                    )),
+                    (StopScope::Turn, _) if !entry.status.turn_open => return Err(OpenDanError::InvalidArgument(format!(
+                        "session {sid} has no Turn in progress"
+                    ))),
+                    _ => {}
                 }
                 self.post_control(who, &sid, ControlCommand::Stop { reason, scope }).await
+            }
+            "session.pause" | "session.resume" => {
+                let sid: String = param(params, "sid")?;
+                let reason = param::<Option<String>>(params, "reason")?;
+                let command = if method == "session.pause" {
+                    ControlCommand::Pause { reason }
+                } else {
+                    ControlCommand::Resume { reason }
+                };
+                self.post_control(who, &sid, command).await
+            }
+            "ui.conversation" => {
+                let peer: String = param(params, "peer_did")?;
+                let session = param::<Option<String>>(params, "session_id")?;
+                crate::ui::conversation(self.agent.as_ref(), &peer, session.as_deref()).await
+            }
+            "ui.rotate" => {
+                let sid: String = param(params, "sid")?;
+                let ui = self.ui.as_ref().ok_or_else(|| {
+                    OpenDanError::InvalidArgument("this host has no message tunnel: there is no conversation to rotate".into())
+                })?;
+                ui.rotate(&sid, who).await
             }
             "session.decide" => {
                 let sid: String = param(params, "sid")?;
@@ -409,6 +448,12 @@ impl StateService {
             "usage.models" => self.home.usage_models(self.agent.as_ref()).await,
             "ui.bindings" => self.home.ui_bindings(self.agent.as_ref()).await,
             "home.workspaces" => self.home.workspaces(self.agent.as_ref()).await,
+            "home.summary" => self.home.summary(self.agent.as_ref()).await,
+            "memory.overview" => self.home.memory_overview(self.agent.as_ref()).await,
+            "memory.list" => self.home.memory_list(self.agent.as_ref(), params).await,
+            "memory.read" => self.home.memory_read(self.agent.as_ref(), params).await,
+            "memory.forget" => self.home.memory_forget(self.agent.as_ref(), params, who).await,
+            "deliveries.recent" => self.home.deliveries_recent(self.agent.as_ref(), params).await,
             "skills.status" => self.home.skills_status(self.agent.as_ref(), params).await,
             "skills.install_plan" => self.home.skills_install_plan(self.agent.as_ref(), params).await,
             "skills.install" => self.home.skills_install(self.agent.as_ref(), params, who).await,
@@ -488,9 +533,11 @@ fn authorize_agent_method(
     // What an Agent may do is the owner's to widen: no Agent — this one included, whatever its permission mode —
     // installs, removes or switches skills.
     if is_owner_only(method) && (mode.is_some() || caller.app_id().as_str() == target_app_id) {
-        return Err(RPCErrors::NoPermission(format!(
-            "{method} is the owner's: an Agent does not change which skills an Agent has (the Skills page, or `buckyos skill` as the owner)"
-        )));
+        return Err(RPCErrors::NoPermission(if method.starts_with("memory.") {
+            format!("{method} is the owner's: an Agent does not delete what an Agent remembers (the Memory page, as the owner)")
+        } else {
+            format!("{method} is the owner's: an Agent does not change which skills an Agent has (the Skills page, or `buckyos skill` as the owner)")
+        }));
     }
     if mode != Some(AgentPermissionMode::ReadOnly) || is_read(method) {
         return Ok(());
@@ -507,7 +554,8 @@ fn authorize_agent_method(
     )))
 }
 
-/// Skill methods only the owner calls (never an Agent's own App identity).
+/// Methods only the owner calls (never an Agent's own App identity): which skills the Agent has, and deleting what the
+/// Agent remembers (cognitions change only through consolidation; an Agent does not delete them on the owner's behalf).
 fn is_owner_only(method: &str) -> bool {
     matches!(
         method,
@@ -517,6 +565,7 @@ fn is_owner_only(method: &str) -> bool {
             | "skills.ui_set"
             | "skills.import"
             | "skills.draft_discard"
+            | "memory.forget"
     )
 }
 
@@ -569,10 +618,17 @@ fn is_read(method: &str) -> bool {
             | "session.read"
             | "session.worklog"
             | "session.work_cards"
+            | "session.work_tree"
+            | "ui.conversation"
             | "agent.profile"
             | "usage.models"
             | "ui.bindings"
             | "home.workspaces"
+            | "home.summary"
+            | "memory.overview"
+            | "memory.list"
+            | "memory.read"
+            | "deliveries.recent"
             | "runtimes.settings"
             | "runtimes.impact"
             | "loader.status"
@@ -584,6 +640,9 @@ fn is_operation(method: &str) -> bool {
     matches!(
         method,
         "session.stop"
+            | "session.pause"
+            | "session.resume"
+            | "ui.rotate"
             | "session.decide"
             | "session.post"
             | "agent.profile_set"
@@ -598,6 +657,7 @@ fn is_operation(method: &str) -> bool {
             | "skills.draft_discard"
             | "goals.activate"
             | "goals.post"
+            | "memory.forget"
     )
 }
 
@@ -736,6 +796,8 @@ mod permission_tests {
             "behaviors.cmd_skill", "skills.list", "skills.install_plan", "skills.state", "skills.ui_get", "skills.drafts", "skills.draft_file", "runtimes.ext_tools", "goals.list", "goals.get", "goals.revision",
             "goals.changes", "goals.state", "goals.epoch_state", "goals.activations",
             "goals.schedule", "notify.state", "notify.list", "session.read", "session.worklog", "session.work_cards",
+            "session.work_tree", "ui.conversation",
+            "home.summary", "memory.overview", "memory.list", "memory.read", "deliveries.recent",
             "agent.profile", "usage.models", "ui.bindings", "home.workspaces", "loader.status", "runtimes.settings", "runtimes.impact",
         ] {
             for target in [OWN_APP, OTHER_APP] {
@@ -754,7 +816,8 @@ mod permission_tests {
             "runtimes.register", "runtimes.update", "runtimes.check", "runtimes.unregister", "runtimes.note_usage",
             "goals.create", "goals.revise", "goals.set_status", "goals.reopen", "goals.restart",
             "notify.send", "notify.cancel", "notify.answer", "skills.note_frozen", "skills.revise", "skills.status", "runtimes.ext_tools_check",
-            "session.stop", "session.decide", "session.post", "goals.activate", "goals.post",
+            "session.stop", "session.pause", "session.resume", "ui.rotate", "sessions.delete",
+            "session.decide", "session.post", "goals.activate", "goals.post",
         ] {
             assert!(authorize(Some(AgentPermissionMode::ReadOnly), method, OWN_APP), "{method}");
             assert!(!authorize(Some(AgentPermissionMode::ReadOnly), method, OTHER_APP), "{method}");
@@ -769,7 +832,7 @@ mod permission_tests {
     fn no_agent_changes_which_skills_an_agent_has() {
         for method in [
             "skills.install", "skills.remove", "skills.set_enabled", "skills.ui_set", "skills.import",
-            "skills.draft_discard",
+            "skills.draft_discard", "memory.forget",
         ] {
             for mode in [Some(AgentPermissionMode::ReadOnly), Some(AgentPermissionMode::ReadWrite)] {
                 for target in [OWN_APP, OTHER_APP] {
@@ -788,7 +851,7 @@ mod permission_tests {
         for method in [
             "agent.profile_set", "goals.write_state", "goals.append_activations",
             "goals.prepare_epoch", "goals.end_epoch", "goals.write_schedule",
-            "agent.future_get", "sessions.delete", "unknown",
+            "agent.future_get", "unknown",
         ] {
             for target in [OWN_APP, OTHER_APP] {
                 assert!(!authorize(Some(AgentPermissionMode::ReadOnly), method, target), "{method}");

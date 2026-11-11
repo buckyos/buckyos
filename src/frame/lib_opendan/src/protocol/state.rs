@@ -245,6 +245,10 @@ pub struct OpenTurn {
     /// A message (not only events) is among them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_msg: bool,
+    /// Keys of the messages among them (a message's ObjId): what a
+    /// retraction names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub msg_keys: Vec<String>,
     pub at_ms: u64,
 }
 
@@ -758,9 +762,38 @@ pub struct SessionState {
     pub updated_at_ms: u64,
 }
 
+/// Why a session is paused: who resumes it follows from it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseSource {
+    /// Someone asked (`control(pause)`).
+    #[default]
+    User,
+    /// Its parent session was paused; resumed with it.
+    Parent,
+    /// The host restarted while it was working; resumed by hand, with the
+    /// sub sessions the same restart interrupted.
+    Interrupted,
+    /// Its Goal was put to sleep; resumed when the Goal wakes.
+    Goal,
+}
+
+impl PauseSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PauseSource::User => "user",
+            PauseSource::Parent => "parent",
+            PauseSource::Interrupted => "interrupted",
+            PauseSource::Goal => "goal",
+        }
+    }
+}
+
 /// [`SessionState::paused`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Paused {
+    #[serde(default)]
+    pub source: PauseSource,
     pub at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,

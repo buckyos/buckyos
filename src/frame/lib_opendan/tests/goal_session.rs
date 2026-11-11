@@ -121,6 +121,18 @@ impl Hosted {
     async fn shutdown(&self) {
         self.sup.shutdown().await;
     }
+
+    /// The host came back after it was killed: the session it was working
+    /// on is interrupted until its owner resumes it.
+    async fn resume_after_restart(&self, sid: &str) {
+        self.until("interrupted", |h| {
+            block(h.agent.sessions().lookup(sid))
+                .unwrap()
+                .is_some_and(|e| e.status.paused == Some(PauseSource::Interrupted))
+        })
+        .await;
+        assert_eq!(resume_interrupted(self.agent.as_ref()).await, 1);
+    }
 }
 
 /// Run a future to completion from synchronous code (a closure of a test).
@@ -699,8 +711,9 @@ async fn a_question_ends_the_activation_and_is_recorded() {
     h.shutdown().await;
 }
 
-/// V11: a paused Goal opens no Activation (fires skipped, a Work's end
-/// waits); after resume the waiting inputs make one Activation.
+/// V11: a dormant Goal opens no Activation (fires skipped) and the Work it
+/// started is paused with it; woken, the Work goes on and its end makes one
+/// Activation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_paused_goal_holds_its_inputs_until_resumed() {
     let env = Env::new();
@@ -736,11 +749,13 @@ async fn a_paused_goal_holds_its_inputs_until_resumed() {
         )
         .await
         .unwrap();
+    // The Work's command in flight is not interrupted; at its next
+    // inference boundary the Work is paused, for its Goal's sleep.
     std::fs::write(&release, "go").unwrap();
-    h.until("work finished", |h| {
+    h.until("work paused", |h| {
         works_of(h, &g.goal_id)
             .iter()
-            .all(|w| w.status.run_state == RunState::Finished)
+            .all(|w| w.status.paused == Some(PauseSource::Goal))
     })
     .await;
     h.clock.advance(SLOT * 1000);
@@ -748,7 +763,11 @@ async fn a_paused_goal_holds_its_inputs_until_resumed() {
         h.tick().await;
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(h.activations(&g.goal_id).len(), 1, "nothing runs while paused");
+    assert_eq!(h.activations(&g.goal_id).len(), 1, "nothing runs while dormant");
+    assert!(
+        works_of(&h, &g.goal_id).iter().all(|w| w.status.run_state != RunState::Finished),
+        "the work waits for its goal"
+    );
     let sch = h.agent.goals().schedule(&g.goal_id).await.unwrap().unwrap();
     assert!(sch.skipped.iter().any(|k| k.reason == "paused"), "{sch:?}");
     h.agent
@@ -764,14 +783,72 @@ async fn a_paused_goal_holds_its_inputs_until_resumed() {
         )
         .await
         .unwrap();
-    h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
+    h.until("work finished", |h| {
+        works_of(h, &g.goal_id)
+            .iter()
+            .all(|w| w.status.run_state == RunState::Finished)
+    })
+    .await;
+    // Woken, the Goal runs again: the slot that passed meanwhile and the
+    // Work's end (one Activation or two, as they arrive).
+    h.until("the work's end reaches the goal", |h| {
+        h.activations(&g.goal_id)
+            .iter()
+            .skip(1)
+            .any(|a| a.reasons.iter().any(|r| r.kind == ActivationReasonKind::Child))
+    })
+    .await;
     for _ in 0..10 {
         h.tick().await;
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     let acts = h.activations(&g.goal_id);
-    assert_eq!(acts.len(), 2);
-    assert!(acts[1].reasons.iter().any(|r| r.kind == ActivationReasonKind::Child));
+    assert!((2..=3).contains(&acts.len()), "{acts:?}");
+    h.shutdown().await;
+}
+
+/// D26: a Goal put to sleep in the middle of an Activation infers no more —
+/// the call in flight finishes, the Activation closes as stopped at the
+/// next inference boundary, and nothing runs until the Goal is woken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_goal_put_to_sleep_mid_activation_infers_no_more() {
+    let env = Env::new();
+    let root = env.root.clone();
+    let llm = ScriptedLlm::new(move |_, n| match n {
+        0 => tool_call("s0", "shell", json!({ "command": "echo step 0" })),
+        // Its owner puts the Goal to sleep while this step runs.
+        1 => {
+            std::fs::write(root.join("sleep_now"), "1").unwrap();
+            tool_call("s1", "shell", json!({ "command": "sleep 1.5; echo step 1" }))
+        }
+        _ => no_action(),
+    });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("sleepy");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    let flag = env.root.join("sleep_now");
+    h.until("the second step runs", |_| flag.exists()).await;
+    h.agent
+        .goals()
+        .set_status(
+            &g.goal_id,
+            &GoalStatusChange { status: GoalStatus::Paused, reason: Some("no use".into()), evidence: None },
+            &owner(),
+        )
+        .await
+        .unwrap();
+    h.until("activation stopped", |h| h.activations(&g.goal_id).len() == 1).await;
+    assert_eq!(h.activations(&g.goal_id)[0].outcome, ActivationOutcome::Stopped);
+    let calls = llm.count();
+    assert_eq!(calls, 2, "the step in flight finished and nothing was inferred after it");
+    for _ in 0..20 {
+        h.tick().await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(llm.count(), calls, "no inference while dormant");
+    let s = h.session(&g.goal_id).state().unwrap();
+    assert!(!s.is_finished() && s.paused.is_none() && s.open_turn.is_none(), "{s:?}");
     h.shutdown().await;
 }
 
@@ -995,8 +1072,9 @@ async fn restart_starts_a_fresh_context_that_takes_over_the_work() {
     h.shutdown().await;
 }
 
-/// V17: stopping an Activation (a TaskMgr cancel, `session.stop`) closes
-/// only its Turn.
+/// V17: stopping an Activation (a TaskMgr cancel, `session.stop` of the
+/// Turn) closes only its Turn; a stop of the Goal Session itself puts its
+/// Goal to sleep.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stopping_an_activation_keeps_the_goal_session() {
     let env = Env::new();
@@ -1027,7 +1105,10 @@ async fn stopping_an_activation_keeps_the_goal_session() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     h.agent
         .sessions()
-        .post_input(&g.session.sid, &PostedInput::control(APP, "stop-1", ControlCommand::stop(Some("enough".into()))))
+        .post_input(
+            &g.session.sid,
+            &PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: Some("enough".into()), scope: StopScope::Turn }),
+        )
         .await
         .unwrap();
     h.until("activation stopped", |h| h.activations(&g.goal_id).len() == 1).await;
@@ -1039,6 +1120,15 @@ async fn stopping_an_activation_keeps_the_goal_session() {
     h.sup.goal_activate(&g.goal_id, "again", "go on").await.unwrap();
     h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
     assert_eq!(h.activations(&g.goal_id)[1].outcome, ActivationOutcome::Completed);
+    // A stop of the session: the Goal sleeps, the session stays.
+    h.agent
+        .sessions()
+        .post_input(&g.session.sid, &PostedInput::control(APP, "stop-2", ControlCommand::stop(Some("no use".into()))))
+        .await
+        .unwrap();
+    h.until("dormant", |h| h.goal_now(&g.goal_id).status == GoalStatus::Paused).await;
+    assert!(!h.session(&g.goal_id).state().unwrap().is_finished());
+    assert_eq!(h.goal_now(&g.goal_id).status_reason.as_deref(), Some("no use"));
     h.shutdown().await;
 }
 
@@ -1382,6 +1472,8 @@ async fn an_activation_killed_mid_run_continues_where_it_was() {
     let _ = child.wait();
     let llm = crash_script("slow", &env.root);
     let h = hosted(&env, llm.clone());
+    // Nothing goes on by itself after the restart.
+    h.resume_after_restart(&g.session.sid).await;
     h.until("activation", |h| h.activations(&g.goal_id).len() == 1).await;
     let a = &h.activations(&g.goal_id)[0];
     assert_eq!((a.epoch, a.seq, a.outcome), (1, 1, ActivationOutcome::Completed));
@@ -1491,6 +1583,7 @@ async fn input_queued_while_a_killed_activation_was_down_waits_for_its_batch() {
     .await
     .unwrap();
     let h = hosted(&env, crash_script("slow", &env.root));
+    h.resume_after_restart(&g.session.sid).await;
     h.until("two activations", |h| h.activations(&g.goal_id).len() == 2).await;
     let acts = h.activations(&g.goal_id);
     assert_eq!(acts[0].reasons[0].kind, ActivationReasonKind::Created);

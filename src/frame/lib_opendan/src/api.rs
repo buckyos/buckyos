@@ -68,8 +68,9 @@ pub struct SessionSpec {
     /// Session template policy (`session.policy`).
     #[serde(default)]
     pub policy: SessionPolicy,
-    /// Whether the session gets an input queue. `None`: one is created
-    /// when the host has a queue client.
+    /// What the session's input queue takes. Every session gets a queue when
+    /// the host has a queue client (controls always go through it); `None`
+    /// here: the template did not say, msg / event inputs are taken.
     #[serde(default)]
     pub input_channel: Option<InputChannel>,
     /// Reply coordinates of a session bound to one conversation.
@@ -97,9 +98,12 @@ pub struct SessionSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputChannel {
-    /// No queue: bootstrap material comes from `prompt.initial_inputs`,
-    /// nothing can be posted later.
+    /// The queue only takes controls (`session.input_policy = none`):
+    /// bootstrap material comes from `prompt.initial_inputs`, no msg can be
+    /// posted later.
     None,
+    /// The queue takes msg / event inputs too; the host must have a queue
+    /// client.
     Queue,
 }
 
@@ -372,16 +376,19 @@ pub async fn create_session(
             ));
         }
     }
+    let controls_only = spec.input_channel == Some(InputChannel::None);
+    if controls_only {
+        spec.input_policy = InputPolicy::None;
+    }
     let queue_client = match spec.input_channel {
-        Some(InputChannel::None) => None,
         Some(InputChannel::Queue) => Some(channels.queue_client().ok_or_else(|| {
-            OpenDanError::Channel("the session needs an input queue but the host has no queue client".into())
+            OpenDanError::Channel("the session takes input but the host has no queue client".into())
         })?),
-        None => channels.queue_client(),
+        _ => channels.queue_client(),
     };
-    if queue_client.is_some() && !spec.prompt.initial_inputs.is_empty() {
+    if queue_client.is_some() && !controls_only && !spec.prompt.initial_inputs.is_empty() {
         return Err(OpenDanError::InvalidArgument(
-            "prompt.initial_inputs is the bootstrap material of a session without an input queue; post to the queue instead".into(),
+            "prompt.initial_inputs is the bootstrap material of a session whose queue takes no msg; post to the queue instead".into(),
         ));
     }
 
@@ -689,11 +696,11 @@ pub struct SubSessionSpec {
     pub runtime_id: Option<String>,
     #[serde(default)]
     pub report: ReportMode,
-    /// The sub session gets an input queue and may wait for input.
+    /// The sub session takes msg input and may wait for it.
     #[serde(default)]
     pub interactive: bool,
-    /// The sub session gets an input queue for its parent's events (a
-    /// Todo's updates and controls); it still never waits for input.
+    /// The sub session takes its parent's msg / event inputs (a Todo's
+    /// updates); it still never waits for input.
     #[serde(default)]
     pub queued: bool,
     /// `(run_id, call_id)` of the creating tool call: the idempotency key.

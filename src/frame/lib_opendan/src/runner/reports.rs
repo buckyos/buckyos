@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::shared::Shared;
+use crate::deliveries::{DeliveryRecord, DeliverySource};
 use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 use crate::session::runs::RunHandle;
@@ -318,7 +319,7 @@ pub(super) async fn submit(
             }
         }
     }
-    let artifacts = store_artifacts(sh, &id, &args.artifacts).await?;
+    let artifacts = store_artifacts(sh, &id, &args.artifacts, DeliverySource::Report).await?;
     let submission = ReportSubmission {
         id,
         run_id: run.run_id().to_string(),
@@ -344,10 +345,85 @@ pub(super) async fn store_artifacts(
     sh: &Shared,
     id: &str,
     paths: &[String],
+    source: DeliverySource,
 ) -> Result<Vec<ReportArtifact>> {
+    let (artifacts, sizes) = store_objects(sh, id, paths).await?;
+    index_deliveries(sh, &artifacts, &sizes, source).await;
+    Ok(artifacts)
+}
+
+/// The UI Session at the top of `sid`'s origin chain and its conversation.
+async fn conversation_of(sh: &Shared, sid: &str) -> (Option<String>, Option<String>) {
+    let mut at = sid.to_string();
+    for _ in 0..16 {
+        let Ok(Some(entry)) = sh.deps.agent.sessions().lookup(&at).await else {
+            break;
+        };
+        if entry.kind == SessionKind::Ui {
+            return (Some(entry.session_id), entry.route_key);
+        }
+        match entry.origin.and_then(|o| o.parent_session) {
+            Some(parent) => at = parent,
+            None => break,
+        }
+    }
+    (None, None)
+}
+
+/// One line of the delivery index per artifact that became an object. A
+/// host without an object store (`--dev`) or without the AgentRoot writes
+/// none; a line that cannot be written is not the delivery's failure.
+async fn index_deliveries(sh: &Shared, artifacts: &[ReportArtifact], sizes: &[Option<u64>], source: DeliverySource) {
+    let (Some(store), Some(root)) = (sh.deps.objects.as_ref(), sh.deps.agent.agent_root()) else {
+        return;
+    };
+    let delivered: Vec<(&ReportArtifact, Option<u64>)> = artifacts
+        .iter()
+        .zip(sizes.iter().copied())
+        .filter(|(a, _)| a.obj_id.is_some())
+        .collect();
+    if delivered.is_empty() {
+        return;
+    }
+    let sid = sh.dir.sid().to_string();
+    let (ui_session_id, route_key) = conversation_of(sh, &sid).await;
+    for (artifact, size) in delivered {
+        let obj_id = artifact.obj_id.clone().unwrap_or_default();
+        let name = match ObjId::new(&obj_id) {
+            Ok(id) if artifact.reference.is_empty() && artifact.url.is_none() => {
+                store.name_of(&id).await.unwrap_or_else(|| artifact.name().to_string())
+            }
+            _ => artifact.name().to_string(),
+        };
+        let record = DeliveryRecord {
+            at_ms: crate::now_ms(),
+            mime: crate::deliveries::mime_of(&name),
+            name,
+            obj_id,
+            url: artifact.url.clone(),
+            size,
+            session_id: sid.clone(),
+            ui_session_id: ui_session_id.clone(),
+            route_key: route_key.clone(),
+            source,
+        };
+        if let Err(e) = crate::deliveries::record(root, &record) {
+            log::warn!("session {sid}: delivery of {} not indexed: {e}", record.name);
+        }
+    }
+}
+
+/// The artifacts as the host keeps them, and the size of each one that was
+/// a file.
+async fn store_objects(
+    sh: &Shared,
+    id: &str,
+    paths: &[String],
+) -> Result<(Vec<ReportArtifact>, Vec<Option<u64>>)> {
     let cfg = sh.session.lock().await.config.clone();
     let workdir = crate::runtime::resolve_workdir(&sh.dir)?;
     let mut artifacts = Vec::new();
+    let mut sizes = Vec::new();
     for (index, path) in paths.iter().enumerate() {
         if let Some(obj_id) = artifact_obj_id(path) {
             artifacts.push(ReportArtifact {
@@ -357,6 +433,7 @@ pub(super) async fn store_artifacts(
                 obj_id: Some(obj_id.to_string()),
                 url: None,
             });
+            sizes.push(None);
             continue;
         }
         if is_bucket_url(path) {
@@ -376,6 +453,7 @@ pub(super) async fn store_artifacts(
                 obj_id: Some(stored.obj_id.to_string()),
                 url: stored.url,
             });
+            sizes.push(None);
             continue;
         }
         let (digest, staging) = if cfg.runtime.is_node() {
@@ -407,6 +485,7 @@ pub(super) async fn store_artifacts(
             std::fs::rename(&staging, &stable).map_err(|e| OpenDanError::io(&stable, e))?;
             crate::fsutil::fsync_dir(stable.parent().unwrap())?;
         }
+        sizes.push(std::fs::metadata(&stable).ok().map(|m| m.len()));
         let mut artifact = ReportArtifact {
             path: path.clone(),
             reference,
@@ -429,7 +508,7 @@ pub(super) async fn store_artifacts(
         }
         artifacts.push(artifact);
     }
-    Ok(artifacts)
+    Ok((artifacts, sizes))
 }
 
 /// The host check of a reply under a reply contract (`[reply]`): what the

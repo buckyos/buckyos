@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type { EntityDetail, MessageHubContext } from './types'
+import type { EntityPreferencePatch } from './EntityList'
 import { HubAvatar } from './HubAvatar'
 
 interface EntityDetailsProps {
@@ -27,6 +28,10 @@ interface EntityDetailsProps {
   onClose: () => void
   /** Opens the new-group dialog with these members preselected. */
   onCreateGroup?: (members: string[]) => void
+  /** Mute / pin of the entity as a whole (every session of it); without it the two actions are not offered. */
+  onEntityPreferences?: (entityIds: string[], patch: EntityPreferencePatch) => Promise<void>
+  /** The content alone, inside another panel that already shows who the entity is and its mute / pin (the Agent panel). */
+  embedded?: boolean
 }
 
 function DetailAvatar({ entity }: { entity: EntityDetail }) {
@@ -63,9 +68,16 @@ function InfoRow({
   )
 }
 
-export function EntityDetails({ entity, context, onClose, onCreateGroup }: EntityDetailsProps) {
+export function EntityDetails({ entity, context, onClose, onCreateGroup, onEntityPreferences, embedded = false }: EntityDetailsProps) {
   const { t } = useI18n()
   const store = useMessageHubStore()
+  const [preferring, setPreferring] = useState(false)
+  const [preferFailed, setPreferFailed] = useState(false)
+  const canPrefer = !!onEntityPreferences && context?.mode !== 'observe' && !preferring
+  const prefer = (patch: EntityPreferencePatch) => {
+    setPreferring(true); setPreferFailed(false)
+    void onEntityPreferences!([entity.id], patch).catch(() => setPreferFailed(true)).finally(() => setPreferring(false))
+  }
   const groupInfo = context && entity.type === 'group' ? store.group(context, entity.id) : null
   const canStartGroup = Boolean(onCreateGroup && context?.mode === 'self' && context.ownerDid === context.viewerDid && (entity.type === 'person' || entity.type === 'agent') && entity.id.startsWith('did:') && !entity.id.startsWith('did:msgtunnel:') && entity.accessLevel !== 'block' && store.connections(context, entity.id).some(choice => choice.binding.kind === 'native'))
 
@@ -78,10 +90,11 @@ export function EntityDetails({ entity, context, onClose, onCreateGroup }: Entit
 
   return (
     <div
-      className="flex flex-col h-full"
-      style={{ background: 'var(--cp-surface)' }}
+      className={embedded ? '' : 'flex flex-col h-full'}
+      style={embedded ? undefined : { background: 'var(--cp-surface)' }}
+      data-testid="entity-details"
     >
-      {/* Header */}
+      {embedded ? null : <>
       <div
         className="flex flex-shrink-0 items-center justify-between py-1 pl-4 pr-1"
         style={{ borderBottom: '1px solid var(--cp-border)' }}
@@ -104,10 +117,11 @@ export function EntityDetails({ entity, context, onClose, onCreateGroup }: Entit
         </button>
       </div>
 
+      </>}
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 shell-scrollbar">
+      <div className={embedded ? '' : 'flex-1 overflow-y-auto px-4 py-4 shell-scrollbar'}>
         {/* Avatar & Name */}
-        <div className="text-center mb-4">
+        <div className={embedded ? 'hidden' : 'text-center mb-4'}>
           <DetailAvatar entity={entity} />
           <h3
             className="text-lg font-bold mt-3"
@@ -256,17 +270,22 @@ export function EntityDetails({ entity, context, onClose, onCreateGroup }: Entit
         )}
 
         {/* Actions */}
-        <div
+        {embedded || !onEntityPreferences ? null : <div
           className="rounded-xl overflow-hidden mb-4"
           style={{
             background:
               'color-mix(in srgb, var(--cp-text) 4%, transparent)',
           }}
+          data-testid="entity-preferences"
         >
           <button
-            disabled={context?.mode === 'observe'}
-            className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-left transition-colors"
+            type="button"
+            disabled={!canPrefer}
+            aria-pressed={!!entity.isMuted}
+            onClick={() => prefer({ muted: !entity.isMuted })}
+            className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-left transition-colors disabled:opacity-50"
             style={{ color: 'var(--cp-text)' }}
+            data-testid="entity-mute"
           >
             {entity.isMuted ? (
               <>
@@ -281,9 +300,13 @@ export function EntityDetails({ entity, context, onClose, onCreateGroup }: Entit
             )}
           </button>
           <button
-            disabled={context?.mode === 'observe'}
-            className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-left transition-colors"
+            type="button"
+            disabled={!canPrefer}
+            aria-pressed={!!entity.isPinned}
+            onClick={() => prefer({ pinned: !entity.isPinned })}
+            className="flex items-center gap-3 w-full px-3 py-2.5 text-sm text-left transition-colors disabled:opacity-50"
             style={{ color: 'var(--cp-text)' }}
+            data-testid="entity-pin"
           >
             {entity.isPinned ? (
               <>
@@ -297,7 +320,8 @@ export function EntityDetails({ entity, context, onClose, onCreateGroup }: Entit
               </>
             )}
           </button>
-        </div>
+          {preferFailed ? <p role="alert" className="px-3 pb-2 text-xs text-[color:var(--cp-danger)]">{t('messagehub.sessionMenu.failed')}</p> : null}
+        </div>}
 
         {/* The system notify sender is neither a contact to admit nor a peer to start sessions with. */}
         {context && !entity.systemNotify && <RelationSection key={`relation:${entity.id}`} entity={entity} context={context} />}

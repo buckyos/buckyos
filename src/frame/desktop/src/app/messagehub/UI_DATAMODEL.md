@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.17（2026-11-09：群聊发送者头像与资料入口、会话头的搜索与 ⋮ 菜单（编辑信息 / 静音 / 清空聊天记录）、列表「发起聊天」与会话列表「新建会话」分开、`ui.description`、`msg.clear_session`，见 §3.5.8 / §4.1.2 / §4.4 / §4.5 / §5.3.1 / §9.2）；v0.16（2026-10-19：Telegram 式语音消息（`MsgObject.voice`）、Composer 表情面板与纯 emoji 大字显示，见 §3.5.1 / §3.5.2 / §3.5.7 / §4.2）；v0.15（2026-10-17：My Network 升级 M6 — 选人、入群、加好友、关系操作改用 `components/network/` 公共组件；`access_level` 的 `friend` 改名 `allow`；未知 DID 作为待建会话的实体打开（`addPeer`）；好友请求卡片，见 §3.7 / §4.6）；v0.14（2026-10-12：实体列表标题栏改为 编辑 / 身份与未读总数（同步状态） / + / ⋮，编辑模式批量置顶与静音，store `syncStatus`，见 §4.1.1）；v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.18（2026-11-10：自己名下 Agent 会话的 Agent 面板（Info 按钮 / 标题 / 触屏左滑）、前台消息状态与占位消息上的停止 / 停止并撤回 / 恢复、子会话树与节点控制、「开始新对话」与时间线分隔、提示词版本、近期产物、实体级免打扰对新会话的继承，见 §3.5.9 / §4.4 / §5.3.2 / §9.1 / §9.2）；v0.17（2026-11-09：群聊发送者头像与资料入口、会话头的搜索与 ⋮ 菜单（编辑信息 / 静音 / 清空聊天记录）、列表「发起聊天」与会话列表「新建会话」分开、`ui.description`、`msg.clear_session`，见 §3.5.8 / §4.1.2 / §4.4 / §4.5 / §5.3.1 / §9.2）；v0.16（2026-10-19：Telegram 式语音消息（`MsgObject.voice`）、Composer 表情面板与纯 emoji 大字显示，见 §3.5.1 / §3.5.2 / §3.5.7 / §4.2）；v0.15（2026-10-17：My Network 升级 M6 — 选人、入群、加好友、关系操作改用 `components/network/` 公共组件；`access_level` 的 `friend` 改名 `allow`；未知 DID 作为待建会话的实体打开（`addPeer`）；好友请求卡片，见 §3.7 / §4.6）；v0.14（2026-10-12：实体列表标题栏改为 编辑 / 身份与未读总数（同步状态） / + / ⋮，编辑模式批量置顶与静音，store `syncStatus`，见 §4.1.1）；v0.13（2026-10-12：提交即出待发气泡与上传进度、附件下载按钮、iPhone 照片去重与 HEIC 转 JPEG，见 §4.2 / §3.5.1）；v0.12（2026-10-11：System Notify — “系统通知”实体与三个分类会话、通知卡片、`?notify=` 深链，见 §3.5.6）；v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -952,6 +952,89 @@ UI Turn 建出 work session 后，气泡附属 UI 以 work session 为主：`ren
   提供「发消息」和 `RelationActions`（加好友 / 允许消息 / 屏蔽…）。「发消息」：不在列表里的 DID 先 `addPeer`，再按默认会话规则打开与对方的会话；
   观察模式与本人不提供。
 
+#### 3.5.9 自己名下 Agent 的会话：Agent 面板、前台消息状态与工作控制（2026-11-10）
+
+适用范围：对方是**查看者自己名下的 Agent**、且查看的是自己的消息（`store.isOwnAgent(context, entityId)`：real 取 `agent.list` 得到的 `agentDids`，
+观察模式和别人的 Agent 都为假）。其余会话的入口、详情栏和输入框不变。群和联系人的侧栏不在这一轮。
+
+**数据来源**。面板和控制都直接调 Agent 自己的 OpenDAN 服务（`conversation/worklog/source.ts` 的 `agentServiceClient(agentDid)`，
+用登录者自己的权限，只有 Agent 的 owner 调得通），封装在 `agentpanel/source.ts` 的 `AgentPanelSource`（mock：`mock/agentpanel.ts`，
+测试经 `window.__messageHubMockAgent` 驱动）。类型和解析在 `agentpanel/model.ts`；解析失败、身份不符都当读取失败。
+
+| 读取 | 方法 | UI 类型 |
+|---|---|---|
+| Agent 全局摘要 | `home.summary {}` | `AgentSummary`：`sessions {working, waiting, failed, interrupted, total}`、`memory {perceptions, pending, cognitions, last_consolidation_at_ms}`、`goals`、`skills`、`runtimes` |
+| 本会话的 Agent 侧状态 | `ui.conversation {peer_did, session_id}`（`peer_did` 是 owner 的 DID，`session_id` 是 MessageHub 会话 id） | `UiConversation {current: UiSessionView \| null, generations[], route_key}`（`route_key` 取自 `current.route_key`，没有当前一代时为空，「当前会话」页签不可用）；`UiSessionView {session_id, run_state, paused: PauseSource \| null, needs_input, one_line_status, open_turn?, unfinished_works, prompt {frozen_at_ms, current, changed[]}}` |
+| 未结束的后台工作 | `session.work_tree {sid, unfinished_only: true}`（`sid` 是当前这一代 UI Session） | `WorkTree {agent_did, session_id, complete, sessions: WorkNode[]}`；`WorkNode` 是 `WorkCard` 加 `children`，Todo 绑定的卡片同样带 `todos` / `children`；超过 4 层（`WORK_TREE_DEPTH`）的丢弃 |
+| 近期产物 | `deliveries.recent {limit, before?, route_key?}` | `DeliveryPage {entries: Delivery[], next_before?}`；`before` / `next_before` 是索引里的行位置；`url` / `mime` / `size` 可能缺省，没有 `url` 的条目不能预览和下载 |
+
+`PauseSource = 'user' | 'parent' | 'interrupted' | 'goal'`：用户暂停、随父会话暂停、宿主重启造成的异常中断、随 Goal 休眠暂停。
+`WorkCard.paused` 只在 `state === 'paused'` 时有；卡片第二行按来源写（`localizeLine` 的第三个参数）。
+
+**刷新**。面板关着什么都不读。打开后每块用 `agentpanel/hooks.ts` 的 `usePanelResource`：立即读一次；当前 Turn 的 TaskMgr 树提示到达后
+去抖 1 秒再读；时间线新增消息时再读；数据还会变（有打开的 Turn、有未结束的工作、处于暂停）时每 15 秒兜底，否则停止。读失败：
+从未成功过的那一块显示「暂不可用」，成功过的保留旧值并标 `stale`；其余各块不受影响。摘要只在打开时读一次。
+
+**面板结构**（`agentpanel/AgentSessionPanel.tsx`，`data-testid="agent-panel"`）。上部是 Agent 全局：头像、名字、在线、可复制的 DID、
+摘要数字、「打开 Agent 首页」（`openAgentHome`，独立 `/messagehub` 页没有桌面时不显示）、免打扰与置顶（实体级，见 §4.4）。
+下部是当前会话：标题与描述、Agent 侧状态（`agentConversationState`：`interrupted / paused / answering / working / idle / fresh`）、
+第几代对话（`generationNumber`）、子会话树、「开始新对话」、近期产物（默认收起）、高级信息（提示词版本，默认收起）、
+会话详情（原 `SessionDetails` 的全部内容，`embedded`，默认收起）、资料与权限（原 `EntityDetails` 的内容，`embedded`，默认收起）。
+
+**前台消息状态**（`conversation/input/foregroundState.ts`，纯函数）。`latestTurnAnchor(timeline, viewerDid)` 取时间线上最新一条
+带 `agent_task` 的对方消息（不算关系消息、自己的消息、已撤回的占位）；`turnMode(task)` 由它的 TaskMgr task 得出：
+
+| task | `ForegroundMode` | 输入框 |
+|---|---|---|
+| `Running` / `Accepted` | `running` | 不能发送 |
+| `Paused`，`message` 以 `interrupted` 开头 | `interrupted` | 不能发送 |
+| `Paused`，其它 | `paused` | 不能发送 |
+| `Waiting`（等子任务、等外部、等回答）、`Terminal`、`Promised`、读不到 | `idle` | 可发送 |
+
+回答态优先：时间线说正在回答 Agent 的提问时（§3.5.5），照常能答。占位出现之前不禁用。禁用的是**发送**：草稿照常可编辑，
+已提交未发出的保持排队（`ConversationComposer` 的 `sendBlocked`）。输入框上方的一行（`composer-blocked`）写明原因并带同一组控制按钮。
+「开始新对话」调用期间同样禁用（`sendBlockedReason`）。
+
+**占位消息上的控制**（`conversation/tasks/TurnControls.tsx`，出现在任务区和工作卡片区的头部；只对 Agent 的 owner，
+由 `ConversationMessageActions.agentTurn` 开启）。Session id 与 Agent DID 取自 Turn task 的 input（`taskWorklogTarget`）。
+
+| 状态 | 按钮 | 调用 |
+|---|---|---|
+| `running` | 停止 | `session.stop {sid, scope: 'turn'}` |
+| `running` | 停止并撤回（先确认） | 对这个 Turn 处理的那条用户消息发 redact 关系消息（`sendRelation`）；Agent 的桥把 owner 的 redact 转成撤回并关掉 Turn，UI 不另调 kRPC |
+| `interrupted` / `paused` | 恢复、停止 | `session.resume {sid}` / `session.stop {sid, scope: 'turn'}` |
+
+没有「暂停」。点击后到 task 的 `revision` 变化之前显示「停止中…」「恢复中…」。回答态的 Stop 按钮对自己名下的 Agent 也调
+`session.stop {scope: 'turn'}`，不再发 `/stop` 文本（别人的 Agent 仍发文本）。被撤回的输入：`turnInputMessage` 先按 task input 的
+`input_keys`（消息 ObjId 列表，后端提供时）取，否则取占位之前查看者最新的一条消息；Turn 已结束的占位没有撤回入口，
+消息菜单里原有的「撤回 / 删除」不变，只改时间线。
+
+停止和撤回都不撤销 Agent 已经做的事，也不停这条消息已经发起的后台工作：确认框写明边界和还有几个后台任务不会跟着停；
+Turn 被停止（task `Canceled`）后，卡片区顶部写「这条消息发起的 N 个后台任务还在运行」，每张未结束的卡片带「停止」
+（`session.stop {sid, scope: 'session'}`，数据仍是 `session.work_cards`）。
+
+任务区第一行的实时状态（`working (analyze_intent)`、`running shell` 等运行时固定英文）经 `localizeLine` 本地化；
+`Paused` 且 message 以 `interrupted` 开头的 task 状态显示为「异常中断」。
+
+**子会话树与节点控制**（`WorkSessionCards.tsx` 的 `WorkCardList` / `WorkCardRow`，气泡与面板共用）。顶层卡片的 TodoList 默认展开；
+Todo 绑定的会话和更深的节点下面的内容默认收起（`work-branch-toggle`）。未结束的节点：暂停（`session.pause`，级联到它名下）、
+已暂停的：恢复（`session.resume`）、任何未结束的：停止（先确认）；随 Goal 休眠暂停的节点没有恢复，提示去唤醒 Goal（`workControls`）。
+树上有异常中断的节点时顶部给提示和「全部恢复」：`interruptedRoots` 找出中断节点里最靠上的，逐个 `session.resume`，其余靠级联。
+停止后的节点不再出现在 `unfinished_only` 的树里，在树下留一行「已停止」和去 Agent 首页的链接（删除在那边做）。
+点卡片打开该会话的整份工作日志（详情栏的 `worklog` 目标，返回回到面板）。
+
+**开始新对话**。`ui.rotate {sid}`；有未结束的工作（`unfinished_works > 0`）或已经没有当前会话时按钮禁用并说明原因。
+成功后 `current` 为空（状态 `fresh`），下一条消息由 Agent 新建一代。分隔标记：`generationBreaks(conversation)` 是各旧代的
+`finished_at_ms`，由 `agentpanel/breaks.ts` 按 `(viewerDid, sessionId)` 记在 `localStorage`（`buckyos.messagehub.agentBreaks.v1`），
+`useReaderWithBreaks` 在时间线对应位置插入一条本地状态行（`ui_item_kind: 'status'`）；早于已加载历史的不显示。
+它只来自 `ui.conversation`，所以在这个浏览器打开过面板之后才有。头部 `⋮` 的「清空聊天记录」是另一件事（§4.5）。
+
+**近期产物**。两个页签：当前会话（`route_key` 取自 `ui.conversation`）和全部；按时间倒序，滚到底取下一页（`before`）。
+文件经它在 Agent `artifacts` 桶里的绑定读取（`Delivery.url`，`obj://bucket/...`）：预览用 `bucketObjectRef`，下载用 `bucketObjectUrl`，
+走 owner 自己的桶权限，不经过 msg-center 的对象路由（那条路由要求消息上下文，别的会话的产物没有）。
+「收藏」「定位到消息」只在已加载的时间线里找得到携带该对象的消息时可用（收藏仍走 `msg.collect_attachment`）；
+「转发」按单个文件构造一条只带该 ref 的消息，复用 `store.forward` 与 `ForwardDialog`。
+
 ### 3.6 会话时间线投影模型
 
 当前原型接口如下（`conversation/history/types.ts`）；真实接入需补 §6.6 的记录更新与分页能力：
@@ -1301,11 +1384,16 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
 - 当前 KV 只按 `session_id` 寻址，尚不满足多 owner 隔离。目标至少按 `(ownerDid, sessionId, key)`
   保存与授权；浏览器草稿 / 选择态 / 缓存另按 viewer 隔离。接口补齐前不能向其中写 Agent 的会话状态。
   （owner 维度已实现：`ui_session.*` 带 `owner` 时读写 `owner_ui_session_states`，个人偏好均走该路径。）
-- 运行态（`typing` / `active` / `status_line`，2026-09-30，MH2U-5）：只有 Agent 产生，OpenDAN 以自身 DID 为 owner
-  写入 `(agentDid, agent 侧 sessionId, key)`。UI 仅对 Agent 会话轮询，读 `owner = agentDid`；
+- 运行态（`typing` / `active` / `status_line`，2026-09-30，MH2U-5）：约定由 Agent 产生，以 Agent 自身 DID 为 owner
+  写在 `(agentDid, agent 侧 sessionId, key)`。**后端没有写入方**（2026-11-10 核对：OpenDAN 不写这三个键，只有 mock 在填），
+  真实环境里会话头和会话列表的运行状态行恒为空；Agent 在一个会话里做什么，以 Agent 面板和占位消息的任务区为准（§3.5.9），
+  它们读的是 Agent 自己的 OpenDAN 服务和 TaskMgr，不依赖这三个键。UI 仍只对 Agent 会话轮询，读 `owner = agentDid`；
   原生 DM 的 agent 侧 session id 为 `dm:<viewerDid>`，具名（`to_session`）会话两侧同 id；观察模式直接读被观察 owner。
   人类之间的会话不轮询运行态；无 owner 的旧 `obj://msg-center/ui-state` 路径普通用户无权读取，UI 不再调用，
   若某会话读取被拒绝则本页不再重试。
+- 实体级免打扰与置顶（2026-11-10）：没有单独的键。实体「静音」= 它的每个会话都 `ui.muted`，「置顶」= 任一会话 `ui.pinned`
+  （`MessageHubView` 的 `updateEntityPreferences`）；`EntityDetails` 的两个按钮和 Agent 面板上部都接到它。
+  实体整体处于静音时，`store.create` 新建的会话（含 `ensureDefaultSession` 建的默认会话）继承 `ui.muted = true`。
 - `binding`、实体创建策略、授权能力不是此 KV 的展示键；tunnel 风险确认按 §3.3.4 仅保存在页面内存。
 
 ### 4.5 owner 本地 Session 生命周期（2026-09-07 已实现：`owner_sessions`）
@@ -1519,6 +1607,18 @@ pointerdown 已 preventDefault，不抢焦点），支持 ←/→ 键盘调整�
   逐页 `loadOlder` 直到出现新的命中或历史读完；一步最多读 20 页，之后再按继续。只要还有未读入的历史，计数后带 `+`，没有命中时显示「暂未找到」而不是「没有结果」。
   搜索期间新到的消息会加入命中列表，当前定位不变。
 - 通知会话（`sysnotify:*`）用自己的筛选条，不提供搜索。搜索状态属于组件内部，不进入 `MessageHubViewState`，切换会话即重置。
+
+#### 5.3.2 详情栏的目标与 Agent 面板的入口（2026-11-10）
+
+`detailsTarget` 取值：`entity` / `session` / `message` / `profile` / `agent` / `worklog`。后两种只在自己名下 Agent 的会话里出现（§3.5.9）：
+`agent` 是 Agent 面板，`worklog` 是从面板的子会话树打开的工作日志（面板保持挂载，返回即回到原样）。宽度：`message` 与 `worklog` 640，`agent` 380，其余 320；
+放不下时是抽屉，Esc 关闭。
+
+- 桌面端：会话头的 Info 按钮（`agent-panel-toggle`）开关面板；开关状态记在 `localStorage`（`buckyos.messagehub.agentPanelOpen.v1`），
+  上次开着的，进入任一自己名下 Agent 的会话时恢复，从不默认展开。头像、名字、副标题的点击都打开面板；`⋮` 的「编辑信息」仍打开会话详情。
+- 触屏：点标题进入全屏面板；会话历史区上向左滑进入，面板上向右滑返回（`swipe.ts`：单指、水平位移 ≥ 64px 且大于垂直位移的两倍、700ms 内；
+  输入框、`data-no-swipe` 的控件、内部可横向滚动的内容上的触摸不算）。输入区不在手势范围内，不影响语音按压。
+- `CodeAssistantAppPanel` 不传 `agentPanel`，行为不变。
 
 ---
 
@@ -1772,7 +1872,13 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 通知卡片状态 / `?notify=` 深链 | `notify.get { notify_id }` | `NotifyView`，见 3.5.6；`notify.list` 已封装（`datamodel/sessionApi.ts`），卡片未用 |
 | `input` 通知的任务快照 | TaskMgr `get_task`（登录用户自己的权限）+ kevent `/obj/taskmgr/<task_id>/changed` | 只取 `revision / phase / result`，用于提交前的 CAS |
 
+Agent 面板的读取（§3.5.9）不经 msg-center：`home.summary`、`ui.conversation`、`session.work_tree`、`deliveries.recent` 调 Agent 自己的
+OpenDAN 服务（`/kapi/<agent_id>`）。
+
 ### 9.2 写入路径
+
+Agent 的控制同样调它自己的 OpenDAN 服务：`session.stop {sid, scope: 'turn' | 'session'}`、`session.pause {sid}`、`session.resume {sid}`、
+`ui.rotate {sid}`（§3.5.9）；撤回输入是一条 redact 关系消息，走下表的发送路径。
 
 | UI 动作 | KRPC 方法 | 请求体 |
 |---|---|---|

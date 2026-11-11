@@ -82,6 +82,8 @@ export interface MessageHubStore {
   hasMoreEntities(context: MessageHubContext): boolean
   loadMoreEntities(context: MessageHubContext): Promise<void>
   entityDetail(context: MessageHubContext, id: string): EntityDetail | null
+  /** The entity is an Agent of the viewer looking at their own messages: the Agent panel and the Turn controls are theirs to use. */
+  isOwnAgent(context: MessageHubContext, id: string): boolean
   /**
    * Lists a DID the owner has no conversation with yet (a person found by search, a link from another
    * app) as a person or Agent entity, so a conversation with it can open; it stays once a session exists.
@@ -110,6 +112,7 @@ export interface MessageHubStore {
   saveAttachments(context: MessageHubContext, sessionId: string, attachments: ComposerAttachmentInput[]): Promise<void>
   policy(context: MessageHubContext, entityId: string): CreationPolicy
   setPolicy(context: MessageHubContext, entityId: string, policy: CreationPolicy): Promise<void>
+  /** A session created for an entity that is muted as a whole (every session of it is) starts muted. */
   create(context: MessageHubContext, input: z.infer<typeof createSessionSchema>): Promise<Session>
   manage(context: MessageHubContext, sessionId: string, action: ManageAction): Promise<void>
   preferences(context: MessageHubContext, sessionId: string): SessionPreferences

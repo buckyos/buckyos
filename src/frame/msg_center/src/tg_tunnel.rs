@@ -50,10 +50,11 @@ const TG_INGRESS_HOLD_PREFIX: &str = "msg-center-ingress:";
 const TG_INGRESS_HOLD_SECS: u64 = 24 * 60 * 60;
 const TG_EDIT_ORIGINAL_PENDING_CODE: &str = "edit_original_pending";
 const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
-    ("new", "Create a new session"),
-    ("clean", "Delete current session and create a new one"),
+    ("new", "Save this conversation and start a new one"),
+    ("clean", "Save this conversation and start a new one"),
     ("stop", "Stop current response"),
-    ("cancel", "Cancel current response"),
+    ("cancel", "Stop current response"),
+    ("resume", "Continue what a restart interrupted"),
     ("info", "Show current session status"),
     ("list", "List active sessions on this agent"),
     ("switch", "Bind this chat to another session"),

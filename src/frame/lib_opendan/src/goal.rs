@@ -364,3 +364,8 @@ pub(crate) async fn work_admission(
         at_ms: now,
     })
 }
+
+/// Reason of the pause a dormant Goal hands to the Work it started.
+pub fn dormant_reason(goal_id: &str) -> String {
+    format!("goal {goal_id} is dormant")
+}

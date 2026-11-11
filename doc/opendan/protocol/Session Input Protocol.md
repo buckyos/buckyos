@@ -16,6 +16,8 @@ Session 不直接读 msg-center：msg bridge 消费 inbox 后投递到总线（�
 
 **kmsg 使用规则**：`create_queue` / `subscribe` 返回“already exists”视为成功（并用 `get_queue_stats` 确认队列）；读取用 `read_message(queue, acked_index + 1, n)`，不依赖服务端游标；`commit_ack` 只提交 state.json 已提交的**连续**消费位置（累积确认）；遇到 “Subscription not found” 以 `At(acked_index + 1)` 重新订阅。队列是生产者-消费者语义：确认过的记录由 kmsg 删除（不声明 `keep_acked`），消费正常时队列基本为空；Session 自己不调用 `delete_message_before`，也不设 `retention_seconds` / `max_messages`（它们不看消费进度）。
 
+**队列与收不收消息**：宿主有队列客户端时，每个 Session 都有输入队列，控制命令一律走它（Session Control Protocol §8）。队列收不收 msg / Input event 由 `session.input_policy` 决定：`any`（缺省）收；`none` 只收控制命令——内置 `work` 类和模板里 `input = "none"` 的类是这种，它的首批材料来自 `prompt.initial_inputs`（只读源 `_bootstrap`，不受这条限制）。向 `input_policy = none` 的 Session 投 msg，登记表在投递时就拒绝并说明原因（`invalid_argument`：takes no messages）；绕过登记表直接入队的 msg / Active 的 Input event 在消费时记 `input_rejected{reason: input_policy}`。后台 Work 里收消息的只有 plan（模板 `input = "queue"`）、Todo 派发的 Work 和 `--interactive` 的 Work。没有队列客户端的宿主建出的 Session 没有队列。
+
 **队列释放**：Session 不再接收输入时（finished，且 acceptance 不是 `pending` / `accepted`、也没有排队的 `decide`；`accepted` 仍可被 `discard`），驱动者在结束它的那次推进末尾删除队列；之后的推进不再打开输入源。向这样的 Session 投递任何记录都在登记表入口返回 `session_finished`。
 
 **队列丢失**：队列名由 `sid` 决定，kmsg 数据在节点本地，可能丢失而 Session 目录还在（如重装）。此时只由驱动者重建（仍接收输入的 Session）：每次推进在恢复 run 与 receipt 之后、读取输入之前检查队列，不存在则先把该源的消费进度（`inputs[src]`）清零并提交 state.json（worklog `control_applied{command: input_source_reset, input.src: "_runner", detail: {src, lost_acked_index}}`），再以同一名称创建队列并以 `Earliest` 订阅。新队列从 1 重新编号，所以必须先清进度再建：两步之间崩溃，下次仍看到队列不存在、再清一次；建好之后投递的记录不会被旧进度跳过。投递方不创建队列，返回可重试的 `queue_missing`（不确认上游，并唤醒驱动者）；旧队列里尚未消费的记录随数据一起丢失。
@@ -103,6 +105,7 @@ CLI：`post <sid> --json <file | ->` 接受逻辑记录（`schema`、`from`、`a
 | `unknown_command` | control 的 `command` 未知 |
 | `session_finished` | finished 之后收到 `decide` 以外的输入 |
 | `input_policy` | Session 的 `input_policy = none` 而收到 msg / Input event |
+| `retracted` | 用户在这条 msg 被消费之前撤回了它（`control(retract)`，Session Control Protocol §4.1）；它不进任何 Turn |
 
 payload 中的未知字段忽略（producer 可以比 consumer 新）；未知 control `command` 拒绝。
 
@@ -369,12 +372,12 @@ loop 里不等待，任何等待都是 task。
 Sub Session 是 `origin.parent_session` 指向父的普通 Session：自己的目录、state、worklog、Turn 与 lease，驱动者默认是父的驱动者。父子都只写自己的 state.json，彼此只经登记表、输入通道与控制协议沟通；登记表里的状态是真相，下面的事件只是加速。
 
 - **创建**（参考实现 `api::create_sub_session`，CLI `agent-session create-worksession`）：`origin = {parent_session, report, created_by_call}`。幂等键由 `(父 session_id, run_id, call_id)` 导出：同一次调用重放得到同一个 Session。超过父的 `policy.max_sub_sessions`（同时未结束）或 `max_session_depth` 时拒绝。继承父的 `prompt.llm_context`（含 runtime 配置；绑定身份是子自己的）、默认共用父的工作目录。首批输入是所属 Agent 自己发出的 MsgObject：子没有队列时进 `prompt.initial_inputs`，有队列（interactive）时投递到队列。创建不推进子 Session。
-- **隐式关注**：父的 Runner 按 `origin.parent_session = 自己` 查登记表（每次选批之前、以及等待期间的每次轮询），不需要订阅，父也不需要输入队列。`origin.report` 为 `none` 或缺省的子不产生任何事件。
+- **隐式关注**：父的 Runner 按 `origin.parent_session = 自己` 查登记表（每次选批之前、以及等待期间的每次轮询），不需要订阅，也不占用父的输入队列。`origin.report` 为 `none` 或缺省的子不产生任何事件。
   - 进度（仅 `report = progress`，子未结束）：`status.rev` 前进且 `{run_state, one_line_status, activity.summary}` 变化时，合成 `AgentEvent{subscription_id: "_child:<sid>", source: session:<sid>, event: "progress", seq: rev}` 并入 `pending_events`（Observe），游标存 `state.subscription_cursors["_child:<sid>"] = {rev, view}`。
   - 需要关注与结束：子 `finished` → `event = finished`（`terminal = true`，summary 含 `report_brief`）；有 `pending_decision` → `needs_decision`；登记表 `status.needs_input`（等待且没有在跟的工作）→ `needs_input`。它们是 **Input**：作为内部输入源 `_child` 的候选（`key = child:<sid>:<event>@<rev>`，index 0）进入受控输入批次，可开启或并入 Turn。候选在每次选批时重新合成，直到消费它的批次的 receipt 提交：应用 receipt 时把 `subscription_cursors["_child:<sid>"].attention` 置为该事件名，同一状态不再交付；子离开该状态后清空，下次进入是新的事件。`_child` 与 `_task` 一样没有总线消费位置。
 - **没有“等一个子 Session”**：`agent-session wait` 与 `create-worksession --wait` 已删除（调用时返回说明）。Session 在 loop 之外跟进它的子 Session：模型结束回复即可，多 Turn Work 的 run 为需要汇报的子保活（`wait_children`），子的结束以 `_child` 的 `finished` 事件作为下一条输入。宿主的 resolver 仍能回答 `session:<sid>` 形式的 task（只读登记表，立即回答），但没有命令再产生它。
-- **plan 发给 Todo 的 work session 的事件**：plan session 的 Todo 由宿主派出的 work session 带输入队列（`SubSessionSpec.queued`；不是 inbox，等待策略仍是 `finish_failed`）。plan 的 `todo update` 向运行中的 attempt 投一条 `event`：`source = todo:<todo_id>`、`event = updated`、`seq = Todo 的 rev`、`summary = "Todo Tx was updated (<字段>): <原因>"`（≤ 1 KiB）、`data_ref = <plan sid>#<todo_id>@<attempt>`、key `<plan sid>:<todo_id>:<attempt>#updated@<rev>`。有 `origin.parent_session` 的 Session 把 `source.kind = todo` 的事件当作 Active 输入接收（不需要订阅）；取入批次时宿主按 `data_ref` 读 plan 的列表，把 Todo 当前的完整任务接在 summary 后。模板变量 `is_todo_update`、`todo_id`。work session 在这类事件取入之前提交的 `report(is_end=true)` 被拒绝（可修正）。
+- **plan 发给 Todo 的 work session 的事件**：plan session 的 Todo 由宿主派出的 work session 的队列收 msg / event（`SubSessionSpec.queued`，`input_policy = any`；不是 inbox，等待策略仍是 `finish_failed`）。plan 的 `todo update` 向运行中的 attempt 投一条 `event`：`source = todo:<todo_id>`、`event = updated`、`seq = Todo 的 rev`、`summary = "Todo Tx was updated (<字段>): <原因>"`（≤ 1 KiB）、`data_ref = <plan sid>#<todo_id>@<attempt>`、key `<plan sid>:<todo_id>:<attempt>#updated@<rev>`。有 `origin.parent_session` 的 Session 把 `source.kind = todo` 的事件当作 Active 输入接收（不需要订阅）；取入批次时宿主按 `data_ref` 读 plan 的列表，把 Todo 当前的完整任务接在 summary 后。模板变量 `is_todo_update`、`todo_id`。work session 在这类事件取入之前提交的 `report(is_end=true)` 被拒绝（可修正）。
 - **父结束规则**：见 [Session Directory Protocol](<Session Directory Protocol.md>) §4 的 `wait_children` 与保活。`run`、`serve` 与等待循环在 `wait_children` 或 `watched_tasks` 非空（或 runner 的纠正待取）时轮询登记表 / resolver，不以“没有输入队列”为返回依据。
-- **停止与级联**：`stop(scope=turn)` 不停止子 Session；父 Session 终止时按 [Session Control Protocol](<Session Control Protocol.md>) 的归属与级联规则处理，有队列的子通过 control、无队列的子通过宿主停止请求处理。子被 stop 在父处表现为一次 `finished`（outcome stopped）。
+- **停止与级联**：`stop(scope=turn)` 不停止子 Session；父 Session 终止时按 [Session Control Protocol](<Session Control Protocol.md>) 的归属与级联规则处理，子 Session 通过 control 停止（每个 Session 都有控制队列；没有队列客户端的宿主建出的无队列子 Session 由驱动它的进程自己停）。子被 stop 在父处表现为一次 `finished`（outcome stopped）。
 - **暂停与级联**：有队列的子可接收级联 pause；父 resume 只恢复因该父暂停的子，具体资格与来源判定见 [Session Control Protocol](<Session Control Protocol.md>)。子暂停不等于 `finished`，不合成结束输入。
 - **推进**：子由其驱动者身份的托管进程推进（参考实现 `host::ChildDriver`：轮询登记表，为每个未结束、未被驱动的子按其自己的配置装配 runtime 后 `drive(Idle)`，各持自己的 lease）。宿主进程退出只停止这些任务，不改变已提交状态；重启后从登记表重新接管。

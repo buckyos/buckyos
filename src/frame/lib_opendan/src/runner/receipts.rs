@@ -157,6 +157,12 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         .map(|i| i.id())
         .collect();
     let has_msg = r.inputs.iter().any(|i| i.kind == "msg");
+    let msg_keys: Vec<String> = r
+        .inputs
+        .iter()
+        .filter(|i| i.kind == "msg" && !i.key.is_empty())
+        .map(|i| i.key.clone())
+        .collect();
     if r.opens_turn {
         // A new Turn starts without corrections.
         state.nudge = Nudge::default();
@@ -167,12 +173,14 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
             hook: Some(r.hook.clone()),
             inputs: logical,
             has_msg,
+            msg_keys,
             at_ms: r.at_ms,
         });
         state.turn_seq = state.turn_seq.max(r.turn);
     } else if let Some(t) = state.open_turn.as_mut() {
         t.inputs.extend(logical);
         t.has_msg |= has_msg;
+        t.msg_keys.extend(msg_keys);
     }
     for i in &r.inputs {
         if i.src == INTERNAL_TASK_SRC {

@@ -23,3 +23,14 @@ convert_failed = "我已经有了回复，但没能把它转换成消息，请�
 accepted = "收到，开始处理…"
 stopped = "已停止。"
 finished = "已完成。"
+
+[commands]
+nothing_to_stop = "现在没有正在处理的消息。"
+cleaned = "已开始新对话。之前的对话已保存，仍然可以查到。"
+already_new = "现在已经是新对话了。"
+clean_refused = "这个对话发起的后台任务还没结束：{works}。请先停止它们或等它们结束，再开始新对话。"
+clean_pending = "之前的对话正在收尾，你的下一条消息会开始新对话。"
+resumed = "已恢复 {count} 个被中断的会话。"
+nothing_to_resume = "没有被中断的会话。"
+interrupted_notice = "我在处理你上一条消息时重启了，那条消息现在停在中途。发 /resume 继续处理，或发 /stop 放弃；这条新消息会等到那之后再处理。"
+command_failed = "没有成功：{error}"

@@ -5,6 +5,9 @@ export type Acceptance = 'n/a' | 'pending' | 'accepted' | 'discarded'
 export type TurnStatus = 'completed' | 'failed' | 'budget_exhausted' | 'stopped'
 export type OutboxStatus = 'pending' | 'sent' | 'failed'
 export type Decision = 'accept' | 'discard'
+/** `user`: the owner; `parent`: with its parent session; `interrupted`: the host restarted; `goal`: with its dormant Goal. */
+export type PauseSource = 'user' | 'parent' | 'interrupted' | 'goal'
+export type StopScope = 'turn' | 'session'
 
 export interface Touching {
   kind: string
@@ -30,8 +33,8 @@ export interface SessionStatus {
   /** Waiting, and only someone's input can move it. */
   needs_input?: boolean
   turn_open?: boolean
-  /** Paused (`control(pause)`): it infers no more until resumed. */
-  paused?: boolean
+  /** It infers no more until resumed; the value says what paused it. */
+  paused?: PauseSource
   /** Backing off after retryable errors: it infers again from then on (epoch ms). */
   retry_not_before_ms?: number
   activity: Activity
@@ -46,6 +49,8 @@ export interface Origin {
   reason_messages?: string[]
   report?: string
   created_by_call?: string
+  /** The Goal whose activation started this work. */
+  goal?: { goal_id: string; revision?: number; epoch?: number; activation_seq?: number; at_ms?: number }
 }
 
 export interface RegistryEntry {
@@ -1062,4 +1067,46 @@ export interface SkillImportRequest {
   name?: string
   scope?: string
   source?: string
+}
+
+export type MemoryLayer = 'cognition' | 'perception'
+
+/** One line of the owner's view of Memory (`memory.list`, `memory.overview`). */
+export interface MemoryEntry {
+  layer: MemoryLayer
+  reference: string
+  summary: string
+  kind: string
+  /** Cognition: `active | disputed`. Perception: `pending | deferred | absorbed | duplicate | discarded`. */
+  state: string
+  at_ms: number
+  revised_at_ms?: number
+  /** A cognition: its current revision (what a delete expects). */
+  revision?: number
+  subjects: string[]
+  session_id?: string
+  deletable: boolean
+  /** A perception already consolidated: the cognitions that took it in. */
+  absorbed_into?: string[]
+  /** A perception whose body was cleaned. */
+  cleared?: boolean
+}
+
+export interface MemoryOverview {
+  cognitions: { current: number }
+  perceptions: { total: number; pending: number }
+  last_consolidation_at_ms: number | null
+  maintenance_goal_id: string | null
+  recent: { cognitions: MemoryEntry[]; perceptions: MemoryEntry[] }
+}
+
+export interface MemoryPage {
+  entries: MemoryEntry[]
+  next_cursor?: string | null
+}
+
+/** `memory.read`: the entry, its revision (cognition) and the record itself (a cognition with its sources). */
+export interface MemoryDetail {
+  /** What `memory.read` returns, shown as it is. */
+  detail: unknown
 }

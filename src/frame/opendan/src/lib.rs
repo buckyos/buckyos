@@ -18,6 +18,7 @@ pub mod loader;
 pub mod notify;
 pub mod obj_provider;
 pub mod objects;
+pub mod overview;
 pub mod records;
 pub mod rootfs;
 pub mod service;

@@ -403,17 +403,17 @@ async fn a_stopped_turn_ends_its_placeholder_and_its_task() {
             post_blocking(
                 &queue_dir,
                 &queue,
-                PostedInput::control(APP, "stop-1", ControlCommand::stop(None)),
+                PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None, scope: StopScope::Turn }),
             );
         }
         tool_call(&format!("c{n}"), "shell", json!({ "command": "echo hi" }))
     });
     let deps = deps_with(&env, llm, &sink, &tasks, Duration::from_secs(60));
     let r = drive(&sd, &deps, StopWhen::Idle).await;
-    assert!(
-        matches!(r, DriveResult::Finished { outcome: Some(Outcome::Stopped), .. }),
-        "{r:?}"
-    );
+    // Only the message is stopped: the conversation waits for the next one.
+    assert!(!r.is_finished(), "{r:?}");
+    let st = sd.state().unwrap();
+    assert!(st.open_turn.is_none() && !st.is_finished(), "{st:?}");
     let sent = sink.sent.lock().unwrap().clone();
     assert_eq!(sent.len(), 2, "{sent:?}");
     assert_eq!(

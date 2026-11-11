@@ -513,6 +513,10 @@ export class MessageHubApiStore implements MessageHubStore {
     return entity && detail ? { ...detail, ...entity } : null
   }
 
+  isOwnAgent(context: MessageHubContext, id: string): boolean {
+    return context.mode === 'self' && context.ownerDid === context.viewerDid && context.ownerDid === this.selfDid && this.owner(context.ownerDid).agentDids.includes(id)
+  }
+
   addPeer(context: MessageHubContext, did: string, info: { name?: string; type?: 'person' | 'agent' } = {}) {
     if (!this.canView(context) || this.findEntity(context, did)) return
     const data = this.owner(context.ownerDid)
@@ -907,6 +911,7 @@ export class MessageHubApiStore implements MessageHubStore {
     if (binding.kind !== 'native') throw new Error('platform_read_only')
     const data = this.owner(context.ownerDid)
     if (entity.type === 'group') return this.createGroupSessionFor(context, entity.id, values.title, values.description ?? '')
+    const inheritMute = this.entities(context).find(item => item.id === entity.id)?.isMuted === true
     const epoch = data.epoch
     const state = await createSession({ owner: context.ownerDid, peer_did: entity.id, title: values.title || undefined, binding: { kind: 'native', targetDid: binding.targetDid }, origin: 'manual' })
     if (data.epoch !== epoch) throw new Error('context_changed')
@@ -916,6 +921,7 @@ export class MessageHubApiStore implements MessageHubStore {
     this.bump(data)
     // The session exists from here on: a description that could not be saved is not a failed creation (it can be set in the session details).
     if (values.description) await this.updatePreferences(context, state.session_id, { description: values.description }).catch(error => console.warn('MessageHub session description not saved.', error))
+    if (inheritMute) await this.updatePreferences(context, state.session_id, { muted: true }).catch(error => console.warn('MessageHub session mute not inherited.', error))
     const session = this.projected(context).sessions.find(item => item.id === state.session_id)
     if (!session) throw new Error('session_missing')
     return session

@@ -1,8 +1,17 @@
 import { useState } from 'react'
 import { useSWRConfig } from 'swr'
-import { useQuery } from '../lib'
-import { dataModel, type OutboxEntry, type SessionDetail, type WorklogEntry } from '../model'
+import { t, type TextKey } from '../i18n'
+import { goalHref, useQuery } from '../lib'
+import { dataModel, type OutboxEntry, type PauseSource, type RegistryEntry, type SessionDetail, type StopScope, type WorklogEntry } from '../model'
+import { pauseLabel } from '../runtimes'
 import { Badge, ConfirmDialog, Empty, ErrorBox, Fields, Mono, Panel, Pre, Sid, Time, type ConfirmRequest } from '../ui'
+
+const PAUSE_HINT: Record<PauseSource, TextKey> = {
+  user: 'pausedByUserHint',
+  parent: 'pausedWithParentHint',
+  interrupted: 'pausedInterruptedHint',
+  goal: 'pausedWithGoalHint',
+}
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v))
 const clip = (v: unknown, max = 220): string => {
@@ -138,9 +147,17 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
   const [text, setText] = useState('')
   const [done, setDone] = useState('')
   const finished = entry.status.run_state === 'finished'
-  // Every operation is a record on the session's input bus: no queue, no operation.
-  const queued = Boolean(entry.input_queue)
-  const decidable = queued && finished && entry.status.acceptance === 'pending'
+  const decidable = finished && entry.status.acceptance === 'pending'
+  const paused = entry.status.paused
+  // A finished work or self-check is deleted with its descendants once they are all finished.
+  const sessions = useQuery(finished && (entry.kind === 'work' || entry.kind === 'self_check') ? ['sessions.query'] : null, () => dataModel.sessions())
+  const descendants = (parent: string): RegistryEntry[] =>
+    (sessions.data ?? []).filter((e) => e.origin?.parent_session === parent && e.session_id !== parent).flatMap((e) => [e, ...descendants(e.session_id)])
+  const below = descendants(sid)
+  const deletable = Boolean(sessions.data) && below.every((e) => e.status.run_state === 'finished')
+  // A Goal session is not stopped: its Goal goes dormant.
+  const goals = useQuery(entry.kind === 'goal' && !finished ? ['goals.list'] : null, () => dataModel.goals())
+  const goal = goals.data?.find((g) => g.session.sid === sid)
 
   const ask = (r: Omit<ConfirmRequest, 'run'>, run: (input: string) => Promise<string>) =>
     setRequest({
@@ -161,27 +178,57 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
       },
       async (note) => `decide(${decision}) posted at index ${(await dataModel.decideSession(sid, decision, note || undefined)).index}`,
     )
+  const stop = (scope: StopScope, label: string, hint: string) =>
+    ask(
+      { title: `${label}?`, detail: hint, inputLabel: t('opReasonOptional'), confirmLabel: label, danger: true },
+      async (reason) => `stop(${scope}) posted at index ${(await dataModel.stopSession(sid, scope, reason || undefined)).index}`,
+    )
 
   return (
     <Panel title="Operations" testId="operations">
+      {paused && (
+        <div className="mb-2 text-xs text-warn" data-testid="session-paused">
+          {t(pauseLabel[paused])} · {t(PAUSE_HINT[paused])}
+          {paused === 'goal' && entry.origin?.goal && <> <a className="text-accent" href={goalHref(entry.origin.goal.goal_id)}>{entry.origin.goal.goal_id}</a></>}
+        </div>
+      )}
       <div className="flex flex-wrap items-start gap-2">
-        {queued && !finished && (
+        {!finished && paused && paused !== 'goal' && (
           <button
-            className="btn border-bad text-bad"
+            className="btn border-ok text-ok"
             onClick={() =>
               ask(
-                {
-                  title: `Stop session ${sid}?`,
-                  detail: 'Posts control(stop) to the session input bus. The session ends as stopped.',
-                  inputLabel: 'Reason (optional)',
-                  confirmLabel: 'Stop session',
-                  danger: true,
-                },
-                async (reason) => `stop posted at index ${(await dataModel.stopSession(sid, reason || undefined)).index}`,
+                { title: `${t('resume')} ${sid}?`, detail: t('resumeHint'), confirmLabel: t('resume') },
+                async () => `resume posted at index ${(await dataModel.resumeSession(sid)).index}`,
               )
             }
           >
-            Stop
+            {t('resume')}
+          </button>
+        )}
+        {!finished && entry.kind === 'ui' && (
+          <button className="btn border-bad text-bad" disabled={!entry.status.turn_open} title={entry.status.turn_open ? undefined : t('stopTurnNone')}
+            onClick={() => stop('turn', t('stopTurn'), t('stopTurnHint'))}>
+            {t('stopTurn')}
+          </button>
+        )}
+        {!finished && entry.kind === 'goal' && (
+          <button
+            className="btn border-bad text-bad"
+            disabled={!goal || goal.status !== 'active'}
+            onClick={() =>
+              goal && ask(
+                { title: t('opPauseTitle', { title: goal.title }), detail: t('opPauseHint'), inputLabel: t('opReasonOptional'), confirmLabel: t('opPause'), danger: true },
+                async (reason) => `${(await dataModel.setGoalStatus(goal.goal_id, 'paused', reason || undefined)).title}: ${t('gsPaused')}`,
+              )
+            }
+          >
+            {goal?.status === 'paused' ? t('gsPaused') : t('opPause')}
+          </button>
+        )}
+        {!finished && (entry.kind === 'work' || entry.kind === 'self_check') && (
+          <button className="btn border-bad text-bad" onClick={() => stop('session', t('stop'), t('stopWorkHint'))}>
+            {t('stop')}
           </button>
         )}
         {decidable && (
@@ -193,6 +240,26 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
               Discard
             </button>
           </>
+        )}
+        {deletable && (
+          <button
+            className="btn border-bad text-bad"
+            data-testid="session-delete"
+            onClick={() =>
+              setRequest({
+                title: t('deleteSessionTitle', { sid }),
+                detail: t('deleteSessionHint', { n: below.length }),
+                confirmLabel: t('deleteSession'),
+                danger: true,
+                run: async () => {
+                  await dataModel.deleteSession(sid)
+                  window.location.hash = '#/'
+                },
+              })
+            }
+          >
+            {t('deleteSession')}
+          </button>
         )}
         {entry.input_queue && (
           <div className="flex min-w-[280px] flex-1 items-start gap-2">
@@ -222,7 +289,6 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
             </button>
           </div>
         )}
-        {!queued && <Empty>This session has no input queue: no operation applies.</Empty>}
       </div>
       {done && (
         <div className="mt-2 text-xs text-ok" data-testid="operation-result">
@@ -261,6 +327,7 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
         <Badge value={status.run_state} />
         {status.outcome && <Badge value={status.outcome} />}
         {status.acceptance !== 'n/a' && <Badge value={`acceptance: ${status.acceptance}`} tone={status.acceptance} />}
+        {status.paused && <Badge value={t(pauseLabel[status.paused])} tone="waiting" />}
         {entry.unreachable && <Badge value="unreachable" tone="bad" />}
         {entry.runtime_unavailable && <><Badge value="runtime unavailable" tone="waiting" /><span className="text-xs text-warn">{entry.runtime_unavailable}</span></>}
       </div>
@@ -304,7 +371,7 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
                   {state.watched_tasks?.length ? <><Badge value="tasks" tone="waiting" /> <Mono>{state.watched_tasks.join(', ')}</Mono></> : null}
                 </span>
               ) : status.needs_input ? <Badge value="input" tone="waiting" /> : null],
-              ['paused', status.paused ? <Badge value="paused" tone="waiting" /> : null],
+              ['paused', status.paused ? <Badge value={t(pauseLabel[status.paused])} tone="waiting" /> : null],
               ['turns', state ? `${state.turns_completed} completed · seq ${state.turn_seq}` : null],
               ['behavior', state?.current_behavior ? <Mono>{state.current_behavior}</Mono> : null],
               ['process entry', state?.process_entry ? <Mono>{state.process_entry}</Mono> : null],

@@ -1717,3 +1717,189 @@ fn objects_are_kept_as_references_another_session_can_read() {
     let hint = Hint::from_perception(rec, None, Vec::new());
     assert!(hint.object_url.as_deref().is_some_and(|u| u.starts_with("obj://") || u.starts_with("cyfs://")), "{hint:?}");
 }
+
+fn refs(entries: &[MemoryEntry]) -> Vec<&str> {
+    entries.iter().map(|e| e.reference.as_str()).collect()
+}
+
+/// Agent UI upgrade TODO, ME1: the owner's lists and counts.
+#[test]
+fn the_owner_sees_both_layers_newest_first() {
+    let (_t, mut h) = host();
+    // An empty library.
+    let o = h.memory.owner_overview().unwrap();
+    assert_eq!((o.cognitions.current, o.perceptions.total, o.perceptions.pending), (0, 0, 0));
+    assert!(o.recent.cognitions.is_empty() && o.recent.perceptions.is_empty());
+    for layer in [MemoryLayer::Cognition, MemoryLayer::Perception] {
+        assert_eq!(h.memory.owner_list(layer, 10, None).unwrap(), MemoryPage::default());
+    }
+
+    // Perceptions only.
+    let a = h.session("A", "ui-a", &[U1, A1], &[U1], &[ALPHA_GAME]);
+    for i in 1..=5 {
+        h.advance_hours(1);
+        let e = h.event(&format!("A/e{i}"), "ui-a", ActorKind::User, "x");
+        a.record(&mut h, observation(&format!("观察 {i}"), e, &[ALPHA_GAME], &format!("A/e{i}/1"))).unwrap();
+    }
+    let o = h.memory.owner_overview().unwrap();
+    assert_eq!((o.cognitions.current, o.perceptions.total, o.perceptions.pending), (0, 5, 5));
+    assert_eq!(refs(&o.recent.perceptions), ["ui-a:5", "ui-a:4", "ui-a:3"], "the latest {RECENT_PERCEPTIONS}");
+    let p = &o.recent.perceptions[0];
+    assert_eq!((p.state.as_str(), p.deletable, p.session_id.as_deref(), p.summary.as_str()), ("pending", true, Some("ui-a"), "观察 5"));
+    assert_eq!(p.subjects, vec![U1.to_string()]);
+
+    // A page, a write in between, the next page: nothing twice, nothing lost.
+    let first = h.memory.owner_list(MemoryLayer::Perception, 2, None).unwrap();
+    assert_eq!(refs(&first.entries), ["ui-a:5", "ui-a:4"]);
+    h.advance_hours(1);
+    let e = h.event("A/e6", "ui-a", ActorKind::User, "x");
+    a.record(&mut h, observation("翻页期间写入", e, &[ALPHA_GAME], "A/e6/1")).unwrap();
+    let second = h.memory.owner_list(MemoryLayer::Perception, 2, first.next_cursor.as_deref()).unwrap();
+    assert_eq!(refs(&second.entries), ["ui-a:3", "ui-a:2"]);
+    let third = h.memory.owner_list(MemoryLayer::Perception, 2, second.next_cursor.as_deref()).unwrap();
+    assert_eq!((refs(&third.entries), third.next_cursor.clone()), (vec!["ui-a:1"], None));
+    assert_eq!(refs(&h.memory.owner_list(MemoryLayer::Perception, 1, None).unwrap().entries), ["ui-a:6"]);
+    assert!(matches!(h.memory.owner_list(MemoryLayer::Perception, 2, Some("nonsense")), Err(MemoryError::Invalid(_))));
+
+    // Cognitions: one absorbs a perception, one is superseded, one is deleted, one is revised.
+    let si = h.si("si");
+    let ev = SourceRef::event(SourceType::SessionEvent, "A/e1");
+    let item = |id: &'static str, text: &'static str| {
+        ItemSpec::new(id, "preference", text, &["obs_o"], scope(&[U1], &[ALPHA_GAME]), Basis::UserStatement).op()
+    };
+    h.advance_hours(1);
+    si.run(&mut h, 10, |_, _| {
+        plan(
+            "c1",
+            "c1",
+            vec![
+                obs_op("obs_o", ObservationKind::ExplicitStatement, "x", &ev, scope(&[U1], &[ALPHA_GAME])),
+                item("item_c1", "认知一"),
+                item("item_old", "被替代的"),
+                item("item_gone", "要删除的"),
+            ],
+            vec![absorbed("ui-a:1", &["item_c1"]), discarded("ui-a:2", "noise")],
+        )
+    })
+    .unwrap();
+    h.advance_hours(1);
+    let deadline = h.after_hours(24);
+    si.run(&mut h, 10, |_, _| {
+        plan(
+            "c2",
+            "c2",
+            vec![
+                item("item_new", "后来的"),
+                status_op("item_old", "superseded", 1, "replaced"),
+                status_op("item_gone", "deleted", 1, "wrong"),
+                status_op("item_c1", "disputed", 1, "the user doubted it"),
+            ],
+            vec![deferred("ui-a:3", "wait for the user", &["the user confirms"], &deadline, None)],
+        )
+    })
+    .unwrap();
+
+    let o = h.memory.owner_overview().unwrap();
+    assert_eq!(o.cognitions.current, 2, "active or disputed: {:?}", o.recent.cognitions);
+    assert_eq!(refs(&o.recent.cognitions), ["item_new@1", "item_c1@2"], "by the time they were added");
+    let c1 = &o.recent.cognitions[1];
+    assert_eq!((c1.state.as_str(), c1.revision, c1.deletable), ("disputed", Some(2), true));
+    assert!(c1.revised_at_ms.is_some_and(|t| t > c1.at_ms), "revised after it was added: {c1:?}");
+    assert_eq!(o.recent.cognitions[0].revised_at_ms, None);
+    assert_eq!(c1.subjects, vec![U1.to_string()]);
+    // Cleaned perceptions are not counted; they stay in the list with what became of them.
+    assert_eq!((o.perceptions.total, o.perceptions.pending), (4, 4));
+    let all = h.memory.owner_list(MemoryLayer::Perception, 50, None).unwrap().entries;
+    let by = |r: &str| all.iter().find(|e| e.reference == r).unwrap().clone();
+    let absorbed_one = by("ui-a:1");
+    assert_eq!((absorbed_one.state.as_str(), absorbed_one.cleared, absorbed_one.deletable), ("absorbed", true, false));
+    assert_eq!(absorbed_one.absorbed_into, vec!["item_c1".to_string()]);
+    assert_eq!(absorbed_one.summary, "", "the body is gone");
+    assert_eq!((by("ui-a:2").state.as_str(), by("ui-a:2").deletable), ("discarded", false));
+    assert_eq!((by("ui-a:3").state.as_str(), by("ui-a:3").deletable, by("ui-a:3").cleared), ("deferred", true, false));
+
+    // Reading needs no session: a cognition with its provenance, a perception with its record.
+    match h.memory.owner_read("item_c1").unwrap() {
+        MemoryRead::Cognition { cognition, provenance } => {
+            assert_eq!((cognition.current_revision, provenance.revisions.len()), (2, 2));
+            assert_eq!(provenance.absorbed, vec!["ui-a:1".to_string()]);
+        }
+        other => panic!("{other:?}"),
+    }
+    match h.memory.owner_read("ui-a:4").unwrap() {
+        MemoryRead::Perception { perception } => assert_eq!(perception.record.summary, "观察 4"),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(h.memory.owner_read("item_gone").unwrap(), MemoryRead::Cognition { cognition, .. } if cognition.current_status == ItemStatus::Deleted));
+    assert!(matches!(h.memory.owner_read("ui-a:99"), Err(MemoryError::NotFound(_))));
+}
+
+/// Agent UI upgrade TODO, ME2: the owner deletes a cognition or an unsettled perception.
+#[test]
+fn the_owner_forgets_a_cognition_or_an_unsettled_perception() {
+    let (_t, mut h) = host();
+    let si = h.si("si");
+    seed(&mut h, &si);
+    let mut b = h.session("B", "ui-b", &[U1, A1], &[U1], &[ALPHA_GAME]);
+    let out = b.topic(&mut h, "调整游戏背景效果", &[]).unwrap();
+    assert!(format!("{out:?}").contains("item_c1"), "B read it: {out:?}");
+    b.observe(&mut h).unwrap();
+    let a = h.session("A", "ui-a", &[U1, A1], &[U1], &[ALPHA_GAME]);
+    let e = h.event("A/e2", "ui-a", ActorKind::User, "x");
+    a.record(&mut h, observation("还没整理的一条", e, &[ALPHA_GAME], "A/e2/1")).unwrap();
+    let seq = gseq(&h);
+
+    // Only under the consolidation lease.
+    assert!(matches!(h.memory.consolidator(&b.lease, "owner"), Err(MemoryError::PermissionDenied(_))));
+    {
+        let owner = h.memory.consolidator(&si.lease, "owner").unwrap();
+
+        // A stale revision is a conflict and changes nothing.
+        assert!(matches!(owner.forget("item_c1", Some(7), None, "did:bns:u1"), Err(MemoryError::Conflict(_))));
+        assert!(matches!(owner.forget("item_c1@7", None, None, "did:bns:u1"), Err(MemoryError::Conflict(_))));
+        assert!(matches!(owner.forget("item_nope", None, None, "did:bns:u1"), Err(MemoryError::NotFound(_))));
+        assert_eq!(gseq(&h), seq);
+
+        let done = owner.forget("item_c1", Some(1), Some("not true any more"), "did:bns:u1").unwrap();
+        assert_eq!((done.reference.as_str(), done.layer, done.state.as_str()), ("item_c1@2", MemoryLayer::Cognition, "deleted"));
+        // Deleted twice: a conflict.
+        assert!(matches!(owner.forget("item_c1", None, None, "did:bns:u1"), Err(MemoryError::Conflict(_))));
+    }
+    assert!(h.memory.owner_list(MemoryLayer::Cognition, 10, None).unwrap().entries.is_empty());
+    assert_eq!(h.memory.owner_overview().unwrap().cognitions.current, 0);
+    {
+        let view = h.memory.graph_view().unwrap();
+        let item = view.item("item_c1").unwrap();
+        assert_eq!((item.status, item.revision), (ItemStatus::Deleted, 2));
+        assert_eq!(view.item_history("item_c1").len(), 2, "the history stays");
+        let occasion = view.occasion(&item.source_occasion).unwrap();
+        assert_eq!(occasion.produced_by.as_ref().and_then(|p| p.goal_run.as_deref()), Some("owner:did:bns:u1"));
+        assert!(occasion.summary.contains("not true any more"), "{}", occasion.summary);
+    }
+    match h.memory.read(&b.caller, "item_c1").unwrap() {
+        MemoryRead::Cognition { cognition, .. } => assert_eq!(cognition.current_status, ItemStatus::Deleted),
+        other => panic!("{other:?}"),
+    }
+
+    // The session that read it is told, without the old statement.
+    let d = b.observe(&mut h).unwrap();
+    let change = d.changes.iter().find(|c| c.hint.id == "item_c1").expect("the withdrawal");
+    let line = libopendan::runner::memory_batch::line(change, &Default::default()).text;
+    assert!(line.starts_with("hint withdrawn (deleted), do not rely on it"), "{line}");
+    assert!(line.contains("item_c1") && !line.contains("静态"), "{line}");
+
+    // A settled perception is refused, naming what carries it; an unsettled one is discarded and cleaned.
+    let owner = h.memory.consolidator(&si.lease, "owner").unwrap();
+    match owner.forget("ui-a:1", None, None, "did:bns:u1") {
+        Err(MemoryError::Conflict(m)) => assert!(m.contains("item_c1"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    let done = owner.forget("ui-a:2", None, None, "did:bns:u1").unwrap();
+    assert_eq!((done.layer, done.state.as_str(), done.cleanup_pending), (MemoryLayer::Perception, "discarded", false));
+    let o = h.memory.owner_overview().unwrap();
+    assert_eq!((o.perceptions.total, o.perceptions.pending), (0, 0));
+    assert!(!Host::perception_files(&h).contains("还没整理的一条"), "the body is cleaned");
+    assert!(matches!(owner.forget("ui-a:2", None, None, "did:bns:u1"), Err(MemoryError::Conflict(_))));
+    assert!(matches!(owner.forget("ui-a:9", None, None, "did:bns:u1"), Err(MemoryError::NotFound(_))));
+    assert_eq!(h.memory.pending_work().unwrap(), PendingWork::default());
+}

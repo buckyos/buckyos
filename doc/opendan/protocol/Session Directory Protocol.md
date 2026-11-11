@@ -87,7 +87,7 @@ Schema：`schema/session_config.schema.json`。要点：
     "frozen": { "catalog_rev": "sha256:…", "frozen_at_ms": 0, "frozen_by": "app:xagent@alice",   // 从 Agent 的 behavior 目录冻结（schema behavior_config）
                 "identity": { "role": "…", "self": "…", "i18n": {} },
                 "behaviors": { "plan": { /* BehaviorConfig */ } } },
-    "initial_inputs": [ /* 无输入队列的 Session：创建时给出的 msg 逻辑记录（≤ 64），发布后不变 */ ],
+    "initial_inputs": [ /* 队列不收 msg 的 Session（input_policy = none）或无队列的 Session：创建时给出的 msg 逻辑记录（≤ 64），发布后不变 */ ],
     "on_init": null, "on_input": null, "on_context_switch": null,   // 输入模板；缺省内建
     "input": { "mode": "batch | single", "media": "reference | inline" },
     "history_render": { "drop_kinds": ["created","turn_started","input_batch","decide","compaction",
@@ -138,7 +138,7 @@ Schema：`schema/session_config.schema.json`。要点：
 - `session.origin.report`：父 Session 怎么收到这个子 Session 的汇报（由创建者选择）：`final` = 需要关注（等输入 / 等决定）与结束；`progress` = 另加进度；`none` 或缺省 = 不推送，父只能读登记表。父对子的关注是隐式的（按 `origin.parent_session` 查登记表），不需要订阅，父也不需要输入队列，见 [Session Input Protocol](<Session Input Protocol.md>) §10。
 - `prompt.frozen`（版本 5）：Session 构造时从 Agent 的 behavior 目录（[Agent State Protocol](<Agent State Protocol.md>) §7）冻结的身份文本与 behavior 配置。范围 = 入口 behavior + `meta.next` 声明的闭包；之后目录的修改不影响该 Session。冻结同时为每个 behavior 生成 `extensions.opendan.behaviors.<name>`（`mode / prompt / input / llm_context / inherit`；入口 behavior 未声明进入模式时为 `switch_context`，其它 behavior 未声明是配置错误），应用提供的同名条目与之不同则拒绝。创建者读不到目录时留空，由驱动者在首次推进（绑定之后、任何推理之前）冻结并替换配置（`config_rev + 1`）；首次用到闭包之外的 behavior 时补冻结（`config_rev + 1`，worklog `control_applied{command: behavior_frozen}`）。有 `frozen` 的 Session 的 system 段只来自冻结材料与配置；既没有 `frozen` 又读不到目录时 RecoveryBlocked，不猜。未采用冻结的 Session 仍直接使用 `extensions.opendan.behaviors`。
 - Goal Session（`kind = goal`，模板 `goal`）：`turns = unbounded`、`wait_user_msg = end_turn`、有输入队列、`observe = events_and_active`、`load_hints = true`，隐式主动订阅 `_goal_activation`（`source = system:goal`）。一个 Activation = 一个逻辑 Turn；Session 只随它的 Goal 结束（§4 `state.goal`）。模板槽 `prompt.goal_activation`（behavior 的 `prompt.goal_activation` 覆盖）是 Goal 头的模板，变量 `goal`（缺省用内建 XML `<goal_activation …>`）。
-- `prompt.initial_inputs`（版本 5）：没有输入队列的 Session 的首批输入。只允许 `msg` 记录；Runner 把它当作只读输入源 `_bootstrap`（index 从 1 起），按同样的路由、消费策略与 receipt 消费，`state.inputs["_bootstrap"]` 记录进度，确认是空操作。有输入队列的 Session 不使用它（投递到队列）。
+- `prompt.initial_inputs`（版本 5）：队列只收控制命令的 Session（`session.input_policy = none`，例如纯 Work）以及没有队列的 Session 的首批输入。队列收 msg 的 Session 不能带它（首批消息投进队列）。只允许 `msg` 记录；Runner 把它当作只读输入源 `_bootstrap`（index 从 1 起），按同样的路由、消费策略与 receipt 消费，`state.inputs["_bootstrap"]` 记录进度，确认是空操作。有输入队列的 Session 不使用它（投递到队列）。
 - 输入队列是可选的：`channels.inputs` 为空的 Session 不能被投递（`post` / 队列型控制返回错误），stop 由驱动进程自己发起，等待工具 / task / 子 Session 仍靠轮询推进。
 
 ## 4. state.json（提交点）
@@ -159,7 +159,7 @@ Schema：`schema/session_state.schema.json`。
   "result": null | { "answer": "...", "answer_ref": "report.md", "artifact_ref": {...}, "discard_report": {...} },
   "turn_seq": 5,                               // 最近打开的 Turn 编号（第一个输入批次之前为 0）
   "open_turn": null | { "index": 5, "run_id": "…", "input_seq": 3, "hook": "on_input",
-                        "inputs": ["q#121"], "has_msg": true, "at_ms": 0 },   // 进行中的 Turn；(run_id, input_seq) = 打开它的输入批次；has_msg：输入里有消息（不只是事件），为 false 时省略
+                        "inputs": ["q#121"], "has_msg": true, "msg_keys": ["cymsg:…"], "at_ms": 0 },   // 进行中的 Turn；(run_id, input_seq) = 打开它的输入批次；has_msg：输入里有消息（不只是事件），为 false 时省略；msg_keys：其中各条消息的 key（ObjId），control(retract) 按它认出要撤回的输入是不是这个 Turn 的，空时省略
   "turns_completed": 4,                        // 以 completed 关闭的 Turn 数
   "current_behavior": "plan", "process_entry": "plan",
   "process_stack": [ { "entry": "plan", "role": "parked | caller", "run_id": "…",
@@ -195,7 +195,7 @@ Schema：`schema/session_state.schema.json`。
   "one_line_status": "…", "last_error": null,   // Turn 开着时是实时一句话（调用带 intent 就是 intent，否则 running <tool> / waiting for N task(s) …），Turn 关闭、结束时写结局句
   "pending_decision": null, "stop_requested": false,
   "turn_stop_requested": false,                // 只停当前 Turn（control(stop, scope = turn)，或 Goal Session 收到的任何 stop），false 时省略
-  "paused": { "at_ms": 0, "reason": "…", "by": "…", "in_run": true },   // control(pause)：不再推理，直到 resume（缺省省略）；in_run：暂停打断了 Turn 内的 run
+  "paused": { "source": "user", "at_ms": 0, "reason": "…", "by": "…", "in_run": true },   // 暂停：不再推理，直到 resume（缺省省略）。source：user（control(pause)）| parent（父 Session 被暂停）| interrupted（宿主重启时它正在工作，§10）| goal（它的 Goal 休眠了），见 Session Control Protocol §5；in_run：暂停打断了 Turn 内的 run
   "resume_run": false,                         // resume 之后，被暂停在 Turn 内的 run 从检查点接着推理（运行时清除；false 时省略）
   "retry": { "attempts": 2, "since_ms": 0, "not_before_ms": 0, "applied_input_seq": 3 },   // live run 连续停在可重试错误：已排的重试次数、第一次的时刻、下次推理不早于、当时 run 收到的批次数（缺省省略），见 §7“run 的预算”
   "goal": null | {                             // Goal Session：它拥有的 Goal State 与进行中的 Activation，见下
@@ -457,6 +457,7 @@ XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校�
 
 ## 10. 恢复顺序（drive 开头）
 
+0. 宿主重启后的第一次驱动（只对宿主这次启动之前就存在的 Session，由宿主的 Supervisor 在它的第一次登记表扫描期间发起）：取到 session 锁、读到已提交的 `state.json` 之后，先判定这个 Session 重启前是不是正在工作（判定规则见 Session Control Protocol §8）。是的话写 `state.paused`（`source = interrupted`）与 `control_applied{command: pause, input.src: "_runner"}`，本次驱动到此为止：下面的恢复步骤照常在以后的驱动里做，但暂停期间不推理，从检查点继续要等 `resume`。`xagent` 直接驱动的 Session 没有这一步。
 1. 取 session 锁（身份必须等于 `session.driver.principal`）；校验 schema 主版本（`state.json` 必须是 `/6`、`session_config.json` 必须是 `/7`，否则 RecoveryBlocked；不迁移，也不按旧字段读取）。
 2. 登记表 `location` 必须等于本目录，否则不推进。
 3. 截掉 worklog 未提交尾部（文件短于 `committed_bytes` → RecoveryBlocked）。

@@ -26,8 +26,8 @@ use buckyos_api::{
 };
 use libopendan::api::create_session;
 use libopendan::bridge::{
-    context_msg_record, route_msg_record, MsgBridgeCtx, MsgBridgeOutput, OutboundRecord,
-    SlashCommand,
+    context_msg_record, outbound_base, route_msg_record, MsgBridgeCtx, MsgBridgeOutput,
+    OutboundRecord, SlashCommand,
 };
 use libopendan::channel::{InputChannelFactory, Waker};
 use libopendan::host::Supervisor;
@@ -396,7 +396,27 @@ pub struct UiModule {
     pub sessions_dir: PathBuf,
     status: Mutex<BTreeMap<String, InboxStatus>>,
     scan: Mutex<UiStatus>,
+    /// Interruptions the conversation was already told about (session id →
+    /// when it was interrupted).
+    told: Mutex<BTreeMap<String, u64>>,
 }
+
+/// How long `rotate` waits for the archived session to end.
+const ARCHIVE_WAIT: Duration = Duration::from_secs(20);
+
+/// Built-in words of the chat commands, for a package without `[commands]`
+/// in its i18n.
+const COMMAND_TEXTS: &[(&str, &str)] = &[
+    ("nothing_to_stop", "Nothing is in progress."),
+    ("cleaned", "Started a new conversation. The earlier one is kept and can still be looked up."),
+    ("already_new", "This is already a new conversation."),
+    ("clean_refused", "Background work started in this conversation is still running: {works}. Stop it or wait for it, then start a new conversation."),
+    ("clean_pending", "The earlier conversation is being closed; your next message starts a new one."),
+    ("resumed", "Resumed {count} interrupted session(s)."),
+    ("nothing_to_resume", "Nothing was interrupted."),
+    ("interrupted_notice", "I restarted while working on your last message, so it is on hold. Send /resume to go on with it, or /stop to drop it; this message waits until then."),
+    ("command_failed", "That did not work: {error}"),
+];
 
 /// Reservation key of generation `generation` of the inbox `route_key`. The
 /// address itself has `:`, `/` and `%`; a session id goes into kevent paths.
@@ -434,6 +454,7 @@ impl UiModule {
             sessions_dir,
             status: Mutex::new(BTreeMap::new()),
             scan: Mutex::new(UiStatus::default()),
+            told: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -453,17 +474,53 @@ impl UiModule {
         s.last_at_ms = libopendan::now_ms();
     }
 
-    /// The session bound to `route_key`: the latest unfinished one, else a
-    /// new generation created from the rule's template. `None`: the inbox is
-    /// driven by someone else, or no rule takes this kind of message.
-    async fn session_for(
-        &self,
-        route_key: &str,
-        first: &MsgObject,
-        key: &str,
-        binding: Option<OutboundBinding>,
-    ) -> libopendan::Result<Option<String>> {
-        let bound: Vec<RegistryEntry> = self
+    /// A word of a chat command in the agent's language (`i18n/<lang>.toml
+    /// [commands]`, else English, else built in), `{name}` replaced.
+    fn command_text(&self, key: &str, vars: &[(&str, String)]) -> String {
+        let read = |lang: &str| -> Option<String> {
+            let root = self.agent.agent_root()?;
+            let text = std::fs::read_to_string(root.join("i18n").join(format!("{lang}.toml"))).ok()?;
+            toml::from_str::<toml::Table>(&text)
+                .ok()?
+                .get("commands")?
+                .get(key)?
+                .as_str()
+                .map(str::to_string)
+                .filter(|s| !s.trim().is_empty())
+        };
+        let mut text = read(&self.config.language)
+            .or_else(|| read("en"))
+            .or_else(|| COMMAND_TEXTS.iter().find(|(k, _)| *k == key).map(|(_, t)| t.to_string()))
+            .unwrap_or_default();
+        for (name, value) in vars {
+            text = text.replace(&format!("{{{name}}}"), value);
+        }
+        text
+    }
+
+    /// Say `text` in the conversation `msg` came from (no session involved).
+    async fn say(&self, msg: &MsgObject, key: &str, what: &str, text: String) {
+        let route = ReplyRoute::of_msg(
+            key,
+            &SessionMsg {
+                msg: msg.clone(),
+                delivery: MsgDelivery::default(),
+            },
+        );
+        let base = match outbound_base(&route, self.agent.agent_did()) {
+            Ok(Some(base)) => base,
+            _ => return,
+        };
+        let mut out = base;
+        out.content.content = text;
+        if let Err(e) = self.mail.post_send(out, &format!("{what}:{key}")).await {
+            log::warn!("ui: {what} not sent: {e}");
+        }
+    }
+
+    /// The UI sessions bound to `route_key`, every generation.
+    async fn generations(&self, route_key: &str) -> libopendan::Result<Vec<RegistryEntry>> {
+        Ok(self
             .agent
             .sessions()
             .query(&RegistryQuery {
@@ -473,16 +530,203 @@ impl UiModule {
             .await?
             .into_iter()
             .filter(|e| e.route_key.as_deref() == Some(route_key))
-            .collect();
-        if let Some(current) = bound
+            .collect())
+    }
+
+    fn latest_open(bound: &[RegistryEntry]) -> Option<&RegistryEntry> {
+        bound
             .iter()
             .filter(|e| e.status.run_state != RunState::Finished)
             .max_by_key(|e| e.status.updated_at_ms)
-        {
+    }
+
+    /// The session of the conversation right now, if it has one.
+    async fn current(&self, route_key: &str) -> libopendan::Result<Option<RegistryEntry>> {
+        Ok(Self::latest_open(&self.generations(route_key).await?).cloned())
+    }
+
+    /// Unfinished work sessions below `sid` (every level).
+    async fn unfinished_works(&self, sid: &str) -> libopendan::Result<Vec<RegistryEntry>> {
+        let mut out: Vec<RegistryEntry> = Vec::new();
+        let mut at = vec![sid.to_string()];
+        while !at.is_empty() {
+            let below = self.agent.sessions().children_of(&at).await?;
+            at = below.iter().map(|e| e.session_id.clone()).collect();
+            out.extend(below.into_iter().filter(|e| e.status.run_state != RunState::Finished));
+        }
+        Ok(out)
+    }
+
+    /// Archive the UI session `sid` (clean): it ends as stopped, kept as it
+    /// is; the next message of its conversation opens a new generation.
+    /// Refused while work it started is unfinished. Returns once the
+    /// registry shows it finished (`finished: false`: still ending).
+    pub async fn rotate(&self, sid: &str, who: &str) -> libopendan::Result<Value> {
+        let entry = self
+            .agent
+            .sessions()
+            .lookup(sid)
+            .await?
+            .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
+        if entry.kind != SessionKind::Ui {
+            return Err(OpenDanError::InvalidArgument(format!("session {sid} is not a UI session")));
+        }
+        if entry.driver.principal != self.who {
+            return Err(OpenDanError::NotDriver {
+                session_id: sid.to_string(),
+                principal: self.who.clone(),
+                driver: entry.driver.principal,
+            });
+        }
+        if entry.status.run_state == RunState::Finished {
+            return Ok(json!({ "archived": sid, "finished": true }));
+        }
+        let works = self.unfinished_works(sid).await?;
+        if !works.is_empty() {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "unfinished_works: {} work session(s) this conversation started are not finished ({}); stop them or wait, then start a new conversation",
+                works.len(),
+                works.iter().map(|e| e.session_id.as_str()).collect::<Vec<_>>().join(", ")
+            )));
+        }
+        let input = PostedInput::control(
+            who,
+            format!("archive:{}", libopendan::ids::new_runner_id()),
+            ControlCommand::Stop {
+                reason: Some(format!("archived by {who}: a new conversation starts")),
+                scope: StopScope::Archive,
+            },
+        );
+        self.agent.sessions().post_input(sid, &input).await?;
+        self.supervisor.ensure_task(sid, "archive").await?;
+        let started = std::time::Instant::now();
+        while started.elapsed() < ARCHIVE_WAIT {
+            let finished = self
+                .agent
+                .sessions()
+                .lookup(sid)
+                .await?
+                .is_none_or(|e| e.status.run_state == RunState::Finished);
+            if finished {
+                log::info!("ui: session {sid} archived by {who}");
+                return Ok(json!({ "archived": sid, "finished": true }));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok(json!({ "archived": sid, "finished": false }))
+    }
+
+    /// Resume what a restart interrupted in the conversation of `sid`: the
+    /// session itself (its interrupted sub sessions follow), else the
+    /// topmost interrupted sessions below it. Returns how many were told.
+    pub async fn resume_interrupted(&self, sid: &str, who: &str) -> libopendan::Result<usize> {
+        let mut told = 0;
+        let mut at = vec![self
+            .agent
+            .sessions()
+            .lookup(sid)
+            .await?
+            .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?];
+        while let Some(e) = at.pop() {
+            if e.status.run_state == RunState::Finished {
+                continue;
+            }
+            if e.status.paused == Some(PauseSource::Interrupted) {
+                let input = PostedInput::control(
+                    who,
+                    format!("resume:{}", libopendan::ids::new_runner_id()),
+                    ControlCommand::Resume { reason: Some("resumed after the restart".into()) },
+                );
+                self.agent.sessions().post_input(&e.session_id, &input).await?;
+                let _ = self.supervisor.ensure_task(&e.session_id, "resume").await;
+                told += 1;
+                continue;
+            }
+            at.extend(self.agent.sessions().children_of(&[e.session_id.clone()]).await?);
+        }
+        Ok(told)
+    }
+
+    /// A chat command the host handles itself. `Ok(false)`: hold the inbox.
+    async fn command(&self, route_key: &str, msg: &MsgObject, key: &str, name: &str) -> Result<bool, String> {
+        let current = self.current(route_key).await.map_err(|e| e.to_string())?;
+        let who = self.owner.to_string();
+        let text = match (name, current) {
+            ("clean" | "new", None) => self.command_text("already_new", &[]),
+            ("clean" | "new", Some(e)) => match self.rotate(&e.session_id, &who).await {
+                Ok(r) if r["finished"] == true => self.command_text("cleaned", &[]),
+                Ok(_) => self.command_text("clean_pending", &[]),
+                Err(OpenDanError::InvalidArgument(m)) if m.starts_with("unfinished_works") => {
+                    let works = self.unfinished_works(&e.session_id).await.map_err(|e| e.to_string())?;
+                    let names = works
+                        .iter()
+                        .map(|w| w.title.clone().unwrap_or_else(|| w.session_id.clone()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.command_text("clean_refused", &[("works", names)])
+                }
+                Err(e) => self.command_text("command_failed", &[("error", e.to_string())]),
+            },
+            ("resume", None) => self.command_text("nothing_to_resume", &[]),
+            ("resume", Some(e)) => match self.resume_interrupted(&e.session_id, &who).await {
+                Ok(0) => self.command_text("nothing_to_resume", &[]),
+                Ok(n) => self.command_text("resumed", &[("count", n.to_string())]),
+                Err(e) => self.command_text("command_failed", &[("error", e.to_string())]),
+            },
+            _ => return Ok(true),
+        };
+        self.say(msg, key, "cmd", text).await;
+        Ok(true)
+    }
+
+    /// A message reached a conversation whose Turn a restart interrupted:
+    /// it waits in the queue, and the user is told once how to go on.
+    async fn tell_interrupted(&self, sid: &str, msg: &MsgObject, key: &str) {
+        let Ok(Some(entry)) = self.agent.sessions().lookup(sid).await else {
+            return;
+        };
+        if entry.status.paused != Some(PauseSource::Interrupted) {
+            return;
+        }
+        let at = libopendan::SessionDir::open(&entry.location)
+            .and_then(|d| d.state())
+            .ok()
+            .and_then(|st| st.paused)
+            .map(|p| p.at_ms)
+            .unwrap_or_default();
+        if self.told.lock().expect("told").insert(sid.to_string(), at) == Some(at) {
+            return;
+        }
+        self.say(msg, key, "interrupted", self.command_text("interrupted_notice", &[])).await;
+    }
+
+    /// The session bound to `route_key`: the latest unfinished one, else a
+    /// new generation created from the rule's template. `None`: the inbox is
+    /// driven by someone else, its session is ending (the record waits for
+    /// the next generation), or no rule takes this kind of message.
+    async fn session_for(
+        &self,
+        route_key: &str,
+        first: &MsgObject,
+        key: &str,
+        binding: Option<OutboundBinding>,
+    ) -> libopendan::Result<Option<String>> {
+        let bound = self.generations(route_key).await?;
+        if let Some(current) = Self::latest_open(&bound) {
             if current.driver.principal != self.who {
                 self.note(route_key, |s| {
                     s.held = Some(format!("driven by {}", current.driver.principal))
                 });
+                return Ok(None);
+            }
+            // The registry follows the session's own state: one that is
+            // ending takes nothing more.
+            let ending = libopendan::SessionDir::open(&current.location)
+                .and_then(|d| d.state())
+                .is_ok_and(|st| st.is_finished() || st.stop_requested);
+            if ending {
+                self.note(route_key, |s| s.held = Some(format!("session {} is ending", current.session_id)));
+                let _ = self.supervisor.ensure_task(&current.session_id, "ending").await;
                 return Ok(None);
             }
             return Ok(Some(current.session_id.clone()));
@@ -561,7 +805,16 @@ impl UiModule {
             agent_did: parse_did(self.agent.agent_did()).ok(),
             owner: self.owner.clone(),
             allow_group: self.allow_group.load(Ordering::SeqCst),
-            commands: [("stop".to_string(), SlashCommand::Stop)].into_iter().collect(),
+            commands: [
+                ("stop", SlashCommand::Stop),
+                ("cancel", SlashCommand::Stop),
+                ("clean", SlashCommand::App),
+                ("new", SlashCommand::App),
+                ("resume", SlashCommand::App),
+            ]
+            .into_iter()
+            .map(|(name, command)| (name.to_string(), command))
+            .collect(),
             contact_name: None,
             conversation_name: None,
         }
@@ -670,11 +923,38 @@ impl UiModule {
                     log::debug!("ui: record {} of {route_key} dropped: {reason}", record.record_id);
                     None
                 }
-                // No application command is registered: nothing to do.
-                MsgBridgeOutput::AppCommand { .. } => None,
-                MsgBridgeOutput::Deliver { .. }
-                | MsgBridgeOutput::Control { .. }
-                | MsgBridgeOutput::Observe { .. } => {
+                MsgBridgeOutput::AppCommand { name, .. } => {
+                    if !self.command(&route_key, &msg, &key, name).await? {
+                        return Ok(());
+                    }
+                    None
+                }
+                // A control is for the conversation's session as it is: it
+                // never opens one.
+                MsgBridgeOutput::Control { command, .. } => {
+                    let current = self.current(&route_key).await.map_err(|e| e.to_string())?;
+                    let stop = matches!(command, ControlCommand::Stop { .. });
+                    match current.filter(|e| !stop || e.status.turn_open) {
+                        Some(e) => {
+                            let input = output
+                                .clone()
+                                .into_input(&self.who, &msg)
+                                .map_err(|e| e.to_string())?
+                                .expect("a control produces a record");
+                            if !self.post(&route_key, &e.session_id, &input).await? {
+                                return Ok(());
+                            }
+                            Some(e.session_id)
+                        }
+                        None => {
+                            if stop {
+                                self.say(&msg, &key, "cmd", self.command_text("nothing_to_stop", &[])).await;
+                            }
+                            None
+                        }
+                    }
+                }
+                MsgBridgeOutput::Deliver { .. } | MsgBridgeOutput::Observe { .. } => {
                     let binding = match &output {
                         MsgBridgeOutput::Observe { binding, .. } => Some(binding.clone()),
                         _ => None,
@@ -696,9 +976,12 @@ impl UiModule {
                         .clone()
                         .into_input(&self.who, &msg)
                         .map_err(|e| e.to_string())?
-                        .expect("deliver / control / observe produce a record");
+                        .expect("deliver / observe produce a record");
                     if !self.post(&route_key, &sid, &input).await? {
                         return Ok(());
+                    }
+                    if matches!(output, MsgBridgeOutput::Deliver { .. }) {
+                        self.tell_interrupted(&sid, &msg, &key).await;
                     }
                     Some(sid)
                 }
@@ -765,4 +1048,93 @@ impl UiModule {
             }
         }
     }
+}
+
+/// `ui.conversation {peer_did, session_id?}`: the UI sessions of one
+/// conversation — the one it is in now and every generation before it.
+/// A session belongs to the conversation when its replies go to `peer_did`
+/// in the chat session `session_id` (a `dm:` id also matches replies bound
+/// to no chat session).
+pub async fn conversation(agent: &dyn AgentStateClient, peer_did: &str, session_id: Option<&str>) -> libopendan::Result<Value> {
+    let mut generations = Vec::new();
+    for e in agent
+        .sessions()
+        .query(&RegistryQuery {
+            kind: Some(SessionKind::Ui),
+            ..Default::default()
+        })
+        .await?
+    {
+        let Ok(sd) = libopendan::SessionDir::open(&e.location) else {
+            continue;
+        };
+        let (Ok(cfg), Ok(state)) = (sd.config(), sd.state()) else {
+            continue;
+        };
+        let bound = cfg.channels.outbound.as_ref().is_some_and(|o| {
+            o.to == peer_did
+                && match (session_id, o.to_session.as_deref()) {
+                    (None, _) => true,
+                    (Some(want), Some(have)) => want == have,
+                    (Some(want), None) => want.starts_with("dm:"),
+                }
+        });
+        if bound {
+            generations.push((e, cfg, state));
+        }
+    }
+    generations.sort_by_key(|(_, cfg, _)| cfg.session.created_at_ms);
+    let current = match generations.iter().rev().find(|(e, _, _)| e.status.run_state != RunState::Finished) {
+        None => Value::Null,
+        Some((e, cfg, state)) => {
+            let mut works = 0;
+            let mut at = vec![e.session_id.clone()];
+            while !at.is_empty() {
+                let below = agent.sessions().children_of(&at).await?;
+                works += below.iter().filter(|c| c.status.run_state != RunState::Finished).count();
+                at = below.into_iter().map(|c| c.session_id).collect();
+            }
+            let prompt = match &cfg.prompt.frozen {
+                None => json!({ "frozen_at_ms": null, "current": true, "changed": [] }),
+                Some(frozen) => {
+                    let changed = match libopendan::state::refrozen(cfg, agent.behaviors(), agent.agent_root(), "ui.conversation").await {
+                        Ok(next) => next
+                            .prompt
+                            .frozen
+                            .as_ref()
+                            .map(|new| libopendan::state::frozen_changes(frozen, new))
+                            .unwrap_or_default(),
+                        Err(err) => {
+                            log::warn!("ui: prompt of {} not compared: {err}", e.session_id);
+                            Vec::new()
+                        }
+                    };
+                    json!({ "frozen_at_ms": frozen.frozen_at_ms, "current": changed.is_empty(), "changed": changed })
+                }
+            };
+            json!({
+                "session_id": e.session_id,
+                "route_key": e.route_key,
+                "run_state": e.status.run_state,
+                "paused": state.paused.as_ref().map(|p| p.source),
+                "needs_input": e.status.needs_input,
+                "one_line_status": state.one_line_status,
+                "open_turn": state.open_turn.as_ref().map(|t| json!({
+                    "turn": t.index,
+                    "task_id": state.open_turn_task().map(|b| b.task_id.clone()),
+                })),
+                "unfinished_works": works,
+                "prompt": prompt,
+            })
+        }
+    };
+    Ok(json!({
+        "current": current,
+        "generations": generations.iter().map(|(e, cfg, state)| json!({
+            "session_id": e.session_id,
+            "created_at_ms": cfg.session.created_at_ms,
+            "finished_at_ms": state.finished_at_ms.filter(|_| state.is_finished()),
+            "outcome": state.outcome.filter(|_| state.is_finished()),
+        })).collect::<Vec<_>>(),
+    }))
 }

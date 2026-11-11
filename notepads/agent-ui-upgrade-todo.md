@@ -1,5 +1,7 @@
 # BuckyOS Agent UI 升级 TODO
 
+**2026-11-10 晚：本单已按下文实施（基线 `7c91504b6`，未提交，真实 Zone 未验）。逐项结果、与本文不同的决定、没做与没验的在 §8 最后两条，任务状态在 §4.0，接口的实际形状在 §3 的状态列。§2.1 的推定 13 的两处修正、推定 15、16 是按建议实施的，owner 随后确认都按建议（D30）；§2.1、§2.3–§2.5、§5、§7 里这三处的“待确认”“等过目”字样是确认之前写的。§1 的“现状核对”和 §2.3、§2.4 里“待实施”“今天”的说法是实施之前的，留作对照。**
+
 状态：2026-11-09 起草；同日 owner 在文中批注了 D1–D16，已整理成 §2 并回写任务。**2026-11-10 按提交 `27aea9efb`（工作树干净）复核并更新了本文；同日 owner 批注了 §2.1，整理为 D17–D20 并回写。** 现在是 38 项任务：做完的只有 RT1 的后端（随 runtime TODO 一起做的）；RT2、RT3、RT4、DX4 各做了一部分；SK1 按 D19 移出本单，另立 [Skills 页界面形态 TODO](opendan-skills-page-ui-todo.md)；SC0（所有 Session 带输入队列，D20）、SC9（聊天命令 `/clean` 等，D18）、SC10（撤回输入，D25）、SC11（重启后的异常中断与手工恢复，D27）是新增的；其余都没有实施。逐项状态见 §4.0。整理 D17–D20 时的七条推定，owner 同日答复：stop 要分“针对消息的”和“针对 Session 的”两种，Goal Session 的手工 disable 叫休眠（D21，表在 §2.3），其余按建议（D22）。展开 D21 时的四条推定（§2.1 第 8–11 条），owner 同日在文中逐条批注，都按建议（D29）。**同日 owner 又从用户角度给了一份有效语义（§2.5），并答复了由它引出的五个问题，整理为 D23–D27：前台消息不要暂停、后台 Work 里只有 plan 收消息、撤回输入按建议、Goal 休眠后不发起下一次推理、重启后一律手工恢复。** 展开时的三条推定（§2.1 第 12–14 条）owner 同日确认，并定了本单的范围：自动恢复是下一期的，这一期把手动控制的语义做对（D28）。据此按代码把手动控制逐项对了一遍，补了几处漏洞：第 13 条的判定有两处修正，另有两条新的推定（第 15、16 条），都在 §2.1 等过目。依据 [BuckyOS Agent UI 升级规划](<BuckyOS Agent UI 升级规划.md>)（下称“规划”，11-09 之后没有改过）逐节对照源码写成。任务后面的（Dn）表示它按哪条裁决做。
 
 范围：Agent 首页（OpenDAN WebUI）与聊天侧的 Session 侧面板（Desktop MessageHub），以及这两处界面需要的后端接口（libopendan、opendan、control_panel、msg_center）。目标管理（规划 §5）本轮沿用现有 UI，不在任务里。
@@ -202,6 +204,7 @@
 | D27 | 断电或重启后的恢复 | owner：现在都手工恢复吧，自动恢复留到下一期再做。重启前正在工作的 Session 变成“异常中断（可恢复）”，用户手工恢复，按任务树恢复；断电、崩溃、正常重启不区分 | SC11、SC3、MH4、MH5、HM3 |
 | D28 | 展开 D25–D27 时的三条推定，以及本单在控制上的范围 | owner：需要我确认的三条都可以按你的建议。自动恢复是下一期的，这次 TODO 把手动控制语义做对。即 §2.1 的第 12–14 条照推定执行。为“做对”按代码逐项核对后，第 13 条的判定有两处修正，另有第 15、16 两条新推定，见 §2.1 | SC2、SC9、SC10、SC11、MH4、MH5、HM3 |
 | D29 | 展开 D21 时的四条推定（§2.1 第 8–11 条） | owner 在这四条下面各批注了一句：好，按你的建议。即：UI Session 收到针对 Session 的 stop 时拒绝，不降级；Goal Session 收到针对 Session 的 stop 就是让它的 Goal 休眠；“休眠”先改界面和文档的用词，状态值 `paused` 和 CLI 的 `goal pause \| resume` 不改名；TaskMgr 取消在 UI Session 和 Goal Session 上是针对消息的 stop，在 Work 上仍结束这个 Work | SC2、HM3 |
+| D30 | 推定 13 的两处修正、推定 15、推定 16 | owner（实施之后，2026-11-10 晚）：推定 13 修正、15、16 都按你的建议。即：等自己发起的工作的 Work 也算中断、在等用户回答的不算；Goal 休眠时它派生的未结束 Work 一并暂停、唤醒时恢复；tunnel 上有 `/resume`，普通消息到了中断的对话时回一次提示。三处都已按此实施，不用改代码 | SC2、SC9、SC11 |
 
 ### 2.1 按裁决推定、待确认
 
@@ -236,16 +239,16 @@
 下面三条是展开 D25–D27 时推出来的。owner 2026-11-10 确认都按建议（D28）。第 13 条确认之后按代码核对出两处漏洞，修正写在它下面，等过目。
 
 12. **（已确认，D28）D26 的“下一次推理”指下一次模型调用，不是下一次 Activation。** 置休眠后，在飞的这次推理和它的工具跑完，到下一个推理边界当前 Activation 就以 stopped 收尾。今天的行为是 Activation 继续推理到自然结束（§1.7）。归档（删除 Goal）按同一条原则处理。（SC2）
-13. **（已确认，D28；有两处修正）哪些 Session 算“正在工作”。** 确认时的写法是：宿主启动后第一次扫描时，有打开的 Turn 且没有暂停的未结束 Session，不分类型；两次 Turn 之间的不算，照常等输入、等调度。内置的 self_check 和记忆整理 Goal 同样适用，重启后用户发来的新消息照常处理，Goal 到了下一次运行机会照常激活，这几点不变。两处修正：
+13. **（已确认，D28；两处修正也已确认，D30）哪些 Session 算“正在工作”。** 确认时的写法是：宿主启动后第一次扫描时，有打开的 Turn 且没有暂停的未结束 Session，不分类型；两次 Turn 之间的不算，照常等输入、等调度。内置的 self_check 和记忆整理 Goal 同样适用，重启后用户发来的新消息照常处理，Goal 到了下一次运行机会照常激活，这几点不变。两处修正：
     - **等自己发起的工作的 Work 也算，即使这一刻没有打开的 Turn。** 原写法把它归到“两次 Turn 之间、不算”。但这种 Work 会自己产生 tick，每次 tick 推理一次（`work` 类 30 秒一次，plan 600 秒一次，§1.7）。按原写法，重启后 plan 的 Todo 会话停住了，plan 自己却每十分钟推理一次，没人看着就一直烧下去；一个在等长任务的 simple Work 更是每 30 秒一次。这与“手工恢复之前不推理”相反。改成：未结束、没有暂停、不是在等用户的 Work 都算，包括刚建好还没开始的。这样一棵任务树要么整棵停住，要么整棵在跑。
     - **在等用户回答的不算。** 提了问题等回答的会话，Turn 是开着的，按原写法会被标成中断。这时用户照常回答，回答进了队列却没有任何反应。它本来就不会自己推理，用户一回答就是用户自己让它继续，不需要再点一次恢复。
     - 修正后的判定：Work Session 看“未结束、没暂停、不是在等用户”；UI、Goal、self_check Session 看“有打开的 Turn 且不是在等用户回答”。（SC11）
 14. **（已确认，D28）撤回的边界。** 只有两种输入能撤回：还没被消费的，和它的 Turn 还开着的。Turn 已经关闭、Agent 已经回复的不能撤回，界面上不给入口；这时 MessageHub 原有的“撤回 / 删除”只改时间线，不动 Agent 的历史。（SC10、MH4）
 
-下面两条是按 D28 的“把手动控制语义做对”核对代码时推出来的，等确认。
+下面两条是按 D28 的“把手动控制语义做对”核对代码时推出来的。owner 2026-11-10 晚确认都按建议（D30）。
 
-15. **Goal 休眠时，它派生的未结束 Work 一并暂停，唤醒时恢复。** 今天 Goal 置 `paused` 只是不再开新的 Activation，它之前派出去的 Work 照常跑到结束（§1.7），只有归档才停它们。owner 对休眠的要求是“不推理了，省 token”（§2.5 第 3 项），派生的 Work 接着推理就不符合。做法比照父会话暂停的级联：休眠时给这些 Work 发会话暂停，原因注明是 Goal 休眠；唤醒时只恢复因此暂停的。不同意的话就保持今天的行为，并在目标页上写明“已经派出的工作会跑完”。（SC2）
-16. **tunnel 渠道要有恢复的入口：`/resume`。** 重启时如果某个对话的消息正处理到一半，这个 UI Session 会停在异常中断。MessageHub 里占位消息上有“恢复”“停止”；Telegram 之类没有界面，用户再发消息只会进队列，Agent 像是没了反应。补两样：聊天命令 `/resume`，恢复这个对话被中断的 Turn 和它名下被中断的 Work；普通消息到了一个中断的 UI Session 时，回一句提示，说明上一条因重启中断，发 `/resume` 继续或 `/stop` 放弃。（SC9、SC11）
+15. **（已确认，D30）Goal 休眠时，它派生的未结束 Work 一并暂停，唤醒时恢复。** 今天 Goal 置 `paused` 只是不再开新的 Activation，它之前派出去的 Work 照常跑到结束（§1.7），只有归档才停它们。owner 对休眠的要求是“不推理了，省 token”（§2.5 第 3 项），派生的 Work 接着推理就不符合。做法比照父会话暂停的级联：休眠时给这些 Work 发会话暂停，原因注明是 Goal 休眠；唤醒时只恢复因此暂停的。不同意的话就保持今天的行为，并在目标页上写明“已经派出的工作会跑完”。（SC2）
+16. **（已确认，D30）tunnel 渠道要有恢复的入口：`/resume`。** 重启时如果某个对话的消息正处理到一半，这个 UI Session 会停在异常中断。MessageHub 里占位消息上有“恢复”“停止”；Telegram 之类没有界面，用户再发消息只会进队列，Agent 像是没了反应。补两样：聊天命令 `/resume`，恢复这个对话被中断的 Turn 和它名下被中断的 Work；普通消息到了一个中断的 UI Session 时，回一句提示，说明上一条因重启中断，发 `/resume` 继续或 `/stop` 放弃。（SC9、SC11）
 
 ### 2.2 之后在别处作出、影响本单的裁决
 
@@ -337,26 +340,26 @@ D28 定了这一期的标准：手动控制的语义要做对。检验办法是�
 
 | 方法 | 读写 | 形状 | 任务 | 状态（11-10） |
 | --- | --- | --- | --- | --- |
-| `home.summary` | 读 | `{sessions: {working, waiting, failed, total}, memory: {perceptions, pending, cognitions, last_consolidation_at_ms}, goals: {active}, skills: {work, plan, goal, disabled}, runtimes: {enabled, unavailable}}` | HM2 | 未做 |
-| `memory.overview` | 读 | `{cognitions: {current}, perceptions: {total, pending}, last_consolidation_at_ms, maintenance_goal_id, recent: {cognitions: MemoryEntry[], perceptions: MemoryEntry[]}}`；`recent` 是最近添加的 5 条认知和 3 条感知 | ME1 | 未做 |
-| `memory.list {layer, limit, cursor?}` | 读 | `{entries: MemoryEntry[], next_cursor?}`，按添加时间倒序；`MemoryEntry = {layer, reference, summary, kind, state, at_ms, revised_at_ms?, subjects, session_id?, deletable, absorbed_into?}` | ME1 | 未做 |
-| `memory.read {reference}` | 读 | 认知带来源视图，感知带原记录；不要 Session | ME1 | 未做 |
-| `memory.forget {reference, expected_revision?, reason?}` | 操作 | 认知 → 新修订 `deleted`；感知 → `discarded` 并清理。整理 Goal 正在运行时返回 busy | ME2 | 未做 |
+| `home.summary` | 读 | `{sessions: {working, waiting, failed, total}, memory: {perceptions, pending, cognitions, last_consolidation_at_ms}, goals: {active}, skills: {work, plan, goal, disabled}, runtimes: {enabled, unavailable}}` | HM2 | 已做（另有 `sessions.interrupted`） |
+| `memory.overview` | 读 | `{cognitions: {current}, perceptions: {total, pending}, last_consolidation_at_ms, maintenance_goal_id, recent: {cognitions: MemoryEntry[], perceptions: MemoryEntry[]}}`；`recent` 是最近添加的 5 条认知和 3 条感知 | ME1 | 已做 |
+| `memory.list {layer, limit, cursor?}` | 读 | `{entries: MemoryEntry[], next_cursor?}`，按添加时间倒序；`MemoryEntry = {layer, reference, summary, kind, state, at_ms, revised_at_ms?, subjects, session_id?, deletable, absorbed_into?}` | ME1 | 已做（`MemoryEntry` 多 `revision?`、`cleared?`，`absorbed_into` 是数组；见 §8） |
+| `memory.read {reference}` | 读 | 认知带来源视图，感知带原记录；不要 Session | ME1 | 已做 |
+| `memory.forget {reference, expected_revision?, reason?}` | 操作 | 认知 → 新修订 `deleted`；感知 → `discarded` 并清理。整理 Goal 正在运行时返回 busy | ME2 | 已做（只有 owner 能调） |
 | `runtimes.settings` | 读 | `{runtimes: {<id>: {enabled, target}}, default_runtime_id, configured_default_runtime_id}`；后一项是 owner 配置的原始值 | RT1 | 已有 |
 | `runtimes.settings_set {runtime_id, enabled?, default?}` | 操作 | 停用不清默认；拒绝停用私有及其别名；上面有正在运行的 Session 时拒绝停用（`sessions_in_progress`） | RT1 | 已有 |
 | `runtimes.remove {runtime_id}` | 操作 | 从这个 Agent 移除一个已分配的 runtime，记录转 `retired`；拒绝私有及其别名；有正在运行的 Session 时拒绝。返回新的设置 | RT1、RT4 | 已有 |
 | `runtimes.impact {runtime_id}` | 读 | `{runtime_id, owner_default, blocking, running_sessions, active_sessions, pending_todos, workspaces, usage}` | RT2、RT4 | 已有（runtime TODO R7） |
-| `session.pause {sid, reason?}` / `session.resume {sid, reason?}` | 操作 | 返回 `{index}`，同 `session.stop`。没有 `cascade` 参数（D23）。SC0 之后对任何未结束的 Session 都能投；界面只在后台 Work 上用 pause，resume 还用来恢复异常中断的 Session（SC11） | SC1、SC11 | 未做 |
-| `session.retract {sid, key}`（名称暂定，要不要加见 SC10） | 操作 | 撤回一条输入，`key` 是消息的 ObjId。未消费的丢弃；Turn 还开着的，停止并记“用户已撤回”；Turn 已关闭的拒绝并说明。返回走了哪一种。主入口是 MessageHub 的 redact 消息，由桥转成控制 | SC10 | 未做 |
-| `session.stop {sid, reason?, scope?}`（已有方法，语义变化） | 操作 | `scope: turn` 是针对消息的 stop；`scope: session` 按会话类型：UI 拒绝，Goal 休眠，Work 结束（D21，§2.3）。SC0 之后不再有“没有队列”的旁路，一律返回 `{index}` | SC0、SC2 | 未做 |
-| `session.post {sid, text}`（已有方法，语义变化） | 操作 | 目标 Session 不收 user message 时拒绝并说明（D20） | SC0 | 未做 |
-| `ui.conversation {peer_did, session_id?}` | 读 | `{current: UiSessionView \| null, generations: [{session_id, created_at_ms, finished_at_ms?, outcome?}]}`；`UiSessionView = {session_id, run_state, paused, needs_input, one_line_status, open_turn?: {turn, task_id}, unfinished_works, prompt: {frozen_at_ms, current: bool, changed: string[]}}`；`paused` 要带来源（用户暂停、父级暂停、异常中断），形状随 SC11 定 | SC4、SC7、SC11 | 未做 |
-| `session.work_tree {sid, unfinished_only?}` | 读 | `{agent_did, session_id, complete, sessions: WorkNode[]}`；`WorkNode` 是 `WorkCard` 加 `children: WorkNode[]`，Todo 绑定的卡片同样递归 | SC5 | 未做 |
-| `ui.rotate {sid}` | 操作 | clean：归档当前 UI Session，下一条消息新建一代。有未结束 Work 时返回错误并带数量；成功返回 `{archived: sid}`，返回时登记表已显示结束 | SC6 | 未做 |
-| 聊天命令 `/clean`、`/new`、`/cancel`、`/resume` | — | `/clean`、`/new` 做与 `ui.rotate` 相同的事并回一句结果；`/cancel` 同 `/stop`；`/resume` 恢复这个对话被中断的 Turn 和它名下被中断的 Work（推定 16） | SC9、SC11 | 未做（今天只注册了 `/stop`） |
-| `sessions.delete {sid}` | 写 | 返回被删的 sid 列表（含后代） | SC8 | 未做 |
-| `deliveries.recent {limit, before?, route_key?}` | 读 | `{entries: [{at_ms, name, obj_id, url, mime?, size?, session_id, ui_session_id?, route_key?, source: report \| reply}], next_before?}` | AR1 | 未做 |
-| Desktop 深链 `?settings=<page>` | — | 打开 Settings 并定位到指定页面 | RT3 | Desktop 内的 `openSettings(page)` 已有；URL 参数未做 |
+| `session.pause {sid, reason?}` / `session.resume {sid, reason?}` | 操作 | 返回 `{index}`，同 `session.stop`。没有 `cascade` 参数（D23）。SC0 之后对任何未结束的 Session 都能投；界面只在后台 Work 上用 pause，resume 还用来恢复异常中断的 Session（SC11） | SC1、SC11 | 已做 |
+| `session.retract {sid, key}`（名称暂定，要不要加见 SC10） | 操作 | 撤回一条输入，`key` 是消息的 ObjId。未消费的丢弃；Turn 还开着的，停止并记“用户已撤回”；Turn 已关闭的拒绝并说明。返回走了哪一种。主入口是 MessageHub 的 redact 消息，由桥转成控制 | SC10 | 不加：入口是 owner 的 redact，桥转成 `control(retract)`；界面靠 Turn task 的状态变化就够（§8） |
+| `session.stop {sid, reason?, scope?}`（已有方法，语义变化） | 操作 | `scope: turn` 是针对消息的 stop；`scope: session` 按会话类型：UI 拒绝，Goal 休眠，Work 结束（D21，§2.3）。SC0 之后不再有“没有队列”的旁路，一律返回 `{index}` | SC0、SC2 | 已做 |
+| `session.post {sid, text}`（已有方法，语义变化） | 操作 | 目标 Session 不收 user message 时拒绝并说明（D20） | SC0 | 已做 |
+| `ui.conversation {peer_did, session_id?}` | 读 | `{current: UiSessionView \| null, generations: [{session_id, created_at_ms, finished_at_ms?, outcome?}]}`；`UiSessionView = {session_id, run_state, paused, needs_input, one_line_status, open_turn?: {turn, task_id}, unfinished_works, prompt: {frozen_at_ms, current: bool, changed: string[]}}`；`paused` 要带来源（用户暂停、父级暂停、异常中断），形状随 SC11 定 | SC4、SC7、SC11 | 已做（`current` 另带 `route_key`） |
+| `session.work_tree {sid, unfinished_only?}` | 读 | `{agent_did, session_id, complete, sessions: WorkNode[]}`；`WorkNode` 是 `WorkCard` 加 `children: WorkNode[]`，Todo 绑定的卡片同样递归 | SC5 | 已做 |
+| `ui.rotate {sid}` | 操作 | clean：归档当前 UI Session，下一条消息新建一代。有未结束 Work 时返回错误并带数量；成功返回 `{archived: sid}`，返回时登记表已显示结束 | SC6 | 已做（返回 `{archived, finished}`） |
+| 聊天命令 `/clean`、`/new`、`/cancel`、`/resume` | — | `/clean`、`/new` 做与 `ui.rotate` 相同的事并回一句结果；`/cancel` 同 `/stop`；`/resume` 恢复这个对话被中断的 Turn 和它名下被中断的 Work（推定 16） | SC9、SC11 | 已做 |
+| `sessions.delete {sid}` | 写 | 返回被删的 sid 列表（含后代） | SC8 | 已做（返回 `{deleted: [sid…]}`） |
+| `deliveries.recent {limit, before?, route_key?}` | 读 | `{entries: [{at_ms, name, obj_id, url, mime?, size?, session_id, ui_session_id?, route_key?, source: report \| reply}], next_before?}` | AR1 | 已做（`before` / `next_before` 是行位置） |
+| Desktop 深链 `?settings=<page>` | — | 打开 Settings 并定位到指定页面 | RT3 | 已做 |
 
 Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目录与分配的接口见 runtime TODO §11，本表不列。读 plan / goal 手册正文的方法随 Skills 页移到[独立 TODO](opendan-skills-page-ui-todo.md)。`session.stop` 对没有队列的 Session 的旁路（`27aea9efb`）在 SC0 之后不再需要。
 
@@ -364,53 +367,49 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
 
 每项写目标、落点、要点、验收。
 
-### 4.0 任务状态一览（2026-11-10，`27aea9efb`）
+### 4.0 任务状态一览（2026-11-10 晚，实施之后；基线 `7c91504b6`，未提交）
 
 | 任务 | 状态 | 说明 |
 | --- | --- | --- |
-| HM1、HM2 | 未做 | Skills 页进了观测页的标签布局，没有首页样式的详情外壳 |
-| HM3 | 未做 | Skills 卡片已经在目标和工作区之间；缺 Memory 卡片和 Session 删除入口。11-10 按 D21 加了一条：Session 详情页的 Stop 按钮分会话类型；按 D27 再加一条：异常中断的会话有“恢复” |
-| ME1–ME4 | 未做 | |
+| HM1、HM3 | 已做 | opendan WebUI，mock e2e 通过，真实后端未验 |
+| HM2 | 已做 | `home.summary`；WebUI 首页仍从 `sessions.query` 自己算（口径相同），用它的是 MessageHub 面板 |
+| ME1–ME4 | 已做 | 后端组件测试通过；界面 mock e2e 通过 |
 | RT1 | 已做 | 随 runtime TODO 提交（`35e72ce06`，按裁决的调整在 `27aea9efb`），本机 Zone DV 通过。调度器刷新的延迟没有量 |
-| RT2 | 部分 | 已有：ComputerUse 与基线只读、停用前取影响清单。未做：瘦列表、三类、折叠的历史、详情页 |
-| RT3 | 部分 | 已有：Desktop 内的 `openSettings('agent-runtimes')`。未做：URL 深链、首页的“添加 Runtime” |
-| RT4 | 部分 | 后端和 WebUI 数据层已有；界面入口未做。它等的前置（目录页）已经落地 |
-| SK1 | 不在本单 | 原来的占位页被 skills TODO 的 Skills 页取代；补齐规划形态的工作按 D19 移到[独立 TODO](opendan-skills-page-ui-todo.md) |
-| WS1、WS2 | 未做 | |
-| SC0 | 未做 | 11-10 按 D20 新增：所有 Session 都带输入队列。SC1 和 MH5 的前置 |
-| SC1–SC8 | 未做 | SC2 按 D17、D21 改写成“区分两种 stop”，SC6 按 D17、D18 改写。11-10 按 D23、D26 再改：SC1 去掉不级联选项，SC2 保持直接打断并加上 Goal 休眠的生效点。按 D28 核对后：SC1 加上提示词里对暂停中 plan 的转发，SC2 加上 Goal 派生 Work 的暂停（推定 15） |
-| SC9 | 未做 | 11-10 按 D18 新增：聊天命令 `/clean`、`/new`、`/cancel`。按 D28 核对后加 `/resume`（推定 16） |
-| SC10 | 未做 | 11-10 按 D25 新增：撤回输入。边界已确认（D28） |
-| SC11 | 未做 | 11-10 按 D27 新增：重启后的异常中断与手工恢复。按 D28 核对后改了判定（推定 13 的修正）和判定的依据，加了 tunnel 上的提示 |
-| AR1 | 未做 | |
-| MH1–MH8 | 未做 | |
-| DX1–DX3 | 未做 | 随各项实施 |
-| DX4 | 部分 | runtime TODO 一侧 11-09 已回写；skills TODO 一侧只差加一行指向独立 TODO |
+| RT2、RT3、RT4 | 已做 | 首页瘦列表 + `#/runtime/<id>` 详情页 + 历史；Desktop 的 `?settings=<page>` 深链见 MH 一行 |
+| SK1 | 不在本单 | 按 D19 移到[独立 TODO](opendan-skills-page-ui-todo.md) |
+| WS1、WS2 | 已做 | |
+| SC0–SC11 | 已做 | libopendan / opendan 全量回归通过（基线已知的 2 条除外）。推定 13 的两处修正、推定 15、16 按建议实施，owner 已确认（D30） |
+| AR1 | 已做 | 回复正文里 `<attachment>` 标签带的文件没进索引（§8） |
+| MH1–MH8 | 已做 | Desktop，mock e2e 通过，真实 Zone 未验；偏差在 §8 最后一条 |
+| DX1、DX3、DX4 | 已做 | 协议文档、README、手册、skills TODO 的回链 |
+| DX2 | 已做 | `UI_DATAMODEL.md` v0.18、PRD §12.8、Current UI Model Data §5.1 |
+
+真实 Zone 上一项都没有验过：后端要重建 aios 镜像，见 §6.3。
 
 ### 4.1 首页骨架（HM）
 
-- [ ] **HM1 详情页外壳与路由。** `App.tsx` 增加首页样式的详情路由：`#/memory`、`#/runtime/<id>`、`#/workspaces`。这些页面用首页的样式（`home` 类、手机优先、中英文走 `i18n.ts`），顶部一个返回首页的链接；不要用观测页的标签布局。抽一个共用外壳组件，做成别的页面也能套用。`#/skills` 现在是观测页的一个标签（skills TODO 交付的页面），本单不动它（D19）；它以后搬不搬进这个外壳由 Skills 页的独立 TODO 定。验收：手机宽度下各页不横向滚动；刷新保持在当前页。
-- [ ] **HM2 `home.summary`。** `home.rs` 新方法，一次返回 §3 的摘要，供首页概况和 MessageHub 面板上部共用。Memory 部分复用 ME1 的缓存；Session 计数的口径与 `Home.tsx` 的 `isWorking` / `isWaiting` / `isFailed` 一致（把判定挪到服务端或保持两边同一份定义，二选一并写测试）。归入 `is_read`。
-- [ ] **HM3 首页布局调整与 Session 删除入口。**（D15）左列顺序：资料卡、工作概况、Memory、目标、Skills、工作区、Runtime。现在只缺 Memory 这一块（ME3），`SkillsCard` 已经在这个位置。`SessionDetail.tsx` 对可删除的会话显示“删除”按钮，二次确认，调用 SC8。同一页现有的 Stop 按钮按 §2.3 分会话类型（D21，依赖 SC2）：UI 会话上是“停止当前消息”，发 turn 范围，没有打开的 Turn 时不可点；Goal 会话上是“休眠”；Work 上仍是“停止”。异常中断的会话（D27，依赖 SC11）在首页的 Session 树和详情页上标“异常中断”，有“恢复”和“停止”按钮，恢复一个节点连同它名下一起中断的子会话；首页顶部在有这类会话时给一行提示和数量，带“全部恢复”：界面找出中断的会话里最靠上的那些（父会话没有中断的），逐个调 `session.resume`，剩下的靠级联。内置的 self_check 和记忆整理 Goal 的会话只在这里看得到，所以这里的入口不能省（推定 13）。暂停着的会话都写明来源：用户暂停、随父会话暂停、异常中断、随 Goal 休眠暂停（推定 15）；最后一种提示去唤醒那个 Goal。验收：未结束的会话、UI 会话没有删除按钮；删除后回到首页且列表不再有它；三类会话上 Stop 按钮的文案和效果各如上述；重启后中断的会话在首页可见并能恢复。
+- [x] **HM1 详情页外壳与路由。** `App.tsx` 增加首页样式的详情路由：`#/memory`、`#/runtime/<id>`、`#/workspaces`。这些页面用首页的样式（`home` 类、手机优先、中英文走 `i18n.ts`），顶部一个返回首页的链接；不要用观测页的标签布局。抽一个共用外壳组件，做成别的页面也能套用。`#/skills` 现在是观测页的一个标签（skills TODO 交付的页面），本单不动它（D19）；它以后搬不搬进这个外壳由 Skills 页的独立 TODO 定。验收：手机宽度下各页不横向滚动；刷新保持在当前页。
+- [x] **HM2 `home.summary`。** `home.rs` 新方法，一次返回 §3 的摘要，供首页概况和 MessageHub 面板上部共用。Memory 部分复用 ME1 的缓存；Session 计数的口径与 `Home.tsx` 的 `isWorking` / `isWaiting` / `isFailed` 一致（把判定挪到服务端或保持两边同一份定义，二选一并写测试）。归入 `is_read`。
+- [x] **HM3 首页布局调整与 Session 删除入口。**（D15）左列顺序：资料卡、工作概况、Memory、目标、Skills、工作区、Runtime。现在只缺 Memory 这一块（ME3），`SkillsCard` 已经在这个位置。`SessionDetail.tsx` 对可删除的会话显示“删除”按钮，二次确认，调用 SC8。同一页现有的 Stop 按钮按 §2.3 分会话类型（D21，依赖 SC2）：UI 会话上是“停止当前消息”，发 turn 范围，没有打开的 Turn 时不可点；Goal 会话上是“休眠”；Work 上仍是“停止”。异常中断的会话（D27，依赖 SC11）在首页的 Session 树和详情页上标“异常中断”，有“恢复”和“停止”按钮，恢复一个节点连同它名下一起中断的子会话；首页顶部在有这类会话时给一行提示和数量，带“全部恢复”：界面找出中断的会话里最靠上的那些（父会话没有中断的），逐个调 `session.resume`，剩下的靠级联。内置的 self_check 和记忆整理 Goal 的会话只在这里看得到，所以这里的入口不能省（推定 13）。暂停着的会话都写明来源：用户暂停、随父会话暂停、异常中断、随 Goal 休眠暂停（推定 15）；最后一种提示去唤醒那个 Goal。验收：未结束的会话、UI 会话没有删除按钮；删除后回到首页且列表不再有它；三类会话上 Stop 按钮的文案和效果各如上述；重启后中断的会话在首页可见并能恢复。
 
 ### 4.2 Memory（ME）
 
-- [ ] **ME1 只读接口。**（D2）
+- [x] **ME1 只读接口。**（D2）
   - 落点：`lib_opendan/src/memory/` 新增 owner 视图（建议单独文件），提供 `overview`、`list_perceptions`、`list_cognitions`、按引用读取；`opendan/src/home.rs`（或新模块）暴露 `memory.overview` / `memory.list` / `memory.read`。不进 Agent State 门面：只有 owner 的界面用。
   - 排序按“最近添加”（D2）：认知从 `Memory::graph_view()` 取，按添加时间倒序（`GraphView::item_created_at`，即首个修订写入的时间）；之后被修订过的显示当前内容，并带修订时间。感知用 `load_perceptions(None)`（改可见性或加包装），按 `at_ms` 倒序，排除 `is_runtime()` 的旧记录。状态用 Graph 的 dispositions 加 `cleared` 推出（待整理、暂缓、已吸收、已丢弃）。
   - `overview.recent` 固定给最近添加的 5 条认知和 3 条感知；数量做成常量。
   - 游标用 `(排序键, 引用)`，不要用现有的 `PageCursor`（任何新感知都会让它失效）。
   - `overview` 按 `MemorySnapshot::token()` 缓存，快照没变不重新扫文件。`last_consolidation_at_ms` 取整理 Goal state 的 `last_successful_consolidation_at_ms`，同时返回该 Goal 的 id。
   - 验收：组件测试覆盖空库、只有感知、有删除和替代修订的认知、清理后的感知；翻页期间写入新感知不丢不重；`cargo test -p libopendan --test memory_component`、`cargo test -p opendan`。
-- [ ] **ME2 删除。**（D1）
+- [x] **ME2 删除。**（D1）
   - 认知删除是必做项（owner：影响大的是认知，用户可以手工删掉一条）；未整理的感知走同一个接口顺带提供。先做认知这条路径并验收，再接感知。
   - 落点：`memory/consolidation.rs` 给 `Consolidator` 加 owner 发起的提交，仿照 `sweep_expired`：认知用 `SetStatus deleted`（带 `expected_revision`，不符返回冲突），感知用 `discarded` 处置后跑 `cleanup()`。服务端仿照 `decide_as` 取 `memory_consolidation` 租约，取不到返回 busy。`produced_by` 标明是 owner 操作，原因写进提交。
   - owner 删除不应推动“最近整理时间”：界面读的是 Goal state 里的时间，本路径不要去写它。
   - 已是终态的感知（已吸收、重复、已丢弃）拒绝，错误里带承接它的认知引用。
   - `runner/memory_batch.rs` 的撤回行：状态为 `deleted` 时不输出原陈述。
   - 验收：删认知后 `memory.list` 不再有它，`cognition.read` 返回 `deleted`，读过它的 Session 下一批收到不带原文的撤回行；整理 Goal 持有租约时删除返回 busy 且库不变；重复删除返回冲突。
-- [ ] **ME3 首页 Memory 区块。** （D2）`Home.tsx` 新卡片：认知总数、感知总数（附待整理数）、最近整理时间（点击去整理 Goal 的详情页）；下方先是最近添加的 5 条认知，再是最近添加的 3 条感知，每条显示摘要、时间、范围。整块右上角“查看全部”去 `#/memory`。这块不要 4 秒轮询：用较长间隔或只在进入页面和手动刷新时取。数据层、mock、类型同步补齐。验收：e2e 断言计数、预览条数、空状态、整理 Goal 不存在时的显示。
-- [ ] **ME4 Memory 详情页。**（D1）`#/memory`：认知、感知两个独立列表（手机上用页签，认知在前），按添加时间倒序，滚动加载；每条可展开看详情（`memory.read`）；删除按钮带确认，busy 时提示稍后再试并保留条目。不做添加和编辑。验收：e2e 覆盖翻页、删除成功、busy、已吸收感知没有删除按钮。
+- [x] **ME3 首页 Memory 区块。** （D2）`Home.tsx` 新卡片：认知总数、感知总数（附待整理数）、最近整理时间（点击去整理 Goal 的详情页）；下方先是最近添加的 5 条认知，再是最近添加的 3 条感知，每条显示摘要、时间、范围。整块右上角“查看全部”去 `#/memory`。这块不要 4 秒轮询：用较长间隔或只在进入页面和手动刷新时取。数据层、mock、类型同步补齐。验收：e2e 断言计数、预览条数、空状态、整理 Goal 不存在时的显示。
+- [x] **ME4 Memory 详情页。**（D1）`#/memory`：认知、感知两个独立列表（手机上用页签，认知在前），按添加时间倒序，滚动加载；每条可展开看详情（`memory.read`）；删除按钮带确认，busy 时提示稍后再试并保留条目。不做添加和编辑。验收：e2e 覆盖翻页、删除成功、busy、已吸收感知没有删除按钮。
 
 ### 4.3 Runtime（RT）
 
@@ -421,14 +420,14 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
   - 与原文不同：停用和移除遇到正在运行的 Session 直接拒绝，没有确认参数（§2.2）；设备 runtime 的启用经 control panel 的 `agent.runtime_enable` 做独占检查；`host` 占位取消；原生运行只在 Lite，`native_agent_node` 在带容器的产品上恒为 `None`。
   - 测试：`opendan/tests/loader.rs` 的 `the_owner_switches_assigned_runtimes_and_work_in_progress_is_told`（settings、impact、remove、标记与通知，经 kRPC）；`lib_opendan/tests/runtimes.rs`（移除后退役并可回来、默认停用后保留）；`buckyos-api` 的 `native_agent_node_follows_the_default_runtime`（含默认被停用、带容器的产品）。本机 Zone 的 DV 见 runtime TODO §12.1 的 “R19 / RT1” 一行。
   - 没做：opendan 这条路径改完 settings 不会触发调度器刷新（control_panel 的 `agent.update` 会），节点上给这个 Agent 的执行权限要等调度器下一轮才收回。停用和移除后的这段延迟没有量；不可接受就补上刷新。
-- [ ] **RT2 首页列表瘦身与详情页。** 依赖 HM1（RT1 已做）。已有的部分：卡片上 ComputerUse 与基线已经只读，停用前先取 `runtimes.impact`，被拦时列出 Session。下面各条里没有注明“已有”的都还没做。
+- [x] **RT2 首页列表瘦身与详情页。** 依赖 HM1（RT1 已做）。已有的部分：卡片上 ComputerUse 与基线已经只读，停用前先取 `runtimes.impact`，被拦时列出 Session。下面各条里没有注明“已有”的都还没做。
   - 首页每行只有名称、一行说明、启停开关。分三类显示：Provider（`connector.type == 'native'`，无开关，标“始终启用”）、Owner 默认（`runtime_id == configured_default_runtime_id`）、其他已分配（settings 里有条目）。`host` 占位记录已经取消，不用过滤。Lite 下私有 runtime 同时是 Owner 的机器（记录的 `connector.aliases` 不空），只显示一行并加标注；带容器的产品上不会出现这种情形。
   - 列表末尾是折叠的“历史”：`retired` 的记录，显示名称、最后使用时间和用过它的 Session 数，点进详情只读。到期的 runtime 不进历史：它仍在当前列表里，标“已到期”，续期后恢复（runtime TODO 裁决 26）。
   - `#/runtime/<id>` 承接 `RuntimeCard` 现有的全部内容和操作（检查、设为默认、基线、ComputerUse、扩展包、工具检查、用量与最近 Session）。runtime 自己的配置（权限、ComputerUse 档位、声明基线、期限）在这里只读显示，改它要去 Desktop 的 Settings → Agent Runtimes：它们是 runtime 的声明，不按 Agent 设（runtime TODO 裁决 24、§7.2 推定 2、§10）。所以详情页上的操作只有检查、设为默认、启停和移除（基线与 ComputerUse 的两个下拉已经去掉）。`runtimes.ext_tools` 只在详情页请求。
   - 停用是可逆的。规则按 §2.2 的裁决 4：上面有正在运行的 Session 时不能停用，界面列出这些 Session，没有“仍要停用”；没有就直接生效。等待的 Todo 和绑定的工作区只显示，不拦。`RuntimeCard` 的 `toggle` 已经是这个行为（已有），搬到新的行和详情页上即可。
   - 重写 `tests/e2e/home.spec.ts` 里断言 runtime 卡片的三条用例（Lite 单行、声明的环境与工具检查、进行中的 Session 拦住停用）和 `mock.ts` 的对应数据。验收对应规划场景“Owner 没有 Default Runtime”：只见 Provider 一行；停用后条目仍在、可重新启用，默认标记不丢。
-- [ ] **RT3 “添加 Runtime”引导与深链。** 首页 Runtime 区块的“添加 Runtime”打开说明：设备在 Desktop 的 runtime 目录里添加，并在那里分配给 Agent；这里只管这个 Agent 用不用它。按钮跳到 `${profile.desktop_url}/?settings=<page>`（在桌面窗口里要跳出 frame，做法同 `messageHubHref` 的 `outerTarget`）；Zone 外没有 `desktop_url` 时只显示说明。目标页面是 Settings → Agent Runtimes，页面 id `agent-runtimes`（`navigation.ts` 的 `AGENT_RUNTIMES_SETTINGS_PAGE`），已经落地。Desktop 侧只差 URL 这一步：在 `DesktopRoute.tsx` 处理 `?settings=<page>`，仿照 `?agent_setup`，校验页面 id 后调现成的 `openSettings(page)`；从 launch payload 到 `SettingsShell` 的 `initialPage` 这一段已有。首页现在只有一句文字提示（`runtimeManagedHint`），没有按钮；这句文案还写着去“用户与 Agent”里设置，一并改成目录页。验收：从 Agent 首页点击后 Desktop 打开 Settings 并停在目标页。
-- [ ] **RT4 从 Agent 移除 runtime。**（D4；“删除”就是从这个 Agent 移除，见 §2.1 去向表第 3 行）依赖 RT1、RT2。
+- [x] **RT3 “添加 Runtime”引导与深链。** 首页 Runtime 区块的“添加 Runtime”打开说明：设备在 Desktop 的 runtime 目录里添加，并在那里分配给 Agent；这里只管这个 Agent 用不用它。按钮跳到 `${profile.desktop_url}/?settings=<page>`（在桌面窗口里要跳出 frame，做法同 `messageHubHref` 的 `outerTarget`）；Zone 外没有 `desktop_url` 时只显示说明。目标页面是 Settings → Agent Runtimes，页面 id `agent-runtimes`（`navigation.ts` 的 `AGENT_RUNTIMES_SETTINGS_PAGE`），已经落地。Desktop 侧只差 URL 这一步：在 `DesktopRoute.tsx` 处理 `?settings=<page>`，仿照 `?agent_setup`，校验页面 id 后调现成的 `openSettings(page)`；从 launch payload 到 `SettingsShell` 的 `initialPage` 这一段已有。首页现在只有一句文字提示（`runtimeManagedHint`），没有按钮；这句文案还写着去“用户与 Agent”里设置，一并改成目录页。验收：从 Agent 首页点击后 Desktop 打开 Settings 并停在目标页。
+- [x] **RT4 从 Agent 移除 runtime。**（D4；“删除”就是从这个 Agent 移除，见 §2.1 去向表第 3 行）依赖 RT1、RT2。
   - 已有：后端 `runtimes.remove`、`runtimes.impact`，WebUI 数据层的 `removeRuntime`（kRPC 与 mock）。没有任何页面调用它。
   - 详情页对 Owner 默认和其他已分配的 runtime 提供“删除”，Provider 没有。先取 `runtimes.impact`：有正在运行的 Session 时不能删，列出它们，没有“仍要删除”（§2.2 裁决 4）。能删时确认框写明：只是不再让这个 Agent 使用它，设备还在目录里，可以再分配；并列出绑定在它上面的工作区、等待的 Todo、用过它的 Session 数和最近一个，这些只展示。
   - 删除后该条进入“历史”。
@@ -447,14 +446,14 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
 
 ### 4.5 工作区（WS）
 
-- [ ] **WS1 区块改版。** 标题改“工作区”（i18n 键和 `data-testid` 一并改名，更新 e2e）。默认收起，收起时显示最近使用的 5 张小卡片：标题、Runtime 名称、目录、Remote URL（有才显示）、描述（一行）。“最近使用”取绑定该工作区的 Session 的最近更新时间，没有 Session 的用记录的 `updated_at_ms`。Runtime 和目录始终显示，用来区分同名工作区。“查看全部”去 `#/workspaces`，那里保留现有完整卡片（检查、改 URL、迁移）。预览数量是规划的待定项，先定 5 并做成常量。
-- [ ] **WS2 手工添加向导。** 把“创建”“导入”两个表单合成一个分步向导：第 1 步选 Runtime，写明“这一步决定 Agent 在哪台机器上访问目录”，只列可用且允许工作区的 runtime；第 2 步选“已有目录”或“新建目录”并填目录、Remote URL、标题、描述；第 3 步提交并显示检测结果。提交仍用 `workspaces.import` / `workspaces.create`，失败时停在第 3 步显示原因并可返回修改。实施时确认导入失败不会留下登记，并记录目录里是否会留下元数据文件。检测细则等工作区专项文档，本项不新增检测逻辑。验收对应规划场景“用户在指定 Runtime 中手工添加工作区”。
+- [x] **WS1 区块改版。** 标题改“工作区”（i18n 键和 `data-testid` 一并改名，更新 e2e）。默认收起，收起时显示最近使用的 5 张小卡片：标题、Runtime 名称、目录、Remote URL（有才显示）、描述（一行）。“最近使用”取绑定该工作区的 Session 的最近更新时间，没有 Session 的用记录的 `updated_at_ms`。Runtime 和目录始终显示，用来区分同名工作区。“查看全部”去 `#/workspaces`，那里保留现有完整卡片（检查、改 URL、迁移）。预览数量是规划的待定项，先定 5 并做成常量。
+- [x] **WS2 手工添加向导。** 把“创建”“导入”两个表单合成一个分步向导：第 1 步选 Runtime，写明“这一步决定 Agent 在哪台机器上访问目录”，只列可用且允许工作区的 runtime；第 2 步选“已有目录”或“新建目录”并填目录、Remote URL、标题、描述；第 3 步提交并显示检测结果。提交仍用 `workspaces.import` / `workspaces.create`，失败时停在第 3 步显示原因并可返回修改。实施时确认导入失败不会留下登记，并记录目录里是否会留下元数据文件。检测细则等工作区专项文档，本项不新增检测逻辑。验收对应规划场景“用户在指定 Runtime 中手工添加工作区”。
 
 ### 4.6 会话控制后端（SC）
 
 本节按 §2.4 区分已有协议与待实施变更。控制语义先在 `doc/opendan/protocol/Session Control Protocol.md` 同步；输入、持久字段、SDK / CLI、服务与界面按实际影响联动，不只更新界面用词。§2.1 的推定 8–11（D29）和 12–14（D28）已确认；涉及推定 15、16 和推定 13 两处修正的部分仍按待确认项处理。
 
-- [ ] **SC0 所有 Session 都带输入队列。**（D20；11-10 新增）控制命令（pause、resume、stop、decide）一律走队列；队列收不收 user message 是另一个属性。SC1、MH5 的前置。
+- [x] **SC0 所有 Session 都带输入队列。**（D20；11-10 新增）控制命令（pause、resume、stop、decide）一律走队列；队列收不收 user message 是另一个属性。SC1、MH5 的前置。
   - 现状：`work` 模板的输入是 `InputChannel::None`，有队列的只有 UI、Goal、self_check、`plan_simple` 类、Todo 派发（`queued`）和 `--interactive` 的 Session（§1.7）。
   - 落点：`lib_opendan/src/template.rs`（`work` 的缺省输入、`settle_input`）；`api.rs` 的 `create_session`、`create_sub_session`（`SubSessionSpec.queued` 变成恒真后去掉）；`opendan/src/service.rs` 的 `import_skills`（它显式要了 `InputChannel::None`）。
   - 不收 user message 用现成的 `session.input_policy` 表达：值为 `none` 时，msg 和 Input event 在消费时被拒，记一条 `input_rejected: input_policy`（Session Input Protocol）。今天没有任何模板设置它。今天没有队列的 Session 改成“有队列、不收 user message”，其余不变（§2.1 推定 7）。投递方（`session.post`、`agent-session post`）在投递时就按目标的策略拒绝并说明，不要等消费时才落一条拒收记录。
@@ -465,10 +464,10 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
   - kmsg 上每个 Session 多一个队列和一个订阅，驱动者在 Session 不再收输入时删掉（现有规则）。量一下 Todo 会话很多时的开销，记入 §8。
   - 同步 `doc/opendan/protocol/Session Control Protocol.md`、`Session Input Protocol.md`、`Session Directory Protocol.md`，以及 `opendan/README.md`「操作」一节里讲“没有队列的 Session”的几句。
   - 验收：聊天里直接建的 simple Work 能 pause、resume、stop，三者都返回 `index`；向它 `session.post` 文本被拒并说明原因；它的首批消息照常进入第一个 Turn；plan 暂停时级联到它名下每一个未结束的子会话。依赖无队列行为的用例（`opendan/tests/loader.rs` 的 `the_owner_stops_a_work_session_without_a_queue` 等）改过。全量 `cargo test -p libopendan -p opendan --no-fail-fast -- --test-threads=1`。
-- [ ] **SC1 pause / resume 接口。**（D8 的后半句、D20、D23）依赖 SC0。只加接口，不改控制命令：`service.rs` 增加 `session.pause` / `session.resume`，归入 `is_operation`。后台 Work 的暂停走现有的 Session 暂停流程，级联到它自己的子会话，行为不变。前台消息不提供暂停（D23），所以原来计划的不级联选项不做，`ControlCommand::Pause` 不加字段。SC0 之后所有 Session 都有队列，这两个方法对任何未结束的 Session 都能投，级联也不再跳过谁。`session.resume` 同时是恢复异常中断的入口，级联规则的扩展在 SC11。协议文档里 pause / resume 的合同不变，只在 `opendan/README.md` 补新方法。
+- [x] **SC1 pause / resume 接口。**（D8 的后半句、D20、D23）依赖 SC0。只加接口，不改控制命令：`service.rs` 增加 `session.pause` / `session.resume`，归入 `is_operation`。后台 Work 的暂停走现有的 Session 暂停流程，级联到它自己的子会话，行为不变。前台消息不提供暂停（D23），所以原来计划的不级联选项不做，`ControlCommand::Pause` 不加字段。SC0 之后所有 Session 都有队列，这两个方法对任何未结束的 Session 都能投，级联也不再跳过谁。`session.resume` 同时是恢复异常中断的入口，级联规则的扩展在 SC11。协议文档里 pause / resume 的合同不变，只在 `opendan/README.md` 补新方法。
   - 暂停后发消息再恢复（§2.5 的 2b）还差提示词这一环：`behaviors/chat_route.toml` 和 `ui_core` 手册写的是把用户的话转给“还在运行”的 plan。plan 暂停着的时候 Agent 可能当它不在运行，转而另起一次分析。把这句改成“没有结束的 plan，包括暂停中的”，并说明暂停中的 plan 恢复后才处理这条消息，回复用户时照实说。核对对话里那行工作状态对暂停中的 plan 显示什么，Agent 要能从它看出是暂停。
   - 验收：暂停一个带 Todo 会话的 plan，它名下未结束的子会话都暂停；向暂停中的 plan 投一条消息，消息留在队列，resume 后 Turn 从检查点继续并处理这条消息；plan 暂停期间在对话里说一句修改，Agent 把它转给这个 plan，没有另起新的工作；对聊天里直接建的 simple Work 能 pause、resume；现有 pause 测试不变。
-- [ ] **SC2 区分针对消息的 stop 和针对 Session 的 stop。**（D9、D17、D21、D26；语义表在 §2.3）
+- [x] **SC2 区分针对消息的 stop 和针对 Session 的 stop。**（D9、D17、D21、D26；语义表在 §2.3）
   - 针对消息的 stop（`scope: turn`）：立刻打断在飞的推理和工具，不再发起新的，当前 Turn 以 stopped 关闭，占位改成“已停止”，Session 回到等待，上下文保留，用户马上能发下一条（§2.5 的 1a）。打断是今天已有的行为（§1.7），这一条不改执行语义。这个 Turn 已经做过的步骤和工具结果留在历史里，下一条消息到来时模型看得到。
   - 先写测试确认现状：UI Turn 在 `analyze_intent` 子 context 里收到 turn 范围 stop 时，Turn 是否以 stopped 关闭、Session 是否回到等待、占位是否被改成“已停止”文案（Agent 包 `i18n` 的 `[outbound] stopped`）。按结果修 `runner/outcome.rs` 的 `turn_stop && !site.child` 分支。
   - 把针对消息的入口都改成发 turn 范围：`/stop`（`bridge/msg.rs` 今天发的是 session 范围）；`CancelBridge`（`tasks.rs`）对 UI Session 改用 turn 范围，Goal 已经是，Work 保持 session 范围（D29）。没有打开的 Turn 时不生效，`/stop` 这时回一句提示。
@@ -478,22 +477,22 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
   - 用词：Goal 的手工 disable 叫“休眠”，恢复叫“唤醒”。opendan WebUI 目标详情页今天写的是“暂停 / 已暂停 / 恢复”（`web/src/i18n.ts` 的 `opPause`、`gsPaused`、`opResume` 等，按钮在 `GoalDetail.tsx`），改掉；英文文案实施时定。状态值 `paused` 和 CLI 的 `goal pause | resume` 不改名（D29）。
   - 更新 `doc/opendan/protocol/Session Control Protocol.md` 的停止作用域、生效边界与 Goal 映射，联动 Directory / Input 的字段与消费说明；更新 `opendan/tests/loader.rs` 相关用例、`ui_core` 手册里对 `/stop` 的说明、`opendan/README.md`「操作」一节。
   - 验收：停止一条正在处理的消息后，同一个 UI Session 接着处理下一条消息，上下文还在，这个 Turn 之前已创建的 Work 不受影响。对 UI Session 发 session 范围的 `session.stop` 被拒，会话不变。对 Goal Session 发 session 范围的 stop 后，Goal 的状态是 `paused`，不再有新的 Activation，唤醒后恢复；发 turn 范围的只结束当前 Activation。Activation 进行中让 Goal 休眠，它在下一个推理边界以 stopped 结束，之后没有新的模型调用。Goal 有一个正在跑的派生 Work 时让它休眠，这个 Work 暂停，不再有模型调用；唤醒后 Work 继续，结束时 Goal 收到结果（推定 15）。对 Work 发 session 范围的 stop 仍以 stopped 结束。
-- [ ] **SC3 暂停状态进 TaskMgr。** `TaskService` 增加暂停上报，`TurnTasks::update` 在 Session 暂停时把 Turn task 置为 TaskMgr 的 `Paused`，恢复后回到 Running。异常中断（SC11）走同一个状态，task 的 message 写明是中断；占位消息靠它显示“异常中断”（MH4）。TaskMgr 一侧发起的 Pause / Resume 请求不桥接（Task Center 上不出现这两个按钮，或出现但不生效，实施时确认并记录）。验收：暂停后 `getTask` 的状态是 Paused，Desktop 的 `taskNodeState` 得到 `paused`。
-- [ ] **SC4 `ui.conversation`。** 给定对话方和 MessageHub 的会话 id，返回当前这一代 UI Session 的状态和历代列表（匹配规则：`outbound` 的 `to` 等于对话方；`to_session` 等于会话 id，或会话 id 是 `dm:` 开头且 `to_session` 为空）。当前一代取未结束的最新一条。归入 `is_read`。这是面板下部、提示词标签、Clean History 入口共用的一次读取。
-- [ ] **SC5 `session.work_tree`。**（D12）在 `work_card.rs` 增加按 Session 汇总的树：该 Session 的全部子 Work（可只取未结束的），plan 的 Todo 绑定卡片递归，非 Todo 的子 Work 挂在 `children`，深度上限 4。`complete` 的含义同 `work_cards`。现有 `session.work_cards` 不变。验收：两个并列 Work、一个 plan 带三个 Todo、其中一个 Todo 的会话又建了子 Work 的夹具，结构与预期一致；全部结束后 `unfinished_only` 返回空且 `complete` 为真。
-- [ ] **SC6 归档当前 UI Session（clean）。**（D11、D17、D18）
+- [x] **SC3 暂停状态进 TaskMgr。** `TaskService` 增加暂停上报，`TurnTasks::update` 在 Session 暂停时把 Turn task 置为 TaskMgr 的 `Paused`，恢复后回到 Running。异常中断（SC11）走同一个状态，task 的 message 写明是中断；占位消息靠它显示“异常中断”（MH4）。TaskMgr 一侧发起的 Pause / Resume 请求不桥接（Task Center 上不出现这两个按钮，或出现但不生效，实施时确认并记录）。验收：暂停后 `getTask` 的状态是 Paused，Desktop 的 `taskNodeState` 得到 `paused`。
+- [x] **SC4 `ui.conversation`。** 给定对话方和 MessageHub 的会话 id，返回当前这一代 UI Session 的状态和历代列表（匹配规则：`outbound` 的 `to` 等于对话方；`to_session` 等于会话 id，或会话 id 是 `dm:` 开头且 `to_session` 为空）。当前一代取未结束的最新一条。归入 `is_read`。这是面板下部、提示词标签、Clean History 入口共用的一次读取。
+- [x] **SC5 `session.work_tree`。**（D12）在 `work_card.rs` 增加按 Session 汇总的树：该 Session 的全部子 Work（可只取未结束的），plan 的 Todo 绑定卡片递归，非 Todo 的子 Work 挂在 `children`，深度上限 4。`complete` 的含义同 `work_cards`。现有 `session.work_cards` 不变。验收：两个并列 Work、一个 plan 带三个 Todo、其中一个 Todo 的会话又建了子 Work 的夹具，结构与预期一致；全部结束后 `unfinished_only` 返回空且 `complete` 为真。
+- [x] **SC6 归档当前 UI Session（clean）。**（D11、D17、D18）
   - 语义（D18）：保存当前聊天会话对应的 UI Session，再有消息时新建一代 UI Session 并关联到同一个聊天会话。MessageHub 的“开始新对话”（MH6）和聊天命令 `/clean`（SC9）都是它。新一代是懒创建的，按同一个 `route_key` 关联（D11 c，§2.1 推定 3）。
   - `ui.rotate {sid}`：确认是本进程驱动的 UI Session；有未结束子 Work 时拒绝并返回数量；否则结束旧会话，等登记表显示结束后返回（有上限，超时返回进行中）。
   - 结束旧会话不能再用 stop 控制命令：SC2 之后针对 Session 的 stop 到了 UI Session 会被拒绝（D17、D21）。归档要有自己的路径，两个候选：新增一条只给归档用的控制命令；或者用 Supervisor 的 `StopSignal`（`Supervisor::stop` 现成的做法）。选哪条实施时定并写回。旧会话的结局仍记 `stopped`，worklog 记下是归档以及谁发起的（D11 d，§2.1 推定 2）。
   - 修既有竞态：`session_for` 选当前会话时，对登记表里“未结束”的候选再看一眼 `state.json`，已请求停止或已结束的不再投递；该 inbox 的记录留到旧会话结束后由新一代接收。对应用例 `inbox_messages_are_answered_along_the_same_conversation` 的偶发超时。
   - 旧会话的目录、worklog、Session id 都保留，Memory 里的原文引用继续可用。
   - 验收对应规划场景“Clean History 后回查旧 Memory”：归档后下一条消息由新的 Session id 处理，`session.read` 旧 sid 仍能读到 worklog；归档后立刻发消息不丢。
-- [ ] **SC7 提示词版本状态与压缩时刷新。**（D14）
+- [x] **SC7 提示词版本状态与压缩时刷新。**（D14）
   - 第一步（只读）：在 `state/behaviors.rs` 加比较函数，把 `prompt.frozen` 的身份文本、已冻结 behaviors、cmd_skills 与 catalog 当前内容逐项比较，返回是否一致和不一致的项目名；`ui.conversation` 的 `prompt` 用它。比较的另一边是“现在新建一个同类会话会冻结到什么”：除了文件内容，还要算上 owner 改过的 UI 集合和被禁用的手册（`.meta/skills_state.json`），这两样不反映在 `behaviors.revision` 里（§1.7）。
   - 第二步：读 `runner/live.rs` 的上下文重写和 `runner/history.rs`，确认压缩后系统前缀是怎么重建的，把结论写回本单 §8，再实现：UI / group 会话在压缩提交点重新冻结（替换 `prompt.frozen`，worklog 记 `control_applied`），Work 会话不动。重新冻结后 cmd_skill 的可用性按冻结规则重算。
   - 验收对应规划场景“Agent root fs 的系统提示词更新”：改 `role.md` 后旧会话 `prompt.current` 为假、新会话为真；旧会话发生一次压缩后变为真，且压缩前后的对话不重复不丢。
-- [ ] **SC8 删除 Session。**（D15）登记表增加删除：只接受已结束的 Work / self_check，后代全部已结束才允许，连同后代一起删除目录和登记项；`state/perception/<sid>.jsonl` 不动（Memory 的来源）；登记表旁的 `.runtime_unavailable/<sid>` 标记一并清掉。门面增加 `sessions.delete` 并归入 `is_write`；`permission_tests` 现在把它当作未归类的方法断言被拒（`read_only_agent_cannot_edit_profiles_or_call_unclassified_methods`），一并改。验收：有未结束后代时拒绝；UI、Goal 会话拒绝；删除后 `sessions.query`、`session.read` 都查不到。
-- [ ] **SC9 聊天命令 `/clean`、`/new`、`/cancel`。**（D17、D18；11-10 新增）依赖 SC2、SC6。给没有界面的渠道用，今天就是 Telegram。
+- [x] **SC8 删除 Session。**（D15）登记表增加删除：只接受已结束的 Work / self_check，后代全部已结束才允许，连同后代一起删除目录和登记项；`state/perception/<sid>.jsonl` 不动（Memory 的来源）；登记表旁的 `.runtime_unavailable/<sid>` 标记一并清掉。门面增加 `sessions.delete` 并归入 `is_write`；`permission_tests` 现在把它当作未归类的方法断言被拒（`read_only_agent_cannot_edit_profiles_or_call_unclassified_methods`），一并改。验收：有未结束后代时拒绝；UI、Goal 会话拒绝；删除后 `sessions.query`、`session.read` 都查不到。
+- [x] **SC9 聊天命令 `/clean`、`/new`、`/cancel`。**（D17、D18；11-10 新增）依赖 SC2、SC6。给没有界面的渠道用，今天就是 Telegram。
   - 现状：`opendan/src/ui.rs` 的 `bridge_ctx` 只注册了 `stop`。桥已经有“由宿主自己处理的命令”这条输出（`SlashCommand::App` → `MsgBridgeOutput::AppCommand`），`drain` 收到后只确认、什么都不做。Telegram 的菜单（`msg_center/src/tg_tunnel.rs` 的 `TG_BUILTIN_COMMANDS`）登记了 `new`、`clean`、`stop`、`cancel`、`info`、`list`、`switch`、`help`，除 `stop` 外发出去都被当成普通文字交给模型。
   - `clean`：注册为 `SlashCommand::App`，`drain` 里对这条消息所在聊天会话的当前 UI Session 做 SC6 的归档，回一句结果。有未结束的 Work 时拒绝，回复里列出它们（D11 b，§2.1 推定 5）。没有当前 UI Session 时回“已经是新对话”。
   - `new`：Agent 一侧与 `clean` 相同（§2.1 推定 4）。Telegram 是单 session：`build_telegram_ui_session_id(bot, chat)` 给每个聊天固定一个会话 id。
@@ -502,7 +501,7 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
   - Telegram 菜单的说明：`clean` 现在写的是 “Delete current session and create a new one”，与“保存”的语义不符，改掉；`new` 在单 session 下与 `clean` 的说明对齐。`info`、`list`、`switch`、`help` 仍然没有处理，不在本项。
   - 回复的发送路径与 SC2 里 `/stop` 的提示共用，文案进 Agent 包的 `i18n`。更新 `ui_core` 手册和 `opendan/README.md`。
   - 验收：opendan 集成测试里发 `/clean`，下一条消息由新的 Session id 处理，旧 sid 仍可读；有未结束的 Work 时被拒且会话不变；`/new` 与 `/clean` 结果相同；`/cancel` 与 `/stop` 结果相同；重启后对中断的对话发 `/resume`，被中断的 Turn 继续并给出回复，发 `/stop` 则放弃它、下一条消息照常处理。真实 Zone 上要配一个 Telegram bot 才能走，没有条件就如实标未验。
-- [ ] **SC10 撤回输入。**（D25；11-10 新增）依赖 SC2。§2.5 的 1b：停止并删掉这条输错的消息。
+- [x] **SC10 撤回输入。**（D25；11-10 新增）依赖 SC2。§2.5 的 1b：停止并删掉这条输错的消息。
   - 现状：没有撤回输入的控制。MessageHub 发出的撤回请求（redact 关系消息）到了桥被当作噪声，Session 不知道（§1.7）。
   - 控制：`ControlCommand` 新增一条，以被撤回输入的 `key`（消息的 ObjId）为目标，名称暂定 `retract`。`runner/inputs.rs` 的 `apply_control` 按目标输入的状态分三种：
     - 还在队列里、没有被消费：丢弃，不进任何 Turn，记一条 `input_rejected`，拒绝原因新增 `retracted`。这是真正的“没输入过”。
@@ -513,7 +512,7 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
   - 感知：如果这条输入在撤回前已经被记进感知流，错的信息还会进记忆。实施时核对捕获发生在哪个点；已经记下的按 ME2 的同一条路径处置为 `discarded`。
   - 同步 `Session Control Protocol.md` §3、§9.2，`Session Input Protocol.md`（新的拒绝原因与消费规则），重新导出 schema，更新 `fixtures/14_input_bus` 的拒绝原因；`ui_core` 手册加一句撤回的效果和边界。
   - 验收：Agent 正忙时发出的第二条消息在被消费前撤回，之后任何 Turn 的历史里都没有它；正在处理的消息被撤回后 Turn 以 stopped 关闭，下一条消息的历史里有这条输入、已执行的步骤和撤回标记；已回复的消息被撤回，历史不变；不是 owner 发的 redact 不生效。
-- [ ] **SC11 重启后的异常中断与手工恢复。**（D27、D23 的括号；11-10 新增）依赖 SC1 的 `session.resume`。
+- [x] **SC11 重启后的异常中断与手工恢复。**（D27、D23 的括号；11-10 新增）依赖 SC1 的 `session.resume`。
   - 现状：宿主启动后把未结束的 Session 全部自动接着跑，没有“异常中断”状态（§1.7）。
   - 判定（推定 13，D28 已确认；两处修正待过目）：宿主进程启动后的第一次登记表扫描里，由本宿主驱动、没有暂停的未结束 Session，按类型看：
     - Work Session：不是在等用户的都算，不管这一刻有没有打开的 Turn。包括推理中、工具执行中、在等跟踪的 task 或子会话（`follows_work`）、刚建好还没开始的。等自己发起的工作的 Work 必须算进来：它会按 `tick_secs` 自己产生 tick 并推理（§1.7），不停住的话 plan 的子会话中断了，plan 自己还每十分钟推理一次。
@@ -544,7 +543,7 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
 
 ### 4.7 产物索引（AR）
 
-- [ ] **AR1 交付索引与查询。**（D13）
+- [x] **AR1 交付索引与查询。**（D13）
   - 在交付成功的地方追加一条记录（落点在 `runner/reports.rs` 调用 `ObjectStore` 之后、能拿到 Session 上下文的位置；`--dev` 没有对象存储时不写）。记录交付时间、名字、对象 id、`obj://` 地址、类型和大小、交付它的 Session、它所属的顶层 UI Session 与 `route_key`、来源是报告还是回复。同一对象同一 Session 重复交付只记一次。
   - 文件放在 AgentRoot 的 state 下，只追加；写明格式并补读写测试（`harness/trigger_rules.md` §3.2）。
   - `deliveries.recent`：按时间倒序分页；给 `route_key` 时只返回该对话的。归入 `is_read`。
@@ -554,10 +553,10 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
 
 共同要求：面板的数据只在面板打开时取；刷新沿用 `conversation/worksessions/watch.ts` 的做法（TaskMgr 树提示驱动，15 秒兜底，`complete` 后停止）；OpenDAN 调用统一走 `agentServiceClient`；调用失败（不是 owner、Agent 离线）时相应区块显示不可用，不影响面板其余部分。每项都要补 mock（`mock/` 下新增 OpenDAN 侧的假数据源）、i18n（`src/i18n/messagehub.ts` 中英文）、`UI_DATAMODEL.md`。
 
-- [ ] **MH1 统一面板外壳。**（D16）新组件（例如 `AgentSessionPanel.tsx`），上下两部分，中间可滚动；`MessageHubView.tsx` 的 `detailsTarget` 增加一种取值。桌面端在 `ConversationView` 头部加 Info 按钮，开关状态记在本地；手机端全屏，保留点标题进入，新增从会话视图左滑进入、右滑返回（MessageHub 里没有现成手势，注意不要和消息列表的滚动、语音录制的按压冲突）。只对“对方是自己名下 Agent 的会话”启用；其余会话入口和详情栏不变。头像、名字、副标题的点击在 Agent 会话里都指向新面板。`CodeAssistantAppPanel` 保持可编译。验收：`messagehub-ux.spec.ts` 增加桌面开关、抽屉模式、手机全屏和手势的用例；非 Agent 会话的现有用例不变。
-- [ ] **MH2 上部：Agent 全局区。** 依赖 HM2。压缩的头部（小头像、名字、在线状态、DID 可复制）；状态摘要一行或一组小数字（进行中、等待、失败、感知与认知数、最近整理时间），来自 `home.summary`；“打开 Agent 首页”用现成的 `openAgentHome`。实体设置：免打扰和置顶接到 `updateEntityPreferences`（顺带修好 `EntityDetails` 里没接线的两个按钮）；实体处于免打扰时，新建的会话继承静音（改 `api/store.ts` 建会话的路径）。验收：免打扰后未读总数和托盘不再计入该 Agent，新建会话也是静音的。
-- [ ] **MH3 下部：当前会话与子会话树。** 依赖 SC4、SC5。显示会话标题和描述、Agent 侧状态（处理中、空闲、异常中断、等待回答，加一句话状态）、当前是第几代会话。“Sub Sessions”区块用 `session.work_tree {unfinished_only: true}` 渲染：卡片行复用 `WorkSessionCards.tsx` 的 `WorkCardRow` 和 Todo 列表组件，把它们改成能递归；默认展开到 Todo 列表。点卡片打开该 Session 的工作日志（现有的消息详情页）。没有未结束的 Work 时显示空状态。现有 `SessionDetails` 的内容（成员、偏好、共享状态、管理、技术信息）收进面板底部的折叠区，不丢功能。验收对应规划场景“一个聊天会话创建多个后台工作”。
-- [ ] **MH4 消息控制与输入框联动。**（D9、D10、D23、D25、D27）依赖 SC2、SC3、SC10、SC11。
+- [x] **MH1 统一面板外壳。**（D16）新组件（例如 `AgentSessionPanel.tsx`），上下两部分，中间可滚动；`MessageHubView.tsx` 的 `detailsTarget` 增加一种取值。桌面端在 `ConversationView` 头部加 Info 按钮，开关状态记在本地；手机端全屏，保留点标题进入，新增从会话视图左滑进入、右滑返回（MessageHub 里没有现成手势，注意不要和消息列表的滚动、语音录制的按压冲突）。只对“对方是自己名下 Agent 的会话”启用；其余会话入口和详情栏不变。头像、名字、副标题的点击在 Agent 会话里都指向新面板。`CodeAssistantAppPanel` 保持可编译。验收：`messagehub-ux.spec.ts` 增加桌面开关、抽屉模式、手机全屏和手势的用例；非 Agent 会话的现有用例不变。
+- [x] **MH2 上部：Agent 全局区。** 依赖 HM2。压缩的头部（小头像、名字、在线状态、DID 可复制）；状态摘要一行或一组小数字（进行中、等待、失败、感知与认知数、最近整理时间），来自 `home.summary`；“打开 Agent 首页”用现成的 `openAgentHome`。实体设置：免打扰和置顶接到 `updateEntityPreferences`（顺带修好 `EntityDetails` 里没接线的两个按钮）；实体处于免打扰时，新建的会话继承静音（改 `api/store.ts` 建会话的路径）。验收：免打扰后未读总数和托盘不再计入该 Agent，新建会话也是静音的。
+- [x] **MH3 下部：当前会话与子会话树。** 依赖 SC4、SC5。显示会话标题和描述、Agent 侧状态（处理中、空闲、异常中断、等待回答，加一句话状态）、当前是第几代会话。“Sub Sessions”区块用 `session.work_tree {unfinished_only: true}` 渲染：卡片行复用 `WorkSessionCards.tsx` 的 `WorkCardRow` 和 Todo 列表组件，把它们改成能递归；默认展开到 Todo 列表。点卡片打开该 Session 的工作日志（现有的消息详情页）。没有未结束的 Work 时显示空状态。现有 `SessionDetails` 的内容（成员、偏好、共享状态、管理、技术信息）收进面板底部的折叠区，不丢功能。验收对应规划场景“一个聊天会话创建多个后台工作”。
+- [x] **MH4 消息控制与输入框联动。**（D9、D10、D23、D25、D27）依赖 SC2、SC3、SC10、SC11。
   - 在占位消息的任务区（`MessageTaskArea` 和 `MessageAgentWork` 的头部）加按钮。运行中：“停止”和“停止并撤回”，没有“暂停”（D23）。异常中断（SC11）：“恢复”“停止”，并写明是重启造成的中断。停止调 `session.stop {scope: "turn"}`；撤回对用户那条消息走 MessageHub 现有的 redact（SC10）；恢复调 `session.resume`。Session id 和 Agent DID 取自 Turn task 的 input（现有的 `taskWorklogTarget`）。点击后到状态变化前显示“停止中”“恢复中”。
   - “停止并撤回”的确认文案写明边界（§2.5 的推论）：Agent 已经做了的事不会撤销，只是不再继续，这条消息从对话里拿掉。Turn 已经结束的消息上不给这个入口（推定 14，已确认）；消息菜单里原有的“撤回 / 删除”不变，只改时间线。
   - 停止不停这条消息已经发起的 Work（D8、D9）。停止或撤回之后，如果这个 Turn 建过 Work 且还有没结束的，在占位下写明“这条消息发起的 N 个后台任务还在运行”，逐个给“停止”（调 `session.stop {scope: "session"}`，同 MH5 的节点控制）。数据用现成的 `session.work_cards {sid, task_id}`。确认框里也先说一句有几个后台任务不会跟着停。
@@ -565,17 +564,17 @@ Skills 的其余接口见 `src/frame/opendan/README.md`「Skills」，设备目�
   - （D17）回答态的 Stop 按钮改调 `session.stop {scope: "turn"}`，不再发 `/stop` 文本。
   - 把 `MessageTaskArea` 第一行的英文实时状态（`working (analyze_intent)` 等）本地化，复用 `worksessions/model.ts` 的 `localizeLine`。
   - 验收：规划场景“用户暂停正在分析的消息”按 D23 改成停止。处理中不能发送；停止后可发送且上下文还在，时间线上旧输入还在、没有 Agent 的回复；停止并撤回后旧输入也不在；停止一条已经建了 Work 的消息后，占位下列出这个 Work，点停止后它结束；Turn 进入等待子任务后可发送；异常中断时不能发送，恢复后继续，停止后可发送。deno 数据模型测试覆盖状态函数的全部分支。
-- [ ] **MH5 子会话树节点控制。**（D8、D20、D24、D27、D28）依赖 MH3、SC0、SC1、SC11。对应 §2.5 的 2b、2c 和 4。树上不加直接发消息的入口：纠正方向的消息由用户在对话里说，UI Session 的 Agent 转给 plan（今天已有）；plan 暂停时这条消息留在它的队列里，恢复后处理。纯 Work 不收消息（D24），节点上只有暂停、恢复、停止。异常中断的节点标明来源，有“恢复”“停止”；恢复一个节点连同它名下一起中断的子会话（SC11），所以恢复 plan 就恢复了它的 Todo 会话。后台 Work 的暂停走 Session 的暂停流程：未结束的节点上有“暂停”，已暂停的有“恢复”“停止”，调 `session.pause`（缺省级联，暂停 plan 就暂停它的 Todo 会话）/ `session.resume` / `session.stop`。停止要二次确认。直接对 Todo 的会话发控制不会写 plan 的 `TodoAttempt` 暂停标记（那是 `agent-session todo pause` 写的），卡片状态以会话自己的 `paused` 为准；验收时确认 plan 的下一次 tick 不把它当异常。已停止的节点上放一个“在 Agent 首页查看”的链接，删除在那边做。SC0 之后所有 Session 都有队列，树上每个未结束的节点都能暂停、恢复、停止，界面不用区分节点的种类。plan 暂停期间对话里的 Agent 照样把用户的话转给它，这一环是提示词的改动，在 SC1；这里验收时走一遍。树上有中断的节点时，区块顶部给一行提示和“全部恢复”：界面找出中断的节点里最靠上的那些，逐个调 `session.resume`，剩下的靠级联（SC11）。对话本身没有中断、只是名下的 Work 中断了的时候，这是面板里唯一一处能一次恢复的地方。
-- [ ] **MH6 Clean History 入口。**（D11、D18）依赖 SC6。面板下部的会话控制区加“开始新对话”，调 `ui.rotate`，与聊天命令 `/clean` 是同一个操作；MessageHub 是多 session 的，new 对应现有的“新建会话”，不动。确认框说明：Agent 从全新上下文开始，旧会话归档可查，消息记录不删除。有未结束 Work 时按钮禁用并说明原因。成功后在时间线插入一条本地分隔标记（按归档时间定位，取自 `ui.conversation` 的历代列表，刷新后仍在）。头部 ⋮ 菜单的“清空聊天记录”保持原样，两处文案要能让人分清。调用期间禁用输入框，返回后恢复。
-- [ ] **MH7 提示词版本标签。** 依赖 SC7 第一步。面板下部显示“与 Agent 当前版本一致”或“Agent 版本已更新”，后者的提示里写“开始新对话或下次历史压缩后生效”，并列出变化的项目名。标为高级信息，放在折叠区。
-- [ ] **MH8 近期产物区块。**（D13）依赖 AR1。默认收起，展开后“全部”“当前会话”两个页签，按时间倒序，滚动加载。每条显示缩略图或类型图标、名字、时间、来源会话。“更多”菜单：下载、收藏、转发（按单个文件构造转发内容，复用 `store.forward` 和 `ForwardDialog`）、定位到消息（仅当前会话且消息已加载或可加载时）。预览复用现有的媒体预览。对象读取走哪条访问路径（msg-center 的 ObjectAccess 需要消息上下文，“全部”页签里别的会话的产物没有）在实施第一步确认并写回 §8。
+- [x] **MH5 子会话树节点控制。**（D8、D20、D24、D27、D28）依赖 MH3、SC0、SC1、SC11。对应 §2.5 的 2b、2c 和 4。树上不加直接发消息的入口：纠正方向的消息由用户在对话里说，UI Session 的 Agent 转给 plan（今天已有）；plan 暂停时这条消息留在它的队列里，恢复后处理。纯 Work 不收消息（D24），节点上只有暂停、恢复、停止。异常中断的节点标明来源，有“恢复”“停止”；恢复一个节点连同它名下一起中断的子会话（SC11），所以恢复 plan 就恢复了它的 Todo 会话。后台 Work 的暂停走 Session 的暂停流程：未结束的节点上有“暂停”，已暂停的有“恢复”“停止”，调 `session.pause`（缺省级联，暂停 plan 就暂停它的 Todo 会话）/ `session.resume` / `session.stop`。停止要二次确认。直接对 Todo 的会话发控制不会写 plan 的 `TodoAttempt` 暂停标记（那是 `agent-session todo pause` 写的），卡片状态以会话自己的 `paused` 为准；验收时确认 plan 的下一次 tick 不把它当异常。已停止的节点上放一个“在 Agent 首页查看”的链接，删除在那边做。SC0 之后所有 Session 都有队列，树上每个未结束的节点都能暂停、恢复、停止，界面不用区分节点的种类。plan 暂停期间对话里的 Agent 照样把用户的话转给它，这一环是提示词的改动，在 SC1；这里验收时走一遍。树上有中断的节点时，区块顶部给一行提示和“全部恢复”：界面找出中断的节点里最靠上的那些，逐个调 `session.resume`，剩下的靠级联（SC11）。对话本身没有中断、只是名下的 Work 中断了的时候，这是面板里唯一一处能一次恢复的地方。
+- [x] **MH6 Clean History 入口。**（D11、D18）依赖 SC6。面板下部的会话控制区加“开始新对话”，调 `ui.rotate`，与聊天命令 `/clean` 是同一个操作；MessageHub 是多 session 的，new 对应现有的“新建会话”，不动。确认框说明：Agent 从全新上下文开始，旧会话归档可查，消息记录不删除。有未结束 Work 时按钮禁用并说明原因。成功后在时间线插入一条本地分隔标记（按归档时间定位，取自 `ui.conversation` 的历代列表，刷新后仍在）。头部 ⋮ 菜单的“清空聊天记录”保持原样，两处文案要能让人分清。调用期间禁用输入框，返回后恢复。
+- [x] **MH7 提示词版本标签。** 依赖 SC7 第一步。面板下部显示“与 Agent 当前版本一致”或“Agent 版本已更新”，后者的提示里写“开始新对话或下次历史压缩后生效”，并列出变化的项目名。标为高级信息，放在折叠区。
+- [x] **MH8 近期产物区块。**（D13）依赖 AR1。默认收起，展开后“全部”“当前会话”两个页签，按时间倒序，滚动加载。每条显示缩略图或类型图标、名字、时间、来源会话。“更多”菜单：下载、收藏、转发（按单个文件构造转发内容，复用 `store.forward` 和 `ForwardDialog`）、定位到消息（仅当前会话且消息已加载或可加载时）。预览复用现有的媒体预览。对象读取走哪条访问路径（msg-center 的 ObjectAccess 需要消息上下文，“全部”页签里别的会话的产物没有）在实施第一步确认并写回 §8。
 
 ### 4.9 文档与手册（DX）
 
-- [ ] **DX1 协议文档。** `doc/opendan/protocol/Session Control Protocol.md`（控制合同主入口：stop 的作用域、Goal 休眠的生效点及归档的关系、撤回输入、异常中断与恢复。目标已经写在它的 §9，实施时回写 §3–§8 并把 §9 的现状栏改掉）、`Session Input Protocol.md`（所有 Session 都有队列与 `input_policy` 的用法，引用控制合同）、`Session Directory Protocol.md`（输入通道与控制的持久表示）、`Agent State Protocol.md`（交付索引、Session 删除）、`src/frame/opendan/README.md`（新方法、`/stop` 的新含义、`/clean` / `/new` / `/cancel`、产物索引）。runtime 的移除与退役、`runtimes.settings*` / `remove` / `impact` 已由 runtime TODO 写进 Agent State Protocol 和 README，本项不再包含。
-- [ ] **DX2 界面文档。** `src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md`（新面板、前台消息状态、子会话树与产物的数据通路；顺带更正 §4.4 关于运行状态键由 OpenDAN 写入的说法，后端没有写入方）、`product/message_hub/MessageHub_Web_UI_PRD.md` §12、`product/message_hub/MessageHub_Current_UI_Model_Data.md`。
-- [ ] **DX3 cmd_skills 联动。** 按 `AGENTS.md` 的表逐项核对并在提交说明里写结论：`ui_core`（`/stop` 语义、`/clean` / `/new` / `/cancel` / `/resume`、撤回的效果与边界、后台工作的暂停与重启后的中断）、`behaviors/chat_route.toml`（暂停中的 plan 照常转发，改动在 SC1）、`opendan_agent_dev`（Session 行为、输入队列与 `input_policy`、新增的服务方法；它的模板示例里有 `input = "queue"`）。本单不改 skill 的安装 kRPC 和 AgentRoot 布局。
-- [ ] **DX4 回写关联 TODO。** 这一项只改文档。runtime TODO 一侧已做，skills TODO 一侧没做。
+- [x] **DX1 协议文档。** `doc/opendan/protocol/Session Control Protocol.md`（控制合同主入口：stop 的作用域、Goal 休眠的生效点及归档的关系、撤回输入、异常中断与恢复。目标已经写在它的 §9，实施时回写 §3–§8 并把 §9 的现状栏改掉）、`Session Input Protocol.md`（所有 Session 都有队列与 `input_policy` 的用法，引用控制合同）、`Session Directory Protocol.md`（输入通道与控制的持久表示）、`Agent State Protocol.md`（交付索引、Session 删除）、`src/frame/opendan/README.md`（新方法、`/stop` 的新含义、`/clean` / `/new` / `/cancel`、产物索引）。runtime 的移除与退役、`runtimes.settings*` / `remove` / `impact` 已由 runtime TODO 写进 Agent State Protocol 和 README，本项不再包含。
+- [x] **DX2 界面文档。** `src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md`（新面板、前台消息状态、子会话树与产物的数据通路；顺带更正 §4.4 关于运行状态键由 OpenDAN 写入的说法，后端没有写入方）、`product/message_hub/MessageHub_Web_UI_PRD.md` §12、`product/message_hub/MessageHub_Current_UI_Model_Data.md`。
+- [x] **DX3 cmd_skills 联动。** 按 `AGENTS.md` 的表逐项核对并在提交说明里写结论：`ui_core`（`/stop` 语义、`/clean` / `/new` / `/cancel` / `/resume`、撤回的效果与边界、后台工作的暂停与重启后的中断）、`behaviors/chat_route.toml`（暂停中的 plan 照常转发，改动在 SC1）、`opendan_agent_dev`（Session 行为、输入队列与 `input_policy`、新增的服务方法；它的模板示例里有 `input = "queue"`）。本单不改 skill 的安装 kRPC 和 AgentRoot 布局。
+- [x] **DX4 回写关联 TODO。** 这一项只改文档。runtime TODO 一侧已做，skills TODO 一侧没做。
   - skills TODO：原计划是把界面要求写进去让那边照着做，但那边已经实施（它的文档里没有提到本单）。按 D19，页面形态的差距另立了 [Skills 页界面形态 TODO](opendan-skills-page-ui-todo.md)；这里只剩在 skills TODO 的 §0 加一行指过去。
   - runtime TODO：在 R-E6 / E6 注明 Agent 首页的形态按规划改为“瘦列表（三类）+ 详情页 + 历史”，由本单 RT1–RT4 实施；在 E5 注明 Agent 首页“添加 Runtime”会深链到目录页；在 R-D1 / R-D3 注明 Agent 视角的“删除”是 `runtimes.remove`。（2026-11-09 已回写：那份文档的 §9.2，以及 R-E6、R-D1、R-D3、E5、E6 各行的状态列。它的裁决 24、26、27 和 §7.2 的答复已写回本单的 RT1、RT2。）
 
@@ -706,3 +705,39 @@ deno test --no-check --config tests/datamodel/messagehub.deno.json --allow-all t
   - 为此核对过的代码事实补在 §1.7 末尾五行：tick 的规则与间隔、`needs_input` 的定义、resume 级联的条件、Goal `paused` 不影响派生 Work、首页“进行中”的判定。都是读代码得出的，没有跑用例。
   - 没有核对清楚的：提了问题在等用户回答的会话在 state 里是什么形状（是 `needs_input`，还是把问题当成跟踪的 task），SC11 的判定要先确认这一点；对话里那行工作状态对暂停中的 plan 显示什么（SC1）。
 - **2026-11-10，owner 在 §2.1 第 8–11 条下面逐条批注“好，按你的建议”，整理为 D29，只改文档。** 四条的内容已经写在 SC2 和 HM3 里，这次没有改任务的做法，只把各处的“推定 8–11、待确认”改成已确认：§2 的裁决表、§2.1、§2.3、§2.4、§4.6、SC2、§5、§7。批注原话并进了 D29 一行。还在等确认的只剩第 13 条的两处修正和第 15、16 条。
+- **2026-11-10 晚，按本单实施（基线 `7c91504b6`，未提交，未在真实 Zone 上验）。** 后端的会话控制（SC0–SC11）在主工作树做；Memory / 产物索引 / `home.summary`、opendan WebUI、Desktop MessageHub 三条线并行做完后合入。下面按“落点 / 与本单不同的决定 / 没做与没验”记，测试结果在本条末尾。
+  - **按建议实施的三处，owner 当晚已确认都按建议（D30）**；落点留作记录：
+    - 推定 13 的两处修正（判定）：`runner/drive.rs` 的 `mark_interrupted`。要改回“只看打开的 Turn”，改那里的 `working` 一个表达式。
+    - 推定 15（Goal 休眠带停派生 Work）：`host/goals.rs` 的 `sync_dormant_work`（`reconcile` 里一处调用）和 `runner/inputs.rs` 的 `pause_source` 里 `goal` 一支。去掉调用即回到“派出的 Work 跑完”；`tests/goal_session.rs` 的 `a_paused_goal_holds_its_inputs_until_resumed` 要跟着改回去，目标页要写明。
+    - 推定 16（`/resume` 与提示）：`opendan/src/ui.rs` 的 `command` 里 `resume` 一支、`tell_interrupted`、`bridge_ctx` 的注册；Telegram 菜单多的一条在 `msg_center/src/tg_tunnel.rs`。
+  - **SC0。** 宿主有队列客户端时每个 Session 都有队列。模板键 `input` 保留键名换含义：`queue` = 收 msg / event，`none` = 只收控制命令（建会话时落成 `session.input_policy = none`），没有改成直接写 `input_policy`。只收控制的 Session 首批材料仍走 `prompt.initial_inputs`（`create_session` 的检查放宽成“队列收消息时才不许带”；`_bootstrap` 源不受 `input_policy` 限制）。投递方的拒绝放在登记表的 `post_input`（所有生产者都经过它），`session.post`、`agent-session post`、`xagent run --msg` 都在投递时得到 “takes no messages”。
+    - 与本单不同：**没有队列客户端的宿主保留无队列**（不在 Zone 里、也没有 `--queue-dir` 的 `xagent`），没有给它缺省的本地文件队列。所以 `cascade_pause`、`stop_children`、`host/mod.rs` 两处、`decide_unqueued` 里的“无队列”判据保留，只对这种宿主生效；`session.stop` 的 Supervisor 旁路删了。`SubSessionSpec.queued` 没有去掉：它现在的含义是“这个子会话收 msg / event”（Todo 派发用），不再是“有没有队列”。
+    - 没做：Todo 会话很多时 kmsg 上每个 Session 多一个队列和订阅的开销没有量。
+  - **SC1。** `session.pause` / `session.resume`。对话里那行工作状态原来只显示 `run_state`，暂停中的 plan 显示成 `waiting`，Agent 看不出来；现在显示 `paused` 或 `interrupted by a restart, waits to be resumed`（`ActiveSession.paused`、`runner/background.rs`）。`chat_route.toml` 和 `ui_core` 写明没有结束的 plan（含暂停中的）照样转发。“plan 暂停期间在对话里说一句修改，Agent 转给这个 plan”只改了提示词，没有用真实模型验。
+  - **SC2。** `StopScope` 多一个 `archive`（见 SC6）。`apply_control` 按会话类型分派；`session.stop` 对 UI 会话的 session 范围、对没有打开 Turn 的 turn 范围在服务端直接报错。Goal Session 的 session 范围 stop 由驱动者以投递者的身份调 `goals.set_status(paused)`。推理边界和驱动循环都看 Goal 状态（`runner/goal.rs` 的 `stop_if_dormant`）。`xagent ctl stop` 加了 `--scope session|turn|archive`。UI Turn 停在工具调用中途时的 turn 范围 stop 有用例；`analyze_intent` 子 context 里的没有单独写用例（`turn_stop && !site.child` 那一支没有动）。
+  - **SC3。** TaskMgr 的 `Paused` 只能经“请求控制 + 确认”进入，而且要 task 的 control profile 允许。做法：会话暂停时把 profile 的 pause / resume 置为可用，再自己请求并确认 Pause；恢复时请求并确认 Resume。副作用是 Task Center 上这个 task 会出现暂停 / 恢复按钮：TaskMgr 一侧发起的请求不转成会话控制，只会在会话自己暂停或恢复时被一并确认。真实 TaskMgr 上没有验（测试里的假 TaskService 用的是缺省空实现）。
+  - **SC4、SC5。** `ui.conversation`（`current` 另带 `route_key`）、`session.work_tree`。树里 Todo 的旧 attempt 不作为 plan 的子节点列出。
+  - **SC6。** 归档选了“stop 的第三种作用域”这条路（`stop {scope: archive}`，只对 UI Session 生效），没有用 Supervisor 的 `StopSignal`：这样旧会话的 worklog 里有谁、为什么归档，在飞的调用也照 stop 的规矩被打断。`ui.rotate` 等旧会话结束最多 20 秒，返回 `{archived, finished}`。竞态的修法照本单：`session_for` 对未结束的候选再读 `state.json`，已请求停止或已结束的不投递，记录留到下一轮扫描。
+  - **SC7。** 比较的做法是把“现在新建一个同类会话会冻结到什么”整个重算一遍（`state/behaviors.rs` 的 `refrozen`，UI 会话的手册取模板当前的缺省，也就是 owner 的 UI 集合，禁用的自然不在里面），再逐项比（`frozen_changes`）。第二步核对的结论：系统前缀在每个新 run 建上下文时由 `prompt.frozen` 装配，压缩不改它；所以刷新做在“新建 run 之前”（`runner/drive.rs` 的 `refresh_frozen`）：UI 会话的摘要比冻结时间新，就重新冻结并记 `control_applied{prompt_refrozen}`。结果是压缩之后的**下一个 run** 才用上新提示词（压缩发生在建上下文的过程中，那个 run 的前缀已经定了）。run 内的就地压缩不换前缀。
+  - **SC8。** `sessions.delete` 归入门面的 `is_write`。已结束但还能验收的 Work 也能删，它的队列没有主动回收。
+  - **SC9。** 命令的回复不经过 Session，由宿主直接发（`ui.rs` 的 `say`），文案在 Agent 包 `i18n/<lang>.toml` 的 `[commands]`，包里没有时用内置英文。控制和撤回只投给对话当前的 UI Session，不会为此新建一代。
+  - **SC10。** `control(retract {key})`。**没有加 `session.retract` kRPC**：入口是 owner 的 redact，界面看 Turn task 的状态就够。
+    - 实现上的两处与设想不同：正在处理的输入按打开的 Turn 上新记的 `open_turn.msg_keys` 认（run 进行中，Turn 的输入记录还没刷进会话 worklog，按 worklog 查不到）；“下一个 Turn 知道这条被撤回了”靠一条待注入的观察事件放进下一批输入的背景（对话沿用同一个上下文时不重建历史，历史里的注记到不了模型），重建历史时另有一行英文注记。这句话是给模型看的，没有进 i18n。Turn 合并了多条消息时不单独标出是哪一条。
+    - 占位消息：没有做成“一问一答都不显示”，也没有单独的“已撤回”文案，沿用“已停止”（`[outbound] stopped`）；用户那条消息按 MessageHub 现有的 redact 显示。
+    - 感知：用户的输入不会自动进感知流，感知只在模型自己 `perceive` 时写。被撤回的 Turn 里模型已经记下的不自动处置，owner 可以在 Memory 页删（未整理的感知可删）。
+    - `fixtures/14_input_bus` 没有动：`retracted` 是运行时由 control 产生的拒绝，不是记录解析阶段的。
+  - **SC11。** 标记由驱动循环在拿到 lease 后写（`mark_interrupted`），Supervisor 只负责告诉“这是重启后的恢复期”（第一次登记表扫描结束之前起的驱动循环都带这个标志）。补了本单没写的两点：只对宿主这次启动之前就存在的 Session 判定（恢复期内新建的不算）；退避中的 run（可重试错误之后）算正在工作，它到点会自己推理。“在等用户回答”在 state 里的形状核对过：就是 `needs_input` 那个式子（`waiting` 且不在等自己发起的工作），提问经通知发出的 Work 也是它。标记之后的恢复步骤（对齐快照、未知结果的物化）在暂停期间的驱动里照常做，不等 resume；推理要等 resume。owner 的通知在第一次扫描结束 5 秒后发一次。
+    - 顺带修了一处既有缺口：驱动被中止（宿主 `shutdown`）时，监视 stop 的后台任务没有随之结束，lease 一直被它拿着（`StopMonitor` 加了 `Drop`）。真实重启不受影响，同进程内重启宿主的测试受影响。
+  - **Memory（ME1、ME2）。** 落点 `memory/owner.rs`、`Consolidator::forget`、`opendan/src/overview.rs`。与 §3 不同：`MemoryEntry` 多 `revision?`（认知的当前修订，删除时当 `expected_revision`）和 `cleared?`，`absorbed_into` 是数组；感知的 `state` 多一种 `duplicate`；`perceptions.pending` 含暂缓的；冲突没有专门的错误 kind（`kind: other`，message 以 `memory_conflict:` 开头），租约被占是标准的 `busy`；`memory.forget` 只有 owner 能调（进了 `is_owner_only`）。`memory.read` 返回 Memory 的读视图原样，WebUI 按 JSON 显示。
+  - **AR1。** `state/deliveries.jsonl`（格式在 Agent State Protocol §6.1）。`before` / `next_before` 是行位置。没进索引的：回复正文里 `<attachment>` 标签带的文件（它在宿主把回复转成消息时才变成对象）；进了索引的回复附件只有结构化回复的 `artifacts`。
+  - **opendan WebUI。** 新文件 `web/src/shell.tsx`、`pages/Memory.tsx`、`pages/Runtimes.tsx`、`runtimes.ts`；`Workspaces.tsx`、`Home.tsx`、`SessionDetail.tsx`、`Sessions.tsx`、数据层四个文件改过。首页概况没有接 `home.summary`（Session 树本来就要整份列表），口径一致：暂停着的不算进行中。WebUI 上没有“暂停”入口（暂停在 MessageHub 的子会话树上）。WS2 核对的结论：导入在写身份文件之前失败的什么都不留；登记这一步失败时目录里会留下 `.opendan-workspace.json`，再次导入同一目录能自愈；create 还可能留下新建的空目录。
+  - **文档与手册。** `Session Control Protocol.md` §3–§8 重写（§9 留作裁决记录），`Session Input Protocol.md`、`Session Directory Protocol.md`、`Agent State Protocol.md`、`opendan/README.md`、`xAgent.md`、架构设计各补了对应的段落；schema 重新导出（`control_command`、`registry_entry`、`session_config`、`session_input`、`session_state`）。手册：`ui_core`（`/stop` 等命令、撤回、暂停与中断）、`opendan_agent_dev`（`input` 键的新含义、stop 的作用域、重启后的中断）、`behaviors/chat_route.toml`、Jarvis 的 `i18n` 加 `[commands]`；Telegram 菜单改了 `clean` / `new` / `cancel` 的说明并加了 `resume`。本单没有改 skill 的安装 kRPC 和 AgentRoot 布局，其它手册不受影响。
+  - **没验的。** 真实 Zone 上全部没验（后端要 `./build_aios --local-test` 重建镜像）；真实 TaskMgr 上的 Paused；Telegram；真实模型下暂停中的 plan 的转发；opendan 这条路径改 settings 后调度器刷新的延迟（RT1 遗留）。升级到这一版后第一次重启，所有进行中的会话都会停在中断，要手工恢复。
+  - **测试结果（2026-11-10 晚）。** `cargo test -p libopendan -p opendan --no-fail-fast -- --test-threads=1`：569 通过，2 失败，6 忽略。失败的两条是 §6.2 记的基线失败（`tests/xagent_cli.rs` 的 `a_sub_session_is_created_and_followed_through_the_shell_tool`、`xllm_takes_over_the_live_run_and_xagent_commits_its_end`，缺 `src/tools/bin`）。新增用例：`lib_opendan/tests/session_control.rs`（8 条：只收控制的队列、对话只能归档、未消费输入的撤回、处理中消息的停止与撤回、重启中断与按树恢复、停止中断的消息、删除、压缩后重新冻结）、`tests/work_card.rs` 的 `the_work_below_a_session_is_a_tree`、`tests/goal_session.rs` 的 `a_goal_put_to_sleep_mid_activation_infers_no_more`、`tests/deliveries.rs`、`tests/memory_component.rs` 两条、`opendan/tests/loader.rs` 的 `a_restart_interrupts_the_message_in_progress_until_resume`。按新合同改过的既有用例：依赖“重启后自动继续”的（`goal_session.rs` 两条、`memory_maintenance.rs` 的崩溃恢复、`loader.rs` 的 `registered_sessions_are_hosted_and_recovered`）现在先手工 resume；对 UI 会话用 session 范围 stop 的改成归档或 turn 范围；断言“没有队列”的改成“只收控制”；`a_paused_goal_holds_its_inputs_until_resumed` 改成验证派生 Work 随 Goal 休眠暂停。`cargo check -p msg_center` 通过。opendan WebUI：`pnpm check`、`pnpm lint`、`pnpm build` 通过，`pnpm test:e2e` 49 条全过（mock，Chromium）。
+  - **Desktop（MH1–MH8、RT3 的深链、DX2）。** 新目录 `desktop/src/app/messagehub/agentpanel/`（面板、数据源、时间线分隔），`conversation/input/foregroundState.ts`（前台消息状态，纯函数）、`conversation/tasks/TurnControls.tsx`、`conversation/worksessions/WorkControls.tsx`、`swipe.ts`、`mock/agentpanel.ts`；`WorkSessionCards` 改成能递归；`DesktopRoute.tsx` 处理 `?settings=<page>`。
+    - 与本单不同：回答态的 Stop 只对自己名下的 Agent 调 `session.stop {scope: turn}`，别人的 Agent 仍发 `/stop` 文本（调不了它的服务）。时间线上“开始新对话”的分隔只来自 `ui.conversation`，面板关着不读，所以要在这个浏览器打开过面板之后才有（历代结束时间记在 localStorage）。点子会话树上的卡片开的是详情栏里的工作日志（新目标 `worklog`），返回回到面板。⋮ 菜单的“编辑信息”仍开原来的会话详情。面板宽 380（其它详情 320）。近期产物只有类型图标，没有缩略图。已停止的节点不在 `unfinished_only` 的树里，树下留一行“已停止”和去 Agent 首页的链接。手势用例放在新 spec，没有进 `messagehub-ux.spec.ts`。
+    - “停止并撤回”撤哪条消息：Turn task 的 input 现在多带 `input_keys`（这个 Turn 的消息 ObjId，`runner/turn_task.rs`、`opendan/src/tasks.rs`），前端优先用它；没有时退回“占位之前用户最新的一条”。
+    - MH8 的对象读取路径：预览和下载走 Agent `artifacts` 桶的绑定（owner 自己的桶权限），不经 msg-center 的对象路由。“收藏”“定位到消息”只在已加载的时间线里找得到携带该对象的消息时可用。归档后没有当前一代时“当前会话”页签不可用（`route_key` 取自 `ui.conversation` 的 `current`）。
+    - 验证：`pnpm check` 通过；动过的文件 lint 0 error（全量仍有基线的 4 个 error，在 ai-center 和 homestation）；deno `messagehub-*.test.ts` 111 通过、7 失败（都在 `messagehub-guest.test.ts`，基线），新增 `messagehub-agent-panel.test.ts` 10 条通过；e2e 新增 `messagehub-agent-panel.spec.ts` 18 条，连同 agent-task 一起 `--workers=2` 复跑 34 通过、3 失败，其中 `messagehub-agent-task.spec.ts:567` 是基线（原 :575），另两条串行重跑通过。全部 `messagehub*` spec 在与后端形状对齐之前整体跑过一次：198 通过、4 失败，都是 §6.2 的基线。全量 `pnpm test:e2e` 只在高负载下跑过一次（524 通过、27 失败）：`ai-center:4`、`ai-center:119`、`desktop:330`、`filebrowser-review:93`、`ndm-upload-endpoint` 全部、`my-network:350` 串行重跑仍失败，这些文件本单没有动，但没有在未改动的工作树上确认它们是不是基线。
+    - 没验：真实 Zone；只测了 Chromium，手势是合成的 touch 事件；转发一个只带 `obj_id` 的产物后对方能不能读到；直接暂停 Todo 的会话后 plan 的下一次 tick 会不会把它当异常；改 UI DataModel 属 `harness/trigger_rules.md` §3.4 的高影响改动（读放大的核对：面板关着不读，会话状态和工作树最多 15 秒一次，产物展开才读）。
+- **2026-11-10 晚，owner 确认推定 13 的两处修正、推定 15、16 都按建议（D30），只改文档。** 三处实施时就是按建议做的，代码不用动。本单没有待确认的推定了。

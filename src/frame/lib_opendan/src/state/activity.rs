@@ -40,6 +40,9 @@ pub struct ActiveSession {
     pub parent: Option<String>,
     /// What it is about (UI sessions), as last reported.
     pub topic: Option<Topic>,
+    /// It is paused (why): it infers nothing until resumed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<PauseSource>,
 }
 
 pub(super) struct FsActivity {
@@ -146,6 +149,7 @@ impl ActivityView for FsActivity {
                 driver: e.driver.principal.clone(),
                 parent: e.origin.as_ref().and_then(|o| o.parent_session.clone()),
                 topic: e.status.topic.clone(),
+                paused: e.status.paused,
             });
         }
         out.sort_by(|a, b| {

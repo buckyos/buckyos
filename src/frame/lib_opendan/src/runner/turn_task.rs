@@ -29,6 +29,9 @@ pub struct TurnTaskOpen {
     pub title: String,
     /// The Turn's logical input (`<source>#<index>`) of its opening batch.
     pub inputs: Vec<String>,
+    /// Keys of the messages among them (a message's ObjId): what a viewer
+    /// retracts.
+    pub input_keys: Vec<String>,
 }
 
 /// What the session does right now.
@@ -45,6 +48,8 @@ pub struct TurnTaskStatus {
     pub message: String,
     pub behavior: Option<String>,
     pub tool: Option<String>,
+    /// The session is paused (why): the Turn stays open and nothing runs.
+    pub paused: Option<PauseSource>,
 }
 
 /// How the Turn ended.
@@ -115,6 +120,7 @@ pub(super) async fn ensure_turn_task(sh: &Arc<Shared>, title: Option<String>) {
                     .and_then(|o| o.parent_task.clone()),
                 title: cut(&title, 120),
                 inputs: t.inputs.clone(),
+                input_keys: t.msg_keys.clone(),
             },
             t.has_msg,
             t.at_ms,
@@ -182,6 +188,9 @@ pub(crate) fn live_line(s: &Session, tool: Option<&str>, intent: Option<&str>) -
     let st = &s.state;
     let goal = super::goal::is_goal(&s.config);
     match st.run_state {
+        _ if st.paused.as_ref().is_some_and(|p| p.source == PauseSource::Interrupted) => {
+            "interrupted: the host restarted; resume to go on, or stop".to_string()
+        }
         _ if st.paused.is_some() => match st.paused.as_ref().and_then(|p| p.reason.as_deref()) {
             Some(r) => format!("paused: {}", r.chars().take(160).collect::<String>()),
             None => "paused".to_string(),
@@ -265,6 +274,7 @@ fn status_of(
             message,
             behavior: st.current_behavior.clone(),
             tool,
+            paused: st.paused.as_ref().map(|p| p.source),
         },
     ))
 }

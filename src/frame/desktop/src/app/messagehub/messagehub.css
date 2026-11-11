@@ -425,6 +425,59 @@ button.mh-sender-avatar:focus-visible {
   opacity: 0.6;
 }
 
+.mh-turn-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.mh-turn-action:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.mh-turn-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mh-work-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--cp-muted);
+}
+
+.mh-work-control:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+}
+
+.mh-work-control:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+@media (pointer: coarse) {
+  .mh-turn-action {
+    min-height: 36px;
+  }
+
+  .mh-work-control {
+    width: 36px;
+    height: 36px;
+  }
+}
+
 .mh-answer-action {
   display: inline-flex;
   min-height: 28px;

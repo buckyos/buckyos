@@ -469,6 +469,69 @@ pub async fn freeze_config(
     Ok(())
 }
 
+/// What a session of this configuration would freeze now: the catalog's
+/// current identity, behaviors and manuals. A conversation takes the
+/// manuals a new one of its class would get (the owner's UI set, what is
+/// switched off left out); behaviors frozen on their first use stay known.
+pub async fn refrozen(
+    cfg: &SessionConfig,
+    catalog: &dyn BehaviorCatalog,
+    agent_root: Option<&Path>,
+    who: &str,
+) -> Result<SessionConfig> {
+    let mut next = cfg.clone();
+    let old = next.prompt.frozen.take();
+    if cfg.session.kind == SessionKind::Ui {
+        next.prompt.cmd_skills = crate::template::SessionTemplate::load(&cfg.session.class, agent_root)?.default_cmd_skills;
+    }
+    freeze_config(&mut next, catalog, who).await?;
+    let later: Vec<String> = old
+        .iter()
+        .flat_map(|f| f.behaviors.keys())
+        .filter(|name| !next.prompt.frozen.as_ref().is_some_and(|f| f.behaviors.contains_key(*name)))
+        .cloned()
+        .collect();
+    for name in later {
+        if let Some(b) = catalog.get(&name).await? {
+            next.set_frozen_entry(&name, &b).map_err(OpenDanError::InvalidArgument)?;
+            if let Some(f) = next.prompt.frozen.as_mut() {
+                f.behaviors.insert(name, b);
+            }
+        }
+    }
+    Ok(next)
+}
+
+/// What differs between two freezes, by the file it comes from (`role.md`,
+/// `self.md`, `i18n`, `behaviors/<name>`, `cmd_skills/<name>`).
+pub fn frozen_changes(old: &FrozenPrompt, new: &FrozenPrompt) -> Vec<String> {
+    let mut changed = Vec::new();
+    if old.identity.role != new.identity.role {
+        changed.push("role.md".to_string());
+    }
+    if old.identity.self_text != new.identity.self_text {
+        changed.push("self.md".to_string());
+    }
+    if old.identity.i18n != new.identity.i18n {
+        changed.push("i18n".to_string());
+    }
+    for (name, b) in &old.behaviors {
+        if new.behaviors.get(name) != Some(b) {
+            changed.push(format!("behaviors/{name}"));
+        }
+    }
+    let text = |f: &FrozenPrompt, name: &str| f.cmd_skills.iter().find(|c| c.name == name).map(|c| c.text.clone());
+    let mut names: Vec<&str> = old.cmd_skills.iter().chain(&new.cmd_skills).map(|c| c.name.as_str()).collect();
+    names.sort();
+    names.dedup();
+    for name in names {
+        if text(old, name) != text(new, name) {
+            changed.push(format!("cmd_skills/{name}"));
+        }
+    }
+    changed
+}
+
 /// Manuals a creator names for a work (`--cmd-skill`, a Todo's `--skill`): each is a work skill the agent has, on, and
 /// for work. What its runtime does not meet is found when the session is frozen.
 pub async fn check_named_skills(catalog: &dyn BehaviorCatalog, names: &[String]) -> Result<()> {

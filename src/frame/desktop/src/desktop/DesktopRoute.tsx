@@ -12,6 +12,8 @@ import { OpenWithHost, requestOpenWith } from '../app/content/OpenWithSheet'
 import { openPreview } from '../app/preview/launch'
 import { agentGuide } from '../app/agent-setup/guide'
 import { agentSetupLaunchSchema, openAgentSetup } from '../app/agent-setup/launch'
+import { openSettings } from '../app/settings/launch'
+import { isSettingsPage } from '../app/settings/components/layout/navigation'
 import { AGENT_GUIDE_APP_ID } from '../app/agent-setup/model'
 import clsx from 'clsx'
 import {
@@ -288,6 +290,18 @@ export function DesktopRoute() {
     params.delete('agent_id')
     setSearchParams(params, { replace: true })
     if (launch.success) openAgentSetup(launch.data)
+  }, [snap.status, searchParams, setSearchParams])
+
+  // A link from another app's page (`?settings=<page>`: the Agent home's "Add runtime") opens Settings on that page.
+  const settingsLinkHandled = useRef(false)
+  useEffect(() => {
+    if (snap.status !== 'success' || settingsLinkHandled.current || !searchParams.has('settings')) return
+    settingsLinkHandled.current = true
+    const page = searchParams.get('settings')
+    const params = new URLSearchParams(searchParams)
+    params.delete('settings')
+    setSearchParams(params, { replace: true })
+    if (isSettingsPage(page)) openSettings(page)
   }, [snap.status, searchParams, setSearchParams])
 
   // The Jarvis guide follows the signed-in user's own Agent created from it.

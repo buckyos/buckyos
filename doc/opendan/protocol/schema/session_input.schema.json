@@ -80,7 +80,7 @@
                   "$ref": "#/definitions/StopScope"
                 }
               ],
-              "description": "`session` (default): the session finishes as stopped. `turn`: only the open Turn closes as stopped and the session goes on waiting. A Goal Session only ever stops its open Turn (it ends with its Goal)."
+              "description": "What it ends ([`StopScope`]); what `session` means follows the session's kind."
             }
           },
           "required": [
@@ -127,6 +127,31 @@
           },
           "required": [
             "command"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The user takes back an input (`key`: the message's ObjId). Still queued: dropped as if never posted. Consumed and its Turn open: the Turn is stopped and the retraction recorded. Its Turn closed: nothing changes.",
+          "properties": {
+            "command": {
+              "enum": [
+                "retract"
+              ],
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "command",
+            "key"
           ],
           "type": "object"
         },
@@ -441,11 +466,29 @@
     },
     "StopScope": {
       "description": "What a `stop` ends.",
-      "enum": [
-        "session",
-        "turn"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "description": "The session: a Work ends as stopped (with its sub sessions), a Goal Session's Goal goes dormant, a UI session refuses.",
+          "enum": [
+            "session"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The open Turn only; the session goes on.",
+          "enum": [
+            "turn"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A UI session is archived: it ends as stopped and the next message of its conversation opens a new one. Other sessions refuse.",
+          "enum": [
+            "archive"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "Subscription": {
       "properties": {

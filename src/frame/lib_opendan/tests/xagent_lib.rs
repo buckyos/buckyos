@@ -73,27 +73,28 @@ fn write(path: &std::path::Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-/// E13: the work template has no input queue and ends with its explicit
-/// final report. Its first input is persisted with the configuration,
+/// E13: the queue of the work template takes controls only, and the
+/// session ends with its explicit final report. Its first input is persisted with the configuration,
 /// consumed through the same receipts, and survives a restart between
 /// creation and the first drive.
 #[tokio::test]
-async fn work_template_runs_without_a_queue_until_its_final_report() {
+async fn work_template_takes_no_message_and_runs_until_its_final_report() {
     let env = Env::new();
     let mut spec = template_spec("work", "summarize the note");
     assert_eq!(spec.input_channel, Some(InputChannel::None));
     spec.prompt.initial_inputs = vec![msg("the note: buy milk"), msg("and eggs")];
     let sd = env.create_work(spec).await;
     let cfg = sd.config().unwrap();
-    assert!(cfg.channels.kmsg().is_none(), "no queue although the host has a client");
+    assert!(cfg.channels.kmsg().is_some(), "a queue for controls");
+    assert_eq!(cfg.session.input_policy, InputPolicy::None);
     assert_eq!(cfg.session.policy.wait_user_msg, WaitPolicy::FinishFailed);
     assert_eq!(cfg.prompt.initial_inputs.len(), 2);
-    // Nothing can be posted later.
+    // No message can be posted later.
     let agent = env.agent();
     let err = libopendan::post_input(agent.as_ref(), sd.sid(), &msg("late"))
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("no input queue"), "{err}");
+    assert!(err.to_string().contains("takes no messages"), "{err}");
 
     let llm = ScriptedLlm::new(|req, _| {
         let u = last_user_text(req);
@@ -677,7 +678,7 @@ async fn a_parent_waits_for_its_reporting_sub_sessions() {
         let sd = SessionDir::open(&c.location).unwrap();
         let cs = sd.state().unwrap();
         assert_eq!((cs.turn_seq, cs.turns_completed), (1, 1), "its own Turn");
-        assert!(sd.config().unwrap().channels.kmsg().is_none());
+        assert_eq!(sd.config().unwrap().session.input_policy, InputPolicy::None);
         assert!(sd.binding_opt().unwrap().is_some(), "bound by its own first drive");
     }
     // The same call again: the same sub session.

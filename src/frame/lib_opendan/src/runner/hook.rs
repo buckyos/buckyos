@@ -85,6 +85,7 @@ impl SessionCheckpointHook {
         // Controls, rejected records, Observe events. msg / Input events
         // stay queued for the next controlled input.
         route_inputs(sh, true).await?;
+        Box::pin(super::goal::stop_if_dormant(sh, true)).await?;
         let (stop, turn_stop, paused) = {
             let s = sh.session.lock().await;
             (

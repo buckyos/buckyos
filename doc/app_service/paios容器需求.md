@@ -285,7 +285,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `gen_video`、`edit_video`、`extend_video`、`upscale_video` | 视频生成与编辑（走 Zone 模型） | `aigc_video`；本地剪辑 / 合成另需表 B 的 ffmpeg |
 | `gen_music`、`text_to_speech`、`speech_to_text`、`enhance_audio` | 音频生成、TTS、ASR、增强（走 Zone 模型） | `aigc_audio`；本地转码 / 拼接另需表 B 的 ffmpeg |
 
-**表 B：`ext-core` 扩展包（`extended` 基线，`baseline::EXTENDED_TOOLS` ↔ `publish/exttool/ext-core/ext-manifest.json`，23 条命令）**
+**表 B：`ext-core` 扩展包（`extended` 基线，`baseline::EXTENDED_TOOLS` ↔ `publish/exttool/ext-core/ext-manifest.json`，已实施 23 条命令，另有 `soffice` 待实施）**
 
 `ext-core` 是扩展包目录里的第一个包，五个平台（`linux-x86_64`、`linux-aarch64`、`darwin-arm64`、`darwin-x86_64`、`windows-x86_64`）各一个自包含 payload；装到 `$BUCKYOS_ROOT/tools/`，三种形态一套（容器节点是 `buckyos-tools` 卷）。发行、钉版与种子见 ExtTools TODO §3.10。工作镜像不再 apt 装这组命令，容器与原生一样从 `ext-core` payload 得到它们。
 
@@ -298,6 +298,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `pdftotext`、`pdftoppm`、`pdfinfo` | poppler ≥ 22.0，`conda-lock.yml` | conda-forge | conda-forge | conda-forge | 媒体工具基线（[doc/workflow/media tool baseline.md](../workflow/media%20tool%20baseline.md)）：workflow `media.pdf` / `media.document` 的 PDF 文本 / 页图提取；`import_office` 后加工 |
 | `tesseract`（含常用语言数据） | tesseract，`conda-lock.yml`（conda-forge 带全部 126 种语言，tessdata_fast；构建时保留 28 种加 `osd`：系统界面语言 `chi_sim`、`chi_tra`、`eng`、`spa`、`fra`、`deu`、`kor`、`jpn`、`rus`，竖排 `chi_sim_vert`、`chi_tra_vert`、`jpn_vert`、`kor_vert`，其他常用 `por`、`ita`、`nld`、`pol`、`tur`、`ukr`、`ara`、`fas`、`heb`、`hin`、`ben`、`tha`、`vie`、`ind`、`msa`；保留清单在 `build.sh`，`smoke/tesseract.*` 逐个检查） | conda-forge | conda-forge | conda-forge | workflow 媒体基线：`media.ocr_pages` 为文字层缺失或乱码的 PDF 页重新识别（[media tool baseline.md](../workflow/media%20tool%20baseline.md)）；Agent 本地 OCR |
 | `pandoc` | 3.12.1，`build.sh` | 官方 | 官方 | 官方 | 文档格式转换（docx / md / html / pdf 互转）：`import_office` 的后加工、文档类产出 |
+| `soffice`（**待实施**，[preview-more-formats-todo](../../notepads/preview-more-formats-todo.md) C1） | LibreOffice 官方发布版，只取无界面转换要用的子集：core、ure、writer、calc、impress、draw、math、graphicfilter、xsltfilter 和它自带的字体。pyuno、内置 Python、图标主题、数据库驱动、扩展、词典都不要。另外带 Noto Sans / Serif CJK 的常规体和粗体，五个平台带同一套。版本和 SHA256 钉在 `build.sh` / `sources.sha256`。落地前，Linux 容器里的 soffice 仍来自 `build_aios` 的 apt 包（见本表下方） | 官方 deb 解包。依赖的系统库（cairo、cups、dbus、fontconfig、freetype、glib、nss、X11 等）由 conda-forge 一起带上；要求 glibc ≥ 2.34 | 官方 dmg 里的 LibreOffice.app，arm64 和 x86_64 分开 | 官方 msi 做管理安装（`msiexec /a`）后解包；launcher 指向 `soffice.com` | Preview 管线：把 Office / ODF / WPS 文档转成 PDF，把 xls / ods 等旧表格转成 xlsx。workflow 媒体基线 `media.to_pdf`。`import_office` 的原样模式和不可解析对象的栅格化。字体集算在转换指纹里（`env/fonts`），所以各平台要一致 |
 | `python3` | python-build-standalone `install_only` 3.12.x，`build.sh` | 官方（astral） | 官方（astral） | 官方（astral） | ScriptHost Python App 的依赖安装；Agent 临时脚本。项目解释器由 uv 管，这份只是保证 `python3` 存在 |
 | `uv` | `build.sh` | 官方 | 官方 | 官方 | Python 项目与解释器管理；`UV_CACHE_DIR` 等指到 Agent 缓存（ExtTools TODO §3.6） |
 | `node`、`npm`、`npx` | Node LTS，`build.sh`（与 `build_aios` 的 `NODE_VERSION` 同一个数） | 官方 | 官方 | 官方 | ScriptHost / aiws 项目构建；`buckyos_app_dev` 的 web 包 |
@@ -313,13 +314,14 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 
 `bash`、`rsync` 是 Linux 特有，仍由 `build_aios` 的 `RUNTIME_PACKAGES` 进工作镜像，不在 `ext-core`，也不要求 macOS / Windows 提供。
 
+**owner 2026-11-10 定：工作镜像里的工具都来自 `ext-core`。** LibreOffice 进了工作镜像，就属于核心扩展工具：`soffice` 命令一定可用，各环境的区别只是调用方式不同（容器从工具卷取，宿主从 `$BUCKYOS_ROOT/tools` 取）。所以原来规划的 `ext-office` 并入 `ext-core`，也就是上表的 `soffice`。在 `soffice` 进入 `ext-core` 之前，`build_aios` 的 `RUNTIME_PACKAGES` 里还有一组过渡用的 apt 包：`libreoffice-{core,writer,impress,calc}-nogui`、`fonts-dejavu-core`、`fonts-liberation`、`fonts-noto-core`、`fonts-noto-cjk`、`locales`（生成 `en_US.UTF-8`，`LANG=C.UTF-8`）。这组包只在 Linux 容器里有，不含 draw。`soffice` 落地后整组删除。
+
 **表 C：其它官方扩展包与非包内容**
 
 每个官方扩展包都是一个 pikg（`app_type = ext_tools`），各有自己的 `ext-manifest.json` 与本表的一张清单；新包先在这里登记场景与命令，再建工程。
 
 | 包 / 内容 | 命令 | 状态 | 来源 / 版本 | 支持的场景（为什么要装） |
 | --- | --- | --- | --- | --- |
-| `ext-office`（规划） | `soffice`（LibreOffice headless）+ 字体（`fonts-dejavu-core`、`fonts-liberation`、`fonts-noto-core`、`fonts-noto-cjk`）+ locale（`en_US.UTF-8`，`LANG=C.UTF-8`） | 规划中。今天只在 Linux 容器：`build_aios` 的 apt 包 `libreoffice-*-nogui` + 字体 + `locales`；原生包要 T0 另核（LibreOffice 三平台有官方安装包但不是 portable，体积约数百 MB） | apt ≥ 7.0；原生待定 | 媒体工具基线：workflow `media.document` 的 DOCX / PPTX / ODT → PDF；`import_office` 的版式转换。字体影响页图内容，属于执行环境指纹 |
 | `ext-cad`（规划） | `freecadcmd` | 规划中，默认不装。今天是 exttool 镜像的可选项：`FREECAD_APPIMAGE_URL_*` 为空时没有这个命令 | FreeCAD 官方 AppImage（Linux x86_64；aarch64 核）、dmg、7z | CAD 脚本化 |
 | 工具卷的 `uv-cache`、`deno-cache` | 不是命令 | 随 `publish/exttool` seed 镜像预热，卷新建时复制一次；格式不允许包携带缓存（X3 定：留在 seed 镜像） | 随镜像 | ScriptHost 首启离线装依赖 |
 

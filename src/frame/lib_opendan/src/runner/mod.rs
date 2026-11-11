@@ -311,6 +311,34 @@ pub struct RunnerDeps {
     pub context_windows: Option<Arc<dyn ContextWindowSource>>,
     pub options: RunnerOptions,
     pub stop: StopSignal,
+    /// Set by a host for the drives it starts while it recovers from a
+    /// restart: a session found working is not advanced but marked
+    /// interrupted (paused, resumed by hand).
+    pub recovering: Option<Arc<Recovering>>,
+}
+
+/// A host's recovery after its start, as far as one session's serving loop
+/// is concerned: the first drive that gets to look at the session's state
+/// decides whether the restart interrupted it.
+pub struct Recovering {
+    pending: std::sync::atomic::AtomicBool,
+    /// When the host started (epoch ms): a session created later was never
+    /// interrupted by this restart.
+    pub since_ms: u64,
+}
+
+impl Recovering {
+    pub fn new(since_ms: u64) -> Arc<Self> {
+        Arc::new(Self {
+            pending: std::sync::atomic::AtomicBool::new(true),
+            since_ms,
+        })
+    }
+
+    /// `true` once: the session has not been looked at yet.
+    pub fn take(&self) -> bool {
+        self.pending.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl RunnerDeps {
@@ -343,6 +371,7 @@ impl RunnerDeps {
             context_windows: None,
             options: RunnerOptions::default(),
             stop: StopSignal::default(),
+            recovering: None,
         }
     }
 

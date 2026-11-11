@@ -11,6 +11,10 @@ import type {
   GoalSchedule,
   GoalState,
   GoalStatus,
+  MemoryDetail,
+  MemoryLayer,
+  MemoryOverview,
+  MemoryPage,
   MemoryQueryResult,
   IdentityText,
   InstallPlan,
@@ -31,6 +35,7 @@ import type {
   SkillSource,
   SkillsState,
   SkillsStatus,
+  StopScope,
   UiBinding,
   UiSkills,
   UsageByModel,
@@ -81,7 +86,12 @@ export interface OpenDanDataModel {
   activeSessions(): Promise<ActiveSession[]>
   session(sid: string, worklog?: number): Promise<SessionDetail>
 
-  stopSession(sid: string, reason?: string): Promise<{ index: number }>
+  /** `turn`: the message being handled. `session`: a work ends; a Goal session's Goal goes dormant; a UI session refuses. */
+  stopSession(sid: string, scope: StopScope, reason?: string): Promise<{ index: number }>
+  /** Also resumes the sub sessions paused with it. */
+  resumeSession(sid: string): Promise<{ index: number }>
+  /** A finished work or self-check with all its (finished) descendants. */
+  deleteSession(sid: string): Promise<{ deleted: string[] }>
   decideSession(sid: string, decision: Decision, note?: string): Promise<{ index: number }>
   postMessage(sid: string, text: string): Promise<{ index: number; key: string }>
 
@@ -92,6 +102,12 @@ export interface OpenDanDataModel {
   identity(): Promise<IdentityText>
   /** What session `session` finds in Memory for `words` (its grants decide what is visible). */
   queryMemory(session: string, words: string[]): Promise<MemoryQueryResult>
+
+  memoryOverview(): Promise<MemoryOverview>
+  memoryList(layer: MemoryLayer, limit: number, cursor?: string): Promise<MemoryPage>
+  memoryRead(reference: string): Promise<MemoryDetail>
+  /** Fails with kind `busy` while the consolidation holds Memory. */
+  memoryForget(reference: string, expectedRevision?: number): Promise<unknown>
 
   goals(): Promise<GoalDefinition[]>
   /** `null`: no such Goal (or revision). */

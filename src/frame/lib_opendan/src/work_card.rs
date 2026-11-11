@@ -111,6 +111,12 @@ pub struct WorkCard {
     pub subtree_usage: Option<CardUsage>,
     /// A plan: its TodoList.
     pub todos: Option<CardTodos>,
+    /// `state = paused`: why (who resumes it follows from it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<PauseSource>,
+    /// `session.work_tree`: its sub sessions that are no Todo's work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<WorkCard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -298,6 +304,8 @@ pub fn work_card(entry: &RegistryEntry, children: &[RegistryEntry]) -> Result<Wo
         model,
         subtree_usage: None,
         todos: None,
+        paused: st.paused.as_ref().filter(|_| state == CardState::Paused).map(|p| p.source),
+        children: Vec::new(),
     };
     if shape == CardShape::Plan {
         let by_sid: BTreeMap<&str, &RegistryEntry> =
@@ -400,6 +408,115 @@ pub async fn work_cards(agent: &dyn AgentStateClient, sid: &str, task_id: &str) 
         session_id: sid.to_string(),
         task_id: task_id.to_string(),
         complete: !turn_open && !sessions.is_empty() && sessions.iter().all(settled),
+        sessions,
+    })
+}
+
+/// Deepest level of a work tree (the session's own works are level 1).
+pub const TREE_MAX_DEPTH: usize = 4;
+
+/// `session.work_tree`: the work below one session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkTree {
+    pub agent_did: String,
+    pub session_id: String,
+    /// Nothing below the session is unfinished: no further change comes.
+    pub complete: bool,
+    pub sessions: Vec<WorkCard>,
+}
+
+fn tree_settled(card: &WorkCard) -> bool {
+    settled(card)
+        && card.children.iter().all(tree_settled)
+        && card
+            .todos
+            .as_ref()
+            .is_none_or(|l| l.items.iter().all(|t| t.card.as_ref().is_none_or(|c| tree_settled(c))))
+}
+
+fn tree_node<'a>(
+    agent: &'a dyn AgentStateClient,
+    entry: &'a RegistryEntry,
+    depth: usize,
+    unfinished_only: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<WorkCard>> + Send + 'a>> {
+    Box::pin(async move {
+        let kids = agent.sessions().children_of(&[entry.session_id.clone()]).await?;
+        let mut card = work_card(entry, &kids)?;
+        if depth >= TREE_MAX_DEPTH {
+            return Ok(card);
+        }
+        // A Todo's earlier attempts are its history, not work of their own.
+        let attempts: std::collections::BTreeSet<String> = if card.shape == CardShape::Plan {
+            SessionDir::open(&entry.location)
+                .ok()
+                .and_then(|sd| crate::todos::store_of(&sd).load().ok())
+                .map(|list| {
+                    list.todos
+                        .iter()
+                        .flat_map(|t| t.attempts.iter().filter_map(|a| a.child_sid.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Default::default()
+        };
+        for kid in &kids {
+            let sub = match tree_node(agent, kid, depth + 1, unfinished_only).await {
+                Ok(c) => c,
+                Err(err) => {
+                    log::warn!("no card for session {}: {err}", kid.session_id);
+                    continue;
+                }
+            };
+            let bound = card
+                .todos
+                .as_mut()
+                .and_then(|l| l.items.iter_mut().find_map(|t| t.card.as_mut().filter(|c| c.session_id == kid.session_id)));
+            match bound {
+                Some(slot) => {
+                    let title = std::mem::take(&mut slot.title);
+                    **slot = WorkCard { title, ..sub };
+                }
+                None if attempts.contains(&kid.session_id) || (unfinished_only && tree_settled(&sub)) => {}
+                None => card.children.push(sub),
+            }
+        }
+        card.children.sort_by_key(|c| c.created_at_ms);
+        Ok(card)
+    })
+}
+
+/// The work sessions below `sid` as a tree: its own sub sessions, a plan's
+/// Todos with their work sessions, and what those started, down to
+/// [`TREE_MAX_DEPTH`]. `unfinished_only`: branches with nothing unfinished
+/// are left out (a plan in progress keeps its whole TodoList).
+pub async fn work_tree(agent: &dyn AgentStateClient, sid: &str, unfinished_only: bool) -> Result<WorkTree> {
+    let root = agent
+        .sessions()
+        .lookup(sid)
+        .await?
+        .ok_or_else(|| crate::error::OpenDanError::NotFound(format!("session {sid}")))?;
+    let works = agent.sessions().children_of(&[root.session_id.clone()]).await?;
+    let mut sessions = Vec::new();
+    let mut complete = true;
+    for e in works.iter().filter(|e| e.kind == SessionKind::Work) {
+        match tree_node(agent, e, 1, unfinished_only).await {
+            Ok(card) => {
+                let done = tree_settled(&card);
+                complete &= done;
+                if !(unfinished_only && done) {
+                    sessions.push(card);
+                }
+            }
+            Err(err) => log::warn!("no card for session {}: {err}", e.session_id),
+        }
+    }
+    sessions.sort_by_key(|c| c.created_at_ms);
+    Ok(WorkTree {
+        agent_did: agent.agent_did().to_string(),
+        session_id: sid.to_string(),
+        complete,
         sessions,
     })
 }

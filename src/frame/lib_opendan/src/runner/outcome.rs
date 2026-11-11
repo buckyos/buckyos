@@ -239,7 +239,7 @@ pub(super) async fn apply_ui_reply(
             next.topic = r.topic;
             if !r.artifacts.is_empty() {
                 let id = crate::ids::h(&[run.run_id(), "structured_reply"]);
-                match super::reports::store_artifacts(sh, &id, &r.artifacts).await {
+                match super::reports::store_artifacts(sh, &id, &r.artifacts, crate::deliveries::DeliverySource::Reply).await {
                     Ok(a) => next.reply_artifacts = a,
                     Err(e) => {
                         log::warn!("session {}: reply artifacts not delivered: {e}", sh.dir.sid());
@@ -307,11 +307,13 @@ pub(super) fn decide_end(cfg: &SessionConfig, next: &mut Next, completed: u64) {
     }
 }
 
-/// Nobody answers the session: it has no queue, or its queue only brings it
-/// events, never an answer it waits for (a plan's forwarded user messages,
-/// a Todo's updates).
+/// Nobody answers the session: its queue takes no msg (or it has none), or
+/// only brings it events, never an answer it waits for (a plan's forwarded
+/// user messages, a Todo's updates).
 fn nobody_answers(cfg: &SessionConfig) -> bool {
-    cfg.channels.inputs.is_empty() || cfg.session.policy.wait_user_msg != WaitPolicy::Allowed
+    cfg.channels.inputs.is_empty()
+        || cfg.session.input_policy == InputPolicy::None
+        || cfg.session.policy.wait_user_msg != WaitPolicy::Allowed
 }
 
 /// A multi-Turn Work Session (simple Work Session TODO §3.3): every reply
@@ -521,7 +523,7 @@ pub(super) fn classify_done(
                 next.outcome = Some(Outcome::Failed);
                 next.turn_end = Some(TurnStatus::Failed);
                 next.error = Some(
-                    json!({"kind":"missing_end_report","message":"an explicit final report is required; this session has no input queue", "recoverable":false}),
+                    json!({"kind":"missing_end_report","message":"an explicit final report is required; nobody answers this session", "recoverable":false}),
                 );
             } else {
                 next.waiting = true;

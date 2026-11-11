@@ -567,7 +567,7 @@ async fn pause_resume_and_stop_reach_the_work_session() {
             .await;
             let mut paused = false;
             for _ in 0..200 {
-                if agent.sessions().lookup(&child).await.unwrap().unwrap().status.paused {
+                if agent.sessions().lookup(&child).await.unwrap().unwrap().status.paused.is_some() {
                     paused = true;
                     break;
                 }
@@ -658,13 +658,13 @@ async fn a_paused_plan_holds_its_inputs_and_pauses_its_work() {
             for _ in 0..200 {
                 let plan = agent.sessions().lookup(&plan_sid).await.unwrap().unwrap();
                 let work = agent.sessions().lookup(&child).await.unwrap().unwrap();
-                if plan.status.paused && work.status.paused {
+                if plan.status.paused.is_some() && work.status.paused.is_some() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             let work = agent.sessions().lookup(&child).await.unwrap().unwrap();
-            assert!(work.status.paused, "the plan's pause reaches its work session");
+            assert_eq!(work.status.paused, Some(PauseSource::Parent), "the plan's pause reaches its work session");
             post_blocking(&queue_dir, &plan_queue, msg("Note: no rush."));
             let plans = |llm: &ScriptedLlm| llm.requests.lock().unwrap().iter().filter(|r| role(r) == Role::Plan).count();
             let before = plans(&llm);

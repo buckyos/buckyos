@@ -4,6 +4,7 @@ import {
   BellOff,
   Eraser,
   FileUp,
+  Info,
   Lock,
   Loader2,
   Menu,
@@ -29,6 +30,13 @@ import {
   type ConversationComposerSubmitPayload,
 } from './conversation/input/ConversationComposer'
 import { conversationInputState } from './conversation/input/inputState'
+import { foregroundState, latestTurnAnchor, turnInputMessage } from './conversation/input/foregroundState'
+import { TurnControls } from './conversation/tasks/TurnControls'
+import { useTaskSummary } from './conversation/tasks'
+import { taskWorklogTarget } from './conversation/worklog/model'
+import { getAgentPanelSource } from './agentpanel/source'
+import { useGenerationBreaks, useReaderWithBreaks } from './agentpanel/breaks'
+import { useSwipe } from './swipe'
 import { messageObjId, messageSummaryText, ownReactionId } from './conversation/history/relations'
 import { SessionPanel } from './conversation/SessionPanel'
 import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
@@ -96,6 +104,15 @@ interface ConversationViewProps {
   onOpenMessage?: (message: MessageObject, worklog?: WorklogDestination) => void
   /** ObjId of a message to bring into view (a deep link, or the message whose details are open). */
   focusMessageId?: string | null
+  /**
+   * The conversation is with one of the viewer's own Agents: its header opens
+   * the Agent panel (`open`: the panel is showing; the Info button toggles
+   * it), the viewer controls the Agent's Turns, and nothing is sent while
+   * the Agent handles the message in front.
+   */
+  agentPanel?: { open: boolean; onToggle: () => void }
+  /** Why nothing may be sent right now, in words (the conversation is being archived). */
+  sendBlockedReason?: string
 }
 
 const MIN_HISTORY_PANE_HEIGHT = 180
@@ -124,6 +141,8 @@ export function ConversationView({
   sessionPanelDetails,
   onOpenMessage,
   focusMessageId = null,
+  agentPanel,
+  sendBlockedReason,
 }: ConversationViewProps) {
   const { t } = useI18n()
   const store = useMessageHubStore()
@@ -137,7 +156,9 @@ export function ConversationView({
   // A notification session (`sysnotify:*`) is not a conversation: its cards are filtered, never answered by typing.
   const notifyCategory = session ? notifyCategoryFromSessionId(session.id) : undefined
   const [notifyFilter, setNotifyFilter] = useState<NotifyFilter>('all')
-  const historyReader = useNotifyFilteredReader(messageReader, notifyCategory ? notifyFilter : 'all')
+  const breaks = useGenerationBreaks(context.viewerDid, agentPanel ? session?.id : undefined)
+  const markedReader = useReaderWithBreaks(messageReader, breaks, t('messagehub.agentPanel.generationBreak'), session?.id)
+  const historyReader = useNotifyFilteredReader(markedReader, notifyCategory ? notifyFilter : 'all')
   const isGroup = entity.type === 'group'
   const subtitle = session ? [title, session.binding.kind === 'tunnel' ? session.binding.connectionName : ''].filter(Boolean).join(' · ') : t('messagehub.noSessions')
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -156,6 +177,16 @@ export function ConversationView({
   const inputState = useMemo(() => conversationInputState(messageReader.timeline ?? [], context.ownerDid, { group: isGroup }), [messageReader, context.ownerDid, isGroup])
   const answerState = inputState.mode === 'answer' ? inputState : null
   if (answerState && relation) setRelation(null)
+  // The message in front: while the Agent handles it (or a restart interrupted it) nothing new is sent.
+  // An open question is answered all the same.
+  const ownAgent = !!agentPanel && isOwner
+  const turnAnchor = useMemo(() => ownAgent ? latestTurnAnchor(messageReader.timeline ?? [], context.ownerDid) : null, [ownAgent, messageReader, context.ownerDid])
+  const turnTask = useTaskSummary(turnAnchor?.taskId).snapshot
+  const turnDetail = turnTask?.status === 'ready' ? turnTask.task : undefined
+  const foreground = foregroundState(turnAnchor, turnDetail)
+  const turnTarget = turnDetail ? taskWorklogTarget(turnDetail) : null
+  const sendBlocked = !answerState && (foreground.mode !== 'idle' || !!sendBlockedReason)
+  const stopAnswerTurn = useMemo(() => ownAgent && turnTarget ? () => getAgentPanelSource().stop(turnTarget.agentDid, turnTarget.sessionId, 'turn') : undefined, [ownAgent, turnTarget?.agentDid, turnTarget?.sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
   const pinned = session ? store.preferences(context, session.id).pinnedMessage ?? null : null
   const pinnedId = pinned?.id
   const [panelInset, setPanelInset] = useState(0)
@@ -225,10 +256,17 @@ export function ConversationView({
         },
       } : undefined,
       readReceipt: sessionId ? (message: MessageObject) => store.readReceipt(context, sessionId, message) : undefined,
+      agentTurn: ownAgent && sessionId ? {
+        inputOf: (anchor: MessageObject, task: { input?: unknown } | undefined) => {
+          const keys = (task?.input as { input_keys?: unknown } | undefined)?.input_keys
+          return canSend ? turnInputMessage(messageReader.timeline ?? [], anchor, context.ownerDid, Array.isArray(keys) ? keys.filter((key): key is string => typeof key === 'string') : []) : null
+        },
+        retract: (input: MessageObject) => sendRelation(messageObjId(input), 'redact'),
+      } : undefined,
       handleNotify: isOwner,
       answerFriendRequests: isOwner,
     }
-  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onOpenProfile, onForward, onOpenMessage, pinnedId, t, answerState]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onOpenProfile, onForward, onOpenMessage, pinnedId, t, answerState, ownAgent, messageReader]) // eslint-disable-line react-hooks/exhaustive-deps
   const askerName = answerState ? messageActions.displayName(answerState.question.from) : ''
   const answer = useMemo<ComposerAnswer | null>(() => answerState ? { ...answerState, askerName } : null, [answerState, askerName])
 
@@ -279,6 +317,9 @@ export function ConversationView({
     await onSendMessage(payload)
     historyPaneRef.current?.scrollToBottom()
   }, [onSendMessage, canSend])
+
+  // On a touch layout a swipe to the left over the history opens the Agent panel (a second way in beside the title).
+  const swipe = useSwipe({ onLeft: agentPanel && !agentPanel.open ? onOpenDetails : undefined })
 
   const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
     if (!canSend || !isTransferWithFiles(event.dataTransfer)) {
@@ -364,11 +405,12 @@ export function ConversationView({
             <span className="block max-w-full truncate text-xs text-[color:var(--cp-muted)]">{subtitle}</span>
           </button>
           <button onClick={onOpenDetails} className="hidden max-w-full items-center gap-1.5 text-left md:flex" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`} title={t('messagehub.entityDetails')}><HubAvatar type={entity.type} name={entity.name} avatar={entity.avatar} size={22} systemNotify={entity.systemNotify} /><span className="truncate text-[15px] font-semibold">{entity.name}</span>{mutedMark}</button>
-          <button onClick={onOpenSessionDetails} disabled={!session} type="button" className="hidden max-w-full truncate text-xs text-[color:var(--cp-muted)] md:block" aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')}>{subtitle}</button>
+          <button onClick={agentPanel ? onOpenDetails : onOpenSessionDetails} disabled={!session} type="button" className="hidden max-w-full truncate text-xs text-[color:var(--cp-muted)] md:block" aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')}>{subtitle}</button>
           <div role="status" data-testid="session-runtime" className="truncate text-xs text-[color:var(--cp-accent)]">{runtime.map(state => `${state.memberDid === context.ownerDid ? t('messagehub.you') : session?.members[state.memberDid]?.nickname || entity.name} · ${t(`messagehub.runtime.${state.status}`)}${state.statusLine ? ` · ${state.statusLine}` : ''}`).join(' · ')}</div>
         </div>
         {refreshing ? <span role="status" className="flex min-w-0 max-w-28 items-center gap-1.5 text-xs text-[color:var(--cp-muted)]" data-testid="conversation-refresh-status"><Loader2 size={14} className="shrink-0 animate-spin" aria-hidden /><span className="truncate">{t('states.loading')}</span></span> : null}
         {session && !notifyCategory ? <button ref={searchButtonRef} type="button" onClick={() => setSearching(true)} title={t('messagehub.search.open')} aria-label={t('messagehub.search.open')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)]" data-testid="conversation-search-open"><Search size={18} /></button> : null}
+        {agentPanel ? <button type="button" onClick={agentPanel.onToggle} aria-pressed={agentPanel.open} title={t('messagehub.agentPanel.toggle')} aria-label={t('messagehub.agentPanel.toggle')} className="hidden min-h-11 min-w-11 items-center justify-center rounded-lg md:flex" style={{ color: agentPanel.open ? 'var(--cp-accent)' : 'var(--cp-muted)' }} data-testid="agent-panel-toggle"><Info size={18} /></button> : null}
         <HeaderMenu label={t('messagehub.sessionMenu.label')} icon={<MoreVertical size={18} />} items={menuItems} testId="session-menu" buttonClassName="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40" />
       </div>
       )}
@@ -388,6 +430,7 @@ export function ConversationView({
           <div
             className="relative flex flex-1 min-h-0 flex-col"
             style={{ minHeight: MIN_HISTORY_PANE_HEIGHT }}
+            {...swipe}
           >
             {session?.panel ? (
               <SessionPanel key={`custom:${session.id}`} icon={<Ticket size={15} />} title={session.panel.title} text={session.panel.text} fields={session.panel.fields} onCollapsedHeight={setPanelInset} testId="session-panel">{sessionPanelDetails}</SessionPanel>
@@ -413,6 +456,10 @@ export function ConversationView({
             </ConversationMediaScopeContext.Provider>
           </div>
 
+          {!notifyCategory && canSend && sendBlocked ? <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-3 py-1.5 text-[12px]" role="status" data-testid="composer-blocked" data-mode={sendBlockedReason ? 'archiving' : foreground.mode}>
+            <span className="min-w-0 flex-1 text-[color:var(--cp-muted)]">{sendBlockedReason ?? t(`messagehub.turn.blocked.${foreground.mode}`)}</span>
+            {!sendBlockedReason && foreground.anchor ? <ConversationMessageActionsContext.Provider value={messageActions}><TurnControls anchor={foreground.anchor.message} taskId={foreground.anchor.taskId} place="composer" /></ConversationMessageActionsContext.Provider> : null}
+          </div> : null}
           {notifyCategory ? null : canSend ? <ConversationComposer
             initialDraft={draft}
             initialAttachments={draftAttachments}
@@ -428,6 +475,8 @@ export function ConversationView({
             answer={answer}
             mentionCandidates={isGroup ? mentionCandidates : undefined}
             canMentionAll={isGroup && (group?.can.mentionAll ?? false)}
+            sendBlocked={sendBlocked}
+            onStopTurn={answerState ? stopAnswerTurn : undefined}
           /> : <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-3 text-[13px] text-[color:var(--cp-muted)]" data-testid="composer-readonly"><Lock size={14} className="shrink-0" aria-hidden /><span>{access?.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.noSessions')}</span></div>}
         </div>
       </div>

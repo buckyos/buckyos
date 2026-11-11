@@ -775,6 +775,14 @@ async fn crash_then_recover(fault: &str) {
     assert!(!wait_exit(&mut child).success(), "the child aborts at {fault}");
     let h = hosted(&env, consolidating_llm());
     let g = h.builtin();
+    // The Activation the crash interrupted goes on once its owner resumes it.
+    h.until("interrupted", |h| {
+        block(h.agent.sessions().lookup(&g.session.sid))
+            .unwrap()
+            .is_some_and(|e| e.status.paused == Some(PauseSource::Interrupted))
+    })
+    .await;
+    assert_eq!(resume_interrupted(h.agent.as_ref()).await, 1);
     h.until("activation after the crash", |h| h.activations(&g.goal_id).len() == 1).await;
     let a = &h.activations(&g.goal_id)[0];
     assert_eq!(a.decision, ActivationDecision::Acted, "{a:?}");

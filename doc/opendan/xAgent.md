@@ -463,6 +463,8 @@ pub struct SessionTemplate {
 | `self_check` | Unbounded | FinishFailed | Queue（timer 事件） | Off | 是 | 定时自检 |
 | `goal` | Unbounded | EndTurn | Queue（`_goal_activation`：`system:goal` 事件） | EventsAndActive | 是 | 一个 Goal 的一个 epoch：每个 Activation 是一个 Turn；只由宿主为 Goal 创建（`xagent new --class goal` 拒绝），见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9 与 [Goal Session TODO](../../notepads/done/opendan-goal-session-todo.md) |
 
+**2026-11-10 更新**：宿主有队列客户端时，`work` 类也有输入队列，只是它只收控制命令（`session.input_policy = none`，模板键 `input = "none"` 现在是这个意思），首批材料仍走 `prompt.initial_inputs`；stop / pause / resume / decide 都经队列。本节和后文凡是说“无队列”的地方，现在只对没有队列客户端的宿主（不在 Zone 里、也没有 `--queue-dir` 的 `xagent`）成立。合同见 [Session Control Protocol](<protocol/Session Control Protocol.md>) §8、[Session Input Protocol](<protocol/Session Input Protocol.md>) §1。
+
 **无队列 work session 的后果**：stop 由 lease 持有者将 SIGINT 接到现有取消路径；decide 走 artifacts 门面；exec 子进程的 `activity --touch` / `perceive` 没有通道，touching 由工具调用推断；这类 Work 自己不留感知（Runtime 自动 run_digest 已于 2026-11-08 删除），其结果经 Final Report 回到父 Session，由父 Session 判断有无持续信号再 `ctl perceive`。父接收子状态（C15）与 task resolver 查询不需要队列，但子 LLM 主动给父发消息需要父有队列。只有需要接收外部投递的订阅才自动升为 Queue；默认时区的初始快照、拉取 session 状态、已跟踪 task 不因此强制建队列。无队列时不承诺收到外部时区更新。等待 task / children 时仍须轮询，不能因 `bus = None` 提前结束。
 
 ### 4.8 xagent 的三种运行形态
@@ -967,7 +969,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
                  常驻：drive(Idle) → 持久候选 / 通知 / 有界轮询 → drive(Idle)；同时调度子 session
   xagent post   <sid> (--msg <text> [--from <did>] [--attach <obj_id>[=<name>]]… [--reply-to <obj_id>] | --json <file | ->)
                  Agent 输入：只接受 MsgObject 消息 / event 逻辑记录
-  xagent ctl    <sid> (stop | decide accept|discard | subscribe <spec> | unsubscribe <id> | activity ... | perceive <text>)
+  xagent ctl    <sid> (stop [--scope session|turn|archive] | pause | resume | decide accept|discard | subscribe <spec> | unsubscribe <id> | activity ... | perceive <text>)
                  Session 控制协议
   xagent status <sid> [--worklog <n>] [--report] [--run] [--events]    状态；--events 显示 pending_events 与最近注入
   xagent list   --agent <did> [--active]

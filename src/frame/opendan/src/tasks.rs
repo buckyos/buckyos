@@ -12,8 +12,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use buckyos_api::{
-    AckControlReq, CreateTaskExecutor, CreateTaskReq, GrantTaskAccessReq, RequestControlReq,
-    RunnerWriteEnvelope, Task, TaskAclGrantSpec, TaskAction, TaskControlAction, TaskDataScope,
+    AckControlReq, ControlAvailability, CreateTaskExecutor, CreateTaskReq, GrantTaskAccessReq,
+    RequestControlReq, RunnerWriteEnvelope, Task, TaskAclGrantSpec, TaskAction, TaskControlAction,
+    TaskControlProfile, TaskDataScope, UpdateControlProfileReq,
     TaskExecutor, TaskGrantScope, TaskGrantSubject, TaskManagerClient, TaskOutcome, TaskPhase,
     TaskWaitReason, TaskWaitReasonKind, OPENDAN_AGENT_TURN_TASK_SCHEMA_ID,
 };
@@ -62,6 +63,14 @@ pub trait TaskService: Send + Sync {
     /// Close as canceled: acknowledge the pending cancel, or request one
     /// first when the stop did not come from TaskMgr.
     async fn canceled(&self, task_id: &str) -> Result<(), String>;
+    /// The session is paused: the task is `Paused`, `message` says why.
+    async fn paused(&self, _task_id: &str, _message: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// The session is not paused (any more): a `Paused` task runs again.
+    async fn resumed(&self, _task_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// TaskMgr of the zone this process runs in. The client is taken from the
@@ -69,6 +78,42 @@ pub trait TaskService: Send + Sync {
 pub struct ZoneTaskService;
 
 impl ZoneTaskService {
+    /// The session did what `action` asks: the pending request for it is
+    /// acknowledged, or one is recorded first when the session moved by
+    /// itself.
+    async fn applied(client: &TaskManagerClient, task_id: &str, action: TaskControlAction) -> Result<(), String> {
+        let mut task = client.get_task(task_id).await.map_err(|e| e.to_string())?;
+        if task.pending_control.is_none() {
+            client
+                .request_control(RequestControlReq {
+                    task_id: task_id.to_string(),
+                    action,
+                    request_id: format!("session-{}:{task_id}:{}", action.to_string().to_lowercase(), libopendan::now_ms()),
+                    recursive: false,
+                    expected_revision: None,
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            task = client.get_task(task_id).await.map_err(|e| e.to_string())?;
+        }
+        let Some(pending) = task.pending_control.clone() else {
+            return Err(format!("task {task_id} has no pending {action} to acknowledge"));
+        };
+        if pending.action != action {
+            return Err(format!("task {task_id} waits for {} while its session did {action}", pending.action));
+        }
+        client
+            .ack_control(AckControlReq {
+                envelope: envelope(&task),
+                request_id: pending.request_id,
+                applied: true,
+                reject_reason: None,
+            })
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     async fn client() -> Result<TaskManagerClient, String> {
         buckyos_api::get_buckyos_api_runtime()
             .map_err(|e| e.to_string())?
@@ -271,6 +316,56 @@ impl TaskService for ZoneTaskService {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+
+    async fn paused(&self, task_id: &str, message: &str) -> Result<(), String> {
+        Self::pause(task_id, message).await
+    }
+
+    async fn resumed(&self, task_id: &str) -> Result<(), String> {
+        Self::resume(task_id).await
+    }
+}
+
+impl ZoneTaskService {
+    async fn pause(task_id: &str, message: &str) -> Result<(), String> {
+        let client = Self::client().await?;
+        let task = client.get_task(task_id).await.map_err(|e| e.to_string())?;
+        if task.phase.is_terminal() {
+            return Ok(());
+        }
+        client
+            .runner_progress(task_id, None, Some(message.to_string()))
+            .await
+            .map_err(|e| e.to_string())?;
+        if task.phase == TaskPhase::Paused {
+            return Ok(());
+        }
+        if task.control_profile.pause != ControlAvailability::Available {
+            let task = client.get_task(task_id).await.map_err(|e| e.to_string())?;
+            client
+                .update_control_profile(UpdateControlProfileReq {
+                    envelope: envelope(&task),
+                    profile: TaskControlProfile {
+                        pause: ControlAvailability::Available,
+                        resume: ControlAvailability::Available,
+                        cancel: task.control_profile.cancel.clone(),
+                        updated_at: 0,
+                    },
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Self::applied(&client, task_id, TaskControlAction::Pause).await
+    }
+
+    async fn resume(task_id: &str) -> Result<(), String> {
+        let client = Self::client().await?;
+        let task = client.get_task(task_id).await.map_err(|e| e.to_string())?;
+        if task.phase != TaskPhase::Paused {
+            return Ok(());
+        }
+        Self::applied(&client, task_id, TaskControlAction::Resume).await
+    }
 }
 
 /// xllm deps of a zone host: `shell` commands that outlive their wait stay
@@ -341,6 +436,7 @@ impl TurnTaskSink for TurnTasks {
                     "session_kind": turn.kind,
                     "turn": turn.turn,
                     "inputs": turn.inputs,
+                    "input_keys": turn.input_keys,
                 }),
                 parent_id: turn.parent_task.clone(),
                 idempotency_key: format!(
@@ -354,6 +450,10 @@ impl TurnTaskSink for TurnTasks {
     }
 
     async fn update(&self, task_id: &str, status: &TurnTaskStatus) -> Result<(), String> {
+        if status.paused.is_some() {
+            return self.tasks.paused(task_id, &status.message).await;
+        }
+        self.tasks.resumed(task_id).await?;
         match status.run_state {
             RunState::Waiting => self.tasks.waiting(task_id, wait_reason(status)).await,
             _ => {
@@ -453,12 +553,13 @@ impl CancelBridge {
                 format!("stop:task:{task_id}"),
                 ControlCommand::Stop {
                     reason: Some(format!("task {task_id} was canceled")),
-                    // The task of a Goal Session's Turn is one Activation:
-                    // canceling it never ends the Goal.
-                    scope: if e.kind == SessionKind::Goal {
-                        StopScope::Turn
-                    } else {
+                    // The task is one Turn. In a conversation or a Goal
+                    // Session canceling it stops that message / Activation;
+                    // a Work's task is the work itself.
+                    scope: if e.kind == SessionKind::Work {
                         StopScope::Session
+                    } else {
+                        StopScope::Turn
                     },
                 },
             );

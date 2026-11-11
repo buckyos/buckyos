@@ -211,7 +211,12 @@ pub fn lines(i: &BackgroundInput) -> Vec<BackgroundLine> {
             } else {
                 &a.activity.summary
             };
-            let mut t = format!("work {}: {}", a.session_id, a.run_state.as_str());
+            let state = match a.paused {
+                Some(PauseSource::Interrupted) => "interrupted by a restart, waits to be resumed",
+                Some(_) => "paused",
+                None => a.run_state.as_str(),
+            };
+            let mut t = format!("work {}: {state}", a.session_id);
             let summary = one_line(summary, 200);
             if !summary.is_empty() {
                 t.push_str(&format!(" — {summary}"));
@@ -449,6 +454,7 @@ mod tests {
             driver: String::new(),
             parent: None,
             topic: Some(Topic { title: "trip to Kyoto".into(), tags: Vec::new() }),
+            paused: None,
         };
         let hints = [other];
         let (shown, map) = select(lines(&input(t0, &hints)), &BTreeMap::new(), t0);

@@ -32,6 +32,9 @@ use super::shared::{commit_and_report, Shared};
 
 const FETCH_MAX: usize = 256;
 
+/// Pending-event slot of a retraction the next input reports.
+const RETRACT_SUBSCRIPTION: &str = "_retract";
+
 /// Pending deliveries of every source: sources in declared order, each by
 /// delivery index (never by `at_ms` / `created_at_ms`).
 pub async fn fetch_inputs(sh: &Shared) -> Result<Vec<FetchedInput>> {
@@ -273,6 +276,7 @@ async fn route_inputs_inner(sh: &Shared, in_run: bool) -> Result<Routed> {
     let mut bodies = Vec::new();
     let mut changed = false;
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let all = fetched.clone();
     for m in fetched {
         if s.state.source(&m.src).is_consumed(m.index) {
             continue;
@@ -298,6 +302,65 @@ async fn route_inputs_inner(sh: &Shared, in_run: bool) -> Result<Routed> {
             continue;
         }
         match input {
+            SessionInput::Control(ControlCommand::Retract { key, reason }) => {
+                let queued = all.iter().find(|x| {
+                    x.key == key
+                        && matches!(x.input, Ok(SessionInput::Msg(_)))
+                        && !s.state.source(&x.src).is_consumed(x.index)
+                        && !s.state.recent_keys.contains(&x.key)
+                });
+                let outcome = match queued {
+                    Some(target) => {
+                        routed.candidates.retain(|c| c.key != key);
+                        bodies.push(reject(&mut s, target, RejectReason::Retracted, ""));
+                        s.state.recent_keys.push(&target.key);
+                        "dropped"
+                    }
+                    None => match open_turn_of(&s, &key).map(Ok).unwrap_or_else(|| consumed_in_turn(&s, &key))? {
+                        Some(turn) if s.state.open_turn.as_ref().is_some_and(|t| t.index == turn) => {
+                            s.state.turn_stop_requested = true;
+                            clear_interruption(&mut s);
+                            // The next input tells the model: the Turn's
+                            // steps stay in its history, the input is void.
+                            let ev = AgentEvent {
+                                subscription_id: Some(RETRACT_SUBSCRIPTION.to_string()),
+                                source: EventSource::new("system", "retract"),
+                                event: "retracted".to_string(),
+                                seq: None,
+                                summary: format!("the user retracted the message of turn {turn}: do not act on it. What that turn already did is not undone."),
+                                data_ref: None,
+                                terminal: false,
+                                call_id: None,
+                            };
+                            merge_pending_event(
+                                &mut s.state.pending_events,
+                                Some(RETRACT_SUBSCRIPTION),
+                                &ev,
+                                &m.key,
+                                None,
+                                crate::now_ms(),
+                            );
+                            "stopped"
+                        }
+                        Some(_) => "closed",
+                        None => "unknown",
+                    },
+                };
+                bodies.push(WorklogBody::ControlApplied {
+                    input: m.input_ref(),
+                    command: "retract".into(),
+                    detail: json!({
+                        "key": key,
+                        "reason": reason,
+                        "from": m.from,
+                        "outcome": outcome,
+                        "applied": matches!(outcome, "dropped" | "stopped"),
+                    }),
+                });
+                s.state.source_mut(&m.src).mark(m.index);
+                s.state.recent_keys.push(&m.key);
+                changed = true;
+            }
             SessionInput::Control(cmd) => {
                 if Box::pin(apply_control(sh, &mut s, &m, &cmd, in_run, &mut bodies)).await? {
                     s.state.source_mut(&m.src).mark(m.index);
@@ -306,7 +369,7 @@ async fn route_inputs_inner(sh: &Shared, in_run: bool) -> Result<Routed> {
                 }
             }
             SessionInput::Msg(_) => {
-                if s.config.session.input_policy == InputPolicy::None {
+                if s.config.session.input_policy == InputPolicy::None && m.src != BOOTSTRAP_SRC {
                     bodies.push(reject(&mut s, &m, RejectReason::InputPolicy, ""));
                     changed = true;
                 } else {
@@ -404,14 +467,59 @@ async fn route_inputs_inner(sh: &Shared, in_run: bool) -> Result<Routed> {
     Ok(routed)
 }
 
+/// The open Turn, when the msg `key` is among its inputs.
+fn open_turn_of(s: &Session, key: &str) -> Option<Option<u64>> {
+    s.state
+        .open_turn
+        .as_ref()
+        .filter(|t| t.msg_keys.iter().any(|k| k == key))
+        .map(|t| Some(t.index))
+}
+
+/// The Turn that consumed the msg `key` (read backwards from the worklog).
+fn consumed_in_turn(s: &Session, key: &str) -> Result<Option<u64>> {
+    let mut r = s.dir.worklog().reverse(s.state.worklog.committed_bytes, 0)?;
+    while let Some((_, e)) = r.next_json::<WorklogEntry>()? {
+        if let WorklogBody::TurnStarted { turn, inputs, .. } | WorklogBody::InputBatch { turn, inputs, .. } = &e.body {
+            if inputs.iter().any(|i| i.key == key) {
+                return Ok(Some(*turn));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Stopping the Turn a restart interrupted ends the interruption too: the
+/// session waits for its next input instead of a `resume`.
+pub(super) fn clear_interruption(s: &mut Session) {
+    if s.state.paused.as_ref().is_some_and(|p| p.source == PauseSource::Interrupted) {
+        s.state.paused = None;
+        s.state.resume_run = false;
+    }
+}
+
 /// Reason of the pause a session hands down to its sub sessions.
 fn parent_pause_reason(sid: &str) -> String {
     format!("parent session {sid} was paused")
 }
 
+/// Why a pause with `reason` reaches this session.
+fn pause_source(cfg: &SessionConfig, reason: Option<&str>) -> PauseSource {
+    let origin = cfg.session.origin.as_ref();
+    let parent = origin.and_then(|o| o.parent_session.as_deref());
+    let goal = origin.and_then(|o| o.goal.as_ref());
+    match reason {
+        Some(r) if parent.is_some_and(|p| r == parent_pause_reason(p)) => PauseSource::Parent,
+        Some(r) if goal.is_some_and(|g| r == crate::goal::dormant_reason(&g.goal_id)) => PauseSource::Goal,
+        _ => PauseSource::User,
+    }
+}
+
 /// A pause reaches the sub sessions that are not finished (those with a
-/// queue); a resume only those this session's pause paused.
-async fn cascade_pause(sh: &Shared, sid: &str, key: &str, pause: bool) {
+/// queue). A resume reaches those this session's pause paused — and, when
+/// this session was interrupted by a restart, those the same restart
+/// interrupted.
+async fn cascade_pause(sh: &Shared, sid: &str, key: &str, pause: bool, was: Option<PauseSource>) {
     let Ok(children) = sh.agent().sessions().children_of(&[sid.to_string()]).await else {
         return;
     };
@@ -423,13 +531,13 @@ async fn cascade_pause(sh: &Shared, sid: &str, key: &str, pause: bool) {
         let command = if pause {
             ControlCommand::Pause { reason: Some(reason.clone()) }
         } else {
-            let by_parent = e.status.paused
-                && crate::session::SessionDir::open(&e.location)
-                    .and_then(|d| d.state())
-                    .ok()
-                    .and_then(|st| st.paused)
-                    .is_some_and(|p| p.reason.as_deref() == Some(reason.as_str()));
-            if !by_parent {
+            let state = crate::session::SessionDir::open(&e.location).and_then(|d| d.state()).ok();
+            let mine = match state.and_then(|st| st.paused) {
+                Some(p) if p.source == PauseSource::Interrupted => was == Some(PauseSource::Interrupted),
+                Some(p) => p.reason.as_deref() == Some(reason.as_str()),
+                None => false,
+            };
+            if !mine {
                 continue;
             }
             ControlCommand::Resume { reason: Some(format!("parent session {sid} was resumed")) }
@@ -454,18 +562,41 @@ async fn apply_control(
     let finished = s.state.is_finished();
     match cmd {
         ControlCommand::Stop { reason, scope } => {
-            // A Goal Session ends with its Goal: a stop only ends the
-            // Activation in progress.
-            let turn_only =
-                *scope == StopScope::Turn || s.config.session.kind == SessionKind::Goal;
-            let applied = if !turn_only {
-                s.state.stop_requested = true;
-                true
-            } else if s.state.open_turn.is_some() {
-                s.state.turn_stop_requested = true;
-                true
-            } else {
-                false
+            let kind = s.config.session.kind;
+            let mut refused = None;
+            let applied = match scope {
+                StopScope::Turn => {
+                    let open = s.state.open_turn.is_some();
+                    if open {
+                        s.state.turn_stop_requested = true;
+                        clear_interruption(s);
+                    }
+                    open
+                }
+                // A UI session is never stopped: it ends when it is archived.
+                StopScope::Session if kind == SessionKind::Ui => {
+                    refused = Some("a UI session is not stopped: stop the message in progress (scope turn), or start a new conversation to drop its context".to_string());
+                    false
+                }
+                // A Goal Session ends with its Goal: stopping it puts the
+                // Goal to sleep.
+                StopScope::Session if kind == SessionKind::Goal => {
+                    match super::goal::sleep(sh, s, &m.from, reason.as_deref()).await {
+                        Ok(()) => true,
+                        Err(e) => {
+                            refused = Some(e.to_string());
+                            false
+                        }
+                    }
+                }
+                StopScope::Archive if kind != SessionKind::Ui => {
+                    refused = Some("only a UI session is archived".to_string());
+                    false
+                }
+                StopScope::Session | StopScope::Archive => {
+                    s.state.stop_requested = true;
+                    true
+                }
             };
             bodies.push(WorklogBody::ControlApplied {
                 input: m.input_ref(),
@@ -473,8 +604,9 @@ async fn apply_control(
                 detail: json!({
                     "reason": reason,
                     "from": m.from,
-                    "scope": if turn_only { "turn" } else { "session" },
+                    "scope": scope,
                     "applied": applied,
+                    "refused": refused,
                 }),
             });
         }
@@ -482,6 +614,7 @@ async fn apply_control(
             let applied = !finished && s.state.paused.is_none();
             if applied {
                 s.state.paused = Some(Paused {
+                    source: pause_source(&s.config, reason.as_deref()),
                     at_ms: crate::now_ms(),
                     reason: reason.clone(),
                     by: m.from.clone(),
@@ -496,12 +629,13 @@ async fn apply_control(
                 detail: json!({ "reason": reason, "from": m.from, "applied": applied }),
             });
             if applied {
-                cascade_pause(sh, s.sid(), &m.key, true).await;
+                cascade_pause(sh, s.sid(), &m.key, true, None).await;
             }
         }
         ControlCommand::Resume { reason } => {
             let paused = s.state.paused.take();
             let applied = paused.is_some();
+            let was = paused.as_ref().map(|p| p.source);
             if paused.is_some_and(|p| p.in_run) {
                 s.state.resume_run = true;
             }
@@ -512,9 +646,10 @@ async fn apply_control(
             });
             if applied {
                 super::turn_task::note_live_line(s, None, None);
-                cascade_pause(sh, s.sid(), &m.key, false).await;
+                cascade_pause(sh, s.sid(), &m.key, false, was).await;
             }
         }
+        ControlCommand::Retract { .. } => {}
         ControlCommand::GoalSkills { add, remove } => {
             match super::goal::apply_skills_control(&mut s.state, add, remove) {
                 Ok(()) => bodies.push(WorklogBody::ControlApplied {

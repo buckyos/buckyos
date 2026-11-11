@@ -26,7 +26,8 @@ pub type MsgRecord = buckyos_api::MailboxRecord;
 /// What a registered slash command does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
-    /// Mapped to a session control command (`/stop` → `stop`).
+    /// Stops the message in progress (`/stop`, `/cancel` → `stop` of the
+    /// open Turn; the conversation and its context stay).
     Stop,
     /// Registered, but handled by the application hosting the bridge.
     App,
@@ -155,6 +156,22 @@ fn delivery(record: &MsgRecord, ctx: &MsgBridgeCtx) -> MsgDelivery {
 /// parses message text: slash text this function does not recognize is an
 /// ordinary message for the LLM.
 pub fn route_msg_record(record: &MsgRecord, msg: &MsgObject, ctx: &MsgBridgeCtx) -> MsgBridgeOutput {
+    // The owner takes a message back: the session it went to is told (an
+    // input still queued is dropped, the Turn working on it is stopped).
+    if let Some(rel) = msg.relates_to.as_ref().filter(|r| r.rel == MsgRelType::Redact) {
+        if record.from != msg.from || record_sender(record) != ctx.owner {
+            return MsgBridgeOutput::Drop {
+                reason: "redaction not from the owner",
+            };
+        }
+        return MsgBridgeOutput::Control {
+            key: format!("ctl:{}", msg_key(msg)),
+            command: ControlCommand::Retract {
+                key: rel.target.to_string(),
+                reason: None,
+            },
+        };
+    }
     if let Some(reason) = noise(record, msg, ctx) {
         return MsgBridgeOutput::Drop { reason };
     }
@@ -205,9 +222,10 @@ pub fn route_msg_record(record: &MsgRecord, msg: &MsgObject, ctx: &MsgBridgeCtx)
             return match ctx.commands.get(name) {
                 Some(SlashCommand::Stop) => MsgBridgeOutput::Control {
                     key: format!("ctl:{}", msg_key(msg)),
-                    command: ControlCommand::stop(
-                        Some(args.to_string()).filter(|a| !a.is_empty()),
-                    ),
+                    command: ControlCommand::Stop {
+                        reason: Some(args.to_string()).filter(|a| !a.is_empty()),
+                        scope: StopScope::Turn,
+                    },
                 },
                 _ => MsgBridgeOutput::AppCommand {
                     name: name.to_string(),
@@ -540,7 +558,7 @@ mod tests {
                 assert_eq!(key, format!("ctl:{}", msg_key(&stop)));
                 assert_eq!(
                     command,
-                    ControlCommand::stop(Some("too slow".into()))
+                    ControlCommand::Stop { reason: Some("too slow".into()), scope: StopScope::Turn }
                 );
             }
             o => panic!("{o:?}"),

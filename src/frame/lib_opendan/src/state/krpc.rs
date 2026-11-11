@@ -114,6 +114,7 @@ pub fn is_write(method: &str) -> bool {
             | "sessions.register"
             | "sessions.post_input"
             | "sessions.verify"
+            | "sessions.delete"
             | "cognition.notebook_append"
             | "artifacts.decide"
             | "workspaces.create"
@@ -205,6 +206,10 @@ pub async fn serve_call(
             Err(e) => Err(e),
         },
         "sessions.verify" => agent.sessions().verify().await.and_then(out),
+        "sessions.delete" => match arg::<String>(params, "sid") {
+            Ok(sid) => agent.sessions().delete(&sid).await.map(|deleted| serde_json::json!({ "deleted": deleted })),
+            Err(e) => Err(e),
+        },
         "sessions.post_input" => {
             match (arg::<String>(params, "sid"), arg::<PostedInput>(params, "input")) {
                 (Ok(sid), Ok(mut input)) => {
@@ -664,6 +669,10 @@ impl SessionRegistry for KrpcAgentStateClient {
     }
     async fn post_input(&self, sid: &str, input: &PostedInput) -> Result<u64> {
         self.call("sessions.post_input", json!({ "sid": sid, "input": input })).await
+    }
+    async fn delete(&self, sid: &str) -> Result<Vec<String>> {
+        let out: Value = self.call("sessions.delete", json!({ "sid": sid })).await?;
+        serde_json::from_value(out["deleted"].clone()).map_err(|e| OpenDanError::Other(format!("sessions.delete: {e}")))
     }
 }
 

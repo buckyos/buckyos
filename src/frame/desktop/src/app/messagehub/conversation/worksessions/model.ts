@@ -2,6 +2,8 @@ import type { TaskText, TaskTone } from '../tasks/taskView'
 
 export type WorkState = 'queued' | 'running' | 'needs_input' | 'paused' | 'succeeded' | 'failed' | 'stopped'
 export type WorkShape = 'simple' | 'plan' | 'explore'
+/** Why a session is paused: the owner paused it, its parent was paused, the host restarted while it worked, or its Goal is dormant. */
+export type PauseSource = 'user' | 'parent' | 'interrupted' | 'goal'
 export type TodoStatus = 'pending' | 'running' | 'blocked' | 'completed' | 'failed' | 'timeout' | 'stopped' | 'cancelled'
 
 export interface WorkModelUsage { model: string; input_tokens: number; output_tokens: number }
@@ -31,11 +33,22 @@ export interface WorkCard {
   model: string | null
   subtree_usage: WorkUsage | null
   todos: WorkTodos | null
+  /** Only while `state` is `paused`. */
+  paused?: PauseSource
+  /** `session.work_tree` only: the work sessions it created that are bound to no Todo. */
+  children?: WorkCard[]
 }
+/** A card of `session.work_tree`: its sub sessions are listed under it. */
+export type WorkNode = WorkCard & { children: WorkCard[] }
+/** The unfinished (or all) work under one session, as `session.work_tree` projects it. */
+export interface WorkTree { agent_did: string; session_id: string; complete: boolean; sessions: WorkNode[] }
 export interface WorkCards { agent_did: string; session_id: string; task_id: string; complete: boolean; sessions: WorkCard[] }
 
 const STATES: readonly WorkState[] = ['queued', 'running', 'needs_input', 'paused', 'succeeded', 'failed', 'stopped']
 const SHAPES: readonly WorkShape[] = ['simple', 'plan', 'explore']
+const PAUSE_SOURCES: readonly PauseSource[] = ['user', 'parent', 'interrupted', 'goal']
+/** Levels of sessions a work tree lists under the session it is read for. */
+export const WORK_TREE_DEPTH = 4
 const ENDED_TODOS: readonly string[] = ['completed', 'failed', 'timeout', 'stopped', 'cancelled']
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -51,10 +64,12 @@ function parseUsage(value: unknown): WorkUsage | null {
   return { input_tokens: count(usage.input_tokens), output_tokens: count(usage.output_tokens), rounds: count(usage.rounds), models }
 }
 
-function parseCard(value: unknown, nested: boolean): WorkCard | null {
+/** `tree`: levels of sub sessions still read under this card (a `session.work_tree` card); undefined for a `session.work_cards` card, whose Todo cards carry nothing below them. */
+function parseCard(value: unknown, nested: boolean, tree?: number): WorkCard | null {
   const card = record(value)
   if (!card || typeof card.session_id !== 'string' || !card.session_id || !STATES.includes(card.state as WorkState)) return null
-  const todos = !nested ? record(card.todos) : null
+  const below = tree === undefined ? undefined : tree - 1
+  const todos = tree === undefined ? (!nested ? record(card.todos) : null) : below! > 0 ? record(card.todos) : null
   return {
     session_id: card.session_id,
     shape: SHAPES.includes(card.shape as WorkShape) ? card.shape as WorkShape : 'simple',
@@ -77,10 +92,47 @@ function parseCard(value: unknown, nested: boolean): WorkCard | null {
         attempt: count(item!.attempt),
         blocked_by: Array.isArray(item!.blocked_by) ? item!.blocked_by.filter(id => typeof id === 'string') : [],
         block_reason: typeof item!.block_reason === 'string' ? item!.block_reason : null,
-        card: parseCard(item!.card, true),
+        card: parseCard(item!.card, true, below),
       })).sort((a, b) => a.seq - b.seq),
     } : null,
+    ...(card.state === 'paused' && PAUSE_SOURCES.includes(card.paused as PauseSource) ? { paused: card.paused as PauseSource } : {}),
+    ...(tree === undefined ? {} : { children: below! > 0 && Array.isArray(card.children) ? card.children.map(child => parseCard(child, true, below)).filter((child): child is WorkCard => !!child).sort((a, b) => a.created_at_ms - b.created_at_ms) : [] }),
   }
+}
+
+/** A `session.work_tree` answer, or null when it is not one. Cards below `WORK_TREE_DEPTH` levels are dropped. */
+export function parseWorkTree(value: unknown): WorkTree | null {
+  const page = record(value)
+  if (!page || typeof page.agent_did !== 'string' || typeof page.session_id !== 'string' || !Array.isArray(page.sessions)) return null
+  const sessions = page.sessions.map(card => parseCard(card, false, WORK_TREE_DEPTH)).filter((card): card is WorkNode => !!card).sort((a, b) => a.created_at_ms - b.created_at_ms)
+  return { agent_did: page.agent_did, session_id: page.session_id, complete: page.complete === true, sessions }
+}
+
+/** The sessions directly under a card: those bound to its Todos, then the others. */
+export function workChildren(card: WorkCard): WorkCard[] {
+  return [...(card.todos?.items ?? []).flatMap(todo => todo.card ? [todo.card] : []), ...(card.children ?? [])]
+}
+
+/** Every card of a tree, parents before their sub sessions. */
+export function flattenWork(cards: readonly WorkCard[]): WorkCard[] {
+  return cards.flatMap(card => [card, ...flattenWork(workChildren(card))])
+}
+
+/**
+ * The interrupted sessions no interrupted session is above: resuming each of
+ * them resumes the rest, since a resume cascades to the sub sessions the same
+ * interruption stopped.
+ */
+export function interruptedRoots(cards: readonly WorkCard[]): WorkCard[] {
+  return cards.flatMap(card => card.state === 'paused' && card.paused === 'interrupted' ? [card] : interruptedRoots(workChildren(card)))
+}
+
+/** What the viewer may do to a work session from its card. */
+export function workControls(card: Pick<WorkCard, 'state' | 'paused'>): { pause: boolean; resume: boolean; stop: boolean } {
+  if (isWorkFinished(card.state)) return { pause: false, resume: false, stop: false }
+  const paused = card.state === 'paused'
+  // A session paused with its Goal resumes when the Goal is woken.
+  return { pause: !paused, resume: paused && card.paused !== 'goal', stop: true }
 }
 
 /** A `session.work_cards` answer, or null when it is not one (cards that do not parse are dropped). */
@@ -124,6 +176,11 @@ export function isWorkFinished(state: WorkState): boolean {
   return state === 'succeeded' || state === 'failed' || state === 'stopped'
 }
 
+/** Whether a card or anything under it still changes. */
+export function cardRunning(card: WorkCard): boolean {
+  return flattenWork([card]).some(item => !isWorkFinished(item.state))
+}
+
 /** The tokens a card shows: a plan counts itself and all of its Todo sessions. */
 export function cardUsage(card: WorkCard): WorkUsage {
   return card.shape === 'plan' && card.subtree_usage ? card.subtree_usage : card.usage
@@ -141,6 +198,13 @@ export function workTone(state: WorkState): TaskTone {
   }
 }
 
+const PAUSED_LINES: Record<PauseSource, string> = {
+  user: 'messagehub.work.line.pausedUser',
+  parent: 'messagehub.work.line.pausedParent',
+  interrupted: 'messagehub.work.line.interrupted',
+  goal: 'messagehub.work.line.pausedGoal',
+}
+
 const DEFAULT_LINES: Partial<Record<WorkState, string>> = {
   queued: 'messagehub.work.line.queued',
   needs_input: 'messagehub.work.line.needsInput',
@@ -153,7 +217,8 @@ const DEFAULT_LINES: Partial<Record<WorkState, string>> = {
  * is; the runtime's known English status lines are localized; an empty line
  * takes the state's default.
  */
-export function localizeLine(line: string, state: WorkState): TaskText | string {
+export function localizeLine(line: string, state: WorkState, paused?: PauseSource): TaskText | string {
+  if (state === 'paused' && paused) return { key: PAUSED_LINES[paused] }
   const value = line.trim()
   if (!value) return DEFAULT_LINES[state] ? { key: DEFAULT_LINES[state]! } : ''
   let match = /^waiting for (\d+) task\(s\)$/.exec(value)

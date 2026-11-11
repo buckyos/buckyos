@@ -165,10 +165,8 @@ pub enum ControlCommand {
     Stop {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
-        /// `session` (default): the session finishes as stopped. `turn`: only
-        /// the open Turn closes as stopped and the session goes on waiting.
-        /// A Goal Session only ever stops its open Turn (it ends with its
-        /// Goal).
+        /// What it ends ([`StopScope`]); what `session` means follows the
+        /// session's kind.
         #[serde(default, skip_serializing_if = "StopScope::is_session")]
         scope: StopScope,
     },
@@ -182,6 +180,15 @@ pub enum ControlCommand {
     /// Undo `pause`: a run it stopped goes on from its checkpoint, inputs
     /// that arrived meanwhile open the next Turn.
     Resume {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// The user takes back an input (`key`: the message's ObjId). Still
+    /// queued: dropped as if never posted. Consumed and its Turn open: the
+    /// Turn is stopped and the retraction recorded. Its Turn closed: nothing
+    /// changes.
+    Retract {
+        key: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
@@ -257,9 +264,15 @@ pub enum ControlCommand {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StopScope {
+    /// The session: a Work ends as stopped (with its sub sessions), a Goal
+    /// Session's Goal goes dormant, a UI session refuses.
     #[default]
     Session,
+    /// The open Turn only; the session goes on.
     Turn,
+    /// A UI session is archived: it ends as stopped and the next message of
+    /// its conversation opens a new one. Other sessions refuse.
+    Archive,
 }
 
 impl StopScope {
@@ -276,6 +289,7 @@ const CONTROL_COMMANDS: &[&str] = &[
     "stop",
     "pause",
     "resume",
+    "retract",
     "decide",
     "subscribe",
     "unsubscribe",
@@ -290,6 +304,7 @@ impl ControlCommand {
             ControlCommand::Stop { .. } => "stop",
             ControlCommand::Pause { .. } => "pause",
             ControlCommand::Resume { .. } => "resume",
+            ControlCommand::Retract { .. } => "retract",
             ControlCommand::Decide { .. } => "decide",
             ControlCommand::Subscribe { .. } => "subscribe",
             ControlCommand::Unsubscribe { .. } => "unsubscribe",
@@ -366,6 +381,8 @@ pub enum RejectReason {
     SessionFinished,
     /// The session does not take msg / event inputs (`input_policy = none`).
     InputPolicy,
+    /// The user retracted the input before it was consumed.
+    Retracted,
 }
 
 impl RejectReason {
@@ -380,6 +397,7 @@ impl RejectReason {
             RejectReason::UnknownCommand => "unknown_command",
             RejectReason::SessionFinished => "session_finished",
             RejectReason::InputPolicy => "input_policy",
+            RejectReason::Retracted => "retracted",
         }
     }
 }

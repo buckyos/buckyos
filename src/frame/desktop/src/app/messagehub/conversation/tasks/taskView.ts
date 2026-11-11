@@ -1,5 +1,6 @@
 import type { TaskWatchNode } from '../../../../api/task_mgr'
 import type { TaskChildren, TaskSnapshot } from './taskWatch'
+import { localizeLine } from '../worksessions/model'
 
 export type TaskTone = 'active' | 'waiting' | 'paused' | 'success' | 'failed' | 'canceled' | 'unavailable'
 
@@ -26,8 +27,8 @@ export interface TaskStateView {
 
 /** What the default two lines of a bubble's task area say. */
 export interface TaskAreaView extends TaskStateView {
-  /** Line 1 after the state: the task's one-line current activity. */
-  activity?: string
+  /** Line 1 after the state: the task's one-line current activity (the runtime's known English status lines localized). */
+  activity?: TaskText | string
   /** Line 2, joined with " · ": sub-task counts and the wait reason. */
   secondary: Array<TaskText | string>
   /** Line 2 ends with "updated …" for a task that is still working. */
@@ -44,6 +45,18 @@ function waitsForInput(node: Pick<TaskWatchNode, 'phase' | 'waitReason'>): boole
   return node.phase === 'Waiting' && node.waitReason?.code === 'input'
 }
 
+/** A paused Turn whose message starts with `interrupted`: the host restarted in the middle of it. */
+export function isInterrupted(node: Pick<TaskWatchNode, 'phase' | 'message'>): boolean {
+  return node.phase === 'Paused' && /^interrupted\b/.test(node.message?.trim() ?? '')
+}
+
+/** The runner's own words for a state the label already says (`paused: …`, `interrupted: …`, `stopped`). */
+function restatesState(node: Pick<TaskWatchNode, 'phase' | 'outcome' | 'message'>): boolean {
+  const message = node.message?.trim() ?? ''
+  if (node.phase === 'Paused') return /^(paused|interrupted)\b/.test(message)
+  return node.phase === 'Terminal' && node.outcome === 'Canceled' && message === 'stopped'
+}
+
 /**
  * State of one task node. A pending control request is shown as "stopping…"
  * (never as canceled) until the runner reports the terminal state.
@@ -57,7 +70,7 @@ export function taskNodeState(node: TaskWatchNode): TaskStateView {
   if (node.pendingControl === 'Cancel') return { tone: 'waiting', label: { key: 'messagehub.task.state.stopping' } }
   if (node.pendingControl === 'Pause') return { tone: 'waiting', label: { key: 'messagehub.task.state.pausing' } }
   if (node.pendingControl === 'Resume') return { tone: 'waiting', label: { key: 'messagehub.task.state.resuming' } }
-  if (node.phase === 'Paused') return { tone: 'paused', label: { key: 'messagehub.task.state.paused' } }
+  if (node.phase === 'Paused') return { tone: 'paused', label: { key: isInterrupted(node) ? 'messagehub.task.state.interrupted' : 'messagehub.task.state.paused' } }
   if (node.phase === 'Waiting') {
     const kind = node.waitReason?.kind
     if (waitsForInput(node)) return { tone: 'waiting', label: { key: 'messagehub.task.state.waitingInput' } }
@@ -107,8 +120,8 @@ export function taskAreaView(snapshot: TaskSnapshot | undefined, children: TaskC
   // Waiting for an answer, the runner's activity and wait message only restate the label.
   const restated = waitsForInput(task) ? task.waitReason?.message : undefined
   const reported = terminal && task.outcome === 'Failed' ? task.error?.message || task.message : task.message
-  const activity = restated && reported === restated ? undefined : reported
+  const activity = (restated && reported === restated) || restatesState(task) ? undefined : reported?.trim() || undefined
   const secondary: Array<TaskText | string> = [...counts]
   if (!terminal && task.phase === 'Waiting' && task.waitReason?.message && task.waitReason.message !== activity && task.waitReason.message !== restated) secondary.push(task.waitReason.message)
-  return { ...state, activity: activity?.trim() || undefined, secondary, updatedAt: terminal ? undefined : task.updatedAt }
+  return { ...state, activity: activity && !terminal ? localizeLine(activity, 'running') || undefined : activity, secondary, updatedAt: terminal ? undefined : task.updatedAt }
 }

@@ -15,6 +15,7 @@ mod consolidation;
 mod expression;
 mod hint;
 mod observation;
+mod owner;
 mod perception;
 pub mod preview;
 mod read;
@@ -44,11 +45,15 @@ pub use agent_tool::agent_memory::{
 };
 pub use changes::{Change, ChangeKind, ChangeSet};
 pub use consolidation::{
-    Batch, BatchOptions, CleanupReport, Consolidator, Material, MaterialState, PendingWork,
-    ReviewDue, DEFAULT_BATCH_LIMIT, DEFAULT_CONTEXT_LIMIT,
+    Batch, BatchOptions, CleanupReport, Consolidator, Forgotten, Material, MaterialState,
+    PendingWork, ReviewDue, DEFAULT_BATCH_LIMIT, DEFAULT_CONTEXT_LIMIT,
 };
 pub use expression::{review_expression, LONG_STATEMENT_CHARS};
 pub use hint::{scope_object_url, Budget, Hint, HintLayer, HintState};
+pub use owner::{
+    CognitionCount, MemoryEntry, MemoryLayer, MemoryOverview, MemoryPage, MemoryRecent,
+    PerceptionCount, MAX_PAGE, RECENT_COGNITIONS, RECENT_PERCEPTIONS,
+};
 pub use observation::{
     observe, observe_batch, set_topic, BatchDelivery, BatchEntry, Delivery, LastQuery,
     ObservationState, TopicConfig, TopicOutcome, TopicState, TopicTag, TopicUpdate, Valve,

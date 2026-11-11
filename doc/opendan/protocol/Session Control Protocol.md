@@ -1,10 +1,10 @@
 # Session Control Protocol（Session 控制）
 
-版本 3 · 2026-10-03；2026-10-11 增加 `stop.scope`、`goal_skills` 与 Goal Session 的结束；2026-11-10 汇总已实现的 pause / resume、控制作用域与级联规则，校正取消确认及终态拒绝说明；同日增加 §9（owner 从用户角度给出的有效语义与控制的对应）和 §8 的宿主重启恢复现状，并把 owner 对 §9 五处待定的裁决写进 §9.2；同日 owner 确认了 §9.2 里的三条推定，按代码核对后修正了“正在工作”的判定，并补了 §9.3（核对出的缺口）。这几次整理都不改变总线 schema 或命令字段。
+版本 3 · 2026-10-03；2026-10-11 增加 `stop.scope`、`goal_skills` 与 Goal Session 的结束；2026-11-10 汇总已实现的 pause / resume、控制作用域与级联规则，校正取消确认及终态拒绝说明；同日增加 §9（owner 从用户角度给出的有效语义与控制的对应）和 §8 的宿主重启恢复现状，并把 owner 对 §9 五处待定的裁决写进 §9.2；同日 owner 确认了 §9.2 里的三条推定，按代码核对后修正了“正在工作”的判定，并补了 §9.3（核对出的缺口）。版本 4 · 2026-11-10：[Agent UI 升级 TODO](../../../notepads/agent-ui-upgrade-todo.md) 的 SC0–SC11 实施后回写 §3–§8：所有 Session 都有控制队列；`stop.scope` 增加 `archive`，Session 范围的 stop 按会话类型分派；新增 `retract`；暂停带来源；宿主重启后正在工作的 Session 停在“异常中断”，手工恢复。
 
 本文是 Session 控制语义的统一入口，由 `libopendan` 的 `src/protocol/input.rs::ControlCommand`、`src/runner/{inputs,drive,outcome,goal}.rs` 反写。输入信封与消费规则见 [Session Input Protocol](<Session Input Protocol.md>)，持久字段、提交与恢复见 [Session Directory Protocol](<Session Directory Protocol.md>)，Goal 对象及授权见 [Agent State Protocol](<Agent State Protocol.md>) §9。架构约束见 [Session 架构设计 §12.12](<../OpenDAN Agent Session架构设计.md#1212-宿主装载运行状态与中断>)。
 
-[Agent UI 升级 TODO](../../../notepads/agent-ui-upgrade-todo.md) 中的控制变更尚未实施，不能直接当作本文已有行为；实施时必须同步修改本协议、共享类型、调用方和验证用例。§9 里标为“未支持”的各项同样是目标，不是已有行为。
+§3–§8 是现行合同。§9 保留 owner 给出语义和裁决时的记录，其中“现状”一栏写的是实施之前的情况；实施结果以 §3–§8 和 UI TODO §8 的实施记录为准。UI TODO §2.1 的推定 13 的两处修正、推定 15、16 实施后已由 owner 确认（UI TODO 的 D30）；§9.3 里说它们“等确认”的句子是确认之前写的。
 
 ## 1. 控制对象与边界
 
@@ -13,7 +13,7 @@
 | Turn | 一次逻辑工作轮次，可跨多个 run 与上下文。停止当前 Turn 不结束 Session，也不等于成功完成任务。 |
 | Run | 一个 LLMContext 的可恢复执行。暂停后继续同一个 Turn，不因恢复快照自动获得新 Turn。 |
 | Session | 连续上下文与执行状态的容器。进入 `finished` 后不能由新输入或 resume 重新打开。 |
-| Goal | 持久目标及其调度状态。Goal 暂停禁止后续 Activation，与暂停 Goal Session 当前的执行不同。 |
+| Goal | 持久目标及其调度状态。Goal 休眠（状态 `paused`）后不再推理：不开新的 Activation，正在进行的在下一个推理边界收尾。它与暂停 Goal Session（`control(pause)`）是两件事。 |
 | 子 Session / 外部 task | 有自己的执行状态。是否级联与是否支持取消分别判断，父级停止不证明它们已停止。 |
 
 `stop` 结束所指定范围内的执行；`pause` 保留未完成的执行，等待 `resume`。协议没有独立的 Session `cancel` 命令，也没有用 stop / cancel 区分“优雅停止 / 强制杀死”的约定。界面的“取消”、聊天命令别名以及外部 Task 的取消接口必须明确映射到哪个对象与操作。
@@ -40,9 +40,10 @@
 
 | `command` | 字段 | 应用规则 |
 |---|---|---|
-| `stop` | `reason?`、`scope?: session \| turn`（缺省 `session`） | 结束 Session 或当前 Turn；Goal Session 特例与中断规则见 §4、§6。 |
-| `pause` | `reason?` | 暂停 Session 推理，保留当前 Turn / run，按 §7 级联。当前没有 `scope` 或 `cascade` 字段。 |
-| `resume` | `reason?` | 清除 Session 暂停，从检查点继续或等待输入；按 §7 恢复因父级而暂停的子 Session。 |
+| `stop` | `reason?`、`scope?: session \| turn \| archive`（缺省 `session`） | `turn`：只关当前 Turn。`session`：按会话类型，Work / self_check 结束，Goal Session 让它的 Goal 休眠，UI Session 拒绝。`archive`：只对 UI Session，归档。见 §4、§6。 |
+| `pause` | `reason?` | 暂停 Session 推理，保留当前 Turn / run，按 §7 级联。没有 `scope` 或 `cascade` 字段。暂停的来源由驱动者按 `reason` 和 Session 的出身认定（§5）。 |
+| `resume` | `reason?` | 清除 Session 暂停，从检查点继续或等待输入；按 §7 恢复因它而暂停、或与它同一次重启中断的子 Session。 |
+| `retract` | `key`（被撤回输入的 `key`，即消息的 ObjId）、`reason?` | 撤回一条输入，按它所处的阶段分三种（§4.1）。 |
 | `goal_skills` | `add[]`（`{name, ref?, version?, note?}` 或名字）、`remove[]`（名字） | 仅 Goal Session：改它拥有的 Goal State 的 `current_skills`（`state.goal.state.rev + 1`），随后发布；其它 Session → `invalid_payload` |
 | `decide` | `decision: accept \| discard`、`by`、`note?` | finished 之后唯一仍可接受的输入，仅 work session。运行中或未 finished 时留在队列并写 `pending_decision`；accept 需 `acceptance = pending`，discard 需 `pending \| accepted`，否则拒绝（`input_rejected`） |
 | `subscribe` | `subscription: {id, mode: active \| semi, source, watch[]}` | 加入 `session_config.subscriptions`（`config_rev + 1`）。`source`：`{type: session, ref}`、`{type: object_event, object, event?}`、`{type: task, task_id}`、`{type: timer, name}`、`{type: system, id}` |
@@ -55,33 +56,58 @@
 | 请求 | Turn 的结局 | Session 的结局 | 子 Session |
 |---|---|---|---|
 | `stop(scope=turn)` | 有打开的 Turn 时置 `turn_stop_requested`，以 `stopped` 关闭，之后清除标志；没有打开的 Turn 时记录 `detail.applied = false` | 保留上下文；未暂停时等待下一个有效输入，已暂停时仍保持暂停 | 不级联 |
-| `stop(scope=session)`，非 Goal Session | 置 `stop_requested`；打开的 Turn 以 `stopped` 关闭 | `run_state = finished`、`outcome = stopped` | 按 §7 停止未结束的子 Session |
-| Goal Session 的任意 `stop` | 按 `scope=turn` 处理，只结束当前 Activation | 保留 Session 与 Goal 状态，等待后续运行机会 | 不因当前 Activation 停止而停止 Goal 派生的 Work |
+| `stop(scope=session)`，Work / self_check | 置 `stop_requested`；打开的 Turn 以 `stopped` 关闭 | `run_state = finished`、`outcome = stopped` | 按 §7 停止未结束的子 Session |
+| `stop(scope=session)`，Goal Session | 不直接动 Turn | 由驱动者以投递者的身份把它的 Goal 置 `paused`（休眠，§6）；Session 与 Goal State 保留。Goal 已经不是 `active` 时记录 `applied = false` 与原因 | 休眠的 Goal 派生的 Work 一并暂停（§7） |
+| `stop(scope=session)`，UI Session | 不变 | 拒绝：记录 `applied = false`、`refused`。UI Session 不被停止 | 无 |
+| `stop(scope=archive)`，UI Session | 打开的 Turn 以 `stopped` 关闭 | `finished`、`outcome = stopped`；同一 `route_key` 的下一条消息新建一代 UI Session | 同 Session 范围（宿主在归档前拒绝还有未结束 Work 的会话） |
+| `stop(scope=archive)`，其它 Session | 不变 | 拒绝，`applied = false` | 无 |
 
-UI Session 在现有协议中可以收到 Session 范围的 stop 并结束；“UI 不提供结束按钮”与“协议拒绝这种请求”是不同要求。没有打开 Turn 时，Turn 范围 stop 也不禁止未来的新 Turn；它不是持续的暂停开关。
+停止的范围就是用户的两种意图：针对消息的 stop（`turn`）和针对 Session 的 stop（`session`）。结束一个 UI Session 只有归档这一条路；归档是 clean（“开始新对话”），由宿主的 `ui.rotate` 和聊天命令 `/clean`、`/new` 发出，旧会话的目录、worklog、Session id 都保留。没有打开 Turn 时，Turn 范围 stop 记录 `applied = false`，也不禁止未来的新 Turn；它不是持续的暂停开关。停止一个被重启中断的 Turn（暂停来源 `interrupted`）时一并清掉这个暂停，Session 回到等待输入；其它来源的暂停不受 stop 影响（§5）。
 
 已经接受的最终报告先于后到的 stop 完成；先被宿主观察到的 stop 拒绝新的结束提交。stop 不把已经由报告提交确定的终局改写成 `stopped`；若目标 Turn 已由报告关闭，Turn stop 清除标志后返回。提交先后规则见 Session Directory Protocol §7.1。
 
 运行中的推理在中断边界停止；工具执行期间由监视任务查看队列中的 stop 并发出中断，监视任务不消费输入、不写 Session state，最终由驱动者消费并提交。等待 task 的挂起调用按可获得的状态回填。该行为不是“所有在飞调用自然返回后再停止”，也不保证任意外部工具都能立即终止。
 
+### 4.1 撤回输入
+
+`retract {key}` 撤回一条 msg 输入，`key` 是它的输入 key（消息的 ObjId）。驱动者按这条输入所处的阶段处理，结果记在 `control_applied{command: retract}` 的 `detail.outcome`：
+
+| 输入的阶段 | 处理 | `outcome` |
+|---|---|---|
+| 还在队列里、没有被消费 | 标记为已消费并记 `input_rejected{reason: retracted}`，不进任何 Turn | `dropped` |
+| 已被消费、它的 Turn 还开着 | 按 `stop(scope=turn)` 关闭这个 Turn；历史由 worklog 重建，这条 `control_applied` 在下一个 Turn 的历史里渲染成一行“用户撤回了这个 Turn 的输入，已经做的事不会撤销” | `stopped` |
+| 它的 Turn 已经关闭 | 不动 | `closed`（`applied = false`） |
+| 找不到这个 key（例如被撤回的是一条表情回应） | 不动 | `unknown`（`applied = false`） |
+
+worklog 不改写：被撤回的 Turn 已执行的步骤都留在历史里。Turn 合并了多条消息时，撤回其中一条同样停止整个 Turn。入口是消息一侧的撤回关系（`relates_to: redact`）：msg bridge 认出 owner 发来的 redact 后转成这条控制，目标是 redact 指向的消息；不是 owner 发的不生效。
+
 ## 5. 暂停与恢复
 
-`pause` 写入 `state.paused = {at_ms, reason, by, in_run}`，暂停的是 Session 的推理推进：
+`pause` 写入 `state.paused = {source, at_ms, reason, by, in_run}`，暂停的是 Session 的推理推进。`source` 是暂停的来源，决定谁来恢复它：
+
+| `source` | 来源 | 恢复 |
+|---|---|---|
+| `user` | 有人投了 `pause` | `resume` |
+| `parent` | 父 Session 被暂停，级联下来（`reason = parent session <sid> was paused`） | 父 Session 的 resume 级联；也可以单独 resume |
+| `interrupted` | 宿主重启时它正在工作（§8）。不经过队列，由驱动者在重启后的第一次驱动里写入 | 手工 `resume`，级联到同一次中断的子 Session；或停止 |
+| `goal` | 它的 Goal 休眠了（`reason = goal <id> is dormant`，§7） | Goal 唤醒时由宿主 resume；也可以单独 resume |
+
+来源由驱动者认定，不是 `pause` 的字段：`reason` 等于父级级联的那一句且这个 Session 确有这个父 Session 时是 `parent`；等于 Goal 休眠的那一句且它确由这个 Goal 派生时是 `goal`；其余是 `user`。暂停的效果对各种来源相同：
 
 - 不打开新 Turn，不产生 tick；到达的 msg / event 留在队列，所跟 task 的结束留待恢复后处理。
 - 运行中的 run 在下一个推理边界，即在飞调用返回并写入检查点后，以中断原因 `session paused` 挂起。run 保留检查点，Turn 保持打开；记录 `worklog outcome.kind = paused`，暂停标记 `in_run = true`。
 - 已经交出的外部 task 按其执行器 / OS 进程语义继续；暂停 Session 不等于暂停这些进程。
-- 登记表投影为 `status.paused`；暂停中的 Session 不报 `needs_input`。已暂停时再次 pause 不覆盖原暂停标记，记录 `applied = false`。
+- 登记表的 `status.paused` 是来源（`user \| parent \| interrupted \| goal`），没有暂停时缺省；暂停中的 Session 不报 `needs_input`。已暂停时再次 pause 不覆盖原暂停标记，记录 `applied = false`。
 
 `resume` 清除 `state.paused`。Turn 内暂停的 run 通过 `state.resume_run` 从检查点继续，与崩溃恢复共用恢复路径；Turn 之间暂停的 Session 由积压输入或下一次有效运行机会打开新 Turn。未暂停的 Session 收到 resume 时记录 `applied = false`。pause / resume 都不重新打开已结束的 Session（§2）。
 
 恢复保留调用身份，不清空累计用量，也不补充当前 Turn 的工具额度；连续执行墙钟仍按 Session Directory Protocol §7 重新计时，不能把恢复误记成新的任务或新的 Turn。等待工具、等待用户、等待调度和用户主动 pause 分别记录，不因 run 快照的 `status = paused` 就认定 Session 收到了 pause。
 
-Session 已暂停时仍可停止当前 Turn 或结束 Session；停止处理先于暂停闸门。stop 不隐式清除 `state.paused`，所以暂停期间的 Turn stop 关闭 Turn 后，后续推理仍需 resume。
+Session 已暂停时仍可停止当前 Turn 或结束 Session；停止处理先于暂停闸门。stop 不隐式清除 `state.paused`，所以暂停期间的 Turn stop 关闭 Turn 后，后续推理仍需 resume。例外是来源为 `interrupted` 的暂停：停止（或撤回）被中断的 Turn 时一并清掉它，否则一个对话会一直停在暂停；Goal 休眠时被中断的 Activation 也照此处理（§6）。
 
 ## 6. Goal 生命周期
 
-Goal 对象的 `status = paused` 是调度开关：不再打开新的 Activation，已打开的 Turn 跑到自然结束。恢复 Goal 为 `active` 允许后续运行机会，不等于 `control(resume)`，也不清除 Goal Session 自己的 `state.paused`。需要暂停当前推理时使用 Session pause；只结束当前 Activation 时使用 stop。
+Goal 对象的 `status = paused` 是休眠：不再打开新的 Activation，也不再发起下一次推理。正在进行的 Activation 里，在飞的这次推理和它的工具不打断；到下一个推理边界（以及驱动循环的每个提交点），驱动者读到 Goal 已休眠，就把当前 Activation 以 `stopped` 收尾（`control_applied{command: stop, input.src: "_runner", scope: turn}`），照常写回 Goal State。归档按同一条规则在推理边界生效。休眠不走 `control(pause)`，Goal Session 自己的 `state.paused` 不动；唤醒（恢复为 `active`）后等下一次运行机会，不续上被收尾的那次 Activation，也不等于 `control(resume)`。只结束当前 Activation 时用 `stop(scope=turn)`；对 Goal Session 发 `stop(scope=session)` 就是让它的 Goal 休眠（§4）。
 
 Goal Session 的终止由 Goal 生命周期驱动，不是另一个 `ControlCommand`。驱动者读取 `state/goals/<id>/goal.json`，在 Goal 归档、达成或进入新 epoch 时写入 `state.goal.ending` 与 `control_applied{command: goal_end}`，再走停止提交路径；打开的 Activation 以 `stopped` 关闭并写回：
 
@@ -89,27 +115,36 @@ Goal Session 的终止由 Goal 生命周期驱动，不是另一个 `ControlComm
 - Goal 达成：Goal Session 以 `succeeded` 结束。
 - restart / reopen 切换 epoch：旧 Session 以 `stopped` 结束，不停止 Goal 派生的 Work；新 epoch 按 Agent State Protocol §9 接管。
 
-界面可以把 Goal 暂停称为“休眠”、恢复称为“唤醒”，但这不会改变 stop 的含义。Goal 状态操作及其权限以 Agent State Protocol §9 为准。
+界面和文档把 Goal 的手工 disable 叫“休眠”、恢复叫“唤醒”，以免和 Session 的暂停混在一起；状态值仍是 `paused`，CLI 仍是 `agent-session goal pause | resume`。Goal 状态操作及其权限以 Agent State Protocol §9 为准。
 
 ## 7. 子工作与外部 Task
 
 | 操作 | 级联规则 |
 |---|---|
 | Turn 范围 stop | 不停止子 Session。外部 task 的取消请求与结果须单独核对。 |
-| 非 Goal Session 以 stopped 结束 | 对未结束且有队列的子 Session 投递 stop；无队列的子由宿主发出驱动者停止请求。普通结束路径只处理需向父汇报的未结束子 Session。 |
-| Session pause | 对未结束且有队列的子 Session 投递 pause，reason 为 `parent session <sid> was paused`；当前会跳过无队列子 Session。 |
-| Session resume | 只对暂停 reason 匹配该父级级联原因的子 Session 投递 resume，不唤醒原先独立暂停的子 Session。 |
-| Goal 派生的 Work（`origin.goal`） | 托管进程只因其 Goal 被归档或不存在而停止它，不因创建它的 epoch 结束而停止；归属见 Agent State Protocol §9.3。 |
+| 非 Goal Session 以 stopped 结束 | 对未结束的子 Session 投递 stop。普通结束路径只处理需向父汇报的未结束子 Session。 |
+| Session pause | 对未结束的子 Session 投递 pause，reason 为 `parent session <sid> was paused`（来源 `parent`）。 |
+| Session resume | 只在这个 Session 自己是暂停的时候才往下级联。恢复两种子 Session：暂停 reason 匹配该父级级联原因的；这个 Session 的暂停来源是 `interrupted` 时，来源同为 `interrupted` 的。不唤醒原先独立暂停的子 Session，也不带动父级。 |
+| Goal 派生的 Work（`origin.goal`） | Goal 归档或不存在时托管进程停止它，不因创建它的 epoch 结束而停止。Goal 休眠时托管进程对未结束、没有暂停的派生 Work 投递 pause（reason `goal <id> is dormant`，来源 `goal`）；Goal 回到 `active` 时只 resume 来源是 `goal` 的。Work 的暂停照常级联到它自己的子 Session。归属见 Agent State Protocol §9.3。 |
+
+级联的起点必须是一个暂停着的 Session：对没有暂停的 Session 发 resume 记 `applied = false`，不往下走。父 Session 没有中断、子 Session 中断了的时候（空闲的对话名下有中断的 Work），由调用方找出中断的 Session 里父级没有中断的那些，逐个发 resume；宿主的 `/resume` 和界面的“全部恢复”都这么做。
+
+没有队列客户端的宿主（不在 Zone 里、也没有 `--queue-dir` 的 `xagent`）建出的 Session 没有队列，上面的投递会跳过它们，由驱动它的进程自己处理停止。
 
 级联投递与子工作实际停止分别观察。外部 task 的取消受执行器能力与停止收尾路径约束：`runner/drive.rs::end_open_work` 根据 resolver 和 run 记录向可取消的 task 请求取消，但取消调用的错误不会阻止 Turn 收尾。运行中断的其它路径不能据此视为已经逐项发出取消。调用方应核对外部 task 的状态，不能以父 Turn 的 `stopped` 推断全部 task 已收到或完成取消；无法确认的结果保留未知或仍在执行的事实。所有停止路径均不承诺撤销已发生的副作用。
 
 ## 8. 宿主和界面映射
 
-- **驱动者自己的停止请求**：驱动进程可以不经队列请求停止，例如 SIGINT 或宿主停止无队列子 Session。记录 `control_applied{command: stop, input.src: "_runner"}`，按 Session 范围停止；Goal Session 上仍只停当前 Activation。无队列 Session 当前仅有这条停止路径，没有 pause / resume 的旁路。
-- **无队列 Session**：不接受队列型控制。`decide` 可由决定者在 `artifact:<aid>` 锁下直接操作产物列表（Agent State Protocol §6）。“所有 Session 都有控制队列”是 UI TODO 中待实施的变更。
-- **聊天与按钮**：斜杠命令不由 Session 解析，msg bridge 在入队前按登记表与发送者身份转成 control。UI 的“停止回答”应明确选择 Turn 作用域；命令名、按钮名和 TaskMgr 的“取消”字样都不能替代作用域。各入口当前映射与改动计划见 UI TODO §1.7、§2.4。
-- **任务服务**：外部取消 / 暂停要转为经过授权的控制请求，再由 Session 报告实际状态；不能只修改 TaskMgr 的显示状态。当前 opendan 对暂停 Turn 仍上报 Running / Waiting 并在 message 写 `paused: …`，TaskMgr Paused 状态桥接属于 UI TODO SC3。
-- **宿主重启后的恢复**：宿主启动后第一次扫描登记表（`host/mod.rs` 的 `Supervisor::tick`），为它驱动的每个未结束 Session 重新起驱动循环；停在 run 中途的从检查点继续，与 resume 走同一条恢复路径（§5）。整个过程不经过控制命令，也不需要用户确认。断电、崩溃、正常重启都是这一条路径，协议里没有“异常中断”这种状态。用户暂停过的 Session 重启后仍是暂停的（`state.paused` 是持久字段）。这次扫描只看本宿主驱动的 Session，由别的宿主驱动的不在其中。目标是改成手工恢复，见 §9.2 第 5 条。
+- **控制队列**：宿主有队列客户端时，每个 Session 都有输入队列，控制命令一律走它。队列收不收 msg / Input event 是另一个属性：`session.input_policy = none` 的 Session（内置 `work` 类，以及模板里 `input = "none"` 的类）只收控制命令，它的首批材料来自 `prompt.initial_inputs`；向它投 msg 在投递时就被拒绝并说明原因。收消息的后台 Work 只有 plan（`input = "queue"`）、Todo 派发的 Work 和 `--interactive` 的 Work。
+- **驱动者自己的停止请求**：驱动进程可以不经队列请求停止，例如 SIGINT。记录 `control_applied{command: stop, input.src: "_runner"}`，按 Session 范围停止；Goal Session 上只停当前 Activation。
+- **无队列 Session**：只出现在没有队列客户端的宿主上（§7 末）。不接受队列型控制；`decide` 可由决定者在 `artifact:<aid>` 锁下直接操作产物列表（Agent State Protocol §6）。
+- **聊天与按钮**：斜杠命令不由 Session 解析，msg bridge 在入队前按登记表与发送者身份处理。`/stop`、`/cancel` 转成 `stop(scope=turn)`，只投给对话当前的 UI Session，没有打开的 Turn 时不投、回一句提示；`/clean`、`/new` 由宿主归档当前 UI Session（有未结束的 Work 时拒绝并列出它们）；`/resume` 由宿主恢复这个对话里被中断的 Session（它自己，否则它名下最靠上的那些）；owner 的 redact 转成 `retract`。控制和撤回都不会为一个还没有 UI Session 的对话新建会话。界面的“停止”按钮在占位消息上发 `turn` 范围，在后台 Work 上发 `session` 范围。
+- **任务服务**：TaskMgr 一侧的取消按 task 属于哪类会话转成 stop：UI Session 和 Goal Session 上是 `turn` 范围，Work 上是 `session` 范围（那个 task 就是这件工作）。暂停着的 Session，其打开的 Turn 的 task 是 TaskMgr 的 `Paused` 状态，message 写 `paused: …`，异常中断写 `interrupted: …`；恢复后回到 Running / Waiting。TaskMgr 一侧发起的 Pause / Resume 请求不转成控制：Session 暂停或恢复时，待处理的同类请求会被一并确认，除此之外不起作用。
+- **宿主重启后的恢复**：宿主启动后第一次扫描登记表（`host/mod.rs` 的 `Supervisor::tick`）找出它驱动的未结束 Session，为每个起驱动循环。这一轮里（直到第一次扫描结束）起的驱动循环，在拿到 lease、读到 `state.json` 之后先判定这个 Session 重启前是不是正在工作；是的话写 `state.paused`（来源 `interrupted`，`reason = interrupted by a restart of the host`，`by` 是宿主）和 `control_applied{command: pause, input.src: "_runner", source: interrupted}`，然后停住，不推理。断电、崩溃、正常重启不区分。
+  - 正在工作：Work Session 未结束、没有暂停、不是在等用户（`run_state = waiting` 且不在等自己发起的工作）就算，不管这一刻有没有打开的 Turn，包括刚建好还没开始的——等子任务的 Work 会自己按 tick 推理；UI、Goal、self_check Session 看“有打开的 Turn 且不是在等用户回答”。空闲的对话、两次 Activation 之间的 Goal Session、在等用户回答的 Session 不算，新消息和下一次运行机会照常处理。
+  - 判定以 `state.json` 为准，登记表只用来找出要看的 Session。之后新建的 Session、驱动循环出错后重起的都不算。用户暂停过的 Session 重启后仍是原来的来源。
+  - `resume` 清掉标记，从检查点继续（§5），级联到同一次中断的子 Session（§7）。中断期间到达的输入留在队列。停止被中断的 Turn 时一并清掉中断标记（§4）。
+  - 每个宿主只处理自己驱动的 Session。`xagent` 命令行直接驱动的 Session 不经过 Supervisor，行为不变。自动恢复没有做。
 
 ## 9. 用户语义与控制的对应（owner，2026-11-10）
 

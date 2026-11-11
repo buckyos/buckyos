@@ -459,6 +459,14 @@ impl<'a> Render<'a> {
             WorklogBody::EventDropped { input, reason } => {
                 self.note(pos, format!("[event dropped {}] {reason}", input.id()))
             }
+            WorklogBody::ControlApplied { command, detail, .. } if command == "retract" => {
+                if detail["outcome"] == "stopped" {
+                    self.note(
+                        pos,
+                        "[control] the user retracted the input of this turn: do not act on it. What the turn already did is not undone.".to_string(),
+                    )
+                }
+            }
             WorklogBody::ControlApplied { command, .. } => {
                 self.note(pos, format!("[control] {command}"))
             }

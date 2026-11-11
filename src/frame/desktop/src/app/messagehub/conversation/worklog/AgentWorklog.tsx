@@ -14,14 +14,20 @@ import { useWorklog } from './useWorklog'
 
 type Destination = { taskId: string; details?: boolean } | WorklogDestination
 
-/** The work log of a message's Turn task; `initial` opens a session's log on top of it (back returns to the Turn). */
-export function AgentWorklog({ taskId, initial }: { taskId: string; initial?: WorklogDestination }) {
+/**
+ * The work log of a message's Turn task; `initial` opens a session's log on
+ * top of it (back returns to the Turn). Without a Turn task (a session
+ * opened from the Agent panel's work tree) `initial` is the bottom of the
+ * stack and going back from it leaves the log (`onExit`).
+ */
+export function AgentWorklog({ taskId, initial, onExit }: { taskId?: string; initial?: WorklogDestination; onExit?: () => void }) {
   const { t } = useI18n()
   const [stack, setStack] = useState<Destination[]>(() => initial ? [{ target: initial.target, title: initial.title, card: initial.card }] : [])
-  const destination = stack.at(-1) ?? { taskId }
+  const destination = stack.at(-1) ?? { taskId: taskId ?? '' }
   const navigate = (next: Destination) => setStack(current => [...current, next])
+  const back = () => { if (!taskId && stack.length <= 1) onExit?.(); else setStack(current => current.slice(0, -1)) }
   return <div className="flex min-h-0 flex-1 flex-col" data-testid="agent-worklog">
-    {stack.length > 0 ? <button className="flex shrink-0 items-center gap-2 border-b border-[color:var(--cp-border)] px-4 py-3 text-xs" onClick={() => setStack(current => current.slice(0, -1))} data-testid="worklog-back"><ArrowLeft size={14} />{t('messagehub.worklog.back')}</button> : null}
+    {stack.length > (taskId ? 0 : 1) || (!taskId && onExit) ? <button className="flex shrink-0 items-center gap-2 border-b border-[color:var(--cp-border)] px-4 py-3 text-xs" onClick={back} data-testid="worklog-back"><ArrowLeft size={14} />{t(!taskId && stack.length <= 1 ? 'messagehub.agentPanel.backToPanel' : 'messagehub.worklog.back')}</button> : null}
     {'target' in destination
       ? <SessionWorklog key={`${destination.target.sessionId}/${destination.target.turn ?? ''}`} target={destination.target} title={destination.title} card={destination.card} navigate={navigate} />
       : destination.details ? <div className="shell-scrollbar min-h-0 overflow-auto p-4"><TaskDetailsBody key={destination.taskId} taskId={destination.taskId} /></div>

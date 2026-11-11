@@ -10,7 +10,7 @@ const pickSource = (): 'mock' | 'krpc' => {
   return import.meta.env.DEV && !import.meta.env.VITE_OPENDAN_PROXY ? 'mock' : 'krpc'
 }
 
-export const dataModel: OpenDanDataModel = pickSource() === 'mock' ? createMockDataModel(new URLSearchParams(window.location.search).get('runtime') === 'native') : createKrpcDataModel()
+export const dataModel: OpenDanDataModel = pickSource() === 'mock' ? createMockDataModel(new URLSearchParams(window.location.search)) : createKrpcDataModel()
 
 export { OpenDanError } from './datamodel'
 export type { OpenDanDataModel } from './datamodel'

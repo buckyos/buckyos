@@ -661,6 +661,55 @@ impl SessionRegistry for FsRegistry {
         Ok(marked)
     }
 
+    async fn delete(&self, sid: &str) -> Result<Vec<String>> {
+        let root = self
+            .read_entry(sid)?
+            .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
+        if !matches!(root.kind, SessionKind::Work | SessionKind::SelfCheck) {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "session {sid} is a {} session: only work and self_check sessions are deleted",
+                root.kind.as_str()
+            )));
+        }
+        let mut all = vec![root];
+        let mut at = 0;
+        while at < all.len() {
+            let below = self.children_of(&[all[at].session_id.clone()]).await?;
+            all.extend(below);
+            at += 1;
+        }
+        let unfinished: Vec<&str> = all
+            .iter()
+            .filter(|e| e.status.run_state != RunState::Finished)
+            .map(|e| e.session_id.as_str())
+            .collect();
+        if !unfinished.is_empty() {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "not finished yet: {} (stop them or wait, then delete)",
+                unfinished.join(", ")
+            )));
+        }
+        let mut deleted = Vec::new();
+        for e in all.iter().rev() {
+            let dir = Path::new(&e.location);
+            if dir.join(STATE_DIR).is_dir() {
+                std::fs::remove_dir_all(dir).map_err(|err| OpenDanError::io(dir, err))?;
+            }
+            let entry = self.layout.registry_entry(&e.session_id);
+            match std::fs::remove_file(&entry) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(OpenDanError::io(&entry, err)),
+            }
+            let _ = std::fs::remove_file(self.layout.unreachable_mark(&e.session_id));
+            let _ = std::fs::remove_file(self.layout.runtime_mark(&e.session_id));
+            self.cache.lock().expect("registry cache").remove(&e.session_id);
+            deleted.push(e.session_id.clone());
+        }
+        deleted.reverse();
+        Ok(deleted)
+    }
+
     async fn post_input(&self, sid: &str, input: &PostedInput) -> Result<u64> {
         let entry = self
             .read_entry(sid)?
@@ -674,6 +723,15 @@ impl SessionRegistry for FsRegistry {
             return Err(OpenDanError::SessionFinished(sid.to_string()));
         }
         input.validate()?;
+        if matches!(input.input, SessionInput::Msg(_))
+            && crate::session::SessionDir::open(&entry.location)
+                .and_then(|d| d.config())
+                .is_ok_and(|c| c.session.input_policy == InputPolicy::None)
+        {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "session {sid} takes no messages: its queue only takes controls (pause, resume, stop). Say it to the plan or the conversation that started it, or stop it and start the work again"
+            )));
+        }
         let queue = entry
             .input_queue
             .clone()

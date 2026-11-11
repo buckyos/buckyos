@@ -173,7 +173,7 @@ impl AgentConfig {
                 );
             }
             if template.input != InputChannel::Queue {
-                bail!("{at}: session class `{}` has no input queue", rule.session_class);
+                bail!("{at}: session class `{}` takes no user messages (input = \"queue\")", rule.session_class);
             }
         }
         if self.loader.goals.enabled {

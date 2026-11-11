@@ -23,6 +23,7 @@
     perception/<sid>.jsonl.lock             感知文件短锁（追加与清理互斥）
     artifacts/<aid>/artifact.json           产物 head
     artifacts/<aid>/versions/v-<sid>.json   各 work session 的贡献
+    deliveries.jsonl                        交付索引（§6.1）：哪个 Session 何时交付了哪个文件
     goals/<goal_id>/                        Goal（§9）：goal.json revisions/ changes.jsonl state.json
                                             activations.jsonl epochs/<n>/state.json schedule.json .lock
   memory/  notebook/                        认知（agent_tool 实现与其内部锁）
@@ -51,7 +52,7 @@
               "report_brief": "≤500 字", "pending_decision": null,
               "needs_input": false,   // run_state = waiting 且只有别人的输入能推动它（没有在跟的 task / 子 Session，不是 Goal Session）；父据此区分“子在等回答”
               "turn_open": false,
-              "paused": false,        // control(pause) 之后、resume 之前：不再推理（缺省省略）
+              "paused": "user",       // 暂停着：不再推理，值是来源 user | parent | interrupted | goal（state.json `paused.source` 的投影，Session Control Protocol §5）；没有暂停时省略
               "retry_not_before_ms": 0,   // 可重试错误的退避期：此刻之前不推理（state.json `retry.not_before_ms` 的投影，缺省省略）；宿主据此不去驱动退避中的子 Session
               "activity": { "summary": "…", "touching": [], "heartbeat_ms": 0 },
               "last_runner": { "runner_id": "…", "host": "…", "pid": 0, "lock_epoch": 0, "at_ms": 0 },
@@ -62,6 +63,7 @@
 - **回报**：驱动者持 session 锁、在每次提交之后写 `status`（整条原子替换）；`status.rev ≤` 已有值时忽略。回报失败由下次 drive 按 `state.reported_rev` 补发。`status` 只是缓存，真相是 session 的 state.json。
 - **巡检**：location 不存在时只写 `.unreachable/<sid>` 标记，不删除、不改写条目（保持单写者）；驱动者下次回报时清除。
 - **runtime 不可用标记**：宿主（`mark_runtime(runtime_id, reason | null)`）对冻结在某个 runtime 上、还没结束的 Session 写 `.runtime_unavailable/<sid>`（内容是原因），runtime 恢复可用时删除；同样不改写条目，读条目时合成 `runtime_unavailable`。Session 不会被迁到别的 runtime。
+- **删除**：`delete(sid)`（kRPC `sessions.delete {sid}` → `{deleted: [sid…]}`）只接受已结束的 Work / self_check Session，且它的全部后代（`origin.parent_session` 逐层向下）都已结束；连同后代一起删除 Session 目录和登记项，清掉 `.unreachable/<sid>`、`.runtime_unavailable/<sid>` 标记。有未结束的后代、或是 UI / Goal Session 时拒绝。`state/perception/<sid>.jsonl` 不动（Memory 的来源）；用量统计随目录一起减少。
 - **子 Session**：`children_of(parents)` = `origin.parent_session` 属于 `parents` 的条目（按 session_id 排序），是查询的一个派生视图。父对子的隐式关注、同步等待的 resolver 与子 Session 的托管进程都只用它和 `lookup`。
 - **查询**是派生视图（扫描 + mtime 缓存），可以另建可删除重建的索引。`RegistryQuery.goal_id` 取出一个 Goal 的全部 Goal Session（各 epoch）与它派生的 Work；`RegistryQuery.runtime_id` 取出冻结在一个 runtime 上的 Session（别名按同一个 runtime 算）。
 
@@ -124,6 +126,23 @@ Session 侧的观察状态（2026-11-09，[召回接线 TODO](../../../notepads/
   - 拿不到 artifact 锁：control 留在队列，下次再试。
 - discard 的报告写入 `state.result.discard_report`：`workspace` = `none`（无 workspace）或 `unsupported`（workspace 回滚另行设计），`unsupported[]` 逐项列出不可撤销的副作用（worklog 中 effect 非 read_only 的动作），`head_moved_to` 记录 head 结果。
 - 顺序：decide 条目先进 worklog，state.json 提交（acceptance 变化），之后追加 `task_discarded` 感知。
+
+### 6.1 交付索引 `state/deliveries.jsonl`
+
+和上面的产物列表是两件事：产物列表记 Work 结果的版本与采纳，交付索引记交给 owner 的文件（报告的 `artifacts`、结构化回复的 `artifacts`，经宿主的 `ObjectStore` 存进 Agent 的 `artifacts` 桶之后）。只追加，一行一条，按交付顺序；行不改写、不删除，读的一方跳过解析不了的行。
+
+```jsonc
+{ "at_ms": 0, "name": "answer.txt", "obj_id": "cyfile:…", "url": "obj://bucket/user/<agent_id>/<owner>/artifacts/<key>",
+  "mime": "text/plain", "size": 7, "session_id": "work-B", "ui_session_id": "ui-A", "route_key": "<agent did>/dm%3A…",
+  "source": "report" }
+```
+
+- 写者是交付它的 Session 的驱动者，在对象存好之后写（`runner/reports.rs` 的 `store_artifacts`）。同一个对象（`obj_id`）由同一个 Session 再次交付不追加。写不进去只记日志，不算交付失败。
+- `url` 是留住这个对象的桶绑定；按对象 id 直接转交的产物（没有桶留住它）没有 `url`。`mime` 按名字的扩展名推出，认不出就没有；`size` 只有工作目录里的文件有。
+- `ui_session_id` / `route_key`：沿 `origin.parent_session` 往上找到的第一个 UI Session 和它的 `route_key`（UI Session 自己交付时就是它自己）。同一个对话的各代 UI Session `route_key` 相同，“当前会话的产物”按它过滤。上面没有 UI Session 的（Goal 派出的 Work）两项都没有。
+- `source`：`report`（报告的产物）或 `reply`（回复的附件）。
+- 没有对象存储的宿主（`--dev`）不写。回复正文里 `<attachment>` 标签带的文件目前不进索引（它在发送回复时才变成对象，那里没有写索引）。
+- 读：opendan 服务的 `deliveries.recent {limit?, before?, route_key?}` → `{entries, next_before?}`，新的在前；`before` 是上一页的 `next_before`（行的位置，不是时间）。
 
 ## 7. behavior 目录（BehaviorCatalog）
 

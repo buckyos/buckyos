@@ -605,6 +605,55 @@ pub(super) async fn ensure_frozen(sh: &Arc<Shared>, behavior: Option<&str>) -> R
     commit_and_report(sh, &mut s).await
 }
 
+/// A conversation whose history was compacted since its prompt was frozen
+/// takes the agent's current prompt for the runs that follow: identity,
+/// behaviors and manuals are frozen again (`control_applied{prompt_refrozen}`).
+/// Work sessions keep what they were created with.
+async fn refresh_frozen(sh: &Arc<Shared>) -> Result<()> {
+    let (cfg, compacted_at) = {
+        let s = sh.session.lock().await;
+        (s.config.clone(), s.dir.summary_opt().ok().flatten().map(|m| m.updated_at_ms))
+    };
+    let (Some(frozen), Some(at)) = (&cfg.prompt.frozen, compacted_at) else {
+        return Ok(());
+    };
+    if cfg.session.kind != SessionKind::Ui || at <= frozen.frozen_at_ms {
+        return Ok(());
+    }
+    let mut next = match crate::state::refrozen(&cfg, sh.agent().behaviors(), sh.agent_root.as_deref(), &sh.deps.who).await {
+        Ok(next) => next,
+        Err(e) => {
+            log::warn!("session {}: prompt not refreshed: {e}", sh.dir.sid());
+            return Ok(());
+        }
+    };
+    let changed = next
+        .prompt
+        .frozen
+        .as_ref()
+        .map(|new| crate::state::frozen_changes(frozen, new))
+        .unwrap_or_default();
+    next.config_rev = cfg.config_rev;
+    let mut s = sh.session.lock().await;
+    s.config = next;
+    s.write_config(&sh.lease)?;
+    let rev = s.config.config_rev;
+    s.append_worklog(
+        &sh.lease,
+        vec![WorklogBody::ControlApplied {
+            input: InputRef {
+                src: "_runner".into(),
+                index: 0,
+                key: format!("prompt_refrozen@{rev}"),
+                kind: INPUT_TYPE_CONTROL.into(),
+            },
+            command: "prompt_refrozen".into(),
+            detail: serde_json::json!({ "changed": changed, "config_rev": rev }),
+        }],
+    )?;
+    commit_and_report(sh, &mut s).await
+}
+
 async fn catch_up(sh: &Arc<Shared>) -> Result<()> {
     let (status, reported) = {
         let s = sh.session.lock().await;
@@ -1248,10 +1297,18 @@ impl StopMonitor {
 
     /// Stop watching; the task (and its hold on the drive's shared state,
     /// the lease included) is gone when this returns.
-    async fn finish(self) -> bool {
+    async fn finish(mut self) -> bool {
         self.task.abort();
-        let _ = self.task.await;
+        let _ = (&mut self.task).await;
         self.seen.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for StopMonitor {
+    /// A drive that is dropped (its host shutting down) takes its monitor
+    /// along: nothing keeps the lease after it.
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
@@ -1328,6 +1385,69 @@ async fn external_stop(sh: &Arc<Shared>) -> Result<()> {
     commit_and_report(sh, &mut s).await
 }
 
+/// Reason of the pause a host restart leaves on the sessions it interrupted.
+pub const INTERRUPTED_REASON: &str = "interrupted by a restart of the host";
+
+/// The host restarted: a session that was working is not advanced by
+/// itself. It is paused as interrupted — judged from its committed state,
+/// under its lease, before anything of it is recovered or inferred — and
+/// goes on with a `resume`.
+///
+/// Working: a Work that is not finished and does not wait for its user
+/// (one that waits for the work it started would tick and infer by
+/// itself); any other session in the middle of a Turn that does not wait
+/// for an answer.
+async fn mark_interrupted(sh: &Arc<Shared>, since_ms: u64) -> Result<Option<DriveResult>> {
+    let mut s = sh.session.lock().await;
+    let st = &s.state;
+    if st.is_finished() || st.paused.is_some() || st.stop_requested || s.config.session.created_at_ms > since_ms {
+        return Ok(None);
+    }
+    // A run kept after a retryable error infers again by itself.
+    let waits_for_user = st.run_state == RunState::Waiting && !st.follows_work() && st.retry.is_none();
+    let working = match s.config.session.kind {
+        SessionKind::Work => !waits_for_user,
+        _ => st.open_turn.is_some() && !waits_for_user,
+    };
+    if !working {
+        return Ok(None);
+    }
+    let in_run = st.live_run.is_some() && st.run_state != RunState::Waiting;
+    s.state.paused = Some(Paused {
+        source: PauseSource::Interrupted,
+        at_ms: crate::now_ms(),
+        reason: Some(INTERRUPTED_REASON.to_string()),
+        by: sh.deps.who.clone(),
+        in_run,
+    });
+    s.state.resume_run = false;
+    let rev = s.state.rev;
+    s.append_worklog(
+        &sh.lease,
+        vec![WorklogBody::ControlApplied {
+            input: InputRef {
+                src: "_runner".into(),
+                index: 0,
+                key: format!("pause@{rev}"),
+                kind: INPUT_TYPE_CONTROL.into(),
+            },
+            command: "pause".into(),
+            detail: serde_json::json!({
+                "reason": INTERRUPTED_REASON,
+                "from": sh.deps.who,
+                "source": "interrupted",
+                "applied": true,
+            }),
+        }],
+    )?;
+    commit_and_report(sh, &mut s).await?;
+    log::info!("session {}: was working when the host stopped; interrupted until resumed", sh.dir.sid());
+    Ok(Some(DriveResult::Idle {
+        rev: s.state.rev,
+        run_state: s.state.run_state,
+    }))
+}
+
 async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     {
         let session = sh.session.lock().await;
@@ -1339,6 +1459,11 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 .is_some_and(|e| e["kind"] == "workspace_binding_invalid")
         {
             return Ok(finished_result(&session));
+        }
+    }
+    if let Some(since_ms) = sh.deps.recovering.as_ref().filter(|r| r.take()).map(|r| r.since_ms) {
+        if let Some(r) = mark_interrupted(sh, since_ms).await? {
+            return Ok(r);
         }
     }
     verify_workspace_admission(sh).await?;
@@ -1520,6 +1645,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             Some(Gate::Paused(g)) => (Some(g.clone()), true),
             _ => (None, false),
         };
+        if goal_paused {
+            Box::pin(super::goal::stop_if_dormant(sh, false)).await?;
+        }
         if sh.session.lock().await.state.turn_stop_requested {
             let reason = "the activation was stopped".to_string();
             Box::pin(end_turn(sh, live.take(), &env, TurnStatus::Stopped, &reason))
@@ -1966,7 +2094,10 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             // running.
             Some(l) => restart_clock(sh, l)?,
             None if state.live_run.is_some() => Box::pin(open_state_live_run(sh, &env)).await?,
-            None => Box::pin(new_run_context(sh, &binding, &env)).await?,
+            None => {
+                refresh_frozen(sh).await?;
+                Box::pin(new_run_context(sh, &binding, &env)).await?
+            }
         };
         if state.resume_run {
             let mut s = sh.session.lock().await;

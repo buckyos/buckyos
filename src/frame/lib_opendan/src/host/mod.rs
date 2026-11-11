@@ -103,9 +103,18 @@ impl HostDeps {
         Ok(deps)
     }
 
-    async fn drive(&self, sd: &SessionDir, until: StopWhen, stop: StopSignal) -> DriveResult {
+    async fn drive(
+        &self,
+        sd: &SessionDir,
+        until: StopWhen,
+        stop: StopSignal,
+        recovering: Option<Arc<crate::runner::Recovering>>,
+    ) -> DriveResult {
         match self.runner_deps(sd, stop).await {
-            Ok(deps) => drive(sd, &deps, until).await,
+            Ok(mut deps) => {
+                deps.recovering = recovering;
+                drive(sd, &deps, until).await
+            }
             Err(e) => DriveResult::BindFailed { error: e.to_json() },
         }
     }
@@ -304,7 +313,7 @@ impl ChildDriver {
             let child_stop = stop.clone();
             let sid = e.session_id.clone();
             let task = tokio::spawn(async move {
-                let r = host.drive(&sd, StopWhen::Idle, child_stop).await;
+                let r = host.drive(&sd, StopWhen::Idle, child_stop, None).await;
                 results.lock().expect("results").insert(sid, r.clone());
                 r
             });
@@ -405,7 +414,7 @@ pub async fn run_session(
     let started = Instant::now();
     let mut stalled_busy = 0;
     let result = loop {
-        let result = host.drive(sd, until, stop.clone()).await;
+        let result = host.drive(sd, until, stop.clone(), None).await;
         if detach_children
             || !matches!(
                 result,
@@ -566,6 +575,7 @@ async fn serve_one(
     stop: StopSignal,
     idle_unload: Option<Duration>,
     observer: Option<Arc<dyn Fn(&DriveResult) + Send + Sync>>,
+    recovering: Option<Arc<crate::runner::Recovering>>,
 ) -> DriveResult {
     let mut bridges: Option<BridgeSet> = None;
     let mut idle_since: Option<Instant> = None;
@@ -581,7 +591,7 @@ async fn serve_one(
                 bridges = Some(start_bridges(&host, &cfg));
             }
         }
-        let r = host.drive(&sd, StopWhen::Idle, stop.clone()).await;
+        let r = host.drive(&sd, StopWhen::Idle, stop.clone(), recovering.clone()).await;
         if let Some(o) = &observer {
             o(&r);
         }
@@ -671,7 +681,7 @@ pub async fn serve(
     let mut loops = Vec::new();
     for sd in targets {
         let sid = sd.sid().to_string();
-        let task = tokio::spawn(serve_one(host.clone(), sd, stop.clone(), idle_unload, None));
+        let task = tokio::spawn(serve_one(host.clone(), sd, stop.clone(), idle_unload, None, None));
         loops.push((sid, task));
     }
     let mut out = Vec::new();
@@ -755,6 +765,10 @@ pub struct Supervisor {
     closing: StopSignal,
     /// Goals hosted by this process ([`goals::GoalHost`]).
     goals: Option<Arc<goals::GoalHost>>,
+    /// The first look at the registry after the start is over: sessions
+    /// hosted from now on are advanced as they are.
+    recovered: std::sync::atomic::AtomicBool,
+    started_at_ms: u64,
 }
 
 impl Supervisor {
@@ -768,6 +782,8 @@ impl Supervisor {
             slots: Mutex::new(HashMap::new()),
             closing: StopSignal::default(),
             goals: None,
+            recovered: std::sync::atomic::AtomicBool::new(false),
+            started_at_ms: crate::now_ms(),
         })
     }
 
@@ -833,6 +849,10 @@ impl Supervisor {
             stop.clone(),
             idle,
             Some(observer),
+            // Until the first look at the registry is over, what is found
+            // working was interrupted by the restart: marked, not advanced.
+            (!stopped && !self.recovered.load(std::sync::atomic::Ordering::SeqCst))
+                .then(|| crate::runner::Recovering::new(self.started_at_ms)),
         ));
         slots.insert(
             sid,
@@ -909,8 +929,23 @@ impl Supervisor {
 
     /// One look at the registry: sessions this identity drives that are not
     /// hosted and can be advanced get a serving loop. The first look after
-    /// a start is the recovery of everything left unfinished.
+    /// a start finds what the restart interrupted: a session that was
+    /// working is paused as interrupted by its own drive and waits for a
+    /// `resume`; everything else goes on as it is.
     pub async fn tick(&self) -> Result<()> {
+        let r = self.scan().await;
+        if r.is_ok() {
+            self.recovered.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        r
+    }
+
+    /// The first look at the registry is over.
+    pub fn recovered(&self) -> bool {
+        self.recovered.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn scan(&self) -> Result<()> {
         self.reap();
         let entries = self
             .host

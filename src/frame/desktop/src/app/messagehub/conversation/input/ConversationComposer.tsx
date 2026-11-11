@@ -120,6 +120,17 @@ interface ConversationComposerProps {
   canMentionAll?: boolean
   /** false: text only, no files, folders, pasted or dropped files or voice notes (Session Only guests, v1). */
   allowFiles?: boolean
+  /**
+   * Nothing new may be sent for now (the Agent is handling the message in
+   * front, or the conversation is being archived): the draft stays editable,
+   * what was already submitted keeps its place in the queue.
+   */
+  sendBlocked?: boolean
+  /**
+   * The answer state's Stop: closes the Turn that asked (`session.stop`,
+   * turn scope). Without it the button sends the `/stop` command as text.
+   */
+  onStopTurn?: () => Promise<void>
 }
 
 
@@ -127,7 +138,7 @@ const ConversationComposerInner = forwardRef<
   ConversationComposerHandle,
   ConversationComposerProps
 >(function ConversationComposer(
-  { placeholder, maxHeight, onSendMessage, onQueueChange, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false, allowFiles = true },
+  { placeholder, maxHeight, onSendMessage, onQueueChange, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, answer = null, mentionCandidates = [], canMentionAll = false, allowFiles = true, sendBlocked = false, onStopTurn },
   ref,
 ) {
   const { t } = useI18n()
@@ -427,7 +438,7 @@ const ConversationComposerInner = forwardRef<
   const handleSend = useCallback(() => {
     const text = inputValue.trim()
 
-    if (!text && attachments.length === 0) {
+    if (sendBlocked || (!text && attachments.length === 0)) {
       return
     }
 
@@ -438,7 +449,7 @@ const ConversationComposerInner = forwardRef<
     flushDraft()
     setAttachments([])
     inputRef.current?.focus()
-  }, [attachments, enqueue, flushDraft, inputValue])
+  }, [attachments, enqueue, flushDraft, inputValue, sendBlocked])
 
   const sendVoice = useCallback((file: File, voice: VoiceNote) => {
     enqueue('', [createAttachmentItem({ file, voice })])
@@ -491,8 +502,11 @@ const ConversationComposerInner = forwardRef<
   }, [answer, sendDirect])
 
   const sendStop = useCallback(() => {
-    void sendDirect('stop', { attachments: [], content: '/stop', ...(answer?.mentions ? { mentions: answer.mentions } : {}) })
-  }, [answer, sendDirect])
+    if (!onStopTurn) { void sendDirect('stop', { attachments: [], content: '/stop', ...(answer?.mentions ? { mentions: answer.mentions } : {}) }); return }
+    setDirectSend('stop')
+    setSendError(false)
+    void onStopTurn().catch(error => { if (mounted.current) setSendError(error instanceof Error && error.message ? error.message : 'true') }).finally(() => { if (mounted.current) setDirectSend(null) })
+  }, [answer, onStopTurn, sendDirect])
 
   /** Replaces the `@word` at the caret with the picked mention. */
   const pickMention = useCallback((option: MentionCandidate | 'all') => {
@@ -606,11 +620,11 @@ const ConversationComposerInner = forwardRef<
   const hasDraft = relation?.kind === 'edit' ? Boolean(inputValue.trim()) : hasAttachments || Boolean(inputValue.trim())
   // An empty input offers a voice note in place of the send button (Telegram);
   // a recording keeps it until the note is sent or discarded.
-  const showVoice = allowFiles && canRecord && showInput && (recording || (!hasDraft && relation?.kind !== 'edit'))
+  const showVoice = allowFiles && canRecord && showInput && (recording || (!hasDraft && relation?.kind !== 'edit' && !sendBlocked))
   const showMentions = mentionCandidates.length > 0 || canMentionAll
   const answerBusy = directSend !== null || pendingSends > 0
   const stopButton = answer ? (
-    <button type="button" className="mh-answer-action" disabled={answerBusy} onClick={sendStop} title={t('messagehub.answer.stopHint')} data-testid="answer-stop">
+    <button type="button" className="mh-answer-action" disabled={answerBusy} onClick={sendStop} title={t(onStopTurn ? 'messagehub.turn.stopHint' : 'messagehub.answer.stopHint')} data-testid="answer-stop">
       <Square size={11} aria-hidden />{t('messagehub.answer.stop')}
     </button>
   ) : null
@@ -831,7 +845,8 @@ const ConversationComposerInner = forwardRef<
           {showVoice ? <VoiceRecorder onSend={sendVoice} onActiveChange={handleRecordingChange} /> : (
             <button
               onClick={handleSend}
-              disabled={!hasDraft}
+              disabled={!hasDraft || sendBlocked}
+              data-blocked={sendBlocked || undefined}
               className="group flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center disabled:cursor-not-allowed"
               type="button"
               aria-label={t('messagehub.send', 'Send')}
@@ -840,10 +855,10 @@ const ConversationComposerInner = forwardRef<
               <span
                 className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
                 style={{
-                  background: hasDraft
+                  background: hasDraft && !sendBlocked
                     ? 'var(--cp-message-self-bg)'
                     : 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-                  color: hasDraft ? 'var(--cp-message-self-text)' : 'color-mix(in srgb, var(--cp-muted) 70%, transparent)',
+                  color: hasDraft && !sendBlocked ? 'var(--cp-message-self-text)' : 'color-mix(in srgb, var(--cp-muted) 70%, transparent)',
                 }}
               >
                 <Send size={16} />

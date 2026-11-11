@@ -11,6 +11,7 @@ import type {
   InstallPlan,
   KnownRuntime,
   KnownWorkspace,
+  MemoryEntry,
   RuntimeImpact,
   RuntimeSettings,
   RegistryEntry,
@@ -568,8 +569,31 @@ const buildGoalFixtures = (): GoalFixture[] => {
 
 const delay = () => new Promise((resolve) => window.setTimeout(resolve, 60))
 
-export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => {
+/**
+ * `runtime=native`: Desktop Lite. `scene=restart`: sessions the host's restart interrupted. `memory=busy`: the
+ * consolidation holds Memory; `memory=empty`: nothing remembered, no consolidation goal.
+ */
+export const createMockDataModel = (params = new URLSearchParams()): OpenDanDataModel => {
+  const nativeRuntime = params.get('runtime') === 'native'
+  const memoryScene = params.get('memory')
   const fx = buildFixtures()
+  if (params.get('scene') === 'restart') {
+    const queue = (sid: string) => ({ input_queue: `opendan/${sid}/input` })
+    fx.entries[1].status.paused = 'interrupted'
+    fx.entries.push(
+      entry('work-plan-77', 'work', 'plan_simple', 'Plan the photo archive migration', { run_state: 'waiting', paused: 'interrupted', one_line_status: 'Waiting for 1 todo', updated_at_ms: ago(200) },
+        { origin: { parent_session: UI }, ...queue('work-plan-77') }),
+      entry('work-todo-a1', 'work', 'work.default', 'Copy the 2019 albums', { run_state: 'running', turn_open: true, paused: 'interrupted', updated_at_ms: ago(210) },
+        { origin: { parent_session: 'work-plan-77' }, ...queue('work-todo-a1') }),
+      entry('sc-weekly', 'self_check', 'self_check', 'Weekly self check', { run_state: 'running', turn_open: true, paused: 'interrupted', updated_at_ms: ago(220) }, queue('sc-weekly')),
+      entry('work-user-paused', 'work', 'work.default', 'Index the music library', { run_state: 'waiting', paused: 'user', updated_at_ms: ago(230) },
+        { origin: { parent_session: UI }, ...queue('work-user-paused') }),
+      entry('work-goal-child', 'work', 'work.default', 'Tidy the downloads folder', { run_state: 'waiting', paused: 'goal', updated_at_ms: ago(240) },
+        { origin: { goal: { goal_id: GOAL_TIDY } }, ...queue('work-goal-child') }),
+      entry('ui-interrupted', 'ui', 'ui.direct', 'Talk with alice', { run_state: 'running', turn_open: true, paused: 'interrupted', updated_at_ms: ago(250) },
+        { route_key: `${AGENT}/dm:did:bns:alice.buckyos`, ...queue('ui-interrupted') }),
+    )
+  }
   const goals = buildGoalFixtures()
   const goalEntries: RegistryEntry[] = goals.flatMap((g) =>
     (g.def.epochs ?? []).map((ep) =>
@@ -643,6 +667,22 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       revision: 2, location_revision: 1, updated_at_ms: ago(8000), checked_at_ms: ago(120),
       source_session: null, conflict: null, last_error: 'Directory does not exist; locate the moved workspace to restore access.',
     },
+    {
+      version: 1, runtime_host: 'mock-host',
+      workspace_id: 'ws-site', name: 'Family site', description: 'Static site of the family album.', url: 'https://github.com/example/family-site',
+      location: { runtime_id: 'host', directory: '/Users/devtest/Sites/family' },
+      usage: 'collaborative', lifecycle: 'active', availability: 'available',
+      revision: 1, location_revision: 1, updated_at_ms: ago(20000), checked_at_ms: ago(20000),
+      source_session: null, conflict: null, last_error: null,
+    },
+    {
+      version: 1, runtime_host: 'mock-host',
+      workspace_id: 'ws-scratch', name: 'Scratch', description: '', url: null,
+      location: { runtime_id: 'local', directory: `${ROOT}/workspace/scratch` },
+      usage: 'private', lifecycle: 'active', availability: 'available',
+      revision: 1, location_revision: 1, updated_at_ms: ago(90000), checked_at_ms: ago(90000),
+      source_session: null, conflict: null, last_error: null,
+    },
   ]
   const allOps = ['open_stream', 'describe', 'exec', 'read', 'write', 'edit', 'mkdir', 'stat', 'rename', 'remove', 'computer_inspect', 'computer_observe', 'computer_act', 'query', 'cancel']
   const runtimes: KnownRuntime[] = [
@@ -669,9 +709,34 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       revision: 3, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400), updated_at_ms: ago(600),
       checked_at_ms: ago(60), last_error: null,
     },
+    {
+      version: 5, runtime_id: 'build-box', name: 'Build box',
+      desc: 'A Linux machine in the closet, assigned to this agent for long builds.',
+      runtime_host: 'build-host', connector: { type: 'node_executor', node_did: 'did:dev:build', executor_id: 'exec-build', profile_id: 'agent-0123456789ab' }, enabled: true,
+      caps: { os: 'linux', arch: 'x86_64', shell: 'bash', desktop: false, baseline: 'standard' },
+      grant: { ops: allOps, roots: ['/srv/build'], computer: 'none' },
+      availability: 'available', builtin: false, default: false, lifecycle: 'active',
+      usage: { sessions_total: 4, last_used_at_ms: ago(86400), last_session_id: WORK_PENDING, workspaces: 0 },
+      revision: 2, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400 * 5), updated_at_ms: ago(86400),
+      checked_at_ms: ago(600), last_error: null,
+    },
+    {
+      version: 5, runtime_id: 'old-laptop', name: 'Old laptop',
+      desc: 'Removed from this agent.',
+      runtime_host: 'laptop-host', connector: { type: 'node_executor', node_did: 'did:dev:laptop', profile_id: 'agent-0123456789ab' }, enabled: false,
+      caps: { os: 'windows', arch: 'x86_64', shell: 'powershell', desktop: true, baseline: 'standard' },
+      grant: { ops: allOps, roots: ['C:\\Users\\devtest'], computer: 'none' },
+      availability: 'runtime_unavailable', builtin: false, default: false, lifecycle: 'retired',
+      usage: { sessions_total: 7, last_used_at_ms: ago(86400 * 30), last_session_id: null, workspaces: 0 },
+      revision: 6, registered_by: 'app:jarvis@devtest', registered_at_ms: ago(86400 * 90), updated_at_ms: ago(86400 * 30),
+      checked_at_ms: ago(86400 * 30), last_error: 'the `old-laptop` runtime is no longer assigned to this agent',
+    },
   ]
   const runtimeSettings: RuntimeSettings = {
-    runtimes: { host: { enabled: true, target: { kind: 'node', node_id: 'desktop', node_did: 'did:dev:mock' } } },
+    runtimes: {
+      host: { enabled: true, target: { kind: 'node', node_id: 'desktop', node_did: 'did:dev:mock' } },
+      'build-box': { enabled: true, target: { kind: 'executor', executor_id: 'exec-build' } },
+    },
     default_runtime_id: 'host',
     configured_default_runtime_id: 'host',
   }
@@ -718,6 +783,7 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     runtime.caps = { ...runtimes[1].caps, baseline_check: { checked_at_ms: ago(60), level: 'standard', missing: [], ok: true, ext: { status: 'ok', missing: [], system: [] } } }
     runtime.grant.computer = 'observe'
     runtimes.splice(1)
+    delete runtimeSettings.runtimes['build-box']
   }
   const projectRuntimes = () => {
     const asSetting = (r: KnownRuntime) => (r.connector.type === 'native' ? (r.connector.aliases?.[0] ?? 'container') : r.runtime_id)
@@ -893,6 +959,37 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     }
   }
 
+  const cognitions: (MemoryEntry & { revision: number })[] = memoryScene === 'empty' ? [] : Array.from({ length: 23 }, (_, i) => ({
+    layer: 'cognition' as const,
+    reference: `cog:${String(23 - i).padStart(3, '0')}`,
+    summary: i === 0 ? 'The owner prefers weekly reports as a single PDF, sent on Monday morning.'
+      : i === 1 ? 'Photos are archived by capture date, never by import date.'
+      : `Fact ${23 - i} the agent concluded about the owner's files and habits.`,
+    kind: i % 4 === 0 ? 'preference' : 'fact',
+    state: i === 2 ? 'disputed' : 'active',
+    at_ms: ago(600 * (i + 1)),
+    ...(i === 1 ? { revised_at_ms: ago(300) } : {}),
+    subjects: i % 3 === 0 ? [OWNER] : ['workspace:ws-photos'],
+    deletable: true,
+    revision: i === 1 ? 2 : 1,
+  }))
+  const perceptionStates = ['pending', 'pending', 'deferred', 'absorbed', 'absorbed', 'pending', 'absorbed', 'absorbed']
+  const perceptions: MemoryEntry[] = memoryScene === 'empty' ? [] : perceptionStates.map((state, i) => ({
+    layer: 'perception' as const,
+    reference: `per:${UI}:${40 - i}`,
+    summary: i === 0 ? 'The owner asked for the report before 9 am.' : `Observation ${40 - i} noted during a conversation.`,
+    kind: 'observation',
+    state,
+    at_ms: ago(120 * (i + 1)),
+    subjects: [OWNER],
+    session_id: UI,
+    deletable: state === 'pending' || state === 'deferred',
+    ...(state === 'absorbed' ? { absorbed_into: ['cog:023'] } : {}),
+  }))
+  const memoryEntry = (e: MemoryEntry): MemoryEntry => e
+  const descendants = (sid: string): RegistryEntry[] =>
+    fx.entries.filter((e) => e.origin?.parent_session === sid).flatMap((e) => [e, ...descendants(e.session_id)])
+
   return {
     source: 'mock',
     login: { lost: () => false, subscribe: () => () => {} },
@@ -976,6 +1073,7 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     createWorkspace: async (request) => {
       await delay()
       if (!availableRuntimeIds().includes(request.location.runtime_id)) throw new OpenDanError('invalid_argument', 'Runtime is unavailable.')
+      if (!request.location.directory.startsWith('/')) throw new OpenDanError('invalid_argument', 'Workspace directory must be absolute.')
       if (!request.name.trim()) throw new OpenDanError('invalid_argument', 'A name is required.')
       const workspace: KnownWorkspace = {
         version: 2, runtime_host: 'mock-host', workspace_id: `ws-${crypto.randomUUID()}`,
@@ -991,6 +1089,7 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
     importWorkspace: async (request) => {
       await delay()
       if (!availableRuntimeIds().includes(request.location.runtime_id)) throw new OpenDanError('invalid_argument', 'Runtime is unavailable.')
+      if (!request.location.directory.startsWith('/')) throw new OpenDanError('invalid_argument', 'Workspace directory must be absolute.')
       const workspace: KnownWorkspace = {
         version: 2, runtime_host: 'mock-host', workspace_id: `ws-${crypto.randomUUID()}`,
         name: request.name || request.location.directory.split('/').filter(Boolean).pop() || 'workspace',
@@ -1132,17 +1231,109 @@ export const createMockDataModel = (nativeRuntime = false): OpenDanDataModel => 
       })
     },
 
-    stopSession: async (sid, reason) => {
+    stopSession: async (sid, scope, reason) => {
       await delay()
       const e = find(sid)
+      if (e.status.run_state === 'finished') throw new OpenDanError('session_finished', `session ${sid} is finished`)
+      if (scope === 'session' && e.kind === 'ui') {
+        throw new OpenDanError('invalid_argument', `session ${sid} is a UI session: it is not stopped; start a new conversation to clear its context`)
+      }
       inputIndex += 1
-      log(sid, { t: 'control_applied', input: { src: 'queue', index: inputIndex, kind: 'control' }, command: 'stop', detail: reason ? { reason } : undefined })
-      if (e.status.run_state !== 'finished') {
-        commit(e, { run_state: 'finished', outcome: 'stopped', needs_input: false, turn_open: false, one_line_status: reason ? `Stopped: ${reason}` : 'Stopped' })
-        const st = fx.details[sid]?.state
+      log(sid, { t: 'control_applied', input: { src: 'queue', index: inputIndex, kind: 'control' }, command: 'stop', detail: { scope, ...(reason ? { reason } : {}) } })
+      const st = fx.details[sid]?.state
+      if (scope === 'session' && e.kind === 'goal') {
+        const g = goals.find((x) => x.def.session.sid === sid)
+        if (g) Object.assign(g.def, { status: 'paused', status_changed_at_ms: Date.now(), status_reason: reason, status_by: OWNER })
+      } else if (scope === 'turn') {
+        // An interrupted Turn that is given up clears the interruption with it.
+        commit(e, { run_state: 'waiting', turn_open: false, needs_input: e.kind === 'ui', paused: e.status.paused === 'interrupted' ? undefined : e.status.paused, one_line_status: 'Stopped the current message' })
+        if (st) Object.assign(st, { open_turn: undefined })
+      } else {
+        for (const s of [e, ...descendants(sid).filter((c) => c.status.run_state !== 'finished')]) {
+          commit(s, { run_state: 'finished', outcome: 'stopped', needs_input: false, turn_open: false, paused: undefined, one_line_status: reason ? `Stopped: ${reason}` : 'Stopped' })
+        }
         if (st) Object.assign(st, { open_turn: undefined, wait_children: undefined, stop_requested: true })
       }
       return { index: inputIndex }
+    },
+
+    resumeSession: async (sid) => {
+      await delay()
+      const e = find(sid)
+      if (e.status.run_state === 'finished') throw new OpenDanError('session_finished', `session ${sid} is finished`)
+      inputIndex += 1
+      const source = e.status.paused
+      log(sid, { t: 'control_applied', input: { src: 'queue', index: inputIndex, kind: 'control' }, command: 'resume', applied: Boolean(source) })
+      if (source) {
+        // A resume cascades from a paused session only, to the sub sessions paused for the same reason.
+        const follows = source === 'user' ? 'parent' : source
+        commit(e, { paused: undefined })
+        for (const child of descendants(sid)) if (child.status.paused === follows) commit(child, { paused: undefined })
+      }
+      return { index: inputIndex }
+    },
+
+    deleteSession: async (sid) => {
+      await delay()
+      const e = find(sid)
+      if (e.kind !== 'work' && e.kind !== 'self_check') throw new OpenDanError('invalid_argument', `session ${sid} is a ${e.kind} session: only work and self-check sessions are deleted`)
+      const all = [e, ...descendants(sid)]
+      const open = all.filter((x) => x.status.run_state !== 'finished')
+      if (open.length) throw new OpenDanError('invalid_argument', `session ${sid} has unfinished sessions (${open.map((x) => x.session_id).join(', ')})`)
+      const deleted = all.map((x) => x.session_id)
+      fx.entries.splice(0, fx.entries.length, ...fx.entries.filter((x) => !deleted.includes(x.session_id)))
+      return { deleted }
+    },
+
+    memoryOverview: async () => {
+      await delay()
+      const maintenance = memoryScene === 'empty' ? undefined : goals.find((g) => g.def.goal_id === GOAL_BUILTIN)
+      return structuredClone({
+        cognitions: { current: cognitions.length },
+        perceptions: { total: perceptions.length, pending: perceptions.filter((p) => p.state === 'pending' || p.state === 'deferred').length },
+        last_consolidation_at_ms: maintenance ? ago(5400) : null,
+        maintenance_goal_id: maintenance?.def.goal_id ?? null,
+        recent: { cognitions: cognitions.slice(0, 5).map(memoryEntry), perceptions: perceptions.slice(0, 3) },
+      })
+    },
+
+    memoryList: async (layer, limit, cursor) => {
+      await delay()
+      const all = layer === 'cognition' ? cognitions.map(memoryEntry) : perceptions
+      const start = cursor ? Math.max(0, all.findIndex((e) => e.reference === cursor) + 1) : 0
+      const entries = all.slice(start, start + limit)
+      return structuredClone({ entries, next_cursor: start + limit < all.length ? entries[entries.length - 1].reference : null })
+    },
+
+    memoryRead: async (reference) => {
+      await delay()
+      const cognition = cognitions.find((c) => c.reference === reference)
+      if (cognition) {
+        return structuredClone({
+          detail: { statement: cognition.summary, confidence: 0.8, sources: [{ perception: `per:${UI}:33`, session_id: UI }] },
+        })
+      }
+      const perception = perceptions.find((p) => p.reference === reference)
+      if (!perception) throw new OpenDanError('not_found', `memory ${reference} does not exist`)
+      return structuredClone({ detail: { seq: Number(reference.split(':').pop()), content: perception.summary, by: `session:${UI}` } })
+    },
+
+    memoryForget: async (reference, expectedRevision) => {
+      await delay()
+      if (memoryScene === 'busy') throw new OpenDanError('busy', 'memory consolidation is running; try again later')
+      const cognition = cognitions.findIndex((c) => c.reference === reference)
+      if (cognition >= 0) {
+        if (expectedRevision != null && expectedRevision !== cognitions[cognition].revision) throw new OpenDanError('conflict', `${reference} was revised; reload before retrying`)
+        cognitions.splice(cognition, 1)
+        return { reference, state: 'deleted' }
+      }
+      const perception = perceptions.findIndex((p) => p.reference === reference)
+      if (perception < 0) throw new OpenDanError('conflict', `${reference} is already deleted`)
+      if (!perceptions[perception].deletable) {
+        throw new OpenDanError('invalid_argument', `${reference} is already consolidated into ${perceptions[perception].absorbed_into}`)
+      }
+      perceptions.splice(perception, 1)
+      return { reference, state: 'discarded' }
     },
 
     decideSession: async (sid, decision, note) => {

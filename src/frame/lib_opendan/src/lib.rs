@@ -22,6 +22,7 @@ pub mod api;
 pub mod baseline;
 pub mod bridge;
 pub mod channel;
+pub mod deliveries;
 pub mod error;
 pub mod fault;
 pub mod fsutil;

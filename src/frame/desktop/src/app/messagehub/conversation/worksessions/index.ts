@@ -55,3 +55,15 @@ const todoExpanded = new ChoiceMemory('buckyos.messagehub.todoExpanded.v1')
 export function useTodoExpanded(viewerDid: string, anchorId: string, sessionId: string, fallback: boolean): [boolean, (value: boolean) => void] {
   return useRememberedChoice(todoExpanded, viewerDid, `${anchorId}/${sessionId}`, fallback)
 }
+
+const openBranches = new Set<string>()
+
+/** Whether the sub sessions under a card are unfolded; kept per list and session for this page, so a list rendered again (a panel that moved, a refreshed tree) stays as it was. */
+export function useBranchExpanded(anchorId: string, sessionId: string): [boolean, (value: boolean) => void] {
+  const key = `${anchorId}/${sessionId}`
+  const [expanded, setExpanded] = useState(() => openBranches.has(key))
+  return [expanded, value => {
+    if (value) openBranches.add(key); else openBranches.delete(key)
+    setExpanded(value)
+  }]
+}

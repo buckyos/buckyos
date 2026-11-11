@@ -46,7 +46,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
                 [--no-bridge] [--detach-children]
   xagent serve  <session_dir|sid>... [--idle-unload <secs>] [--no-bridge]
   xagent post   <sid> (--msg <text> [--from <did>] [--attach <obj_id>[=<name>]]... [--reply-to <obj_id>] | --json <file | ->)
-  xagent ctl    <sid> (stop | pause | resume [--reason <t>] | decide accept|discard [--note <t>] | subscribe <spec> | unsubscribe <id>
+  xagent ctl    <sid> (stop [--scope session|turn|archive] | pause | resume [--reason <t>] | decide accept|discard [--note <t>] | subscribe <spec> | unsubscribe <id>
                        | activity [--summary <t>] [--touch <ref>]... [--clear] | perceive <text>)
   xagent status <sid> [--worklog <n>] [--report] [--run] [--events]
   xagent list   --agent <did> [--active]
@@ -893,7 +893,15 @@ async fn cmd_ctl(mut a: Args) -> R<i32> {
             .unwrap_or_else(|| format!("{prefix}-{}", uuid::Uuid::new_v4().simple()))
     };
     let (key, command) = match cmd.as_str() {
-        "stop" => (key("stop"), ControlCommand::stop(a.get("reason"))),
+        "stop" => {
+            let scope = match a.get("scope").as_deref() {
+                None | Some("session") => StopScope::Session,
+                Some("turn") => StopScope::Turn,
+                Some("archive") => StopScope::Archive,
+                Some(s) => return Err(bad(format!("bad --scope {s} (session | turn | archive)"))),
+            };
+            (key("stop"), ControlCommand::Stop { reason: a.get("reason"), scope })
+        }
         "pause" => (key("pause"), ControlCommand::Pause { reason: a.get("reason") }),
         "resume" => (key("resume"), ControlCommand::Resume { reason: a.get("reason") }),
         "decide" => {
@@ -1330,8 +1338,8 @@ async fn cmd_sessions(a: Args) -> R<i32> {
             if e.status.needs_input {
                 println!("  Needs input: agent-session post {} --msg <text>", e.session_id);
             }
-            if e.status.paused {
-                println!("  Paused");
+            if let Some(source) = e.status.paused {
+                println!("  Paused ({})", source.as_str());
             }
             if e.status.acceptance != Acceptance::NotApplicable {
                 println!("  Acceptance: {}", list_label(e.status.acceptance));

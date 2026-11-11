@@ -227,6 +227,10 @@ pub trait AdmissionCheck: Send + Sync {
     async fn check(&self, ctx: &AdmissionCtx<'_>) -> Option<String>;
 }
 
+/// How long after a Goal woke the host still looks for Work its sleep
+/// paused (a resume that could not be posted at once is retried meanwhile).
+const WAKE_WINDOW_MS: u64 = 600_000;
+
 /// The Goal is active.
 pub struct ActiveCheck;
 
@@ -556,6 +560,40 @@ impl GoalHost {
     }
 
     /// The session of an epoch is finished and published everything.
+    /// A dormant Goal infers nothing: the Work it started is paused with
+    /// it and resumed when it wakes (only what its sleep paused).
+    async fn sync_dormant_work(&self, sup: &Supervisor, goal: &GoalDefinition) {
+        let dormant = goal.status == GoalStatus::Paused;
+        // Awake for a while: what its sleep paused was resumed long ago.
+        if !dormant && crate::now_ms().saturating_sub(goal.status_changed_at_ms) > WAKE_WINDOW_MS {
+            return;
+        }
+        let agent = sup.host.agent.as_ref();
+        let query = RegistryQuery { goal_id: Some(goal.goal_id.clone()), ..Default::default() };
+        let Ok(works) = agent.sessions().query(&query).await else {
+            return;
+        };
+        let reason = crate::goal::dormant_reason(&goal.goal_id);
+        for e in works {
+            if e.kind == SessionKind::Goal || e.status.run_state == RunState::Finished || e.input_queue.is_none() {
+                continue;
+            }
+            let command = match (dormant, e.status.paused) {
+                (true, None) => ControlCommand::Pause { reason: Some(reason.clone()) },
+                (false, Some(PauseSource::Goal)) => {
+                    ControlCommand::Resume { reason: Some(format!("goal {} woke", goal.goal_id)) }
+                }
+                _ => continue,
+            };
+            let key = format!("{}:goal:{}:{}", command.name(), goal.goal_id, goal.status_changed_at_ms);
+            let input = PostedInput::control(&sup.host.who, key, command);
+            match agent.sessions().post_input(&e.session_id, &input).await {
+                Ok(_) => self.drive(sup, &e.session_id, "goal sleep").await,
+                Err(err) => log::warn!("goals: {}: work {} not told: {err}", goal.goal_id, e.session_id),
+            }
+        }
+    }
+
     fn settled(entry: &RegistryEntry) -> Result<bool> {
         if entry.status.run_state != RunState::Finished {
             return Ok(false);
@@ -644,6 +682,7 @@ impl GoalHost {
             }
             GoalStatus::Active | GoalStatus::Paused => {}
         }
+        self.sync_dormant_work(sup, goal).await;
         if previous_open {
             return Ok(());
         }

@@ -10,7 +10,7 @@ use libopendan::lock::Acquire;
 use libopendan::protocol::*;
 use libopendan::session::Session;
 use libopendan::state::AgentStateClient;
-use libopendan::work_card::{work_cards, CardShape, CardState, WorkCard};
+use libopendan::work_card::{work_cards, work_tree, CardShape, CardState, WorkCard};
 use libopendan::SessionDir;
 use serde_json::json;
 
@@ -44,6 +44,7 @@ fn open_turn(index: u64) -> OpenTurn {
         hook: None,
         inputs: Vec::new(),
         has_msg: true,
+        msg_keys: Vec::new(),
         at_ms: 1,
     }
 }
@@ -146,7 +147,7 @@ async fn every_state_has_its_line() {
     edit(&paused, |s, _| {
         s.state.run_state = RunState::Waiting;
         s.state.turn_seq = 1;
-        s.state.paused = Some(Paused { at_ms: 1, reason: Some("the owner asked".into()), by: "x".into(), in_run: false });
+        s.state.paused = Some(Paused { source: PauseSource::User, at_ms: 1, reason: Some("the owner asked".into()), by: "x".into(), in_run: false });
     });
     let done = child(&env, &ui, UI_TASK, Some("Done"), "work", None).await;
     edit(&done, |s, lease| {
@@ -381,4 +382,82 @@ async fn a_todo_session_has_the_todo_title() {
     assert_eq!(sd.config().unwrap().session.title.as_deref(), Some("Survey the sources"));
     let entry = env.agent().sessions().lookup(sd.sid()).await.unwrap().unwrap();
     assert_eq!(entry.title.as_deref(), Some("Survey the sources"));
+}
+
+fn finish(sd: &SessionDir) {
+    edit(sd, |s, _| {
+        s.state.run_state = RunState::Finished;
+        s.state.outcome = Some(Outcome::Succeeded);
+        s.state.finished_at_ms = Some(9);
+    });
+}
+
+fn running(sd: &SessionDir) {
+    edit(sd, |s, _| {
+        s.state.run_state = RunState::Running;
+        s.state.turn_seq = 1;
+        s.state.open_turn = Some(open_turn(1));
+    });
+}
+
+/// SC5: the work below a conversation as a tree — two works side by side, a
+/// plan with three Todos, one of whose work sessions started a work of its
+/// own; unfinished only, and complete once everything ended.
+#[tokio::test]
+async fn the_work_below_a_session_is_a_tree() {
+    let env = Env::new();
+    let agent = env.agent();
+    let ui = ui_session(&env).await;
+    let done = child(&env, &ui, UI_TASK, Some("Done before"), "work", None).await;
+    finish(&done);
+    let side = child(&env, &ui, "t-ui-0", Some("Side job"), "work", None).await;
+    running(&side);
+    edit(&side, |s, _| {
+        s.state.paused = Some(Paused { source: PauseSource::Interrupted, at_ms: 2, reason: Some("interrupted by a restart of the host".into()), by: APP.into(), in_run: false });
+    });
+    let plan = child(&env, &ui, UI_TASK, Some("The plan"), "plan_simple", None).await;
+    running(&plan);
+    let t1 = child(&env, &plan, "t-plan-1", Some("One"), "work", None).await;
+    finish(&t1);
+    let t2_old = child(&env, &plan, "t-plan-1", Some("Two"), "work", None).await;
+    finish(&t2_old);
+    let t2 = child(&env, &plan, "t-plan-1", Some("Two"), "work", None).await;
+    running(&t2);
+    let deep = child(&env, &t2, "t-t2-1", Some("Deeper"), "work", None).await;
+    running(&deep);
+    let list = json!({
+        "schema": "opendan.todo_list/1", "next_seq": 4, "rev": 3,
+        "todos": [
+            todo("T01", 1, "One", "completed", json!([attempt(1, t1.sid(), "completed")]), json!({})),
+            todo("T02", 2, "Two", "running", json!([attempt(1, t2_old.sid(), "failed"), attempt(2, t2.sid(), "running")]), json!({})),
+            todo("T03", 3, "Three", "pending", json!([]), json!({})),
+        ]
+    });
+    std::fs::write(plan.state_dir().join("todos.json"), serde_json::to_vec_pretty(&list).unwrap()).unwrap();
+
+    let all = work_tree(agent.as_ref(), ui.sid(), false).await.unwrap();
+    assert!(!all.complete);
+    let ids: Vec<&str> = all.sessions.iter().map(|c| c.session_id.as_str()).collect();
+    assert_eq!(ids, [done.sid(), side.sid(), plan.sid()], "every work of the session, whichever Turn created it");
+    assert_eq!((all.sessions[1].state, all.sessions[1].paused), (CardState::Paused, Some(PauseSource::Interrupted)));
+
+    let tree = work_tree(agent.as_ref(), ui.sid(), true).await.unwrap();
+    assert!(!tree.complete);
+    let ids: Vec<&str> = tree.sessions.iter().map(|c| c.session_id.as_str()).collect();
+    assert_eq!(ids, [side.sid(), plan.sid()], "a finished branch is left out");
+    let p = &tree.sessions[1];
+    assert!(p.children.is_empty(), "a Todo's attempts are not listed beside its Todos: {:?}", p.children);
+    let todos = p.todos.as_ref().unwrap();
+    assert_eq!(todos.items.len(), 3, "a plan in progress keeps its whole list");
+    let c2 = todos.items[1].card.as_ref().unwrap();
+    assert_eq!((c2.session_id.as_str(), c2.title.as_str(), c2.state), (t2.sid(), "Two", CardState::Running));
+    assert_eq!(c2.children.len(), 1, "what a Todo's work session started hangs below it");
+    assert_eq!((c2.children[0].session_id.as_str(), c2.children[0].title.as_str()), (deep.sid(), "Deeper"));
+    assert!(todos.items[0].card.as_ref().unwrap().children.is_empty());
+
+    for sd in [&side, &plan, &t2, &deep] {
+        finish(sd);
+    }
+    let tree = work_tree(agent.as_ref(), ui.sid(), true).await.unwrap();
+    assert!(tree.complete && tree.sessions.is_empty(), "{tree:?}");
 }

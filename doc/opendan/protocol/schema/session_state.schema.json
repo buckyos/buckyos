@@ -1445,6 +1445,13 @@
           },
           "type": "array"
         },
+        "msg_keys": {
+          "description": "Keys of the messages among them (a message's ObjId): what a retraction names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "run_id": {
           "description": "Input batch that opened it: `(run_id, input_seq)`.",
           "type": "string"
@@ -1576,6 +1583,39 @@
       ],
       "type": "string"
     },
+    "PauseSource": {
+      "description": "Why a session is paused: who resumes it follows from it.",
+      "oneOf": [
+        {
+          "description": "Someone asked (`control(pause)`).",
+          "enum": [
+            "user"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Its parent session was paused; resumed with it.",
+          "enum": [
+            "parent"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The host restarted while it was working; resumed by hand, with the sub sessions the same restart interrupted.",
+          "enum": [
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Its Goal was put to sleep; resumed when the Goal wakes.",
+          "enum": [
+            "goal"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "Paused": {
       "description": "[`SessionState::paused`].",
       "properties": {
@@ -1598,6 +1638,14 @@
             "string",
             "null"
           ]
+        },
+        "source": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PauseSource"
+            }
+          ],
+          "default": "user"
         }
       },
       "required": [

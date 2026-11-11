@@ -43,9 +43,10 @@ pub struct SessionStatus {
     /// A Turn is open (work in progress, or waiting inside it).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub turn_open: bool,
-    /// Paused (`control(pause)`): it infers no more until resumed.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub paused: bool,
+    /// Paused: it infers no more until resumed. The value says why
+    /// ([`super::state::PauseSource`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<super::state::PauseSource>,
     /// Backing off after retryable errors: it infers again from then on
     /// (epoch ms; [`super::state::SessionState::retry`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,7 +84,7 @@ impl SessionStatus {
             pending_decision: None,
             needs_input: false,
             turn_open: false,
-            paused: false,
+            paused: None,
             retry_not_before_ms: None,
             activity: Activity::default(),
             last_runner: None,

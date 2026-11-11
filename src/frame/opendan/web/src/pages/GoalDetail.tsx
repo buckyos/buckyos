@@ -144,7 +144,7 @@ function Operations({ goal, schedule, onDone }: { goal: GoalDefinition; schedule
           </button>
         )}
         {goal.status === 'paused' && (
-          <button className="btn border-ok text-ok" onClick={() => setStatus('active', 'opResumeTitle', 'opPauseHint', 'opResume')}>
+          <button className="btn border-ok text-ok" onClick={() => setStatus('active', 'opResumeTitle', 'opResumeHint', 'opResume')}>
             {t('opResume')}
           </button>
         )}

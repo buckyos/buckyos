@@ -1170,3 +1170,53 @@ pub(super) async fn flush(sh: &Shared) {
         log::warn!("session {}: goal flush marks not committed: {e}", sh.dir.sid());
     }
 }
+
+/// A stop of the Goal Session itself: its Goal goes dormant (the session
+/// and its state stay, no Activation opens until the Goal is woken).
+pub(super) async fn sleep(sh: &Shared, s: &Session, from: &str, reason: Option<&str>) -> Result<()> {
+    let b = binding(&s.config)
+        .ok_or_else(|| OpenDanError::InvalidArgument("not a goal session".into()))?;
+    let req = crate::state::goals::GoalStatusChange {
+        status: GoalStatus::Paused,
+        reason: reason.map(str::to_string),
+        evidence: None,
+    };
+    sh.agent()
+        .goals()
+        .set_status(&b.goal_id, &req, &crate::state::goals::GoalCaller::owner(from))
+        .await
+        .map(|_| ())
+}
+
+/// A Goal that is dormant (`ended`: or ended) infers no more: the
+/// Activation in progress is stopped at this boundary. `true`: it is being
+/// stopped.
+pub(super) async fn stop_if_dormant(sh: &Shared, ended: bool) -> Result<bool> {
+    let why = match gate(sh).await? {
+        Some(Gate::Paused(_)) => "the goal is dormant",
+        Some(Gate::End(_)) if ended => "the goal ended",
+        _ => return Ok(false),
+    };
+    let mut s = sh.session.lock().await;
+    if s.state.open_turn.is_none() || s.state.turn_stop_requested {
+        return Ok(s.state.turn_stop_requested);
+    }
+    s.state.turn_stop_requested = true;
+    super::inputs::clear_interruption(&mut s);
+    let rev = s.state.rev;
+    s.append_worklog(
+        &sh.lease,
+        vec![WorklogBody::ControlApplied {
+            input: InputRef {
+                src: "_runner".into(),
+                index: 0,
+                key: format!("stop@{rev}"),
+                kind: INPUT_TYPE_CONTROL.into(),
+            },
+            command: "stop".into(),
+            detail: json!({ "reason": why, "from": sh.deps.who, "scope": "turn", "applied": true }),
+        }],
+    )?;
+    commit_and_report(sh, &mut s).await?;
+    Ok(true)
+}

@@ -207,6 +207,39 @@
       ],
       "type": "string"
     },
+    "PauseSource": {
+      "description": "Why a session is paused: who resumes it follows from it.",
+      "oneOf": [
+        {
+          "description": "Someone asked (`control(pause)`).",
+          "enum": [
+            "user"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Its parent session was paused; resumed with it.",
+          "enum": [
+            "parent"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The host restarted while it was working; resumed by hand, with the sub sessions the same restart interrupted.",
+          "enum": [
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Its Goal was put to sleep; resumed when the Goal wakes.",
+          "enum": [
+            "goal"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ReportMode": {
       "description": "What a parent receives from a sub session without subscribing: the registry state stays the truth, these events only accelerate.",
       "oneOf": [
@@ -332,8 +365,15 @@
           ]
         },
         "paused": {
-          "description": "Paused (`control(pause)`): it infers no more until resumed.",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PauseSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Paused: it infers no more until resumed. The value says why ([`super::state::PauseSource`])."
         },
         "pending_decision": true,
         "report_brief": {

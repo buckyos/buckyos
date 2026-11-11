@@ -418,3 +418,22 @@ pub fn post_blocking(
 pub fn queue_of(sd: &SessionDir) -> String {
     sd.config().unwrap().channels.kmsg().unwrap().1.to_string()
 }
+
+/// What a host restart interrupted is resumed, as its owner would: every
+/// session marked interrupted gets a `resume`. Returns how many.
+pub async fn resume_interrupted(agent: &dyn libopendan::state::AgentStateClient) -> usize {
+    use libopendan::protocol::*;
+    let mut told = 0;
+    for e in agent.sessions().query(&RegistryQuery::default()).await.unwrap() {
+        if e.status.paused == Some(PauseSource::Interrupted) {
+            let input = PostedInput::control(
+                APP,
+                format!("resume:{}:{}", e.session_id, e.status.rev),
+                ControlCommand::Resume { reason: None },
+            );
+            agent.sessions().post_input(&e.session_id, &input).await.unwrap();
+            told += 1;
+        }
+    }
+    told
+}

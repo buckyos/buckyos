@@ -1,4 +1,4 @@
-import { useContext, useState } from 'react'
+import { useContext, useState, type ReactNode } from 'react'
 import { Ban, ChevronDown, ChevronRight, Circle, CircleSlash, MessageCircleQuestion } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import type { DID } from 'buckyos'
@@ -9,8 +9,10 @@ import { useTaskSummary } from '../tasks'
 import { MessageTaskArea, ToneIcon } from '../tasks/MessageTask'
 import { toneColor, type TaskText } from '../tasks/taskView'
 import { taskWorklogTarget } from '../worklog/model'
-import { useSecondClock, useTodoExpanded, useWorkCards } from './index'
-import { cardUsage, displayModel, formatDuration, formatTokens, isTodoEnded, isWorkFinished, localizeLine, todoTitle, visibleTodos, workDuration, workTone, type WorkCard, type WorkCards, type WorkState, type WorkTodo, type WorkUsage } from './model'
+import { TurnControls } from '../tasks/TurnControls'
+import { getWorkCardsWatch, useBranchExpanded, useSecondClock, useTodoExpanded, useWorkCards } from './index'
+import { WorkControls } from './WorkControls'
+import { cardRunning, cardUsage, displayModel, flattenWork, formatDuration, formatTokens, isTodoEnded, isWorkFinished, localizeLine, todoTitle, visibleTodos, workChildren, workDuration, workTone, type WorkCard, type WorkCards, type WorkState, type WorkTodo, type WorkUsage } from './model'
 
 /**
  * What an Agent reply shows under its body: the cards of the work sessions
@@ -25,7 +27,7 @@ export function MessageAgentWork({ message, selfDid }: { message: MessageObject;
   const binding = task ? taskWorklogTarget(task) : null
   const request = taskId && binding && (children?.items.length ?? 0) > 0 ? { agentDid: binding.agentDid, sessionId: binding.sessionId, taskId } : undefined
   const cards = useWorkCards(request, task?.phase === 'Terminal')
-  if (request && cards?.status === 'ready' && cards.cards && cards.cards.sessions.length > 0) return <WorkSessionCards message={message} cards={cards.cards} stale={cards.stale} selfDid={selfDid} />
+  if (taskId && request && cards?.status === 'ready' && cards.cards && cards.cards.sessions.length > 0) return <WorkSessionCards message={message} cards={cards.cards} stale={cards.stale} selfDid={selfDid} taskId={taskId} stopped={task?.phase === 'Terminal' && task.outcome === 'Canceled'} />
   return <MessageTaskArea message={message} />
 }
 
@@ -43,29 +45,78 @@ function exactUsage(t: ReturnType<typeof useI18n>['t'], usage: WorkUsage): strin
   return t('messagehub.work.usageExact', undefined, { input: usage.input_tokens.toLocaleString(), output: usage.output_tokens.toLocaleString(), rounds: usage.rounds })
 }
 
-function cardRunning(card: WorkCard): boolean {
-  return !isWorkFinished(card.state) || (card.todos?.items ?? []).some(todo => !!todo.card && !isWorkFinished(todo.card.state))
+/** What every row of one card list shares. */
+export interface WorkListContext {
+  now: number
+  stale: boolean
+  /** Remembers which TodoLists the viewer opened or closed. */
+  viewerDid: string
+  anchorId: string
+  onOpen: (card: WorkCard, title: string) => void
+  /** Controls at the end of a card's first line (pause / resume / stop). */
+  actions?: (card: WorkCard, title: string) => ReactNode
 }
 
-/** The cards of one bubble: work session cards in creation order, a plan's TodoList under its card. */
-export function WorkSessionCards({ message, cards, stale, selfDid }: { message: MessageObject; cards: WorkCards; stale: boolean; selfDid?: DID }) {
+/**
+ * The cards of one bubble: work session cards in creation order, a plan's
+ * TodoList under its card. A Turn the owner stopped says which of the work
+ * sessions it started are still running and lets each be stopped: stopping a
+ * message does not stop the work it already started.
+ */
+export function WorkSessionCards({ message, cards, stale, selfDid, taskId, stopped = false }: { message: MessageObject; cards: WorkCards; stale: boolean; selfDid?: DID; taskId?: string; stopped?: boolean }) {
+  const { t } = useI18n()
   const now = useSecondClock(!stale && cards.sessions.some(cardRunning))
-  const { openDetails } = useContext(ConversationMessageActionsContext)
-  const open = (card: WorkCard, title: string) => openDetails?.(message, { target: { agentDid: cards.agent_did, sessionId: card.session_id }, title, card })
+  const { openDetails, agentTurn } = useContext(ConversationMessageActionsContext)
+  const running = stopped && agentTurn ? flattenWork(cards.sessions).filter(card => !isWorkFinished(card.state)).length : 0
+  const context: WorkListContext = {
+    now, stale, viewerDid: selfDid ?? '', anchorId: messageObjId(message) ?? '',
+    onOpen: (card, title) => openDetails?.(message, { target: { agentDid: cards.agent_did, sessionId: card.session_id }, title, card }),
+    actions: running > 0 ? (card, title) => <WorkControls agentDid={cards.agent_did} card={card} title={title} only={['stop']} onChanged={() => getWorkCardsWatch().resync()} /> : undefined,
+  }
   return (
     <div className="mh-work mt-2 space-y-0.5 rounded-xl p-1" data-testid="work-cards" data-no-details data-complete={cards.complete} data-stale={stale || undefined}>
-      {cards.sessions.map(card => <div key={card.session_id}>
-        <WorkCardRow card={card} title={card.title} usage={cardUsage(card)} planUsage={card.shape === 'plan' && card.subtree_usage ? card.usage : undefined} now={now} stale={stale} onOpen={() => open(card, card.title)} />
-        {card.todos && card.todos.items.length > 0 ? <TodoListSection card={card} anchorId={messageObjId(message) ?? ''} viewerDid={selfDid ?? ''} now={now} stale={stale} onOpen={open} /> : null}
-      </div>)}
+      {taskId ? <TurnControls anchor={message} taskId={taskId} place="bubble" /> : null}
+      {running > 0 ? <p className="px-2 py-1 text-[12px]" role="note" data-testid="turn-works-running">{t('messagehub.turn.worksRunning', undefined, { count: running })}</p> : null}
+      <WorkCardList cards={cards.sessions} context={context} />
     </div>
   )
 }
 
-function WorkCardRow({ card, title, usage, planUsage, now, stale, todo = false, onOpen }: { card: WorkCard; title: string; usage: WorkUsage; planUsage?: WorkUsage; now: number; stale: boolean; todo?: boolean; onOpen: () => void }) {
+/** Top-level cards: each with its TodoList and, under it, the sessions it created outside its Todos. */
+export function WorkCardList({ cards, context }: { cards: readonly WorkCard[]; context: WorkListContext }) {
+  return <>{cards.map(card => <div key={card.session_id}>
+    <WorkCardRow card={card} title={card.title} usage={cardUsage(card)} planUsage={card.shape === 'plan' && card.subtree_usage ? card.usage : undefined} context={context} />
+    {card.todos && card.todos.items.length > 0 ? <TodoListSection card={card} context={context} open={!isWorkFinished(card.state)} /> : null}
+    {(card.children ?? []).length > 0 ? <div className="ml-[23px]" data-testid="work-children">{card.children!.map(child => <WorkBranch key={child.session_id} card={child} title={child.title} context={context} />)}</div> : null}
+  </div>)}</>
+}
+
+/** A session below the top level: its row and, folded until asked for, what is under it. */
+function WorkBranch({ card, title, context }: { card: WorkCard; title: string; context: WorkListContext }) {
+  const { t } = useI18n()
+  const [open, setOpen] = useBranchExpanded(context.anchorId, card.session_id)
+  const below = workChildren(card).length + (card.todos?.items.filter(todo => !todo.card).length ?? 0)
+  return <>
+    <WorkCardRow card={card} title={title} usage={card.usage} context={context} todo />
+    {below > 0 ? <div className="ml-5" data-testid="work-branch" data-expanded={open}>
+      <button type="button" className="mh-work-toggle flex min-h-7 items-center gap-1 rounded-lg px-1 text-[12px] font-medium text-[color:var(--cp-muted)]" aria-expanded={open} onClick={() => setOpen(!open)} data-testid="work-branch-toggle">
+        {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+        {t('messagehub.work.subSessions', undefined, { count: workChildren(card).length })}
+      </button>
+      {open ? <>
+        {card.todos && card.todos.items.length > 0 ? <TodoListSection card={card} context={context} open /> : null}
+        {(card.children ?? []).map(child => <WorkBranch key={child.session_id} card={child} title={child.title} context={context} />)}
+      </> : null}
+    </div> : null}
+  </>
+}
+
+export function WorkCardRow({ card, title, usage, planUsage, context, todo = false }: { card: WorkCard; title: string; usage: WorkUsage; planUsage?: WorkUsage; context: WorkListContext; todo?: boolean }) {
   const { t } = useI18n()
   const text = useText()
-  const line = text(localizeLine(card.line, card.state))
+  const { now, stale } = context
+  const onOpen = () => context.onOpen(card, title)
+  const line = text(localizeLine(card.line, card.state, card.paused))
   const model = displayModel(card.model)
   const models = card.usage.models.map(item => item.model)
   const tokens = planUsage
@@ -74,7 +125,7 @@ function WorkCardRow({ card, title, usage, planUsage, now, stale, todo = false, 
   const staleNote = stale && !isWorkFinished(card.state) ? t('messagehub.work.stale') : ''
   const second = [line, staleNote].filter(Boolean).join(' · ')
   return (
-    <div role="button" tabIndex={0} className={`mh-work-card rounded-lg px-2 py-1 ${todo ? 'ml-5 text-[12px]' : 'text-[13px]'}`} onClick={onOpen} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen() } }} aria-label={t('messagehub.work.open', undefined, { title })} data-testid={todo ? 'todo-card' : 'work-card'} data-session-id={card.session_id} data-state={card.state} data-shape={card.shape}>
+    <div role="button" tabIndex={0} className={`mh-work-card rounded-lg px-2 py-1 ${todo ? 'ml-5 text-[12px]' : 'text-[13px]'}`} onClick={onOpen} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onOpen() } }} aria-label={t('messagehub.work.open', undefined, { title })} data-testid={todo ? 'todo-card' : 'work-card'} data-session-id={card.session_id} data-state={card.state} data-paused={card.paused} data-shape={card.shape}>
       <div className="flex items-center gap-2">
         <WorkStateIcon state={card.state} stale={stale} size={todo ? 13 : 15} />
         <span className="min-w-0 flex-1 truncate font-medium" title={title} data-testid="work-card-title">{title}</span>
@@ -83,6 +134,7 @@ function WorkCardRow({ card, title, usage, planUsage, now, stale, todo = false, 
           <span className="mh-work-in text-[color:var(--cp-muted)]">{t('messagehub.work.tokensIn', undefined, { value: formatTokens(usage.input_tokens) })} · </span>
           <span>{t('messagehub.work.tokensOut', undefined, { value: formatTokens(usage.output_tokens) })}</span>
         </span> : null}
+        {context.actions?.(card, title)}
       </div>
       {second || model ? <div className={`flex items-center gap-2 ${todo ? 'pl-[21px] text-[11px]' : 'pl-[23px] text-[12px]'}`}>
         <span className="min-w-0 flex-1 truncate opacity-80" title={second} data-testid="work-card-line">{second}</span>
@@ -92,10 +144,10 @@ function WorkCardRow({ card, title, usage, planUsage, now, stale, todo = false, 
   )
 }
 
-function TodoListSection({ card, anchorId, viewerDid, now, stale, onOpen }: { card: WorkCard; anchorId: string; viewerDid: string; now: number; stale: boolean; onOpen: (card: WorkCard, title: string) => void }) {
+function TodoListSection({ card, context, open }: { card: WorkCard; context: WorkListContext; open: boolean }) {
   const { t } = useI18n()
   const todos = card.todos!
-  const [expanded, setExpanded] = useTodoExpanded(viewerDid, anchorId, card.session_id, !isWorkFinished(card.state))
+  const [expanded, setExpanded] = useTodoExpanded(context.viewerDid, context.anchorId, card.session_id, open)
   const [showAll, setShowAll] = useState(false)
   const shown = visibleTodos(todos.items, showAll)
   return (
@@ -106,7 +158,7 @@ function TodoListSection({ card, anchorId, viewerDid, now, stale, onOpen }: { ca
       </button>
       {expanded ? <ul className="-ml-5 space-y-0.5" data-testid="todo-items">
         {shown.items.map(todo => <li key={todo.todo_id}>{todo.card
-          ? <WorkCardRow card={todo.card} title={todoTitle(todo)} usage={todo.card.usage} now={now} stale={stale} todo onOpen={() => onOpen(todo.card!, todoTitle(todo))} />
+          ? <WorkBranch card={todo.card} title={todoTitle(todo)} context={context} />
           : <UnboundTodoRow todo={todo} />}</li>)}
         {shown.hidden > 0 ? <li><button type="button" className="mh-work-toggle ml-5 rounded-lg px-2 py-0.5 text-[12px] text-[color:var(--cp-muted)]" onClick={() => setShowAll(true)} data-testid="todo-more">{t('messagehub.work.todoMore', undefined, { count: shown.hidden })}</button></li> : null}
       </ul> : null}

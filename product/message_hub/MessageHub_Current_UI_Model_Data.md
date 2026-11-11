@@ -1,6 +1,6 @@
 # MessageHub 当前 UI Model Data
 
-- 版本：v0.4，2026-09-07（真实 msg-center store 落地；mock 原型保持不变）
+- 版本：v0.5，2026-11-10（自己名下 Agent 的 Agent 面板与前台消息控制，见 §5.1）；v0.4，2026-09-07（真实 msg-center store 落地；mock 原型保持不变）
 - 范围：MessageHub mock 原型与真实 store、共享的 Conversation 组件、CodeAssistant 长历史 seed，以及 Agent 主页入口。
 - 实现依据：`src/frame/desktop/src/app/messagehub/`，本文件只描述已落地字段。权威服务设计见 [UI_DATAMODEL](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)。
 - §1–§7 描述 mock 原型；§8 描述真实 store 的实际字段来源与仍未接入的服务能力。
@@ -212,6 +212,31 @@ interface SessionPreferences {
 
 Session 行包含来源、截断标题、状态提示、未读、固定宽度时间与独立操作按钮；无右侧选中竖条，无嵌套 button。
 hover、focus-within 和触屏均能访问处理入口。对话框有 Tab 焦点约束与取消焦点恢复，删除不作为默认回车动作。
+
+### 5.1 Agent 面板、前台消息状态与工作控制（2026-11-10）
+
+只对 `store.isOwnAgent(context, entityId)` 为真的会话（mock：种子 Agent `did:buckyos:agent:codeassistant` 且查看的是自己的消息；
+real：`agent.list` 里的 DID）。数据不在 `MessageHubStore` 里，由 `agentpanel/source.ts` 的 `AgentPanelSource` 直接读写 Agent 的 OpenDAN 服务。
+
+| 状态 / 数据 | 位置 | 来源 |
+|---|---|---|
+| `detailsTarget` 新增 `agent`、`worklog` | `MessageHubView` state | Info 按钮 / 标题 / 左滑；桌面端开关记在 `localStorage['buckyos.messagehub.agentPanelOpen.v1']` |
+| `AgentSummary` | 面板上部 | `home.summary`，面板打开时读一次 |
+| `UiConversation`（当前一代 UI Session、历代列表、`route_key`） | 面板下部、提示词版本、「开始新对话」 | `ui.conversation {peer_did, session_id}` |
+| `WorkTree` | Sub Sessions | `session.work_tree {sid, unfinished_only: true}` |
+| `DeliveryPage` | 近期产物（展开后才读） | `deliveries.recent {limit, before?, route_key?}` |
+| `ForegroundState`（`idle / running / interrupted / paused`） | 输入框的发送禁用、`composer-blocked` 行 | 时间线上最新一条带 `agent_task` 的对方消息 + 它的 TaskMgr task；纯函数 `foregroundState` |
+| 代际分隔 | 时间线里的本地状态行 | `ui.conversation` 的历代结束时间，记在 `localStorage['buckyos.messagehub.agentBreaks.v1']` |
+| 子会话展开状态 | 页面内存（`useBranchExpanded`）；TodoList 沿用 `todoExpanded` | — |
+
+控制动作：`session.stop {sid, scope}`（占位与回答态用 `turn`，树节点用 `session`）、`session.pause` / `session.resume`、`ui.rotate`；
+「停止并撤回」是对那条用户消息发 redact。实体级免打扰 / 置顶写的是该实体每个会话的 `ui.muted` / 默认会话的 `ui.pinned`，
+实体整体静音时新建的会话继承静音。
+
+mock（`mock/agentpanel.ts`，`window.__messageHubMockAgent`）：`session-coder-work` 是第 2 代对话（Turn 8 正在处理，名下 4 个未结束的工作，
+提示词已变化）；`session-coder-ask` 的 Turn 在等回答；其余会话是空闲的第 1 代。`interrupt(sessionId)` 模拟宿主重启，`denied` 模拟读取被拒。
+mock store 把 owner 对种子 Agent 的 redact 当作撤回：关掉打开的 Turn 并把占位改写成 `Stopped.`（后端没有单独的“已撤回”文案，撤回与否只看 Turn task 是否 `Canceled`）。懒生成历史的种子会话
+（时间线不在内存里）不显示代际分隔。
 
 ## 6. Action Message 与历史投影
 

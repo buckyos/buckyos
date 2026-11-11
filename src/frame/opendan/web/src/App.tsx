@@ -10,9 +10,12 @@ import AgentStatePage from './pages/AgentState'
 import GoalDetailPage from './pages/GoalDetail'
 import HomePage from './pages/Home'
 import LoaderPage from './pages/Loader'
+import MemoryPage from './pages/Memory'
+import RuntimeDetailPage from './pages/Runtimes'
 import SessionDetailPage from './pages/SessionDetail'
 import SessionsPage from './pages/Sessions'
 import SkillsPage from './pages/Skills'
+import WorkspacesPage from './pages/Workspaces'
 
 const subscribeHash = (notify: () => void) => {
   window.addEventListener('hashchange', notify)
@@ -49,6 +52,9 @@ export default function App() {
   // layout; a goal has no tab of its own and its back link goes home.
   const detail = (page === 'session' || page === 'goal') && Boolean(arg)
   const tab = page === 'session' ? 'sessions' : page
+  // Detail pages in the home page's style (`#/memory`, `#/workspaces`, `#/runtime/<id>`).
+  const shell =
+    page === 'memory' ? <MemoryPage /> : page === 'workspaces' ? <WorkspacesPage /> : page === 'runtime' && arg ? <RuntimeDetailPage key={arg} runtimeId={decodeURIComponent(arg)} /> : null
   const home = !detail && !TABS.some((x) => x.id === tab)
   const { mutate } = useSWRConfig()
   const status = useQuery(home || loginLost ? null : ['loader.status'], () => dataModel.loaderStatus())
@@ -63,7 +69,7 @@ export default function App() {
   if (home) {
     return (
       <div className="mx-auto max-w-5xl px-3 pb-6 pt-3 sm:px-4">
-        <HomePage />
+        {shell ?? <HomePage />}
         <footer className="mt-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-mute">
           <button className="tap px-2 text-xs font-normal" onClick={() => mutate(() => true)}>
             <RefreshCw size={12} />

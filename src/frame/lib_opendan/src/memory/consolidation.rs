@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_tool::agent_memory::{CommitActor, GraphView, ItemStatus};
+use agent_tool::agent_memory::{
+    CommitActor, GraphOperation, GraphView, ItemStatus, SetStatusOp, TargetKind,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -131,6 +133,22 @@ pub struct CleanupReport {
     /// `(sid, error)`; retried by the next cleanup.
     pub failed: Vec<(String, String)>,
     pub remaining: usize,
+}
+
+/// What an owner's `forget` did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Forgotten {
+    /// The cognition at its new `deleted` revision (`item_x@N`), or the
+    /// perception.
+    pub reference: String,
+    pub layer: super::MemoryLayer,
+    /// `deleted` (a cognition) or `discarded` (a perception).
+    pub state: String,
+    pub occasion_id: String,
+    /// A perception whose body could not be cleaned right now: the next
+    /// cleanup retries.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cleanup_pending: bool,
 }
 
 /// Holder of the consolidation lease (the only writer of cognitions, M-32).
@@ -543,5 +561,127 @@ impl<'a> Consolidator<'a> {
             tags: Vec::new(),
         };
         self.commit_plan(plan).map(|r| Some((r, count)))
+    }
+
+    /// The owner deletes one entry (Agent UI upgrade TODO, ME2), under the
+    /// same lease as a consolidation and as one commit of its own.
+    ///
+    /// A cognition gets a new `deleted` revision (its history stays, it is
+    /// never revived); `expected_revision` not being its current revision,
+    /// or the cognition being deleted already, is a conflict. A perception
+    /// no consolidation has settled is disposed as `discarded` and its body
+    /// cleaned; a settled one is refused, naming the cognitions that carry
+    /// it (those are what the owner deletes).
+    pub fn forget(
+        &self,
+        reference: &str,
+        expected_revision: Option<u64>,
+        reason: Option<&str>,
+        who: &str,
+    ) -> MemoryResult<Forgotten> {
+        self.lease.check()?;
+        let view = self.graph()?;
+        let why = match reason.map(str::trim).filter(|r| !r.is_empty()) {
+            Some(r) => format!("deleted by the owner ({who}): {r}"),
+            None => format!("deleted by the owner ({who})"),
+        };
+        let mut plan = ConsolidationCommit {
+            idempotency_key: format!("owner-forget:{reference}:{}", self.memory.now_ms()),
+            summary: format!("{reference} {why}"),
+            produced_by: ProducedBy {
+                goal_run: Some(format!("owner:{who}")),
+                prompt_version: None,
+                model: None,
+            },
+            operations: Vec::new(),
+            dispositions: Vec::new(),
+            tags: Vec::new(),
+        };
+        if reference.starts_with("item_") {
+            let (id, cited) = parse_cite(reference)?;
+            let item = view
+                .item(&id)
+                .ok_or_else(|| MemoryError::NotFound(reference.to_string()))?;
+            if item.status == ItemStatus::Deleted {
+                return Err(MemoryError::Conflict(format!("{id} is already deleted")));
+            }
+            if let Some(expected) = expected_revision.or(cited).filter(|r| *r != item.revision) {
+                return Err(MemoryError::Conflict(format!(
+                    "{id} is at revision {}, not {expected}; re-read it",
+                    item.revision
+                )));
+            }
+            plan.operations.push(GraphOperation::SetStatus(SetStatusOp {
+                target_kind: TargetKind::Item,
+                target_id: id.clone(),
+                status: ItemStatus::Deleted.to_string(),
+                reason: why,
+                replaced_by: None,
+                expected_revision: Some(item.revision),
+                evidence: Vec::new(),
+            }));
+            let result = self.commit_plan(plan)?;
+            let revision = result
+                .report
+                .items
+                .iter()
+                .find(|c| c.item_id == id)
+                .map(|c| c.revision)
+                .unwrap_or(item.revision + 1);
+            return Ok(Forgotten {
+                reference: format!("{id}@{revision}"),
+                layer: super::MemoryLayer::Cognition,
+                state: ItemStatus::Deleted.to_string(),
+                occasion_id: result.occasion_id,
+                cleanup_pending: false,
+            });
+        }
+        let record = self
+            .memory
+            .perception(reference)?
+            .filter(|r| !r.is_runtime())
+            .ok_or_else(|| MemoryError::NotFound(reference.to_string()))?;
+        let settled = match (&record.cleared, view.disposition(reference)) {
+            (Some(marker), _) => Some((marker.outcome.clone(), marker.cognition_refs.clone())),
+            (None, Some(d)) if d.disposition.outcome.is_terminal() => Some((
+                d.disposition.outcome.to_string(),
+                d.disposition.cognition_refs.clone(),
+            )),
+            _ => None,
+        };
+        if let Some((outcome, cognitions)) = settled {
+            return Err(MemoryError::Conflict(if cognitions.is_empty() {
+                format!("{reference} is already {outcome}")
+            } else {
+                format!(
+                    "{reference} is already {outcome} into {}: delete the cognition instead",
+                    cognitions.join(", ")
+                )
+            }));
+        }
+        plan.dispositions.push(Disposition {
+            perception_ref: reference.to_string(),
+            outcome: DispositionOutcome::Discarded,
+            cognition_refs: Vec::new(),
+            reason: Some(why),
+            reevaluate_when: Vec::new(),
+            deadline: None,
+            clarify: None,
+        });
+        let result = self.commit_plan(plan)?;
+        let cleanup_pending = match self.cleanup() {
+            Ok(report) => !report.cleared.iter().any(|r| r == reference),
+            Err(e) => {
+                log::warn!("memory: {reference} discarded by the owner, its body not cleaned yet: {e}");
+                true
+            }
+        };
+        Ok(Forgotten {
+            reference: reference.to_string(),
+            layer: super::MemoryLayer::Perception,
+            state: DispositionOutcome::Discarded.to_string(),
+            occasion_id: result.occasion_id,
+            cleanup_pending,
+        })
     }
 }

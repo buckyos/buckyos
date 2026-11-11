@@ -120,14 +120,14 @@ async fn a_finished_session_gives_its_queue_back() {
     let env = Env::new();
     let agent = env.agent();
     let deps = env.deps(ScriptedLlm::new(|_, _| text("ok")));
-    // A chat session stopped for good: nothing can reach it any more.
+    // A chat session archived: nothing can reach it any more.
     let ui = env.create_work(ui_spec()).await;
     libopendan::post_input(agent.as_ref(), ui.sid(), &msg("hi")).await.unwrap();
     drive(&ui, &deps, StopWhen::TurnClosed).await;
     libopendan::post_input(
         agent.as_ref(),
         ui.sid(),
-        &PostedInput::control(APP, "stop-1", ControlCommand::stop(None)),
+        &PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None, scope: StopScope::Archive }),
     )
     .await
     .unwrap();

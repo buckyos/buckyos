@@ -1,5 +1,6 @@
 import { createContext, type ReactNode } from 'react'
 import type { DID } from 'buckyos'
+import type { TaskWatchDetail } from '../../../../api/task_mgr'
 import type { MessageObject } from '../../protocol/msgobj'
 import type { GroupInvitationView, ReadReceipt } from '../../types'
 import type { WorklogDestination } from '../worklog/model'
@@ -56,6 +57,16 @@ export interface ConversationMessageActions {
   pin?: { isPinned: (message: MessageObject) => boolean; toggle: (message: MessageObject) => Promise<void> }
   /** Opens the details of a message (original, effective content, edits, delivery, task); `worklog`: on that session's work log. */
   openDetails?: (message: MessageObject, worklog?: WorklogDestination) => void
+  /**
+   * The viewer owns the Agent of this conversation and may control its Turns
+   * (stop, resume; `TurnControls`). `inputOf`: the viewer's message the Turn
+   * of a placeholder handles, when it can still be retracted; `retract`
+   * sends the redact the Agent takes as "this input is withdrawn".
+   */
+  agentTurn?: {
+    inputOf: (anchor: MessageObject, task: TaskWatchDetail | undefined) => MessageObject | null
+    retract: (input: MessageObject) => Promise<void>
+  }
   /** Read receipt of an own group message, when the session shows receipts. */
   readReceipt?: (message: MessageObject) => ReadReceipt | null
   /** The viewer may answer, acknowledge and dismiss notification cards (the owner, never an observer). */

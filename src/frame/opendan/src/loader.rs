@@ -523,8 +523,16 @@ impl Loader {
         }
 
         // Recovery does not wait for something to touch a session: the
-        // first registry scan hosts everything left unfinished.
+        // first registry scan hosts everything left unfinished. What was
+        // working when the host stopped is not advanced: it is marked
+        // interrupted and waits for the owner's resume.
         tasks.push(tokio::spawn(supervisor.clone().run()));
+        tasks.push(tokio::spawn(tell_interrupted(
+            agent.clone(),
+            supervisor.clone(),
+            env.who.clone(),
+            env.notify.clone(),
+        )));
         match &env.notify {
             Some(notify) => {
                 module("notify", true, true, None);
@@ -745,6 +753,55 @@ pub async fn mark_runtime_sessions(agent: &dyn AgentStateClient, notify: Option<
         if let Err(e) = notify.send(request).await {
             log::warn!("loader: owner not told that {reason}: {e}");
         }
+    }
+}
+
+/// Once the first look at the registry is over: the owner is told, once,
+/// which sessions the restart interrupted and where they are resumed.
+async fn tell_interrupted(
+    agent: Arc<dyn AgentStateClient>,
+    supervisor: Arc<Supervisor>,
+    who: String,
+    notify: Option<Arc<dyn libopendan::notify::NotifyHost>>,
+) {
+    while !supervisor.recovered() {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // Each session is marked by its own drive, under its own lease.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let query = libopendan::protocol::RegistryQuery { driver: Some(who), not_finished_or_pending: Some(true), ..Default::default() };
+    let interrupted: Vec<libopendan::protocol::RegistryEntry> = match agent.sessions().query(&query).await {
+        Ok(entries) => entries
+            .into_iter()
+            .filter(|e| e.status.paused == Some(libopendan::protocol::PauseSource::Interrupted))
+            .collect(),
+        Err(e) => {
+            log::warn!("loader: interrupted sessions not listed: {e}");
+            return;
+        }
+    };
+    if interrupted.is_empty() {
+        return;
+    }
+    let names = interrupted
+        .iter()
+        .take(8)
+        .map(|e| format!("{} ({})", e.title.clone().unwrap_or_else(|| e.objective.chars().take(60).collect()), e.session_id))
+        .collect::<Vec<_>>();
+    log::warn!("loader: {} session(s) were working when the host stopped; interrupted until resumed: {}", interrupted.len(), names.join(", "));
+    let Some(notify) = notify else { return };
+    let request = libopendan::notify::NotifySendReq::notice(
+        "",
+        "Work was interrupted by a restart".to_string(),
+        format!(
+            "{} session(s) were working when I restarted and are on hold until you resume them: {}. Resume them on my home page (\"Resume all\"), in the conversation that started them, or with /resume; or stop them.",
+            interrupted.len(),
+            names.join("; ")
+        ),
+        format!("interrupted:{}", interrupted.iter().map(|e| e.session_id.as_str()).collect::<Vec<_>>().join(",")),
+    );
+    if let Err(e) = notify.send(request).await {
+        log::warn!("loader: owner not told about the interrupted sessions: {e}");
     }
 }
 
