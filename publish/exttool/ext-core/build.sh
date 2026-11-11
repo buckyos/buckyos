@@ -71,10 +71,18 @@ fetch() {
   want="$(sha_of "$file")"
   [ -n "$want" ] || { echo "$file is not in sources.sha256" >&2; exit 1; }
   if [ ! -f "$cache/$file" ] || [ "$(sha256_of_file "$cache/$file")" != "$want" ]; then
-    curl -fsSL --retry 3 --retry-delay 2 -o "$cache/$file.part" "$url"
-    mv "$cache/$file.part" "$cache/$file"
+    if ! curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --connect-timeout 30 -o "$cache/$file.part" "$url"; then
+      rm -f "$cache/$file.part"
+      echo "$file: download failed" >&2
+      exit 1
+    fi
+    if [ "$(sha256_of_file "$cache/$file.part")" != "$want" ]; then
+      rm -f "$cache/$file.part"
+      echo "$file: sha256 differs from sources.sha256" >&2
+      exit 1
+    fi
+    mv "$cache/$file.part" "$cache/$file" || exit 1
   fi
-  [ "$(sha256_of_file "$cache/$file")" = "$want" ] || { echo "$file: sha256 differs from sources.sha256" >&2; exit 1; }
   echo "$cache/$file"
 }
 

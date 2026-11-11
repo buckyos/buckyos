@@ -24,7 +24,7 @@ on:
     paths:
       - 'publish/exttool/ext-core/**'
       - '.github/scripts/ext_tools.py'
-      - '.github/scripts/test_ext_tools.py'
+      - '.github/scripts/test_ext_*.py'
       - '.github/workflows/ext-core.yml'
 
 permissions:
@@ -42,7 +42,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
-      - run: python3 -m unittest discover -s .github/scripts -p 'test_ext_tools.py'
+      - run: python3 -m unittest discover -s .github/scripts -p 'test_ext_*.py'
       - run: python3 .github/scripts/ext_tools.py check-table
       - id: version
         run: echo "version=$(python3 -c 'import json; print(json.load(open("publish/exttool/ext-core/ext-manifest.json"))["version"])')" >> "$GITHUB_OUTPUT"
