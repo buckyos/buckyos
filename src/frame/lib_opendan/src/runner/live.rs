@@ -1503,7 +1503,7 @@ pub(super) struct InputBatch<'a> {
     pub text: String,
     pub media: Vec<AiContent>,
     /// Goal Sessions: the Activation this batch opens and its header
-    /// (placed first; the receipt carries the Activation).
+    /// (leading the input message; the receipt carries the Activation).
     pub goal: Option<super::goal::Opening>,
     /// Revision of the TodoList whose view the input message shows.
     pub todo_rev: Option<u64>,
@@ -1633,15 +1633,19 @@ pub(super) async fn commit_input_batch(
     let after_step = lc.ctx.snapshot().state.next_step_index;
     let mut messages = Vec::new();
     let mut part_texts: Vec<(&str, String)> = Vec::new();
-    let goal_brief = goal.as_ref().map(|g| g.brief.clone());
-    if let Some(g) = &goal {
-        messages.push(AiMessage::text(AiRole::User, g.text.clone()));
-        part_texts.push((PART_GOAL, g.text.clone()));
-    }
-    let mut input_msg = AiMessage::text(AiRole::User, batch.text.clone());
+    // A Goal Activation's header leads its input message (one User message,
+    // TODO B5); history keeps one line of it.
+    let (text, goal_brief) = match &goal {
+        Some(g) => (
+            format!("{}\n{}", g.text, batch.text),
+            Some(format!("{}\n{}", g.brief, batch.text)),
+        ),
+        None => (batch.text, None),
+    };
+    let mut input_msg = AiMessage::text(AiRole::User, text.clone());
     input_msg.content.extend(batch.media);
     messages.push(input_msg);
-    part_texts.push((PART_INPUT, batch.text));
+    part_texts.push((PART_INPUT, text));
     let count = messages.len();
     let pos = lc.ctx.inject(Injection {
         messages,
@@ -1666,11 +1670,7 @@ pub(super) async fn commit_input_batch(
             .into_iter()
             .zip(positions)
             .map(|((part, text), pos)| ReceiptPart {
-                brief: if part == PART_GOAL {
-                    goal_brief.clone()
-                } else {
-                    None
-                },
+                brief: if part == PART_INPUT { goal_brief.clone() } else { None },
                 part: part.to_string(),
                 pos,
                 text,

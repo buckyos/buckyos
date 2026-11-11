@@ -237,6 +237,13 @@
             "goal"
           ],
           "type": "string"
+        },
+        {
+          "description": "Its Goal's period budget (or the agent's background total) ran out; resumed when the period resets.",
+          "enum": [
+            "budget"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -299,8 +306,7 @@
         {
           "enum": [
             "ui",
-            "work",
-            "self_check"
+            "work"
           ],
           "type": "string"
         },

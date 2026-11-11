@@ -416,19 +416,13 @@ impl Loader {
             config.loader.goals.enabled,
             config.loader.goals.enabled.then_some("schedule backend: local"),
         );
-        module(
-            "self_check",
-            config.loader.self_check.enabled,
-            false,
-            config.loader.self_check.enabled.then_some("not available in this version"),
-        );
         let maintenance = libopendan::goal::defaults(Some(&env.agent_root), libopendan::goal::GOAL_CLASS).maintenance;
         module(
             "memory_maintenance",
             maintenance.enabled,
             maintenance.enabled && config.loader.goals.enabled,
             Some(if maintenance.enabled {
-                "built-in goal seeded by the goals module; decision pre-check off"
+                "built-in goal seeded by the goals module; its check script decides when it infers"
             } else {
                 "[session.goal.maintenance] enabled = false"
             }),

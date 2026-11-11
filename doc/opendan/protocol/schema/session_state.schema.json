@@ -29,6 +29,15 @@
             "integer",
             "null"
           ]
+        },
+        "max_wall_secs": {
+          "description": "Wall clock from the opening of the Activation: past it no new run segment starts and the Activation closes as `budget_exhausted`.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -161,6 +170,13 @@
           "description": "A question of the Goal was answered (or closed) by the user: `ref` is its notification.",
           "enum": [
             "answer"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The hard guarantee: too long without an inference.",
+          "enum": [
+            "guarantee"
           ],
           "type": "string"
         }
@@ -623,6 +639,64 @@
       ],
       "type": "object"
     },
+    "GoalHold": {
+      "description": "Events held by the gate (the Goal Session keeps them in its queue).",
+      "properties": {
+        "checked_at_ms": {
+          "default": 0,
+          "description": "When the budget was read last (a budget hold is read again at most once a minute).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "reason": {
+          "$ref": "#/definitions/HoldReason"
+        },
+        "since_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "until_ms": {
+          "description": "When the hold lifts by itself (end of the interval, start of the next period).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "reason",
+        "since_ms"
+      ],
+      "type": "object"
+    },
+    "GoalHolds": {
+      "description": "Events the gate held in the current period (one per hold, however long it lasted).",
+      "properties": {
+        "budget": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "min_interval": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "period_start_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "GoalQuestion": {
       "properties": {
         "activation": {
@@ -794,6 +868,13 @@
           },
           "type": "array"
         },
+        "consecutive_no_action": {
+          "default": 0,
+          "description": "Activations in a row that ended `no_action`.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "current_skills": {
           "items": {
             "$ref": "#/definitions/GoalSkill"
@@ -824,6 +905,29 @@
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "holding": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GoalHold"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Events waiting for the gate right now."
+        },
+        "holds": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GoalHolds"
+            }
+          ],
+          "default": {
+            "budget": 0,
+            "min_interval": 0,
+            "period_start_ms": 0
+          }
         },
         "last_activation": {
           "anyOf": [
@@ -905,7 +1009,7 @@
       "type": "object"
     },
     "GoalUsage": {
-      "description": "Usage of the current statistics period.",
+      "description": "Usage of the current statistics period. Tokens are counted by the time their rounds ran (`usage.jsonl` of every session of the Goal), running Work included.",
       "properties": {
         "activations": {
           "default": 0,
@@ -920,14 +1024,14 @@
         },
         "tokens": {
           "default": 0,
-          "description": "Tokens of the Goal Session's Activations.",
+          "description": "Tokens of the Goal Sessions (every epoch) in the period.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
         },
         "work_tokens": {
           "default": 0,
-          "description": "Tokens of the Work absorbed in the period.",
+          "description": "Tokens of the Goal's Work in the period, finished or running.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -978,6 +1082,32 @@
         "sid"
       ],
       "type": "object"
+    },
+    "HoldReason": {
+      "description": "Why an event waits instead of opening an Activation.",
+      "oneOf": [
+        {
+          "description": "Closer than the hard interval to the last inference.",
+          "enum": [
+            "min_interval"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The Goal's period budget is used up.",
+          "enum": [
+            "period_budget"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The agent's background total is used up.",
+          "enum": [
+            "agent_budget"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "InputPos": {
       "description": "Delivery position of a bus record.",
@@ -1611,6 +1741,13 @@
           "description": "Its Goal was put to sleep; resumed when the Goal wakes.",
           "enum": [
             "goal"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Its Goal's period budget (or the agent's background total) ran out; resumed when the period resets.",
+          "enum": [
+            "budget"
           ],
           "type": "string"
         }

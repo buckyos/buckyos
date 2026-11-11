@@ -1,161 +1,97 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
-    "MaintenanceGate": {
-      "description": "Deterministic check water marks of the consolidation Goal (§6), kept by the host in `schedule.json`: \"checked\", as opposed to \"consolidated\" (`GoalState.maintenance`).",
+    "CheckOutcome": {
+      "description": "What a check returned (`true`: the run opportunity became an inference).",
+      "enum": [
+        "true",
+        "false",
+        "error"
+      ],
+      "type": "string"
+    },
+    "CheckRecord": {
+      "description": "The last check the host ran.",
       "properties": {
-        "backoff_level": {
-          "default": 0,
-          "format": "uint32",
+        "at_ms": {
+          "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
         },
-        "backoff_until_ms": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "due_reviews": {
-          "default": 0,
-          "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "last_baseline_slot": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "last_checked_at_ms": {
+        "elapsed_ms": {
           "default": 0,
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
         },
-        "last_checked_slot": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
+        "outcome": {
+          "$ref": "#/definitions/CheckOutcome"
         },
-        "last_error": {
+        "reason": {
+          "description": "The script's `reason` (`true`), or the error.",
           "type": [
             "string",
             "null"
           ]
         },
-        "last_full_check_at_ms": {
+        "script_version": {
           "default": 0,
-          "description": "Last time the full deterministic check (`pending_work`) ran.",
+          "description": "Version of the script that ran.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "last_inputs_digest": {
-          "description": "Memory snapshot token the full check saw.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "last_run_at_ms": {
-          "default": 0,
-          "description": "Last run opportunity the gate let through.",
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "last_run_slot": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "last_skip_reason": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "next_review_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "pending": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/MaintenancePending"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "status": {
-          "default": "",
-          "description": "`no_work | no_change | active | mechanical | paused | disabled | unknown | backoff | period_budget`.",
-          "type": "string"
-        },
-        "unfinished_receipts": {
-          "default": 0,
-          "format": "uint",
           "minimum": 0.0,
           "type": "integer"
         }
       },
+      "required": [
+        "at_ms",
+        "outcome"
+      ],
       "type": "object"
     },
-    "MaintenancePending": {
-      "description": "Summary of Memory's pending work as the gate saw it last.",
+    "GateStats": {
+      "description": "What the gate did in the current period (host side; held events are in the Goal State's `holds`).",
       "properties": {
-        "due": {
+        "checks_error": {
           "default": 0,
-          "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "new": {
-          "default": 0,
-          "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "next_deadline": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "oldest_at_ms": {
-          "description": "Oldest material not disposed yet.",
           "format": "uint64",
           "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
-        "retry_cleanup": {
+        "checks_false": {
           "default": 0,
-          "format": "uint",
+          "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
         },
-        "waiting": {
+        "checks_true": {
           "default": 0,
-          "format": "uint",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "guarantees": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "period_start_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "skipped_budget": {
+          "default": 0,
+          "description": "… by the Goal's period budget or the agent's total.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "skipped_min_interval": {
+          "default": 0,
+          "description": "Scheduled run opportunities skipped by the hard interval.",
+          "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
         }
@@ -194,7 +130,7 @@
           "type": "integer"
         },
         "reason": {
-          "description": "`paused | period_budget | min_interval | not_active`, or a gate reason of the consolidation Goal (`no_work | no_change | …`).",
+          "description": "`paused | not_active | min_interval | period_budget | agent_budget | check_false | check_error`.",
           "type": "string"
         },
         "slot": {
@@ -217,28 +153,41 @@
       "description": "`local` (phase 1).",
       "type": "string"
     },
-    "every_secs": {
-      "description": "Interval the slots count in (a changed interval starts counting again).",
+    "check_errors": {
+      "default": 0,
+      "description": "Checks in a row that failed (thrown, timed out, wrong result).",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "check_state": {
+      "description": "The `state` the script returned last, given back to the next check."
+    },
+    "goal_id": {
+      "type": "string"
+    },
+    "guarantee_posted_for_ms": {
+      "default": 0,
+      "description": "The quiet stretch (its start) the last hard guarantee was posted for: one per stretch.",
       "format": "uint64",
       "minimum": 0.0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
-    "gate": {
+    "last_check": {
       "anyOf": [
         {
-          "$ref": "#/definitions/MaintenanceGate"
+          "$ref": "#/definitions/CheckRecord"
         },
         {
           "type": "null"
         }
-      ],
-      "description": "The consolidation Goal's check water marks (§6)."
+      ]
     },
-    "goal_id": {
-      "type": "string"
+    "last_check_error": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "last_error": {
       "type": [
@@ -291,6 +240,34 @@
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "stats": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/GateStats"
+        }
+      ],
+      "default": {
+        "checks_error": 0,
+        "checks_false": 0,
+        "checks_true": 0,
+        "guarantees": 0,
+        "period_start_ms": 0,
+        "skipped_budget": 0,
+        "skipped_min_interval": 0
+      }
+    },
+    "switched_off": {
+      "default": false,
+      "description": "A built-in Goal switched off in `agent.toml`: no session, no checks.",
+      "type": "boolean"
+    },
+    "timetable": {
+      "description": "The timetable the slots count in (`every:<secs>` | `cron:<expr>@<zone>`; a changed one starts counting again).",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "updated_at_ms": {
       "default": 0,

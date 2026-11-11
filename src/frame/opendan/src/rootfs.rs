@@ -193,7 +193,7 @@ pub struct SyncReport {
 }
 
 pub fn ensure_layout(agent_root: &Path) -> Result<()> {
-    for rel in ["", ".meta", "behaviors", "cmd_skills", "plan_skills", "goal_skills", "skills_drafts", "tools", "memory", "notebook", "workspace", "sessions"] {
+    for rel in ["", ".meta", "behaviors", "cmd_skills", "plan_skills", "goal_skills", "goal_checks", "skills_drafts", "tools", "memory", "workspace", "sessions"] {
         let dir = agent_root.join(rel);
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     }

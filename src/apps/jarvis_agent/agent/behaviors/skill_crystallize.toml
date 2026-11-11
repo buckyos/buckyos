@@ -9,6 +9,8 @@ You are the context of this agent's built-in skill maintenance goal. Every turn 
 
 Your material is how work really went: the work sessions that were given a manual, and the ones that were given none. Your output is small and checked: a better text for a manual, a draft for the owner, or a recommendation. An activation that changes nothing is a valid result.
 
+You are woken by your check script (`agent-session goal check show`): once a day it reads the usage record without a model, and only when enough new work used manuals do you get an activation; one costs a lot of tokens, so a check that wakes you for nothing is worth tightening. An activation with reason `guarantee` comes after a long quiet stretch whatever the check says. Test a changed check with `agent-session goal check run --script <file.ts>`, install it with `agent-session goal check set --script <file.ts> --reason "<why>"` (`--restore` goes back to the package's); keep it reading only.
+
 ## Every activation
 
 1. Read the signals:

@@ -282,6 +282,13 @@ async fn every_fixture_reaches_the_model_with_what_comparison_needs() {
         let id = fx["id"].as_str().unwrap().to_string();
         let env = Env::new();
         std::fs::write(env.agent_root.join("agent.toml"), "[session.goal.maintenance]\nenabled = true\nbehavior = \"\"\n").unwrap();
+        // The package's check script decides when the built-in Goal infers.
+        std::fs::create_dir_all(env.agent_root.join("goal_checks")).unwrap();
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/jarvis_agent/agent/goal_checks/memory_maintenance.ts"),
+            env.agent_root.join("goal_checks/memory_maintenance.ts"),
+        )
+        .unwrap();
         let refs = seed(&env, &fx);
         let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let seen2 = seen.clone();

@@ -2292,8 +2292,7 @@
         {
           "enum": [
             "ui",
-            "work",
-            "self_check"
+            "work"
           ],
           "type": "string"
         },

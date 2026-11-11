@@ -835,7 +835,7 @@ pub fn explicit_request(h: &mut Host) {
     );
     h.check(
         "S19.no_notebook",
-        !h.layout().notebook_dir().exists(),
+        !h.layout().root.join("notebook").exists(),
         "no Notebook is created or read",
     );
     let si = h.si("si-memory");

@@ -29,7 +29,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as Json};
 
 pub mod agent_memory;
-pub mod agent_notebook;
 pub mod aicc_model_tools;
 pub mod dcrontab_tool;
 pub mod exec_tracking;

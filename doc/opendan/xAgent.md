@@ -42,7 +42,7 @@ xagent 的目的是**在一个新产品里验证四层架构、发现设计问�
 
 ### 1.2 范围
 
-- 做：work / self_improve / self_check session；native runtime；文件版与进程内 Agent State；behavior 冻结与 `BehaviorAssembler`；CLI 形态 session 工具；单 Turn / 积压消费 / 常驻三种运行形态；Sub Session（创建工具、ChildDriver、汇报与等待，§4.10–§4.16）。
+- 做：work / ui / goal session（self_improve、self_check 已删除）；native runtime；文件版与进程内 Agent State；behavior 冻结与 `BehaviorAssembler`；CLI 形态 session 工具；单 Turn / 积压消费 / 常驻三种运行形态；Sub Session（创建工具、ChildDriver、汇报与等待，§4.10–§4.16）。
 - 不做（沿用计划的后移项）：正式 UI session 与 msg-center / TaskMgr 服务接入、出站消息发送、kRPC 服务端、DID Object 宿主、opendan 改造、TS 版；Sub-Agent Instance（另一个 Agent DID，RFC §16–§17）；ActionGuard / grant / 审批（§5.4、E18）。ui 模板仅用于库与 CLI 的等待语义测试。
 - 沿用现有目录协议（含已实现的 `post.lock`）；新增持久字段落在 `session_config.json`（`prompt`、`session.policy`、`origin` 等）与 `state.json`。当前版本见 §1.5，后续不兼容变更再升版，不沿用旧草案的版本号。
 
@@ -425,7 +425,7 @@ bridge 必须保证：同一来源内有序、至少一次、key 唯一。Sessio
 | bridge | 在哪 | 产出 |
 |---|---|---|
 | kevent 桥 | xagent `run` / `serve` 进程内；以后是 OpenDAN Supervisor | 按 session 的 ObjectEvent 订阅模式订阅 kevent → `AgentEvent{subscription_id, source: Object}` |
-| timer 桥 | 同上（self_check） | `AgentEvent{source: Timer}` |
+| timer 桥 | 同上（Work 的 tick） | `AgentEvent{source: Timer}` |
 | task_mgr 桥 | `libopendan::bridge::task::task_event`（外部 task → 事件的映射）；Turn → task 由宿主钩子 `runner::TurnTaskSink` 上报（OpenDAN 用 TaskMgr 实现，2026-10-04） | `AgentEvent{source: task:<task_id>}` |
 | msg-center 桥 | `libopendan::bridge::msg::route_msg_record`（纯函数，已实施；接 msg-center 后移） | 过滤 / 分流后原样投递 `SessionMsg{msg, delivery}`，斜杠命令转 `control` |
 | 子 session 桥 | Runner 内置（§4.3、§4.14） | `AgentEvent{source: Session}`：订阅的 session 与本 session 的子 session |
@@ -450,7 +450,7 @@ pub struct SessionTemplate {
     pub max_process_depth: u8,        // process_stack 深度上限（默认 4，§3.3）
     pub max_sub_sessions: u8,         // 同时未结束的子 session 数上限（默认 4，§4.11）
     pub max_session_depth: u8,        // 子 session 嵌套深度上限（默认 2，§4.11）
-    pub implicit_subscriptions: Vec<Subscription>, // 模板预先登记的订阅（如 self_check 的 timer、goal 的 system:goal、ui 的 _notify、用户时区）；没有“未订阅也投递”的兜底策略（§4.3）
+    pub implicit_subscriptions: Vec<Subscription>, // 模板预先登记的订阅（如 goal 的 system:goal、ui 的 _notify、用户时区）；没有“未订阅也投递”的兜底策略（§4.3）
     pub goal: Option<GoalDefaults>,   // goal 类：[session.goal] 的 budget / min_interval_secs 缺省值
 }
 ```
@@ -459,7 +459,6 @@ pub struct SessionTemplate {
 |---|---|---|---|---|---|---|
 | `work` | One | FinishFailed | **None**（需要外部投递的订阅则升为 Queue） | Events | 否 | 一次性任务：一个 Turn 跑到结果；不等用户消息（向用户提问用 `ask_user`，回答是 task 结果）；默认没有队列 |
 | `ui` | Unbounded | Allowed | Queue（隐式半订阅 `_notify`：`system:notify:<id>`） | EventsAndActive | 是 | 长生命周期对话入口；只在有输入时 bootstrap（观察到的通知不会让它开口） |
-| `self_check` | Unbounded | FinishFailed | Queue（timer 事件） | Off | 是 | 定时自检 |
 | `goal` | Unbounded | EndTurn | Queue（`_goal_activation`：`system:goal` 事件） | EventsAndActive | 是 | 一个 Goal 的一个 epoch：每个 Activation 是一个 Turn；只由宿主为 Goal 创建（`xagent new --class goal` 拒绝），见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9 与 [Goal Session TODO](../../notepads/done/opendan-goal-session-todo.md) |
 
 **2026-11-10 更新**：宿主有队列客户端时，`work` 类也有输入队列，只是它只收控制命令（`session.input_policy = none`，模板键 `input = "none"` 现在是这个意思），首批材料仍走 `prompt.initial_inputs`；stop / pause / resume / decide 都经队列。本节和后文凡是说“无队列”的地方，现在只对没有队列客户端的宿主（不在 Zone 里、也没有 `--queue-dir` 的 `xagent`）成立。合同见 [Session Control Protocol](<protocol/Session Control Protocol.md>) §8、[Session Input Protocol](<protocol/Session Input Protocol.md>) §1。
@@ -957,7 +956,7 @@ impl dyn AgentStateClient {
 ```text
 xagent — drive an Agent Session for one Turn (or keep driving it)
 
-  xagent new    --agent <did> --objective <text> [--class work|ui|self_check] [--parent <dir>]
+  xagent new    --agent <did> --objective <text> [--class work|ui] [--parent <dir>]
                 [--behavior <name>] [--llm-context <json|@file>] [--runtime <id>] [--workspace <workspace_id>]
                 [--subscribe <spec>]... [--msg <text>] [--until turn|finished|idle|outcomes:<n>] [--no-run]
                  按模板创建 session（冻结 behavior 与模板），默认立刻推进一个 Turn

@@ -28,13 +28,6 @@ pub struct UiRule {
     pub idle_unload_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModuleSwitch {
-    #[serde(default)]
-    pub enabled: bool,
-}
-
 /// `[loader.goals]`: the agent's Goals are hosted (their Goal Sessions,
 /// scheduled run opportunities). On by default: without a Goal it costs
 /// nothing.
@@ -68,8 +61,6 @@ pub struct LoaderSection {
     #[serde(default)]
     pub placeholder_delay_ms: Option<u64>,
     #[serde(default)]
-    pub self_check: ModuleSwitch,
-    #[serde(default)]
     pub goals: GoalsSwitch,
 }
 
@@ -89,7 +80,6 @@ impl Default for LoaderSection {
             idle_unload_secs: default_idle(),
             ui: Vec::new(),
             placeholder_delay_ms: None,
-            self_check: ModuleSwitch::default(),
             goals: GoalsSwitch::default(),
         }
     }
@@ -206,7 +196,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = AgentConfig::load(dir.path()).unwrap();
         assert!(cfg.loader.ui.is_empty() && cfg.loader.agent_state_service);
-        assert!(!cfg.loader.self_check.enabled);
         assert!(cfg.loader.goals.enabled);
     }
 
@@ -240,14 +229,13 @@ max_total_tokens = 1000
         assert!(load("[session.goal.budget]\nnope = 1\n").is_err());
         std::fs::write(
             dir.path().join("agent.toml"),
-            "[session.goal.maintenance]\nenabled = true\ndecision = \"off\"\nbehavior = \"memory_maintenance\"\n",
+            "[session.goal.maintenance]\nenabled = true\nbehavior = \"memory_maintenance\"\n",
         )
         .unwrap();
         let d = libopendan::goal::defaults(Some(dir.path()), "goal");
         assert!(d.maintenance.enabled);
-        assert_eq!(d.maintenance.decision, "off");
         assert_eq!(d.maintenance.behavior.as_deref(), Some("memory_maintenance"));
-        assert!(load("[session.goal.maintenance]\ndecision = \"maybe\"\n").is_err());
+        assert!(load("[session.goal.maintenance]\ndecision = \"off\"\n").is_err(), "the decision pre-check is gone");
         assert!(load("[session.goal.maintenance]\nnope = 1\n").is_err());
     }
 
@@ -276,9 +264,6 @@ idle_unload_secs = 60
 on = "msg.group"
 session_class = "group"
 sid_strategy = "per_group"
-
-[loader.self_check]
-enabled = false
 
 [session.ui]
 default_behavior = "chat_route"

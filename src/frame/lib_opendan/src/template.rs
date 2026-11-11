@@ -67,14 +67,12 @@ pub const UI_OBJECTIVE: &str = "The long-lived conversation of this agent with o
 pub const GROUP_OBJECTIVE: &str = "The long-lived presence of this agent in one group, serving its owner only. Answer what a conversation can answer; hand work that must happen outside the conversation to intent analysis and relay what it created; when a work session or goal reports back, relay the result. The conversation never ends by itself.";
 
 /// `agent.toml [session.goal.maintenance]`: the agent's default Memory
-/// consolidation Goal (Jarvis default Goal TODO §2, §6, §7).
+/// consolidation Goal (Jarvis default Goal TODO §2, §6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaintenanceDefaults {
     /// Seed and run the built-in `memory_maintenance` Goal (off: no seeding,
-    /// no background check; an existing Goal keeps its state).
+    /// no checks; an existing Goal keeps its state).
     pub enabled: bool,
-    /// `off | auto`: the optional decision pre-check (§7; `auto` is T06).
-    pub decision: String,
     /// Behavior of its Goal Session (`None`: the class default).
     pub behavior: Option<String>,
 }
@@ -83,7 +81,6 @@ impl Default for MaintenanceDefaults {
     fn default() -> Self {
         Self {
             enabled: false,
-            decision: "off".to_string(),
             behavior: Some("memory_maintenance".to_string()),
         }
     }
@@ -105,12 +102,37 @@ impl Default for CrystallizeDefaults {
     }
 }
 
-/// `agent.toml [session.goal]` defaults of every Goal (`budget`,
-/// `min_interval_secs`, `maintenance`), over the built-in ones.
+/// `agent.toml [session.goal.agent_budget]`: the agent's background total,
+/// shared by every Goal's inferences and the Work they create (not the
+/// conversations, not the Work a user starts).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentBudget {
+    pub window_secs: u64,
+    /// `None`: no total.
+    pub max_total_tokens: Option<u64>,
+}
+
+impl Default for AgentBudget {
+    fn default() -> Self {
+        Self {
+            window_secs: 86_400,
+            max_total_tokens: Some(5_000_000),
+        }
+    }
+}
+
+/// `agent.toml [session.goal]` defaults of every Goal (`budget`, the gates
+/// of architecture §12.1.1, the built-in Goals), over the built-in ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalDefaults {
     pub budget: GoalBudget,
+    /// Hard interval between two inferences of a Goal.
     pub min_interval_secs: u64,
+    /// Hard guarantee (`0`: off).
+    pub guarantee_secs: u64,
+    /// Check timetable of a Goal with a check script and no timetable.
+    pub check_every_secs: u64,
+    pub agent_budget: AgentBudget,
     pub maintenance: MaintenanceDefaults,
     pub crystallize: CrystallizeDefaults,
 }
@@ -122,15 +144,19 @@ impl Default for GoalDefaults {
                 activation: ActivationBudget {
                     max_total_tokens: Some(400_000),
                     max_runs: Some(8),
+                    max_wall_secs: Some(1_800),
                 },
                 period: PeriodBudget {
                     window_secs: Some(86_400),
-                    max_total_tokens: None,
+                    max_total_tokens: Some(2_000_000),
                     max_activations: None,
                     max_works: Some(24),
                 },
             },
-            min_interval_secs: 60,
+            min_interval_secs: 900,
+            guarantee_secs: 259_200,
+            check_every_secs: 300,
+            agent_budget: AgentBudget::default(),
             maintenance: MaintenanceDefaults::default(),
             crystallize: CrystallizeDefaults::default(),
         }
@@ -138,7 +164,7 @@ impl Default for GoalDefaults {
 }
 
 impl SessionTemplate {
-    /// The built-in templates: `work`, `ui`, `self_check`, `goal`.
+    /// The built-in templates: `work`, `ui`, `goal`.
     pub fn builtin(class: &str) -> Option<Self> {
         let policy = SessionPolicy::default();
         let base = |kind, turns, wait, input, observe, hints| SessionTemplate {
@@ -205,25 +231,6 @@ impl SessionTemplate {
                     mode: SubscriptionMode::Semi,
                     source: SubscriptionSource::System {
                         id: NOTIFY_SOURCE_ID.into(),
-                    },
-                    watch: Vec::new(),
-                });
-                t
-            }
-            "self_check" => {
-                let mut t = base(
-                    SessionKind::SelfCheck,
-                    Turns::Unbounded,
-                    WaitPolicy::FinishFailed,
-                    InputChannel::Queue,
-                    ObserveScope::Off,
-                    true,
-                );
-                t.implicit_subscriptions.push(Subscription {
-                    id: "_self_check_timer".into(),
-                    mode: SubscriptionMode::Active,
-                    source: SubscriptionSource::Timer {
-                        name: "self_check".into(),
                     },
                     watch: Vec::new(),
                 });
@@ -304,7 +311,7 @@ impl SessionTemplate {
             }
             (None, None) => {
                 return Err(OpenDanError::InvalidArgument(format!(
-                    "unknown session class `{class}` (built-in: work, ui, self_check, goal; others need agent.toml [session.{class}])"
+                    "unknown session class `{class}` (built-in: work, ui, goal; others need agent.toml [session.{class}])"
                 )))
             }
         };
@@ -391,16 +398,44 @@ impl SessionTemplate {
                     .map_err(|e| OpenDanError::InvalidArgument(format!("agent.toml [session.{class}] budget: {e}")))?;
                 g.budget = budget.over(&g.budget);
             }
-            if let Some(v) = over.get("min_interval_secs") {
-                g.min_interval_secs = v
-                    .as_integer()
-                    .and_then(|n| u64::try_from(n).ok())
-                    .ok_or_else(|| bad("min_interval_secs"))?;
+            for (key, slot) in [
+                ("min_interval_secs", &mut g.min_interval_secs),
+                ("guarantee_secs", &mut g.guarantee_secs),
+                ("check_every_secs", &mut g.check_every_secs),
+            ] {
+                if let Some(v) = over.get(key) {
+                    *slot = v.as_integer().and_then(|n| u64::try_from(n).ok()).ok_or_else(|| bad(key))?;
+                }
+            }
+            if g.check_every_secs < CHECK_MIN_EVERY_SECS {
+                return Err(bad("check_every_secs (at least 60)"));
+            }
+            if let Some(a) = over.get("agent_budget") {
+                let a = a.as_table().ok_or_else(|| bad("agent_budget"))?;
+                for key in a.keys() {
+                    if !matches!(key.as_str(), "window_secs" | "max_total_tokens") {
+                        return Err(OpenDanError::InvalidArgument(format!(
+                            "agent.toml [session.{class}.agent_budget]: unknown key `{key}`"
+                        )));
+                    }
+                }
+                if let Some(v) = a.get("window_secs") {
+                    g.agent_budget.window_secs = v
+                        .as_integer()
+                        .and_then(|n| u64::try_from(n).ok())
+                        .filter(|n| *n > 0)
+                        .ok_or_else(|| bad("agent_budget.window_secs"))?;
+                }
+                if let Some(v) = a.get("max_total_tokens") {
+                    // 0: no total.
+                    let n = v.as_integer().and_then(|n| u64::try_from(n).ok()).ok_or_else(|| bad("agent_budget.max_total_tokens"))?;
+                    g.agent_budget.max_total_tokens = (n > 0).then_some(n);
+                }
             }
             if let Some(m) = over.get("maintenance") {
                 let m = m.as_table().ok_or_else(|| bad("maintenance"))?;
                 for key in m.keys() {
-                    if !matches!(key.as_str(), "enabled" | "decision" | "behavior") {
+                    if !matches!(key.as_str(), "enabled" | "behavior") {
                         return Err(OpenDanError::InvalidArgument(format!(
                             "agent.toml [session.{class}.maintenance]: unknown key `{key}`"
                         )));
@@ -408,13 +443,6 @@ impl SessionTemplate {
                 }
                 if let Some(v) = m.get("enabled") {
                     g.maintenance.enabled = v.as_bool().ok_or_else(|| bad("maintenance.enabled"))?;
-                }
-                if let Some(v) = m.get("decision") {
-                    let d = v.as_str().ok_or_else(|| bad("maintenance.decision"))?;
-                    if !matches!(d, "off" | "auto") {
-                        return Err(bad("maintenance.decision (off | auto)"));
-                    }
-                    g.maintenance.decision = d.to_string();
                 }
                 if let Some(v) = m.get("behavior") {
                     g.maintenance.behavior =

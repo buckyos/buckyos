@@ -234,6 +234,37 @@ function UiSetPanel({ busy, run }: { busy: boolean; run: (action: () => Promise<
   )
 }
 
+/** The owner's switch of the skill crystallization goal. */
+function CrystallizePanel({ busy, run }: { busy: boolean; run: (action: () => Promise<unknown>) => void }) {
+  const state = useQuery(['skills.state'], () => dataModel.skillsState())
+  const on = state.data?.crystallize === true
+  return (
+    <Panel title={t('skCrystallize')} testId="skills-crystallize">
+      <ErrorBox error={state.error} />
+      <label className="mb-2 flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          role="switch"
+          className="h-5 w-5"
+          checked={on}
+          disabled={busy || !state.data}
+          onChange={(e) => run(() => dataModel.setCrystallize(e.target.checked))}
+          data-testid="skills-crystallize-switch"
+        />
+        <span>{t('skCrystallize')}</span>
+        <span className={clsx('text-xs', on ? 'text-ok' : 'text-mute')} data-testid="skills-crystallize-state">{t(on ? 'switchOn' : 'switchOff')}</span>
+      </label>
+      <p className="mb-1 text-xs text-mute">{t('skCrystallizeHint')}</p>
+      <p className="mb-1 text-xs text-mute">{t('skCrystallizeCost')}</p>
+      {state.data && (
+        <p className="text-xs text-mute" data-testid="skills-crystallize-source">
+          {t(state.data.crystallize == null ? 'skCrystallizeDefault' : 'skCrystallizeOwner')}
+        </p>
+      )}
+    </Panel>
+  )
+}
+
 interface PlanRequest {
   source: SkillSource
   /** Tells one source from another in the query cache. */
@@ -673,6 +704,7 @@ export default function SkillsPage() {
       })}
 
       <UiSetPanel busy={busy} run={run} />
+      <CrystallizePanel busy={busy} run={run} />
       <InstallPanel plan={setPlan} />
       <DraftsPanel plan={setPlan} ask={ask} />
       <ImportPanel />

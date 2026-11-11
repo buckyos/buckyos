@@ -1637,8 +1637,22 @@ pub fn bin_plan_with(
             plan.tool_plan = Some(tp);
         }
     }
+    if cfg.session.kind == SessionKind::Goal {
+        // A Goal never waits for a person inside an Activation (TODO B2).
+        plan.scripts.insert(
+            bin_overlay::tombstone_name(GOAL_NO_ASK),
+            bin_overlay::tombstone_script(
+                GOAL_NO_ASK,
+                "a goal does not ask inside an activation: put the question in the `questions` of the activation's result (it reaches the user as a notification; the answer opens a later activation)",
+                "goal_session",
+            ),
+        );
+    }
     Ok(plan)
 }
+
+/// The command a Goal Session does not get.
+const GOAL_NO_ASK: &str = "ask_user";
 
 /// The §7.3 environment contract.
 pub async fn session_env_vars(ctx: &SessionEnvCtx, runtime_id: &str) -> Result<Vec<(String, String)>> {

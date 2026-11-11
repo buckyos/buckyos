@@ -20,6 +20,15 @@
             "integer",
             "null"
           ]
+        },
+        "max_wall_secs": {
+          "description": "Wall clock from the opening of the Activation: past it no new run segment starts and the Activation closes as `budget_exhausted`.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -71,6 +80,42 @@
           "default": {}
         }
       },
+      "type": "object"
+    },
+    "GoalCheckScript": {
+      "description": "The check script of a Goal: `state/goals/<id>/checks/<version>.ts`.",
+      "properties": {
+        "package": {
+          "description": "The package script a built-in Goal started from (`goal_checks/<name>.ts` of the AgentRoot): what \"restore\" copies again.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "source": {
+          "description": "Who wrote this version: `package:<path>` | `owner` | `ui_session:<sid>` | `goal_session:<sid>`.",
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "source",
+        "updated_at_ms",
+        "version"
+      ],
       "type": "object"
     },
     "GoalCreatedBy": {
@@ -174,10 +219,37 @@
     },
     "GoalScheduleSpec": {
       "additionalProperties": false,
-      "description": "When the runtime offers the Goal a run (phase 1: a fixed interval).",
+      "description": "When a run opportunity becomes an inference (architecture §12.1.1): the hard guarantee, the hard interval, the period budget (`GoalBudget`) and the check (a timetable and a script).",
       "properties": {
+        "check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GoalCheckScript"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The script each scheduled check runs: `true` makes the run opportunity an inference (none: every scheduled check passes). Changed through `set_check` only, never by a revision."
+        },
+        "cron": {
+          "description": "Check timetable as a 5-field cron expression on the wall clock of `timezone` (instead of `every_secs`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "every_secs": {
-          "description": "Scheduled Activations every `every_secs` (none: manual and event driven only).",
+          "description": "Check timetable: a check every `every_secs` (none and no `cron`: the check timetable default when the Goal has a check script, else no scheduled checks). At least [`CHECK_MIN_EVERY_SECS`].",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "guarantee_secs": {
+          "description": "Hard guarantee: past this long without an inference one runs whatever the budget and the check say (`None`: `[session.goal] guarantee_secs`; `0`: off).",
           "format": "uint64",
           "minimum": 0.0,
           "type": [
@@ -186,7 +258,7 @@
           ]
         },
         "min_interval_secs": {
-          "description": "A scheduled fire closer than this to the last Activation is skipped (`None`: `[session.goal] min_interval_secs`).",
+          "description": "Hard interval: no inference closer than this to the end of the last one, whatever the trigger (`None`: `[session.goal] min_interval_secs`).",
           "format": "uint64",
           "minimum": 0.0,
           "type": [
@@ -198,6 +270,13 @@
           "default": false,
           "description": "The first Activation starts when the Goal Session is created.",
           "type": "boolean"
+        },
+        "timezone": {
+          "description": "IANA time zone of `cron` (none: the agent's, then UTC).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -334,7 +413,7 @@
           "type": "string"
         },
         {
-          "description": "Only what must not be lost: `active_works`, `absorbed`, `usage`, `recent_works`; skills return to `initial_skills` (restart's default).",
+          "description": "Only what must not be lost: `active_works`, `absorbed`, `usage`, `recent_works`, the skills (the initial ones and those the Goal added) (restart's default).",
           "enum": [
             "facts"
           ],

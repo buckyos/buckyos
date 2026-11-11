@@ -100,14 +100,31 @@ export const goalExtension = (goal: GoalDefinition): OpendanGoalExtension | null
   return ext && typeof ext === 'object' ? (ext as OpendanGoalExtension) : null
 }
 
+export type Timetable = { every: number } | { cron: string; zone: string }
+
+/** `schedule.json`'s `timetable`: `every:<secs>` | `cron:<expr>@<zone>`. */
+export const parseTimetable = (timetable?: string): Timetable | null => {
+  if (timetable?.startsWith('every:')) {
+    const every = Number(timetable.slice(6))
+    return every > 0 ? { every } : null
+  }
+  if (timetable?.startsWith('cron:')) {
+    const body = timetable.slice(5)
+    const at = body.lastIndexOf('@')
+    return at > 0 ? { cron: body.slice(0, at), zone: body.slice(at + 1) } : { cron: body, zone: 'UTC' }
+  }
+  return null
+}
+
 /**
- * When the schedule offers the next run: the start of the slot after the
- * last one counted, in UTC slots of `every_secs` (a slot already behind us
- * moves on to the next boundary). `null`: no interval (manual and event
- * driven only).
+ * When the schedule offers the next check: the start of the slot after the
+ * last one counted, in UTC slots of an `every:<secs>` timetable (a slot
+ * already behind us moves on to the next boundary). `null`: no interval
+ * timetable (a cron one, or manual and event driven only).
  */
 export const nextOpportunityMs = (schedule: GoalSchedule, nowMs = Date.now()): number | null => {
-  const every = schedule.every_secs
+  const table = parseTimetable(schedule.timetable)
+  const every = table && 'every' in table ? table.every : 0
   if (!every) return null
   const fromLast = schedule.last_slot != null ? (schedule.last_slot + 1) * every * 1000 : 0
   const fromNow = (Math.floor(nowMs / 1000 / every) + 1) * every * 1000

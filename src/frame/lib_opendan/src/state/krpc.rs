@@ -8,7 +8,7 @@
 //! side; nothing is stored here.
 //!
 //! Only non-driver operations travel: reads and signed writes (`register`,
-//! `post_input`, `notebook_append`, `decide`). What a driver writes under
+//! `post_input`, `decide`). What a driver writes under
 //! its lease (`report_state`, `perception.append`, cursors, artifact
 //! versions) and the Agent-level locks depend on flock and stay with the
 //! processes that see the AgentRoot.
@@ -115,7 +115,6 @@ pub fn is_write(method: &str) -> bool {
             | "sessions.post_input"
             | "sessions.verify"
             | "sessions.delete"
-            | "cognition.notebook_append"
             | "artifacts.decide"
             | "workspaces.create"
             | "workspaces.import"
@@ -136,6 +135,7 @@ pub fn is_write(method: &str) -> bool {
             | "goals.set_status"
             | "goals.reopen"
             | "goals.restart"
+            | "goals.set_check"
             | "notify.send"
             | "notify.cancel"
             | "notify.answer"
@@ -254,10 +254,6 @@ pub async fn serve_call(
         "cognition.read" => match (arg::<String>(params, "session"), arg::<String>(params, "reference")) {
             (Ok(sid), Ok(r)) => agent.cognition().read(&sid, &r).await.and_then(out),
             (Err(e), _) | (_, Err(e)) => Err(e),
-        },
-        "cognition.notebook_append" => match arg::<NotebookNote>(params, "note") {
-            Ok(n) => agent.cognition().notebook_append(&n, who).await.and_then(out),
-            Err(e) => Err(e),
         },
         "artifacts.head" => match arg::<String>(params, "aid") {
             Ok(aid) => agent.artifacts().head(&aid).await.and_then(out),
@@ -452,6 +448,28 @@ pub async fn serve_call(
         ) {
             (Ok(id), Ok(req), Ok(c)) => agent.goals().restart(&id, &req, &c).await.and_then(out),
             (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
+        "goals.set_check" => match (
+            arg::<String>(params, "goal_id"),
+            arg::<GoalCheckChange>(params, "request"),
+            goal_caller(who, params),
+        ) {
+            (Ok(id), Ok(req), Ok(c)) => agent.goals().set_check(&id, &req, &c).await.and_then(out),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
+        },
+        "goals.check_script" => match (arg::<String>(params, "goal_id"), arg::<Option<u64>>(params, "version")) {
+            (Ok(id), Ok(v)) => agent.goals().check_script(&id, v).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "memory.status" => match agent.agent_root() {
+            Some(root) => {
+                let full = arg::<Option<bool>>(params, "full").ok().flatten().unwrap_or(false);
+                crate::host::maintenance::memory_status(root, full)
+                    .await
+                    .map_err(|e| OpenDanError::Other(format!("memory status: {e}")))
+                    .and_then(out)
+            }
+            None => Err(OpenDanError::InvalidArgument("memory.status needs the AgentRoot".into())),
         },
         "goals.state" => match arg::<String>(params, "goal_id") {
             Ok(id) => agent.goals().state(&id).await.and_then(out),
@@ -705,9 +723,6 @@ impl Cognition for KrpcAgentStateClient {
     async fn read(&self, sid: &str, reference: &str) -> Result<crate::memory::MemoryRead> {
         self.call("cognition.read", json!({ "session": sid, "reference": reference })).await
     }
-    async fn notebook_append(&self, note: &NotebookNote, _who: &str) -> Result<()> {
-        self.call("cognition.notebook_append", json!({ "note": note })).await
-    }
 }
 
 #[async_trait]
@@ -907,6 +922,16 @@ impl GoalStore for KrpcAgentStateClient {
             json!({ "goal_id": goal_id, "request": req, "session": caller.session }),
         )
         .await
+    }
+    async fn set_check(&self, goal_id: &str, req: &GoalCheckChange, caller: &GoalCaller) -> Result<GoalDefinition> {
+        self.call(
+            "goals.set_check",
+            json!({ "goal_id": goal_id, "request": req, "session": caller.session }),
+        )
+        .await
+    }
+    async fn check_script(&self, goal_id: &str, version: Option<u64>) -> Result<Option<String>> {
+        self.call("goals.check_script", json!({ "goal_id": goal_id, "version": version })).await
     }
     async fn state(&self, goal_id: &str) -> Result<Option<GoalState>> {
         self.call("goals.state", json!({ "goal_id": goal_id })).await

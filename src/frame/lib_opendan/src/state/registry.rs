@@ -400,13 +400,13 @@ mod id_tests {
         assert_eq!(first, "work-20260101-25");
         let other = reserve_session_id_on_date(
             &layout,
-            SessionKind::SelfCheck,
+            SessionKind::Ui,
             "default",
             None,
             "20260101",
         )
         .unwrap();
-        assert_eq!(other, "sc-20260101-26");
+        assert_eq!(other, "ui-20260101-26");
         assert_eq!(
             std::fs::read_to_string(custom.path().join("work-20260101-24")).unwrap(),
             "keep"
@@ -485,8 +485,7 @@ mod id_tests {
                             SessionKind::Work,
                             SessionKind::Ui,
                             SessionKind::Goal,
-                            SessionKind::SelfCheck,
-                        ][i % 4];
+                        ][i % 3];
                         let sid = reserve_session_id_on_date(
                             layout,
                             kind,
@@ -665,9 +664,9 @@ impl SessionRegistry for FsRegistry {
         let root = self
             .read_entry(sid)?
             .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
-        if !matches!(root.kind, SessionKind::Work | SessionKind::SelfCheck) {
+        if root.kind != SessionKind::Work {
             return Err(OpenDanError::InvalidArgument(format!(
-                "session {sid} is a {} session: only work and self_check sessions are deleted",
+                "session {sid} is a {} session: only work sessions are deleted",
                 root.kind.as_str()
             )));
         }

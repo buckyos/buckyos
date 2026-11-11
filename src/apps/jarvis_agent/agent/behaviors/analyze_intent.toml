@@ -33,7 +33,8 @@ For the request below, decide what it needs:
 - a bounded task: create a work session → `work_created`
 - a state to reach or keep over time, or something to watch: create a goal → `goal_created`
 - a question the conversation can answer: create nothing → `direct`
-- something that has to run at a later time (scheduled): not supported yet → `unsupported`
+- something to look at or decide again at a later time or on a timetable ("every weekday at 9, check …", "tomorrow morning, see whether …"): create a goal with that timetable → `goal_created`. Something already one goal's duty goes to that goal instead (goals are scarce: fold it into one that fits)
+- a plain reminder at a fixed time that needs no judgement ("remind me at 9 to …"): not supported yet → `unsupported`
 - something that should not or cannot be done → `declined`
 - a proposal the user must approve as a whole, which one question cannot settle → `needs_confirmation`
 
@@ -90,7 +91,8 @@ For the request below, decide what it needs:
   The work session does not see this conversation: its objective and message are all it has. Its end comes back to the conversation by itself.
   `--title`: the name the user sees the work under, in the user's language: what is done, at most 20 Chinese characters or 40 Latin characters (for example `重写 llm_context 设计文档`, `Build and test the crate`). Required.
   `--cmd-skill`: the manuals for this work (see "Choosing manuals for work"). A `--behavior work_simple` work takes them into its prompt. A `--class plan_simple` work takes none itself: the names you give are candidates the plan sees and chooses from for each of its Todos, so give the ones the Todos are likely to need.
-- Goal: `agent-session goal create --objective "<the state to reach or keep>" --title <short title> --lifecycle achieve|maintain [--achieved-when <t>] [--healthy-state <t>] [--constraint <t>]... [--workspace <id>] [--every <secs>] --start --key <unique operation id>`
+- Goal: `agent-session goal create --objective "<the state to reach or keep>" --title <short title> --lifecycle achieve|maintain [--achieved-when <t>] [--healthy-state <t>] [--constraint <t>]... [--workspace <id>] [--every <secs ≥ 60> | --cron "<minute hour day month weekday>" [--timezone <iana zone>]] --start --key <unique operation id>`
+  A timetable is when the goal checks; it infers only when its check says so (it writes its own check script in its first activation). A wall-clock request ("weekdays at 9") is a `--cron` in the user's time zone (taken from this conversation when `--timezone` is left out); a rate ("every hour") is `--every`.
   A request that belongs to an existing goal goes to it: `agent-session goal post <goal_id> --msg "<text>"`.
 
 __INCLUDE(skill_select_rule.inc)__
@@ -115,7 +117,7 @@ Your final reply is one JSON object, the result, with every field below (no tool
 - `outcome`: `work_created | goal_created | direct | declined | needs_confirmation | unsupported`.
 - `request`: the request restated completely.
 - `report`: the text the conversation relays to the user, complete in itself, in the user's language, in three parts:
-  1. what you did and what you created — the work's objective and assumptions, or the goal and how it is pursued; for `direct` the answer's facts; for `declined` / `unsupported` why, and what is missing (scheduled tasks are not supported yet); for `needs_confirmation` the proposal to decide on;
+  1. what you did and what you created — the work's objective and assumptions, or the goal and how it is pursued; for `direct` the answer's facts; for `declined` / `unsupported` why, and what is missing (fixed-time reminders are not supported yet); for `needs_confirmation` the proposal to decide on;
   2. what you asked the user and what they answered, word for word, every question (or that you asked nothing);
   3. what the user will see next (the work's report when it ends, the goal's notifications, nothing).
   Not your exploration.

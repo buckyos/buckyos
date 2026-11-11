@@ -82,6 +82,15 @@ fn attention_now(e: &RegistryEntry) -> Option<&'static str> {
     }
 }
 
+/// Someone can answer the session's question with a message: its queue
+/// takes messages and it may wait for one.
+fn answerable(e: &RegistryEntry) -> bool {
+    let Ok(cfg) = crate::session::SessionDir::open(&e.location).and_then(|d| d.config()) else {
+        return true;
+    };
+    cfg.session.input_policy != InputPolicy::None && cfg.session.policy.wait_user_msg == WaitPolicy::Allowed
+}
+
 /// The state of sub session `task_id` (`session:<sid>`) was the result of a
 /// call: what it shows now is not reported as an event too.
 pub(super) async fn mark_heard(sh: &Shared, task_id: &str) -> Result<()> {
@@ -254,6 +263,7 @@ pub(super) async fn poll_children(
         return Ok(inputs);
     }
     let brief = s.config.session.kind == SessionKind::Ui;
+    let goal_parent = s.state.goal.is_some();
     let mut changed = false;
     for e in &children {
         let Some(report) = reports(e) else {
@@ -264,7 +274,13 @@ pub(super) async fn poll_children(
             continue;
         }
         let delivered = attention_of(&s.state, sid);
-        let now = attention_now(e);
+        let mut now = attention_now(e);
+        // A Goal hears of its Work's end and of questions someone can answer
+        // (TODO H0): a Work that takes no message and waits between its
+        // Turns (for its own background work, its ticks) asks nothing.
+        if goal_parent && now == Some(ATTENTION_INPUT) && !answerable(e) {
+            now = None;
+        }
         match now {
             Some(a) if delivered.as_deref() != Some(a) => {
                 let ev = AgentEvent {

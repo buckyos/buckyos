@@ -1,0 +1,116 @@
+{
+  "schema": "opendan.goal_schedule/1",
+  "goal_id": "g-k3c2c26af84aec91068d70710",
+  "backend": "local",
+  "timetable": "every:60",
+  "last_slot": 29906943,
+  "last_posted_key": "goal:g-k3c2c26af84aec91068d70710:scheduled:e60:29906549:1",
+  "last_fire_at_ms": 1794392940084,
+  "start_posted_epoch": 1,
+  "skipped": [
+    {
+      "slot": 29906928,
+      "at_ms": 1794415681196,
+      "reason": "min_interval"
+    },
+    {
+      "slot": 29906929,
+      "at_ms": 1794415741284,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906930,
+      "at_ms": 1794415801367,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906931,
+      "at_ms": 1794415861451,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906932,
+      "at_ms": 1794415921531,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906933,
+      "at_ms": 1794415981619,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906934,
+      "at_ms": 1794416041704,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906935,
+      "at_ms": 1794416101798,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906936,
+      "at_ms": 1794416161882,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906937,
+      "at_ms": 1794416221967,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906938,
+      "at_ms": 1794416280061,
+      "reason": "guarantee"
+    },
+    {
+      "slot": 29906939,
+      "at_ms": 1794416340150,
+      "reason": "min_interval"
+    },
+    {
+      "slot": 29906940,
+      "at_ms": 1794416400259,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906941,
+      "at_ms": 1794416460343,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906942,
+      "at_ms": 1794416520431,
+      "reason": "period_budget"
+    },
+    {
+      "slot": 29906943,
+      "at_ms": 1794416580518,
+      "reason": "period_budget"
+    }
+  ],
+  "last_check": {
+    "at_ms": 1794410100904,
+    "outcome": "false",
+    "script_version": 1,
+    "elapsed_ms": 10
+  },
+  "check_errors": 0,
+  "check_state": {
+    "seen": [
+      "report-1.txt"
+    ]
+  },
+  "stats": {
+    "period_start_ms": 1794355200000,
+    "skipped_min_interval": 39,
+    "skipped_budget": 94,
+    "checks_true": 1,
+    "checks_false": 255,
+    "checks_error": 0,
+    "guarantees": 38
+  },
+  "guarantee_posted_for_ms": 1794415679601,
+  "switched_off": false,
+  "updated_at_ms": 1794416580518
+}

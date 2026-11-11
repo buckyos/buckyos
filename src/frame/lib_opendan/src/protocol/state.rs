@@ -776,6 +776,9 @@ pub enum PauseSource {
     Interrupted,
     /// Its Goal was put to sleep; resumed when the Goal wakes.
     Goal,
+    /// Its Goal's period budget (or the agent's background total) ran out;
+    /// resumed when the period resets.
+    Budget,
 }
 
 impl PauseSource {
@@ -785,6 +788,7 @@ impl PauseSource {
             PauseSource::Parent => "parent",
             PauseSource::Interrupted => "interrupted",
             PauseSource::Goal => "goal",
+            PauseSource::Budget => "budget",
         }
     }
 }

@@ -511,6 +511,7 @@ fn pause_source(cfg: &SessionConfig, reason: Option<&str>) -> PauseSource {
     match reason {
         Some(r) if parent.is_some_and(|p| r == parent_pause_reason(p)) => PauseSource::Parent,
         Some(r) if goal.is_some_and(|g| r == crate::goal::dormant_reason(&g.goal_id)) => PauseSource::Goal,
+        Some(r) if goal.is_some_and(|g| r == crate::goal::budget_pause_reason(&g.goal_id)) => PauseSource::Budget,
         _ => PauseSource::User,
     }
 }

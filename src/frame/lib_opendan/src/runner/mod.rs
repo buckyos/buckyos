@@ -211,6 +211,9 @@ pub struct RunnerOptions {
     /// How long a Turn answering a message stays open before its
     /// placeholder is sent (a first tool call sends it earlier).
     pub placeholder_delay: Duration,
+    /// The clock of a Goal Session's decisions (its gate of events, the
+    /// times of its Activations): the host's Goal clock.
+    pub goal_clock: crate::host::goals::GoalClock,
 }
 
 /// A stop requested by the driving process itself (SIGINT, a host stopping
@@ -265,6 +268,7 @@ impl Default for RunnerOptions {
             load_hints: true,
             keep_snapshots: 2,
             placeholder_delay: Duration::from_secs(3),
+            goal_clock: Default::default(),
         }
     }
 }

@@ -32,6 +32,7 @@ export const pauseLabel: Record<PauseSource, TextKey> = {
   parent: 'pausedWithParent',
   interrupted: 'pausedInterrupted',
   goal: 'pausedWithGoal',
+  budget: 'pausedByBudget',
 }
 
 /** The interrupted sessions whose parent is not interrupted: resuming them resumes the rest. */

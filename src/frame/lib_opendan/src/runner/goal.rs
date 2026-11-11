@@ -184,6 +184,128 @@ pub(super) fn ending(state: &SessionState) -> Option<&GoalEnding> {
     state.goal.as_ref().and_then(|g| g.ending.as_ref())
 }
 
+/// The clock of Goal decisions (the host's Goal clock).
+fn now(sh: &Shared) -> u64 {
+    sh.deps.options.goal_clock.now_ms()
+}
+
+/// How often a budget hold reads the budget again.
+const BUDGET_HOLD_RECHECK_MS: u64 = 60_000;
+
+/// Whether the inputs picked for a new Activation must wait (TODO H2, steps
+/// 2–4: the hard interval, the hard guarantee, the budgets; a dormant Goal
+/// holds its inputs before this). Explicit acts and run opportunities the
+/// host already let through (`activate`, scheduled checks, the hard
+/// guarantee, an epoch's start) open at once; a Work's end, a message and
+/// an answer wait in the queue and open one Activation together when the
+/// gate lets them through. A hold is recorded once in the Goal State.
+pub(super) async fn hold_events(sh: &Arc<Shared>, goal: &GoalDefinition, picked: &[FetchedInput]) -> Result<bool> {
+    let bypass = picked.iter().any(|p| crate::goal::reason_of(p).kind.bypasses_gate());
+    let t = now(sh);
+    let (st, class) = {
+        let s = sh.session.lock().await;
+        let Some(g) = s.state.goal.as_ref() else {
+            return Ok(false);
+        };
+        (g.state.clone(), s.config.session.class.clone())
+    };
+    if bypass {
+        release_hold(sh).await?;
+        return Ok(false);
+    }
+    // A budget hold read less than a minute ago stands without a new scan.
+    if let Some(h) = &st.holding {
+        if h.reason != HoldReason::MinInterval
+            && t.saturating_sub(h.checked_at_ms) < BUDGET_HOLD_RECHECK_MS
+            && h.until_ms.is_none_or(|u| u > t)
+        {
+            return Ok(true);
+        }
+    }
+    let d = crate::goal::defaults(sh.agent_root.as_deref(), &class);
+    let verdict = match crate::goal::last_inference_ms(Some(&st)) {
+        Some(last) if t.saturating_sub(last) < crate::goal::min_interval_secs(goal, &d) * 1000 => {
+            crate::goal::GateVerdict::Held {
+                reason: HoldReason::MinInterval,
+                until_ms: Some(last + crate::goal::min_interval_secs(goal, &d) * 1000),
+                why: String::new(),
+            }
+        }
+        _ => crate::goal::gate_now(sh.agent(), goal, Some(&st), &d, t).await?.0,
+    };
+    match verdict {
+        crate::goal::GateVerdict::Pass { .. } => {
+            release_hold(sh).await?;
+            Ok(false)
+        }
+        crate::goal::GateVerdict::Dormant => Ok(true),
+        crate::goal::GateVerdict::Held { reason, until_ms, .. } => {
+            let window = crate::goal::window_secs(&crate::goal::effective_budget(goal, &d));
+            note_hold(sh, reason, until_ms, window, t).await?;
+            Ok(true)
+        }
+    }
+}
+
+async fn note_hold(sh: &Shared, reason: HoldReason, until_ms: Option<u64>, window_secs: u64, t: u64) -> Result<()> {
+    let mut s = sh.session.lock().await;
+    let Some(g) = s.state.goal.as_mut() else {
+        return Ok(());
+    };
+    let st = &mut g.state;
+    match st.holding.as_mut() {
+        Some(h) if h.reason == reason => {
+            if reason == HoldReason::MinInterval {
+                return Ok(());
+            }
+            h.until_ms = until_ms;
+            h.checked_at_ms = t;
+        }
+        _ => {
+            let start = crate::goal::period_start(t, window_secs);
+            if st.holds.period_start_ms != start {
+                st.holds = GoalHolds {
+                    period_start_ms: start,
+                    ..Default::default()
+                };
+            }
+            match reason {
+                HoldReason::MinInterval => st.holds.min_interval += 1,
+                HoldReason::PeriodBudget | HoldReason::AgentBudget => st.holds.budget += 1,
+            }
+            st.holding = Some(GoalHold {
+                reason,
+                since_ms: t,
+                until_ms,
+                checked_at_ms: t,
+            });
+            log::info!(
+                "session {}: goal {} holds its events ({})",
+                sh.dir.sid(),
+                g.goal_id,
+                reason.as_str()
+            );
+        }
+    }
+    let st = &mut g.state;
+    st.rev += 1;
+    st.updated_at_ms = t;
+    commit_and_report(sh, &mut s).await
+}
+
+async fn release_hold(sh: &Shared) -> Result<()> {
+    let mut s = sh.session.lock().await;
+    let Some(g) = s.state.goal.as_mut() else {
+        return Ok(());
+    };
+    if g.state.holding.take().is_none() {
+        return Ok(());
+    }
+    g.state.rev += 1;
+    g.state.updated_at_ms = now(sh);
+    commit_and_report(sh, &mut s).await
+}
+
 /// Tokens and run ids recorded in `usage.jsonl` after `offset`.
 fn usage_since(dir: &SessionDir, offset: u64) -> (u64, BTreeSet<String>) {
     let path = dir.file(USAGE_FILE);
@@ -215,6 +337,14 @@ fn usage_len(dir: &SessionDir) -> u64 {
 pub(super) async fn activation_exhausted(sh: &Shared, creating: bool) -> Option<String> {
     let s = sh.session.lock().await;
     let open = s.state.goal.as_ref()?.activation.as_ref()?;
+    if let Some(max) = open.budget.max_wall_secs {
+        let ran = now(sh).saturating_sub(open.started_at_ms) / 1000;
+        if ran >= max {
+            return Some(format!(
+                "the activation ran {ran}s of its {max}s: whatever it started that still runs is left to run, its end is not followed (start the next step in a work session)"
+            ));
+        }
+    }
     let (tokens, runs) = usage_since(&sh.dir, open.usage_offset);
     if let Some(max) = open.budget.max_total_tokens {
         if tokens >= max {
@@ -309,7 +439,9 @@ async fn works_of(sh: &Shared, goal: &GoalDefinition, st: &GoalState) -> Result<
         })
         .await?
     {
-        if e.kind == SessionKind::Goal || st.is_absorbed(&e.session_id) {
+        // Work that ended comes as its event and then in `<recent_works>`:
+        // `<works>` lists what still runs (TODO B5).
+        if e.kind == SessionKind::Goal || st.is_absorbed(&e.session_id) || e.status.run_state == RunState::Finished {
             continue;
         }
         let o = e.origin.as_ref().and_then(|o| o.goal.clone());
@@ -340,6 +472,77 @@ fn xml_list(out: &mut String, tag: &str, item: &str, items: &[String]) {
     out.push_str(&format!("</{tag}>\n"));
 }
 
+/// What the gate and the check did lately (the `<gate>` of a Goal header).
+#[derive(Debug, Clone, Default, Serialize)]
+pub(super) struct GateView {
+    hard_interval_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hard_guarantee_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timetable: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check_script: Option<GoalCheckScript>,
+    period_resets_at_ms: u64,
+    agent: crate::goal::AgentUsage,
+    stats: GateStats,
+    holds: GoalHolds,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_check: Option<CheckRecord>,
+    check_errors: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_check_error: Option<String>,
+    no_action_in_a_row: u32,
+}
+
+fn render_gate(v: &GateView) -> String {
+    let mut s = format!("<gate hard_interval_secs=\"{}\"", v.hard_interval_secs);
+    match v.hard_guarantee_secs {
+        Some(g) => s.push_str(&format!(" hard_guarantee_secs=\"{g}\"")),
+        None => s.push_str(" hard_guarantee=\"off\""),
+    }
+    s.push_str(&format!(
+        " check_timetable=\"{}\"",
+        escape_xml_attr(v.timetable.as_deref().unwrap_or("none"))
+    ));
+    match &v.check_script {
+        Some(c) => s.push_str(&format!(
+            " check_script=\"version {} by {}\"",
+            c.version,
+            escape_xml_attr(&c.source)
+        )),
+        None => s.push_str(" check_script=\"none\""),
+    }
+    s.push_str(&format!(" no_action_in_a_row=\"{}\">\n", v.no_action_in_a_row));
+    s.push_str(&format!(
+        "<this_period checks_true=\"{}\" checks_false=\"{}\" checks_error=\"{}\" skipped_by_interval=\"{}\" skipped_by_budget=\"{}\" events_held_by_interval=\"{}\" events_held_by_budget=\"{}\" hard_guarantees=\"{}\"/>\n",
+        v.stats.checks_true,
+        v.stats.checks_false,
+        v.stats.checks_error,
+        v.stats.skipped_min_interval,
+        v.stats.skipped_budget,
+        v.holds.min_interval,
+        v.holds.budget,
+        v.stats.guarantees
+    ));
+    if let Some(c) = &v.last_check {
+        s.push_str(&format!(
+            "<last_check at=\"{}\" outcome=\"{}\">{}</last_check>\n",
+            crate::runner::input_view::utc_rfc3339(c.at_ms),
+            c.outcome.as_str(),
+            escape_xml_text(c.reason.as_deref().unwrap_or_default())
+        ));
+    }
+    if v.check_errors > 0 {
+        s.push_str(&format!(
+            "<check_errors in_a_row=\"{}\">{}</check_errors>\n",
+            v.check_errors,
+            escape_xml_text(v.last_check_error.as_deref().unwrap_or_default())
+        ));
+    }
+    s.push_str("</gate>\n");
+    s
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_builtin(
     goal: &GoalDefinition,
@@ -349,6 +552,8 @@ fn render_builtin(
     works: &[WorkView],
     budget: &GoalBudget,
     usage: &GoalUsage,
+    gate: &GateView,
+    agent_root: Option<&std::path::Path>,
     extra: &str,
 ) -> String {
     let mut s = format!(
@@ -420,16 +625,20 @@ fn render_builtin(
     }
     xml_list(&mut s, "scope", "item", &scope);
     s.push_str("</definition>\n");
-    // Skills: a stable place, never lost with history.
+    // Skills: a stable place, never lost with history. A goal skill's text
+    // is read when needed (`path`), never copied here (TODO F1, N2).
     if !st.current_skills.is_empty() {
-        s.push_str("<current_skills>\n");
+        s.push_str("<current_skills read_with=\"cat <path>\">\n");
         for k in &st.current_skills {
             s.push_str(&format!(
-                "<skill name=\"{}\"{}{}>{}</skill>\n",
+                "<skill name=\"{}\"{}{}{}>{}</skill>\n",
                 escape_xml_attr(&k.name),
                 k.reference
                     .as_ref()
                     .map(|r| format!(" ref=\"{}\"", escape_xml_attr(r)))
+                    .unwrap_or_default(),
+                crate::goal::skill_path(agent_root, k)
+                    .map(|p| format!(" path=\"{}\"", escape_xml_attr(&p.display().to_string())))
                     .unwrap_or_default(),
                 k.version
                     .as_ref()
@@ -529,7 +738,8 @@ fn render_builtin(
         }
         s.push_str("</recent_works>\n");
     }
-    // Budget of this Activation and of the period.
+    // Budget of this Activation and of the period: everything the user gives
+    // this goal to work in the background, its Work included.
     let mut b = String::new();
     if let Some(n) = open.budget.max_total_tokens {
         b.push_str(&format!(" activation_max_tokens=\"{n}\""));
@@ -537,10 +747,16 @@ fn render_builtin(
     if let Some(n) = open.budget.max_runs {
         b.push_str(&format!(" activation_max_runs=\"{n}\""));
     }
+    if let Some(n) = open.budget.max_wall_secs {
+        b.push_str(&format!(" activation_max_wall_secs=\"{n}\""));
+    }
     b.push_str(&format!(
-        " period_secs=\"{}\" period_tokens_used=\"{}\" period_activations_used=\"{}\" period_works_created=\"{}\"",
+        " period_secs=\"{}\" period_resets_at=\"{}\" period_tokens_used=\"{}\" tokens_used_by_goal=\"{}\" tokens_used_by_works=\"{}\" period_activations_used=\"{}\" period_works_created=\"{}\"",
         crate::goal::window_secs(budget),
-        usage.tokens + usage.work_tokens,
+        crate::runner::input_view::utc_rfc3339(gate.period_resets_at_ms),
+        usage.total_tokens(),
+        usage.tokens,
+        usage.work_tokens,
         usage.activations,
         usage.works
     ));
@@ -553,7 +769,14 @@ fn render_builtin(
     if let Some(n) = budget.period.max_works {
         b.push_str(&format!(" period_max_works=\"{n}\""));
     }
+    if let Some(n) = gate.agent.max {
+        b.push_str(&format!(
+            " agent_background_tokens_used=\"{}\" agent_background_max_tokens=\"{n}\"",
+            gate.agent.used
+        ));
+    }
     s.push_str(&format!("<budget{b}/>\n"));
+    s.push_str(&render_gate(gate));
     s.push_str(extra);
     s.push_str("<result_format>End this activation with report(is_end=true, result={decision: no_action | acted | created_work | needs_info, distance?: text, pending?: [..], questions?: [..], skills?: {add?: [..], remove?: [..]}}). Not acting is a valid result; not observed is not \"no change\".</result_format>\n");
     s.push_str("</goal_activation>");
@@ -579,7 +802,32 @@ pub(super) async fn opening(
     };
     let d = crate::goal::defaults(sh.agent_root.as_deref(), &class);
     let budget = crate::goal::effective_budget(goal, &d);
-    let usage = crate::goal::current_usage(Some(&st), crate::now_ms(), crate::goal::window_secs(&budget));
+    let t = now(sh);
+    let window = crate::goal::window_secs(&budget);
+    let usage = crate::goal::period_usage(sh.agent(), &goal.goal_id, Some(&st), t, window).await?;
+    let schedule = sh.agent().goals().schedule(&goal.goal_id).await?.unwrap_or_else(|| GoalSchedule::new(&goal.goal_id, "local"));
+    let mut stats = schedule.stats.clone();
+    if stats.period_start_ms != usage.period_start_ms {
+        stats = GateStats::default();
+    }
+    let mut holds = st.holds.clone();
+    if holds.period_start_ms != usage.period_start_ms {
+        holds = GoalHolds::default();
+    }
+    let gate = GateView {
+        hard_interval_secs: crate::goal::min_interval_secs(goal, &d),
+        hard_guarantee_secs: crate::goal::guarantee_secs(goal, &d),
+        timetable: crate::goal_time::Timetable::of(goal, &d).map(|t| t.describe()),
+        check_script: goal.schedule.check.clone(),
+        period_resets_at_ms: usage.period_start_ms + window * 1000,
+        agent: crate::goal::agent_usage(sh.agent(), &d, t).await?,
+        stats,
+        holds,
+        last_check: schedule.last_check.clone(),
+        check_errors: schedule.check_errors,
+        last_check_error: schedule.last_check_error.clone(),
+        no_action_in_a_row: st.consecutive_no_action,
+    };
     let mut reasons: Vec<ActivationReason> = picked.iter().map(crate::goal::reason_of).collect();
     reasons.dedup_by(|a, b| a.key == b.key);
     let changed: Vec<String> = if st.goal_revision_seen > 0 && st.goal_revision_seen < goal.revision {
@@ -612,7 +860,7 @@ pub(super) async fn opening(
         // Every model entry of the consolidation Goal (scheduled, created,
         // manual, answer) stays inside what the period has left.
         if let (Some(max), Some(period)) = (activation_budget.max_total_tokens, budget.period.max_total_tokens) {
-            let used = usage.tokens + usage.work_tokens;
+            let used = usage.total_tokens();
             activation_budget.max_total_tokens = Some(max.min(period.saturating_sub(used)).max(1));
         }
     }
@@ -625,12 +873,12 @@ pub(super) async fn opening(
         seq,
         goal_revision: goal.revision,
         reasons: reasons.clone(),
-        started_at_ms: crate::now_ms(),
+        started_at_ms: t,
         usage_offset: usage_len(&sh.dir),
         budget: activation_budget,
         absorbed: Vec::new(),
     };
-    let builtin = render_builtin(goal, &st, &open, &changed, &works, &budget, &usage, &extra);
+    let builtin = render_builtin(goal, &st, &open, &changed, &works, &budget, &usage, &gate, sh.agent_root.as_deref(), &extra);
     let text = match template {
         Some(tpl) => {
             let view = GoalView {
@@ -644,7 +892,7 @@ pub(super) async fn opening(
                 definition: serde_json::to_value(goal).unwrap_or(Value::Null),
                 state: serde_json::to_value(&st).unwrap_or(Value::Null),
                 works,
-                budget: json!({ "activation": open.budget, "period": budget.period, "used": usage }),
+                budget: json!({ "activation": open.budget, "period": budget.period, "used": usage, "gate": gate }),
                 reasons,
                 text: builtin.clone(),
             };
@@ -735,7 +983,10 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
     let Some(open) = s.state.goal.as_mut().and_then(|g| g.activation.take()) else {
         return Ok(());
     };
-    let now = crate::now_ms();
+    // What the Activation started and still runs is left to run; its end is
+    // not followed (TODO H0).
+    s.state.watched_tasks.clear();
+    let now = now(sh);
     let class = s.config.session.class.clone();
     let goal = sh.agent().goals().get(&binding.goal_id).await?;
     let d = crate::goal::defaults(sh.agent_root.as_deref(), &class);
@@ -805,15 +1056,11 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
         })
         .map(|e| e.session_id.clone())
         .collect();
-    let mut work_tokens = 0;
     let mut recent = Vec::new();
     for sid in &open.absorbed {
         let Some(e) = entries.iter().find(|e| &e.session_id == sid) else {
             continue;
         };
-        if let Ok(st) = SessionDir::open(&e.location).and_then(|d| d.statistics()) {
-            work_tokens += st.total_tokens;
-        }
         recent.push(RecentWork {
             sid: sid.clone(),
             outcome: e.status.outcome,
@@ -853,13 +1100,23 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
         result: end.report.and_then(|r| r.result.clone()),
     };
     let sid = s.sid().to_string();
+    let period_start = crate::goal::period_start(now, window);
+    let (own_tokens, work_tokens) = crate::goal::goal_tokens_since(sh.agent(), &binding.goal_id, period_start)
+        .await
+        .unwrap_or((0, 0));
     let g = s.state.goal.as_mut().expect("goal state");
     let st = &mut g.state;
     let mut dropped: Vec<GoalQuestion> = Vec::new();
     crate::goal::roll_usage(&mut st.usage, now, window);
-    st.usage.tokens += tokens;
+    st.usage.tokens = own_tokens;
     st.usage.activations += 1;
-    st.usage.work_tokens += work_tokens;
+    st.usage.work_tokens = work_tokens;
+    st.consecutive_no_action = if decision == ActivationDecision::NoAction {
+        st.consecutive_no_action.saturating_add(1)
+    } else {
+        0
+    };
+    st.holding = None;
     st.usage.works = entries
         .iter()
         .filter(|e| {

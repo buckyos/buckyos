@@ -403,7 +403,6 @@ const toTree = (entries: RegistryEntry[]): Tree => {
 
 const KIND_LABEL: Partial<Record<RegistryEntry['kind'], TextKey>> = {
   work: 'kindWork',
-  self_check: 'kindSelfCheck',
   goal: 'kindGoal',
 }
 

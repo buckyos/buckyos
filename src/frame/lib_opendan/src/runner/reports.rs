@@ -248,6 +248,12 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
         }
     }
     if !running.is_empty() {
+        if super::goal::is_goal(&s.config) {
+            return Err(invalid(format!(
+                "this activation still follows what it started ({}): an activation follows its own commands to their end, within its wall clock limit (activation_max_wall_secs), and their ends come back to you as `<<task_result>>`. Cancel what you no longer need (`agent-session task cancel <task_id>`); anything long belongs in a work session",
+                running.join(", ")
+            )));
+        }
         return Err(invalid(format!(
             "cannot finish while tasks you started are still active ({}): their ends come back to you as `<<task_result>>`; reply to close this Turn meanwhile, or cancel what you no longer need",
             running.join(", ")

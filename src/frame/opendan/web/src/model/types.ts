@@ -1,12 +1,12 @@
-export type SessionKind = 'ui' | 'work' | 'self_check' | 'goal'
+export type SessionKind = 'ui' | 'work' | 'goal'
 export type RunState = 'created' | 'ready' | 'running' | 'waiting' | 'finished'
 export type Outcome = 'succeeded' | 'failed' | 'stopped'
 export type Acceptance = 'n/a' | 'pending' | 'accepted' | 'discarded'
 export type TurnStatus = 'completed' | 'failed' | 'budget_exhausted' | 'stopped'
 export type OutboxStatus = 'pending' | 'sent' | 'failed'
 export type Decision = 'accept' | 'discard'
-/** `user`: the owner; `parent`: with its parent session; `interrupted`: the host restarted; `goal`: with its dormant Goal. */
-export type PauseSource = 'user' | 'parent' | 'interrupted' | 'goal'
+/** `user`: the owner; `parent`: with its parent session; `interrupted`: the host restarted; `goal`: with its dormant Goal; `budget`: its Goal's budget ran out. */
+export type PauseSource = 'user' | 'parent' | 'interrupted' | 'goal' | 'budget'
 export type StopScope = 'turn' | 'session'
 
 export interface Touching {
@@ -581,7 +581,7 @@ export type GoalLifecycle = 'achieve' | 'maintain'
 export type GoalStatus = 'active' | 'paused' | 'achieved' | 'archived'
 export type EpochStart = 'created' | 'reopened' | 'restarted'
 export type EpochEnd = 'archived' | 'achieved' | 'restarted'
-export type ActivationReasonKind = 'created' | 'scheduled' | 'child' | 'feedback' | 'manual' | 'reopened' | 'restarted' | 'event' | 'answer'
+export type ActivationReasonKind = 'created' | 'scheduled' | 'child' | 'feedback' | 'manual' | 'reopened' | 'restarted' | 'event' | 'answer' | 'guarantee'
 export type ActivationOutcome = 'completed' | 'failed' | 'budget_exhausted' | 'stopped' | 'needs_input'
 export type ActivationDecision = 'no_action' | 'acted' | 'created_work' | 'needs_info' | 'unknown'
 export type GoalQuestionStatus = 'open' | 'answered' | 'dismissed' | 'expired' | 'canceled'
@@ -613,6 +613,7 @@ export interface GoalSkill {
 export interface ActivationBudget {
   max_total_tokens?: number
   max_runs?: number
+  max_wall_secs?: number
 }
 
 export interface PeriodBudget {
@@ -627,10 +628,49 @@ export interface GoalBudget {
   period?: PeriodBudget
 }
 
+/** `state/goals/<id>/checks/<version>.ts`. */
+export interface GoalCheckScript {
+  version: number
+  sha256: string
+  /** `package:<path>` | `owner` | `ui_session:<sid>` | `goal_session:<sid>`. */
+  source: string
+  /** The package script a built-in Goal started from: what "restore" copies again. */
+  package?: string
+  updated_at_ms: number
+}
+
+/** The gates of a run opportunity: hard guarantee, hard interval, period budget (`GoalBudget`) and the check. */
 export interface GoalScheduleSpec {
+  /** Check timetable (at least 60). */
   every_secs?: number
+  cron?: string
+  /** IANA zone of `cron`. */
+  timezone?: string
+  /** Changed through `goals.set_check` only. */
+  check?: GoalCheckScript
+  /** Absent: the agent's default. */
   min_interval_secs?: number
+  /** Absent: the agent's default; 0: off. */
+  guarantee_secs?: number
   start_on_create?: boolean
+}
+
+export interface GoalRevise {
+  expected_revision: number
+  reason?: string
+  budget?: GoalBudget
+  schedule?: GoalScheduleSpec
+}
+
+/** A change of the check script and timetable (not a content revision). */
+export interface GoalCheckChange {
+  script?: string
+  restore_package?: boolean
+  clear_script?: boolean
+  every_secs?: number
+  cron?: string
+  timezone?: string
+  reason?: string
 }
 
 export interface GoalEpoch {
@@ -837,6 +877,23 @@ export interface MaintenanceState {
   last_error?: string
 }
 
+export type HoldReason = 'min_interval' | 'period_budget' | 'agent_budget'
+
+/** Events waiting for the gate right now. */
+export interface GoalHold {
+  reason: HoldReason
+  since_ms: number
+  until_ms?: number
+  checked_at_ms: number
+}
+
+/** Events the gate held in the current period. */
+export interface GoalHolds {
+  period_start_ms: number
+  min_interval: number
+  budget: number
+}
+
 export interface GoalState {
   schema: string
   goal_id: string
@@ -852,6 +909,10 @@ export interface GoalState {
   recent_works?: RecentWork[]
   current_skills?: GoalSkill[]
   usage: GoalUsage
+  /** Activations in a row that ended `no_action`. */
+  consecutive_no_action: number
+  holding?: GoalHold
+  holds: GoalHolds
   last_error?: unknown
   maintenance?: MaintenanceState
   updated_at_ms?: number
@@ -863,38 +924,32 @@ export interface PendingFire {
   missed: number
 }
 
-export interface MaintenancePending {
-  new?: number
-  due?: number
-  waiting?: number
-  retry_cleanup?: number
-  next_deadline?: string
-  oldest_at_ms?: number
+export type CheckOutcome = 'true' | 'false' | 'error'
+
+/** The last check the host ran. */
+export interface CheckRecord {
+  at_ms: number
+  outcome: CheckOutcome
+  reason?: string
+  script_version: number
+  elapsed_ms: number
 }
 
-/** `no_work | no_change | active | mechanical | paused | disabled | unknown | backoff | period_budget`. */
-export interface MaintenanceGate {
-  status: string
-  last_checked_slot?: number
-  last_baseline_slot?: number
-  last_checked_at_ms?: number
-  last_full_check_at_ms?: number
-  last_skip_reason?: string
-  last_inputs_digest?: string
-  pending?: MaintenancePending
-  due_reviews?: number
-  next_review_at?: string
-  unfinished_receipts?: number
-  last_run_at_ms?: number
-  last_run_slot?: number
-  backoff_until_ms?: number
-  backoff_level?: number
-  last_error?: string
+/** What the gate did in the current period. */
+export interface GateStats {
+  period_start_ms: number
+  skipped_min_interval: number
+  skipped_budget: number
+  checks_true: number
+  checks_false: number
+  checks_error: number
+  guarantees: number
 }
 
 export interface SkippedFire {
   slot: number
   at_ms: number
+  /** `paused | not_active | min_interval | period_budget | agent_budget | check_false | check_error | guarantee`. */
   reason: string
 }
 
@@ -902,7 +957,8 @@ export interface GoalSchedule {
   schema: string
   goal_id: string
   backend: string
-  every_secs?: number
+  /** `every:<secs>` | `cron:<expr>@<zone>`. */
+  timetable?: string
   last_slot?: number
   pending?: PendingFire
   last_posted_key?: string
@@ -910,7 +966,15 @@ export interface GoalSchedule {
   start_posted_epoch?: number
   skipped?: SkippedFire[]
   last_error?: string
-  gate?: MaintenanceGate
+  last_check?: CheckRecord
+  /** Checks in a row that failed. */
+  check_errors: number
+  last_check_error?: string
+  check_state?: unknown
+  stats: GateStats
+  guarantee_posted_for_ms: number
+  /** A built-in Goal switched off in `agent.toml`: no session, no checks. */
+  switched_off: boolean
   updated_at_ms?: number
 }
 
@@ -982,6 +1046,8 @@ export interface SkillsState {
   usage?: Record<string, SkillUsage>
   install?: Record<string, SkillInstallState>
   audit?: SkillAudit[]
+  /** The owner's switch of the skill crystallization Goal; absent: the agent package's default. */
+  crystallize?: boolean
 }
 
 /** The manuals every new conversation takes. */

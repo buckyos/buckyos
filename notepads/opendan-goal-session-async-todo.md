@@ -387,6 +387,19 @@ XLLM 结晶（架构 §9.4）面向企业客服，不作为个人 Agent 的默�
 - E1 `tests/goal_session.rs`：Activation 墙钟上限；残留任务不开 Activation；运行中 Work 的 token 计入准入；Goal 不带 `--behavior` 建出 work_simple；tell 投递与幂等（崩溃点放在 `goal:after_activation_close`）；UI poll。
 - E2 DV（本机 DV Zone，`./debug_jarvis.sh devtest --agent xiaobai.test.buckyos.io`）：在另一个对话里建一个 Goal → Activation 产出 tell → Jarvis 在 default chat 里用对话口吻说出来（没有"处理中"占位、没有通知卡）→ 通知中心收到一条泛通知，点开 URL 定位到这条消息 → 用户回复 → UI `goal post` → 下一次 Activation 的 reason 是 `message`；用户先说"今天别打扰"再触发 tell，UI 不说并回写 `skipped`；Goal 建出 work_simple，且运行中 period tokens 随之增长。DV 结束后归档测试 Goal。
 
+## 8.1 实施记录（2026-11-11）
+
+在 [Goal Session 继续推进 TODO](./opendan-goal-session-next-todo.md) 里实施，详细记录在该单 §10。本单各项的落点：
+
+- Q-G1（墙钟上限）：`ActivationBudget.max_wall_secs`，缺省 1800 秒；report 被拒的文案对 Goal 另写。
+- Q-G2（`ask_user`）：Goal Session 的命令目录里放一个只报错的 `ask_user`，提示改用 `questions`。
+- Q-G4c：父是 Goal Session、没给 `--behavior` 时宿主把类缺省换成 `work_simple`。
+- Q-G5：周期用量按各 Session `usage.jsonl` 的记录时间实时汇总，运行中的 Work 也算。
+- Q-G6：Goal 头放在输入消息开头（一条 User 消息），`<works>` 只列还在跑的。没有做成模板变量（见继续推进 TODO §10 的偏差）。
+- Q-G7：Activation 关闭时清掉 `watched_tasks`，残留任务的结束不打开 Activation。
+- Q-U3、Q-U7：不采用（2026-11-10 裁决），`notify send` 加了 `--url`。其余 Q-U 是 `notify send` 背后的实现，未做。
+- Q-S3：cron + 时区已做；follow_up 取消。Q-S4：到点要判断的建带时间表的 Goal 已做，固定提醒仍 `unsupported`。
+
 ## 9. 关联
 
 - [llm_context 冻结 TODO](./done/llm-context-freeze-todo.md)：原则 8、F18、F20、§3.2.1

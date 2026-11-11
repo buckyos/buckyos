@@ -2,7 +2,7 @@
 
 日期：2026-11-10
 
-状态：**A 组已于 2026-11-10 实施并在本机 Zone 补验，记录见 §2 的 A 组和 §7；其余各组未实施。** 同日 owner 就 Goal 的触发逻辑做了裁决，整理成 H 组（§2 的 H 节，裁决原文在 §8），H 组排在 B 组前面；H 组的问题已全部裁决。同日 owner 表示其余已有问题基本按建议走，并给了结果交付的三点想法（§9）；据此 C、D、E 三组的范围有调整；§3.4 的四项随后也定了。**现在没有待裁决的设计问题**，可以按 H → B → C0 → D1 → 其余的顺序实施。
+状态：A 组 2026-11-10 实施并在本机 Zone 补验（§7）。**2026-11-11 实施了 H、B、C0、D1、D5 的一半、E4、E5、F1、F2、G1、G2（记录在 §10，未提交）。** 剩下的：D3（workflow 计划后端，依赖 workflow 的修复）、F3（等一个跑了一周的 Goal 的数据，DV 先量到一组见 §10.6）、D5 的固定提醒那一半与按裁决推后的 D4、E1、E2、E3（等日历 / 待办接入）。DV 发现一件待 owner 定的事：硬保障要不要设下限（§10.6）。裁决原文在 §8、§9。
 
 本单是 Goal 剩余工作的总入口：排顺序，标明依赖和裁决状态，并补上此前没有任何 TODO 承接的项。已有详细方案的不在这里重写，只给指针，实施时按原文的方案做：
 
@@ -70,17 +70,17 @@
 
 现状对照：硬保障没有；硬间隔是 `schedule.min_interval_secs`（Jarvis 缺省 60 秒），预算是 `budget.period`（通用 Goal 缺省不设 token 上限），两者今天都只拦定时触发；检查只有整理 Goal 写在宿主里的那一个（`lib_opendan/host/maintenance.rs::decide`）。
 
-- [ ] **H0 事件触发收口**（前置）。Goal 只为这几种事件醒：派生的 Work 结束、Work 里真正要人回答的问题、用户转来的消息、问题得到回答、手动激活。要堵的三处：
+- [x] **H0 事件触发收口**（前置）。Goal 只为这几种事件醒：派生的 Work 结束、Work 里真正要人回答的问题、用户转来的消息、问题得到回答、手动激活。要堵的三处：
   - Activation 关闭后残留的任务结束时打开新的 Activation（原 B6，异步单 Q-G7 的建议 (a)：Activation 关闭时放手）。
   - Work 等自己的后台任务时的 `needs_input` 也唤醒 Goal（§7.3 第 2 条）。
   - Work 自己的任务结束事件混进 Goal 的原因（§7.3 第 3 条，来源先查清）。
-- [ ] **H1 配置与协议。** Goal 定义里表达四道门槛，直接改现有字段，不做兼容。
+- [x] **H1 配置与协议。** Goal 定义里表达四道门槛，直接改现有字段，不做兼容。
   - 硬保障：新增（秒，空表示关）。硬间隔：沿用 `schedule.min_interval_secs`，缺省改 900，含义改为管所有触发。预算：`budget.period` 的缺省改为 86400 秒、200 万 token。
   - Agent 总量：一个 Agent 一天的后台 token 上限，所有 Goal 的推理和它们派出的 Work 共用，不含对话和用户直接发起的 Work。放在 Agent 的配置里（`agent.toml [session.goal]` 一级），不在某个 Goal 的定义里。缺省 500 万，够两三个 Goal 各自跑满（整理者的建议，owner 2026-11-10 表示已有问题基本按建议走）。
   - 检查：时间表（今天的 `every_secs`，D1 做完后可以是 cron）加脚本引用；缺省每 5 分钟，下限 60 秒，Agent 只能在下限以上调。内置整理 Goal 维持每 30 分钟。
   - 权限：前三道只有 owner 侧和创建它的 UI Session 能改（现状）。检查的脚本和时间表 Goal Session 自己也能改，新增入口（`agent-session goal check set …`，经驱动者写入，保持单写者），每次修改记入 `changes.jsonl`。
   - 落点：`lib_opendan/protocol/goal.rs`（`GoalScheduleSpec`、`PeriodBudget`）、`template.rs` 的 `GoalDefaults`、`state/goals.rs` 的权限、`jarvis/agent.toml [session.goal]`、`xagent_cli.rs`。
-- [ ] **H2 统一闸门。** 今天的准入链只管定时触发（`lib_opendan/host/goals.rs` 的 `AdmissionCheck`），事件触发不过任何门槛。改成所有触发源在打开 Activation 之前过同一个闸门。顺序是实施建议，owner 没有单独裁决：
+- [x] **H2 统一闸门。** 今天的准入链只管定时触发（`lib_opendan/host/goals.rs` 的 `AdmissionCheck`），事件触发不过任何门槛。改成所有触发源在打开 Activation 之前过同一个闸门。顺序是实施建议，owner 没有单独裁决：
   1. Goal 休眠或已结束：不推理。休眠压过硬保障。
   2. 距上次推理不到硬间隔：不推理。
   3. 距上次推理超过硬保障：推理，跳过 4、5。
@@ -89,27 +89,27 @@
   - 被 2、4 拦下的事件留在队列里，放行时合并成一次 Activation（`runner/goal.rs` 的 `Gate::Paused` 已经能把输入留在队列里，照这个做法加一种“等待”）。时间表被拦下的那一次直接跳过，不补。
   - 手动激活是 owner 的显式操作，不过门槛。
   - 每次拦截记原因和次数，供 H5 和页面使用。
-- [ ] **H3 检查脚本的执行。**
+- [x] **H3 检查脚本的执行。**
   - 在 Agent 的私有容器里用 Deno 跑，只能是 TypeScript。用标准层 Tool 自带的 Deno（跑 `buckyos-agent` 命令的那个，`lib_opendan/baseline.rs::run_deno_command`），不用扩展包里的：扩展包没装好时检查不会全部变成出错，还能用同一份 `deno.json` 直接 import websdk。
   - 权限：给读和网络，不给 `--allow-run` 和 `--allow-write`。检查只观察不行动：它不消耗 token、不留 Activation 记录，不能让它做事。身份与这个 Goal Session 相同；带超时和输出上限。
   - 约定（实施建议）：脚本默认导出一个函数，`check(ctx, state)` 返回 `{run, reason?, state?}`。`reason` 作为这次 Activation 的原因交给模型，模型不用重查；`state` 由宿主保存、下次传回，脚本没有写权限也能记住上次看到哪。`ctx` 至少有 Goal 的 id、作用范围、上次推理和上次检查的时间。
   - 出错（抛异常、超时、返回值不合约定）不推理，记最后的错误和连续次数。不加写入时试跑，也不加出错后的修复推理（§8 第 5 条），兜底只有硬保障。
   - 给 Agent 一条按宿主同样方式试跑的命令（`agent-session goal check run`，同样的 Deno、权限和 `ctx`，不改任何状态），`goal.toml` 写明改完脚本用它测。这是让“写完自己测”做得到的工具，不是写入门槛。
   - 条件一直为真时宿主不兜底：脚本一直返回 true 的代价由硬间隔和预算封顶，Goal 从 H5 的信息里看得到自己在空转，自己改脚本。
-- [ ] **H4 硬保障。** 距上次推理超过保障时间时无条件给一次运行机会，原因单列（`guarantee`），带上检查最近的结果、连续出错的次数和最后一次错误，Goal 才知道要修什么。休眠的 Goal 不触发。
-- [ ] **H5 预算口径与告知。**
+- [x] **H4 硬保障。** 距上次推理超过保障时间时无条件给一次运行机会，原因单列（`guarantee`），带上检查最近的结果、连续出错的次数和最后一次错误，Goal 才知道要修什么。休眠的 Goal 不触发。
+- [x] **H5 预算口径与告知。**
   - 周期预算含派生 Work 的 token，运行中也计入（原 B3，异步单 Q-G5 的建议 (a)）：`lib_opendan/goal.rs` 的 `current_usage`、`work_admission` 读各 Work 的 `usage.jsonl`。
   - Goal 头的 `<budget>`（`runner/goal.rs` 的 `render_builtin`）补上：本周期已用多少（自己的和 Work 的分开）、周期什么时候重置、本周期被预算和硬间隔各拦下几次、检查跑了几次及其结果（true、false、出错）、最近连续几次 `no_action`、当前的检查时间表。
   - 预算用完时正在运行的派生 Work 在下一个推理边界暂停，周期重置后恢复，只恢复因此暂停的。做法照休眠（`lib_opendan/host/goals.rs::sync_dormant_work`），暂停来源另加一种（今天是 `user / parent / interrupted / goal`）。Agent 总量用完时对所有 Goal 的 Work 同样处理。
   - Agent 总量：统计所有 Goal 在同一周期里的用量（各 Goal State 的 `usage` 加运行中 Work 的用量），在闸门里与每个 Goal 的预算一起判断；Goal 头里把 Agent 总量的已用和上限也列出来。
   - `goal.toml` 写明：这是用户给这个 Goal 背地里干活的全部 token；看到预算吃紧或空转多，就调低检查频率或收紧检查条件。
-- [ ] **H6 内置 Goal 改成同一套。**
+- [x] **H6 内置 Goal 改成同一套。**
   - 包里的脚本只是初始状态（N11 的裁决）：内置 Goal 和普通 Goal 一样可以改自己的检查脚本和时间表，随着使用演化。因此硬保障对内置 Goal 照常打开。包升级不覆盖 Goal 已经改过的脚本；页面上给一个恢复成包内版本的操作（实施建议）。
   - 整理 Goal：`host/maintenance.rs::decide` 里“有没有要整理的材料”的判断搬进检查脚本，初始脚本随 Jarvis 包分发。脚本拿数据要一个只读 kRPC（Memory 的版本摘要、待处理与到期数、到期复核数），今天没有，要加；全量检查本身仍在 Rust 里。
   - 清理重试、未完成回执这些不需要模型的维护留在宿主，不算推理触发。`schedule.json.gate` 的水位随之精简。
   - 结晶 Goal 加检查脚本（手册的使用记录有没有变化），避免空跑：A3 量到它一次 `no_action` 用了 18.2 万 token。
   - `tests/memory_maintenance.rs` 里 gate 的用例跟着迁移。“无材料不调用模型”改为“无材料时只有硬保障触发的那一次”：缺省 72 小时一次。默认 Goal 单的 V01 和 Agent State Protocol §9.7 要跟着改。
-- [ ] **H7 页面与文档。** Goal 详情页显示四道门槛的配置、检查脚本、最近的检查结果和拦截原因，owner 能改前三道（与 G2 的页面内编辑一起做）。同步 Agent State Protocol §9、schema、fixture `16_goal_session`、架构设计 §12.1.1 与 §15.7。
+- [x] **H7 页面与文档。** Goal 详情页显示四道门槛的配置、检查脚本、最近的检查结果和拦截原因，owner 能改前三道（与 G2 的页面内编辑一起做）。同步 Agent State Protocol §9、schema、fixture `16_goal_session`、架构设计 §12.1.1 与 §15.7。
 - 验收（`tests/goal_session.rs` 用手动时钟，脚本用测试替身和真实 Deno 各一组）：
   - 四道门槛各自生效；硬保障压过预算和检查；休眠压过硬保障；手动激活不过门槛。
   - 硬间隔内到达的 Work 结束事件留在队列里，间隔到了合并成一次 Activation；预算用完时同理，周期重置后放行。
@@ -124,18 +124,18 @@
 
 方案在异步单 §3、§7，落点在它的 §8 A1–A5，验收在它的 E1。owner 2026-11-10：按建议走。B3、B6 已随同日的裁决并入 H 组。
 
-- [ ] **B1 Activation 墙钟上限**（Q-G1，建议维持“跟到底”并加上限，缺省 1800 秒）。`ActivationBudget.max_wall_secs`（`lib_opendan/protocol/goal.rs:221`）、`runner/goal.rs::activation_exhausted`；跟进提示和 report 被拒的文案对 Goal 另写；`goal.toml` 补一句长命令的说明。
-- [ ] **B2 Goal Session 里去掉 `ask_user`**（Q-G2，建议宿主层剔除并提示用 `result.questions`）。今天只靠 `goal.toml` 的一句话挡着，真被调用时 Activation 会挂到用户答复或过期。入口 `lib_opendan/baseline.rs:83`，按会话过滤的位置实施前核对。
-- [ ] **B3 运行中 Work 的用量计入周期**（Q-G5，2026-11-10 已裁决为计入，并入 H5）。
-- [ ] **B4 宿主缺省 behavior**（Q-G4c，建议父是 Goal Session 且没给 `--behavior` 时取 `work_simple`，显式给别的照样允许）。`lib_opendan/api.rs::create_sub_session`，常量 `todos.rs::WORK_BEHAVIOR`。
-- [ ] **B5 Goal 头并入输入模板，Work 结局只出现一次**（Q-G6）。今天 Goal 头是一条独立的 User 消息，同一个 Work 结局在原因、`<works>`、事件渲染三处出现。fixture `16_goal_session` 要重新生成。
-- [ ] **B6 Activation 关闭后不再跟残留任务**（Q-G7，并入 H0）。今天不可取消的任务结束时会绕过准入链打开新的 Activation。
+- [x] **B1 Activation 墙钟上限**（Q-G1，建议维持“跟到底”并加上限，缺省 1800 秒）。`ActivationBudget.max_wall_secs`（`lib_opendan/protocol/goal.rs:221`）、`runner/goal.rs::activation_exhausted`；跟进提示和 report 被拒的文案对 Goal 另写；`goal.toml` 补一句长命令的说明。
+- [x] **B2 Goal Session 里去掉 `ask_user`**（Q-G2，建议宿主层剔除并提示用 `result.questions`）。今天只靠 `goal.toml` 的一句话挡着，真被调用时 Activation 会挂到用户答复或过期。入口 `lib_opendan/baseline.rs:83`，按会话过滤的位置实施前核对。
+- [x] **B3 运行中 Work 的用量计入周期**（Q-G5，2026-11-10 已裁决为计入，并入 H5）。
+- [x] **B4 宿主缺省 behavior**（Q-G4c，建议父是 Goal Session 且没给 `--behavior` 时取 `work_simple`，显式给别的照样允许）。`lib_opendan/api.rs::create_sub_session`，常量 `todos.rs::WORK_BEHAVIOR`。
+- [x] **B5 Goal 头并入输入模板，Work 结局只出现一次**（Q-G6）。今天 Goal 头是一条独立的 User 消息，同一个 Work 结局在原因、`<works>`、事件渲染三处出现。fixture `16_goal_session` 要重新生成。
+- [x] **B6 Activation 关闭后不再跟残留任务**（Q-G7，并入 H0）。今天不可取消的任务结束时会绕过准入链打开新的 Activation。
 
 ### C. 告诉用户（结果交付的第一种）
 
 owner 2026-11-10（§9 第 1 条）：通知用户这件事，把命令行定下来，背后的实现以后可以调整。所以 Goal 告诉用户的接口是一条命令，不是结果里的字段：异步单 Q-U3、Q-U7 的建议（改成 `result.tell`、删掉 `notify send`）不再采用。异步单 §4 设计的 default chat session、由对话里的 Agent 说出来、带 URL 的泛通知，都是这条命令背后的实现，不需要改 Goal 的提示词和协议，可以以后再做。
 
-- [ ] **C0 通知命令的命令行**（2026-11-10 已裁决，按下面的建议）。今天是 `agent-session notify send --title <t> [--message <text>] [--level quiet|normal|timely|urgent] [--expires-in <dur>] [--key <k>]`（`lib_opendan/xagent_cli.rs:122`），`goal.toml` 和 `skill_crystallize.toml` 都在用。要做的只有加 `--url` 和把语义写进帮助与 `goal.toml`：
+- [x] **C0 通知命令的命令行**（2026-11-10 已裁决，按下面的建议）。今天是 `agent-session notify send --title <t> [--message <text>] [--level quiet|normal|timely|urgent] [--expires-in <dur>] [--key <k>]`（`lib_opendan/xagent_cli.rs:122`），`goal.toml` 和 `skill_crystallize.toml` 都在用。要做的只有加 `--url` 和把语义写进帮助与 `goal.toml`：
   - 名字和现有参数不动。语义写明是“把一件事告诉用户，渠道由系统决定”，命令行里不出现渠道。
   - 只加一个 `--url`：点开后落到哪。Goal 为用户做了页面或 app（§9 第 3 条）、产出了报告时，靠它把人带过去。
   - 需要用户回答的事仍然写进结果的 `questions`，不走这条命令。
@@ -147,14 +147,14 @@ owner 2026-11-10（§9 第 1 条）：通知用户这件事，把命令行定下
 
 ### D. 时间：日历时间表、生产调度、timer
 
-- [ ] **D1 cron 与时区**（Q-S3）。`GoalScheduleSpec`（`lib_opendan/protocol/goal.rs:284`）加 `cron` 与 `timezone`，与 `every_secs` 二选一；`LocalScheduleBackend`（`lib_opendan/host/goals.rs`）按墙上时间计槽；`goal create` 加对应参数。时区来源的顺序按默认 Goal 单 §5.1。不依赖 workflow，可以先做。需要时区库时先确认。
+- [x] **D1 cron 与时区**（Q-S3）。`GoalScheduleSpec`（`lib_opendan/protocol/goal.rs:284`）加 `cron` 与 `timezone`，与 `every_secs` 二选一；`LocalScheduleBackend`（`lib_opendan/host/goals.rs`）按墙上时间计槽；`goal create` 加对应参数。时区来源的顺序按默认 Goal 单 §5.1。不依赖 workflow，可以先做。需要时区库时先确认。
 - **D2 follow_up：已取消**（N13，2026-11-10）。Goal 能调检查的时间表，检查脚本能自己判断“到没到时间”，不再需要让 Goal 在结果里声明“下次什么时候再看”。
 - [ ] **D3 workflow 计划后端。** 生产定时换到 workflow 的计划任务，本地后端只留给 dev 和测试。H 组之后它承载的是检查时间表：到点由 OpenDAN 跑检查脚本，不是直接推理。
   - 先修 workflow 的四个问题（第一段 §9.1，是 10-11 的记录，workflow 在 11 月改过，实施前复核）：`opendan.command` 的 fire task 没有执行方；成功 fire 后按旧的 fire 时间算下一次，停机后会逐个补发；`buckyos-api/src/workflow_service.rs` 的类型与服务端不一致；`load_schedules` 只读第一页。
   - 再做 `WorkflowScheduleBackend`：`every_secs → RunEvery`、cron → `Cron`，目标 `opendan.command{goal.activate}`。
   - 改 workflow 按 `harness/Service Dev Loop.md`；完整的 IANA 时区要引入时区库，先确认。
 - **D4 timer 对象：等日历 / 待办接入**（§9 第 2 条）。改用户的待办、日历是接入之后的命令，现在不支持就没有这种交付方法；Q-S1、S7、S8 届时再定。原设想：到点不需要推理的提醒，不是 Goal。方案在异步单 §5.2 场景 1 与 §8 D1：workflow 的 `Once` / `Cron` 加发通知的目标、按 owner 加 key 的幂等创建、单次发生的跳过与改动，以及建、列、取消的命令和手册。依赖 D3 里 workflow 的修复。
-- [ ] **D5 意图分析的定时分支**（Q-S4）。`analyze_intent.toml:36` 今天一律 `unsupported`。到点要判断的建 Goal 并带检查时间表，这一半在 H、D1 之后就能做；固定提醒那一半等 D4。
+- [~] **D5 意图分析的定时分支**（到点要判断的一半已做，见 §10.2）（Q-S4）。`analyze_intent.toml:36` 今天一律 `unsupported`。到点要判断的建 Goal 并带检查时间表，这一半在 H、D1 之后就能做；固定提醒那一半等 D4。
 - **D6 对象订阅驱动 Goal：改为不排期**（N13，2026-11-10）。“定期去看某个对象变没变”由检查脚本承担；真有等不起一个检查周期的事件再回来做，届时声明放在哪见 N6。
 
 ### E. 内置 Goal
@@ -164,16 +164,16 @@ owner 2026-11-10（§9 第 1 条）：通知用户这件事，把命令行定下
   - 留着的挂点：`lib_opendan/runner/consolidation.rs:854`（提交后发布候选）、`runner/goal.rs:921`（问题与候选的关联，`candidate_id` 今天恒为空）；类型已冻结，页面已有候选列表的位置。方案在默认 Goal 单 T05，验收 V06、V10–V13。
 - **E2 整理 Goal 的 P2：落地，等日历 / 待办接入**（§9 第 2 条）。默认 Goal 单 T05 的后两条（依赖 D3、D4），验收 V16 和 V12、V13 的其余断言。T06（用模型做预检，验收 V14、V15）已取消（N13，2026-11-10）：H 组改用不花 token 的检查脚本，`[session.goal.maintenance] decision` 配置项（`lib_opendan/template.rs:76`）随 H6 删除。
 - **E3 日程管家：等日历 / 待办接入**（§9 第 2 条）。它要管的是用户当天的 timer，依赖 D4。届时按“Goal 是珍贵的资源”的原则（§8 第 10 条）先看它是独立的 Goal 还是默认 Goal 的一项职责；Q-S6、S8、S9、S10 那时再定。方案在异步单 §5.2 与 §8 D6。
-- [ ] **E4 self_check 退役**（N1）。它今天不运行（`[loader.self_check]` 打开只会报“本版本不可用”），但类型、模板、behavior 都在，也没有独立的 TODO。
+- [x] **E4 self_check 退役**（N1）。它今天不运行（`[loader.self_check]` 打开只会报“本版本不可用”），但类型、模板、behavior 都在，也没有独立的 TODO。
   - 删除：`SessionKind::SelfCheck`、内建模板 `self_check` 与 `_self_check_timer`（`lib_opendan/template.rs:213`）、sid 前缀 `sc-`、`[loader.self_check]`（`src/frame/opendan/src/config.rs:71`、`loader.rs:420`、`jarvis/agent.toml:41`）、`jarvis/behaviors/self_check.toml`、WebUI 的 `SessionKind`（`src/frame/opendan/web/src/model/types.ts:1`）。
   - Notebook 一并退役（Memory 需求 TD-09）：`agent_tool/src/agent_notebook.rs`、`lib_opendan/state/` 里的 `notebook_append`、`xagent_cli.rs` 与 `agent_tool_cli_dev` 的入口、`opendan/src/service.rs`。唯一的 behavior 调用方是 `self_check.toml`。
   - 文档：`doc/opendan/xAgent.md` 的模板表、架构设计 §15.3 与 §15.5、Session Control Protocol 里提到 self_check 的几处。
-- [ ] **E5 结晶 Goal 的开关与验证**（N8）。今天只能改 `agent.toml [session.goal.crystallize]`，页面上没有开关。验证见 A3 第 4 条。
+- [x] **E5 结晶 Goal 的开关与验证**（N8）。今天只能改 `agent.toml [session.goal.crystallize]`，页面上没有开关。验证见 A3 第 4 条。
 
 ### F. Goal 的上下文与方法
 
-- [ ] **F1 Goal Skill 运行时读取**（N2）。`goal_skills/` 能安装和列出，运行时没有任何路径读它；Goal 头的 `<current_skills>`（`lib_opendan/runner/goal.rs:424`）只列名字和一个自由文本的 `ref`。这是 Skills 单 §3.5 留给 Goal 的那一条：`ref` 指向 `goal_skills/<name>/SKILL.md` 时，让 Goal 能可靠地读到正文。同时让 `goal create` 与 `goal skills add` 能按名字从 `agent-session skill list --kind goal` 里选。
-- [ ] **F2 内置 goal skill。** Jarvis 包今天没有 goal skill（`jarvis/goal_skills/` 目录不存在）。首批两份（2026-11-10 裁决）：
+- [x] **F1 Goal Skill 运行时读取**（N2）。`goal_skills/` 能安装和列出，运行时没有任何路径读它；Goal 头的 `<current_skills>`（`lib_opendan/runner/goal.rs:424`）只列名字和一个自由文本的 `ref`。这是 Skills 单 §3.5 留给 Goal 的那一条：`ref` 指向 `goal_skills/<name>/SKILL.md` 时，让 Goal 能可靠地读到正文。同时让 `goal create` 与 `goal skills add` 能按名字从 `agent-session skill list --kind goal` 里选。
+- [x] **F2 内置 goal skill。** Jarvis 包今天没有 goal skill（`jarvis/goal_skills/` 目录不存在）。首批两份（2026-11-10 裁决）：
   - **怎么写检查脚本**：只读不做、用 `state` 记住上次看到哪、`reason` 写给下一次推理看、写完用试跑命令测（配合 H3）。
   - **怎么选交付方式**：通知、为这个 Goal 做一个 app、AIWorkspace 页面。做 app 的步骤交给 Work，指向 work skill `buckyos_app_dev`、`aiworkspace_template_dev`；做好以后用 `notify send --url` 把人带过去（C0）。
   - 两份都按 owner 给的范式写（§9 第 5 条）：**Goal 的早期运行应该为后面的重复交付准备好必要的工具**。前几次 Activation 花预算把检查脚本、交付用的 app 或页面、常用的脚本建起来，后面的 Activation 只是用它们，每次都很便宜。`goal.toml` 的“Every activation”一节也要加上这一条，否则没读 skill 的 Goal 不会这么做。
@@ -183,8 +183,8 @@ owner 2026-11-10（§9 第 1 条）：通知用户这件事，把命令行定下
 
 ### G. 治理与管理面
 
-- [ ] **G1 创建 Work 的就绪性检查**（N4）。设计 §3.1、§14.5 要求 UI 和 Goal 建 Work 走同一套检查；今天两个入口都只有提示词约束。
-- [ ] **G2 Goals 页面**（N5）。`src/frame/opendan/web/src/pages/{Goals,GoalDetail}.tsx`，e2e 在 `tests/e2e/goals.spec.ts`。
+- [x] **G1 创建 Work 的就绪性检查**（N4）。设计 §3.1、§14.5 要求 UI 和 Goal 建 Work 走同一套检查；今天两个入口都只有提示词约束。
+- [x] **G2 Goals 页面**（N5）。`src/frame/opendan/web/src/pages/{Goals,GoalDetail}.tsx`，e2e 在 `tests/e2e/goals.spec.ts`。
   - 修订前后的差异：两个修订的字段对比，数据已有（`goals.revision`）。
   - Goal 数量提示：活动 Goal 超过阈值时在 Goals 区域提示，阈值待定（设计 §13.4 的候选是 16）。
   - 成本：详情页按周期显示用量的变化，数据在 Activation 记录里。
@@ -391,3 +391,77 @@ owner 用一张脑图（“goal 怎么触发推理？定义门槛”）给出四
 5. “按你的建议，我觉得从范式上来说，goal 的早期运行应该为后面的重复交付准备好必要的工具。”（首批 goal skill）→ F2。
    - 整理者的展开：这条范式不只写进两份 goal skill，也写进 `goal.toml`；准备好的工具要在 Goal 头里看得到，restart 时要保留。后两点 owner 没有单独说。
 6. “按你的建议。”（压缩等数据）→ F3。
+
+## 10. H、B、C0、D1 及其余的实施记录（2026-11-11，未提交）
+
+按 H → B → C0 → D1 → 其余的顺序实施。没做的：D3（workflow 计划后端）、F3（等数据）、按裁决推后的 D4、E1、E2、E3，D5 的固定提醒那一半。真实 Zone 上的 DV 情况见 §10.6。
+
+### 10.1 H 组
+
+- **协议**（`protocol/goal.rs`）：`GoalScheduleSpec` 加 `cron`、`timezone`、`check`（`GoalCheckScript{version, sha256, source, package, updated_at_ms}`）、`guarantee_secs`；`min_interval_secs` 含义改为对所有触发生效。`ActivationBudget.max_wall_secs`。`GoalState` 加 `consecutive_no_action`、`holding`、`holds`。`GoalSchedule` 去掉 `gate` 和 `every_secs`，加 `timetable`、`last_check`、`check_errors`、`last_check_error`、`check_state`、`stats`、`guarantee_posted_for_ms`、`switched_off`。`ActivationReasonKind::Guarantee`，`PauseSource::Budget`。`MaintenanceGate` 删除，`MemoryStatus` 新增。
+- **缺省**（`template.rs`、Jarvis `agent.toml`）：硬间隔 900 秒、硬保障 259200 秒、检查时间表 300 秒（下限 60）、周期 24 小时 200 万 token、Agent 总量 `[session.goal.agent_budget]` 24 小时 500 万、Activation 墙钟 1800 秒。`[session.goal.maintenance] decision` 删除。
+- **H0**：Activation 关闭时清掉 `watched_tasks`（`runner/goal.rs::close_activation`，`outcome.rs` 的 `commit_run_end` / `commit_kept` 不再在 Turn 关闭后把任务加回来），残留任务的结束不打开 Activation（B6）。§7.3 第 3 条的来源查清了：Goal 的工具结果里出现过 Work 的任务 id（`note_task`），run 结束后被当成自己的任务跟着；同一处修掉。Goal Session 的子 Session 只有收消息（`input_policy != none` 且 `wait_user_msg = allowed`）时它的 `needs_input` 才唤醒 Goal（`children.rs::answerable`）。
+- **H1 / H2**：闸门在 `goal.rs::gate`（休眠 → 硬间隔 → 硬保障 → 周期预算 / Agent 总量），检查只对时间表（宿主 `host/goals.rs::scheduled`）。事件在 Goal Session 自己的驱动里过闸门（`runner/goal.rs::hold_events`，`drive.rs` 选好批次后调用）：被拦下的不消费，下一次驱动再看，`holding` 只在开始拦截时记一次；手动激活、定时检查、硬保障、epoch 开始不过这道闸。Goal Session 改检查脚本和时间表走新的 `GoalStore::set_check`（kRPC `goals.set_check`，CLI `goal check set`），记 `changes.jsonl` 的 `kind = check`，不增加内容修订号；脚本存 `checks/<n>.ts`。owner 的 `revise` 改 `schedule` 时保留 `schedule.check`。
+- **H3**：`goal_check.rs` + `goal_check_runner.ts`（`include_str!` 进二进制，写到 `<AgentRoot>/.cache/goal_checks/`）。Deno 只给 `--allow-read --allow-net --allow-env`，30 秒超时，日志和 `state` 各 64 KiB 上限。Deno 的查找顺序：Agent 镜像的 `$BUCKYOS_ROOT/bin/opendan/deno`（容器里只有这一个）、宿主安装的 `libexec/buckyos-tool/runtime/deno`、程序旁边、`PATH`。`ctx.host.call` 是宿主经脚本的标准输入输出提供的只读调用（`memory.status`）。CLI `goal check run [--script]` 按宿主同样的方式试跑，不改任何状态；`goal check show` 看脚本、时间表和最近的检查。
+- **H4**：宿主每个 tick 看硬保障，每个 quiet 段（按“上次推理或 epoch 开始”计）只投一次 `guarantee`，原因里带最近一次检查、连续出错次数和最后一次错误。
+- **H5**：周期用量 = 这个 Goal 所有 Session（各 epoch 的 Goal Session、Work 及其子 Session）`usage.jsonl` 里落在本周期的 token（`goal.rs::period_usage`），`work_admission` 和闸门都用它，另判 Agent 总量（`agent_usage`）。预算用完时宿主（`sync_budget_work`，每个 Goal 最多 30 秒看一次）向运行中的 Work 投 `pause`（`reason = goal <id> used up its budget of the period`，来源 `budget`），周期重置后只恢复这一来源的。Goal 头的 `<budget>` 加自己与 Work 分开的用量、重置时刻、墙钟上限、Agent 总量；新的 `<gate>` 列硬间隔、硬保障、检查时间表与脚本版本、本周期检查与拦截的次数、最近一次检查、连续出错、连续 `no_action`。`goal.toml` 写明预算的含义和怎么调检查。
+- **H6**：`host/maintenance.rs::decide` 和 `schedule.json.gate` 删除，判断搬进 `goal_checks/memory_maintenance.ts`（随 Jarvis 包分发）；结晶 Goal 加 `goal_checks/skill_crystallize.ts`（使用记录里新增 3 个 Work，或新增且满一周）。播种时用 `set_check` 写成 Goal 的脚本（`source = package:<path>`）；以后播种时只在 Goal 还用包内版本且包里的变了时替换。owner 可 `restore_package`。机械维护由宿主在每个检查槽 drive 一次。AgentRoot 布局加 `goal_checks/`。
+- **H7**：文档见 §10.5；页面见 §10.4。
+
+### 10.2 B、C0、D1、D5、E、F、G
+
+- **B1**：`max_wall_secs`；到点后不再开 run 段，以 `budget_exhausted` 关闭；Goal 的 report 被拒（还有自己的任务在跑）时文案另写（`reports.rs`）。`goal.toml` 加了长命令交给 Work 的说明。
+- **B2**：Goal Session 的 bin 里放 `ask_user` 的 tombstone（`runtime/mod.rs::bin_plan_with`），提示改用 `questions`。
+- **B4**：`api.rs::create_sub_session`：父是 Goal Session、没给 `--behavior` 且类缺省有 behavior 时取 `work_simple`。
+- **B5**：Goal 头放在输入消息开头，同一条 User 消息；历史里替换成一行（`ReceiptPart.brief`）。`<works>` 只列未结束的 Work。`PART_GOAL` 删除。fixture `16_goal_session` 重新生成（只替换这一个）。
+- **C0**：`notify send --url <link>`（写进 `NotifySource.link`，只接受 `https://`、`http://` 或 `/` 开头），帮助与 `goal.toml` 写明语义。
+- **D1**：`goal_time.rs`（5 段 cron，`chrono-tz` 已是依赖，没有新增依赖）；`Timetable` 统一 every / cron，`LocalScheduleBackend` 按墙上时间计槽（槽 = 匹配分钟的 UTC 分钟数）；`goal create / revise / check set` 加 `--cron --timezone`，没给时区时取调用会话的用户时区，再缺省 UTC。
+- **D5（一半）**：`analyze_intent.toml`：到点要判断的请求建带时间表的 Goal；固定提醒仍 `unsupported`。
+- **E4**：删除 `SessionKind::SelfCheck`、内建模板 `self_check`、`[loader.self_check]`、`behaviors/self_check.toml`；Agent Notebook 一并删除（`agent_tool::agent_notebook`、`agent_tool_cli_dev` 的 `agent-notebook` 子命令、`cognition.notebook_append` 与 kRPC、`xagent note`、AgentRoot 的 `notebook/` 目录）。
+- **E5**：开关放进 owner 的 `.meta/skills_state.json`（`crystallize`），kRPC `skills.crystallize_set {enabled}`（owner 专用），覆盖 `agent.toml` 的值；关掉的内置 Goal 在 `schedule.json.switched_off` 标出。
+- **F1**：Goal 头的 `<current_skills>` 给出每个 skill 正文可读的路径（`goal.rs::skill_path`）；`goal create --skill <name>` 和 `goal skills add <name>` 不带 ref 时取已安装 goal skill 的路径。restart（`facts`）保留 Goal 自己加的 skills。
+- **F2**：Jarvis 包加 `goal_skills/goal_check_script`、`goal_skills/goal_delivery`；`goal.toml` 加“早期运行准备工具、之后便宜”的范式和 goal skill 的用法。
+- **G1**：`api.rs::check_ready`，UI 和 Goal 两个入口都走它：任务书不能为空；Goal 的 Work 另有两条（N4 原文只针对 Goal）：同一个 Goal 下不能再建任务书相同（规范化空白和大小写后相同）且未结束的 Work，任务书不能等于 Goal 的 objective。最初对话入口也查重，xagent_lib / xagent_cli 里四个用例同一父会话下建同名子会话被拦，收回到只对 Goal 查。
+- **G2**：见 §10.4。
+
+### 10.3 与本单方案不同的地方
+
+1. 硬保障字段为空表示取 Agent 的缺省（72 小时），`0` 才是关闭（本单写的是“空表示关”）：和其它字段的“空取缺省”一致。
+2. 检查脚本拿数据的“只读 kRPC”做成两处：宿主经脚本的标准输入输出提供 `memory.status`（脚本不需要网络和身份就能拿到），同名的 Agent State kRPC 也加了（页面、Goal Session 可以看）。
+3. 检查脚本得到 `--allow-env`（websdk 要靠环境变量里的身份），本单只写了读和网络。
+4. Goal Session 改检查用 `GoalStore::set_check`（goal.json 的锁下 CAS 写），不是经驱动者的控制输入；单写者靠 GoalStore 的锁保证。
+5. B5 没有把 Goal 头做成输入模板变量，而是放在模板输出的前面（同一条消息）。现在没有哪个 behavior 需要把它放到别处。
+6. 没有材料、没有时间表也没有脚本的普通 Goal 只会被事件、手动和硬保障唤醒；有时间表没有脚本的 Goal 每个槽都推理（受硬间隔和预算封顶），与本单“条件一直为真时宿主不兜底”一致。
+7. 带检查脚本、不是 `--start` 创建的 Goal，epoch 开始时先跑一次检查；没有脚本的 reopen / restart 照旧直接投运行机会。
+
+### 10.4 页面（H7、G2、E5）
+
+`src/frame/opendan/web`（`model/{types,datamodel,krpc,mock}.ts`、`goals.ts`、`lib.ts`、`i18n.ts`、`runtimes.ts`、`pages/{GoalDetail,Goals,Skills,SessionDetail,Home}.tsx`、e2e `goals.spec.ts`、`skills.spec.ts`、`mock.spec.ts`、`sessions.spec.ts`、`home.spec.ts`）：
+
+- Goals 列表：关掉的内置 Goal 显示“已关闭”，排在休眠之后、不计入活动数；“下一次机会”带上次检查的结果，cron 的显示表达式和时区；活动 Goal 超过 16 个时提示 Goal 是珍贵的资源、可以并进已有的 Goal。
+- 详情页的门槛面板：硬保障（时长 / 缺省 / 关）、硬间隔、周期预算（已用 / 上限 / 剩余，Goal 与 Work 分开，Work 数，窗口与重置时刻）、检查（时间表、脚本版本与来源和包内路径、上次检查、连续出错与最后一次错误、本周期的检查与拦截次数、硬保障次数、连续 `no_action`、正在被拦的事件）；“查看检查脚本”“恢复包内脚本”“编辑预算与时间表”。旧的 gate 显示删除，整理回执保留。
+- 编辑表单（N5 (b)）：预算、硬间隔、硬保障经 `goals.revise`（带打开时的修订号，冲突时提示并重载），检查时间表经 `goals.set_check`；`every_secs` 小于 60 在页面上就拒绝。清空时间表走 `revise`（`set_check` 不能清空 `every_secs` / `cron`）。
+- 修订差异：与上一修订逐字段对比（12 个字段，只列不同的）。成本：本周期用量与最近 7 天按天的 token。
+- Skills 页：经验结晶的开关（说明它做什么、一次约 18 万 token、当前值来自包缺省还是 owner）。
+- 暂停来源 `budget` 的文字；self_check 从会话类型、mock 和用例里删除。
+- 已知的不足：页面上的缺省值（15 分钟、3 天、200 万、5 分钟）是写死的，Agent 在 `agent.toml` 里改了缺省时显示不对；列表每次刷新多一个请求（为了知道哪些内置 Goal 关掉了）；修订冲突的路径 mock 测不到。
+- 验证：`pnpm check`、`pnpm lint` 通过，`pnpm test:e2e` 56 个全部通过（mock，Chromium，含一组 390×844 手机宽度不横向滚动的检查）。真实 Zone、真机没有验。
+
+### 10.5 文档
+
+- [Agent State Protocol](<../doc/opendan/protocol/Agent State Protocol.md>) §9（文件与字段、§9.4 改写为预算与门槛、权限、kRPC、§9.7 / §9.8）；[Session Control Protocol](<../doc/opendan/protocol/Session Control Protocol.md>) 加暂停来源 `budget`、去掉 self_check；Session Directory Protocol、xAgent.md 去掉 self_check；`build-in agent-tool手册.md` 的 agent-notebook 一节标为已删除。
+- [架构设计](<../doc/opendan/OpenDAN Agent Session架构设计.md>) §12.1.1 标为已实施并写了实现上的取舍，§12.2、§15.3、§15.5、§15.7、§17 的相关行同步。
+- 手册：`opendan_agent_dev` 写了 `[session.goal]` 的新键与检查脚本，删了 `notebook/`；`ui_core` 不涉及（它不描述 Goal 的门槛和定时，`notify send` 也不在 UI 手册里）。异步单 §8.1、默认 Goal 单 §11.8 记了落点。
+
+### 10.6 验证
+
+- `cargo test -p libopendan -p opendan -p agent_tool --no-fail-fast -- --test-threads=1`：goal_session 37、memory_maintenance 13、fixtures 19、memory_replay、session_control、notify、workspace_binding、xagent_lib、loader 等全部通过。失败的只有环境问题：`agent_tool` 的 3 个 grep 用例和 `agent_tool_cli_dev` 的 1 个（本机没有 `rg`），`xagent_cli` 的 2 个（`src/tools/bin` 不存在，恢复被拦，早已存在）。
+- 新增用例：`goal_session.rs` 的 `the_check_script_decides_scheduled_inferences_and_keeps_its_state`、`the_hard_interval_holds_events_and_merges_them_into_one_activation`、`the_hard_guarantee_wakes_a_goal_past_budget_and_check_but_not_a_dormant_one`、`the_agent_total_holds_every_goal_but_their_guarantees`、`a_closed_activation_lets_go_of_its_tasks`、`checks_run_on_deno_with_read_and_network_only`（真实 Deno：执行命令、写文件被拒，`state` 往返、超时、返回值不合约定）、`the_period_limit_skips_fires_pauses_work_and_the_next_period_resumes_it`（改写原 V07）、`work_is_refused_when_it_repeats_running_work_or_the_whole_goal`、`a_cron_timetable_fires_on_the_wall_clock_of_its_zone`、`goal_skills_are_readable_from_the_header_and_survive_a_restart`；`memory_maintenance.rs` 迁到检查脚本（真实 Deno 跑包里的脚本），加 `without_material_only_the_hard_guarantee_infers` 和包升级 / 自改 / 恢复的断言；`goal_time.rs` 3 个单元测试。
+- `uv run buckyos-build.py` 通过；`./build_aios --local-test` 通过。WebUI 见 §10.4。
+- 真实 Zone DV（证据 `notepads/evidence/goal-session-next/2026-11-11/README.md`）：升级后内置整理 Goal 拿到包里的脚本、在容器的 Deno 上 6 个多小时 14 次检查无误且没有调用模型；测试 Goal 检查为真才推理；脚本写坏后静默到硬保障、由 Goal 自己修好；页面经网关在 390 / 1280 宽度显示门槛。
+- 没有验的：事件被硬间隔 / 预算拦下再合并（只有集成测试）、预算用完时 Work 的暂停与恢复（只有集成测试）、cron 时间表（只有集成测试）、页面的编辑表单与结晶开关的提交、手机真机、Workspace 失效。DV 之后的两处小修（硬保障原因里的时长写法、过滤 Deno 的 TLS 警告）没有重新部署。
+
+DV 发现、待 owner 定的一件事：**硬保障压过预算，设得短时会无视预算持续推理**。测试 Goal 的硬保障设成 600 秒，环境闲置约 6.5 小时里被唤醒 38 次，周期预算 150 万用完后照样触发，共用了约 220 万 token（DV 参数不当所致）。建议给硬保障设下限（例如不小于 1 小时），或在页面和 `goal create` 上对短于若干小时的值给出提示。
+
+F3 的数据：同一个 Goal 连续 `no_action` 时每次 Activation 从 2.5 万涨到 7.8 万 token（历史每次约长 2k），第 37 次触发通用压缩后回落到 5.9 万。
+

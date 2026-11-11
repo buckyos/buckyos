@@ -190,6 +190,9 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
       call('goals.reopen', { goal_id: goalId, request: { reason, fresh_state: freshState } }),
     restartGoal: (goalId, reason, carryState = false) =>
       call('goals.restart', { goal_id: goalId, request: { reason, carry_state: carryState } }),
+    reviseGoal: (goalId, request) => call('goals.revise', { goal_id: goalId, request }),
+    setGoalCheck: (goalId, request) => call('goals.set_check', { goal_id: goalId, request }),
+    goalCheckScript: (goalId, version) => call('goals.check_script', { goal_id: goalId, ...(version != null ? { version } : {}) }),
     skills: () => call('skills.list'),
     skillsState: () => call('skills.state'),
     uiSkills: () => call('skills.ui_get'),
@@ -204,5 +207,6 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     setUiSkills: (names) => call('skills.ui_set', { names }),
     importSkill: (request) => call('skills.import', { ...request }),
     discardSkillDraft: (slug) => call('skills.draft_discard', { slug }),
+    setCrystallize: (enabled) => call('skills.crystallize_set', { enabled }),
   }
 }

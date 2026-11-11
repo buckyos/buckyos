@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 const USAGE: &str = "\
 xagent — drive an Agent Session for one Turn (or keep driving it)
 
-  xagent new    --agent <did> --objective <text> [--class work|ui|self_check] [--parent <dir>]
+  xagent new    --agent <did> --objective <text> [--class work|ui] [--parent <dir>]
                 [--behavior <name>] [--cmd-skill <name>]... [--llm-context <json|@file>] [--runtime <id>] [--workspace <id>]
                 [--subscribe <spec>]... [--msg <text>] [--key <idem>]
                 [--until turn|finished|idle|outcomes:<n>] [--no-run]
@@ -64,22 +64,27 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
                  | unregister <id> --expected-revision <n>
   xagent goal   create --objective <text> [--title <t>] [--lifecycle achieve|maintain] [--achieved-when <t>]
                        [--healthy-state <t>] [--distance <t>] [--constraint <t>]... [--skill <name>[=<ref>]]...
-                       [--workspace <id>] [--path <p>]... [--object <o>]... [--every <secs>] [--min-interval <secs>]
+                       [--workspace <id>] [--path <p>]... [--object <o>]... [--every <secs> | --cron <expr> [--timezone <iana>]]
+                       [--check <script.ts>] [--min-interval <secs>] [--guarantee <secs, 0 = off>]
                        [--start] [--behavior <b>] [--budget <json|@file>] [--key <idem>] [--json <request|@file>]
   xagent goal   list | show [<id>] [--state] [--activations <n>] [--changes <n>] [--revisions] [--epochs] [--schedule]
-  xagent goal   revise <id> --expected-revision <n> [--objective ..] [--title ..] [--every ..] [--budget <json>]
-                       [--json <patch|@file>] [--reason <t>]
+  xagent goal   revise <id> --expected-revision <n> [--objective ..] [--title ..] [--every ..|--cron ..] [--timezone ..]
+                       [--min-interval <secs>] [--guarantee <secs>] [--budget <json>] [--json <patch|@file>] [--reason <t>]
+  xagent goal   check show [<id>] [--version <n>] | run [<id>] [--script <file.ts>]
+                | set [<id>] [--script <file.ts> | --restore | --clear] [--every <secs> | --cron <expr>] [--timezone <iana>] [--reason <t>]
+                       (the check script and its timetable; a goal session changes its own)
   xagent goal   pause|resume|archive [<id>] [--reason <t>] | achieved [<id>] --evidence <t>
   xagent goal   reopen <id> --reason <t> [--fresh-state] | restart <id> --reason <t> [--carry-state]
   xagent goal   activate <id> [--reason <t>] | post <id> --msg <t>
-  xagent goal   skills add <name>[=<ref>] [--note <t>] | skills remove <name>     (inside a goal session)
+  xagent goal   skills add <name>[=<ref>] [--note <t>] | skills remove <name>     (inside a goal session; a name without
+                       a ref takes the installed goal skill of that name, `skill list --kind goal`)
   xagent goal   serve [--llm-context <json|@file>] [--idle-unload <secs>]      (host the agent's goals and sessions)
   xagent schema <dir>
 
   <spec> = active|semi:object:<id>[#<event>] | semi:session:<sid>[:watch=f1,f2] | active|semi:timer:<name>
 
   inside a session's shell (as `agent-session`; the session comes from the environment):
-  ctl activity ... | ctl perceive <text> | note <text> | sessions [--active] [--children] [--json]
+  ctl activity ... | ctl perceive <text> | sessions [--active] [--children] [--json]
   recall <word|tag>... [--object <path>]... [--alias <name>]... [--limit <n>] [--json] | recall --read <ref> [--json]
   read-session <sid> [--report] [--worklog <n>] | artifact head <aid> | artifact list
   create-worksession --title <t> --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
@@ -118,8 +123,15 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   runtime list [--available] [--json] | get <id> | check <id> | baseline [--level standard|extended] [--json] | workspace ...
         (workspace list, runtime list and sessions: readable text by default; --json for structured output)
   goal ... (ui sessions: create / show / post / pause / resume / archive / reopen / restart / activate;
-            goal sessions: show / skills add|remove / achieved --evidence / archive --reason)
-  notify send --title <t> [--message <text>] [--level quiet|normal|timely|urgent] [--expires-in <dur>] [--key <k>]
+            goal sessions: show / skills add|remove / check show|run|set / achieved --evidence / archive --reason)
+  goal check run [--script <file.ts>]   run the check script (or a draft) the way the host does: same Deno, read and
+        network only, same ctx and state; nothing is recorded. Test a script with it before `goal check set`.
+  goal check set [--script <file.ts> | --restore | --clear] [--every <secs ≥ 60> | --cron <expr>] [--timezone <iana>] --reason <t>
+        the script each scheduled check runs (`export default async function check(ctx, state)` returning
+        {run, reason?, state?}) and how often; `--restore` goes back to the package's script of a built-in goal
+  notify send --title <t> [--message <text>] [--url <link>] [--level quiet|normal|timely|urgent] [--expires-in <dur>] [--key <k>]
+         (tell the user something; the system picks the channel. --url: where opening it lands, e.g. a page or
+          app made for this; something the user must answer goes in a goal's `questions`, not here)
   notify list [--open] [--any-source] [--session <sid>] [--goal <id>] | show <notify_id>
   notify answer <notify_id> (--option <value> | --text <t>) | ack <notify_id> | cancel <notify_id> [--reason <r>]
          (answer / ack: on the user's behalf, for a notification the user answered in this conversation;
@@ -1269,23 +1281,6 @@ fn render_memory_read(v: &crate::memory::MemoryRead) -> String {
     out
 }
 
-async fn cmd_note(mut a: Args) -> R<i32> {
-    let text = a.next("<text>")?;
-    let c = ctx(&a, None, false).await?;
-    let note = crate::state::NotebookNote {
-        notebook_id: a.get("notebook").unwrap_or_else(|| "default".into()),
-        title: a
-            .get("title")
-            .unwrap_or_else(|| text.lines().next().unwrap_or_default().chars().take(80).collect()),
-        content: text,
-        tags: a.all("tag"),
-        session_id: env_sid(),
-    };
-    c.agent.cognition().notebook_append(&note, &c.who).await?;
-    print(&json!({ "noted": note.title }));
-    Ok(0)
-}
-
 fn brief(e: &RegistryEntry) -> Value {
     let mut v = json!({
         "session_id": e.session_id, "class": e.class, "objective": e.objective,
@@ -2425,6 +2420,18 @@ async fn cmd_runtime_run(argv: Vec<String>) -> R<i32> {
     print(&record);
     Ok(if op.timed_out { 124 } else { op.exit_code })
 }
+/// The user's time zone of the calling session (a cron timetable without
+/// `--timezone` takes it), if it has one.
+async fn session_timezone(c: &Ctx) -> Option<String> {
+    let sid = env_sid()?;
+    let e = c.agent.sessions().lookup(&sid).await.ok()??;
+    SessionDir::open(&e.location).ok()?.config().ok()?.session.timezone.filter(|t| !t.is_empty())
+}
+
+fn read_text_file(path: &str) -> R<String> {
+    std::fs::read_to_string(path).map_err(|e| bad(format!("read {path}: {e}")))
+}
+
 /// The caller of a goal operation: inside a session its kind decides what it
 /// may do (`$OPENDAN_SESSION_ID`), outside the owner side.
 fn goal_caller(c: &Ctx) -> GoalCaller {
@@ -2570,7 +2577,12 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
                 req.distance_evaluation = t;
             }
             req.constraints.extend(a.all("constraint"));
-            req.initial_skills.extend(skills_arg(&a));
+            for mut k in skills_arg(&a) {
+                if k.reference.is_none() {
+                    k.reference = crate::goal::goal_skill_ref(c.agent.as_ref(), &k.name).await;
+                }
+                req.initial_skills.push(k);
+            }
             if let Some(w) = a.get("workspace") {
                 req.scope.workspace = Some(w);
             }
@@ -2579,8 +2591,23 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
             if let Some(n) = a.num::<u64>("every")? {
                 req.schedule.every_secs = Some(n);
             }
+            if let Some(expr) = a.get("cron") {
+                req.schedule.cron = Some(expr);
+                req.schedule.timezone = match a.get("timezone") {
+                    Some(t) => Some(t),
+                    None => session_timezone(&c).await,
+                };
+            } else if let Some(t) = a.get("timezone") {
+                req.schedule.timezone = Some(t);
+            }
             if let Some(n) = a.num::<u64>("min-interval")? {
                 req.schedule.min_interval_secs = Some(n);
+            }
+            if let Some(n) = a.num::<u64>("guarantee")? {
+                req.schedule.guarantee_secs = Some(n);
+            }
+            if let Some(f) = a.get("check") {
+                req.check_script = Some(read_text_file(&f)?);
             }
             if a.has("start") {
                 req.schedule.start_on_create = true;
@@ -2630,13 +2657,30 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
             if let Some(t) = a.get("distance") {
                 req.distance_evaluation = Some(t);
             }
-            if let Some(n) = a.num::<u64>("every")? {
+            let touches_schedule = ["every", "cron", "timezone", "min-interval", "guarantee"].iter().any(|k| a.get(k).is_some());
+            if touches_schedule {
                 let mut s = goals
                     .get(&id)
                     .await?
                     .ok_or_else(|| bad(format!("goal {id} does not exist")))?
                     .schedule;
-                s.every_secs = Some(n);
+                if let Some(n) = a.num::<u64>("every")? {
+                    s.every_secs = Some(n);
+                    s.cron = None;
+                }
+                if let Some(c) = a.get("cron") {
+                    s.cron = Some(c);
+                    s.every_secs = None;
+                }
+                if let Some(t) = a.get("timezone") {
+                    s.timezone = Some(t);
+                }
+                if let Some(n) = a.num::<u64>("min-interval")? {
+                    s.min_interval_secs = Some(n);
+                }
+                if let Some(n) = a.num::<u64>("guarantee")? {
+                    s.guarantee_secs = Some(n);
+                }
                 req.schedule = Some(s);
             }
             if let Some(b) = a.get("budget") {
@@ -2715,6 +2759,75 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
                 print(&json!({ "posted": index, "key": key, "session_id": goal.session.sid }));
             }
         }
+        "check" => {
+            let op = a.next("show | run | set")?;
+            let id = goal_id_arg(&c, &mut a).await?;
+            let goal = goals
+                .get(&id)
+                .await?
+                .ok_or_else(|| bad(format!("goal {id} does not exist")))?;
+            match op.as_str() {
+                "show" => {
+                    let version = a.num::<u64>("version")?;
+                    let d = crate::goal::defaults(c.agent.agent_root(), crate::goal::GOAL_CLASS);
+                    print(&json!({
+                        "goal_id": id,
+                        "timetable": crate::goal_time::Timetable::of(&goal, &d).map(|t| t.describe()),
+                        "script": goal.schedule.check,
+                        "source": goals.check_script(&id, version).await?,
+                        "schedule": goals.schedule(&id).await?,
+                        "hard_interval_secs": crate::goal::min_interval_secs(&goal, &d),
+                        "hard_guarantee_secs": crate::goal::guarantee_secs(&goal, &d),
+                    }));
+                }
+                "run" => {
+                    let draft = a.get("script").map(PathBuf::from);
+                    if let Some(p) = &draft {
+                        if !p.is_file() {
+                            return Err(bad(format!("--script {}: no such file", p.display())));
+                        }
+                    }
+                    let draft = match draft {
+                        Some(p) => Some(std::fs::canonicalize(&p).unwrap_or(p)),
+                        None => None,
+                    };
+                    let work = std::env::temp_dir().join("opendan-goal-checks");
+                    let runner: Box<dyn crate::goal_check::CheckRunner> = match crate::goal_check::DenoCheckRunner::discover(work) {
+                        Some(d) => Box::new(d),
+                        None => Box::new(crate::goal_check::MissingRunner),
+                    };
+                    let run = crate::goal_check::run_for(c.agent.as_ref(), runner.as_ref(), &goal, draft.as_deref(), "test", crate::now_ms()).await?;
+                    let code = if run.verdict.is_ok() { 0 } else { 1 };
+                    print(&json!({
+                        "outcome": run.outcome().as_str(),
+                        "run": run.verdict.as_ref().ok().map(|v| v.run),
+                        "reason": run.verdict.as_ref().ok().and_then(|v| v.reason.clone()),
+                        "state": run.verdict.as_ref().ok().and_then(|v| v.state.clone()),
+                        "error": run.verdict.as_ref().err(),
+                        "log": run.log,
+                        "elapsed_ms": run.elapsed_ms,
+                    }));
+                    return Ok(code);
+                }
+                "set" => {
+                    let mut req = crate::state::GoalCheckChange {
+                        script: a.get("script").map(|f| read_text_file(&f)).transpose()?,
+                        restore_package: a.has("restore"),
+                        clear_script: a.has("clear"),
+                        every_secs: a.num::<u64>("every")?,
+                        cron: a.get("cron"),
+                        timezone: a.get("timezone"),
+                        reason: a.get("reason"),
+                        ..Default::default()
+                    };
+                    if req.cron.is_some() && req.timezone.is_none() && goal.schedule.timezone.is_none() {
+                        req.timezone = session_timezone(&c).await;
+                    }
+                    print(&goals.set_check(&id, &req, &caller).await?);
+                }
+                other => return Err(bad(format!("goal check {other}: show | run | set"))),
+            }
+        }
         "skills" => {
             // A change of the Goal State: applied by the session's driver.
             let sid = env_sid().ok_or_else(|| bad("goal skills runs inside a goal session ($OPENDAN_SESSION_ID)"))?;
@@ -2724,7 +2837,7 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
                 "add" => {
                     let (n, r) = match name.split_once('=') {
                         Some((n, r)) => (n.to_string(), Some(r.to_string())),
-                        None => (name.clone(), None),
+                        None => (name.clone(), crate::goal::goal_skill_ref(c.agent.as_ref(), &name).await),
                     };
                     ControlCommand::GoalSkills {
                         add: vec![GoalSkill {
@@ -2874,6 +2987,12 @@ async fn cmd_notify(mut a: Args) -> R<i32> {
             };
             if c.agent.agent_root().is_some() {
                 complete_notify_source(c.agent.as_ref(), &mut source).await;
+            }
+            if let Some(url) = a.get("url").map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) {
+                if !(url.starts_with("https://") || url.starts_with("http://") || url.starts_with('/')) {
+                    return Err(bad(format!("--url {url}: a link (https://…) or a path of this Zone (/…)")).into());
+                }
+                source.link = Some(url);
             }
             req.source = Some(source);
             let v = notify.send(req).await?;
@@ -3146,7 +3265,6 @@ async fn real_main() -> R<i32> {
         "workspace" => cmd_workspace(a).await,
         "runtime" => cmd_runtime(a).await,
         "recall" => cmd_recall(a).await,
-        "note" => cmd_note(a).await,
         "sessions" => cmd_sessions(a).await,
         "read-session" => cmd_read_session(a).await,
         "artifact" => cmd_artifact(a).await,

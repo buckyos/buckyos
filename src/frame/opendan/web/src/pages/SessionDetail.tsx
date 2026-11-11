@@ -11,6 +11,7 @@ const PAUSE_HINT: Record<PauseSource, TextKey> = {
   parent: 'pausedWithParentHint',
   interrupted: 'pausedInterruptedHint',
   goal: 'pausedWithGoalHint',
+  budget: 'pausedByBudgetHint',
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v))
@@ -149,8 +150,8 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
   const finished = entry.status.run_state === 'finished'
   const decidable = finished && entry.status.acceptance === 'pending'
   const paused = entry.status.paused
-  // A finished work or self-check is deleted with its descendants once they are all finished.
-  const sessions = useQuery(finished && (entry.kind === 'work' || entry.kind === 'self_check') ? ['sessions.query'] : null, () => dataModel.sessions())
+  // A finished work is deleted with its descendants once they are all finished.
+  const sessions = useQuery(finished && entry.kind === 'work' ? ['sessions.query'] : null, () => dataModel.sessions())
   const descendants = (parent: string): RegistryEntry[] =>
     (sessions.data ?? []).filter((e) => e.origin?.parent_session === parent && e.session_id !== parent).flatMap((e) => [e, ...descendants(e.session_id)])
   const below = descendants(sid)
@@ -189,7 +190,7 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
       {paused && (
         <div className="mb-2 text-xs text-warn" data-testid="session-paused">
           {t(pauseLabel[paused])} · {t(PAUSE_HINT[paused])}
-          {paused === 'goal' && entry.origin?.goal && <> <a className="text-accent" href={goalHref(entry.origin.goal.goal_id)}>{entry.origin.goal.goal_id}</a></>}
+          {(paused === 'goal' || paused === 'budget') && entry.origin?.goal && <> <a className="text-accent" href={goalHref(entry.origin.goal.goal_id)}>{entry.origin.goal.goal_id}</a></>}
         </div>
       )}
       <div className="flex flex-wrap items-start gap-2">
@@ -226,7 +227,7 @@ function Operations({ detail, onDone }: { detail: SessionDetail; onDone: () => v
             {goal?.status === 'paused' ? t('gsPaused') : t('opPause')}
           </button>
         )}
-        {!finished && (entry.kind === 'work' || entry.kind === 'self_check') && (
+        {!finished && entry.kind === 'work' && (
           <button className="btn border-bad text-bad" onClick={() => stop('session', t('stop'), t('stopWorkHint'))}>
             {t('stop')}
           </button>

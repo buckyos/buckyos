@@ -488,3 +488,8 @@ Mock/虚拟时钟用于确定性和崩溃测试；集成验收另外验证真实
 - §11.2 的 `related_view` 与上面“只按 scope 重叠选已知认知”的风险已改：引用必带、Agent 自身认知总是候选、按与本批材料的词重合排序后截断 24 条。
 - 表达审阅（建议，不是规则）、`explicit` 不能配 `inference`、提交结果带 `pending`／`next`，见需求文档 A.4.1。
 - 行为提示词已用真实模型回放：`cargo test -p libopendan --test memory_replay -- --ignored --nocapture`（夹具 `src/frame/lib_opendan/tests/fixtures/memory_consolidation/`，报告 `src/target/memory-replay/`）。
+
+### 11.8 检查脚本取代宿主 gate（2026-11-11）
+
+[Goal Session 继续推进 TODO](./opendan-goal-session-next-todo.md) 的 H6 实施（记录在该单 §10）：§6.1 的确定性 gate 从宿主（`host/maintenance.rs::decide`）搬进检查脚本 `goal_checks/memory_maintenance.ts`，随 Jarvis 包分发，播种时成为这个 Goal 的脚本；Goal 可以改写它，包升级不覆盖改过的。脚本经宿主的只读调用 `memory.status` 取 Memory 的版本向量和完整检查（完整检查仍在 Rust 里）。`schedule.json.gate` 删除，检查结果记在 `schedule.json` 的 `last_check / stats / check_state`。清理重试、未完成回执由宿主在每个检查槽 drive 一次 Session 完成。`[session.goal.maintenance] decision` 删除（T06 取消）。V01 的“无材料不调用模型”改为“无材料时只有硬保障那一次”（缺省 72 小时，用例 `without_material_only_the_hard_guarantee_infers`）。
+

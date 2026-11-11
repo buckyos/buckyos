@@ -919,11 +919,49 @@ async fn decide_locked(
     Ok(target)
 }
 
+fn normalized(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Is a Work ready to be created (architecture §3.1, §14.5; TODO G1)? One
+/// mechanical check for every entry: a task to do; and for a Goal's Work
+/// (N4), no second unfinished Work of the Goal with the same task, and a
+/// piece of the Goal, never the Goal itself.
+async fn check_ready(
+    agent: &dyn AgentStateClient,
+    pcfg: &SessionConfig,
+    objective: &str,
+    unfinished: &[RegistryEntry],
+) -> Result<()> {
+    let want = normalized(objective);
+    if want.is_empty() {
+        return Err(OpenDanError::InvalidArgument("a work session needs an objective".into()));
+    }
+    if let Some(b) = &pcfg.session.goal {
+        if let Some(same) = unfinished.iter().find(|e| normalized(&e.objective) == want) {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "work session {} of this goal with the same objective is still running: follow it (or stop it) instead of starting it again",
+                same.session_id
+            )));
+        }
+        if let Some(goal) = agent.goals().get(&b.goal_id).await? {
+            if normalized(&goal.objective) == want {
+                return Err(OpenDanError::InvalidArgument(
+                    "a work session takes one bounded piece of the goal, not the goal's whole objective: give it a task it can finish and check".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+
 /// Create a sub session of `parent_sid`: registered with
 /// `origin = {parent_session, report, created_by_call}`, driven by the
 /// parent's driver, not advanced here. Idempotent for the same creating
 /// call. Refused beyond the parent's `max_sub_sessions` (not finished at the
-/// same time) and `max_session_depth`.
+/// same time) and `max_session_depth`, and when it is not ready
+/// ([`check_ready`]).
 pub async fn create_sub_session(
     agent: &dyn AgentStateClient,
     who: &str,
@@ -959,7 +997,7 @@ pub async fn create_sub_session(
         Some(binding) => Some(crate::goal::work_admission(agent, &pcfg, &parent_dir, binding).await?),
         None => None,
     };
-    let siblings = match &goal_origin {
+    let unfinished: Vec<RegistryEntry> = match &goal_origin {
         Some(g) => agent
             .sessions()
             .query(&RegistryQuery {
@@ -969,15 +1007,17 @@ pub async fn create_sub_session(
             .await?
             .into_iter()
             .filter(|e| e.kind != SessionKind::Goal && e.status.run_state != RunState::Finished)
-            .count(),
+            .collect(),
         None => agent
             .sessions()
             .children_of(&[parent_sid.to_string()])
             .await?
             .into_iter()
             .filter(|e| e.status.run_state != RunState::Finished)
-            .count(),
+            .collect(),
     };
+    check_ready(agent, &pcfg, &sub.objective, &unfinished).await?;
+    let siblings = unfinished.len();
     if siblings >= policy.max_sub_sessions as usize {
         return Err(OpenDanError::InvalidArgument(format!(
             "session {parent_sid} already has {siblings} unfinished sub sessions (max_sub_sessions = {}); wait for one or stop it",
@@ -1036,6 +1076,10 @@ pub async fn create_sub_session(
     spec.policy.max_session_depth = policy.max_session_depth;
     if let Some(b) = sub.behavior.clone() {
         spec.prompt.behavior = Some(b);
+    } else if pcfg.session.kind == SessionKind::Goal && spec.prompt.behavior.is_some() {
+        // A Goal plans across its Activations: its Work is one bounded task
+        // (TODO B4), not the class default (a plan with Todos).
+        spec.prompt.behavior = Some(crate::todos::WORK_BEHAVIOR.to_string());
     }
     spec.require_cmd_skills = sub.cmd_skills.is_some();
     spec.prompt.cmd_skills = match &sub.cmd_skills {

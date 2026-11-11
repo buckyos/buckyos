@@ -33,14 +33,13 @@
 | session root | `<agent_root>/sessions/<session_id>/` |
 | behavior / step / wakeup | session state / last step record |
 | tool bin / session tool path | BuckyOS tools 路径规则 + `agent_id + session_id` |
-| memory / notebook / todo / workspace | Agent RootFS 固定目录规则（见 [Agent RootFS.md](../opendan/Agent%20RootFS.md)） |
+| memory / todo / workspace | Agent RootFS 固定目录规则（见 [Agent RootFS.md](../opendan/Agent%20RootFS.md)） |
 
 ### Dev-only override（仅本地调试，不进生产契约）
 
 | env | 用途 |
 |-----|------|
 | `AGENT_MEMORY_ROOT` | 覆盖 memory root（否则用 `<agent_root>/memory/`） |
-| `AGENT_NOTEBOOK_ROOT` | 覆盖 notebook root |
 | `OPENDAN_WORKFLOW_URL` / `WORKFLOW_SERVICE_URL` | 直连 workflow service |
 | `OPENDAN_TASK_MANAGER_URL` / `TASK_MANAGER_URL` | 直连 task-manager |
 | `OPENDAN_SESSION_TOKEN` / `SESSION_TOKEN` | dev 直连 RPC token |
@@ -81,9 +80,8 @@ beta2.2 是 breaking-change 版本，下列旧上下文变量**已整体移除**
 | [`cancel_task`](#19-cancel_task) | CLI 伪工具 | 取消 pending task | `agent_tool_cli_dev/src/lib.rs` |
 | [`finish_task`](#20-finish_task) | CLI 伪工具 | 结束 task（完成/失败） | `agent_tool_cli_dev/src/lib.rs` |
 | [`agent-memory`](#21-agent-memory) | CLI | 长期记忆 KV 存取 | `agent_tool_cli_dev/src/lib.rs` |
-| [`agent-notebook`](#22-agent-notebook) | CLI | Agent notebook 读写 | `agent_tool_cli_dev/src/lib.rs` |
 
-CLI 伪工具不走 `AgentTool` trait 注册，只在 `agent_tool` 二进制内分发。`agent-memory` / `agent-notebook` 是 CLI-only 子命令，没有对应的 `TypedTool` 注册。
+CLI 伪工具不走 `AgentTool` trait 注册，只在 `agent_tool` 二进制内分发。`agent-memory` 是 CLI-only 子命令，没有对应的 `TypedTool` 注册。
 
 ---
 
@@ -1166,71 +1164,9 @@ END
 
 ---
 
-## 22. `agent-notebook`
+## 22. `agent-notebook`（已删除）
 
-CLI-only，对应 `agent_tool::agent_notebook`。Agent 私有笔记 / system context 拼装入口。
-
-### Prompt
-
-CLI-only，由 prompt 模板里的 notebook 章节驱动。
-
-`usage`（节选）：
-```text
-agent-notebook [--root <path>] \
-  <create|update|append|read|list|build-system-context|build-registry-context|hints|mark-status|promote> [...]
-```
-
-`--root` 默认从 RuntimeContext 推导为 `<OPENDAN_AGENT_ROOT>/notebook/` 对应固定目录；dev 态可用 `AGENT_NOTEBOOK_ROOT` override（见[环境变量契约](#环境变量契约)）。Agent Notebook 归属当前 Agent，SQL 数据按当前 notebook DB 路径隔离；命令行参数只表达业务语义，不需要传 owner/session/actor/reason 类上下文参数。
-
-### Bash 支持
-
-CLI-only。
-
-### CLI 命令解释 + 常用例子
-
-```bash
-agent-notebook create --bookid nb_01HXY --kind project --title "buckyos beta2.2"
-agent-notebook append "read_tool unchanged 短路" --bookid nb_01HXY --stdin <<EOF
-今天梳理了 read_tool 的 unchanged 短路。
-EOF
-
-agent-notebook read --bookid nb_01HXY
-agent-notebook list
-agent-notebook status itm_01HXY stale --reason "no longer applies"
-agent-notebook remarks append itm_01HXY red "needs confirmation"
-agent-notebook remarks list itm_01HXY --type red
-agent-notebook remarks remove itm_01HXY rmk_01HXY
-
-# 装配 prompt 用的 context
-agent-notebook build-system-context
-agent-notebook hints --topic-tags agent-notebook,state-management
-```
-
-### 输出示例
-
-```json
-{
-  "agent_tool_protocol": "1",
-  "status": "success",
-  "cmd_name": "agent-notebook",
-  "cmd_args": "agent-notebook read --bookid nb_01HXY",
-  "title": "agent-notebook read nb_01HXY => ok",
-  "summary": "read nb_01HXY (1.2 KB)",
-  "detail": {
-    "ok": true,
-    "notebook": {
-      "id": "nb_01HXY",
-      "kind": "project",
-      "title": "buckyos beta2.2",
-      "items": [ { "status": "active", "text": "..." } ]
-    }
-  }
-}
-```
-
-`build-system-context` / `build-registry-context` 返回的 `detail.text` 是已经拼好的 prompt 片段，可以直接喂回 system message。
-
----
+Agent Notebook 于 2026-11-11 退役（[Goal Session 继续推进 TODO](../../notepads/opendan-goal-session-next-todo.md) E4，Memory 需求 TD-09）：`agent_tool::agent_notebook` 与 `agent-notebook` 子命令都已删除，Agent 记住的东西只走 Memory（`agent-session ctl perceive`、整理 Goal）。
 
 ## 附录
 

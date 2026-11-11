@@ -35,14 +35,13 @@ pub use behaviors::{
     check_cmd_skill_names, check_named_skills, freeze_behavior, freeze_config, parse_behavior, BehaviorCatalog,
     FsBehaviorCatalog, MemBehaviorCatalog, CMD_SKILLS_DIR, ROLE_SUPPLEMENT_FILE, frozen_changes, refrozen,
 };
-pub use cognition::NotebookNote;
 pub use connect::{
     connect, register_in_process, unregister_in_process, ConnectOptions, ForwardingStateClient,
     StateLocator, WithBehaviors, WithNotify, ENV_AGENT_ROOT, ENV_AGENT_STATE_URL,
 };
 pub use fs_client::{AgentLayout, FsAgentStateClient};
 pub use goals::{
-    ActivationQuery, CallerKind, GoalCaller, GoalCreate, GoalReopen, GoalRestart, GoalRevise,
+    ActivationQuery, CallerKind, GoalCaller, GoalCheckChange, GoalCreate, GoalReopen, GoalRestart, GoalRevise,
     GoalStatusChange, GoalStore,
 };
 pub use krpc::{KrpcAgentStateClient, KrpcTransport, StateTransport};
@@ -90,7 +89,7 @@ pub trait SessionRegistry: Send + Sync {
     async fn mark_runtime(&self, _runtime_id: &str, _reason: Option<&str>) -> Result<Vec<RegistryEntry>> {
         Ok(Vec::new())
     }
-    /// Delete a finished Work / self_check session with everything below it
+    /// Delete a finished Work session with everything below it
     /// (all finished too): their directories and registry entries. Returns
     /// the deleted session ids. What they left in the perception stream
     /// stays (Memory cites it).
@@ -122,7 +121,7 @@ pub trait Perception: Send + Sync {
     async fn last_seq(&self, sid: &str) -> Result<u64>;
 }
 
-/// Cognition facade (§6.3, §6.4) over the Memory component / notebook.
+/// Cognition facade (§6.3, §6.4) over the Memory component.
 #[async_trait]
 pub trait Cognition: Send + Sync {
     /// Active Memory query of session `sid`, as its host-bound identity
@@ -131,8 +130,6 @@ pub trait Cognition: Send + Sync {
     /// A reference in full (a cognition with its provenance, or a
     /// perception), as session `sid`. Read-only.
     async fn read(&self, sid: &str, reference: &str) -> Result<crate::memory::MemoryRead>;
-    /// Explicit declaration from an ordinary session ("remember this").
-    async fn notebook_append(&self, note: &NotebookNote, who: &str) -> Result<()>;
 }
 
 /// Artifact list (§6.5): registration and pointers only.

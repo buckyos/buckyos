@@ -27,9 +27,21 @@ export const OUTCOME_TONE: Record<ActivationOutcome, string> = {
   needs_input: 'waiting',
 }
 
-/** The built-in Goal's gate says why it last skipped; an ordinary one keeps a list of skipped fires. */
-export const lastSkipReason = (schedule: GoalSchedule, builtin: boolean): string | undefined =>
-  (builtin ? schedule.gate?.last_skip_reason : undefined) ?? schedule.skipped?.at(-1)?.reason
+export const lastSkipReason = (schedule: GoalSchedule): string | undefined => schedule.skipped?.at(-1)?.reason
+
+/** Defaults of `agent.toml [session.goal]` in the agent package (the page cannot read the agent's own). */
+export const GOAL_DEFAULTS = {
+  min_interval_secs: 900,
+  guarantee_secs: 259_200,
+  check_every_secs: 300,
+  window_secs: 86_400,
+  period_max_total_tokens: 2_000_000,
+}
+
+export const CHECK_MIN_EVERY_SECS = 60
+
+/** The active goals past which the list says goals are scarce. */
+export const MANY_GOALS = 16
 
 export const candidatesWaiting = (state: GoalState | null | undefined): number =>
   state?.maintenance?.candidates?.filter((c) => c.status === 'needs_confirmation').length ?? 0

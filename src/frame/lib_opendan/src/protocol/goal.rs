@@ -35,8 +35,6 @@ pub const GOAL_SCHEDULE_SCHEMA: &str = "opendan.goal_schedule/1";
 pub const GOAL_SOURCE_ID: &str = "goal";
 /// The implicit active subscription of a Goal Session on them.
 pub const GOAL_ACTIVATION_SUBSCRIPTION: &str = "_goal_activation";
-/// Part name of the Goal header message in an input receipt.
-pub const PART_GOAL: &str = "goal_activation";
 /// `receipt.extra` key carrying the Activation a batch opened.
 pub const RECEIPT_GOAL_ACTIVATION: &str = "goal_activation";
 /// `receipt.extra` key carrying the reasons a batch adds to the open
@@ -223,6 +221,10 @@ pub struct ActivationBudget {
     pub max_total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_runs: Option<u32>,
+    /// Wall clock from the opening of the Activation: past it no new run
+    /// segment starts and the Activation closes as `budget_exhausted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_wall_secs: Option<u64>,
 }
 
 /// Limits of one statistics period (fixed windows of `window_secs`).
@@ -264,6 +266,7 @@ impl GoalBudget {
                     .max_total_tokens
                     .or(base.activation.max_total_tokens),
                 max_runs: self.activation.max_runs.or(base.activation.max_runs),
+                max_wall_secs: self.activation.max_wall_secs.or(base.activation.max_wall_secs),
             },
             period: PeriodBudget {
                 window_secs: self.period.window_secs.or(base.period.window_secs),
@@ -278,18 +281,42 @@ impl GoalBudget {
     }
 }
 
-/// When the runtime offers the Goal a run (phase 1: a fixed interval).
+/// Shortest check timetable (`every_secs`) anyone may set.
+pub const CHECK_MIN_EVERY_SECS: u64 = 60;
+
+/// When a run opportunity becomes an inference (architecture §12.1.1): the
+/// hard guarantee, the hard interval, the period budget (`GoalBudget`) and
+/// the check (a timetable and a script).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GoalScheduleSpec {
-    /// Scheduled Activations every `every_secs` (none: manual and event
-    /// driven only).
+    /// Check timetable: a check every `every_secs` (none and no `cron`: the
+    /// check timetable default when the Goal has a check script, else no
+    /// scheduled checks). At least [`CHECK_MIN_EVERY_SECS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every_secs: Option<u64>,
-    /// A scheduled fire closer than this to the last Activation is skipped
-    /// (`None`: `[session.goal] min_interval_secs`).
+    /// Check timetable as a 5-field cron expression on the wall clock of
+    /// `timezone` (instead of `every_secs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    /// IANA time zone of `cron` (none: the agent's, then UTC).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    /// The script each scheduled check runs: `true` makes the run
+    /// opportunity an inference (none: every scheduled check passes).
+    /// Changed through `set_check` only, never by a revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<GoalCheckScript>,
+    /// Hard interval: no inference closer than this to the end of the last
+    /// one, whatever the trigger (`None`: `[session.goal]
+    /// min_interval_secs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_interval_secs: Option<u64>,
+    /// Hard guarantee: past this long without an inference one runs
+    /// whatever the budget and the check say (`None`: `[session.goal]
+    /// guarantee_secs`; `0`: off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guarantee_secs: Option<u64>,
     /// The first Activation starts when the Goal Session is created.
     #[serde(default)]
     pub start_on_create: bool,
@@ -299,6 +326,26 @@ impl GoalScheduleSpec {
     pub fn is_empty(&self) -> bool {
         self == &GoalScheduleSpec::default()
     }
+
+    /// A check timetable is set (`every_secs` or `cron`).
+    pub fn has_timetable(&self) -> bool {
+        self.every_secs.is_some() || self.cron.is_some()
+    }
+}
+
+/// The check script of a Goal: `state/goals/<id>/checks/<version>.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GoalCheckScript {
+    pub version: u64,
+    pub sha256: String,
+    /// Who wrote this version: `package:<path>` | `owner` |
+    /// `ui_session:<sid>` | `goal_session:<sid>`.
+    pub source: String,
+    /// The package script a built-in Goal started from (`goal_checks/<name>.ts`
+    /// of the AgentRoot): what "restore" copies again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    pub updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -339,8 +386,8 @@ pub enum StateKeep {
     #[default]
     All,
     /// Only what must not be lost: `active_works`, `absorbed`, `usage`,
-    /// `recent_works`; skills return to `initial_skills` (restart's
-    /// default).
+    /// `recent_works`, the skills (the initial ones and those the Goal
+    /// added) (restart's default).
     Facts,
 }
 
@@ -484,6 +531,19 @@ pub enum ActivationReasonKind {
     /// A question of the Goal was answered (or closed) by the user:
     /// `ref` is its notification.
     Answer,
+    /// The hard guarantee: too long without an inference.
+    Guarantee,
+}
+
+impl ActivationReasonKind {
+    /// Explicit acts and run opportunities the host already let through:
+    /// they open an Activation without the gate of events.
+    pub fn bypasses_gate(&self) -> bool {
+        matches!(
+            self,
+            Self::Manual | Self::Scheduled | Self::Guarantee | Self::Created | Self::Reopened | Self::Restarted
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -679,11 +739,13 @@ pub struct RecentWork {
     pub absorbed_in: (u64, u64),
 }
 
-/// Usage of the current statistics period.
+/// Usage of the current statistics period. Tokens are counted by the time
+/// their rounds ran (`usage.jsonl` of every session of the Goal), running
+/// Work included.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GoalUsage {
     pub period_start_ms: u64,
-    /// Tokens of the Goal Session's Activations.
+    /// Tokens of the Goal Sessions (every epoch) in the period.
     #[serde(default)]
     pub tokens: u64,
     #[serde(default)]
@@ -691,9 +753,64 @@ pub struct GoalUsage {
     /// Work created in the period.
     #[serde(default)]
     pub works: u64,
-    /// Tokens of the Work absorbed in the period.
+    /// Tokens of the Goal's Work in the period, finished or running.
     #[serde(default)]
     pub work_tokens: u64,
+}
+
+impl GoalUsage {
+    pub fn total_tokens(&self) -> u64 {
+        self.tokens + self.work_tokens
+    }
+}
+
+/// Why an event waits instead of opening an Activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldReason {
+    /// Closer than the hard interval to the last inference.
+    MinInterval,
+    /// The Goal's period budget is used up.
+    PeriodBudget,
+    /// The agent's background total is used up.
+    AgentBudget,
+}
+
+impl HoldReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HoldReason::MinInterval => "min_interval",
+            HoldReason::PeriodBudget => "period_budget",
+            HoldReason::AgentBudget => "agent_budget",
+        }
+    }
+}
+
+/// Events held by the gate (the Goal Session keeps them in its queue).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GoalHold {
+    pub reason: HoldReason,
+    pub since_ms: u64,
+    /// When the hold lifts by itself (end of the interval, start of the next
+    /// period).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_ms: Option<u64>,
+    /// When the budget was read last (a budget hold is read again at most
+    /// once a minute).
+    #[serde(default)]
+    pub checked_at_ms: u64,
+}
+
+/// Events the gate held in the current period (one per hold, however long
+/// it lasted).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GoalHolds {
+    #[serde(default)]
+    pub period_start_ms: u64,
+    #[serde(default)]
+    pub min_interval: u64,
+    #[serde(default)]
+    pub budget: u64,
 }
 
 /// `state.json`.
@@ -728,6 +845,14 @@ pub struct GoalState {
     pub current_skills: Vec<GoalSkill>,
     #[serde(default)]
     pub usage: GoalUsage,
+    /// Activations in a row that ended `no_action`.
+    #[serde(default)]
+    pub consecutive_no_action: u32,
+    /// Events waiting for the gate right now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holding: Option<GoalHold>,
+    #[serde(default)]
+    pub holds: GoalHolds,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<Value>,
     /// The consolidation Goal's typed maintenance state (receipts,
@@ -758,6 +883,9 @@ impl GoalState {
                 period_start_ms: now_ms,
                 ..Default::default()
             },
+            consecutive_no_action: 0,
+            holding: None,
+            holds: GoalHolds::default(),
             last_error: None,
             maintenance: None,
             updated_at_ms: now_ms,
@@ -770,10 +898,20 @@ impl GoalState {
             StateKeep::All => self.clone(),
             StateKeep::Facts => {
                 let mut s = GoalState::initial(goal, epoch, now_ms);
+                // What the Goal added for itself (its tools, the methods it
+                // found) survives a fresh context.
+                for k in &self.current_skills {
+                    match s.current_skills.iter_mut().find(|x| x.name == k.name) {
+                        Some(x) => *x = k.clone(),
+                        None => s.current_skills.push(k.clone()),
+                    }
+                }
                 s.active_works = self.active_works.clone();
                 s.absorbed = self.absorbed.clone();
                 s.recent_works = self.recent_works.clone();
                 s.usage = self.usage.clone();
+                s.holds = self.holds.clone();
+                s.consecutive_no_action = self.consecutive_no_action;
                 s.goal_revision_seen = self.goal_revision_seen;
                 s.maintenance = self.maintenance.clone();
                 s
@@ -985,7 +1123,7 @@ pub struct PendingFire {
     pub missed: u64,
 }
 
-/// Summary of Memory's pending work as the gate saw it last.
+/// Summary of Memory's pending work (the `memory.status` call of a check).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MaintenancePending {
     #[serde(default)]
@@ -1009,57 +1147,83 @@ impl MaintenancePending {
     }
 }
 
-/// Deterministic check water marks of the consolidation Goal (§6), kept by
-/// the host in `schedule.json`: "checked", as opposed to "consolidated"
-/// (`GoalState.maintenance`).
+/// What Memory holds for the consolidation (`memory.status` of a check).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct MaintenanceGate {
-    /// `no_work | no_change | active | mechanical | paused | disabled |
-    /// unknown | backoff | period_budget`.
-    #[serde(default)]
-    pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_checked_slot: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_baseline_slot: Option<u64>,
-    #[serde(default)]
-    pub last_checked_at_ms: u64,
-    /// Last time the full deterministic check (`pending_work`) ran.
-    #[serde(default)]
-    pub last_full_check_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_skip_reason: Option<String>,
-    /// Memory snapshot token the full check saw.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_inputs_digest: Option<String>,
+pub struct MemoryStatus {
+    /// Version vector of Memory: changes whenever anything was written.
+    pub digest: String,
+    /// The full check (absent unless asked for with `full`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<MaintenancePending>,
     #[serde(default)]
     pub due_reviews: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_review_at: Option<String>,
-    #[serde(default)]
-    pub unfinished_receipts: usize,
-    /// Last run opportunity the gate let through.
-    #[serde(default)]
-    pub last_run_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_run_slot: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backoff_until_ms: Option<u64>,
-    #[serde(default)]
-    pub backoff_level: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SkippedFire {
     pub slot: u64,
     pub at_ms: u64,
-    /// `paused | period_budget | min_interval | not_active`, or a gate
-    /// reason of the consolidation Goal (`no_work | no_change | …`).
+    /// `paused | not_active | min_interval | period_budget | agent_budget |
+    /// check_false | check_error`.
     pub reason: String,
+}
+
+/// What a check returned (`true`: the run opportunity became an inference).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckOutcome {
+    True,
+    False,
+    Error,
+}
+
+impl CheckOutcome {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CheckOutcome::True => "true",
+            CheckOutcome::False => "false",
+            CheckOutcome::Error => "error",
+        }
+    }
+}
+
+/// The last check the host ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CheckRecord {
+    pub at_ms: u64,
+    pub outcome: CheckOutcome,
+    /// The script's `reason` (`true`), or the error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Version of the script that ran.
+    #[serde(default)]
+    pub script_version: u64,
+    #[serde(default)]
+    pub elapsed_ms: u64,
+}
+
+/// What the gate did in the current period (host side; held events are in
+/// the Goal State's `holds`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GateStats {
+    #[serde(default)]
+    pub period_start_ms: u64,
+    /// Scheduled run opportunities skipped by the hard interval.
+    #[serde(default)]
+    pub skipped_min_interval: u64,
+    /// … by the Goal's period budget or the agent's total.
+    #[serde(default)]
+    pub skipped_budget: u64,
+    #[serde(default)]
+    pub checks_true: u64,
+    #[serde(default)]
+    pub checks_false: u64,
+    #[serde(default)]
+    pub checks_error: u64,
+    #[serde(default)]
+    pub guarantees: u64,
 }
 
 /// `schedule.json`.
@@ -1069,10 +1233,10 @@ pub struct GoalSchedule {
     pub goal_id: String,
     /// `local` (phase 1).
     pub backend: String,
-    /// Interval the slots count in (a changed interval starts counting
-    /// again).
+    /// The timetable the slots count in (`every:<secs>` |
+    /// `cron:<expr>@<zone>`; a changed one starts counting again).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub every_secs: Option<u64>,
+    pub timetable: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_slot: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1089,9 +1253,25 @@ pub struct GoalSchedule {
     pub skipped: Vec<SkippedFire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
-    /// The consolidation Goal's check water marks (§6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gate: Option<MaintenanceGate>,
+    pub last_check: Option<CheckRecord>,
+    /// Checks in a row that failed (thrown, timed out, wrong result).
+    #[serde(default)]
+    pub check_errors: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_check_error: Option<String>,
+    /// The `state` the script returned last, given back to the next check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_state: Option<Value>,
+    #[serde(default)]
+    pub stats: GateStats,
+    /// The quiet stretch (its start) the last hard guarantee was posted
+    /// for: one per stretch.
+    #[serde(default)]
+    pub guarantee_posted_for_ms: u64,
+    /// A built-in Goal switched off in `agent.toml`: no session, no checks.
+    #[serde(default)]
+    pub switched_off: bool,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
@@ -1102,7 +1282,7 @@ impl GoalSchedule {
             schema: GOAL_SCHEDULE_SCHEMA.to_string(),
             goal_id: goal_id.to_string(),
             backend: backend.to_string(),
-            every_secs: None,
+            timetable: None,
             last_slot: None,
             pending: None,
             last_posted_key: None,
@@ -1110,9 +1290,26 @@ impl GoalSchedule {
             start_posted_epoch: 0,
             skipped: Vec::new(),
             last_error: None,
-            gate: None,
+            last_check: None,
+            check_errors: 0,
+            last_check_error: None,
+            check_state: None,
+            stats: GateStats::default(),
+            guarantee_posted_for_ms: 0,
+            switched_off: false,
             updated_at_ms: 0,
         }
+    }
+
+    /// Statistics of the period that `now_ms` falls in.
+    pub fn stats_mut(&mut self, period_start_ms: u64) -> &mut GateStats {
+        if self.stats.period_start_ms != period_start_ms {
+            self.stats = GateStats {
+                period_start_ms,
+                ..Default::default()
+            };
+        }
+        &mut self.stats
     }
 
     pub fn skip(&mut self, slot: u64, at_ms: u64, reason: &str) {

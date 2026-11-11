@@ -95,6 +95,63 @@ pub struct GoalCreate {
     /// only the owner side without a session may set it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
+    /// Source (TypeScript) of the check script the Goal starts with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_script: Option<String>,
+    /// The package script it is a copy of (owner side only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_package: Option<String>,
+}
+
+/// A change of a Goal's check: its script and its timetable. The Goal
+/// Session may make it for its own Goal; it is recorded (`changes.jsonl`
+/// kind `check`) but is not a content revision.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalCheckChange {
+    /// New script source (TypeScript).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    /// The script is a copy of this package script (owner side only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// Go back to the package script the Goal started from.
+    #[serde(default)]
+    pub restore_package: bool,
+    /// Remove the script (every scheduled check passes).
+    #[serde(default)]
+    pub clear_script: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `sha256` of a check script's source.
+pub fn script_digest(script: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(script.as_bytes()))
+}
+
+/// Where version `version` of a Goal's check script is on an AgentRoot.
+pub fn check_script_path(agent_root: &Path, goal_id: &str, version: u64) -> PathBuf {
+    super::fs_client::AgentLayout::new(agent_root)
+        .goals_dir()
+        .join(goal_id)
+        .join("checks")
+        .join(format!("{version}.ts"))
+}
+
+fn check_schedule(s: &GoalScheduleSpec) -> Result<()> {
+    if s.every_secs == Some(0) {
+        return Err(OpenDanError::InvalidArgument("schedule.every_secs must be > 0".into()));
+    }
+    crate::goal_time::validate_timetable(s.every_secs, s.cron.as_deref(), s.timezone.as_deref())
+        .map_err(|e| OpenDanError::InvalidArgument(format!("schedule: {e}")))
 }
 
 /// A content revision: fields left out stay as they are.
@@ -198,6 +255,11 @@ pub trait GoalStore: Send + Sync {
     /// A new epoch with a fresh context (active / paused stay as they are).
     async fn restart(&self, goal_id: &str, req: &GoalRestart, caller: &GoalCaller)
         -> Result<GoalDefinition>;
+    /// Its check script and timetable (the Goal Session may change its own).
+    async fn set_check(&self, goal_id: &str, req: &GoalCheckChange, caller: &GoalCaller)
+        -> Result<GoalDefinition>;
+    /// Source of a version of the check script (`None`: the current one).
+    async fn check_script(&self, goal_id: &str, version: Option<u64>) -> Result<Option<String>>;
     async fn state(&self, goal_id: &str) -> Result<Option<GoalState>>;
     /// The Goal State an ended epoch left.
     async fn epoch_state(&self, goal_id: &str, epoch: u64) -> Result<Option<GoalState>>;
@@ -379,7 +441,6 @@ impl FsGoals {
             SessionKind::Ui => CallerKind::Ui(sid.clone()),
             SessionKind::Goal => CallerKind::Goal(sid.clone(), e.goal_id.unwrap_or_default()),
             SessionKind::Work => CallerKind::Work(sid.clone()),
-            _ => CallerKind::Other(sid.clone()),
         })
     }
 
@@ -444,6 +505,45 @@ impl FsGoals {
 
     fn state_file(&self, goal_id: &str) -> PathBuf {
         self.dir(goal_id).join("state.json")
+    }
+
+    /// Write a new version of a Goal's check script (immutable).
+    fn store_script(
+        &self,
+        goal_id: &str,
+        script: &str,
+        source: String,
+        package: Option<String>,
+        now: u64,
+    ) -> Result<GoalCheckScript> {
+        if script.trim().is_empty() {
+            return Err(OpenDanError::InvalidArgument("the check script is empty".into()));
+        }
+        if script.len() > crate::goal_check::CHECK_SCRIPT_MAX {
+            return Err(OpenDanError::InvalidArgument(format!(
+                "the check script is {} bytes, more than {}",
+                script.len(),
+                crate::goal_check::CHECK_SCRIPT_MAX
+            )));
+        }
+        let dir = self.dir(goal_id).join("checks");
+        std::fs::create_dir_all(&dir).map_err(|e| OpenDanError::io(&dir, e))?;
+        let latest = std::fs::read_dir(&dir)
+            .map_err(|e| OpenDanError::io(&dir, e))?
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".ts")?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        let version = latest + 1;
+        let path = dir.join(format!("{version}.ts"));
+        fsutil::atomic_replace(&path, script.as_bytes())?;
+        Ok(GoalCheckScript {
+            version,
+            sha256: script_digest(script),
+            source,
+            package,
+            updated_at_ms: now,
+        })
     }
 }
 
@@ -516,8 +616,14 @@ impl GoalStore for FsGoals {
         if req.objective.trim().is_empty() {
             return Err(OpenDanError::InvalidArgument("a goal needs an objective".into()));
         }
-        if req.schedule.every_secs == Some(0) {
-            return Err(OpenDanError::InvalidArgument("schedule.every_secs must be > 0".into()));
+        check_schedule(&req.schedule)?;
+        if req.schedule.check.is_some() {
+            return Err(OpenDanError::InvalidArgument(
+                "schedule.check is set from check_script, not given".into(),
+            ));
+        }
+        if req.check_package.is_some() && ck != CallerKind::Owner {
+            return Err(forbidden("name a package check script", &ck));
         }
         if req.budget.period.window_secs == Some(0) {
             return Err(OpenDanError::InvalidArgument("budget.period.window_secs must be > 0".into()));
@@ -592,6 +698,13 @@ impl GoalStore for FsGoals {
             updated_at_ms: now,
             extensions: req.extensions.clone(),
         };
+        if let Some(script) = &req.check_script {
+            let source = match &req.check_package {
+                Some(p) => format!("package:{p}"),
+                None => ck.via(),
+            };
+            goal.schedule.check = Some(self.store_script(&goal_id, script, source, req.check_package.clone(), now)?);
+        }
         self.write_revision(&goal)?;
         let mut change = Self::change("created", caller, &ck, None);
         change.revision = Some(1);
@@ -639,7 +752,12 @@ impl GoalStore for FsGoals {
         take!(initial_skills);
         take!(beneficiaries);
         take!(budget);
-        take!(schedule);
+        if let Some(v) = &req.schedule {
+            // The check script changes through `set_check` only.
+            let check = goal.schedule.check.clone();
+            goal.schedule = v.clone();
+            goal.schedule.check = check;
+        }
         if req.achieved_when.is_some() {
             goal.achieved_when = req.achieved_when.clone();
         }
@@ -664,9 +782,7 @@ impl GoalStore for FsGoals {
         if goal.objective.trim().is_empty() {
             return Err(OpenDanError::InvalidArgument("a goal needs an objective".into()));
         }
-        if goal.schedule.every_secs == Some(0) {
-            return Err(OpenDanError::InvalidArgument("schedule.every_secs must be > 0".into()));
-        }
+        check_schedule(&goal.schedule)?;
         let mut cmp = goal.clone();
         cmp.revision = before.revision;
         if cmp == before {
@@ -858,6 +974,117 @@ impl GoalStore for FsGoals {
         self.append_change(&mut goal, change)?;
         self.write_goal(&goal)?;
         Ok(goal)
+    }
+
+    async fn set_check(
+        &self,
+        goal_id: &str,
+        req: &GoalCheckChange,
+        caller: &GoalCaller,
+    ) -> Result<GoalDefinition> {
+        let ck = self.caller_kind(caller).await?;
+        let _lock = self.lock(goal_id)?;
+        let mut goal = self.must(goal_id)?;
+        match &ck {
+            CallerKind::Owner => {}
+            CallerKind::Ui(sid) if goal.created_by.via == format!("ui_session:{sid}") => {}
+            CallerKind::Goal(_, g) if g == goal_id => {}
+            _ => return Err(forbidden(&format!("change the check of goal {goal_id}"), &ck)),
+        }
+        if req.package.is_some() && ck != CallerKind::Owner {
+            return Err(forbidden("name a package check script", &ck));
+        }
+        let given = [req.script.is_some(), req.restore_package, req.clear_script].iter().filter(|x| **x).count();
+        if given > 1 {
+            return Err(OpenDanError::InvalidArgument(
+                "give one of script, restore_package and clear_script".into(),
+            ));
+        }
+        let before = goal.schedule.clone();
+        if req.every_secs.is_some() && req.cron.is_some() {
+            return Err(OpenDanError::InvalidArgument("every_secs or cron, not both".into()));
+        }
+        if let Some(e) = req.every_secs {
+            goal.schedule.every_secs = Some(e);
+            goal.schedule.cron = None;
+        }
+        if let Some(c) = &req.cron {
+            goal.schedule.cron = Some(c.trim().to_string());
+            goal.schedule.every_secs = None;
+        }
+        if let Some(t) = &req.timezone {
+            goal.schedule.timezone = Some(t.trim().to_string()).filter(|t| !t.is_empty());
+        }
+        check_schedule(&goal.schedule)?;
+        let now = crate::now_ms();
+        if req.clear_script {
+            goal.schedule.check = None;
+        }
+        let new_script = if req.restore_package {
+            let pkg = goal
+                .schedule
+                .check
+                .as_ref()
+                .and_then(|c| c.package.clone())
+                .ok_or_else(|| OpenDanError::InvalidArgument(format!("goal {goal_id} has no package check script to restore")))?;
+            let path = self.layout.root.join(&pkg);
+            let text = std::fs::read_to_string(&path).map_err(|e| OpenDanError::io(&path, e))?;
+            Some((text, format!("package:{pkg}"), Some(pkg)))
+        } else if let Some(text) = &req.script {
+            let source = match &req.package {
+                Some(p) => format!("package:{p}"),
+                None => ck.via(),
+            };
+            let package = req
+                .package
+                .clone()
+                .or_else(|| goal.schedule.check.as_ref().and_then(|c| c.package.clone()));
+            Some((text.clone(), source, package))
+        } else {
+            None
+        };
+        if let Some((text, source, package)) = new_script {
+            let unchanged = goal
+                .schedule
+                .check
+                .as_ref()
+                .is_some_and(|c| c.sha256 == script_digest(&text) && c.source == source);
+            if !unchanged {
+                goal.schedule.check = Some(self.store_script(goal_id, &text, source, package, now)?);
+            }
+        }
+        if goal.schedule == before {
+            return Ok(goal);
+        }
+        goal.updated_at_ms = now;
+        let mut change = Self::change("check", caller, &ck, req.reason.clone());
+        change.epoch = Some(goal.session.epoch);
+        change.detail = json!({
+            "every_secs": goal.schedule.every_secs,
+            "cron": goal.schedule.cron,
+            "timezone": goal.schedule.timezone,
+            "script": goal.schedule.check,
+        });
+        self.append_change(&mut goal, change)?;
+        self.write_goal(&goal)?;
+        Ok(goal)
+    }
+
+    async fn check_script(&self, goal_id: &str, version: Option<u64>) -> Result<Option<String>> {
+        check_goal_id(goal_id)?;
+        let version = match version {
+            Some(v) => v,
+            None => match self.read(goal_id)?.and_then(|g| g.schedule.check.map(|c| c.version)) {
+                Some(v) => v,
+                None => return Ok(None),
+            },
+        };
+        let path = self.dir(goal_id).join("checks").join(format!("{version}.ts"));
+        match std::fs::read_to_string(&path) {
+            Ok(t) => Ok(Some(t)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(OpenDanError::io(&path, e)),
+        }
     }
 
     async fn state(&self, goal_id: &str) -> Result<Option<GoalState>> {

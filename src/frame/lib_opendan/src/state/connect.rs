@@ -189,9 +189,6 @@ impl Cognition for ForwardingStateClient {
     async fn read(&self, sid: &str, reference: &str) -> Result<crate::memory::MemoryRead> {
         self.inner.cognition().read(sid, reference).await
     }
-    async fn notebook_append(&self, note: &NotebookNote, who: &str) -> Result<()> {
-        self.inner.cognition().notebook_append(note, who).await
-    }
 }
 
 #[async_trait]

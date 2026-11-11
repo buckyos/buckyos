@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use common::*;
 use libopendan::api::{create_sub_session, SubSessionSpec};
-use libopendan::host::goals::{GoalHost, GoalHostOptions, ManualClock};
+use libopendan::host::goals::{GoalClock, GoalHost, GoalHostOptions, ManualClock};
 use libopendan::host::{HostDeps, Supervisor};
 use libopendan::protocol::*;
 use libopendan::runner::DefaultAssembler;
@@ -23,8 +23,6 @@ use llm_context::deps::LlmInferenceRequest;
 use serde_json::{json, Value};
 
 const SLOT: u64 = 300;
-/// A statistics window no test run crosses.
-const FOREVER: u64 = 1_000_000_000;
 
 struct Hosted {
     sup: Arc<Supervisor>,
@@ -66,10 +64,19 @@ fn hosted(env: &Env, llm: Arc<ScriptedLlm>) -> Hosted {
 }
 
 fn hosted_with(env: &Env, llm: Arc<ScriptedLlm>, llm_context: Value) -> Hosted {
+    hosted_opts(env, llm, llm_context, |_| {})
+}
+
+/// A host whose Goals and Goal Sessions read one hand-moved clock.
+fn hosted_opts(env: &Env, llm: Arc<ScriptedLlm>, llm_context: Value, f: impl FnOnce(&mut GoalHostOptions)) -> Hosted {
     let clock = ManualClock::at(libopendan::now_ms());
     let mut opts = GoalHostOptions::new(env.agent_root.join("sessions"), llm_context);
     opts.clock = clock.clone();
-    let sup = Supervisor::new(host_deps(env, llm), None).with_goals(GoalHost::new(opts));
+    opts.budget_every = Duration::ZERO;
+    f(&mut opts);
+    let mut deps = host_deps(env, llm);
+    deps.options.goal_clock = GoalClock(clock.clone());
+    let sup = Supervisor::new(deps, None).with_goals(GoalHost::new(opts));
     Hosted {
         sup,
         clock,
@@ -154,10 +161,15 @@ fn owner() -> GoalCaller {
     GoalCaller::owner(APP)
 }
 
+/// A Goal without a hard interval (the gate's own tests set one).
 fn goal_req(objective: &str) -> GoalCreate {
     GoalCreate {
         objective: objective.into(),
         distance_evaluation: "count open items".into(),
+        schedule: GoalScheduleSpec {
+            min_interval_secs: Some(0),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -567,7 +579,12 @@ async fn work_created_by_an_activation_is_absorbed_later() {
         .filter(|h| h.lines().next().unwrap_or_default().contains(" revision=\"2\""))
         .collect();
     assert!(headers[0].contains("changed_since_last_activation=\"objective\""), "{}", headers[0]);
-    assert!(headers[0].contains("goal_revision=\"1\" outdated=\"true\""), "{}", headers[0]);
+    // A Work still running is listed as made for the older revision; one
+    // that ended comes as its event and is not listed (B5).
+    if headers[0].contains("<works>") {
+        assert!(headers[0].contains("goal_revision=\"1\" outdated=\"true\""), "{}", headers[0]);
+    }
+    assert!(!headers[0].contains("state=\"finished\""), "{}", headers[0]);
     let last = headers.last().unwrap();
     if !std::ptr::eq(last, &headers[0]) && act_of(last) != act_of(&headers[0]) {
         assert!(!last.contains("changed_since_last_activation"), "{last}");
@@ -625,10 +642,12 @@ fn works_of(h: &Hosted, goal_id: &str) -> Vec<RegistryEntry> {
     .unwrap()
 }
 
-/// V07: at the period limit scheduled fires are skipped (and recorded) and
-/// no Work is created; the end of a Work created before is still absorbed.
+/// V07 / H5: at the period limit scheduled checks are skipped (and
+/// recorded), no Work is created and the running Work is paused at its next
+/// inference boundary; its end waits for the next period, which resumes it
+/// and gives its end one Activation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_period_limit_skips_fires_and_refuses_work_but_absorbs_results() {
+async fn the_period_limit_skips_fires_pauses_work_and_the_next_period_resumes_it() {
     let env = Env::new();
     let root = env.root.clone();
     let release = env.root.join("release");
@@ -650,10 +669,12 @@ async fn the_period_limit_skips_fires_and_refuses_work_but_absorbs_results() {
         report(json!({ "decision": "no_action" }))
     });
     let h = hosted(&env, llm);
+    // An hour into a day of the hand-moved clock: the slots below stay in it.
+    const DAY: u64 = 86_400_000;
+    h.clock.set((libopendan::now_ms() / DAY + 1) * DAY + 3_600_000);
     let mut req = goal_req("bounded goal");
     req.schedule.every_secs = Some(SLOT);
-    req.schedule.min_interval_secs = Some(0);
-    req.budget.period.window_secs = Some(FOREVER);
+    req.budget.period.window_secs = Some(86_400);
     req.budget.period.max_activations = Some(2);
     req.budget.period.max_works = Some(1);
     let g = h.agent.goals().create(&req, &owner()).await.unwrap();
@@ -663,22 +684,37 @@ async fn the_period_limit_skips_fires_and_refuses_work_but_absorbs_results() {
     h.clock.advance(SLOT * 1000);
     h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
     assert_eq!(refused.lock().unwrap().as_deref(), Some("goal_budget_exhausted"));
-    // Over the limit: the next slot is skipped and recorded.
+    // Over the limit: the next slot is skipped and recorded, the Work paused.
     h.clock.advance(SLOT * 1000);
     h.until("skip recorded", |h| {
         block(h.agent.goals().schedule(&g.goal_id))
             .unwrap()
-            .is_some_and(|s| s.skipped.iter().any(|k| k.reason == "period_budget"))
+            .is_some_and(|s| s.skipped.iter().any(|k| k.reason == "period_budget") && s.stats.skipped_budget >= 1)
     })
     .await;
-    assert_eq!(h.activations(&g.goal_id).len(), 2);
-    assert_eq!(works_of(&h, &g.goal_id).len(), 1);
-    // The Work's end still comes in.
+    let work = works_of(&h, &g.goal_id);
+    assert_eq!(work.len(), 1);
+    let wsid = work[0].session_id.clone();
+    // Its command returns: the pause stops it at that inference boundary.
     std::fs::write(&release, "go").unwrap();
+    h.until("work paused by the budget", |h| {
+        block(h.agent.sessions().lookup(&wsid)).unwrap().is_some_and(|e| e.status.paused == Some(PauseSource::Budget))
+    })
+    .await;
+    for _ in 0..40 {
+        h.tick().await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(h.state(&g.goal_id).unwrap().absorbed.is_empty(), "a paused Work does not end");
+    assert_eq!(h.activations(&g.goal_id).len(), 2);
+    // The next period: the Work resumes, ends, and one Activation takes it in.
+    h.clock.advance(DAY);
     h.until("work absorbed", |h| h.state(&g.goal_id).is_some_and(|s| s.absorbed.len() == 1))
         .await;
-    let last = h.activations(&g.goal_id).pop().unwrap();
-    assert_eq!(last.reasons[0].kind, ActivationReasonKind::Child);
+    let all = h.activations(&g.goal_id);
+    let taker = all.iter().find(|a| a.works_absorbed.contains(&wsid)).expect("an activation absorbed the work");
+    assert!(taker.reasons.iter().any(|r| r.kind == ActivationReasonKind::Child), "{taker:?}");
+    assert!(block(h.agent.sessions().lookup(&wsid)).unwrap().unwrap().status.paused.is_none());
     h.shutdown().await;
 }
 
@@ -1571,7 +1607,7 @@ async fn input_queued_while_a_killed_activation_was_down_waits_for_its_batch() {
     }
     child.kill().unwrap();
     let _ = child.wait();
-    let key = libopendan::goal::scheduled_key(&g.goal_id, 42, 3);
+    let key = libopendan::goal::scheduled_key(&g.goal_id, "e300", 42, 3);
     libopendan::goal::post_activation(
         agent.as_ref(),
         &g,
@@ -1621,7 +1657,7 @@ async fn a_run_opportunity_joining_an_open_activation_is_one_of_its_reasons() {
             .is_some_and(|e| e.status.turn_open && e.status.last_error.is_some())
     })
     .await;
-    let key = libopendan::goal::scheduled_key(&g.goal_id, 42, 3);
+    let key = libopendan::goal::scheduled_key(&g.goal_id, "e300", 42, 3);
     libopendan::goal::post_activation(
         h.agent.as_ref(),
         &g,
@@ -1670,6 +1706,7 @@ async fn goal_questions_reach_the_user_and_answers_come_back() {
     let mut deps = host_deps(&env, llm.clone());
     deps.notify = Some(local.clone());
     let clock = ManualClock::at(libopendan::now_ms());
+    deps.options.goal_clock = GoalClock(clock.clone());
     let mut opts = GoalHostOptions::new(
         env.agent_root.join("sessions"),
         json!({ "tools": { "enabled": true } }),
@@ -1810,5 +1847,414 @@ async fn a_workspace_lost_mid_activation_closes_it_as_failed() {
     assert_eq!(state.outcome, Some(Outcome::Failed));
     assert!(!state.goal.as_ref().unwrap().needs_flush());
     assert_eq!(llm.count(), 1);
+    h.shutdown().await;
+}
+
+// ---- the gate of run opportunities (TODO H, architecture §12.1.1) ------
+
+fn schedule_of(h: &Hosted, id: &str) -> GoalSchedule {
+    block(h.agent.goals().schedule(id)).unwrap().expect("schedule")
+}
+
+/// H3 with a test double: a scheduled check that returns false does not
+/// infer; one that returns true opens an Activation with its reason; the
+/// script's `state` goes back to the next check; an error infers nothing
+/// and is recorded with its count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_check_script_decides_scheduled_inferences_and_keeps_its_state() {
+    use libopendan::goal_check::{CheckVerdict, FnCheckRunner};
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let ctxs = seen.clone();
+    let h = hosted_opts(&env, llm.clone(), json!({ "tools": { "enabled": true } }), move |o| {
+        o.checks = Arc::new(FnCheckRunner(move |_script: &Path, ctx: &Value, state: &Value| {
+            ctxs.lock().unwrap().push(ctx.clone());
+            let n = state["n"].as_u64().unwrap_or(0);
+            if n == 3 {
+                return Err("boom: the script threw".into());
+            }
+            Ok(CheckVerdict { run: n == 2, reason: Some(format!("n={n}")), state: Some(json!({ "n": n + 1 })) })
+        }));
+    });
+    let mut req = goal_req("watch a folder");
+    req.schedule.every_secs = Some(SLOT);
+    req.check_script = Some("export default (ctx, state) => true;\n".into());
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    assert_eq!(g.schedule.check.as_ref().unwrap().version, 1);
+    h.tick().await;
+    // The start was a check (no `--start`): n=0, false.
+    assert_eq!(schedule_of(&h, &g.goal_id).last_check.unwrap().outcome, CheckOutcome::False);
+    h.clock.advance(SLOT * 1000);
+    h.tick().await;
+    assert!(h.activations(&g.goal_id).is_empty());
+    h.clock.advance(SLOT * 1000);
+    h.until("an activation the check let through", |h| h.activations(&g.goal_id).len() == 1).await;
+    let a = &h.activations(&g.goal_id)[0];
+    assert_eq!(a.reasons[0].kind, ActivationReasonKind::Scheduled);
+    assert!(a.reasons[0].note.as_deref().unwrap().contains("n=2"), "{a:?}");
+    let s = schedule_of(&h, &g.goal_id);
+    assert_eq!((s.stats.checks_false, s.stats.checks_true), (2, 1), "{s:?}");
+    assert_eq!(s.check_state, Some(json!({ "n": 3 })));
+    // The ctx the script got.
+    let ctx = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(ctx["goal_id"], g.goal_id);
+    assert_eq!(ctx["trigger"], "scheduled");
+    assert!(ctx["last_check_at_ms"].is_number() && ctx["agent_root"].is_string(), "{ctx}");
+    // An error: no inference, recorded with the count.
+    h.clock.advance(SLOT * 1000);
+    h.tick().await;
+    let s = schedule_of(&h, &g.goal_id);
+    assert_eq!(s.check_errors, 1);
+    assert!(s.last_check_error.as_deref().unwrap().contains("boom"));
+    assert!(s.skipped.iter().any(|k| k.reason == "check_error"));
+    assert_eq!(h.activations(&g.goal_id).len(), 1);
+    // The header shows the gate to the Goal.
+    let header = last_header(&llm);
+    assert!(header.contains("<gate hard_interval_secs=\"0\""), "{header}");
+    assert!(header.contains("check_script=\"version 1 by owner\""), "{header}");
+    assert!(header.contains("checks_false=\"2\""), "{header}");
+    h.shutdown().await;
+}
+
+
+/// H2: Work ends that come closer than the hard interval to the last
+/// inference wait in the queue (one hold recorded) and open one Activation
+/// together when the interval ends; a manual activation does not wait; the
+/// header tells the Goal what its Work used and what was held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_hard_interval_holds_events_and_merges_them_into_one_activation() {
+    let env = Env::new();
+    let root = env.root.clone();
+    let llm = ScriptedLlm::new(move |req, _| {
+        if !is_goal_req(req) {
+            return text("work done");
+        }
+        if act(req) == 1 && this_result(req, "r1").is_none() {
+            create_work(&root, &session_id_of(req), "check item 1", "w1").unwrap();
+            create_work(&root, &session_id_of(req), "check item 2", "w2").unwrap();
+            return report(json!({ "decision": "created_work" }));
+        }
+        no_action()
+    });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("two items");
+    req.schedule.start_on_create = true;
+    req.schedule.min_interval_secs = Some(600);
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    h.until("both works finished", |h| {
+        works_of(h, &g.goal_id).iter().filter(|e| e.status.run_state == RunState::Finished).count() == 2
+    })
+    .await;
+    h.until("the events are held", |h| h.state(&g.goal_id).is_some_and(|s| s.holding.is_some())).await;
+    for _ in 0..20 {
+        h.tick().await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let st = h.state(&g.goal_id).unwrap();
+    assert_eq!(st.holding.as_ref().unwrap().reason, HoldReason::MinInterval);
+    assert_eq!(st.holds.min_interval, 1, "one hold, however many polls");
+    assert_eq!(h.activations(&g.goal_id).len(), 1);
+    // The interval ends: one Activation takes both ends in.
+    h.clock.advance(600 * 1000);
+    h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
+    let a = &h.activations(&g.goal_id)[1];
+    assert_eq!(a.works_absorbed.len(), 2, "{a:?}");
+    assert_eq!(a.reasons.iter().filter(|r| r.kind == ActivationReasonKind::Child).count(), 2, "{a:?}");
+    let header = last_header(&llm);
+    assert!(header.contains("events_held_by_interval=\"1\""), "{header}");
+    let used_by_works: u64 = header
+        .split("tokens_used_by_works=\"")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap();
+    assert!(used_by_works > 0, "the Work's tokens count: {header}");
+    assert!(header.contains("period_resets_at=") && header.contains("no_action_in_a_row=\"0\""), "{header}");
+    assert!(h.state(&g.goal_id).unwrap().holding.is_none());
+    // A manual activation right after does not wait for the interval.
+    h.sup.goal_activate(&g.goal_id, "now", "look again").await.unwrap();
+    h.until("activation 3", |h| h.activations(&g.goal_id).len() == 3).await;
+    assert_eq!(h.activations(&g.goal_id)[2].reasons[0].kind, ActivationReasonKind::Manual);
+    assert_eq!(h.state(&g.goal_id).unwrap().consecutive_no_action, 2);
+    h.shutdown().await;
+}
+
+/// H4: past the hard guarantee one Activation runs whatever the budget and
+/// the check say, and says how the checks went; a dormant Goal gets none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_hard_guarantee_wakes_a_goal_past_budget_and_check_but_not_a_dormant_one() {
+    use libopendan::goal_check::FnCheckRunner;
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let h = hosted_opts(&env, llm, json!({ "tools": { "enabled": true } }), |o| {
+        o.checks = Arc::new(FnCheckRunner(|_: &Path, _: &Value, _: &Value| Err("ReferenceError: x is not defined".into())));
+    });
+    let mut req = goal_req("guarded");
+    req.schedule.every_secs = Some(SLOT);
+    req.schedule.guarantee_secs = Some(3600);
+    req.check_script = Some("export default () => x;\n".into());
+    req.budget.period.max_activations = Some(0);
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.tick().await;
+    h.clock.advance(SLOT * 1000);
+    h.tick().await;
+    let s = schedule_of(&h, &g.goal_id);
+    assert!(s.skipped.iter().any(|k| k.reason == "period_budget"), "the budget refuses the slot: {s:?}");
+    assert!(h.activations(&g.goal_id).is_empty());
+    h.clock.advance(3600 * 1000);
+    h.until("the guarantee", |h| h.activations(&g.goal_id).len() == 1).await;
+    let a = &h.activations(&g.goal_id)[0];
+    assert_eq!(a.reasons[0].kind, ActivationReasonKind::Guarantee, "{a:?}");
+    assert_eq!(schedule_of(&h, &g.goal_id).stats.guarantees, 1);
+    // Once per quiet stretch.
+    for _ in 0..5 {
+        h.tick().await;
+    }
+    assert_eq!(h.activations(&g.goal_id).len(), 1);
+    // A dormant Goal: no guarantee.
+    h.agent
+        .goals()
+        .set_status(&g.goal_id, &GoalStatusChange { status: GoalStatus::Paused, reason: Some("sleep".into()), evidence: None }, &owner())
+        .await
+        .unwrap();
+    h.clock.advance(2 * 3600 * 1000);
+    for _ in 0..10 {
+        h.tick().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(h.activations(&g.goal_id).len(), 1);
+    h.shutdown().await;
+}
+
+/// H5: the agent's background total stops every Goal when their tokens
+/// together reach it; each one's hard guarantee still wakes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_agent_total_holds_every_goal_but_their_guarantees() {
+    let env = Env::new();
+    std::fs::write(env.agent_root.join("agent.toml"), "[session.goal.agent_budget]\nmax_total_tokens = 20\n").unwrap();
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let h = hosted(&env, llm);
+    let mut ids = Vec::new();
+    for name in ["a", "b"] {
+        let mut req = goal_req(name);
+        req.schedule.every_secs = Some(SLOT);
+        req.schedule.guarantee_secs = Some(3600);
+        ids.push(h.agent.goals().create(&req, &owner()).await.unwrap().goal_id);
+    }
+    h.tick().await;
+    h.clock.advance(SLOT * 1000);
+    h.until("one activation each", |h| ids.iter().all(|id| h.activations(id).len() == 1)).await;
+    h.clock.advance(SLOT * 1000);
+    h.until("both skipped by the total", |h| {
+        ids.iter().all(|id| schedule_of(h, id).skipped.iter().any(|k| k.reason == "agent_budget"))
+    })
+    .await;
+    assert!(ids.iter().all(|id| h.activations(id).len() == 1));
+    h.clock.advance(3600 * 1000);
+    h.until("both guarantees", |h| ids.iter().all(|id| h.activations(id).len() == 2)).await;
+    for id in &ids {
+        assert_eq!(h.activations(id)[1].reasons[0].kind, ActivationReasonKind::Guarantee);
+    }
+    h.shutdown().await;
+}
+
+/// H0: a closed Activation lets go of the tasks it started; their ends open
+/// no Activation of their own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_activation_lets_go_of_its_tasks() {
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, _| {
+        if !is_goal_req(req) {
+            return text("not a goal");
+        }
+        match this_result(req, "s1") {
+            None => tool_call("s1", "shell", json!({ "command": "sleep 1; echo slept" })),
+            Some(_) => no_action(),
+        }
+    });
+    let h = hosted_with(&env, llm, json!({ "tools": { "enabled": true }, "runtime": { "task_wait_ms": 200 } }));
+    let mut req = goal_req("start something long");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    assert!(h.session(&g.goal_id).state().unwrap().watched_tasks.is_empty(), "the task is not followed");
+    // Its end comes and goes without an Activation.
+    for _ in 0..60 {
+        h.tick().await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(h.activations(&g.goal_id).len(), 1, "{:?}", h.activations(&g.goal_id));
+    h.shutdown().await;
+}
+
+/// H3 on the real Deno: a check may read and use the host's calls, never
+/// run a command or write a file; its state goes round; it is bounded in
+/// time. (Skipped without a Deno.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn checks_run_on_deno_with_read_and_network_only() {
+    use libopendan::goal_check::{run_for, DenoCheckRunner};
+    let env = Env::new();
+    let Some(mut runner) = DenoCheckRunner::discover(env.root.join("checks")) else {
+        eprintln!("no Deno: skipped");
+        return;
+    };
+    let agent = env.agent();
+    let script = |name: &str, body: &str| {
+        let p = env.root.join(format!("{name}.ts"));
+        std::fs::write(&p, body).unwrap();
+        p
+    };
+    let g = agent.goals().create(&goal_req("deno checks"), &owner()).await.unwrap();
+    let now = libopendan::now_ms();
+    let run = |p: std::path::PathBuf, r: &DenoCheckRunner| {
+        let agent = agent.clone();
+        let g = g.clone();
+        let r = DenoCheckRunner { deno: r.deno.clone(), config: r.config.clone(), timeout: r.timeout, work_dir: r.work_dir.clone() };
+        async move { run_for(agent.as_ref(), &r, &g, Some(&p), "test", now).await.unwrap() }
+    };
+    let cmd = run(script("cmd", "export default async () => { await new Deno.Command('echo', { args: ['x'] }).output(); return true; };\n"), &runner).await;
+    assert_eq!(cmd.outcome(), CheckOutcome::Error);
+    assert!(cmd.verdict.as_ref().unwrap_err().contains("run"), "{cmd:?}");
+    let write = run(script("write", "export default async (ctx) => { await Deno.writeTextFile(ctx.agent_root + '/x.txt', 'x'); return true; };\n"), &runner).await;
+    assert_eq!(write.outcome(), CheckOutcome::Error);
+    assert!(write.verdict.as_ref().unwrap_err().contains("write"), "{write:?}");
+    assert!(!env.agent_root.join("x.txt").exists());
+    let ok = run(
+        script(
+            "ok",
+            "export default async (ctx, state) => {\n  const m = await ctx.host.call('memory.status');\n  console.log('looked at', ctx.goal_id);\n  return { run: true, reason: `digest ${typeof m.digest}`, state: { n: (state?.n ?? 0) + 1, read: (await Deno.readTextFile(ctx.agent_root + '/agent.json')).length > 0 } };\n};\n",
+        ),
+        &runner,
+    );
+    std::fs::write(env.agent_root.join("agent.json"), "{}").unwrap();
+    let ok = ok.await;
+    let v = ok.verdict.clone().unwrap_or_else(|e| panic!("{e}\n{}", ok.log));
+    assert!(v.run);
+    assert_eq!(v.reason.as_deref(), Some("digest string"));
+    assert_eq!(v.state, Some(json!({ "n": 1, "read": true })));
+    assert!(ok.log.contains("looked at"), "{}", ok.log);
+    let bad = run(script("bad", "export default () => 42;\n"), &runner).await;
+    assert!(bad.verdict.unwrap_err().contains("returns {run"));
+    runner.timeout = Duration::from_secs(2);
+    let slow = run(script("slow", "export default () => new Promise((r) => setTimeout(() => r(true), 10000));\n"), &runner).await;
+    assert!(slow.verdict.unwrap_err().contains("did not finish"));
+}
+
+/// G1: a Goal's Work is ready only when no unfinished Work of the Goal has
+/// the same task and the task is not the Goal's whole objective.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn work_is_refused_when_it_repeats_running_work_or_the_whole_goal() {
+    let env = Env::new();
+    let root = env.root.clone();
+    let release = env.root.join("release");
+    let rel = release.clone();
+    let errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = errors.clone();
+    let llm = ScriptedLlm::new(move |req, _| {
+        if !is_goal_req(req) {
+            return work_reply(req, &rel);
+        }
+        if act(req) == 1 && this_result(req, "r1").is_none() {
+            let sid = session_id_of(req);
+            create_work(&root, &sid, "check item 1", "w1").unwrap();
+            let mut e = seen.lock().unwrap();
+            e.push(create_work(&root, &sid, "  Check   item 1 ", "w2").unwrap_err().to_string());
+            e.push(create_work(&root, &sid, "keep the list tidy", "w3").unwrap_err().to_string());
+            return report(json!({ "decision": "created_work" }));
+        }
+        no_action()
+    });
+    let h = hosted(&env, llm);
+    let mut req = goal_req("keep the list tidy");
+    req.schedule.start_on_create = true;
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    let e = errors.lock().unwrap().clone();
+    assert!(e[0].contains("with the same objective is still running"), "{e:?}");
+    assert!(e[1].contains("not the goal's whole objective"), "{e:?}");
+    assert_eq!(works_of(&h, &g.goal_id).len(), 1);
+    std::fs::write(&release, "go").unwrap();
+    h.shutdown().await;
+}
+
+/// D1: a cron timetable counts slots on the wall clock of its zone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cron_timetable_fires_on_the_wall_clock_of_its_zone() {
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let h = hosted(&env, llm);
+    // 08:55 in Shanghai (00:55 UTC) on the next day of the hand-moved clock.
+    const DAY: u64 = 86_400_000;
+    h.clock.set((libopendan::now_ms() / DAY + 1) * DAY + 55 * 60_000);
+    let mut req = goal_req("morning look");
+    req.schedule.cron = Some("0 9 * * *".into());
+    req.schedule.timezone = Some("Asia/Shanghai".into());
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    // Not both, and a zone that exists.
+    let mut bad = goal_req("bad timetable");
+    bad.schedule.cron = Some("0 9 * * *".into());
+    bad.schedule.every_secs = Some(600);
+    assert!(h.agent.goals().create(&bad, &owner()).await.is_err());
+    bad.schedule.every_secs = None;
+    bad.schedule.timezone = Some("Mars/Base".into());
+    assert!(h.agent.goals().create(&bad, &owner()).await.is_err());
+    h.tick().await;
+    h.clock.advance(4 * 60_000);
+    h.tick().await;
+    assert!(h.activations(&g.goal_id).is_empty(), "08:59 is not 09:00");
+    h.clock.advance(2 * 60_000);
+    h.until("the 09:00 slot", |h| h.activations(&g.goal_id).len() == 1).await;
+    let note = h.activations(&g.goal_id)[0].reasons[0].note.clone().unwrap();
+    assert!(note.contains("cron `0 9 * * *` Asia/Shanghai"), "{note}");
+    assert_eq!(schedule_of(&h, &g.goal_id).timetable.as_deref(), Some("cron:0 9 * * *@Asia/Shanghai"));
+    h.shutdown().await;
+}
+
+/// F1 / F2: a skill named in the Goal header carries where its text is (an
+/// installed goal skill, a file of the AgentRoot); what the Goal adds for
+/// itself survives a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn goal_skills_are_readable_from_the_header_and_survive_a_restart() {
+    let env = Env::new();
+    let dir = env.agent_root.join("goal_skills/watch_folder");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "---\nname: watch_folder\ndescription: watch a folder\n---\nList it.\n").unwrap();
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("watch the inbox");
+    req.schedule.start_on_create = true;
+    req.initial_skills = vec![GoalSkill { name: "watch_folder".into(), reference: None, version: None, note: None }];
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    let header = last_header(&llm);
+    let path = dir.join("SKILL.md").display().to_string();
+    assert!(header.contains(&format!("<skill name=\"watch_folder\" path=\"{path}\"")), "{header}");
+    // The Goal records a tool it made for itself.
+    libopendan::post_input(
+        h.agent.as_ref(),
+        &g.session.sid,
+        &PostedInput::control(
+            APP,
+            "goal_skills:tool",
+            ControlCommand::GoalSkills {
+                add: vec![GoalSkill { name: "inbox_check".into(), reference: Some("https://example.invalid/inbox".into()), version: None, note: Some("the page I made".into()) }],
+                remove: Vec::new(),
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    h.until("skill recorded", |h| h.state(&g.goal_id).is_some_and(|s| s.current_skills.len() == 2)).await;
+    // A restart (fresh context, `facts`) keeps both.
+    h.agent
+        .goals()
+        .restart(&g.goal_id, &GoalRestart { reason: "fresh context".into(), carry_state: false }, &owner())
+        .await
+        .unwrap();
+    h.until("epoch 2", |h| h.state(&g.goal_id).is_some_and(|s| s.epoch == 2)).await;
+    let names: Vec<String> = h.state(&g.goal_id).unwrap().current_skills.iter().map(|k| k.name.clone()).collect();
+    assert_eq!(names, ["watch_folder", "inbox_check"]);
     h.shutdown().await;
 }

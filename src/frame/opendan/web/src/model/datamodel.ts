@@ -7,7 +7,9 @@ import type {
   Decision,
   GoalActivation,
   GoalChange,
+  GoalCheckChange,
   GoalDefinition,
+  GoalRevise,
   GoalSchedule,
   GoalState,
   GoalStatus,
@@ -90,7 +92,7 @@ export interface OpenDanDataModel {
   stopSession(sid: string, scope: StopScope, reason?: string): Promise<{ index: number }>
   /** Also resumes the sub sessions paused with it. */
   resumeSession(sid: string): Promise<{ index: number }>
-  /** A finished work or self-check with all its (finished) descendants. */
+  /** A finished work with all its (finished) descendants. */
   deleteSession(sid: string): Promise<{ deleted: string[] }>
   decideSession(sid: string, decision: Decision, note?: string): Promise<{ index: number }>
   postMessage(sid: string, text: string): Promise<{ index: number; key: string }>
@@ -123,6 +125,12 @@ export interface OpenDanDataModel {
   setGoalStatus(goalId: string, status: GoalStatus, reason?: string): Promise<GoalDefinition>
   reopenGoal(goalId: string, reason: string, freshState?: boolean): Promise<GoalDefinition>
   restartGoal(goalId: string, reason: string, carryState?: boolean): Promise<GoalDefinition>
+  /** Fails with kind `goal_conflict` when the Goal is no longer at `expected_revision`. A `schedule` keeps its `check`. */
+  reviseGoal(goalId: string, request: GoalRevise): Promise<GoalDefinition>
+  /** The check script and timetable; not a content revision. */
+  setGoalCheck(goalId: string, request: GoalCheckChange): Promise<GoalDefinition>
+  /** Source of a version of the check script (default: the current one); `null`: none. */
+  goalCheckScript(goalId: string, version?: number): Promise<string | null>
 
   skills(): Promise<SkillMeta[]>
   skillsState(): Promise<SkillsState>
@@ -142,6 +150,8 @@ export interface OpenDanDataModel {
   /** The agent writes a draft from the text; it appears in `skillDrafts` when the session is done. */
   importSkill(request: SkillImportRequest): Promise<{ session_id: string; inbox?: unknown }>
   discardSkillDraft(slug: string): Promise<unknown>
+  /** The skill crystallization Goal on or off. */
+  setCrystallize(enabled: boolean): Promise<{ crystallize?: boolean }>
 }
 
 export class OpenDanError extends Error {

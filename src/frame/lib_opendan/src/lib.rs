@@ -27,6 +27,8 @@ pub mod error;
 pub mod fault;
 pub mod fsutil;
 pub mod goal;
+pub mod goal_check;
+pub mod goal_time;
 pub mod host;
 pub mod ids;
 pub mod lock;

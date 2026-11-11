@@ -1781,6 +1781,15 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 InputMode::Batch => sh.deps.options.input_batch_max.max(1),
             };
             picked = select_batch(candidates, take);
+            // A Goal's events wait at its gate (the hard interval, the
+            // budgets) before they open an Activation.
+            if is_goal && state.open_turn.is_none() && !picked.is_empty() {
+                if let Some(g) = &goal_def {
+                    if Box::pin(super::goal::hold_events(sh, g, &picked)).await? {
+                        picked.clear();
+                    }
+                }
+            }
         }
         let state = sh.session.lock().await.state.clone();
         // One controlled input per batch: `on_init` → `on_context_switch` →

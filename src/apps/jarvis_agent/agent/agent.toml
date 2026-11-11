@@ -39,9 +39,6 @@ session_class = "group"
 sid_strategy = "per_group"
 idle_unload_secs = 900
 
-[loader.self_check]
-enabled = false
-
 # Goals of the agent: the Loader creates one Goal Session per goal and epoch
 # and offers scheduled run opportunities (local schedule).
 [loader.goals]
@@ -87,30 +84,45 @@ max_process_depth = 8
 # A plan sees every runtime and workspace to place its Todos.
 runtime_view = "all"
 
-# Goal Sessions: every activation is one Turn; what a goal leaves out of its
-# budget and schedule comes from here.
+# Goal Sessions: every activation is one Turn. When a run opportunity
+# becomes an inference (architecture §12.1.1), and what a goal leaves out of
+# its budget and schedule:
+# - min_interval_secs: hard interval, no inference closer than this to the
+#   last one (scheduled checks and events alike);
+# - guarantee_secs: hard guarantee, one inference after this long without
+#   one, whatever the budget and the check say (0: off);
+# - check_every_secs: the check timetable of a goal with a check script and
+#   no timetable of its own (at least 60);
+# - budget.period: tokens a goal may use in a period, its work included;
+# - agent_budget: the background total of every goal and its work together.
 [session.goal]
 default_behavior = "goal"
 max_sub_sessions = 4
-min_interval_secs = 60
+min_interval_secs = 900
+guarantee_secs = 259200
+check_every_secs = 300
 
 [session.goal.budget.activation]
 max_total_tokens = 300000
 max_runs = 6
+max_wall_secs = 1800
 
 [session.goal.budget.period]
 window_secs = 86400
+max_total_tokens = 2000000
 max_works = 24
+
+[session.goal.agent_budget]
+window_secs = 86400
+max_total_tokens = 5000000
 
 # The agent's default Memory maintenance Goal (lifecycle maintain, built in,
 # key `builtin:memory_maintenance`): consolidates perceptions into
-# cognitions every 30 minutes when there is material (a 2 hour baseline
-# check otherwise). Its own budget is set when it is seeded; `decision`
-# is the optional model pre-check (off until the AICC decision provider is
-# wired).
+# cognitions. Its check script (`goal_checks/memory_maintenance.ts`, every
+# 30 minutes) lets it infer only when Memory holds material; it may rewrite
+# the script as it learns. Its own budget is set when it is seeded.
 [session.goal.maintenance]
 enabled = true
-decision = "off"
 behavior = "memory_maintenance"
 
 # The agent's skill maintenance Goal (lifecycle maintain, built in, key

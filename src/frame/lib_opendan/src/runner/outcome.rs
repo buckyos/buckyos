@@ -981,8 +981,10 @@ pub(super) async fn commit_kept(
             marks.apply(l);
         }
     }
+    let mut closed = false;
     if let Some(status) = next.turn_end {
         if close_open_turn(sh, &mut s, &run_id, turn, status, next).await?.is_some() {
+            closed = true;
             bodies.push(WorklogBody::TurnEnded {
                 run_id: run_id.clone(),
                 turn,
@@ -998,7 +1000,9 @@ pub(super) async fn commit_kept(
     } else {
         RunState::Ready
     };
-    if next.waiting {
+    // A closed Activation lets go of what it started (TODO H0).
+    let let_go = closed && super::goal::is_goal(&s.config);
+    if next.waiting && !let_go {
         for task in &next.wait_tasks {
             if !s.state.watched_tasks.contains(task) {
                 s.state.watched_tasks.push(task.clone());
@@ -1367,10 +1371,15 @@ async fn commit_run_end(
     }
     // Background tasks the run started and that are still running (their
     // calls already returned): the session keeps following them after the
-    // run — until it finishes, which never re-opens for a task.
+    // run — until it finishes, which never re-opens for a task. A Goal
+    // Session lets go of them when the Activation closes (TODO H0): their
+    // ends would open new Activations nobody asked for, and a task id it only
+    // read about (a Work's) is not its own.
     if next.finished {
         s.state.watched_tasks.clear();
         s.state.pending_events.clear();
+    } else if turn_closed.is_some() && super::goal::is_goal(&s.config) {
+        s.state.watched_tasks.clear();
     } else {
         let resolver = sh.tasks.lock().expect("tasks").clone();
         if let Some(r) = resolver {

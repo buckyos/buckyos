@@ -31,7 +31,6 @@ fn random_part() -> String {
 ///
 /// - `ui`: `ui-H("ui", agent_did, route_key)`
 /// - `work`: random, or `work-H("work", agent_did, creator, key)`
-/// - `self_check`: `sc-H("self_check", agent_did)`
 /// - `goal`: from the Goal only, [`goal_session_key`]
 pub fn session_identity_key(
     kind: SessionKind,
@@ -48,7 +47,6 @@ pub fn session_identity_key(
             })?;
             format!("{prefix}-{}", h(&["ui", agent_did, route]))
         }
-        SessionKind::SelfCheck => format!("{prefix}-{}", h(&["self_check", agent_did])),
         SessionKind::Goal => {
             return Err(OpenDanError::InvalidArgument(
                 "a goal session allocation key derives from its goal and epoch (ids::goal_session_key); goal sessions are created by the host for a goal".into(),
@@ -193,15 +191,9 @@ mod tests {
         let u1 = session_identity_key(SessionKind::Ui, "did:bns:a", "", None, Some("tg:1")).unwrap();
         let u2 = session_identity_key(SessionKind::Ui, "did:bns:b", "", None, Some("tg:1")).unwrap();
         assert_ne!(u1, u2);
-        let c1 = session_identity_key(SessionKind::SelfCheck, "did:bns:a", "", None, None).unwrap();
-        let c2 = session_identity_key(SessionKind::SelfCheck, "did:bns:b", "", None, None).unwrap();
-        assert_ne!(c1, c2);
         // Same agent name under two owners → different DIDs → different ids.
-        let o1 =
-            session_identity_key(SessionKind::SelfCheck, "did:bns:jarvis.alice", "", None, None)
-                .unwrap();
-        let o2 = session_identity_key(SessionKind::SelfCheck, "did:bns:jarvis.bob", "", None, None)
-            .unwrap();
+        let o1 = session_identity_key(SessionKind::Ui, "did:bns:jarvis.alice", "", None, Some("tg:1")).unwrap();
+        let o2 = session_identity_key(SessionKind::Ui, "did:bns:jarvis.bob", "", None, Some("tg:1")).unwrap();
         assert_ne!(o1, o2);
     }
 

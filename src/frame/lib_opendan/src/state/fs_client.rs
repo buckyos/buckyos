@@ -9,7 +9,7 @@
 //!   state/goals/<goal_id>/               goal, state, activations, schedule
 //!   state/workspaces/<wid>.json          workspace registrations
 //!   state/runtimes/<runtime_id>.json     runtime registrations
-//!   memory/ notebook/ cognition (agent_tool)
+//!   memory/                            the Memory component
 //!   .locks/memory_consolidation.lease  .locks/artifact/<aid>.lease
 //! ```
 
@@ -141,10 +141,6 @@ impl AgentLayout {
 
     pub fn memory_dir(&self) -> PathBuf {
         self.root.join("memory")
-    }
-
-    pub fn notebook_dir(&self) -> PathBuf {
-        self.root.join("notebook")
     }
 
 }

@@ -1,0 +1,154 @@
+{
+  "schema": "opendan.session_config/7",
+  "config_rev": 1,
+  "session": {
+    "session_id": "work-20261111-2",
+    "agent_did": "did:bns:jarvis.alice",
+    "kind": "work",
+    "class": "work",
+    "created_at_ms": 1794391304727,
+    "created_by": {
+      "principal": "app:app2@alice",
+      "via": "session:goal-20261111-1"
+    },
+    "driver": {
+      "principal": "app:app2@alice"
+    },
+    "idempotency_key": "sub:8e77dcd2640e276709bdbdd6dfbcfeb2f11e75057cffc146e209486e84403d89",
+    "origin": {
+      "parent_session": "goal-20261111-1",
+      "report": "final",
+      "goal": {
+        "goal_id": "g-k9ed545152f8cdfcc3d3f30bc",
+        "revision": 1,
+        "epoch": 1,
+        "activation_seq": 0,
+        "at_ms": 1794391304719
+      }
+    },
+    "objective": "Tick item 1 of TODO.md",
+    "end_condition": {
+      "type": "max_turns",
+      "detail": {
+        "n": 18446744073709551615
+      }
+    },
+    "input_policy": "none",
+    "acl": {
+      "agent_access": "full"
+    },
+    "policy": {
+      "completion": "explicit_report",
+      "wait_user_msg": "finish_failed",
+      "observe": "events",
+      "load_hints": true,
+      "max_process_depth": 4,
+      "max_sub_sessions": 4,
+      "max_session_depth": 2,
+      "tick_secs": 30,
+      "runtime_view": "work"
+    }
+  },
+  "prompt": {
+    "llm_context": {
+      "tools": {
+        "enabled": true
+      }
+    },
+    "initial_inputs": [
+      {
+        "schema": "opendan.session_input/3",
+        "key": "cymsg:dc58f1eeab6c65121907e384bea3d79a2aea5c2e24f6a749c43fe78a1f898e3e",
+        "from": "app:app2@alice",
+        "at_ms": 1794391304719,
+        "type": "msg",
+        "payload": {
+          "msg": {
+            "from": "did:bns:jarvis.alice",
+            "to": [
+              "did:bns:jarvis.alice"
+            ],
+            "kind": "chat",
+            "created_at_ms": 1794391304719,
+            "nonce": 2919006906,
+            "content": {
+              "content": "tick item 1 of TODO.md"
+            }
+          }
+        }
+      }
+    ],
+    "history_render": {
+      "drop_kinds": [
+        "created",
+        "turn_started",
+        "input_batch",
+        "decide",
+        "compaction",
+        "input_rejected",
+        "event_dropped",
+        "turn_ended"
+      ]
+    }
+  },
+  "runtime": {
+    "requirement": {},
+    "frozen": {
+      "runtime_id": "private",
+      "connector": {
+        "type": "native"
+      },
+      "revision": 0,
+      "selected_by": "inherited",
+      "caps": {
+        "os": "linux",
+        "arch": "x86_64",
+        "shell": "bash",
+        "desktop": false,
+        "baseline": "extended"
+      },
+      "grant": {
+        "ops": [
+          "open_stream",
+          "describe",
+          "exec",
+          "read",
+          "write",
+          "edit",
+          "mkdir",
+          "stat",
+          "rename",
+          "remove",
+          "computer_inspect",
+          "computer_observe",
+          "computer_act",
+          "query",
+          "cancel"
+        ],
+        "roots": [],
+        "computer": "none"
+      }
+    }
+  },
+  "subscriptions": [
+    {
+      "id": "_task_watch_timer",
+      "mode": "active",
+      "source": {
+        "type": "timer",
+        "name": "task_watch"
+      }
+    }
+  ],
+  "channels": {
+    "inputs": [
+      {
+        "kind": "kmsg",
+        "id": "q",
+        "queue": "app2::alice::opendan.session.450f096e3f30fad3f56e4ce50b13873f674b0c496cb837f220affd9779de6f40",
+        "subscriber": "opendan.450f096e3f30fad3f56e4ce50b13873f674b0c496cb837f220affd9779de6f40"
+      }
+    ],
+    "wake_event": "/opendan/jarvis.alice/session/work-20261111-2/input"
+  }
+}

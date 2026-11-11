@@ -131,6 +131,13 @@
             "answer"
           ],
           "type": "string"
+        },
+        {
+          "description": "The hard guarantee: too long without an inference.",
+          "enum": [
+            "guarantee"
+          ],
+          "type": "string"
         }
       ]
     }

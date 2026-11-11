@@ -913,7 +913,7 @@ async fn gen(out: &Path) -> R<()> {
             &goal,
             APP,
             ActivationReasonKind::Scheduled,
-            &libopendan::goal::scheduled_key(&goal.goal_id, 1, 1),
+            &libopendan::goal::scheduled_key(&goal.goal_id, "e300", 1, 1),
             "scheduled run (every 3600s)",
         )
         .await?;

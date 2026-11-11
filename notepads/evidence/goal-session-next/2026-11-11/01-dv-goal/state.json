@@ -1,0 +1,40 @@
+{
+  "schema": "opendan.goal_state/1",
+  "goal_id": "g-k3c2c26af84aec91068d70710",
+  "rev": 40,
+  "epoch": 1,
+  "goal_revision_seen": 1,
+  "last_activation": {
+    "epoch": 1,
+    "seq": 39,
+    "at_ms": 1794416292860,
+    "reasons": [
+      {
+        "kind": "guarantee",
+        "key": "goal:g-k3c2c26af84aec91068d70710:guarantee:1794415679601",
+        "note": "hard guarantee: no inference for 0h or more; last check false at 2026-11-11T15:15:00Z"
+      }
+    ],
+    "outcome": "completed",
+    "decision": "no_action",
+    "summary": "Healthy: report-1.txt (18 bytes) is recorded in dv_seen.txt; no unlisted files. No changes needed. Gate reports zero check errors; scheduled checks are budget-skipped until the period reset. Retained the event-filtered schedule because this activation came from the fixed hard guarantee."
+  },
+  "distance": {
+    "text": "0 unlisted files, directly verified. Gate reports 0 check errors and budget-skipped checks; budget resets 2026-11-12T00:00:00Z.",
+    "observed_at_ms": 1794416292860
+  },
+  "usage": {
+    "period_start_ms": 1794355200000,
+    "tokens": 2199360,
+    "activations": 39,
+    "works": 0,
+    "work_tokens": 0
+  },
+  "consecutive_no_action": 38,
+  "holds": {
+    "period_start_ms": 0,
+    "min_interval": 0,
+    "budget": 0
+  },
+  "updated_at_ms": 1794416292860
+}

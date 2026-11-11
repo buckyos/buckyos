@@ -4,7 +4,7 @@ const UI = 'ui-7f3a2c91'
 const WORK_RUNNING = 'work-b41d09e2'
 const WORK_PENDING = 'work-5c8e17aa'
 const WORK_FAILED = 'work-e02b66f4'
-const CHECK = 'sc-daily'
+const CHECK = 'work-20261101-4'
 const GOAL_SESSION = 'goal-downloads-tidy-e2'
 
 const open = async (page: Page, hash = '', query = '') => {
@@ -41,7 +41,7 @@ test('what Stop means follows the kind of session', async ({ page }) => {
   expect(errors).toEqual([])
 })
 
-test('only a finished work or self-check whose sub sessions are finished is deleted', async ({ page }) => {
+test('only a finished work whose sub sessions are finished is deleted', async ({ page }) => {
   const errors = await open(page, `#/session/${CHECK}`)
   const ops = page.getByTestId('operations')
   await expect(ops.getByTestId('session-delete')).toBeVisible()
@@ -75,7 +75,7 @@ test('sessions a restart interrupted are shown on the home page and resumed by h
   // A paused session is not at work.
   await expect(page.getByTestId('stat-working')).toContainText('0')
   const list = page.getByTestId('session-list')
-  await expect(list.getByTestId('home-session-sc-weekly')).toContainText('Interrupted')
+  await expect(list.getByTestId('home-session-work-weekly')).toContainText('Interrupted')
   await list.getByTestId(`home-session-${UI}`).getByRole('button', { name: /Show sub sessions/ }).click()
   await expect(list.getByTestId('home-session-work-plan-77')).toContainText('Interrupted')
   await expect(list.getByTestId('home-session-work-user-paused')).toContainText('Paused')
@@ -87,12 +87,12 @@ test('sessions a restart interrupted are shown on the home page and resumed by h
   await expect(list.getByTestId('home-session-work-todo-a1')).toContainText('Working')
 
   // An interrupted session may be given up instead.
-  await banner.getByTestId('interrupted-sc-weekly').getByRole('button', { name: 'Stop' }).click()
+  await banner.getByTestId('interrupted-work-weekly').getByRole('button', { name: 'Stop' }).click()
   const dialog = page.getByTestId('interrupted-stop')
   await expect(dialog).toContainText('What was already done is not undone.')
   await dialog.getByRole('button', { name: 'Stop', exact: true }).click()
   await expect(dialog).toHaveCount(0)
-  await expect(list.getByTestId('home-session-sc-weekly')).toContainText('Stopped')
+  await expect(list.getByTestId('home-session-work-weekly')).toContainText('Stopped')
 
   await banner.getByTestId('resume-all').click()
   await expect(banner).toHaveCount(0)

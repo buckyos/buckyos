@@ -38,12 +38,24 @@ const UI = 'ui-7f3a2c91'
 const WORK_RUNNING = 'work-b41d09e2'
 const WORK_PENDING = 'work-5c8e17aa'
 const WORK_FAILED = 'work-e02b66f4'
-const CHECK = 'sc-daily'
+const CHECK = 'work-20261101-4'
 const GOAL_BUILTIN = 'goal-memory-maintenance'
 const GOAL_TIDY = 'goal-downloads-tidy'
 const GOAL_ARCHIVED = 'goal-photo-backlog'
 const SLOT_SECS = 1800
 const slotNow = Math.floor(now / 1000 / SLOT_SECS)
+// The goals' statistics period (fixed windows of a day, as the host counts them).
+const PERIOD_START = Math.floor(now / 86_400_000) * 86_400_000
+const MEMORY_CHECK = 'goal_checks/memory_maintenance.ts'
+const MEMORY_CHECK_V1 = `// Check of the built-in Memory maintenance goal (its initial version).
+export default async function check(ctx, state) {
+  const status = await ctx.host.call('memory.status', { full: true })
+  const pending = status.pending ?? {}
+  const run = (pending.new ?? 0) + (pending.due ?? 0) + (status.due_reviews ?? 0) > 0
+  return { run, reason: run ? 'memory holds material' : undefined, state }
+}
+`
+const MEMORY_CHECK_V2 = MEMORY_CHECK_V1.replace("{ full: true }", "{ full: !state?.digest }").replace('(its initial version)', '(rewritten by the goal: the full check only when the digest moved)')
 const iso = (seconds: number) => new Date(now + seconds * 1000).toISOString()
 
 const entry = (
@@ -181,11 +193,11 @@ const buildFixtures = () => {
     origin: { parent_session: WORK_RUNNING },
     driver: { principal: 'app:xagent@devtest' },
   })
-  const check = entry(CHECK, 'self_check', 'self_check', 'Daily self check', {
+  const check = entry(CHECK, 'work', 'work.default', 'Summarize last week\'s notes', {
     rev: 6,
     run_state: 'finished',
     outcome: 'succeeded',
-    one_line_status: 'No issue found',
+    one_line_status: 'Summary written',
     updated_at_ms: ago(40000),
   })
   const entries = [ui, running, pending, failed, check]
@@ -326,7 +338,16 @@ interface GoalFixture {
   schedule: GoalSchedule
   activations: GoalActivation[]
   changes: GoalChange[]
+  /** Earlier revisions of the definition. */
+  revisions?: Record<number, GoalDefinition>
+  /** Check script source by version. */
+  scripts?: Record<number, string>
 }
+
+const noStats = (): GoalSchedule['stats'] => ({
+  period_start_ms: PERIOD_START, skipped_min_interval: 0, skipped_budget: 0, checks_true: 0, checks_false: 0, checks_error: 0, guarantees: 0,
+})
+const gateState = { check_errors: 0, guarantee_posted_for_ms: 0, switched_off: false }
 
 const goalDef = (goal_id: string, title: string, objective: string, extra: Partial<GoalDefinition>): GoalDefinition => ({
   schema: 'opendan.goal/1',
@@ -376,7 +397,10 @@ const buildGoalFixtures = (): GoalFixture[] => {
       constraints: ['Never record perceptions of its own', 'Small batches: about 20 materials, at most 3 per activation'],
       created_by: { principal: AGENT, via: 'opendan' },
       budget: { activation: { max_total_tokens: 32000, max_runs: 4 }, period: { window_secs: 86400, max_total_tokens: 200000, max_activations: 48 } },
-      schedule: { every_secs: SLOT_SECS },
+      schedule: {
+        every_secs: SLOT_SECS,
+        check: { version: 2, sha256: 'b7e1c0a4', source: `goal_session:${GOAL_BUILTIN}-e1`, package: MEMORY_CHECK, updated_at_ms: ago(86400) },
+      },
       behavior: 'memory_maintenance',
       status_by: AGENT,
       idempotency_key: 'builtin:memory_maintenance',
@@ -400,7 +424,9 @@ const buildGoalFixtures = (): GoalFixture[] => {
         text: 'You mentioned a weekly release report three times. Should I keep a schedule for it (Fridays 16:00)?',
         at_ms: ago(5400), epoch: 1, activation: 7, notify_id: 'ntf-7c2e', status: 'open', candidate_id: 'cand-weekly-report',
       }],
-      usage: { period_start_ms: ago(30000), tokens: 41200, activations: 5, works: 0, work_tokens: 0 },
+      usage: { period_start_ms: PERIOD_START, tokens: 41200, activations: 5, works: 0, work_tokens: 0 },
+      consecutive_no_action: 0,
+      holds: { period_start_ms: PERIOD_START, min_interval: 2, budget: 0 },
       maintenance: {
         receipts: [
           { operation_id: 'op-01HX1', epoch: 1, activation: 7, batch_id: 'batch-0a3f', graph_seq: 1180, refs: ['mat-1', 'mat-2'], batch: { materials: 8 }, stage: 'completed', operations: 9, dispositions: 8, cleanup_pending: false, created_at_ms: ago(5500), updated_at_ms: ago(5450) },
@@ -423,30 +449,21 @@ const buildGoalFixtures = (): GoalFixture[] => {
       schema: 'opendan.goal_schedule/1',
       goal_id: GOAL_BUILTIN,
       backend: 'local',
-      every_secs: SLOT_SECS,
+      timetable: `every:${SLOT_SECS}`,
       last_slot: slotNow,
       last_fire_at_ms: ago(5400),
       start_posted_epoch: 1,
       skipped: [
-        { slot: slotNow - 1, at_ms: ago(1800), reason: 'no_change' },
-        { slot: slotNow, at_ms: ago(60), reason: 'no_change' },
+        { slot: slotNow - 1, at_ms: ago(1800), reason: 'check_false' },
+        { slot: slotNow, at_ms: ago(60), reason: 'check_false' },
       ],
-      gate: {
-        status: 'no_change',
-        last_checked_slot: slotNow,
-        last_baseline_slot: slotNow - 3,
-        last_checked_at_ms: ago(60),
-        last_full_check_at_ms: ago(7200),
-        last_skip_reason: 'no_change',
-        last_inputs_digest: 'sha256:1f9c2b7e',
-        pending: { new: 0, due: 0, waiting: 3, retry_cleanup: 0, next_deadline: iso(4 * 3600), oldest_at_ms: ago(86400) },
-        due_reviews: 0,
-        next_review_at: iso(2 * 86400),
-        unfinished_receipts: 0,
-        last_run_at_ms: ago(5400),
-        last_run_slot: slotNow - 3,
-        backoff_level: 0,
-      },
+      last_check: { at_ms: ago(60), outcome: 'false', script_version: 2, elapsed_ms: 140 },
+      check_errors: 0,
+      last_check_error: 'memory.status timed out after 10s',
+      check_state: { digest: 'sha256:1f9c2b7e', full_check_at: ago(7200), next_deadline: iso(4 * 3600) },
+      stats: { period_start_ms: PERIOD_START, skipped_min_interval: 1, skipped_budget: 0, checks_true: 3, checks_false: 14, checks_error: 1, guarantees: 0 },
+      guarantee_posted_for_ms: 0,
+      switched_off: false,
       updated_at_ms: ago(60),
     },
     activations: [5, 6, 7].map((seq) =>
@@ -455,6 +472,7 @@ const buildGoalFixtures = (): GoalFixture[] => {
         : { summary: 'Checked: nothing reached its processing condition.' }),
     ),
     changes: [change(1, ago(86400 * 3), 'created', AGENT, 'opendan', { revision: 1, epoch: 1, reason: 'seeded builtin:memory_maintenance' })],
+    scripts: { 1: MEMORY_CHECK_V1, 2: MEMORY_CHECK_V2 },
   }
 
   const tidy: GoalFixture = {
@@ -493,18 +511,23 @@ const buildGoalFixtures = (): GoalFixture[] => {
         at_ms: ago(43200), epoch: 2, activation: 1, notify_id: 'ntf-4a1b', status: 'open',
       }],
       recent_works: [{ sid: 'work-tidy-01', outcome: 'succeeded', one_line_status: 'Moved 12 archives into the workspace', absorbed_in: [1, 2] }],
-      usage: { period_start_ms: ago(50000), tokens: 12800, activations: 1, works: 0, work_tokens: 0 },
+      usage: { period_start_ms: PERIOD_START, tokens: 12800, activations: 1, works: 0, work_tokens: 0 },
+      consecutive_no_action: 0,
+      holding: { reason: 'min_interval', since_ms: ago(600), until_ms: now + 300_000, checked_at_ms: ago(600) },
+      holds: { period_start_ms: PERIOD_START, min_interval: 1, budget: 0 },
       updated_at_ms: ago(43200),
     },
     schedule: {
       schema: 'opendan.goal_schedule/1',
       goal_id: GOAL_TIDY,
       backend: 'local',
-      every_secs: 6 * 3600,
+      timetable: `every:${6 * 3600}`,
       last_slot: Math.floor(now / 1000 / (6 * 3600)),
       last_fire_at_ms: ago(43200),
       start_posted_epoch: 2,
       skipped: [{ slot: Math.floor(now / 1000 / (6 * 3600)), at_ms: ago(600), reason: 'min_interval' }],
+      ...gateState,
+      stats: { ...noStats(), skipped_min_interval: 1 },
       updated_at_ms: ago(600),
     },
     activations: [
@@ -551,10 +574,12 @@ const buildGoalFixtures = (): GoalFixture[] => {
       distance: { text: '212 photos renamed, 3 skipped.', observed_at_ms: ago(86400 * 2) },
       recent_works: [{ sid: WORK_PENDING, outcome: 'succeeded', one_line_status: 'Renamed 212 photos, 3 skipped', absorbed_in: [1, 1] }],
       usage: { period_start_ms: ago(86400 * 2), tokens: 2600, activations: 1, works: 1, work_tokens: 9800 },
+      consecutive_no_action: 0,
+      holds: { period_start_ms: ago(86400 * 2), min_interval: 0, budget: 0 },
       last_error: { kind: 'llm', message: 'provider returned 529 (overloaded) after 3 attempts', at_ms: ago(86400 * 4) },
       updated_at_ms: ago(86400 * 2),
     },
-    schedule: { schema: 'opendan.goal_schedule/1', goal_id: GOAL_ARCHIVED, backend: 'local', start_posted_epoch: 1, updated_at_ms: ago(86400 * 6) },
+    schedule: { schema: 'opendan.goal_schedule/1', goal_id: GOAL_ARCHIVED, backend: 'local', start_posted_epoch: 1, ...gateState, stats: noStats(), updated_at_ms: ago(86400 * 6) },
     activations: [
       activation(GOAL_ARCHIVED, 1, 1, ago(86400 * 6), { reasons: [{ kind: 'created', key: `create:${GOAL_ARCHIVED}` }], decision: 'created_work', summary: 'Started the rename Work.', works_created: [WORK_PENDING], cost: { runs: 1, total_tokens: 2600 } }),
     ],
@@ -571,7 +596,8 @@ const delay = () => new Promise((resolve) => window.setTimeout(resolve, 60))
 
 /**
  * `runtime=native`: Desktop Lite. `scene=restart`: sessions the host's restart interrupted. `memory=busy`: the
- * consolidation holds Memory; `memory=empty`: nothing remembered, no consolidation goal.
+ * consolidation holds Memory; `memory=empty`: nothing remembered, no consolidation goal. `goals=many`: more active
+ * goals than the list thinks wise; `goals=off`: the built-in goal is switched off in the agent's configuration.
  */
 export const createMockDataModel = (params = new URLSearchParams()): OpenDanDataModel => {
   const nativeRuntime = params.get('runtime') === 'native'
@@ -585,7 +611,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
         { origin: { parent_session: UI }, ...queue('work-plan-77') }),
       entry('work-todo-a1', 'work', 'work.default', 'Copy the 2019 albums', { run_state: 'running', turn_open: true, paused: 'interrupted', updated_at_ms: ago(210) },
         { origin: { parent_session: 'work-plan-77' }, ...queue('work-todo-a1') }),
-      entry('sc-weekly', 'self_check', 'self_check', 'Weekly self check', { run_state: 'running', turn_open: true, paused: 'interrupted', updated_at_ms: ago(220) }, queue('sc-weekly')),
+      entry('work-weekly', 'work', 'work.default', 'Write the weekly report', { run_state: 'running', turn_open: true, paused: 'interrupted', updated_at_ms: ago(220) }, queue('work-weekly')),
       entry('work-user-paused', 'work', 'work.default', 'Index the music library', { run_state: 'waiting', paused: 'user', updated_at_ms: ago(230) },
         { origin: { parent_session: UI }, ...queue('work-user-paused') }),
       entry('work-goal-child', 'work', 'work.default', 'Tidy the downloads folder', { run_state: 'waiting', paused: 'goal', updated_at_ms: ago(240) },
@@ -595,6 +621,22 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
     )
   }
   const goals = buildGoalFixtures()
+  if (params.get('goals') === 'off') goals[0].schedule.switched_off = true
+  if (params.get('goals') === 'many') {
+    for (let i = 1; i <= 16; i += 1) {
+      const id = `goal-chore-${i}`
+      goals.push({
+        def: goalDef(id, `Chore ${i}`, `Keep chore ${i} done.`, { updated_at_ms: ago(86400 * 4 + i) }),
+        state: {
+          schema: 'opendan.goal_state/1', goal_id: id, rev: 1, epoch: 1,
+          usage: { period_start_ms: PERIOD_START }, consecutive_no_action: 0, holds: { period_start_ms: PERIOD_START, min_interval: 0, budget: 0 },
+        },
+        schedule: { schema: 'opendan.goal_schedule/1', goal_id: id, backend: 'local', start_posted_epoch: 1, ...gateState, stats: noStats() },
+        activations: [],
+        changes: [change(1, ago(86400 * 4), 'created', OWNER, 'owner', { revision: 1, epoch: 1 })],
+      })
+    }
+  }
   const goalEntries: RegistryEntry[] = goals.flatMap((g) =>
     (g.def.epochs ?? []).map((ep) =>
       entry(ep.sid, 'goal', 'goal', g.def.title, {
@@ -629,7 +671,6 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
     g.state.rev += 1
     g.state.updated_at_ms = Date.now()
     if (keep === 'facts') Object.assign(g.state, { distance: undefined, pending: undefined, questions: undefined, last_activation: undefined })
-    if (g.schedule.gate) g.schedule.gate.status = 'unknown'
     goalEntries.push(entry(sid, 'goal', 'goal', g.def.title, { run_state: 'waiting', one_line_status: `Epoch ${epoch}: waiting for the next activation` }, { input_queue: `opendan/${sid}/input` }))
     goalChange(g, start, { epoch, reason })
     return structuredClone(g.def)
@@ -882,6 +923,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
     return found
   }
   let uiNames: string[] | null = null
+  let crystallize: boolean | undefined
   const uiCandidates = () => skills.filter((s) => s.kind === 'work' && s.enabled && s.scope?.split(',').includes('ui')).map((s) => s.name)
   const uiSkills = (): UiSkills => {
     const names = uiNames ?? ['ui_core']
@@ -1008,8 +1050,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
           { name: 'agent_state_service', enabled: true, running: true, note: 'port 4060' },
           { name: 'webui', enabled: true, running: true },
           { name: 'ui', enabled: true, running: true, note: '1 inbox' },
-          { name: 'self_check', enabled: true, running: false, note: 'next run in 6h' },
-          { name: 'memory_maintenance', enabled: true, running: true, note: 'built-in goal seeded by the goals module; decision pre-check off' },
+          { name: 'memory_maintenance', enabled: true, running: true, note: 'built-in goal seeded by the goals module; its check script decides when it infers' },
         ],
         hosted: structuredClone(fx.hostedList),
         ui: {
@@ -1276,7 +1317,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
     deleteSession: async (sid) => {
       await delay()
       const e = find(sid)
-      if (e.kind !== 'work' && e.kind !== 'self_check') throw new OpenDanError('invalid_argument', `session ${sid} is a ${e.kind} session: only work and self-check sessions are deleted`)
+      if (e.kind !== 'work') throw new OpenDanError('invalid_argument', `session ${sid} is a ${e.kind} session: only work sessions are deleted`)
       const all = [e, ...descendants(sid)]
       const open = all.filter((x) => x.status.run_state !== 'finished')
       if (open.length) throw new OpenDanError('invalid_argument', `session ${sid} has unfinished sessions (${open.map((x) => x.session_id).join(', ')})`)
@@ -1441,7 +1482,8 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       await delay()
       const g = goals.find((x) => x.def.goal_id === goalId)
       if (!g || revision > g.def.revision || revision < 1) return null
-      return structuredClone({ ...g.def, revision, constraints: revision === g.def.revision ? g.def.constraints : (g.def.constraints ?? []).slice(0, -1) })
+      if (revision === g.def.revision) return structuredClone(g.def)
+      return structuredClone(g.revisions?.[revision] ?? { ...g.def, revision, constraints: (g.def.constraints ?? []).slice(0, -1) })
     },
 
     goalChanges: async (goalId, limit = 0) => {
@@ -1486,7 +1528,6 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       g.state.usage.activations = (g.state.usage.activations ?? 0) + 1
       g.state.rev += 1
       g.state.updated_at_ms = started
-      if (g.schedule.gate) Object.assign(g.schedule.gate, { last_run_at_ms: started, last_checked_at_ms: started })
       inputIndex += 1
       return { index: inputIndex, key: `goal:${goalId}:activate:${seq}` }
     },
@@ -1500,10 +1541,6 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       g.def.status_changed_at_ms = Date.now()
       g.def.status_reason = reason
       g.def.status_by = OWNER
-      if (g.schedule.gate) {
-        g.schedule.gate.status = status === 'paused' ? 'paused' : status === 'active' ? 'no_change' : 'disabled'
-        if (status === 'paused') g.schedule.gate.last_skip_reason = 'paused'
-      }
       if (status === 'paused') (g.schedule.skipped ??= []).push({ slot: slotNow, at_ms: Date.now(), reason: 'paused' })
       if (status === 'archived') {
         const current = g.def.epochs?.find((ep) => ep.epoch === g.def.session.epoch)
@@ -1528,6 +1565,61 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       return openEpoch(g, 'restarted', reason, carryState ? 'all' : 'facts')
     },
 
+    reviseGoal: async (goalId, request) => {
+      await delay()
+      const g = findGoal(goalId)
+      if (request.expected_revision !== g.def.revision) {
+        throw new OpenDanError('goal_conflict', `goal ${goalId} is at revision ${g.def.revision}, not ${request.expected_revision}`)
+      }
+      const next = structuredClone(g.def)
+      if (request.budget) next.budget = structuredClone(request.budget)
+      // The check script changes through set_check only.
+      if (request.schedule) next.schedule = { ...structuredClone(request.schedule), check: g.def.schedule?.check }
+      if (next.schedule?.every_secs != null && next.schedule.every_secs < 60) throw new OpenDanError('invalid_argument', 'schedule: every_secs is at least 60')
+      if (JSON.stringify(next) === JSON.stringify(g.def)) return structuredClone(g.def)
+      ;(g.revisions ??= {})[g.def.revision] = structuredClone(g.def)
+      next.revision += 1
+      g.def = next
+      goalChange(g, 'revised', { revision: next.revision, reason: request.reason })
+      return structuredClone(g.def)
+    },
+
+    setGoalCheck: async (goalId, request) => {
+      await delay()
+      const g = findGoal(goalId)
+      const schedule = (g.def.schedule ??= {})
+      if (request.every_secs != null && request.cron != null) throw new OpenDanError('invalid_argument', 'every_secs or cron, not both')
+      if (request.every_secs != null) {
+        if (request.every_secs < 60) throw new OpenDanError('invalid_argument', 'schedule: every_secs is at least 60')
+        schedule.every_secs = request.every_secs
+        delete schedule.cron
+      }
+      if (request.cron != null) {
+        if (request.cron.trim().split(/\s+/).length !== 5) throw new OpenDanError('invalid_argument', 'schedule: a cron expression has 5 fields')
+        schedule.cron = request.cron.trim()
+        delete schedule.every_secs
+      }
+      if (request.timezone != null) schedule.timezone = request.timezone.trim() || undefined
+      if (request.clear_script) delete schedule.check
+      if (request.restore_package) {
+        const pkg = schedule.check?.package
+        if (!pkg) throw new OpenDanError('invalid_argument', `goal ${goalId} has no package check script to restore`)
+        const version = Math.max(0, ...Object.keys(g.scripts ?? {}).map(Number)) + 1
+        ;(g.scripts ??= {})[version] = MEMORY_CHECK_V1
+        schedule.check = { version, sha256: 'a51f9d02', source: `package:${pkg}`, package: pkg, updated_at_ms: Date.now() }
+      }
+      g.schedule.timetable = schedule.cron ? `cron:${schedule.cron}@${schedule.timezone ?? 'UTC'}` : schedule.every_secs ? `every:${schedule.every_secs}` : schedule.check ? 'every:300' : undefined
+      goalChange(g, 'check', { reason: request.reason, epoch: g.def.session.epoch, detail: { every_secs: schedule.every_secs, cron: schedule.cron, timezone: schedule.timezone, script: schedule.check } })
+      return structuredClone(g.def)
+    },
+
+    goalCheckScript: async (goalId, version) => {
+      await delay()
+      const g = findGoal(goalId)
+      const v = version ?? g.def.schedule?.check?.version
+      return v != null ? g.scripts?.[v] ?? null : null
+    },
+
     skills: async () => {
       await delay()
       return structuredClone(skills)
@@ -1540,6 +1632,7 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
         ...(uiNames ? { ui_cmd_skills: [...uiNames] } : {}),
         usage: { ...Object.fromEntries(skills.filter((s) => s.usage).map((s) => [`${s.kind}:${s.name}`, s.usage!])), none: { frozen: 4, last_ms: ago(5400), recent_sessions: [WORK_FAILED] } },
         audit: structuredClone(skillAudit),
+        ...(crystallize != null ? { crystallize } : {}),
       }
     },
 
@@ -1674,6 +1767,13 @@ export const createMockDataModel = (params = new URLSearchParams()): OpenDanData
       drafts.splice(at, 1)
       audit('draft_discard', undefined, slug)
       return {}
+    },
+
+    setCrystallize: async (enabled) => {
+      await delay()
+      crystallize = enabled
+      audit(enabled ? 'crystallize_on' : 'crystallize_off')
+      return { crystallize }
     },
   }
 }

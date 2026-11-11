@@ -43,7 +43,6 @@
 | kind / 前缀 | 身份键规则 |
 |---|---|
 | work / `work` | 无幂等键时生成随机身份键；带幂等键时用 `work-H("work", agent_did, creator_principal, key)` 预留短 ID |
-| self_check / `sc` | `sc-H("self_check", agent_did)` 预留单例短 ID |
 | goal / `goal` | `goal-H("goal", agent_did, goal_id, epoch)` 预留短 ID（epoch 为十进制字符串）；只由宿主为 Goal 创建（[Agent State Protocol](<Agent State Protocol.md>) §9），普通创建与子 Session 创建都拒绝 `goal` 类 |
 | ui / `ui` | `ui-H("ui", agent_did, route_key)` 预留短 ID；`route_key` 是该 Session 绑定的会话（OpenDAN 的 UI Session 用 msg-center 的 `MailboxAddress` 字符串）。未给 `route_key` 的本地对话补一个 `local:<幂等键或 uuid>`。OpenDAN 的多代 UI Session 用 `ui-H("ui", agent_did, route_key, <代次>)` 预留各代短 ID |
 
@@ -59,7 +58,7 @@ Schema：`schema/session_config.schema.json`。要点：
   "config_rev": 1,                    // 运行中可改的字段（订阅）变化时 +1
   "session": {
     "session_id": "...", "agent_did": "did:bns:jarvis.alice",
-    "kind": "work | self_check | ui | goal", "class": "work",
+    "kind": "work | ui | goal", "class": "work",
     "created_at_ms": 0,
     "created_by": { "principal": "app:app2@alice", "via": "app" },
     "driver": { "principal": "app:app2@alice" },   // 推进身份，创建后不变
@@ -130,7 +129,7 @@ Schema：`schema/session_config.schema.json`。要点：
   - 会话的初始 behavior（`prompt.behavior`）没有自己的条目时，视为使用会话基础配置的 `switch_context` 目标。交接到其它没有条目的 behavior 是配置错误：当前 Turn 以 `failed` 结束（`last_error.kind = behavior_config`）；发生在子 context 内时作为失败结果交回调用方。
   - 表在每次推进开始时校验，非法（未知 mode、fork 带 system 等）则不做任何推理。旧的 `extensions.opendan.process_modes` 不再接受。
 - 工具 `call_behavior({behavior, task})`：在 `prompt.llm_context.tools.tools` 中以 `{"name": "call_behavior"}` 显式装配后，context 可以用工具调用（或 behavior action）发起子 context（目标必须是 `create_sub_context` / `fork`）。调用只登记，交接在调用方的 run 段结束时发生（§8）。只由会话自己的 runner 提供；xllm 不具备该工具，拒绝接手装配了它的 run。
-- `session.policy`（版本 6）：Session 模板（`work / ui / self_check / goal`，`agent.toml [session.<class>]` 可覆盖）在创建时解析的结果，随配置冻结。
+- `session.policy`（版本 6）：Session 模板（`work / ui / goal`，`agent.toml [session.<class>]` 可覆盖）在创建时解析的结果，随配置冻结。
   - `completion`：`natural`（缺省）沿用普通 function-call `Done` 和已获准结束报告的 end_condition；`explicit_report` 仅获准的结束报告可正常关闭 Session。普通 Done 完成 Turn：有输入队列则等待，无队列则 `finished + failed`、`missing_end_report`。`agent.toml [session.<class>] completion` 可覆盖模板值。
   - `wait_user_msg`：`WAIT_USER_MSG` 在该 Session 的含义。`allowed`：Turn 保持打开等输入（已交付回复则完成该 Turn）；`finish_failed`：Turn 以 `failed` 关闭、Session `finished + failed`，`last_error.kind = needs_user_input`，问题写入 report（不影响工具 / task 等待）；`finish_completed`：按交付结果处理；`end_turn`：没有人此刻回答，Turn 以 `completed` 关闭（带着它的问题），Session 不结束、继续等下一个输入（Goal Session）。
   - `observe`：`off` 不注入半订阅快照；`events` 注入快照；`events_and_active` 另在受控输入里给出活动 Session 列表。`load_hints`：是否装配 hints。

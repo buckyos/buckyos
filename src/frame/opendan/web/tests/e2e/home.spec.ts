@@ -6,7 +6,7 @@ const UI = 'ui-7f3a2c91'
 const WORK_RUNNING = 'work-b41d09e2'
 const WORK_PENDING = 'work-5c8e17aa'
 const WORK_FAILED = 'work-e02b66f4'
-const CHECK = 'sc-daily'
+const CHECK = 'work-20261101-4'
 
 const open = async (page: Page) => {
   const errors: string[] = []

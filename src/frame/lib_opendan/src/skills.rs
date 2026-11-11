@@ -78,7 +78,8 @@ fn save_record(root: &Path, record: &SkillsRecord) -> Result<()> {
 pub struct SkillAudit {
     pub at_ms: u64,
     pub by: String,
-    /// `install | remove | enable | disable | ui_set | revise | draft | draft_discard | install_cmd`.
+    /// `install | remove | enable | disable | ui_set | revise | draft | draft_discard | install_cmd |
+    /// crystallize_on | crystallize_off`.
     pub action: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub skill: String,
@@ -102,6 +103,19 @@ pub struct SkillsState {
     pub install: BTreeMap<String, SkillInstallState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audit: Vec<SkillAudit>,
+    /// The owner's switch of the skill crystallization Goal; absent:
+    /// `agent.toml [session.goal.crystallize] enabled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crystallize: Option<bool>,
+}
+
+/// Switch the skill crystallization Goal on or off (the owner's).
+pub fn set_crystallize(root: &Path, enabled: bool, who: &str) -> Result<SkillsState> {
+    update_state(root, |state| {
+        audit(state, who, if enabled { "crystallize_on" } else { "crystallize_off" }, "", "");
+        state.crystallize = Some(enabled);
+        Ok(state.clone())
+    })
 }
 
 pub fn load_state(root: &Path) -> Result<SkillsState> {

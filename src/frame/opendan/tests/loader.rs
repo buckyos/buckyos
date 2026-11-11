@@ -1141,7 +1141,7 @@ async fn agent_state_over_krpc_matches_the_files() {
         .collect();
     assert_eq!(modules["ui"], true);
     assert_eq!(modules["agent_state_service"], true);
-    assert_eq!(modules["self_check"], false);
+    assert!(!modules.contains_key("self_check"), "self_check is retired");
     assert!(status["hosted"].as_array().unwrap().iter().any(|h| h["session_id"] == ui.sid()));
 
     // The home page: profile card, usage by model, conversations. Without

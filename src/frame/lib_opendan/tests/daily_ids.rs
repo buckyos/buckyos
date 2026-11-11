@@ -33,7 +33,7 @@ async fn automatic_session_kinds_keep_short_ids_as_directory_names() {
     let agent = env.agent();
     let channels = env.channels();
     let mut numbers = Vec::new();
-    for kind in [SessionKind::Work, SessionKind::Ui, SessionKind::SelfCheck] {
+    for kind in [SessionKind::Work, SessionKind::Ui] {
         let mut spec = work_spec("short directory");
         spec.kind = kind;
         spec.class = kind.as_str().into();
@@ -69,7 +69,7 @@ async fn automatic_session_kinds_keep_short_ids_as_directory_names() {
     .unwrap();
     assert!(created);
     numbers.push(daily_id(&sd, SessionKind::Goal));
-    assert_eq!(numbers, vec![1, 2, 3, 4]);
+    assert_eq!(numbers, vec![1, 2, 3]);
 }
 
 #[tokio::test]
