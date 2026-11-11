@@ -195,10 +195,6 @@ fn semantic_supported() -> bool {
     native_semantic::ready()
 }
 
-/// toggle / select / expand / collapse run on the UIA backend; macOS AX does
-/// not perform them yet.
-const STATE_COMMANDS: bool = cfg!(windows);
-
 /// Whether a toggle/select/expand/collapse reply (`before` and `st` state
 /// bits) shows the element short of the state the command aims for: toggle
 /// changes the check state, the others leave it selected, expanded (also
@@ -571,10 +567,14 @@ fn native_capabilities(desktop: &Desktop, paused: bool, semantic: bool) -> Compu
             ComputerObservationMode::Semantic,
             ComputerObservationMode::Hybrid,
         ]);
-        commands.extend(["invoke", "set_value"]);
-        if STATE_COMMANDS {
-            commands.extend(["toggle", "select", "expand", "collapse"]);
-        }
+        commands.extend([
+            "invoke",
+            "set_value",
+            "toggle",
+            "select",
+            "expand",
+            "collapse",
+        ]);
     }
     ComputerCapabilities {
         capture: capability(
@@ -1495,9 +1495,9 @@ impl DesktopComputer {
                 }
                 required(PAT_VALUE)?
             }
-            ComputerRequest::Toggle { .. } if STATE_COMMANDS => required(PAT_TOGGLE)?,
-            ComputerRequest::Select { .. } if STATE_COMMANDS => required(PAT_SELECTION_ITEM)?,
-            ComputerRequest::Expand { .. } | ComputerRequest::Collapse { .. } if STATE_COMMANDS => {
+            ComputerRequest::Toggle { .. } => required(PAT_TOGGLE)?,
+            ComputerRequest::Select { .. } => required(PAT_SELECTION_ITEM)?,
+            ComputerRequest::Expand { .. } | ComputerRequest::Collapse { .. } => {
                 required(PAT_EXPAND_COLLAPSE)?
             }
             _ => return Err("command_unsupported"),
@@ -2251,7 +2251,7 @@ mod tests {
             .contains(&ComputerObservationMode::Semantic));
         assert!(caps.commands.contains(&"set_value".to_string()));
         for command in ["toggle", "select", "expand", "collapse"] {
-            assert_eq!(caps.commands.contains(&command.to_string()), cfg!(windows));
+            assert!(caps.commands.contains(&command.to_string()));
         }
         assert_eq!(
             native_capabilities(&ready, true, true)

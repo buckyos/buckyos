@@ -379,6 +379,7 @@ static const float AX_CALL_TIMEOUT = 1.0f;
 @property (nonatomic, copy) NSString *name;
 @property (nonatomic, copy) NSString *identifier;
 @property (nonatomic, copy) NSString *value;
+@property (nonatomic, copy) NSString *expander;
 @property (nonatomic) uint32_t patterns;
 @property (nonatomic) uint32_t states;
 @property (nonatomic) CGRect frame;
@@ -419,7 +420,6 @@ AX_SET(ax_leaf_roles, @"AXStaticText", @"AXImage", @"AXScrollBar", @"AXValueIndi
     @"AXRelevanceIndicator", @"AXHandle", @"AXTextField", @"AXTextArea", @"AXDateField", @"AXTimeField",
     @"AXSlider")
 AX_SET(ax_clip_roles, @"AXScrollArea", @"AXWebArea")
-AX_SET(ax_selectable_roles, @"AXRow", @"AXRadioButton")
 AX_SET(ax_expandable_roles, @"AXComboBox", @"AXPopUpButton", @"AXMenuButton", @"AXRow")
 AX_SET(ax_meaningful_roles, @"AXWindow", @"AXSheet", @"AXPopover", @"AXWebArea", @"AXToolbar", @"AXHeading",
     @"AXCheckBox", @"AXButton", @"AXMenuButton", @"AXDisclosureTriangle", @"AXColorWell", @"AXDockItem",
@@ -526,7 +526,7 @@ static BOOL ax_settable(AXUIElementRef element, CFStringRef attribute) {
 
 enum {
     A_ROLE, A_SUBROLE, A_TITLE, A_DESCRIPTION, A_VALUE, A_IDENTIFIER, A_ENABLED, A_ROLE_DESCRIPTION, A_SELECTED,
-    A_EXPANDED, A_POSITION, A_SIZE, A_HELP, A_PLACEHOLDER, A_DOM_ID, A_MARK, A_TITLE_ELEMENT, A_CHILDREN,
+    A_EXPANDED, A_POSITION, A_SIZE, A_HELP, A_PLACEHOLDER, A_DOM_ID, A_MARK, A_TITLE_ELEMENT, A_DISCLOSING, A_CHILDREN,
 };
 
 static NSArray *ax_attributes(BOOL children) {
@@ -541,7 +541,7 @@ static NSArray *ax_attributes(BOOL children) {
             (__bridge NSString *)kAXPositionAttribute, (__bridge NSString *)kAXSizeAttribute,
             (__bridge NSString *)kAXHelpAttribute, (__bridge NSString *)kAXPlaceholderValueAttribute,
             @"AXDOMIdentifier", (__bridge NSString *)kAXMenuItemMarkCharAttribute,
-            (__bridge NSString *)kAXTitleUIElementAttribute];
+            (__bridge NSString *)kAXTitleUIElementAttribute, (__bridge NSString *)kAXDisclosingAttribute];
         withChildren = [facts arrayByAddingObject:(__bridge NSString *)kAXChildrenAttribute];
     });
     return children ? withChildren : facts;
@@ -549,6 +549,9 @@ static NSArray *ax_attributes(BOOL children) {
 
 /// One element's role, name, geometry and pattern/state bits (the same bits
 /// the UIA backend derives from control patterns), plus its children.
+/// Toggle, radio select and disclosure triangles need AXPress; row select
+/// and expand/collapse need a settable AXSelected, AXExpanded or (outline
+/// rows) AXDisclosing, recorded in `expander`.
 /// Focus is not read here: `AXFocused` is true on every cell of a focused
 /// SwiftUI list, so callers compare with the app's focused element.
 static BuckyAxFacts *ax_read(AXUIElementRef element, BOOL children, float timeout, AXError *error) {
@@ -585,36 +588,48 @@ static BuckyAxFacts *ax_read(AXUIElementRef element, BOOL children, float timeou
     }
     if (ax_bool(values[A_ENABLED]) == 0) states |= ST_DISABLED;
     BOOL menu = [role isEqualToString:@"AXMenuItem"] || [role isEqualToString:@"AXMenuBarItem"];
-    // Chromium reports AXSelected/AXExpanded (false) on every node: the
-    // patterns are kept for roles that select or expand, other roles only
-    // show a true state.
+    BOOL row = [role isEqualToString:@"AXRow"];
+    BOOL press = (patterns & PAT_INVOKE) != 0;
+    // Chromium reports AXSelected/AXExpanded (false, read-only) on every
+    // node, and SwiftUI and Finder report read-only AXDisclosing on rows
+    // that do not expand: the patterns need a settable attribute on roles
+    // that select or expand, other roles only show a true state.
     int selected = ax_bool(values[A_SELECTED]);
     if (selected >= 0 && !menu && !inert) {
-        if ([ax_selectable_roles() containsObject:role]) patterns |= PAT_SELECTION_ITEM;
+        if (row && ax_settable(element, kAXSelectedAttribute)) patterns |= PAT_SELECTION_ITEM;
         if (selected == 1) states |= ST_SELECTED;
     }
     id value = ax_present(values[A_VALUE]);
     int number = [value isKindOfClass:[NSNumber class]] ? [value intValue] : -1;
     if ([role isEqualToString:@"AXCheckBox"]) {
-        patterns |= PAT_TOGGLE;
+        if (press) patterns |= PAT_TOGGLE;
         if (number == 1) states |= ST_CHECKED;
         else if (number == 2) states |= ST_MIXED;
     } else if ([role isEqualToString:@"AXRadioButton"]) {
-        patterns |= PAT_SELECTION_ITEM;
+        if (press) patterns |= PAT_SELECTION_ITEM;
         if (number == 1) states |= ST_SELECTED;
     } else if ([role isEqualToString:@"AXMenuItem"]) {
         NSString *mark = ax_text(values[A_MARK], 4);
         if (mark.length) states |= [mark isEqualToString:@"-"] ? ST_MIXED : ST_CHECKED;
     } else if ([role isEqualToString:@"AXDisclosureTriangle"] && number >= 0) {
-        patterns |= PAT_EXPAND_COLLAPSE;
+        if (press) patterns |= PAT_EXPAND_COLLAPSE;
         states |= number ? ST_EXPANDED : ST_COLLAPSED;
     }
     int expanded = ax_bool(values[A_EXPANDED]);
-    if (expanded >= 0 && !menu && !inert && [ax_expandable_roles() containsObject:role]) {
-        patterns |= PAT_EXPAND_COLLAPSE;
-        states |= expanded ? ST_EXPANDED : ST_COLLAPSED;
-    } else if (expanded == 1 && !menu && !inert) {
-        states |= ST_EXPANDED;
+    if (!menu && !inert) {
+        CFStringRef expander = NULL;
+        int open = expanded;
+        if ([ax_expandable_roles() containsObject:role]) {
+            if (expanded >= 0) expander = kAXExpandedAttribute;
+            else if (row && (open = ax_bool(values[A_DISCLOSING])) >= 0) expander = kAXDisclosingAttribute;
+        }
+        if (expander && ax_settable(element, expander)) {
+            patterns |= PAT_EXPAND_COLLAPSE;
+            states |= open ? ST_EXPANDED : ST_COLLAPSED;
+            facts.expander = (__bridge NSString *)expander;
+        } else if (expanded == 1) {
+            states |= ST_EXPANDED;
+        }
     }
     BOOL textual = [ax_textual_roles() containsObject:role];
     if (textual) {
@@ -1064,17 +1079,22 @@ static BOOL ax_focus_reached(id element, pid_t pid, float timeout) {
     return NO;
 }
 
-/// AXPress. An app that opens a modal dialog or tracks a menu answers the
-/// press only when that ends; if it meanwhile answers another request, the
-/// press is running in that nested loop and counts as delivered.
-static int ax_press(BuckyAxNode *node, float timeout, BOOL *pending) {
+/// An AXPress or attribute change (`attribute` set to `value`). An app that
+/// opens a modal dialog or tracks a menu answers it only when that ends; if
+/// it meanwhile answers another request, the change is running in that
+/// nested loop and counts as delivered.
+static int ax_deliver(BuckyAxNode *node, CFStringRef attribute, CFTypeRef value, float timeout, BOOL *pending) {
     *pending = NO;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     __block AXError result = kAXErrorFailure;
     id element = node.element;
+    NSString *name = (__bridge NSString *)attribute;
+    id argument = (__bridge id)value;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)element, timeout);
-        result = AXUIElementPerformAction((__bridge AXUIElementRef)element, kAXPressAction);
+        AXUIElementRef target = (__bridge AXUIElementRef)element;
+        AXUIElementSetMessagingTimeout(target, timeout);
+        result = name ? AXUIElementSetAttributeValue(target, (__bridge CFStringRef)name, (__bridge CFTypeRef)argument)
+                      : AXUIElementPerformAction(target, kAXPressAction);
         dispatch_semaphore_signal(done);
     });
     double started = ax_now();
@@ -1096,9 +1116,17 @@ static int ax_press(BuckyAxNode *node, float timeout, BOOL *pending) {
     return UR_TIMEOUT;
 }
 
+/// Ops 4-7 (toggle, select, expand, collapse) and the state each one aims for.
+static BOOL ax_state_reached(uint32_t op, uint32_t before, uint32_t after) {
+    if (op == 4) return ((after ^ before) & (ST_CHECKED | ST_MIXED)) != 0;
+    if (op == 5) return (after & ST_SELECTED) != 0;
+    if (op == 6) return (after & ST_EXPANDED) != 0;
+    return (after & ST_COLLAPSED) != 0;
+}
+
 int bucky_semantic_element(uint64_t snapshot, uint32_t index, uint32_t op, const uint16_t *text, size_t text_length,
                            uint32_t timeout_ms, char **json, size_t *length) {
-    if (!json || !length || (text_length && !text) || op > 3) return UR_FAILED;
+    if (!json || !length || (text_length && !text) || op > 7) return UR_FAILED;
     *json = NULL;
     *length = 0;
     @autoreleasepool {
@@ -1158,7 +1186,7 @@ int bucky_semantic_element(uint64_t snapshot, uint32_t index, uint32_t op, const
         } else if (op == 2) {
             if (!(facts.patterns & PAT_INVOKE)) return UR_FAILED;
             BOOL pending = NO;
-            int status = ax_press(node, timeout, &pending);
+            int status = ax_deliver(node, NULL, NULL, timeout, &pending);
             if (status != UR_OK) return status;
             if (pending) {
                 reply[@"pending"] = @YES;
@@ -1168,7 +1196,7 @@ int bucky_semantic_element(uint64_t snapshot, uint32_t index, uint32_t op, const
                 reply[@"gone"] = current && [current.role isEqualToString:node.role] ? @NO : @YES;
                 if (current) reply[@"st"] = @(current.states);
             }
-        } else {
+        } else if (op == 3) {
             if (!(facts.patterns & PAT_VALUE)) return UR_FAILED;
             NSString *value = [[NSString alloc] initWithCharacters:text length:text_length];
             AXUIElementSetMessagingTimeout(element, timeout);
@@ -1178,6 +1206,39 @@ int bucky_semantic_element(uint64_t snapshot, uint32_t index, uint32_t op, const
             CFTypeRef current = NULL;
             if (AXUIElementCopyAttributeValue(element, kAXValueAttribute, &current) == kAXErrorSuccess) {
                 reply[@"v"] = ax_text(CFBridgingRelease(current), AX_MAX_READBACK);
+            }
+        } else {
+            uint32_t required = op == 4 ? PAT_TOGGLE : op == 5 ? PAT_SELECTION_ITEM : PAT_EXPAND_COLLAPSE;
+            if (!(facts.patterns & required)) return UR_FAILED;
+            CFStringRef attribute = op == 5 ? ([facts.role isEqualToString:@"AXRadioButton"] ? NULL : kAXSelectedAttribute)
+                : op >= 6 ? (__bridge CFStringRef)facts.expander : NULL;
+            BOOL pending = NO;
+            // AXPress flips a disclosure triangle: one already in the aimed-for
+            // state is left alone.
+            if (attribute || op < 6 || !ax_state_reached(op, facts.states, facts.states)) {
+                int status = ax_deliver(node, attribute, op == 7 ? kCFBooleanFalse : kCFBooleanTrue, timeout, &pending);
+                if (status != UR_OK) return status;
+            }
+            if (pending) {
+                reply[@"pending"] = @YES;
+            } else {
+                // Apps such as Chromium apply the change asynchronously: poll
+                // briefly for the aimed-for state before reading it back.
+                double until = ax_now() + fmin(timeout / 2.0, 0.3);
+                BOOL gone = NO;
+                for (;;) {
+                    AXError after = kAXErrorSuccess;
+                    BuckyAxFacts *current = ax_read(element, NO, quick, &after);
+                    if (!current || ![current.role isEqualToString:node.role]) {
+                        gone = !current ? after == kAXErrorInvalidUIElement || after == kAXErrorNoValue : YES;
+                        break;
+                    }
+                    reply[@"st"] = @(current.states);
+                    if (ax_state_reached(op, facts.states, current.states) || ax_now() >= until) break;
+                    usleep(20000);
+                }
+                reply[@"before"] = @(facts.states);
+                reply[@"gone"] = gone ? @YES : @NO;
             }
         }
         return ax_reply(ax_json(reply), json, length);

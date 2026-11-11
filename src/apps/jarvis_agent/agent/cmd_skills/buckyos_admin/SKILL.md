@@ -96,7 +96,7 @@ buckyos system info                                 # BuckyOS version, build_ver
   provide the prebuilt binary's runtime dependencies instead of assuming VC runtime DLLs ship with Windows.
   Windows supports the primary display, visual/semantic/hybrid/auto observations, click, Unicode type,
   keypress, line scrolling, delay waits and, through UI Automation, element targets with
-  invoke/set_value/toggle/select/expand/collapse (macOS lacks the last four; `inspect` lists `commands`);
+  invoke/set_value/toggle/select/expand/collapse (`inspect` lists `commands`);
   `inspect` reports `accessibility` readiness. Windows of a higher integrity level (Task Manager, an
   elevated terminal) are listed `accessible:false` without a control tree. macOS offers the same observation
   modes and element targets through Accessibility: semantic observation needs only the Accessibility grant

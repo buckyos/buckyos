@@ -4,15 +4,16 @@
 
 // Self-test of the macOS Accessibility semantic backend (bucky_semantic_*).
 // A child process of this binary shows a window with a button, a text field,
-// a checkbox and buttons that open a modal panel, remove the first button or
-// stop answering for 3 s; the parent reads and drives it only through AX
+// a checkbox, radio buttons, a popup button, a combo box, an outline with an
+// expandable row and buttons that open a modal panel, remove the first button
+// or stop answering for 3 s; the parent reads and drives it only through AX
 // (AX requests to one's own process run on the calling thread, which is not
 // the path the Driver uses). No mouse or keyboard events are sent; focusing
 // the text field activates the test window. Returns 77 without Accessibility.
 
 extern char **environ;
 
-@interface BuckyAxTarget : NSObject
+@interface BuckyAxTarget : NSObject <NSOutlineViewDataSource, NSOutlineViewDelegate>
 @property (nonatomic, strong) NSTextField *counter;
 @property (nonatomic, strong) NSButton *pressButton;
 @property (nonatomic) int presses;
@@ -40,12 +41,31 @@ extern char **environ;
 - (void)stall {
     usleep(3000000);
 }
+- (void)radio:(id)sender {
+}
+- (NSInteger)outlineView:(NSOutlineView *)view numberOfChildrenOfItem:(id)item {
+    return item ? ([item isEqual:@"Bucky Folder"] ? 1 : 0) : 2;
+}
+- (id)outlineView:(NSOutlineView *)view child:(NSInteger)index ofItem:(id)item {
+    return item ? @"Bucky Leaf" : (index ? @"Bucky Other" : @"Bucky Folder");
+}
+- (BOOL)outlineView:(NSOutlineView *)view isItemExpandable:(id)item {
+    return [item isEqual:@"Bucky Folder"];
+}
+- (NSView *)outlineView:(NSOutlineView *)view viewForTableColumn:(NSTableColumn *)column item:(id)item {
+    NSTableCellView *cell = [NSTableCellView new];
+    NSTextField *label = [NSTextField labelWithString:item];
+    label.frame = NSMakeRect(0, 0, 160, 18);
+    [cell addSubview:label];
+    cell.textField = label;
+    return cell;
+}
 @end
 
 static int target_main(void) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(200, 200, 380, 240)
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(200, 200, 640, 240)
         styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
     window.title = @"BuckyOS AX self-test";
     BuckyAxTarget *target = [BuckyAxTarget new];
@@ -65,7 +85,30 @@ static int target_main(void) {
     remove.frame = NSMakeRect(180, 64, 100, 32);
     NSButton *hang = [NSButton buttonWithTitle:@"Hang" target:target action:@selector(hang:)];
     hang.frame = NSMakeRect(20, 20, 100, 32);
-    for (NSView *view in @[press, target.counter, field, box, modal, remove, hang]) [window.contentView addSubview:view];
+    NSButton *alpha = [NSButton radioButtonWithTitle:@"Alpha" target:target action:@selector(radio:)];
+    alpha.frame = NSMakeRect(400, 200, 100, 24);
+    alpha.state = NSControlStateValueOn;
+    NSButton *beta = [NSButton radioButtonWithTitle:@"Beta" target:target action:@selector(radio:)];
+    beta.frame = NSMakeRect(510, 200, 100, 24);
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(400, 166, 110, 26) pullsDown:NO];
+    [popup addItemsWithTitles:@[@"One", @"Two"]];
+    NSComboBox *combo = [[NSComboBox alloc] initWithFrame:NSMakeRect(520, 166, 100, 26)];
+    [combo addItemsWithObjectValues:@[@"Red", @"Green"]];
+    combo.placeholderString = @"Color";
+    NSOutlineView *outline = [[NSOutlineView alloc] initWithFrame:NSMakeRect(0, 0, 220, 130)];
+    NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"name"];
+    column.width = 200;
+    [outline addTableColumn:column];
+    outline.outlineTableColumn = column;
+    outline.headerView = nil;
+    outline.allowsMultipleSelection = YES;
+    outline.dataSource = target;
+    outline.delegate = target;
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(400, 20, 220, 130)];
+    scroll.documentView = outline;
+    [outline reloadData];
+    for (NSView *view in @[press, target.counter, field, box, modal, remove, hang, alpha, beta, popup, combo, scroll])
+        [window.contentView addSubview:view];
     [window orderFrontRegardless];
     [NSApp run];
     return 0;
@@ -103,6 +146,27 @@ static NSInteger find(NSArray *nodes, NSString *role, NSString *name) {
     return -1;
 }
 
+static NSInteger row_of(NSArray *nodes, NSString *label) {
+    for (NSInteger at = find(nodes, @"AXStaticText", label); at >= 0; at = [nodes[at][@"p"] integerValue]) {
+        if ([nodes[at][@"r"] isEqualToString:@"AXRow"]) return at;
+    }
+    return -1;
+}
+
+static NSInteger child_of(NSArray *nodes, NSInteger parent, NSString *role) {
+    for (NSUInteger i = 0; parent >= 0 && i < nodes.count; i++) {
+        if (![nodes[i][@"r"] isEqualToString:role]) continue;
+        for (NSInteger at = [nodes[i][@"p"] integerValue]; at >= 0; at = [nodes[at][@"p"] integerValue]) {
+            if (at == parent) return (NSInteger)i;
+        }
+    }
+    return -1;
+}
+
+static uint32_t bits(NSArray *nodes, NSInteger index, NSString *key) {
+    return index >= 0 ? [nodes[index][key] unsignedIntValue] : 0;
+}
+
 static id element(int *code, uint64_t snap, NSInteger index, uint32_t op, NSString *text, uint32_t timeout) {
     NSMutableData *buffer = [NSMutableData dataWithLength:text.length * sizeof(unichar) + 2];
     [text getCharacters:buffer.mutableBytes range:NSMakeRange(0, text.length)];
@@ -110,6 +174,76 @@ static id element(int *code, uint64_t snap, NSInteger index, uint32_t op, NSStri
     return call(code, ^(char **json, size_t *size) {
         return bucky_semantic_element(snap, (uint32_t)index, op, buffer.bytes, length, timeout, json, size);
     });
+}
+
+/// toggle, select, expand and collapse (ops 4-7): each reply carries the
+/// state bits before and after, and a later snapshot agrees.
+static void run_state_checks(uint64_t window, pid_t pid) {
+    __block int code = 0;
+    NSDictionary *tree = snapshot(&code, window, pid, NULL);
+    uint64_t snap = [tree[@"snapshot"] unsignedLongLongValue];
+    NSArray *nodes = tree[@"nodes"];
+    NSInteger box = find(nodes, @"AXCheckBox", @"Remember"), field = find(nodes, @"AXTextField", @"Name");
+    NSInteger alpha = find(nodes, @"AXRadioButton", @"Alpha"), beta = find(nodes, @"AXRadioButton", @"Beta");
+    NSInteger popup = find(nodes, @"AXPopUpButton", nil), combo = find(nodes, @"AXComboBox", nil);
+    NSInteger folder = row_of(nodes, @"Bucky Folder"), other = row_of(nodes, @"Bucky Other");
+    NSInteger triangle = child_of(nodes, folder, @"AXDisclosureTriangle");
+    check(box >= 0 && field >= 0 && alpha >= 0 && beta >= 0 && popup >= 0 && combo >= 0 && folder >= 0 && other >= 0 && triangle >= 0,
+        @"radio buttons, popup, combo box, outline rows and disclosure triangle found");
+    if (box < 0 || field < 0 || alpha < 0 || beta < 0 || popup < 0 || combo < 0 || folder < 0 || other < 0 || triangle < 0) {
+        bucky_semantic_release(snap);
+        return;
+    }
+    check((bits(nodes, alpha, @"st") & ST_SELECTED) && (bits(nodes, beta, @"pat") & PAT_SELECTION_ITEM), @"radio buttons show selected and offer select");
+    check((bits(nodes, folder, @"pat") & (PAT_SELECTION_ITEM | PAT_EXPAND_COLLAPSE)) == (PAT_SELECTION_ITEM | PAT_EXPAND_COLLAPSE)
+        && (bits(nodes, folder, @"st") & ST_COLLAPSED), @"expandable row offers select and expand (AXDisclosing) and is collapsed");
+    check((bits(nodes, other, @"pat") & PAT_SELECTION_ITEM) && !(bits(nodes, other, @"pat") & PAT_EXPAND_COLLAPSE)
+        && !(bits(nodes, other, @"st") & (ST_EXPANDED | ST_COLLAPSED)), @"leaf row offers select only (read-only AXDisclosing)");
+    check((bits(nodes, triangle, @"pat") & PAT_EXPAND_COLLAPSE) && (bits(nodes, triangle, @"st") & ST_COLLAPSED), @"disclosure triangle offers expand");
+    check((bits(nodes, combo, @"pat") & PAT_EXPAND_COLLAPSE) && (bits(nodes, combo, @"st") & ST_COLLAPSED), @"combo box offers expand (AXExpanded)");
+    check(!(bits(nodes, popup, @"pat") & PAT_EXPAND_COLLAPSE), @"popup button without AXExpanded offers no expand");
+
+    NSDictionary *(^op)(NSInteger, uint32_t) = ^NSDictionary *(NSInteger index, uint32_t command) {
+        return element(&code, snap, index, command, @"", 3000);
+    };
+    BOOL wasChecked = (bits(nodes, box, @"st") & ST_CHECKED) != 0;
+    NSDictionary *reply = op(box, 4);
+    check(code == 0 && ![reply[@"gone"] boolValue] && (([reply[@"st"] unsignedIntValue] & ST_CHECKED) != 0) != wasChecked
+        && (([reply[@"before"] unsignedIntValue] & ST_CHECKED) != 0) == wasChecked,
+        [NSString stringWithFormat:@"toggle flips the checkbox and reads it back (code %d, %@ -> %@)", code, reply[@"before"], reply[@"st"]]);
+    reply = op(beta, 5);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_SELECTED), [NSString stringWithFormat:@"select presses the radio button (code %d, st %@)", code, reply[@"st"]]);
+    reply = op(other, 5);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_SELECTED), [NSString stringWithFormat:@"select sets AXSelected on a row (code %d, st %@)", code, reply[@"st"]]);
+    reply = op(folder, 5);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_SELECTED), [NSString stringWithFormat:@"select another row (code %d, st %@)", code, reply[@"st"]]);
+    reply = op(folder, 6);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_EXPANDED), [NSString stringWithFormat:@"expand sets AXDisclosing on the row (code %d, st %@)", code, reply[@"st"]]);
+    NSDictionary *after = snapshot(&code, window, pid, NULL);
+    NSArray *now = after[@"nodes"];
+    check(!(bits(now, alpha, @"st") & ST_SELECTED) && (bits(now, find(now, @"AXRadioButton", @"Beta"), @"st") & ST_SELECTED),
+        @"tree shows the other radio button deselected");
+    check((bits(now, row_of(now, @"Bucky Folder"), @"st") & ST_SELECTED) && !(bits(now, row_of(now, @"Bucky Other"), @"st") & ST_SELECTED),
+        @"row select replaces the selection");
+    check(row_of(now, @"Bucky Leaf") >= 0 && (bits(now, row_of(now, @"Bucky Folder"), @"st") & ST_EXPANDED), @"expanded row shows its child");
+    bucky_semantic_release([after[@"snapshot"] unsignedLongLongValue]);
+    reply = op(folder, 7);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_COLLAPSED), [NSString stringWithFormat:@"collapse clears AXDisclosing (code %d, st %@)", code, reply[@"st"]]);
+    reply = op(triangle, 6);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_EXPANDED), [NSString stringWithFormat:@"expand presses the disclosure triangle (code %d, st %@)", code, reply[@"st"]]);
+    reply = op(triangle, 6);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_EXPANDED), [NSString stringWithFormat:@"expand of an expanded triangle leaves it expanded (code %d, st %@)", code, reply[@"st"]]);
+    reply = op(triangle, 7);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_COLLAPSED), [NSString stringWithFormat:@"collapse presses the disclosure triangle (code %d, st %@)", code, reply[@"st"]]);
+    reply = op(combo, 6);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_EXPANDED), [NSString stringWithFormat:@"expand sets AXExpanded on the combo box (code %d, st %@, pending %@)", code, reply[@"st"], reply[@"pending"]]);
+    reply = op(combo, 7);
+    check(code == 0 && ([reply[@"st"] unsignedIntValue] & ST_COLLAPSED), [NSString stringWithFormat:@"collapse clears AXExpanded on the combo box (code %d, st %@)", code, reply[@"st"]]);
+    op(field, 4);
+    check(code == UR_FAILED, [NSString stringWithFormat:@"toggle of a text field fails without trying (code %d)", code]);
+    op(popup, 6);
+    check(code == UR_FAILED, [NSString stringWithFormat:@"expand of the popup button fails without trying (code %d)", code]);
+    bucky_semantic_release(snap);
 }
 
 static void run_checks(uint64_t window, pid_t pid) {
@@ -164,6 +298,8 @@ static void run_checks(uint64_t window, pid_t pid) {
     NSInteger box = find(after[@"nodes"], @"AXCheckBox", @"Remember");
     check(box >= 0 && ([after[@"nodes"][box][@"st"] unsignedIntValue] & ST_CHECKED), @"invoke toggles the checkbox and the tree shows checked");
     bucky_semantic_release([after[@"snapshot"] unsignedLongLongValue]);
+
+    run_state_checks(window, pid);
 
     NSDictionary *focused = element(&code, snap, fieldIndex, 1, @"", 3000);
     check(code == 0 && [focused[@"focused"] boolValue], [NSString stringWithFormat:@"focus activates the window and focuses the field (code %d)", code]);

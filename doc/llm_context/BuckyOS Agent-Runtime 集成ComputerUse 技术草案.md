@@ -428,7 +428,7 @@ type FocusTarget = {
 | `set_value` | element、value（≤16 KiB）。替换整个值（即 `semantic.fill`），执行后回读，回读不一致报 `value_mismatch` |
 | `toggle`、`select`、`expand`、`collapse` | element。切换勾选、选中、展开或折叠，不移动鼠标；执行后在有界时间内回读，未达到目标状态报 `state_mismatch`（执行状态 completed） |
 
-语义动作分两阶段：第一阶段为 element 目标的 click/type/keypress/scroll 与 `invoke`、`set_value`（Windows、macOS 已实现）；第二阶段的 `toggle`、`select`、`expand`、`collapse` 已在 Windows 实现（2026-11-11），macOS 尚未实施，capabilities 不列出这四个命令。`scroll_into_view` 推迟：offscreen 元素不在大纲里、没有 ref，要先定 offscreen 节点的返回策略（见 [UIA 语义观察 TODO](../../notepads/computer-use-uia-semantic-todo.md) §9）。每个语义命令只对观察中声明了该动作的元素开放，归入 `computer_act`，只读授权不能调用。`click(element)` 在元素可点击点做物理点击，不等同于 invoke；`type`/`keypress(element)` 先经通用 `focus` 聚焦并回读焦点，再输入；`scroll(element)` 在元素中心滚动。通用动作在各平台的映射：
+语义动作分两阶段：第一阶段为 element 目标的 click/type/keypress/scroll 与 `invoke`、`set_value`（Windows、macOS 已实现）；第二阶段的 `toggle`、`select`、`expand`、`collapse` 已在 Windows、macOS 实现（2026-11-11）。`scroll_into_view` 推迟：offscreen 元素不在大纲里、没有 ref，要先定 offscreen 节点的返回策略（见 [UIA 语义观察 TODO](../../notepads/computer-use-uia-semantic-todo.md) §9）。每个语义命令只对观察中声明了该动作的元素开放，归入 `computer_act`，只读授权不能调用。`click(element)` 在元素可点击点做物理点击，不等同于 invoke；`type`/`keypress(element)` 先经通用 `focus` 聚焦并回读焦点，再输入；`scroll(element)` 在元素中心滚动。通用动作在各平台的映射：
 
 | 通用动作 | Windows UIA | macOS AX | 浏览器 |
 | --- | --- | --- | --- |
@@ -436,11 +436,11 @@ type FocusTarget = {
 | `invoke` | InvokePattern.Invoke | `AXPress` | DOM 激活（`element.click()`） |
 | `set_value` | ValuePattern.SetValue | 设置 `AXValue` | 设置 value 并派发 input / change 事件 |
 | `toggle` | TogglePattern.Toggle | checkbox 上的 `AXPress` | `element.click()` |
-| `select` | SelectionItemPattern.Select | 设置 `AXSelected` | 选中 option / 激活 tab |
-| `expand`、`collapse` | ExpandCollapsePattern | 设置 `AXExpanded` / `AXDisclosing` | 激活带 `aria-expanded` 的控件 |
+| `select` | SelectionItemPattern.Select | 单选、标签页上的 `AXPress`；行上设置 `AXSelected` | 选中 option / 激活 tab |
+| `expand`、`collapse` | ExpandCollapsePattern | 设置 `AXExpanded` / `AXDisclosing`；展开三角上的 `AXPress` | 激活带 `aria-expanded` 的控件 |
 | `scroll_into_view` | ScrollItemPattern.ScrollIntoView | `AXScrollToVisible` | `element.scrollIntoView()` |
 
-macOS 第一阶段的 `focus`（目标应用不在前台时先激活应用并提升窗口）、`invoke`、`set_value` 已于 2026-11-09 实测；第二阶段各行在 macOS 上仍是待实测的规划。实测中 Chrome 的网页节点不声明 `AXPress`，这类链接和按钮只能 `click(element)`。
+macOS 第一阶段的 `focus`（目标应用不在前台时先激活应用并提升窗口）、`invoke`、`set_value` 已于 2026-11-09 实测，第二阶段的 `toggle`、`select`、`expand`、`collapse` 已于 2026-11-11 实测。macOS 上这些动作只对能执行的元素声明：`toggle` 与单选、标签页的 `select` 要求元素声明 `AXPress`，行的 `select` 要求 `AXSelected` 可写，`expand`/`collapse` 要求 `AXExpanded`（大纲行为 `AXDisclosing`）可写，或是声明 `AXPress` 的展开三角；Chromium 网页节点上只读的 `AXSelected`/`AXExpanded` 不再产生这两个动作。实测中 Chrome 的网页节点不声明 `AXPress`，这类链接和按钮只能 `click(element)`。
 
 UIA 调用超时且已开始执行时，元素动作的执行状态为 `unknown`，按原 operation 查询，不盲目重试。macOS 的 `AXPress` 打开模态对话框或菜单时，应用要到它们结束才应答；若此时应用仍应答其他请求，Driver 按已送达处理（执行状态 completed，结果带 `pending`），否则超时同样记为 `unknown`。
 
