@@ -2,11 +2,13 @@ import {
   createContext,
   createElement,
   useContext,
+  useEffect,
   useState,
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
 import { AppServiceMockStore } from '../mock/store'
+import { isMockRuntime } from '../../../runtime'
 
 export const AppServiceStoreContext = createContext<AppServiceMockStore | null>(null)
 
@@ -19,6 +21,12 @@ export function getSharedAppServiceStore() {
 
 export function AppServiceStoreProvider({ children }: { children: ReactNode }) {
   const [store] = useState(getSharedAppServiceStore)
+  useEffect(() => {
+    if (isMockRuntime()) return
+    void store.refreshRealApps()
+    const timer = window.setInterval(() => { void store.refreshRealApps() }, 15_000)
+    return () => window.clearInterval(timer)
+  }, [store])
 
   return createElement(AppServiceStoreContext.Provider, { value: store }, children)
 }

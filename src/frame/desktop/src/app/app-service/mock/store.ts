@@ -21,10 +21,10 @@ import type {
   RuntimeView,
 } from '../types'
 import type { SudoByPasswordParams, SudoGrant } from '../../../components/sudo'
-import { fetchAppList } from '../../../api/app_mgr'
+import { fetchAppList, fetchAppStatus } from '../../../api/app_mgr'
 import { currentZoneHost } from '../../../presentation/zone'
 import { isMockRuntime } from '../../../runtime'
-import { appServiceItemFromSummary } from '../realApps'
+import { appServiceItemFromSummary, sameDeployment } from '../realApps'
 import {
   appDocument,
   defaultInput,
@@ -105,8 +105,7 @@ export function runtimeEvidenceValid(runtime: RuntimeView) {
     runtime.evidence.observed_at <= Date.now() &&
     runtime.evidence.valid_until > Date.now() &&
     runtime.evidence.valid_until > runtime.evidence.observed_at &&
-    JSON.stringify(runtime.evidence.deployment) ===
-      JSON.stringify(runtime.expected_deployment),
+    sameDeployment(runtime.evidence.deployment, runtime.expected_deployment),
   )
 }
 
@@ -141,6 +140,8 @@ export class AppServiceMockStore {
   private staleSeen = new Set<string>()
   private running = new Set<string>()
   private pendingSubmissions = new Map<string, Promise<SubmitResult>>()
+  private realLoad: Promise<void> | null = null
+  private realGeneration = 0
 
   constructor() {
     this.load()
@@ -163,9 +164,17 @@ export class AppServiceMockStore {
   }
   getRevision = () => this.revision
   private load() {
+    this.realGeneration += 1
+    this.realLoad = null
     this.tasks = {}
     this.drafts = {}
     this.idempotency = {}
+    if (!isMockRuntime()) {
+      this.services = []
+      this.viewStatus = 'loading'
+      void this.refreshRealApps()
+      return
+    }
     this.services = seedServices()
     try {
       const data = JSON.parse(
@@ -234,34 +243,65 @@ export class AppServiceMockStore {
       },
       scenario === 'loading' ? 1600 : 220,
     )
-    void this.loadRealApps()
   }
-  /** Outside the mock runtime the App layer lists the caller's real apps (display and state only). */
-  private async loadRealApps() {
+  refreshRealApps() {
     if (isMockRuntime()) return
+    if (this.realLoad) return this.realLoad
+    const pending = this.loadRealApps(this.realGeneration).finally(() => {
+      if (this.realLoad === pending) this.realLoad = null
+    })
+    this.realLoad = pending
+    return pending
+  }
+  private async loadRealApps(generation: number) {
     const { data } = await fetchAppList()
+    if (generation !== this.realGeneration) return
     if (!data) {
+      this.services = []
       this.viewStatus = 'error'
       this.emit()
       return
     }
     const options = { zoneHost: currentZoneHost(), protocol: window.location.protocol }
-    this.services = [
-      ...this.services.filter((service) => service.layer !== 'app'),
-      ...data.apps.map((summary) => appServiceItemFromSummary(summary, options)),
-    ]
+    const previous = new Map(this.services.map(service => [service.id, service]))
+    this.services = data.apps.map(summary => {
+      const service = appServiceItemFromSummary(summary, options)
+      const before = previous.get(service.id)
+      if (before?.version === service.version && before.spec.enable === service.spec.enable
+        && before.spec.expected_instance_count === service.spec.expected_instance_count) {
+        service.runtime = before.runtime
+        service.status = before.status
+      }
+      return service
+    })
+    this.viewStatus = 'ready'
     this.emit()
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(4, data.apps.length) }, async () => {
+      while (next < data.apps.length && generation === this.realGeneration) {
+        const summary = data.apps[next++]
+        const { data: snapshot } = await fetchAppStatus(summary.app_instance_id)
+        if (generation !== this.realGeneration) return
+        this.services = this.services.map(service => service.id === summary.app_instance_id
+          ? appServiceItemFromSummary(summary, options, snapshot) : service)
+        this.emit()
+      }
+    }))
   }
   retryLoad() {
     this.viewStatus = 'loading'
     this.emit()
+    if (!isMockRuntime()) {
+      void this.refreshRealApps()
+      return
+    }
     this.schedule(() => {
       this.viewStatus = 'ready'
       this.emit()
     }, 400)
-    void this.loadRealApps()
   }
   getAllServices() {
+    if (!isMockRuntime()) return this.services
     return this.services.filter(
       (s) =>
         s.layer !== 'app' ||

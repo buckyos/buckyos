@@ -128,7 +128,7 @@ test('home preserves three layers, owner identity and truthful settings and runt
     .click()
   await expect(page.getByText('Docker Engine')).toBeVisible()
   await expect(
-    page.getByText('Settings are read only in this prototype.', {
+    page.getByText('Application settings are read only here.', {
       exact: false,
     }),
   ).toBeVisible()
@@ -573,11 +573,12 @@ test('real PIKG inspection waits for ready, uses object references and never ope
   await expect(page.getByTestId('app-service-source-next')).toBeDisabled()
   await page.evaluate(() => (window as any).finishPikgUpload())
   await expect(page.getByTestId('app-service-real-inspection')).toContainText('Validated package')
-  await expect(page.getByTestId('app-service-real-inspection')).toContainText('this inspection does not install')
+  await expect(page.getByTestId('app-service-real-inspection')).toContainText('Use the BuckyOS CLI to install this package.')
   await expect(page.getByTestId('app-service-source-next')).toBeDisabled()
   const calls = await page.evaluate(() => (window as any).pikgCalls)
   expect(calls.find((entry: any) => entry.method === 'apps.staging.finalize').params).toEqual({ source_obj_id: 'cyfile:uploaded', size: 4, purpose: 'inspect' })
   expect(calls.some((entry: any) => entry.method.includes('submit'))).toBe(false)
-  await page.getByLabel('Enter a link or application identifier').fill('changed')
+  await expect(page.getByLabel('Enter a link or application identifier')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Back to applications', exact: true }).click()
   await expect.poll(() => page.evaluate(() => (window as any).pikgCalls.some((entry: any) => entry.method === 'apps.staging.release' && entry.params.staging_handle === 'staging:mine'))).toBe(true)
 })

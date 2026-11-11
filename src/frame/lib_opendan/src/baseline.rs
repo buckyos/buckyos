@@ -414,7 +414,15 @@ pub fn version_probe_of(name: &str) -> String {
 /// those of `versions` also the probe's exit code and first output line.
 /// Exits 0: POSIX `sh`, or PowerShell when `windows`.
 pub fn resolve_probe(names: &[&str], versions: &[&str], windows: bool) -> String {
-    let probe = |n: &&str| if versions.contains(n) { version_probe_of(n) } else { String::new() };
+    let probe = |n: &&str| {
+        if !versions.contains(n) {
+            String::new()
+        } else if windows && *n == "unzip" {
+            "unzip --help".to_string()
+        } else {
+            version_probe_of(n)
+        }
+    };
     if windows {
         let calls = names
             .iter()
@@ -422,7 +430,7 @@ pub fn resolve_probe(names: &[&str], versions: &[&str], windows: bool) -> String
             .collect::<Vec<_>>()
             .join("; ");
         format!(
-            "function p($c,$f) {{ $g = Get-Command $c -ErrorAction SilentlyContinue | Select-Object -First 1; if (-not $g) {{ return }}; if ($f) {{ $global:LASTEXITCODE = 0; $o = try {{ Invoke-Expression \"$f 2>&1\" }} catch {{ $global:LASTEXITCODE = 127; $_ }}; $v = ($o | Select-Object -First 1); Write-Output (\"{{0}}`t{{1}}`t{{2}}`t{{3}}\" -f $c,$g.Source,$LASTEXITCODE,$v) }} else {{ Write-Output (\"{{0}}`t{{1}}\" -f $c,$g.Source) }} }}; {calls}"
+            "function p($c,$f) {{ $g = Get-Command $c -ErrorAction SilentlyContinue | Select-Object -First 1; if (-not $g) {{ return }}; if ($f) {{ $ErrorActionPreference = 'Continue'; $PSNativeCommandUseErrorActionPreference = $false; $global:LASTEXITCODE = 0; $o = @(try {{ Invoke-Expression \"$f 2>&1\" }} catch {{ $global:LASTEXITCODE = 127; $_ }}); $r = $LASTEXITCODE; $v = ($o | Where-Object {{ $_ -isnot [System.Management.Automation.ErrorRecord] }} | Select-Object -First 1); if ($null -eq $v) {{ $v = ($o | Select-Object -First 1) }}; Write-Output (\"{{0}}`t{{1}}`t{{2}}`t{{3}}\" -f $c,$g.Source,$r,$v) }} else {{ Write-Output (\"{{0}}`t{{1}}\" -f $c,$g.Source) }} }}; {calls}; $global:LASTEXITCODE = 0"
         )
     } else {
         let calls = names
@@ -925,11 +933,46 @@ mod tests {
 
     #[test]
     fn a_windows_resolve_probe_is_one_powershell_line() {
-        let ps = resolve_probe(&["it's", "ffmpeg"], &["ffmpeg"], true);
+        let ps = resolve_probe(&["it's", "ffmpeg", "unzip"], &["ffmpeg", "unzip"], true);
         assert!(ps.contains("Get-Command") && ps.contains("$g.Source"));
         assert!(ps.contains("p 'it''s' ''") && ps.contains("p 'ffmpeg' 'ffmpeg -version'"), "{ps}");
+        assert!(ps.contains("p 'unzip' 'unzip --help'"), "{ps}");
+        assert!(!ps.contains('\n'), "{ps}");
         assert_eq!(version_probe_of("custom-tool"), "custom-tool --version");
         assert_eq!(version_probe_of("pdftotext"), "pdftotext -v");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_resolve_probe_keeps_native_stderr_and_exit_codes() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            std::fs::write(dir.path().join(format!("{name}.cmd")), format!("@echo off\r\n{body}\r\n")).unwrap();
+        };
+        script("probe-real", "echo deprecated >&2\r\necho real 1.2.3\r\nexit /b 0");
+        script("probe-stderr", "echo stderr 1.2.3 >&2\r\nexit /b 0");
+        script("probe-stub", "echo not bundled >&2\r\nexit /b 127");
+        script("probe-denied", "echo not executable >&2\r\nexit /b 126");
+        script("probe-failed", "echo unsupported argument >&2\r\nexit /b 1");
+        script("unzip", "if not \"%1\"==\"--help\" exit /b 1\r\necho BusyBox unzip\r\nexit /b 0");
+        let asked = ["probe-real", "probe-stderr", "probe-stub", "probe-denied", "probe-absent", "unzip", "probe-failed"];
+        let path = std::env::join_paths(std::iter::once(dir.path().to_path_buf()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))).unwrap();
+        let probe = resolve_probe(&asked, &asked, true);
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"])
+            .arg(format!("$ErrorActionPreference = 'Stop'; $PSNativeCommandUseErrorActionPreference = $true; & {{ {probe} }}; if ($ErrorActionPreference -ne 'Stop' -or -not $PSNativeCommandUseErrorActionPreference) {{ throw 'probe changed caller preferences' }}; exit $LASTEXITCODE"))
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let found = parse_resolved(&String::from_utf8_lossy(&output.stdout), &asked);
+        assert_eq!((found["probe-real"].exit_code, found["probe-real"].version.as_deref()), (Some(0), Some("real 1.2.3")));
+        assert_eq!((found["probe-stderr"].exit_code, found["probe-stderr"].version.as_deref()), (Some(0), Some("stderr 1.2.3")));
+        assert_eq!((found["probe-failed"].exit_code, found["probe-failed"].version.as_deref()), (Some(1), Some("unsupported argument")));
+        assert!(is_stub_exit(found["probe-stub"].exit_code));
+        assert!(is_stub_exit(found["probe-denied"].exit_code));
+        assert!(!found.contains_key("probe-absent"));
+        assert_eq!((found["unzip"].exit_code, found["unzip"].version.as_deref()), (Some(0), Some("BusyBox unzip")));
     }
 
     #[test]

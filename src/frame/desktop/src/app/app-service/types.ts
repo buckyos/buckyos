@@ -200,6 +200,7 @@ export interface DeploymentIdentity {
   task_id: TaskId
   app_doc_object_id: string
   spec_generation: number
+  pikg_digest?: string
 }
 export interface RuntimeView {
   type: RuntimeType

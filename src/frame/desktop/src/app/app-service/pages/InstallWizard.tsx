@@ -177,7 +177,8 @@ export function InstallWizard({
           />
           <button
             type="button"
-            className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[var(--cp-border)] px-4 text-sm font-semibold"
+            disabled={!isMockRuntime()}
+            className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[var(--cp-border)] px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
             onClick={() => setPickerOpen(true)}
           >
             <Server size={17} />
@@ -185,10 +186,10 @@ export function InstallWizard({
           </button>
         </div>
         <p className="text-xs leading-5 text-[var(--cp-muted)]">
-          {t('app22.source.mockFiles')}
+          {t(isMockRuntime() ? 'app22.source.mockFiles' : 'app22.source.realFiles')}
         </p>
       </section>
-      <form
+      {isMockRuntime() && <form
         className="space-y-3 rounded-[22px] border border-[var(--cp-border)] bg-[var(--cp-surface)] p-5"
         onSubmit={(event) => {
           void form.handleSubmit(({ sourceText }) => analyze(sourceText))(event)
@@ -240,7 +241,7 @@ export function InstallWizard({
             />
           )}
         </details>
-      </form>
+      </form>}
       {progress && (
         <section
           role="status"

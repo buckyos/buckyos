@@ -84,6 +84,40 @@ export interface AppDetailsResponse {
   spec: Record<string, unknown>
 }
 
+export interface AppDeploymentIdentity {
+  app_instance_id: string
+  task_id: string
+  app_doc_object_id: string
+  spec_generation: number
+  pikg_digest?: string
+}
+
+export interface AppDeploymentObservation {
+  deployment?: AppDeploymentIdentity | null
+  node_id: string
+  observed_at: number
+  expires_at: number
+  deployment_error?: { code: string; message: string } | null
+}
+
+export interface AppInstallationStatus {
+  app_instance_id: string
+  desired_deployment: AppDeploymentIdentity
+  desired_spec: {
+    state: AppState | string
+    enable: boolean
+    packages?: Array<{ sub_pkg_name: string }>
+    app_doc: { app_type: string; pkg_list?: Record<string, unknown> }
+  }
+  desired_instance_count: number
+  runtime_instances?: Array<AppDeploymentObservation & { state: string; health: string }>
+  static_web_evidence?: Array<AppDeploymentObservation & {
+    materialized_at: number
+    gateway_ready_at: number
+    gateway_config_generation: string
+  }>
+}
+
 export type AvailabilityEffect = 'allow' | 'deny'
 
 /**
@@ -161,6 +195,9 @@ export const fetchAppAvailability = async (
   callRpc<AppAvailabilityPolicy>('apps.availability.get', {
     app_instance_id: appInstanceId,
   })
+
+export const fetchAppStatus = (appInstanceId: string) =>
+  callRpc<AppInstallationStatus>('apps.status', { selector: appInstanceId })
 
 export const setAppAvailability = async (
   appInstanceId: string,

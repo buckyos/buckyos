@@ -2,7 +2,9 @@
 
 日期：2026-10-25。
 
-状态：**2026-10-26 已实施（未提交）：T0–T4 完成，Linux / Windows 10 / macOS 26 开发安装 DV 通过；T5 中 CI 产物、真实安装包安装、BuckyOSApp 联调、干净机器工具基线未完成，见 §6.4。** 原始清单与验收口径保留在 §1–§5，实施记录见 §6。**2026-10-30：调度器里的产品逻辑已按 [调度器解耦 TODO](buckyos-desktop-lite-scheduler-decoupling-todo.md) 撤销**（产品同步、准入、槽位、副本上限、按产品强制 native、`schedule_status`、单 spec 失败隔离）；调度器只保留脚本应用 `need_container` auto（有容器用容器，否则 native）。下文 §3 T1/T3/T4 与 §6.1 表中写到 scheduler 的条目以该文为准。
+当前验收状态（2026-11-11）：**T5 仍未完成。已用 CI `20261111-040013` 的真实 Windows/macOS amd64 签名包在干净 VM 安装 Lite；两端 CLI 首次激活遇到占位文件冲突，macOS 签名 Deno 执行 JS 崩溃。Windows 绕过占位后 Desktop/SSO、原生 systest、单 Agent 和标准工具基线通过本轮测试。** 新发现与剩余项见 §7，完整记录见 [正式 CI 包验收报告](evidence/desktop-lite-ci/2026-11-11/README.md)。§6 的“未安装真实包/未测干净环境”等是历史记录，不再代表全部现状。
+
+历史状态：**2026-10-26 已实施（未提交）：T0–T4 完成，Linux / Windows 10 / macOS 26 开发安装 DV 通过；T5 中 CI 产物、真实安装包安装、BuckyOSApp 联调、干净机器工具基线未完成，见 §6.4。** 原始清单与验收口径保留在 §1–§5，实施记录见 §6。**2026-10-30：调度器里的产品逻辑已按 [调度器解耦 TODO](done/buckyos-desktop-lite-scheduler-decoupling-todo.md) 撤销**（产品同步、准入、槽位、副本上限、按产品强制 native、`schedule_status`、单 spec 失败隔离）；调度器只保留脚本应用 `need_container` auto（有容器用容器，否则 native）。下文 §3 T1/T3/T4 与 §6.1 表中写到 scheduler 的条目以该文为准。
 
 源码核对基线：`e3aebad51` 加当前工作树改动。当前已有未提交的原生 Agent Service 等实现；接手时先检查 `git status` 和相关源码，保留在途工作，按缺口补齐，不从旧研究报告重新实现一套。
 
@@ -251,3 +253,59 @@ macOS DV（PVE VM 114，macOS 26.7.1 25G241，x86_64；无 Docker/colima/podman�
 - 重装时又发现一个 Windows 问题：Deno 把每个本地模块的绝对路径镜像到 `DENO_DIR\gen\file\…`，systest 运行过一次后路径约 290 字符，devkit `clean_app` 的 Python `rmtree` 删不掉，`start.py --all` 失败。修法：Windows 上原生脚本 App 带 `DENO_EMIT_CACHE_MODE=disable`（Deno 2.9.2 实测不再写 `gen\file`，启动时现场转译）。devkit 的 `rmtree` 不支持长路径这一点没改（在 buckyos-devkit 仓库）。
 - 验证：`cargo test -p node_daemon -- --test-threads=1`（148 项，新增 `a_script_app_is_handed_the_port_of_its_primary_service`、`a_script_app_in_a_container_is_handed_its_inner_port`）。
 
+## 7. 正式 CI 包干净虚拟机验收（2026-11-11）
+
+Bug 汇总已提交：[buckyos/buckyos#734](https://github.com/buckyos/buckyos/issues/734)。
+
+产物为用户提供的 CI `20261111-040013`、`0.7.0+build261110` Fog Works 签名包，BuckyOS commit `27aea9efbd3712aea97b08949c76dd86bbd74373`。从干净模板 213/214 新建克隆 **313 Windows / 314 macOS**，未改原测试机 113/114。本轮没有用源码构建替换发行文件，没有修产品代码。签名、SHA、环境、日志和截图见 [完整验收报告](evidence/desktop-lite-ci/2026-11-11/README.md)。
+
+### 7.1 已补齐的证据
+
+- 统一正式包可在安装时选择 Lite：Windows `/S /LITE`、macOS GUI Install Lite 均安装退出 0；真实 BuckyOSApp 启动成功，不再是占位桌面程序。Windows Authenticode、macOS 签名/公证验证通过。原 T5“CI 没有 Lite 包”的口径应更新为统一包的 Lite 安装模式验收，而非要求独立文件名。
+- 用户运行身份成立：Windows 基础服务、原生 Deno、OpenDAN 为登录用户 buckyos；macOS 为 liteci UID 502 的用户 LaunchAgent。安装器没有要求补装容器环境。
+- Windows 仅移走已确认的未激活占位文件后，用原包 CLI 正式激活；真实网关登录与鉴权、Lite 能力、Desktop、Text Editor 跨域 SSO、原生 systest 网页/浏览器 Runtime 检测通过。Jarvis ready 且只有一个原生 OpenDAN；第二个创建被 `agent_slot_occupied` 拒绝，UI 也显示占槽。
+- 干净 Windows 的 standard baseline **31 项通过**，`missing=[]`、`unmanaged=[]`，工具由包内 executor/Agent 链路落盘。正式 CLI、AICC 工具帮助入口实际可执行；FFmpeg/ImageMagick、PDF/ZIP 工具实际完成测试文件处理。未调用 AI provider，不能据此勾选真实对话/AI 能力。
+- macOS 在两个显式诊断绕过后，基础服务/网关可用；正式 `service stop/start` 能控制同一用户 Runtime。原始 systest 仍失败，证明失败没有拖垮基础服务。未替换原安装 Deno。
+
+### 7.2 本批发行缺陷（源码修复见 §8，仍待新签名包复验）
+
+- [ ] **两端正式 CLI 首次激活**：`provision status=unactivated`、`check ready=true`，但 activate 因安装包的 `etc/node_gateway_params.json`（`did:bns:unactivated.local`）返回 `TARGET_PARTIALLY_ACTIVATED`。统一检查/提交对占位文件的处理，补真实安装根目录回归。macOS 复现此项时仅给 CLI 进程加 jitless 隔离下面的故障；GUI/SN 激活未实测。
+- [ ] **macOS amd64 签名 Deno 执行失败**：版本查询正常，JavaScript eval、正式 CLI、原生 systest 均 panic。诊断对照定位到 hardened runtime 执行内存权限：仅 `allow-jit` 仍失败，加 `allow-unsigned-executable-memory` 才通过。需修签名流程并重发正式包验证，不以去签名或全局 jitless 作为验收通过。
+- [ ] **Windows 扩展工具探测误报**：`runtimes.check(full=true)` 把 convert/pdfinfo/pdftotext/pdftoppm/unzip 标成 stub/missing，但五项真实文件处理均退出 0。修 PowerShell stderr/退出码处理及 BusyBox unzip 探测参数；不能按本次 missing 列表判断缺包。见 [定位](evidence/desktop-lite-ci/2026-11-11/windows/extended-probe-analysis.md)。
+- [ ] **Desktop App Service 呈现**：发行界面残留 Mock/Prototype 文案；原生 systest 显示 Docker/unknown；Text Editor 已可打开却显示 deploying。占槽操作按钮还存在三行折行。见 [UI 证据](evidence/desktop-lite-ci/2026-11-11/windows/ui/report.json)。
+
+### 7.3 仍不能勾选完成的范围
+
+T5 整体保持未完成：macOS 完整 Agent/标准与扩展工具基线被上述运行问题阻断；BuckyOSApp 托盘启停/状态/权限完整联调、实际 computer 操作与 TCC 授权/撤销恢复、重启/升级/卸载仍待验收。两端真实 provider/Agent 对话、Session 恢复、并发抢槽与删除释放、static web 新增/升级/卸载等没有用此批正式包重跑，不沿用旧开发 DV 当作本批通过。Windows PDF 转图另有缺字体告警，简单样例成功不代表复杂文档完整。
+
+本轮只覆盖 Windows/macOS **amd64 签名包**；arm64、未签名包、Android、已有容器工具环境与完整版回归不在本轮结果内。测试 TLS 的 ALPN 错配、克隆时钟和初始 CLI 输入 BOM 均已作为测试配置问题单列，不记成发行缺陷。两台克隆及激活前快照保留供复现，临时传包服务已关闭。
+
+## 8. #734 源码修复（2026-11-11，未提交）
+
+四项缺陷的源码修复已落到 `buckyos`、`buckyos-websdk` 和 `pve-pack-system`，尚未生成新的正式签名安装包；§7.2 和 T5 的发行验收保持未完成。
+
+| 缺陷 | 修复与边界 |
+| --- | --- |
+| CLI 首次激活 | WebSDK 严格识别安装器的普通 JSON 占位文件，持有激活锁后复核，再用临时文件原子替换；真实身份、自定义配置、符号链接及提交中发生的内容变化均拒绝覆盖。修正持锁复查被 `ACTIVATION_IN_PROGRESS` 掩盖的问题，并同步 provision 分发产物。 |
+| macOS Deno | 两个制包签名入口仅为 Deno 增加 `allow-jit` 和 `allow-unsigned-executable-memory`；完成所有签名后校验权限、清除诊断用 `DENO_V8_FLAGS` 并执行 JS/Wasm，失败阻止制包。Intel 机器组装 arm64 时明确报告执行检查未运行。 |
+| Windows 工具探测 | PowerShell 探测函数局部处理 stderr，保留原生退出码和版本输出，不泄漏最后一个工具退出码；Windows BusyBox unzip 使用 `--help`。126/127 仍表示不可执行/占位工具。 |
+| Desktop App Service | 使用已有 `apps.status` 的部署身份和有效期核验运行证据；原生脚本显示 Script、静态网页按实际网关就绪显示 Running。真实模式不注入 Mock 库存，不显示无数据支撑的 Agent 绑定数；原型安装入口禁用或隐藏并说明 CLI 安装路径，占槽按钮改为提示下方单行布局。 |
+
+前端每 15 秒刷新，最多 4 个并行状态查询，并合并未完成的刷新；没有新增后端协议或包安装能力。数据映射和未覆盖的性能范围见 `src/frame/desktop/src/app/app-service/UI_DATAMODEL.md`。
+
+### 8.1 已完成验证
+
+- WebSDK：相关 Jest 49 项、Deno CLI 5 项通过；覆盖 Lite/完整版占位文件、已有身份、锁冲突、备份和提交失败保护；构建与 CLI 边界检查通过。
+- Windows 原生 CLI：VM313 登录用户 buckyos、包内 Deno 2.9.2，运行修复后的 CLI/SDK 隔离副本；安装器占位文件 `check ready` 且字节不变，`activate` 退出 0、提交 10 个文件，`status=configured`。重复激活退出 6 / `TARGET_ALREADY_ACTIVATED`，整棵身份文件指纹不变且没有第二份备份。CLI 禁止联网、读写权限限定临时根，没有更改实际安装身份。见 [原生激活回归](evidence/desktop-lite-ci/2026-11-11/windows/fix-activation-regression.json)。
+- Windows：`libopendan` baseline 14 项通过；VM313 登录用户的 PowerShell 5.1 实测五个工具均正确返回版本/退出码，stderr、退出码 1/126/127、缺失工具、调用者偏好及整体退出码回归通过。没有替换 VM 已安装二进制。
+- macOS：VM314 新 gate 拒绝原包 Deno，使用新权限签名的隔离副本通过 JS/Wasm；原 Deno SHA 未变。签名新测试 5 项通过。补充制包回归 54 通过、1 项缺 zsh 跳过，但使用的是隔离目录的可获取 package-kit `d6b05af`；固定提交 `a57b46b` 无法拉取，不能算固定依赖全量通过。详见 [签名修复验证](evidence/desktop-lite-ci/2026-11-11/macos/signing-fix-734.md)。
+- Desktop：运行证据映射 25 项通过；App Service、安装器、Agent 向导原有 71 项通过（两项文案/原型入口断言调整后单独复跑）。类型检查、相关 ESLint 和真实模式生产构建通过；ESLint 仅有原有测试的 8 项 `any` warning。
+- 真实 UI DV：本机 Chromium 运行当前源码前端，连接 VM313 的原包后端，通过正常密码登录与 Gateway/SDK 访问；1440×1000 和 375×812 两项通过。10 张截图已审阅，Script/StaticWeb/Running 正确、无 Mock 库存/文案、安装能力边界明确、占槽按钮单行；登录后控制台/网络错误和应用写 RPC 均为空。测试使用合法 Zone HTTPS origin 的临时转发及指定测试证书信任，不代表原生系统 CA 验收；转发已关闭。见 [真实 UI 回归报告](evidence/desktop-lite-ci/2026-11-11/windows/ui-fix-734/report.md)。
+
+### 8.2 仍需发行验证
+
+- 合入三个仓库的修复后重新构建 CI 包，验证两端全新安装与首次激活、Windows `runtimes.check(full=true)` 和更新后的 Desktop。
+- 正式 Developer ID 重签、公证及 arm64 执行尚未验证；VM314 没有正式签名身份，隔离副本采用 ad-hoc 签名。
+- §7.3 的完整平台验收、真实 provider、升级/卸载与 TCC 等范围仍保留，不能用本轮针对性回归替代。
+
+已检查相关 cmd_skills：CLI 命令/参数、工具清单和后端协议未改变，无需改命令手册；WebSDK 激活文档、制包 README 和 UI 数据模型已同步。原始发行失败证据及激活前快照保留；未提交、推送、发布或关闭 #734。

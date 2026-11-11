@@ -18,6 +18,7 @@ import { useAppServiceStore } from '../hooks/use-app-service-store'
 import type { AppServiceItem, InstallTask } from '../types'
 import { runtimeStatus } from '../mock/store'
 import type { AppInstallerDialogParams } from '../../../sysdlg'
+import { isMockRuntime } from '../../../runtime'
 
 function statusColor(status: AppServiceItem['status']) {
   switch (status) {
@@ -458,7 +459,7 @@ export function HomePage({ onNavigate, onOpenInstaller }: HomePageProps) {
         <>
           <p className="text-xs leading-5 text-[var(--cp-muted)]">
             {t(
-              store.scope.role === 'admin'
+              !isMockRuntime() ? 'app22.visibility.real' : store.scope.role === 'admin'
                 ? 'app22.visibility.admin'
                 : 'app22.visibility.user',
             )}
@@ -516,7 +517,7 @@ export function HomePage({ onNavigate, onOpenInstaller }: HomePageProps) {
             )}
           </section>
 
-          <section>
+          {(isMockRuntime() || systemServices.length > 0) && <section>
             <SectionHeading
               title={t('appService.layer.system', 'System Services')}
               count={systemServices.length}
@@ -526,9 +527,9 @@ export function HomePage({ onNavigate, onOpenInstaller }: HomePageProps) {
               )}
             />
             <ServiceLedger services={systemServices} />
-          </section>
+          </section>}
 
-          <section>
+          {(isMockRuntime() || kernelServices.length > 0) && <section>
             <SectionHeading
               title={t('appService.layer.kernel', 'Kernel')}
               count={kernelServices.length}
@@ -538,7 +539,7 @@ export function HomePage({ onNavigate, onOpenInstaller }: HomePageProps) {
               )}
             />
             <ServiceLedger services={kernelServices} />
-          </section>
+          </section>}
         </>
       )}
     </div>

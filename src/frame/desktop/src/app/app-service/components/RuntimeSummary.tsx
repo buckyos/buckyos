@@ -66,7 +66,7 @@ export function RuntimeSummary({ service }: { service: AppServiceItem }) {
           </div>
         ))}
       </dl>
-      {runtime.type === 'agent' && (
+      {runtime.type === 'agent' && runtime.agent_bindings !== null && (
         <p className="mt-3 text-xs leading-5">
           {runtime.agent_bindings === 0
             ? t('app22.noBinding')
@@ -77,7 +77,7 @@ export function RuntimeSummary({ service }: { service: AppServiceItem }) {
       )}
       {runtime.reason && (
         <p className="mt-3 text-xs leading-5">
-          {t(`app22.error.${runtime.reason}`, t('app22.unknown'))}
+          {t(`app22.error.${runtime.reason}`, runtime.reason)}
         </p>
       )}
       {service.operation_error && (

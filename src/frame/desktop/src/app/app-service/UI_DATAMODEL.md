@@ -316,3 +316,26 @@ AppDoc v1 输入预检样本：
 Outside the mock runtime, the device picker calls WebSDK `importFiles` / `ensureUploaded`, then `apps.staging.finalize({source_obj_id,size,purpose:"inspect"})` and `apps.inspect({source:{kind:"local_pikg",staging_handle}})`. The server validates the package manifest and all payloads, computes the whole-package digest, and enforces original-caller NDM read permission. The browser does not reread the package for a second digest or upload its bytes twice.
 
 The result is an inspection only: it displays the authoritative package identity, digest, and readiness. Real install plan editing/approval/submission is not wired to this page yet; Continue stays disabled and a clear message says no application was installed. The fixture store is inaccessible to real source analysis. Personal Server fixture selection and identifier import remain mock-only until their real consumers are connected. Cancellation and source replacement stop SDK work; late staging responses release their own handle. Closing/replacing a successful inspection also releases that handle, with server TTL as the crash fallback.
+
+## Real application runtime observations
+
+2026-11-11，修复 #734：真实模式仅展示 `apps.list` 的授权应用，不加载或恢复 Mock 应用、系统/内核服务、安装任务和草稿。列表不是全 Zone 管理清单；运行控制尚未接入，不能把 Mock 动作赋给真实应用。
+
+`apps.list.runtime_type` 来自 AppDoc 的应用分类，`dapp`/`service` 不代表 Docker；`state` 是期望配置状态，不能作为运行成功证据。真实模式读取已有 `apps.status`：
+
+| RPC 字段 | UI 投影 |
+| --- | --- |
+| `desired_spec.packages[].sub_pkg_name`（无选择包时用 `app_doc.pkg_list`） | script/docker 运行类型；两者都有或均无时保留 unknown；web/agent 沿用明确的应用分类 |
+| `desired_deployment` | `RuntimeView.expected_deployment`，比较实例、task、AppDoc、generation 及可选 pikg digest |
+| `runtime_instances` | 匹配部署、未过期且非未来报告；达到期望数量的 started/healthy 且无错误才为 running |
+| `static_web_evidence` | 匹配部署、新鲜、内容已物化且对应网关 generation 已加载；数量满足要求才为 running，不依赖 spec.state 从 new 改成 running |
+| `deployment_error`、不健康报告 | error 与原始错误码；不能因进程存在显示健康 |
+| 无证据、过期/错误部署、查询失败 | unknown，不能沿用配置状态或模拟成功 |
+
+后端时间戳为秒，映射为 RuntimeView 的毫秒。静态证据要求 `materialized_at > 0`、`materialized_at <= gateway_ready_at <= observed_at <= now < expires_at`；聚合使用满足副本数所需报告的最早过期时间。停止配置收到真实 stopped/notexist/exited 才显示 stopped；进程尚在 started 时显示 stopping。
+
+每次读取为一次 `apps.list` 加每应用一次 `apps.status`，最多四个状态请求并发，同一 Store 的并行刷新合并。App Service 挂载期间每 15 秒刷新，关闭后清理定时器；刷新中的旧证据仍受原 TTL 限制，单个状态查询失败会置该项 unknown。上下文切换用 generation 丢弃旧响应。当前未引入后端批量接口，较大列表的 RPC 数量随应用数线性增长；本轮没有将其宣称为大规模列表性能验收。
+
+真实包检查页面仅开放已接入的本机 `.pikg` 检查，Personal Server 样本入口禁用、标识符原型输入不展示，文案指向 CLI 完成安装。中英文真实界面不展示 Mock/Prototype 说明。
+
+映射回归：`tests/e2e/pages/app-service-runtime.spec.ts`；真实链路回归与截图另见本次 CI 验收证据。现有 `ui_core`/`buckyos_admin` 的命令契约不变，本次没有新增 CLI、后端 RPC 或安装能力。

@@ -27,6 +27,7 @@ export const appServiceEn: Record<string, string> = {
   'app22.source.server': 'Choose from Personal Server',
   'app22.source.mockFiles':
     'Prototype: Personal Server contains sample packages. Local import accepts the documented Mock PIKG fixture; real package upload is pending integration.',
+  'app22.source.realFiles': 'Choose a local .pikg package to check its identity and requirements. This page checks packages; use the BuckyOS CLI to install them.',
   'app22.source.identifier': 'Enter a link or application identifier',
   'app22.source.check': 'Check source',
   'app22.source.advanced': 'Advanced import',
@@ -40,7 +41,7 @@ export const appServiceEn: Record<string, string> = {
   'app22.source.realValidated': 'Package validated and inspected',
   'app22.source.liteOnlyStaticWeb': 'BuckyOS Desktop Lite runs no container: you can add static web apps; script and Docker apps are not supported.',
   'app22.source.realReadiness': 'Server inspection result',
-  'app22.source.realInstallUnavailable': 'Package bytes and manifest were validated by the server. Installation controls are not connected yet; this inspection does not install the application.',
+  'app22.source.realInstallUnavailable': 'Package inspection is complete. Use the BuckyOS CLI to install this package.',
   'app22.source.label': 'Source',
   'app22.source.kind.identifier': 'Application identifier',
   'app22.source.kind.local-pikg': 'Local package',
@@ -185,10 +186,11 @@ export const appServiceEn: Record<string, string> = {
   'app22.restoreDraft': 'Inspect draft again',
   'app22.visibility.admin':
     'Administrator view: installations visible to this account, including the Mock management inventory. A complete Zone management API is pending integration.',
+  'app22.visibility.real': 'Applications available to this account. Runtime status is based on the latest deployment reports.',
   'app22.visibility.user':
     'Your installations and authorized service information. Administrative installation and runtime controls are unavailable.',
   'app22.settingsReadOnly':
-    'Settings are read only in this prototype. Saving and application of changes require a defined application settings API.',
+    'Application settings are read only here.',
   'app22.appLogin.title': 'Customer sign-in by this App',
   'app22.appLogin.hint':
     'When on, this App may sign its own external customers in with its service identity: one-time codes on the App origin and 48-hour links on the Zone root, each tied to a Limited account the App created. Turning it off ends every session the App signed in.',
@@ -382,6 +384,7 @@ export const appServiceZh: Record<string, string> = {
   'app22.source.server': '从 Personal Server 选择',
   'app22.source.mockFiles':
     '原型：Personal Server 提供示例包。本地导入接受文档约定的 Mock PIKG 样本，真实包上传待接入。',
+  'app22.source.realFiles': '选择本机 .pikg 包以检查身份和安装要求。本页面仅检查包，请使用 BuckyOS CLI 完成安装。',
   'app22.source.identifier': '输入链接或应用标识',
   'app22.source.check': '检查来源',
   'app22.source.advanced': '高级导入',
@@ -395,7 +398,7 @@ export const appServiceZh: Record<string, string> = {
   'app22.source.realValidated': '应用包已校验并检查',
   'app22.source.liteOnlyStaticWeb': 'BuckyOS Desktop Lite 不运行容器：可以添加静态网页应用，不支持脚本应用和 Docker 应用。',
   'app22.source.realReadiness': '服务端检查结果',
-  'app22.source.realInstallUnavailable': '服务端已验证应用包字节和清单。安装操作尚未接通，本次检查不会安装应用。',
+  'app22.source.realInstallUnavailable': '应用包检查已完成，请使用 BuckyOS CLI 安装此包。',
   'app22.source.label': '来源',
   'app22.source.kind.identifier': '应用标识',
   'app22.source.kind.local-pikg': '本地应用包',
@@ -534,10 +537,11 @@ export const appServiceZh: Record<string, string> = {
   'app22.restoreDraft': '重新检查草稿',
   'app22.visibility.admin':
     '管理员视图：本账号可见的安装，包含 Mock 管理清单。Zone 全量管理接口待接入。',
+  'app22.visibility.real': '显示本账号可访问的应用，运行状态来自最新部署报告。',
   'app22.visibility.user':
     '显示你的安装及获授权的服务信息，不提供管理员安装和运行控制。',
   'app22.settingsReadOnly':
-    '本原型中的设置为只读，保存和生效需后续明确应用设置接口。',
+    '此处的应用设置为只读。',
   'app22.appLogin.title': '本应用为外部客户代登录',
   'app22.appLogin.hint':
     '打开后，本应用可以用自己的服务身份为它的外部客户签发登录凭据：在应用子域兑换的一次性登录码，以及在 Zone 根域打开的 48 小时客户链接，都对应应用创建的受限账号。关闭会结束该应用签入的全部会话。',
