@@ -1,0 +1,10 @@
+{"seq":1,"at_ms":1794383939969,"kind":"created","who":"app:control-panel@devtest","via":"owner","revision":1,"epoch":1}
+{"seq":2,"at_ms":1794383942481,"kind":"status","who":"app:jarvis.test.buckyos.io@devtest","via":"owner","reason":"dv sleep","epoch":1,"detail":{"evidence":null,"from":"active","to":"paused"}}
+{"seq":3,"at_ms":1794383942630,"kind":"status","who":"app:jarvis.test.buckyos.io@devtest","via":"owner","reason":"dv wake","epoch":1,"detail":{"evidence":null,"from":"paused","to":"active"}}
+{"seq":4,"at_ms":1794383942783,"kind":"restarted","who":"app:jarvis.test.buckyos.io@devtest","via":"owner","reason":"dv restart","epoch":2,"detail":{"keep":"facts","previous_epoch":1}}
+{"seq":5,"at_ms":1794383942931,"kind":"status","who":"app:jarvis.test.buckyos.io@devtest","via":"owner","reason":"dv archive","epoch":2,"detail":{"evidence":null,"from":"active","to":"archived"}}
+{"seq":6,"at_ms":1794383942934,"kind":"epoch_ended","who":"opendan","via":"opendan","reason":"dv archive","epoch":2,"detail":{"end":"archived"}}
+{"seq":7,"at_ms":1794383943082,"kind":"reopened","who":"app:jarvis.test.buckyos.io@devtest","via":"owner","reason":"dv reopen","epoch":3,"detail":{"from":"archived","keep":"all"}}
+{"seq":8,"at_ms":1794383946397,"kind":"epoch_ended","who":"opendan","via":"opendan","reason":"dv restart","epoch":1,"detail":{"end":"restarted"}}
+{"seq":9,"at_ms":1794384573219,"kind":"status","who":"app:control-panel@devtest","via":"owner","reason":"dv finished: test goal archived","epoch":3,"detail":{"evidence":null,"from":"active","to":"archived"}}
+{"seq":10,"at_ms":1794384577137,"kind":"epoch_ended","who":"opendan","via":"opendan","reason":"dv finished: test goal archived","epoch":3,"detail":{"end":"archived"}}

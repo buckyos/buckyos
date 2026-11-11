@@ -124,12 +124,11 @@ async fn drive_locked(
         return finished_result(&session);
     }
     let mut deps = deps.clone();
+    let mut workspace_error = None;
     if !session.state.is_finished() {
         match crate::runtime::verify_workspace(deps.agent.as_ref(), &session.config).await {
             Ok(()) => {}
-            Err(error @ OpenDanError::WorkspaceBindingInvalid(_)) => {
-                return fail_workspace(&mut session, &lease, deps.agent.as_ref(), &error).await;
-            }
+            Err(error @ OpenDanError::WorkspaceBindingInvalid(_)) => workspace_error = Some(error),
             Err(OpenDanError::Busy { holder, .. }) => return DriveResult::Busy { holder },
             Err(error) => {
                 return DriveResult::Error {
@@ -139,12 +138,14 @@ async fn drive_locked(
             }
         }
     }
-    match crate::runtime::session_runtime(sd, &session.config, &deps.runtime) {
-        Ok(r) => deps.runtime = r,
-        Err(e) => return DriveResult::BindFailed { error: e.to_json() },
+    if workspace_error.is_none() {
+        match crate::runtime::session_runtime(sd, &session.config, &deps.runtime) {
+            Ok(r) => deps.runtime = r,
+            Err(e) => return DriveResult::BindFailed { error: e.to_json() },
+        }
     }
     // A finished session that takes no more input gave its queue back.
-    let takes_input = session.state.takes_input();
+    let takes_input = workspace_error.is_none() && session.state.takes_input();
     let mut sources = if takes_input {
         match deps.inputs.open(&session.config).await {
             Ok(s) => s,
@@ -191,6 +192,16 @@ async fn drive_locked(
         external_stop_applied: AtomicBool::new(false),
         behavior_functions: Default::default(),
     });
+    if let Some(error) = workspace_error {
+        if let Err(e) = super::goal::load(&sh).await {
+            log::warn!("session {}: goal state not loaded: {e}", sd.sid());
+        }
+        let mut session = sh.session.lock().await;
+        let result = fail_workspace(&sh, &mut session, &error).await;
+        drop(session);
+        Box::pin(super::goal::flush(&sh)).await;
+        return result;
+    }
     super::live_tasks::register(sh.agent().agent_did(), sd.sid(), &sh);
     let r = Box::pin(drive_inner(&sh, until)).await;
     let failure = sh
@@ -201,8 +212,9 @@ async fn drive_locked(
     if let Some(message) = failure {
         let mut session = sh.session.lock().await;
         let error = OpenDanError::WorkspaceBindingInvalid(message);
-        let result = fail_workspace(&mut session, &sh.lease, sh.agent(), &error).await;
+        let result = fail_workspace(&sh, &mut session, &error).await;
         drop(session);
+        Box::pin(super::goal::flush(&sh)).await;
         release_sources(&sh).await;
         return result;
     }
@@ -218,7 +230,10 @@ async fn drive_locked(
         }
         Err(error @ OpenDanError::WorkspaceBindingInvalid(_)) => {
             let mut session = sh.session.lock().await;
-            fail_workspace(&mut session, &sh.lease, sh.agent(), &error).await
+            let result = fail_workspace(&sh, &mut session, &error).await;
+            drop(session);
+            Box::pin(super::goal::flush(&sh)).await;
+            result
         }
         Err(OpenDanError::Busy { holder, .. }) => DriveResult::Busy { holder },
         Err(OpenDanError::RunBusy { run_id }) => DriveResult::RunBusy { run_id },
@@ -249,12 +264,9 @@ async fn binding_error(error: &OpenDanError) -> Value {
     detail
 }
 
-async fn fail_workspace(
-    session: &mut Session,
-    lease: &Lease,
-    agent: &dyn crate::state::AgentStateClient,
-    error: &OpenDanError,
-) -> DriveResult {
+async fn fail_workspace(sh: &Shared, session: &mut Session, error: &OpenDanError) -> DriveResult {
+    let lease = &sh.lease;
+    let agent = sh.agent();
     let persist: Result<()> = async {
         session.reset_to_committed(lease)?;
         let mut unresolved_tasks: std::collections::BTreeSet<String> =
@@ -337,6 +349,7 @@ async fn fail_workspace(
                 at_ms: crate::now_ms(),
             });
         }
+        Box::pin(super::goal::fail_session(sh, session, &detail)).await?;
         session.append_worklog(lease, bodies)?;
         session.commit_state(lease)?;
         agent

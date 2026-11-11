@@ -997,6 +997,31 @@ pub(super) async fn close_activation(sh: &Shared, s: &mut Session, end: TurnEnd<
     Ok(())
 }
 
+/// The Goal Session failed for good (its workspace binding is invalid): an
+/// open Activation is closed as failed; without one the Goal State alone
+/// says why. The Goal stays as it is until it is restarted.
+pub(super) async fn fail_session(sh: &Shared, s: &mut Session, error: &Value) -> Result<()> {
+    let Some(g) = s.state.goal.as_mut() else {
+        return Ok(());
+    };
+    let mut error = error.clone();
+    error["recovery"] = json!("resolve the workspace, then restart the goal for a new goal session");
+    if g.activation.is_some() {
+        let end = TurnEnd {
+            status: TurnStatus::Failed,
+            needs_input: false,
+            answer: None,
+            report: None,
+            error: Some(&error),
+        };
+        return close_activation(sh, s, end).await;
+    }
+    g.state.last_error = Some(error);
+    g.state.rev += 1;
+    g.state.updated_at_ms = crate::now_ms();
+    Ok(())
+}
+
 fn question_key(goal_id: &str, text: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = hex::encode(Sha256::digest(text.as_bytes()));

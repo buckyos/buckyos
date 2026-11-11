@@ -236,7 +236,7 @@ Goal 是 Agent State 中的持久对象，是唯一的真相；它的 Goal Sessi
 
 `goal.json` 的主要字段：`goal_id`（`g-<yyyymmddThhmmss>-<8 hex>`；带幂等键创建时为 `g-k<24 hex>` = H(agent, 创建者, key)）、`title`、`objective`、`scope{objects, paths, workspace}`、`lifecycle = achieve | maintain`、`achieved_when` / `healthy_state`、`distance_evaluation`、`constraints`、`initial_skills`、`owner`、`created_by{principal, via}`、`beneficiaries`、`budget`、`schedule{every_secs, min_interval_secs, start_on_create}`、`behavior`、`status = active | paused | achieved | archived`（及 `status_changed_at_ms / status_reason / status_by`）、`session{epoch, sid}`、`epochs[]{epoch, sid, started_at_ms, start: created | reopened | restarted, reason, keep: all | facts, ended_at_ms, end: archived | achieved | restarted, end_reason}`。
 
-`state.json`：`epoch`、`goal_revision_seen`、`last_activation`、`distance{text, observed_at_ms, evidence_refs, unknowns}`、`pending[]`、`questions[]`（每条可带 `candidate_id`）、`active_works[]{sid, objective, epoch, created_in_activation, goal_revision}`、`absorbed[]`（已吸收 Work，最多 512，跨 epoch 去重的依据）、`recent_works[]`、`current_skills[]`、`usage{period_start_ms, tokens, activations, works, work_tokens}`、`last_error`、`maintenance`（§9.7，restart 的 `facts` 也保留）。
+`state.json`：`epoch`、`goal_revision_seen`、`last_activation`、`distance{text, observed_at_ms, evidence_refs, unknowns}`、`pending[]`、`questions[]`（每条可带 `candidate_id`）、`active_works[]{sid, objective, epoch, created_in_activation, goal_revision}`、`absorbed[]`（已吸收 Work，最多 512，跨 epoch 去重的依据）、`recent_works[]`、`current_skills[]`、`usage{period_start_ms, tokens, activations, works, work_tokens}`、`last_error`（最近一次 Activation 的错误，下一次无错的 Activation 清掉；Goal Session 因 Workspace 绑定失效而 failed 时是 `{kind: "workspace_binding_invalid", message, workspace_binding, recovery, …}`，这时 Goal 要 restart 才会再运行）、`maintenance`（§9.7，restart 的 `facts` 也保留）。
 
 `goal.json.extensions.opendan`（Schema `goal_opendan_extension`）是宿主的受信标记 `{builtin?, policy_version, capabilities[], records_perception}`：只有 owner 侧（`GoalCaller.session` 为空）的 `create` / `revise` 可以写，kRPC 的 `goals.create / revise` 带这个键一律 `forbidden`；Goal Session 按 `goal_id` 读取它得到能力，不复制进 SessionConfig。
 
@@ -249,7 +249,7 @@ Goal 是 Agent State 中的持久对象，是唯一的真相；它的 Goal Sessi
 
 ### 9.3 Work 的归属
 
-Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activation_seq, at_ms}`，登记表 `goal_id` 同步写入；Goal 修订后已运行的 Work 保留创建时的 `revision`。Work 的 `report.md` 与 `state.result.goal` 带同样的引用。Goal Session 吸收 Work 按 `goal_id` 而不是 `parent_session`：新 epoch 接管旧 epoch 的 Work，`absorbed` 保证只吸收一次。一个 Goal 的 Work 只在 Goal 被归档（或删除）时随之停止，epoch 结束不停止它。
+Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activation_seq, at_ms}`，登记表 `goal_id` 同步写入；Goal 修订后已运行的 Work 保留创建时的 `revision`。Work 的 `report.md` 与 `state.result.goal` 带同样的引用。Goal Session 吸收 Work 按 `goal_id` 而不是 `parent_session`：新 epoch 接管旧 epoch 的 Work，`absorbed` 保证只吸收一次。一个 Goal 的 Work 只在 Goal 被归档（或删除）时随之停止，epoch 结束不停止它。Goal 休眠（`status = paused`）时，宿主暂停它未结束的 Work，唤醒时只恢复因此暂停的（[Session Control Protocol](<Session Control Protocol.md>) §7）。
 
 ### 9.4 预算
 
@@ -280,6 +280,14 @@ Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activa
 - **gate**（宿主 `host/maintenance.rs`，在 reconcile 中对 `created / reopened / restarted` 与每个定时 fire 生效；不是 `AdmissionCheck`）：先按 Memory 版本向量（`memory_snapshot`，不打开 Graph）与上次摘要比对；非 start、非基线槽（`slot % 4 == 0`，UTC 对齐的整 2 小时）、摘要未变、无积压、暂缓未到期、复核未到期、无未完成 receipt 则 `no_change`；否则做完整确定性检查 `pending_work` + `due_reviews`：无材料 `no_work`；只有清理重试 / 未完成 receipt 则 `mechanical`（只 drive Session 做恢复与清理，不投运行机会）；有新 / 到期材料或到期复核才投运行机会。检查出错记 `unknown` 并退避 5m → 15m → 30m。`paused` / `period_budget` 也在这里记。水位在 `schedule.json.gate`：`status`、`last_checked_slot / last_baseline_slot / last_checked_at_ms / last_full_check_at_ms`、`last_skip_reason`、`last_inputs_digest`、`pending{new, due, waiting, retry_cleanup, next_deadline, oldest_at_ms}`、`due_reviews`、`next_review_at`、`unfinished_receipts`、`last_run_at_ms / last_run_slot`、`backoff_until_ms / backoff_level`、`last_error`。
 - **整理**（runner `consolidation.rs`）：drive 开始先持 `memory_consolidation` lease（Busy 即返回，不开 Activation），先做机械维护（未完成 receipt 推进、读了未提交的批次丢弃、`sweep_expired`、清理重试），再处理输入。宿主工具只对带能力的 Goal Session 暴露：`memory_consolidation_begin {limit?}` 读一批材料并把完整 `Batch` 写成 receipt（`GoalState.maintenance.receipts[]`，`operation_id = mc-<hash>`，一次 Activation 最多 3 批，有未完成 receipt 时拒绝）；`memory_consolidation_commit {operation_id, summary, operations[], dispositions[], tags?}` 先把计划持久化进 receipt，再以 `operation_id` 为幂等键提交 Memory envelope，再发布候选（P1），再清理（失败记 `cleanup_pending` 由下次机械维护重试）；阶段 `prepared → memory_committed → published → completed`，每步可重入，`StaleLease` 记 `failed` 与 `last_error`（不自动修锁）。`abandon: true` 关闭批次不处置。Activation 的 `report` 带 `acted / created_work` 而有未提交批次时被拒。Activation 的 token 上限取 `min(activation 上限, 周期剩余)`。Goal 头多一块 `<memory_maintenance …>`（材料计数、到期复核、簿记）。
 - `GoalState.maintenance`：`receipts[]`（完成的保留 32 条）、`candidates[]`（§5.1 契约，P1 填）、`last_successful_consolidation_at_ms`、`consolidations / operations / dispositions / abandoned_batches`、`last_error`。
+
+### 9.8 内置经验结晶 Goal（skill_crystallize）
+
+设计见 [Skills 体系 TODO](../../../notepads/opendan-skills-system-todo.md) §3.8。要点：
+
+- **播种**：`[session.goal.crystallize] enabled = true` 时宿主每进程一次以 `GoalCaller::owner(<Agent DID>)` 创建，`key = builtin:skill_crystallize`，`extensions.opendan = {builtin: "skill_crystallize", policy_version: 1, capabilities: [], records_perception: true}`。库和 Jarvis 模板的缺省都是 `enabled = false`：不播种，已有的这个 Goal 也不建 Session。
+- **时间表与预算**：`schedule.every_secs = 86400`、`min_interval_secs = 3600`；每次 300000 tokens / 6 runs，24 h 内 600000 tokens / 2 次，`max_works = 0`。`behavior` 取 `crystallize.behavior`（缺省 `skill_crystallize`）。
+- 没有专用的 gate 和宿主工具，按普通定时 Goal 运行：读 `.meta/skills_state.json` 的使用记录和它指向的 Work Session，用 `agent-session skill revise` 改写来源为 `local` / `imported` 的手册（旧文本留在 `revisions/`），其余改动写成 `skills_drafts/<slug>/` 草稿并通知 owner。
 
 
 ## 10. Runtimes `state/runtimes/<runtime_id>.json`

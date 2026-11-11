@@ -1,0 +1,31 @@
+{
+ "goal_id": "g-k168268e5ecaf5443391e713d",
+ "title": "Memory maintenance",
+ "status": "active",
+ "builtin": null,
+ "builtin_key": null,
+ "key": null,
+ "schedule": {
+  "every_secs": 1800,
+  "min_interval_secs": 60,
+  "start_on_create": false
+ },
+ "session": {
+  "epoch": 1,
+  "sid": "goal-20261111-1"
+ },
+ "epochs": [
+  {
+   "epoch": 1,
+   "sid": "goal-20261111-1",
+   "started_at_ms": 1794362780360,
+   "start": "created",
+   "keep": "all"
+  }
+ ],
+ "created_at_ms": 1794362780360,
+ "created_by": {
+  "principal": "did:web:jarvis.test.buckyos.io",
+  "via": "owner"
+ }
+}

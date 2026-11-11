@@ -450,6 +450,8 @@
 
 以下是已经查到的事实和已经做出的决定，作为细化时的输入。
 
+> 2026-11-10 进度：§9.2 已实施（[Jarvis 默认 Goal Session TODO](../jarvis-default-goal-session-todo.md) 的 P0，self_improve 已删除）；§9.4 已实施（同上 §11.4）；§9.5 里的“UI 意图分析产出 Goal”和“Agent 通知人”第一段已实施，Skill 结晶已做成内置 Goal `skill_crystallize`（缺省关闭）。§9.1、§9.3 和 §9.5 的其余各项都没有做，§11.5 的遗留里 `goal_ref` 已解决。剩余工作的排期见 [Goal Session 继续推进 TODO](../opendan-goal-session-next-todo.md)。
+
 ### 9.1 workflow 计划任务接入（生产定时）
 
 - 计划任务单元在 `src/kernel/workflow`（`scheduled_task_manager.rs`、`server.rs`，kRPC `/kapi/workflow`），记录存在 task-mgr 中。
@@ -586,5 +588,5 @@ V21：上述全量回归通过，UI / Work / self_* 的既有用例行为不变�
 1. **Work 在 behavior 循环里不动手（第一段之外，已单独修复）**：`agent_tool/src/xllm.rs` 的 behavior 协议文本在“只有原生工具、没有 XML action”时写 “No actions are available in this run: reply with a single `<response>` whose `<report end=\"true\">` contains the complete final result”（2026-10-10 `upgrade opendan report` 引入），同时又说原生工具已声明。Jarvis 的 `plan` behavior 正是这种组合，模型常按前一句直接交最终报告、不调用工具（DV 中 6 个 Work 有 2 个如此）。影响所有 Work，不只 Goal。按“llm_context / agent_tool 层修改单列 TODO 先行”的约定单列在 [xllm behavior 原生工具协议 TODO](xllm-behavior-native-tools-protocol-todo.md)，用户确认后已于同日修复（只有原生工具时改为说明用工具行动、观察结果后再交结束报告）。
 2. **Goal Session 的历史逐轮增长**：DV 中连续 `no_action` 轮的 token 每轮约 +1k（机械历史，未到压缩阈值）。架构 §11.2 要求 Goal 的压缩策略单独设计，留给第二段。
 3. **镜像**：本地测试镜像已构建并在 DV 容器形态验证（见 §11.4 末条）；正式镜像发布（`build_aios --push`）与模板包发布未做。
-4. **未覆盖**：`fail_workspace`（Workspace 绑定失效使 Session failed）不写 Activation 记录；Goal Session 内 `agent-memory` 观察还不会自动带 `goal_ref`（只有运行时的 run_digest 感知带 `source_ref.goal_ref`）；Activation 预算不含 `max_tool_iterations`；WebUI Goals 视图属 §9.4。
+4. **未覆盖**：`fail_workspace`（Workspace 绑定失效使 Session failed）不写 Activation 记录（2026-11-10 已补：原因写进 Goal State 的 `last_error`，进行中的 Activation 记为 `failed`，见[继续推进 TODO](../opendan-goal-session-next-todo.md) A2）；Goal Session 内 `agent-memory` 观察还不会自动带 `goal_ref`（只有运行时的 run_digest 感知带 `source_ref.goal_ref`）；Activation 预算不含 `max_tool_iterations`；WebUI Goals 视图属 §9.4。
 5. 已知风险同 §8.3。第一段验收后再把 §9 细化成任务。

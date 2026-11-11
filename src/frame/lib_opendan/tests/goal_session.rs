@@ -1727,3 +1727,88 @@ async fn goal_questions_reach_the_user_and_answers_come_back() {
     assert_eq!(h.activations(&g.goal_id).len(), 3, "an answer opens one Activation");
     h.shutdown().await;
 }
+
+/// A Goal whose workspace is gone: its Goal Session fails for good, the
+/// Goal State says why (no Activation was open, so none is recorded), and a
+/// restart after the workspace is back runs it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_workspace_is_told_by_the_goal_state_and_restart_recovers() {
+    let env = Env::new();
+    let directory = env.root.join("project");
+    let moved = env.root.join("moved");
+    std::fs::create_dir(&directory).unwrap();
+    let ws = env.workspace(&directory).await;
+    let llm = ScriptedLlm::new(|_, _| no_action());
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("keep the project tidy");
+    req.schedule.every_secs = Some(SLOT);
+    req.schedule.start_on_create = true;
+    req.scope.workspace = Some(ws.workspace_id.clone());
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+    std::fs::rename(&directory, &moved).unwrap();
+    h.clock.advance(SLOT * 1000);
+    h.until("the reason in the goal state", |h| {
+        h.state(&g.goal_id).is_some_and(|s| s.last_error.is_some())
+    })
+    .await;
+    let error = h.state(&g.goal_id).unwrap().last_error.unwrap();
+    assert_eq!(error["kind"], "workspace_binding_invalid");
+    assert!(error["message"].as_str().unwrap().contains(&ws.workspace_id), "{error}");
+    assert!(error["recovery"].as_str().unwrap().contains("restart the goal"), "{error}");
+    let sd = h.session(&g.goal_id);
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Failed));
+    assert_eq!(h.activations(&g.goal_id).len(), 1, "no activation was open");
+    assert_eq!(h.goal(&g.goal_id).await.status, GoalStatus::Active);
+    assert_eq!(llm.count(), 1);
+    std::fs::rename(&moved, &directory).unwrap();
+    let restart = GoalRestart { reason: "the workspace is back".into(), carry_state: true };
+    let g2 = h.agent.goals().restart(&g.goal_id, &restart, &owner()).await.unwrap();
+    assert_eq!(g2.session.epoch, 2);
+    h.until("an activation of epoch 2", |h| {
+        h.activations(&g.goal_id).iter().any(|a| a.epoch == 2 && a.outcome == ActivationOutcome::Completed)
+    })
+    .await;
+    assert!(last_header(&llm).contains("<last_error>"), "the new context is told what happened");
+    h.until("the error cleared", |h| h.state(&g.goal_id).is_some_and(|s| s.last_error.is_none())).await;
+    h.shutdown().await;
+}
+
+/// The workspace goes away while an Activation runs: that Activation is
+/// recorded as failed with the reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workspace_lost_mid_activation_closes_it_as_failed() {
+    let env = Env::new();
+    let directory = env.root.join("project");
+    let moved = env.root.join("moved");
+    std::fs::create_dir(&directory).unwrap();
+    let ws = env.workspace(&directory).await;
+    let (from, to) = (directory.clone(), moved.clone());
+    let llm = ScriptedLlm::new(move |req, _| {
+        if this_result(req, "c1").is_some() {
+            return no_action();
+        }
+        std::fs::rename(&from, &to).unwrap();
+        tool_call("c1", "shell", json!({ "command": "echo looked" }))
+    });
+    let h = hosted(&env, llm.clone());
+    let mut req = goal_req("keep the project tidy");
+    req.schedule.start_on_create = true;
+    req.scope.workspace = Some(ws.workspace_id.clone());
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("the failed activation", |h| !h.activations(&g.goal_id).is_empty()).await;
+    let acts = h.activations(&g.goal_id);
+    assert_eq!(acts.len(), 1);
+    assert_eq!(acts[0].outcome, ActivationOutcome::Failed);
+    assert!(acts[0].end_reason.as_deref().unwrap().contains("workspace binding invalid"), "{acts:?}");
+    assert!(acts[0].cost.total_tokens > 0);
+    let st = h.state(&g.goal_id).unwrap();
+    assert_eq!(st.last_error.as_ref().unwrap()["kind"], "workspace_binding_invalid");
+    assert_eq!(st.last_activation.as_ref().unwrap().outcome, ActivationOutcome::Failed);
+    assert_eq!(st.usage.activations, 1);
+    let state = h.session(&g.goal_id).state().unwrap();
+    assert_eq!(state.outcome, Some(Outcome::Failed));
+    assert!(!state.goal.as_ref().unwrap().needs_flush());
+    assert_eq!(llm.count(), 1);
+    h.shutdown().await;
+}

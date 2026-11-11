@@ -2,7 +2,7 @@
 
 日期：2026-10-23
 
-状态：**P0 已实施（2026-10-23，未提交 git，DV 未验收）**，实施记录见 §11；P1、P2 待做。§0–§10 保留为方案与验收标准，与代码不一致处以 §11 为准。
+状态：**P0 已实施（2026-10-23）并已提交；宿主侧 DV 见 §11.6，容器形态未验**，实施记录见 §11；P1、P2 待做，排期见 [Goal Session 继续推进 TODO](opendan-goal-session-next-todo.md) 的 E1、E2。§0–§10 保留为方案与验收标准，与代码不一致处以 §11 为准。
 
 读者：后续 codeagent。路径相对 `buckyos/`，实施前重新核对源码；不要把旧 TODO 的实施记录当作当前接口。
 
@@ -339,7 +339,7 @@ T01–T07 合在一起等于 Memory S 阶段加 Goal 发现加 workflow 加 deci
 - [x] 修改 `opendan` 配置/Loader、GoalHost 和 Jarvis 源模板，接稳定内置目标、独立 behavior、30m机会/2h基线、廉价摘要与恢复状态（`host/maintenance.rs`，`[session.goal.maintenance]`，`behaviors/memory_maintenance.toml`）。
 - [x] pause/archive/disable、重启、多 Agent 隔离、升级（`policy_version` 只 revise 标记）、通用 Goal 不受影响：`tests/memory_maintenance.rs`、`tests/goal_session.rs` 全部通过。
 - [x] status 摘要：`schedule.json.gate` 与 `GoalState.maintenance`，经 `goals.schedule/goals.state` 读出；Goal 头另有 `<memory_maintenance …>` 块。
-- [ ] 按 §2.1 实现 WebUI：Home 的 Goals 区域、`#/goal/<goal_id>` 详情页、activate 操作（实施中，结果见 §11.4）。owner 的 pause/resume/reopen/restart 不需要新入口：`goals.set_status/reopen/restart` 经 Agent State 门面以 `GoalCaller{session: None}` = owner 侧放行，服务端 `authorize_agent_method` 的既有单测 `read_only_agent_writes_only_its_own_state` 已覆盖这三个方法。
+- [x] 按 §2.1 实现 WebUI：Home 的 Goals 区域、`#/goal/<goal_id>` 详情页、activate 与状态操作（已实施，结果见 §11.4；经 zone 网关登录的真实 Zone 未验）。owner 的 pause/resume/reopen/restart 不需要新入口：`goals.set_status/reopen/restart` 经 Agent State 门面以 `GoalCaller{session: None}` = owner 侧放行，服务端 `authorize_agent_method` 的既有单测 `read_only_agent_writes_only_its_own_state` 已覆盖这三个方法。
 
 ### T05 — 发现、确认与正式对象落地
 

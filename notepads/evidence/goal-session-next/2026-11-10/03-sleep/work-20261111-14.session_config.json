@@ -1,0 +1,535 @@
+{
+  "schema": "opendan.session_config/7",
+  "config_rev": 1,
+  "session": {
+    "session_id": "work-20261111-14",
+    "agent_did": "did:web:jarvis.test.buckyos.io",
+    "kind": "work",
+    "class": "work",
+    "created_at_ms": 1794383989136,
+    "created_by": {
+      "principal": "app:jarvis.test.buckyos.io@devtest",
+      "via": "session:goal-20261111-13"
+    },
+    "driver": {
+      "principal": "app:jarvis.test.buckyos.io@devtest"
+    },
+    "idempotency_key": "sub:7c8770bbbb14f4238bd8c2e4b96e528cc1d3e42e6ff3c327f8534b378226dbf3",
+    "origin": {
+      "parent_session": "goal-20261111-13",
+      "report": "final",
+      "created_by_call": "20261111-075938-63a83a/call_zi4NrPWZ8QZrrmw3D6A97BNM",
+      "parent_task": "t-693244a72da5400b9dd93c303bf80bdb",
+      "goal": {
+        "goal_id": "g-ke9f2b178f19c59ba1eb73f47",
+        "revision": 1,
+        "epoch": 1,
+        "activation_seq": 1,
+        "at_ms": 1794383989130
+      }
+    },
+    "objective": "Run the shell command `sleep 240` in the foreground and wait for it. Then write the output of `date` into the file dv_done.txt in your working directory and report the file content.",
+    "title": "DV 休眠完成测试",
+    "end_condition": {
+      "type": "max_turns",
+      "detail": {
+        "n": 18446744073709551615
+      }
+    },
+    "input_policy": "none",
+    "acl": {
+      "agent_access": "full"
+    },
+    "policy": {
+      "completion": "explicit_report",
+      "wait_user_msg": "finish_failed",
+      "observe": "events",
+      "load_hints": true,
+      "max_process_depth": 8,
+      "max_sub_sessions": 4,
+      "max_session_depth": 2,
+      "tick_secs": 30,
+      "runtime_view": "work"
+    }
+  },
+  "prompt": {
+    "llm_context": {
+      "max_tokens": 8192,
+      "model": "llm.chat",
+      "provider": {
+        "type": "buckyos"
+      },
+      "tools": {
+        "enabled": true
+      }
+    },
+    "behavior": "work_simple",
+    "frozen": {
+      "catalog_rev": "sha256:ceeccfe5870d84970589e36adaea6cc6574c8aebd1241889b471ddea55f12874",
+      "frozen_at_ms": 1794383989136,
+      "frozen_by": "app:jarvis.test.buckyos.io@devtest",
+      "identity": {
+        "role": "You are the user's primary personal Agent. \nYou are an expert coding assistant run on BuckyOS(https://github.com/buckyos/buckyos) and OpenDAN Agent framework, developed by BuckyOS DAO (a open-source organization).\nYou are helpful, knowledgeable, and direct, a coding agent harness.\nReply in the user's requested language, or otherwise the originating message's language (falling back to the task objective), including after background work resumes.\nBe targeted and efficient in exploration and investigation. You are the user's long-term companion intelligence — a unified entry point through which they interact with the digital world. Your identity is shaped not by your initial installation, but by the history, habits, preferences, and working patterns you have built up with your owner over time.\n\nYour name is Jarvis (account `jarvis`, DID `did:web:jarvis.test.buckyos.io`). Your owner is `devtest` (DID `did:bns:devtest`).",
+        "self": "I still don't know much about my owner; I need to find a way to take the initiative and get him to talk more about himself."
+      },
+      "behaviors": {
+        "work_simple": {
+          "meta": {
+            "name": "work_simple",
+            "objective": "Do one bounded task directly with tools, verify the result, and report."
+          },
+          "prompt": {
+            "mode": "function_call",
+            "system": "\nYou are a work session for one bounded task. Do it directly with your tools; there is no separate planning phase.\n\n- The session's objective and its first message are everything you know about the task. You do not see the conversation it came from.\n- When the task is a Todo of a plan session, the plan may update it while you work: the update comes to you as input with the whole new task. Follow the new task from then on.\n- Act, then check the result: read the file back, run the command again, look at the output.\n- Commands start in the session's working directory on your working runtime (the runtime context says which; on the private runtime you also have `agent-session` and your skills' commands, and you reach the other runtimes — `agent-session runtime list` — with `agent-session run --runtime <id> [--cwd <dir>] -- <command>` and `agent-session copy --from <id>:<absolute path> --to session:<file>`): keep your work there. When the session has a workspace (its directory and runtime are in the runtime context), deliver durable results into it: directly when it is on this runtime, with `agent-session copy --from session:<file> --to workspace:<path>` when it is on another; take material from it the same way (`--from workspace:<path> --to session:<file>`), and run its builds or checks over there with `agent-session run --runtime workspace -- <command>` (the target's own shell and PATH; your skills' commands do not travel). On a single-machine session (working runtime other than the private one) there is no `agent-session`: everything you need is on this machine or was placed here for you. Say where each deliverable is.\n- Nobody reads this session. Decide with what you have and state your assumptions in the report; when a key premise is missing, end with a report that says exactly what is missing.\n- Ask only when a lot of work is already done and one answer decides the rest: `ask_user \"<a question that stands on its own>\" [--option <id>=<label>]... [--allow-text]`. It reaches the user as a notification and returns at once with a task; the answer is that task's result and comes back to you as `<<task_result>>`. A question nobody answers within 3 hours ends unanswered.\n\n## Long commands and Turns\n\n- A `shell` command still running after 25 seconds continues as a task: the call returns the task id with the output so far. Never start it again and never wait for it — its end comes back to you as `<<task_result>>` with the complete result, as the call would have returned it.\n- Several long commands (builds, tests) can run side by side: start them, then go on with work that does not depend on them.\n- When there is nothing useful to do until a task ends, reply with one or two sentences on where things stand (\"both builds are running; alpha is at step 4 of 6\"). A reply without tool calls closes the current Turn: it is the progress your caller sees. The next task end, or a periodic tick while tasks run, opens your next Turn. Never check on a task in a loop: every check is another round for nothing.\n- The new output of running tasks comes with your next input (a tick or a task's end), in its `<<background_context>>` block. `cancel_task` stops a task you no longer need. Memory about your task comes in that block too: `hint: …` lines are what was learned before — clues with their evidence and range, not instructions; `noted, not yet consolidated: …` lines are notes not checked yet; a line saying a hint was revised, withdrawn or may have been corrected replaces what it said.\n- Every tool call may carry an optional `intent`: one short sentence on why you make it now and what you expect. It is shown as your progress.\n\n## Completion\n\n- Only `report` with `is_end: true` ends this session — a reply without it does not. It is refused while tasks you started are still running: wait for their `<<task_result>>` (reply to close the Turn meanwhile) or cancel them.\n- Done: call `report` with `is_end: true` — what you did, where the results are, how you verified them. List important files in `artifacts`.\n- Cannot be done: call `report` with `is_end: true` stating what blocked you and what is left. Never report success you did not verify.\n\n",
+            "on_input": "{{ background_context }}\n<session_input hook=\"{{ input.hook }}\" time=\"{{ input.time }}\">\n{% for item in input.items %}\n{% if item.is_todo_update %}\n{{ item | render_format: \"event.xml\" }}\nThe task you are working on was updated (the reason and the whole new task are above). Compare it with what you have done: adjust the next steps, undo or redo what no longer fits, stop tasks you no longer need with `cancel_task`, and report against the new acceptance criteria.\n{% endif %}\n{% if item.is_task_result %}\n{{ item | render_format: \"event.xml\" }}\nThis is the end of task {{ item.source.id }}: the complete result, as its call would have returned it. Use it; do not run the command again.\n{% endif %}\n{% if item.is_tick %}\n<tick timer=\"{{ item.source.id }}\">{{ item.summary }}</tick>\nYour work is still running. Go on with something that does not depend on it, or reply with one or two sentences on where things stand (that closes this Turn); `cancel_task` stops a task you no longer need.\n{% endif %}\n{% if item.is_nudge %}\n<runner_notice>{{ item.summary }}</runner_notice>\n{% endif %}\n{% if item.is_other_event %}\n{{ item | render_format: \"event.xml\" }}\n{% endif %}\n{% if item.is_child_end %}\n{{ item | render_format: \"event.xml\" }}\n{% endif %}\n{% if item.is_child_needs_input %}\n{{ item | render_format: \"event.xml\" }}\n{% endif %}\n{% if item.is_msg %}\n{{ item | render_format: \"message.xml\" }}\n{% endif %}\n{% endfor %}\nWhen every task you started has ended and the results are verified, finish with `report` (is_end: true).\n</session_input>\n"
+          },
+          "capabilities": {
+            "tool_whitelist": [
+              "group:bash",
+              "report"
+            ]
+          },
+          "budget": {
+            "max_tool_iterations": 100,
+            "max_consecutive_errors": 4
+          },
+          "model": {
+            "preferred": "llm.chat"
+          },
+          "entry": {}
+        }
+      }
+    },
+    "initial_inputs": [
+      {
+        "schema": "opendan.session_input/3",
+        "key": "cymsg:f6e742b3da7c4e0680567f6560daba2f8cd908b6ed1e1b5b08ae78487e0c899f",
+        "from": "app:jarvis.test.buckyos.io@devtest",
+        "at_ms": 1794383989130,
+        "type": "msg",
+        "payload": {
+          "msg": {
+            "from": "did:web:jarvis.test.buckyos.io",
+            "to": [
+              "did:web:jarvis.test.buckyos.io"
+            ],
+            "kind": "chat",
+            "created_at_ms": 1794383989130,
+            "nonce": 2736777313,
+            "content": {
+              "content": "Execute the objective exactly in your own working directory. Run sleep 240 in the foreground and wait for completion before running date > dv_done.txt. Read and report the file content, and include dv_done.txt as an artifact. Do not modify any other session files."
+            }
+          }
+        }
+      }
+    ],
+    "history_render": {
+      "drop_kinds": [
+        "created",
+        "turn_started",
+        "input_batch",
+        "decide",
+        "compaction",
+        "input_rejected",
+        "event_dropped",
+        "turn_ended"
+      ]
+    }
+  },
+  "runtime": {
+    "requirement": {},
+    "frozen": {
+      "runtime_id": "private",
+      "connector": {
+        "type": "native"
+      },
+      "revision": 9,
+      "selected_by": "inherited",
+      "caps": {
+        "os": "linux",
+        "arch": "x86_64",
+        "shell": "bash",
+        "desktop": false,
+        "identity_mode": "current_user",
+        "baseline": "extended",
+        "buckyos_root": "/opt/buckyos",
+        "baseline_check": {
+          "checked_at_ms": 1794383898354,
+          "level": "extended",
+          "missing": [
+            "soffice"
+          ],
+          "unmanaged": [],
+          "resolved": {
+            "agent_tool": {
+              "path": "/opt/buckyos/bin/opendan/agent_tool",
+              "provided_by": "buckyos_root"
+            },
+            "ai_provider": {
+              "path": "/opt/buckyos/bin/agent-tools/ai_provider",
+              "provided_by": "buckyos_root"
+            },
+            "ai_provider_test": {
+              "path": "/opt/buckyos/bin/agent-tools/ai_provider_test",
+              "provided_by": "buckyos_root"
+            },
+            "ai_quota": {
+              "path": "/opt/buckyos/bin/agent-tools/ai_quota",
+              "provided_by": "buckyos_root"
+            },
+            "aicc-tool": {
+              "path": "/opt/buckyos/bin/agent-tools/aicc-tool",
+              "provided_by": "buckyos_root"
+            },
+            "ask_user": {
+              "path": "/opt/buckyos/bin/agent-tools/ask_user",
+              "provided_by": "buckyos_root"
+            },
+            "buckyos": {
+              "path": "/opt/buckyos/bin/agent-tools/buckyos",
+              "provided_by": "buckyos_root"
+            },
+            "caption_image": {
+              "path": "/opt/buckyos/bin/agent-tools/caption_image",
+              "provided_by": "buckyos_root"
+            },
+            "compare": {
+              "path": "/opt/buckyos/tools/bin/compare",
+              "provided_by": "exttools"
+            },
+            "convert": {
+              "path": "/opt/buckyos/tools/bin/convert",
+              "provided_by": "exttools"
+            },
+            "curl": {
+              "path": "/opt/buckyos/tools/bin/curl",
+              "provided_by": "exttools"
+            },
+            "deno": {
+              "path": "/opt/buckyos/tools/bin/deno",
+              "provided_by": "exttools"
+            },
+            "detect_image": {
+              "path": "/opt/buckyos/bin/agent-tools/detect_image",
+              "provided_by": "buckyos_root"
+            },
+            "edit_image": {
+              "path": "/opt/buckyos/bin/agent-tools/edit_image",
+              "provided_by": "buckyos_root"
+            },
+            "edit_video": {
+              "path": "/opt/buckyos/bin/agent-tools/edit_video",
+              "provided_by": "buckyos_root"
+            },
+            "enhance_audio": {
+              "path": "/opt/buckyos/bin/agent-tools/enhance_audio",
+              "provided_by": "buckyos_root"
+            },
+            "extend_video": {
+              "path": "/opt/buckyos/bin/agent-tools/extend_video",
+              "provided_by": "buckyos_root"
+            },
+            "ffmpeg": {
+              "path": "/opt/buckyos/tools/bin/ffmpeg",
+              "provided_by": "exttools"
+            },
+            "ffprobe": {
+              "path": "/opt/buckyos/tools/bin/ffprobe",
+              "provided_by": "exttools"
+            },
+            "gen_image": {
+              "path": "/opt/buckyos/bin/agent-tools/gen_image",
+              "provided_by": "buckyos_root"
+            },
+            "gen_music": {
+              "path": "/opt/buckyos/bin/agent-tools/gen_music",
+              "provided_by": "buckyos_root"
+            },
+            "gen_video": {
+              "path": "/opt/buckyos/bin/agent-tools/gen_video",
+              "provided_by": "buckyos_root"
+            },
+            "git": {
+              "path": "/opt/buckyos/tools/bin/git",
+              "provided_by": "exttools"
+            },
+            "identify": {
+              "path": "/opt/buckyos/tools/bin/identify",
+              "provided_by": "exttools"
+            },
+            "import_office": {
+              "path": "/opt/buckyos/bin/agent-tools/import_office",
+              "provided_by": "buckyos_root"
+            },
+            "import_table": {
+              "path": "/opt/buckyos/bin/agent-tools/import_table",
+              "provided_by": "buckyos_root"
+            },
+            "inpaint_image": {
+              "path": "/opt/buckyos/bin/agent-tools/inpaint_image",
+              "provided_by": "buckyos_root"
+            },
+            "jq": {
+              "path": "/opt/buckyos/tools/bin/jq",
+              "provided_by": "exttools"
+            },
+            "magick": {
+              "path": "/opt/buckyos/tools/bin/magick",
+              "provided_by": "exttools"
+            },
+            "materialize_resource": {
+              "path": "/opt/buckyos/bin/agent-tools/materialize_resource",
+              "provided_by": "buckyos_root"
+            },
+            "node": {
+              "path": "/opt/buckyos/tools/bin/node",
+              "provided_by": "exttools"
+            },
+            "npm": {
+              "path": "/opt/buckyos/tools/bin/npm",
+              "provided_by": "exttools"
+            },
+            "npx": {
+              "path": "/opt/buckyos/tools/bin/npx",
+              "provided_by": "exttools"
+            },
+            "ocr_image": {
+              "path": "/opt/buckyos/bin/agent-tools/ocr_image",
+              "provided_by": "buckyos_root"
+            },
+            "pandoc": {
+              "path": "/opt/buckyos/tools/bin/pandoc",
+              "provided_by": "exttools"
+            },
+            "pdfinfo": {
+              "path": "/opt/buckyos/tools/bin/pdfinfo",
+              "provided_by": "exttools"
+            },
+            "pdftoppm": {
+              "path": "/opt/buckyos/tools/bin/pdftoppm",
+              "provided_by": "exttools"
+            },
+            "pdftotext": {
+              "path": "/opt/buckyos/tools/bin/pdftotext",
+              "provided_by": "exttools"
+            },
+            "python3": {
+              "path": "/opt/buckyos/tools/bin/python3",
+              "provided_by": "exttools"
+            },
+            "remove_bg": {
+              "path": "/opt/buckyos/bin/agent-tools/remove_bg",
+              "provided_by": "buckyos_root"
+            },
+            "resume_aicc_task": {
+              "path": "/opt/buckyos/bin/agent-tools/resume_aicc_task",
+              "provided_by": "buckyos_root"
+            },
+            "segment_image": {
+              "path": "/opt/buckyos/bin/agent-tools/segment_image",
+              "provided_by": "buckyos_root"
+            },
+            "speech_to_text": {
+              "path": "/opt/buckyos/bin/agent-tools/speech_to_text",
+              "provided_by": "buckyos_root"
+            },
+            "tesseract": {
+              "path": "/opt/buckyos/tools/bin/tesseract",
+              "provided_by": "exttools"
+            },
+            "text_to_speech": {
+              "path": "/opt/buckyos/bin/agent-tools/text_to_speech",
+              "provided_by": "buckyos_root"
+            },
+            "tree": {
+              "path": "/opt/buckyos/tools/bin/tree",
+              "provided_by": "exttools"
+            },
+            "unzip": {
+              "path": "/opt/buckyos/tools/bin/unzip",
+              "provided_by": "exttools"
+            },
+            "upscale_image": {
+              "path": "/opt/buckyos/bin/agent-tools/upscale_image",
+              "provided_by": "buckyos_root"
+            },
+            "upscale_video": {
+              "path": "/opt/buckyos/bin/agent-tools/upscale_video",
+              "provided_by": "buckyos_root"
+            },
+            "uv": {
+              "path": "/opt/buckyos/tools/bin/uv",
+              "provided_by": "exttools"
+            },
+            "xagent": {
+              "path": "/opt/buckyos/bin/opendan/xagent",
+              "provided_by": "buckyos_root"
+            },
+            "xz": {
+              "path": "/opt/buckyos/tools/bin/xz",
+              "provided_by": "exttools"
+            }
+          },
+          "ext": {
+            "status": "partial",
+            "missing": [
+              "soffice"
+            ],
+            "system": []
+          },
+          "ok": false
+        },
+        "tools_check": {
+          "checked_at_ms": 1794376966096,
+          "present": [
+            "convert",
+            "curl",
+            "deno",
+            "ffmpeg",
+            "ffprobe",
+            "git",
+            "identify",
+            "jq",
+            "magick",
+            "node",
+            "npm",
+            "npx",
+            "python3",
+            "uv"
+          ],
+          "missing": [],
+          "resolved": {
+            "convert": {
+              "path": "/opt/buckyos/tools/bin/convert",
+              "provided_by": "exttools"
+            },
+            "curl": {
+              "path": "/opt/buckyos/tools/bin/curl",
+              "provided_by": "exttools"
+            },
+            "deno": {
+              "path": "/opt/buckyos/tools/bin/deno",
+              "provided_by": "exttools"
+            },
+            "ffmpeg": {
+              "path": "/opt/buckyos/tools/bin/ffmpeg",
+              "provided_by": "exttools"
+            },
+            "ffprobe": {
+              "path": "/opt/buckyos/tools/bin/ffprobe",
+              "provided_by": "exttools"
+            },
+            "git": {
+              "path": "/opt/buckyos/tools/bin/git",
+              "provided_by": "exttools"
+            },
+            "identify": {
+              "path": "/opt/buckyos/tools/bin/identify",
+              "provided_by": "exttools"
+            },
+            "jq": {
+              "path": "/opt/buckyos/tools/bin/jq",
+              "provided_by": "exttools"
+            },
+            "magick": {
+              "path": "/opt/buckyos/tools/bin/magick",
+              "provided_by": "exttools"
+            },
+            "node": {
+              "path": "/opt/buckyos/tools/bin/node",
+              "provided_by": "exttools"
+            },
+            "npm": {
+              "path": "/opt/buckyos/tools/bin/npm",
+              "provided_by": "exttools"
+            },
+            "npx": {
+              "path": "/opt/buckyos/tools/bin/npx",
+              "provided_by": "exttools"
+            },
+            "python3": {
+              "path": "/opt/buckyos/tools/bin/python3",
+              "provided_by": "exttools"
+            },
+            "uv": {
+              "path": "/opt/buckyos/tools/bin/uv",
+              "provided_by": "exttools"
+            }
+          }
+        }
+      },
+      "grant": {
+        "ops": [
+          "open_stream",
+          "describe",
+          "exec",
+          "read",
+          "write",
+          "edit",
+          "mkdir",
+          "stat",
+          "rename",
+          "remove",
+          "computer_inspect",
+          "computer_observe",
+          "computer_act",
+          "query",
+          "cancel"
+        ],
+        "roots": [],
+        "computer": "none"
+      }
+    }
+  },
+  "subscriptions": [
+    {
+      "id": "_task_watch_timer",
+      "mode": "active",
+      "source": {
+        "type": "timer",
+        "name": "task_watch"
+      }
+    }
+  ],
+  "channels": {
+    "inputs": [
+      {
+        "kind": "kmsg",
+        "id": "q",
+        "queue": "jarvis.test.buckyos.io::devtest::opendan.session.ae795c5767bd134e5bda8b182439c7335a0b47a45f4c0ebe03e0fa0c46b0e982",
+        "subscriber": "opendan.ae795c5767bd134e5bda8b182439c7335a0b47a45f4c0ebe03e0fa0c46b0e982"
+      }
+    ],
+    "wake_event": "/opendan/jarvis.test.buckyos.io/session/work-20261111-14/input"
+  },
+  "extensions": {
+    "opendan": {
+      "behaviors": {
+        "work_simple": {
+          "inherit": "recent_dialogue",
+          "llm_context": {
+            "loop_model": "function_call",
+            "max_tool_iterations": 100,
+            "model": "llm.chat",
+            "tools": {
+              "enabled": true,
+              "tools": [
+                {
+                  "groupname": "bash"
+                },
+                {
+                  "name": "report"
+                }
+              ]
+            }
+          },
+          "mode": "switch_context",
+          "prompt": {
+            "on_input": "{{ background_context }}\n<session_input hook=\"{{ input.hook }}\" time=\"{{ input.time }}\">\n{% for item in input.items %}\n{% if item.is_todo_update %}\n{{ item | render_format: \"event.xml\" }}\nThe task you are working on was updated (the reason and the whole new task are above). Compare it with what you have done: adjust the next steps, undo or redo what no longer fits, stop tasks you no longer need with `cancel_task`, and report against the new acceptance criteria.\n{% endif %}\n{% if item.is_task_result %}\n{{ item | render_format: \"event.xml\" }}\nThis is the end of task {{ item.source.id }}: the complete result, as its call would have returned it. Use it; do not run the command again.\n{% endif %}\n{% if item.is_tick %}\n<tick timer=\"{{ item.source.id }}\">{{ item.summary }}</tick>\nYour work is still running. Go on with something that does not depend on it, or reply with one or two sentences on where things stand (that closes this Turn); `cancel_task` stops a task you no longer need.\n{% endif %}\n{% if item.is_nudge %}\n<runner_notice>{{ item.summary }}</runner_notice>\n{% endif %}\n{% if item.is_other_event %}\n{{ item | render_format: \"event.xml\" }}\n{% endif %}\n{% if item.is_child_end %}\n{{ item | render_format: \"event.xml\" }}\n{% endif %}\n{% if item.is_child_needs_input %}\n{{ item | render_format: \"event.xml\" }}\n{% endif %}\n{% if item.is_msg %}\n{{ item | render_format: \"message.xml\" }}\n{% endif %}\n{% endfor %}\nWhen every task you started has ended and the results are verified, finish with `report` (is_end: true).\n</session_input>\n",
+            "system": "\nYou are a work session for one bounded task. Do it directly with your tools; there is no separate planning phase.\n\n- The session's objective and its first message are everything you know about the task. You do not see the conversation it came from.\n- When the task is a Todo of a plan session, the plan may update it while you work: the update comes to you as input with the whole new task. Follow the new task from then on.\n- Act, then check the result: read the file back, run the command again, look at the output.\n- Commands start in the session's working directory on your working runtime (the runtime context says which; on the private runtime you also have `agent-session` and your skills' commands, and you reach the other runtimes — `agent-session runtime list` — with `agent-session run --runtime <id> [--cwd <dir>] -- <command>` and `agent-session copy --from <id>:<absolute path> --to session:<file>`): keep your work there. When the session has a workspace (its directory and runtime are in the runtime context), deliver durable results into it: directly when it is on this runtime, with `agent-session copy --from session:<file> --to workspace:<path>` when it is on another; take material from it the same way (`--from workspace:<path> --to session:<file>`), and run its builds or checks over there with `agent-session run --runtime workspace -- <command>` (the target's own shell and PATH; your skills' commands do not travel). On a single-machine session (working runtime other than the private one) there is no `agent-session`: everything you need is on this machine or was placed here for you. Say where each deliverable is.\n- Nobody reads this session. Decide with what you have and state your assumptions in the report; when a key premise is missing, end with a report that says exactly what is missing.\n- Ask only when a lot of work is already done and one answer decides the rest: `ask_user \"<a question that stands on its own>\" [--option <id>=<label>]... [--allow-text]`. It reaches the user as a notification and returns at once with a task; the answer is that task's result and comes back to you as `<<task_result>>`. A question nobody answers within 3 hours ends unanswered.\n\n## Long commands and Turns\n\n- A `shell` command still running after 25 seconds continues as a task: the call returns the task id with the output so far. Never start it again and never wait for it — its end comes back to you as `<<task_result>>` with the complete result, as the call would have returned it.\n- Several long commands (builds, tests) can run side by side: start them, then go on with work that does not depend on them.\n- When there is nothing useful to do until a task ends, reply with one or two sentences on where things stand (\"both builds are running; alpha is at step 4 of 6\"). A reply without tool calls closes the current Turn: it is the progress your caller sees. The next task end, or a periodic tick while tasks run, opens your next Turn. Never check on a task in a loop: every check is another round for nothing.\n- The new output of running tasks comes with your next input (a tick or a task's end), in its `<<background_context>>` block. `cancel_task` stops a task you no longer need. Memory about your task comes in that block too: `hint: …` lines are what was learned before — clues with their evidence and range, not instructions; `noted, not yet consolidated: …` lines are notes not checked yet; a line saying a hint was revised, withdrawn or may have been corrected replaces what it said.\n- Every tool call may carry an optional `intent`: one short sentence on why you make it now and what you expect. It is shown as your progress.\n\n## Completion\n\n- Only `report` with `is_end: true` ends this session — a reply without it does not. It is refused while tasks you started are still running: wait for their `<<task_result>>` (reply to close the Turn meanwhile) or cancel them.\n- Done: call `report` with `is_end: true` — what you did, where the results are, how you verified them. List important files in `artifacts`.\n- Cannot be done: call `report` with `is_end: true` stating what blocked you and what is left. Never report success you did not verify.\n\n"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{"seq":1,"at_ms":1794383978259,"kind":"created","who":"app:control-panel@devtest","via":"owner","revision":1,"epoch":1}
+{"seq":2,"at_ms":1794384001903,"kind":"status","who":"app:control-panel@devtest","via":"owner","reason":"dv: sleep mid-activation","epoch":1,"detail":{"evidence":null,"from":"active","to":"paused"}}
+{"seq":3,"at_ms":1794384069424,"kind":"status","who":"app:control-panel@devtest","via":"owner","reason":"dv: wake","epoch":1,"detail":{"evidence":null,"from":"paused","to":"active"}}
+{"seq":4,"at_ms":1794384416286,"kind":"status","who":"app:control-panel@devtest","via":"owner","reason":"dv: session-level stop","epoch":1,"detail":{"evidence":null,"from":"active","to":"paused"}}
+{"seq":5,"at_ms":1794384573228,"kind":"status","who":"app:control-panel@devtest","via":"owner","reason":"dv finished: test goal archived","epoch":1,"detail":{"evidence":null,"from":"paused","to":"archived"}}
+{"seq":6,"at_ms":1794384579142,"kind":"epoch_ended","who":"opendan","via":"opendan","reason":"dv finished: test goal archived","epoch":1,"detail":{"end":"archived"}}

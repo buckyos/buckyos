@@ -1,0 +1,4 @@
+1 None printf 'ROOT=%s\n' "$OPENDAN_AGENT_ROOT"; cat "$OPENDAN_AGENT_ROOT/.meta/skills_state.json"; agent-session skill list --all --stats --json; ls -la "$OPENDAN_AGENT_ROOT/skills_drafts/"
+2 None for sid in work-20261111-14 work-20261111-9 work-20261111-8 work-20261111-7 work-20261111-5 work-20261111-4; do printf '\n===== %s =====\n' "$sid"; agent-session read-session "$sid" --report --worklog 40; done
+3 None mkdir -p evidence; for sid in work-20261111-14 work-20261111-9 work-20261111-8 work-20261111-7 work-20261111-5 work-20261111-4; do agent-session read-session "$sid" --report --worklog 40 > "evidence/$sid.json"; jq '{session:.entry.session_id, objective:.entry.
+4 None python3 - <<'PY' ⏎ import json ⏎ from pathlib import Path ⏎ for sid in ['work-20261111-7','work-20261111-8','work-20261111-9']: ⏎  d=json.loads(Path('evidence/'+sid+'.json').read_text()) ⏎  print('\n===',sid,'===\nOBJECTIVE\n',d['entry']['objective'].split('Builds on')[

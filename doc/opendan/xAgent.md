@@ -459,7 +459,6 @@ pub struct SessionTemplate {
 |---|---|---|---|---|---|---|
 | `work` | One | FinishFailed | **None**（需要外部投递的订阅则升为 Queue） | Events | 否 | 一次性任务：一个 Turn 跑到结果；不等用户消息（向用户提问用 `ask_user`，回答是 task 结果）；默认没有队列 |
 | `ui` | Unbounded | Allowed | Queue（隐式半订阅 `_notify`：`system:notify:<id>`） | EventsAndActive | 是 | 长生命周期对话入口；只在有输入时 bootstrap（观察到的通知不会让它开口） |
-| `self_improve` | One | FinishFailed | None | Off | 否 | 感知窗口整理 |
 | `self_check` | Unbounded | FinishFailed | Queue（timer 事件） | Off | 是 | 定时自检 |
 | `goal` | Unbounded | EndTurn | Queue（`_goal_activation`：`system:goal` 事件） | EventsAndActive | 是 | 一个 Goal 的一个 epoch：每个 Activation 是一个 Turn；只由宿主为 Goal 创建（`xagent new --class goal` 拒绝），见 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9 与 [Goal Session TODO](../../notepads/done/opendan-goal-session-todo.md) |
 
@@ -947,7 +946,7 @@ impl dyn AgentStateClient {
 | `perception()` | 整理 Goal 的材料读取 | perception 输入（`ctl perceive`）；Runtime 不再写 run_digest / task_outcome，也不补发（2026-11-08） |
 | `cognition()` | 层 ② 的 `recall`（`query` / `read`）；批次的自动召回与观察不经此门面，由驱动者直接调用 Memory 组件（`memory_batch`） | 整理 Goal 的 `commit_consolidation` |
 | `artifacts()` | `head` / `version` | `register_version`、`decide` |
-| `locks()` | — | `self_improve`、`artifact:<aid>` |
+| `locks()` | — | `memory_consolidation`（内置整理 Goal 的整理租约，原 `self_improve`）、`artifact:<aid>` |
 | `behaviors()`（新） | 冻结时 `identity / get / revision`；补冻结时 `get` | — |
 | `runtime_grants()`（后移） | policy 阶段再接入 | 用户 / OpenDAN 签发；不纳入当前 trait 必需方法 |
 
@@ -958,7 +957,7 @@ impl dyn AgentStateClient {
 ```text
 xagent — drive an Agent Session for one Turn (or keep driving it)
 
-  xagent new    --agent <did> --objective <text> [--class work|ui|self_improve|self_check] [--parent <dir>]
+  xagent new    --agent <did> --objective <text> [--class work|ui|self_check] [--parent <dir>]
                 [--behavior <name>] [--llm-context <json|@file>] [--runtime <id>] [--workspace <workspace_id>]
                 [--subscribe <spec>]... [--msg <text>] [--until turn|finished|idle|outcomes:<n>] [--no-run]
                  按模板创建 session（冻结 behavior 与模板），默认立刻推进一个 Turn

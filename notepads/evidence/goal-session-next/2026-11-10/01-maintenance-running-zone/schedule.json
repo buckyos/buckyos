@@ -1,0 +1,73 @@
+{
+  "schema": "opendan.goal_schedule/1",
+  "goal_id": "g-k168268e5ecaf5443391e713d",
+  "backend": "local",
+  "every_secs": 1800,
+  "last_slot": 996879,
+  "last_posted_key": "goal:g-k168268e5ecaf5443391e713d:scheduled:996874:1",
+  "last_fire_at_ms": 1794373201648,
+  "start_posted_epoch": 1,
+  "skipped": [
+    {
+      "slot": 996870,
+      "at_ms": 1794366000779,
+      "reason": "no_work"
+    },
+    {
+      "slot": 996872,
+      "at_ms": 1794369600486,
+      "reason": "no_work"
+    },
+    {
+      "slot": 996873,
+      "at_ms": 1794371400045,
+      "reason": "no_change"
+    },
+    {
+      "slot": 996875,
+      "at_ms": 1794375001752,
+      "reason": "no_work"
+    },
+    {
+      "slot": 996876,
+      "at_ms": 1794376801913,
+      "reason": "no_work"
+    },
+    {
+      "slot": 996877,
+      "at_ms": 1794378601510,
+      "reason": "no_change"
+    },
+    {
+      "slot": 996878,
+      "at_ms": 1794380401125,
+      "reason": "no_change"
+    },
+    {
+      "slot": 996879,
+      "at_ms": 1794382200708,
+      "reason": "no_change"
+    }
+  ],
+  "gate": {
+    "status": "no_change",
+    "last_checked_slot": 996879,
+    "last_baseline_slot": 996876,
+    "last_checked_at_ms": 1794382200708,
+    "last_full_check_at_ms": 1794376801913,
+    "last_skip_reason": "no_change",
+    "last_inputs_digest": "g3/p3",
+    "pending": {
+      "new": 0,
+      "due": 0,
+      "waiting": 0,
+      "retry_cleanup": 0
+    },
+    "due_reviews": 0,
+    "unfinished_receipts": 0,
+    "last_run_at_ms": 1794373201648,
+    "last_run_slot": 996874,
+    "backoff_level": 0
+  },
+  "updated_at_ms": 1794382200708
+}
