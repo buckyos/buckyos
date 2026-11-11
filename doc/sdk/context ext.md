@@ -439,7 +439,7 @@ interface OpenRequest {               // 展开到 entry.path 的占位符，或
 - 双击 = 候选列表第一位；用户勾选“始终使用”即调用 `setDefault("open", selector, handlerKey)`；
 - App 收到 `open` 后必须在自身权限内重新读取内容，不能假设系统已替它读好；无法作为自身格式处理的内容在 App 内嵌入系统 Preview（Zone 根域 `/embed/preview`，`buckyos.preview-embed`），不再把内容路由出去；读取失败显示对应错误（不存在 / 无权限 / 网络），不笼统归为“不支持”。
 - “打开方式…”由系统统一处理：App 发 `content.open { target: "chooser", hints }`（websdk `AppFrameClient.openContent`），Shell 列出候选并启动所选应用，**不把请求方 App 自己的任何 handler 列回给它**（按 AppId，含 `mime: */*` 的通配 handler）；独立标签页走 Zone 根域 `/?open=…&intent=chooser`。实现见 `src/apps/text_editor/readme.md` §7.3、§7.6。
-- 选文件、选文件夹、选保存位置同样由系统统一处理：`AppFrameClient.selectContent(params)` 拉起系统文件选择器（`sysdlg/select`），App 不自己写 Zone 文件浏览。契约见 [BuckyOS 系统对话框实现方案](../desktop/BuckyOS%20系统对话框实现方案.md) §4、§7、§8。
+- 选文件、选文件夹、选保存位置同样由系统统一处理：`AppFrameClient.selectContent(params)` 拉起系统文件选择器（`sysdlg/select`），App 不自己写 Zone 文件浏览。契约见 [BuckyOS 系统对话框实现方案](../desktop/BuckyOS%20系统对话框实现方案.md) §4、§7、§8。用户的内容默认在 Zone 里：挑内容的入口只放这一个，也接受本机文件时传 `allowLocal: true`，本机来源在选择器里，不在 App 界面上另放原生选择框；要不可变的对象 ID 时再对结果调 `ensureObjId`。`ndm.pickupAndImport` 只用于“从本机上传成对象”这一种语义，不用来挑内容。
 
 ### 9.4 `cell.view` / `cell.edit`
 

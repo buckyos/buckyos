@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { EntityEnvelope, Operation, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
-import { expect, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
+import { chooseFromDevice, chooseFromHome, expect, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
 
 type Workspace = Pick<WorkspaceSummary, 'workspace_id' | 'epoch'>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -46,13 +46,18 @@ async function openCanvas(actor: Actor, ws: Workspace) {
   await expect(actor.page.getByTestId('aiws-canvas-view')).toBeVisible()
 }
 
-/** Open the Office import from the insert menu with a fixture; the dialog and whether the node has LibreOffice. */
-async function openImport(page: Page, path: string, type: string) {
-  const chooser = page.waitForEvent('filechooser')
-  await page.getByTestId('aiws-main-menu').click()
-  await page.getByTestId('aiws-menu-insert').click()
-  await page.getByTestId('aiws-menu-import-office').click()
-  await (await chooser).setFiles({ name: path.split('/').pop()!, mimeType: type, buffer: readFileSync(`${FIXTURES}/${path}`) })
+/** Open the Office import from the insert menu with a fixture, chosen in the system file picker from the Zone (written
+ * into the home folder first) or from this device; the dialog and whether the node has LibreOffice. */
+async function openImport(actor: Actor, path: string, type: string, from: 'zone' | 'device' = 'device') {
+  const page = actor.page
+  const open = async () => {
+    await page.getByTestId('aiws-main-menu').click()
+    await page.getByTestId('aiws-menu-insert').click()
+    await page.getByTestId('aiws-menu-import-office').click()
+  }
+  const picked = { name: path.split('/').pop()!, mimeType: type, buffer: readFileSync(`${FIXTURES}/${path}`) }
+  if (from === 'zone') await chooseFromHome(actor, open, `${actor.client.prefix}-files`, picked)
+  else await chooseFromDevice(page, open, picked)
   const dialog = page.getByTestId('aiws-office-dialog')
   await expect(dialog.getByTestId('aiws-office-facts')).toBeVisible({ timeout: 60_000 })
   await expect(dialog).not.toHaveAttribute('data-libreoffice', 'unknown', { timeout: 30_000 })
@@ -79,7 +84,7 @@ test('[office] a Word document with EMF / WMF pictures becomes a flow page', asy
   test.setTimeout(420_000)
   const ws = await canvasWorkspace(owner)
   await openCanvas(owner, ws)
-  const { dialog, libreOffice } = await openImport(owner.page, 'docx/real/VariousPictures.docx', DOCX)
+  const { dialog, libreOffice } = await openImport(owner, 'docx/real/VariousPictures.docx', DOCX, 'zone')
   await screenshot(owner.page, info, 'office-docx-dialog')
   const done = await finish(owner, ws, dialog, ['sf-o'])
   expect(done.kinds).toContain(libreOffice ? 'docx_rasterized' : 'docx_unsupported_image')
@@ -99,7 +104,7 @@ test('[office] a PowerPoint deck becomes pages with a path; its chart a picture 
   test.setTimeout(420_000)
   const ws = await canvasWorkspace(owner)
   await openCanvas(owner, ws)
-  const { dialog, libreOffice } = await openImport(owner.page, 'pptx/basic.pptx', PPTX)
+  const { dialog, libreOffice } = await openImport(owner, 'pptx/basic.pptx', PPTX)
   const done = await finish(owner, ws, dialog, ['sf-o'])
   expect(done.kinds).toContain('pptx_notes_dropped')
   expect(done.kinds).toContain(libreOffice ? 'pptx_rasterized' : 'pptx_chart')
@@ -120,7 +125,7 @@ test('[office] "as it looks": LibreOffice draws the document, the PDF importer t
   test.setTimeout(420_000)
   const ws = await canvasWorkspace(owner)
   await openCanvas(owner, ws)
-  const { dialog, libreOffice } = await openImport(owner.page, 'docx/basic.docx', DOCX)
+  const { dialog, libreOffice } = await openImport(owner, 'docx/basic.docx', DOCX)
   if (!libreOffice) {
     await expect(dialog.getByTestId('aiws-office-mode-faithful')).toBeDisabled()
     await screenshot(owner.page, info, 'office-faithful-unavailable')

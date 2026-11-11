@@ -1,5 +1,6 @@
 import { crc32, deflateSync } from 'node:zlib'
 import { createNamedSession } from '../fixtures/messagehub'
+import { closeSelect, selectDialog, selectGoto } from '../fixtures/selectDialog'
 import { expect, test, type Page } from '@playwright/test'
 
 declare global {
@@ -210,7 +211,76 @@ test('a directory is one attachment with empty children and original file bytes 
   const folder = page.getByTestId('conversation-history').getByTestId('attachment-directory').first()
   await folder.getByRole('button', { name: '旅行', exact: true }).click()
   await expect(folder.getByRole('button', { name: '空目录', exact: true })).toBeVisible()
-  await expect(folder.getByRole('button', { name: 'photo.heic', exact: true })).toBeVisible()
+  await expect(folder.getByTestId('attachment-directory-file').filter({ hasText: 'photo.heic' })).toBeVisible()
+})
+
+/** What the mock Zone holds at `path`, as text; null when nothing is there. */
+const zoneText = (page: Page, path: string) => page.evaluate(async path => {
+  const data = '/src/app/filebrowser/mock/data.ts'
+  const content = '/src/app/filebrowser/mock/content.ts'
+  const entry = (await import(data)).mockEntryByPath(path)
+  return entry ? (await (await import(content)).mockReadContent(entry)).text() as string : null
+}, path)
+
+test('a received file is saved into my files at a place I pick in the Zone', async ({ page }) => {
+  await page.route('https://upload.wikimedia.org/**', route => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"/>' }))
+  await page.goto(`/messagehub?entityId=${encodeURIComponent(ALICE)}`)
+  const card = page.getByTestId('conversation-history').getByTestId('attachment-file').filter({ hasText: 'design-brief.pdf' })
+  await expect(card).toBeVisible({ timeout: 15_000 })
+  const save = card.getByRole('button', { name: 'Save design-brief.pdf to my files', exact: true })
+  await save.click()
+  const dialog = selectDialog(page)
+  await expect(dialog).toHaveAttribute('data-mode', 'save')
+  await expect(dialog.getByTestId('select-name')).toHaveValue('design-brief.pdf')
+  await selectGoto(dialog, '/home/Downloads')
+  await dialog.getByTestId('select-confirm').click()
+  await expect(card.getByTestId('attachment-save')).toHaveAttribute('data-state', 'saved')
+  await expect(card.getByTestId('attachment-save')).toHaveAccessibleName('Saved to /home/Downloads/design-brief.pdf')
+  expect(await zoneText(page, '/home/Downloads/design-brief.pdf')).toMatch(/^%PDF/)
+
+  // Cancelling the picker saves nothing.
+  await card.getByTestId('attachment-save').click()
+  await closeSelect(page)
+  await expect(card.getByTestId('attachment-save')).toHaveAttribute('data-state', 'idle')
+})
+
+test('a received folder, or a file in it, is saved into my files', async ({ page }) => {
+  const sessionId = await openSession(page, 'Save folder')
+  await page.evaluate(async ({ context, sessionId }) => {
+    const directory = { kind: 'dir' as const, name: '旅行', children: [
+      { kind: 'dir' as const, name: 'day1', children: [{ kind: 'file' as const, file: new File(['day one'], 'notes.txt', { type: 'text/plain' }) }] },
+      { kind: 'file' as const, file: new File(['photo bytes'], 'photo.heic', { type: 'image/heic' }) },
+    ] }
+    await window.__messageHubMock.send(context, sessionId, { content: 'folder', attachments: [{ file: new File([], directory.name), directory }] }, undefined)
+  }, { context: OWN, sessionId })
+  const folder = page.getByTestId('conversation-history').getByTestId('attachment-directory').first()
+  await expect(folder).toBeVisible()
+  await folder.getByRole('button', { name: 'Save 旅行 to my files', exact: true }).click()
+  let dialog = selectDialog(page)
+  await expect(dialog.getByTestId('select-name')).toHaveValue('旅行')
+  await selectGoto(dialog, '/home/Documents')
+  await dialog.getByTestId('select-confirm').click()
+  await expect(folder.getByRole('button', { name: 'Saved to /home/Documents/旅行', exact: true })).toBeVisible()
+  expect(await zoneText(page, '/home/Documents/旅行/photo.heic')).toBe('photo bytes')
+  expect(await zoneText(page, '/home/Documents/旅行/day1/notes.txt')).toBe('day one')
+
+  // Saving it there again: the picker refuses the taken name and keeps asking.
+  await folder.getByRole('button', { name: 'Saved to /home/Documents/旅行', exact: true }).click()
+  dialog = selectDialog(page)
+  await selectGoto(dialog, '/home/Documents')
+  await dialog.getByTestId('select-confirm').click()
+  await expect(dialog.getByTestId('select-notice')).toBeVisible()
+  await closeSelect(page)
+
+  // One file inside it.
+  await folder.getByRole('button', { name: '旅行', exact: true }).click()
+  const inner = folder.getByTestId('attachment-directory-file').filter({ hasText: 'photo.heic' })
+  await inner.getByRole('button', { name: 'Save photo.heic to my files', exact: true }).click()
+  dialog = selectDialog(page)
+  await selectGoto(dialog, '/home/Downloads')
+  await dialog.getByTestId('select-confirm').click()
+  await expect(inner.getByTestId('attachment-save')).toHaveAttribute('data-state', 'saved')
+  expect(await zoneText(page, '/home/Downloads/photo.heic')).toBe('photo bytes')
 })
 
 test('a directory read failure names the failed path in the composer', async ({ page }) => {

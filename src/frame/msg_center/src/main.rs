@@ -260,6 +260,14 @@ impl RPCHandler for MsgCenterHttpServer {
                     trace_id: req.trace_id,
                 });
             }
+            if req.method == buckyos_api::METHOD_MSG_PREPARE_SAVE_ATTACHMENT {
+                let value = center.prepare_save_attachment(req.params.clone(), &ctx).await?;
+                return Ok(RPCResponse {
+                    result: RPCResult::Success(value),
+                    seq: req.seq,
+                    trace_id: req.trace_id,
+                });
+            }
             if req.method.starts_with("group.") {
                 let value = center
                     .group_rpc(&req.method, req.params.clone(), ctx)

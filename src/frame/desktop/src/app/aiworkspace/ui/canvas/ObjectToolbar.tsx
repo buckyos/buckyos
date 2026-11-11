@@ -2,13 +2,14 @@
  * (AI) entry, the workspace's pinned extensions, "all objects", and undo / redo at the bottom. Picking
  * an object on a free Surface starts a one-shot placement; on a flow page it appends. */
 
-import { useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { useSyncExternalStore, type ReactNode } from 'react'
 import { ChevronsDown, ChevronsUp, Eraser, Frame, Hand, Image, LetterText, Library, MousePointer2, PenLine, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, Network, type LucideIcon } from 'lucide-react'
 import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { blockRegistry } from '../blocks/registry'
 import { ShapePicker } from '../blocks/shapeBlock'
 import { PopoverPanel, usePopover } from '../shell/popover'
+import { useFilePicker } from '../shell/filePicker'
 import { entryId, extensionEntries, registryEntries, type CatalogEntry } from './catalog'
 import { ShapeLibraryPanel } from './ShapeLibraryPanel'
 import { libraryShapeConfig } from './stencilLibrary'
@@ -99,14 +100,13 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
   useOutlineVersion()
   useSyncExternalStore(blockRegistry.subscribe, blockRegistry.snapshot)
   const pinned = useUserState<string[]>('ui:pinned-defs') ?? []
-  const fileRef = useRef<HTMLInputElement>(null)
-  const fileEntry = useRef<CatalogEntry | null>(null)
+  const pickFile = useFilePicker((message) => store.notify('error', message))
   // a flow page shows no connectors (连接线实现方案 §8.3)
   const standard = registryEntries().filter((entry) => entry.catalog.standard && (isFree || entry.definition.type !== 'connector'))
   const extensions = extensionEntries(store)
   const pinnedEntries = extensions.filter((entry) => pinned.includes(entry.defEntity?.entity_id ?? ''))
   const pick = (entry: CatalogEntry) => {
-    if (entry.catalog.needs === 'file') { fileEntry.current = entry; fileRef.current?.click(); return }
+    if (entry.catalog.needs === 'file') { void pickFile.file().then((file) => { if (file) onPickFile(entry, file) }); return }
     if (entry.catalog.needs !== 'none') { onOpenCatalog(entry.group === 'extension' ? 'extension' : 'all', entry.key); return }
     onPick(entry)
   }
@@ -170,12 +170,6 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
       <button type="button" className="aiws-tool aiws-tool-collapse" aria-label={t(collapsed ? 'aiworkspace.canvas.tool.expand' : 'aiworkspace.canvas.tool.collapse')} title={t(collapsed ? 'aiworkspace.canvas.tool.expand' : 'aiworkspace.canvas.tool.collapse')} data-testid="aiws-tool-collapse" onClick={() => onCollapsed(!collapsed)}>
         {collapsed ? <ChevronsDown size={16} /> : <ChevronsUp size={16} />}
       </button>
-      <input ref={fileRef} type="file" hidden aria-hidden="true" tabIndex={-1} data-testid="aiws-tool-file" onChange={(event) => {
-        const file = event.target.files?.[0]
-        const entry = fileEntry.current
-        event.target.value = ''
-        if (file && entry) onPickFile(entry, file)
-      }} />
       {!canInsert && insertReason && !collapsed && <span className="aiws-sr-only" data-testid="aiws-insert-unavailable">{insertReason}</span>}
     </div>
   )

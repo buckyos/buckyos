@@ -38,6 +38,8 @@ function AvatarDialog({
   const { t } = useI18n()
   const [draft, setDraft] = useState<string | null>(current)
   const [saving, setSaving] = useState(false)
+  // The system file picker is drawn in the window, under this page-level dialog: step aside while it is open.
+  const [picking, setPicking] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const save = async () => {
@@ -54,7 +56,7 @@ function AvatarDialog({
   }
 
   return (
-    <Dialog open onClose={saving ? undefined : onClose} fullWidth maxWidth="xs" aria-labelledby="self-avatar-dialog-title">
+    <Dialog open={!picking} keepMounted onClose={saving ? undefined : onClose} fullWidth maxWidth="xs" aria-labelledby="self-avatar-dialog-title">
       <DialogTitle id="self-avatar-dialog-title">{t('usersAgents.self.avatarTitle', 'Profile picture')}</DialogTitle>
       <DialogContent>
         <div className="space-y-3 pt-1">
@@ -73,7 +75,8 @@ function AvatarDialog({
             }}
             onChange={setDraft}
             testId="self-avatar-picker"
-            inputTestId="self-avatar-input"
+            chooseTestId="self-avatar-choose"
+            onPickingChange={setPicking}
           />
           {error ? <Alert severity="error" data-testid="self-avatar-error">{error}</Alert> : null}
         </div>

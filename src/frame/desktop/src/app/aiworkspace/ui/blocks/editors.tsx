@@ -20,6 +20,7 @@ import { ValueEditor } from '../ValueEditor'
 import { UNSET, formatValue, type Input } from '../values'
 import { consumeIntent, useEditorToolbar, useIntent } from './editorToolbar'
 import { replaceAccept, replaceAsset } from './ops'
+import { useFilePicker } from '../shell/filePicker'
 import { AssetMedia, type AssetMediaProps } from '../media/AssetMedia'
 import { clearDraft, readDraft, recoverDraft, saveDraft, submitDraft } from '../../state/drafts'
 import type { ToolbarItem } from './registry'
@@ -240,6 +241,7 @@ export function AssetCell({ entityId, fit, readOnly, bare = false, media }: {
 }) {
   const { t } = useAiwsText()
   const store = useStore()
+  const pickFile = useFilePicker((message) => store.notify('error', message))
   const version = useVersion(`e:${entityId}`)
   const load = useCallback(() => store.session.read<AssetContent>(entityId), [store, entityId])
   const asset = useLoad<ReadOk<AssetContent>>(load, version)
@@ -265,9 +267,7 @@ export function AssetCell({ entityId, fit, readOnly, bare = false, media }: {
         {typeof payload.size === 'number' && <span>{t('aiworkspace.blocks.asset.bytes', { count: payload.size })}</span>}
         <span className={`aiws-chip ${availability === 'available' ? '' : 'aiws-chip-warn'}`} data-testid="aiws-asset-availability">{availabilityText}</span>
         {canReplace && (
-          <label className="aiws-link">{t('aiworkspace.blocks.asset.replaceEllipsis')}
-            <input type="file" hidden accept={replaceAccept(payload)} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void replace(file) }} />
-          </label>
+          <button type="button" className="aiws-link" data-testid="aiws-asset-replace-file" onClick={() => { void pickFile.file(replaceAccept(payload)).then((file) => { if (file) void replace(file) }) }}>{t('aiworkspace.blocks.asset.replaceEllipsis')}</button>
         )}
         {uploading && <span>{uploading}</span>}
       </div>}

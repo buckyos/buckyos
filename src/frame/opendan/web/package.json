@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "pnpm update --no-save buckyos && tsc -b && vite build",
     "check": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "autoprefixer": "^10.4.27",
-    "buckyos": "^0.7.137",
+    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main",
     "clsx": "^2.1.1",
     "lucide-react": "^1.7.0",
     "postcss": "^8.5.8",

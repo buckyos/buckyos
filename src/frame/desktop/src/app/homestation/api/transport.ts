@@ -45,6 +45,8 @@ export interface Transport {
   objectUrl(objId: ObjId): string
   /** The file's bucket binding, or null when it is not bound (read `contentUrl` then). */
   contentRef(objId: ObjId, signal?: AbortSignal): Promise<ContentRefInfo | null>
+  /** Hands a posted file or folder to the viewer's own session, to commit into their files (`…/objects/<id>/save`). */
+  prepareSave(objId: ObjId): Promise<{ objId: ObjId; kind: 'file' | 'dir' }>
 }
 
 async function fetchContentRef(url: string, signal?: AbortSignal): Promise<ContentRefInfo | null> {
@@ -118,6 +120,19 @@ async function importAttachment(transport: Transport, endpoint: string, token: s
   return result
 }
 
+async function postSave(origin: string, objId: ObjId, token: string): Promise<{ objId: ObjId; kind: 'file' | 'dir' }> {
+  const url = `${origin}/home/${encodeURIComponent(contentHome)}/objects/${encodeURIComponent(objId)}/save`
+  let response: Response
+  try {
+    response = await fetch(url, { method: 'POST', headers: token ? { authorization: `Bearer ${token}` } : {}, credentials: 'omit' })
+  } catch (error) {
+    throw new TransportError('network', error instanceof Error ? error.message : String(error))
+  }
+  if (!response.ok) throw await httpError(response)
+  const body = await response.json() as { obj_id: ObjId; kind: 'file' | 'dir' }
+  return { objId: body.obj_id, kind: body.kind }
+}
+
 function contentPath(origin: string, objId: ObjId, token: string) {
   const path = `${origin}/home/${encodeURIComponent(contentHome)}/objects/${encodeURIComponent(objId)}/content`
   return token ? `${path}?access=${encodeURIComponent(token)}` : path
@@ -173,6 +188,10 @@ class DevOverrideTransport implements Transport {
   contentRef(objId: ObjId, signal?: AbortSignal) {
     return fetchContentRef(this.contentUrl(objId).replace('/content', '/ref'), signal)
   }
+
+  prepareSave(objId: ObjId) {
+    return postSave(this.origin, objId, this.token)
+  }
 }
 
 class ZoneTransport implements Transport {
@@ -214,6 +233,10 @@ class ZoneTransport implements Transport {
 
   contentRef(objId: ObjId, signal?: AbortSignal) {
     return fetchContentRef(this.contentUrl(objId).replace('/content', '/ref'), signal)
+  }
+
+  async prepareSave(objId: ObjId) {
+    return postSave('', objId, await this.token())
   }
 }
 

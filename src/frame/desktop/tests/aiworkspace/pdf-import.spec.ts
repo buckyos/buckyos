@@ -5,7 +5,7 @@
  * page. A dropped PDF first asks whether it is a file or pages. Screenshots go to test-results/aiworkspace-pdf/. */
 
 import type { Page } from '@playwright/test'
-import { mainMenu, openCanvas, openWorkspacePage, test, expect, type Api } from './fixtures'
+import { chooseFromDevice, chooseFromZone, mainMenu, openCanvas, openWorkspacePage, test, expect, type Api } from './fixtures'
 import { deck, spacedText, overflowText } from './pdfFiles'
 
 const ALICE = 'tok-alice'
@@ -43,9 +43,7 @@ test('PI-01 a three-page PDF from the main menu: one canvas, page groups with ed
   test.setTimeout(120_000)
   const ws = await canvasWorkspace(api, `pi-01 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  const chooser = page.waitForEvent('filechooser')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')
-  await (await chooser).setFiles({ name: 'deck.pdf', mimeType: 'application/pdf', buffer: deck() })
+  await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf'), { name: 'deck.pdf', mimeType: 'application/pdf', buffer: deck() })
   const dialog = page.getByTestId('aiws-pdf-dialog')
   await expect(dialog.getByTestId('aiws-pdf-pages')).toContainText('共 3 页')
   await expect(dialog.getByTestId('aiws-pdf-preview')).toBeVisible()
@@ -196,9 +194,7 @@ test('PI-03 editable PDF keeps fragment gaps and compressed advances after impor
   test.setTimeout(120_000)
   const ws = await canvasWorkspace(api, `pi-03 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  const chooser = page.waitForEvent('filechooser')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')
-  await (await chooser).setFiles({ name: 'spaced.pdf', mimeType: 'application/pdf', buffer: spacedText() })
+  await chooseFromDevice(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf'), { name: 'spaced.pdf', mimeType: 'application/pdf', buffer: spacedText() })
   const dialog = page.getByTestId('aiws-pdf-dialog')
   await expect(dialog.getByTestId('aiws-pdf-pages')).toContainText('共 1 页')
   await dialog.getByTestId('aiws-pdf-start').click()
@@ -244,9 +240,7 @@ test('PI-04 layout overflow preserves the opaque background and all text in one 
   test.setTimeout(120_000)
   const ws = await canvasWorkspace(api, `pi-04 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  const chooser = page.waitForEvent('filechooser')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')
-  await (await chooser).setFiles({ name: 'overflow.pdf', mimeType: 'application/pdf', buffer: overflowText() })
+  await chooseFromDevice(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf'), { name: 'overflow.pdf', mimeType: 'application/pdf', buffer: overflowText() })
   const dialog = page.getByTestId('aiws-pdf-dialog')
   await expect(dialog.getByTestId('aiws-pdf-pages')).toContainText('共 1 页')
   await dialog.getByTestId('aiws-pdf-start').click()
@@ -310,9 +304,7 @@ test('PI-05 an import is one Commit, sent in parts: a refused one leaves nothing
     await route.continue()
   })
   const start = async () => {
-    const chooser = page.waitForEvent('filechooser')
-    await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')
-    await (await chooser).setFiles({ name: 'deck.pdf', mimeType: 'application/pdf', buffer: deck() })
+    await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf'), { name: 'deck.pdf', mimeType: 'application/pdf', buffer: deck() })
     const dialog = page.getByTestId('aiws-pdf-dialog')
     await expect(dialog.getByTestId('aiws-pdf-pages')).toContainText('共 3 页')
     await dialog.getByTestId('aiws-pdf-start').click()

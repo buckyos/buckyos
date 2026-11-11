@@ -597,3 +597,54 @@ async fn read_never_runs_content_on_the_origin() {
     let pdf = get("x.pdf", "").await;
     assert!(!pdf.headers()["content-security-policy"].to_str().unwrap().contains("sandbox"), "a browser would refuse to show it");
 }
+
+#[tokio::test]
+async fn recent_is_the_newest_files_of_my_own_home() {
+    let s = start().await;
+    let now = std::time::SystemTime::now();
+    let put = |rel: &str, ahead: u64| {
+        let path = s.data.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, rel).unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(now + std::time::Duration::from_secs(ahead))).unwrap();
+    };
+    put("home/alice/docs/old.txt", 100);
+    put("home/alice/Downloads/new.pdf", 300);
+    put("home/alice/.cache/hidden.bin", 900);
+    put("home/alice/agents/jarvis/state.json", 900);
+    put("home/bob/bob-new.txt", 900);
+
+    let alice = s.client(Some("alice")).await;
+    let view = alice.ok("open_view", json!({"args": {"view_id": "recent"}})).await;
+    assert_eq!(view["title"], "Recent");
+    let paths = |listing: &Value| -> Vec<String> {
+        listing["entries"].as_array().unwrap().iter().map(|e| e["canonical_path"].as_str().unwrap().to_string()).collect()
+    };
+    let first = alice.ok("list", json!({"at": {"uri": "view://recent"}, "want": ["base"]})).await;
+    assert_eq!(paths(&first), ["cyfs:///home/alice/Downloads/new.pdf", "cyfs:///home/alice/docs/old.txt", "cyfs:///home/alice/docs/a.txt"]);
+    let entry = &first["entries"][0];
+    assert_eq!(entry["name"], "new.pdf");
+    assert_eq!(entry["binding"], "derived");
+    assert_eq!(entry["target"]["kind"], "file");
+    assert_eq!(entry["target"]["attrs"]["size"], "home/alice/Downloads/new.pdf".len());
+    assert!(entry["target"]["attrs"].get("_ino").is_none());
+
+    // A new file comes first and changes the revision, so cached listings revalidate.
+    put("home/alice/fresh.txt", 600);
+    let second = alice.ok("list", json!({"at": {"uri": "view://recent"}})).await;
+    assert_eq!(paths(&second)[0], "cyfs:///home/alice/fresh.txt");
+    assert_ne!(second["container"]["revision"], first["container"]["revision"]);
+    let by_ref = alice.ok("list", json!({"at": {"ref": view["ref"]}})).await;
+    assert_eq!(paths(&by_ref), paths(&second));
+
+    // Each user sees only their own home; without a session there is no Recent.
+    let bob = s.client(Some("bob")).await;
+    let theirs = paths(&bob.ok("list", json!({"at": {"uri": "view://recent"}})).await);
+    assert_eq!(theirs[0], "cyfs:///home/bob/bob-new.txt");
+    assert!(theirs.iter().all(|p| p.starts_with("cyfs:///home/bob/")), "{theirs:?}");
+    let owner = s.client(Some("owner")).await;
+    assert_eq!(owner.ok("list", json!({"at": {"uri": "view://recent"}})).await["entries"], json!([]));
+    let anonymous = s.client(None).await;
+    assert_eq!(anonymous.call("list", json!({"at": {"uri": "view://recent"}})).await["ok"], false);
+}

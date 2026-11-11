@@ -238,6 +238,11 @@ export const mockObjectAccess: ObjectAccess = {
     mockCollected.set(key, objId)
     return { bucketId: 'user/msg-center/mock/collected', key }
   },
+  async prepareSave(objId, _context, innerPath) {
+    const id = resolveMockId(objId, innerPath)
+    if (!directories.has(id) && !specOf(id)) throw new Error('404 object unavailable')
+    return { objId: id, kind: directories.has(id) ? 'dir' : 'file' }
+  },
 }
 
 async function mockDescribe(objId: string, innerPath?: string): Promise<ObjectInfo> {

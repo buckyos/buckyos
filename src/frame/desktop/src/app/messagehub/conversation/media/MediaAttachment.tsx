@@ -1,6 +1,7 @@
-import { Bookmark, BookmarkCheck, Download, File, FileArchive, FileText, Film, FolderOpen, Loader2, Music, Play } from 'lucide-react'
+import { Bookmark, BookmarkCheck, Download, File, FileArchive, FileText, Film, FolderCheck, FolderDown, FolderOpen, Loader2, Music, Play } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { networkCache } from '../../../../components/network/cache'
+import { useSaveToZone } from '../../../../components/saveToZone'
 import { usePreviewThumbnail } from '../../../../components/preview/thumbnail'
 import { useI18n } from '../../../../i18n/provider'
 import { getObjectAccess, isLocalObjectId, objectFailure, type ObjectFailure, type ObjectInfo } from '../history/objectAccess'
@@ -136,7 +137,10 @@ function ObjectAttachment({ attachment, isSelf, onKind }: { attachment: MessageA
     body = (
       <div className="group/collect relative w-fit max-w-full">
         <InlineImage attachment={attachment} url={state.contentUrl} isGif={mediaType === 'image/gif'} />
-        <CollectButton attachment={attachment} name={info.name ?? label} overlay />
+        <span className="absolute right-2 top-2 flex gap-1">
+          <SaveButton attachment={attachment} name={info.name ?? label} kind="file" overlay />
+          <CollectButton attachment={attachment} name={info.name ?? label} overlay />
+        </span>
       </div>
     )
   } else if (kind === 'video' || kind === 'image') {
@@ -244,6 +248,7 @@ function ThumbnailTile({ attachment, kind, info }: { attachment: MessageAttachme
       </button>
       <span className="flex max-w-[min(100%,420px)] items-center gap-1">
         <span className="min-w-0 flex-1 truncate text-[11px] opacity-75">{info.name ?? attachment.label}{info.size !== undefined ? ` · ${formatBytes(info.size)}` : ''}</span>
+        <SaveButton attachment={attachment} name={info.name ?? attachment.label} kind="file" compact />
         <CollectButton attachment={attachment} name={info.name ?? attachment.label} compact />
         <DownloadButton attachment={attachment} name={info.name ?? attachment.label} compact />
       </span>
@@ -277,6 +282,7 @@ function FileCard({ attachment, kind, info, mediaType, isSelf }: { attachment: M
           <span className="block truncate text-[11px] opacity-75">{[info.size !== undefined ? formatBytes(info.size) : null, mediaType].filter(Boolean).join(' · ')}</span>
         </span>
       </button>
+      <SaveButton attachment={attachment} name={info.name ?? attachment.label} kind="file" />
       <CollectButton attachment={attachment} name={info.name ?? attachment.label} />
       <DownloadButton attachment={attachment} name={info.name ?? attachment.label} />
     </div>
@@ -299,7 +305,7 @@ function CollectButton({ attachment, name, compact = false, overlay = false }: {
   const label = state === 'saved' ? t('messagehub.media.collected') : state === 'failed' ? `${t('messagehub.media.collectFailed')} · ${t('messagehub.retry')}` : t('messagehub.media.collect', undefined, { name })
   const size = compact || overlay ? 14 : 18
   const placement = overlay
-    ? `absolute right-2 top-2 h-8 w-8 rounded-full text-white ${state === 'idle' ? 'opacity-0 group-hover/collect:opacity-100 focus-visible:opacity-100' : ''}`
+    ? `h-8 w-8 rounded-full text-white ${state === 'idle' ? 'opacity-0 group-hover/collect:opacity-100 focus-visible:opacity-100' : ''}`
     : `rounded-lg ${compact ? 'h-8 w-8' : 'h-11 w-11'}`
   return (
     <button
@@ -318,14 +324,85 @@ function CollectButton({ attachment, name, compact = false, overlay = false }: {
   )
 }
 
-function DownloadButton({ attachment, name, compact = false }: { attachment: MessageAttachment; name: string; compact?: boolean }) {
+/** The bytes of an attachment, or of every file of a folder attachment by its path below it (the mock runtime's save). */
+async function attachmentFiles(objId: string, context: string | undefined, innerPath: string | undefined, kind: 'file' | 'dir'): Promise<Array<{ path: string; blob: Blob }>> {
+  const access = getObjectAccess()
+  if (!access) throw new Error('unavailable')
+  const read = async (path: string | undefined) => (await fetch(await access.contentUrl(objId, context, path))).blob()
+  if (kind === 'file') return [{ path: '', blob: await read(innerPath) }]
+  const files: Array<{ path: string; blob: Blob }> = []
+  const walk = async (path: string | undefined, below: string) => {
+    for (const name of (await access.describe(objId, context, path)).entries ?? []) {
+      const child = path ? `${path}/${name}` : name
+      const relative = below ? `${below}/${name}` : name
+      if ((await access.describe(objId, context, child)).isDirectory) await walk(child, relative)
+      else files.push({ path: relative, blob: await read(child) })
+    }
+  }
+  await walk(innerPath, '')
+  return files
+}
+
+/**
+ * Saves the attachment (or what `innerPath` names in a folder attachment) into the viewer's own files, at a place
+ * they pick in the Zone. The main way to keep what was received; downloading is the desktop's extra.
+ */
+function SaveButton({ attachment, name, kind, innerPath, compact = false, overlay = false }: { attachment: MessageAttachment; name: string; kind: 'file' | 'dir'; innerPath?: string; compact?: boolean; overlay?: boolean }) {
+  const { t } = useI18n()
+  const save = useSaveToZone(t('messagehub.media.saveNameTaken'))
+  const [state, setState] = useState<{ phase: 'idle' | 'saving' | 'failed' } | { phase: 'saved'; path: string }>({ phase: 'idle' })
+  const access = getObjectAccess()
+  const objId = attachment.objId
+  const context = attachment.context
+  if (!access?.prepareSave || !objId || !context || isLocalObjectId(objId)) return null
+  const prepare = access.prepareSave
+  const run = () => {
+    if (state.phase === 'saving') return
+    setState({ phase: 'saving' })
+    save({
+      name: name.split('/').pop() || name,
+      kind,
+      grant: () => prepare(objId, context, innerPath).then(prepared => prepared.objId),
+      mockFiles: () => attachmentFiles(objId, context, innerPath, kind),
+    }).then(result => setState(result.status === 'saved' ? { phase: 'saved', path: result.path } : { phase: 'idle' }), () => setState({ phase: 'failed' }))
+  }
+  const label = state.phase === 'saved' ? t('messagehub.media.saved', undefined, { path: state.path })
+    : state.phase === 'failed' ? `${t('messagehub.media.saveFailed')} · ${t('messagehub.retry')}`
+      : t('messagehub.media.save', undefined, { name })
+  const size = compact || overlay ? 14 : 18
+  const placement = overlay
+    ? `h-8 w-8 rounded-full text-white ${state.phase === 'idle' ? 'opacity-0 group-hover/collect:opacity-100 focus-visible:opacity-100' : ''}`
+    : `rounded-lg ${compact ? 'h-8 w-8' : 'h-11 w-11'}`
+  return (
+    <button
+      type="button"
+      onClick={run}
+      className={`flex shrink-0 items-center justify-center focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--cp-accent)] ${placement}`}
+      style={overlay ? { background: 'rgba(0,0,0,0.55)', color: state.phase === 'failed' ? 'var(--cp-danger)' : undefined } : { color: state.phase === 'failed' ? 'var(--cp-danger)' : 'inherit', opacity: state.phase === 'idle' ? 0.8 : 1 }}
+      aria-label={label}
+      title={label}
+      aria-busy={state.phase === 'saving'}
+      data-testid="attachment-save"
+      data-state={state.phase}
+    >
+      {state.phase === 'saving' ? <Loader2 size={size} className="animate-spin" /> : state.phase === 'saved' ? <FolderCheck size={size} /> : <FolderDown size={size} />}
+    </button>
+  )
+}
+
+/** Downloading to this device: a desktop's extra next to saving into the Zone, not offered on phones. */
+const canDownload = () => !window.matchMedia?.('(pointer: coarse)').matches
+
+function DownloadButton({ attachment, name, innerPath, compact = false }: { attachment: MessageAttachment; name: string; innerPath?: string; compact?: boolean }) {
   const { t } = useI18n()
   const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle')
+  const [shown] = useState(canDownload)
+  if (!shown) return null
   const download = () => {
     const access = getObjectAccess()
     if (!access || !attachment.objId || state === 'loading') return
     setState('loading')
-    access.contentUrl(attachment.objId, attachment.context).then(url => {
+    access.contentUrl(attachment.objId, attachment.context, innerPath).then(url => {
       const anchor = document.createElement('a')
       anchor.href = url
       anchor.download = name.split('/').pop() || name
@@ -356,6 +433,7 @@ function DirectoryAttachment({ attachment, info, innerPath = '' }: { attachment:
   const [opened, setOpened] = useState(false)
   const [entries, setEntries] = useState<Array<{ name: string; path: string; info: ObjectInfo }>>([])
   const [error, setError] = useState('')
+  const name = info.name || (innerPath ? innerPath.split('/').pop()! : attachment.label)
   const load = async () => {
     if (opened) { setOpened(false); return }
     const access = getObjectAccess()
@@ -369,44 +447,18 @@ function DirectoryAttachment({ attachment, info, innerPath = '' }: { attachment:
       setOpened(true)
     } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
   }
-  const download = async (path: string, name: string) => {
-    try {
-      const url = await getObjectAccess()?.contentUrl(attachment.objId!, attachment.context, path)
-      if (!url) return
-      const anchor = document.createElement('a')
-      anchor.href = url; anchor.download = name; anchor.click()
-    } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
-  }
-  const pickDirectory = (window as Window & { showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker
-  const saveDirectory = async () => {
-    if (!pickDirectory || !attachment.objId) return
-    try {
-      const destination = await pickDirectory.call(window)
-      const access = getObjectAccess()!
-      const save = async (folder: ObjectInfo, path: string, parent: FileSystemDirectoryHandle) => {
-        try { await parent.getDirectoryHandle(folder.name || attachment.label); throw new Error('A folder with this name already exists; choose another destination.') } catch (error) { if (!(error instanceof DOMException) || error.name !== 'NotFoundError') throw error }
-        const target = await parent.getDirectoryHandle(folder.name || attachment.label, { create: true })
-        for (const name of folder.entries ?? []) {
-          const childPath = path ? `${path}/${name}` : name
-          const child = await access.describe(attachment.objId!, attachment.context, childPath)
-          if (child.isDirectory) await save(child, childPath, target)
-          else {
-            const response = await fetch(await access.contentUrl(attachment.objId!, attachment.context, childPath))
-            const writable = await (await target.getFileHandle(name, { create: true })).createWritable()
-            try { await writable.write(await response.blob()); await writable.close() } catch (error) { await writable.abort(); throw error }
-          }
-        }
-      }
-      await save(info, innerPath, destination)
-      setError('')
-    } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
-  }
   return <div className="p-2" data-testid="attachment-directory">
-    <button type="button" onClick={() => void load()} className="flex items-center gap-2"><FolderOpen size={18} />{info.name ?? attachment.label}</button>
-    {pickDirectory ? <button type="button" className="text-xs underline" onClick={() => void saveDirectory()}>Save folder</button> : <span className="text-xs">Open the folder to download individual files.</span>}
+    <span className="flex items-center gap-1">
+      <button type="button" onClick={() => void load()} className="flex min-w-0 flex-1 items-center gap-2 text-left"><FolderOpen size={18} className="shrink-0" /><span className="truncate">{name}</span></button>
+      <SaveButton attachment={attachment} name={name} kind="dir" innerPath={innerPath || undefined} compact />
+    </span>
     {error ? <p role="alert">{error}</p> : null}
     {opened ? <ul className="ml-4">{entries.map(entry => <li key={entry.path}>{entry.info.isDirectory
       ? <DirectoryAttachment attachment={attachment} info={entry.info} innerPath={entry.path} />
-      : <button type="button" className="flex items-center gap-2 p-1" onClick={() => void download(entry.path, entry.name)}><Download size={14} />{entry.name}</button>}</li>)}</ul> : null}
+      : <span className="flex items-center gap-1 p-1" data-testid="attachment-directory-file">
+        <File size={14} className="shrink-0" /><span className="min-w-0 flex-1 truncate">{entry.name}</span>
+        <SaveButton attachment={attachment} name={entry.name} kind="file" innerPath={entry.path} compact />
+        <DownloadButton attachment={attachment} name={entry.name} innerPath={entry.path} compact />
+      </span>}</li>)}</ul> : null}
   </div>
 }

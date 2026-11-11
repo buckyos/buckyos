@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import clsx from 'clsx'
 import {
   Check,
@@ -22,6 +22,7 @@ import {
   type RegistryEntry,
   type UiBinding,
 } from '../model'
+import { pickFile } from '../pickFile'
 import { ErrorBox } from '../ui'
 import { GoalList } from './Goals'
 import { SkillsCard } from './Skills'
@@ -72,9 +73,14 @@ function ProfileDialog({ profile, onClose }: { profile: AgentProfile; onClose: (
   const [avatar, setAvatar] = useState(profile.avatar)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
-  const file = useRef<HTMLInputElement>(null)
-
-  const pick = async (picked?: File) => {
+  const pick = async () => {
+    let picked: File | null
+    try {
+      picked = await pickFile([{ mime: 'image/*' }])
+    } catch (e) {
+      setError(e)
+      return
+    }
     if (!picked) return
     try {
       setAvatar(await toAvatar(picked))
@@ -123,8 +129,7 @@ function ProfileDialog({ profile, onClose }: { profile: AgentProfile; onClose: (
         <div className="mb-4 flex items-center gap-4">
           <Avatar profile={{ ...profile, display_name: name || profile.display_name }} src={avatar} className="h-20 w-20 text-3xl" />
           <div className="flex flex-col items-start gap-1">
-            <input ref={file} type="file" accept="image/*" className="hidden" aria-label={t('changePhoto')} onChange={(e) => void pick(e.target.files?.[0])} />
-            <button type="button" className="tap border border-line" onClick={() => file.current?.click()}>
+            <button type="button" className="tap border border-line" onClick={() => void pick()}>
               <ImagePlus size={16} />
               {t('changePhoto')}
             </button>

@@ -161,6 +161,15 @@ struct CollectAttachmentReq {
     context_path: String,
 }
 
+#[derive(Deserialize)]
+struct PrepareSaveAttachmentReq {
+    obj_id: ObjId,
+    context_path: String,
+    /// A file or folder inside a folder attachment, `/`-separated below it.
+    #[serde(default)]
+    inner_path: Option<String>,
+}
+
 impl MessageCenter {
     pub fn set_bucket_host(&self, host: BucketHost) {
         self.buckets.set(host);
@@ -422,6 +431,56 @@ impl MessageCenter {
             Err(e) => return Err(e),
         }
         Ok(json!({"bucket_id": dst.to_string(), "key": dst_key}))
+    }
+
+    /// `msg.prepare_save_attachment`: hands an attachment the calling user
+    /// reads — or, by `inner_path`, a file or folder inside a folder
+    /// attachment — to that user through the calling App (nfs-server
+    /// `bucket.grant_holdings`), so the user's own session can commit it into
+    /// their files (`commit_object`). Authorized like a read of the
+    /// attachment; one not here yet is fetched first. Answers
+    /// `{obj_id, kind: "file" | "dir"}`.
+    pub(crate) async fn prepare_save_attachment(&self, params: Value, ctx: &RPCContext) -> Result<Value> {
+        let req: PrepareSaveAttachmentReq = serde_json::from_value(params)
+            .map_err(|e| RPCErrors::ParseRequestError(e.to_string()))?;
+        let caller = self
+            .caller_identity(ctx)
+            .await?
+            .filter(|caller| caller.principal_kind == TokenPrincipalKind::User && !caller.external)
+            .ok_or_else(|| RPCErrors::NoPermission("save-requires-a-zone-user".into()))?;
+        let msg_id = self.authorize_attachment(ctx, &req.obj_id, &req.context_path).await?;
+        let buckets = self
+            .open_buckets()
+            .await?
+            .ok_or_else(|| RPCErrors::ReasonError("bucket service unavailable".into()))?;
+        if self.bound_attachment(&buckets, &msg_id, &req.obj_id).await?.is_none() {
+            let reader = self.message_reader(ctx, &msg_id).await;
+            match self.ensure_remote_attachment(&buckets, &msg_id, &req.obj_id, reader.as_ref()).await {
+                RemoteAttachment::Bound => {}
+                RemoteAttachment::Fetching | RemoteAttachment::Unreachable => return Err(attachment_not_ready()),
+                _ => return Err(missing()),
+            }
+        }
+        self.bound_attachment(&buckets, &msg_id, &req.obj_id).await?.ok_or_else(missing)?;
+        // What is below a folder the caller reads is read through it, as the object route does.
+        let mut target = req.obj_id.clone();
+        for name in req.inner_path.as_deref().unwrap_or("").split('/').filter(|name| !name.is_empty()) {
+            if name == "." || name == ".." || name.contains('\\') {
+                return Err(RPCErrors::ParseRequestError("invalid inner_path".into()));
+            }
+            target = buckets.store.get_dir_child(&target, name).await.map_err(|_| missing())?;
+        }
+        if !kept(&target) {
+            return Err(RPCErrors::ParseRequestError("only a file or a folder can be saved".into()));
+        }
+        buckets
+            .client
+            .grant_holdings(&caller.user_id, &caller.app_key, &[target.to_string()])
+            .await?;
+        Ok(json!({
+            "obj_id": target.to_string(),
+            "kind": if target.is_dir_object() { "dir" } else { "file" },
+        }))
     }
 
     /// Authorize user-originated references before anything is stored or

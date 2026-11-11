@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect, type Frame, type Page } from '@playwright/test'
 import { routeAppHost } from '../fixtures/desktop'
-import { selectGoto, selectRow } from '../fixtures/selectDialog'
+import { closeSelect, putZoneFile, selectGoto, selectRow } from '../fixtures/selectDialog'
 
 // The fixture App is fulfilled by Playwright (no address) and reaches the dev server on 127.0.0.1; see preview-embed.spec.ts.
 test.use({ launchOptions: { args: ['--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessForNavigations,PrivateNetworkAccessRespectPreflightResults'] } })
@@ -16,7 +16,7 @@ test.use({ launchOptions: { args: ['--disable-features=LocalNetworkAccessChecks,
 const SHELL = 'http://127.0.0.1:4173'
 // The fixture App ships the SDK build itself, as an App does.
 const SDK_DIST = join(realpathSync('node_modules/buckyos'), 'dist')
-const fixture = `<!doctype html><title>Picker fixture</title><textarea id="draft" style="width:300px;height:80px"></textarea><div style="height:3000px"></div>
+const fixture = `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Picker fixture</title><textarea id="draft" style="width:300px;height:80px"></textarea><div style="height:3000px"></div>
 <script type="module">
   import { AppFrameClient } from '/sdk/app-frame.mjs'
   const client = window.client = new AppFrameClient({ shellOrigin: '${SHELL}', systemOrigin: '${SHELL}' })
@@ -102,7 +102,7 @@ test('refusals: unknown dialog, invalid parameters, and cancelling is a result',
   await expect.poll(async () => (await results(app)).at(-1)).toEqual({ action: 'cancelled' })
   await pick(app, { mode: 'folder' })
   await expect(dialog).toHaveAttribute('data-mode', 'folder')
-  await dialog.getByTestId('select-cancel').click()
+  await closeSelect(page)
   await expect.poll(async () => (await results(app)).length).toBe(2)
   expect((await results(app)).at(-1)).toEqual({ action: 'cancelled' })
 })
@@ -143,12 +143,12 @@ test('folder and save need a writable folder only when it will be written to', a
   await expect(dialog.getByTestId('select-readonly')).toBeVisible()
   await expect(dialog.getByTestId('select-confirm')).toBeDisabled()
   await expect(dialog.getByTestId('select-new-folder')).toHaveCount(0)
-  await dialog.getByTestId('select-cancel').click()
+  await closeSelect(page)
   await expect.poll(async () => (await results(app)).length).toBe(1)
   await pick(app, { mode: 'save', start: ref('/home/Documents'), suggestedName: 'a.txt' })
   await expect(dialog.getByTestId('select-readonly')).toBeVisible()
   await expect(dialog.getByTestId('select-confirm')).toBeDisabled()
-  await dialog.getByTestId('select-cancel').click()
+  await closeSelect(page)
   await expect.poll(async () => (await results(app)).length).toBe(2)
   await pick(app, { mode: 'folder', start: ref('/home/Documents') })
   await expect(dialog.getByTestId('select-confirm')).toBeEnabled()
@@ -156,17 +156,69 @@ test('folder and save need a writable folder only when it will be written to', a
   await expect.poll(async () => (await results(app)).at(-1)?.action).toBe('selected')
 })
 
-test('a folder larger than one page keeps loading, and a start that does not exist falls back to home', async ({ page }) => {
+test('a folder larger than one page keeps loading, and a start that does not exist falls back to Recent (open) or home', async ({ page }) => {
   const { app, dialog } = await openInWindow(page)
   await pick(app, { mode: 'open', start: ref('/home/stress-10k') })
   const rows = dialog.getByTestId('select-row')
   await expect(rows).toHaveCount(200)
   await dialog.getByTestId('select-list').evaluate((el) => el.scrollTo(0, el.scrollHeight))
   await expect.poll(() => rows.count()).toBeGreaterThan(200)
-  await dialog.getByTestId('select-cancel').click()
+  await closeSelect(page)
   await expect.poll(async () => (await results(app)).length).toBe(1)
   await pick(app, { mode: 'open', start: ref('/home/no/such/place') })
-  await expect(dialog.getByTestId('select-crumbs')).toHaveText(/home$/)
+  await expect(dialog.getByTestId('select-crumbs')).toHaveText('Recent')
+  await closeSelect(page)
+  await expect.poll(async () => (await results(app)).length).toBe(2)
+  await pick(app, { mode: 'folder', start: ref('/home/no/such/place') })
+  await expect(dialog.getByTestId('select-crumbs').locator('[aria-current="page"]')).toHaveText('home')
+})
+
+test('open starts in Recent the first time; images show as thumbnails in a grid; search finds files in any folder', async ({ page }) => {
+  const { app, dialog } = await openInWindow(page)
+  await pick(app, { mode: 'open', accept: [{ mime: 'image/*' }] })
+  await expect(dialog.getByTestId('select-crumbs')).toHaveText('Recent')
+  await expect(dialog.getByTestId('select-list')).toHaveAttribute('data-layout', 'grid')
+  await selectGoto(dialog, '/home/Pictures/Trips/Kyoto')
+  const photo = selectRow(dialog, 'kyoto-temple-0412.jpg')
+  await expect(photo.locator('img')).toHaveAttribute('src', /^data:image\/svg\+xml/)
+  await expect.poll(() => photo.locator('img').evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true)
+  await photo.click()
+  await dialog.getByTestId('select-confirm').click()
+  await expect.poll(async () => (await results(app)).at(-1)?.items?.[0]?.source?.path).toBe('cyfs:///home/Pictures/Trips/Kyoto/kyoto-temple-0412.jpg')
+
+  // the folder is remembered: the next pick starts there, as a list for other types
+  await pick(app, { mode: 'open', multiple: true })
+  await expect(dialog.getByTestId('select-crumbs')).toHaveText(/Kyoto$/)
+  await expect(dialog.getByTestId('select-list')).toHaveAttribute('data-layout', 'list')
+  await dialog.getByTestId('select-search').fill('contract')
+  await expect(dialog.getByTestId('select-search-scope')).toBeVisible()
+  await expect(selectRow(dialog, 'Friend Contract Draft.pdf')).toContainText('/home/Documents')
+  await selectRow(dialog, 'Friend Contract Draft.pdf').click()
+  await dialog.getByTestId('select-search').fill('no such thing at all')
+  await expect(dialog.getByTestId('select-empty')).toHaveText('No matching files')
+  // Esc in the search box clears the search, not the dialog; the selection made from the results is kept
+  await dialog.getByTestId('select-search').press('Escape')
+  await expect(dialog.getByTestId('select-search')).toHaveValue('')
+  await expect(dialog.getByTestId('select-crumbs')).toHaveText(/Kyoto$/)
+  await expect(dialog.getByTestId('select-count')).toContainText('1 selected')
+  await dialog.getByTestId('select-confirm').click()
+  await expect.poll(async () => (await results(app)).at(-1)?.items?.map((i: any) => i.source.path)).toEqual(['cyfs:///home/Documents/Friend Contract Draft.pdf'])
+
+  // folder mode searches folders only, and a found folder is entered
+  await pick(app, { mode: 'folder' })
+  await dialog.getByTestId('select-search').fill('trips')
+  await expect(dialog.getByTestId('select-row')).toHaveCount(1)
+  await selectRow(dialog, 'Trips').click()
+  await expect(dialog.getByTestId('select-search')).toHaveValue('')
+  await expect(dialog.getByTestId('select-crumbs').locator('[aria-current="page"]')).toHaveText('Trips')
+})
+
+test('Recent keeps its own order: the file saved last comes first', async ({ page }) => {
+  const { app, dialog } = await openInWindow(page)
+  await putZoneFile(page, '/home/Downloads/zz-just-saved.txt', Buffer.from('new'), 'text/plain')
+  await pick(app, { mode: 'open' })
+  await expect(dialog.getByTestId('select-crumbs')).toHaveText('Recent')
+  await expect(dialog.getByTestId('select-row').first()).toHaveAttribute('data-name', 'zz-just-saved.txt')
 })
 
 test('this device: files and a folder reach the App as File objects; refused picks stay in the dialog', async ({ page }) => {
@@ -240,7 +292,7 @@ test('standalone tab: the picker page is framed over the App and the page is res
 
   // cancelling, and a local file through the system page's own input
   await pick(app, { mode: 'save', suggestedName: 'x.txt' })
-  await picker.getByTestId('select-cancel').click()
+  await picker.getByTestId('select-close').click()
   await expect.poll(async () => (await results(app)).at(-1)).toEqual({ action: 'cancelled' })
   const dir = mkdtempSync(join(tmpdir(), 'sysdlg-'))
   writeFileSync(join(dir, 'local.txt'), 'from this device')
@@ -274,4 +326,33 @@ test('the picker page refuses to work for a page outside the Zone', async ({ pag
   await page.goto('http://outside.example/')
   await expect(page.frameLocator('#embed').getByRole('alert')).toBeVisible({ timeout: 15_000 })
   await expect(page.frameLocator('#embed').getByTestId('select-dialog')).toHaveCount(0)
+})
+
+test.describe('phone', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+
+  test('the picker is a compact sheet: photos as a thumbnail grid, search, and the confirm button in view', async ({ page }) => {
+    await routeFixture(page)
+    await page.goto('http://notes-fixture.localhost:4173/')
+    await page.waitForFunction(() => (window as any).ready === true)
+    const app = page.mainFrame()
+    await pick(app, { mode: 'open', multiple: true, accept: [{ mime: ['image/*', 'video/*'] }], allowLocal: true })
+    const picker = page.frameLocator('[data-buckyos-sysdlg] iframe')
+    const dialog = picker.getByTestId('select-dialog')
+    await expect(dialog).toBeVisible({ timeout: 20_000 })
+    await expect(dialog.getByTestId('select-crumbs')).toHaveText('Recent')
+    expect(await dialog.getByTestId('select-locations').evaluate((el) => el.tagName)).toBe('SELECT')
+    await selectGoto(dialog, '/home/Pictures/Trips/Kyoto', true)
+    await expect(dialog.getByTestId('select-list')).toHaveAttribute('data-layout', 'grid')
+    await selectRow(dialog, 'kyoto-temple-0412.jpg').tap()
+    await dialog.getByTestId('select-search').fill('group')
+    await selectRow(dialog, 'team-offsite-group.jpg').tap()
+    await expect(dialog.getByTestId('select-count')).toContainText('2 selected')
+    await page.screenshot({ path: test.info().outputPath('phone-picker.png') })
+    await expect(dialog.getByTestId('select-confirm')).toBeInViewport()
+    await dialog.getByTestId('select-confirm').tap()
+    await expect.poll(async () => (await results(app)).at(-1)?.items?.map((i: any) => i.source.path)).toEqual([
+      'cyfs:///home/Pictures/Trips/Kyoto/kyoto-temple-0412.jpg', 'cyfs:///home/Pictures/Work/team-offsite-group.jpg',
+    ])
+  })
 })

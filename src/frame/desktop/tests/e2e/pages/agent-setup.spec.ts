@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { pickLocal } from '../fixtures/selectDialog'
 
 /** The mock control panel (src/api/control_panel_mock.ts) merges this object over its defaults. */
 const MOCK_KEY = 'buckyos.mock.control-panel.v1'
@@ -45,7 +46,9 @@ test.describe('Agent setup wizard', () => {
     await expect(wizard.getByTestId('agent-setup-next')).toBeDisabled()
     await expect(wizard.getByTestId('agent-setup-did')).toHaveText('did:bns:xiaobai.alice')
     await wizard.getByTestId('agent-setup-nickname').fill('小白')
-    await wizard.getByTestId('agent-setup-avatar-input').setInputFiles({ name: 'avatar.png', mimeType: 'image/png', buffer: AVATAR_PNG })
+    // A picture from this device, through the system picker's "This device" (the Zone case is in object-presentation.spec).
+    await wizard.getByTestId('agent-setup-avatar-choose').click()
+    await pickLocal(page, { name: 'avatar.png', mimeType: 'image/png', buffer: AVATAR_PNG })
     await expect(wizard.getByText('Your image, cropped to a square.')).toBeVisible()
     await expect(wizard.getByTestId('agent-setup-bio')).toHaveValue(/personal assistant/)
     await wizard.getByRole('button', { name: 'Role supplement' }).click()

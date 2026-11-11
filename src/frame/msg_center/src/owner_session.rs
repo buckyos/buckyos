@@ -583,6 +583,9 @@ pub struct CallerIdentity {
     pub user_did: Option<DID>,
     /// RBAC app subject of the token (`system:<service>` / `app:<app>`).
     pub authorization_key: String,
+    /// The token's canonical target (`system:<service>` / `app:<app>@<owner>`):
+    /// nfs-server keeps a user's object holdings per this key.
+    pub app_key: String,
     /// A user token for a DID without an account record in this Zone: it
     /// only acts in group sessions.
     pub external: bool,
@@ -738,6 +741,7 @@ impl MessageCenter {
         Ok(Some(CallerIdentity {
             user_id,
             authorization_key: claims.target.authorization_key(),
+            app_key: claims.target.canonical_key(),
             principal_kind: claims.principal_kind,
             user_did,
             external,

@@ -28,6 +28,9 @@ async function bootstrap() {
     identity = await buckyos.getCurrentIdentity().catch(() => ANONYMOUS_IDENTITY)
     if (identity.kind === 'account') setPresentationViewer(identity.user_id)
     else if (identity.kind === 'external') setPresentationViewer(identity.did)
+  } else {
+    const { exposeMockZoneFiles } = await import('./app/filebrowser/mock/content')
+    exposeMockZoneFiles()
   }
   setBootIdentity(identity)
   createRoot(document.getElementById('root')!).render(

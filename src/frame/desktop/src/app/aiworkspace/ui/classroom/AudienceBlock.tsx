@@ -14,6 +14,7 @@ import { aiwsT } from '../../i18n'
 import type { BlockDefinition, RenderContext } from '../blocks/registry'
 import { cellOp } from '../blocks/ops'
 import { TABULAR_ACCEPT } from '@table/files'
+import { useFilePicker } from '../shell/filePicker'
 import { tableImports } from '../import/tableImportRequest'
 import { boundId, ensureBindings, rosterColumns, text, useRows } from './feeds'
 
@@ -25,6 +26,7 @@ function isPublic(context: RenderContext): boolean {
 
 function AudienceStatic(context: RenderContext) {
   const store = useStore()
+  const pickFile = useFilePicker((message) => store.notify('error', message))
   const session = useSession()
   const { t } = useAiwsText()
   const pub = isPublic(context)
@@ -74,9 +76,7 @@ function AudienceStatic(context: RenderContext) {
         </div>
       )}
       {presenter && !session?.replay && !pub && (
-        <label className="aiws-link" onPointerDown={(e) => e.stopPropagation()}>{t('aiworkspace.session.audience.importRoster')}
-          <input type="file" hidden accept={TABULAR_ACCEPT} data-testid="aiws-audience-import" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importRoster(file) }} />
-        </label>
+        <button type="button" className="aiws-link" data-testid="aiws-audience-import" onPointerDown={(e) => e.stopPropagation()} onClick={() => { void pickFile.file(TABULAR_ACCEPT).then((file) => { if (file) void importRoster(file) }) }}>{t('aiworkspace.session.audience.importRoster')}</button>
       )}
       {!session && context.mode !== 'show' && <div className="aiws-muted aiws-classroom-meta">{pub ? t('aiworkspace.session.audience.publicHint') : t('aiworkspace.session.audience.designHint')}</div>}
     </div>

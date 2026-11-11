@@ -1,0 +1,12 @@
+<!doctype html><html><head><title>Shell harness</title></head><body><iframe id="app" style="width:100%;height:720px;border:0"></iframe><script type="module">
+// A stand-in for a Desktop window (path B): frames the WebUI with the App Frame handshake and records the system
+// dialogs it asks for; the test answers each with `answerDialog(result | { code })`.
+import { AppFrameHost } from 'buckyos/app-frame'
+const iframe = document.querySelector('#app'), nonce = crypto.randomUUID()
+window.dialogs = []
+window.host = new AppFrameHost({ target: () => iframe.contentWindow, origin: location.origin,
+  init: { nonce, windowId: 'test-window', theme: { mode: 'light' }, locale: 'en', formFactor: 'desktop', shellCapabilities: ['sysdlg/select'] },
+  onReady: () => { window.frameReady = true },
+  onSystemDialog: async (path, params) => { window.dialogs.push({ path, params }); const answer = await new Promise(resolve => { window.answerDialog = resolve }); return answer.code ? { ok: false, code: answer.code } : { ok: true, result: answer } } })
+iframe.src = '/' + location.search + '#bfp=' + nonce
+</script></body></html>

@@ -674,6 +674,12 @@ RPC `msg.create_session` / `msg.archive_session` / `msg.restore_session` / `msg.
 收藏的副本之后经 `/bucket/v1/<bucket_id>/<key>` 读，消息撤回不影响它。桶的声明、key 与解绑规则见
 `Message Center Durable Data Schema.md` §3。
 
+`msg.prepare_save_attachment {obj_id, context_path, inner_path?}` 是把附件存进用户自己的文件的第一步：按同一规则判定调用者能读
+这个附件（没有取回的先取回），`inner_path` 指文件夹附件里的某个文件或子文件夹（从附件根逐级解析，和对象路由的 `inner_path`
+相同），然后经 nfs-server `bucket.grant_holdings`（`obj://ndm/grant`）把解析出的对象授予“调用者用户 + 调用者会话的 App”，返回
+`{obj_id, kind: "file" | "dir"}`。第二步由客户端用用户自己的会话调 NFSP `commit_object {parent, name, obj_id}`，同名冲突、路径 ACL
+由 nfs-server 处理，内容不经过浏览器。只授予解析出的那一个对象，不含其下层对象；只有 Zone 用户可调用（外部用户、受限会话拒绝）。
+
 归档只改变会话在活动列表中的可见性，保留历史、逐记录阅读状态、未读计数和草稿；恢复沿用原会话与活动时间。
 有效普通新消息可以解除归档，运行态与 Action Log 不解除归档。归档属于独立的持久 Session 元数据。
 

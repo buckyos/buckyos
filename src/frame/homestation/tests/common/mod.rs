@@ -40,6 +40,14 @@ pub struct Node {
 }
 
 impl Node {
+    /// Who holds `obj_id` on this zone's nfs-server (`<user>|<app>`): what `bucket.grant_holdings` recorded.
+    pub fn nfs_holders(&self, obj_id: &str) -> Vec<String> {
+        let db = self._dir.as_ref().unwrap().path().join("nfs/fsdb/filedb.sqlite");
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let mut stmt = conn.prepare("SELECT principal FROM ndm_holdings WHERE obj_id=?1 ORDER BY principal").unwrap();
+        stmt.query_map([obj_id], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
     /// Take the node offline (its listener closes) and bring it back on the same port.
     pub fn stop(&self) {
         if let Some(h) = self.handle.lock().unwrap().take() {

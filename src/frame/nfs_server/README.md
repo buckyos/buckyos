@@ -70,7 +70,7 @@ cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
 | 引用绑定 | `bind_ref` / `unlink` | ✅ sidecar merge、同名冲突 `conflicts[]`、unlink 只解引用 |
 | 上传 | `probe` + tus 续传 + `commit_file` | ✅ 内嵌最小 tus(N1 采纳内嵌方案);probe/秒传基于 filedb `content_index` 缓存表 |
 | 元数据 | `get_meta` / `set_meta`(user ns) | ✅ 锚定 `live:n_<id>` + `obj:sha256:*`;写 meta 触发惰性锚定 |
-| 视图 | `open_view` + 通用 `list(view_ref)` | ✅ 只读;base/patch overlay 合并已实现;内容经 debug API / filedb 灌入(v1 无 AI 生成器) |
+| 视图 | `open_view` + 通用 `list(view_ref)` | ✅ 只读;base/patch overlay 合并已实现;内容经 debug API / filedb 灌入(v1 无 AI 生成器);内置 `view://recent` 现场计算调用者 home 里最新的 50 个文件(`src/recent.rs`) |
 | 集合 | `create_collection` / `open_collection` / `collection_patch` + 通用 `list` | ✅ add_ref/remove_entry/move_entries/create_group/rename_group;成员只存 Ref,`canonical_path` 读取时批量补全 |
 | 搜索 | `search` | ✅ name mode;响应结构完整(`match_source`/`explain`/`sources[]`);先序遍历 + 路径游标 |
 | 权限 | `get_acl` / `set_acl` / `list_acls` | ✅ 路径 ACL(实现扩展);继承/关闭继承、内置 owner 规则、owner 可列出全部记录 |
@@ -185,12 +185,12 @@ loopback 监听且显式开启 `--debug-api`。测试仍执行 JWT 签名及标�
 ## NDM 网关
 
 `/ndm/v1/*`（浏览器/App 上传协议）与 `/ndm/proxy/v1/*`（受信进程代理）由本服务承接（`src/ndm/`），
-每个请求都要会话 token，并按 RBAC 资源 `obj://ndm/{uploads,objects,retain,manage}` 授权；tus 上传会话绑定主体、
+每个请求都要会话 token，并按 RBAC 资源 `obj://ndm/{uploads,objects,retain,grant,manage}` 授权；tus 上传会话绑定主体、
 持久化可续传、支持终止与过期清理；查重、store API 与 proxy 授权后交给 cyfs-ndn 的现成处理器。说明见
 `product/bucky_file/nfs_server.md` §13。回归：`cargo test -p nfs_server --test ndm`（真实 RBAC 模型 + 默认策略，
 覆盖归属、续传、终止、过期、登记校验、未授权读取与权限分离）。
 
-`bucket.grant_holdings { user_id, app_id, obj_ids }`（`obj://ndm/manage`）让某个用户经某个 App 能读这些对象，给生成对象的可信服务用：workflow 在 `get_run_output` 时把系统管线的产物交给已授权的请求者。只覆盖列出的对象本身，不含其下的 chunk，也不为这些对象加 lease，保留由登记方负责。
+`bucket.grant_holdings { user_id, app_id, obj_ids }`（`obj://ndm/grant`，`obj://ndm/manage` 也行）让某个用户经某个 App 能读这些对象，给按自己的上下文判定读权的可信服务用：workflow 在 `get_run_output` 时把系统管线的产物交给已授权的请求者；msg-center（`msg.prepare_save_attachment`）和 HomeStation（`POST /home/<user>/objects/<id>/save`）把读者有权读的附件交给读者自己的会话，读者再用 NFSP `commit_object` 存进自己的文件。`obj://ndm/grant` 只能授予 holding，默认策略给 `frame` 组，不含 `manage` 的删除、GC 和任意 owner 的 pin。只覆盖列出的对象本身，不含其下的 chunk，也不为这些对象加 lease，保留由登记方负责。
 
 浏览器使用 WebSDK `ndm.importFiles` / `ndm.importDirectory`，再等待 `ndm.ensureUploaded`；稳定 ObjId 与 `objectStatus: ready` 分开。`POST /ndm/v1/import/finalize` 接收 `{ objects: [{ obj_id, obj_data }], roots: [ObjId], qcid_links?: [{ qcid, content_id, size }] }`，在原上传用户和 canonical App/System target 下按依赖顺序登记 FileObject、ChunkList、DirObject，校验 ID、子对象读取权限及递归完整性。请求体上限 8 MiB、对象和根各最多 10000 个；根只能是 FileObject 或 DirObject。
 

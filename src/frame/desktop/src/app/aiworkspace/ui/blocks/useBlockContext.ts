@@ -5,6 +5,7 @@ import { aiwsT } from '../../i18n'
 import { useEntity, useLoad, useReadOnlyReason, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { RunModeContext } from '../../state/runMode'
+import { useFilePicker } from '../shell/filePicker'
 import { EditorToolbarContext } from './editorToolbar'
 import { blockRegistry, modePolicy, type BlockDefinition, type CanvasMode, type DataState, type RenderContext, type Resolution, type ToolbarItem } from './registry'
 
@@ -77,6 +78,7 @@ export function useBlockContext(options: BlockContextOptions) {
   const toolbarSink = useContext(EditorToolbarContext)
   const runMode = useContext(RunModeContext)
   const pointerType = usePointerType()
+  const picker = useFilePicker((message) => store.notify('error', message))
   if (!cell || !payload) return { cell, context: null, resolution, error: read.error, registryVersion }
   const dataState = dataStateOf(payload, source)
   const policy = modePolicy(mode)
@@ -102,7 +104,7 @@ export function useBlockContext(options: BlockContextOptions) {
     activateEditor: () => { if (activatable && resolution?.ok) options.onActivate?.() },
     deactivateEditor: () => options.onDeactivate?.(), openEntity: ui.openEntity,
     setEditorToolbar: (items: ToolbarItem[] | null) => toolbarSink?.set(`block:${cellId}`, items), pointerType,
-    annotate: ui.annotate, showAnnotations: ui.showAnnotations,
+    annotate: ui.annotate, showAnnotations: ui.showAnnotations, pickFile: picker.file,
   }
   const availableResolution: Resolution | null = dataState === 'missing' || dataState === 'unreadable' || dataState === 'degraded'
     ? { ok: false, reason: 'data_unavailable', detail: t(dataState === 'missing' ? 'aiworkspace.blocks.data.missing' : dataState === 'unreadable' ? 'aiworkspace.blocks.data.unreadable' : 'aiworkspace.blocks.data.degraded') }

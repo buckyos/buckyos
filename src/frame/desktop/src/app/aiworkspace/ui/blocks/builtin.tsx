@@ -264,15 +264,10 @@ function AssetEditor(context: RenderContext) {
 function pickReplacement(context: RenderContext, store: WorkspaceStore) {
   const sourceId = context.source?.entity_id
   if (!sourceId) return
-  const input = document.createElement('input')
-  input.type = 'file'
   const accept = replaceAccept({ object_id: '', media_type: context.source?.media_type ?? undefined, file_name: context.source?.name ?? undefined })
-  if (accept) input.accept = accept
-  input.onchange = () => {
-    const file = input.files?.[0]
+  void context.pickFile(accept).then((file) => {
     if (file) void replaceAsset(store, sourceId, file).then((problem) => { if (problem) store.notify('error', problem) })
-  }
-  input.click()
+  })
 }
 
 /** Which Office document a file Block holds, by its name (Office 导入 TODO §6). */

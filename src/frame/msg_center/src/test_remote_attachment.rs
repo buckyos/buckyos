@@ -680,6 +680,14 @@ async fn forwarding_and_collecting_an_unread_attachment_fetch_it_first() {
     let copy = s.b.buckets.client.get(&dst, collected["key"].as_str().unwrap(), None).await.unwrap();
     assert_eq!(copy.obj_id, Some(other.to_string()));
 
+    // And for saving one into the reader's files.
+    let saved_file = stored_file(&s.a.buckets.store, "saved.txt", b"saved unread").await;
+    let (saved_msg, saved_id) = arrived(&s, &saved_file, 6).await;
+    let params = json!({"obj_id": saved_file.to_string(), "context_path": saved_id.to_string()});
+    let saved = s.b.center.prepare_save_attachment(params, &session("bob", ZONE_B.key)).await.expect("prepared");
+    assert_eq!(saved, json!({"obj_id": saved_file.to_string(), "kind": "file"}));
+    assert!(is_bound(&s.b, &format!("{}0", MessageCenter::attachment_prefix(&saved_id, &saved_msg))).await);
+
     // A source that is away: the send is refused, and may be tried again.
     let third = stored_file(&s.a.buckets.store, "c.txt", b"later").await;
     let (_, _) = arrived(&s, &third, 4).await;

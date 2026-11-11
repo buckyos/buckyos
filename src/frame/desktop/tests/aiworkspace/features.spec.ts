@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, expectAllCommitted, openApp, openWorkspace, test, closeWorkspace, openSide } from './fixtures'
+import { chooseFolderFromZone, chooseFromDevice, chooseFromZone, expect, expectAllCommitted, openApp, openWorkspace, openWorkspacePage, test, closeWorkspace, openSide } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -54,6 +54,40 @@ test('named imports preserve folder structure and workspace asset bytes after re
     expect(nestedGroup.title).toBe('nested')
     expect(canvasEntities.filter(e => [importedGroup.entity_id, nestedGroup.entity_id].includes(e.parent_id) && e.view_type === 'asset')).toHaveLength(3)
   } finally { rmSync(temporary, { recursive: true, force: true }) }
+})
+
+test('imports from the Zone: a folder and files chosen in the system file picker keep their tree and bytes, in the Desktop window and on the Workspace\'s own page', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `zone import ${Date.now()}`)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-top-sources').click()
+  const contents = Buffer.alloc(48 * 1024, 73)
+  // a folder of the Zone (sysdlg path A: the picker over the Desktop window)
+  await chooseFolderFromZone(page, () => page.getByTestId('aiws-pick-folder').click(), '/home/Documents/云端 资料', [
+    { path: 'same.txt', buffer: contents }, { path: 'nested/same.txt', buffer: contents }, { path: 'note.md', buffer: Buffer.from('# 云端') },
+  ])
+  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '云端 资料').length).toBe(1)
+  const entities = await api.outline(ALICE, ws.workspace_id)
+  const directory = entities.find(e => e.name === '云端 资料')
+  const nested = entities.find(e => e.parent_id === directory.entity_id && e.name === 'nested')
+  expect(nested.type_id).toBe('buckyos.container')
+  const leaves = entities.filter(e => [directory.entity_id, nested.entity_id].includes(e.parent_id) && e.type_id === 'buckyos.asset-ref')
+  expect(leaves.map(e => e.name).sort()).toEqual(['note.md', 'same.txt', 'same.txt'])
+  for (const leaf of leaves) {
+    const id = (await api.read(ALICE, ws.workspace_id, leaf.entity_id)).content.payload.object_id
+    const response = await fetch(`${api.base}/asset/${ws.workspace_id}/${id}`, { headers: { authorization: `Bearer ${ALICE}` } })
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(leaf.name === 'note.md' ? Buffer.from('# 云端') : contents)
+  }
+  // files of the Zone on the Workspace's own origin (path C: the system page framed over the Workspace's page)
+  await openWorkspacePage(page, ALICE, ws.workspace_id)
+  // (the page opens where the window left off: the data view)
+  if (!await page.getByTestId('aiws-pick-files').isVisible()) await page.getByTestId('aiws-top-sources').click()
+  await chooseFromZone(page, () => page.getByTestId('aiws-pick-files').click(), [{ name: '报告.txt', mimeType: 'text/plain', buffer: Buffer.from('来自 Zone') }])
+  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '报告.txt').length).toBe(1)
+  const report = (await api.outline(ALICE, ws.workspace_id)).find(e => e.name === '报告.txt')
+  const reportId = (await api.read(ALICE, ws.workspace_id, report.entity_id)).content.payload.object_id
+  const response = await fetch(`${api.base}/asset/${ws.workspace_id}/${reportId}`, { headers: { authorization: `Bearer ${ALICE}` } })
+  expect(await response.text()).toBe('来自 Zone')
+  await expect(page.locator('[data-buckyos-sysdlg="select"]')).toHaveCount(0)
 })
 
 function notesBlock(page: Page, blockId: string) {
@@ -423,7 +457,8 @@ test('packages: export, import as new, fork, and a restore that replaces history
   const sharePath = await share.path()
   await expect(card.getByTestId('aiws-export-manifest')).toContainText('分享')
   const importForm = list.getByTestId('aiws-import')
-  await importForm.getByTestId('aiws-import-file').setInputFiles({ name: 'share.zip', mimeType: 'application/zip', buffer: (await import('node:fs')).readFileSync(sharePath) })
+  await chooseFromZone(list, () => importForm.getByTestId('aiws-import-file').click(), { name: 'share.zip', mimeType: 'application/zip', buffer: (await import('node:fs')).readFileSync(sharePath) })
+  await expect(importForm.getByTestId('aiws-import-file-name')).toHaveText('share.zip')
   // the semantics have no default: nothing can be imported before choosing
   await expect(importForm.getByTestId('aiws-import-submit')).toBeDisabled()
   await importForm.getByLabel('作为新的工作区').check()
@@ -450,7 +485,7 @@ test('packages: export, import as new, fork, and a restore that replaces history
   await editor.getByLabel('负责人 task-40', { exact: true }).press('Enter')
   await expectAllCommitted(editor)
 
-  await importForm.getByTestId('aiws-import-file').setInputFiles({ name: 'backup.zip', mimeType: 'application/zip', buffer: backupBytes })
+  await chooseFromDevice(list, () => importForm.getByTestId('aiws-import-file').click(), { name: 'backup.zip', mimeType: 'application/zip', buffer: backupBytes })
   await importForm.getByLabel('恢复为包内的同一工作区').check()
   await importForm.getByLabel('若该工作区已存在则替换').check()
   await importForm.getByTestId('aiws-import-submit').click()
@@ -548,7 +583,7 @@ test('record properties, asset upload, object embed and object link', async ({ p
   // asset: upload → verified object → asset-ref + cell in one commit; shown through the authenticated route
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAJCAIAAAC0SDtlAAAAFElEQVR42mPQiDpBEmIY1TAoNAAAk1q5oVLxFXwAAAAASUVORK5CYII=', 'base64')
   await page.getByTestId('aiws-top-sources').click()
-  await page.getByTestId('aiws-new-image').setInputFiles({ name: '新图.png', mimeType: 'image/png', buffer: png })
+  await chooseFromZone(page, () => page.getByTestId('aiws-new-image').click(), { name: '新图.png', mimeType: 'image/png', buffer: png })
   await expect(page.locator('[data-testid^="aiws-detail-"]').getByTestId('aiws-asset-image')).toHaveCount(1)
   await page.getByTestId('aiws-top-canvas').click()
   const outline = (await api.rpc(ALICE, 'doc.outline', { workspace_id: ws.workspace_id })).entities as { entity_id: string; type_id: string }[]

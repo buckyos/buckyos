@@ -288,3 +288,59 @@ async fn a_followers_media_carries_the_objects_own_meta() {
     let refused = refused.to_string();
     assert!(refused.contains("media type"), "{refused}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reader_saves_a_posted_file_or_folder_into_their_files() {
+    let net = Net::new_zones(&["alice", "bob"], &[], &[], &[("alice", "carol")], &[]).await;
+    let alice = net.n("alice");
+    let station = alice.station.as_ref();
+    let bytes = b"posted notes";
+    let content = chunk(station, bytes).await;
+    let file = FileObject::new("notes.txt".into(), bytes.len() as u64, content);
+    let body = serde_json::to_value(&file).unwrap();
+    let (file_id, file_json) = homestation::protocol::obj_id_of(ndn_lib::OBJ_TYPE_FILE, &body).unwrap();
+    named(station, &file_id, &file_json).await;
+    let mut directory = DirObject::new(Some("trip".into()));
+    directory.add_file("notes.txt".into(), body, file.size).unwrap();
+    let (dir_id, dir_json) = directory.gen_obj_id().unwrap();
+    let dir_id = dir_id.to_string();
+    named(station, &dir_id, &dir_json).await;
+    let target = net.rpc("alice", "object.upload_target", json!({ "name": "trip" })).await;
+    let key = target["key"].as_str().unwrap();
+    upload_binding(station, key, &dir_id).await;
+    net.rpc("alice", "object.register", json!({ "objId": dir_id, "key": key })).await;
+    let input = json!({ "text": "A folder", "attachments": [{ "id": "folder", "kind": "dir", "name": "trip", "status": "uploaded", "object": dir_id }], "audience": { "kind": "dids", "dids": [did_of("carol")] } });
+    publish(&net, "alice", "saved-folder", input).await;
+
+    // The test nfs-server has no sessions: what the station itself brought in is held by `local`.
+    let holders = |id: &str| alice.nfs_holders(id).into_iter().filter(|h| !h.starts_with("local|")).collect::<Vec<_>>();
+    let save = |id: &str, auth: Option<String>| {
+        let mut req = net.http.post(format!("{}/objects/{id}/save", alice.home));
+        if let Some(auth) = auth {
+            req = req.header("authorization", auth);
+        }
+        req.send()
+    };
+    // An account of this zone in the audience: the folder and a file in it, each handed to
+    // that user through the App of the session, and nothing else.
+    let saved = save(&dir_id, Some("Bearer tok-carol".into())).await.unwrap();
+    assert_eq!(saved.status().as_u16(), 200);
+    assert_eq!(saved.json::<serde_json::Value>().await.unwrap(), json!({ "obj_id": dir_id, "kind": "dir" }));
+    assert_eq!(holders(&dir_id), vec!["carol|control-panel".to_string()]);
+    assert!(holders(&file_id).is_empty());
+    let saved = save(&file_id, Some("Bearer tok-carol".into())).await.unwrap();
+    assert_eq!(saved.json::<serde_json::Value>().await.unwrap(), json!({ "obj_id": file_id, "kind": "file" }));
+    assert_eq!(holders(&file_id), vec!["carol|control-panel".to_string()]);
+    // The owner saves their own.
+    assert_eq!(save(&file_id, Some(format!("Bearer {}", alice.token))).await.unwrap().status().as_u16(), 200);
+    assert_eq!(holders(&file_id), vec!["alice|control-panel".to_string(), "carol|control-panel".to_string()]);
+
+    // Not in the audience, no session, or no files here (another zone's reader).
+    assert_eq!(save(&dir_id, Some("Bearer tok-alice-guest".into())).await.unwrap().status().as_u16(), 404);
+    assert_eq!(save(&dir_id, None).await.unwrap().status().as_u16(), 401);
+    assert_eq!(save(&dir_id, Some(net.proof("bob", "alice").await)).await.unwrap().status().as_u16(), 403);
+    assert_eq!(holders(&dir_id), vec!["carol|control-panel".to_string()]);
+    // Only files and folders.
+    let version = bound(station, HOMESTATION_BUCKET_ENTRIES, "feed/").await[0].obj_id.clone().unwrap();
+    assert_eq!(save(&version, Some("Bearer tok-carol".into())).await.unwrap().status().as_u16(), 400);
+}

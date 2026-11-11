@@ -1,3 +1,4 @@
+import { pickZone, putZoneFile, selectDialog } from '../fixtures/selectDialog'
 import { expect, test } from '@playwright/test'
 
 test('AI Center exposes the complete catalog and expands multi-currency totals', async ({ page }) => {
@@ -224,9 +225,9 @@ test('custom provider rules use structured model editing and whole-file JSON pre
   expect(JSON.parse(await json.innerText()).provider_profile_id).toBe('deepseek')
   await panel.getByRole('button', { name: 'Edit rules', exact: true }).click()
   exported.model_driver_overrides['custom-chat-model'] = 'openai/gpt-5.1-mini'
-  await panel.getByLabel('Import full JSON', { exact: true }).setInputFiles({
-    name: 'custom-rules.provider.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported)),
-  })
+  await putZoneFile(page, '/home/Downloads/custom-rules.provider.json', Buffer.from(JSON.stringify(exported)), 'application/json')
+  await panel.getByRole('button', { name: 'Import full JSON', exact: true }).click()
+  await pickZone(selectDialog(page), '/home/Downloads/custom-rules.provider.json')
   await expect(panel.getByRole('status')).toContainText('pending apply')
   await panel.getByRole('button', { name: 'Finish editing and apply' }).click()
   await expect(panel.getByRole('status')).toContainText('Rules applied')
@@ -248,4 +249,46 @@ test('custom provider rules use structured model editing and whole-file JSON pre
   await page.setViewportSize({ width: 375, height: 812 })
   await expect(page.getByRole('button', { name: 'Provider rules', exact: true })).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Provider rules', exact: true })).toHaveCount(0)
+})
+
+test('custom provider rules: the full JSON file is chosen in the Zone through the system picker', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('buckyos.prototype.locale.v1', 'en'))
+  await page.goto('/?scenario=normal&aiccScenario=populated')
+  await page.getByTestId('desktop-app-ai-center').click()
+  await page.getByRole('button', { name: 'Providers', exact: true }).click()
+  await page.getByRole('button', { name: 'Add Provider' }).click()
+  await page.getByRole('button', { name: /Custom Provider/ }).click()
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await page.getByPlaceholder('custom-main').fill('custom-rules')
+  await page.getByPlaceholder('sk-...').fill('mock-key')
+  await page.getByRole('combobox', { name: /^Base URL/ }).fill('https://example.test/v1')
+  await page.getByRole('combobox', { name: 'Protocol Family', exact: true }).selectOption('openai-responses')
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await page.getByRole('button', { name: 'Create Provider', exact: true }).click()
+  await expect(page.getByRole('button', { name: /Est\. cost/i })).toBeVisible()
+  await page.getByRole('button', { name: 'Providers', exact: true }).click()
+  await page.getByRole('button').filter({ hasText: 'custom-rules/custom' }).click()
+  await page.getByRole('button', { name: 'Provider rules', exact: true }).click()
+  const panel = page.getByRole('region', { name: 'Provider rules', exact: true })
+  await expect(panel.getByTestId('provider-rule-model')).toHaveCount(2)
+
+  const downloadPromise = page.waitForEvent('download')
+  await panel.getByRole('button', { name: 'Export full JSON' }).click()
+  const stream = await (await downloadPromise).createReadStream()
+  const chunks: Buffer[] = []
+  for await (const chunk of stream!) chunks.push(Buffer.from(chunk))
+  const exported = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  exported.model_driver_overrides = { ...exported.model_driver_overrides, 'custom-chat-model': 'openai/gpt-5.1-mini' }
+  await putZoneFile(page, '/home/Downloads/custom-rules.provider.json', Buffer.from(JSON.stringify(exported)), 'application/json')
+
+  await panel.getByRole('button', { name: 'Edit rules', exact: true }).click()
+  await panel.getByRole('button', { name: 'Import full JSON', exact: true }).click()
+  await pickZone(selectDialog(page), '/home/Downloads/custom-rules.provider.json')
+  await expect(panel.getByRole('status')).toContainText('pending apply')
+  await expect(panel.getByRole('status')).toContainText('custom-rules.provider.json')
+  await panel.getByRole('button', { name: 'Finish editing and apply' }).click()
+  await expect(panel.getByRole('status')).toContainText('Rules applied')
+  await panel.getByRole('button', { name: 'Full configuration JSON', exact: true }).click()
+  await expect(panel.getByLabel('Full configuration JSON', { exact: true })).toContainText('openai/gpt-5.1-mini')
 })

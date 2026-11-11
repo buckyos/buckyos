@@ -131,7 +131,7 @@ interface SelectDialogParams {
 | `accept` | 最多 16 条。用 `matchSelector(selector, contentDescriptor(source, { name, size }))` 判断，`mime` 按扩展名推断，不读文件内容。不命中的文件照常显示但不可选；目录始终可以进入 |
 | `exclude` | 最多 1000 条，只接受 `cyfs-path`。列表里这些目录不能进入，位于其中时不能确认。File Browser 移动、复制文件夹时用它排除被操作的目录自身 |
 | `suggestedName` | 须通过 File Browser 的 `entryNameSchema`，不合法时忽略 |
-| `allowLocal` | 为 true 时对话框多一个“本机”入口（§5.2）。`save` 模式忽略它；带 `writable` 的 `folder` 也忽略它，因为本机目录不能作为写入目标 |
+| `allowLocal` | 为 true 时对话框多一个“从当前设备选择文件”按钮（§5.2）。`save` 模式忽略它；带 `writable` 的 `folder` 也忽略它，因为本机目录不能作为写入目标 |
 
 模式之外的字段被忽略（例如 `save` 模式下的 `multiple`）。未知字段被拒绝。
 
@@ -222,7 +222,7 @@ ensureObjId(item: ZoneContent | LocalFile, options?): Promise<{ objId: string; r
 - `open`：全部可浏览的位置，包括目录、“最近”等视图（`view://`）和集合（`collection://`）。
 - `folder`、`save`：只显示真实目录。`save` 和带 `writable` 的 `folder` 只有当前目录可写（`capabilities.acceptsContent`）时才能确认。
 
-**布局。** 桌面是居中的对话框（`presentation: 'modal'`，`size: 'lg'`）：左侧根目录，右侧面包屑和列表，底部是已选数量与“取消 / 确认”；`save` 模式底部多一个文件名输入框。移动端用 `sheet`，根目录收进顶部的下拉。`fullscreen` 只对系统应用的窗口开放（`resolveWindowDialogPermissions`），所以只在 `canPresent('fullscreen')` 为真时使用，否则会抛 `WindowDialogPermissionError`。
+**布局。** 桌面是居中的对话框（`presentation: 'modal'`，`size: 'lg'`）：左侧根目录，右侧面包屑和列表，底部是已选数量与确认按钮；`save` 模式底部多一个文件名输入框。没有“取消”按钮，标题栏右上角的 × 、Esc 和移动端返回键都是取消（owner，2026-11-10）。移动端用 `sheet`，根目录收进顶部的下拉。`fullscreen` 只对系统应用的窗口开放（`resolveWindowDialogPermissions`），所以只在 `canPresent('fullscreen')` 为真时使用，否则会抛 `WindowDialogPermissionError`。
 
 **交互。**
 
@@ -235,13 +235,19 @@ ensureObjId(item: ZoneContent | LocalFile, options?): Promise<{ objId: string; r
 - 移动端返回键先回到上一级目录，已在起始目录时等于取消。输入框聚焦时确认按钮不能被软键盘挡住。
 - 键盘可以完成全部操作；列表项有明确的选中状态；加载与错误用 live region 播报。
 
-搜索（复用 File Browser 的搜索数据源）和预览不在第一阶段。
+**缩略图、搜索、起始位置。** 从 Zone 挑内容是手机用户的高频流程（见 §5.2 末段的原则），选择器要和手机相册一样顺手：
+
+- 条目带缩略图（File Browser 数据层的 `thumbnailUrl`，来自 NFSP 的 `access` 组）时，行首显示缩略图；`accept` 只收图片或视频时改为缩略图网格。
+- 列表上方是搜索框，复用 File Browser 的搜索数据源（`useSearch`），在用户能读的全部文件里搜，结果行带所在目录；`folder` 模式只搜目录。点结果里的目录进入该目录并退出搜索；`save` 模式点结果里的文件，进入它所在的目录并填上文件名。搜索框里按 Esc 或移动端返回键先清空搜索。
+- 起始位置：调用方给了 `start` 就用它；否则用该调用方上次确认的目录；都没有时，`open` 从“最近”（`view://recent`）开始，`folder`、`save` 从 home 开始。
+
+预览不在第一阶段。
 
 ### 5.2 本机的文件和文件夹
 
-调用方传了 `allowLocal: true` 时，根目录列表最上面多一个“本机”入口。浏览器不允许网页列出本机目录，所以选择器不自己画本机的文件列表，而是交给操作系统的选择器：
+调用方传了 `allowLocal: true` 时，底部确认按钮旁边多一个“从当前设备选择文件”（`folder` 模式是“从当前设备选择文件夹”）按钮，占原来“取消”的位置，不放在根目录列表里（owner，2026-11-10）。浏览器不允许网页列出本机目录，所以选择器不自己画本机的文件列表，而是交给操作系统的选择器：
 
-1. 用户点“本机”，选择器在自己的文档里触发 `<input type="file">`（`folder` 模式用 `webkitdirectory`），弹出操作系统的选择器。`open` 且 `multiple` 时允许多选；`accept` 换算成 `<input>` 的 `accept` 属性（MIME 模式和扩展名）。
+1. 用户点“从当前设备选择文件”，选择器在自己的文档里触发 `<input type="file">`（`folder` 模式用 `webkitdirectory`），弹出操作系统的选择器。`open` 且 `multiple` 时允许多选；`accept` 换算成 `<input>` 的 `accept` 属性（MIME 模式和扩展名）。
 2. 用户在系统选择器里选完，对话框立即以这些本机条目结束，不需要再点一次“确认”。此前在 Zone 里勾选的条目被放弃，结果不混合两种来源。
 3. 用户在系统选择器里取消，回到对话框，之前的状态不变。
 4. 选中的文件超过 `limit`，或者有文件不满足 `accept`（含 `maxSize`）时，留在对话框里提示原因，不返回部分结果。
@@ -252,10 +258,10 @@ ensureObjId(item: ZoneContent | LocalFile, options?): Promise<{ objId: string; r
 
 - **必须用 `<input type="file">`，不用 `showOpenFilePicker` / `showDirectoryPicker`。** 后者返回的句柄不能跨源传递，而路径 B、C 的结果要从系统页面传给另一个源的 App。`File` 对象可以跨源传递（Preview 嵌入已经在用同样的方式传 `Blob`），浏览器不复制内容。
 - **相对路径显式携带。** 跨窗口传递后不能依赖 `File.webkitRelativePath`，所以 `LocalFolder.files` 的每一项自带 `relativePath`。
-- **文件夹选择的已知限制**，和 MessageHub、AI Workspace 现在遇到的一样：`webkitdirectory` 拿不到空目录；不支持的环境（iPhone 等粗指针设备）不显示本机文件夹的入口，`folder` 模式下此时等于没有“本机”。
-- **不做“一打开对话框就直接弹系统选择器”。** 浏览器只在用户刚操作过的文档里允许弹出文件选择器，而用户最初的点击发生在调用方的文档里：路径 C 下这次操作不会算到系统页头上，路径 B 下也只在很短的时间内有效。统一要求用户在对话框里点一次“本机”。
+- **文件夹选择的已知限制**，和 MessageHub、AI Workspace 现在遇到的一样：`webkitdirectory` 拿不到空目录；不支持的环境（iPhone 等粗指针设备）不显示本机文件夹的入口，`folder` 模式下此时没有这个按钮。
+- **不做“一打开对话框就直接弹系统选择器”。** 浏览器只在用户刚操作过的文档里允许弹出文件选择器，而用户最初的点击发生在调用方的文档里：路径 C 下这次操作不会算到系统页头上，路径 B 下也只在很短的时间内有效。统一要求用户在对话框里点一次“从当前设备选择文件”。
 
-**什么时候用。** `allowLocal` 适合两种来源都要的入口，例如 AI Workspace 的导入。它比直接放一个原生选择器按钮多一次点击，所以以本机为主的入口（聊天里拍照、发图）可以保留直达原生选择器的按钮，另放一个“从 Zone 选择”。
+**什么时候用（owner，2026-11-10）。** 目标用户是没有 PC 的手机用户，Zone 是用户的主文件系统，本机文件是次要来源。所以所有挑内容的入口都只拉起这一个选择器，用户先看到的是 Zone；调用方能处理本机文件时传 `allowLocal: true`，本机来源放在选择器底部的“从当前设备选择文件”按钮，不在调用方界面上另放直达原生选择框的按钮（聊天附件、发动态也一样）。桌面上的拖放保留，拖进来的一定是本机文件。只有语义就是“把本机文件传进 Zone”的入口（File Browser 的上传）和没有 Zone 会话的页面（MessageHub 访客页）保留原生选择框。各入口的换用清单见 [sysdlg-select-adoption-todo](../../notepads/sysdlg-select-adoption-todo.md)。
 
 ---
 
@@ -339,7 +345,7 @@ App 直接在浏览器标签页里打开时没有 Shell。这时 SDK 在 App 页
 
 消息里不带任何 token。所有消息都用确切的 origin 作为 `targetOrigin`。
 
-`allowLocal` 在这条路径上同样可用：“本机”入口在系统页自己的文档里触发 `<input type="file">`，选中的 `File` 随 `embed.result` 传回 App。
+`allowLocal` 在这条路径上同样可用：“从当前设备选择文件”在系统页自己的文档里触发 `<input type="file">`，选中的 `File` 随 `embed.result` 传回 App。
 
 **SDK 的浮层负责：**
 
@@ -410,7 +416,7 @@ App 直接在浏览器标签页里打开时没有 Shell。这时 SDK 在 App 页
 | W2 | `ensureObjId` helper（§4.3）。本机条目可以先做；Zone 条目依赖 nfs_server 的 `snapshot` | websdk |
 | D1 | 参数与结果的 zod schema | Desktop `sysdlg/select/schemas.ts` |
 | D2 | File Browser 数据层带出对象 ID：列表请求加 `ident` 组，`FileEntry` 增加可选的 `objId`。目前只有对象桶投影的条目有值；nfs_server TODO 第一步完成前，要滤掉 `sha256:` 形式的值 | Desktop `app/filebrowser/data/` |
-| D3 | `SelectDialog` 组件：三种模式，浏览 Zone（§5.1），“本机”入口（§5.2） | Desktop `sysdlg/select/` |
+| D3 | `SelectDialog` 组件：三种模式，浏览 Zone（§5.1），本机来源按钮（§5.2） | Desktop `sysdlg/select/` |
 | D4 | 在 `useSystemDialog` 登记 `SELECT_DIALOG_PATH` | Desktop `sysdlg/index.tsx` |
 | D5 | App Service 安装向导改用 `sysdlg/select`（`accept` 限 `.pikg`），删除 `FilePickerDialog.tsx` 和示例数据 | Desktop `app/app-service/` |
 | D6 | AI Workspace 的导入入口（插入目录的“从文件…”、数据树的导入）改用 `sysdlg/select`，`allowLocal: true`。本机条目照旧处理；Zone 条目经 NFSP 读出内容后走同一套导入 | Desktop `app/aiworkspace/` |
@@ -427,7 +433,8 @@ D6 只覆盖桌面窗口里的 AI Workspace（路径 A）。`aiws-<id>.<zone>` �
 | W3 | `sysdlg.open` / `sysdlg.openResult`，`AppFrameClient.selectContent`，`AppFrameHost.onSystemDialog` | websdk `src/app-frame.ts` |
 | D8 | `shellCapabilities` 加 `'sysdlg/select'`，实现 `onSystemDialog`（名单、校验、单窗口单请求、调用方名称、焦点） | Desktop `WebAppFramePanel.tsx` |
 | T1 | “打开”和“另存为”在桌面窗口内改用 `selectContent`。独立标签页暂时保留自带的位置选择器 | `src/apps/text_editor/` |
-| D9 | MessageHub 回形针菜单增加“从 Zone 选择”，原有的本机入口保留 | Desktop `app/messagehub/` |
+| D9 | MessageHub 回形针菜单的“选择文件 / 选择文件夹”替换为一个拉起选择器的入口（`open` 多选，可选文件夹，`allowLocal: true`），不保留本机直达（owner，2026-11-10）。访客页没有 Zone 会话，保留原生输入框 | Desktop `app/messagehub/` |
+| H1 | HomeStation 发布框的媒体、文件、文件夹三个原生入口，同 D9 替换成选择器；媒体按钮带图片 / 视频的 `accept`。附件是对象 ID，同样依赖 `snapshot` | Desktop `app/homestation/publish/` |
 | — | 同步 Text Editor readme §7.3（消息表）、§8.9；按 AGENTS 的 cmd_skills 联动表检查 `buckyos_app_dev` 手册是否要补 `selectContent` | 文档 |
 
 D9 的说明：消息附件是不可变对象。有 `objId` 就直接用，没有时用 `ensureObjId`，同样依赖 nfs_server 的 `snapshot`。`snapshot` 支持目录，所以从 Zone 里选整个文件夹作为附件也走这条路。
@@ -444,6 +451,8 @@ D9 的说明：消息附件是不可变对象。有 `objId` 就直接用，没�
 
 ### 11.4 实施状态（2026-11-10）
 
+各 App 换用选择器的情况（A、B、O、V 各项）记在 [sysdlg-select-adoption-todo](../../notepads/sysdlg-select-adoption-todo.md) §10。
+
 | 编号 | 状态 | 说明 |
 |---|---|---|
 | W1、W3、W4 | 已实施 | websdk `src/content.ts`、`src/app-frame.ts`。错误类型是 `SystemDialogError`（带 `code`） |
@@ -457,7 +466,9 @@ D9 的说明：消息附件是不可变对象。有 `objId` 就直接用，没�
 | D9 | 顺延 | 依赖 `snapshot` |
 | D10 | 已实施 | `sysdlg/select/SelectEmbedApp.tsx`，`main.tsx` 的 `/embed/sysdlg/select` 分支 |
 | D11 | 已实施 | `MoveTargetDialog` 已删除，移动、复制的目标和“添加已有文件”改用 `SelectDialog` |
-| HomeStation、AI Workspace 自有源页面 | 未做 | 按需接入。AI Workspace 在自有源页面上没有窗口对话框层，仍用原生的文件输入（`useSelectContent()` 返回 null） |
+| AI Workspace 自有源页面 | 已实施（2026-11-10） | `useSelectContent()` 在没有窗口对话框层时走路径 C，原生输入全部删除 |
+| H1（HomeStation 发布框） | 顺延 | 依赖 `snapshot`。HomeStation 收到的附件“存到我的文件”已做（V1，见接入 TODO §5.2） |
+| 缩略图、搜索、起始位置（§5.1） | 已实施（2026-11-10） | 见 [sysdlg-select-adoption-todo](../../notepads/sysdlg-select-adoption-todo.md) §10.1（S1–S3）。真实环境的缩略图全部来自 Preview Pipeline |
 
 实施时定下、和正文不完全一样的地方：
 
@@ -484,7 +495,7 @@ D9 的说明：消息附件是不可变对象。有 `objId` 就直接用，没�
 - 三种模式在 mock 运行时和真实 Zone 下都能完成选择；取消返回 `cancelled`。
 - `accept` 不命中的文件不可选；多选达到 `limit` 后不能再选；`save` 遇到同名文件会询问并在结果里给出 `overwrite: true`。
 - 超过一页的目录能继续加载；跨目录的已选项不丢。
-- 没有 `allowLocal` 时没有“本机”入口。有 `allowLocal` 时能选本机文件；`folder` 模式能选本机文件夹，得到带相对路径的文件列表；在系统选择器里取消会回到对话框，之前的状态不变。
+- 没有 `allowLocal` 时没有“从当前设备选择文件”按钮。有 `allowLocal` 时能选本机文件；`folder` 模式能选本机文件夹，得到带相对路径的文件列表；在系统选择器里取消会回到对话框，之前的状态不变。
 - 目录列表带对象 ID 的条目，结果里有 `objId`；普通文件没有。
 - `ensureObjId`：本机文件得到 FileObject 的 ID。nfs_server 的 `snapshot` 就绪后，Zone 文件也得到 FileObject 的 ID，对同一个没变的文件第二次调用不重读内容。
 - 安装向导能从 Zone 里选中 `.pikg` 并进入检查流程；仓库里不再有 `FilePickerDialog`（依赖 `snapshot`，随 D5 顺延）。

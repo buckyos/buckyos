@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { test, expect, openWorkspacePage, workspacePage, mainMenu } from './fixtures'
+import { chooseFromDevice, chooseFromZone, test, expect, openWorkspacePage, workspacePage, mainMenu } from './fixtures'
 import type { Page } from '@playwright/test'
 import { reviewPdf } from '../../../aiworkspace/fixtures/pdf/src/review'
 import { reviewFollowupPdf, syntheticCmykPdf, syntheticLongRenderPdf } from '../../../aiworkspace/fixtures/pdf/src/review-followup'
@@ -83,8 +83,7 @@ for (const { pageNumber, end } of cases) {
     expect(original, `page ${pageNumber} must exist in ${cached!.pageCount} pages`).toBeTruthy()
     await info.attach('source-inventory', { contentType: 'application/json', body: Buffer.from(JSON.stringify(cached)) })
     phase = 'import'
-    const [chooser] = await Promise.all([page.waitForEvent('filechooser', { timeout: 15_000 }), mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')])
-    await chooser.setFiles({ name: basename(input!), mimeType: 'application/pdf', buffer: source })
+    await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf'), { name: basename(input!), mimeType: 'application/pdf', buffer: source })
     const dialog = page.getByTestId('aiws-pdf-dialog')
     await expect(dialog.getByTestId('aiws-pdf-pages')).toBeVisible()
     await dialog.getByTestId('aiws-pdf-from').fill(String(pageNumber))
@@ -239,8 +238,7 @@ test('PDF review glyphs, paint order and optimized images', async ({ page, api }
   }, source.toString('base64'))
   expect(triggers.text).toContain('ABCDEFGH\uE123IJ')
   expect(triggers).toMatchObject({ repeat: true, inlineGroup: true })
-  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')])
-  await chooser.setFiles({ name, mimeType: 'application/pdf', buffer: source })
+  await chooseFromDevice(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf'), { name, mimeType: 'application/pdf', buffer: source })
   const dialog = page.getByTestId('aiws-pdf-dialog')
   await expect(dialog.getByTestId('aiws-pdf-pages')).toBeVisible()
   await dialog.getByTestId('aiws-pdf-columns').fill('1')
@@ -303,8 +301,7 @@ test('PDF style edits preserve positioned spans and dense mixed text', async ({ 
   test.skip(info.project.name !== 'editable', 'This case exercises editable import')
   const ws = await api.freeCanvas('tok-alice', 'pdf-style-followup')
   await openWorkspacePage(page, 'tok-alice', ws.workspace_id, 'free')
-  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf')])
-  await chooser.setFiles({ name: 'synthetic-pdf-followup.pdf', mimeType: 'application/pdf', buffer: Buffer.from(reviewFollowupPdf()) })
+  await chooseFromDevice(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-pdf'), { name: 'synthetic-pdf-followup.pdf', mimeType: 'application/pdf', buffer: Buffer.from(reviewFollowupPdf()) })
   const dialog = page.getByTestId('aiws-pdf-dialog')
   await expect(dialog.getByTestId('aiws-pdf-pages')).toBeVisible()
   await dialog.getByTestId('aiws-pdf-columns').fill('1')

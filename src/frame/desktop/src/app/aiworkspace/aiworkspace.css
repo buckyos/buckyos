@@ -946,6 +946,8 @@
 .aiws-catalog .aiws-field { gap: 8px; font-size: 12px; }
 .aiws-root .aiws-catalog .aiws-field input, .aiws-root .aiws-catalog .aiws-field select, .aiws-root .aiws-catalog .aiws-field textarea { width: 100%; min-height: 36px; max-width: 100%; padding: 7px 10px; border-radius: 8px; }
 .aiws-catalog .aiws-field textarea { resize: vertical; }
+.aiws-file-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.aiws-file-choice > .aiws-muted { min-width: 0; overflow-wrap: anywhere; }
 .aiws-catalog-actions { flex: none; gap: 8px; padding: 16px 20px; border-top: 1px solid var(--cp-border); background: var(--cp-surface-opaque, var(--cp-surface)); }
 .aiws-root .aiws-catalog-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; padding: 8px 12px; border-radius: 8px; font-size: 12px; }
 .aiws-catalog-actions button svg { flex: none; }

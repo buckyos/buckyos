@@ -89,6 +89,11 @@ export interface ObjectAccess {
   contentUrl(objId: string, context?: string, innerPath?: string): Promise<string>
   /** Copies the attachment into the viewer's collection; absent where the viewer has none. */
   collect?(objId: string, context?: string): Promise<CollectedObject>
+  /**
+   * Makes the attachment — or what `innerPath` names inside a folder attachment — readable to the viewer's own
+   * session, which then commits it into their files; absent where the viewer has no files (a guest).
+   */
+  prepareSave?(objId: string, context: string, innerPath?: string): Promise<{ objId: string; kind: 'file' | 'dir' }>
 }
 
 export interface LocalObject {
@@ -114,6 +119,7 @@ export function registerObjectAccess(access: ObjectAccess | null) {
       return local ? Promise.resolve(local.url) : access.contentUrl(objId, context, innerPath)
     },
     ...(access.collect ? { collect: access.collect.bind(access) } : {}),
+    ...(access.prepareSave ? { prepareSave: access.prepareSave.bind(access) } : {}),
   } : null
 }
 

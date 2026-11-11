@@ -9,7 +9,7 @@ import { resolve } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { EntityEnvelope, Operation, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
 import { deck } from '../aiworkspace/pdfFiles'
-import { expect, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
+import { chooseFromDevice, chooseFromHome, expect, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
 
 type Workspace = Pick<WorkspaceSummary, 'workspace_id' | 'epoch'>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,15 +44,19 @@ async function openCanvas(actor: Actor, ws: Workspace) {
   await expect(actor.page.getByTestId('aiws-canvas-view')).toBeVisible()
 }
 
-/** Import a PDF from the main menu; `setup` adjusts the dialog before starting. Returns the new canvas. */
-async function importPdf(actor: Actor, ws: Workspace, file: { name: string; buffer: Buffer }, setup: (dialog: ReturnType<Page['getByTestId']>) => Promise<void> = async () => {}) {
+/** Import a PDF from the main menu, chosen in the system file picker from the Zone (written into the home folder
+ * first) or from this device; `setup` adjusts the dialog before starting. Returns the new canvas. */
+async function importPdf(actor: Actor, ws: Workspace, file: { name: string; buffer: Buffer }, setup: (dialog: ReturnType<Page['getByTestId']>) => Promise<void> = async () => {}, from: 'zone' | 'device' = 'device') {
   const page = actor.page
   const before = (await outline(actor, ws)).filter((e) => e.kind === 'surface' && !e.deleted).map((e) => e.entity_id)
-  const chooser = page.waitForEvent('filechooser')
-  await page.getByTestId('aiws-main-menu').click()
-  await page.getByTestId('aiws-menu-insert').click()
-  await page.getByTestId('aiws-menu-import-pdf').click()
-  await (await chooser).setFiles({ name: file.name, mimeType: 'application/pdf', buffer: file.buffer })
+  const open = async () => {
+    await page.getByTestId('aiws-main-menu').click()
+    await page.getByTestId('aiws-menu-insert').click()
+    await page.getByTestId('aiws-menu-import-pdf').click()
+  }
+  const picked = { name: file.name, mimeType: 'application/pdf', buffer: file.buffer }
+  if (from === 'zone') await chooseFromHome(actor, open, `${actor.client.prefix}-files`, picked)
+  else await chooseFromDevice(page, open, picked)
   const dialog = page.getByTestId('aiws-pdf-dialog')
   await expect(dialog.getByTestId('aiws-pdf-pages')).toBeVisible({ timeout: 60_000 })
   await setup(dialog)
@@ -98,7 +102,7 @@ test('[pdf] a made deck on a real Zone: CMap text, picture, raster, original, pa
   const { surface, all, seconds, notes } = await importPdf(owner, ws, { name: 'deck.pdf', buffer: deck() }, async (dialog) => {
     await expect(dialog.getByTestId('aiws-pdf-estimate')).toContainText(/2 (段文字|text objects).*1 (张图片|image).*1 (个图形|shape)/)
     await screenshot(page, info, 'pdf-deck-dialog')
-  })
+  }, 'zone')
   const groups = children(all, surface.entity_id)
   expect(groups.map((g) => g.kind)).toEqual(['group', 'group', 'group'])
   const texts = await Promise.all(children(all, groups[1].entity_id).map(async (e) => (await read(owner, ws, e.entity_id)).config?.text))

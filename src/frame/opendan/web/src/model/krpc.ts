@@ -60,7 +60,7 @@ const initSdk = async (): Promise<boolean> => {
   return true
 }
 
-const sessionToken = async (): Promise<string | null> => {
+export const sessionToken = async (): Promise<string | null> => {
   if (Date.now() < noTokenUntil) return null
   sdkReady ??= initSdk().catch(() => false)
   const token = (await sdkReady) ? await getActiveSessionToken().catch(() => null) : null

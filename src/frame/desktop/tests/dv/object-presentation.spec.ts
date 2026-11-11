@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { pickLocal } from '../e2e/fixtures/selectDialog'
 
 /**
  * Zone display settings, profile pictures and their propagation on a running zone with the
@@ -130,7 +131,9 @@ test.describe('object presentation on the DV zone', () => {
       const win = page.getByTestId('window-users-agents')
       await win.getByRole('button', { name: 'Avatar' }).click()
       const dialog = page.getByRole('dialog', { name: 'Profile picture' })
-      await dialog.getByTestId('self-avatar-input').setInputFiles({ name: 'me.png', mimeType: 'image/png', buffer: PNG_FILE })
+      await dialog.getByTestId('self-avatar-choose').click()
+      await pickLocal(page, { name: 'me.png', mimeType: 'image/png', buffer: PNG_FILE })
+      await expect(dialog.getByText('Cropped to a square')).toBeVisible()
       await dialog.getByTestId('self-avatar-save').click()
       await expect(dialog).toHaveCount(0)
       await expect(avatarButton.locator('img')).toHaveAttribute('src', /^data:image\/jpeg;base64,/)

@@ -317,6 +317,9 @@ export async function postSendMessage(msg: ndn.MsgObject, idempotencyKey?: strin
 
 /** `msg.collect_attachment`: the attachment's copy in the caller's `collected` bucket. */
 export const collectAttachment = (objId: string, contextPath: string) => call<{ bucket_id: string; key: string }>('msg.collect_attachment', { obj_id: objId, context_path: contextPath })
+/** `msg.prepare_save_attachment`: hands the attachment (or what `innerPath` names inside a folder attachment) to the caller's own session, to commit into their files. */
+export const prepareSaveAttachment = (objId: string, contextPath: string, innerPath?: string) =>
+  call<{ obj_id: string; kind: 'file' | 'dir' }>('msg.prepare_save_attachment', { obj_id: objId, context_path: contextPath, ...(innerPath ? { inner_path: innerPath } : {}) })
 
 /* ── UI session state (legacy session-only KV and owner-scoped KV) ── */
 

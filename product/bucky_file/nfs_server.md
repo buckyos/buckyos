@@ -235,7 +235,7 @@ View/Collection/namespace binding 成员显示"失联"并提供重新定位或 u
 | 引用绑定 | `bind_ref` / `unlink` | 报文与 schema 从 v1 固定;首版可不广告 `reference-binding`,但 list 必须能返回 Binding Entry |
 | 上传 | `probe` + tus 续传 + `commit_file` | 完整(见 §5.3) |
 | 元数据 | `get_meta` / `set_meta`(user ns) | 完整 |
-| 视图 | `open_view` + 通用 `list(view_ref)` | 只读;`view_patch` 延后 |
+| 视图 | `open_view` + 通用 `list(view_ref)` | 只读;`view_patch` 延后。内置 `view://recent`(启动时建行,成员不落库):每次 list 现场遍历调用者自己的 `home/<user>`,跳过以 `.` 开头的项和顶层 `agents/`(AgentRootFS),按 max(mtime, 创建时间) 取最新 50 个文件;revision 是成员与 mtime/size 的摘要,内容变了缓存会重验;单次最多看 10 万个条目,超过就从已看到的里取 |
 | 集合 | `create_collection` / `open_collection` / `collection_patch` + 通用 `list` | 完整;只管理引用/Group,不是上传目标 |
 | 搜索 | `search` | v1 只做 `name` mode,但**响应结构完整**(带 `match_source`/`sources[]`),后续加 mode 不改结构 |
 | 分享 | `grant` / `revoke` | 签发完整(活子树 bearer cap),数据面不放行 |
@@ -594,7 +594,7 @@ zone 协议 §2.4。
 - **查重、`/ndm/v1/store/*` 与 `/ndm/proxy/v1/*`** 先在 nfs-server 授权，再交给 cyfs-ndn 的 `NamedDataMgrZoneGateway` /
   `NamedDataMgrNodeGateway`（后者受限能力打开，由前置授权决定）。
 - **授权**：RBAC 资源 `obj://ndm/uploads`（write）、`obj://ndm/objects`（read）、`obj://ndm/retain`（write）、
-  `obj://ndm/manage`（write），用户主体与 App/服务主体都要放行；默认策略见 buckyos-api `rbac_config.rs`。
+  `obj://ndm/grant`（write，只能 `bucket.grant_holdings`）、`obj://ndm/manage`（write），用户主体与 App/服务主体都要放行；默认策略见 buckyos-api `rbac_config.rs`。
   本主体上传、写入或登记过的对象记入 `ndm_holdings`，可读回；`put_object` 要求对象体哈希到 id、引用的 chunk/子对象
   由本主体持有（manage 除外）；pin 类调用要求 manage，或 retain 且 owner 在 `<App 主体>/<用户>/` 前缀下。
 - **已知边界**：`chunk_hash` 秒传不证明持有内容；读写模式之外的 Agent 没有对象读取权；独立模式未鉴权时所有调用者

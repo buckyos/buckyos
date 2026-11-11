@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { fakeZone, pickerParams, pickLocal } from './picker'
 
 const AGENT = 'did:bns:jarvis.devtest'
 const UI = 'ui-7f3a2c91'
@@ -186,6 +187,7 @@ test('sessions open in MessageHub when they are conversations, else on their det
 })
 
 test('the profile is edited from the card', async ({ page }) => {
+  await fakeZone(page)
   await open(page)
   const card = page.getByTestId('agent-card')
   await card.getByRole('button', { name: 'Edit profile' }).click()
@@ -195,7 +197,9 @@ test('the profile is edited from the card', async ({ page }) => {
   await expect(dialog.getByRole('alert')).toContainText('A name is required')
   await dialog.getByLabel('Name').fill('Friday')
   await dialog.getByLabel(/About/).fill('Keeps the house in order.')
-  await dialog.getByLabel('Change photo').setInputFiles({
+  await dialog.getByRole('button', { name: 'Change photo' }).click()
+  expect(await pickerParams(page)).toMatchObject({ mode: 'open', allowLocal: true, accept: [{ mime: 'image/*' }] })
+  await pickLocal(page, {
     name: 'a.png',
     mimeType: 'image/png',
     buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'),

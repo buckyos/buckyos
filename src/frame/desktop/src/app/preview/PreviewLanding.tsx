@@ -5,10 +5,12 @@
  */
 
 import { FolderOpen, History, ScanEye, Settings2, Upload } from 'lucide-react'
-import { useEffect, useRef, useState, type DragEvent } from 'react'
+import { useEffect, useState, type DragEvent } from 'react'
+import type { SelectedContent } from 'buckyos/content'
 import type { ContentRef, PreviewSessionContext, PreviewSessionItemInput } from '../../components/preview/types'
 import { useI18n } from '../../i18n/provider'
 import { isMockRuntime } from '../../runtime'
+import { useSelectContent } from '../../sysdlg'
 import { usePreviewSettings } from './settings'
 import type { PreviewOpenRequest } from './types'
 import { previewWindowManager } from './windowManager'
@@ -23,17 +25,25 @@ function parseReference(input: string): ContentRef {
   return { kind: 'cyfs-path', path: value }
 }
 
-function filesToRequest(files: File[]): PreviewOpenRequest | null {
-  if (!files.length) return null
-  const refs: ContentRef[] = files.map((file) => ({ kind: 'blob', value: { blob: file, name: file.name } }))
-  if (refs.length === 1) return { source: refs[0], origin: ORIGIN }
-  const session: PreviewSessionContext = {
-    kind: 'list',
-    items: refs.map((source, i) => ({ source, title: files[i].name })),
-    currentIndex: 0,
-    navigation: 'wrap',
-  }
-  return { source: refs[0], session, origin: ORIGIN }
+function itemsToRequest(items: Array<{ source: ContentRef; title: string }>): PreviewOpenRequest | null {
+  if (!items.length) return null
+  if (items.length === 1) return { source: items[0].source, origin: ORIGIN }
+  const session: PreviewSessionContext = { kind: 'list', items, currentIndex: 0, navigation: 'wrap' }
+  return { source: items[0].source, session, origin: ORIGIN }
+}
+
+const filesToRequest = (files: File[]) => itemsToRequest(files.map((file) => ({ source: { kind: 'blob', value: { blob: file, name: file.name } }, title: file.name })))
+
+/** Zone items are opened by reference (the Preview reads them with the user's session); files of this device as blobs. */
+function selectedToRequest(items: SelectedContent[]): PreviewOpenRequest | null {
+  return itemsToRequest(items.flatMap((item): Array<{ source: ContentRef; title: string }> => {
+    if (item.origin === 'zone') {
+      if (item.source.kind !== 'cyfs-path') return []
+      return [{ source: { kind: 'cyfs-path', path: item.source.path }, title: item.hints.name ?? item.source.path.slice(item.source.path.lastIndexOf('/') + 1) }]
+    }
+    if (item.kind === 'file') return [{ source: { kind: 'blob', value: { blob: item.file, name: item.file.name } }, title: item.file.name }]
+    return []
+  }))
 }
 
 export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: PreviewOpenRequest) => void; onOpenSettings: () => void }) {
@@ -42,7 +52,7 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
   const [value, setValue] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const [lastSession] = useState(() => (settings.restoreLastSession ? previewWindowManager.lastSession() : null))
-  const fileInput = useRef<HTMLInputElement | null>(null)
+  const selectContent = useSelectContent()
   // The sample gallery only exists in the mock runtime; load it lazily so the
   // mock provider stays out of the production chunk.
   const [samples, setSamples] = useState<{ container: ContentRef; items: PreviewSessionItemInput[] } | null>(null)
@@ -60,6 +70,11 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
   const submit = () => {
     if (!value.trim()) return
     onOpen({ source: parseReference(value), origin: ORIGIN })
+  }
+  const chooseFiles = async () => {
+    const result = await selectContent({ mode: 'open', multiple: true, allowLocal: true }, { id: 'preview' })
+    const request = result.action === 'selected' ? selectedToRequest(result.items) : null
+    if (request) onOpen(request)
   }
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -125,23 +140,12 @@ export function PreviewLanding({ onOpen, onOpenSettings }: { onOpen: (request: P
           <span>{t('previewApp.landing.drop', 'Drop files here to preview them (several files become one session)')}</span>
           <button
             type="button"
-            onClick={() => fileInput.current?.click()}
+            onClick={() => void chooseFiles()}
+            data-testid="preview-landing-choose"
             className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-[color:var(--cp-border)] px-3 py-1 text-[12px] text-[color:var(--cp-text)] hover:border-[color:var(--cp-accent)]"
           >
             <FolderOpen size={13} /> {t('previewApp.landing.chooseFiles', 'Choose files…')}
           </button>
-          <input
-            ref={fileInput}
-            type="file"
-            multiple
-            className="hidden"
-            data-testid="preview-landing-file-input"
-            onChange={(event) => {
-              const request = filesToRequest([...(event.target.files ?? [])])
-              event.target.value = ''
-              if (request) onOpen(request)
-            }}
-          />
         </div>
 
         <div className="flex flex-wrap items-center justify-center gap-2">

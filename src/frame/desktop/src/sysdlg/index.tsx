@@ -1,7 +1,10 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useOptionalWindowDialog, useWindowDialog, type WindowDialogApi } from '../desktop/windows/dialogs'
 import { useMemo } from 'react'
+import { buckyos } from 'buckyos'
+import { openSelectEmbed } from 'buckyos/app-frame'
 import { useI18n } from '../i18n/provider'
+import { isMockRuntime } from '../runtime'
 import {
   AppInstaller,
   type AppInstallerInternalParams,
@@ -68,13 +71,27 @@ function openSelectDialog(windowDialog: WindowDialogApi, t: Translate, params?: 
 }
 
 /**
- * The system file picker for UI that also runs where there is no Desktop window (AI Workspace on a Workspace's own
- * origin): null there, so the caller keeps its own entry.
+ * The Zone's system entry, which serves `/embed/sysdlg/select`. In the mock runtime the Zone is `localhost` (or
+ * `127.0.0.1`) on the dev server's port, and a page on a sub-host of it (`aiws-<id>.localhost`) frames the parent.
  */
-export function useSelectContent(): ((params?: SelectDialogParams, caller?: SelectDialogCaller) => Promise<SelectDialogResult>) | null {
+function systemOrigin(): string {
+  return isMockRuntime()
+    ? window.location.origin.replace(/^(https?:\/\/)[a-z0-9.-]+\.(localhost(?::\d+)?)$/, '$1$2')
+    : `${window.location.protocol}//${buckyos.getZoneHostName()}`
+}
+
+
+/**
+ * The system file picker for UI that also runs where there is no Desktop window (AI Workspace on a Workspace's own
+ * origin): there it frames the system page over this page (path C), browsing with the Zone root's own session.
+ */
+export function useSelectContent(): (params?: SelectDialogParams, caller?: SelectDialogCaller) => Promise<SelectDialogResult> {
   const windowDialog = useOptionalWindowDialog()
-  const { t } = useI18n()
-  return useMemo(() => windowDialog ? (params, caller) => openSelectDialog(windowDialog, t, params, caller) : null, [windowDialog, t])
+  const { t, locale } = useI18n()
+  return useMemo(() => windowDialog
+    ? (params, caller) => openSelectDialog(windowDialog, t, params, caller)
+    : (params) => openSelectEmbed(systemOrigin(), params ?? {}, { locale, theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light' }),
+  [windowDialog, t, locale])
 }
 
 export function useSystemDialog() {

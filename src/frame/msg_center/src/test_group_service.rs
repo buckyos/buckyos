@@ -2948,6 +2948,11 @@ mod attachment_buckets {
     /// An nfs-server of its own (no auth: msg-center's calls act with full
     /// access) declaring the msg-center buckets, and its named store.
     async fn bucket_host(dir: &std::path::Path) -> Buckets {
+        bucket_host_state(dir).await.0
+    }
+
+    /// The bucket host and the nfs-server state behind it.
+    async fn bucket_host_state(dir: &std::path::Path) -> (Buckets, nfs_server::state::SharedState) {
         let mut config = nfs_server::ServerConfig::new(dir.join("nfs"), vec![]);
         config.named_store = nfs_server::config::NamedStoreSource::Dir(dir.join("store"));
         config.bucket_specs = serde_json::from_value(json!({"msg-center": {
@@ -2959,9 +2964,9 @@ mod attachment_buckets {
         let store = state.share.store(&state.config).await.unwrap().clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/kapi/nfs-server", listener.local_addr().unwrap());
-        let app = nfs_server::build_router(state);
+        let app = nfs_server::build_router(state.clone());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        Buckets { client: Arc::new(buckyos_api::BucketClient::new(kRPC::kRPC::new(&url, None))), store }
+        (Buckets { client: Arc::new(buckyos_api::BucketClient::new(kRPC::kRPC::new(&url, None))), store }, state)
     }
 
     async fn bound_center() -> (MessageCenter, TempDir, Buckets) {
@@ -3369,6 +3374,54 @@ mod attachment_buckets {
         let dm_params = json!({"obj_id": report, "context_path": dm.gen_obj_id().0.to_string()});
         assert!(c.collect_attachment(dm_params.clone(), &account(GUEST_ACCOUNT)).await.is_err());
         assert!(c.collect_attachment(dm_params, &account(MEMBER_ACCOUNT)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_saved_attachment_is_handed_to_its_reader_and_nothing_else() {
+        let (c, tmp, _) = center().await;
+        let (b, nfs) = bucket_host_state(tmp.path()).await;
+        c.set_bucket_host(BucketHost::Fixed(b.clone()));
+        create(&c, json!({})).await;
+        join(&c, &member()).await;
+        let report = file(&b.store, "report.pdf", b"%PDF").await;
+        let notes = file(&b.store, "notes.txt", b"inside the folder").await;
+        let mut trip = ndn_lib::DirObject::new(Some("trip".into()));
+        trip.object_map.body.insert("notes.txt".into(), ndn_lib::SimpleMapItem::ObjId(notes.clone()));
+        let (trip_id, trip_body) = trip.gen_obj_id().unwrap();
+        b.store.put_object(&trip_id, &trip_body).await.unwrap();
+        let shared = with_refs(message(&owner(), None, "files", 1), &[&report, &trip_id]);
+        let shared_id = shared.gen_obj_id().0;
+        assert!(c.accept_group_message(&actor(owner()), shared, None).await.unwrap().ok);
+        let context_path = format!("{}/{}", session_key(&group(), None).unwrap(), shared_id.to_string());
+
+        let reader = account(MEMBER_ACCOUNT);
+        let token = RPCSessionToken::from_string(reader.token.as_deref().unwrap()).unwrap();
+        let app = buckyos_api::validate_verify_hub_token_claims(&token, TokenUse::Session).unwrap().target.canonical_key();
+        let principal = nfs_server::ndm::Principal::new(MEMBER_ACCOUNT.into(), app.clone(), app, None);
+        let held = |id: &ObjId| nfs_server::ndm::holds(&nfs, &principal, &id.to_string());
+        let save = |params: Value| c.prepare_save_attachment(params, &reader);
+
+        // A file, a folder, and a file inside the folder, each handed over exactly.
+        assert!(!held(&report));
+        let saved = save(json!({"obj_id": report, "context_path": context_path})).await.unwrap();
+        assert_eq!(saved, json!({"obj_id": report.to_string(), "kind": "file"}));
+        assert!(held(&report));
+        let saved = save(json!({"obj_id": trip_id, "context_path": context_path})).await.unwrap();
+        assert_eq!(saved, json!({"obj_id": trip_id.to_string(), "kind": "dir"}));
+        assert!(held(&trip_id) && !held(&notes));
+        let saved = save(json!({"obj_id": trip_id, "context_path": context_path, "inner_path": "notes.txt"})).await.unwrap();
+        assert_eq!(saved, json!({"obj_id": notes.to_string(), "kind": "file"}));
+        assert!(held(&notes));
+
+        // Nothing outside what the caller reads through this message.
+        for bad in ["../notes.txt", "missing.txt"] {
+            assert!(save(json!({"obj_id": trip_id, "context_path": context_path, "inner_path": bad})).await.is_err(), "{bad}");
+        }
+        let other = file(&b.store, "other.bin", b"not in the message").await;
+        assert!(save(json!({"obj_id": other, "context_path": context_path})).await.is_err());
+        assert!(!held(&other));
+        let params = json!({"obj_id": report, "context_path": context_path});
+        assert!(c.prepare_save_attachment(params, &account(GUEST_ACCOUNT)).await.is_err());
     }
 
     #[tokio::test]

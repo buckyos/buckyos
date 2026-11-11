@@ -15,6 +15,7 @@ import { SURFACE_ICONS } from '../canvas/icons'
 import { accepted } from '../canvas/surfaceManage'
 import { createSurfaceOps, surfacesOf } from '../canvas/surfaceOps'
 import { saveBlob } from './download'
+import { useFilePicker } from './filePicker'
 import { MockRunPanel } from './panels'
 import { useOverlayMounted } from './popover'
 
@@ -284,6 +285,7 @@ export function ImportForm({ client, onDone }: { client: AiwsClient; onDone: (me
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const pickFile = useFilePicker(setError)
   const run = async () => {
     if (!file || semantics === '') return
     setBusy(true)
@@ -302,7 +304,10 @@ export function ImportForm({ client, onDone }: { client: AiwsClient; onDone: (me
   return (
     <form className="aiws-import" data-testid="aiws-import" onSubmit={(event) => { event.preventDefault(); void run() }}>
       <div className="aiws-panel-title">{t('aiworkspace.shell.import.title')}</div>
-      <input type="file" aria-label={t('aiworkspace.shell.import.file')} accept=".zip,application/zip" data-testid="aiws-import-file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+      <div className="aiws-file-choice" role="group" aria-label={t('aiworkspace.shell.import.file')}>
+        <button type="button" data-testid="aiws-import-file" disabled={busy} onClick={() => { void pickFile.file('.zip,application/zip').then((chosen) => { if (chosen) { setFile(chosen); setError(null) } }) }}>{t('aiworkspace.shell.import.choose')}</button>
+        <span className="aiws-muted" data-testid="aiws-import-file-name">{file?.name ?? t('aiworkspace.shell.import.noFile')}</span>
+      </div>
       <fieldset>
         <legend>{t('aiworkspace.shell.import.semantics')}</legend>
         <label><input type="radio" name="aiws-semantics" value="new" checked={semantics === 'new'} onChange={() => setSemantics('new')} /> {t('aiworkspace.shell.import.asNew')}</label>

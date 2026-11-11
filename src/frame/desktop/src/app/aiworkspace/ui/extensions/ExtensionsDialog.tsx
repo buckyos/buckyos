@@ -13,6 +13,7 @@ import { useLoad, useOutlineVersion, useStore, useUserState, useVersion } from '
 import { useAiwsText } from '../../useAiwsText'
 import { Modal } from '../shell/dialogs'
 import { saveBlob } from '../shell/download'
+import { useFilePicker } from '../shell/filePicker'
 import { controlDefinitions, HOST_MANIFEST_VERSION, interfaceChanges, type InterfaceChanges } from './controls'
 import {
   buildFailure, buildFromHome, createSource, exportToHome, hasSource, homeControlDir, homeExportDir, pullToHome, sourceStateKey, startWatch, stopWatch, subscribeWatch, unbuiltDefinitions, watchOf, type BuildOutcome,
@@ -39,7 +40,7 @@ export function ExtensionsDialog({ initialDefId, phone, onClose }: { initialDefI
   const canBuild = !phone && live && store.session.info().capabilities.some((c) => c === 'structure' || c === 'update')
   const current = defs.find((d) => d.entity_id === chosen) ?? null
   // a .pikg file of the user's into the library (Q21): uploaded into its own exports bucket, then `ext.install`
-  const pikgInput = useRef<HTMLInputElement>(null)
+  const pickFile = useFilePicker((message) => store.notify('error', message))
   const [importing, setImporting] = useState(false)
   const importPikg = async (file: File) => {
     setImporting(true)
@@ -60,8 +61,7 @@ export function ExtensionsDialog({ initialDefId, phone, onClose }: { initialDefI
         {canBuild && view.kind === 'list' && <>
           <button type="button" data-testid="aiws-ext-new" onClick={() => setView({ kind: 'new' })}><Plus size={15} aria-hidden="true" />{t('aiworkspace.ext.new')}</button>
           <button type="button" data-testid="aiws-ext-library" onClick={() => setView({ kind: 'library' })}><Library size={15} aria-hidden="true" />{t('aiworkspace.ext.fromLibrary')}</button>
-          <button type="button" data-testid="aiws-ext-import-pikg" disabled={importing} onClick={() => pikgInput.current?.click()}><FileUp size={15} aria-hidden="true" />{t('aiworkspace.ext.importPikg')}</button>
-          <input ref={pikgInput} type="file" accept=".pikg" hidden data-testid="aiws-ext-import-pikg-file" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importPikg(file) }} />
+          <button type="button" data-testid="aiws-ext-import-pikg" disabled={importing} onClick={() => { void pickFile.file('.pikg').then((file) => { if (file) void importPikg(file) }) }}><FileUp size={15} aria-hidden="true" />{t('aiworkspace.ext.importPikg')}</button>
           <button type="button" data-testid="aiws-ext-export" disabled={checked.size === 0} title={checked.size === 0 ? t('aiworkspace.ext.exportPick') : undefined} onClick={() => setView({ kind: 'export' })}><Upload size={15} aria-hidden="true" />{t('aiworkspace.ext.export', { count: checked.size })}</button>
         </>}
         {view.kind !== 'list' && <button type="button" className="aiws-link" onClick={() => setView({ kind: 'list' })}>{t('aiworkspace.ext.back')}</button>}

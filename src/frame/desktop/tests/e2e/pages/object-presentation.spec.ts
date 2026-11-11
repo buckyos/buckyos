@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { pickZone, putZoneFile, selectDialog } from '../fixtures/selectDialog'
 
 // An 8×8 PNG, small enough for both the avatar and the Zone icon limits.
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGN4VmGDFTEMLQkAN6BmgaudJikAAAAASUVORK5CYII=', 'base64')
@@ -29,7 +30,11 @@ test.describe('object presentation', () => {
     await expect(win.getByTestId('settings-zone-did')).toHaveText('did:bns:alice')
     await win.getByTestId('settings-zone-name').fill('我的家庭云')
     await win.getByTestId('settings-zone-description').fill('Photos and files for the family')
-    await win.getByTestId('settings-zone-icon-input').setInputFiles({ name: 'zone.png', mimeType: 'image/png', buffer: PNG })
+    // The icon comes from the Zone, the user's main file system.
+    await putZoneFile(page, '/home/Pictures/zone.png', PNG, 'image/png')
+    await win.getByTestId('settings-zone-icon-choose').click()
+    await pickZone(selectDialog(page), '/home/Pictures/zone.png')
+    await expect(win.getByTestId('settings-zone-icon')).toContainText('Your image; transparency is kept.')
     await expect(win.getByTestId('settings-zone-preview')).toContainText('我的家庭云')
     await win.getByTestId('settings-zone-save').click()
     await expect(win.getByTestId('settings-zone-status')).toContainText('Saved')
@@ -83,7 +88,12 @@ test.describe('object presentation', () => {
     const win = page.getByTestId('window-users-agents')
     await win.getByRole('button', { name: 'Avatar' }).click()
     const dialog = page.getByRole('dialog', { name: 'Profile picture' })
-    await dialog.getByTestId('self-avatar-input').setInputFiles({ name: 'me.png', mimeType: 'image/png', buffer: PNG })
+    // A picture already in the Zone; the profile dialog steps aside while the picker is open, then comes back.
+    await dialog.getByTestId('self-avatar-choose').click()
+    await expect(dialog).toBeHidden()
+    await pickZone(selectDialog(page), '/home/Pictures/sketches/design-sketch.png')
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText('Cropped to a square')).toBeVisible()
     await dialog.getByTestId('self-avatar-save').click()
     await expect(dialog).toHaveCount(0)
 

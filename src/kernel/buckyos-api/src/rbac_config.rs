@@ -255,6 +255,9 @@ p, frame, obj://bucket/zone/{frame}/*, all, allow
 p, frame, obj://ndm/uploads, write, allow
 p, frame, obj://ndm/objects, read, allow
 p, frame, obj://ndm/retain, write, allow
+# A service that authorizes a read by its own context (a message, a post) hands that
+# object to the reader: holdings only, not obj://ndm/manage.
+p, frame, obj://ndm/grant, write, allow
 p, admin, obj://ndm/uploads, write, allow
 p, admin, obj://ndm/objects, read, allow
 p, admin, obj://ndm/retain, write, allow

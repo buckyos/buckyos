@@ -8,7 +8,7 @@ use crate::auth::reader_from_request;
 use crate::delivery::HEADER_AUDIENCE;
 use crate::error::{denied, HsError};
 use crate::host::{Host, Viewer};
-use crate::protocol::{normalize_obj_id, obj_type_of, OBJ_TYPE_FILE, ZONE_FEED};
+use crate::protocol::{normalize_obj_id, obj_type_of, OBJ_TYPE_DIR, OBJ_TYPE_FILE, ZONE_FEED};
 use crate::Station;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -52,6 +52,7 @@ pub fn router(state: AppState) -> Router {
         .route("/home/{user}/objects/{id}", get(object))
         .route("/home/{user}/objects/{id}/content", get(object_content))
         .route("/home/{user}/objects/{id}/ref", get(object_ref))
+        .route("/home/{user}/objects/{id}/save", post(object_save))
         .route("/home/{user}/chunks/{id}", get(chunk))
         .route("/home/{user}/inbox", axum::routing::put(inbox_put).get(inbox_status))
         .route("/home/{user}/{ns}/@/{key}", get(entry_head))
@@ -406,6 +407,56 @@ async fn object_ref(State(state): State<AppState>, headers: HeaderMap, Path((use
         },
         Ok(None) => (StatusCode::NOT_FOUND, "not found").into_response(),
         Err(r) => r,
+    }
+}
+
+/// `POST /home/<user>/objects/<file or folder id>/save`: hands what the caller reads here to
+/// the caller's own session (nfs-server `bucket.grant_holdings`, for the user and the App
+/// of the session), which then commits it into the caller's files (`commit_object`). Only
+/// an account of this Zone has files; the content must be here, complete. Answers
+/// `{obj_id, kind: "file" | "dir"}`.
+async fn object_save(State(state): State<AppState>, headers: HeaderMap, Path((user, id)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let id = normalize_obj_id(&id);
+    let kind = match obj_type_of(&id).as_deref() {
+        Some(OBJ_TYPE_FILE) => "file",
+        Some(OBJ_TYPE_DIR) => "dir",
+        _ => return (StatusCode::BAD_REQUEST, "only a file or a folder can be saved").into_response(),
+    };
+    let token = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).map(str::trim).or(q.get("access").map(String::as_str));
+    let Some(token) = token else { return error_response(HsError::Unauthorized("session token required".into())) };
+    let caller = match state.host.auth.authenticate(token).await {
+        Ok(caller) => caller,
+        Err(e) => return error_response(e),
+    };
+    // External and Agent sessions speak for a DID; only an account's session has files here.
+    let app = match caller.app_id.as_deref() {
+        Some(app) if !caller.restricted && !caller.principal.starts_with("did:") => app.to_string(),
+        _ => return error_response(denied(buckyos_api::DenyReason::SessionKindNotAllowed, "object.save")),
+    };
+    let (station, reader, _) = match find_object(&state, &user, &headers, &q, &id).await {
+        Ok(Some(found)) => found,
+        Ok(None) => return (StatusCode::NOT_FOUND, "not found").into_response(),
+        Err(r) => return r,
+    };
+    let complete = match station.store.is_complete(&id).await {
+        Ok(true) => true,
+        Ok(false) if reader == Reader::Owner && kind == "file" => {
+            let _ = station.fetch_content_on_demand(&id).await;
+            station.store.is_complete(&id).await.unwrap_or(false)
+        }
+        Ok(false) => false,
+        Err(e) => return error_response(e),
+    };
+    if !complete {
+        return (StatusCode::NOT_FOUND, "content not held here").into_response();
+    }
+    let granted = match station.store.buckets().await {
+        Ok(buckets) => buckets.grant_holdings(&caller.principal, &app, std::slice::from_ref(&id)).await.map_err(crate::objects::bucket_err),
+        Err(e) => Err(e),
+    };
+    match granted {
+        Ok(()) => no_store(Json(json!({ "obj_id": id, "kind": kind })).into_response()),
+        Err(e) => error_response(e),
     }
 }
 

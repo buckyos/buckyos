@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { BookOpen, ChevronRight } from 'lucide-react'
 import { useSWRConfig } from 'swr'
@@ -16,6 +16,7 @@ import {
   type SkillRuntimeStatus,
   type SkillSource,
 } from '../model'
+import { pickFile } from '../pickFile'
 import { readSkillPikg } from '../pikg'
 import { Badge, ConfirmDialog, Empty, ErrorBox, Mono, Panel, Pre, Sid, Time, type ConfirmRequest } from '../ui'
 
@@ -336,15 +337,17 @@ function PlanDialog({ request, onClose, onDone }: { request: PlanRequest; onClos
   )
 }
 
+const PIKG_ACCEPT = [{ ext: ['.pikg', '.zip'] }, { mime: 'application/zip' }]
+
 function InstallPanel({ plan }: { plan: (request: PlanRequest) => void }) {
-  const input = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
-  const pick = async (file?: File) => {
-    if (!file) return
+  const pick = async () => {
     setBusy(true)
     setError(null)
     try {
+      const file = await pickFile(PIKG_ACCEPT)
+      if (!file) return
       const read = await readSkillPikg(file)
       plan({
         source: { package: read.package },
@@ -356,23 +359,19 @@ function InstallPanel({ plan }: { plan: (request: PlanRequest) => void }) {
       setError(e)
     } finally {
       setBusy(false)
-      if (input.current) input.current.value = ''
     }
   }
   return (
     <Panel title={t('skInstallFromFile')} testId="skills-install">
       <p className="mb-2 text-xs text-mute">{t('skInstallHint')}</p>
       <ErrorBox error={error} />
-      <input ref={input} type="file" accept=".pikg,.zip,application/zip" className="hidden" aria-label={t('skChoosePikg')}
-        data-testid="skills-pikg-input" onChange={(e) => void pick(e.target.files?.[0])} />
-      <button className="btn" disabled={busy} onClick={() => input.current?.click()}>{t(busy ? 'loading' : 'skChoosePikg')}</button>
+      <button className="btn" disabled={busy} data-testid="skills-pikg-choose" onClick={() => void pick()}>{t(busy ? 'loading' : 'skChoosePikg')}</button>
     </Panel>
   )
 }
 
 function ImportPanel() {
   const refresh = useSkillsRefresh()
-  const file = useRef<HTMLInputElement>(null)
   const [text, setText] = useState('')
   const [name, setName] = useState('')
   const [scope, setScope] = useState('')
@@ -380,9 +379,10 @@ function ImportPanel() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [session, setSession] = useState<string | null>(null)
-  const load = async (picked?: File) => {
-    if (!picked) return
+  const load = async () => {
     try {
+      const picked = await pickFile()
+      if (!picked) return
       setText(await picked.text())
       setSource(picked.name)
       setError(null)
@@ -418,8 +418,7 @@ function ImportPanel() {
       <textarea className="input mb-2 block w-full font-mono" rows={6} value={text} aria-label={t('skImportText')} placeholder={t('skImportText')}
         onChange={(e) => { setText(e.target.value); setSource('') }} />
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-mute">
-        <input ref={file} type="file" className="hidden" aria-label={t('skImportFile')} onChange={(e) => { void load(e.target.files?.[0]); e.target.value = '' }} />
-        <button className="btn" onClick={() => file.current?.click()}>{t('skImportFile')}</button>
+        <button className="btn" data-testid="skills-import-file" onClick={() => void load()}>{t('skImportFile')}</button>
         {source && <Mono>{source}</Mono>}
         <label>
           {t('skImportName')} <input className="input ml-1" value={name} onChange={(e) => setName(e.target.value)} />

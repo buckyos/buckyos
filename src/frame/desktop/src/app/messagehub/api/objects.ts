@@ -5,9 +5,10 @@
  * through). Results are cached per viewer (`identityKey`), `context_path`
  * and object id; a new viewer drops them and revokes the Blob URLs
  * (`resetObjectCaches`). Collecting copies the attachment into the viewer's
- * `collected` bucket (`msg.collect_attachment`).
+ * `collected` bucket (`msg.collect_attachment`); saving hands it to the viewer's
+ * session to commit into their files (`msg.prepare_save_attachment`).
  */
-import { collectAttachment, currentSessionToken, msgCenterServiceUrl } from '../datamodel/sessionApi'
+import { collectAttachment, currentSessionToken, msgCenterServiceUrl, prepareSaveAttachment } from '../datamodel/sessionApi'
 import { ObjectRouteError, onObjectCachesReset, resetObjectCaches, retryingObjectRead, type ObjectAccess, type ObjectInfo } from '../conversation/history/objectAccess'
 
 export { ObjectRouteError }
@@ -98,5 +99,9 @@ export const apiObjectAccess: ObjectAccess = {
     if (!context) throw new ObjectRouteError(404, 'not-found')
     const { bucket_id: bucketId, key } = await collectAttachment(objId, context)
     return { bucketId, key }
+  },
+  async prepareSave(objId, context, innerPath) {
+    const { obj_id: id, kind } = await prepareSaveAttachment(objId, context, innerPath)
+    return { objId: id, kind }
   },
 }

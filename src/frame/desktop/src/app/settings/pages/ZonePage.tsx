@@ -184,7 +184,7 @@ export function ZonePage() {
               }}
               onChange={(icon) => { setDraft((current) => ({ ...current, icon })); setStatus({ kind: 'ready' }) }}
               testId="settings-zone-icon"
-              inputTestId="settings-zone-icon-input"
+              chooseTestId="settings-zone-icon-choose"
             />
             {canEdit ? (
               <div className="flex flex-wrap items-center gap-2">

@@ -14,6 +14,7 @@
 //! | `obj://ndm/uploads` | write  | upload chunks, register own objects, existence checks |
 //! | `obj://ndm/objects` | read   | read any object or chunk                            |
 //! | `obj://ndm/retain`  | write  | pin/unpin under the caller's own owner prefix       |
+//! | `obj://ndm/grant`   | write  | granting holdings, nothing else                     |
 //! | `obj://ndm/manage`  | write  | delete, GC, fs anchors, edges, pins of any owner, granting holdings |
 //!
 //! What a caller uploaded or registered stays readable to it (`ndm_holdings`)
@@ -46,6 +47,9 @@ pub const RES_UPLOADS: &str = "obj://ndm/uploads";
 pub const RES_OBJECTS: &str = "obj://ndm/objects";
 pub const RES_RETAIN: &str = "obj://ndm/retain";
 pub const RES_MANAGE: &str = "obj://ndm/manage";
+/// Granting holdings only: what a service that authorizes reads by its own context
+/// (a message, a post) needs to hand an object to a reader.
+pub const RES_GRANT: &str = "obj://ndm/grant";
 
 /// How long an upload or a registration holds what it brought into the store.
 pub const HOLD_TTL_SECS: u64 = 24 * 3600;
@@ -273,9 +277,12 @@ pub async fn hold_checked(state: &AppState, store: &NamedDataMgr, p: &Principal,
 /// `bucket.grant_holdings { user_id, app_id, obj_ids }`: exactly these objects become
 /// readable to that user through that app. Nothing below them is covered: a held file
 /// is read through the file, its chunks stay out of reach. No lease is taken; the
-/// granting service keeps retaining what it produced.
+/// granting service keeps retaining what it produced. Needs `obj://ndm/grant` (or
+/// `obj://ndm/manage`, which includes it).
 pub async fn grant_holdings(state: &SharedState, session: &Session, user_id: &str, app_id: &str, obj_ids: &[String]) -> BucketResult<Value> {
-    crate::ndn::public::require(state, session, RES_MANAGE).await?;
+    if crate::ndn::public::require(state, session, RES_GRANT).await.is_err() {
+        crate::ndn::public::require(state, session, RES_MANAGE).await?;
+    }
     if user_id.is_empty() || app_id.is_empty() {
         return Err(BucketError::InvalidArgument("user_id and app_id are required".into()));
     }

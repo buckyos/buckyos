@@ -11,6 +11,7 @@ use crate::error::*;
 use crate::filedb::{Anchor, BindingRow, CollectionRow, Entity, ViewGroupRow, ViewRow};
 use crate::fsutil::*;
 use crate::handle::{native_entry_ref, watch_token, Cursor, NativeHandle, ROOT_NODE_ID};
+use crate::recent;
 use crate::state::AppState;
 use crate::types::{Capabilities, Locator, WantMask, WireRef};
 use crate::watch::ContainerKey;
@@ -663,7 +664,6 @@ impl AppState {
             ));
         }
         let limit = args.limit.unwrap_or(200).clamp(1, self.config.max_list);
-        let revision = self.node_revision(node).unwrap_or_default();
         let container_key = node.container_key().unwrap();
 
         let (default_order, mut rows, conflicts) = match node {
@@ -672,6 +672,7 @@ impl AppState {
                 let (rows, conflicts) = self.dir_entries(actor, node, want)?;
                 ("name", rows, conflicts)
             }
+            Node::View(_) if recent::is_recent(node) => ("manual", self.recent_entries(actor, want)?, Vec::new()),
             Node::View(v) => ("manual", self.view_entries(actor, v, None, want)?, Vec::new()),
             Node::ViewGroup { group, view } => {
                 ("manual", self.view_entries(actor, view, Some(group.node_id), want)?, Vec::new())
@@ -685,6 +686,11 @@ impl AppState {
                 Vec::new(),
             ),
             Node::Projection(p) => ("name", self.projection_entries(actor, p, want)?, Vec::new()),
+        };
+        let revision = if recent::is_recent(node) {
+            recent::recent_revision(&rows)
+        } else {
+            self.node_revision(node).unwrap_or_default()
         };
         let order = args.order.clone().unwrap_or_else(|| default_order.to_string());
         if order != "manual" {
@@ -949,7 +955,7 @@ impl AppState {
     }
 
     /// target JSON for a native child (handles want-mask attrs).
-    fn target_json(&self, actor: &Actor, node: &Node, want: &WantMask) -> NfsResult<Value> {
+    pub(crate) fn target_json(&self, actor: &Actor, node: &Node, want: &WantMask) -> NfsResult<Value> {
         let mut attrs = serde_json::Map::new();
         if let Node::Native { meta, .. } = node {
             if want.has("base") {

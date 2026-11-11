@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Page, TestInfo } from '@playwright/test'
 import type { EntityEnvelope, FreshnessInfo, Result, RichTextContent, WorkspaceInfo, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
-import { createSample, createTemplate, expect, expectAllCommitted, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
+import { chooseFromDevice, createSample, createTemplate, expect, expectAllCommitted, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
 
 type Workspace = Pick<WorkspaceSummary, 'workspace_id' | 'epoch'>
 
@@ -154,7 +154,7 @@ test('[journey-handoff] an author exports a short report and an isolated user im
   try {
     await peer.page.goto('/workspace')
     const form = peer.page.getByTestId('aiws-import')
-    await form.getByTestId('aiws-import-file').setInputFiles(sharePath)
+    await chooseFromDevice(peer.page, () => form.getByTestId('aiws-import-file').click(), sharePath)
     await expect(form.getByTestId('aiws-import-submit')).toBeDisabled()
     await form.getByLabel('作为新的工作区', { exact: false }).check()
     const [response] = await Promise.all([peer.page.waitForResponse((reply) => {

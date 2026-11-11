@@ -7,7 +7,7 @@
 
 import { readFileSync } from 'node:fs'
 import type { Page } from '@playwright/test'
-import { mainMenu, openCanvas, test, expect, type Api } from './fixtures'
+import { chooseFromDevice, chooseFromZone, mainMenu, openCanvas, test, expect, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const SHOTS = 'test-results/aiworkspace-office'
@@ -61,9 +61,7 @@ test('OI-01 a .docx from the insert menu: a new flow page of rich text and pictu
   test.setTimeout(120_000)
   const ws = await canvasWorkspace(api, `oi-01 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  const chooser = page.waitForEvent('filechooser')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office')
-  await (await chooser).setFiles({ name: 'basic.docx', mimeType: DOCX, buffer: fixture('docx/basic.docx') })
+  await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office'), { name: 'basic.docx', mimeType: DOCX, buffer: fixture('docx/basic.docx') })
   const dialog = page.getByTestId('aiws-office-dialog')
   await expect(dialog.getByTestId('aiws-office-facts')).toBeVisible()
   await expect(dialog.getByTestId('aiws-office-mode-editable')).toBeChecked()
@@ -135,9 +133,7 @@ test('OI-03 the report lists what was simplified; hidden slides on request; a ch
   test.setTimeout(240_000)
   const ws = await canvasWorkspace(api, `oi-03 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  const chooser = page.waitForEvent('filechooser')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office')
-  await (await chooser).setFiles({ name: 'basic.pptx', mimeType: PPTX, buffer: fixture('pptx/basic.pptx') })
+  await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office'), { name: 'basic.pptx', mimeType: PPTX, buffer: fixture('pptx/basic.pptx') })
   const dialog = page.getByTestId('aiws-office-dialog')
   const withLibreOffice = await libreOffice(page)
   await expect(dialog.getByTestId('aiws-office-objects-note')).toBeVisible()
@@ -192,9 +188,7 @@ test('OI-05 "as it looks": LibreOffice makes a PDF, the PDF importer takes it ap
   test.setTimeout(240_000)
   const ws = await canvasWorkspace(api, `oi-05 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  const chooser = page.waitForEvent('filechooser')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office')
-  await (await chooser).setFiles({ name: 'basic.docx', mimeType: DOCX, buffer: fixture('docx/basic.docx') })
+  await chooseFromDevice(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office'), { name: 'basic.docx', mimeType: DOCX, buffer: fixture('docx/basic.docx') })
   const dialog = page.getByTestId('aiws-office-dialog')
   const withLibreOffice = await libreOffice(page)
   await expect(dialog.getByTestId('aiws-office-facts')).toBeVisible()
@@ -220,9 +214,7 @@ test('OI-06 a Word file with EMF / WMF pictures: pictures through LibreOffice, e
   test.setTimeout(240_000)
   const ws = await canvasWorkspace(api, `oi-06 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  const chooser = page.waitForEvent('filechooser')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office')
-  await (await chooser).setFiles({ name: 'VariousPictures.docx', mimeType: DOCX, buffer: fixture('docx/real/VariousPictures.docx') })
+  await chooseFromDevice(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office'), { name: 'VariousPictures.docx', mimeType: DOCX, buffer: fixture('docx/real/VariousPictures.docx') })
   const dialog = page.getByTestId('aiws-office-dialog')
   const withLibreOffice = await libreOffice(page)
   await dialog.getByTestId('aiws-office-keep').uncheck()
@@ -271,9 +263,7 @@ test('OI-08 the same document imported twice: two pages, the second named apart'
   await openCanvas(page, ALICE, ws.workspace_id)
   for (let k = 0; k < 2; k++) {
     if (k === 1) await page.getByTestId('aiws-import-report-close').click({ timeout: 20_000 })
-    const chooser = page.waitForEvent('filechooser')
-    await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office')
-    await (await chooser).setFiles({ name: 'basic.docx', mimeType: DOCX, buffer: fixture('docx/basic.docx') })
+    await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-office'), { name: 'basic.docx', mimeType: DOCX, buffer: fixture('docx/basic.docx') })
     const dialog = page.getByTestId('aiws-office-dialog')
     await dialog.getByTestId('aiws-office-start').click()
     await expect(dialog).toHaveCount(0, { timeout: 60_000 })

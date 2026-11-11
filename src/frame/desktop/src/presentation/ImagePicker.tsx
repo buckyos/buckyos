@@ -1,9 +1,10 @@
 /* ── Choose / replace / remove an image (avatars, Zone icons) with a local preview ── */
 
-import { useRef, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Button } from '@mui/material'
 import { ImagePlus, Trash2 } from 'lucide-react'
 import { useI18n } from '../i18n/provider'
+import { usePickFiles } from '../sysdlg/select/pickFiles'
 import { ObjectAvatar } from './ObjectIcon'
 import {
   ACCEPTED_IMAGE_TYPES,
@@ -34,8 +35,8 @@ export function ImagePicker({
   previewSize = 72,
   onChange,
   testId,
-  inputTestId,
-  inputLabel,
+  chooseTestId,
+  onPickingChange,
 }: {
   title: string
   /** The chosen image (a data URL); null means "no image of our own". */
@@ -50,22 +51,28 @@ export function ImagePicker({
   previewSize?: number
   onChange: (value: string | null) => void
   testId?: string
-  inputTestId?: string
-  inputLabel?: string
+  chooseTestId?: string
+  /** While the system file picker is open; a caller inside a page-level modal hides it meanwhile. */
+  onPickingChange?: (picking: boolean) => void
 }) {
   const { t } = useI18n()
-  const file = useRef<HTMLInputElement>(null)
+  const pickFiles = usePickFiles('image-picker')
   const [error, setError] = useState<ImageFileErrorReason | null>(null)
+  const [picking, setPicking] = useState(false)
 
-  const pick = async (picked?: File) => {
-    if (!picked) return
+  const pick = async () => {
+    setPicking(true)
+    onPickingChange?.(true)
     try {
+      const picked = (await pickFiles({ accept: ACCEPTED_IMAGE_TYPES.join(','), title: labels.choose }))?.[0]
+      if (!picked) return
       onChange(await imageFileToDataUrl(picked, options))
       setError(null)
     } catch (caught) {
       setError(caught instanceof ImageFileError ? caught.reason : 'unreadable')
     } finally {
-      if (file.current) file.current.value = ''
+      setPicking(false)
+      onPickingChange?.(false)
     }
   }
 
@@ -86,22 +93,12 @@ export function ImagePicker({
         decorative
       />
       <div className="flex min-w-0 flex-col items-start gap-1.5">
-        <input
-          ref={file}
-          type="file"
-          accept={ACCEPTED_IMAGE_TYPES.join(',')}
-          className="hidden"
-          aria-label={inputLabel ?? labels.choose}
-          data-testid={inputTestId}
-          disabled={disabled}
-          onChange={(event) => void pick(event.target.files?.[0])}
-        />
         <div className="flex flex-wrap gap-2">
-          <Button size="small" variant="outlined" startIcon={<ImagePlus size={14} />} disabled={disabled} onClick={() => file.current?.click()}>
+          <Button size="small" variant="outlined" startIcon={<ImagePlus size={14} />} disabled={disabled || picking} onClick={() => void pick()} data-testid={chooseTestId}>
             {labels.choose}
           </Button>
           {value ? (
-            <Button size="small" variant="text" startIcon={<Trash2 size={14} />} disabled={disabled} onClick={() => { setError(null); onChange(null) }}>
+            <Button size="small" variant="text" startIcon={<Trash2 size={14} />} disabled={disabled || picking} onClick={() => { setError(null); onChange(null) }}>
               {labels.remove}
             </Button>
           ) : null}

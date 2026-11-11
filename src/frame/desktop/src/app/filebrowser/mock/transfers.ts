@@ -19,6 +19,7 @@ import { classifyFileKind } from '../data/fileKinds'
 import { dfsPathOf } from '../data/urls'
 import { invalidateMockPath, mockDelay } from '../data/mockReader'
 import { mockAddEntry, mockNameExists } from './data'
+import { mockSetContent } from './content'
 
 function checkCancelled(controls: TransferControls) {
   if (controls.isCancelled()) throw new TransferCancelledError()
@@ -88,6 +89,8 @@ async function runMockTransfer(
     source: { type: 'local', label: 'Uploaded (mock)' },
   }
   mockAddEntry(entry)
+  const file = takeLocalFile(task.candidate.localId)
+  if (file) mockSetContent(entry.id, file)
   invalidateMockPath(parentPath)
   return entry
 }

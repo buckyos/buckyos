@@ -1,6 +1,7 @@
-import { expect, test as base, type Page } from '@playwright/test'
+import { expect, test as base, type FrameLocator, type Locator, type Page } from '@playwright/test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { pickLocal, putZoneFile, selectDialog, selectEmbedFrame, selectRow } from '../e2e/fixtures/selectDialog'
 
 const BACKEND_FIXTURE = resolve('../aiworkspace/fixtures/project-workspace/commits.json')
 export const VECTORS_PATH = resolve('../aiworkspace/fixtures/vectors/object-ids.json')
@@ -299,3 +300,67 @@ export const test = base.extend<{ api: Api }>({
   },
 })
 export { expect }
+
+// ---- the system file picker (sysdlg/select): every file the Workspace takes in is chosen there
+
+/** A file the specs choose, from the Zone or from this device. */
+export type PickedFile = { name: string; mimeType: string; buffer: Buffer }
+/** Where the specs put the files they choose from the Zone (the mock Desktop runtime's file data). */
+export const ZONE_DIR = '/home/Documents/aiws-e2e'
+
+const asPayload = (file: PickedFile | string): PickedFile => typeof file === 'string'
+  ? { name: file.slice(file.lastIndexOf('/') + 1), mimeType: 'application/octet-stream', buffer: readFileSync(file) } : file
+
+/** The picker over this page: in the Desktop window (path A), or framed over a Workspace's own page (path C). */
+export async function openedPicker(page: Page): Promise<{ dialog: Locator; frame: FrameLocator | null }> {
+  const inWindow = selectDialog(page)
+  const framed = selectDialog(selectEmbedFrame(page))
+  // (a frame locator cannot be part of `or`)
+  await expect.poll(async () => await inWindow.isVisible() || await framed.isVisible(), { timeout: 30_000 }).toBe(true)
+  return await inWindow.isVisible() ? { dialog: inWindow, frame: null } : { dialog: framed, frame: selectEmbedFrame(page) }
+}
+
+const HOME_LABEL = /^(我的文件|My files)$/
+
+/** From the picker's home root ("我的文件") down through `segments`, the folders below the home folder. */
+export async function zoneGoto(dialog: Locator, segments: string[]) {
+  const locations = dialog.getByTestId('select-locations')
+  if (await locations.evaluate((el) => el.tagName === 'SELECT')) {
+    const label = (await locations.locator('option').allTextContents()).find((text) => HOME_LABEL.test(text.trim()))
+    await locations.selectOption({ label: label?.trim() ?? '我的文件' })
+  } else await locations.getByRole('button', { name: HOME_LABEL }).click()
+  for (const segment of segments) await selectRow(dialog, segment).click()
+}
+const belowHome = (dir: string) => dir.split('/').filter(Boolean).slice(1)
+
+/** Choose files from the Zone in the picker `open` brings up. They are put into the mock Zone first — of this page,
+ * which reads them, and of the framed system page, which lists them (path C) — then picked in their folder. */
+export async function chooseFromZone(page: Page, open: () => Promise<unknown>, files: PickedFile | string | Array<PickedFile | string>, dir = ZONE_DIR) {
+  const list = (Array.isArray(files) ? files : [files]).map(asPayload)
+  for (const file of list) await putZoneFile(page, `${dir}/${file.name}`, file.buffer, file.mimeType)
+  await open()
+  const { dialog } = await openedPicker(page)
+  const framed = page.frames().find((frame) => /\/embed\/sysdlg\/select/.test(frame.url()))
+  if (framed) for (const file of list) await putZoneFile(framed, `${dir}/${file.name}`, file.buffer, file.mimeType)
+  await zoneGoto(dialog, belowHome(dir))
+  for (const file of list) await selectRow(dialog, file.name).click()
+  await dialog.getByTestId('select-confirm').click()
+}
+
+/** Choose a whole Zone folder (its files put into the mock Zone first) in the folder picker `open` brings up. */
+export async function chooseFolderFromZone(page: Page, open: () => Promise<unknown>, dir: string, files: Array<{ path: string; buffer: Buffer }>) {
+  for (const file of files) await putZoneFile(page, `${dir}/${file.path}`, file.buffer)
+  await open()
+  const { dialog } = await openedPicker(page)
+  const framed = page.frames().find((frame) => /\/embed\/sysdlg\/select/.test(frame.url()))
+  if (framed) for (const file of files) await putZoneFile(framed, `${dir}/${file.path}`, file.buffer)
+  await zoneGoto(dialog, belowHome(dir))
+  await dialog.getByTestId('select-confirm').click()
+}
+
+/** Choose files (or a folder) from this device: the picker's "This device" entry, then the browser's own picker. */
+export async function chooseFromDevice(page: Page, open: () => Promise<unknown>, files: string | string[] | PickedFile | PickedFile[]) {
+  await open()
+  const { dialog } = await openedPicker(page)
+  await pickLocal(page, files, dialog)
+}

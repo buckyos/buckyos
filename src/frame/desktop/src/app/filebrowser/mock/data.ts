@@ -1,5 +1,6 @@
 import { MOCK_DESKTOP_PATH, mockDesktopFolderEntries } from '../../../api/desktop_items_mock'
 import { classifyFileKind } from '../data/fileKinds'
+import { mockThumbnailUrl } from './thumbnail'
 import type {
   BrowserTab,
   DeviceNode,
@@ -394,6 +395,7 @@ function buildIndex(list: FileEntry[]) {
   const byId: Record<string, FileEntry> = {}
   for (const entry of list) {
     byId[entry.id] = entry
+    if (entry.kind === 'image' && !entry.thumbnailUrl) entry.thumbnailUrl = mockThumbnailUrl(entry.name)
     const parent = entry.path.split('/').slice(0, -1).join('/') || '/'
     const key = parent === '' ? '/' : parent
     if (!byPath[key]) byPath[key] = []

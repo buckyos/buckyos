@@ -1,7 +1,8 @@
 import './ProviderRulesPanel.css'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check, Code2, Copy, List, Pencil } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
+import { usePickFiles } from '../../../../sysdlg/select/pickFiles'
 import { useAICCStore } from '../../hooks/use-aicc-store'
 import type { KnownProviderProfile, ProviderView } from '../../../../api/aicc_mgr'
 import { LongField } from '../shared/LongField'
@@ -53,7 +54,7 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [attempt, setAttempt] = useState(0)
-  const input = useRef<HTMLInputElement>(null)
+  const pickFiles = usePickFiles('ai-center.rules')
   const active = editing ? draft : current
   const resolved = sourceFile ? importedRules : provider.config.resolved_model_rules ?? {}
   const definitions = options ?? EMPTY_OPTIONS
@@ -109,9 +110,12 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
   }
-  const importFile = async (file: File) => {
+  const importFile = async () => {
     try {
-      setError(''); setImporting('file')
+      setError('')
+      const file = (await pickFiles({ accept: '.json,application/json', title: t('aiCenter.rules.import', 'Import full JSON') }))?.[0]
+      if (!file) return
+      setImporting('file')
       if (file.size > 5 * 1024 * 1024) throw new Error(t('aiCenter.rules.fileTooLarge', 'Rules file must be smaller than 5 MB.'))
       const next = parseProviderRulesFile(await file.text(), active)
       const resolved = await store.previewProviderRules(provider, providerRulesFile(next), ids)
@@ -161,7 +165,7 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
         {editing && <button type="button" disabled={busy} className="rounded-lg border px-3 py-2 text-sm"
           onClick={() => { setEditing(false); setEdits({}); setError(''); setSourceFile(''); setSelected(null) }}>{t('common.cancel', 'Cancel')}</button>}
         <button type="button" disabled={busy || !fullFile} onClick={exportFile} className="rounded-lg border px-3 py-2 text-sm">{t('aiCenter.rules.export', 'Export full JSON')}</button>
-        {editing && <button type="button" disabled={busy} onClick={() => input.current?.click()} className="rounded-lg border px-3 py-2 text-sm">{importing === 'file' ? t('aiCenter.rules.importing', 'Importing...') : t('aiCenter.rules.import', 'Import full JSON')}</button>}
+        {editing && <button type="button" disabled={busy} onClick={() => { void importFile() }} className="rounded-lg border px-3 py-2 text-sm">{importing === 'file' ? t('aiCenter.rules.importing', 'Importing...') : t('aiCenter.rules.import', 'Import full JSON')}</button>}
       </div>
     </div>
     {editing && <div className="flex flex-wrap items-end gap-3 rounded-lg border p-3" style={{ borderColor: 'var(--cp-border)' }}>
@@ -177,8 +181,6 @@ export function ProviderRulesPanel({ provider, active: visible = true }: { provi
       </button>
       <p className="w-full text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.rules.importPresetHelp', 'Import replaces the rules draft. Finish editing to apply it.')}</p>
     </div>}
-    <input ref={input} type="file" accept=".json,application/json" className="hidden" aria-label={t('aiCenter.rules.import', 'Import full JSON')}
-      disabled={!editing || busy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file); event.target.value = '' }} />
     <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.rules.structuredHelp', 'Configure one model at a time. Default operations are not saved as overrides. Thinking efforts are supported only when explicitly configured. Finish editing to apply the whole draft.')}</p>
     {loading && <p role="status" className="text-xs">{t('common.loading', 'Loading...')}</p>}
     {loadError && <p role="alert" style={{ color: 'var(--cp-danger)' }}>{loadError} <button type="button" onClick={retry} className="underline">{t('aiCenter.rules.retry', 'Retry')}</button></p>}

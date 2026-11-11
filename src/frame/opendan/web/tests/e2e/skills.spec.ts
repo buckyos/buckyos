@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { gzipSync } from 'node:zlib'
+import { readFileSync } from 'node:fs'
 import { expect, test, type Page } from '@playwright/test'
+import { fakeZone, picker, pickerParams, pickLocal, pickZone } from './picker'
 
 // A skill PIKG built by `buckyos pikg pack`: `cmd_skills/hello/SKILL.md` and `plan_skills/hello_plan/SKILL.md`.
 const SAMPLE_PIKG = fileURLToPath(new URL('../../../../../../test/skills_pikg_sample/dapp_dist/hello-skills-0.1.0.pikg', import.meta.url))
@@ -165,18 +167,24 @@ test('the UI set is edited and reset to the default', async ({ page }) => {
 })
 
 test('a .pikg file is read in the browser, planned, confirmed and installed', async ({ page }) => {
+  await fakeZone(page)
   const errors = await open(page)
-  await page.getByTestId('skills-pikg-input').setInputFiles({ name: 'broken.pikg', mimeType: 'application/zip', buffer: Buffer.from('not a zip at all, just text') })
+  const choose = page.getByTestId('skills-pikg-choose')
+  await choose.click()
+  expect(await pickerParams(page)).toMatchObject({ mode: 'open', allowLocal: true, accept: [{ ext: ['.pikg', '.zip'] }, { mime: 'application/zip' }] })
+  await pickLocal(page, { name: 'broken.pikg', mimeType: 'application/zip', buffer: Buffer.from('not a zip at all, just text') })
   await expect(page.getByTestId('skills-install').getByRole('alert')).toContainText('not a skill package')
 
   // A package that brings a command is passed on as it is: the service's refusal is what the owner reads.
-  await page.getByTestId('skills-pikg-input').setInputFiles(toolsPikg())
+  await choose.click()
+  await pickLocal(page, toolsPikg())
   const dialog = page.getByTestId('skill-plan-dialog')
   await expect(dialog.getByRole('alert')).toContainText('`tools/hello/bin/hello`: a skill is text only')
   await expect(dialog.getByTestId('plan-confirm')).toHaveCount(0)
   await dialog.getByRole('button', { name: 'Cancel' }).click()
 
-  await page.getByTestId('skills-pikg-input').setInputFiles(SAMPLE_PIKG)
+  await choose.click()
+  await pickLocal(page, SAMPLE_PIKG)
   await expect(dialog).toContainText('Install hello-skills 0.1.0?')
   await expect(dialog.getByTestId('plan-skills')).toContainText('work:hello')
   await expect(dialog.getByTestId('plan-skills')).toContainText('plan:hello_plan')
@@ -193,13 +201,53 @@ test('a .pikg file is read in the browser, planned, confirmed and installed', as
   await expect(hello).toContainText('hello-skills 0.1.0')
 
   // The same package again replaces the skill, and says so.
-  await page.getByTestId('skills-pikg-input').setInputFiles(SAMPLE_PIKG)
+  await choose.click()
+  await pickLocal(page, SAMPLE_PIKG)
   await expect(dialog.getByTestId('plan-replaces').first()).toContainText('replaces the installed skill')
   await expect(dialog.getByTestId('plan-risk')).toHaveText('Medium')
   await expect(dialog.getByTestId('plan-confirm')).toHaveText('Install and replace')
   await dialog.getByTestId('plan-confirm').click()
   await expect(dialog).toHaveCount(0)
   expect(errors).toEqual([])
+})
+
+
+test('a .pikg in the Zone is chosen in the system picker and read with the page session', async ({ page }) => {
+  await fakeZone(page, { '/home/devtest/Downloads/hello-skills-0.1.0.pikg': readFileSync(SAMPLE_PIKG) })
+  const errors = await open(page)
+  await page.getByTestId('skills-pikg-choose').click()
+  await pickZone(page, '/home/devtest/Downloads/hello-skills-0.1.0.pikg')
+  const dialog = page.getByTestId('skill-plan-dialog')
+  await expect(dialog).toContainText('Install hello-skills 0.1.0?')
+  await expect(dialog.getByTestId('plan-skills')).toContainText('work:hello')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.locator('[data-buckyos-sysdlg]')).toHaveCount(0)
+
+  // Cancelling the picker changes nothing.
+  await page.getByTestId('skills-pikg-choose').click()
+  await picker(page).getByRole('button', { name: 'Answer cancel' }).click()
+  await expect(page.locator('[data-buckyos-sysdlg]')).toHaveCount(0)
+  await expect(page.getByTestId('skills-pikg-choose')).toBeEnabled()
+  await expect(dialog).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
+test('in a Desktop window the text import asks the shell for the picker', async ({ page }) => {
+  await fakeZone(page, { '/home/devtest/notes/invoice.md': Buffer.from('# Invoices\n\nFile them monthly.\n') })
+  await page.goto('/tests/harness/shell.html?data=mock&lang=en')
+  await page.waitForFunction(() => (window as unknown as { frameReady?: boolean }).frameReady === true)
+  const frame = page.frame({ url: /bfp=/ })!
+  await frame.evaluate(() => { location.hash = '#/skills' })
+  const app = page.frameLocator('#app')
+  await app.getByTestId('skills-import-file').click()
+  await page.waitForFunction(() => (window as unknown as { dialogs: unknown[] }).dialogs.length === 1)
+  expect(await page.evaluate(() => (window as unknown as { dialogs: unknown[] }).dialogs[0])).toMatchObject({ path: 'sysdlg/select', params: { mode: 'open', allowLocal: true } })
+  // The shell draws the dialog over the window: nothing is framed over the WebUI itself.
+  await expect(app.locator('[data-buckyos-sysdlg]')).toHaveCount(0)
+  await page.evaluate(() => (window as unknown as { answerDialog: (r: unknown) => void }).answerDialog({ action: 'selected', items: [{ origin: 'zone', kind: 'file', source: { kind: 'cyfs-path', path: 'cyfs:///home/devtest/notes/invoice.md' }, hints: { name: 'invoice.md' } }] }))
+  const panel = app.getByTestId('skills-import')
+  await expect(panel.getByRole('textbox').first()).toHaveValue('# Invoices\n\nFile them monthly.\n')
+  await expect(panel).toContainText('invoice.md')
 })
 
 test('drafts are viewed, installed after the plan, or discarded; an import starts a session', async ({ page }) => {

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { pickLocal, pickZone, selectDialog } from '../fixtures/selectDialog'
 
 /**
  * Preview App / Component acceptance (PRD §21) on the mock runtime.
@@ -100,6 +101,33 @@ test.describe('Preview App', () => {
     await expect(second.getByTestId('content-preview')).toHaveAttribute('data-renderer', 'text', { timeout: 15_000 })
     // The first window keeps showing its own item.
     await expect(page.getByTestId('window-preview').nth(0).getByTestId('content-preview')).toHaveAttribute('data-renderer', 'html')
+  })
+
+  test('landing page: "Choose files…" opens Zone files by reference as one session', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/?scenario=normal')
+    await page.getByTestId('desktop-app-preview').click()
+    const previewWindow = page.getByTestId('window-preview')
+    await expect(previewWindow.getByTestId('preview-landing')).toBeVisible()
+
+    // Two files from the Zone become a list session; the Preview reads them by path.
+    await previewWindow.getByTestId('preview-landing-choose').click()
+    await pickZone(selectDialog(page), ['/home/Documents/Kyoto Trip Plan.md', '/home/Documents/2026 Q1 Review.docx'])
+    const preview = previewWindow.getByTestId('content-preview')
+    await expect(preview).toHaveAttribute('data-status', 'ready', { timeout: 15_000 })
+    await expect(preview).toHaveAttribute('data-item-count', '2')
+    await expect(previewWindow.getByTestId('content-preview-text')).toContainText('Kyoto Trip Plan')
+
+  })
+
+  test('landing page: "Choose files…" also takes a file of this device', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/?scenario=normal')
+    await page.getByTestId('desktop-app-preview').click()
+    const previewWindow = page.getByTestId('window-preview')
+    await previewWindow.getByTestId('preview-landing-choose').click()
+    await pickLocal(page, { name: 'note.txt', mimeType: 'text/plain', buffer: Buffer.from('hello from this device') })
+    await expect(previewWindow.getByTestId('content-preview-text')).toContainText('hello from this device', { timeout: 15_000 })
   })
 
   test('landing page opens the sample gallery; unsupported, permission and retry states', async ({ page }) => {

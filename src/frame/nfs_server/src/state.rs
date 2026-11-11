@@ -58,6 +58,7 @@ impl AppState {
         let uploads = UploadMgr::new(config.staging_dir())?;
         let copies = crate::copy::CopyJournal::open(&config.data_dir)?;
         let acls = AclTable::load(&db)?;
+        crate::recent::ensure_builtin_views(&db)?;
         let share = crate::share::ShareMgr::new(&db)?;
         let ndm = crate::ndm::NdmMgr::new(config.ndm_staging_dir())?;
         if matches!(config.auth, crate::config::AuthMode::Runtime) {

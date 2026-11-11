@@ -138,6 +138,7 @@ Zone 级：
 | `GET /home/<user>/objects/<ObjId>` | 对象（JWT 或 canonical JSON）；受限条目附 `hs-audience: restricted` |
 | `GET /home/<user>/objects/<cyfile ObjId>/content` | 文件内容（Range），供媒体元素使用。这个路由和 Desktop 同源，活动类型不会在这里执行：只有图片、音视频、PDF、纯文本内联，其余 `application/octet-stream` 加下载，都带 `nosniff`、CSP、`no-referrer` |
 | `GET /home/<user>/objects/<cyfile ObjId>/ref` | 文件在 nfs-server 数据面上的绑定和只读令牌。令牌是持有即可读的链接，所以只对公开条目和 owner 发放；受限条目的读者走 `/content`，每次按受众判定 |
+| `POST /home/<user>/objects/<cyfile 或 cydir ObjId>/save` | 存进读者自己的文件的第一步：按读取同样的受众判定，内容须完整在本 Zone（owner 读别人的文件时按需取回），再经 nfs-server `bucket.grant_holdings`（`obj://ndm/grant`）把这个对象授予“会话用户 + 会话 App”，返回 `{obj_id, kind}`；客户端随后用自己的会话调 NFSP `commit_object`。只有本 Zone 账号的会话可用（External、Agent、受限会话 403），文件夹里的文件按自己的对象 ID 单独保存 |
 | `GET /home/<user>/chunks/<ChunkId>` | chunk 数据，接收方按 ChunkId 校验 |
 | `GET /home/<user>/comments?target=<ObjId>[&type=]` | 作者视图（目标是该用户的版本）或收录者视图（收录模式） |
 | `GET /home/<user>/profile` | 门户资料：DID、用户名、名称、简介、`avatar`（Message Center 中本人联系人的公开头像，可无）、发表流 / 投递入口、关注者数、作品精选（按读者过滤） |

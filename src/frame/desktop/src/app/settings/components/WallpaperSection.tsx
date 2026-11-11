@@ -13,6 +13,7 @@ import {
   type RefObject,
 } from 'react'
 import { useI18n } from '../../../i18n/provider'
+import { usePickFiles } from '../../../sysdlg/select/pickFiles'
 import { DesktopApiError } from '../../../api/desktop_state'
 import { WallpaperImageError, type WallpaperImageErrorReason } from '../../../desktop/wallpaper/image'
 import {
@@ -257,7 +258,7 @@ export function WallpaperSection({ pageCount }: { pageCount: number }) {
   const thisScreen = useThisScreen()
   const screenOf = (device: Device) => (device === thisDevice ? thisScreen : typicalScreens[device])
   const pages = Math.max(1, pageCount)
-  const fileInput = useRef<HTMLInputElement>(null)
+  const pickFiles = usePickFiles('settings.wallpaper')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<WallpaperImageErrorReason | 'upload' | null>(null)
   const [dropping, setDropping] = useState(false)
@@ -275,7 +276,16 @@ export function WallpaperSection({ pageCount }: { pageCount: number }) {
       else setError('upload')
     } finally {
       setBusy(false)
-      if (fileInput.current) fileInput.current.value = ''
+    }
+  }
+
+  const choose = async () => {
+    setError(null)
+    try {
+      const files = await pickFiles({ accept: 'image/*', title: t('settings.wallpaper.choose', 'Choose picture…') })
+      if (files?.[0]) await pick(files[0])
+    } catch {
+      setError('unreadable')
     }
   }
 
@@ -345,23 +355,13 @@ export function WallpaperSection({ pageCount }: { pageCount: number }) {
 
         <div className="flex min-w-0 flex-col gap-3">
           <div className="flex flex-col items-start gap-1.5">
-            <input
-              ref={fileInput}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              aria-label={t('settings.wallpaper.choose', 'Choose picture…')}
-              data-testid="settings-wallpaper-file"
-              disabled={busy}
-              onChange={(event) => void pick(event.target.files?.[0])}
-            />
             <div className="flex flex-wrap gap-2">
               <Button
                 size="small"
                 variant="outlined"
                 startIcon={<ImagePlus size={14} />}
                 disabled={busy}
-                onClick={() => fileInput.current?.click()}
+                onClick={() => void choose()}
                 data-testid="settings-wallpaper-choose"
               >
                 {image ? t('settings.wallpaper.replace', 'Change picture…') : t('settings.wallpaper.choose', 'Choose picture…')}

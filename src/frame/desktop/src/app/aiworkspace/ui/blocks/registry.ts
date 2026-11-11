@@ -66,6 +66,8 @@ export interface RenderContext {
   /** Start an annotation (null without the `comment` capability); show the annotations targeting an entity. */
   annotate: ((anchor: CapturedAnchor) => void) | null
   showAnnotations: (targetId: string) => void
+  /** One file from the system file picker (the Zone, or this device), as for `<input accept>`; null when cancelled. */
+  pickFile: (accept?: string) => Promise<File | null>
 }
 
 /** One control of the near toolbar (标准对象的交互改进 §5.4). `disabled` is the reason, shown as the tooltip.

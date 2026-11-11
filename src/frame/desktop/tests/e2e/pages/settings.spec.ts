@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { pickLocal, pickZone, putZoneFile, selectDialog } from '../fixtures/selectDialog'
 
 /** A landscape picture drawn in the page, as a file the picker can take. */
 async function landscapePicture(page: Page, name = 'sunset.jpg') {
@@ -94,7 +95,11 @@ test.describe('settings', () => {
     await expect(page.getByTestId('desktop-background')).not.toHaveAttribute('data-wallpaper-mode')
     await expect(page.locator('main[data-wallpaper]')).toHaveCount(0)
 
-    await win.getByTestId('settings-wallpaper-file').setInputFiles(await landscapePicture(page))
+    // From the Zone, the user's main file system: the picker shows pictures as a grid.
+    await putZoneFile(page, '/home/Pictures/sunset.jpg', (await landscapePicture(page)).buffer, 'image/jpeg')
+    await win.getByTestId('settings-wallpaper-choose').click()
+    await pickZone(selectDialog(page), '/home/Pictures/sunset.jpg')
+    await expect(selectDialog(page)).toHaveCount(0)
     await expect(section.getByTestId('settings-wallpaper-status')).toContainText('sunset.jpg · 1200 × 800')
     await expect(page.getByTestId('desktop-background')).toHaveAttribute('data-wallpaper-mode', 'fill')
     await expect(wallpaperLayer(page)).toHaveCSS('background-image', /^url\("blob:/)
@@ -144,7 +149,9 @@ test.describe('settings', () => {
     const win = await openSettings(page, 'Appearance')
     await win.getByTestId('settings-theme').selectOption('dark')
     await win.getByTestId('settings-icon-size').selectOption('large')
-    await win.getByTestId('settings-wallpaper-file').setInputFiles(await landscapePicture(page))
+    // From this device, through the picker's "This device".
+    await win.getByTestId('settings-wallpaper-choose').click()
+    await pickLocal(page, await landscapePicture(page))
     await win.getByTestId('settings-wallpaper-fit-fit').click()
     await expect.poll(() => accountAppearance(page)).toMatchObject({ theme: 'dark', iconSize: 'large', wallpaper: { fit: 'fit', image: { name: 'sunset.jpg' } } })
 
@@ -171,11 +178,11 @@ test.describe('settings', () => {
 
   test('appearance: a file that is not a picture is refused and the background is kept', async ({ page }) => {
     const win = await openSettings(page, 'Appearance')
-    await win.getByTestId('settings-wallpaper-file').setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') })
-    await expect(win.getByTestId('settings-wallpaper').getByRole('alert')).toContainText('Choose a picture file')
-    await expect(page.getByTestId('desktop-background')).not.toHaveAttribute('data-wallpaper-mode')
-
-    await win.getByTestId('settings-wallpaper-file').setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('not a png') })
+    // The picker only takes pictures: a text file is refused there and the picker stays open.
+    await win.getByTestId('settings-wallpaper-choose').click()
+    await pickLocal(page, { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') })
+    await expect(selectDialog(page).getByTestId('select-notice')).toContainText('notes.txt')
+    await pickLocal(page, { name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('not a png') })
     await expect(win.getByTestId('settings-wallpaper').getByRole('alert')).toContainText('could not be read')
     await expect(page.getByTestId('desktop-background')).not.toHaveAttribute('data-wallpaper-mode')
   })
@@ -349,7 +356,9 @@ test.describe('settings on a phone', () => {
     await page.getByRole('button', { name: 'Appearance' }).first().click()
 
     await expect(page.getByTestId('settings-wallpaper-preview-phone').locator('xpath=..')).toContainText('Phone · this screen')
-    await page.getByTestId('settings-wallpaper-file').setInputFiles(await landscapePicture(page))
+    await putZoneFile(page, '/home/Pictures/sunset.jpg', (await landscapePicture(page)).buffer, 'image/jpeg')
+    await page.getByTestId('settings-wallpaper-choose').tap()
+    await pickZone(selectDialog(page), '/home/Pictures/sunset.jpg', true)
     await expect(page.getByTestId('settings-wallpaper-status')).toContainText('1200 × 800')
     await page.getByTestId('settings-wallpaper-fit-panorama').click()
     await page.getByRole('button', { name: 'Minimize' }).tap()

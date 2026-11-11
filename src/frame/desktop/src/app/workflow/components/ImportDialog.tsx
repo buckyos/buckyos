@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { CheckCircle2, FileUp, Link2, Sparkles, X, XCircle } from 'lucide-react'
 import type { WorkflowDefinition as DslDefinition } from 'buckyos'
+import { usePickFiles } from '../../../sysdlg/select/pickFiles'
 import { useWorkflowStore } from '../hooks/use-workflow-store'
 import type { AnalysisIssue } from '../types'
 
@@ -45,9 +46,21 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<DryRunResult | null>(null)
+  const pickFiles = usePickFiles('workflow.import')
+  const [fileName, setFileName] = useState('')
+  const [fileError, setFileError] = useState('')
 
-  function loadFile(file: File) {
-    file.text().then(setText).catch(() => undefined)
+  async function chooseFile() {
+    setFileError('')
+    try {
+      const file = (await pickFiles({ accept: '.json,.dsl,.txt' }))?.[0]
+      if (!file) return
+      setText(await file.text())
+      setFileName(file.name)
+      setResult(null)
+    } catch (error) {
+      setFileError(error instanceof Error ? error.message : String(error))
+    }
   }
 
   async function sourceText(): Promise<string> {
@@ -186,28 +199,24 @@ export function ImportDialog({ onClose, onShowAiPrompt, onImported }: ImportDial
           )}
 
           {mode === 'file' && (
-            <label
-              className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg py-10 text-xs"
+            <button
+              type="button"
+              onClick={() => void chooseFile()}
+              data-testid="workflow-import-choose-file"
+              className="flex w-full flex-col items-center justify-center gap-2 rounded-lg py-10 text-xs"
               style={{
                 background: 'var(--cp-surface-2)',
                 border: '1px dashed var(--cp-border)',
-                color: 'var(--cp-muted)',
+                color: fileError ? 'var(--cp-danger)' : 'var(--cp-muted)',
               }}
             >
               <FileUp size={20} />
-              {text
-                ? `Loaded ${text.length} chars. Click again to choose another.`
-                : 'Click to choose a JSON file.'}
-              <input
-                type="file"
-                accept=".json,.dsl,.txt"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0]
-                  if (f) loadFile(f)
-                }}
-              />
-            </label>
+              {fileError
+                ? `Could not read the file: ${fileError}`
+                : text && fileName
+                  ? `Loaded ${fileName} (${text.length} chars). Click to choose another.`
+                  : 'Click to choose a JSON file.'}
+            </button>
           )}
 
           {mode === 'url' && (

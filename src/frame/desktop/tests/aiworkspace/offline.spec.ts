@@ -1,5 +1,5 @@
 import { expect, editCell, grantPersistence, openCard, openDesktop, prepareOffline, saveSummary, serviceWorkerReady, test } from './offline-fixtures'
-import { closeWorkspace, mainMenu, openMock, openSide, openStatus, openWorkspacePage, backToList, workspacePage } from './fixtures'
+import { chooseFromZone, closeWorkspace, mainMenu, openMock, openSide, openStatus, openWorkspacePage, backToList, workspacePage } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -356,9 +356,7 @@ test('导入原子化 replica: an import saved locally is sent as one Commit in 
   const tables = async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: { type_id?: string; name?: string; deleted?: boolean }) => e.type_id === 'buckyos.table-source' && e.name === 'big' && !e.deleted)
   const head = await api.headSeq(ALICE, ws.workspace_id)
   // (a table: an import with pictures needs the backend's asset store, which the replica does not plan against)
-  const chooser = page.waitForEvent('filechooser')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-table')
-  await (await chooser).setFiles({ name: 'big.csv', mimeType: 'text/csv', buffer: Buffer.from(['n,label', ...Array.from({ length: 3000 }, (_, i) => `${i},row ${i}`)].join('\n')) })
+  await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-table'), { name: 'big.csv', mimeType: 'text/csv', buffer: Buffer.from(['n,label', ...Array.from({ length: 3000 }, (_, i) => `${i},row ${i}`)].join('\n')) })
   const dialog = page.getByTestId('aiws-table-dialog')
   await dialog.getByTestId('aiws-table-start').click()
   await expect(dialog).toHaveCount(0, { timeout: 60_000 })

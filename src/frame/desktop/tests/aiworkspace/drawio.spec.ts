@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Page } from '@playwright/test'
 import { buildOperations, convertPage, ImportReport, readDrawio } from '../../../aiworkspace/import-drawio/mod.ts'
-import { fitAll, mainMenu, openCanvas, test, expect, type Api } from './fixtures'
+import { chooseFromDevice, chooseFromZone, fitAll, mainMenu, openCanvas, test, expect, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const SHOTS = 'test-results/aiworkspace-drawio'
@@ -56,9 +56,7 @@ test('DR-render basic shapes, swimlanes and connectors from the fixtures draw in
 
 async function importFile(page: Page, file: string) {
   await expect(page.getByTestId('aiws-import-report')).toHaveCount(0)
-  const chooser = page.waitForEvent('filechooser')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-drawio')
-  await (await chooser).setFiles(`${FIXTURES}/${file}`)
+  await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-drawio'), `${FIXTURES}/${file}`)
 }
 
 const cellsOn = async (api: Api, ws: { workspace_id: string }, surface: string): Promise<Json[]> => {
@@ -501,8 +499,6 @@ test('DR-11 the insert catalog: a swimlane pool with three lanes, objects dragge
   expect((await configOf(api, ws, shape.entity_id)).config).toMatchObject({ shape: 'svg', fill: '#1a7f37' })
   // import from the catalog
   await page.getByTestId('aiws-tool-catalog').click()
-  const chooser = page.waitForEvent('filechooser')
-  await page.getByTestId('aiws-catalog-import-drawio').click()
-  await (await chooser).setFiles(`${FIXTURES}/flowchart.drawio`)
+  await chooseFromDevice(page, () => page.getByTestId('aiws-catalog-import-drawio').click(), `${FIXTURES}/flowchart.drawio`)
   await expect.poll(async () => (await cellsOn(api, ws, 'sf-d')).filter((e: Json) => e.view_type === 'connector').length).toBe(8)
 })

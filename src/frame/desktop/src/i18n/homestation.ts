@@ -1,4 +1,9 @@
 export const homeStationEn: Record<string, string> = {
+  "homestation.attachment.save": "Save {{name}} to my files",
+  "homestation.attachment.saved": "Saved to {{path}}",
+  "homestation.attachment.saveFailed": "Could not save to my files",
+  "homestation.attachment.saveNameTaken": "That name is taken here. Choose another name.",
+  "homestation.attachment.download": "Download {{name}}",
   "homestation.validation.did": "Following needs a DID. Search by name above and pick the person.",
   "homestation.sources.homePages": "HomeStation pages",
   "homestation.sources.followFailed": "Could not follow. Try again.",
@@ -558,6 +563,11 @@ export const homeStationEn: Record<string, string> = {
 }
 
 export const homeStationZh: Record<string, string> = {
+  "homestation.attachment.save": "把 {{name}} 存到我的文件",
+  "homestation.attachment.saved": "已存到 {{path}}",
+  "homestation.attachment.saveFailed": "没能存到我的文件",
+  "homestation.attachment.saveNameTaken": "这里已有同名项，请换一个名字。",
+  "homestation.attachment.download": "下载 {{name}}",
   "homestation.validation.did": "关注需要 DID。请在上方按名称搜索并选择对方。",
   "homestation.sources.homePages": "HomeStation 主页",
   "homestation.sources.followFailed": "关注失败，请重试。",

@@ -34,7 +34,7 @@ import { RelationsPanel } from '../sources/RelationsPanel'
 import { AnnotationsPanel } from '../shell/AnnotationsPanel'
 import type { CanvasCommands, Command } from '../shell/MainMenu'
 import { MainToolbar } from '../shell/MainToolbar'
-import { useImportPicker } from '../shell/importPicker'
+import { useFilePicker } from '../shell/filePicker'
 import { useOverlayOpen } from '../shell/popover'
 import { ViewToolbar } from '../shell/ViewToolbar'
 import { CANVAS_SIDE_TABS, useCanvasMode, useShell, type SideTab } from '../shell/shellContext'
@@ -96,6 +96,8 @@ interface Viewport { x: number; y: number; zoom: number }
  * narrow windows stack the two top toolbars (a phone has only one). */
 /** What a line drawn to blank space offers to create at its end (Miro's "next object"). */
 const NEXT_OBJECTS = ['note', 'richtext', 'shape', 'wish']
+const DRAWIO_ACCEPT = '.drawio,.xml,.png,.svg,application/xml,text/xml,image/png,image/svg+xml'
+const PDF_ACCEPT = '.pdf,application/pdf'
 const TOP_INSET = 68
 const TOP_INSET_NARROW = 124
 const LEFT_INSET = 68
@@ -166,6 +168,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const ui = useWorkspaceUi()
   const shell = useShell()
   const { t, list } = useAiwsText()
+  const pickFile = useFilePicker((message) => store.notify('error', message))
   const readOnlyReason = useReadOnlyReason()
   const readOnlyNow = readOnlyReason !== null
   const overlayOpen = useOverlayOpen()
@@ -568,12 +571,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const insertFlow = (entry: CatalogEntry, parent: string, afterId: string | null) => {
     const reason = insertReasonOf(entry.definition.type)
     if (reason) { store.notify('info', reason); return }
-    if (entry.catalog.needs === 'file') {
-      const input = document.createElement('input')
-      input.type = 'file'
-      input.onchange = () => { const file = input.files?.[0]; if (file) void insert({ entry, file }, null, parent, undefined, afterId) }
-      input.click()
-    } else if (entry.catalog.needs !== 'none') openCatalog(entry.group === 'extension' ? 'extension' : 'all', entry.key, null, parent, afterId)
+    if (entry.catalog.needs === 'file') void pickFile.file().then((file) => { if (file) void insert({ entry, file }, null, parent, undefined, afterId) })
+    else if (entry.catalog.needs !== 'none') openCatalog(entry.group === 'extension' ? 'extension' : 'all', entry.key, null, parent, afterId)
     else void insert({ entry }, null, parent, undefined, afterId)
   }
 
@@ -823,8 +822,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
 
   // ---- draw.io import, dropped and pasted files (draw.io 导入 TODO §2.3, §2.4, §3)
   const importBusy = useRef(false)
-  const pickImport = useImportPicker()
-  const importInput = useRef<HTMLInputElement>(null)
   const canCreateSurfaces = store.session.info().capabilities.includes('structure')
   const importReason = !isFree && !canCreateSurfaces ? t('aiworkspace.canvas.reason.noCreateCanvas') : insertReason
   const runImport = async (input: { name: string; bytes?: Uint8Array; text?: string }, at: { x: number; y: number } | null) => {
@@ -853,9 +850,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       store.dismissNotice(progress)
     }
   }
-  const importCommand: Command = { reason: importReason, run: () => importInput.current?.click() }
+  const importCommand: Command = { reason: importReason, run: () => void pickFile.file(DRAWIO_ACCEPT).then((file) => { if (file) void file.arrayBuffer().then((buffer) => runImport({ name: file.name, bytes: new Uint8Array(buffer) }, null)) }) }
   // ---- PDF import (PDF 导入方案 §5): pages on a new canvas, a path through them
-  const pdfInput = useRef<HTMLInputElement>(null)
   const pdfReason = !canCreateSurfaces ? t('aiworkspace.pdf.reason.noStructure') : store.session.status().kind !== 'live' ? t('aiworkspace.pdf.reason.offline') : null
   const finishPdfImport = (outcome: ImportOutcome) => {
     if (outcome.surfaceId) {
@@ -872,9 +868,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (pdfImports.busy) { store.notify('info', t('aiworkspace.canvas.import.busy')); return }
     pdfImports.open({ source: { name: file.name, bytes: bytes ?? new Uint8Array(await file.arrayBuffer()) }, step: ask ? 'ask' : 'options', insertAsFile: () => { void insertFile(file, at) }, finish: finishPdfImport })
   }
-  const importPdfCommand: Command = { reason: pdfReason, run: () => pdfInput.current?.click() }
+  const importPdfCommand: Command = { reason: pdfReason, run: () => void pickFile.file(PDF_ACCEPT).then((file) => { if (file) void openPdfImport(file, null, false, null) }) }
   // ---- Office documents (Office 导入 TODO §6): a docx as a new flow page, a pptx as pages on a new canvas
-  const officeInput = useRef<HTMLInputElement>(null)
   const finishOfficeImport = (outcome: ImportOutcome) => {
     if (outcome.surfaceId) {
       if (outcome.bounds) { const v = camera.fitted(outcome.bounds, 60); store.userState.set(`viewport:${outcome.surfaceId}`, { x: Math.round(v.x), y: Math.round(v.y), zoom: Number(v.zoom.toFixed(3)) }) }
@@ -892,7 +887,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!kind) { void insertFile(file, at); return }
     officeImports.open({ source: { name: file.name, bytes: data, kind }, step: ask ? 'ask' : 'options', insertAsFile: () => { void insertFile(file, at) }, finish: finishOfficeImport })
   }
-  const importOfficeCommand: Command = { reason: pdfReason, run: () => officeInput.current?.click() }
+  const importOfficeCommand: Command = { reason: pdfReason, run: () => void pickFile.file(OFFICE_ACCEPT).then((file) => { if (file) void openOfficeImport(file, null, false, null) }) }
   const finishOfficeRef = useRef(finishOfficeImport)
   useEffect(() => { finishOfficeRef.current = finishOfficeImport })
   useEffect(() => {
@@ -909,10 +904,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     return () => { if (pdfImports.finisher === finisher) pdfImports.finisher = null }
   }, [])
   // ---- table data import (表格数据导入 TODO §3.5, §4, §5): a TableSource in the content folder, a table Block here
-  const tableInput = useRef<HTMLInputElement>(null)
   const tableReason = insertReason
-  /** Where a table chosen from the insert catalog goes (the catalog's spot), for the file picker's answer. */
-  const catalogSpot = useRef<{ x: number; y: number } | null>(null)
   const finishTableImport = (outcome: ImportOutcome) => {
     if (outcome.created.length === 0) return
     setSelectionState(new Set(outcome.created))
@@ -930,9 +922,11 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       destination: { canvas: { surfaceId, isFree, contentFolderId: surface.content_folder_id ?? '', at: isFree ? at : null, center: camera.toWorld(c.x, c.y), afterId } },
     })
   }
-  const importTableCommand: Command = { reason: tableReason, run: () => tableInput.current?.click() }
   /** The insert catalog's "From a file…": the picker, the table at the catalog's spot. */
-  const importTableAt = (world: { x: number; y: number } | null) => { catalogSpot.current = world; tableInput.current?.click() }
+  const importTableAt = (at: { x: number; y: number } | null) => void pickFile.file(TABULAR_ACCEPT).then((file) => {
+    if (file) void file.arrayBuffer().then((buffer) => openTableImport({ kind: 'file', name: file.name, bytes: new Uint8Array(buffer) }, false, at))
+  })
+  const importTableCommand: Command = { reason: tableReason, run: () => importTableAt(null) }
   const exportCommand: Command = {
     reason: !isFree ? t('aiworkspace.canvas.export.onlyFree') : null,
     run: () => {
@@ -1424,14 +1418,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             {nextObject && <ContextMenu at={nextObject.at} onClose={() => setNextObject(null)}
               items={NEXT_OBJECTS.flatMap((type) => { const entry = registryEntries().find((e) => e.definition.type === type && !e.variant); return entry ? [{ id: `next-${type}`, label: entry.title, run: () => insertAtLineEnd(entry) }] : [] })} />}
             <StatusDock />
-            <input ref={importInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept=".drawio,.xml,.png,.svg,application/xml,text/xml,image/png,image/svg+xml" data-testid="aiws-import-drawio-file"
-              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void file.arrayBuffer().then((buffer) => runImport({ name: file.name, bytes: new Uint8Array(buffer) }, null)) }} />
-            <input ref={pdfInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept=".pdf,application/pdf" data-testid="aiws-import-pdf-file"
-              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void openPdfImport(file, null, false, null) }} />
-            <input ref={officeInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept={OFFICE_ACCEPT} data-testid="aiws-import-office-file"
-              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void openOfficeImport(file, null, false, null) }} />
-            <input ref={tableInput} type="file" hidden aria-hidden="true" tabIndex={-1} accept={TABULAR_ACCEPT} data-testid="aiws-import-table-file"
-              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; const at = catalogSpot.current; catalogSpot.current = null; if (file) void file.arrayBuffer().then((buffer) => openTableImport({ kind: 'file', name: file.name, bytes: new Uint8Array(buffer) }, false, at)) }} />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
             {defining && defining.length > 0 && <DefineControlDialog ids={defining} laid={laid} surfaceId={surfaceId} onClose={() => setDefining(null)} onDone={(ids) => { setDefining(null); setSelectionState(new Set(ids)) }} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
@@ -1448,7 +1434,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               return (
               <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree && !intoNode} onClose={() => setCatalog(null)} onImport={importReason === null && !intoNode ? () => { setCatalog(null); importCommand.run() } : undefined}
                 onImportTable={tableReason === null && !intoNode ? () => { setCatalog(null); importTableAt(catalog.world ?? null) } : undefined}
-                pickImport={pickImport ? (folder) => pickImport(folder).catch((error) => { store.notify('error', t('aiworkspace.data.tree.uploadFailed', { error: describeError(error) })); return null }) : undefined}
                 onImportAssets={insertReason === null && !intoNode ? async (files, folder, signal) => {
                   try {
                     const items = await store.session.importAssets(files, folder, signal)

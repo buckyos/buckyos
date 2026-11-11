@@ -1758,6 +1758,7 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | `MessageObject[]` | `msg.list_session`（当前 owner，`with_object: true`，最新页 + 向上分页） | `api/reader.ts::itemToMessage`，记录上下文置于 `ui_record` |
 | 附件对象 / 内容 | `GET /kapi/msg-center/objects/{obj_id}[/content]?context_path=[<session MailboxAddress>/]<msg_id>`（Bearer 会话 token） | `api/objects.ts`，`context_path` 由 `objectContextOf` 给出（携带附件的消息，编辑后是最新一次编辑）；msg-center 只经该消息在 `attachments` 桶的绑定代读，其他 Zone 的附件没有绑定时 `/content` 先拉取、描述只问来源；群 / Session 展示文件（EXT-04）用 `displayContext(<session MailboxAddress>)` = `<session>/_display`；`uri_hint` 只作提示 |
 | 收藏附件 | `msg.collect_attachment {obj_id, context_path}` → `{bucket_id: "user/msg-center/<user>/collected", key}` | `ObjectAccess.collect`；之后经 `/bucket/v1/<bucket_id>/<key>` 读，消息撤回不影响 |
+| 存到我的文件 | `msg.prepare_save_attachment {obj_id, context_path, inner_path?}` → `{obj_id, kind}`，再 NFSP `commit_object {parent, name, obj_id, overwrite}` | `ObjectAccess.prepareSave` + `components/saveToZone.ts`：系统选择器 `save` 模式选位置和名字；文件夹不覆盖，同名时重新拉起选择器。附件卡、缩略图、内联图、文件夹及其中的每个文件都有“存到我的文件”；下载到本机只在非触屏设备上保留；访客页没有 |
 | `ui_message_id` | `SessionMessageItem.record_id` | 直接 |
 | `ui_delivery_status` | `SessionMessageItem.delivery.overall` | 枚举映射，见 3.5 |
 | `ui_sender_name` | `MailboxRecord.from_name` | 缺失时回落 DID |

@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Page } from '@playwright/test'
-import { mainMenu, openCanvas, test, expect, type Api } from './fixtures'
+import { chooseFromDevice, chooseFromZone, mainMenu, openCanvas, test, expect, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const SHOTS = 'test-results/aiworkspace-table'
@@ -64,10 +64,10 @@ async function drop(page: Page, name: string, bytes: Buffer, at: { x: number; y:
   await target.dispatchEvent('drop', { dataTransfer: dt, clientX: at.x, clientY: at.y })
 }
 
-async function chooseFile(page: Page, open: () => Promise<void>, name: string, buffer: Buffer, mimeType = 'text/csv') {
-  const chooser = page.waitForEvent('filechooser')
-  await open()
-  await (await chooser).setFiles({ name, mimeType, buffer })
+/** A file from the Zone (the main case), or from this device. */
+async function chooseFile(page: Page, open: () => Promise<void>, name: string, buffer: Buffer, mimeType = 'text/csv', from: 'zone' | 'device' = 'zone') {
+  if (from === 'zone') await chooseFromZone(page, open, { name, mimeType, buffer })
+  else await chooseFromDevice(page, open, { name, mimeType, buffer })
 }
 
 const fixture = (path: string) => readFileSync(`${FIXTURES}/${path}`)
@@ -308,7 +308,7 @@ test('TI-11 more than 20 000 rows: one Commit; one undo removes the table with e
   await openCanvas(page, ALICE, ws.workspace_id)
   const head = await api.headSeq(ALICE, ws.workspace_id)
   const csv = Buffer.from(['n,label', ...Array.from({ length: 20_001 }, (_, i) => `${i},row ${i}`)].join('\n'))
-  await chooseFile(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-table'), 'big.csv', csv)
+  await chooseFile(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-table'), 'big.csv', csv, 'text/csv', 'device')
   const dialog = wizard(page)
   await expect(dialog.getByTestId('aiws-table-start')).toHaveText('导入 20001 行')
   await dialog.getByTestId('aiws-table-start').click()

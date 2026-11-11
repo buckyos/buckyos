@@ -66,6 +66,8 @@ async function bootstrap() {
     // The mock runtime's session lives in its in-browser control panel.
     const { mockCurrentIdentity } = await import('./api/control_panel_mock.ts')
     identity = mockCurrentIdentity()
+    const { exposeMockZoneFiles } = await import('./app/filebrowser/mock/content')
+    exposeMockZoneFiles()
   }
   if (!optional && identity.kind === 'anonymous') {
     console.log('[bootstrap] no active session, redirect to login')

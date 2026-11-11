@@ -522,9 +522,9 @@ async fn a_service_grants_a_principal_exactly_the_objects_it_names() {
         srv.http.post(format!("{}/kapi/nfs-server", srv.base)).json(&body).send()
     };
 
-    // Only `obj://ndm/manage` may do this: not the holder, not another frame service.
-    let frame = token("aicc", TokenPrincipalKind::System, "system:aicc");
-    for auth in [alice.clone().unwrap(), bob.clone().unwrap(), frame] {
+    // Only a service may do this (`obj://ndm/grant` or `obj://ndm/manage`): not the holder, not a user, not an App.
+    let app = token("alice", TokenPrincipalKind::App, "app:testapp@alice");
+    for auth in [alice.clone().unwrap(), bob.clone().unwrap(), app] {
         let refused: Value = grant(auth, bob_key).await.unwrap().json().await.unwrap();
         assert_eq!(refused["code"], "permission_denied", "{refused}");
     }
@@ -547,6 +547,13 @@ async fn a_service_grants_a_principal_exactly_the_objects_it_names() {
         srv.http.post(format!("{}/kapi/nfs-server", srv.base)).json(&body).send().await.unwrap().json().await.unwrap()
     };
     assert_eq!(bad["code"], "invalid_argument", "{bad}");
+
+    // A frame service (msg-center, HomeStation) has `obj://ndm/grant` alone: it grants, and manages nothing.
+    let frame = token("aicc", TokenPrincipalKind::System, "system:aicc");
+    let granted: Value = grant(frame.clone(), "app:testapp@bob").await.unwrap().json().await.unwrap();
+    assert_eq!(granted["result"]["granted"], 1, "{granted}");
+    assert_eq!(srv.proxy_call(&bob_app, "get_object", json!({"obj_id": file_id.to_string()})).await.0, StatusCode::OK);
+    assert_eq!(srv.proxy_call(&Some(frame), "remove_object", json!({"obj_id": file_id.to_string()})).await.0, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

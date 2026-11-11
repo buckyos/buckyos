@@ -1,6 +1,6 @@
 # nfs_server：路径的对象 ID（`ident.obj_id`）TODO
 
-> 状态：待实施。§2 是 owner 已裁决的方向，§6 有 4 个问题待裁决。现状核实于 2026-11-09（buckyos `b6c57704a`、buckyos-websdk `b12d6c3`、cyfs-ndn `9115234`），下文行号以这些提交为准。
+> 状态：待实施。**优先级 P0**（owner，2026-11-10）：第二步 `snapshot` 卡住了聊天附件和发动态这两个最高频的“从 Zone 选择”入口，见 [sysdlg-select-adoption-todo](sysdlg-select-adoption-todo.md) N1。§2 是 owner 已裁决的方向，§6 有 4 个问题待裁决。现状核实于 2026-11-09（buckyos `b6c57704a`、buckyos-websdk `b12d6c3`、cyfs-ndn `9115234`），下文行号以这些提交为准。
 >
 > 背景：系统文件选择器（[设计稿](../doc/desktop/BuckyOS%20系统对话框实现方案.md) §4.3）要“尽力返回对象 ID”，来源是 NFSP 的 `ident.obj_id`。核实时发现 nfs_server 放在这个字段里的不是调用方能用的对象 ID。
 >

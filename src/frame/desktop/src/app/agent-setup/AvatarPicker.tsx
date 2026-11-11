@@ -31,7 +31,7 @@ export function AvatarPicker({
       }}
       onChange={onChange}
       testId="agent-setup-avatar"
-      inputTestId="agent-setup-avatar-input"
+      chooseTestId="agent-setup-avatar-choose"
     />
   )
 }

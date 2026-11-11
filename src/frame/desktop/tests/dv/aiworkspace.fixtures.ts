@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import { expect, test as base, type BrowserContext, type Page, type TestInfo } from '@playwright/test'
 import { unwrap } from '../../src/app/aiworkspace/api/client'
 import { PROTOCOL_VERSION, type CommitResult, type Operation, type Result, type RichTextContent, type WorkspaceInfo, type WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
-import { expectAllCommitted } from '../aiworkspace/fixtures'
+import { chooseFromDevice, expectAllCommitted, openedPicker, zoneGoto, type PickedFile } from '../aiworkspace/fixtures'
+import { selectRow } from '../e2e/fixtures/selectDialog'
 
 type Params = Record<string, unknown>
 type Workspace = Pick<WorkspaceInfo, 'workspace_id' | 'epoch'>
@@ -15,7 +16,7 @@ export class ZoneClient {
   readonly prefix = `dv-aiws-${randomUUID()}`
   private seq = 0
 
-  constructor(readonly page: Page, private readonly token: string) {}
+  constructor(readonly page: Page, readonly token: string) {}
 
   async service<T>(service: string, method: string, params: Params, token: string | null = this.token): Promise<T> {
     const reply = await this.page.evaluate(async (input) => {
@@ -221,4 +222,36 @@ export const test = base.extend<{ owner: Actor; peer: Actor }>({
   },
 })
 
-export { expect, expectAllCommitted, screenshot }
+/** Writes a file below the actor's home folder over NFSP (the Zone's file service, with the actor's session): what
+ * the system file picker then chooses from the Zone. `dir` is relative to the home folder. */
+export async function putHomeFile(actor: Actor, dir: string, file: PickedFile) {
+  let seq = 0
+  const call = async (method: string, body: Params) => {
+    const parsed = await (await actor.page.request.post(`/nfs/v1/${method}`, { headers: { Authorization: `Bearer ${actor.client.token}` }, data: body })).json()
+    if (!parsed.ok) throw new Error(`${method}: ${JSON.stringify(parsed.error)}`)
+    return parsed.result
+  }
+  const session = (await call('hello', { args: {} })).session
+  let path = `/home/${actor.userId}`
+  for (const segment of dir.split('/').filter(Boolean)) {
+    path = `${path}/${segment}`
+    await call('mkdir', { session, seq: ++seq, args: {}, at: { realm: 'dfs', path } }).catch(() => undefined)
+  }
+  const parent = await call('stat', { session, args: {}, at: { realm: 'dfs', path } })
+  const open = await call('open_write', { session, seq: ++seq, args: { parent_ref: parent.ref, name: file.name, size: file.buffer.length } })
+  await actor.page.request.fetch(`/nfs/v1/uploads/${open.fb_handle}`, { method: 'PATCH', headers: { Authorization: `Bearer ${actor.client.token}`, 'Upload-Offset': '0', 'Tus-Resumable': '1.0.0', 'Content-Type': 'application/offset+octet-stream' }, data: file.buffer })
+  await call('commit_file', { session, seq: ++seq, args: { name: file.name, fb_handle: open.fb_handle, lease_id: open.lease.lease_id, overwrite: true }, at: { ref: parent.ref } })
+}
+
+/** Chooses a file from the Zone in the system file picker `open` brings up (path A in the Desktop window, path C framed
+ * over a Workspace's own page): it is written into the home folder first. */
+export async function chooseFromHome(actor: Actor, open: () => Promise<unknown>, dir: string, file: PickedFile) {
+  await putHomeFile(actor, dir, file)
+  await open()
+  const { dialog } = await openedPicker(actor.page)
+  await zoneGoto(dialog, dir.split('/').filter(Boolean))
+  await selectRow(dialog, file.name).click()
+  await dialog.getByTestId('select-confirm').click()
+}
+
+export { chooseFromDevice, expect, expectAllCommitted, screenshot }
