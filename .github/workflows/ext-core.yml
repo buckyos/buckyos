@@ -121,6 +121,8 @@ jobs:
           name: ext-core-${{ matrix.platform }}
           path: ${{ runner.temp }}/dist
       - name: Unpack as the installer does and run with the system's tools off the PATH
+        env:
+          EXT_CORE_SMOKE_ARTIFACTS: ${{ runner.temp }}/ext-core-smoke
         run: |
           set -euo pipefail
           target="$RUNNER_TEMP/some where/else"
@@ -130,6 +132,14 @@ jobs:
             echo "== $script"
             PATH="$target/bin:/usr/bin:/bin" sh "$script"
           done
+      - name: Keep failed conversion files
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: smoke-diagnostics-${{ matrix.platform }}
+          path: ${{ runner.temp }}/ext-core-smoke
+          if-no-files-found: ignore
+          retention-days: 7
 
   smoke-windows:
     name: smoke windows-x86_64
@@ -145,6 +155,8 @@ jobs:
       # read paths through it, so a Chinese path works on a Chinese Windows and not on this runner.
       - name: A path with a space and a non-ASCII letter
         shell: pwsh
+        env:
+          EXT_CORE_SMOKE_ARTIFACTS: ${{ runner.temp }}/ext-core-smoke
         run: |
           $ErrorActionPreference = 'Stop'
           $target = Join-Path $env:RUNNER_TEMP 'outils é tools'
@@ -158,6 +170,14 @@ jobs:
             powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script.FullName
             if ($LASTEXITCODE -ne 0) { throw "$script failed" }
           }
+      - name: Keep failed conversion files
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: smoke-diagnostics-windows-x86_64
+          path: ${{ runner.temp }}/ext-core-smoke
+          if-no-files-found: ignore
+          retention-days: 7
 
   pikg:
     name: Package and manifest
