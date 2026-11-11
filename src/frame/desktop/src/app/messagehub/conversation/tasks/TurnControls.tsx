@@ -17,20 +17,22 @@ type TurnAction = 'stop' | 'retract' | 'resume'
 const buttonClass = 'mh-turn-action'
 
 /**
- * What the owner may do to the Turn of a placeholder: stop it (the session
- * and its context stay, the work it already started keeps running), stop it
- * and retract the input, or — after the host restarted in the middle of it —
- * resume it. Nothing here undoes what the Agent already did. Rendered only
- * for the owner of the Agent (`agentTurn` of the conversation's actions) and
- * only while the Turn is running, interrupted or paused.
+ * What the owner may do to the Turn in front of the conversation, from the
+ * line above the composer (the placeholder itself carries no controls): stop
+ * it (the session and its context stay, the work it already started keeps
+ * running), stop it and retract the input, or — after the host restarted in
+ * the middle of it, or while it is paused — resume it. Nothing here undoes
+ * what the Agent already did. Rendered only for the owner of the Agent
+ * (`agentTurn` of the conversation's actions) and only while the Turn is
+ * running, interrupted or paused.
  */
-export function TurnControls(props: { anchor: MessageObject; taskId: string; place: 'bubble' | 'composer' }) {
+export function TurnControls(props: { anchor: MessageObject; taskId: string }) {
   const { agentTurn } = useContext(ConversationMessageActionsContext)
   // Conversations without the owner's controls (another's Agent, an embedded conversation view) render nothing and need no dialog host.
   return agentTurn ? <OwnerTurnControls {...props} agentTurn={agentTurn} /> : null
 }
 
-function OwnerTurnControls({ anchor, taskId, place, agentTurn }: { anchor: MessageObject; taskId: string; place: 'bubble' | 'composer'; agentTurn: NonNullable<ConversationMessageActions['agentTurn']> }) {
+function OwnerTurnControls({ anchor, taskId, agentTurn }: { anchor: MessageObject; taskId: string; agentTurn: NonNullable<ConversationMessageActions['agentTurn']> }) {
   const { t } = useI18n()
   const dialog = useWindowDialog()
   const { snapshot, children } = useTaskSummary(taskId)
@@ -65,8 +67,7 @@ function OwnerTurnControls({ anchor, taskId, place, agentTurn }: { anchor: Messa
   }
   const stopping = pending === 'stop' || pending === 'retract'
   return (
-    <div className={`flex flex-wrap items-center gap-1.5 ${place === 'bubble' ? 'mt-1.5 pl-[23px]' : ''}`} data-testid="turn-controls" data-mode={mode} data-place={place} data-pending={pending ?? undefined} data-no-details>
-      {mode === 'interrupted' && place === 'bubble' ? <span className="basis-full text-[12px] opacity-80" data-testid="turn-interrupted-note">{t('messagehub.turn.interruptedNote')}</span> : null}
+    <div className="flex flex-wrap items-center gap-1.5" data-testid="turn-controls" data-mode={mode} data-pending={pending ?? undefined}>
       {mode !== 'running' ? <button type="button" className={buttonClass} disabled={!!pending} onClick={() => void run('resume')} data-testid="turn-resume"><Play size={11} aria-hidden />{t(pending === 'resume' ? 'messagehub.turn.resuming' : 'messagehub.turn.resume')}</button> : null}
       <button type="button" className={buttonClass} disabled={!!pending} onClick={() => void run('stop')} title={t('messagehub.turn.stopHint')} data-testid="turn-stop"><Square size={11} aria-hidden />{t(stopping ? 'messagehub.turn.stopping' : 'messagehub.turn.stop')}</button>
       {mode === 'running' && input ? <button type="button" className={buttonClass} disabled={!!pending} onClick={() => void run('retract')} title={t('messagehub.turn.retractHint')} data-testid="turn-retract"><Undo2 size={11} aria-hidden />{t('messagehub.turn.retract')}</button> : null}

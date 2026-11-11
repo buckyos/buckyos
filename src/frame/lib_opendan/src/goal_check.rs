@@ -1,14 +1,21 @@
 //! The check of a Goal (architecture §12.1.1, TODO H3): a TypeScript
 //! function the host runs on Deno before a scheduled run opportunity becomes
-//! an inference. It observes and never acts: it may read files and the
-//! network, never run a command or write a file; it spends no token and
+//! an inference. It observes and never acts itself: it may read files and
+//! the network, never run a command or write a file; it spends no token and
 //! leaves no Activation record.
 //!
 //! The script's default export is `check(ctx, state)` returning `{run,
-//! reason?, state?}`: `reason` becomes the reason of the Activation it lets
-//! through, `state` is kept by the host and given back to the next check.
-//! `ctx.host.call(method, params)` reaches the read-only calls of
-//! [`CheckCalls`] (`memory.status`).
+//! reason?, state?, notify?}`: `reason` becomes the reason of the Activation
+//! it lets through, `state` is kept by the host and given back to the next
+//! check, `notify` is a notification the host sends the user at once (a
+//! reminder at a known time needs no inference). `ctx.host.call(method,
+//! params)` reaches the read-only calls of [`CheckCalls`]
+//! (`memory.status`).
+//!
+//! A check also runs while the gate holds the Goal's inferences (`ctx.held`
+//! says why): a result with `run: false` counts in full, one with `run:
+//! true` is set aside whole (state, notification and all) as if the check
+//! had not run, so the next check sees the same thing again.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -29,10 +36,16 @@ pub const CHECK_STATE_MAX: usize = 64 * 1024;
 pub const CHECK_SCRIPT_MAX: usize = 256 * 1024;
 
 const MARK: &str = "\u{1}opendan-check ";
+const CHECK_CONVENTION: &str =
+    "a check returns {run: boolean, reason?: string, state?: any, notify?: {title, message?, url?, level?}}";
 const RUNNER_TS: &str = include_str!("goal_check_runner.ts");
 
+/// The longest title and message of a check's notification.
+pub const CHECK_NOTIFY_TITLE_MAX: usize = 200;
+pub const CHECK_NOTIFY_MESSAGE_MAX: usize = 4000;
+
 /// What a check decided.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CheckVerdict {
     pub run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,6 +53,53 @@ pub struct CheckVerdict {
     /// `None`: the script returned none (the stored one stays).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<Value>,
+    /// A notification for the user, sent by the host now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<CheckNotify>,
+}
+
+/// A notification a check asks the host to send: what `agent-session notify
+/// send` would send, without an inference.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckNotify {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Where opening it lands: `https://…` or a path of this Zone (`/…`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// `quiet | normal | timely | urgent` (the system's default when left
+    /// out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<crate::notify::NotifyLevel>,
+}
+
+impl CheckVerdict {
+    /// The bounds of a result the host acts on.
+    pub fn validate(self) -> std::result::Result<Self, String> {
+        let size = self.state.as_ref().map(|s| s.to_string().len()).unwrap_or(0);
+        if size > CHECK_STATE_MAX {
+            return Err(format!("the check's state is {size} bytes, more than {CHECK_STATE_MAX}"));
+        }
+        if let Some(n) = &self.notify {
+            let title = n.title.trim();
+            if title.is_empty() {
+                return Err("`notify.title` of a check result is empty".into());
+            }
+            if title.chars().count() > CHECK_NOTIFY_TITLE_MAX {
+                return Err(format!("`notify.title` is longer than {CHECK_NOTIFY_TITLE_MAX} characters"));
+            }
+            if n.message.as_ref().is_some_and(|m| m.chars().count() > CHECK_NOTIFY_MESSAGE_MAX) {
+                return Err(format!("`notify.message` is longer than {CHECK_NOTIFY_MESSAGE_MAX} characters"));
+            }
+            if let Some(url) = n.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+                if !(url.starts_with("https://") || url.starts_with("http://") || url.starts_with('/')) {
+                    return Err(format!("`notify.url` {url}: a link (https://…) or a path of this Zone (/…)"));
+                }
+            }
+        }
+        Ok(self)
+    }
 }
 
 /// One check run.
@@ -283,7 +343,7 @@ impl CheckRunner for DenoCheckRunner {
                     }
                     Ok(Line::Result { value }) => return Ok(value),
                     Ok(Line::Error { message }) => return Err(message),
-                    Err(e) => return Err(format!("a check returns {{run: boolean, reason?: string, state?: any}}: {e}")),
+                    Err(e) => return Err(format!("{CHECK_CONVENTION}: {e}")),
                 }
             }
         };
@@ -297,14 +357,6 @@ impl CheckRunner for DenoCheckRunner {
         if !stderr_log.is_empty() {
             push_log(&mut log, stderr_log.trim_end());
         }
-        let verdict = verdict.and_then(|v| {
-            let size = v.state.as_ref().map(|s| s.to_string().len()).unwrap_or(0);
-            if size > CHECK_STATE_MAX {
-                Err(format!("the check's state is {size} bytes, more than {CHECK_STATE_MAX}"))
-            } else {
-                Ok(v)
-            }
-        });
         CheckRun {
             verdict,
             log,
@@ -351,7 +403,7 @@ pub fn check_ctx(
     state: Option<&GoalState>,
     schedule: Option<&GoalSchedule>,
     agent_root: Option<&Path>,
-    trigger: &str,
+    when: &CheckWhen,
     now_ms: u64,
 ) -> Value {
     json!({
@@ -361,8 +413,10 @@ pub fn check_ctx(
         "epoch": goal.session.epoch,
         "scope": goal.scope,
         "agent_root": agent_root.map(|p| p.display().to_string()),
-        "trigger": trigger,
+        "trigger": when.trigger,
+        "held": when.held,
         "now_ms": now_ms,
+        "timezone": goal.schedule.timezone,
         "last_inference_at_ms": crate::goal::last_inference_ms(state),
         "last_check_at_ms": schedule.and_then(|s| s.last_check.as_ref()).map(|c| c.at_ms),
         "last_check": schedule.and_then(|s| s.last_check.clone()),
@@ -371,28 +425,49 @@ pub fn check_ctx(
     })
 }
 
+/// Why a check runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckWhen {
+    /// `start` | `scheduled` | `test` (a dry run).
+    pub trigger: String,
+    /// Why the Goal may not infer now (`min_interval`, `period_budget`,
+    /// `agent_budget`, `guarantee`): a `run: true` is set aside.
+    pub held: Option<String>,
+}
+
+impl CheckWhen {
+    pub fn new(trigger: &str) -> Self {
+        Self { trigger: trigger.into(), held: None }
+    }
+
+    pub fn held(trigger: &str, why: &str) -> Self {
+        Self { trigger: trigger.into(), held: Some(why.into()) }
+    }
+}
+
 /// Run a Goal's check the way the host does: its current script (or
 /// `script`, a draft), its `ctx` and the `state` the host keeps. Nothing is
-/// recorded (the host records what it runs; `goal check run` is a dry run).
+/// recorded and nothing is sent (the host records what it runs and sends
+/// the notification; `goal check run` is a dry run).
 pub async fn run_for(
     agent: &dyn crate::state::AgentStateClient,
     runner: &dyn CheckRunner,
     goal: &GoalDefinition,
     script: Option<&Path>,
-    trigger: &str,
+    when: &CheckWhen,
     now_ms: u64,
 ) -> crate::error::Result<CheckRun> {
     let goals = agent.goals();
     let state = goals.state(&goal.goal_id).await?;
     let schedule = goals.schedule(&goal.goal_id).await?;
-    let ctx = check_ctx(goal, state.as_ref(), schedule.as_ref(), agent.agent_root(), trigger, now_ms);
+    let ctx = check_ctx(goal, state.as_ref(), schedule.as_ref(), agent.agent_root(), when, now_ms);
     let stored = schedule.as_ref().and_then(|s| s.check_state.clone()).unwrap_or(Value::Null);
     let path = match script {
         Some(p) => p.to_path_buf(),
         None => {
             let Some(c) = &goal.schedule.check else {
                 return Ok(CheckRun {
-                    verdict: Ok(CheckVerdict { run: true, reason: None, state: None }),
+                    verdict: Ok(CheckVerdict { run: true, ..Default::default() }),
                     log: "no check script: every scheduled check passes".into(),
                     elapsed_ms: 0,
                 });
@@ -419,5 +494,7 @@ pub async fn run_for(
     let calls = AgentCalls {
         agent_root: agent.agent_root().map(Path::to_path_buf),
     };
-    Ok(runner.run(&path, &ctx, &stored, &calls).await)
+    let mut run = runner.run(&path, &ctx, &stored, &calls).await;
+    run.verdict = run.verdict.and_then(CheckVerdict::validate);
+    Ok(run)
 }

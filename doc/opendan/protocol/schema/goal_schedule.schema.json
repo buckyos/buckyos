@@ -24,6 +24,20 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "held": {
+          "description": "The gate held the Goal's inferences while it ran (`min_interval`, `period_budget`, `agent_budget`, `guarantee`): a `true` was set aside.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notified": {
+          "description": "Title of the notification the check had the host send.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "outcome": {
           "$ref": "#/definitions/CheckOutcome"
         },
@@ -71,6 +85,13 @@
         },
         "guarantees": {
           "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "notified": {
+          "default": 0,
+          "description": "Notifications the checks had the host send (no inference).",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -252,6 +273,7 @@
         "checks_false": 0,
         "checks_true": 0,
         "guarantees": 0,
+        "notified": 0,
         "period_start_ms": 0,
         "skipped_budget": 0,
         "skipped_min_interval": 0

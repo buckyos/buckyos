@@ -458,7 +458,7 @@ export function ConversationView({
 
           {!notifyCategory && canSend && sendBlocked ? <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-3 py-1.5 text-[12px]" role="status" data-testid="composer-blocked" data-mode={sendBlockedReason ? 'archiving' : foreground.mode}>
             <span className="min-w-0 flex-1 text-[color:var(--cp-muted)]">{sendBlockedReason ?? t(`messagehub.turn.blocked.${foreground.mode}`)}</span>
-            {!sendBlockedReason && foreground.anchor ? <ConversationMessageActionsContext.Provider value={messageActions}><TurnControls anchor={foreground.anchor.message} taskId={foreground.anchor.taskId} place="composer" /></ConversationMessageActionsContext.Provider> : null}
+            {!sendBlockedReason && foreground.anchor ? <ConversationMessageActionsContext.Provider value={messageActions}><TurnControls anchor={foreground.anchor.message} taskId={foreground.anchor.taskId} /></ConversationMessageActionsContext.Provider> : null}
           </div> : null}
           {notifyCategory ? null : canSend ? <ConversationComposer
             initialDraft={draft}

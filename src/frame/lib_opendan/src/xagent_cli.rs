@@ -128,7 +128,8 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
         network only, same ctx and state; nothing is recorded. Test a script with it before `goal check set`.
   goal check set [--script <file.ts> | --restore | --clear] [--every <secs ≥ 60> | --cron <expr>] [--timezone <iana>] --reason <t>
         the script each scheduled check runs (`export default async function check(ctx, state)` returning
-        {run, reason?, state?}) and how often; `--restore` goes back to the package's script of a built-in goal
+        {run, reason?, state?, notify?: {title, message?, url?, level?}}; the host sends `notify` without an
+        inference) and how often; `--restore` goes back to the package's script of a built-in goal
   notify send --title <t> [--message <text>] [--url <link>] [--level quiet|normal|timely|urgent] [--expires-in <dur>] [--key <k>]
          (tell the user something; the system picks the channel. --url: where opening it lands, e.g. a page or
           app made for this; something the user must answer goes in a goal's `questions`, not here)
@@ -2796,13 +2797,22 @@ async fn cmd_goal(mut a: Args) -> R<i32> {
                         Some(d) => Box::new(d),
                         None => Box::new(crate::goal_check::MissingRunner),
                     };
-                    let run = crate::goal_check::run_for(c.agent.as_ref(), runner.as_ref(), &goal, draft.as_deref(), "test", crate::now_ms()).await?;
+                    let run = crate::goal_check::run_for(
+                        c.agent.as_ref(),
+                        runner.as_ref(),
+                        &goal,
+                        draft.as_deref(),
+                        &crate::goal_check::CheckWhen::new("test"),
+                        crate::now_ms(),
+                    )
+                    .await?;
                     let code = if run.verdict.is_ok() { 0 } else { 1 };
                     print(&json!({
                         "outcome": run.outcome().as_str(),
                         "run": run.verdict.as_ref().ok().map(|v| v.run),
                         "reason": run.verdict.as_ref().ok().and_then(|v| v.reason.clone()),
                         "state": run.verdict.as_ref().ok().and_then(|v| v.state.clone()),
+                        "notify": run.verdict.as_ref().ok().and_then(|v| v.notify.clone()),
                         "error": run.verdict.as_ref().err(),
                         "log": run.log,
                         "elapsed_ms": run.elapsed_ms,

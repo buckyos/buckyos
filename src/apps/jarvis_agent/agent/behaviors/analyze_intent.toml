@@ -34,7 +34,7 @@ For the request below, decide what it needs:
 - a state to reach or keep over time, or something to watch: create a goal → `goal_created`
 - a question the conversation can answer: create nothing → `direct`
 - something to look at or decide again at a later time or on a timetable ("every weekday at 9, check …", "tomorrow morning, see whether …"): create a goal with that timetable → `goal_created`. Something already one goal's duty goes to that goal instead (goals are scarce: fold it into one that fits)
-- a plain reminder at a fixed time that needs no judgement ("remind me at 9 to …"): not supported yet → `unsupported`
+- a reminder or another fixed message at set times ("remind me at 9 to …", "on weekdays between 15:00 and 18:00, every 50 minutes, remind me to stand up"): create a goal that sends it → `goal_created` (see "Reminders" below). A reminder that belongs to a goal's duty goes to that goal instead
 - something that should not or cannot be done → `declined`
 - a proposal the user must approve as a whole, which one question cannot settle → `needs_confirmation`
 
@@ -94,6 +94,7 @@ For the request below, decide what it needs:
 - Goal: `agent-session goal create --objective "<the state to reach or keep>" --title <short title> --lifecycle achieve|maintain [--achieved-when <t>] [--healthy-state <t>] [--constraint <t>]... [--workspace <id>] [--every <secs ≥ 60> | --cron "<minute hour day month weekday>" [--timezone <iana zone>]] --start --key <unique operation id>`
   A timetable is when the goal checks; it infers only when its check says so (it writes its own check script in its first activation). A wall-clock request ("weekdays at 9") is a `--cron` in the user's time zone (taken from this conversation when `--timezone` is left out); a rate ("every hour") is `--every`.
   A request that belongs to an existing goal goes to it: `agent-session goal post <goal_id> --msg "<text>"`.
+- Reminders: a goal whose objective states every reminder exactly — the times or the rule that gives them (spelled out: "weekdays at 15:00, 15:50, 16:40 and 17:30"), the time zone, and what to tell the user. `--lifecycle maintain --healthy-state "every reminder reaches the user at its time"` for a repeating one; `--lifecycle achieve --achieved-when "the reminder was sent"` for a single one. `--cron` that comes at least at every reminder time, in the user's time zone (`*/10 15-17 * * 1-5` covers the example); `--start`. In its first activation the goal writes a check script that sends each reminder at its time by itself, so a reminder costs no inference. Ask only what changes the reminders (for example which days count as working days when the user means something unusual); a missing detail with an obvious reading is an assumption you state.
 
 __INCLUDE(skill_select_rule.inc)__
 
@@ -117,7 +118,7 @@ Your final reply is one JSON object, the result, with every field below (no tool
 - `outcome`: `work_created | goal_created | direct | declined | needs_confirmation | unsupported`.
 - `request`: the request restated completely.
 - `report`: the text the conversation relays to the user, complete in itself, in the user's language, in three parts:
-  1. what you did and what you created — the work's objective and assumptions, or the goal and how it is pursued; for `direct` the answer's facts; for `declined` / `unsupported` why, and what is missing (fixed-time reminders are not supported yet); for `needs_confirmation` the proposal to decide on;
+  1. what you did and what you created — the work's objective and assumptions, or the goal and how it is pursued; for `direct` the answer's facts; for `declined` / `unsupported` why, and what is missing; for a reminder its exact times and text; for `needs_confirmation` the proposal to decide on;
   2. what you asked the user and what they answered, word for word, every question (or that you asked nothing);
   3. what the user will see next (the work's report when it ends, the goal's notifications, nothing).
   Not your exploration.

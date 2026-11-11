@@ -514,10 +514,11 @@ fn render_gate(v: &GateView) -> String {
     }
     s.push_str(&format!(" no_action_in_a_row=\"{}\">\n", v.no_action_in_a_row));
     s.push_str(&format!(
-        "<this_period checks_true=\"{}\" checks_false=\"{}\" checks_error=\"{}\" skipped_by_interval=\"{}\" skipped_by_budget=\"{}\" events_held_by_interval=\"{}\" events_held_by_budget=\"{}\" hard_guarantees=\"{}\"/>\n",
+        "<this_period checks_true=\"{}\" checks_false=\"{}\" checks_error=\"{}\" notifications_by_checks=\"{}\" skipped_by_interval=\"{}\" skipped_by_budget=\"{}\" events_held_by_interval=\"{}\" events_held_by_budget=\"{}\" hard_guarantees=\"{}\"/>\n",
         v.stats.checks_true,
         v.stats.checks_false,
         v.stats.checks_error,
+        v.stats.notified,
         v.stats.skipped_min_interval,
         v.stats.skipped_budget,
         v.holds.min_interval,
@@ -525,10 +526,19 @@ fn render_gate(v: &GateView) -> String {
         v.stats.guarantees
     ));
     if let Some(c) = &v.last_check {
-        s.push_str(&format!(
-            "<last_check at=\"{}\" outcome=\"{}\">{}</last_check>\n",
+        let mut attrs = format!(
+            "at=\"{}\" outcome=\"{}\"",
             crate::runner::input_view::utc_rfc3339(c.at_ms),
-            c.outcome.as_str(),
+            c.outcome.as_str()
+        );
+        if let Some(h) = &c.held {
+            attrs.push_str(&format!(" held=\"{}\"", escape_xml_attr(h)));
+        }
+        if let Some(n) = &c.notified {
+            attrs.push_str(&format!(" notified=\"{}\"", escape_xml_attr(n)));
+        }
+        s.push_str(&format!(
+            "<last_check {attrs}>{}</last_check>\n",
             escape_xml_text(c.reason.as_deref().unwrap_or_default())
         ));
     }

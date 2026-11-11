@@ -504,6 +504,8 @@ Work Session 可以因为审批、`ask_user` 或外部回复暂时等待，但�
 
 本次口述具体展开的是这一条路线，没有将其他调度实现补写为已定方案。
 
+实现现状（2026-11-11）：提醒由一个 Goal 承担，不另起 Work。Goal 第一次运行时把提醒的时刻和内容写进自己的检查脚本，检查按 cron 时间表运行，到点时在结果里带上一条通知，由宿主经 System Notify 发出，每次提醒都不推理。要结合当天情况判断的（请假、出差、用户说今天不用），由检查返回 true 交给 Goal 推理，或由用户转来的消息唤醒 Goal 去改脚本。细节见 [OpenDAN Agent Session架构设计](<OpenDAN Agent Session架构设计.md>) §8.1、§12.1.1 和 [Agent State Protocol](<protocol/Agent State Protocol.md>) §9.4。
+
 ### 11.3 通知内容由 Agent 判断，触达方式由系统选择
 
 Work Session 判断应该提醒后，调用 System Notify，说明内容、来源与所需强度。

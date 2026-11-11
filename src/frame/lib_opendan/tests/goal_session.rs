@@ -69,12 +69,24 @@ fn hosted_with(env: &Env, llm: Arc<ScriptedLlm>, llm_context: Value) -> Hosted {
 
 /// A host whose Goals and Goal Sessions read one hand-moved clock.
 fn hosted_opts(env: &Env, llm: Arc<ScriptedLlm>, llm_context: Value, f: impl FnOnce(&mut GoalHostOptions)) -> Hosted {
+    hosted_notify(env, llm, llm_context, None, f)
+}
+
+/// … with a notification service.
+fn hosted_notify(
+    env: &Env,
+    llm: Arc<ScriptedLlm>,
+    llm_context: Value,
+    notify: Option<Arc<dyn libopendan::notify::NotifyHost>>,
+    f: impl FnOnce(&mut GoalHostOptions),
+) -> Hosted {
     let clock = ManualClock::at(libopendan::now_ms());
     let mut opts = GoalHostOptions::new(env.agent_root.join("sessions"), llm_context);
     opts.clock = clock.clone();
     opts.budget_every = Duration::ZERO;
     f(&mut opts);
     let mut deps = host_deps(env, llm);
+    deps.notify = notify;
     deps.options.goal_clock = GoalClock(clock.clone());
     let sup = Supervisor::new(deps, None).with_goals(GoalHost::new(opts));
     Hosted {
@@ -1874,7 +1886,7 @@ async fn the_check_script_decides_scheduled_inferences_and_keeps_its_state() {
             if n == 3 {
                 return Err("boom: the script threw".into());
             }
-            Ok(CheckVerdict { run: n == 2, reason: Some(format!("n={n}")), state: Some(json!({ "n": n + 1 })) })
+            Ok(CheckVerdict { run: n == 2, reason: Some(format!("n={n}")), state: Some(json!({ "n": n + 1 })), ..Default::default() })
         }));
     });
     let mut req = goal_req("watch a folder");
@@ -1917,6 +1929,116 @@ async fn the_check_script_decides_scheduled_inferences_and_keeps_its_state() {
     h.shutdown().await;
 }
 
+
+/// A reminder at a known time needs no inference: the check names the
+/// notification and the host sends it, also while the hard interval holds
+/// the Goal's inferences (`ctx.held`). Held, a `run: true` is set aside
+/// whole (no notification, the state stays) and comes back at the next
+/// check; past the gate it is sent with the Activation. A notification
+/// that cannot be sent is a failed check whose state stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_check_sends_reminders_without_inference_even_while_held() {
+    use libopendan::goal_check::{CheckNotify, CheckVerdict, FnCheckRunner};
+    use libopendan::notify::{LocalNotify, NotifyHost, NotifyLevel, NotifyListReq};
+    let env = Env::new();
+    let local = Arc::new(LocalNotify::enable(&env.agent_root, AGENT).unwrap());
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let ctxs = seen.clone();
+    let notice = |title: &str| CheckNotify {
+        title: title.into(),
+        message: Some("10 minutes away from the desk".into()),
+        url: None,
+        level: Some(NotifyLevel::Timely),
+    };
+    let h = hosted_notify(&env, llm.clone(), json!({ "tools": { "enabled": true } }), Some(local.clone()), move |o| {
+        o.checks = Arc::new(FnCheckRunner(move |_: &Path, ctx: &Value, state: &Value| {
+            ctxs.lock().unwrap().push(ctx.clone());
+            let n = state["n"].as_u64().unwrap_or(0);
+            Ok(match n {
+                0 => CheckVerdict { notify: Some(notice("Stand up")), state: Some(json!({ "n": 1 })), ..Default::default() },
+                1 => CheckVerdict {
+                    run: true,
+                    reason: Some("the reminders changed".into()),
+                    notify: Some(notice("Stand up again")),
+                    state: Some(json!({ "n": 2 })),
+                },
+                _ => CheckVerdict::default(),
+            })
+        }));
+    });
+    let mut req = goal_req("remind the user to stand up");
+    req.title = Some("stand-up reminder".into());
+    req.schedule.every_secs = Some(SLOT);
+    req.schedule.min_interval_secs = Some(3 * SLOT);
+    req.schedule.timezone = Some("Asia/Shanghai".into());
+    req.schedule.start_on_create = true;
+    req.check_script = Some("export default () => false;\n".into());
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.until("activation 1", |h| h.activations(&g.goal_id).len() == 1).await;
+
+    // Held by the hard interval: the reminder goes out, nothing infers.
+    h.clock.advance(SLOT * 1000);
+    h.until("the reminder", |h| schedule_of(h, &g.goal_id).stats.notified == 1).await;
+    let sent = local.list(NotifyListReq::default()).await.unwrap();
+    assert_eq!(sent.len(), 1, "{sent:#?}");
+    assert_eq!(sent[0].prompt.title.as_deref(), Some("Stand up"));
+    assert_eq!(sent[0].level, NotifyLevel::Timely);
+    assert_eq!(sent[0].source.goal_id.as_deref(), Some(g.goal_id.as_str()));
+    assert_eq!(sent[0].source.operation.as_deref(), Some("stand-up reminder"));
+    let s = schedule_of(&h, &g.goal_id);
+    let last = s.last_check.clone().unwrap();
+    assert_eq!((last.held.as_deref(), last.notified.as_deref()), (Some("min_interval"), Some("Stand up")));
+    assert_eq!(s.check_state, Some(json!({ "n": 1 })));
+    assert_eq!(s.stats.skipped_min_interval, 1);
+    let ctx = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((ctx["held"].as_str(), ctx["timezone"].as_str()), (Some("min_interval"), Some("Asia/Shanghai")));
+    assert_eq!(h.activations(&g.goal_id).len(), 1);
+
+    // Still held: a `true` is set aside with its notification and state.
+    h.clock.advance(SLOT * 1000);
+    h.until("the held check", |h| schedule_of(h, &g.goal_id).stats.checks_true == 1).await;
+    let s = schedule_of(&h, &g.goal_id);
+    assert_eq!(s.check_state, Some(json!({ "n": 1 })), "the state stays");
+    assert_eq!(s.stats.notified, 1);
+    assert_eq!(local.list(NotifyListReq::default()).await.unwrap().len(), 1);
+    assert_eq!(h.activations(&g.goal_id).len(), 1);
+
+    // Past the interval the same check opens an Activation and its
+    // notification goes out.
+    h.clock.advance(SLOT * 1000);
+    h.until("activation 2", |h| h.activations(&g.goal_id).len() == 2).await;
+    let a = &h.activations(&g.goal_id)[1];
+    assert!(a.reasons[0].note.as_deref().unwrap().contains("the reminders changed"), "{a:?}");
+    let s = schedule_of(&h, &g.goal_id);
+    assert_eq!((s.stats.notified, s.check_state.clone()), (2, Some(json!({ "n": 2 }))));
+    let titles: Vec<_> = local.list(NotifyListReq::default()).await.unwrap().into_iter().filter_map(|v| v.prompt.title).collect();
+    assert!(titles.contains(&"Stand up again".to_string()), "{titles:?}");
+    let header = last_header(&llm);
+    assert!(header.contains("notifications_by_checks=\"2\""), "{header}");
+    assert!(header.contains("notified=\"Stand up again\""), "{header}");
+    h.shutdown().await;
+
+    // No notification service: the check failed, its state stays.
+    let env = Env::new();
+    let llm = ScriptedLlm::new(|req, _| if is_goal_req(req) { no_action() } else { text("not a goal") });
+    let h = hosted_opts(&env, llm, json!({ "tools": { "enabled": true } }), move |o| {
+        o.checks = Arc::new(FnCheckRunner(move |_: &Path, _: &Value, _: &Value| {
+            Ok(CheckVerdict { notify: Some(notice("Stand up")), state: Some(json!({ "n": 1 })), ..Default::default() })
+        }));
+    });
+    let mut req = goal_req("remind the user to stand up");
+    req.schedule.every_secs = Some(SLOT);
+    req.check_script = Some("export default () => false;\n".into());
+    let g = h.agent.goals().create(&req, &owner()).await.unwrap();
+    h.tick().await;
+    let s = schedule_of(&h, &g.goal_id);
+    assert_eq!(s.check_errors, 1, "{s:?}");
+    assert!(s.last_check_error.as_deref().unwrap().contains("was not sent"), "{s:?}");
+    assert_eq!((s.check_state.clone(), s.stats.notified), (None, 0));
+    assert!(h.activations(&g.goal_id).is_empty());
+    h.shutdown().await;
+}
 
 /// H2: Work ends that come closer than the hard interval to the last
 /// inference wait in the queue (one hold recorded) and open one Activation
@@ -2133,7 +2255,7 @@ async fn checks_run_on_deno_with_read_and_network_only() {
         let agent = agent.clone();
         let g = g.clone();
         let r = DenoCheckRunner { deno: r.deno.clone(), config: r.config.clone(), timeout: r.timeout, work_dir: r.work_dir.clone() };
-        async move { run_for(agent.as_ref(), &r, &g, Some(&p), "test", now).await.unwrap() }
+        async move { run_for(agent.as_ref(), &r, &g, Some(&p), &libopendan::goal_check::CheckWhen::new("test"), now).await.unwrap() }
     };
     let cmd = run(script("cmd", "export default async () => { await new Deno.Command('echo', { args: ['x'] }).output(); return true; };\n"), &runner).await;
     assert_eq!(cmd.outcome(), CheckOutcome::Error);
@@ -2158,6 +2280,24 @@ async fn checks_run_on_deno_with_read_and_network_only() {
     assert!(ok.log.contains("looked at"), "{}", ok.log);
     let bad = run(script("bad", "export default () => 42;\n"), &runner).await;
     assert!(bad.verdict.unwrap_err().contains("returns {run"));
+    // A notification: a title, the rest optional; the level is one of four.
+    let remind = run(
+        script(
+            "remind",
+            "export default (ctx) => ({ run: false, notify: { title: `Stand up (${ctx.timezone ?? 'UTC'})`, level: 'timely' }, state: { at: ctx.now_ms } });\n",
+        ),
+        &runner,
+    )
+    .await;
+    let v = remind.verdict.clone().unwrap_or_else(|e| panic!("{e}\n{}", remind.log));
+    let n = v.notify.unwrap();
+    assert_eq!((n.title.as_str(), n.level), ("Stand up (UTC)", Some(libopendan::notify::NotifyLevel::Timely)));
+    let loud = run(script("loud", "export default () => ({ run: false, notify: { title: 'x', level: 'loud' } });\n"), &runner).await;
+    assert!(loud.verdict.unwrap_err().contains("notify"), "an unknown level");
+    let empty = run(script("empty", "export default () => ({ run: false, notify: { title: ' ' } });\n"), &runner).await;
+    assert!(empty.verdict.unwrap_err().contains("notify.title"));
+    let link = run(script("link", "export default () => ({ run: false, notify: { title: 'x', url: 'javascript:alert(1)' } });\n"), &runner).await;
+    assert!(link.verdict.unwrap_err().contains("notify.url"));
     runner.timeout = Duration::from_secs(2);
     let slow = run(script("slow", "export default () => new Promise((r) => setTimeout(() => r(true), 10000));\n"), &runner).await;
     assert!(slow.verdict.unwrap_err().contains("did not finish"));

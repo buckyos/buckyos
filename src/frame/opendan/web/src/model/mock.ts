@@ -345,7 +345,7 @@ interface GoalFixture {
 }
 
 const noStats = (): GoalSchedule['stats'] => ({
-  period_start_ms: PERIOD_START, skipped_min_interval: 0, skipped_budget: 0, checks_true: 0, checks_false: 0, checks_error: 0, guarantees: 0,
+  period_start_ms: PERIOD_START, skipped_min_interval: 0, skipped_budget: 0, checks_true: 0, checks_false: 0, checks_error: 0, guarantees: 0, notified: 0,
 })
 const gateState = { check_errors: 0, guarantee_posted_for_ms: 0, switched_off: false }
 
@@ -457,11 +457,11 @@ const buildGoalFixtures = (): GoalFixture[] => {
         { slot: slotNow - 1, at_ms: ago(1800), reason: 'check_false' },
         { slot: slotNow, at_ms: ago(60), reason: 'check_false' },
       ],
-      last_check: { at_ms: ago(60), outcome: 'false', script_version: 2, elapsed_ms: 140 },
+      last_check: { at_ms: ago(60), outcome: 'false', script_version: 2, elapsed_ms: 140, held: 'min_interval' },
       check_errors: 0,
       last_check_error: 'memory.status timed out after 10s',
       check_state: { digest: 'sha256:1f9c2b7e', full_check_at: ago(7200), next_deadline: iso(4 * 3600) },
-      stats: { period_start_ms: PERIOD_START, skipped_min_interval: 1, skipped_budget: 0, checks_true: 3, checks_false: 14, checks_error: 1, guarantees: 0 },
+      stats: { period_start_ms: PERIOD_START, skipped_min_interval: 1, skipped_budget: 0, checks_true: 3, checks_false: 14, checks_error: 1, guarantees: 0, notified: 0 },
       guarantee_posted_for_ms: 0,
       switched_off: false,
       updated_at_ms: ago(60),

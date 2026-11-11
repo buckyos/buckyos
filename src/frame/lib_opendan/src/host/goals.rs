@@ -27,7 +27,7 @@ use crate::goal::{
     activate_key, defaults, effective_budget, ensure_goal_session, gate_now, guarantee_since_ms, post_activation,
     post_feedback, scheduled_key, start_key, window_secs, GateVerdict, GOAL_CLASS,
 };
-use crate::goal_check::{CheckRun, CheckRunner, DenoCheckRunner, MissingRunner};
+use crate::goal_check::{CheckNotify, CheckRun, CheckRunner, CheckWhen, DenoCheckRunner, MissingRunner};
 use crate::goal_time::Timetable;
 use crate::protocol::*;
 use crate::session::SessionDir;
@@ -415,12 +415,29 @@ impl GoalHost {
         );
     }
 
-    /// Run the Goal's check script once and record what it said in
-    /// `schedule.json` (last check, consecutive errors, its `state`, the
-    /// period's counters).
-    async fn check(&self, sup: &Supervisor, goal: &GoalDefinition, trigger: &str, now: u64) -> Result<CheckRun> {
+    /// Run the Goal's check script once, send the notification it asks for
+    /// and record what it said in `schedule.json` (last check, consecutive
+    /// errors, its `state`, the period's counters). `key`: the run
+    /// opportunity it runs for (the notification's idempotency key derives
+    /// from it). Held (`when.held`), a `run: true` is set aside whole: no
+    /// notification, the stored `state` stays.
+    async fn check(&self, sup: &Supervisor, goal: &GoalDefinition, when: &CheckWhen, key: &str, now: u64) -> Result<CheckRun> {
         let agent = sup.host.agent.as_ref();
-        let run = crate::goal_check::run_for(agent, self.options.checks.as_ref(), goal, None, trigger, now).await?;
+        let mut run = crate::goal_check::run_for(agent, self.options.checks.as_ref(), goal, None, when, now).await?;
+        let set_aside = when.held.is_some() && matches!(&run.verdict, Ok(v) if v.run);
+        let mut notified = None;
+        let wanted = if set_aside { None } else { run.verdict.as_ref().ok().and_then(|v| v.notify.clone()) };
+        if let Some(n) = wanted {
+            match self.send_notify(sup, goal, &n, key).await {
+                Ok(id) => {
+                    log::info!("goals: {}: the check sent notification {id}: {}", goal.goal_id, n.title);
+                    notified = Some(n.title.trim().chars().take(200).collect::<String>());
+                }
+                // Not sent: the check did not do its job; its state stays so
+                // the next check sends it again.
+                Err(e) => run.verdict = Err(format!("the check's notification `{}` was not sent: {e}", n.title)),
+            }
+        }
         let d = defaults(agent.agent_root(), &self.options.class);
         let start = crate::goal::period_start(now, window_secs(&effective_budget(goal, &d)));
         let goals = agent.goals();
@@ -436,6 +453,8 @@ impl GoalHost {
             reason: reason.map(|r| r.chars().take(2000).collect()),
             script_version: goal.schedule.check.as_ref().map(|c| c.version).unwrap_or(0),
             elapsed_ms: run.elapsed_ms,
+            notified: notified.clone(),
+            held: when.held.clone(),
         });
         let stats = schedule.stats_mut(start);
         match outcome {
@@ -443,10 +462,13 @@ impl GoalHost {
             CheckOutcome::False => stats.checks_false += 1,
             CheckOutcome::Error => stats.checks_error += 1,
         }
+        if notified.is_some() {
+            stats.notified += 1;
+        }
         match &run.verdict {
             Ok(v) => {
                 schedule.check_errors = 0;
-                if let Some(st) = &v.state {
+                if let (Some(st), false) = (&v.state, set_aside) {
                     schedule.check_state = Some(st.clone());
                 }
             }
@@ -459,6 +481,28 @@ impl GoalHost {
         schedule.updated_at_ms = now;
         goals.write_schedule(&schedule).await?;
         Ok(run)
+    }
+
+    /// Send what a check asked for, as the Goal (once per run opportunity).
+    async fn send_notify(&self, sup: &Supervisor, goal: &GoalDefinition, n: &CheckNotify, key: &str) -> Result<String> {
+        let notify = sup.host.notify.clone().ok_or_else(crate::notify::unavailable)?;
+        let mut req = crate::notify::NotifySendReq::notice(
+            String::new(),
+            n.title.trim(),
+            n.message.clone().unwrap_or_default(),
+            format!("{key}:notify"),
+        );
+        req.level = n.level;
+        let mut source = crate::notify::NotifySource {
+            session_id: Some(goal.session.sid.clone()),
+            goal_id: Some(goal.goal_id.clone()),
+            operation: Some(goal.title.chars().take(200).collect::<String>()).filter(|t| !t.is_empty()),
+            link: n.url.as_deref().map(str::trim).filter(|u| !u.is_empty()).map(str::to_string),
+            ..Default::default()
+        };
+        crate::notify::complete_notify_source(sup.host.agent.as_ref(), &mut source).await;
+        req.source = Some(source);
+        Ok(notify.send(req).await?.notify_id)
     }
 
     /// Count a scheduled run opportunity the gate refused.
@@ -861,7 +905,8 @@ impl GoalHost {
             match gate_now(agent, goal, state, d, now).await?.0 {
                 GateVerdict::Pass { guarantee: true } => Some(format!("{start_note}; the hard guarantee is due")),
                 GateVerdict::Pass { guarantee: false } => {
-                    let run = self.check(sup, goal, "start", now).await?;
+                    let key = start_key(&goal.goal_id, epoch);
+                    let run = self.check(sup, goal, &CheckWhen::new("start"), &key, now).await?;
                     match run.verdict {
                         Ok(v) if v.run => Some(match v.reason {
                             Some(r) => format!("{start_note}; check: {r}"),
@@ -973,6 +1018,11 @@ impl GoalHost {
                     return Ok(());
                 }
                 GateVerdict::Held { reason, why, .. } => {
+                    // The check still runs: what it sends needs no
+                    // inference; a `true` waits for the gate.
+                    if goal.schedule.check.is_some() {
+                        self.check(sup, goal, &CheckWhen::held("scheduled", reason.as_str()), &key, now).await?;
+                    }
                     backend.settle(goals, &goal.goal_id, &fire, &skip(reason.as_str()), now).await?;
                     self.count_skip(goals, goal, d, reason, now).await?;
                     self.skipped(&goal.goal_id, format!("slot {} skipped: {why}", fire.slot), now);
@@ -980,11 +1030,14 @@ impl GoalHost {
                 }
                 GateVerdict::Pass { guarantee: true } => {
                     // The hard guarantee was posted on its own this pass.
+                    if goal.schedule.check.is_some() {
+                        self.check(sup, goal, &CheckWhen::held("scheduled", "guarantee"), &key, now).await?;
+                    }
                     backend.settle(goals, &goal.goal_id, &fire, &skip("guarantee"), now).await?;
                     return Ok(());
                 }
                 GateVerdict::Pass { guarantee: false } if goal.schedule.check.is_some() => {
-                    let run = self.check(sup, goal, "scheduled", now).await?;
+                    let run = self.check(sup, goal, &CheckWhen::new("scheduled"), &key, now).await?;
                     match run.verdict {
                         Ok(v) if v.run => {
                             note = match v.reason {

@@ -2,7 +2,7 @@
 // stdin: one line `{ctx, state}`, then one line per answer to a host call.
 // stdout: protocol lines start with MARK; anything else the script prints is
 // its log. The script's default export is `check(ctx, state)` and returns
-// `{run, reason?, state?}` (a bare boolean is `{run}`).
+// `{run, reason?, state?, notify?}` (a bare boolean is `{run}`).
 
 const MARK = "\u0001opendan-check ";
 const encoder = new TextEncoder();
@@ -61,13 +61,22 @@ try {
   }
   const result = await check({ ...input.ctx, host }, input.state ?? null);
   const value = typeof result === "boolean" ? { run: result } : result;
+  const convention = "a check returns {run: boolean, reason?: string, state?: any, notify?: {title, message?, url?, level?}}";
   if (!value || typeof value !== "object" || typeof value.run !== "boolean") {
-    throw new Error(`a check returns {run: boolean, reason?: string, state?: any}, got ${JSON.stringify(result)}`);
+    throw new Error(`${convention}, got ${JSON.stringify(result)}`);
   }
-  if (value.reason !== undefined && typeof value.reason !== "string") {
+  if (value.reason != null && typeof value.reason !== "string") {
     throw new Error("`reason` of a check result is a string");
   }
-  await send({ kind: "result", value: { run: value.run, reason: value.reason ?? null, state: value.state ?? null } });
+  const n = value.notify;
+  if (n != null) {
+    const text = (v: unknown) => v == null || typeof v === "string";
+    if (typeof n !== "object" || typeof n.title !== "string" || !text(n.message) || !text(n.url) || !text(n.level)) {
+      throw new Error(`\`notify\` of a check result is {title: string, message?: string, url?: string, level?: "quiet" | "normal" | "timely" | "urgent"}, got ${JSON.stringify(n)}`);
+    }
+  }
+  const notify = n == null ? null : { title: n.title, message: n.message ?? null, url: n.url ?? null, level: n.level ?? null };
+  await send({ kind: "result", value: { run: value.run, reason: value.reason ?? null, state: value.state ?? null, notify } });
   Deno.exit(0);
 } catch (e) {
   const message = e instanceof Error ? (e.stack ?? e.message) : String(e);

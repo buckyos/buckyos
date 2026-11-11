@@ -9,7 +9,8 @@ Every way a goal delivers is a command; nothing is delivered by writing it into 
 
 ## The ways
 
-- **Tell the user**: `agent-session notify send --title "<one line>" --message "<details>" [--url <link>] [--level quiet|normal|timely|urgent]`. The system chooses the channel. Use it for a finding, a reminder or a result that fits in a few lines. `--url` is where opening it lands: a page, an app, a report. Something the user must decide goes in your result's `questions` instead.
+- **Tell the user**: `agent-session notify send --title "<one line>" --message "<details>" [--url <link>] [--level quiet|normal|timely|urgent]`. The system chooses the channel. Use it for a finding or a result that fits in a few lines. `--url` is where opening it lands: a page, an app, a report. Something the user must decide goes in your result's `questions` instead.
+- **Tell the user at known times** (a reminder, a fixed daily message): the check script sends it (`notify` in its result, goal skill `goal_check_script`), with no activation for each one. Write it once, in the first activation.
 - **A page or app for this goal** (a dashboard, a list the goal keeps up to date, a form): BuckyOS lets the agent make an app with its own URL, a standard TypeScript app or one built on AIWorkspace. Build it in a work session — `agent-session create-worksession ... --behavior work_simple --cmd-skill buckyos_app_dev` for an app, `--cmd-skill aiworkspace_template_dev` for an AIWorkspace page — with a task that names what the page shows and how the goal updates it. When it exists, later activations only update its data and send a short notification with `--url` pointing at it.
 - **A file or report** in the goal's workspace: write it (or have a work session write it) and notify with its link.
 

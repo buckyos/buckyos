@@ -2,7 +2,7 @@
 
 日期：2026-11-10
 
-状态：A 组 2026-11-10 实施并在本机 Zone 补验（§7）。**2026-11-11 实施了 H、B、C0、D1、D5 的一半、E4、E5、F1、F2、G1、G2（记录在 §10，未提交）。** 剩下的：D3（workflow 计划后端，依赖 workflow 的修复）、F3（等一个跑了一周的 Goal 的数据，DV 先量到一组见 §10.6）、D5 的固定提醒那一半与按裁决推后的 D4、E1、E2、E3（等日历 / 待办接入）。DV 之后 owner 定了硬保障下限 1 小时（§10.6，已实施）。裁决原文在 §8、§9。
+状态：A 组 2026-11-10 实施并在本机 Zone 补验（§7）。**2026-11-11 实施了 H、B、C0、D1、D5 的一半、E4、E5、F1、F2、G1、G2（记录在 §10，未提交）。** 剩下的：D3（workflow 计划后端，依赖 workflow 的修复）、F3（等一个跑了一周的 Goal 的数据，DV 先量到一组见 §10.6）与按裁决推后的 D4、E1、E2、E3（等日历 / 待办接入）。DV 之后 owner 定了硬保障下限 1 小时（§10.6，已实施）。D5 的固定提醒那一半按 owner 11-11 的要求改由 Goal 承担（§10.7，已实施未提交）。裁决原文在 §8、§9。
 
 本单是 Goal 剩余工作的总入口：排顺序，标明依赖和裁决状态，并补上此前没有任何 TODO 承接的项。已有详细方案的不在这里重写，只给指针，实施时按原文的方案做：
 
@@ -154,7 +154,7 @@ owner 2026-11-10（§9 第 1 条）：通知用户这件事，把命令行定下
   - 再做 `WorkflowScheduleBackend`：`every_secs → RunEvery`、cron → `Cron`，目标 `opendan.command{goal.activate}`。
   - 改 workflow 按 `harness/Service Dev Loop.md`；完整的 IANA 时区要引入时区库，先确认。
 - **D4 timer 对象：等日历 / 待办接入**（§9 第 2 条）。改用户的待办、日历是接入之后的命令，现在不支持就没有这种交付方法；Q-S1、S7、S8 届时再定。原设想：到点不需要推理的提醒，不是 Goal。方案在异步单 §5.2 场景 1 与 §8 D1：workflow 的 `Once` / `Cron` 加发通知的目标、按 owner 加 key 的幂等创建、单次发生的跳过与改动，以及建、列、取消的命令和手册。依赖 D3 里 workflow 的修复。
-- [~] **D5 意图分析的定时分支**（到点要判断的一半已做，见 §10.2）（Q-S4）。`analyze_intent.toml:36` 今天一律 `unsupported`。到点要判断的建 Goal 并带检查时间表，这一半在 H、D1 之后就能做；固定提醒那一半等 D4。
+- [x] **D5 意图分析的定时分支**（Q-S4）。到点要判断的一半见 §10.2；固定提醒那一半原定等 D4，2026-11-11 owner 在 DV 里要求由 Goal 承担，改为检查脚本到点发通知、不推理（§10.7）。
 - **D6 对象订阅驱动 Goal：改为不排期**（N13，2026-11-10）。“定期去看某个对象变没变”由检查脚本承担；真有等不起一个检查周期的事件再回来做，届时声明放在哪见 N6。
 
 ### E. 内置 Goal
@@ -464,4 +464,19 @@ owner 用一张脑图（“goal 怎么触发推理？定义门槛”）给出四
 DV 发现：**硬保障压过预算，设得短时会无视预算持续推理**。测试 Goal 的硬保障设成 600 秒，环境闲置约 6.5 小时里被唤醒 38 次，周期预算 150 万用完后照样触发，共用了约 220 万 token（DV 参数不当所致）。2026-11-11 owner 裁决：**硬保障下限 1 小时**。已实施：`GUARANTEE_MIN_SECS = 3600`，`schedule.guarantee_secs` 只能是 0（关）或不小于 3600，创建、修订（`state/goals.rs::check_schedule`）和 `agent.toml [session.goal] guarantee_secs`（`template.rs`）都拒绝更小的值，运行时对已存的更小值按 3600 算（`goal.rs::guarantee_secs`）；页面表单同样校验。用例加在 `the_hard_guarantee_wakes_a_goal_past_budget_and_check_but_not_a_dormant_one` 和 e2e `goals.spec.ts`。
 
 F3 的数据：同一个 Goal 连续 `no_action` 时每次 Activation 从 2.5 万涨到 7.8 万 token（历史每次约长 2k），第 37 次触发通用压缩后回落到 5.9 万。
+
+### 10.7 固定提醒由 Goal 承担（2026-11-11，owner 追加，未提交）
+
+起因：owner 在 DV 环境对 Jarvis 说“工作日的下午3点-6点之间，每50分钟提醒我站起来活动10分钟”，得到“目前我还不支持自动发送固定时间的重复”。原话：“按道理goal session可以很容易支持这种主动通知逻辑”。拒绝来自 `analyze_intent.toml` 里 D5 留下的那一行（固定提醒 → `unsupported`，等 D4）。
+
+做法（整理者的选择，owner 没有单独裁决）：意图分析为提醒建 Goal；Goal 第一次 Activation 把提醒写进检查脚本；检查结果加一个 `notify` 字段，到点时由宿主发通知，不打开 Activation。没有选“每次提醒推理一次、由 Goal 调 `notify send`”：DV 量到一次 `no_action` 的 Activation 就要 2.5 万到 7.8 万 token，例子里一周 20 次提醒会用掉百万级 token，也不符合“早期运行为重复交付准备工具”（§9 第 5 条）。
+
+- **检查结果**：`{run, reason?, state?, notify?}`，`notify = {title, message?, url?, level?}`（`goal_check.rs::CheckNotify`，`CheckVerdict::validate` 限制标题 200、正文 4000 字符，`url` 同 `notify send --url`）。宿主以这个 Goal 的名义发 `notice`（来源带 Goal Session、`goal_id`、Goal 标题），幂等键是运行机会的 key 加 `:notify`。发不出去算这次检查出错，`state` 不保存，下一次检查再决定。
+- **被拦下的检查槽也跑检查**（改了 H2 的做法）：硬间隔、预算拦下一个槽，或硬保障占了这个槽时，有脚本的 Goal 照样跑检查，`ctx.held` 是原因。`run: false` 的结果照常生效；`run: true` 的结果整个搁置（不发通知，`state` 不变），下一次检查会再看到。不这样做的话，刚创建的提醒 Goal 在硬间隔（缺省 15 分钟）内的提醒会丢，Agent 后台总量被别的 Goal 用完时提醒也会停。槽本身仍然跳过、不补，计数不变。
+- `ctx` 加 `held`、`timezone`（Goal 的 `schedule.timezone`）。`CheckRecord` 加 `notified`（发出的通知标题）、`held`；`GateStats` 加 `notified`。Goal 头 `<this_period>` 加 `notifications_by_checks`，`<last_check>` 带 `held` / `notified`。`goal check run` 的输出带 `notify`（只显示，不发）。
+- **提示词与手册**：`analyze_intent.toml` 把提醒交给 Goal（目标里写清每个时刻、时区和内容，`--cron` 覆盖所有提醒时刻，一次性的用 achieve），不再 `unsupported`；`goal.toml` 写明到点要说的话放进检查脚本；`goal_check_script` 加“Reminders at known times”一节和一个跑过的例子（工作日 15:00 / 15:50 / 16:40 / 17:30，晚到 15 分钟内仍补发，重复检查不重发）；`goal_delivery` 加一条。
+- **文档**：Agent State Protocol §9.4；架构设计 §8.1（实现现状）、§12.1.1（检查只观察，但可以让宿主发通知）、§17 表；《Agent 主动给用户发“消息”的方法总结》§11.2 记了实现现状；schema 重新生成（`goal_schedule`）。
+- **页面**：门槛面板的本周期计数加“检查发出的通知”，最近检查显示被拦下与已发通知。
+- **用例**：`goal_session.rs` 新增 `a_check_sends_reminders_without_inference_even_while_held`（硬间隔内照发、被拦下的 `true` 整个搁置、放行后随 Activation 发出、没有通知服务时算出错且 `state` 不变）；`checks_run_on_deno_with_read_and_network_only` 加真实 Deno 下 `notify` 的往返与三种不合约定。goal_session 38、memory_maintenance 13、fixtures 19 通过；WebUI check、lint、e2e 56 通过。`cargo test -p libopendan -p opendan` 并行跑时 `plan_simple_async` 5 个、`runtimes`、`session_runtime`、库内 `concurrent_reservations…`、`loader` 各 1 个失败，单线程（`--test-threads=1`）重跑都通过；`plan_simple_async` 在去掉这次改动的 HEAD 上并行跑同样失败，是用例之间的隔离问题，与本项无关。`xagent_cli` 的 2 个仍是 `src/tools/bin` 不存在。
+- 没有做 / 没有验：没有部署到 DV 环境，没有对真实模型跑这句话（意图分析能否写出覆盖所有时刻的 cron、Goal 第一次 Activation 能否写对脚本）；通知的呈现仍是系统通知（default chat session 的口吻转述是 C 组后半，未做）；检查脚本写坏时提醒会静默停到硬保障（缺省 72 小时）才被 Goal 发现，对提醒类 Goal 偏长，是否要“连续出错 N 次就唤醒一次”待 owner 定（§8 第 5 条原先说不加机制）。
 

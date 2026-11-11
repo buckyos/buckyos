@@ -210,6 +210,8 @@ test('the gates show the check of the built-in goal, its script and the package 
   await expect(gates.getByTestId('gate-script')).toContainText('package script: goal_checks/memory_maintenance.ts')
   await expect(gates.getByTestId('gate-last-check')).toContainText('false')
   await expect(gates.getByTestId('gate-last-check')).toContainText('v2 · 140 ms')
+  await expect(gates.getByTestId('gate-last-check-held')).toHaveText('ran while held by the hard interval: a true would have waited')
+  await expect(gates.getByTestId('gate-last-check-notified')).toHaveCount(0)
   await expect(gates.getByTestId('gate-check-errors')).toContainText('0 in a row')
   await expect(gates.getByTestId('gate-check-errors')).toContainText('memory.status timed out after 10s')
   const counts = gates.getByTestId('gate-counts')
@@ -217,6 +219,7 @@ test('the gates show the check of the built-in goal, its script and the package 
   await expect(counts).toContainText('skipped: 1 by the interval · 0 by the budget')
   await expect(counts).toContainText('events held: 2 by the interval · 0 by the budget')
   await expect(counts).toContainText('hard guarantees: 0')
+  await expect(counts).toContainText('notifications sent by checks: 0')
   await expect(gates.getByTestId('gate-no-action')).toHaveText('0')
   await expect(gates.getByTestId('gate-holding')).toHaveText('Nothing held')
 

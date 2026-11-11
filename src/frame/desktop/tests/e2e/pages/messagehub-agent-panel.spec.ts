@@ -5,7 +5,7 @@ import { createNamedSession } from '../fixtures/messagehub'
  * The Agent panel of a conversation with one of the viewer's own Agents
  * (agent-ui-upgrade-todo.md §4.8): its entrances on the desktop and the
  * touch layout, the Agent's summary and preferences, the work tree and its
- * controls, the Turn controls on a placeholder and the composer they block,
+ * controls, the Turn controls above the composer they block,
  * starting a new conversation, the prompt version and recent deliveries.
  */
 
@@ -13,13 +13,14 @@ declare global {
   interface Window {
     __messageHubMockAgent: typeof import('../../../src/app/messagehub/mock/agentpanel').mockAgentPanel
     __messageHubMockTasks: import('../../../src/app/messagehub/mock/tasks').MockTaskSource
+    __messageHubMockWorkCards: typeof import('../../../src/app/messagehub/mock/worksessions').mockWorkCards
   }
 }
 
 const CODER = 'did:buckyos:agent:codeassistant'
 const ALICE = 'did:buckyos:person:alice'
 const WORK = 'session-coder-work'
-const BUILDS_TURN = 'task-turn-work-builds'
+const DEPLOY_TURN = 'task-turn-work-deploy'
 
 async function openHub(page: Page, entityId: string, sessionId?: string) {
   await page.goto(`/messagehub?entityId=${encodeURIComponent(entityId)}${sessionId ? `&sessionId=${sessionId}` : ''}`)
@@ -233,13 +234,15 @@ test('after a restart the interrupted work is resumed together, and the interrup
   await openHub(page, CODER, WORK)
   await expect(page.getByTestId('composer-blocked')).toHaveAttribute('data-mode', 'running')
   await page.evaluate(session => window.__messageHubMockAgent.interrupt(session), WORK)
-  await expect(page.getByTestId('composer-blocked')).toHaveAttribute('data-mode', 'interrupted')
-  await expect(page.getByTestId('composer-blocked')).toContainText('restart interrupted')
+  const blocked = page.getByTestId('composer-blocked')
+  await expect(blocked).toHaveAttribute('data-mode', 'interrupted')
+  await expect(blocked).toContainText('restart interrupted')
   const placeholder = bubble(page, 'msg-cw-8')
   await expect(placeholder.getByTestId('message-task')).toHaveAttribute('data-state', 'interrupted')
-  await expect(placeholder.getByTestId('turn-interrupted-note')).toBeVisible()
-  await expect(placeholder.getByTestId('turn-resume')).toBeVisible()
-  await expect(placeholder.getByTestId('turn-retract')).toHaveCount(0)
+  // The controls are above the composer only; the placeholder carries none.
+  await expect(placeholder.getByTestId('turn-controls')).toHaveCount(0)
+  await expect(blocked.getByTestId('turn-resume')).toBeVisible()
+  await expect(blocked.getByTestId('turn-retract')).toHaveCount(0)
 
   await page.getByTestId('agent-panel-toggle').click()
   await expect(page.getByTestId('agent-conversation-state')).toHaveAttribute('data-state', 'interrupted')
@@ -253,9 +256,9 @@ test('after a restart the interrupted work is resumed together, and the interrup
   expect(await calls(page, 'session.resume')).toEqual([{ sid: 'plan-docs' }, { sid: 'work-builds' }])
   await expect(page.locator('[data-testid="work-tree"] [data-session-id="work-docs-t02"]')).toHaveAttribute('data-state', 'running')
 
-  // The conversation itself is still interrupted: resumed from its placeholder.
-  await placeholder.getByTestId('turn-resume').click()
-  await expect(page.getByTestId('composer-blocked')).toHaveAttribute('data-mode', 'running')
+  // The conversation itself is still interrupted: resumed from above the composer.
+  await blocked.getByTestId('turn-resume').click()
+  await expect(blocked).toHaveAttribute('data-mode', 'running')
   expect(await calls(page, 'session.resume')).toContainEqual({ sid: 'ui-session-work' })
   await expect(page.getByTestId('agent-conversation-state')).toHaveAttribute('data-state', 'working')
 })
@@ -273,16 +276,16 @@ test('a message being handled blocks sending; stopping it keeps the input, lists
   await expect(blocked).toContainText('handling your message')
   const placeholder = bubble(page, 'msg-cw-8')
   await expect(placeholder.getByTestId('task-line-1')).toHaveText('Working · Running shell')
-  await expect(placeholder.getByTestId('turn-stop')).toBeVisible()
-  await expect(placeholder.getByTestId('turn-retract')).toBeVisible()
+  await expect(placeholder.getByTestId('turn-controls')).toHaveCount(0)
+  await expect(blocked.getByTestId('turn-stop')).toBeVisible()
+  await expect(blocked.getByTestId('turn-retract')).toBeVisible()
   // No pause for the message in front.
-  await expect(placeholder.getByText('Pause')).toHaveCount(0)
+  await expect(blocked.getByText('Pause')).toHaveCount(0)
 
   await blocked.getByTestId('turn-stop').click()
   await expect(blocked).toHaveCount(0)
   expect(await calls(page, 'session.stop')).toEqual([{ sid: 'ui-session-work', scope: 'turn' }])
   await expect(placeholder.getByTestId('message-task')).toHaveAttribute('data-state', 'canceled')
-  await expect(placeholder.getByTestId('turn-controls')).toHaveCount(0)
   // The old input is still there; the next message goes out.
   await expect(bubble(page, 'msg-cw-7')).toContainText('Clean up the deploy scripts.')
   await expect(send).toBeEnabled()
@@ -293,41 +296,40 @@ test('a message being handled blocks sending; stopping it keeps the input, lists
 test('stopping a message that started work says the work keeps running and stops each on request', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 })
   await openHub(page, CODER, WORK)
-  // The Turn of the builds is handled again (running) with its work session under it.
-  await page.evaluate(task => {
-    window.__messageHubMockTasks.update(task, { phase: 'Running', outcome: undefined, message: 'working (analyze_intent)' })
-    window.__messageHubMockAgent.conversation('session-coder-work').openTask = { turn: 6, task_id: task }
-  }, BUILDS_TURN)
-  const turn = bubble(page, 'msg-cw-6')
+  // The message in front (still running) has started a work session.
+  await page.evaluate(({ id, ui }) => {
+    window.__messageHubMockWorkCards.set(id, { agent_did: 'did:buckyos:agent:codeassistant', session_id: ui, task_id: id, complete: false, sessions: [{ session_id: 'work-deploy', shape: 'simple', title: 'Clean up the deploy scripts', created_at_ms: Date.now() - 5_000, finished_at_ms: null, state: 'running', line: 'running shell', usage: { input_tokens: 0, output_tokens: 0, rounds: 0, models: [] }, model: 'llm.chat', subtree_usage: null, todos: null }] })
+    window.__messageHubMockTasks.add({ taskId: `${id}.work-deploy`, parentId: id, name: 'Clean up the deploy scripts', phase: 'Running', input: { agent_did: 'did:buckyos:agent:codeassistant', session_id: 'work-deploy', turn: 1 } }, true)
+    window.__messageHubMockTasks.update(id, { message: 'working (analyze_intent)' })
+  }, { id: DEPLOY_TURN, ui: 'ui-session-work' })
+  const turn = bubble(page, 'msg-cw-8')
   await expect(turn.getByTestId('work-cards')).toBeVisible()
-  await turn.getByTestId('turn-stop').click()
+  await expect(turn.getByTestId('turn-controls')).toHaveCount(0)
+  await page.getByTestId('composer-blocked').getByTestId('turn-stop').click()
   await expect(page.getByRole('dialog')).toContainText('1 background task(s) this message started will keep running')
   await confirm(page, 'Stop')
   await expect(turn.getByTestId('turn-works-running')).toContainText('1 background task(s) this message started are still running')
-  const card = turn.locator('[data-session-id="work-builds"]')
+  const card = turn.locator('[data-session-id="work-deploy"]')
   await expect(card).toHaveAttribute('data-state', 'running')
   await card.getByTestId('work-stop').click()
   await confirm(page, 'Stop')
   await expect(card).toHaveAttribute('data-state', 'stopped')
   await expect(turn.getByTestId('turn-works-running')).toHaveCount(0)
-  expect(await calls(page, 'session.stop')).toEqual([{ sid: 'ui-session-work', scope: 'turn' }, { sid: 'work-builds', scope: 'session' }])
+  expect(await calls(page, 'session.stop')).toEqual([{ sid: 'ui-session-work', scope: 'turn' }, { sid: 'work-deploy', scope: 'session' }])
 })
 
 test('stop and retract says what it cannot undo, takes the input out of the conversation and ends the Turn', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 })
   await openHub(page, CODER, WORK)
-  const placeholder = bubble(page, 'msg-cw-8')
-  await placeholder.getByTestId('turn-retract').click()
+  await page.getByTestId('composer-blocked').getByTestId('turn-retract').click()
   await expect(page.getByRole('dialog')).toContainText('What the agent already did is not undone')
   await confirm(page, 'Stop and retract')
   await expect(page.getByTestId('message-redacted')).toHaveCount(1)
   await expect(page.getByTestId('conversation-history')).not.toContainText('Clean up the deploy scripts.')
+  // The Turn ended: nothing is left to stop or retract.
   await expect(page.getByTestId('composer-blocked')).toHaveCount(0)
-  await expect(placeholder.getByTestId('turn-controls')).toHaveCount(0)
   // The retraction is the redact alone: the Agent stops the Turn on receiving it.
   expect(await calls(page, 'session.stop')).toEqual([])
-  // A Turn that already ended offers nothing to retract.
-  await expect(bubble(page, 'msg-cw-6').getByTestId('turn-retract')).toHaveCount(0)
 })
 
 test('a Turn that only waits for its work leaves the composer free', async ({ page }) => {
@@ -335,7 +337,6 @@ test('a Turn that only waits for its work leaves the composer free', async ({ pa
   await openHub(page, CODER, 'session-coder-task')
   await expect(bubble(page, 'msg-ct-10').getByTestId('message-task')).toHaveAttribute('data-state', 'waitingChild')
   await expect(page.getByTestId('composer-blocked')).toHaveCount(0)
-  await expect(bubble(page, 'msg-ct-10').getByTestId('turn-controls')).toHaveCount(0)
   await page.getByPlaceholder('Message...').fill('Still here?')
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
 })

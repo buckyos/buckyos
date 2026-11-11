@@ -9,7 +9,6 @@ import { useTaskSummary } from '../tasks'
 import { MessageTaskArea, ToneIcon } from '../tasks/MessageTask'
 import { toneColor, type TaskText } from '../tasks/taskView'
 import { taskWorklogTarget } from '../worklog/model'
-import { TurnControls } from '../tasks/TurnControls'
 import { getWorkCardsWatch, useBranchExpanded, useSecondClock, useTodoExpanded, useWorkCards } from './index'
 import { WorkControls } from './WorkControls'
 import { cardRunning, cardUsage, displayModel, flattenWork, formatDuration, formatTokens, isTodoEnded, isWorkFinished, localizeLine, todoTitle, visibleTodos, workChildren, workDuration, workTone, type WorkCard, type WorkCards, type WorkState, type WorkTodo, type WorkUsage } from './model'
@@ -27,7 +26,7 @@ export function MessageAgentWork({ message, selfDid }: { message: MessageObject;
   const binding = task ? taskWorklogTarget(task) : null
   const request = taskId && binding && (children?.items.length ?? 0) > 0 ? { agentDid: binding.agentDid, sessionId: binding.sessionId, taskId } : undefined
   const cards = useWorkCards(request, task?.phase === 'Terminal')
-  if (taskId && request && cards?.status === 'ready' && cards.cards && cards.cards.sessions.length > 0) return <WorkSessionCards message={message} cards={cards.cards} stale={cards.stale} selfDid={selfDid} taskId={taskId} stopped={task?.phase === 'Terminal' && task.outcome === 'Canceled'} />
+  if (taskId && request && cards?.status === 'ready' && cards.cards && cards.cards.sessions.length > 0) return <WorkSessionCards message={message} cards={cards.cards} stale={cards.stale} selfDid={selfDid} stopped={task?.phase === 'Terminal' && task.outcome === 'Canceled'} />
   return <MessageTaskArea message={message} />
 }
 
@@ -63,7 +62,7 @@ export interface WorkListContext {
  * sessions it started are still running and lets each be stopped: stopping a
  * message does not stop the work it already started.
  */
-export function WorkSessionCards({ message, cards, stale, selfDid, taskId, stopped = false }: { message: MessageObject; cards: WorkCards; stale: boolean; selfDid?: DID; taskId?: string; stopped?: boolean }) {
+export function WorkSessionCards({ message, cards, stale, selfDid, stopped = false }: { message: MessageObject; cards: WorkCards; stale: boolean; selfDid?: DID; stopped?: boolean }) {
   const { t } = useI18n()
   const now = useSecondClock(!stale && cards.sessions.some(cardRunning))
   const { openDetails, agentTurn } = useContext(ConversationMessageActionsContext)
@@ -75,7 +74,6 @@ export function WorkSessionCards({ message, cards, stale, selfDid, taskId, stopp
   }
   return (
     <div className="mh-work mt-2 space-y-0.5 rounded-xl p-1" data-testid="work-cards" data-no-details data-complete={cards.complete} data-stale={stale || undefined}>
-      {taskId ? <TurnControls anchor={message} taskId={taskId} place="bubble" /> : null}
       {running > 0 ? <p className="px-2 py-1 text-[12px]" role="note" data-testid="turn-works-running">{t('messagehub.turn.worksRunning', undefined, { count: running })}</p> : null}
       <WorkCardList cards={cards.sessions} context={context} />
     </div>

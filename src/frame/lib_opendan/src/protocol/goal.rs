@@ -1206,6 +1206,14 @@ pub struct CheckRecord {
     pub script_version: u64,
     #[serde(default)]
     pub elapsed_ms: u64,
+    /// Title of the notification the check had the host send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notified: Option<String>,
+    /// The gate held the Goal's inferences while it ran (`min_interval`,
+    /// `period_budget`, `agent_budget`, `guarantee`): a `true` was set
+    /// aside.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 /// What the gate did in the current period (host side; held events are in
@@ -1228,6 +1236,9 @@ pub struct GateStats {
     pub checks_error: u64,
     #[serde(default)]
     pub guarantees: u64,
+    /// Notifications the checks had the host send (no inference).
+    #[serde(default)]
+    pub notified: u64,
 }
 
 /// `schedule.json`.

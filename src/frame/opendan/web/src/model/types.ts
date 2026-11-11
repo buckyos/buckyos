@@ -933,6 +933,10 @@ export interface CheckRecord {
   reason?: string
   script_version: number
   elapsed_ms: number
+  /** Title of the notification the check had the host send. */
+  notified?: string
+  /** It ran while the gate held the goal's inferences (`min_interval | period_budget | agent_budget | guarantee`): a `true` was set aside. */
+  held?: string
 }
 
 /** What the gate did in the current period. */
@@ -944,6 +948,8 @@ export interface GateStats {
   checks_false: number
   checks_error: number
   guarantees: number
+  /** Notifications the checks had the host send (no inference). */
+  notified: number
 }
 
 export interface SkippedFire {

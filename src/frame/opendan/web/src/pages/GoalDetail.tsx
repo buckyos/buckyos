@@ -875,6 +875,14 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
               <span className="text-xs" data-testid="gate-last-check">
                 <Badge value={last.outcome} tone={CHECK_TONE[last.outcome]} /> <Time ms={last.at_ms} />
                 <span className="text-mute"> · v{last.script_version} · {last.elapsed_ms} ms</span>
+                {last.held && (
+                  <span className="block text-mute" data-testid="gate-last-check-held">
+                    {t('gateCheckHeld', { reason: last.held in HOLD_LABEL ? t(HOLD_LABEL[last.held as HoldReason]) : t('gateHoldGuarantee') })}
+                  </span>
+                )}
+                {last.notified && (
+                  <span className="block" data-testid="gate-last-check-notified">{t('gateCheckNotified', { title: last.notified })}</span>
+                )}
                 {last.reason && <span className="block">{last.reason}</span>}
               </span>
             ) : null,
@@ -895,6 +903,7 @@ function Gates({ goal, state, schedule, onDone }: { goal: GoalDefinition; state?
               <span className="block">{t('gateCountSkipped', { interval: stats?.skipped_min_interval ?? 0, budget: stats?.skipped_budget ?? 0 })}</span>
               <span className="block">{t('gateCountHeld', { interval: holds?.min_interval ?? 0, budget: holds?.budget ?? 0 })}</span>
               <span className="block">{t('gateCountGuarantees', { n: stats?.guarantees ?? 0 })}</span>
+              <span className="block">{t('gateCountNotified', { n: stats?.notified ?? 0 })}</span>
             </span>,
           ],
           [t('gateNoAction'), <span className="text-xs" data-testid="gate-no-action">{state?.consecutive_no_action ?? 0}</span>],
