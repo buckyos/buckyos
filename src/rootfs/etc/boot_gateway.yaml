@@ -182,6 +182,10 @@ servers:
 
   node_gateway:
     type: http
+    # Serves HTTP/1.1 and HTTP/2 on every connection (the protocol is told by the connection preface).
+    # The Zone's TLS stacks offer `h2` by ALPN: over HTTP/1.1 a browser opens at most 6 connections
+    # to a host, and the long-lived streams (kevent, NFSP watch) of a few tabs used them all up.
+    version: "HTTP/2"
     response_timeout: 900s
     gzip_vary: true
     gzip_types:

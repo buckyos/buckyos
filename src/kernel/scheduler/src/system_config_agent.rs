@@ -1442,6 +1442,9 @@ pub(crate) async fn update_node_gateway_config(
                             wildcard_zone_domain,
                             zone_hostname
                         ],
+                        // node_gateway speaks HTTP/2 too: browsers then share one connection
+                        // instead of running out of their 6 HTTP/1.1 connections per host.
+                        "alpn_protocols": ["h2", "http/1.1"],
                         "hook_point": {
                             "main": {
                                 "blocks": {

@@ -925,6 +925,7 @@ stacks:
     protocol: tls
     hosts:
 ${gatewayHosts.map((host) => `      - "${host}"`).join("\n")}
+    alpn_protocols: ["h2", "http/1.1"]
     identity_manager:
       public_root_path: ../local/identity
       security_root_path: ../security
