@@ -539,7 +539,7 @@ if platform.startswith("darwin"):
     patterns = {
         contents: ["Frameworks/LibreOfficePython.framework", "Resources/python", "Resources/java", "Resources/help", "Resources/gallery",
                    "Resources/extensions/*", "Resources/config/images_*.zip", "Resources/Scripts", "Resources/CREDITS.fodt",
-                   "Resources/firebird", "Frameworks/libpyuno*", "Frameworks/libpythonloader*", "Frameworks/libavmedia*",
+                   "Resources/firebird", "Frameworks/intl", "Frameworks/libpyuno*", "Frameworks/libpythonloader*", "Frameworks/libavmedia*",
                    "Frameworks/libfirebird*", "Frameworks/libEngine12*", "Frameworks/libmysqlc*", "Frameworks/libpostgresql*",
                    "Frameworks/libofficebean*", "Library/Spotlight", "Library/QuickLook"],
     }
