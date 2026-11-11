@@ -1,7 +1,8 @@
 #!/bin/sh
-# A docx with Chinese and Latin text and a picture, and an xlsx, to PDF: the text comes back, set in the CJK fonts of the
-# payload (a machine's own fonts are not looked at), and the picture is in the page.
+# A docx explicitly using the payload's Noto CJK font, with Chinese and Latin text and a picture, and an xlsx, to PDF:
+# the text comes back, the requested font is embedded, and the picture is in the page.
 set -eu
+smoke_dir="$(cd "$(dirname "$0")" && pwd)"
 if [ -n "${EXT_CORE_SMOKE_ARTIFACTS:-}" ]; then
   mkdir -p "$EXT_CORE_SMOKE_ARTIFACTS"
   dir="$(mktemp -d "$EXT_CORE_SMOKE_ARTIFACTS/soffice.XXXXXX")"
@@ -24,6 +25,7 @@ echo '[soffice] preparing DOCX and XLSX fixtures'
 magick -size 32x32 xc:red a.png
 printf '# 标题 Title\n\n中英混排 mixed text\n\n![](a.png)\n' > a.md
 pandoc a.md -o a.docx
+python3 "$smoke_dir/soffice_docx.py" a.docx
 python3 - <<'PY'
 import zipfile
 parts = {

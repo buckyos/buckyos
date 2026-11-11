@@ -30,6 +30,7 @@ with zipfile.ZipFile("b.xlsx", "w") as z:
   [IO.File]::WriteAllText("$dir\make.py", $make)
   & python3 make.py; Require ($LASTEXITCODE -eq 0)
   & pandoc a.md -o a.docx; Require ($LASTEXITCODE -eq 0)
+  & python3 (Join-Path $PSScriptRoot 'soffice_docx.py') a.docx; Require ($LASTEXITCODE -eq 0)
   $profile_url = 'file:///' + ("$dir\profile" -replace '\\', '/' -replace ' ', '%20')
   $stage = 'convert DOCX and XLSX to PDF'
   Write-Output "[soffice] $stage"

@@ -643,6 +643,7 @@ for platform in "${platforms[@]}"; do
     windows-*) cp "$here"/smoke/*.ps1 "$payload/smoke/" ;;
     *) cp "$here"/smoke/*.sh "$payload/smoke/" ;;
   esac
+  cp "$here/smoke/soffice_docx.py" "$payload/smoke/"
   install_conda "$payload" "$platform"
   install_official "$payload" "$platform"
   install_soffice "$payload" "$platform"
