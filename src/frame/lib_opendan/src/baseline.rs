@@ -172,6 +172,7 @@ pub const EXTENDED_TOOLS: &[ExtendedTool] = &[
     ]),
     core_tool("tesseract", ExtToolCategory::Ocr, &[ext_cmd("tesseract", "tesseract --version", Some("smoke/tesseract.sh"))]),
     core_tool("pandoc", ExtToolCategory::Document, &[ext_cmd("pandoc", "pandoc --version", Some("smoke/pandoc.sh"))]),
+    core_tool("libreoffice", ExtToolCategory::Document, &[ext_cmd("soffice", "soffice --version", Some("smoke/soffice.sh"))]),
     core_tool("python", ExtToolCategory::Python, &[
         ext_cmd("python3", "python3 --version", Some("smoke/python3.sh")),
         ext_cmd("uv", "uv --version", None),

@@ -9,7 +9,7 @@
 | 环境 | 谁用 | 为什么 |
 | --- | --- | --- |
 | **workflow 宿主**（运行 `workflow` 内核服务的 OOD / 节点，Linux / macOS / Windows） | `LocalThunkRunner` 在**宿主进程内**执行全部 `media.*` Native 函数（TODO D1） | 媒体转换 P0 不在 Agent 容器里跑；镜像里装了工具不等于宿主 runner 可用 |
-| **paios 工作镜像**（Agent 容器：`soffice` 与字体在镜像的 `RUNTIME_PACKAGES`，其余命令来自节点的扩展包 `ext-core`） | Agent 自己的 shell 步骤、`import_office` 等手册命令；未来 Scheduler / Node Runner 把 Native 执行调度到容器时也用它 | 保持 Agent 侧命令可用，并为后续分布式执行预置相同能力 |
+| **paios 工作镜像**（Agent 容器：命令全部来自节点的扩展包 `ext-core`，`soffice` 和字体也是） | Agent 自己的 shell 步骤、`import_office` 等手册命令；未来 Scheduler / Node Runner 把 Native 执行调度到容器时也用它 | 保持 Agent 侧命令可用，并为后续分布式执行预置相同能力 |
 
 缺基线项是**部署缺陷**，不是正常降级：对应转换步骤以 `tools_missing` 失败并列出缺项，Run `Failed`，不启用本地备用转换（裁决 R2 / R3）。镜像齐全、宿主缺工具的故障注入必须准确定位到宿主缺项（验收 21）。
 
@@ -22,9 +22,9 @@
 | `pdftoppm` | poppler ≥ 22.0 | `media.render_pdf_pages` | 页图（PNG，`-r <dpi>`，长边按 `max_long_edge` 缩放） | `pdftoppm -v` |
 | `ffprobe` | ffmpeg ≥ 6.0 | `media.probe`（video）、`media.extract_frames`、`media.extract_audio` | 时长、流信息（有无音轨） | `ffprobe -hide_banner -version`，取 `ffprobe version <x>` |
 | `ffmpeg` | ≥ 6.0，带 `libmp3lame`（音轨输出）、PNG 编码 | `media.extract_frames`、`media.extract_audio`；`media.fit_image` 的可选依赖（`image` crate 解不了的格式先转 PNG） | 均匀抽帧、提取音轨、非常见图片格式解码 | `ffmpeg -hide_banner -version` |
-| `soffice`（LibreOffice headless：core、writer、impress、calc） | ≥ 7.0 | `media.to_pdf` | DOCX / PPTX / ODT / ODP / DOC / PPT / RTF / TXT → PDF；每次调用独立 `-env:UserInstallation` profile，Office lane 并发 1 | `soffice --version`（Windows 上 `soffice.com`），取第一个数字 token |
-| 字体：DejaVu、Liberation、Noto（含 CJK） | — | `media.to_pdf`（经 soffice） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf` 指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
-| locale：`C.UTF-8` 可用，建议生成 `en_US.UTF-8` | — | `media.to_pdf` | soffice 的文件名、编码处理 | 不单独探测 |
+| `soffice`（LibreOffice headless：core、writer、impress、calc、draw；`ext-core` 带的是 26.8） | ≥ 7.0 | `media.to_pdf` | DOCX / PPTX / ODT / ODP / DOC / PPT / RTF / TXT → PDF；每次调用独立 `-env:UserInstallation` profile，Office lane 并发 1 | `soffice --version`（Windows 上 `soffice.com`），取第一个数字 token |
+| 字体：DejaVu、Liberation、Noto CJK（`ext-core` 的 soffice 自带：LibreOffice 的字体加 Noto Sans / Serif CJK 常规体和粗体，Linux 上不读系统字体目录） | — | `media.to_pdf`（经 soffice） | 中西文文档的字形与度量；缺字体会改变页图内容 | `fc-list` 的摘要进 `to_pdf` 指纹（`env/fonts`）；没有 `fc-list` 时记为 `unknown` |
+| locale：`C.UTF-8` 可用（glibc 自带；`ext-core` 的 soffice launcher 在环境没有 UTF-8 locale 时自己设 `LC_ALL=C.UTF-8`） | — | `media.to_pdf` | soffice 的文件名、编码处理 | 不单独探测 |
 | `tesseract`，带常用语言数据（`ext-core` 保留的 28 种加 `osd`，见 [paios容器需求.md](../app_service/paios容器需求.md) §6.4） | ≥ 5.0 | `media.ocr_pages`（软依赖：缺它时各页保留文字层，步骤输出 `status: tools_missing`，结果不进缓存） | 文字层缺失或乱码的页重新识别；按窗口抽样选语言（试各文字系统的代表模型比置信度，都不像时问 `osd`）；竖排中日韩用 `_vert` 模型 | `tesseract --version` 取第二个 token；`tesseract --list-langs` 的语言表进 `ocr_pages` 指纹（`env/ocr_langs`），增减语言包使旧结果失效 |
 
 不在基线内：ImageMagick（服务于其它场景）；`media.capabilities` / `media.build_catalog` / `media.fit_image`（常规格式）只需要 workflow 自身与 `image` crate（编译依赖，随 workflow 发布）。
@@ -41,9 +41,8 @@
 
 ## 3. 宿主预置与检查
 
-- **Linux 宿主（OOD）**：与镜像同一份 apt 清单：`poppler-utils ffmpeg libreoffice-core-nogui libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui fonts-dejavu-core fonts-liberation fonts-noto-core fonts-noto-cjk locales`。安装脚本 / 安装文档应把这组包列为 workflow 服务的运行依赖（本轮未改安装脚本，见 §6）。
-- **macOS**：Homebrew `poppler ffmpeg` + LibreOffice.app；字体依赖系统自带 CJK 字体。
-- **Windows**：poppler（如 `poppler-windows` 发行）、ffmpeg、LibreOffice 安装到 `%ProgramFiles%`，或把二进制放进 `$BUCKYOS_ROOT/libexec/buckyos-tool/bin/`。
+- **三个平台相同**：宿主和容器用同一个扩展包 `ext-core`（`$BUCKYOS_ROOT/tools/`，节点默认播种）。poppler、ffmpeg、tesseract、`soffice` 和 soffice 用的字体都在里面，宿主不需要另装 LibreOffice 和字体包。机器上已经有的同名工具排在前面（§1 的查找顺序），所以宿主自己装了 LibreOffice 时用的是宿主那份，字体集也是宿主的。
+- **Linux**：`ext-core` 的 soffice 要求 glibc ≥ 2.34（[paios 容器需求 §6.4 表 B](../app_service/paios容器需求.md)）。
 - **检查**：
   - `check.py` 的 workflow（4070）一行只说明服务在线；能力诊断调 `workflow.get_capabilities`（返回 `environment.tools` / `missing` / `searched`），或看 workflow 启动日志 `workflow media tools revision=… present=[…] missing=[…]`。
   - 真实验证不是 `command -v`：对每个工具跑冒烟样例（§4），确认版本与真实转换都成功。
@@ -61,11 +60,11 @@
 
 ## 5. 与 paios 镜像的联动（T4b）
 
-- `build_aios` 的 `RUNTIME_PACKAGES` 已加入 LibreOffice nogui 组件、字体与 `locales`（生成 `en_US.UTF-8`，`LANG=C.UTF-8`）；poppler-utils、ffmpeg 原已包含。镜像未在本轮重新构建，amd64 / aarch64 的真实探测与样例运行**未验证**。
-- [paios 容器需求 §6.4 表 B](../app_service/paios容器需求.md) 同步了这四项并指回本文；§6.3 的“不含 libreoffice”已改。
+- 工作镜像不带媒体工具：`build_aios` 的 `RUNTIME_PACKAGES` 只有 `bash`、`ca-certificates`、`rsync`，`LANG=C.UTF-8`。容器里的 poppler、ffmpeg、`soffice`、字体都来自工具卷上的 `ext-core`（1.2.0 起含 LibreOffice）。
+- [paios 容器需求 §6.4 表 B](../app_service/paios容器需求.md) 列了这几项并指回本文。
 - runtime 的 `tools_check` / baseline 声明（`src/frame/lib_opendan/src/baseline.rs`，Agent 标准命令检查）**未**改为按本表探测媒体工具；标准命令测试通过不等于媒体基线满足。ExtTools / ext-core 的 `provides` 落地时使用同一清单。
 
 ## 6. 未完成项
 
-- 宿主安装脚本 / 安装文档未加入 LibreOffice 与字体包；本轮只改了镜像清单与文档。
-- macOS / Windows 宿主的字体与 locale 要求未实测。
+- `ext-core` 1.2.0 的 soffice 只在 linux-x86_64 上实测（干净的 Ubuntu 24.04 / 22.04 容器，无网络）；linux-aarch64、macOS、Windows 的 payload 未运行过。
+- macOS / Windows 上 soffice 的字体回退走系统字体（CoreText / GDI），没写字体的中日韩文字不一定落到随包的 Noto CJK；`to_pdf` 指纹里的字体摘要取自 `fc-list`，看不到 `ext-core` 自带的字体。两项都未处理。

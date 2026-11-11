@@ -224,8 +224,9 @@ v1 至少支持以下结果族：
 4. **HTML / Rich Text**；
 5. **Audio**：当前 Runtime 原生支持的格式或流；
 6. **Video**：当前 Runtime 原生支持的格式或流；
-7. **PDF**：P0 保留原始 PDF，通过专用 `PDFIframeRenderer` 交给 Runtime 内置 PDF Viewer 展示；
-8. **Preview Manifest**：描述多页、分片、渐进加载、封面、元数据和备用结果的标准清单。
+7. **PDF**：保留原始 PDF。桌面通过专用 `PDFIframeRenderer` 交给 Runtime 内置 PDF Viewer；Runtime 没有内置 Viewer 或是触屏设备（手机）时用 PDF.js 渲染器；
+8. **Sheet**：xlsx / csv / tsv 由表格渲染器直接读原件；xls、ods、numbers 等先由 Pipeline 转成 xlsx，再交给同一个渲染器；
+9. **Preview Manifest**：描述多页、分片、渐进加载、封面、元数据和备用结果的标准清单。
 
 > 原始格式可以很多，但进入 Preview Component 的内容类型应保持有限和稳定。
 
@@ -1320,10 +1321,10 @@ Preview Controller 与 `nfs_server` 之间至少需要以下三个逻辑操作�
 
 以下事项不改变上述执行契约，但仍需在各自实现阶段落定：
 
-1. `nfs_server` 首批内置 Pipeline / Target Profile 清单，以及各转换器的版本、资源预算和失败分类；
+1. `nfs_server` 内置 Pipeline / Target Profile 清单已落定：`preview-image`、`preview-video`、`preview-audio`、`thumbnail`、`preview-document`、`preview-sheet`、`preview-html`，转换器分 ffmpeg、soffice、ImageMagick、poppler、pandoc 五组，版本、资源预算和失败分类见 `src/frame/nfs_server/README.md`「预览管线」；
 2. NFSP `repr`、结果查询和事件订阅的最终 request/response schema、错误码、RBAC 与 `hello` feature 名称；
 3. 各 Web Runtime 对图片编码、媒体 codec、PDF iframe 和流式能力的具体探测 Adapter，以及 PDF iframe 的隔离域、sandbox / CSP 兼容矩阵；
-4. P1 PDF 增强采用 PDF.js、自绘分页、Page Images、Safe HTML 或 Preview Manifest 的实现顺序；
+4. PDF 增强的第一步已定为 PDF.js（手机和没有内置 Viewer 的 Runtime）；自绘分页、Page Images、Safe HTML、Preview Manifest 的顺序仍待定；
 5. Container 枚举接口和跨 CYFS / NDN / ZIP 的统一 Iterator；
 6. Provider-based Session 的分页、回收和一致性协议；
 7. Smart Window 相关性评分的精确权重；

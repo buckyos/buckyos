@@ -219,7 +219,8 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 
 ```text
 [Base Image]
-    └─ ca-certs / locale / 字体 / Deno / uv / 最小系统库
+    └─ ca-certs / Deno / uv / 最小系统库（locale 用 glibc 自带的 C.UTF-8；
+       字体随 ext-core 的 LibreOffice，不装进镜像）
             │
             ▼
 [Worker Image]（默认运行镜像，paios/aios）
@@ -253,7 +254,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 3. 工匠镜像的产物是独立的工具包，不是“工匠镜像本身替代工作镜像”。工具包加载回工作镜像后，工作层 Agent 才能使用新能力。
 4. 工匠镜像必须具备“模拟工作镜像环境”的能力，以便在交付前验证产物能在干净的工作镜像里运行，避免构建环境与运行环境之间的隐式依赖泄漏。
 5. 体积大、但只有部分任务用到的 CLI（目前是 pandoc）以自包含工具包的形式随 External Tool Volume 发布（`/opt/buckyos/tools/bin/` 在 PATH 上），不进工作镜像。External Tool Volume 不可用时 Worker 照常启动，只是缺这些工具（node_daemon 记 error 日志）。ExtTools TODO T2 之后整组 `ext-core` 命令都这样交付：容器节点的 `buckyos-tools` 卷与原生的 `$BUCKYOS_ROOT/tools/` 用同一份 payload 字节（§6.4 表 B）。
-6. Agent 看到的工具分三层（owner 2026-11-05 定）：**核心**（Agent 标准命令及其运行依赖，随系统升级、不能独立升级）、**扩展**（zone-owner 装的扩展包，可独立升级，装在哪台机器上对该机器所有 Agent 生效）、**Agent 自装**（在自己的实例卷里，删掉不伤核心）。工作镜像预置的 CLI 工具集在扩展包体系落地后就是 `ext-core` 的内容；T2 之后工作镜像不再 apt 装这组命令，容器也从 `ext-core` payload 取（§6.4 表 B）。
+6. Agent 看到的工具分三层（owner 2026-11-05 定）：**核心**（Agent 标准命令及其运行依赖，随系统升级、不能独立升级）、**扩展**（zone-owner 装的扩展包，可独立升级，装在哪台机器上对该机器所有 Agent 生效）、**Agent 自装**（在自己的实例卷里，删掉不伤核心）。工作镜像预置的 CLI 工具集在扩展包体系落地后就是 `ext-core` 的内容；T2 之后工作镜像不再 apt 装这组命令，容器也从 `ext-core` payload 取（§6.4 表 B）。`ext-core` 1.2.0 起 LibreOffice headless 与字体也在其中：`build_aios` 的 `RUNTIME_PACKAGES` 只剩 `bash`、`ca-certificates`、`rsync`，不装 `locales`（`LANG=C.UTF-8`）。
 
 ### 6.4 官方发布的基线与扩展工具清单（运维事实来源）
 
@@ -285,7 +286,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `gen_video`、`edit_video`、`extend_video`、`upscale_video` | 视频生成与编辑（走 Zone 模型） | `aigc_video`；本地剪辑 / 合成另需表 B 的 ffmpeg |
 | `gen_music`、`text_to_speech`、`speech_to_text`、`enhance_audio` | 音频生成、TTS、ASR、增强（走 Zone 模型） | `aigc_audio`；本地转码 / 拼接另需表 B 的 ffmpeg |
 
-**表 B：`ext-core` 扩展包（`extended` 基线，`baseline::EXTENDED_TOOLS` ↔ `publish/exttool/ext-core/ext-manifest.json`，已实施 23 条命令，另有 `soffice` 待实施）**
+**表 B：`ext-core` 扩展包（`extended` 基线，`baseline::EXTENDED_TOOLS` ↔ `publish/exttool/ext-core/ext-manifest.json`，24 条命令）**
 
 `ext-core` 是扩展包目录里的第一个包，五个平台（`linux-x86_64`、`linux-aarch64`、`darwin-arm64`、`darwin-x86_64`、`windows-x86_64`）各一个自包含 payload；装到 `$BUCKYOS_ROOT/tools/`，三种形态一套（容器节点是 `buckyos-tools` 卷）。发行、钉版与种子见 ExtTools TODO §3.10。工作镜像不再 apt 装这组命令，容器与原生一样从 `ext-core` payload 得到它们。
 
@@ -298,7 +299,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 | `pdftotext`、`pdftoppm`、`pdfinfo` | poppler ≥ 22.0，`conda-lock.yml` | conda-forge | conda-forge | conda-forge | 媒体工具基线（[doc/workflow/media tool baseline.md](../workflow/media%20tool%20baseline.md)）：workflow `media.pdf` / `media.document` 的 PDF 文本 / 页图提取；`import_office` 后加工 |
 | `tesseract`（含常用语言数据） | tesseract，`conda-lock.yml`（conda-forge 带全部 126 种语言，tessdata_fast；构建时保留 28 种加 `osd`：系统界面语言 `chi_sim`、`chi_tra`、`eng`、`spa`、`fra`、`deu`、`kor`、`jpn`、`rus`，竖排 `chi_sim_vert`、`chi_tra_vert`、`jpn_vert`、`kor_vert`，其他常用 `por`、`ita`、`nld`、`pol`、`tur`、`ukr`、`ara`、`fas`、`heb`、`hin`、`ben`、`tha`、`vie`、`ind`、`msa`；保留清单在 `build.sh`，`smoke/tesseract.*` 逐个检查） | conda-forge | conda-forge | conda-forge | workflow 媒体基线：`media.ocr_pages` 为文字层缺失或乱码的 PDF 页重新识别（[media tool baseline.md](../workflow/media%20tool%20baseline.md)）；Agent 本地 OCR |
 | `pandoc` | 3.12.1，`build.sh` | 官方 | 官方 | 官方 | 文档格式转换（docx / md / html / pdf 互转）：`import_office` 的后加工、文档类产出 |
-| `soffice`（**待实施**，[preview-more-formats-todo](../../notepads/preview-more-formats-todo.md) C1） | LibreOffice 官方发布版，只取无界面转换要用的子集：core、ure、writer、calc、impress、draw、math、graphicfilter、xsltfilter 和它自带的字体。pyuno、内置 Python、图标主题、数据库驱动、扩展、词典都不要。另外带 Noto Sans / Serif CJK 的常规体和粗体，五个平台带同一套。版本和 SHA256 钉在 `build.sh` / `sources.sha256`。落地前，Linux 容器里的 soffice 仍来自 `build_aios` 的 apt 包（见本表下方） | 官方 deb 解包。依赖的系统库（cairo、cups、dbus、fontconfig、freetype、glib、nss、X11 等）由 conda-forge 一起带上；要求 glibc ≥ 2.34 | 官方 dmg 里的 LibreOffice.app，arm64 和 x86_64 分开 | 官方 msi 做管理安装（`msiexec /a`）后解包；launcher 指向 `soffice.com` | Preview 管线：把 Office / ODF / WPS 文档转成 PDF，把 xls / ods 等旧表格转成 xlsx。workflow 媒体基线 `media.to_pdf`。`import_office` 的原样模式和不可解析对象的栅格化。字体集算在转换指纹里（`env/fonts`），所以各平台要一致 |
+| `soffice` | LibreOffice 官方发布版 26.8.2，`build.sh`。只取无界面转换要用的子集：core、ure、writer、calc、impress、draw、math、graphicfilter、xsltfilter 和它自带的字体；pyuno、内置 Python、Java 类、帮助、图库、图标主题、扩展、词典、数据库驱动、GUI 媒体后端都不要。另带 Noto Sans / Serif CJK 的常规体和粗体（OTC，`Sans2.004` / `Serif2.003`），五个平台同一套，放在 LibreOffice 自己的字体目录。版本在 `build.sh` 顶部，SHA256 在 `sources.sha256` | 官方 deb 包解包（`build.sh` 自己读 `ar`，不需要 dpkg）。官方构建从系统取的库（cairo、cups、dbus、fontconfig、freetype、glib、NSS / NSPR、X11 一族、Kerberos、avahi、libstdc++）全部来自同一个 conda-forge 前缀，其中只有 `avahi` 是为它新加的（`conda-env.yml`）；launcher 把 `LD_LIBRARY_PATH` 设成 LibreOffice 自己的 `program/` 加前缀的 `lib/`，`FONTCONFIG_FILE` 指向前缀的配置（不读系统字体目录；没写语言的中日韩文字回退到简体字形），环境里没有 UTF-8 locale 时设 `LC_ALL=C.UTF-8`。**要求 glibc ≥ 2.34**（`ext-core` 其余命令是 2.28）：Debian 11、RHEL 8 这一代上 `smoke/soffice.sh` 不过，整个包装不上 | 官方 dmg 里的 LibreOffice.app（`hdiutil`，只能在 Mac 上构建），arm64 和 x86_64 分开；launcher 指向 `Contents/MacOS/soffice` | 官方 msi 解包：在 Windows 上用 `msiexec /a` 做管理安装，在其它系统上用 `msiextract`（msitools）；msi 里装进系统字体目录的字体改放到 `share\fonts\truetype`；launcher 指向 `program\soffice.com` | Preview 管线：把 Office / ODF / WPS 文档转成 PDF，把 xls / ods 等旧表格转成 xlsx。workflow 媒体基线 `media.to_pdf`。`import_office` 的原样模式和不可解析对象的栅格化。字体集算在转换指纹里（`env/fonts`），所以各平台带同一套 |
 | `python3` | python-build-standalone `install_only` 3.12.x，`build.sh` | 官方（astral） | 官方（astral） | 官方（astral） | ScriptHost Python App 的依赖安装；Agent 临时脚本。项目解释器由 uv 管，这份只是保证 `python3` 存在 |
 | `uv` | `build.sh` | 官方 | 官方 | 官方 | Python 项目与解释器管理；`UV_CACHE_DIR` 等指到 Agent 缓存（ExtTools TODO §3.6） |
 | `node`、`npm`、`npx` | Node LTS，`build.sh`（与 `build_aios` 的 `NODE_VERSION` 同一个数） | 官方 | 官方 | 官方 | ScriptHost / aiws 项目构建；`buckyos_app_dev` 的 web 包 |
@@ -314,7 +315,7 @@ OpenDAN Agent 一开始就存在自改提示词、角色描述、流程规则与
 
 `bash`、`rsync` 是 Linux 特有，仍由 `build_aios` 的 `RUNTIME_PACKAGES` 进工作镜像，不在 `ext-core`，也不要求 macOS / Windows 提供。
 
-**owner 2026-11-10 定：工作镜像里的工具都来自 `ext-core`。** LibreOffice 进了工作镜像，就属于核心扩展工具：`soffice` 命令一定可用，各环境的区别只是调用方式不同（容器从工具卷取，宿主从 `$BUCKYOS_ROOT/tools` 取）。所以原来规划的 `ext-office` 并入 `ext-core`，也就是上表的 `soffice`。在 `soffice` 进入 `ext-core` 之前，`build_aios` 的 `RUNTIME_PACKAGES` 里还有一组过渡用的 apt 包：`libreoffice-{core,writer,impress,calc}-nogui`、`fonts-dejavu-core`、`fonts-liberation`、`fonts-noto-core`、`fonts-noto-cjk`、`locales`（生成 `en_US.UTF-8`，`LANG=C.UTF-8`）。这组包只在 Linux 容器里有，不含 draw。`soffice` 落地后整组删除。
+**owner 2026-11-10 定：工作镜像里的工具都来自 `ext-core`。** LibreOffice 进了工作镜像，就属于核心扩展工具：`soffice` 命令一定可用，各环境的区别只是调用方式不同（容器从工具卷取，宿主从 `$BUCKYOS_ROOT/tools` 取）。所以原来规划的 `ext-office` 并入 `ext-core`，也就是上表的 `soffice`（`ext-core` 1.2.0）。`build_aios` 里原来那组 apt 包（`libreoffice-{core,writer,impress,calc}-nogui`、四个字体包、`locales`）已删除。
 
 **表 C：其它官方扩展包与非包内容**
 

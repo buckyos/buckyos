@@ -14,7 +14,8 @@
 #
 # Needs: bash, curl, python3, tar (with xz), unzip, and micromamba (MICROMAMBA, or the one this script downloads).
 # darwin-* builds on a Mac: writing the install prefix into a Mach-O breaks its signature, and only macOS can sign it
-# again. linux-* and windows-* build anywhere.
+# again; LibreOffice comes out of its dmg with hdiutil. linux-* builds anywhere. windows-* builds on Windows (msiexec /a
+# unpacks LibreOffice's msi) or anywhere with msiextract (msitools).
 set -euo pipefail
 
 PANDOC_VERSION=3.12.1
@@ -28,6 +29,9 @@ MINGIT_TAG=v2.56.0.windows.4
 MINGIT_VERSION=2.56.0.4
 BUSYBOX_VERSION=FRP-6354-g5f09fb446
 MICROMAMBA_VERSION=2.10.0-0
+LIBREOFFICE_VERSION=26.8.2
+NOTO_SANS_CJK_TAG=Sans2.004
+NOTO_SERIF_CJK_TAG=Serif2.003
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 manifest="$here/ext-manifest.json"
@@ -141,6 +145,14 @@ export CURL_CA_BUNDLE="$s/conda/ssl/cacert.pem"
 SH
   cat > "$store/env/fontconfig.sh" <<'SH'
 export FONTCONFIG_FILE="$s/conda/etc/fonts/fonts.conf"
+SH
+  # LibreOffice's own libraries first (its copies of curl, ICU and libxml2 are not the prefix's), then the prefix for what
+  # the official build takes from the system. Fonts: the prefix's and LibreOffice's share/fonts, not the system's font
+  # directories, so that a conversion looks the same on every machine. Its text handling needs a UTF-8 locale; C.UTF-8 is in every glibc.
+  cat > "$store/env/soffice.sh" <<'SH'
+export LD_LIBRARY_PATH="$s/libreoffice/program:$s/conda/lib"
+export FONTCONFIG_FILE="$s/conda/etc/fonts/fonts.conf"
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8|*[Uu][Tt][Ff]8) ;; *) export LC_ALL=C.UTF-8 ;; esac
 SH
 }
 
@@ -400,8 +412,172 @@ install_official() {
   rm -rf "$store/.tmp"
 }
 
+# LibreOffice, headless conversion only (doc/app_service/paios容器需求.md §6.4 table B): writer, calc, impress, draw, math,
+# the import filters and its own fonts. No Python, Java classes, help, gallery, icon themes, extensions, dictionaries,
+# database drivers nor GUI media backends. Noto Sans / Serif CJK, regular and bold, go into its font directory on every
+# platform: the font set is part of a conversion's fingerprint.
+LIBREOFFICE_DEBS="libreoffice{v} libreoffice{v}-ure libobasis{v}-core libobasis{v}-writer libobasis{v}-calc libobasis{v}-impress libobasis{v}-draw libobasis{v}-math libobasis{v}-graphicfilter libobasis{v}-xsltfilter libobasis{v}-ooofonts libobasis{v}-en-us"
+
+install_soffice() {
+  local payload="$1" platform="$2" store="$1/store/ext-core" lo="$1/store/ext-core/libreoffice" tmp="$1/store/ext-core/.tmp/libreoffice"
+  local base="https://download.documentfoundation.org/libreoffice/stable/$LIBREOFFICE_VERSION" file fonts found
+  rm -rf "$tmp" "$lo"
+  mkdir -p "$tmp"
+  case "$platform" in
+    linux-*)
+      case "$platform" in
+        linux-x86_64) file="$(fetch "$base/deb/x86_64/LibreOffice_${LIBREOFFICE_VERSION}_Linux_x86-64_deb.tar.gz")" ;;
+        linux-aarch64) file="$(fetch "$base/deb/aarch64/LibreOffice_${LIBREOFFICE_VERSION}_Linux_aarch64_deb.tar.gz")" ;;
+      esac
+      tar -xzf "$file" -C "$tmp"
+      "$python_bin" - "$tmp" "$tmp/root" "${LIBREOFFICE_VERSION%.*}" $LIBREOFFICE_DEBS <<'PY'
+import io, sys, tarfile
+from pathlib import Path
+src, root, series, names = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4:]
+def data_of(deb):
+    """The data.tar.* member of a .deb, which is an `ar` archive."""
+    with deb.open("rb") as handle:
+        assert handle.read(8) == b"!<arch>\n", deb
+        while True:
+            header = handle.read(60)
+            if len(header) < 60:
+                raise SystemExit(f"{deb}: no data.tar")
+            name, size = header[:16].decode().strip().rstrip("/"), int(header[48:58])
+            if name.startswith("data.tar"):
+                return handle.read(size)
+            handle.seek(size + size % 2, 1)
+for name in names:
+    name = name.replace("{v}", series)
+    debs = list(src.glob(f"*/DEBS/{name}_*.deb"))
+    if len(debs) != 1:
+        raise SystemExit(f"LibreOffice archive: expected one {name}_*.deb, found {len(debs)}")
+    with tarfile.open(fileobj=io.BytesIO(data_of(debs[0]))) as tar:
+        tar.extractall(root, filter="tar")
+PY
+      mv "$tmp/root/opt/libreoffice${LIBREOFFICE_VERSION%.*}" "$lo"
+      fonts="$lo/share/fonts/truetype"
+      # Text that names no language falls back to the Simplified Chinese faces, not to whichever face comes first.
+      cat > "$store/conda/etc/fonts/conf.d/64-ext-core-cjk.conf" <<'XML'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <alias><family>sans-serif</family><prefer><family>Noto Sans CJK SC</family></prefer></alias>
+  <alias><family>serif</family><prefer><family>Noto Serif CJK SC</family></prefer></alias>
+  <alias><family>monospace</family><prefer><family>Noto Sans CJK SC</family></prefer></alias>
+</fontconfig>
+XML
+      ;;
+    darwin-*)
+      case "$platform" in
+        darwin-arm64) file="$(fetch "$base/mac/aarch64/LibreOffice_${LIBREOFFICE_VERSION}_MacOS_aarch64.dmg")" ;;
+        darwin-x86_64) file="$(fetch "$base/mac/x86_64/LibreOffice_${LIBREOFFICE_VERSION}_MacOS_x86-64.dmg")" ;;
+      esac
+      command -v hdiutil >/dev/null 2>&1 || { echo "[ext-core] $platform: LibreOffice's dmg needs hdiutil (build on a Mac)" >&2; exit 1; }
+      mkdir -p "$tmp/mnt" "$lo"
+      hdiutil attach -nobrowse -readonly -mountpoint "$tmp/mnt" "$file" >/dev/null
+      cp -R "$tmp/mnt/LibreOffice.app" "$lo/" || { hdiutil detach "$tmp/mnt" >/dev/null; exit 1; }
+      hdiutil detach "$tmp/mnt" >/dev/null
+      fonts="$lo/LibreOffice.app/Contents/Resources/fonts/truetype"
+      ;;
+    windows-*)
+      file="$(fetch "$base/win/x86_64/LibreOffice_${LIBREOFFICE_VERSION}_Win_x86-64.msi")"
+      mkdir -p "$tmp/msi"
+      case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+          MSYS2_ARG_CONV_EXCL='*' msiexec /a "$(cygpath -w "$file")" /qn "TARGETDIR=$(cygpath -w "$tmp/msi")" ;;
+        *)
+          command -v msiextract >/dev/null 2>&1 || { echo "[ext-core] $platform: LibreOffice's msi needs msiextract (msitools), or build on Windows" >&2; exit 1; }
+          msiextract -C "$tmp/msi" "$file" >/dev/null ;;
+      esac
+      found="$(find "$tmp/msi" -type f -name soffice.com | head -n 1)"
+      [ -n "$found" ] || { echo "[ext-core] $platform: no soffice.com in LibreOffice's msi" >&2; exit 1; }
+      mv "$(dirname "$(dirname "$found")")" "$lo"
+      # The msi puts LibreOffice's fonts into the Windows font folder; here they go where it loads private fonts from.
+      fonts="$lo/share/fonts/truetype"
+      mkdir -p "$fonts"
+      find "$tmp/msi" -type f \( -iname '*.ttf' -o -iname '*.otf' \) -exec cp {} "$fonts/" \;
+      ;;
+  esac
+  [ -d "$fonts" ] || { echo "[ext-core] $platform: LibreOffice has no font directory at $fonts" >&2; exit 1; }
+  prune_soffice "$lo" "$platform"
+  for file in NotoSansCJK-Regular.ttc NotoSansCJK-Bold.ttc; do
+    cp "$(fetch "https://raw.githubusercontent.com/notofonts/noto-cjk/$NOTO_SANS_CJK_TAG/Sans/OTC/$file")" "$fonts/"
+  done
+  for file in NotoSerifCJK-Regular.ttc NotoSerifCJK-Bold.ttc; do
+    cp "$(fetch "https://raw.githubusercontent.com/notofonts/noto-cjk/$NOTO_SERIF_CJK_TAG/Serif/OTC/$file")" "$fonts/"
+  done
+  mkdir -p "$store/LICENSES"
+  cp "$(fetch "https://raw.githubusercontent.com/notofonts/noto-cjk/$NOTO_SANS_CJK_TAG/LICENSE" NotoCJK-LICENSE)" "$store/LICENSES/NotoCJK-LICENSE"
+  found="$(find "$lo" -maxdepth 4 -type f \( -name LICENSE -o -name license.txt \) | head -n 1)"
+  [ -n "$found" ] && cp "$found" "$store/LICENSES/LibreOffice-LICENSE"
+  rm -rf "$tmp"
+  rmdir "$store/.tmp" 2>/dev/null || true
+  assert_soffice_loads "$store" "$platform"
+}
+
+prune_soffice() {
+  "$python_bin" - "$1" "$2" <<'PY'
+import shutil, sys
+from pathlib import Path
+lo, platform = Path(sys.argv[1]), sys.argv[2]
+def rm(path):
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+if platform.startswith("darwin"):
+    contents = lo / "LibreOffice.app" / "Contents"
+    program, share = contents / "Frameworks", contents / "Resources"
+    patterns = {
+        contents: ["Frameworks/LibreOfficePython.framework", "Resources/python", "Resources/java", "Resources/help", "Resources/gallery",
+                   "Resources/extensions/*", "Resources/config/images_*.zip", "Resources/Scripts", "Resources/CREDITS.fodt",
+                   "Resources/firebird", "Frameworks/libpyuno*", "Frameworks/libpythonloader*", "Frameworks/libavmedia*",
+                   "Frameworks/libfirebird*", "Frameworks/libEngine12*", "Frameworks/libmysqlc*", "Frameworks/libpostgresql*",
+                   "Frameworks/libofficebean*", "Library/Spotlight", "Library/QuickLook"],
+    }
+elif platform.startswith("windows"):
+    patterns = {
+        lo: ["help", "readmes", "CREDITS.fodt", "LICENSE.html", "share/gallery", "share/extensions/*", "share/Scripts",
+             "share/config/images_*.zip", "program/classes", "program/wizards", "program/python-core-*", "program/python*.exe",
+             "program/python*.dll", "program/pyuno*", "program/pythonloader*", "program/*.py", "program/firebird*", "program/fbembed*",
+             "program/intl", "program/Engine12*", "program/mysqlc*", "program/postgresql-sdbc*", "program/libpq*", "program/avmedia*",
+             "program/officebean*", "program/updater*", "program/update_service*", "program/shlxthdl", "program/sbase.exe",
+             "program/minidump_upload*", "program/senddoc*", "program/gengal*"],
+    }
+else:
+    patterns = {
+        lo: ["help", "readmes", "CREDITS.fodt", "LICENSE.html", "share/gallery", "share/extensions", "share/Scripts",
+             "program/classes", "program/wizards", "program/*.py", "program/*.pyi", "program/libavmedia*", "program/liblibreofficekitgtk*",
+             "program/libofficebean*", "program/libmysqlclo*", "program/libldapbe2lo*", "program/gengal*", "program/minidump_upload",
+             "program/senddoc", "program/gdbtrace"],
+    }
+for base, globs in patterns.items():
+    for pattern in globs:
+        for path in list(base.glob(pattern)):
+            rm(path)
+PY
+}
+
+# The official Linux build takes cairo, cups, dbus, fontconfig, freetype, glib, NSS, X11, avahi and Kerberos from the
+# system: here they are the prefix's (conda-env.yml). Nothing it loads may be missing from the payload, save glibc.
+assert_soffice_loads() {
+  local store="$1" platform="$2" missing
+  case "$platform:$(uname -s)-$(uname -m)" in
+    linux-x86_64:Linux-x86_64|linux-aarch64:Linux-aarch64) ;;
+    *) return 0 ;;
+  esac
+  missing="$(for file in "$store"/libreoffice/program/*.bin "$store"/libreoffice/program/oosplash "$store"/libreoffice/program/*.so*; do
+    [ -f "$file" ] && LD_LIBRARY_PATH="$store/libreoffice/program:$store/conda/lib" ldd "$file" 2>/dev/null | grep 'not found' | sed "s|^|$(basename "$file"): |"
+  done | sort -u || true)"
+  if [ -n "$missing" ]; then
+    echo "[ext-core] LibreOffice loads what the payload does not have:" >&2
+    echo "$missing" >&2
+    exit 1
+  fi
+}
+
 unix_launchers() {
-  local p="$1"
+  local p="$1" platform="$2"
   unix_env_files "$p"
   for c in ffprobe xz tree unzip; do unix_launcher "$p" "$c" "\"\$s/conda/bin/$c\""; done
   unix_launcher "$p" ffmpeg "\"\$s/conda/bin/ffmpeg\"" fontconfig.sh
@@ -418,6 +594,10 @@ unix_launchers() {
   unix_launcher "$p" npx "\"\$s/node/bin/node\" \"\$s/node/lib/node_modules/npm/bin/npx-cli.js\""
   unix_launcher "$p" deno "\"\$s/deno/deno\""
   unix_launcher "$p" jq "\"\$s/jq/jq\""
+  case "$platform" in
+    darwin-*) unix_launcher "$p" soffice "\"\$s/libreoffice/LibreOffice.app/Contents/MacOS/soffice\"" ;;
+    *) unix_launcher "$p" soffice "\"\$s/libreoffice/program/soffice\"" soffice.sh ;;
+  esac
 }
 
 windows_launchers() {
@@ -443,6 +623,7 @@ windows_launchers() {
   cp "$here/windows/tree.py" "$p/store/ext-core/tree/tree.py"
   windows_launcher "$p" tree '"%S%\python\python.exe" "%S%\tree\tree.py"'
   windows_launcher "$p" unzip '"%S%\busybox\busybox.exe" unzip'
+  windows_launcher "$p" soffice '"%S%\libreoffice\program\soffice.com"'
 }
 
 for platform in "${platforms[@]}"; do
@@ -456,9 +637,10 @@ for platform in "${platforms[@]}"; do
   esac
   install_conda "$payload" "$platform"
   install_official "$payload" "$platform"
+  install_soffice "$payload" "$platform"
   case "$platform" in
     windows-*) windows_launchers "$payload" ;;
-    *) unix_launchers "$payload" ;;
+    *) unix_launchers "$payload" "$platform" ;;
   esac
   echo "[ext-core] $platform: $(du -sh "$payload" | cut -f1) in $payload"
   if [ "$archive" = 1 ]; then

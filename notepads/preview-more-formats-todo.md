@@ -1,6 +1,6 @@
 # Preview：用系统自带的转换工具扩大默认可预览格式 TODO
 
-> 状态：待实施。基线已定（owner，2026-11-10，见 §0.2）：
+> 状态：2026-11-10 已实施（未提交），实施记录、偏差和未验证项见 §7；真实 Zone、真机手机、macOS / Windows 的 ext-core 没有验证。基线（owner，2026-11-10，见 §0.2）：
 >
 > - **paios 镜像里的工具都来自 ext-core。** LibreOffice 进了 paios 镜像，就属于核心扩展工具：`soffice` 命令一定可用，各环境只是调用方式不同。所以 LibreOffice 要进 ext-core 的五个平台。
 > - pandoc 只用于它肯定能处理的格式。
@@ -272,3 +272,96 @@ WMV / WMA（ASF）、FLV、RM / RMVB、AIFF、CAF、APE 由 ffmpeg 解码。容�
 - `src/frame/desktop/src/app/preview/README.md`（Providers、Known gaps）。
 - `src/frame/nfs_server/README.md` 的 preview 部分。
 - 媒体工具基线（C3），paios 容器需求 §6.3、§6.4 表 B 和表 C（C1）。
+
+## 7. 实施记录（2026-11-10）
+
+代码未提交。服务端在 `src/frame/nfs_server/src/preview/`，前端在 `src/frame/desktop/src/components/preview/`，ext-core 在 `publish/exttool/ext-core/`。
+
+### 7.1 各项结果
+
+| 项 | 结果 |
+| --- | --- |
+| A1 pdf.js | 已做。`pdfViewerEnabled` 为假或 `(pointer: coarse)` 时用 `PdfJsRenderer`，URL 来源按 Range 读（`/nfs/v1/read/` 已核实支持单段 Range）。Playwright 模拟 Pixel 7、iPhone 14 通过 |
+| A2 协议类型 | 已做。websdk `ReprResult.result_type` 加了 `document`、`sheet`、`html`（dist 已重建） |
+| A3 表格渲染器 | 已做。Worker 里解析，解压上限 512 MiB，文件 30 MiB，每个 sheet 5000 行、256 列 |
+| A4 实机核对 | **没做**，需要真机 |
+| B0 pandoc 评估 | 已做，结论见 §7.2。清单定为 epub、ipynb、Markdown |
+| B1 探测分组 | 已做。五组；每个 `soffice` 安装按应用（Writer / Calc / Impress）记录，文档交给第一个带对应应用的安装 |
+| B2 pandoc → HTML | 已做 |
+| B3 ImageMagick | 已做。PSD 没换：见 §7.4 |
+| B4 缩略图 | 已做。B4b（Files 网格用 `usePreviewThumbnail`）没做 |
+| B5 音视频识别 | 已做。APE 只有识别的单测，没有样本（ffmpeg 不能编码 APE） |
+| B6 文档识别 | 已做 |
+| B7 外链核查 | 已做，结论见 §7.3 |
+| C1 ext-core | linux-x86_64 已构建并通过 smoke；其余平台见 §7.5 |
+| C2 补测格式 | 已用 ext-core 的 soffice 实测，见 §7.4 |
+| C3 基线文档 | 已改 |
+| D 样本矩阵 | `tests/preview.rs` 19 个用例通过（表格用例用的是 ext-core payload 里的 soffice，排在缺 Calc 的宿主 LibreOffice 之后） |
+| D 工具缺失注入 | 四种情况都有用例 |
+| D 真实 Zone、性能基线 | **没做**。本机 Zone 没有重新部署，也没有 N100 设备 |
+
+### 7.2 B0：pandoc 能肯定处理哪些格式
+
+做法：真实样本（Project Gutenberg 的 epub 三本，含中文和 600 多张图；GitHub 上的 ipynb、Sphinx / CPython / requests 的 rst、Org 手册和 Doom Emacs 文档、KDE / GLib 的 DocBook、Typst 官方模板、arXiv 模板）加一份自己写的中文样本（表格、公式、脚注、任务列表、嵌套列表、图片）。用 B2 的参数转换，Playwright 在 390×844 视口下截图，并检查横向溢出和坏图。
+
+| 格式 | 结果 | 进清单 |
+| --- | --- | --- |
+| epub | 三本都完整，图片内嵌，最大的 3 MB、2.2 s | 进 |
+| ipynb | 代码、输出、图表、DataFrame 表格都在；引用的外部图片不显示 | 进 |
+| Markdown（`gfm`） | 表格、任务列表、脚注、公式、嵌套列表、front matter 都正确 | 进（Q5，见下） |
+| rst | 能读，但 Sphinx 的角色和指令漏成正文（`:ref:`、`.. index::`、`!pass`） | 不进 |
+| org | 自包含的文件正确；Org 手册里来自 setup 文件的宏（`{{{kbd(...)}}}`）原样漏出 | 不进 |
+| docbook | 带 DTD 实体的真实 DocBook 4（KDE）直接报 Invalid XML | 不进 |
+| fb2 | 没找到真实样本，只测了 pandoc 自己的测试文件 | 不进 |
+| tex、typst | Typst 官方模板解析失败；LaTeX 模板只读出一部分 | 不进 |
+
+所有通过的样本在手机视口下都没有横向溢出。不进清单的文本格式仍按纯文本显示，和以前一样。rst 和 org 内容完整、只是有瑕疵，owner 愿意接受的话，在 `media.rs` 的 `MARKUP` 和前端 `PIPELINE_DOCUMENTS` 各加一行即可。
+
+**Q5（Markdown 由谁渲染）**：MessageMarkdown 不支持图片、任务列表、脚注、公式、内嵌 HTML 和引用式链接；pandoc 的 `gfm` 都支持。按“选效果好的”，实现成 Markdown 走 pandoc，节点没有 pandoc 时退回纯文本。这一条是我按评估结果选的，**待 owner 确认**；MessageMarkdown 那一侧是读代码比较的，没有截图。
+
+### 7.3 B7：宿主 soffice 会联网
+
+实测（LibreOffice 25.2.3.2，headless）：docx 里的外链图片会让 soffice 向目标地址发 OPTIONS 和 GET。处理：
+
+- 每次转换的私有 profile 预写 `user/registrymodifications.xcu`，打开 `BlockUntrustedRefererLinks`。实测打开后不再有请求，转换照常成功。三个平台通用。
+- Linux 上 `unshare` 能建网络命名空间时，soffice 还在无网络的命名空间里跑（root 用 `--net`，否则 `--user --map-root-user --net`）。建不了时只靠上一条，并打 warn 日志。
+- 回归用例 `soffice_does_not_fetch_what_a_document_links_to`。
+- 没核实的：表格的 `WEBSERVICE()`、外部数据区域等其它取数途径在只有 profile 设置（macOS / Windows）时是否也被拦住。
+
+### 7.4 C2 和其它实测
+
+用 ext-core payload 的 soffice（26.8.2.2），样本取自 LibreOffice 自己的测试数据：
+
+| 格式 | 结果 |
+| --- | --- |
+| odg、vsdx、pub、wpd、pages | 转出 PDF，页数和文字正确 |
+| numbers | 转出 xlsx |
+| key | 转出一页 PDF，但页面是空白；样本本身是否有内容没确认 |
+| hwp | HWP 97 转换正确。HWP 5（OLE2）LibreOffice 不读，服务端不认，显示“不支持” |
+
+- **PSD**：没有真实的 Photoshop 文件。ImageMagick 自己写出的 PSD，ffmpeg 读不了，ImageMagick 读回来像素也不对，比较不出结论，所以 PSD 仍走 ffmpeg。
+- **XCF、DCM**：只有识别的单测，没有样本。RAW 只实测了脚本生成的未压缩 DNG；CR2、NEF、ARW、RAF、ORF、RW2 没有样本。
+- **.rm 缩略图**：样本在取帧位置拿不到帧，加了“取不到就取首帧”的重试。
+
+### 7.5 C1：ext-core 1.2.0
+
+| 平台 | 状态 | tar.gz / 安装后 |
+| --- | --- | --- |
+| linux-x86_64 | 已构建；在干净的 Ubuntu 24.04 容器（`--network none`）里十个 smoke 全过，中文用的是 Noto CJK | 677 MiB / 1788 MiB |
+| linux-aarch64 | 已构建，没运行 | 659 MiB / 1717 MiB |
+| windows-x86_64 | 已构建（msitools 解包），没运行 | 753 MiB / 2186 MiB |
+| darwin-arm64、darwin-x86_64 | dmg 已下载校验，没构建（只能在 Mac 上构建） | — |
+
+- 系统库：官方 Linux 版要的库都来自 conda 前缀，只新增了 `avahi`。
+- 1.2.0 没有发布；本机 `/opt/buckyos/tools` 没有重新播种，aios 镜像去掉 apt 包之后没有重建，`xagent runtime baseline --check` 没跑。
+
+### 7.6 与本文的偏差
+
+1. **ext-core 的 glibc 下限从 2.28 升到 2.34。** soffice 的 smoke 在 Debian 11、RHEL 8 这一代上不过，于是整个 ext-core 1.2.0 在这些系统上装不上，原来能用的 ffmpeg 等也跟着没有。要不要为老系统保留一个不带 soffice 的版本，**待 owner 决定**。
+2. pandoc 用 `--metadata pagetitle=<文件名>`，不是 `title=`：`title` 会在正文顶部加一个文件名大标题。
+3. xlsx 走到管线时仍给 PDF（前端正常不会来请求）；`preview-sheet` 只给 xls、et、ods、numbers。xltx 也按 xlsx 给 PDF。
+4. `hello.repr.soffice` 变成数组（每个安装一项，带 `components`）；工具多了 `source` 字段，取值是 `system` 或 `ext-tools`，不是“宿主或容器”。
+5. 内容给不出缩略图（没有内嵌图、PDF 加密）时，记录按失败保存 30 天，对外答 `unsupported/no-renderer`。
+6. OLE2 大文件只按文件头里的目录扇区号补读一次（64 KiB），不沿 FAT 链读完整目录。
+7. 前端：iframe 加载失败或 15 秒没出来时改由 pdf.js 接手；表格只显示值和合并区间，没有单元格样式和图表；pdf.js 渲染器没有文本层，不能选字和查找。
+8. Windows 上 LibreOffice 是否从 `share\fonts\truetype` 加载随包字体没有验证；macOS / Windows 上没指定字体的中文不一定用随包的 Noto CJK。workflow `to_pdf` 指纹里的字体摘要取自 `fc-list`，看不到 ext-core 自带的字体。

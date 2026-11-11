@@ -8,12 +8,17 @@
 //! - `preview-audio`: AAC in MP4 for a container with no picture.
 //! - `thumbnail`: JPEG, long edge ≤ 640 (a video's frame at min(1 s, 10 %)).
 //! - `preview-document`: PDF by LibreOffice (Office import TODO §5.1, Q11).
+//! - `preview-sheet`: xlsx by LibreOffice, for the viewer's sheet renderer.
+//! - `preview-html`: one self-contained HTML file by `pandoc --sandbox`.
+//! - Stills ffmpeg does not decode (RAW, XCF, JXL, …) go through ImageMagick
+//!   with an explicit coder and resource limits; a PDF's thumbnail is its
+//!   first page by `pdftoppm`, a document's the picture it carries inside.
 //!
 //! HDR (PQ / HLG) is tone-mapped to SDR BT.709 and noted in the fidelity.
 
 use super::heif::{HeifInfo, Nclx, Transform};
 use super::media::{Kind, MediaInfo, Stream};
-use super::tools::{Tool, Toolchain};
+use super::tools::{PdfTools, Tool, Toolchain};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -28,6 +33,8 @@ pub enum Profile {
     PreviewAudio,
     Thumbnail,
     PreviewDocument,
+    PreviewSheet,
+    PreviewHtml,
 }
 
 impl Profile {
@@ -38,6 +45,8 @@ impl Profile {
             Profile::PreviewAudio => "preview-audio",
             Profile::Thumbnail => "thumbnail",
             Profile::PreviewDocument => "preview-document",
+            Profile::PreviewSheet => "preview-sheet",
+            Profile::PreviewHtml => "preview-html",
         }
     }
 }
@@ -52,6 +61,16 @@ pub const FIDELITY_HDR: &str = "HDR 已映射为 SDR";
 pub const FIDELITY_HDR_RAW: &str = "HDR 未能映射为 SDR（缺少 zscale/tonemap 滤镜），颜色可能失真";
 pub const FIDELITY_ALPHA: &str = "透明区域以白底显示";
 pub const FIDELITY_DOCUMENT: &str = "由 LibreOffice 转换，字体与版式可能与原件有差异";
+pub const FIDELITY_SHEET: &str = "由 LibreOffice 转换为表格显示，图表与宏不显示";
+pub const FIDELITY_HTML: &str = "已转换为网页显示";
+pub const FIDELITY_EMBEDDED: &str = "文档内嵌的缩略图";
+/// The viewer's HTML renderer reads at most this much (TODO §3.4).
+pub const HTML_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// A document's own thumbnail larger than this is not taken.
+pub const EMBEDDED_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// A deterministic "this content has no thumbnail": answered as `unsupported`, not as a failure.
+pub const NO_THUMBNAIL: &str = "NO_THUMBNAIL";
+const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 #[derive(Debug, Clone)]
 pub struct ConvertError {
@@ -476,10 +495,10 @@ pub fn file_url(path: &Path) -> String {
 }
 
 /// soffice arguments: a private profile per attempt (a second instance on a
-/// shared one exits silently and leaves a lock behind), PDF next to the input.
-pub fn document_args(profile: &Path, input: &Path, dir: &Path) -> Vec<OsString> {
+/// shared one exits silently and leaves a lock behind), the result next to the input.
+pub fn document_args(profile: &Path, input: &Path, dir: &Path, to: &str) -> Vec<OsString> {
     let mut args = vec![OsString::from(format!("-env:UserInstallation={}", file_url(profile)))];
-    args.extend(os(&["--headless", "--norestore", "--nologo", "--nolockcheck", "--nodefault", "--convert-to", "pdf", "--outdir"]));
+    args.extend(os(&["--headless", "--norestore", "--nologo", "--nolockcheck", "--nodefault", "--convert-to", to, "--outdir"]));
     args.push(dir.into());
     args.push(input.into());
     args
@@ -490,35 +509,274 @@ pub fn document_timeout(size: u64) -> Duration {
     Duration::from_secs(size.div_ceil(1024 * 1024).saturating_mul(10).max(120))
 }
 
-/// `preview-document`: LibreOffice writes `<input stem>.pdf` into `dir`.
-pub async fn document(soffice: &Tool, input: &Path, dir: &Path, profile: &Path) -> Result<Output, ConvertError> {
-    let size = tokio::fs::metadata(input).await.map(|m| m.len()).unwrap_or(0);
-    let mut cmd = command(&soffice.path);
-    cmd.args(document_args(profile, input, dir));
-    log::debug!("preview soffice {:?}", cmd.as_std());
-    let limit = document_timeout(size);
-    // Dropping the timed-out future kills soffice (`kill_on_drop`).
-    let out = tokio::time::timeout(limit, cmd.output())
+fn tail(b: &[u8]) -> String {
+    String::from_utf8_lossy(&b[b.len().saturating_sub(2048)..]).trim().to_string()
+}
+
+fn timed_out(limit: Duration) -> ConvertError {
+    ConvertError { code: "CONVERT_TIMEOUT", message: format!("the conversion took longer than {}s", limit.as_secs()), retryable: true }
+}
+
+/// Runs `cmd` to its end within `limit`; dropping the timed-out future kills it (`kill_on_drop`).
+async fn output_within(mut cmd: tokio::process::Command, name: &str, limit: Duration) -> Result<std::process::Output, ConvertError> {
+    log::debug!("preview {name} {:?}", cmd.as_std());
+    tokio::time::timeout(limit, cmd.output())
         .await
-        .map_err(|_| ConvertError { code: "CONVERT_TIMEOUT", message: format!("the conversion took longer than {}s", limit.as_secs()), retryable: true })?
-        .map_err(|e| ConvertError { code: "CONVERTER_UNAVAILABLE", message: format!("cannot run soffice: {e}"), retryable: true })?;
-    let path = dir.join(input.with_extension("pdf").file_name().unwrap_or_default());
-    match tokio::fs::metadata(&path).await {
-        Ok(m) if m.len() > 0 => Ok(Output {
-            path,
-            media_type: "application/pdf",
-            result_type: "document",
-            plan: "soffice-pdf",
-            width: None,
-            height: None,
-            duration: None,
-            fidelity: vec![FIDELITY_DOCUMENT],
-        }),
-        _ => {
-            let tail = |b: &[u8]| String::from_utf8_lossy(&b[b.len().saturating_sub(2048)..]).trim().to_string();
-            Err(ConvertError::new("CONVERT_FAILED", format!("soffice exited with {} and produced no PDF: {} {}", out.status, tail(&out.stderr), tail(&out.stdout))))
+        .map_err(|_| timed_out(limit))?
+        .map_err(|e| ConvertError { code: "CONVERTER_UNAVAILABLE", message: format!("cannot run {name}: {e}"), retryable: true })
+}
+
+async fn non_empty(path: &Path) -> bool {
+    matches!(tokio::fs::metadata(path).await, Ok(m) if m.len() > 0)
+}
+
+/// LibreOffice fetches what a document links to (measured: a linked picture in
+/// a docx is requested over HTTP during a headless conversion). The private
+/// profile turns that off ("block links from documents not among the trusted
+/// locations").
+const BLOCK_LINKS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop></item>
+</oor:items>
+"#;
+
+/// On Linux soffice also runs in a network namespace of its own when `unshare`
+/// can make one (as root, or through a user namespace): the prefix to run it with.
+async fn network_isolation() -> &'static [&'static str] {
+    static PREFIX: tokio::sync::OnceCell<&'static [&'static str]> = tokio::sync::OnceCell::const_new();
+    PREFIX
+        .get_or_init(|| async {
+            if !cfg!(target_os = "linux") {
+                return &[][..];
+            }
+            const WAYS: [&[&str]; 2] = [&["unshare", "--net", "--"], &["unshare", "--user", "--map-root-user", "--net", "--"]];
+            for way in WAYS {
+                let mut cmd = tokio::process::Command::new(way[0]);
+                cmd.args(&way[1..]).arg("true").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                if matches!(cmd.status().await, Ok(s) if s.success()) {
+                    log::info!("preview: soffice runs without network ({})", way.join(" "));
+                    return way;
+                }
+            }
+            log::warn!("preview: no network namespace for soffice (unshare is missing or not permitted); linked content is blocked by its profile only");
+            &[][..]
+        })
+        .await
+}
+
+/// `preview-document` / `preview-sheet`: LibreOffice writes `<input stem>.pdf` (`.xlsx`) into `dir`.
+pub async fn document(soffice: &Tool, input: &Path, dir: &Path, profile: &Path, sheet: bool) -> Result<Output, ConvertError> {
+    let size = tokio::fs::metadata(input).await.map(|m| m.len()).unwrap_or(0);
+    let to = if sheet { "xlsx" } else { "pdf" };
+    let settings = profile.join("user");
+    let prepared = async {
+        tokio::fs::create_dir_all(&settings).await?;
+        tokio::fs::write(settings.join("registrymodifications.xcu"), BLOCK_LINKS).await
+    };
+    prepared.await.map_err(|e| ConvertError { code: "CONVERT_FAILED", message: format!("soffice profile: {e}"), retryable: true })?;
+    let mut cmd = match network_isolation().await {
+        [] => command(&soffice.path),
+        [unshare, rest @ ..] => {
+            let mut cmd = command(Path::new(unshare));
+            cmd.args(rest).arg(&soffice.path);
+            cmd
+        }
+    };
+    cmd.args(document_args(profile, input, dir, to));
+    let out = output_within(cmd, "soffice", document_timeout(size)).await?;
+    let path = dir.join(input.with_extension(to).file_name().unwrap_or_default());
+    if !non_empty(&path).await {
+        return Err(ConvertError::new("CONVERT_FAILED", format!("soffice exited with {} and produced no {to}: {} {}", out.status, tail(&out.stderr), tail(&out.stdout))));
+    }
+    Ok(Output {
+        path,
+        media_type: if sheet { XLSX } else { "application/pdf" },
+        result_type: if sheet { "sheet" } else { "document" },
+        plan: if sheet { "soffice-xlsx" } else { "soffice-pdf" },
+        width: None,
+        height: None,
+        duration: None,
+        fidelity: vec![if sheet { FIDELITY_SHEET } else { FIDELITY_DOCUMENT }],
+    })
+}
+
+/// ImageMagick arguments: the coder is named (no format guessing, so no
+/// delegate such as Ghostscript is reached), resources are capped on the
+/// command line (the launcher fixes the policy path), only the first frame.
+pub fn raster_args(coder: &str, input: &Path, output: &Path, max_edge: u32) -> Vec<OsString> {
+    let mut args = os(&[
+        "-limit", "memory", "1GiB", "-limit", "map", "2GiB", "-limit", "disk", "4GiB", "-limit", "width", "32KP", "-limit", "height", "32KP", "-limit", "area", "256MP",
+        "-limit", "time", "120",
+    ]);
+    let mut source = OsString::from(format!("{coder}:"));
+    source.push(input);
+    source.push("[0]");
+    args.push(source);
+    args.extend(os(&["-auto-orient", "-background", "white", "-flatten", "-resize", &format!("{max_edge}x{max_edge}>"), "-colorspace", "sRGB", "-strip", "-quality", "85", "-print", "%w %h"]));
+    let mut dest = OsString::from("jpg:");
+    dest.push(output);
+    args.push(dest);
+    args
+}
+
+/// A still by ImageMagick: JPEG on white, long edge ≤ `max_edge`.
+pub async fn raster(magick: &Tool, coder: &str, input: &Path, dir: &Path, max_edge: u32) -> Result<Output, ConvertError> {
+    let path = dir.join("out.jpg");
+    let mut cmd = command(&magick.path);
+    cmd.args(raster_args(coder, input, &path, max_edge));
+    let out = output_within(cmd, "magick", Duration::from_secs(150)).await?;
+    if !out.status.success() || !non_empty(&path).await {
+        return Err(ConvertError::new("CONVERT_FAILED", format!("magick exited with {}: {}", out.status, tail(&out.stderr))));
+    }
+    let printed = String::from_utf8_lossy(&out.stdout);
+    let mut size = printed.split_whitespace().map(|v| v.parse::<u32>().ok());
+    let (width, height) = (size.next().flatten(), size.next().flatten());
+    Ok(Output { path, media_type: "image/jpeg", result_type: "image", plan: "magick-jpeg", width, height, duration: None, fidelity: Vec::new() })
+}
+
+/// Narrow-screen typography for pandoc's standalone page; wide tables and code scroll sideways.
+const HTML_HEAD: &str = r#"<meta name="color-scheme" content="light dark">
+<style>
+html { -webkit-text-size-adjust: 100%; }
+body { max-width: 46em; margin: 0 auto; padding: 16px; font: 16px/1.65 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; overflow-wrap: break-word; }
+img, svg, video { max-width: 100%; height: auto; }
+pre { overflow-x: auto; padding: 12px; border-radius: 6px; background: rgba(127,127,127,.12); font-size: 13px; line-height: 1.5; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+th, td { padding: 6px 10px; border: 1px solid rgba(127,127,127,.35); }
+blockquote { margin: 1em 0; padding: 0 1em; border-left: 3px solid rgba(127,127,127,.4); }
+math { overflow-x: auto; max-width: 100%; }
+h1 { font-size: 1.6em; } h2 { font-size: 1.35em; } h3 { font-size: 1.15em; }
+</style>
+"#;
+
+/// pandoc arguments: `--sandbox` allows no IO but the files named here; the
+/// result embeds its images and styles.
+pub fn markup_args(reader: &str, input: &Path, head: &Path, output: &Path, title: &str) -> Vec<OsString> {
+    let mut args = os(&["+RTS", "-M1024m", "-RTS", "--sandbox", "-f", reader, "-t", "html5", "-s", "--embed-resources", "--math-method=mathml", "--metadata"]);
+    args.push(format!("pagetitle={title}").into());
+    args.push("-H".into());
+    args.push(head.into());
+    args.push("-o".into());
+    args.push(output.into());
+    args.push(input.into());
+    args
+}
+
+/// `preview-html`: one self-contained HTML file.
+pub async fn markup(pandoc: &Tool, reader: &str, input: &Path, dir: &Path, title: &str) -> Result<Output, ConvertError> {
+    let head = dir.join("head.html");
+    tokio::fs::write(&head, HTML_HEAD).await.map_err(|e| ConvertError { code: "CONVERT_FAILED", message: e.to_string(), retryable: true })?;
+    let path = dir.join("out.html");
+    let mut cmd = command(&pandoc.path);
+    cmd.args(markup_args(reader, input, &head, &path, title));
+    let out = output_within(cmd, "pandoc", Duration::from_secs(120)).await?;
+    if !out.status.success() || !non_empty(&path).await {
+        return Err(ConvertError::new("CONVERT_FAILED", format!("pandoc exited with {}: {}", out.status, tail(&out.stderr))));
+    }
+    let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+    if size > HTML_MAX_BYTES {
+        return Err(ConvertError::new("TOO_LARGE", format!("the page is {size} bytes, over the {HTML_MAX_BYTES}-byte limit of the HTML viewer")));
+    }
+    Ok(Output { path, media_type: "text/html; charset=utf-8", result_type: "html", plan: "pandoc-html", width: None, height: None, duration: None, fidelity: vec![FIDELITY_HTML] })
+}
+
+/// A PDF's first page as a JPEG, long edge `THUMBNAIL_MAX_EDGE`.
+pub async fn pdf_thumbnail(tools: &PdfTools, input: &Path, dir: &Path) -> Result<Output, ConvertError> {
+    let mut info = command(&tools.pdfinfo.path);
+    info.arg(input);
+    let info = output_within(info, "pdfinfo", Duration::from_secs(60)).await?;
+    if !info.status.success() {
+        let err = tail(&info.stderr);
+        let code = if err.contains("Incorrect password") { NO_THUMBNAIL } else { "CONTENT_CORRUPTED" };
+        return Err(ConvertError::new(code, if code == NO_THUMBNAIL { "the PDF is password protected".to_string() } else { format!("pdfinfo cannot read the PDF: {err}") }));
+    }
+    let mut cmd = command(&tools.pdftoppm.path);
+    cmd.args(["-f", "1", "-l", "1", "-scale-to", &THUMBNAIL_MAX_EDGE.to_string(), "-jpeg", "-singlefile"]).arg(input).arg(dir.join("out"));
+    let out = output_within(cmd, "pdftoppm", Duration::from_secs(60)).await?;
+    let path = dir.join("out.jpg");
+    if !out.status.success() || !non_empty(&path).await {
+        return Err(ConvertError::new("CONVERT_FAILED", format!("pdftoppm exited with {}: {}", out.status, tail(&out.stderr))));
+    }
+    Ok(Output { path, media_type: "image/jpeg", result_type: "image", plan: "pdf-page", width: None, height: None, duration: None, fidelity: Vec::new() })
+}
+
+fn xml_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let at = tag.match_indices(name).find(|(i, _)| tag[..*i].ends_with(char::is_whitespace) && tag[i + name.len()..].trim_start().starts_with('='))?.0;
+    let rest = tag[at + name.len()..].trim_start().strip_prefix('=')?.trim_start();
+    let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    rest[1..].split(quote).next()
+}
+
+fn xml_tags<'a>(xml: &'a str, name: &'a str) -> impl Iterator<Item = &'a str> {
+    xml.split('<').filter(move |t| t.strip_prefix(name).is_some_and(|r| r.starts_with(|c: char| c.is_whitespace() || c == '/' || c == '>'))).map(|t| t.split('>').next().unwrap_or(t))
+}
+
+/// The cover image of an EPUB, as its zip entry name: `properties="cover-image"` (EPUB 3) or `<meta name="cover">` (EPUB 2).
+pub fn epub_cover(container: &str, read_opf: impl FnOnce(&str) -> Option<String>) -> Option<String> {
+    let opf_path = xml_tags(container, "rootfile").find_map(|t| xml_attr(t, "full-path"))?.to_string();
+    let opf = read_opf(&opf_path)?;
+    let strip = |t: &'_ str| t.rsplit_once(':').map(|(_, n)| n.to_string()).unwrap_or_else(|| t.to_string());
+    let tags: Vec<&str> = opf.split('<').map(|t| t.split('>').next().unwrap_or(t)).collect();
+    let named = |name: &str| tags.iter().copied().filter(|t| strip(t.split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or_default()) == name).collect::<Vec<_>>();
+    let items = named("item");
+    let cover_id = named("meta").into_iter().find(|t| xml_attr(t, "name") == Some("cover")).and_then(|t| xml_attr(t, "content"));
+    let item = items
+        .iter()
+        .find(|t| xml_attr(t, "properties").is_some_and(|p| p.split_whitespace().any(|w| w == "cover-image")))
+        .or_else(|| items.iter().find(|t| cover_id.is_some() && xml_attr(t, "id") == cover_id))?;
+    let href = percent_encoding::percent_decode_str(xml_attr(item, "href")?).decode_utf8_lossy().into_owned();
+    let base = opf_path.rsplit_once('/').map(|(d, _)| d).unwrap_or_default();
+    let mut parts: Vec<&str> = base.split('/').filter(|p| !p.is_empty()).collect();
+    for part in href.split('/') {
+        match part {
+            ".." => {
+                parts.pop();
+            }
+            "." | "" => {}
+            p => parts.push(p),
         }
     }
+    Some(parts.join("/"))
+}
+
+fn picture_ext(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        Some("png")
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        Some("jpg")
+    } else {
+        None
+    }
+}
+
+/// The picture a document carries for itself (blocking): ODF
+/// `Thumbnails/thumbnail.png`, OOXML `docProps/thumbnail.jpeg`, iWork
+/// `preview.jpg`, an EPUB's cover. Written to `dir/embedded.<ext>`.
+pub fn embedded_thumbnail(input: &Path, dir: &Path) -> Result<PathBuf, ConvertError> {
+    use std::io::Read;
+    let none = || ConvertError::new(NO_THUMBNAIL, "the document carries no thumbnail");
+    let file = std::fs::File::open(input).map_err(|e| ConvertError::new("CONTENT_UNAVAILABLE", e.to_string()))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|_| none())?;
+    let text = |zip: &mut zip::ZipArchive<std::fs::File>, name: &str| -> Option<String> {
+        let mut out = String::new();
+        zip.by_name(name).ok()?.take(4 * 1024 * 1024).read_to_string(&mut out).ok()?;
+        Some(out)
+    };
+    const FIXED: &[&str] = &["Thumbnails/thumbnail.png", "docProps/thumbnail.jpeg", "docProps/thumbnail.png", "preview.jpg", "QuickLook/Thumbnail.jpg"];
+    let names: Vec<String> = zip.file_names().map(String::from).collect();
+    let cover = text(&mut zip, "META-INF/container.xml").and_then(|c| epub_cover(&c, |opf| text(&mut zip, opf)));
+    let entry = FIXED.iter().map(|n| n.to_string()).chain(cover).find(|n| names.contains(n) && picture_ext(n).is_some()).ok_or_else(none)?;
+    let ext = picture_ext(&entry).ok_or_else(none)?;
+    let mut bytes = Vec::new();
+    zip.by_name(&entry).map_err(|_| none())?.take(EMBEDDED_MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|e| ConvertError::new("CONTENT_CORRUPTED", e.to_string()))?;
+    if bytes.is_empty() || bytes.len() as u64 > EMBEDDED_MAX_BYTES {
+        return Err(none());
+    }
+    let path = dir.join(format!("embedded.{ext}"));
+    std::fs::write(&path, bytes).map_err(|e| ConvertError { code: "CONVERT_FAILED", message: e.to_string(), retryable: true })?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -529,7 +787,7 @@ mod tests {
     use crate::preview::tools::Tool;
 
     fn tools() -> Toolchain {
-        let t = Tool { path: "ffmpeg".into(), version: "7.1".into() };
+        let t = Tool::new("ffmpeg".into(), "7.1".into());
         Toolchain { ffmpeg: t.clone(), ffprobe: t, tonemap: true, libx264: true, heif: true }
     }
 
@@ -581,7 +839,7 @@ mod tests {
     #[test]
     fn soffice_command() {
         let dir = Path::new("/data/preview-tmp/att_1");
-        let args = document_args(Path::new("/data/preview-tmp/profile-att_1"), &dir.join("input.pptx"), dir);
+        let args = document_args(Path::new("/data/preview-tmp/profile-att_1"), &dir.join("input.pptx"), dir, "pdf");
         let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(
             args,
@@ -600,6 +858,33 @@ mod tests {
             ]
         );
         assert_eq!(file_url(Path::new("/srv/数据 x/profile-1")), "file:///srv/%E6%95%B0%E6%8D%AE%20x/profile-1");
+    }
+
+    #[test]
+    fn magick_names_the_coder() {
+        let args: Vec<String> = raster_args("dng", Path::new("/t/input"), Path::new("/t/out.jpg"), 640).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.starts_with(&["-limit".into(), "memory".into(), "1GiB".into()]), "{args:?}");
+        assert!(args.contains(&"dng:/t/input[0]".to_string()) && args.contains(&"640x640>".to_string()), "{args:?}");
+        assert_eq!(args.last().unwrap(), "jpg:/t/out.jpg");
+    }
+
+    #[test]
+    fn pandoc_is_sandboxed() {
+        let args: Vec<String> = markup_args("epub", Path::new("/t/input"), Path::new("/t/head.html"), Path::new("/t/out.html"), "书 1.epub").iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.contains(&"--sandbox".to_string()) && args.contains(&"--embed-resources".to_string()), "{args:?}");
+        assert!(args.contains(&"pagetitle=书 1.epub".to_string()), "{args:?}");
+        assert_eq!(&args[args.len() - 3..], ["-o", "/t/out.html", "/t/input"]);
+    }
+
+    #[test]
+    fn epub_covers() {
+        let container = r#"<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+        let v3 = r#"<package><manifest><item id="nav" href="nav.xhtml" properties="nav"/><item href="images/cover%20art.jpg" id="c" media-type="image/jpeg" properties="cover-image"/></manifest></package>"#;
+        assert_eq!(epub_cover(container, |p| (p == "OEBPS/content.opf").then(|| v3.to_string())).as_deref(), Some("OEBPS/images/cover art.jpg"));
+        let v2 = r#"<opf:package><opf:metadata><opf:meta content='cov' name='cover'/></opf:metadata><opf:manifest><opf:item id="x" href="a.png"/><opf:item id="cov" href="../cover.png"/></opf:manifest></opf:package>"#;
+        assert_eq!(epub_cover(container, |_| Some(v2.to_string())).as_deref(), Some("cover.png"));
+        assert_eq!(epub_cover(container, |_| Some("<package><manifest><item id='a' href='a.xhtml'/></manifest></package>".into())), None);
+        assert_eq!(epub_cover("<container/>", |_| panic!("no rootfile")), None);
     }
 
     #[cfg(windows)]

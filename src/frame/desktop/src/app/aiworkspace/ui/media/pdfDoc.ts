@@ -1,21 +1,12 @@
-/* pdf.js for the workspace (多媒体对象 §3.3, PDF 导入方案 §5): loaded only when a PDF is met, with the CMaps (CJK
- * text of PDFs that use predefined encodings) and the standard font data (PDFs that do not embed the 14 base fonts)
- * the build serves under aiworkspace/pdfjs/ — fetched only by the pages that need them. The poster of an inserted
- * PDF and the importer open documents here. */
+/* pdf.js for the workspace (多媒体对象 §3.3, PDF 导入方案 §5), loaded through components/preview/pdfjs.ts. The poster
+ * of an inserted PDF and the importer open documents here. */
 
 import type { PdfOperatorList } from '@pdf/mod'
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist'
+import { loadPdfjs, pdfjsAssetOptions } from '../../../../components/preview/pdfjs'
 
+export { loadPdfjs }
 export type { PDFDocumentProxy, PDFPageProxy }
-
-const ASSETS = 'aiworkspace/pdfjs/'
-
-export async function loadPdfjs() {
-  const pdfjs = await import('pdfjs-dist')
-  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
-  return pdfjs
-}
 
 export class PdfPasswordError extends Error {}
 
@@ -23,10 +14,8 @@ export class PdfPasswordError extends Error {}
 export async function openPdfDocument(bytes: Uint8Array, signal?: AbortSignal): Promise<{ doc: PDFDocumentProxy; close: () => void }> {
   const pdfjs = await loadPdfjs()
   signal?.throwIfAborted()
-  // the worker fetches the data files itself: absolute URLs
-  const base = new URL(`${import.meta.env.BASE_URL}${ASSETS}`, window.location.href).href
   const task: PDFDocumentLoadingTask = pdfjs.getDocument({
-    data: bytes.slice(), cMapUrl: `${base}cmaps/`, cMapPacked: true, standardFontDataUrl: `${base}standard_fonts/`, wasmUrl: `${base}wasm/`, iccUrl: `${base}iccs/`,
+    data: bytes.slice(), ...pdfjsAssetOptions(),
     // font names, serif and monospace flags for the importer (PDF 导入方案 §5.1)
     fontExtraProperties: true,
   })

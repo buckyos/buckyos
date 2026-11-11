@@ -20,8 +20,8 @@ SCHEMA = "buckyos.ext-tools/v1"
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "darwin-arm64", "darwin-x86_64", "windows-x86_64")
 DEFAULT_BASE_URL = "https://buckyos-installer.tbudr.top"
 # A row of table B names its tool in the source column: who has to pin it.
-CONDA_TOOLS = {"ffmpeg", "imagemagick", "poppler", "tesseract", "curl", "xz", "git", "tree", "unzip"}
-OFFICIAL_TOOLS = {"pandoc": "pandoc-", "python": "cpython-", "uv": "uv-", "node": "node-", "deno": "deno-", "jq": "jq-", "mingit": "MinGit-", "busybox": "busybox-"}
+CONDA_TOOLS = {"ffmpeg", "imagemagick", "poppler", "tesseract", "curl", "xz", "git", "tree", "unzip", "avahi"}
+OFFICIAL_TOOLS = {"pandoc": "pandoc-", "python": "cpython-", "uv": "uv-", "node": "node-", "deno": "deno-", "jq": "jq-", "mingit": "MinGit-", "busybox": "busybox-", "libreoffice": "LibreOffice_", "noto-cjk": "NotoSansCJK-"}
 
 
 def table_commands(text):

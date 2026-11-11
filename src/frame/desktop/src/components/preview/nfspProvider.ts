@@ -6,7 +6,8 @@
  * Pipeline calls map onto `repr` (ensure) / `get_repr` (query). nfs_server
  * advertises `repr` while any converter is present and lists in
  * `hello.repr.profiles` what it can produce (ffmpeg: image / video / audio /
- * thumbnail; LibreOffice: `preview-document`, a PDF). A format whose profile
+ * thumbnail; LibreOffice: `preview-document`, a PDF, and `preview-sheet`, an
+ * xlsx workbook; pandoc: `preview-html`). A format whose profile
  * is absent plans as Unsupported with the node's reason — never a fake
  * result. Results are read from the `preview-cache` bucket through the URL
  * (with a short-lived token) the node signs.
@@ -15,7 +16,7 @@
 import { bucket, getActiveSessionToken } from 'buckyos'
 import { NfspError, type NodeInfo, type ReprRecord, type ReprResult, type ReprSource, type WireRef } from '../../api/nfsp_client'
 import { effectiveListLimit, ensureSession, nfspBaseUrl, nfspClient } from '../../app/filebrowser/data/nfsp/client'
-import { extensionOf, isPipelineDocument, mediaTypeFromExtension, rendererForMediaType } from './mediaTypes'
+import { extensionOf, mediaTypeFromExtension, pipelineDocumentProfile, rendererForMediaType } from './mediaTypes'
 import { asBucketObjectRef, bucketRefOf, resolveBucketSource } from './bucketSource'
 import { resolveNdmSource } from './ndmSource'
 import { cyfsPathToLocal, normalizeCyfsPath, parentCyfsPath } from './session'
@@ -101,10 +102,9 @@ async function resolveNode(source: ContentRef, signal?: AbortSignal): Promise<No
 // ─── `repr` wire (frozen with nfs_server preview/rpc.rs and websdk nfsp.ts) ───
 
 function mapWireResult(result: ReprResult): PreviewResult {
-  // A document's result is a PDF (`result_type: "document"`).
-  const type: string = result.result_type
+  // `document` is a PDF; `sheet` (an xlsx workbook) and `html` name their renderers.
   return {
-    resultType: type === 'document' ? 'pdf' : result.result_type,
+    resultType: result.result_type === 'document' ? 'pdf' : result.result_type,
     readRef: { kind: 'url', url: absoluteUrl(result.read_url) },
     mediaType: result.media_type,
     sourceVersion: result.source_version,
@@ -134,7 +134,8 @@ function mapWireRecord(record: Exclude<ReprRecord, { state: 'unsupported' }>): P
 /** The nfs_server profile (preview/convert.rs) a request needs; null = only the node can tell. */
 function reprProfileOf(request: EnsurePreviewWorkRequest): string | null {
   if (request.targetProfile.purpose === 'thumbnail') return 'thumbnail'
-  if (isPipelineDocument(request.mediaType)) return 'preview-document'
+  const document = pipelineDocumentProfile(request.mediaType)
+  if (document) return document
   switch (rendererForMediaType(request.mediaType ?? '')) {
     case 'image':
       return 'preview-image'

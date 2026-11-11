@@ -10,7 +10,7 @@ import { classifyFormat, serialToIso, type FormatInfo } from './format.ts'
 import { cell, note, type Cell, type Grid, type GridNote } from './grid.ts'
 
 export class XlsxError extends Error {
-  readonly code: 'not_zip' | 'not_xlsx' | 'encrypted' | 'unsupported' | 'corrupt'
+  readonly code: 'not_zip' | 'not_xlsx' | 'encrypted' | 'unsupported' | 'corrupt' | 'too_large'
   constructor(code: XlsxError['code'], message: string) { super(message); this.code = code }
 }
 
@@ -49,19 +49,37 @@ export function zipEntries(bytes: Uint8Array): Map<string, ZipEntry> {
   return out
 }
 
-async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
+/** How many inflated bytes a reader may still produce (a workbook that inflates past it is refused). */
+export interface InflateBudget { left: number }
+
+async function inflateRaw(data: Uint8Array, budget?: InflateBudget): Promise<Uint8Array> {
   const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'))
-  return new Uint8Array(await new Response(stream).arrayBuffer())
+  if (!budget) return new Uint8Array(await new Response(stream).arrayBuffer())
+  const reader = stream.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    budget.left -= value.byteLength
+    if (budget.left < 0) { void reader.cancel().catch(() => undefined); throw new XlsxError('too_large', 'the workbook is too large') }
+    chunks.push(value)
+  }
+  const out = new Uint8Array(size)
+  let at = 0
+  for (const chunk of chunks) { out.set(chunk, at); at += chunk.byteLength }
+  return out
 }
 
-export async function zipRead(bytes: Uint8Array, entry: ZipEntry): Promise<Uint8Array> {
+export async function zipRead(bytes: Uint8Array, entry: ZipEntry, budget?: InflateBudget): Promise<Uint8Array> {
   if (entry.flags & 1) throw new XlsxError('encrypted', 'the workbook is encrypted')
   const p = entry.offset
   if (u32(bytes, p) !== 0x04034b50) throw new XlsxError('corrupt', `bad zip entry ${entry.name}`)
   const start = p + 30 + u16(bytes, p + 26) + u16(bytes, p + 28)
   const data = bytes.subarray(start, start + entry.compressed)
   if (entry.method === 0) return data
-  if (entry.method === 8) return await inflateRaw(data)
+  if (entry.method === 8) return await inflateRaw(data, budget)
   throw new XlsxError('unsupported', `zip compression method ${entry.method}`)
 }
 
@@ -107,11 +125,11 @@ export function cellRef(ref: string): [number, number] | null {
 /** A double as the text a spreadsheet shows (15 significant digits: no binary noise like 0.30000000000000004). */
 export const numberText = (n: number) => String(Number(n.toPrecision(15)))
 
-export async function openXlsx(bytes: Uint8Array): Promise<Workbook> {
+export async function openXlsx(bytes: Uint8Array, budget?: InflateBudget): Promise<Workbook> {
   if (!isZip(bytes)) throw new XlsxError('not_zip', 'not a zip file')
   const entries = zipEntries(bytes)
   const dec = new TextDecoder()
-  const text = async (path: string) => { const e = entries.get(path); return e ? dec.decode(await zipRead(bytes, e)) : null }
+  const text = async (path: string) => { const e = entries.get(path); return e ? dec.decode(await zipRead(bytes, e, budget)) : null }
   const wbText = await text('xl/workbook.xml')
   if (wbText === null) throw new XlsxError('not_xlsx', 'no xl/workbook.xml')
   const wb = parseXml(wbText)
@@ -200,6 +218,7 @@ function readSheet(name: string, doc: XmlElement, strings: string[], styles: For
   for (let r = 0; r < rows.length; r++) { rows[r] ??= []; for (let k = 0; k < rows[r].length; k++) rows[r][k] ??= cell('') }
   // merged ranges keep the top-left value (the others are empty in the file already): mark them covered
   const mergeCells = child(doc, 'mergeCells')
+  const merges: [number, number, number, number][] = []
   let first = Infinity
   for (const r of rows.keys()) if (rows[r].some((c) => c.text !== '')) { first = r; break }
   for (const m of mergeCells ? kids(mergeCells, 'mergeCell') : []) {
@@ -208,6 +227,7 @@ function readSheet(name: string, doc: XmlElement, strings: string[], styles: For
     const to = cellRef(b ?? a ?? '')
     if (!at || !to) continue
     note(notes, at[0] === first ? 'merged_header' : 'merged_cells', m.attrs.ref)
+    merges.push([at[0], at[1], to[0], to[1]])
     for (let r = at[0]; r <= Math.min(to[0], at[0] + 1000); r++) for (let k = at[1]; k <= Math.min(to[1], at[1] + 1000); k++) {
       if (r === at[0] && k === at[1]) continue
       if (r >= rows.length && r > first) continue
@@ -216,7 +236,7 @@ function readSheet(name: string, doc: XmlElement, strings: string[], styles: For
     }
   }
   for (let r = 0; r < rows.length; r++) { rows[r] ??= []; for (let k = 0; k < rows[r].length; k++) rows[r][k] ??= cell('') }
-  return { name, rows, header: null, columns: [], notes, ...(truncated ? { truncated } : {}) }
+  return { name, rows, header: null, columns: [], notes, ...(merges.length ? { merges } : {}), ...(truncated ? { truncated } : {}) }
 }
 
 function readCell(c: XmlElement, strings: string[], styles: FormatInfo[], date1904: boolean, notes: GridNote[]): Cell | null {

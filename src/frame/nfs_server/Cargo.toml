@@ -41,6 +41,7 @@ buckyos-http-server = { workspace = true }
 http-body-util = { workspace = true }
 pbkdf2 = "0.12"
 hmac = "0.12"
+zip = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

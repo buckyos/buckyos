@@ -19,3 +19,4 @@ dependencies:
   - git    # [unix]
   - tree   # [unix]
   - unzip  # [unix]
+  - avahi  # [linux]  libavahi-client, which LibreOffice's impress / draw library links

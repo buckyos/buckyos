@@ -92,6 +92,15 @@ test('Preview shows its own unsupported state inline and the window does not pin
   await expect.poll(async () => Number(await app.locator('#focus').textContent())).toBe(focus + 1)
 })
 
+test('a PDF inside an embedding App is drawn by pdf.js with the data files of the Zone root', async ({ page }) => {
+  // Headless Chromium has no built-in PDF viewer, like Android Chrome: the embed page loads pdf.js and its worker.
+  const { app, embed } = await openFixture(page, 'cyfs:///samples/annual-report.pdf')
+  await expect(app.locator('#state')).toHaveText('ready', { timeout: 20_000 })
+  const viewer = embed.getByTestId('content-preview-pdfjs')
+  await expect(viewer).toHaveAttribute('data-page-count', '12')
+  await expect(viewer.getByTestId('content-preview-pdf-canvas').first()).toHaveAttribute('data-rendered', 'true')
+})
+
 test('the system entry opens the chooser from a link and leaves out the requesting App', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto(`/?scenario=normal&contentApps=1&open=${encodeURIComponent('cyfs:///home/Documents/Kyoto Trip Plan.md')}&intent=chooser&name=${encodeURIComponent('Kyoto Trip Plan.md')}&from=notes.fixture.bns.did`)

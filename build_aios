@@ -11,22 +11,13 @@ IMAGE_NAME="${IMAGE_NAME:-}"
 VERSION_FILE="$SRC_DIR/VERSION"
 VERSION_TAG="${VERSION_TAG:-}"
 SUPPORTED_ARCHES=("amd64" "aarch64")
-# Core runtime + predefined Worker Image CLI tool set (see container
-# requirements §6.3). No compile toolchain — Crafter is deferred. Python apps
-# use uv with this system Python 3.12; Node.js comes from the official tarball
-# (NODE_VERSION in the Dockerfile), not Debian's EOL nodejs/npm. pandoc is a
-# tool package of the ExtTool volume (publish/exttool/install_pandoc.sh).
-# ffmpeg / poppler-utils / LibreOffice headless / fonts / locales are the
-# workflow media tool baseline (doc/workflow/media tool baseline.md); the
-# workflow host must carry the same set, the image alone does not satisfy it.
-# Only what is not an extension package's: the tools of ext-core come from the node's
-# tools volume (doc/app_service/paios容器需求.md §6.4 table B). The second group is the
-# planned ext-office (table C).
+# Only what is not an extension package's (doc/app_service/paios容器需求.md §6.3):
+# every command an Agent has beyond the core layer, LibreOffice headless and its
+# fonts included, comes from ext-core on the node's tools volume (§6.4 table B).
+# No compile toolchain — Crafter is deferred. bash and rsync are Linux-only and
+# not in ext-core.
 RUNTIME_PACKAGES=(
   "bash" "ca-certificates" "rsync"
-  "libreoffice-core-nogui" "libreoffice-writer-nogui" "libreoffice-impress-nogui" "libreoffice-calc-nogui"
-  "fonts-dejavu-core" "fonts-liberation" "fonts-noto-core" "fonts-noto-cjk"
-  "locales"
 )
 EXTRA_APT_PACKAGES=()
 SELECTED_ARCHES=()
@@ -603,9 +594,8 @@ EOF
        /usr/lib/*-linux-gnu/libGLX_mesa.so* \
     && rm -rf /usr/lib/*-linux-gnu/dri
 
-# UTF-8 locale for soffice (document -> PDF) and the other media tools; en_US.UTF-8
-# is generated so LibreOffice has a full locale besides C.UTF-8.
-RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen en_US.UTF-8
+# C.UTF-8 is built into glibc: no locales package. ext-core's soffice launcher sets
+# it for itself where the environment has no UTF-8 locale.
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 COPY --from=core-deno /core/bin/deno /opt/buckyos/bin/opendan/deno

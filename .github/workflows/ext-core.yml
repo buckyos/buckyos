@@ -66,6 +66,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+      - name: msiextract, for LibreOffice's msi
+        if: matrix.platform == 'windows-x86_64'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends msitools
       - name: Build the payload
         working-directory: publish/exttool/ext-core
         run: ./build.sh --platform '${{ matrix.platform }}' --archive --out "$RUNNER_TEMP/payload" --dist "$RUNNER_TEMP/dist"

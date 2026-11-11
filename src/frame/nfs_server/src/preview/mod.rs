@@ -2,9 +2,10 @@
 //! viewer's Runtime cannot show directly (Preview PRD §23.6–23.7; preview
 //! iPhone media TODO D1–D10).
 //!
-//! - Converters: ffmpeg / ffprobe (media) and LibreOffice `soffice` (Office /
-//!   ODF / RTF documents → PDF, Office import TODO §5.1) spawned in-process,
-//!   each "有则使用，没有就失败" (`tools`); `hello` advertises `repr` while any one
+//! - Converters: ffmpeg / ffprobe (media), LibreOffice `soffice` (documents →
+//!   PDF, legacy spreadsheets → xlsx), ImageMagick (RAW and other stills),
+//!   poppler (PDF thumbnails) and pandoc (markup → HTML), spawned in-process,
+//!   each group optional (`tools`); `hello` advertises `repr` while any one
 //!   is found and lists the profiles it can produce.
 //! - Records: filedb `preview_works`, one row per `work_key = sha256(input
 //!   ObjId, converter@version, params)`; `processing` → `completed` | `failed`,
@@ -15,8 +16,8 @@
 //!   `zone/nfs-server/_/preview-cache` (key = work_key), read through the
 //!   bucket data plane (Range) with a short-lived, read-only, key-scoped
 //!   `bkt_` token signed only after the source's own ACL passed.
-//! - Limits: 1–2 ffmpeg conversions at once (by CPU count), timeout max(60 s,
-//!   10× duration); one soffice at a time in its own slot with a private
+//! - Limits: 1–2 ffmpeg / magick / pandoc / pdftoppm conversions at once (by
+//!   CPU count), ffmpeg's timeout max(60 s, 10× duration); one soffice at a time in its own slot with a private
 //!   profile per attempt, timeout max(120 s, 10 s/MiB); callers of one work_key
 //!   share the running attempt, a caller leaving never stops it; results unread
 //!   for 30 days expire and the cache keeps under `preview_cache_mib` by least
@@ -47,13 +48,17 @@ use tokio::io::AsyncReadExt;
 pub const FEATURE: &str = "repr";
 pub const PIPELINE_ID: &str = "nfs.preview";
 pub const PIPELINE_VERSION: u32 = 1;
-pub const PROFILES: &[Profile] = &[Profile::PreviewImage, Profile::PreviewVideo, Profile::PreviewAudio, Profile::Thumbnail, Profile::PreviewDocument];
+pub const PROFILES: &[Profile] =
+    &[Profile::PreviewImage, Profile::PreviewVideo, Profile::PreviewAudio, Profile::Thumbnail, Profile::PreviewDocument, Profile::PreviewSheet, Profile::PreviewHtml];
+/// A deterministic "no thumbnail" is not asked again until the record expires.
+const NO_THUMBNAIL_TTL_MS: i64 = IDLE_EXPIRY_MS;
 pub const NEGATIVE_TTL_MS: i64 = 10 * 60 * 1000;
 pub const IDLE_EXPIRY_MS: i64 = 30 * 24 * 3600 * 1000;
 const TOKEN_TTL_MS: i64 = 6 * 3600 * 1000;
 const AUTHORIZED_TTL: Duration = Duration::from_secs(3600);
 const MAINTENANCE_EVERY: Duration = Duration::from_secs(3600);
 const HEAD_BYTES: usize = 1024 * 1024;
+const OLE_DIRECTORY_BYTES: usize = 64 * 1024;
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS preview_works(
@@ -188,10 +193,15 @@ pub fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 pub fn converter_id(converter: &tools::Converter) -> String {
-    match converter {
-        tools::Converter::Ffmpeg(t) => format!("{PIPELINE_ID}/{PIPELINE_VERSION}@ffmpeg-{}", t.ffmpeg.version),
-        tools::Converter::Soffice(t) => format!("{PIPELINE_ID}/{PIPELINE_VERSION}@soffice-{}", t.version),
-    }
+    let tool = match converter {
+        tools::Converter::Ffmpeg(t) => format!("ffmpeg-{}", t.ffmpeg.version),
+        tools::Converter::Soffice(t) => format!("soffice-{}", t.version),
+        tools::Converter::Magick(t) => format!("magick-{}", t.version),
+        tools::Converter::Pandoc(t) => format!("pandoc-{}", t.version),
+        tools::Converter::Pdftoppm(t) => format!("pdftoppm-{}", t.pdftoppm.version),
+        tools::Converter::Embedded(_) => "embedded".to_string(),
+    };
+    format!("{PIPELINE_ID}/{PIPELINE_VERSION}@{tool}")
 }
 
 /// `params` is canonical JSON (serde_json maps are sorted).
@@ -241,21 +251,30 @@ impl PreviewMgr {
         }
     }
 
-    /// Re-probes when the binaries found differ from the cached ones (blocking).
-    pub fn refresh(&self) -> tools::Probe {
-        let found: Vec<PathBuf> = tools::NAMES.iter().filter_map(|n| tools::find(n, &self.dirs)).collect();
+    fn cached(&self) -> Result<tools::Probe, tools::Identity> {
+        let found = tools::installed(&self.dirs);
         let identity = tools::identity(&found.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-        if let Some((id, probe)) = self.probe.lock().unwrap().as_ref() {
-            if *id == identity {
-                return probe.clone();
-            }
+        match self.probe.lock().unwrap().as_ref() {
+            Some((id, probe)) if *id == identity => Ok(probe.clone()),
+            _ => Err(identity),
         }
-        let probe = tools::probe(&self.dirs);
+    }
+
+    fn store(&self, identity: tools::Identity, probe: tools::Probe) -> tools::Probe {
         if let Some(t) = &probe.media {
             log::info!("preview converter: ffmpeg {} ({}), ffprobe {}, tonemap={}, libx264={}, heif={}", t.ffmpeg.version, t.ffmpeg.path.display(), t.ffprobe.version, t.tonemap, t.libx264, t.heif);
         }
-        if let Some(t) = &probe.soffice {
-            log::info!("preview converter: soffice {} ({})", t.version, t.path.display());
+        for o in &probe.office {
+            log::info!("preview converter: soffice {} ({}, {}), applications {:?}", o.tool.version, o.tool.path.display(), o.tool.source, o.components);
+        }
+        for t in [&probe.magick, &probe.pandoc, &probe.pdf.as_ref().map(|p| p.pdftoppm.clone())].into_iter().flatten() {
+            log::info!("preview converter: {} {} ({})", t.path.file_stem().unwrap_or_default().to_string_lossy(), t.version, t.source);
+        }
+        if probe.office.is_empty() {
+            log::warn!("preview: soffice is not available, Office documents cannot be previewed (deployment defect: ext-core provides it)");
+        }
+        for app in probe.missing_office() {
+            log::warn!("preview: no LibreOffice install has {}, its documents cannot be previewed (deployment defect)", app.name());
         }
         if let Some(detail) = probe.missing_detail() {
             log::info!("preview converter unavailable: {detail}");
@@ -264,20 +283,22 @@ impl PreviewMgr {
         probe
     }
 
-    pub async fn refresh_async(&self) -> tools::Probe {
-        let found: Vec<PathBuf> = tools::NAMES.iter().filter_map(|n| tools::find(n, &self.dirs)).collect();
-        let identity = tools::identity(&found.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-        if let Some((id, probe)) = self.probe.lock().unwrap().as_ref() {
-            if *id == identity {
-                return probe.clone();
-            }
+    /// Re-probes when the binaries found differ from the cached ones (blocking).
+    pub fn refresh(&self) -> tools::Probe {
+        match self.cached() {
+            Ok(probe) => probe,
+            Err(identity) => self.store(identity, tools::probe(&self.dirs)),
         }
+    }
+
+    pub async fn refresh_async(&self) -> tools::Probe {
+        let identity = match self.cached() {
+            Ok(probe) => return probe,
+            Err(identity) => identity,
+        };
         let dirs = self.dirs.clone();
-        let probe = tokio::task::spawn_blocking(move || tools::probe(&dirs))
-            .await
-            .unwrap_or(tools::Probe { media: None, soffice: None, missing: tools::NAMES.to_vec(), searched: Vec::new() });
-        *self.probe.lock().unwrap() = Some((identity, probe.clone()));
-        probe
+        let probe = tokio::task::spawn_blocking(move || tools::probe(&dirs)).await.unwrap_or(tools::Probe { missing: tools::NAMES.to_vec(), ..Default::default() });
+        self.store(identity, probe)
     }
 
     pub fn authorize(&self, actor: &str, key: &str) {
@@ -307,16 +328,33 @@ pub struct Plan {
     pub kind: Kind,
     pub profile: Profile,
     pub hevc_playable: bool,
+    /// The source's file name (a page title, never a path).
+    pub name: Option<String>,
+    /// A document's thumbnail taken from its cached `preview-document` PDF (that result's ObjId).
+    pub preview_pdf: Option<ObjId>,
 }
 
 impl Plan {
     pub fn params(&self) -> Value {
         if self.profile == Profile::PreviewVideo {
             json!({"profile": self.profile.as_str(), "hevc": self.hevc_playable})
+        } else if self.preview_pdf.is_some() {
+            json!({"profile": self.profile.as_str(), "via": "preview-document"})
         } else {
             json!({"profile": self.profile.as_str()})
         }
     }
+}
+
+/// The PDF a completed `preview-document` of this input left in the cache.
+pub async fn cached_preview_pdf(state: &AppState, soffice: &tools::Tool, input_obj_id: &str) -> Option<ObjId> {
+    let converter = converter_id(&tools::Converter::Soffice(soffice.clone()));
+    let key = work_key(input_obj_id, &converter, &json!({"profile": Profile::PreviewDocument.as_str()}));
+    let rec = get_record(&state.db, &key).ok()??;
+    if rec.state != "completed" || !result_available(state, &rec).await {
+        return None;
+    }
+    ObjId::new(rec.result.as_ref()?["obj_id"].as_str()?).ok()
 }
 
 async fn cache_store(state: &AppState) -> Result<&Arc<BucketStore>, BucketError> {
@@ -411,8 +449,8 @@ pub async fn ensure(state: &SharedState, converter: &tools::Converter, plan: Pla
 
 async fn run_attempt(state: SharedState, converter: tools::Converter, rec: Record, plan: Plan) {
     let permits = match &converter {
-        tools::Converter::Ffmpeg(_) => &state.preview.permits,
         tools::Converter::Soffice(_) => &state.preview.office_permits,
+        _ => &state.preview.permits,
     };
     let permit = permits.clone().acquire_owned().await;
     let dir = state.config.data_dir.join("preview-tmp").join(&rec.attempt_id);
@@ -428,7 +466,7 @@ async fn run_attempt(state: SharedState, converter: tools::Converter, rec: Recor
         }
         Err(e) => {
             log::warn!("preview {key} ({}) failed after {:?}: {} {}", plan.profile.as_str(), started.elapsed(), e.code, e.message);
-            let until = now_ms() + NEGATIVE_TTL_MS;
+            let until = now_ms() + if e.code == convert::NO_THUMBNAIL { NO_THUMBNAIL_TTL_MS } else { NEGATIVE_TTL_MS };
             let error = json!({"code": e.code, "message": e.message, "retryable": e.retryable, "retry_after": until});
             finish_record(&state.db, key, &rec.attempt_id, "failed", None, Some(&error), Some(until))
         }
@@ -476,6 +514,41 @@ pub async fn read_head(state: &AppState, input: &Input) -> Result<Vec<u8>, Conve
     Ok(head)
 }
 
+/// `len` bytes at `offset` of a source (an object is read up to there).
+pub async fn read_range(state: &AppState, input: &Input, offset: u64, len: usize) -> Result<Vec<u8>, ConvertError> {
+    use tokio::io::AsyncSeekExt;
+    let unavailable = |e: String| ConvertError::new("CONTENT_UNAVAILABLE", e);
+    let mut out = Vec::with_capacity(len);
+    match input {
+        Input::Path(p) => {
+            let mut file = tokio::fs::File::open(p).await.map_err(|e| unavailable(e.to_string()))?;
+            file.seek(std::io::SeekFrom::Start(offset)).await.map_err(|e| unavailable(e.to_string()))?;
+            file.take(len as u64).read_to_end(&mut out).await.map_err(|e| unavailable(e.to_string()))?;
+        }
+        Input::Object(id) => {
+            let ndm = state.share.store(&state.config).await.map_err(|e| unavailable(e.message))?;
+            let content = content_of(ndm, id).await?;
+            let (mut reader, _) = ndm.open_reader(&content, None).await.map_err(|e| unavailable(e.to_string()))?;
+            tokio::io::copy(&mut (&mut reader).take(offset), &mut tokio::io::sink()).await.map_err(|e| unavailable(e.to_string()))?;
+            reader.take(len as u64).read_to_end(&mut out).await.map_err(|e| unavailable(e.to_string()))?;
+        }
+    }
+    Ok(out)
+}
+
+/// What planning sniffs: the head, and for an OLE2 file whose directory lies
+/// past it, the header followed by the directory read from where the header
+/// says it is.
+pub async fn sniff_bytes(state: &AppState, input: &Input) -> Result<Vec<u8>, ConvertError> {
+    let head = read_head(state, input).await?;
+    if !media::is_ole2(&head) || media::sniff(&head, None).is_some() {
+        return Ok(head);
+    }
+    let Some(offset) = media::ole_directory_offset(&head).filter(|o| *o >= HEAD_BYTES as u64 || head.len() < HEAD_BYTES) else { return Ok(head) };
+    let directory = read_range(state, input, offset, OLE_DIRECTORY_BYTES).await?;
+    Ok([&head[..512.min(head.len())], &directory[..]].concat())
+}
+
 /// The source's file name: a hint for formats its bytes leave open (OLE2 without
 /// its directory in the head), never the basis on its own.
 pub async fn name_of(state: &AppState, input: &Input) -> Option<String> {
@@ -500,14 +573,7 @@ async fn materialize(state: &AppState, id: &ObjId, dest: &Path) -> Result<(), Co
 
 /// ffprobe, then the planned ffmpeg run.
 async fn media_output(state: &SharedState, tools: &tools::Toolchain, rec: &Record, plan: &Plan, dir: &Path) -> Result<Output, ConvertError> {
-    let input = match &plan.input {
-        Input::Path(p) => p.clone(),
-        Input::Object(id) => {
-            let dest = dir.join("input");
-            materialize(state, id, &dest).await?;
-            dest
-        }
-    };
+    let input = local_input(state, &plan.input, dir, "input").await?;
     let heif = if plan.kind == Kind::Heif {
         let mut head = Vec::new();
         let file = tokio::fs::File::open(&input).await.map_err(|e| ConvertError::new("CONTENT_UNAVAILABLE", e.to_string()))?;
@@ -523,9 +589,30 @@ async fn media_output(state: &SharedState, tools: &tools::Toolchain, rec: &Recor
         mgr_state.preview.progress.lock().unwrap().insert(key.clone(), p);
     });
     let job = Job { tools, input: &input, dir, kind: plan.kind, profile: plan.profile, hevc_playable: plan.hevc_playable, heif, progress };
-    let (args, output) = convert::plan(&job, &info)?;
-    convert::run(&job, &info, args, &output).await?;
+    let (mut args, output) = convert::plan(&job, &info)?;
+    let seeks = plan.kind == Kind::Video && plan.profile == Profile::Thumbnail;
+    match convert::run(&job, &info, args.clone(), &output).await {
+        // A container that cannot seek gives no frame at the offset: its first frame, then.
+        Err(e) if seeks && e.code == "CONVERT_FAILED" => {
+            log::info!("preview {}: no frame at the thumbnail offset ({}), taking the first", rec.work_key, e.message);
+            args[1] = "0".into();
+            convert::run(&job, &info, args, &output).await?;
+        }
+        other => other?,
+    }
     Ok(output)
+}
+
+/// The source as a local file: itself, or a copy of the object in `dir`.
+async fn local_input(state: &AppState, input: &Input, dir: &Path, name: &str) -> Result<PathBuf, ConvertError> {
+    match input {
+        Input::Path(p) => Ok(p.clone()),
+        Input::Object(id) => {
+            let dest = dir.join(name);
+            materialize(state, id, &dest).await?;
+            Ok(dest)
+        }
+    }
 }
 
 /// LibreOffice on a copy named with the real extension (it picks the import
@@ -542,16 +629,58 @@ async fn document_output(state: &SharedState, soffice: &tools::Tool, rec: &Recor
         Input::Object(id) => materialize(state, id, &input).await?,
     }
     let profile = dir.with_file_name(format!("profile-{}", rec.attempt_id));
-    let output = convert::document(soffice, &input, dir, &profile).await;
+    let output = convert::document(soffice, &input, dir, &profile, plan.profile == Profile::PreviewSheet).await;
     let _ = tokio::fs::remove_dir_all(&profile).await;
     output
 }
 
+/// A document's own thumbnail, shrunk to the thumbnail size when a scaler is there.
+async fn embedded_output(state: &SharedState, scaler: &Option<tools::Scaler>, rec: &Record, plan: &Plan, dir: &Path) -> Result<Output, ConvertError> {
+    let input = local_input(state, &plan.input, dir, "input").await?;
+    let out_dir = dir.to_path_buf();
+    let picture = tokio::task::spawn_blocking(move || convert::embedded_thumbnail(&input, &out_dir))
+        .await
+        .map_err(|e| ConvertError { code: "CONVERT_FAILED", message: e.to_string(), retryable: true })??;
+    let mut output = match scaler {
+        Some(tools::Scaler::Ffmpeg(tools)) => {
+            let image = Plan { input: Input::Path(picture), kind: Kind::Image, ..plan.clone() };
+            media_output(state, tools, rec, &image, dir).await?
+        }
+        Some(tools::Scaler::Magick(magick)) => {
+            let coder = if picture.extension().is_some_and(|e| e == "png") { "png" } else { "jpeg" };
+            convert::raster(magick, coder, &picture, dir, convert::THUMBNAIL_MAX_EDGE).await?
+        }
+        None => {
+            let png = picture.extension().is_some_and(|e| e == "png");
+            Output { path: picture, media_type: if png { "image/png" } else { "image/jpeg" }, result_type: "image", plan: "embedded", width: None, height: None, duration: None, fidelity: Vec::new() }
+        }
+    };
+    output.plan = "embedded";
+    output.fidelity = vec![convert::FIDELITY_EMBEDDED];
+    Ok(output)
+}
+
 async fn attempt(state: &SharedState, converter: &tools::Converter, rec: &Record, plan: &Plan, dir: &Path) -> Result<Value, ConvertError> {
     tokio::fs::create_dir_all(dir).await.map_err(|e| convert_err("CONVERT_FAILED", true)(e.to_string()))?;
-    let output = match converter {
-        tools::Converter::Ffmpeg(tools) => media_output(state, tools, rec, plan, dir).await?,
-        tools::Converter::Soffice(soffice) => document_output(state, soffice, rec, plan, dir).await?,
+    let output = match (converter, plan.kind) {
+        (tools::Converter::Ffmpeg(tools), _) => media_output(state, tools, rec, plan, dir).await?,
+        (tools::Converter::Soffice(soffice), _) => document_output(state, soffice, rec, plan, dir).await?,
+        (tools::Converter::Magick(magick), Kind::Raster(coder)) => {
+            let input = local_input(state, &plan.input, dir, "input").await?;
+            let max = if plan.profile == Profile::Thumbnail { convert::THUMBNAIL_MAX_EDGE } else { convert::IMAGE_MAX_EDGE };
+            convert::raster(magick, coder, &input, dir, max).await?
+        }
+        (tools::Converter::Pandoc(pandoc), Kind::Markup(reader)) => {
+            let input = local_input(state, &plan.input, dir, "input").await?;
+            convert::markup(pandoc, reader, &input, dir, plan.name.as_deref().unwrap_or("Preview")).await?
+        }
+        (tools::Converter::Pdftoppm(pdf), _) => {
+            let source = plan.preview_pdf.clone().map(Input::Object).unwrap_or_else(|| plan.input.clone());
+            let input = local_input(state, &source, dir, "input.pdf").await?;
+            convert::pdf_thumbnail(pdf, &input, dir).await?
+        }
+        (tools::Converter::Embedded(scaler), _) => embedded_output(state, scaler, rec, plan, dir).await?,
+        _ => return Err(ConvertError::new("CONTENT_UNSUPPORTED", format!("no {} conversion for this content", plan.profile.as_str()))),
     };
     let ext = output.path.extension().and_then(|e| e.to_str()).unwrap_or("bin");
     let name = format!("preview.{ext}");
@@ -723,9 +852,9 @@ mod tests {
         assert_ne!(a, work_key("sha256:ab", "nfs.preview/1@ffmpeg-7.1", &json!({"profile": "preview-image"})));
         assert_ne!(a, work_key("sha256:aa", "nfs.preview/1@ffmpeg-7.2", &json!({"profile": "preview-image"})));
         assert_ne!(a, work_key("sha256:aa", "nfs.preview/1@ffmpeg-7.1", &json!({"profile": "thumbnail"})));
-        let video = |hevc| Plan { input: Input::Path("/x".into()), input_obj_id: "x".into(), kind: Kind::Video, profile: Profile::PreviewVideo, hevc_playable: hevc };
+        let video = |hevc| Plan { input: Input::Path("/x".into()), input_obj_id: "x".into(), kind: Kind::Video, profile: Profile::PreviewVideo, hevc_playable: hevc, name: None, preview_pdf: None };
         assert_ne!(video(true).params(), video(false).params());
-        let soffice = tools::Converter::Soffice(tools::Tool { path: "soffice".into(), version: "25.2.3.2".into() });
+        let soffice = tools::Converter::Soffice(tools::Tool::new("soffice".into(), "25.2.3.2".into()));
         assert_eq!(converter_id(&soffice), "nfs.preview/1@soffice-25.2.3.2");
     }
 }

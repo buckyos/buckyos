@@ -62,10 +62,14 @@ import {
   decideDirect,
   detectRuntimeProfile,
   ensureRuntimeProfile,
+  pdfUsesPdfjs,
   TEXT_READ_BUDGET,
   type MediaClassification,
 } from './preview/mediaTypes'
+import { PdfJsRenderer } from './preview/PdfJsRenderer'
+import type { ZoomHandle } from './preview/pinchZoom'
 import { ensurePreviewProvider } from './preview/provider'
+import { SheetRenderer } from './preview/SheetRenderer'
 import {
   locateIndex,
   neighborIndex,
@@ -534,12 +538,7 @@ export function ContentPreview(props: ContentPreviewProps) {
         })
         const runtime = await ensureRuntimeProfile()
         const skipDirect = skipDirectRef.current.get(itemRef.id)
-        let direct = skipDirect ? ({ ok: false, reason: 'runtime-unsupported' } as const) : decideDirect(classification, resolved.size, runtime)
-        // PDF P0 (§23.3.1): the original PDF only ever takes the Direct path — when the
-        // Runtime cannot embed it, the PDFIframeRenderer shows the degraded state itself.
-        if (!direct.ok && direct.reason === 'runtime-unsupported' && classification.rendererType === 'pdf' && !skipDirect) {
-          direct = { ok: true }
-        }
+        const direct = skipDirect ? ({ ok: false, reason: 'runtime-unsupported' } as const) : decideDirect(classification, resolved.size, runtime)
 
         if (direct.ok && classification.rendererType) {
           update({
@@ -583,6 +582,11 @@ export function ContentPreview(props: ContentPreviewProps) {
         })
         if (signal.aborted) return
         if ('kind' in state) {
+          // Markup no Pipeline converts here is still readable as the text it is.
+          if (classification.textFallback && (state.reason === 'no-pipeline' || state.reason === 'no-renderer')) {
+            update({ phase: 'rendering', resolved, classification, via: 'direct', result: { resultType: 'text', readRef: resolved.readRef, mediaType: classification.mediaType, sourceVersion: resolved.versionToken }, progress: undefined })
+            return
+          }
           const browserLimited = !!skipDirect || (direct.ok === false && direct.reason === 'runtime-unsupported')
           const failed = browserLimited && state.reason === 'no-pipeline' ? renderFailureState(skipDirect, classification, runtime, t) : null
           update({ phase: 'error', resolved, classification, error: failed ?? unsupportedState(state.reason, contentLabelOf(classification), state.detail) })
@@ -805,6 +809,7 @@ export function ContentPreview(props: ContentPreviewProps) {
   // ── renderer controls ──
   const imageRef = useRef<ImageRendererHandle | null>(null)
   const mediaRef = useRef<MediaRendererHandle | null>(null)
+  const zoomRef = useRef<ZoomHandle | null>(null)
   const [fontScale, setFontScale] = useState(1)
 
   // ── item info & events ──
@@ -818,9 +823,11 @@ export function ContentPreview(props: ContentPreviewProps) {
     const ready = status === 'ready'
     const isImage = ready && (rendererType === 'image' || rendererType === 'svg')
     const isText = ready && rendererType === 'text'
+    // A PDF drawn by pdf.js and a sheet report their view; the built-in PDF viewer zooms by itself.
+    const isZoomView = ready && (rendererType === 'pdf' || rendererType === 'sheet') && imageView !== null
     const hasRead = Boolean(current?.result?.readRef)
     return {
-      zoom: isImage || isText,
+      zoom: isImage || isText || isZoomView,
       pan: isImage,
       textSelection: ready && (rendererType === 'text' || rendererType === 'html'),
       search: isText,
@@ -832,7 +839,7 @@ export function ContentPreview(props: ContentPreviewProps) {
       openWith: Boolean(onRequestOpenWith),
       fullscreen: fullscreenAvailable,
     }
-  }, [allowExport, canNext, canPrev, current?.result?.readRef, fullscreenAvailable, onRequestOpenWith, rendererType, status])
+  }, [allowExport, canNext, canPrev, current?.result?.readRef, fullscreenAvailable, imageView, onRequestOpenWith, rendererType, status])
 
   const capabilitiesKey = JSON.stringify(capabilities)
   useEffect(() => {
@@ -905,14 +912,17 @@ export function ContentPreview(props: ContentPreviewProps) {
 
   const zoomIn = useCallback(() => {
     if (rendererType === 'text') setFontScale((s) => clamp(s * 1.15, 0.5, 4))
+    else if (rendererType === 'pdf' || rendererType === 'sheet') zoomRef.current?.zoomBy(ZOOM_STEP)
     else imageRef.current?.zoomBy(ZOOM_STEP)
   }, [rendererType])
   const zoomOut = useCallback(() => {
     if (rendererType === 'text') setFontScale((s) => clamp(s / 1.15, 0.5, 4))
+    else if (rendererType === 'pdf' || rendererType === 'sheet') zoomRef.current?.zoomBy(1 / ZOOM_STEP)
     else imageRef.current?.zoomBy(1 / ZOOM_STEP)
   }, [rendererType])
   const fitToView = useCallback(() => {
     if (rendererType === 'text') setFontScale(1)
+    else if (rendererType === 'pdf' || rendererType === 'sheet') zoomRef.current?.fit()
     else imageRef.current?.fit()
   }, [rendererType])
   const actualSize = useCallback(() => imageRef.current?.actualSize(), [])
@@ -1098,6 +1108,7 @@ export function ContentPreview(props: ContentPreviewProps) {
               find={{ open: findOpen, query: findQuery, active: findActive, onCount: setFindCount }}
               imageRef={imageRef}
               mediaRef={mediaRef}
+              zoomRef={zoomRef}
               onViewChange={handleViewChange}
               onRendered={handleRendered}
               onFailure={handleRenderFailure}
@@ -1711,6 +1722,7 @@ function RendererSwitch({
   find,
   imageRef,
   mediaRef,
+  zoomRef,
   onViewChange,
   onRendered,
   onFailure,
@@ -1730,6 +1742,7 @@ function RendererSwitch({
   find: FindState
   imageRef: React.RefObject<ImageRendererHandle | null>
   mediaRef: React.RefObject<MediaRendererHandle | null>
+  zoomRef: React.RefObject<ZoomHandle | null>
   onViewChange: (view: ImageViewInfo | null) => void
   onRendered: (media?: LoadState['media'], opts?: { degraded?: boolean }) => void
   onFailure: (failure: RenderFailure) => void
@@ -1775,7 +1788,28 @@ function RendererSwitch({
         />
       )
     case 'pdf':
-      return <PDFIframeRenderer readRef={result.readRef} title={displayName} onRendered={onRendered} onDownload={onDownload} onOpenWith={onOpenWith} t={t} />
+      return <PdfRenderer ref={zoomRef} readRef={result.readRef} title={displayName} onViewChange={onViewChange} onRendered={onRendered} onFailure={onFailure} onDownload={onDownload} onOpenWith={onOpenWith} t={t} />
+    case 'sheet': {
+      const type = result.mediaType.split(';')[0].trim().toLowerCase()
+      const delimited = type === 'text/csv' || type === 'text/tab-separated-values'
+      const name = type === 'text/tab-separated-values' && !/\.tsv$/i.test(displayName) ? `${displayName}.tsv` : displayName
+      return (
+        <SheetRenderer
+          ref={zoomRef}
+          readRef={result.readRef}
+          kind={delimited ? 'csv' : 'xlsx'}
+          name={name}
+          compact={compact}
+          textView={delimited ? <TextRenderer readRef={result.readRef} fontScale={fontScale} find={find} onRendered={onRendered} onFailure={onFailure} t={t} /> : undefined}
+          onViewChange={onViewChange}
+          onRendered={onRendered}
+          onFailure={onFailure}
+          onDownload={onDownload}
+          onOpenWith={onOpenWith}
+          t={t}
+        />
+      )
+    }
     default:
       return null
   }
@@ -2339,46 +2373,68 @@ function MediaRenderer({
   )
 }
 
-// ─── PDF (P0: Runtime built-in viewer in an iframe, §10.7 / §23.3.1) ───
+// ─── PDF (§10.7 / §23.3.1): the Runtime's viewer on a desktop, pdf.js on touch devices and where there is none ───
 
-function PDFIframeRenderer({
+function PdfRenderer({
+  ref,
   readRef,
   title,
+  onViewChange,
   onRendered,
+  onFailure,
   onDownload,
   onOpenWith,
   t,
 }: {
+  ref: Ref<ZoomHandle>
   readRef: PreviewReadRef
   title: string
+  onViewChange: (view: ImageViewInfo | null) => void
   onRendered: (media?: LoadState['media'], opts?: { degraded?: boolean }) => void
+  onFailure: (failure: RenderFailure) => void
   onDownload: () => void
   onOpenWith?: () => void
   t: TranslateFn
 }) {
-  const [phase, setPhase] = useState<'preflight' | 'loading' | 'ready' | 'degraded'>('preflight')
+  const [pdfjs, setPdfjs] = useState(() => pdfUsesPdfjs())
+  const fallBack = useCallback(() => setPdfjs(true), [])
+  if (pdfjs) {
+    return <PdfJsRenderer ref={ref} readRef={readRef} title={title} onViewChange={onViewChange} onRendered={onRendered} onFailure={onFailure} onDownload={onDownload} onOpenWith={onOpenWith} t={t} />
+  }
+  return <PDFIframeRenderer ref={ref} readRef={readRef} title={title} onRendered={onRendered} onUnavailable={fallBack} />
+}
+
+function PDFIframeRenderer({
+  ref,
+  readRef,
+  title,
+  onRendered,
+  onUnavailable,
+}: {
+  ref: Ref<ZoomHandle>
+  readRef: PreviewReadRef
+  title: string
+  onRendered: (media?: LoadState['media']) => void
+  /** The viewer did not take the content: pdf.js draws it instead. */
+  onUnavailable: () => void
+}) {
+  const [phase, setPhase] = useState<'preflight' | 'loading' | 'ready'>('preflight')
+  // The viewer is opaque: a zoom asked through the component reloads it with the open parameter.
+  const [zoom, setZoom] = useState<number | null>(null)
   const url = useContentUrl(readRef)
   const rendered = useRef(false)
-  const degrade = useCallback(() => {
-    setPhase('degraded')
-    onRendered(undefined, { degraded: true })
-  }, [onRendered])
+  useImperativeHandle(ref, () => ({ zoomBy: (factor) => setZoom((value) => clamp((value ?? 1) * factor, 0.25, 5)), fit: () => setZoom(null) }), [])
 
   useEffect(() => {
     const controller = new AbortController()
     void (async () => {
-      const runtime = detectRuntimeProfile()
-      if (!runtime.pdfInline) {
-        degrade()
-        return
-      }
       try {
         // URL pre-check: the bytes must be a PDF and the response must not force a download.
         const probe = await readProbe(readRef, 1024, controller.signal)
         const head = String.fromCharCode(...probe.bytes.subarray(0, 5))
         const type = (probe.contentType ?? '').split(';')[0].trim().toLowerCase()
         if (head !== '%PDF-' && type !== 'application/pdf') {
-          degrade()
+          onUnavailable()
           return
         }
       } catch {
@@ -2387,47 +2443,26 @@ function PDFIframeRenderer({
       if (!controller.signal.aborted) setPhase('loading')
     })()
     return () => controller.abort()
-  }, [degrade, readRef])
+  }, [onUnavailable, readRef])
 
   useEffect(() => {
     if (phase !== 'loading') return
     const timer = window.setTimeout(() => {
-      if (!rendered.current) degrade()
+      if (!rendered.current) onUnavailable()
     }, PDF_LOAD_TIMEOUT_MS)
     return () => window.clearTimeout(timer)
-  }, [degrade, phase])
+  }, [onUnavailable, phase])
 
-  if (phase === 'degraded') {
-    return (
-      <div className="absolute inset-0 flex items-center justify-center p-6" data-testid="content-preview-pdf-degraded">
-        <div className="flex max-w-md flex-col items-center gap-3 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-[color:color-mix(in_srgb,var(--cp-surface-2)_86%,transparent)] text-[color:var(--cp-muted)]">
-            <FileQuestion size={28} />
-          </div>
-          <div className="text-[15px] font-semibold">{t('preview.pdf.degraded', 'This Runtime cannot embed a PDF preview')}</div>
-          <div className="text-[12px] text-[color:var(--cp-muted)]">{t('preview.pdf.degradedBody', 'Download the file or open it with another application.')}</div>
-          <div className="mt-1 flex gap-2">
-            <ActionChip onClick={onDownload}>
-              <Download size={13} /> {t('preview.action.download', 'Download original')}
-            </ActionChip>
-            {onOpenWith ? (
-              <ActionChip onClick={onOpenWith}>
-                <ExternalLink size={13} /> {t('preview.action.openWith', 'Open with…')}
-              </ActionChip>
-            ) : null}
-          </div>
-        </div>
-      </div>
-    )
-  }
   if (phase === 'preflight' || !url) return null
+  const src = zoom === null ? url : `${url}#zoom=${Math.round(zoom * 100)}`
   return (
     // The viewer is an opaque renderer: no DOM access, no private messaging (§23.3.1 rule 5).
     // Chromium disables its PDF plugin inside sandboxed frames, so `sandbox` is deliberately absent;
     // the iframe stays on a system-controlled read endpoint with a short-lived, permission-bound URL.
     <iframe
+      key={src}
       title={title}
-      src={url}
+      src={src}
       referrerPolicy="no-referrer"
       className="absolute inset-0 h-full w-full border-0 bg-[color:var(--cp-surface-2-opaque)]"
       data-testid="content-preview-pdf"
@@ -2436,7 +2471,7 @@ function PDFIframeRenderer({
         setPhase('ready')
         onRendered()
       }}
-      onError={degrade}
+      onError={onUnavailable}
     />
   )
 }

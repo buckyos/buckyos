@@ -147,7 +147,7 @@ host 入口由 `opendan install-agent-tools` 布置：Unix 使用符号链接，
 
 ### 3.2 aios 镜像自带的软件
 
-工作镜像只带不属于扩展包的东西（[`build_aios`](../../build_aios)）：`bash`、`rsync`（Linux 特有，不在 `EXTENDED_TOOLS` 里）、`ca-certificates`，规划中 `ext-office` 那组（LibreOffice headless、字体、locale），以及标准层自己的 Deno（`/opt/buckyos/bin/opendan/deno`，标准命令和入口脚本按绝对路径用它，排在 PATH 上扩展层之后）。其它命令都来自 §3.3。
+工作镜像只带不属于扩展包的东西（[`build_aios`](../../build_aios)）：`bash`、`rsync`（Linux 特有，不在 `EXTENDED_TOOLS` 里）、`ca-certificates`，以及标准层自己的 Deno（`/opt/buckyos/bin/opendan/deno`，标准命令和入口脚本按绝对路径用它，排在 PATH 上扩展层之后）。其它命令都来自 §3.3。
 
 ### 3.3 扩展包提供的工具
 

@@ -9,9 +9,10 @@
  * `detectRuntimeProfile()` answers "can this Runtime directly consume X?" —
  * the answer feeds both the Direct decision and the Pipeline Target Profile.
  *
- * Office / ODF / RTF documents have the `pdf` renderer but are never Direct:
- * the renderer shows the PDF a Pipeline converts them to (nfs_server
- * `preview-document`, Office import TODO §5.2).
+ * Pipeline documents are never Direct: the renderer shows what a Pipeline
+ * converts them to — a PDF (`preview-document`), an xlsx workbook
+ * (`preview-sheet`) or a self-contained HTML page (`preview-html`). xlsx /
+ * xlsm / csv / tsv are read by the sheet renderer itself.
  */
 
 import type { PreviewRendererType, PreviewRuntimeProfile } from './types'
@@ -48,29 +49,83 @@ const BASELINE_IMAGE_TYPES = [
 
 const GENERIC_CONTENT_TYPES = new Set(['', 'application/octet-stream', 'binary/octet-stream'])
 
-/** Documents shown as their Pipeline PDF, by extension (the SDK table lacks some of them). */
-const PIPELINE_DOCUMENT_TYPES: Record<string, string> = {
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  doc: 'application/msword',
-  ppt: 'application/vnd.ms-powerpoint',
-  xls: 'application/vnd.ms-excel',
-  odt: 'application/vnd.oasis.opendocument.text',
-  odp: 'application/vnd.oasis.opendocument.presentation',
-  ods: 'application/vnd.oasis.opendocument.spreadsheet',
-  odg: 'application/vnd.oasis.opendocument.graphics',
-  rtf: 'application/rtf',
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+/** Spreadsheets the sheet renderer reads itself. */
+const SHEET_TYPES: Record<string, string> = {
+  xlsx: XLSX_TYPE,
+  xlsm: 'application/vnd.ms-excel.sheet.macroenabled.12',
+  csv: 'text/csv',
+  tsv: 'text/tab-separated-values',
+}
+const SHEET_MEDIA_TYPES = new Set(Object.values(SHEET_TYPES))
+
+export type PipelineDocumentProfile = 'preview-document' | 'preview-sheet' | 'preview-html'
+
+const OOXML = 'application/vnd.openxmlformats-officedocument'
+const ODF = 'application/vnd.oasis.opendocument'
+
+/** Documents shown as a Pipeline result, by extension: media type and the nfs_server profile that converts them. */
+const PIPELINE_DOCUMENTS: Record<string, [string, PipelineDocumentProfile]> = {
+  docx: [`${OOXML}.wordprocessingml.document`, 'preview-document'],
+  docm: ['application/vnd.ms-word.document.macroenabled.12', 'preview-document'],
+  dotx: [`${OOXML}.wordprocessingml.template`, 'preview-document'],
+  dotm: ['application/vnd.ms-word.template.macroenabled.12', 'preview-document'],
+  doc: ['application/msword', 'preview-document'],
+  wps: ['application/kswps', 'preview-document'],
+  wpt: ['application/kswpt', 'preview-document'],
+  odt: [`${ODF}.text`, 'preview-document'],
+  rtf: ['application/rtf', 'preview-document'],
+  pptx: [`${OOXML}.presentationml.presentation`, 'preview-document'],
+  pptm: ['application/vnd.ms-powerpoint.presentation.macroenabled.12', 'preview-document'],
+  ppsx: [`${OOXML}.presentationml.slideshow`, 'preview-document'],
+  potx: [`${OOXML}.presentationml.template`, 'preview-document'],
+  ppt: ['application/vnd.ms-powerpoint', 'preview-document'],
+  dps: ['application/ksdps', 'preview-document'],
+  dpt: ['application/ksdpt', 'preview-document'],
+  odp: [`${ODF}.presentation`, 'preview-document'],
+  odg: [`${ODF}.graphics`, 'preview-document'],
+  vsdx: ['application/vnd.ms-visio.drawing', 'preview-document'],
+  pub: ['application/vnd.ms-publisher', 'preview-document'],
+  hwp: ['application/x-hwp', 'preview-document'],
+  wpd: ['application/vnd.wordperfect', 'preview-document'],
+  pages: ['application/vnd.apple.pages', 'preview-document'],
+  key: ['application/vnd.apple.keynote', 'preview-document'],
+  xltx: [`${OOXML}.spreadsheetml.template`, 'preview-document'],
+  xls: ['application/vnd.ms-excel', 'preview-sheet'],
+  et: ['application/kset', 'preview-sheet'],
+  ett: ['application/ksett', 'preview-sheet'],
+  ods: [`${ODF}.spreadsheet`, 'preview-sheet'],
+  numbers: ['application/vnd.apple.numbers', 'preview-sheet'],
+  epub: ['application/epub+zip', 'preview-html'],
+  ipynb: ['application/x-ipynb+json', 'preview-html'],
+  md: ['text/markdown', 'preview-html'],
+  markdown: ['text/markdown', 'preview-html'],
 }
 
-const PIPELINE_DOCUMENT_MEDIA_TYPES = new Set([...Object.values(PIPELINE_DOCUMENT_TYPES), 'text/rtf'])
+const PIPELINE_PROFILES = new Map<string, PipelineDocumentProfile>([...Object.values(PIPELINE_DOCUMENTS), ['text/rtf', 'preview-document']])
 
-/** An Office / ODF / RTF document: rendered only as the PDF a Pipeline converts it to. */
+/** Text markup a Pipeline turns into a page; shown as plain text where no Pipeline does. */
+const TEXT_FALLBACK_TYPES = new Set(['ipynb', 'md'].map((ext) => PIPELINE_DOCUMENTS[ext][0]))
+
+/** The nfs_server profile that converts a Pipeline document; null for everything else. */
+export function pipelineDocumentProfile(mediaType: string | undefined | null): PipelineDocumentProfile | null {
+  return PIPELINE_PROFILES.get(stripMediaTypeParams(mediaType)) ?? null
+}
+
+/** A document rendered only as what a Pipeline converts it to. */
 export function isPipelineDocument(mediaType: string | undefined | null): boolean {
-  return PIPELINE_DOCUMENT_MEDIA_TYPES.has(stripMediaTypeParams(mediaType))
+  return pipelineDocumentProfile(mediaType) !== null
 }
 
+/** Extensions that also name plain-text files (a PEM `.key`, an SSH `.pub`): a document only when the bytes are not text. */
+const BINARY_ONLY_DOCUMENTS = new Set(['key', 'pub', 'pages', 'numbers'])
 
+function typeFromExtension(extension: string, textLike: boolean): string | undefined {
+  if (!extension) return undefined
+  if (textLike && BINARY_ONLY_DOCUMENTS.has(extension)) return mediaTypeFromExtension(extension)
+  return SHEET_TYPES[extension] ?? PIPELINE_DOCUMENTS[extension]?.[0] ?? mediaTypeFromExtension(extension)
+}
 
 /** Conservative text heuristic over a bounded sample (no NULs, valid UTF-8, few control chars). */
 export function looksLikeText(bytes: Uint8Array | null | undefined): boolean {
@@ -102,6 +157,8 @@ export interface MediaClassification {
   rendererType: PreviewRendererType | null
   /** The renderer takes the original bytes; false = only a Pipeline result (an Office document's PDF). */
   direct: boolean
+  /** A Pipeline document that is text: shown by the text renderer where no Pipeline converts it. */
+  textFallback: boolean
   basis: MediaBasis
   extension: string
   /** True when bytes or a trusted header confirmed the type (not extension only). */
@@ -114,7 +171,10 @@ export function rendererForMediaType(mediaType: string): PreviewRendererType | n
   if (type === 'image/svg+xml') return 'svg'
   if (type.startsWith('image/')) return 'image'
   if (type === 'text/html' || type === 'application/xhtml+xml') return 'html'
-  if (type === 'application/pdf' || isPipelineDocument(type)) return 'pdf'
+  if (SHEET_MEDIA_TYPES.has(type)) return 'sheet'
+  const profile = pipelineDocumentProfile(type)
+  if (profile) return profile === 'preview-sheet' ? 'sheet' : profile === 'preview-html' ? 'html' : 'pdf'
+  if (type === 'application/pdf') return 'pdf'
   if (type.startsWith('text/') || TEXT_APPLICATION_TYPES.has(type)) return 'text'
   if (type.startsWith('audio/') || type === 'application/ogg') return 'audio'
   if (type.startsWith('video/')) return 'video'
@@ -133,17 +193,18 @@ export function classifyMedia(input: {
   const extension = extensionOf(input.name)
   const magicType = sniffMagic(input.magic)
   const headerType = stripMediaTypeParams(input.contentType)
-  const extType = extension ? (mediaTypeFromExtension(extension) ?? PIPELINE_DOCUMENT_TYPES[extension]) : undefined
-  const hintType = input.hints?.map(stripMediaTypeParams).find((h) => h && !GENERIC_CONTENT_TYPES.has(h))
   const textLike = looksLikeText(input.magic)
+  const extType = typeFromExtension(extension, textLike)
+  const hintType = input.hints?.map(stripMediaTypeParams).find((h) => h && !GENERIC_CONTENT_TYPES.has(h))
 
   const finish = (mediaType: string, basis: MediaBasis, confirmed: boolean): MediaClassification => {
     let renderer = rendererForMediaType(mediaType)
+    const pipelineOnly = isPipelineDocument(mediaType)
     // HTML / SVG must at least be text — an extension alone never decides (§23.3 rule 5).
-    if (renderer && SENSITIVE_TEXT_RENDERERS.has(renderer) && input.magic && !textLike) {
+    if (renderer && !pipelineOnly && SENSITIVE_TEXT_RENDERERS.has(renderer) && input.magic && !textLike) {
       renderer = null
     }
-    return { mediaType, rendererType: renderer, direct: renderer !== null && !isPipelineDocument(mediaType), basis, extension, confirmed }
+    return { mediaType, rendererType: renderer, direct: renderer !== null && !pipelineOnly, textFallback: textLike && TEXT_FALLBACK_TYPES.has(mediaType), basis, extension, confirmed }
   }
 
   if (magicType) {
@@ -154,11 +215,16 @@ export function classifyMedia(input: {
     return finish(magicType, 'magic', true)
   }
   if (headerType && !GENERIC_CONTENT_TYPES.has(headerType)) {
-    // A generic text/plain header loses to a more specific extension hint.
-    if (headerType === 'text/plain' && extType && rendererForMediaType(extType) === 'text') {
-      return finish(extType, 'extension', true)
+    // A generic text header loses to a more specific extension hint.
+    const extRenderer = extType ? rendererForMediaType(extType) : null
+    if (extType && headerType !== extType && rendererForMediaType(headerType) === 'text' && (extRenderer === 'text' || extRenderer === 'sheet' || isPipelineDocument(extType))) {
+      return finish(extType, 'extension', !isPipelineDocument(extType))
     }
     return finish(headerType, 'content-type', true)
+  }
+  // A sheet or Pipeline document named by its extension: the resolver's hint table does not know them all.
+  if (extType && (SHEET_MEDIA_TYPES.has(extType) || isPipelineDocument(extType))) {
+    return finish(extType, 'extension', false)
   }
   if (hintType) {
     return finish(hintType, 'extension', false)
@@ -169,7 +235,7 @@ export function classifyMedia(input: {
   if (textLike) {
     return finish('text/plain', 'text-heuristic', true)
   }
-  return { mediaType: 'application/octet-stream', rendererType: null, direct: false, basis: 'unknown', extension, confirmed: false }
+  return { mediaType: 'application/octet-stream', rendererType: null, direct: false, textFallback: false, basis: 'unknown', extension, confirmed: false }
 }
 
 /** "PNG · image/png" style label for the Unsupported / Info states. */
@@ -222,6 +288,12 @@ function canPlay(element: HTMLMediaElement | null, type: string): boolean {
   }
 }
 
+/** PDFs are drawn by pdf.js where the Runtime has no built-in viewer and on touch devices; else by the viewer in an iframe. */
+export function pdfUsesPdfjs(runtime: PreviewRuntimeProfile = detectRuntimeProfile()): boolean {
+  if (!runtime.pdfInline) return true
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+}
+
 function pdfInlineSupported(): boolean {
   if (typeof navigator === 'undefined') return false
   const nav = navigator as Navigator & { pdfViewerEnabled?: boolean }
@@ -241,7 +313,7 @@ export function detectRuntimeProfile(): PreviewRuntimeProfile {
   const videoCandidates = ['video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-matroska']
   const audioCandidates = ['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/wav', 'audio/ogg', 'audio/flac', 'audio/webm']
   runtimeProfile = {
-    acceptTypes: ['image', 'svg', 'text', 'html', 'audio', 'video', 'pdf'],
+    acceptTypes: ['image', 'svg', 'text', 'html', 'audio', 'video', 'pdf', 'sheet'],
     imageMediaTypes: [...BASELINE_IMAGE_TYPES, 'image/svg+xml'],
     videoMediaTypes: videoCandidates.filter((t) => canPlay(video, t)),
     audioMediaTypes: audioCandidates.filter((t) => canPlay(audio, t)),
@@ -292,7 +364,11 @@ export const DIRECT_SIZE_BUDGET: Record<PreviewRendererType, number> = {
   audio: Number.POSITIVE_INFINITY,
   video: Number.POSITIVE_INFINITY,
   pdf: Number.POSITIVE_INFINITY,
+  sheet: 30 * 1024 * 1024,
 }
+
+/** Rows of one sheet the sheet renderer shows before a truncation notice. */
+export const SHEET_ROW_LIMIT = 5000
 
 /** How much of a text file the text renderer reads before showing a truncation notice. */
 export const TEXT_READ_BUDGET = 2 * 1024 * 1024
@@ -314,9 +390,6 @@ export function decideDirect(
   if (renderer === 'audio') {
     const normalized = type === 'application/ogg' ? 'audio/ogg' : type
     if (!runtime.audioMediaTypes.includes(normalized)) return { ok: false, reason: 'runtime-unsupported' }
-  }
-  if (renderer === 'pdf' && !runtime.pdfInline) {
-    return { ok: false, reason: 'runtime-unsupported' }
   }
   if (typeof size === 'number' && size > DIRECT_SIZE_BUDGET[renderer]) {
     return { ok: false, reason: 'too-large' }

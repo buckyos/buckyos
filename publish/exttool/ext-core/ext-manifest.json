@@ -1,7 +1,7 @@
 {
   "schema": "buckyos.ext_tools/1",
   "id": "ext-core",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "requires": [],
   "conflicts": [],
   "provides": [
@@ -16,6 +16,7 @@
     {"command": "pdfinfo", "version_probe": "pdfinfo -v"},
     {"command": "tesseract", "version_probe": "tesseract --version", "smoke": "smoke/tesseract.sh"},
     {"command": "pandoc", "version_probe": "pandoc --version", "smoke": "smoke/pandoc.sh"},
+    {"command": "soffice", "version_probe": "soffice --version", "smoke": "smoke/soffice.sh"},
     {"command": "python3", "version_probe": "python3 --version", "smoke": "smoke/python3.sh"},
     {"command": "uv", "version_probe": "uv --version"},
     {"command": "node", "version_probe": "node --version", "smoke": "smoke/node.sh"},
@@ -31,5 +32,5 @@
   ],
   "platforms": ["linux-x86_64", "linux-aarch64", "darwin-arm64", "darwin-x86_64", "windows-x86_64"],
   "license": "per tool: see store/ext-core/LICENSES",
-  "desc": "The tools every extended runtime has: media, images, PDF, OCR, document conversion, Python, JS/TS and common helpers"
+  "desc": "The tools every extended runtime has: media, images, PDF, OCR, document conversion (pandoc, LibreOffice headless), Python, JS/TS and common helpers"
 }

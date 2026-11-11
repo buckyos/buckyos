@@ -40,6 +40,8 @@ export interface Grid {
   header: boolean | null
   columns: (ColumnHint | undefined)[]
   notes: GridNote[]
+  /** Merged ranges as [first row, first column, last row, last column] (xlsx). */
+  merges?: [number, number, number, number][]
   /** Rows the source had beyond what was read (a SQLite table over the limit). */
   truncated?: number
 }
@@ -72,7 +74,7 @@ export function tidy(grid: Grid): Grid {
     for (let i = 0; i < row.length; i++) if (!blank(row[i])) { if (i < left) left = i; if (i > right) right = i }
   }
   const notes = [...grid.notes.map((n) => ({ ...n, samples: [...n.samples] }))]
-  if (right < 0) return { ...grid, rows: [], columns: [], notes }
+  if (right < 0) return { ...grid, rows: [], columns: [], notes, merges: undefined }
   const kept: Cell[][] = []
   let skipped = 0
   let pending = 0
@@ -86,7 +88,7 @@ export function tidy(grid: Grid): Grid {
     kept.push(out)
   }
   if (skipped > 0) note(notes, 'empty_rows', undefined, skipped)
-  return { ...grid, rows: kept, columns: grid.columns.slice(left, right + 1), notes }
+  return { ...grid, rows: kept, columns: grid.columns.slice(left, right + 1), notes, merges: undefined }
 }
 
 /** A grid from plain strings (CSV, TSV). */

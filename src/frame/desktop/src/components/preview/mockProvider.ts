@@ -165,15 +165,125 @@ ${Array.from({ length: 30 }, (_, i) => `<p>Section ${i + 1} — rich text paragr
   return new Blob([html], { type: 'text/html' })
 }
 
-function makeSheetHtml(title: string): Blob {
-  const rows = Array.from({ length: 24 }, (_, r) =>
-    `<tr>${Array.from({ length: 6 }, (_, c) => `<td>${c === 0 ? `Row ${r + 1}` : ((r + 1) * (c + 3) * 17) % 997}</td>`).join('')}</tr>`,
-  ).join('')
-  return makeHtml(
-    title,
-    'Converted by the built-in spreadsheet Pipeline (fidelity: values only, no formulas or charts).',
-    `<table><thead><tr><th>Item</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table>`,
-  )
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+function crc32(bytes: Uint8Array): number {
+  let crc = ~0
+  for (const byte of bytes) {
+    crc ^= byte
+    for (let k = 0; k < 8; k += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+  }
+  return ~crc >>> 0
+}
+
+/** A zip of stored (uncompressed) entries. */
+function makeZip(files: [string, string][]): Uint8Array {
+  const encoder = new TextEncoder()
+  const parts: Uint8Array[] = []
+  const directory: Uint8Array[] = []
+  let offset = 0
+  for (const [name, text] of files) {
+    const nameBytes = encoder.encode(name)
+    const data = encoder.encode(text)
+    const header = new DataView(new ArrayBuffer(30))
+    header.setUint32(0, 0x04034b50, true)
+    header.setUint16(4, 20, true)
+    header.setUint32(14, crc32(data), true)
+    header.setUint32(18, data.length, true)
+    header.setUint32(22, data.length, true)
+    header.setUint16(26, nameBytes.length, true)
+    const entry = new DataView(new ArrayBuffer(46))
+    entry.setUint32(0, 0x02014b50, true)
+    entry.setUint16(4, 20, true)
+    entry.setUint16(6, 20, true)
+    entry.setUint32(16, crc32(data), true)
+    entry.setUint32(20, data.length, true)
+    entry.setUint32(24, data.length, true)
+    entry.setUint16(28, nameBytes.length, true)
+    entry.setUint32(42, offset, true)
+    parts.push(new Uint8Array(header.buffer), nameBytes, data)
+    directory.push(new Uint8Array(entry.buffer), nameBytes)
+    offset += 30 + nameBytes.length + data.length
+  }
+  const directorySize = directory.reduce((n, part) => n + part.length, 0)
+  const end = new DataView(new ArrayBuffer(22))
+  end.setUint32(0, 0x06054b50, true)
+  end.setUint16(8, files.length, true)
+  end.setUint16(10, files.length, true)
+  end.setUint32(12, directorySize, true)
+  end.setUint32(16, offset, true)
+  const out = new Uint8Array(offset + directorySize + 22)
+  let at = 0
+  for (const part of [...parts, ...directory, new Uint8Array(end.buffer)]) {
+    out.set(part, at)
+    at += part.length
+  }
+  return out
+}
+
+type MockCell = string | number | { value: number; style: 1 | 2 }
+interface MockSheet {
+  name: string
+  rows: MockCell[][]
+  merges?: string[]
+  hidden?: boolean
+}
+
+const xmlEscape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+function columnName(index: number): string {
+  let n = index + 1
+  let out = ''
+  while (n > 0) {
+    out = String.fromCharCode(65 + ((n - 1) % 26)) + out
+    n = Math.floor((n - 1) / 26)
+  }
+  return out
+}
+
+/** A real workbook: text, numbers, dates (style 1) and percentages (style 2), merged ranges, hidden sheets. */
+export function makeMockXlsx(sheets: MockSheet[]): Blob {
+  const sheetXml = (sheet: MockSheet) => {
+    const rows = sheet.rows.map((row, r) => {
+      const cells = row.map((value, c) => {
+        const ref = `${columnName(c)}${r + 1}`
+        if (typeof value === 'string') return value ? `<c r="${ref}" t="inlineStr"><is><t>${xmlEscape(value)}</t></is></c>` : ''
+        if (typeof value === 'number') return `<c r="${ref}"><v>${value}</v></c>`
+        return `<c r="${ref}" s="${value.style}"><v>${value.value}</v></c>`
+      })
+      return `<row r="${r + 1}">${cells.join('')}</row>`
+    })
+    const merges = sheet.merges?.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map((ref) => `<mergeCell ref="${ref}"/>`).join('')}</mergeCells>` : ''
+    return `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows.join('')}</sheetData>${merges}</worksheet>`
+  }
+  const main = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  const rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+  const files: [string, string][] = [
+    ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
+    ['_rels/.rels', `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${rels}/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+    ['xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="${main}" xmlns:r="${rels}"><sheets>${sheets.map((sheet, i) => `<sheet name="${xmlEscape(sheet.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"${sheet.hidden ? ' state="hidden"' : ''}/>`).join('')}</sheets></workbook>`],
+    ['xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${rels}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="${rels}/styles" Target="styles.xml"/></Relationships>`],
+    ['xl/styles.xml', `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="${main}"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0"/><xf numFmtId="14" applyNumberFormat="1"/><xf numFmtId="10" applyNumberFormat="1"/></cellXfs></styleSheet>`],
+    ...sheets.map((sheet, i): [string, string] => [`xl/worksheets/sheet${i + 1}.xml`, sheetXml(sheet)]),
+  ]
+  return new Blob([makeZip(files) as BlobPart], { type: XLSX_TYPE })
+}
+
+function makeBudgetXlsx(title: string): Blob {
+  const quarters: MockCell[][] = Array.from({ length: 24 }, (_, r) => {
+    const values = [1, 2, 3, 4].map((q) => ((r + 1) * (q + 3) * 17) % 997)
+    return [`Item ${r + 1}`, { value: 45292 + r * 7, style: 1 }, ...values, values.reduce((a, b) => a + b, 0), { value: ((r * 7) % 40) / 100 + 0.025, style: 2 }]
+  })
+  return makeMockXlsx([
+    { name: 'Budget', rows: [[title], ['Item', 'Updated', 'Q1', 'Q2', 'Q3', 'Q4', 'Total', 'Growth'], ...quarters], merges: ['A1:H1'] },
+    { name: 'Notes', rows: [['Topic', 'Note'], ['Scope', 'Figures are generated for the mock runtime.'], ['币种', '人民币（元）']] },
+    { name: 'Internal', rows: [['hidden']], hidden: true },
+  ])
+}
+
+function makeCsv(): Blob {
+  const rows = Array.from({ length: 40 }, (_, i) => `Contact ${i + 1},contact${i + 1}@example.com,"${i % 3 === 0 ? 'Kyoto, Japan' : 'Shenzhen'}",${2020 + (i % 6)}-0${1 + (i % 9)}-15`)
+  return new Blob([['Name,Email,City,Joined', ...rows].join('\n')], { type: 'text/csv' })
 }
 
 function makeWav(seconds = 4, seed = 'tone'): Blob {
@@ -211,19 +321,24 @@ function pdfEscape(text: string): string {
   return text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').replace(/[^\x20-\x7e]/g, '?')
 }
 
-/** Minimal single-page PDF (Helvetica) so the Runtime's PDF viewer has real bytes. */
-function makePdf(title: string, lines: string[]): Blob {
-  const content = [
-    `BT /F1 24 Tf 72 720 Td (${pdfEscape(title)}) Tj ET`,
+/** Minimal PDF (Helvetica) so a PDF viewer has real bytes; pages after the first carry their number. */
+function makePdf(title: string, lines: string[], pageCount = 1): Blob {
+  const pageContent = (page: number) => [
+    `BT /F1 24 Tf 72 720 Td (${pdfEscape(page === 0 ? title : `${title} - page ${page + 1}`)}) Tj ET`,
     ...lines.map((line, i) => `BT /F1 12 Tf 72 ${680 - i * 18} Td (${pdfEscape(line)}) Tj ET`),
   ].join('\n')
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
-    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    `<< /Type /Pages /Kids [${Array.from({ length: pageCount }, (_, i) => `${4 + i * 2} 0 R`).join(' ')}] /Count ${pageCount} >>`,
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
   ]
+  for (let page = 0; page < pageCount; page += 1) {
+    const content = pageContent(page)
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${5 + page * 2} 0 R /Resources << /Font << /F1 3 0 R >> >> >>`,
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    )
+  }
   let out = '%PDF-1.4\n'
   const offsets: number[] = []
   objects.forEach((body, i) => {
@@ -308,7 +423,11 @@ const SAMPLES: SampleSpec[] = [
   { name: 'ambient-tone.wav', make: () => makeWav(4, 'ambient') },
   { name: 'product-brief.pdf', make: () => makePdf('Product brief', ['BuckyOS Preview — content-first viewing for every app.', 'Rendered by the Runtime built-in PDF viewer (PDFIframeRenderer).', 'Zoom, find and print come from the viewer itself in P0.']) },
   { name: 'quarterly-report.docx', make: () => new Blob(['PK\u0003\u0004mock-docx'], { type: 'application/octet-stream' }), behaviour: 'pipeline', size: 240_000 },
-  { name: 'budget.xlsx', make: () => new Blob(['PK\u0003\u0004mock-xlsx'], { type: 'application/octet-stream' }), behaviour: 'pipeline', size: 88_000 },
+  { name: 'ledger.xls', make: () => new Blob(['\u00d0\u00cf\u0011\u00e0mock-xls'], { type: 'application/octet-stream' }), behaviour: 'pipeline', size: 88_000 },
+  { name: 'budget.xlsx', make: () => makeBudgetXlsx('Budget 2026') },
+  { name: 'contacts.csv', make: makeCsv },
+  { name: 'annual-report.pdf', make: () => makePdf('Annual report', ['A longer document: pages are drawn as they scroll into view.'], 12) },
+  { name: 'handbook.epub', make: () => new Blob(['PK\u0003\u0004mimetypeapplication/epub+zip'], { type: 'application/octet-stream' }), behaviour: 'pipeline', size: 640_000 },
   { name: 'demo-clip.mp4', make: () => new Blob(['\u0000\u0000\u0000\u0018ftypisom'], { type: 'application/octet-stream' }), behaviour: 'pipeline', size: 12_400_000 },
   { name: 'keynote.pptx', make: () => new Blob(['PK\u0003\u0004mock-pptx'], { type: 'application/octet-stream' }), behaviour: 'unsupported', size: 5_100_000 },
   { name: 'archive.zip', make: () => new Blob(['PK\u0003\u0004mock-zip'], { type: 'application/zip' }), behaviour: 'unsupported', size: 900_000 },
@@ -368,6 +487,10 @@ function libraryBlob(entry: FileEntry): Promise<Blob> {
       case 'html':
       case 'htm':
         return makeHtml(label, entry.summary ?? '')
+      case 'xlsx':
+        return makeBudgetXlsx(label)
+      case 'csv':
+        return makeCsv()
       case 'wav':
       case 'mp3':
       case 'm4a':
@@ -483,8 +606,9 @@ const CATALOG: Record<string, MockPlan> = {
   docx: { pipelineId: 'office-html', pipelineVersion: '1.2.0', output: 'html', ticks: 4, fidelityNote: 'Converted to HTML: fonts, page layout and tracked changes may differ from the original.' },
   doc: { pipelineId: 'office-html', pipelineVersion: '1.2.0', output: 'html', ticks: 4, fidelityNote: 'Converted to HTML: fonts, page layout and tracked changes may differ from the original.' },
   odt: { pipelineId: 'office-html', pipelineVersion: '1.2.0', output: 'html', ticks: 4, fidelityNote: 'Converted to HTML: fonts and page layout may differ from the original.' },
-  xlsx: { pipelineId: 'sheet-html', pipelineVersion: '0.9.1', output: 'html', ticks: 3, failFirstAttempt: true, fidelityNote: 'Values only — formulas, charts and conditional formatting are not shown.' },
-  xls: { pipelineId: 'sheet-html', pipelineVersion: '0.9.1', output: 'html', ticks: 3, failFirstAttempt: true, fidelityNote: 'Values only — formulas, charts and conditional formatting are not shown.' },
+  xls: { pipelineId: 'sheet-xlsx', pipelineVersion: '1.0.0', output: 'sheet', ticks: 3, failFirstAttempt: true, fidelityNote: 'Values only — formulas, charts and conditional formatting are not shown.' },
+  ods: { pipelineId: 'sheet-xlsx', pipelineVersion: '1.0.0', output: 'sheet', ticks: 3, fidelityNote: 'Values only — formulas, charts and conditional formatting are not shown.' },
+  epub: { pipelineId: 'office-html', pipelineVersion: '1.2.0', output: 'html', ticks: 3, fidelityNote: 'Converted to a web page.' },
   mp4: { pipelineId: 'media-transmux', pipelineVersion: '2.0.0', output: 'video', ticks: 5, fidelityNote: 'Transmuxed to WebM for playback; bitrate and audio tracks may be reduced.' },
   mov: { pipelineId: 'media-transmux', pipelineVersion: '2.0.0', output: 'video', ticks: 5, fidelityNote: 'Transmuxed to WebM for playback; bitrate and audio tracks may be reduced.' },
   mkv: { pipelineId: 'media-transmux', pipelineVersion: '2.0.0', output: 'video', ticks: 5, fidelityNote: 'Transmuxed to WebM for playback; bitrate and audio tracks may be reduced.' },
@@ -541,9 +665,9 @@ async function produceResult(plan: MockPlan, source: ResolvedPreviewSource): Pro
     )
     return { resultType: 'html', readRef: { kind: 'blob', blob }, mediaType: 'text/html', sourceVersion: source.versionToken, fidelityNote: plan.fidelityNote, cacheable: true }
   }
-  if (plan.pipelineId === 'sheet-html') {
-    const blob = await cachedBlob(`work:${plan.pipelineId}:${source.inputObjectId}`, () => makeSheetHtml(title))
-    return { resultType: 'html', readRef: { kind: 'blob', blob }, mediaType: 'text/html', sourceVersion: source.versionToken, fidelityNote: plan.fidelityNote, cacheable: true }
+  if (plan.pipelineId === 'sheet-xlsx') {
+    const blob = await cachedBlob(`work:${plan.pipelineId}:${source.inputObjectId}`, () => makeBudgetXlsx(title))
+    return { resultType: 'sheet', readRef: { kind: 'blob', blob }, mediaType: XLSX_TYPE, sourceVersion: source.versionToken, fidelityNote: plan.fidelityNote, cacheable: true }
   }
   if (plan.pipelineId === 'media-transmux') {
     const blob = await makeWebm()

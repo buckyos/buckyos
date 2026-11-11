@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "output_dir": "../dapp_dist",
-  "pikg_file": "ext-core-1.1.0.pikg",
+  "pikg_file": "ext-core-1.2.0.pikg",
   "sub_pkgs": {
     "ext_tools_linux_x86_64": {
       "selector": {
