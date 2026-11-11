@@ -11,7 +11,7 @@ import type { ndn } from 'buckyos'
 import { getMessageStableId, messageObjId, type MessageObject } from '../../protocol/msgobj'
 import { effectiveContent, messageRelations } from '../history/relations'
 import type { ConversationMessageReader } from '../history/types'
-import { getObjectAccess, objectFailure, type ObjectInfo } from '../history/objectAccess'
+import { getObjectAccess, isLocalObjectId, objectFailure, type ObjectInfo } from '../history/objectAccess'
 
 export const MESSAGEHUB_OBJECT_SOURCE = 'messagehub-object'
 
@@ -180,6 +180,15 @@ async function resolveMessageObject(source: ContentRef): Promise<ResolvedPreview
     objectType: 'file',
     mediaTypeHints: hint ? [hint] : [],
     readRef: { kind: 'url', url },
+    pipelineObjectId: async () => {
+      const { objId: id, context } = value
+      if (!id) throw new PreviewError('INVALID_SOURCE', 'Invalid attachment reference')
+      if (isLocalObjectId(id)) throw new PreviewError('UNSUPPORTED', 'The attachment has not been sent yet')
+      if (!access.prepareSave || !context) throw new PreviewError('UNSUPPORTED', 'Converted previews need a Zone account')
+      return (await access.prepareSave(id, context).catch((error: unknown) => {
+        throw accessError(error)
+      })).objId
+    },
   }
 }
 

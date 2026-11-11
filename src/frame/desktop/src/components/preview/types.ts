@@ -165,6 +165,8 @@ export interface ResolvedPreviewSource {
   containerRef?: ContentRef
   /** Provider-specific opaque handle (e.g. NFSP ref) for later calls. */
   providerHandle?: unknown
+  /** A host-resolved source: the object id the viewer's own session can read, for Pipeline work. */
+  pipelineObjectId?: () => Promise<string>
 }
 
 // ─── Standard result types (§9.2) ───

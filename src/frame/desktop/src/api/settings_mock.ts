@@ -11,6 +11,9 @@ import type {
   ZoneDevice,
   ZoneDevicesResponse,
   ZoneOverviewResponse,
+  GarbageReport,
+  GcRecord,
+  GcStatus,
   StorageOverview,
 } from './settings.ts'
 
@@ -276,6 +279,30 @@ export function mockStorageOverview(): StorageOverview {
 export function deleteMockStorageBucket(bucketId: string): { deleted: boolean } {
   storageBuckets = mockBuckets().filter((item) => item.bucket_id !== bucketId)
   return { deleted: true }
+}
+
+let garbageBytes = 184 * MB
+let gcRecords: GcRecord[] | null = null
+
+function mockGcRecords(): GcRecord[] {
+  gcRecords ??= [
+    { at: Date.now() - 42 * 60_000, trigger: 'background', freed_bytes: 12 * MB, evicted_objects: 9, evicted_chunks: 14, pins_expired: 0 },
+    { at: Date.now() - 26 * 3_600_000, trigger: 'background', freed_bytes: 0, evicted_objects: 0, evicted_chunks: 0, pins_expired: 2 },
+  ]
+  return gcRecords
+}
+
+export function mockStorageGcStatus(): GcStatus {
+  return { evict_enabled: true, last_round_at: Date.now() - 12_000, rounds: 3120, last_error: null, recent: mockGcRecords().map((item) => ({ ...item })) }
+}
+
+/** The first run frees what is there, the next finds nothing. */
+export function collectMockStorageGarbage(): GarbageReport {
+  const freed = garbageBytes
+  garbageBytes = 0
+  const report = { freed_bytes: freed, evicted_objects: freed ? 37 : 0, evicted_chunks: freed ? 52 : 0, pins_expired: 0 }
+  gcRecords = [{ at: Date.now(), trigger: 'manual' as const, ...report }, ...mockGcRecords()].slice(0, 3)
+  return { ...report, rounds: freed ? 2 : 1, complete: true }
 }
 
 const LOG_SERVICES = ['control-panel', 'cyfs-gateway', 'msg-center', 'node-daemon', 'scheduler', 'system-config', 'task-manager']

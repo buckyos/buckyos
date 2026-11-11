@@ -1268,8 +1268,7 @@ export type ConversationComposerSubmitPayload = ComposerDraft
 - `attachments` 上限 64 项；附件按 `relativePath || file.name`、大小与 `lastModified` 去重，
   同名不同内容的文件都保留（iOS 相机每张都叫 `image.jpg`，粘贴的截图都叫 `image.png`）。
 - 不支持选目录的环境（`webkitdirectory` 不可用或粗指针设备，如 iPhone）不显示“选择文件夹”，回形针直接打开系统文件选择器。
-- 独立选择的 HEIC / HEIF 图片（按类型、扩展名或 `ftyp` 品牌识别）在上传前由浏览器解码并转成 JPEG（`conversation/input/imageNormalize.ts`，
-  画布像素上限 1600 万，超出等比缩小），文件名改为 `.jpg`；浏览器解不了（如桌面 Chrome）则原样上传。
+- HEIC / HEIF 等浏览器不一定能显示的图片按原件上传，不在浏览器里转码。显示由 Preview 的转换管线负责（nfs_server `repr`，附件经 `msg.prepare_save_attachment` 交给查看者的会话后转换），下载得到的是原件。
 - 每个叶文件上限 64 MiB，SDK 完成 FileObject / ChunkList / DirObject 登记且 `objectStatus === ready` 后才提交消息；msg-center 用 `NamedDataMgr::open_reader` 读取单 chunk 或 ChunkList，下载仍有 64 MiB 内存缓冲上限。
 - 文件夹作为一个 DirObject 附件，保留选中根、嵌套和同名不同路径；目录内文件保持原始字节，不进行图片规范化。目录拖拽保留空目录，FileList picker 无法提供空目录节点。枚举失败显示具体路径和原因，整个选择失败，不把失败当目录结束。
 - `importFiles` / `importDirectory` 接收已选对象，`ensureUploaded` 完成上传和登记；页面不覆盖全局 picker、不手工写对象。发送失败重用导入 session，发送成功释放客户端 session；取消中止当前导入并恢复草稿，移除附件释放本任务 session。

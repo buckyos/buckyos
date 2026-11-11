@@ -32,11 +32,13 @@ pub struct BucketHost {
     groups: Mutex<HashMap<String, (Instant, Vec<String>, bool)>>,
     /// Display names of apps owning buckets (Files projection folders), from their specs.
     pub(crate) names: Mutex<HashMap<String, String>>,
+    /// What the named-store GC did lately (`bucket.gc_status`); in memory only.
+    pub(crate) gc_log: Mutex<tasks::GcLog>,
 }
 
 impl Default for BucketHost {
     fn default() -> Self {
-        BucketHost { store: tokio::sync::OnceCell::new(), synced: Default::default(), groups: Default::default(), names: Default::default() }
+        BucketHost { store: tokio::sync::OnceCell::new(), synced: Default::default(), groups: Default::default(), names: Default::default(), gc_log: Default::default() }
     }
 }
 

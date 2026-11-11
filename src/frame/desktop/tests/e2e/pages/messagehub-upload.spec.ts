@@ -108,7 +108,7 @@ test('a failed upload takes its bubble back and returns the draft to the compose
   await expect(page.getByTitle('beach.png', { exact: true })).toBeVisible()
 })
 
-test('an iPhone HEIC photo the browser can decode goes out as a JPEG; one it cannot decode goes out unchanged', async ({ page }) => {
+test('an iPhone HEIC photo goes out as the original file, whether or not the browser can decode it', async ({ page }) => {
   const id = await openSession(page, 'HEIC photos')
   const input = page.locator('input[type="file"]').first()
   await input.setInputFiles({ name: 'IMG_0001.HEIC', mimeType: 'image/heic', buffer: png(64, 48, [250, 200, 20]) })
@@ -124,8 +124,7 @@ test('an iPhone HEIC photo the browser can decode goes out as a JPEG; one it can
       return { label: ref.label, mimeType: info.mimeType }
     }))
   }, { context: OWN, id })
-  expect(sent).toEqual([{ label: 'IMG_0001.jpg', mimeType: 'image/jpeg' }, { label: 'IMG_0002.HEIC', mimeType: 'image/heic' }])
-  await expect(page.getByTestId('conversation-history').getByRole('img', { name: 'IMG_0001.jpg', exact: true })).toBeVisible()
+  expect(sent).toEqual([{ label: 'IMG_0001.HEIC', mimeType: 'image/heic' }, { label: 'IMG_0002.HEIC', mimeType: 'image/heic' }])
 })
 
 test('photos with the same file name are all kept in the draft', async ({ page }) => {

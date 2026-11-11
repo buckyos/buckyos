@@ -205,6 +205,26 @@ test.describe('settings', () => {
     await expect(storage.getByTestId('settings-storage-bucket-user/notes.alice.bns.did/alice/index')).toBeVisible()
   })
 
+  test('storage: an admin runs the content store cleanup by hand', async ({ page }) => {
+    const win = await openSettings(page, 'Storage')
+    const gc = win.getByTestId('settings-storage-gc')
+    // What the background GC did lately, so that it can be seen running.
+    await expect(gc).toContainText(/last run 1\d seconds ago/)
+    const records = gc.getByTestId('settings-storage-gc-record')
+    await expect(records).toHaveCount(2)
+    await expect(records.first()).toContainText('Background')
+    await expect(records.first()).toContainText('Freed 12 MB (23 items)')
+    await expect(records.nth(1)).toContainText('2 expired holds released')
+
+    await gc.getByTestId('settings-storage-gc-run').click()
+    await expect(records).toHaveCount(3)
+    await expect(records.first()).toContainText('Manual')
+    await expect(records.first()).toContainText('Freed 184 MB (89 items)')
+    await gc.getByTestId('settings-storage-gc-run').click()
+    await expect(records.first()).toContainText('Nothing to clean up')
+    await expect(records).toHaveCount(3)
+  })
+
   test('agent runtimes: node policy, device issue and assignment, one Agent per device, revoke', async ({ page }) => {
     const win = await openSettings(page, 'Agent Runtimes')
     const runtimes = win.getByTestId('settings-agent-runtimes')

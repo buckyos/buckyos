@@ -1,13 +1,15 @@
 import { Button } from '@mui/material'
-import { RefreshCw } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { RefreshCw, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { bucket } from 'buckyos'
+import { collectStorageGarbage, fetchStorageGcStatus, type GcRecord, type GcStatus } from '../../../api/settings'
 import { useSudoByPassword } from '../../../components/sudo'
 import { useI18n } from '../../../i18n/provider'
 import { isMockRuntime } from '../../../runtime'
 import { useSettingsResource, useSettingsStore } from '../hooks/use-settings-store'
+import { useViewerIsAdmin } from '../hooks/use-viewer-is-admin'
 import { ListCard, Section, SectionNote, StatusBadge } from '../components/shared/Section'
-import { formatBytes, formatDateTime } from '../components/shared/format'
+import { formatBytes, formatDateTime, formatRelative } from '../components/shared/format'
 
 type Translate = ReturnType<typeof useI18n>['t']
 
@@ -59,6 +61,7 @@ export function StoragePage() {
   const storage = useSettingsResource('storage')
   const store = useSettingsStore()
   const requestSudo = useSudoByPassword()
+  const isAdmin = useViewerIsAdmin()
   const [confirming, setConfirming] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
@@ -157,6 +160,93 @@ export function StoragePage() {
           ))}
         </div>
       </Section>
+      {isAdmin && <GarbageSection onCollected={() => void store.load('storage', true)} />}
     </div>
+  )
+}
+
+function gcOutcome(t: Translate, record: GcRecord) {
+  const count = record.evicted_objects + record.evicted_chunks
+  if (count > 0) return t('settings.storage.gc.freed', 'Freed {{size}} ({{count}} items)', { size: formatBytes(record.freed_bytes), count: String(count) })
+  if (record.pins_expired > 0) return t('settings.storage.gc.expired', '{{count}} expired holds released', { count: String(record.pins_expired) })
+  return t('settings.storage.gc.nothing', 'Nothing to clean up')
+}
+
+/** The Zone's content store frees unreferenced data in the background, a batch at a time: what it did lately, and a button that runs it to the end now. */
+function GarbageSection({ onCollected }: { onCollected: () => void }) {
+  const { t, locale } = useI18n()
+  const [running, setRunning] = useState(false)
+  const [status, setStatus] = useState<GcStatus | null>(null)
+  const [incomplete, setIncomplete] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+
+  const reload = useCallback(() => fetchStorageGcStatus().then(({ data }) => { if (data) setStatus(data) }), [])
+  // The background round runs every 30 seconds: keep "last ran" honest while the page is open.
+  useEffect(() => {
+    let live = true
+    const load = () => void fetchStorageGcStatus().then(({ data }) => { if (live && data) setStatus(data) })
+    load()
+    const timer = window.setInterval(load, 30_000)
+    return () => {
+      live = false
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  const collect = async () => {
+    setRunning(true)
+    setFailure(null)
+    const { data, error } = await collectStorageGarbage()
+    setRunning(false)
+    if (!data) {
+      setFailure(error instanceof Error && error.message ? error.message : t('settings.storage.gc.failed', 'The cleanup could not run.'))
+      return
+    }
+    setIncomplete(!data.complete)
+    await reload()
+    onCollected()
+  }
+
+  return (
+    <Section
+      title={t('settings.storage.gc.title', 'Free up space')}
+      description={t('settings.storage.gc.description', 'Deleted data is removed from the Zone’s content store in the background, a little at a time. Run the cleanup now to free it all at once. Data that is still in use is never touched, and content stored less than 24 hours ago is kept.')}
+      actions={
+        <Button size="small" variant="outlined" startIcon={<Trash2 size={14} />} disabled={running} onClick={() => void collect()} data-testid="settings-storage-gc-run">
+          {running ? t('settings.storage.gc.running', 'Cleaning up…') : t('settings.storage.gc.run', 'Clean up now')}
+        </Button>
+      }
+      testId="settings-storage-gc"
+    >
+      {failure && <SectionNote tone="danger">{failure}</SectionNote>}
+      {incomplete && <SectionNote tone="warning">{t('settings.storage.gc.more', 'There is more to clean up: run it again.')}</SectionNote>}
+      {status && (
+        <div data-testid="settings-storage-gc-status">
+          {status.last_error && <SectionNote tone="danger">{t('settings.storage.gc.backgroundFailed', 'The last background check failed: {{error}}', { error: status.last_error })}</SectionNote>}
+          {!status.evict_enabled && <SectionNote tone="warning">{t('settings.storage.gc.evictOff', 'Background cleanup is turned off on this Zone; only a manual cleanup frees space.')}</SectionNote>}
+          <SectionNote>
+            {status.last_round_at == null
+              ? t('settings.storage.gc.notYet', 'The background check runs every 30 seconds; it has not run since the service started.')
+              : t('settings.storage.gc.lastRound', 'The background check runs every 30 seconds; last run {{when}}.', { when: formatRelative(Math.floor(status.last_round_at / 1000), locale) })}
+          </SectionNote>
+          <p className="mt-3 text-sm font-medium" style={{ color: 'var(--cp-text)' }}>{t('settings.storage.gc.recent', 'Recent cleanups')}</p>
+          {status.recent.length === 0 && <SectionNote>{t('settings.storage.gc.noRecords', 'Nothing has been cleaned up since the service started.')}</SectionNote>}
+          <div className="mt-1 space-y-1">
+            {status.recent.map((record, index) => (
+              <div key={`${record.at}-${index}`} className="flex flex-wrap items-center justify-between gap-2 text-sm" data-testid="settings-storage-gc-record">
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <span style={{ color: 'var(--cp-text)' }}>{formatDateTime(Math.floor(record.at / 1000), locale)}</span>
+                  <StatusBadge
+                    status={record.trigger === 'manual' ? 'info' : 'neutral'}
+                    label={record.trigger === 'manual' ? t('settings.storage.gc.manual', 'Manual') : t('settings.storage.gc.background', 'Background')}
+                  />
+                </div>
+                <span style={{ color: 'var(--cp-muted)' }}>{gcOutcome(t, record)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Section>
   )
 }

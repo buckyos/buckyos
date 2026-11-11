@@ -3,7 +3,6 @@ import type { z } from 'zod'
 import { createCodeAssistantMockReaders } from '../../codeassistant/mockHistory'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
 import { registerObjectAccess, rememberLocalObject } from '../conversation/history/objectAccess'
-import { jpegName, normalizeImageFile } from '../conversation/input/imageNormalize'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import { notifyCategoryFromSessionId } from 'buckyos'
 import { getMessageStableId, messageAgentTaskId, messageNotify, messageVoice, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
@@ -664,8 +663,7 @@ export class MessageHubMockStore implements MessageHubStore {
     this.sendingLocalIds.add(localId)
     try {
       show({ phase: 'preparing' })
-      const files: File[] = []
-      for (const item of payload.attachments) files.push(item.directory ? item.file : await normalizeImageFile(item.file))
+      const files = payload.attachments.map(item => item.file)
       const total = payload.attachments.reduce((sum, item) => sum + attachmentSize(item), 0)
       const steps = 4
       for (let step = 0; step <= steps; step++) {
@@ -676,7 +674,7 @@ export class MessageHubMockStore implements MessageHubStore {
       payload.signal?.throwIfAborted()
       const uploads = files.map((file, index) => {
         const label = payload.attachments[index].relativePath || payload.attachments[index].file.name
-        return { objId: `${payload.attachments[index].directory ? 'cydir' : 'cyfile'}:mock-upload-${crypto.randomUUID()}`, name: file === payload.attachments[index].file ? label : jpegName(label), file, directory: payload.attachments[index].directory }
+        return { objId: `${payload.attachments[index].directory ? 'cydir' : 'cyfile'}:mock-upload-${crypto.randomUUID()}`, name: label, file, directory: payload.attachments[index].directory }
       })
       message.content = { ...message.content, refs: uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name })) }
       await this.sendMessage(context, id, message, confirmation, localId, next => {

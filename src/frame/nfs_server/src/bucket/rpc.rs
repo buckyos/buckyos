@@ -269,6 +269,19 @@ pub async fn dispatch(state: &SharedState, session: &Session, method: &str, p: &
             let id = bucket_arg(state, p).await?;
             to_value(store.recompute_usage_checked(&id, c).await?)
         }
+        "bucket.collect_garbage" => {
+            require_admin(is_admin(state, session).await)?;
+            let report = super::tasks::collect_garbage(store.ndm(), super::tasks::MANUAL_GC_BUDGET).await.map_err(|e| BucketError::Store(e.to_string()))?;
+            state.buckets.gc_log.lock().unwrap().manual(&report);
+            to_value(report)
+        }
+        "bucket.gc_status" => {
+            require_admin(is_admin(state, session).await)?;
+            let log = state.buckets.gc_log.lock().unwrap().clone();
+            let mut status = to_value(log)?;
+            status["evict_enabled"] = json!(state.config.gc_evict);
+            Ok(status)
+        }
         "bucket.get_lifecycle" => {
             let id = bucket_arg(state, p).await?;
             to_value(store.get_lifecycle(&id, c).await?)

@@ -1,6 +1,5 @@
 import { buckyos, ndm } from 'buckyos'
 import { attachmentSize, oversizedAttachmentNames, type ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
-import { normalizeImageFile, transcodeLostMeta } from '../conversation/input/imageNormalize'
 import { currentSessionToken } from '../datamodel/sessionApi'
 import type { OutgoingUpload } from '../store/types'
 
@@ -27,12 +26,11 @@ export async function uploadAttachments(attachments: readonly ComposerAttachment
     signal?.throwIfAborted()
     let session = sessions.get(item.file)
     if (!session) {
-      const file = item.directory ? undefined : await normalizeImageFile(item.file)
+      const file = item.directory ? undefined : item.file
       const options = { endpoint, sessionToken, signal, autoStartUpload: false }
-      const lostMeta = file && file !== item.file ? await transcodeLostMeta(item.file) : undefined
       const snapshot = item.directory
         ? await ndm.importDirectory(item.directory, options)
-        : await ndm.importFiles([file!], { ...options, mode: 'single_file', fileMeta: () => lostMeta })
+        : await ndm.importFiles([file!], { ...options, mode: 'single_file' })
       const object = snapshot.items[0]
       if (!object) throw new Error('attachment_upload_failed: missing object')
       session = { sessionId: snapshot.sessionId, file, object: { objectId: object.objectId, name: object.name, size: file?.size ?? attachmentSize(item) } }

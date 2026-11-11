@@ -397,3 +397,39 @@ async fn a_zone_device_administers_every_bucket() {
         assert_eq!(srv.call(&service, "bucket.stat", json!({"bucket_id": "user/photos/bob/library"})).await.unwrap_err().0, "permission_denied", "a service stays inside its own app's buckets");
     }
 }
+
+#[tokio::test]
+async fn an_admin_collects_named_store_garbage_by_hand() {
+    let srv = start().await;
+    assert_eq!(srv.call(&ui("alice"), "bucket.collect_garbage", json!({})).await.unwrap_err().0, "permission_denied");
+    assert_eq!(srv.call(&via("alice", "photos"), "bucket.collect_garbage", json!({})).await.unwrap_err().0, "permission_denied");
+
+    // Far more unreferenced objects than one periodic round evicts (100 per store).
+    let store = srv.state.share.store(&srv.state.config).await.unwrap();
+    for i in 0..250 {
+        let (id, text) = file_of(&format!("orphan-{i}.txt"), format!("orphan {i}").as_bytes());
+        store.put_object(&id, &text).await.unwrap();
+    }
+    let (kept, kept_text) = file_of("kept.txt", b"kept");
+    store.put_object(&kept, &kept_text).await.unwrap();
+    store.pin(&kept, "test", named_store::PinScope::Skeleton, None).await.unwrap();
+
+    let report = srv.call(&ui("owner"), "bucket.collect_garbage", json!({})).await.unwrap();
+    assert_eq!(report["complete"], true, "{report}");
+    assert!(report["evicted_objects"].as_u64().unwrap() >= 250, "{report}");
+    assert!(report["rounds"].as_u64().unwrap() >= 3, "{report}");
+    assert!(store.get_object(&kept).await.is_ok(), "a pinned object stays");
+
+    let again = srv.call(&ui("owner"), "bucket.collect_garbage", json!({})).await.unwrap();
+    assert_eq!((again["evicted_objects"].as_u64(), again["rounds"].as_u64()), (Some(0), Some(1)), "{again}");
+
+    // The page shows what the GC did lately: newest first, three at most.
+    assert_eq!(srv.call(&ui("alice"), "bucket.gc_status", json!({})).await.unwrap_err().0, "permission_denied");
+    srv.call(&ui("owner"), "bucket.collect_garbage", json!({})).await.unwrap();
+    srv.call(&ui("owner"), "bucket.collect_garbage", json!({})).await.unwrap();
+    let status = srv.call(&ui("owner"), "bucket.gc_status", json!({})).await.unwrap();
+    let recent = status["recent"].as_array().unwrap();
+    assert_eq!(recent.len(), 3, "{status}");
+    assert!(recent.iter().all(|r| r["trigger"] == "manual" && r["evicted_objects"] == 0 && r["at"].as_i64().unwrap() > 0), "{status}");
+    assert!(status["evict_enabled"].is_boolean(), "{status}");
+}

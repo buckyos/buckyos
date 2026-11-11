@@ -169,7 +169,8 @@ buckyos system info                                 # BuckyOS version, build_ver
   `orphaned_at` of an uninstalled App's bucket, reconcile `issues`), `bucket get obj://bucket/<bucket_id>/<key>`.
   Named-store eviction (GC actually freeing bytes of unretained objects and chunks) is
   `services/nfs-server/settings.named_store_gc_evict` (default `true`); unretained chunk bytes survive at least 24 h
-  after their last write or read. Pool and bucket quotas: kRPC `bucket.get_pool_quota|set_pool_quota|get_quota|set_quota`
+  after their last write or read. The background round evicts a batch every 30 s; an admin runs it to the end at once
+  with kRPC `bucket.collect_garbage` or Desktop Settings › Storage › Clean up now. Pool and bucket quotas: kRPC `bucket.get_pool_quota|set_pool_quota|get_quota|set_quota`
   (admin) and `bucket.usage_report`; no CLI verb, Desktop Settings › Storage lists per-App usage.
   Preview conversion (HEIC/HEVC shown on browsers that cannot decode them; Office / ODF / RTF / iWork documents →
   PDF, legacy spreadsheets → xlsx; RAW and other stills; PDF and document thumbnails; EPUB / ipynb / Markdown → HTML)

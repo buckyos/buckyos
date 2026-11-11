@@ -248,6 +248,64 @@ export const deleteStorageBucket = async (bucketId: string, sessionToken: string
   }
 }
 
+/** What one manual named-store collection did (`bucket.collect_garbage`). */
+export interface GarbageReport {
+  freed_bytes: number
+  evicted_objects: number
+  evicted_chunks: number
+  pins_expired: number
+  rounds: number
+  /** False when the time budget ran out with garbage left: run it again. */
+  complete: boolean
+}
+
+export interface GcRecord {
+  /** Unix milliseconds. */
+  at: number
+  trigger: 'background' | 'manual'
+  freed_bytes: number
+  evicted_objects: number
+  evicted_chunks: number
+  pins_expired: number
+}
+
+/** What the named-store GC did since nfs-server started (`bucket.gc_status`). */
+export interface GcStatus {
+  /** Whether the background round evicts (`named_store_gc_evict`). */
+  evict_enabled: boolean
+  /** When the background round last ran, Unix milliseconds; most rounds find nothing and leave no record. */
+  last_round_at: number | null
+  rounds: number
+  last_error: string | null
+  /** Newest first, three at most. */
+  recent: GcRecord[]
+}
+
+export const fetchStorageGcStatus = async (): RpcResult<GcStatus> => {
+  if (isMockRuntime()) {
+    const { mockStorageGcStatus } = await import('./settings_mock.ts')
+    return { data: mockStorageGcStatus(), error: null }
+  }
+  try {
+    return { data: await buckyos.getBucketClient().call<GcStatus>('bucket.gc_status', {}), error: null }
+  } catch (error) {
+    return { data: null, error }
+  }
+}
+
+/** Runs the Zone's named-store GC now, until nothing evictable is left (admin only). */
+export const collectStorageGarbage = async (): RpcResult<GarbageReport> => {
+  if (isMockRuntime()) {
+    const { collectMockStorageGarbage } = await import('./settings_mock.ts')
+    return { data: collectMockStorageGarbage(), error: null }
+  }
+  try {
+    return { data: await buckyos.getBucketClient().call<GarbageReport>('bucket.collect_garbage', {}), error: null }
+  } catch (error) {
+    return { data: null, error }
+  }
+}
+
 // ---- Developer tools ----
 
 export interface ConfigFileSummary {

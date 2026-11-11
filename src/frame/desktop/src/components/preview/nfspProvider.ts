@@ -149,7 +149,7 @@ function reprProfileOf(request: EnsurePreviewWorkRequest): string | null {
 }
 
 /** Where the node finds the bytes: an NFSP ref, a bucket binding or a named object. */
-function reprTarget(resolved: ResolvedPreviewSource): { at: WireRef | null; source?: ReprSource } | null {
+async function reprTarget(resolved: ResolvedPreviewSource): Promise<{ at: WireRef | null; source?: ReprSource } | null> {
   const bucketRef = bucketRefOf(resolved)
   if (bucketRef) {
     const parsed = bucket.parseBucketObjUrl(bucketRef.url)
@@ -158,6 +158,7 @@ function reprTarget(resolved: ResolvedPreviewSource): { at: WireRef | null; sour
   }
   if (resolved.providerHandle) return { at: resolved.providerHandle as WireRef }
   if (isObjectIdRef(resolved.originalSource) && resolved.sourceObjectId) return { at: null, source: { obj_id: resolved.sourceObjectId } }
+  if (resolved.pipelineObjectId) return { at: null, source: { obj_id: await resolved.pipelineObjectId() } }
   return null
 }
 
@@ -252,7 +253,7 @@ export function createNfspPreviewProvider(): PreviewProvider {
         return { kind: 'unsupported', reason: 'no-pipeline', detail: detail ?? 'The content server has no Preview Pipeline' }
       }
       const { source, runtimeProfile, targetProfile, options } = request
-      const target = reprTarget(source)
+      const target = await reprTarget(source)
       if (!target) return { kind: 'unsupported', reason: 'not-content', detail: 'The source has no stable content identity' }
       try {
         const record = await raw.repr(target.at, {
