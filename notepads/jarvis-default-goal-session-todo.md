@@ -350,6 +350,8 @@ T01–T07 合在一起等于 Memory S 阶段加 Goal 发现加 workflow 加 deci
 
 ### T06 — 可选 decision 优化
 
+> 2026-11-10 已取消（owner 裁决，见 [Goal Session 继续推进 TODO](opendan-goal-session-next-todo.md) §8 第 12 条）：改用不花 token 的检查脚本，§7 的 decision 预检和验收 V14、V15 不再做，`decision` 配置项随那份 TODO 的 H6 删除。同一次裁决还定了：内置整理 Goal 的检查改成脚本，包里的脚本只是初始状态，Goal 可以自己演化，硬保障对它打开，所以 V01 的“无材料不调用模型”要改成“无材料时只有硬保障那一次”。
+
 - [ ] T02—T05 在无 decision 模型时已能工作，再增加 §7 的异步预检、能力探测、阈值、持久缓存、退避、独立计账与硬预算边界，以及 §7 末尾的 `resume_gate` 回投入口。默认配置保持 `off`。
 - [ ] 启用/禁用 decision 不改变整理语义、授权语义和最大拖延窗口，只改变成本与运行次数。
 

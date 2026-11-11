@@ -8,6 +8,8 @@
 
 2026-11-10 复核（提交 `667468998`）：§6 的 G1（`goal.toml` 补 `--title`）已合入；其余都没有实施，包括已裁决的 Q-G4（`goal.toml` 仍不带 `--behavior`，Goal 建出来的还是 plan）。§2 现状表里与 Goal 休眠有关的行为已随 Agent UI 升级改变：休眠在下一个推理边界生效，派生的 Work 一并暂停，Session 级 stop 等于休眠（Session Control Protocol §6、§7）。排期与依赖见 [Goal Session 继续推进 TODO](opendan-goal-session-next-todo.md) 的 A1 与 B、C、D 组。
 
+同日 owner 的后续裁决记在那份 TODO 的 §8、§9，本文正文没有回写，冲突处以那边为准：Q-G1、G2、G3、G4c、G6、G7 按本文的建议；Q-G5 定为计入；触发改为四道门槛加检查脚本（follow_up 取消）；Q-U3、Q-U7 不按本文的建议——告诉用户的接口是命令，`notify send` 保留，不加 `result.tell`，§4 的 default chat session 是命令背后的实现，以后再做；Q-S1、S2、S4–S10 搁置，等日历 / 待办接入。
+
 范围：Goal Session（class `goal`、`goal.toml`、`memory_maintenance.toml`）的运行时语义、它派生的 Work 的形状与预算、它与用户之间的通道。两刀都写明"goal 会话不动"，本单就是补这一刀。UI 会话只涉及 §4"由谁在对话里开口"这部分；UI 的中间回复、提问撤销仍归第三刀（第一刀 §7）。
 
 路径相对 `buckyos/`；`lib_opendan/` 指 `src/frame/lib_opendan/src/`，`jarvis/` 指 `src/apps/jarvis_agent/agent/`。工作区有 MessageHub worksession UI 的未提交改动（`create-worksession --title` 必填等），实施前复核，不得覆盖。
