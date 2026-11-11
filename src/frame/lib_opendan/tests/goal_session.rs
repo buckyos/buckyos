@@ -1991,6 +1991,27 @@ async fn the_hard_guarantee_wakes_a_goal_past_budget_and_check_but_not_a_dormant
     let h = hosted_opts(&env, llm, json!({ "tools": { "enabled": true } }), |o| {
         o.checks = Arc::new(FnCheckRunner(|_: &Path, _: &Value, _: &Value| Err("ReferenceError: x is not defined".into())));
     });
+    // The hard guarantee overrides the budget: 0 (off) or at least an hour.
+    for short in [60, 600, 3599] {
+        let mut bad = goal_req("too eager");
+        bad.schedule.guarantee_secs = Some(short);
+        let e = h.agent.goals().create(&bad, &owner()).await.unwrap_err();
+        assert!(e.to_string().contains("at least 3600"), "{e}");
+    }
+    let mut off = goal_req("no guarantee");
+    off.schedule.guarantee_secs = Some(0);
+    let off = h.agent.goals().create(&off, &owner()).await.unwrap();
+    let mut s = off.schedule.clone();
+    s.guarantee_secs = Some(1800);
+    let refused = h
+        .agent
+        .goals()
+        .revise(&off.goal_id, &GoalRevise { expected_revision: off.revision, schedule: Some(s), ..Default::default() }, &owner())
+        .await;
+    assert!(refused.is_err(), "a revision is held to the same floor");
+    std::fs::write(env.agent_root.join("agent.toml"), "[session.goal]\nguarantee_secs = 600\n").unwrap();
+    assert!(libopendan::SessionTemplate::load("goal", Some(&env.agent_root)).is_err());
+    std::fs::remove_file(env.agent_root.join("agent.toml")).unwrap();
     let mut req = goal_req("guarded");
     req.schedule.every_secs = Some(SLOT);
     req.schedule.guarantee_secs = Some(3600);

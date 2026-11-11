@@ -274,8 +274,12 @@ test('the owner edits budget and gates as a revision, the timetable as a check c
   await expect(form.getByLabel('Max tokens per activation')).toHaveValue('60000')
   await expect(form.getByLabel('Timetable')).toHaveValue('every')
   await form.getByLabel('Hard interval (seconds)').fill('1800')
+  // The hard guarantee overrides the budget: off, or at least an hour.
+  await form.getByLabel('Hard guarantee (seconds, at least 3600)').fill('600')
+  await form.getByRole('button', { name: 'Save' }).click()
+  await expect(form.getByRole('alert')).toContainText('Hard guarantee (seconds, at least 3600): a whole number of at least 3600')
   await form.getByLabel('No hard guarantee').check()
-  await expect(form.getByLabel('Hard guarantee (seconds)')).toBeDisabled()
+  await expect(form.getByLabel('Hard guarantee (seconds, at least 3600)')).toBeDisabled()
   await form.getByLabel('Max tokens per period').fill('500000')
   await form.getByLabel('Max time per activation (seconds)').fill('600')
   await form.getByLabel('Check every (seconds, at least 60)').fill('30')

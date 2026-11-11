@@ -65,7 +65,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent goal   create --objective <text> [--title <t>] [--lifecycle achieve|maintain] [--achieved-when <t>]
                        [--healthy-state <t>] [--distance <t>] [--constraint <t>]... [--skill <name>[=<ref>]]...
                        [--workspace <id>] [--path <p>]... [--object <o>]... [--every <secs> | --cron <expr> [--timezone <iana>]]
-                       [--check <script.ts>] [--min-interval <secs>] [--guarantee <secs, 0 = off>]
+                       [--check <script.ts>] [--min-interval <secs>] [--guarantee <secs ≥ 3600, 0 = off>]
                        [--start] [--behavior <b>] [--budget <json|@file>] [--key <idem>] [--json <request|@file>]
   xagent goal   list | show [<id>] [--state] [--activations <n>] [--changes <n>] [--revisions] [--epochs] [--schedule]
   xagent goal   revise <id> --expected-revision <n> [--objective ..] [--title ..] [--every ..|--cron ..] [--timezone ..]

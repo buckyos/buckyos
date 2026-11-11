@@ -194,9 +194,12 @@ pub fn min_interval_secs(goal: &GoalDefinition, d: &GoalDefaults) -> u64 {
     goal.schedule.min_interval_secs.unwrap_or(d.min_interval_secs)
 }
 
-/// Hard guarantee of a Goal (`None`: off).
+/// Hard guarantee of a Goal (`None`: off), never shorter than
+/// [`GUARANTEE_MIN_SECS`].
 pub fn guarantee_secs(goal: &GoalDefinition, d: &GoalDefaults) -> Option<u64> {
-    Some(goal.schedule.guarantee_secs.unwrap_or(d.guarantee_secs)).filter(|g| *g > 0)
+    Some(goal.schedule.guarantee_secs.unwrap_or(d.guarantee_secs))
+        .filter(|g| *g > 0)
+        .map(|g| g.max(GUARANTEE_MIN_SECS))
 }
 
 /// Check interval of a Goal without a cron timetable: its own, else the

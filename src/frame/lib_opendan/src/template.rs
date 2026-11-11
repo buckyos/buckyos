@@ -410,6 +410,9 @@ impl SessionTemplate {
             if g.check_every_secs < CHECK_MIN_EVERY_SECS {
                 return Err(bad("check_every_secs (at least 60)"));
             }
+            if g.guarantee_secs > 0 && g.guarantee_secs < GUARANTEE_MIN_SECS {
+                return Err(bad("guarantee_secs (0: off, otherwise at least 3600)"));
+            }
             if let Some(a) = over.get("agent_budget") {
                 let a = a.as_table().ok_or_else(|| bad("agent_budget"))?;
                 for key in a.keys() {

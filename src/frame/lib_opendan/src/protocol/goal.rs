@@ -283,6 +283,9 @@ impl GoalBudget {
 
 /// Shortest check timetable (`every_secs`) anyone may set.
 pub const CHECK_MIN_EVERY_SECS: u64 = 60;
+/// Shortest hard guarantee (it overrides the budget: a short one would
+/// infer on and on whatever the budget says).
+pub const GUARANTEE_MIN_SECS: u64 = 3_600;
 
 /// When a run opportunity becomes an inference (architecture §12.1.1): the
 /// hard guarantee, the hard interval, the period budget (`GoalBudget`) and
@@ -314,7 +317,8 @@ pub struct GoalScheduleSpec {
     pub min_interval_secs: Option<u64>,
     /// Hard guarantee: past this long without an inference one runs
     /// whatever the budget and the check say (`None`: `[session.goal]
-    /// guarantee_secs`; `0`: off).
+    /// guarantee_secs`; `0`: off; otherwise at least
+    /// [`GUARANTEE_MIN_SECS`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guarantee_secs: Option<u64>,
     /// The first Activation starts when the Goal Session is created.

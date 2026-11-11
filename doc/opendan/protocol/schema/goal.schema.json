@@ -249,7 +249,7 @@
           ]
         },
         "guarantee_secs": {
-          "description": "Hard guarantee: past this long without an inference one runs whatever the budget and the check say (`None`: `[session.goal] guarantee_secs`; `0`: off).",
+          "description": "Hard guarantee: past this long without an inference one runs whatever the budget and the check say (`None`: `[session.goal] guarantee_secs`; `0`: off; otherwise at least [`GUARANTEE_MIN_SECS`]).",
           "format": "uint64",
           "minimum": 0.0,
           "type": [

@@ -39,6 +39,8 @@ export const GOAL_DEFAULTS = {
 }
 
 export const CHECK_MIN_EVERY_SECS = 60
+/** Shortest hard guarantee (it overrides the budget); 0 turns it off. */
+export const GUARANTEE_MIN_SECS = 3600
 
 /** The active goals past which the list says goals are scarce. */
 export const MANY_GOALS = 16

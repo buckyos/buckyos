@@ -3,6 +3,7 @@ import clsx from 'clsx'
 import { useSWRConfig } from 'swr'
 import {
   CHECK_MIN_EVERY_SECS,
+  GUARANTEE_MIN_SECS,
   DECISION_LABEL,
   DECISION_TONE,
   GOAL_DEFAULTS,
@@ -671,7 +672,7 @@ function GatesForm({ goal, onClose, onSaved, onConflict }: {
         activation: { ...b.activation, max_total_tokens: parse('actTokens', 'formActTokens', 1), max_runs: parse('runs', 'formRuns', 1), max_wall_secs: parse('wall', 'formWall', 1) },
         period: { ...b.period, max_total_tokens: parse('periodTokens', 'formPeriodTokens', 1), window_secs: parse('window', 'formWindow', 1), max_works: parse('works', 'formWorks', 0) },
       }
-      schedule = { ...s, min_interval_secs: parse('interval', 'formInterval', 0), guarantee_secs: guaranteeOff ? 0 : parse('guarantee', 'formGuarantee', 1) }
+      schedule = { ...s, min_interval_secs: parse('interval', 'formInterval', 0), guarantee_secs: guaranteeOff ? 0 : parse('guarantee', 'formGuarantee', GUARANTEE_MIN_SECS) }
       if (mode === 'default') {
         schedule = { ...schedule, every_secs: undefined, cron: undefined, timezone: undefined }
       } else if (mode === 'every') {

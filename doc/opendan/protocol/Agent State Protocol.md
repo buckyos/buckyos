@@ -260,7 +260,7 @@ Goal Session 派生的 Work 的 `origin.goal = {goal_id, revision, epoch, activa
 
 1. Goal 不是 `active`：不推理。休眠压过硬保障。
 2. 距上次推理（上一次 Activation 关闭）不到硬间隔 `schedule.min_interval_secs`（缺省 `[session.goal] min_interval_secs`，内建 900）：不推理。
-3. 距上次推理（没有过则从 epoch 开始）超过硬保障 `schedule.guarantee_secs`（缺省 `[session.goal] guarantee_secs`，内建 259200；0 关闭）：推理，跳过 4、5。宿主每个 quiet 段只投一次 `guarantee` 运行机会，原因里写最近一次检查的结果、连续出错次数和最后一次错误。
+3. 距上次推理（没有过则从 epoch 开始）超过硬保障 `schedule.guarantee_secs`（缺省 `[session.goal] guarantee_secs`，内建 259200；0 关闭，否则不小于 3600——它压过预算，太短就成了不受预算约束的定时推理；创建、修订和 `agent.toml` 都拒绝更小的值，已存的更小值按 3600 算）：推理，跳过 4、5。宿主每个 quiet 段只投一次 `guarantee` 运行机会，原因里写最近一次检查的结果、连续出错次数和最后一次错误。
 4. 周期预算用完，或 Agent 总量用完：不推理，到周期重置。此时宿主让这个 Goal 正在运行的 Work 在下一个推理边界暂停（暂停来源 `budget`），周期重置后只恢复因此暂停的。
 5. 检查时间表到点时跑检查脚本：`true` 推理（`reason` 成为这次 Activation 的原因），`false` 或出错不推理。没有脚本的 Goal 每个槽都通过。
 

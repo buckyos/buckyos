@@ -150,6 +150,11 @@ fn check_schedule(s: &GoalScheduleSpec) -> Result<()> {
     if s.every_secs == Some(0) {
         return Err(OpenDanError::InvalidArgument("schedule.every_secs must be > 0".into()));
     }
+    if s.guarantee_secs.is_some_and(|g| g > 0 && g < GUARANTEE_MIN_SECS) {
+        return Err(OpenDanError::InvalidArgument(format!(
+            "schedule.guarantee_secs is 0 (off) or at least {GUARANTEE_MIN_SECS}: the hard guarantee overrides the budget"
+        )));
+    }
     crate::goal_time::validate_timetable(s.every_secs, s.cron.as_deref(), s.timezone.as_deref())
         .map_err(|e| OpenDanError::InvalidArgument(format!("schedule: {e}")))
 }

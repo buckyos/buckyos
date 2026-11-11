@@ -90,7 +90,8 @@ runtime_view = "all"
 # - min_interval_secs: hard interval, no inference closer than this to the
 #   last one (scheduled checks and events alike);
 # - guarantee_secs: hard guarantee, one inference after this long without
-#   one, whatever the budget and the check say (0: off);
+#   one, whatever the budget and the check say (0: off, otherwise at least
+#   3600);
 # - check_every_secs: the check timetable of a goal with a check script and
 #   no timetable of its own (at least 60);
 # - budget.period: tokens a goal may use in a period, its work included;
