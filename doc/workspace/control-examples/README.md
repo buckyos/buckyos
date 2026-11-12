@@ -1,12 +1,12 @@
 # control-examples：按“拼装”原则做的四个控件
 
-> [控件机制完善 TODO](<../../../notepads/aiworkspace-control-mechanism-todo.md>) §0.4 的配套例子，2026-11-12 建立。前三个只用 `composition.json` 拼装（label、media / asset、shape 加投影），第四个走 HTML 路线。`aiws-manifest.json` 是 `manifest_version: 4`，`digest` 是按 websdk `aiwsContentDigest` 算的真值；websdk `tests/aiws_ext.test.ts` 用 `verifyBundle` 整包核对，服务端 `server/tests/ext.rs` 的 `control_examples_and_manifest_4` 用真实 `ext.build` 逐个构建。改了任何文件都要重算对应控件的 `digest`。权威契约仍是 aiworkspace README 与 `src/frame/aiworkspace/schemas/`。
+> [控件机制完善 TODO](<../../../notepads/aiworkspace-control-mechanism-todo.md>) §0.4 的配套例子，2026-11-12 建立。前三个只用 `composition.json` 拼装（label、media / asset、shape 加投影），第四个走 HTML 路线。`aiws-manifest.json` 是 `manifest_version: 5`，`digest` 是按 websdk `aiwsContentDigest` 算的真值；websdk `tests/aiws_ext.test.ts` 用 `verifyBundle` 整包核对，服务端 `server/tests/ext.rs` 的 `control_examples_and_manifests` 用真实 `ext.build` 逐个构建。改了任何文件都要重算对应控件的 `digest`。权威契约仍是 aiworkspace README 与 `src/frame/aiworkspace/schemas/`。
 
 | 控件 | 路线 | 用到的机制 | 验收（TODO §5） |
 | --- | --- | --- | --- |
 | `tv-screen` 电视屏 | composite | `media`：slot 里的视频按 `config.broadcast` 锚点播放（G17），服务端时钟（G16），空 slot 时从 Zone 选视频 | §5.3 |
 | `time-limited` 限时可见 | composite | slot 的 `visible: { from: "first_open", for_ms }`（G19），观众投影显示剩余时间（`viewer` 数据源，`countdown` 格式） | §5.4 |
-| `photo-vote` 照片投票 | composite | 目录成员投影 + 本人选择标记（G2、G20），计数投影做封面（G21），事件默认处理 `events.pick.on`，声明动作“准备选票” | §5.5 |
+| `photo-vote` 照片投票 | composite | 目录成员投影 + 本人选择标记（G2、G20），计数投影做封面（G21），事件默认处理 `events.pick.on`，声明动作“准备选票”，插入时的 `on_bind` / `on_init_control`（manifest 5） | §5.5 |
 | `listen-together` 一起听 | HTML（host API 4） | 声明动作（H2）、`onConfig`（H1）、`serverNow`（H5）、`userState`（H4）、`mediaUrl` 流式地址（H6） | §5.6 |
 
 ## 怎么用
@@ -29,8 +29,7 @@ buckyos aiws build doc/workspace/control-examples/controls/tv-screen --workspace
 
 ### 照片投票
 
-1. 先建一张投票表：一个 `text` 字段设 `submitter: true`（服务端填写提交者），一个 `multi_select` 字段 `picks`，`max_items: 3`。
-2. 插入控件，绑定 `photos`（照片目录）和 `votes`（这张表），然后在工具栏点“准备选票”：给每张照片加一个选项（选项名就是文件名）。以后加了照片再点一次。
+插入时控件的 `on_bind`（manifest 5，见 [控件 on_bind TODO](<../../../notepads/aiworkspace-control-on-bind-todo.md>)）先让你选照片目录（只有一个目录时直接用），再为这次投票新建一张投票表：一个 `text` 字段 `voter` 设 `submitter: true`（服务端填写提交者），一个 `multi_select` 字段 `picks`，`max_items: 3`。插入后自动跑一次“准备选票”，给每张照片加一个选项（选项名就是文件名）；以后加了照片，在工具栏再点一次“准备选票”。
 3. 运行模式下点照片就是选 / 取消；每人一条记录，只能改自己的，最多 `picks` 张。封面区是得票前 3 张，同票按目录顺序，由读取方计算，不写回。
 
 ### 一起听

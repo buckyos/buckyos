@@ -791,8 +791,9 @@ fn entity_purge(p: &mut Planner, op: &Value) -> OpResult {
 
 /// Own data (内核架构改进 D05): a Block created in this Commit together with the data it shows, under the
 /// canvas content folder, owns that data — unless the Block declares `data_ownership: "shared"`. The
-/// `owns` edge is added beside `bind`; data of the data tree (inserted in data mode) is never owned. A data control
-/// (to-do, calendar) owns the tables of its `bindings` created with it the same way.
+/// `owns` edge is added beside `bind`; data of the data tree (inserted in data mode) is never owned. A control owns
+/// the data of its `bindings` created with it the same way: a data control (to-do, calendar), a composite, an extension
+/// Cell (控件 on_bind TODO §2.1: what its on_bind creates).
 fn add_owns_edges(p: &mut Planner) -> WsResult<()> {
     let seq = p.seq();
     let created: Vec<EntityRow> = p
@@ -800,16 +801,17 @@ fn add_owns_edges(p: &mut Planner) -> WsResult<()> {
         .entities
         .values()
         .filter(|e| e.created_seq == seq && e.alive())
-        .filter(|e| e.type_id == TYPE_CELL || (e.type_id == TYPE_CONTAINER && crate::types::is_data_control(container_kind(e))))
+        .filter(|e| e.type_id == TYPE_CELL || (e.type_id == TYPE_CONTAINER && (crate::types::is_data_control(container_kind(e)) || container_kind(e) == crate::types::COMPOSITE)))
         .cloned()
         .collect();
     for block in created {
         if block.payload.get("data_ownership").and_then(Value::as_str) == Some("shared") {
             continue;
         }
+        let bound = block.payload.get("bindings").and_then(Value::as_object).into_iter().flat_map(|b| b.values()).flat_map(crate::types::binding_targets);
         let targets: Vec<&Value> = match block.type_id.as_str() {
-            TYPE_CELL => block.payload.get("source_ref").into_iter().collect(),
-            _ => block.payload.get("bindings").and_then(Value::as_object).into_iter().flat_map(|b| b.values()).collect(),
+            TYPE_CELL => block.payload.get("source_ref").into_iter().chain(bound).collect(),
+            _ => bound.collect(),
         };
         for r in targets {
             let Some(target) = Some(r).filter(|r| crate::value::reference_is_local(r)).and_then(crate::value::reference_entity_id).map(str::to_string) else { continue };
@@ -1155,7 +1157,10 @@ fn tree_clone(p: &mut Planner, op: &Value) -> OpResult {
         }
         if let Some(b) = payload.get_mut("bindings").and_then(Value::as_object_mut) {
             for v in b.values_mut() {
-                remap(v, &ids);
+                match v {
+                    Value::Array(list) => list.iter_mut().for_each(|item| remap(item, &ids)),
+                    _ => remap(v, &ids),
+                }
             }
         }
         let mut create = json!({ "op": "entity.create", "entity_id": ids[&r.entity_id], "type_id": r.type_id, "schema_version": r.schema_version });

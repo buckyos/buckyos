@@ -57,10 +57,9 @@ read and change it.
 
 const CALENDAR_AGENT = `# calendar — the calendar control
 
-A \`buckyos.container\` with \`kind: "calendar"\`. It shows calendar tables (\`schema_id: "buckyos.calendar@1"\`) bound
-as \`bindings.events\` (more calendars under any other binding name), and the due dates of to-do tables
-(\`buckyos.todo@1\`, read only) bound as \`bindings.todo\` and \`bindings.todo_<name>\` — any number of each.
-**Events are the table's records**: write the table, never Blocks.
+A \`buckyos.container\` with \`kind: "calendar"\`. It shows the calendar tables (\`schema_id: "buckyos.calendar@1"\`) listed
+in \`bindings.events\` and the due dates of the to-do tables (\`buckyos.todo@1\`, read only) listed in \`bindings.todo\`:
+both bindings are lists, \`[{ "entity_id": … }, …]\`. **Events are the table's records**: write the table, never Blocks.
 
 ## The table (fields by id)
 
@@ -80,15 +79,15 @@ override record; "skip today" adds the original to \`ext.exdate\`.
 
 ## The control
 
-\`payload: { kind: "calendar", layout: { mode: "data" }, title?, bindings: { events: { entity_id } }, config? }\` with a
-numeric placement. \`config\`: \`view\` (\`day\` | \`week\` | \`month\` | \`agenda\`), \`week_start\` (0 Monday … 6 Sunday),
-\`day_start\` (first hour shown), \`colors\` (\`{ <binding>: "#rrggbb" }\`).
+\`payload: { kind: "calendar", layout: { mode: "data" }, title?, bindings: { events: [{ entity_id }, …], todo?: [{ entity_id }, …] }, config? }\`
+with a numeric placement. \`config\`: \`view\` (\`day\` | \`week\` | \`month\` | \`agenda\`), \`week_start\` (0 Monday … 6 Sunday),
+\`day_start\` (first hour shown), \`colors\` (\`{ <table entity id>: "#rrggbb" }\`; otherwise each table gets the next colour).
 
 ## Create one with doc.commit
 
 \`\`\`json
 { "op": "entity.create", "entity_id": "calctl1", "type_id": "buckyos.container", "parent_id": "<surface>", "order_key": "c",
-  "placement": { "x": 40, "y": 40, "w": 880, "h": 640 }, "payload": { "kind": "calendar", "layout": { "mode": "data" }, "bindings": { "events": { "entity_id": "<calendar table>" } }, "config": { "view": "week" } } }
+  "placement": { "x": 40, "y": 40, "w": 880, "h": 640 }, "payload": { "kind": "calendar", "layout": { "mode": "data" }, "bindings": { "events": [{ "entity_id": "<calendar table>" }] }, "config": { "view": "week" } } }
 { "op": "table.insert_records", "source_id": "<calendar table>", "records": [
   { "record_id": "e1", "values": { "title": "Stand-up", "start": "2026-11-16T01:00:00Z", "end": "2026-11-16T01:15:00Z", "ext": { "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "tz": "Asia/Shanghai" } } },
   { "record_id": "e2", "values": { "title": "Trip", "all_day": true, "start_date": "2026-11-20", "end_date": "2026-11-22" } }] }

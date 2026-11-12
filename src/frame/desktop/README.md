@@ -17,6 +17,20 @@ pnpm run build
 
 真实 Zone 开发代理由 [vite.config.ts](vite.config.ts) 的 `VITE_ZONE_PROXY`、`VITE_ZONE_HOST` 和 `VITE_ZONE_PROXY_IP` 控制，需关闭 Mock runtime。AI Workspace 的独立后台使用自己的 `AIWS_BACKEND` 与显式 dev override，详见 [AI Workspace README](src/app/aiworkspace/README.md)。HomeStation 的独立后台使用 `HS_BACKEND`。
 
+## 开源软件清单
+
+设置 → 通用 → 开源软件展示实际解析的依赖版本、许可证标识、项目来源及随包提供的许可原文。清单位于 `public/open-source/`，由 [`src/tools/generate_open_source.py`](../../tools/generate_open_source.py) 生成；不要手改生成文件。相同软件的不同版本分别列出。
+
+`pnpm run build` 在更新 SDK 依赖后运行 `pnpm run licenses:generate`，刷新 Desktop 生产依赖（含传递依赖）与内置素材，其他模块保留仓库内快照并在“清单范围”中标注。完整系统构建在 Desktop 被本轮重建后再次汇总全部模块，并同步到 `dist/` 和 `rootfs/bin/control-panel/web/`。`--skip-web` 或只选择 Rust 模块不会刷新清单；这些开发构建保留上一次 Desktop 构建的清单。开源清单不进入 Desktop service worker 的预缓存，以便构建结束后的汇总可即时生效。
+
+在本目录手动刷新完整清单：
+
+```bash
+uv run python ../../tools/generate_open_source.py
+```
+
+完整刷新需要 Rust/Cargo 及已准备的各 Web 模块、SDK 分发目录和扩展工具 payload。可加 `--offline` 使用 Cargo 本地缓存；`--fetch-metadata` 允许从 npm 官方 registry 或 Deno 上游补齐对应确切版本的许可证资料。未准备的模块会标为暂无资料，未声明许可证的条目不会猜测许可证。范围包括 Rust 服务依赖、多套 Web 界面和内置应用、SDK/CLI SBOM、可用扩展工具 payload 与素材，以及同级 `cyfs-gateway` 仓库的锁定依赖快照。网关独立构建，其条目始终标为快照，不代表已安装网关的版本核验；宿主操作系统、容器基础镜像及另行安装或运行时下载的组件未完整纳入。“清单范围”会显示收录状态，完整生成失败会使系统构建失败。
+
 ## E2E 入口
 
 `pnpm run test:e2e` 仅使用默认配置、运行 `tests/e2e`。不同后台与环境需要明确选择配置：

@@ -2,6 +2,7 @@
  * Only what the Desktop app reads is typed; unknown keys are preserved as `unknown`. */
 
 import type { StoredPlacement } from '@controls/placement'
+import type { OnBindStep, OnInitStep } from 'buckyos'
 import type { Composition } from '@controls/composite'
 
 export const PROTOCOL_VERSION = '1.1'
@@ -571,6 +572,9 @@ export interface BlockDefPayload {
   composition?: Composition
   /** P2 (Q26): the events the control raises (a composite's re-raise a child's, `from`). */
   events?: Record<string, ControlEvent>
+  /** (manifest 5) A composite's declared steps when placed (控件 on_bind TODO §2.6). */
+  on_bind?: OnBindStep[]
+  on_init_control?: OnInitStep[]
 }
 
 /** An event a control declares (`component.json` `events`, a composite's `composition.json` `events`). */
@@ -592,7 +596,7 @@ export type EventHandler =
 export type EventBindings = Record<string, EventHandler | EventHandler[]>
 
 /** A named data input a control declares (its instances bind it in the Cell's `bindings`). */
-export interface ControlBinding { accepts?: string[]; required?: boolean; title?: string; description?: string }
+export interface ControlBinding { accepts?: string[]; required?: boolean; many?: boolean; schema_id?: string; title?: string; description?: string }
 
 /** One problem of a control's source (`ext.build`'s `BUILD_FAILED.data.diagnostics`). */
 export interface BuildDiagnostic { file: string; line?: number; col?: number; severity: 'error' | 'warning'; message: string; code?: string; instances?: { entity_id: string; title?: string | null }[]; dependents?: { ident: string; def_entity_id: string }[] }

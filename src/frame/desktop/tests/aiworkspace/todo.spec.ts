@@ -241,7 +241,11 @@ test('TD10 inserted from the catalog: no to-do table → one is created; one →
   await insertFromCatalog('calendar')
   await expect.poll(async () => (await tables('buckyos.calendar@1')).length).toBe(1)
   const [cal] = await controls('calendar')
-  expect(cal.bindings).toEqual({ events: (await tables('buckyos.calendar@1'))[0] })
+  // … and shows the due dates of every to-do table
+  const todoIds = await tables('buckyos.todo@1')
+  expect(Object.keys(cal.bindings).sort()).toEqual(['events', 'todo', 'todo_2', 'todo_3'])
+  expect(cal.bindings.events).toBe((await tables('buckyos.calendar@1'))[0])
+  expect([cal.bindings.todo, cal.bindings.todo_2, cal.bindings.todo_3].sort()).toEqual([...todoIds].sort())
   await expect(page.getByTestId(`aiws-dc-bind-${cal.entity_id}`)).toHaveCount(0)
   await expect(page.getByTestId(`aiws-cal-${cal.entity_id}`)).toBeVisible()
 

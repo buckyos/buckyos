@@ -88,7 +88,8 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
   const view = ctl.view
   const bindings = useMemo(() => container?.bindings ?? {}, [container?.bindings])
   const calendars = useMemo(() => Object.entries(bindings).filter(([name]) => !isTodoBinding(name)).map(([binding, sourceId], i) => ({ binding, sourceId, color: colorFor(binding, i, container?.config) })), [bindings, container?.config])
-  const todos = useMemo(() => Object.entries(bindings).filter(([name]) => isTodoBinding(name)).map(([binding, sourceId]) => ({ binding, sourceId })), [bindings])
+  // each to-do list its own colour, after the calendars' (`config.colors` names one per binding)
+  const todos = useMemo(() => Object.entries(bindings).filter(([name]) => isTodoBinding(name)).map(([binding, sourceId], i) => ({ binding, sourceId, color: colorFor(binding, calendars.length + i, container?.config) })), [bindings, calendars.length, container?.config])
   const sourceIds = useMemo(() => [...calendars.map((c) => c.sourceId), ...todos.map((x) => x.sourceId)], [calendars, todos])
   const { sets, snapshots, version } = useRecordSets(sourceIds)
   const today = localDayOf(now)
@@ -126,7 +127,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
         if (day < range.first || day > range.last) continue
         out.push({
           occ: { id: `${list.binding}:${item.record_id}`, row: row as never, title: item.title, allDay: true, startDate: item.due, endDate: item.due, status: null, ext: {}, recurring: false, override: false, agentWritten: false },
-          calendar: list.binding, color: '#64748b', startDay: day, endDay: day, allDay: true, startMin: 0, endMin: 1440, todo: { recordId: item.record_id, done: item.done, sourceId: list.sourceId },
+          calendar: list.binding, color: list.color, startDay: day, endDay: day, allDay: true, startMin: 0, endMin: 1440, todo: { recordId: item.record_id, done: item.done, sourceId: list.sourceId },
         })
       }
     }
@@ -758,7 +759,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
             { id: 'week-mon', label: t('aiworkspace.calendar.weekStartsMonday'), checked: view.week_start === 0, icon: view.week_start === 0 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 0 }) },
             { id: 'week-sun', label: t('aiworkspace.calendar.weekStartsSunday'), checked: view.week_start === 6, icon: view.week_start === 6 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 6 }) },
             ...(todos.length ? [{ id: 'todo', label: t('aiworkspace.calendar.showTodo'), checked: view.show_todo, icon: view.show_todo ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ show_todo: !view.show_todo }) } as MenuItem] : []),
-            ...(calendars.length + todos.length > 1 ? [...calendars, ...todos.map((x) => ({ ...x, color: '#64748b' }))].map((c): MenuItem => {
+            ...(calendars.length + todos.length > 1 ? [...calendars, ...todos].map((c): MenuItem => {
               const hidden = (view.hidden ?? []).includes(c.binding)
               return { id: `cal-${c.binding}`, label: store.outline.get(c.sourceId)?.name ?? c.binding, checked: !hidden, icon: <span className="aiws-cal-dot" style={{ background: hidden ? 'transparent' : c.color, borderColor: c.color }} />,
                 run: () => ctl.set({ hidden: hidden ? (view.hidden ?? []).filter((x) => x !== c.binding) : [...(view.hidden ?? []), c.binding] }) }

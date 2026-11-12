@@ -162,6 +162,16 @@ const CELL_KEYS: &[&str] = &[
 ];
 /// Named data bindings of a Block (`aiws` v2): at most this many names.
 pub const MAX_BINDINGS: usize = 32;
+/// Data one `many` binding names at most (控件 on_bind TODO Q2: a list of references).
+pub const MAX_BINDING_ITEMS: usize = 32;
+
+/// The references one binding holds: itself, or the items of a `many` binding's list.
+pub fn binding_targets(v: &Value) -> Vec<&Value> {
+    match v {
+        Value::Array(list) => list.iter().collect(),
+        other => vec![other],
+    }
+}
 /// Largest canonical size of a Block's `config` / a definition's body.
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 pub const MAX_BLOCK_DEF_BYTES: usize = 512 * 1024;
@@ -224,8 +234,9 @@ fn view_source_type(view_type: &str) -> Option<&'static str> {
 
 const DATA_SOURCE_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_RECORD, TYPE_ASSET, TYPE_WISH, TYPE_ANNOTATION, TYPE_BLOCK_DEF, TYPE_DIR];
 
-/// Named data bindings of a Block or a composite (`{ <name>: { entity_id, selector? } }`, at most
-/// `MAX_BINDINGS`); the targets are judged (reference class) when `check`.
+/// Named data bindings of a Block or a composite (`{ <name>: { entity_id, selector? } | [{ entity_id, selector? }, …] }`,
+/// at most `MAX_BINDINGS`, a list — a binding declared `many` — of at most `MAX_BINDING_ITEMS`, an empty one dropped);
+/// the targets are judged (reference class) when `check`.
 fn normalize_bindings(p: &Planner, payload: &mut JsonMap, check: bool) -> WsResult<()> {
     match payload.get("bindings").cloned() {
         None => {}
@@ -237,11 +248,8 @@ fn normalize_bindings(p: &Planner, payload: &mut JsonMap, check: bool) -> WsResu
                 return Err(WsError::limit(format!("at most {MAX_BINDINGS} bindings")));
             }
             let mut norm = Map::new();
-            for (name, target) in b {
-                if !crate::wish::is_input_name(&name) || name == "source" {
-                    return Err(bad(format!("binding name {name:?} must be an identifier other than source")));
-                }
-                let t = target.as_object().ok_or_else(|| bad("binding must be { entity_id, selector? }"))?;
+            let one = |target: &Value| -> WsResult<Value> {
+                let t = target.as_object().ok_or_else(|| bad("binding must be { entity_id, selector? } or a list of them"))?;
                 if t.keys().any(|k| !matches!(k.as_str(), "entity_id" | "selector")) {
                     return Err(bad("binding: unknown key"));
                 }
@@ -257,7 +265,30 @@ fn normalize_bindings(p: &Planner, payload: &mut JsonMap, check: bool) -> WsResu
                 if let Some(sel) = t.get("selector") {
                     nt.insert("selector".into(), sel.clone());
                 }
-                norm.insert(name, Value::Object(nt));
+                Ok(Value::Object(nt))
+            };
+            for (name, target) in b {
+                if !crate::wish::is_input_name(&name) || name == "source" {
+                    return Err(bad(format!("binding name {name:?} must be an identifier other than source")));
+                }
+                match &target {
+                    Value::Array(list) => {
+                        if list.len() > MAX_BINDING_ITEMS {
+                            return Err(WsError::limit(format!("binding {name}: at most {MAX_BINDING_ITEMS} items")));
+                        }
+                        let items = list.iter().map(one).collect::<WsResult<Vec<_>>>()?;
+                        let mut seen = std::collections::BTreeSet::new();
+                        if items.iter().any(|i| !seen.insert(i["entity_id"].to_string())) {
+                            return Err(bad(format!("binding {name}: an item is listed twice")));
+                        }
+                        if !items.is_empty() {
+                            norm.insert(name, Value::Array(items));
+                        }
+                    }
+                    _ => {
+                        norm.insert(name, one(&target)?);
+                    }
+                }
             }
             payload.insert("bindings".into(), Value::Object(norm));
         }
@@ -1669,7 +1700,7 @@ fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
 /// readable). 2 (P1) adds `kind: composite`, `composition` and non-empty `deps`; 3 (P2 / P3) `events`, the declarative
 /// `button`, composite `events`, HTML host API 3 and Workspace templates; 4 (控件机制 TODO G13, G17, G19, H2) composite
 /// `projections`, `media`, slot `visible`, events raised by a projection's role, `actions`, HTML host API 4.
-pub const MANIFEST_VERSION: u64 = 4;
+pub const MANIFEST_VERSION: u64 = 5;
 /// Definitions one definition may depend on (`deps`).
 pub const MAX_DEF_DEPS: usize = 32;
 /// Slots of a composite (`composition.slots`).
@@ -1725,13 +1756,88 @@ pub fn check_def_bindings(v: &Value) -> WsResult<()> {
         for (k, x) in d {
             let ok = match k.as_str() {
                 "accepts" => x.as_array().is_some_and(|l| l.iter().all(|t| t.as_str().is_some_and(is_data_type))),
-                "required" => x.is_boolean(),
+                "required" | "many" => x.is_boolean(),
+                // only tables of this business schema (控件 on_bind TODO §2.3)
+                "schema_id" => x.as_str().is_some_and(|t| !t.is_empty() && t.len() <= 128),
                 "title" => x.as_str().is_some_and(|t| t.chars().count() <= 256),
                 "description" => x.as_str().is_some_and(|t| t.chars().count() <= 4000),
                 _ => return Err(bad(format!("binding {name}: unknown key {k}"))),
             };
             if !ok {
                 return Err(bad(format!("binding {name}: bad {k}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// (manifest 5, 控件 on_bind TODO §2.6) A composite's declared steps: `on_bind` — `{ binding, pick: one | many | all,
+/// title?, allow_new? }`, `{ binding, from_parent }`, `{ binding, create: { standard } | { table: { name, title_field_id?,
+/// fields } } | { dir: { name } }, when?: missing | always }` — and `on_init_control` — `{ require: "children" }`,
+/// `{ then: { action } }` — against the bindings and actions it declares, 16 steps each at most.
+pub fn check_bind_steps(on_bind: Option<&Value>, on_init: Option<&Value>, bindings: &Map<String, Value>, actions: &[String]) -> WsResult<()> {
+    if let Some(v) = on_bind {
+        let steps = v.as_array().filter(|l| l.len() <= 16).ok_or_else(|| bad("on_bind: at most 16 steps"))?;
+        for (i, step) in steps.iter().enumerate() {
+            let at = format!("on_bind[{i}]");
+            let o = step.as_object().ok_or_else(|| bad(format!("{at}: an object")))?;
+            let name = o.get("binding").and_then(Value::as_str).ok_or_else(|| bad(format!("{at}: names a binding")))?;
+            let decl = bindings.get(name).ok_or_else(|| bad(format!("{at}: {name} is not a declared binding")))?;
+            let many = decl.get("many") == Some(&json!(true));
+            let kinds: Vec<&str> = ["pick", "from_parent", "create"].into_iter().filter(|k| o.contains_key(*k)).collect();
+            if kinds.len() != 1 {
+                return Err(bad(format!("{at}: one of pick, from_parent, create")));
+            }
+            let allowed: &[&str] = match kinds[0] {
+                "pick" => &["binding", "pick", "title", "allow_new"],
+                "from_parent" => &["binding", "from_parent"],
+                _ => &["binding", "create", "when"],
+            };
+            if let Some(k) = o.keys().find(|k| !allowed.contains(&k.as_str())) {
+                return Err(bad(format!("{at}: unknown key {k}")));
+            }
+            match kinds[0] {
+                "pick" => match o["pick"].as_str() {
+                    Some("one") => {}
+                    Some("many" | "all") if many => {}
+                    Some("many" | "all") => return Err(bad(format!("{at}: {name} takes one"))),
+                    _ => return Err(bad(format!("{at}: pick is one, many or all"))),
+                },
+                "from_parent" if !o["from_parent"].as_str().is_some_and(is_binding_name) => return Err(bad(format!("{at}: from_parent names a binding of the parent"))),
+                "from_parent" => {}
+                _ => {
+                    let c = o["create"].as_object().filter(|c| c.len() == 1).ok_or_else(|| bad(format!("{at}: create one of standard, table, dir")))?;
+                    let ok = match c.iter().next().map(|(k, v)| (k.as_str(), v)) {
+                        Some(("standard", v)) => v.as_str().is_some_and(|s| crate::standard::is_standard_schema(s)),
+                        Some(("table", v)) => v.get("name").and_then(Value::as_str).is_some_and(|n| !n.is_empty() && n.chars().count() <= 256) && v.get("fields").is_some_and(Value::is_array)
+                            && v.as_object().is_some_and(|t| t.keys().all(|k| matches!(k.as_str(), "name" | "fields" | "title_field_id"))),
+                        Some(("dir", v)) => v.get("name").and_then(Value::as_str).is_some_and(|n| !n.is_empty() && n.chars().count() <= 256) && v.as_object().is_some_and(|t| t.len() == 1),
+                        _ => false,
+                    };
+                    if !ok {
+                        return Err(bad(format!("{at}: create one of {{ standard: <a standard schema> }}, {{ table: {{ name, fields, title_field_id? }} }}, {{ dir: {{ name }} }}")));
+                    }
+                    if o.get("when").is_some_and(|w| !matches!(w.as_str(), Some("missing" | "always"))) {
+                        return Err(bad(format!("{at}: when is missing or always")));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(v) = on_init {
+        let steps = v.as_array().filter(|l| l.len() <= 16).ok_or_else(|| bad("on_init_control: at most 16 steps"))?;
+        for (i, step) in steps.iter().enumerate() {
+            let at = format!("on_init_control[{i}]");
+            if step == &json!({ "require": "children" }) {
+                continue;
+            }
+            match step.get("then").and_then(|t| t.get("action")).and_then(Value::as_str) {
+                Some(a) if step.as_object().is_some_and(|o| o.len() == 1) && step["then"].as_object().is_some_and(|t| t.len() == 1) => {
+                    if !actions.iter().any(|x| x == a) {
+                        return Err(bad(format!("{at}: {a} is not a declared action")));
+                    }
+                }
+                _ => return Err(bad(format!("{at}: {{ require: \"children\" }} or {{ then: {{ action }} }}"))),
             }
         }
     }
@@ -1763,6 +1869,7 @@ fn is_sha256_digest(s: &str) -> bool {
 pub const BLOCK_DEF_KEYS: &[&str] = &[
     "def_id", "version", "kind", "title", "accepts", "allow_no_source", "default_size", "declarative", "html", "config_schema", "actions", "inspector", "description",
     "ident", "manifest_version", "source_dir", "bindings", "catalog", "agent", "provenance", "deps", "composition", "events",
+    "on_bind", "on_init_control",
 ];
 
 /// A slot name of a composite (`composition.slots`): `[a-z][a-z0-9_]{0,31}`.
@@ -1928,6 +2035,15 @@ fn block_def_schema(e: &mut EntityRow) -> WsResult<()> {
     }
     if kind != COMPOSITE && e.payload.contains_key("composition") {
         return Err(bad("composition is only valid on a composite definition"));
+    }
+    if e.payload.contains_key("on_bind") || e.payload.contains_key("on_init_control") {
+        if kind != COMPOSITE {
+            return Err(bad("on_bind / on_init_control are declared steps of a composite"));
+        }
+        let empty = Map::new();
+        let bindings = e.payload.get("bindings").and_then(Value::as_object).unwrap_or(&empty);
+        let actions: Vec<String> = e.payload.get("actions").and_then(Value::as_array).into_iter().flatten().filter_map(|a| a.get("id").and_then(Value::as_str)).map(str::to_string).collect();
+        check_bind_steps(e.payload.get("on_bind"), e.payload.get("on_init_control"), bindings, &actions)?;
     }
     opt_text(&e.payload, "title", 256)?;
     opt_text(&e.payload, "description", 4000)?;
@@ -2645,9 +2761,11 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
             if let Some(d) = e.payload.get("def_ref") {
                 out.insert(ref_edge(&e.entity_id, "", "def", d));
             }
-            for (name, target) in e.payload.get("bindings").and_then(Value::as_object).into_iter().flatten() {
+            for (name, binding) in e.payload.get("bindings").and_then(Value::as_object).into_iter().flatten() {
                 let s = selector_string(&json!({ "kind": "binding", "name": name }));
-                out.insert(ref_edge(&e.entity_id, &s, "bind", target));
+                for target in binding_targets(binding) {
+                    out.insert(ref_edge(&e.entity_id, &s, "bind", target));
+                }
             }
             // endpoint bindings: listed in relations, never blocking deletion (the line freezes instead, §6)
             if is_connector(&e.type_id, &e.payload) {
@@ -2721,9 +2839,11 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
             if let Some(d) = e.payload.get("def_ref") {
                 out.insert(ref_edge(&e.entity_id, "", "def", d));
             }
-            for (name, target) in e.payload.get("bindings").and_then(Value::as_object).into_iter().flatten() {
+            for (name, binding) in e.payload.get("bindings").and_then(Value::as_object).into_iter().flatten() {
                 let s = selector_string(&json!({ "kind": "binding", "name": name }));
-                out.insert(ref_edge(&e.entity_id, &s, "bind", target));
+                for target in binding_targets(binding) {
+                    out.insert(ref_edge(&e.entity_id, &s, "bind", target));
+                }
             }
         }
         _ => {}

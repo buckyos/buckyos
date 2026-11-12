@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "pnpm update --no-save buckyos && tsc -b && vite build",
+    "build": "pnpm update --no-save buckyos && pnpm run licenses:generate && tsc -b && vite build",
+    "licenses:generate": "uv run python ../../tools/generate_open_source.py --scope desktop --scope assets",
     "check": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",

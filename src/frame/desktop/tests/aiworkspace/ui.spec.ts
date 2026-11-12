@@ -6,6 +6,8 @@
 import type { Page } from '@playwright/test'
 import { asUser, closeWorkspace, expect, fitAll, hooks, mainMenu, openCanvas, openWorkspacePage, test, workspaceOrigin, workspacePage, type Api } from './fixtures'
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- RPC results
+type Json = any
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
 
@@ -737,4 +739,81 @@ test('P0 stacking (connector plan §9.3): painting and hit testing follow the Bl
   await page.getByTestId('aiws-menu-back').click()
   await expect.poll(() => paintedAt(ab)).toBe('shp-b')
   expect(await selectedBy(ab)).toBe('shp-b')
+})
+
+test('UI-P17 the object toolbar in two columns: fifteen buttons without scrolling; select / pan, the table group with the standard tables, the shape group with the library open beside it', async ({ page, api }) => {
+  const ws = await blankCanvas(api, `p17 ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const bar = page.getByTestId('aiws-object-toolbar')
+  // the fifteen buttons, top to bottom (the collapse handle is not one of them)
+  const ids = await bar.locator(':scope > .aiws-tool-group button.aiws-tool').evaluateAll((els) => els.map((el) => el.getAttribute('data-testid')))
+  expect(ids).toEqual(['aiws-tool-pointer', 'aiws-tool-pen', 'aiws-tool-insert-shape-text', 'aiws-tool-insert-richtext', 'aiws-tool-insert-asset', 'aiws-tool-table', 'aiws-tool-insert-mindmap',
+    'aiws-tool-insert-shape', 'aiws-tool-insert-connector', 'aiws-tool-insert-frame', 'aiws-tool-insert-wish', 'aiws-tool-insert-note', 'aiws-tool-catalog', 'aiws-undo', 'aiws-redo'])
+  // no scroll bar at this window height, nor at a lower one
+  for (const height of [1000, 760]) {
+    await page.setViewportSize({ width: 1600, height })
+    await expect.poll(() => bar.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(0)
+  }
+  const canvas = page.getByTestId('aiws-canvas')
+
+  // select / pan: the button opens its column; it shows and goes back to the last one used
+  await page.getByTestId('aiws-tool-pointer').click()
+  const pointerColumn = page.getByTestId('aiws-tool-pointer-column')
+  await expect(pointerColumn).toBeVisible()
+  const barBox = (await bar.boundingBox())!
+  expect((await pointerColumn.boundingBox())!.x).toBeGreaterThan(barBox.x + barBox.width)
+  await pointerColumn.getByTestId('aiws-tool-hand').click()
+  await expect(pointerColumn).toHaveCount(0)
+  await expect(canvas).toHaveAttribute('data-tool', 'hand')
+  await page.getByTestId('aiws-tool-pen').click()
+  await expect(canvas).toHaveAttribute('data-tool', 'pen')
+  await page.getByTestId('aiws-tool-pointer').click()
+  await expect(canvas).toHaveAttribute('data-tool', 'hand')
+  await expect(pointerColumn.getByTestId('aiws-tool-hand')).toHaveAttribute('aria-pressed', 'true')
+  await pointerColumn.getByTestId('aiws-tool-select').click()
+  await expect(canvas).toHaveAttribute('data-tool', 'select')
+
+  // the table group: views, then the standard tables (the schemas the system knows)
+  await page.getByTestId('aiws-tool-table').click()
+  const tableColumn = page.getByTestId('aiws-tool-table-column')
+  expect(await tableColumn.locator('button').evaluateAll((els) => els.map((el) => el.getAttribute('data-testid')))).toEqual(
+    ['aiws-tool-insert-table', 'aiws-tool-insert-calendar', 'aiws-tool-insert-todo', 'aiws-tool-insert-table-todo', 'aiws-tool-insert-table-calendar'])
+  await page.screenshot({ path: 'test-results/aiworkspace/p17-table-column.png' })
+  // a to-do table: a new standard table shown as a table view; the view keeps no `standard`
+  await tableColumn.getByTestId('aiws-tool-insert-table-todo').click()
+  await page.mouse.click(700, 300)
+  const tables = async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.type_id === 'buckyos.table-source' && e.schema_id === 'buckyos.todo@1')
+  await expect.poll(async () => (await tables()).length).toBe(1)
+  const [todo] = await tables()
+  await expect.poll(async () => (await cells(api, ws.workspace_id, 'sf-p')).length).toBe(1)
+  const [view] = await cells(api, ws.workspace_id, 'sf-p')
+  expect(view.view_type).toBe('table')
+  expect(view.source_id).toBe(todo.entity_id)
+  expect((await api.read(ALICE, ws.workspace_id, view.entity_id)).content.payload.config?.standard).toBeUndefined()
+  // again: the workspace has one, so it asks — that one in a new view, or a new table
+  await page.keyboard.press('Escape')
+  await page.getByTestId('aiws-tool-table').click()
+  await tableColumn.getByTestId('aiws-tool-insert-table-todo').click()
+  await page.mouse.click(700, 700)
+  const chooser = page.getByTestId('aiws-source-chooser')
+  await expect(chooser.locator('[data-testid^="aiws-source-"]')).toHaveCount(2)
+  await chooser.getByTestId(`aiws-source-${todo.entity_id}`).click()
+  await expect.poll(async () => (await cells(api, ws.workspace_id, 'sf-p')).map((c: Json) => c.source_id)).toEqual([todo.entity_id, todo.entity_id])
+  expect(await tables()).toHaveLength(1)
+
+  // the shape group: the basic shapes first, the libraries in the same column; kept inside the canvas area
+  await page.keyboard.press('Escape')
+  await page.getByTestId('aiws-tool-insert-shape').click()
+  const shapeColumn = page.getByTestId('aiws-tool-shape-picker')
+  await expect(shapeColumn.getByTestId('aiws-shape-kind-diamond')).toBeVisible()
+  await expect(shapeColumn.getByTestId('aiws-library-select')).toHaveValue('')
+  await shapeColumn.getByTestId('aiws-library-select').selectOption('flowchart')
+  await expect(shapeColumn.getByTestId('aiws-library-shape-mxgraph.flowchart.decision')).toBeVisible()
+  const area = (await canvas.boundingBox())!
+  const column = (await shapeColumn.boundingBox())!
+  expect(column.y + column.height).toBeLessThanOrEqual(area.y + area.height)
+  await page.screenshot({ path: 'test-results/aiworkspace/p17-shape-column.png' })
+  await shapeColumn.getByTestId('aiws-library-shape-mxgraph.flowchart.decision').click()
+  await page.mouse.click(1100, 300)
+  await expect.poll(async () => (await cells(api, ws.workspace_id, 'sf-p')).filter((c: Json) => c.view_type === 'shape').length).toBe(1)
 })

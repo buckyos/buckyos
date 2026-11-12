@@ -254,6 +254,150 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
             module._prepare_ext_tools({})
             run.assert_called_once()
 
+    def test_rebuilt_desktop_refreshes_inventory_once_after_devkit(self) -> None:
+        module = _load_build_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            script = Path(temporary) / "src" / "buckyos-build.py"
+            index = script.parent / "frame" / "desktop" / "dist" / "index.html"
+            index.parent.mkdir(parents=True)
+            index.write_text("old", encoding="utf-8")
+            order = []
+
+            def build(command, **kwargs):
+                order.append("devkit")
+                index.write_text("fresh desktop", encoding="utf-8")
+                return module.subprocess.CompletedProcess(command, 0)
+
+            def refresh(env):
+                order.append("inventory")
+                self.assertTrue(index.is_file())
+                return 0
+
+            with (
+                patch.object(module, "__file__", str(script)),
+                patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+                patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
+                patch.object(module, "_prepare_agent_tools", return_value=0),
+                patch.object(module, "_prepare_ext_tools", return_value=0),
+                patch.object(module.subprocess, "run", side_effect=build),
+                patch.object(module, "_refresh_open_source_inventory", side_effect=refresh) as inventory,
+                patch.object(module, "_assemble_macos_runtime", return_value=0) as assemble,
+            ):
+                self.assertEqual(module.main(["--select"]), 0)
+            inventory.assert_called_once()
+            assemble.assert_called_once()
+            self.assertEqual(order, ["devkit", "inventory"])
+
+    def test_inventory_refresh_does_not_run_for_non_web_builds(self) -> None:
+        module = _load_build_script()
+        for args in (["-s", "scheduler"], ["--skip-web"], ["--agent-daemon"]):
+            with (
+                self.subTest(args=args),
+                patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+                patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
+                patch.object(module, "_prepare_agent_tools", return_value=0),
+                patch.object(module, "_prepare_ext_tools", return_value=0),
+                patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)),
+                patch.object(module, "_desktop_build_stamp", return_value=(10, 20)) as stamp,
+                patch.object(module, "_refresh_open_source_inventory") as inventory,
+                patch.object(module, "_assemble_macos_runtime", return_value=0),
+            ):
+                self.assertEqual(module.main(args), 0)
+                inventory.assert_not_called()
+                if "--skip-web" in args or "--agent-daemon" in args:
+                    stamp.assert_not_called()
+
+    def test_inventory_failure_propagates_after_a_successful_web_build(self) -> None:
+        module = _load_build_script()
+        with (
+            patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
+            patch.object(module, "_prepare_agent_tools", return_value=0),
+            patch.object(module, "_prepare_ext_tools", return_value=0),
+            patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)),
+            patch.object(module, "_desktop_build_stamp", side_effect=[None, (10, 20)]),
+            patch.object(module, "_refresh_open_source_inventory", return_value=19) as inventory,
+            patch.object(module, "_assemble_macos_runtime") as assemble,
+        ):
+            self.assertEqual(module.main(["-s", "desktop"]), 19)
+        inventory.assert_called_once()
+        assemble.assert_not_called()
+
+    def test_inventory_is_synchronized_to_existing_web_outputs(self) -> None:
+        module = _load_build_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            src_root = Path(temporary) / "src"
+            source = src_root / "frame" / "desktop" / "public" / "open-source"
+            (source / "licenses").mkdir(parents=True)
+            (source / "index.json").write_text('{"packages": []}', encoding="utf-8")
+            (source / "licenses" / "a.json").write_text("{}", encoding="utf-8")
+            destinations = [src_root / "frame" / "desktop" / "dist", src_root / "rootfs" / "bin" / "control-panel" / "web"]
+            for destination in destinations:
+                (destination / "open-source").mkdir(parents=True)
+                (destination / "index.html").write_text("web", encoding="utf-8")
+                (destination / "open-source" / "stale.json").write_text("old", encoding="utf-8")
+            with (
+                patch.object(module, "__file__", str(src_root / "buckyos-build.py")),
+                patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)) as run,
+            ):
+                self.assertEqual(module._refresh_open_source_inventory({"BUCKYOS_TEST": "1"}), 0)
+            run.assert_called_once_with([module.sys.executable, str(src_root / "tools" / "generate_open_source.py")], env={"BUCKYOS_TEST": "1"})
+            for destination in destinations:
+                self.assertEqual((destination / "open-source" / "index.json").read_bytes(), (source / "index.json").read_bytes())
+                self.assertTrue((destination / "open-source" / "licenses" / "a.json").is_file())
+                self.assertFalse((destination / "open-source" / "stale.json").exists())
+                self.assertEqual((destination / "index.html").read_text(encoding="utf-8"), "web")
+
+    def test_inventory_failure_does_not_replace_web_output(self) -> None:
+        module = _load_build_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            src_root = Path(temporary) / "src"
+            destination = src_root / "frame" / "desktop" / "dist"
+            (destination / "open-source").mkdir(parents=True)
+            (destination / "index.html").write_text("web", encoding="utf-8")
+            previous = destination / "open-source" / "index.json"
+            previous.write_text("previous inventory", encoding="utf-8")
+            with (
+                patch.object(module, "__file__", str(src_root / "buckyos-build.py")),
+                patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 23)),
+            ):
+                self.assertEqual(module._refresh_open_source_inventory({}), 23)
+            self.assertEqual(previous.read_text(encoding="utf-8"), "previous inventory")
+
+    def test_inventory_does_not_create_unbuilt_web_output(self) -> None:
+        module = _load_build_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            src_root = Path(temporary) / "src"
+            source = src_root / "frame" / "desktop" / "public" / "open-source"
+            source.mkdir(parents=True)
+            (source / "index.json").write_text("{}", encoding="utf-8")
+            with (
+                patch.object(module, "__file__", str(src_root / "buckyos-build.py")),
+                patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)),
+            ):
+                self.assertEqual(module._refresh_open_source_inventory({}), 0)
+            self.assertFalse((src_root / "frame" / "desktop" / "dist").exists())
+            self.assertFalse((src_root / "rootfs").exists())
+
+    def test_inventory_missing_output_or_copy_failure_is_not_success(self) -> None:
+        module = _load_build_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            src_root = Path(temporary) / "src"
+            destination = src_root / "frame" / "desktop" / "dist"
+            destination.mkdir(parents=True)
+            (destination / "index.html").write_text("web", encoding="utf-8")
+            with (
+                patch.object(module, "__file__", str(src_root / "buckyos-build.py")),
+                patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)),
+                patch.object(module.shutil, "copytree", side_effect=OSError("copy failed")) as copy,
+            ):
+                self.assertEqual(module._refresh_open_source_inventory({}), 2)
+                copy.assert_not_called()
+                source = src_root / "frame" / "desktop" / "public" / "open-source"
+                source.mkdir(parents=True)
+                (source / "index.json").write_text("{}", encoding="utf-8")
+                self.assertEqual(module._refresh_open_source_inventory({}), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

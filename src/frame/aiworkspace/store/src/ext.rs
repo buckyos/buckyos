@@ -185,7 +185,7 @@ pub fn content_digest<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) 
 
 const COMPONENT_KEYS: &[&str] = &[
     "manifest_version", "ident", "kind", "title", "description", "host_api", "accepts", "allow_no_source", "default_size", "config_schema", "bindings", "entry", "assets",
-    "catalog", "agent", "deps", "events", "actions",
+    "catalog", "agent", "deps", "events", "actions", "on_bind", "on_init_control",
 ];
 const ACTION_HANDLER_KINDS: &[&str] = &["write", "wish", "open", "notify", "config", "forward"];
 
@@ -243,6 +243,8 @@ const V2_HINT: &str = "needs manifest_version 2 (raise it in component.json)";
 const V3_HINT: &str = "needs manifest_version 3 (raise it in component.json)";
 /// What only `manifest_version` 4 may use (控件机制 TODO G13, H2).
 const V4_HINT: &str = "needs manifest_version 4 (raise it in component.json)";
+/// What only `manifest_version` 5 may use (控件 on_bind TODO).
+const V5_HINT: &str = "needs manifest_version 5 (raise it in component.json)";
 const PARAM_TYPES: &[&str] = &["string", "number", "boolean", "object", "entity"];
 
 /// `events { <name>: { title?, description?, params?: { <p>: { type, required?, description? } } } }` of a render control
@@ -1047,6 +1049,28 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
             payload.insert("actions".into(), v.clone());
         }
     }
+    // (manifest 5) what a composite binds when placed, child controls after it, and its last check (控件 on_bind TODO §2.6)
+    if c.contains_key("on_bind") || c.contains_key("on_init_control") {
+        if manifest_version < 5 {
+            d.error(f, format!("on_bind / on_init_control {V5_HINT}"));
+        } else if kind != COMPOSITE {
+            d.error(f, "on_bind / on_init_control: declared steps are for a composite (an HTML control binds in behavior.js)");
+        } else {
+            let empty = Map::new();
+            let decls = c.get("bindings").and_then(Value::as_object).unwrap_or(&empty);
+            let actions: Vec<String> = c.get("actions").and_then(Value::as_array).into_iter().flatten().filter_map(|a| a.get("id").and_then(Value::as_str)).map(str::to_string).collect();
+            match aiworkspace_core::types::check_bind_steps(c.get("on_bind"), c.get("on_init_control"), decls, &actions) {
+                Ok(()) => {
+                    for k in ["on_bind", "on_init_control"] {
+                        if let Some(v) = c.get(k) {
+                            payload.insert(k.into(), v.clone());
+                        }
+                    }
+                }
+                Err(e) => d.error(f, e.detail),
+            }
+        }
+    }
     let mut slot_cells = Vec::new();
     let mut bubbles = Vec::new();
     let mut named: BTreeSet<String> = BTreeSet::from([COMPONENT_FILE.to_string()]);
@@ -1218,10 +1242,15 @@ pub fn narrowing(old: &Map<String, Value>, new: &Map<String, Value>) -> Vec<Stri
     let ob = old.get("bindings").and_then(Value::as_object).unwrap_or(&empty);
     let nb = new.get("bindings").and_then(Value::as_object).unwrap_or(&empty);
     let required = |b: &Value| b.get("required") == Some(&json!(true));
+    let many = |b: &Value| b.get("many") == Some(&json!(true));
     for (name, decl) in ob {
         match nb.get(name) {
             None => out.push(format!("binding {name} is removed")),
             Some(n) if required(n) && !required(decl) => out.push(format!("binding {name} becomes required")),
+            Some(n) if many(decl) && !many(n) => out.push(format!("binding {name} no longer takes several")),
+            Some(n) if n.get("schema_id").is_some() && n.get("schema_id") != decl.get("schema_id") => {
+                out.push(format!("binding {name} now takes only {}", n["schema_id"]))
+            }
             Some(_) => {}
         }
     }
@@ -1354,6 +1383,9 @@ fn instance_issues(ctx: &dyn ReadCtx, old: &Map<String, Value>, new: &Map<String
     for (name, d) in &decl {
         if d.get("required") == Some(&json!(true)) && !bound.contains_key(name) {
             out.push(format!("leaves the required binding {name} unbound"));
+        }
+        if d.get("many") != Some(&json!(true)) && bound.get(name).is_some_and(Value::is_array) {
+            out.push(format!("binds several to {name}, which takes one"));
         }
     }
     if let (Some(accepts), Some(src)) = (new.get("accepts").and_then(Value::as_array), inst.payload.get("source_ref").and_then(|r| r.get("entity_id")).and_then(Value::as_str)) {

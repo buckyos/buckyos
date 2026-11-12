@@ -93,7 +93,7 @@ fn composite_definitions_keep_their_shape() {
         (json!({ "composition": { "slots": {}, "events": { "Bad": {} } } }), "INVALID_SCHEMA"),
         (json!({ "composition": { "layout": {} } }), "INVALID_SCHEMA"),
         (json!({ "composition": { "slots": (0..17).map(|i| (format!("s{i}"), json!({}))).collect::<serde_json::Map<String, Value>>() } }), "LIMIT_EXCEEDED"),
-        (json!({ "manifest_version": 5 }), "UNSUPPORTED_VERSION"),
+        (json!({ "manifest_version": 6 }), "UNSUPPORTED_VERSION"),
     ] {
         let f = as_build(&mut ws, json!([def("d-x", "x", "c", "composite", extra.clone())])).unwrap_err();
         assert_eq!(code(&f), expected, "{extra}: {f}");

@@ -1146,6 +1146,21 @@
 /* the shape library (draw.io 导入 TODO §2.4) */
 .aiws-popover.aiws-library-popover { width: 344px; max-height: min(72vh, 620px); }
 .aiws-library { display: flex; flex-direction: column; gap: 8px; }
+/* the second column of the object toolbar (工具栏双排): a button that opens one carries a corner mark; the column sits
+   beside the toolbar level with its button, never taller than the canvas area (--aiws-column-room, set by SideColumn) */
+.aiws-root .aiws-tool.has-column { position: relative; }
+.aiws-root .aiws-tool.has-column::after { content: ''; position: absolute; right: 3px; bottom: 3px; border: 3px solid transparent; border-right-color: currentColor; border-bottom-color: currentColor; opacity: 0.5; pointer-events: none; }
+.aiws-popover.aiws-tool-column { display: flex; flex-direction: column; gap: 2px; min-width: 168px; padding: 4px; max-height: min(70vh, 560px, var(--aiws-column-room, 100vh)); }
+.aiws-popover.aiws-tool-column.aiws-library-popover { display: block; padding: 6px; max-height: min(72vh, 620px, var(--aiws-column-room, 100vh)); }
+.aiws-root button.aiws-column-item { display: flex; align-items: center; justify-content: flex-start; gap: 10px; min-height: 36px; padding: 0 10px; border: none; border-radius: 8px; background: none; color: var(--cp-text); white-space: nowrap; text-align: left; }
+.aiws-root button.aiws-column-item:hover:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-root button.aiws-column-item[aria-pressed='true'] { background: var(--aiws-pressed-bg); color: var(--cp-accent); }
+.aiws-column-item > span { flex: 1; }
+.aiws-column-item > kbd { font: inherit; font-size: 12px; color: var(--cp-muted); padding-left: 16px; }
+.aiws-column-title { font-size: 12px; color: var(--cp-muted); padding: 8px 10px 2px; margin-top: 2px; border-top: 1px solid var(--cp-border); }
+@media (pointer: coarse) {
+  .aiws-root button.aiws-column-item { min-height: 44px; }
+}
 .aiws-library-head { display: flex; gap: 6px; }
 .aiws-library-head > select { flex: none; max-width: 130px; }
 .aiws-library-head > input { flex: 1 1 auto; min-width: 0; }

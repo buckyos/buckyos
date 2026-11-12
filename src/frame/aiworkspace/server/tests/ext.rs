@@ -371,7 +371,7 @@ fn composite_controls_with_dependencies() {
         assert_eq!(idents.len(), 2, "{ex}");
         let board_entry = ex["manifest"]["controls"].as_array().unwrap().iter().find(|c| c["kind"] == "composite").unwrap();
         assert_eq!(board_entry["deps"], json!(["did:bns:alice#card"]));
-        assert_eq!(ex["manifest"]["manifest_version"], 4);
+        assert_eq!(ex["manifest"]["manifest_version"], 5);
         let only = srv.rpc("ext.export", json!({ "entity_ids": [board_id] })).await;
         assert_eq!(only["manifest"]["controls"].as_array().unwrap().len(), 2, "the closure follows def_dep");
         let pull = srv.rpc("ext.export", json!({ "entity_ids": [board_id], "purpose": "pull" })).await;
@@ -642,7 +642,7 @@ fn workspace_templates_from_snapshot_to_new_workspaces() {
         assert_eq!(count(&srv.rpc("ws.list", json!({})).await), before, "installing creates no Workspace");
         let lib = srv.rpc("ext.list_library", json!({})).await;
         let pkg = lib["packages"].as_array().unwrap().iter().find(|p| p["pkg_id"] == "team-kit").unwrap().clone();
-        assert_eq!((pkg["templates"][0]["id"].as_str(), pkg["controls"][0]["ident"].as_str(), pkg["manifest_version"].as_i64()), (Some("team-board"), Some("did:bns:alice#kpi"), Some(4)), "{pkg}");
+        assert_eq!((pkg["templates"][0]["id"].as_str(), pkg["controls"][0]["ident"].as_str(), pkg["manifest_version"].as_i64()), (Some("team-board"), Some("did:bns:alice#kpi"), Some(5)), "{pkg}");
 
         // two creations, two independent Workspaces; parameters replaced, the reset table empty, the instance bound
         let a = srv.rpc("ext.create_from_template", json!({ "pkg_id": "team-kit", "template_id": "team-board", "params": { "team_name": "Red" } })).await;
@@ -675,7 +675,7 @@ fn workspace_templates_from_snapshot_to_new_workspaces() {
 /// need — the actions, the projected event with its default handler, the outline's `def_actions`; manifest 4's keys
 /// are refused below it and checked (控件机制 TODO G13, G17, G19, H2).
 #[test]
-fn control_examples_and_manifest_4() {
+fn control_examples_and_manifests() {
     run_test(|| async move {
         let mut srv = Srv::start(tempfile::tempdir().unwrap(), model()).await;
         workspace(&mut srv, "Examples").await;
@@ -697,8 +697,11 @@ fn control_examples_and_manifest_4() {
         }
         let payload = |v: Value| v["content"]["payload"].clone();
         let vote = payload(srv.rpc("doc.read", json!({ "entity_id": defs["photo-vote"] })).await);
-        assert_eq!(vote["manifest_version"], 4);
+        assert_eq!(vote["manifest_version"], 5);
         assert_eq!(vote["actions"][0]["id"], "prepare");
+        // (manifest 5) what it binds when placed: the photo folder picked, a votes table of its own, then the ballot
+        assert_eq!(vote["on_bind"][1]["create"]["table"]["fields"][0]["submitter"], true, "{vote}");
+        assert_eq!(vote["on_init_control"], json!([{ "then": { "action": "prepare" } }]));
         assert_eq!(vote["events"]["pick"]["from"], json!({ "projection": "photos", "role": "pick" }));
         assert_eq!(vote["events"]["pick"]["on"]["what"], "toggle");
         assert_eq!(vote["events"]["pick"]["params"]["item"]["type"], "string");
@@ -739,5 +742,29 @@ fn control_examples_and_manifest_4() {
         bad["events"] = json!({ "tap": { "from": { "projection": "p" }, "on": { "kind": "forward" } } });
         let r = try_build(&c, &bad).await;
         assert!(diag_text(&r).contains("events.tap.on"), "{r}");
+
+        // declared steps need manifest 5 and name what the control declares
+        c["bindings"] = json!({ "clips": { "accepts": ["buckyos.dir"], "required": true } });
+        c["on_bind"] = json!([{ "binding": "clips", "pick": "one" }]);
+        let r = try_build(&c, &comp).await;
+        assert!(diag_text(&r).contains("needs manifest_version 5"), "{r}");
+        c["manifest_version"] = json!(5);
+        c.as_object_mut().unwrap().remove("agent");
+        c["ident"]["name"] = json!("tv-steps");
+        let r = try_build(&c, &comp).await;
+        assert_eq!(r["status"], "accepted", "{r}");
+        c["on_bind"] = json!([{ "binding": "nope", "pick": "one" }]);
+        let r = try_build(&c, &comp).await;
+        assert!(diag_text(&r).contains("nope is not a declared binding"), "{r}");
+        c["on_bind"] = json!([{ "binding": "clips", "pick": "many" }]);
+        let r = try_build(&c, &comp).await;
+        assert!(diag_text(&r).contains("clips takes one"), "{r}");
+        c["on_bind"] = json!([{ "binding": "clips", "create": { "standard": "acme.ledger@1" } }]);
+        let r = try_build(&c, &comp).await;
+        assert!(diag_text(&r).contains("create one of"), "{r}");
+        c.as_object_mut().unwrap().remove("on_bind");
+        c["on_init_control"] = json!([{ "then": { "action": "go" } }]);
+        let r = try_build(&c, &comp).await;
+        assert!(diag_text(&r).contains("go is not a declared action"), "{r}");
     });
 }

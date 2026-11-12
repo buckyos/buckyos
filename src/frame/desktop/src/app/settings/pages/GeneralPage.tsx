@@ -6,6 +6,7 @@ import { useSettingsResource } from '../hooks/use-settings-store'
 import { Section, InfoRow, SectionNote, StatusBadge } from '../components/shared/Section'
 import { CopyButton } from '../components/shared/CopyButton'
 import { downloadText, formatDateTime, formatUsage } from '../components/shared/format'
+import { OpenSourcePanel } from '../components/OpenSourcePanel'
 
 function releaseChannelStatus(channel: string): 'pass' | 'warn' | 'neutral' {
   const normalized = channel.trim().toLowerCase()
@@ -114,6 +115,8 @@ export function GeneralPage() {
           <SectionNote>{t('settings.common.loading', 'Loading…')}</SectionNote>
         )}
       </Section>
+
+      <OpenSourcePanel />
 
       <Section
         title={t('settings.general.support', 'Support & Debug')}

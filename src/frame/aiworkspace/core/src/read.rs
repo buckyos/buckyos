@@ -284,10 +284,16 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
                 env["def_id"] = d.clone();
             }
             // a data control projects the tables it binds, a composite its projections' data (控件机制 TODO G2, G13):
-            // their ids, by binding name
+            // their ids, by binding name (a list for a `many` binding)
             if env["kind"].as_str().is_some_and(|k| types::is_data_control(k) || k == types::COMPOSITE) {
                 if let Some(b) = e.payload.get("bindings").and_then(Value::as_object) {
-                    let ids: Map<String, Value> = b.iter().filter_map(|(k, v)| v.get("entity_id").map(|id| (k.clone(), id.clone()))).collect();
+                    let ids: Map<String, Value> = b
+                        .iter()
+                        .filter_map(|(k, v)| match v {
+                            Value::Array(list) => Some((k.clone(), Value::Array(list.iter().filter_map(|i| i.get("entity_id").cloned()).collect()))),
+                            _ => v.get("entity_id").map(|id| (k.clone(), id.clone())),
+                        })
+                        .collect();
                     env["bindings"] = Value::Object(ids);
                 }
             }

@@ -330,7 +330,11 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   opens the workspace and its Surface in a tab. A gone Surface falls back to the first readable one and says so.
 - **Chrome.** The canvas fills the window; the main toolbar (top left), the view toolbar (top right: add
   annotation, zoom ▾ with presets / fit, identity, share) and the vertical object toolbar float in screen space
-  (`camera.setInsets` keeps fitting and centring out from under them). There is no bottom-right navigation area:
+  (`camera.setInsets` keeps fitting and centring out from under them). The object toolbar has fifteen fixed buttons
+  (select, pen | text, rich text, media, table, mind map, shape, connector, frame, wish, note, insert… | undo, redo);
+  select, table and shape carry a corner mark and open a second column beside the toolbar (select / pan; table,
+  calendar, to-do and the standard tables; the basic shapes merged with the shape library). Pinned extensions follow
+  "insert…". There is no bottom-right navigation area:
   the bottom-right corner of the work area is the status area (`StatusDock`: the save / sync summary, alerts and
   notices stacked above it; expandable work logs are meant to live there too).
   The right panel shows one tab at a time (属性 / 引用与依赖 / 批注 / 协作 / 修改状态): layout width when the
@@ -663,7 +667,7 @@ sent by reference (`assetUploader`, Q22).
 
 ## Handwriting (notepads/aiworkspace-handwriting-todo.md)
 
-- **Entry**: the object toolbar's pen and eraser (free canvas, edit mode, insert permission; `P` / `E`), which show the
+- **Entry**: the object toolbar's pen (free canvas, edit mode, insert permission; `P` / `E`), which shows the
   writing bar at the bottom: pen / eraser, six colours, three widths (2 / 4 / 8 canvas units), the pressure switch,
   the canvas touch lock, done (`Esc` drops a running stroke, else puts the pen down). The settings are the user's own
   (`ui:ink` in the user work state); a stroke stores the colour, width and pressure it was written with.

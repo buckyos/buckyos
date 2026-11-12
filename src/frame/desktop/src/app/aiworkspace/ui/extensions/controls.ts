@@ -37,7 +37,7 @@ export function missingBindings(def: BlockDefPayload | undefined, bindings: Reco
 
 
 /** The newest `manifest_version` this host reads (扩展控件 P2/P3); a package above it is listed, never imported (Q33). */
-export const HOST_MANIFEST_VERSION = 4
+export const HOST_MANIFEST_VERSION = 5
 
 /** What a newer version of a control changes in the contract its instances rely on (`ext.upgrade`, Q30): the inputs of
  * the migration form. `next` is the new `component.json` (and `composition.json` for a composite). */

@@ -1,9 +1,10 @@
 /* The shape library (draw.io 导入 TODO §2.4): the built-in libraries (draw.io stencil sets converted to SVG shapes),
  * browsed by library or searched across all of them. A click places the shape like any object; dragging it onto
  * the canvas drops it there. A library shape is an ordinary `shape` of kind `svg`: recolourable, with its own
- * connection points, and it exports back under its draw.io name. */
+ * connection points, and it exports back under its draw.io name. The object toolbar's shape tool shows the basic
+ * shapes (its own picker, `basic`) as the first library of the same panel (工具栏双排). */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import { readLook } from '@drawio/shapes'
 import type { Json } from '../../api/types'
 import { useLoad } from '../../state/hooks'
@@ -17,40 +18,48 @@ function Preview({ shape }: { shape: StencilPackShape }) {
   return <span className="aiws-library-art"><ShapeArt look={look} w={40} h={40} /></span>
 }
 
-export function ShapeLibraryPanel({ onPick }: { onPick: (shape: StencilPackShape) => void }) {
+/** The value of the basic shapes in the library choice (no library is named so). */
+const BASIC = ''
+
+export function ShapeLibraryPanel({ onPick, basic }: { onPick: (shape: StencilPackShape) => void; basic?: ReactNode }) {
   const { t } = useAiwsText()
   const index = useLoad(useCallback(() => stencilIndex(), [])).data
-  const [lib, setLib] = useState<string>('flowchart')
+  const [lib, setLib] = useState<string>(basic ? BASIC : 'flowchart')
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
+  const showBasic = basic !== undefined && lib === BASIC && !q
   const loadPacks = useCallback(async (): Promise<StencilPack[]> => {
-    if (!index) return []
+    if (!index || (lib === BASIC && !q)) return []
     const libs = q ? index.libs.map((l) => l.lib) : [lib]
     return (await Promise.all(libs.map((l) => stencilPack(l)))).filter((p): p is StencilPack => p !== null)
   }, [index, lib, q])
   const packs = useLoad(loadPacks).data ?? []
   const shapes = packs.flatMap((p) => p.shapes.filter((s) => !q || s.title.toLowerCase().includes(q) || s.name.includes(q)).map((s) => ({ lib: p.lib, shape: s })))
-  if (index === null) return <div className="aiws-muted">{t('aiworkspace.canvas.library.unavailable')}</div>
+  if (index === null) return basic ? <div className="aiws-library">{basic}<div className="aiws-muted aiws-library-note">{t('aiworkspace.canvas.library.unavailable')}</div></div>
+    : <div className="aiws-muted">{t('aiworkspace.canvas.library.unavailable')}</div>
   return (
     <div className="aiws-library" data-testid="aiws-shape-library">
       <div className="aiws-library-head">
         <select aria-label={t('aiworkspace.canvas.library.title')} value={lib} data-testid="aiws-library-select" onChange={(e) => { setLib(e.target.value); setQuery('') }}>
+          {basic && <option value={BASIC}>{t('aiworkspace.canvas.library.basic')}</option>}
           {(index?.libs ?? []).map((l) => <option key={l.lib} value={l.lib}>{t('aiworkspace.canvas.library.option', { title: libraryTitle(l.lib, l.title, t), count: l.count })}</option>)}
         </select>
         <input type="search" placeholder={t('aiworkspace.canvas.library.searchPlaceholder')} aria-label={t('aiworkspace.canvas.library.search')} value={query} data-testid="aiws-library-search" onChange={(e) => setQuery(e.target.value)} />
       </div>
-      <div className="aiws-library-grid" role="listbox" aria-label={t('aiworkspace.canvas.library.shapes')}>
-        {shapes.slice(0, 240).map(({ lib: l, shape }) => (
-          <button key={shape.name} type="button" role="option" aria-selected="false" className="aiws-library-item" title={t('aiworkspace.canvas.library.shapeTip', { name: shape.title, library: l })} data-testid={`aiws-library-shape-${shape.name}`}
-            draggable onDragStart={(event) => { event.dataTransfer.setData(SHAPE_DRAG_TYPE, JSON.stringify({ lib: l, name: shape.name })); event.dataTransfer.effectAllowed = 'copy' }}
-            onClick={() => onPick(shape)}>
-            <Preview shape={shape} />
-            <span className="aiws-library-name">{shape.title}</span>
-          </button>
-        ))}
-        {shapes.length === 0 && <div className="aiws-muted">{index ? t('aiworkspace.canvas.library.noMatch') : t('aiworkspace.canvas.library.loading')}</div>}
-      </div>
-      <div className="aiws-muted aiws-library-note">{t('aiworkspace.canvas.library.note')}</div>
+      {showBasic ? basic : <>
+        <div className="aiws-library-grid" role="listbox" aria-label={t('aiworkspace.canvas.library.shapes')}>
+          {shapes.slice(0, 240).map(({ lib: l, shape }) => (
+            <button key={shape.name} type="button" role="option" aria-selected="false" className="aiws-library-item" title={t('aiworkspace.canvas.library.shapeTip', { name: shape.title, library: l })} data-testid={`aiws-library-shape-${shape.name}`}
+              draggable onDragStart={(event) => { event.dataTransfer.setData(SHAPE_DRAG_TYPE, JSON.stringify({ lib: l, name: shape.name })); event.dataTransfer.effectAllowed = 'copy' }}
+              onClick={() => onPick(shape)}>
+              <Preview shape={shape} />
+              <span className="aiws-library-name">{shape.title}</span>
+            </button>
+          ))}
+          {shapes.length === 0 && <div className="aiws-muted">{index ? t('aiworkspace.canvas.library.noMatch') : t('aiworkspace.canvas.library.loading')}</div>}
+        </div>
+        <div className="aiws-muted aiws-library-note">{t('aiworkspace.canvas.library.note')}</div>
+      </>}
     </div>
   )
 }

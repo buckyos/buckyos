@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import FocusTrap from '@mui/material/Unstable_TrapFocus'
-import { ArrowDownToLine, Check, Database, FileUp, FlaskConical, FolderUp, Frame, Grid2X2, Image, Info, Layers3, LetterText, MousePointer2, Plus, Puzzle, Search, Shapes, Sparkles, Spline, StickyNote, Table, Type, X, Network, type LucideIcon } from 'lucide-react'
+import { ArrowDownToLine, Check, Database, FileUp, FlaskConical, FolderUp, Grid2X2, Info, Layers3, MousePointer2, Plus, Puzzle, Search, Shapes, Sparkles, Type, X, type LucideIcon } from 'lucide-react'
 import type { BlockDefPayload, EntityEnvelope, Json } from '../../api/types'
 import type { ReadOk } from '../../api/session'
 import { useLoad, useOutlineVersion, useStore, useUserState } from '../../state/hooks'
@@ -16,7 +16,7 @@ import { useOverlayMounted } from '../shell/popover'
 import { ShapePicker } from '../blocks/shapeBlock'
 import { svgShapeFromDocument } from '@drawio/svg'
 import type { ShapeKind } from '@drawio/shapes'
-import { allEntries, dataFor, entryId, entrySize, type CatalogEntry, type InsertRequest } from './catalog'
+import { allEntries, dataFor, ENTRY_ICONS, entryId, entrySize, type CatalogEntry, type InsertRequest } from './catalog'
 import { InstanceForm } from '../extensions/InstanceForm'
 import { configProblems, missingBindings } from '../extensions/controls'
 import { useShell } from '../shell/shellContext'
@@ -25,7 +25,6 @@ import { useFilePicker } from '../shell/filePicker'
 export type CatalogTab = 'all' | CatalogGroup | 'existing'
 const TABS: CatalogTab[] = ['all', 'text', 'data', 'layout', 'ai', 'sample', 'extension', 'existing']
 const TAB_ICONS: Record<CatalogTab, LucideIcon> = { all: Grid2X2, text: Type, data: Database, layout: Shapes, ai: Sparkles, sample: FlaskConical, extension: Puzzle, existing: Layers3 }
-const ENTRY_ICONS: Record<string, LucideIcon> = { richtext: Type, 'shape-text': LetterText, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, mindmap: Network, table: Table, asset: Image, wish: Sparkles }
 
 function EntryIcon({ entry }: { entry: CatalogEntry }) {
   const Icon = ENTRY_ICONS[entryId(entry)] ?? TAB_ICONS[entry.group]

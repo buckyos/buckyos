@@ -197,7 +197,7 @@ test('CA07 a link to one occurrence turns to its day and opens it', async ({ pag
   await expect(page.getByTestId('aiws-cal-range-cal')).toContainText('16')
 })
 
-test('CA10 to-do lists on a calendar: the only one comes with an inserted calendar; the menu shows another to-do list and another calendar, and stops showing one', async ({ page, api }) => {
+test('CA10 to-do lists on a calendar: an inserted calendar shows every to-do list; the menu shows another to-do list and another calendar, and stops showing one', async ({ page, api }) => {
   const ws = await api.freeCanvas(ALICE, `cal-todo ${Date.now()}`)
   const TODO_FIELDS = [
     { field_id: 'title', name: 'Title', type: 'text', required: true },
@@ -237,6 +237,9 @@ test('CA10 to-do lists on a calendar: the only one comes with an inserted calend
   await menu('add-todo')
   await expect.poll(async () => (await calOf())?.bindings.todo_2).toBe('work')
   await expect(due('todo_2', 'work-1')).toContainText('Send the report')
+  // each to-do list its own colour, neither the calendar's
+  const fill = (id: string) => page.locator(`[data-proj^="${cal}~bg~${id}"]`).first().evaluate((el) => { const shape = el.querySelector('rect, path, ellipse') ?? el; return getComputedStyle(shape).fill })
+  expect(new Set([await fill('todo:home-1'), await fill('todo_2:work-1')]).size).toBe(2)
   // nothing left to add
   await page.getByTestId(`aiws-cal-menu-${cal}`).click()
   await expect(page.getByTestId('aiws-ctl-menu-add-todo')).toBeDisabled()
@@ -259,4 +262,12 @@ test('CA10 to-do lists on a calendar: the only one comes with an inserted calend
   await expect(due('todo', 'home-1')).toHaveCount(0)
   await expect(due('todo_2', 'work-1')).toBeVisible()
   expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'home', limit: 10 })).rows).toHaveLength(1)
+
+  // a calendar inserted now (two calendar tables: asked which one) shows both to-do lists
+  await page.getByTestId('aiws-tool-catalog').click()
+  await page.getByTestId('aiws-catalog-entry-control-calendar').click()
+  await page.getByTestId('aiws-catalog-insert').click()
+  await page.getByTestId('aiws-source-chooser').locator('[data-testid^="aiws-source-"]').first().click()
+  const second = async () => (await api.outline(ALICE, ws.workspace_id)).find((e: Json) => e.kind === 'calendar' && !e.deleted && e.entity_id !== cal) as { bindings: Record<string, string> } | undefined
+  await expect.poll(async () => [(await second())?.bindings.todo, (await second())?.bindings.todo_2].sort()).toEqual(['home', 'work'])
 })

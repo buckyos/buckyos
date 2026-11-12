@@ -243,6 +243,45 @@ def _prepare_ext_tools(env: dict[str, str]) -> int:
     ).returncode
 
 
+def _desktop_build_stamp() -> tuple[int, int] | None:
+    index = Path(__file__).resolve().parent / "frame" / "desktop" / "dist" / "index.html"
+    try:
+        stat = index.stat()
+    except FileNotFoundError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _refresh_open_source_inventory(env: dict[str, str]) -> int:
+    src_root = Path(__file__).resolve().parent
+    result = subprocess.run(
+        [sys.executable, str(src_root / "tools" / "generate_open_source.py")],
+        env=env,
+    ).returncode
+    if result != 0:
+        print(f"Open-source inventory generation failed with return code {result}")
+        return result
+    source = src_root / "frame" / "desktop" / "public" / "open-source"
+    if not (source / "index.json").is_file():
+        print("Open-source inventory generation did not produce index.json.")
+        return 2
+    try:
+        for web_root in (
+            src_root / "frame" / "desktop" / "dist",
+            src_root / "rootfs" / "bin" / "control-panel" / "web",
+        ):
+            if not (web_root / "index.html").is_file():
+                continue
+            target = web_root / "open-source"
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(source, target)
+    except OSError as error:
+        print(f"Open-source inventory synchronization failed: {error}")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     if any(arg in ("-h", "--help") for arg in args):
@@ -277,12 +316,19 @@ def main(argv: list[str] | None = None) -> int:
         _find_command("node") or "node",
         str(Path(__file__).resolve().parent / "rootfs" / "libexec" / "buckyos-tool" / "cli" / "launcher.mjs"),
     ])
+    watch_desktop = not standalone_daemon and "--skip-web" not in args
+    desktop_before = _desktop_build_stamp() if watch_desktop else None
     result = subprocess.run(
         [executable, *args],
         env=env,
     ).returncode
     if result != 0 or standalone_daemon:
         return result
+    desktop_after = _desktop_build_stamp() if watch_desktop else None
+    if desktop_after is not None and desktop_after != desktop_before:
+        result = _refresh_open_source_inventory(env)
+        if result != 0:
+            return result
     return _assemble_macos_runtime(env)
 
 

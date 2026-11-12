@@ -10,10 +10,11 @@ import { useCallback, type CSSProperties, type ReactNode } from 'react'
 import { ALargeSmall, ClipboardCopy, Columns3, Eye, File as FileIcon, FileText, Film, Image as ImageIcon, LayoutGrid, ListFilter, ListTree, Music, Play, Plus, Replace, Reply, Scan, Table, Type } from 'lucide-react'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
-import type { AnnotationContent, Json, KeyedContent, Reference, RichTextContent } from '../../api/types'
+import type { AnnotationContent, Json, KeyedContent, Operation, Reference, RichTextContent } from '../../api/types'
 import { StaticRichText } from '../../richtext/RichTextEditor'
 import { isGuestPrincipal } from '../../api/transport'
-import { aiwsT } from '../../i18n'
+import { standardTableOp } from 'buckyos'
+import { aiwsT, currentAiwsLocale } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
 import { authorLabel, readGuestName } from '../../state/guest'
 import { useEdit, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
@@ -28,7 +29,8 @@ import { AssetCell, LockScope, NoteEditor, NoteReplies, RecordCell, RichTextCell
 import { cellOp, createOp, MAX_EMBED_DEPTH, replaceAccept, replaceAsset, setCellConfig } from './ops'
 import { assetMediaType, mediaKindOf, playsInPlace } from '../media/kinds'
 import type { StagedPayload } from '../media/stage'
-import { blockRegistry, type BlockDefinition, type RenderContext, type ToolbarItem } from './registry'
+import { freeTableName, standardTableOf } from '../controls/data/source'
+import { blockRegistry, type BlockDefinition, type CreateArgs, type RenderContext, type ToolbarItem } from './registry'
 import { frameDefinition } from './frameBlock'
 import { shapeDefinition } from './shapeBlock'
 
@@ -81,7 +83,13 @@ const table: BlockDefinition = {
   type: 'table', version: 1, get title() { return aiwsT('aiworkspace.blocks.table.title') }, accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 640, h: 320 }, cost: { editor: true, html: false },
   Static: TableStatic, Simplified: TableSimplified, Editor: TableEditorView,
-  catalog: { group: 'data', get description() { return aiwsT('aiworkspace.blocks.table.description') }, needs: 'none', standard: true },
+  catalog: {
+    group: 'data', get description() { return aiwsT('aiworkspace.blocks.table.description') }, needs: 'none', standard: true,
+    variants: [
+      { id: 'todo', get title() { return aiwsT('aiworkspace.blocks.table.standardTodo') }, group: 'data', get description() { return aiwsT('aiworkspace.blocks.table.standardTodoDescription') }, config: { standard: 'todo' } },
+      { id: 'calendar', get title() { return aiwsT('aiworkspace.blocks.table.standardCalendar') }, group: 'data', get description() { return aiwsT('aiworkspace.blocks.table.standardCalendarDescription') }, config: { standard: 'calendar' } },
+    ],
+  },
   actions: [{ id: 'edit', get label() { return aiwsT('aiworkspace.blocks.action.editContent') }, modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
   hover: (context) => [
     ...sourceLabel(context, Table),
@@ -95,12 +103,27 @@ const table: BlockDefinition = {
     // "copy as table" (表格数据导入 TODO §4.1): run by the table's editor, which knows the view's rows
     { kind: 'button', id: 'table-copy', icon: ClipboardCopy, label: aiwsT('aiworkspace.data.table.copyAsTable'), run: () => openWith(context, 'copy') },
   ],
-  create: (args) => (args.existingSourceId ? [cellOp(args, 'table', args.existingSourceId)] : [
+  create: (rawArgs) => {
+    const config = Object.entries(rawArgs.config ?? {}).filter(([key]) => key !== 'standard')
+    const args: CreateArgs = { ...rawArgs, config: config.length > 0 ? Object.fromEntries(config) : undefined }
+    if (args.existingSourceId) return [cellOp(args, 'table', args.existingSourceId)]
+    const standard = standardTableOf(rawArgs.config)
+    if (standard) {
+      const name = freeTableName(args.store, args.contentFolderId, args.title || aiwsT(standard.table === 'todo' ? 'aiworkspace.blocks.table.standardTodo' : 'aiworkspace.blocks.table.standardCalendar'))
+      const locale = currentAiwsLocale().startsWith('zh') ? 'zh' : 'en'
+      return [standardTableOp(standard.table, { entity_id: args.dataId, parent_id: args.contentFolderId, order_key: args.dataOrderKey, name, locale }) as unknown as Operation, cellOp(args, 'table', args.dataId)]
+    }
+    return newTableOps(args)
+  },
+}
+
+function newTableOps(args: CreateArgs): Operation[] {
+  return [
     createOp(args.dataId, 'buckyos.table-source', args.contentFolderId, args.dataOrderKey, {
       title_field_id: 'title', fields: [{ field_id: 'title', name: aiwsT('aiworkspace.blocks.table.fieldTitle'), type: 'text', required: true }, { field_id: 'done', name: aiwsT('aiworkspace.blocks.table.fieldDone'), type: 'boolean' }],
     }, args.title || undefined),
     cellOp(args, 'table', args.dataId),
-  ]),
+  ]
 }
 
 // ---- rich text

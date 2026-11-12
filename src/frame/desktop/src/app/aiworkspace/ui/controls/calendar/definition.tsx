@@ -1,7 +1,7 @@
 /* The official calendar control (控件机制 TODO §0.1, Q1, Q20): a code-registered data control showing standard calendar
  * tables (`buckyos.calendar@1`). Inserted, it binds as `events` the workspace's only calendar table, asks which one
  * among several, and creates one in the canvas's content folder when there is none (data/source.ts), and shows the due
- * dates of the workspace's only to-do table (`todo`); its menu adds further calendars and to-do tables (`todo_<n>`). */
+ * dates of every to-do table of the workspace (`todo`, `todo_2` …); its menu adds further calendars and to-do tables. */
 
 import { CalendarDays } from 'lucide-react'
 import { CALENDAR_SCHEMA_ID, standardTableOp, TODO_SCHEMA_ID } from 'buckyos'
@@ -11,7 +11,7 @@ import { randomId } from '../../../api/ids'
 import { aiwsT, currentAiwsLocale } from '../../../i18n'
 import { controlKey } from '../data/keys'
 import { DataFlow } from '../data/DataFlow'
-import { freeTableName, sourceTables } from '../data/source'
+import { freeBindingName, freeTableName, sourceTables } from '../data/source'
 import type { ContainerDefinition } from '../registry'
 import { CalendarBody } from './CalendarBody'
 import { CALENDAR_KIND, EVENTS_BINDING, TODO_BINDING } from './model'
@@ -37,13 +37,14 @@ export const calendarControl: ContainerDefinition = {
     const tableId = args.existingSourceId ?? args.dataId ?? randomId('t')
     const locale = currentAiwsLocale().startsWith('zh') ? 'zh' : 'en'
     const title = args.title || aiwsT('aiworkspace.calendar.title')
-    // the workspace's only to-do table shows its due dates at once; among several, the menu adds the ones wanted
-    const todos = sourceTables(args.store, TODO_SCHEMA_ID)
+    // every to-do table of the workspace shows its due dates at once (`todo`, `todo_2` …); the menu stops showing one
+    const todos: Record<string, { entity_id: string }> = {}
+    for (const table of sourceTables(args.store, TODO_SCHEMA_ID)) todos[freeBindingName(todos, TODO_BINDING)] = { entity_id: table.entity_id }
     return [
       ...(args.existingSourceId ? [] : [standardTableOp('calendar', { entity_id: tableId, parent_id: args.contentFolderId, order_key: args.dataOrderKey, name: freeTableName(args.store, args.contentFolderId, title), locale })]),
       { op: 'entity.create', entity_id: containerId, type_id: 'buckyos.container', parent_id: args.parentId, order_key: args.orderKey,
         placement: { x: Math.round(args.placement.x), y: Math.round(args.placement.y), w: Math.round(args.placement.w), h: Math.round(args.placement.h) },
-        payload: { kind: CALENDAR_KIND, layout: { mode: 'data' }, title, bindings: { [EVENTS_BINDING]: { entity_id: tableId }, ...(todos.length === 1 ? { [TODO_BINDING]: { entity_id: todos[0].entity_id } } : {}) } } },
+        payload: { kind: CALENDAR_KIND, layout: { mode: 'data' }, title, bindings: { [EVENTS_BINDING]: { entity_id: tableId }, ...todos } } },
     ] as never
   },
   keys: (ctx, event) => controlKey(ctx.containerId, event),

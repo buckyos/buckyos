@@ -1,5 +1,5 @@
 {
-  "manifest_version": 4,
+  "manifest_version": 5,
   "ident": { "author_did": "did:bns:buckyos", "name": "photo-vote" },
   "kind": "composite",
   "title": "Photo vote",
@@ -15,8 +15,16 @@
   },
   "bindings": {
     "photos": { "accepts": ["buckyos.dir"], "required": true, "title": "Photos", "description": "A folder of photos (resources)" },
-    "votes": { "accepts": ["buckyos.table-source"], "required": true, "title": "Votes", "description": "A table with a text field marked submitter and a multi_select field `picks` (max_items = picks); `Prepare the ballot` fills its options from the photos" }
+    "votes": { "accepts": ["buckyos.table-source"], "required": true, "title": "Votes", "description": "A table with a text field marked submitter and a multi_select field `picks` (max_items = picks), created when the control is placed; `Prepare the ballot` fills its options from the photos" }
   },
+  "on_bind": [
+    { "binding": "photos", "pick": "one", "title": "Which photos?" },
+    { "binding": "votes", "when": "always", "create": { "table": { "name": "Votes", "title_field_id": "voter", "fields": [
+      { "field_id": "voter", "name": "Voter", "type": "text", "submitter": true },
+      { "field_id": "picks", "name": "Picks", "type": "multi_select", "options": [], "max_items": 3 }
+    ] } } }
+  ],
+  "on_init_control": [{ "then": { "action": "prepare" } }],
   "actions": [
     { "id": "prepare", "title": "Prepare the ballot", "needs": ["structure"], "description": "An option of `picks` for every photo of the folder that has none yet (run again after adding photos)",
       "run": { "kind": "write", "target": "votes", "what": "addOptions", "args": { "field": "picks", "from": "photos", "accept": "image" } } }

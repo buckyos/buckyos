@@ -123,6 +123,10 @@ buckyos system info                                 # BuckyOS version, build_ver
 - stdout: one JSON envelope `{ok, data | error{code,message,retryable}, meta{trace_id}}`; `--output text` prints a system-config value as-is; progress of waiting verbs goes to stderr.
 
 #### Settings: where each one is managed
+- Desktop Settings → General → Open-source software lists the build's resolved dependency versions and licenses;
+  select a package for its project source and bundled license notices. Catalog coverage marks missing metadata and
+  saved snapshots from modules that were not refreshed. This is build inventory, not a live scan of installed apps,
+  container base images or the host OS; do not use it as proof that every runtime component was inventoried.
 - Agents: `buckyos agent list`, `agent get|profile-get <agent_id>` (raw host name like `xiaobai.test.buckyos.io`, not
   the `did:web:` DID), `agent profile-set <agent_id> --display-name <n> [--bio <t>]` (given fields only, `''` clears;
   returns `before` and `profile`, which is your revert). Users, agent create/delete/settings: Desktop "Users and Agents".

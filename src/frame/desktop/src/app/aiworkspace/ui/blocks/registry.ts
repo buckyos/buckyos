@@ -128,7 +128,8 @@ export interface CatalogInfo {
   needs: 'none' | 'data' | 'file' | 'definition'
   /** Inserted without a title prompt, then the editor opens at once (text, notes, wishes). */
   editAfterInsert?: boolean
-  /** Offered directly on the object toolbar. */
+  /** Offered in the quick insert lists (context menu, flow page insert, slash menu). The object toolbar has its own
+   * fixed layout (`ObjectToolbar.tsx` `OBJECTS`). */
   standard?: boolean
   /** Further entries of the same definition with preset configuration (a shape's "text"). */
   variants?: CatalogVariant[]

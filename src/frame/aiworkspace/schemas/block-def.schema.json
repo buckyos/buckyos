@@ -93,7 +93,7 @@
   "manifest_version": {
    "type": "integer",
    "minimum": 1,
-   "maximum": 4
+   "maximum": 5
   },
   "source_dir": {
    "type": "object",
@@ -235,6 +235,193 @@
     }
    },
    "description": "Written by ext.build / ext.import only (P2, as deps): the control's events, from component.json (render controls) or composition.json (a composite, params copied from the child event). The core keeps the shape (≤ 16 names, ≤ 16 KiB)."
+  },
+  "on_bind": {
+   "type": "array",
+   "maxItems": 16,
+   "description": "(manifest 5, kind composite) What the composite binds when placed or re-bound, in order; bindings no step settles follow the host's default rule (控件 on_bind TODO §2.4). Run from parent to child: a child sees its parent's bindings.",
+   "items": {
+    "oneOf": [
+     {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "binding",
+       "pick"
+      ],
+      "properties": {
+       "binding": {
+        "type": "string"
+       },
+       "pick": {
+        "enum": [
+         "one",
+         "many",
+         "all"
+        ]
+       },
+       "title": {
+        "type": "string",
+        "maxLength": 256
+       },
+       "allow_new": {
+        "type": "boolean"
+       }
+      }
+     },
+     {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "binding",
+       "from_parent"
+      ],
+      "properties": {
+       "binding": {
+        "type": "string"
+       },
+       "from_parent": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,31}$"
+       }
+      }
+     },
+     {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "binding",
+       "create"
+      ],
+      "properties": {
+       "binding": {
+        "type": "string"
+       },
+       "when": {
+        "enum": [
+         "missing",
+         "always"
+        ]
+       },
+       "create": {
+        "oneOf": [
+         {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+           "standard"
+          ],
+          "properties": {
+           "standard": {
+            "enum": [
+             "buckyos.todo@1",
+             "buckyos.calendar@1"
+            ]
+           }
+          }
+         },
+         {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+           "table"
+          ],
+          "properties": {
+           "table": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+             "name",
+             "fields"
+            ],
+            "properties": {
+             "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+             },
+             "title_field_id": {
+              "type": "string"
+             },
+             "fields": {
+              "type": "array"
+             }
+            }
+           }
+          }
+         },
+         {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+           "dir"
+          ],
+          "properties": {
+           "dir": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+             "name"
+            ],
+            "properties": {
+             "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+             }
+            }
+           }
+          }
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  "on_init_control": {
+   "type": "array",
+   "maxItems": 16,
+   "description": "(manifest 5, kind composite) After every on_bind, from child to parent: { require: children } (the default: every child control ready) and { then: { action } } (a declared action run after the Commit).",
+   "items": {
+    "oneOf": [
+     {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "require"
+      ],
+      "properties": {
+       "require": {
+        "const": "children"
+       }
+      }
+     },
+     {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "then"
+      ],
+      "properties": {
+       "then": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "action"
+        ],
+        "properties": {
+         "action": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$"
+         }
+        }
+       }
+      }
+     }
+    ]
+   }
   }
  },
  "$defs": {

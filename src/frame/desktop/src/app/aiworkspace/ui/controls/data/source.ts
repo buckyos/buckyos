@@ -2,9 +2,9 @@
  * control takes the workspace's only such table, asks which one when there are several (or a new one), and creates one
  * when there is none — in the canvas's content folder, with the binding in the same Commit. */
 
-import { standardTableOp } from 'buckyos'
+import { CALENDAR_SCHEMA_ID, standardTableOp, TODO_SCHEMA_ID } from 'buckyos'
 import { uniqueName } from '@table/operations'
-import type { EntityEnvelope, Operation } from '../../../api/types'
+import type { EntityEnvelope, Json, Operation } from '../../../api/types'
 import { currentAiwsLocale } from '../../../i18n'
 import type { WorkspaceStore } from '../../../state/store'
 import type { DataSource } from '../registry'
@@ -47,7 +47,15 @@ export function bindOps(containerId: string, bindings: Record<string, string | n
 }
 
 /** A binding name not yet used: `base` when free, else `<base>_2`, `<base>_3` … */
-export function freeBindingName(bindings: Record<string, string>, base: string): string {
+export function freeBindingName(bindings: Record<string, unknown>, base: string): string {
   if (!(base in bindings)) return base
   for (let n = 2; ; n++) if (!(`${base}_${n}` in bindings)) return `${base}_${n}`
+}
+
+/** The standard table a table Block's catalog variant stands for (`config.standard`: `todo` / `calendar`), else null. */
+export function standardTableOf(config: Record<string, Json> | null | undefined): DataSource | null {
+  const kind = config?.standard
+  if (kind === 'todo') return { binding: 'items', schemaId: TODO_SCHEMA_ID, table: 'todo' }
+  if (kind === 'calendar') return { binding: 'events', schemaId: CALENDAR_SCHEMA_ID, table: 'calendar' }
+  return null
 }

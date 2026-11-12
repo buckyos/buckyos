@@ -353,9 +353,9 @@ test('DR-08 SVG shapes: pasted SVG becomes a recolourable shape; the library pan
   await page.getByTestId('aiws-color-d1242f').click()
   await expect.poll(async () => (await configOf(api, ws, star.entity_id)).config.stroke).toBe('#d1242f')
   await expect(page.getByTestId(`aiws-shape-${star.entity_id}`).locator('svg.aiws-shape-art')).toHaveCSS('--aiws-shape-stroke', '#d1242f')
-  // the library: search, click to place
+  // the library (the shape tool's second column, after the basic shapes): search, click to place
   await page.mouse.click(1200, 800)
-  await page.getByTestId('aiws-tool-library').click()
+  await page.getByTestId('aiws-tool-insert-shape').click()
   await expect(page.getByTestId('aiws-shape-library')).toBeVisible()
   await page.getByTestId('aiws-library-search').fill('decision')
   await expect(page.getByTestId('aiws-library-shape-mxgraph.flowchart.decision')).toBeVisible()
@@ -364,7 +364,7 @@ test('DR-08 SVG shapes: pasted SVG becomes a recolourable shape; the library pan
   await page.mouse.click(700, 400)
   await expect.poll(async () => (await cellsOn(api, ws, 'sf-d')).length).toBe(2)
   // drag a BPMN shape from the library onto the canvas
-  await page.getByTestId('aiws-tool-library').click()
+  await page.getByTestId('aiws-tool-insert-shape').click()
   await page.getByTestId('aiws-library-select').selectOption('bpmn')
   await page.getByTestId('aiws-library-shape-mxgraph.bpmn.user_task').dragTo(page.getByTestId('aiws-canvas'), { targetPosition: { x: 1000, y: 450 } })
   await expect.poll(async () => (await cellsOn(api, ws, 'sf-d')).length).toBe(3)

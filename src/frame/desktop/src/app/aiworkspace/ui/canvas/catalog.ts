@@ -3,6 +3,7 @@
  * workspace's readable `buckyos.block-def` entities. The menus, the object toolbar, the context menu and the
  * catalog dialog all read this one list. */
 
+import { CalendarDays, CalendarRange, Frame, Image, LetterText, ListChecks, ListTodo, Network, Shapes, Sparkles, Spline, StickyNote, Table, Type, type LucideIcon } from 'lucide-react'
 import type { EntityEnvelope, Json } from '../../api/types'
 import { aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
@@ -57,6 +58,12 @@ function compositeEntry(): BlockDefinition | undefined {
 
 /** An entry's id in test ids and menu ids: the type, or `type-variant`. */
 export const entryId = (entry: CatalogEntry) => (entry.variant ? `${entry.definition.type}-${entry.variant}` : entry.definition.type)
+
+/** The icons of the standard entries (object toolbar, insert catalog), by `entryId`. */
+export const ENTRY_ICONS: Record<string, LucideIcon> = {
+  richtext: Type, 'shape-text': LetterText, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, mindmap: Network, table: Table, asset: Image, wish: Sparkles,
+  todo: ListTodo, calendar: CalendarDays, 'table-todo': ListChecks, 'table-calendar': CalendarRange,
+}
 /** The size an insertion of the entry takes. */
 export const entrySize = (entry: CatalogEntry) => entry.size ?? entry.definition.defaultSize
 

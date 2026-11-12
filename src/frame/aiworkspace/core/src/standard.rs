@@ -34,6 +34,11 @@ const CALENDAR_FIELDS: Fields = &[
     ("ext", FieldType::Json),
 ];
 
+/// A business schema the kernel knows the standard table of (a host can create one).
+pub fn is_standard_schema(id: &str) -> bool {
+    matches!(id, TODO_SCHEMA | CALENDAR_SCHEMA)
+}
+
 /// The standard fields of a table, `None` when it is not a standard table.
 pub fn standard_fields(e: &EntityRow) -> Option<Fields> {
     if e.type_id != TYPE_TABLE {

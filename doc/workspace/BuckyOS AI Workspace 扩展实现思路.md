@@ -104,7 +104,7 @@ PIKG 负责分发与本机安装，AIWS 负责选择性引入与工作区内管�
 
 **定义实体**（内核 `types.rs` `validate_block_def`）：payload 键只允许 `def_id`（Renderer id 格式）、`version`（默认 1）、`kind`、`title`、`description`、`accepts`、`allow_no_source`、`default_size`、`declarative`、`html { html, css?, js?, api_version? }`、`config_schema`、`actions`、`inspector`。Cell 通过 `def_ref` 引用定义，引用阻止删除；定义随导出包、Fork、离线副本携带。许愿格的 `aiws.result.html` 已经会把 HTML 产物落成一个 block-def（`def_id = wish.<hash>`）加一个 Cell（`store/src/wish/plan.rs`）。
 
-**插入目录对扩展的处理**（`ui/canvas/catalog.ts`、`InsertCatalog.tsx`、`ObjectToolbar.tsx`）：`extensionEntries()` 扫 outline 里可读的 `buckyos.block-def`，以 `def_kind` 找宿主 Block（`declarative` / `html`），进"扩展"分组；左侧对象工具栏显示用户固定的扩展（`user_state` `ui:pinned-defs`）和"工作区扩展"入口；数据源模式对 block-def 只有详情页（`DataDetail.tsx` `BlockDefDetail`：kind、accepts、HTML 风险提示、原文折叠）。
+**插入目录对扩展的处理**（`ui/canvas/catalog.ts`、`InsertCatalog.tsx`、`ObjectToolbar.tsx`）：`extensionEntries()` 扫 outline 里可读的 `buckyos.block-def`，以 `def_kind` 找宿主 Block（`declarative` / `html`），进"扩展"分组；左侧对象工具栏没有单独的扩展入口（2026-11-12 工具栏改双排后），扩展经"插入…"打开目录的"扩展"页签，用户固定的扩展（`user_state` `ui:pinned-defs`）排在"插入…"之后；数据源模式对 block-def 只有详情页（`DataDetail.tsx` `BlockDefDetail`：kind、accepts、HTML 风险提示、原文折叠）。
 
 ### 2.2 Block-control（路线二的基础）
 
@@ -290,9 +290,9 @@ render-block 是这条路线的渲染核心：给定 `RenderContext`，产出视
 
 > 2026-10-30：扩展页签空态已改为指向“从本机库添加 / 新建控件”，并有对应功能；“工作区控件…”入口在主菜单“插入 → 扩展控件”分组末尾（再加一个顶层项，小窗口里“关闭工作区”会被挤出窗口）、插入目录扩展页签与数据源详情三处。以下为 P0 前的记录。
 
-- **插入目录**（主菜单"插入"、左侧"＋全部对象"、空白处右键）：八个页签 全部 / 文字 / 数据 / 版式 / AI / 样本 / **扩展** / 已有数据；顶部搜索；详情页按 `needs` 引导选数据或选文件；顶部有"导入 draw.io…"、"导入文件"、"导入文件夹"按钮。
+- **插入目录**（主菜单"插入"、左侧"插入…"、空白处右键）：八个页签 全部 / 文字 / 数据 / 版式 / AI / 样本 / **扩展** / 已有数据；顶部搜索；详情页按 `needs` 引导选数据或选文件；顶部有"导入 draw.io…"、"导入文件"、"导入文件夹"按钮。
 - **扩展页签**只列当前工作区可读的 `buckyos.block-def`；空态文案"这个工作区还没有 Block 定义（扩展）。可在数据源中导入或由许愿格生成"——**前半句没有对应功能**（Desktop 没有任何导入 block-def 的代码；数据源模式对 block-def 只有详情页）。
-- **左侧对象工具栏**：标准对象（含脑图，`STANDARD_ORDER` 里有 `mindmap`）→ 用户固定的扩展（`ui:pinned-defs`）→ "工作区扩展"入口 → "＋全部对象"。
+- **左侧对象工具栏**（2026-11-12 改为双排）：固定 15 个按钮——选择（第二排：选择 / 移动视图）、画笔｜文字、富文本、媒体、表格（第二排：表格、日历、待办，以及标准表格 `buckyos.todo@1` / `buckyos.calendar@1`）、脑图、形状（第二排：基本形状与图形库合并）、连接线、框、许愿格、便签、"插入…"｜撤销、重做；用户固定的扩展（`ui:pinned-defs`）排在"插入…"之后，默认没有。按钮顺序写在 `ObjectToolbar.tsx` 的 `OBJECTS`，不再由 `catalog.standard` 决定（它只决定右键、流式页插入和斜杠菜单里的快捷条目）。
 - **control 的插入**：目录 `layout` 分组里的 `control:<kind>` 条目，插入即建容器 + 根并进入编辑；把 `.md` / `.opml` 文件拖到画布或经"导入文件"按钮会直接变成脑图（`CanvasView.handleFiles` → `importOutline`）；选中富文本里的嵌套列表可"转成脑图"。
 - **跨工作区**：导出包（`share` / `personal_backup`）携带 block-def；"从模板创建工作区"会带上模板里的定义（KPI 卡）；"把模板添加到当前工作区"是 UI 改进 §6.2 列明的未做项。
 

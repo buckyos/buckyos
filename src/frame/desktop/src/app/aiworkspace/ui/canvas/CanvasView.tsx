@@ -57,7 +57,7 @@ import { InstanceInspector } from '../controls/composite/Inspector'
 import { DefineControlDialog } from '../extensions/DefineControlDialog'
 import { isComposite, isFixedComposite, slotForDrop } from '../controls/composite/model'
 import { controlRegistry, type ControlCommandContext } from '../controls/registry'
-import { sourceTables } from '../controls/data/source'
+import { sourceTables, standardTableOf } from '../controls/data/source'
 import { SourceChooser } from '../controls/data/SourceChooser'
 import { useTimedHidden } from '../controls/composite/visibility'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
@@ -452,12 +452,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     afterId?: string | null) => {
     const definition = request.entry.definition
     if (!definition.create || insertReasonOf(definition.type)) return false
-    // a data control shows the workspace's only table of its kind, asks among several, creates one when there is none
+    // a data control shows the workspace's only table of its kind, asks among several, creates one when there is none;
+    // a standard table (the toolbar's table group) asks whenever the workspace has one of its schema
     const source = request.entry.key.startsWith('control:') ? controlRegistry.get(definition.type)?.source : undefined
-    if (source && request.sourceId === undefined && !request.newSource) {
-      const tables = sourceTables(store, source.schemaId)
-      if (tables.length === 1) request = { ...request, sourceId: tables[0].entity_id }
-      else if (tables.length > 1) { setSourceAsk({ tables, request, world, parentId, also, afterId }); return false }
+    const schemaId = source?.schemaId ?? (definition.type === 'table' ? standardTableOf(request.entry.config)?.schemaId : undefined)
+    if (schemaId && request.sourceId === undefined && !request.newSource) {
+      const tables = sourceTables(store, schemaId)
+      if (source && tables.length === 1) request = { ...request, sourceId: tables[0].entity_id }
+      else if (tables.length > (source ? 1 : 0)) { setSourceAsk({ tables, request, world, parentId, also, afterId }); return false }
     }
     // a flow page shows no connectors (连接线实现方案 §8.3)
     if (definition.type === 'connector' && !isFree) { store.notify('info', aiwsT('aiworkspace.canvas.flowNoConnectors')); return false }
@@ -1449,7 +1451,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             <StatusDock />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
             {defining && defining.length > 0 && <DefineControlDialog ids={defining} laid={laid} surfaceId={surfaceId} onClose={() => setDefining(null)} onDone={(ids) => { setDefining(null); setSelectionState(new Set(ids)) }} />}
-            {sourceAsk && <SourceChooser title={t('aiworkspace.datactl.source.title', { name: sourceAsk.request.title || sourceAsk.request.entry.title })} note={t('aiworkspace.datactl.source.note')}
+            {sourceAsk && <SourceChooser title={t('aiworkspace.datactl.source.title', { name: sourceAsk.request.title || sourceAsk.request.entry.title })}
+              note={t(sourceAsk.request.entry.key.startsWith('control:') ? 'aiworkspace.datactl.source.note' : 'aiworkspace.datactl.source.standardNote')}
               tables={sourceAsk.tables} onClose={() => setSourceAsk(null)} onPick={(choice) => {
               const { request, world, parentId, also, afterId } = sourceAsk
               setSourceAsk(null)

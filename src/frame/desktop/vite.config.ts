@@ -25,7 +25,7 @@ function desktopServiceWorker(): Plugin {
         }
       }
       try { walk(outDir) } catch { return } // the build failed before writing anything
-      const precache = files.filter((file) => file !== 'sw.js' && !file.endsWith('.map') && !file.startsWith(PDFJS_PREFIX)).sort()
+      const precache = files.filter((file) => file !== 'sw.js' && !file.endsWith('.map') && !file.startsWith(PDFJS_PREFIX) && !file.startsWith('open-source/')).sort()
       if (!precache.includes('index.html')) return
       const hash = createHash('sha256')
       for (const file of precache) hash.update(file).update('\0').update(readFileSync(join(outDir, file)))
