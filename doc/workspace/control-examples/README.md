@@ -7,7 +7,7 @@
 | `tv-screen` 电视屏 | composite | `media`：slot 里的视频按 `config.broadcast` 锚点播放（G17），服务端时钟（G16），空 slot 时从 Zone 选视频 | §5.3 |
 | `time-limited` 限时可见 | composite | slot 的 `visible: { from: "first_open", for_ms }`（G19），观众投影显示剩余时间（`viewer` 数据源，`countdown` 格式） | §5.4 |
 | `photo-vote` 照片投票 | composite | 目录成员投影 + 本人选择标记（G2、G20），计数投影做封面（G21），事件默认处理 `events.pick.on`，声明动作“准备选票”，插入时的 `on_bind` / `on_init_control`（manifest 5） | §5.5 |
-| `listen-together` 一起听 | HTML（host API 4） | 声明动作（H2）、`onConfig`（H1）、`serverNow`（H5）、`userState`（H4）、`mediaUrl` 流式地址（H6） | §5.6 |
+| `listen-together` 一起听 | HTML（host API 5） | 声明动作（H2）、`onConfig`（H1）、`serverNow`（H5）、`userState`（H4）、`mediaUrl` 流式地址（H6）、脚本里的 `aiws.on('bind')`（控件 on_bind TODO §2.9） | §5.6 |
 
 ## 怎么用
 
@@ -34,7 +34,7 @@ buckyos aiws build doc/workspace/control-examples/controls/tv-screen --workspace
 
 ### 一起听
 
-绑定一个音频目录（同名 `.lrc` 是歌词）。owner 不用先激活控件，直接在工具栏点“开始一起听 / 暂停 / 继续 / 下一首 / 顺序播放 / 随机播放”：开始和播放模式由宿主直接写配置；暂停、继续、下一首转给 HTML 计算后写入（控件没在运行时宿主先启动它）。正在听的人立刻跟上。每个人可以切到“自己听”、拖进度、切歌；音量和自己听的位置记在本人的 User State 里，下次打开接着听。
+绑定一个音频目录（同名 `.lrc` 是歌词）。插入时由它自己的脚本（`on_bind: "script"`）决定绑哪个：只列出装有音频的目录，只有一个就直接绑，一个都没有就新建一个空的 Playlist 目录；Agent 用 `place` 放置时脚本不跑，要用 `--bind` 给出 `playlist`。owner 不用先激活控件，直接在工具栏点“开始一起听 / 暂停 / 继续 / 下一首 / 顺序播放 / 随机播放”：开始和播放模式由宿主直接写配置；暂停、继续、下一首转给 HTML 计算后写入（控件没在运行时宿主先启动它）。正在听的人立刻跟上。每个人可以切到“自己听”、拖进度、切歌；音量和自己听的位置记在本人的 User State 里，下次打开接着听。
 
 ## 已知限制
 

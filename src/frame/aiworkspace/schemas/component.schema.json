@@ -42,7 +42,7 @@
    "type": "integer",
    "minimum": 1,
    "default": 1,
-   "description": "The host API the control was written for: html 2, 3 (needs manifest_version 3: aiws.emit, createBlock parent / slot, context.interactive) or 4 (needs manifest_version 4: aiws.onConfig, serverNow, userState, mediaUrl, forwarded actions); the declarative interpreter is 1."
+   "description": "The host API the control was written for: html 2, 3 (needs manifest_version 3: aiws.emit, createBlock parent / slot, context.interactive), 4 (needs manifest_version 4: aiws.onConfig, serverNow, userState, mediaUrl, forwarded actions) or 5 (needs manifest_version 5: on_bind / on_init_control \"script\"); the declarative interpreter is 1."
   },
   "accepts": {
    "$ref": "#/$defs/data_types"
@@ -276,191 +276,205 @@
    "description": "manifest_version 4 (控件机制 TODO H2): actions the host offers on an instance's near toolbar in the modes named, to whoever has the capabilities needed — in view mode too, and before an HTML control runs. Like an event, an action is the person's own act, with their rights."
   },
   "on_bind": {
-   "type": "array",
-   "maxItems": 16,
-   "description": "(manifest 5, kind composite) What the composite binds when placed or re-bound, in order; bindings no step settles follow the host's default rule (控件 on_bind TODO §2.4). Run from parent to child: a child sees its parent's bindings.",
-   "items": {
-    "oneOf": [
-     {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-       "binding",
-       "pick"
-      ],
-      "properties": {
-       "binding": {
-        "type": "string"
-       },
-       "pick": {
-        "enum": [
-         "one",
-         "many",
-         "all"
-        ]
-       },
-       "title": {
-        "type": "string",
-        "maxLength": 256
-       },
-       "allow_new": {
-        "type": "boolean"
-       }
-      }
-     },
-     {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-       "binding",
-       "from_parent"
-      ],
-      "properties": {
-       "binding": {
-        "type": "string"
-       },
-       "from_parent": {
-        "type": "string",
-        "pattern": "^[a-z][a-z0-9_]{0,31}$"
-       }
-      }
-     },
-     {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-       "binding",
-       "create"
-      ],
-      "properties": {
-       "binding": {
-        "type": "string"
-       },
-       "when": {
-        "enum": [
-         "missing",
-         "always"
-        ]
-       },
-       "create": {
-        "oneOf": [
-         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-           "standard"
-          ],
-          "properties": {
-           "standard": {
-            "enum": [
-             "buckyos.todo@1",
-             "buckyos.calendar@1"
-            ]
-           }
-          }
-         },
-         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-           "table"
-          ],
-          "properties": {
-           "table": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-             "name",
-             "fields"
-            ],
-            "properties": {
-             "name": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256
-             },
-             "title_field_id": {
-              "type": "string"
-             },
-             "fields": {
-              "type": "array"
-             }
-            }
-           }
-          }
-         },
-         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-           "dir"
-          ],
-          "properties": {
-           "dir": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-             "name"
-            ],
-            "properties": {
-             "name": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256
-             }
-            }
-           }
-          }
-         }
-        ]
-       }
-      }
-     }
-    ]
-   }
-  },
-  "on_init_control": {
-   "type": "array",
-   "maxItems": 16,
-   "description": "(manifest 5, kind composite) After every on_bind, from child to parent: { require: children } (the default: every child control ready) and { then: { action } } (a declared action run after the Commit).",
-   "items": {
-    "oneOf": [
-     {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-       "require"
-      ],
-      "properties": {
-       "require": {
-        "const": "children"
-       }
-      }
-     },
-     {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-       "then"
-      ],
-      "properties": {
-       "then": {
+   "description": "(manifest 5) A composite: what it binds when placed or re-bound, in order; bindings no step settles follow the host's default rule (控件 on_bind TODO §2.4). Run from parent to child: a child sees its parent's bindings. An HTML control (host_api 5): \"script\" — its behavior.js handles aiws.on('bind'), run by the host without a page before placing (控件 on_bind TODO §2.9).",
+   "oneOf": [
+    {
+     "type": "array",
+     "maxItems": 16,
+     "items": {
+      "oneOf": [
+       {
         "type": "object",
         "additionalProperties": false,
         "required": [
-         "action"
+         "binding",
+         "pick"
         ],
         "properties": {
-         "action": {
+         "binding": {
+          "type": "string"
+         },
+         "pick": {
+          "enum": [
+           "one",
+           "many",
+           "all"
+          ]
+         },
+         "title": {
+          "type": "string",
+          "maxLength": 256
+         },
+         "allow_new": {
+          "type": "boolean"
+         }
+        }
+       },
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "binding",
+         "from_parent"
+        ],
+        "properties": {
+         "binding": {
+          "type": "string"
+         },
+         "from_parent": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]{0,31}$"
          }
         }
+       },
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "binding",
+         "create"
+        ],
+        "properties": {
+         "binding": {
+          "type": "string"
+         },
+         "when": {
+          "enum": [
+           "missing",
+           "always"
+          ]
+         },
+         "create": {
+          "oneOf": [
+           {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+             "standard"
+            ],
+            "properties": {
+             "standard": {
+              "enum": [
+               "buckyos.todo@1",
+               "buckyos.calendar@1"
+              ]
+             }
+            }
+           },
+           {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+             "table"
+            ],
+            "properties": {
+             "table": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+               "name",
+               "fields"
+              ],
+              "properties": {
+               "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+               },
+               "title_field_id": {
+                "type": "string"
+               },
+               "fields": {
+                "type": "array"
+               }
+              }
+             }
+            }
+           },
+           {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+             "dir"
+            ],
+            "properties": {
+             "dir": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+               "name"
+              ],
+              "properties": {
+               "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+               }
+              }
+             }
+            }
+           }
+          ]
+         }
+        }
        }
-      }
+      ]
      }
-    ]
-   }
+    },
+    {
+     "const": "script"
+    }
+   ]
+  },
+  "on_init_control": {
+   "description": "(manifest 5) A composite: after every on_bind, from child to parent: { require: children } (the default: every child control ready) and { then: { action } } (a declared action run after the Commit). An HTML control (host_api 5): \"script\" — its behavior.js handles aiws.on('init_control'), run by the host without a page before placing (控件 on_bind TODO §2.9).",
+   "oneOf": [
+    {
+     "type": "array",
+     "maxItems": 16,
+     "items": {
+      "oneOf": [
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "require"
+        ],
+        "properties": {
+         "require": {
+          "const": "children"
+         }
+        }
+       },
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "then"
+        ],
+        "properties": {
+         "then": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+           "action"
+          ],
+          "properties": {
+           "action": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "const": "script"
+    }
+   ]
   }
  },
  "$defs": {

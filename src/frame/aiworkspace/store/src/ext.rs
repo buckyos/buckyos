@@ -10,7 +10,7 @@ use aiworkspace_core::materialize::ObjectSource;
 use aiworkspace_core::model::*;
 use aiworkspace_core::order_key::order_key_between;
 use aiworkspace_core::types::{
-    check_catalog, check_def_bindings, check_member_name, ident_string, is_event_name, is_renderer_id, is_slot_name, COMPOSITE, HTML_API_LATEST, HTML_API_VERSION,
+    check_catalog, check_def_bindings, check_member_name, ident_string, is_event_name, is_renderer_id, is_slot_name, COMPOSITE, HTML_API_LATEST, HTML_API_VERSION, HTML_BIND_API,
     MANIFEST_VERSION, MAX_AGENT_BYTES, MAX_BLOCK_DEF_BYTES, MAX_DEF_DEPS, MAX_EVENTS, MAX_SLOTS,
 };
 use aiworkspace_core::{Code, WsError, WsResult};
@@ -1049,12 +1049,27 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
             payload.insert("actions".into(), v.clone());
         }
     }
-    // (manifest 5) what a composite binds when placed, child controls after it, and its last check (控件 on_bind TODO §2.6)
+    // (manifest 5) what a composite binds when placed, child controls after it, and its last check (控件 on_bind TODO §2.6);
+    // an HTML control decides it in its script (§2.9, host API 5)
     if c.contains_key("on_bind") || c.contains_key("on_init_control") {
         if manifest_version < 5 {
             d.error(f, format!("on_bind / on_init_control {V5_HINT}"));
+        } else if kind == "html" {
+            match aiworkspace_core::types::check_script_events(c.get("on_bind"), c.get("on_init_control")) {
+                Err(e) => d.error(f, e.detail),
+                Ok(()) if host_api.unwrap_or(HTML_API_VERSION) < HTML_BIND_API => {
+                    d.error(f, format!("on_bind / on_init_control \"script\": aiws.on('bind') / aiws.on('init_control') need host_api {HTML_BIND_API}"))
+                }
+                Ok(()) => {
+                    for k in ["on_bind", "on_init_control"] {
+                        if let Some(v) = c.get(k) {
+                            payload.insert(k.into(), v.clone());
+                        }
+                    }
+                }
+            }
         } else if kind != COMPOSITE {
-            d.error(f, "on_bind / on_init_control: declared steps are for a composite (an HTML control binds in behavior.js)");
+            d.error(f, "on_bind / on_init_control: declared steps are for a composite, \"script\" for an HTML control");
         } else {
             let empty = Map::new();
             let decls = c.get("bindings").and_then(Value::as_object).unwrap_or(&empty);
@@ -1093,6 +1108,8 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
             let api = host_api.unwrap_or(HTML_API_VERSION);
             if !(HTML_API_VERSION..=HTML_API_LATEST).contains(&api) {
                 d.error(f, format!("host_api {api}: the HTML Block host speaks API {HTML_API_VERSION}…{HTML_API_LATEST}"));
+            } else if api >= HTML_BIND_API && manifest_version < 5 {
+                d.error(f, format!("host_api {api} {V5_HINT}"));
             } else if api >= 3 && manifest_version < 3 {
                 d.error(f, format!("host_api {api} {V3_HINT}"));
             } else if api < 3 && !events.is_empty() {

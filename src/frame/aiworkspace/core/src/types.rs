@@ -177,9 +177,12 @@ pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 pub const MAX_BLOCK_DEF_BYTES: usize = 512 * 1024;
 /// Version of the `window.aiws` Block host API (`aiws` v2) the wish planner writes into html results.
 pub const HTML_API_VERSION: u64 = 2;
-/// The newest Block host API a control may be written for (扩展控件 P2: `emit`, `createBlock.parent`, `interactive`);
-/// hosts run every version from 2 on.
-pub const HTML_API_LATEST: u64 = 4;
+/// The newest Block host API a control may be written for (扩展控件 P2: `emit`, `createBlock.parent`, `interactive`;
+/// 5: `aiws.on('bind')` / `aiws.on('init_control')` run before placing, 控件 on_bind TODO §2.9); hosts run every version
+/// from 2 on.
+pub const HTML_API_LATEST: u64 = 5;
+/// The host API from which an HTML control may decide its bindings in its script (`on_bind: "script"`).
+pub const HTML_BIND_API: u64 = 5;
 /// Events one control declares, handlers one event of an instance binds, and the size of an instance's `on` (Q26).
 pub const MAX_EVENTS: usize = 16;
 pub const MAX_EVENT_HANDLERS: usize = 4;
@@ -1771,6 +1774,17 @@ pub fn check_def_bindings(v: &Value) -> WsResult<()> {
     Ok(())
 }
 
+/// (host API 5, 控件 on_bind TODO §2.9) An HTML control decides its bindings in its script: `on_bind` / `on_init_control`
+/// are `"script"`, its `aiws.on('bind')` / `aiws.on('init_control')` run by the host without a page before placing.
+pub fn check_script_events(on_bind: Option<&Value>, on_init: Option<&Value>) -> WsResult<()> {
+    for (key, v) in [("on_bind", on_bind), ("on_init_control", on_init)] {
+        if v.is_some_and(|v| v != "script") {
+            return Err(bad(format!("{key}: an HTML control writes \"script\" (its behavior.js handles aiws.on('{}'))", if key == "on_bind" { "bind" } else { "init_control" })));
+        }
+    }
+    Ok(())
+}
+
 /// (manifest 5, 控件 on_bind TODO §2.6) A composite's declared steps: `on_bind` — `{ binding, pick: one | many | all,
 /// title?, allow_new? }`, `{ binding, from_parent }`, `{ binding, create: { standard } | { table: { name, title_field_id?,
 /// fields } } | { dir: { name } }, when?: missing | always }` — and `on_init_control` — `{ require: "children" }`,
@@ -2037,9 +2051,17 @@ fn block_def_schema(e: &mut EntityRow) -> WsResult<()> {
         return Err(bad("composition is only valid on a composite definition"));
     }
     if e.payload.contains_key("on_bind") || e.payload.contains_key("on_init_control") {
-        if kind != COMPOSITE {
-            return Err(bad("on_bind / on_init_control are declared steps of a composite"));
+        if kind == "html" {
+            check_script_events(e.payload.get("on_bind"), e.payload.get("on_init_control"))?;
+            let api = e.payload.get("html").and_then(|h| h.get("api_version")).and_then(Value::as_u64).unwrap_or(HTML_API_VERSION);
+            if api < HTML_BIND_API {
+                return Err(bad(format!("on_bind / on_init_control \"script\" needs html api_version {HTML_BIND_API}")));
+            }
+        } else if kind != COMPOSITE {
+            return Err(bad("on_bind / on_init_control are a composite's declared steps or an HTML control's \"script\""));
         }
+    }
+    if kind == COMPOSITE && (e.payload.contains_key("on_bind") || e.payload.contains_key("on_init_control")) {
         let empty = Map::new();
         let bindings = e.payload.get("bindings").and_then(Value::as_object).unwrap_or(&empty);
         let actions: Vec<String> = e.payload.get("actions").and_then(Value::as_array).into_iter().flatten().filter_map(|a| a.get("id").and_then(Value::as_str)).map(str::to_string).collect();

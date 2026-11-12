@@ -1,6 +1,10 @@
 # listen-together
 
-An HTML control (host API 4) that plays the audio files of the bound folder `playlist` for everyone at the same moment.
+An HTML control (host API 5) that plays the audio files of the bound folder `playlist` for everyone at the same moment.
+
+- Placing it: `buckyos aiws place did:bns:buckyos#listen-together --workspace <ws> --surface <canvas> --bind "playlist=<folder id>"`.
+  For a person its own script chooses the folder (only folders holding audio are offered; none: a new empty folder
+  "Playlist"); that script is not run for you, so give `playlist` — a folder with audio files in it.
 
 - Shared state is the instance's config: `track` (a file name of the folder; empty: the first), `mode` (`order` or
   `shuffle`) and `anchor = { pos_ms, at_ms, playing }` — at service time `at_ms` the track was at `pos_ms`. Use the

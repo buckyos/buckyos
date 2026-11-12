@@ -6275,11 +6275,25 @@
       "revision": "",
       "license": "MIT",
       "scopes": [
-        "desktop",
         "opendan",
-        "sdk-tool",
         "sys-test",
-        "sys-test-web",
+        "sys-test-web"
+      ],
+      "licenseFileCount": 1
+    },
+    {
+      "id": "5df3f459c99dba9ef1dc",
+      "name": "buckyos",
+      "version": "0.7.183",
+      "ecosystem": "npm",
+      "description": "BuckyOS WebSDK for browser and Node.js environments",
+      "homepage": "https://github.com/buckyos/buckyos-websdk#readme",
+      "repository": "https://github.com/buckyos/buckyos-websdk.git",
+      "revision": "",
+      "license": "MIT",
+      "scopes": [
+        "desktop",
+        "sdk-tool",
         "text-editor"
       ],
       "licenseFileCount": 1

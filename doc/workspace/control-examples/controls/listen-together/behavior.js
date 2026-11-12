@@ -7,6 +7,32 @@
 (function () {
   var DEFAULTS = { title: 'Listen together', mode: 'order', track: '' }
   var AUDIO = /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|webm)$/i
+  function isAudio(name, member) { return member.kind === 'file' && (/^audio\//.test(member.media_type || '') || AUDIO.test(name)) }
+
+  // ---- before it is placed or re-bound (host API 5, on_bind "script", 控件 on_bind TODO §2.9): run without a page, so
+  // nothing below this branch. Only folders that hold audio are offered; none: a new empty "Playlist" folder to fill.
+  if (aiws.context.role === 'bind') {
+    aiws.on('bind', async function (ctx) {
+      if (ctx.reason === 'insert' && ctx.given.playlist) return { bindings: { playlist: ctx.given.playlist } }
+      var folders = await ctx.find({ accepts: ['buckyos.dir'] })
+      var playable = []
+      for (var i = 0; i < folders.length && i < 64; i++) {
+        var read = await ctx.read(folders[i].entity_id)
+        var members = (read && read.content && read.content.payload && read.content.payload.members) || {}
+        if (Object.keys(members).some(function (n) { return isAudio(n, members[n]) })) playable.push(folders[i].entity_id)
+      }
+      if (playable.length === 0) return { bindings: { playlist: 'new' }, create: [{ ref: 'new', kind: 'dir', name: 'Playlist' }] }
+      if (playable.length === 1 && ctx.reason === 'insert') return { bindings: { playlist: playable[0] } }
+      var picked = await ctx.dialogs.pickOne({
+        title: /^zh/.test(aiws.locale) ? '要播放的文件夹' : 'Folder to play', // the host shows "Choose: …"
+        query: { accepts: ['buckyos.dir'], ids: playable },
+        current: ctx.given.playlist || null,
+      })
+      return picked ? { bindings: { playlist: picked } } : null
+    })
+    return
+  }
+
   var $ = function (id) { return document.getElementById(id) }
   var audio = $('audio'), wave = $('wave'), lyricsEl = $('lyrics')
   var config = Object.assign({}, DEFAULTS, aiws.context.config || {})
@@ -43,10 +69,7 @@
     var dir = await aiws.read(b.entity_id)
     var members = (dir && dir.content && dir.content.payload && dir.content.payload.members) || {}
     var names = Object.keys(members).sort()
-    tracks = names.filter(function (n) {
-      var m = members[n]
-      return m.kind === 'file' && (/^audio\//.test(m.media_type || '') || AUDIO.test(n))
-    }).map(function (n) {
+    tracks = names.filter(function (n) { return isAudio(n, members[n]) }).map(function (n) {
       var lrc = n.replace(/\.[^.]+$/, '') + '.lrc'
       return { name: n, lrc: members[lrc] ? lrc : null }
     })

@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Plus, Table2 } from 'lucide-react'
+import { Check, Folder, Plus, Table2 } from 'lucide-react'
 import { aiwsT } from '../../../i18n'
 import { useEntity, useReadOnlyReason, useStore } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
@@ -30,11 +30,11 @@ function Sheet({ title, onClose, children }: { title: string; onClose: () => voi
   )
 }
 
-function DataRow({ id, title, place, selected, onClick }: { id: string; title: string; place: string; selected?: boolean; onClick: () => void }) {
+function DataRow({ id, title, place, folder, selected, onClick }: { id: string; title: string; place: string; folder: boolean; selected?: boolean; onClick: () => void }) {
   const { t } = useAiwsText()
   return (
     <button type="button" role="listitem" className={`aiws-source-item${selected ? ' is-selected' : ''}`} aria-pressed={selected} data-testid={`aiws-source-${id}`} onClick={onClick}>
-      {selected ? <Check size={16} aria-hidden="true" /> : <Table2 size={16} aria-hidden="true" />}
+      {selected ? <Check size={16} aria-hidden="true" /> : folder ? <Folder size={16} aria-hidden="true" /> : <Table2 size={16} aria-hidden="true" />}
       <span><span className="aiws-source-name">{title}</span>{place && <span className="aiws-muted">{t('aiworkspace.datactl.source.in', { place })}</span>}</span>
     </button>
   )
@@ -50,7 +50,7 @@ function PickOne({ ask, onDone }: { ask: Extract<Ask, { kind: 'one' }>; onDone: 
       <b>{title}</b>
       {ask.note && <div className="aiws-muted">{ask.note}</div>}
       <div className="aiws-source-list" role="list">
-        {data.map((d) => <DataRow key={d.entity_id} id={d.entity_id} title={d.title ?? d.entity_id} place={d.place ?? ''} selected={d.entity_id === ask.current} onClick={() => onDone(d.entity_id)} />)}
+        {data.map((d) => <DataRow key={d.entity_id} id={d.entity_id} title={d.title ?? d.entity_id} place={d.place ?? ''} folder={d.type_id === 'buckyos.dir'} selected={d.entity_id === ask.current} onClick={() => onDone(d.entity_id)} />)}
         {ask.allowNew && (
           <button type="button" role="listitem" className="aiws-source-item" data-testid="aiws-source-new" onClick={() => onDone({ new: true })}>
             <Plus size={16} aria-hidden="true" /><span className="aiws-source-name">{t('aiworkspace.datactl.source.new')}</span>
@@ -75,7 +75,7 @@ function PickMany({ ask, onDone }: { ask: Extract<Ask, { kind: 'many' }>; onDone
       <b>{title}</b>
       {ask.note && <div className="aiws-muted">{ask.note}</div>}
       <div className="aiws-source-list" role="list">
-        {data.map((d) => <DataRow key={d.entity_id} id={d.entity_id} title={d.title ?? d.entity_id} place={d.place ?? ''} selected={chosen.has(d.entity_id)} onClick={() => toggle(d.entity_id)} />)}
+        {data.map((d) => <DataRow key={d.entity_id} id={d.entity_id} title={d.title ?? d.entity_id} place={d.place ?? ''} folder={d.type_id === 'buckyos.dir'} selected={chosen.has(d.entity_id)} onClick={() => toggle(d.entity_id)} />)}
         {data.length === 0 && !ask.allowNew && <div className="aiws-muted">{t('aiworkspace.datactl.source.none')}</div>}
         {ask.allowNew && (
           <button type="button" role="listitem" className={`aiws-source-item${fresh ? ' is-selected' : ''}`} aria-pressed={fresh} data-testid="aiws-source-new" onClick={() => setFresh((v) => !v)}>

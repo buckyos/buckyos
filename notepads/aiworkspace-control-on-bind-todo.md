@@ -197,7 +197,7 @@ Agent 放置控件同样走 on_bind 和 on_init_control，固定 `no_ui`：
 - 新增命令 `buckyos aiws place <控件> --surface <画布> [--bind <name>=<id>[,<id>…]] [--config <json>]`，跑完后提交一个 Commit。
 - Agent 直接写 `doc.commit` 时内核不会调用 on_bind，内核是 Rust，跑不了控件逻辑。手册里规定 Agent 放置控件要用 `place`，不手写插入操作。
 
-### 2.9 第二步（不在本单）
+### 2.9 第二步（2026-11-12 已实施，见 §8）
 
 HTML 控件：
 
@@ -396,3 +396,63 @@ Desktop 部分（owner 提交并说“继续”之后）：
 - 注意：DV 调用的是 websdk 的 `cli/dist/cli.mjs`，改 `cli/modules` 后要 `npx vite build --config vite.cli.config.ts`。
 
 没在 DV 里覆盖：手机上的选择对话框（底部弹出，没在真实 Zone 或真机上看过）、普通成员插入、日历“显示哪些表…”在真实 Zone 上的操作。
+
+## 8. 第二步：HTML 控件的 `aiws.on('bind')`（2026-11-12，已实施、已部署本机 Zone 做 DV，未提交）
+
+owner 裁决（11-12）：
+
+- 脚本的 bind 处理不依赖页面：Desktop 在不显示的 Worker 里跑 `behavior.js`（`aiws.context.role === 'bind'`）。
+- “坚持原则”：CLI 不跑扩展脚本。`buckyos aiws place` 把 Agent 给的绑定当作 ctx 原样使用；必填的没给，就以 `NEEDS_UI` 失败并说出名字。不拿声明里的默认规则替脚本做选择。
+
+落点：
+
+- **声明**：`component.json` 写 `"on_bind": "script"`（可选 `"on_init_control": "script"`），需要 `host_api` 5 和 `manifest_version` 5。
+  - 内核：`HTML_API_LATEST` 升到 5，新增 `HTML_BIND_API`、`check_script_events`；`ext.rs` 构建时检查，定义实体直接写入时也查。
+  - schema：`component` / `block-def` 的 `on_bind`、`on_init_control` 改为 `oneOf`（步骤列表，或 `"script"`）。
+  - websdk 预检 `aiws_ext.ts` 同步，`AIWS_HTML_API_VERSION` 升到 5（新建 HTML 控件的骨架随之是 5）。
+- **结果检查**（websdk `aiws_bind.ts` `checkBindResult`，所有 on_bind 都过一遍，不只脚本）：
+  - 绑定名要已声明，单张只能一个 id，列表最多 32 个且不重复；
+  - `create` 最多 16 项，`kind` 是 standard / table / dir，新建的都要绑上；
+  - 每个控件结果里的 `ref` 改名成全局唯一，两个控件都用 `new` 也不会撞；
+  - 不合规按 `INVALID` 失败。
+  - 顺带的变化：改绑定时列表选成空，结果里不再保留 `[]`，直接省略。写入效果不变，`bindingsPayload` 本来就丢弃空列表。
+- **查询**：`DataQuery` 加 `ids`，脚本可以只让对话框列出它挑出的几份。
+- **Desktop**：
+  - `ui/extensions/bindScript.ts`：Worker 从 blob 加载引导代码，`importScripts` 定义的 `js`。
+  - 脚本可用的：`find` / `read` / `canCreate` / `defaults(names?)` / `dialogs.*`，都经消息转给宿主。
+  - 超时：加载 8 秒；脚本 20 秒没有动静算超时，等人在对话框里选的时间不算。
+  - 失败都是带原因的 `INVALID`：脚本抛错、碰页面、没注册处理函数、返回值不对，界面上显示“插入失败：……”。
+  - `binding.ts` 的 `declaredOf` 对 `on_bind: "script"` 的定义给出脚本版 `onBind` / `onInit`，用到时才启动 Worker，结束后关掉。
+  - 改绑定（实例属性面板的“更改绑定的数据…”）也由脚本决定（Q1）；组合控件的步骤仍只管插入。
+  - `htmlRuntime.ts` 的版本表加 5（页面上没有新成员）。
+- **CLI**：`place` 对 `on_bind: "script"` 的定义用 `givenOnly`；组合控件仍跑声明步骤；HTML 控件的 init 检查用默认的。
+- **示例**：一起听改为 manifest 5、host API 5、`on_bind: "script"`。
+  - 只列出装有音频的目录，只有一个就直接绑，一个都没有就新建空的 `Playlist` 目录。
+  - 对话框标题按 `aiws.locale` 选中文或英文；README、AGENT.md、`aiws-manifest.json` 的 host_api 和 digest 同步。
+- **文档**：kernel 05 新增“HTML 控件写在脚本里”一段，host API 列表加 5，并写明 Agent 走 `place` 不跑脚本；手册 `aiworkspace_template_dev` 同步。
+
+验证：
+
+- Rust：`cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace`，58 个测试程序、289 条全过。`control_examples_and_manifests` 加了一起听的 `on_bind: "script"`，以及三条反例：HTML 写步骤、host_api 4 写 script、manifest 4 用 host_api 5。
+- websdk jest：`aiws_bind` / `aiws_ext` / `aiws_schedule` 共 45 条通过（1 条原本就跳过）。新增 ref 不冲突、结果不合规、no_ui 下开对话框三条；HTML script 预检一条。
+- Desktop：`tsc`、`eslint` 无报错；WASM 已重建。
+- e2e：
+  - CE06：一起听从目录插入。没有音频目录时不弹框，新建 Playlist；有两个音频目录和一个照片目录时只列出前两个，标题是脚本给的中文；取消不插入；改绑定时标出当前目录，改选另一个。
+  - CE07：脚本抛错、用了页面（`document is not defined`）、没注册处理函数、`init_control` 返回未就绪原因，四种都不插入，并显示原因。
+  - control-examples 7 条全过（CE04 一起听播放照常）。
+
+- 回归（串行）：todo / calendar / extensions / blocks / schedule / wish 共 51 条。
+  - Q33 原来用 api_version 5 充当“比宿主新的版本”，宿主升到 5 后改用 6，已过。
+  - wish T3-4（本地执行器）在串行回归里超时；单独跑两次都过（18 秒对 1.2 分钟），和本次改动无关，是负载下的偶发。
+- 本机 Zone DV（`buckyos-build.py -s aiworkspace desktop` + `start.py`，`aiworkspace.controls` 7 条全过）。新增 `[ctl] on_bind script`：
+  - Agent 不给 `--bind` 时，`place` 以 `NEEDS_UI` 失败并说出 `playlist`；
+  - owner 从目录插入一起听：没有音频目录时新建 Playlist；有两个音频目录和一个照片目录时，对话框只列出前两个；
+  - Agent `--bind playlist=talks` 原样绑上，不新建任何数据。
+- DV 截图里看到文件夹在对话框里显示表格图标，已改成文件夹图标（`BindDialogs.tsx`），重新部署 Desktop 后 DV 复跑通过。
+
+还没做 / 没验：
+
+- 20 秒无响应的超时没写用例；
+- 服务端大纲不给 Cell 输出 `bindings`，只有数据控件和组合控件有。子控件拿父控件的绑定这条路不受影响，因为 HTML 控件不会是父控件；
+- 真机、手机没验。
+

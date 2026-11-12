@@ -707,7 +707,26 @@ fn control_examples_and_manifests() {
         assert_eq!(vote["events"]["pick"]["params"]["item"]["type"], "string");
         let listen = payload(srv.rpc("doc.read", json!({ "entity_id": defs["listen-together"] })).await);
         assert_eq!(listen["actions"].as_array().map(Vec::len), Some(6));
-        assert_eq!(listen["html"]["api_version"], 4, "{listen}");
+        assert_eq!(listen["html"]["api_version"], 5, "{listen}");
+        assert_eq!(listen["on_bind"], "script", "{listen}");
+        // an HTML control decides in its script (host API 5): declared steps are a composite's, "script" needs host_api 5
+        let lt = files_of("listen-together");
+        let build_html = async |c: &Value| {
+            let files: Vec<(&str, String)> = lt.iter().map(|(n, t)| (n.as_str(), if n == "component.json" { c.to_string() } else { t.clone() })).collect();
+            srv.rpc("ext.build", json!({ "files": upload(&srv, "lt-bad", &files).await })).await
+        };
+        let mut lc: Value = serde_json::from_str(&lt.iter().find(|(n, _)| n == "component.json").unwrap().1).unwrap();
+        lc["on_bind"] = json!([{ "binding": "playlist", "pick": "one" }]);
+        let r = build_html(&lc).await;
+        assert!(diag_text(&r).contains("on_bind: an HTML control writes"), "{r}");
+        lc["on_bind"] = json!("script");
+        lc["host_api"] = json!(4);
+        let r = build_html(&lc).await;
+        assert!(diag_text(&r).contains("need host_api 5"), "{r}");
+        lc["host_api"] = json!(5);
+        lc["manifest_version"] = json!(4);
+        let r = build_html(&lc).await;
+        assert!(diag_text(&r).contains("needs manifest_version 5"), "{r}");
         let outline = srv.rpc("doc.outline", json!({})).await;
         let env = outline["entities"].as_array().unwrap().iter().find(|e| e["entity_id"] == defs["photo-vote"].as_str()).unwrap().clone();
         assert_eq!(env["def_actions"][0]["id"], "prepare", "{env}");

@@ -573,9 +573,10 @@ export interface BlockDefPayload {
   composition?: Composition
   /** P2 (Q26): the events the control raises (a composite's re-raise a child's, `from`). */
   events?: Record<string, ControlEvent>
-  /** (manifest 5) A composite's declared steps when placed (控件 on_bind TODO §2.6). */
-  on_bind?: OnBindStep[]
-  on_init_control?: OnInitStep[]
+  /** (manifest 5) A composite's declared steps when placed (控件 on_bind TODO §2.6); an HTML control's `"script"` — its
+   * behavior.js handles `aiws.on('bind')` / `aiws.on('init_control')` (§2.9, host API 5). */
+  on_bind?: OnBindStep[] | 'script'
+  on_init_control?: OnInitStep[] | 'script'
 }
 
 /** An event a control declares (`component.json` `events`, a composite's `composition.json` `events`). */

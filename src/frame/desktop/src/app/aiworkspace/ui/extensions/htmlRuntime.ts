@@ -13,6 +13,9 @@
  *       `context.config`); serverNow() — the service's clock; userState.get(key) / set(key, value) — this
  *       person's own state of this Block (`block:<id>/<key>`); mediaUrl(binding, member?) — a Range-playable
  *       address of a bound audio / video asset (or a member of a bound directory)
+ *   v5 (控件 on_bind TODO §2.9): nothing new on the page; a definition declaring `on_bind` / `on_init_control` "script"
+ *       has its script run once more without a page before it is placed or re-bound (bindScript.ts,
+ *       `aiws.context.role === 'bind'`) for its aiws.on('bind') / aiws.on('init_control')
  *   locale: the host's language when the iframe starts ('en', 'zh-CN', …; also the document's `lang`),
  *       so an extension can show its own text in it; a language the extension has no text for should
  *       read English, as the host does.
@@ -25,8 +28,8 @@ import type { Json, Operation } from '../../api/types'
 import { aiwsT, currentAiwsLocale } from '../../i18n'
 
 /** The host API versions this host runs (Q19: newer versions only add members); the newest is what it speaks. */
-export const HTML_API_VERSIONS = [2, 3, 4] as const
-export const HTML_API_VERSION = 4
+export const HTML_API_VERSIONS = [2, 3, 4, 5] as const
+export const HTML_API_VERSION = 5
 /** A definition that names no version was written for API 2. */
 export const HTML_API_DEFAULT = 2
 /** The version an HTML definition runs on, or null when this host is older than it (Q33: shown as its snapshot). */

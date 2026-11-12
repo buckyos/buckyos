@@ -667,3 +667,65 @@ test('[ctl] on_bind: the Agent places to-do / calendar / photo vote with buckyos
   await expect.poll(async () => (await readEntity(owner, ws, inserted.bindings.votes)).content.fields.find((f: J) => f.field_id === 'picks').options.map((o: J) => o.label), { timeout: 30_000 }).toEqual(['Cake.png'])
   await screenshot(page, info, 'on-bind-vote')
 })
+
+// ---- 控件 on_bind TODO §2.9 on the Zone: an HTML control decides its bindings in its own script; an Agent gives them
+
+test('[ctl] on_bind script: listen together picks its playlist in its own script (only folders with audio; none → a new Playlist); the Agent gives it with place', async ({ owner, baseURL }, info) => {
+  test.setTimeout(300_000)
+  const ws = await freeCanvas(owner)
+  const def = await build(owner, ws, 'listen-together')
+  const place = (...args: string[]) => cli(owner, baseURL!, 'aiws', 'place', ...args, '--workspace', ws.workspace_id, '--surface', 'free')
+  const outlineOf = async () => (await outline(owner, ws)) as J[]
+  const cells = async () => (await outlineOf()).filter((e) => e.type_id === 'buckyos.cell' && e.def_id === def && !e.deleted)
+  const playlistOf = async (id: string) => (await readEntity(owner, ws, id)).content.payload.bindings?.playlist?.entity_id as string | undefined
+
+  // the Agent: the script is not run for it — without --bind it is told to give playlist
+  let refused = ''
+  try { place('did:bns:buckyos#listen-together') } catch (error) { refused = String(error) }
+  expect(refused).toContain('NEEDS_UI')
+  expect(refused).toContain('playlist')
+
+  const page = owner.page
+  await open(owner, ws)
+  const insert = async () => {
+    await page.getByTestId('aiws-tool-catalog').click()
+    await page.getByTestId(`aiws-catalog-entry-def-${def}`).click()
+    await page.getByTestId('aiws-catalog-insert').click()
+  }
+  const dialog = page.getByTestId('aiws-source-chooser')
+  // no folder holds audio: nothing asked, an empty folder "Playlist" made on the canvas
+  await insert()
+  await expect.poll(async () => (await cells()).length, { timeout: 30_000 }).toBe(1)
+  const [first] = await cells()
+  const firstList = await playlistOf(first.entity_id)
+  expect((await outlineOf()).find((e) => e.entity_id === firstList)?.name).toBe('Playlist')
+
+  // two folders with audio and one of photos: only the two offered
+  const folder = async (id: string, files: [string, Buffer][]) => {
+    const members: Record<string, J> = {}
+    for (const [name, bytes] of files) members[name] = { kind: 'file', object_id: await upload(owner, ws, bytes) }
+    return { op: 'entity.create', entity_id: id, type_id: 'buckyos.dir', parent_id: 'data', order_key: id, name: id, payload: { members } }
+  }
+  await accepted(owner, ws, [
+    await folder('songs', [['a song.webm', media('a song.webm')], ['a song.lrc', media('a song.lrc')]]),
+    await folder('talks', [['b song.webm', media('b song.webm')]]),
+    await folder('photos', [['pic.png', png(10, 20, 30)]]),
+  ])
+  await insert()
+  await expect(dialog.getByTestId('aiws-source-songs')).toBeVisible({ timeout: 30_000 })
+  await expect(dialog.getByTestId('aiws-source-talks')).toBeVisible()
+  await expect(dialog.getByTestId('aiws-source-photos')).toHaveCount(0)
+  await expect(dialog.getByTestId(`aiws-source-${firstList}`)).toHaveCount(0)
+  await screenshot(page, info, 'on-bind-script-dialog')
+  await dialog.getByTestId('aiws-source-songs').click()
+  await expect.poll(async () => (await cells()).length, { timeout: 30_000 }).toBe(2)
+  const second = (await cells()).find((e) => e.entity_id !== first.entity_id)!
+  expect(await playlistOf(second.entity_id)).toBe('songs')
+
+  // the Agent with --bind: taken as given
+  const placed = place('did:bns:buckyos#listen-together', '--bind', 'playlist=talks')
+  expect(placed.bindings.playlist.entity_id).toBe('talks')
+  expect(placed.created).toEqual([])
+  await expect.poll(async () => (await cells()).length, { timeout: 30_000 }).toBe(3)
+  await screenshot(page, info, 'on-bind-script-placed')
+})

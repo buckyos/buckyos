@@ -1,10 +1,10 @@
 /* What a placed control binds (控件 on_bind TODO): the Desktop side of buckyos-websdk `resolveBindings` — the controls an
  * insertion creates as a tree (a composite and the first Blocks of its slots), their declarations (a built-in control's
- * contract, a definition's `bindings` / `on_bind` / `on_init_control`), the Workspace's data for the queries, the
- * dialogs of BindDialogs.tsx, and the result folded into the insertion's Commit; a re-bind of a control on the canvas the
- * same way. */
+ * contract, a definition's `bindings` / `on_bind` / `on_init_control`; an HTML control's own script, §2.9), the
+ * Workspace's data for the queries, the dialogs of BindDialogs.tsx, and the result folded into the insertion's Commit; a
+ * re-bind of a control on the canvas the same way. */
 
-import { bindingsPayload, boundIds, createOps, resolveBindings, type BindDialogs, type BindFailure, type BindingDecl, type BindNode, type Bound, type DataInfo, type DataQuery, type OnBindStep, type OnInitStep } from 'buckyos'
+import { bindingsPayload, boundIds, createOps, resolveBindings, type BindDialogs, type BindFailure, type BindingDecl, type BindNode, type Bound, type DataInfo, type DataQuery, type OnBind, type OnBindStep, type OnInit, type OnInitStep } from 'buckyos'
 import { uniqueName } from '@table/operations'
 import { CONTRACTS } from '@controls/contracts'
 import { isDataControl } from '@controls/contract'
@@ -12,6 +12,8 @@ import { randomId } from '../../../api/ids'
 import type { EntityEnvelope, Json, Operation } from '../../../api/types'
 import { aiwsT, currentAiwsLocale } from '../../../i18n'
 import type { WorkspaceStore } from '../../../state/store'
+import { configDefaults } from '../../extensions/actions'
+import { BindScript } from '../../extensions/bindScript'
 import { controlRegistry } from '../registry'
 
 /** Entities that are data a control can bind (not Blocks, canvases or definitions). */
@@ -27,12 +29,18 @@ export function placeOf(store: WorkspaceStore, e: EntityEnvelope): string {
 
 export function findData(store: WorkspaceStore, q: DataQuery): DataInfo[] {
   return store.outline.all()
-    .filter((e) => !e.deleted && !NOT_DATA.has(e.type_id) && (!q.accepts?.length || q.accepts.includes(e.type_id)) && (!q.schema_id || e.schema_id === q.schema_id))
+    .filter((e) => !e.deleted && !NOT_DATA.has(e.type_id) && (!q.accepts?.length || q.accepts.includes(e.type_id)) && (!q.schema_id || e.schema_id === q.schema_id) && (!q.ids || q.ids.includes(e.entity_id)))
     .map((e) => ({ entity_id: e.entity_id, type_id: e.type_id, schema_id: e.schema_id ?? null, title: e.title ?? e.name ?? null, name: e.name ?? null, place: placeOf(store, e) }))
 }
 
-/** A control's declarations: a built-in data control's contract, or its definition's payload. */
-interface Declared { decls: Record<string, BindingDecl>; onBind?: OnBindStep[]; onInit?: OnInitStep[]; actions: { id: string }[]; title: string }
+/** A control's declarations: a built-in data control's contract, or its definition's payload (`dispose` stops an HTML
+ * control's binding script). */
+interface Declared { decls: Record<string, BindingDecl>; onBind?: OnBindStep[] | OnBind; onInit?: OnInitStep[] | OnInit; actions: { id: string }[]; title: string; dispose?: () => void }
+
+interface DefPayload {
+  kind?: string; bindings?: Record<string, BindingDecl>; on_bind?: OnBindStep[] | 'script'; on_init_control?: OnInitStep[] | 'script'
+  actions?: { id: string }[]; title?: string; config_schema?: unknown; html?: { js?: string; api_version?: number }
+}
 
 /** The built-in controls' binding titles in the person's language (their contracts are written in English). */
 const BUILTIN_TITLES: Record<string, Record<string, string>> = {
@@ -49,9 +57,15 @@ async function declaredOf(store: WorkspaceStore, kind: string | null, defId: str
   }
   if (!defId) return null
   try {
-    const read = await store.readBatched<{ payload: { bindings?: Record<string, BindingDecl>; on_bind?: OnBindStep[]; on_init_control?: OnInitStep[]; actions?: { id: string }[]; title?: string } }>(defId)
+    const read = await store.readBatched<{ payload: DefPayload }>(defId)
     const p = read.content.payload
-    return { decls: p.bindings ?? {}, onBind: p.on_bind, onInit: p.on_init_control, actions: p.actions ?? [], title: p.title ?? defId }
+    const title = p.title ?? defId
+    if (p.kind === 'html' && (p.on_bind === 'script' || p.on_init_control === 'script')) {
+      // its behavior.js decides (host API 5): started only when the placement gets to it
+      const script = new BindScript(store, { defId, title, js: p.html?.js ?? '', apiVersion: p.html?.api_version ?? 5, config: configDefaults(p.config_schema) })
+      return { decls: p.bindings ?? {}, onBind: p.on_bind === 'script' ? script.onBind : undefined, onInit: p.on_init_control === 'script' ? script.onInit : undefined, actions: p.actions ?? [], title, dispose: () => script.dispose() }
+    }
+    return { decls: p.bindings ?? {}, onBind: Array.isArray(p.on_bind) ? p.on_bind : undefined, onInit: Array.isArray(p.on_init_control) ? p.on_init_control : undefined, actions: p.actions ?? [], title }
   } catch { return null }
 }
 
@@ -106,7 +120,7 @@ export async function bindPlacement(store: WorkspaceStore, operations: Operation
   const outcome = await resolveBindings(root, {
     reason: 'insert', no_ui: opts.noUi === true, dialogs: opts.dialogs, find: (q) => findData(store, q),
     parent: outer && outerDeclared ? { decls: outerDeclared.decls, bound: (outer.bindings ?? {}) as Bound } : null,
-  })
+  }).finally(() => { for (const p of placed.values()) p.declared.dispose?.(); outerDeclared?.dispose?.() })
   if (!outcome.ok) return { ok: false, message: failureText(outcome.error, (node) => placed.get(node)?.declared.decls) }
   const made = createData(store, outcome.results, opts.folderId, operations)
   for (const [id, result] of outcome.results) {
@@ -151,10 +165,15 @@ export async function bindControl(store: WorkspaceStore, id: string, reason: 'in
   const declared = await declaredOf(store, entity.type_id === 'buckyos.container' ? entity.kind ?? null : null, entity.def_id ?? null)
   if (!declared) return 'missing'
   const current = entity.bindings ? (entity.bindings as Bound) : boundOf((await store.readBatched<{ payload: { bindings?: unknown } }>(id)).content.payload.bindings)
+  // a composite's steps place it; its own script (an HTML control) also decides a re-bind
   const outcome = await resolveBindings(
-    { id, title: entity.title ?? declared.title, decls: declared.decls, given: current, onBind: reason === 'insert' ? declared.onBind : undefined, onInit: undefined, children: [] },
+    {
+      id, title: entity.title ?? declared.title, decls: declared.decls, given: current, children: [],
+      onBind: reason === 'insert' || typeof declared.onBind === 'function' ? declared.onBind : undefined,
+      onInit: typeof declared.onInit === 'function' ? declared.onInit : undefined,
+    },
     { reason, no_ui: false, dialogs, find: (q) => findData(store, q) },
-  )
+  ).finally(() => declared.dispose?.())
   if (!outcome.ok) return failureText(outcome.error, () => declared.decls) ?? 'cancelled'
   const result = outcome.results.get(id)!
   const made = createData(store, outcome.results, folderId)

@@ -3,14 +3,15 @@
  * the service's clock (also on a device whose clock is 30 s behind) and follows a pause; the time-limited control hides
  * its Blocks for the viewer once their time is up (also after a reload) and shows them marked in design mode; a photo
  * vote prepared from the toolbar takes one choice per person, at most three, the cover showing the most-voted photo;
- * listen together starts from the toolbar without running the control, and a reader is offered none of the actions. */
+ * listen together starts from the toolbar without running the control, and a reader is offered none of the actions;
+ * placed from the catalog, its own script (aiws.on('bind'), run without a page) decides what it binds. */
 
 import { deflateSync } from 'node:zlib'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { openCanvas, setCanvasMode, test, expect, type Api } from './fixtures'
+import { openCanvas, openSide, setCanvasMode, test, expect, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -290,4 +291,83 @@ test('CE05 photo vote placed from the catalog: its on_bind asks which photo fold
   await dialog.getByTestId('aiws-bind-cancel').click()
   await expect(dialog).toHaveCount(0)
   expect(await instance()).toHaveLength(2)
+})
+
+test('CE06 listen together placed from the catalog: its own script (aiws.on(\'bind\'), no page) offers only the folders with audio, creates an empty Playlist when there is none, and decides a re-bind too', async ({ page, api }) => {
+  const { ws, def } = await exampleWorkspace(api, 'listen-together', 'listen-bind-e2e')
+  const outline = async () => await api.outline(ALICE, ws.workspace_id) as J[]
+  const instances = async () => (await outline()).filter((e) => e.type_id === 'buckyos.cell' && e.def_id === def && !e.deleted)
+  // a Cell's bindings are in its payload (the outline lists a data control's and a composite's only)
+  const playlistOf = async (id: string) => (await api.read(ALICE, ws.workspace_id, id)).content.payload.bindings?.playlist?.entity_id as string | undefined
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const insert = async () => {
+    await page.getByTestId('aiws-tool-catalog').click()
+    await page.getByTestId(`aiws-catalog-entry-def-${def}`).click()
+    await page.getByTestId('aiws-catalog-insert').click()
+  }
+  const dialog = page.getByTestId('aiws-source-chooser')
+
+  // no folder holds audio (the canvas's own folders do not): nothing asked, a new empty folder "Playlist" in the canvas
+  await insert()
+  await expect.poll(async () => (await instances()).length, { timeout: 15_000 }).toBe(1)
+  await expect(dialog).toHaveCount(0)
+  const [first] = await instances()
+  const firstList = await playlistOf(first.entity_id)
+  const playlist = (await outline()).find((e) => e.entity_id === firstList)
+  expect([playlist?.type_id, playlist?.name, playlist?.parent_id]).toEqual(['buckyos.dir', 'Playlist', 'free-content'])
+
+  // folders with audio: only those offered, not the photo folder nor the empty Playlist
+  const folder = async (id: string, files: [string, Buffer][]) => {
+    const members: Record<string, J> = {}
+    for (const [name, bytes] of files) members[name] = { kind: 'file', object_id: (await api.uploadAsset(ALICE, ws.workspace_id, bytes)).object_id }
+    return { op: 'entity.create', entity_id: id, type_id: 'buckyos.dir', parent_id: 'data', order_key: id, name: id, payload: { members } }
+  }
+  expect((await api.commit(ALICE, ws, [await folder('songs', [['a song.wav', wav(2)], ['b song.wav', wav(3)]]), await folder('talks', [['talk.wav', wav(2)]]), await folder('photos', [['pic.png', png(10, 20, 30)]])])).status).toBe('accepted')
+  await insert()
+  await expect(dialog.getByTestId('aiws-source-songs')).toBeVisible()
+  await expect(dialog).toContainText('选择要播放的文件夹') // the script's own title, in the host's language
+  await expect(dialog.getByTestId('aiws-source-talks')).toBeVisible()
+  await expect(dialog.getByTestId('aiws-source-photos')).toHaveCount(0)
+  await expect(dialog.getByTestId(`aiws-source-${playlist?.entity_id}`)).toHaveCount(0)
+  await dialog.getByTestId('aiws-source-songs').click()
+  await expect.poll(async () => (await instances()).length).toBe(2)
+  const second = (await instances()).find((e) => e.entity_id !== first.entity_id)!
+  expect(await playlistOf(second.entity_id)).toBe('songs')
+  // cancelled: nothing placed
+  await insert()
+  await dialog.getByTestId('aiws-bind-cancel').click()
+  await expect(dialog).toHaveCount(0)
+  expect(await instances()).toHaveLength(2)
+
+  // a re-bind asks the script again: the current folder marked, another one chosen
+  await page.getByTestId(`aiws-canvas-block-${second.entity_id}`).click()
+  await openSide(page, 'inspector')
+  await page.getByTestId('aiws-instance-rebind').click()
+  await expect(dialog.getByTestId('aiws-source-songs')).toHaveAttribute('aria-pressed', 'true')
+  await dialog.getByTestId('aiws-source-talks').click()
+  await expect.poll(() => playlistOf(second.entity_id)).toBe('talks')
+})
+
+test('CE07 a binding script that fails places nothing and says why: it throws, it uses the page it does not have, it registers no handler, its init_control says not ready', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `bind-script-e2e ${Date.now()}`)
+  const control = async (name: string, js: string, extra: J = {}) => (await api.build(ALICE, ws.workspace_id, {
+    'component.json': { manifest_version: 5, ident: { author_did: 'did:bns:alice', name }, kind: 'html', host_api: 5, title: name, allow_no_source: true,
+      default_size: { w: 200, h: 100 }, on_bind: 'script', entry: { html: 'view.html', js: 'behavior.js' }, ...extra },
+    'view.html': '<p>hi</p>',
+    'behavior.js': js,
+  })).def_entity_id as string
+  const cases: [string, string][] = [
+    [await control('throws', "aiws.on('bind', async function () { throw new Error('boom') })"), '绑定脚本出错：boom'],
+    [await control('uses-page', "document.body.textContent = 'x'; aiws.on('bind', async function () { return { bindings: {} } })"), 'document is not defined'],
+    [await control('no-handler', "if (aiws.context.role !== 'bind') aiws.ready()"), "没有注册 aiws.on('bind')"],
+    [await control('not-ready', "aiws.on('bind', async function () { return { bindings: {} } }); aiws.on('init_control', async function () { return 'nothing to play' })", { on_init_control: 'script' }), '还没有就绪：nothing to play'],
+  ]
+  await openCanvas(page, ALICE, ws.workspace_id)
+  for (const [def, text] of cases) {
+    await page.getByTestId('aiws-tool-catalog').click()
+    await page.getByTestId(`aiws-catalog-entry-def-${def}`).click()
+    await page.getByTestId('aiws-catalog-insert').click()
+    await expect(page.getByTestId('aiws-notice').filter({ hasText: text })).toBeVisible({ timeout: 15_000 })
+  }
+  expect((await api.outline(ALICE, ws.workspace_id) as J[]).filter((e) => e.type_id === 'buckyos.cell' && !e.deleted)).toHaveLength(0)
 })

@@ -72,7 +72,7 @@ HTML 代码不随打开文档自动运行：编辑和查看时显示静态快照
 
 宿主 API 采用明确版本。新宿主维持已支持旧 API 的语义；定义升级不能静默改变已有实例的属性、绑定或用户内容。兼容升级保留实例覆盖；不兼容升级通过显式迁移，失败保留最后可用修订。
 
-当前宿主运行 HTML host API 2、3、4，新版本只增加成员。host API 4（需要 `manifest_version` 4）增加：
+当前宿主运行 HTML host API 2、3、4、5，新版本只增加成员。host API 5（需要 `manifest_version` 5）在页面上不加成员，只让控件在脚本里决定自己的绑定（见下文“放置控件时的绑定”）。host API 4（需要 `manifest_version` 4）增加：
 
 | 成员 | 作用 |
 | --- | --- |
@@ -268,8 +268,27 @@ Frame 的视觉区域、成员关系、演示目标与打印页用途必须分�
 - `on_bind`：最多 16 步，每步是 `{ binding, pick: "one" | "many" | "all", title?, allow_new? }`、`{ binding, from_parent: "<父控件的绑定名>" }` 或 `{ binding, create: { standard } | { table: { name, fields, title_field_id? } } | { dir: { name } }, when?: "missing" | "always" }`；步骤没写到的绑定按默认规则。
 - `on_init_control`：`{ require: "children" }`（默认）或 `{ then: { action } }`（插入后跑一个声明过的动作）。
 
-构建时内核检查步骤：绑定名要已声明，`pick: many | all` 要求绑定是 `many`，`create.standard` 要是登记的标准表，`then` 要是声明过的动作。照片投票示例用这套：选照片目录、为这次投票新建投票表、插入后准备选票。HTML 控件在 `behavior.js` 里写 `aiws.on('bind')` 是下一步，现在 HTML 控件按默认规则。
+构建时内核检查步骤：绑定名要已声明，`pick: many | all` 要求绑定是 `many`，`create.standard` 要是登记的标准表，`then` 要是声明过的动作。照片投票示例用这套：选照片目录、为这次投票新建投票表、插入后准备选票。
+
+**HTML 控件写在脚本里**（host API 5，`component.json` 写 `"on_bind": "script"`，需要时再写 `"on_init_control": "script"`）：插入或改绑定前，宿主在一个不显示的 Worker 里再跑一次 `behavior.js`，这时 `aiws.context.role === "bind"`，没有页面（没有 `document`、`window`），只有 `aiws`。脚本先判断角色，注册处理函数后直接返回，不要往下跑界面代码（处理函数要在脚本顶层同步注册，`aiws.ready()` 可调可不调）：
+
+```js
+(function () {
+  if (aiws.context.role === 'bind') {
+    aiws.on('bind', async (ctx) => { … return { bindings: { playlist: id }, create: [] } })  // null：取消
+    aiws.on('init_control', async (ctx) => true)                                               // 字符串：还没就绪的原因
+    return
+  }
+  // 以下是界面代码
+})()
+```
+
+- `bind` 的 `ctx`：`reason`（`insert` / `rebind`）、`no_ui`、`node`、`title`、`decls`、`given`（插入前已选的，改绑定时是现有的）、`parent`，以及 `find(query)`（按 `accepts`、`schema_id` 列出工作区的数据，`ids` 可限定范围）、`read(id)`（同 `aiws.read`）、`canCreate(name)`、`defaults(names?)`（对这些绑定跑默认规则）、`dialogs.pickOne / pickMany / confirm`（`query.ids` 可只列脚本挑出的几份）。
+- 返回 `{ bindings: { <name>: id | id[] | ref }, create?: [{ ref, kind: "standard" | "table" | "dir", … }] }`，形状同组合控件的 `create` 步骤；`ref` 只在这一次结果里有效。宿主检查结果：绑定名要已声明，单张绑定只能一个 id，列表最多 32 个，新建的都要绑上。不合规、脚本抛错、碰了页面、20 秒没有动静（等人选的时间不算）都按失败处理，不插入，并说明原因。
+- `init_control` 的 `ctx`：`reason`、`no_ui`、`node`、`title`、`decls`、`bound`、`children`、`dialogs`；返回 `true` 或一段原因。
+- Worker 不是安全边界（与 HTML 控件同一前提）：它只让绑定逻辑不依赖页面。
+- “一起听”示例用这套：只列出装有音频的目录，只有一个就直接绑，一个都没有就新建空的 Playlist 目录。
 
 **颜色**：列表绑定的每份数据由宿主按顺序从同一调色板分配颜色，`config.colors { <entity_id>: "#rrggbb" }` 可以另设；组合控件投影出的每条记录带 `item.binding`、`item.source`（表的 id）、`item.binding_color`。
 
-**Agent**：`buckyos aiws place <控件> --workspace <ws> --surface <画布> [--bind "name=id[,id];…"]` 跑同一个 on_bind 和 on_init_control，固定 `no_ui`：给定的绑定直接用，不需要选择的步骤照常执行（没有就新建、只有一份就绑），需要人来选时失败（`NEEDS_UI`）并说明要给哪个绑定；`then` 里的动作在输出中列出，由 Agent 自己执行。执行器是 websdk `aiws_bind.ts`，Desktop 与 CLI 共用。
+**Agent**：`buckyos aiws place <控件> --workspace <ws> --surface <画布> [--bind "name=id[,id];…"]` 跑同一个 on_bind 和 on_init_control，固定 `no_ui`：给定的绑定直接用，不需要选择的步骤照常执行（没有就新建、只有一份就绑），需要人来选时失败（`NEEDS_UI`）并说明要给哪个绑定；`then` 里的动作在输出中列出，由 Agent 自己执行。执行器是 websdk `aiws_bind.ts`，Desktop 与 CLI 共用。HTML 控件的脚本（`on_bind: "script"`）`place` 不跑：Agent 给的绑定就是它的 ctx，原样使用；必填的没给就以 `NEEDS_UI` 失败并说明要给哪个（owner 11-12 裁决，见控件的 AGENT.md）。

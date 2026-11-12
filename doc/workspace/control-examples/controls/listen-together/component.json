@@ -1,8 +1,9 @@
 {
-  "manifest_version": 4,
+  "manifest_version": 5,
   "ident": { "author_did": "did:bns:buckyos", "name": "listen-together" },
   "kind": "html",
-  "host_api": 4,
+  "host_api": 5,
+  "on_bind": "script",
   "title": "Listen together",
   "description": "Plays a folder of audio for everyone at the same moment: the owner starts, pauses and skips from the toolbar (no need to start the control first), listeners follow by the service's clock, with a running waveform and the lyrics of a song that has a .lrc file of the same name. Anyone can listen on their own for a while; their volume and their own position are kept for them.",
   "allow_no_source": true,
