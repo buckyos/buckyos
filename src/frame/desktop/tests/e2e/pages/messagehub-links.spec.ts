@@ -90,7 +90,14 @@ test('own messages link URLs in the self bubble link colour', async ({ page, con
 test('attachment captions and the message details link URLs too', async ({ page, context }) => {
   await openBob(page, context)
   await receive(page, 'msg-caption', { format: 'text/plain', content: 'caption https://example.com/caption', refs: [{ role: 'input', label: 'design-brief.pdf', target: { type: 'data_obj', obj_id: 'cyfile:mock-doc-brief', uri_hint: 'cyfs://cyfile:mock-doc-brief' } }] })
-  await expect(page.getByTestId('conversation-history').getByTestId('message-attachments').filter({ hasText: 'caption https' }).getByRole('link', { name: 'https://example.com/caption' })).toHaveAttribute('href', 'https://example.com/caption')
+  const withFile = page.getByTestId('conversation-history').getByTestId('message-attachments').filter({ hasText: 'caption https' })
+  await expect(withFile.getByRole('link', { name: 'https://example.com/caption' })).toHaveAttribute('href', 'https://example.com/caption')
+  // The text comes first, the attachment list under it.
+  await expect(withFile.getByText('design-brief.pdf')).toBeVisible()
+  const textBottom = (await withFile.getByTestId('message-attachments-text').boundingBox())!
+  const fileTop = (await withFile.getByText('design-brief.pdf').boundingBox())!
+  expect(fileTop.y).toBeGreaterThanOrEqual(textBottom.y + textBottom.height)
+  await withFile.screenshot({ path: test.info().outputPath('attachment-under-text.png') })
 
   await receive(page, 'msg-details', { format: 'text/plain', content: 'details https://example.com/details' })
   const bubble = page.getByTestId('conversation-history').getByTestId('message-bubble').filter({ hasText: 'details https' })

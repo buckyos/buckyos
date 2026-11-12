@@ -693,7 +693,8 @@ Agent 实体会话中对端发来的 `text/plain` 也按 Markdown 渲染，因�
   （`store.deleteMessage`：`msg.update_record_state(record_id, 'DELETED')`，只影响 owner 自己的 mailbox 记录）。
 
 纯图片 / 视频消息不绘制气泡背景（`data-testid="message-media"`）：媒体直接落在会话画布上，
-caption 另起一个气泡，时间等页脚使用画布配色；含文件卡片或其它引用的消息仍用气泡。
+caption 另起一个气泡，时间等页脚使用画布配色；含文件卡片或其它引用的消息仍用气泡，气泡里正文在上、附件列表在下
+（2026-11-11 起；以前附件在正文上方，Agent 回复带产物时要先翻过附件才看到结论）。
 类型在对象解析前按文件名判断，解析后以对象信息为准。
 
 附件（`conversation/media/`）与 Preview 的集成：

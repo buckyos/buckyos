@@ -153,7 +153,7 @@ owner 2026-11-10（§9 第 1 条）：通知用户这件事，把命令行定下
   - 先修 workflow 的四个问题（第一段 §9.1，是 10-11 的记录，workflow 在 11 月改过，实施前复核）：`opendan.command` 的 fire task 没有执行方；成功 fire 后按旧的 fire 时间算下一次，停机后会逐个补发；`buckyos-api/src/workflow_service.rs` 的类型与服务端不一致；`load_schedules` 只读第一页。
   - 再做 `WorkflowScheduleBackend`：`every_secs → RunEvery`、cron → `Cron`，目标 `opendan.command{goal.activate}`。
   - 改 workflow 按 `harness/Service Dev Loop.md`；完整的 IANA 时区要引入时区库，先确认。
-- **D4 timer 对象：等日历 / 待办接入**（§9 第 2 条）。改用户的待办、日历是接入之后的命令，现在不支持就没有这种交付方法；Q-S1、S7、S8 届时再定。原设想：到点不需要推理的提醒，不是 Goal。方案在异步单 §5.2 场景 1 与 §8 D1：workflow 的 `Once` / `Cron` 加发通知的目标、按 owner 加 key 的幂等创建、单次发生的跳过与改动，以及建、列、取消的命令和手册。依赖 D3 里 workflow 的修复。
+- **D4 timer 对象：等日历 / 待办接入**（§9 第 2 条）。2026-11-11 owner 要求单独讨论方案，讨论稿在 [opendan-d4-timer-reminder-todo.md](./opendan-d4-timer-reminder-todo.md)，问题是“crond 还是日历”，建议做成提醒对象加 crond，未裁决。改用户的待办、日历是接入之后的命令，现在不支持就没有这种交付方法；Q-S1、S7、S8 届时再定。原设想：到点不需要推理的提醒，不是 Goal。方案在异步单 §5.2 场景 1 与 §8 D1：workflow 的 `Once` / `Cron` 加发通知的目标、按 owner 加 key 的幂等创建、单次发生的跳过与改动，以及建、列、取消的命令和手册。依赖 D3 里 workflow 的修复。
 - [x] **D5 意图分析的定时分支**（Q-S4）。到点要判断的一半见 §10.2；固定提醒那一半原定等 D4，2026-11-11 owner 在 DV 里要求由 Goal 承担，改为检查脚本到点发通知、不推理（§10.7）。
 - **D6 对象订阅驱动 Goal：改为不排期**（N13，2026-11-10）。“定期去看某个对象变没变”由检查脚本承担；真有等不起一个检查周期的事件再回来做，届时声明放在哪见 N6。
 
@@ -478,5 +478,7 @@ F3 的数据：同一个 Goal 连续 `no_action` 时每次 Activation 从 2.5 �
 - **文档**：Agent State Protocol §9.4；架构设计 §8.1（实现现状）、§12.1.1（检查只观察，但可以让宿主发通知）、§17 表；《Agent 主动给用户发“消息”的方法总结》§11.2 记了实现现状；schema 重新生成（`goal_schedule`）。
 - **页面**：门槛面板的本周期计数加“检查发出的通知”，最近检查显示被拦下与已发通知。
 - **用例**：`goal_session.rs` 新增 `a_check_sends_reminders_without_inference_even_while_held`（硬间隔内照发、被拦下的 `true` 整个搁置、放行后随 Activation 发出、没有通知服务时算出错且 `state` 不变）；`checks_run_on_deno_with_read_and_network_only` 加真实 Deno 下 `notify` 的往返与三种不合约定。goal_session 38、memory_maintenance 13、fixtures 19 通过；WebUI check、lint、e2e 56 通过。`cargo test -p libopendan -p opendan` 并行跑时 `plan_simple_async` 5 个、`runtimes`、`session_runtime`、库内 `concurrent_reservations…`、`loader` 各 1 个失败，单线程（`--test-threads=1`）重跑都通过；`plan_simple_async` 在去掉这次改动的 HEAD 上并行跑同样失败，是用例之间的隔离问题，与本项无关。`xagent_cli` 的 2 个仍是 `src/tools/bin` 不存在。
-- 没有做 / 没有验：没有部署到 DV 环境，没有对真实模型跑这句话（意图分析能否写出覆盖所有时刻的 cron、Goal 第一次 Activation 能否写对脚本）；通知的呈现仍是系统通知（default chat session 的口吻转述是 C 组后半，未做）；检查脚本写坏时提醒会静默停到硬保障（缺省 72 小时）才被 Goal 发现，对提醒类 Goal 偏长，是否要“连续出错 N 次就唤醒一次”待 owner 定（§8 第 5 条原先说不加机制）。
+- **DV（2026-11-11，owner 部署后自己发的提醒请求）**：意图分析建了 Goal `g-k0b915a12dc76c2022c6052cf`（maintain，`--cron "*/10 12-17 * * 1-5"`，America/Los_Angeles，提醒时刻 12:00 起每 50 分钟到 17:00）。创建时的一次 Activation 用了 92,412 token：按 `goal_check_script` 写脚本、模拟 10,080 分钟、宿主试跑两次、`goal check set` 安装。之后每 10 分钟跑一次检查，每次约 18 ms：13:50、14:00 两个槽在硬间隔内（`held=min_interval`）照跑；14:30:00.84 PST 检查返回 `notify`，宿主发出 `nt-738aa9a3c34c459587222bc1938bf960`。到 14:40 共检查 6 次，发通知 1 次，出错 0 次，创建后没有再推理。
+  - DV 发现的问题：Agent 写的脚本只在整分钟命中时发，注释写着“never backfill”，没有照手册例子留 15 分钟的晚到窗口。`ctx.now_ms` 是检查实际运行的时刻，不是槽的时刻；宿主多个槽合并成一次触发（`missed > 1`）时同样如此。所以宿主在提醒那一分钟重启或延迟时，这次提醒会静默丢掉。可选的修法：`ctx` 带上槽的时刻，或在手册里把晚到窗口写成必须。待 owner 定。
+- 没有做 / 没有验：通知的呈现仍是系统通知（default chat session 的口吻转述是 C 组后半，未做）；检查脚本写坏时提醒会静默停到硬保障（缺省 72 小时）才被 Goal 发现，对提醒类 Goal 偏长，是否要“连续出错 N 次就唤醒一次”待 owner 定（§8 第 5 条原先说不加机制）。
 

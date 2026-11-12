@@ -709,9 +709,10 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
       >
         {sender}
         <ReplyQuote message={message} />
-        <div className="flex flex-col gap-2" data-no-details>{items}</div>
+        {/* The text first, the files it comes with under it. */}
+        {caption.length > 0 ? <div className={`${bodyTextClass} whitespace-pre-wrap break-words`} data-testid="message-attachments-text">{captionBody}</div> : null}
+        <div className={`flex flex-col gap-2 ${caption.length > 0 ? 'mt-2' : ''}`} data-no-details>{items}</div>
         {progress}
-        {caption.length > 0 ? <div className={`${bodyTextClass} mt-2 whitespace-pre-wrap break-words`}>{captionBody}</div> : null}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} />
       </div>
     </MessageRow>
