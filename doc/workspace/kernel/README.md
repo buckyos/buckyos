@@ -10,7 +10,7 @@
 | [数据源、发布与同步](04-数据源发布与同步.md) | 定义 Source 的本地有效版本、发布与引用，以及扩展 Adapter 和同步脚本的执行契约。普通文件导入另见扩展与导入文档。 |
 | [Block、组合控件与标准库](05-Block控件与标准库.md) | 定义 Block/Renderer 的完整宿主接口、Block-control 的组合关系，以及内置标准库的能力边界。 |
 | [布局、模式与用户状态](06-布局模式与用户状态.md) | 定义自由与流式布局、模式的正交关系、工具栏和 App 模式，以及附加层、私有状态和草稿恢复。 |
-| [事件、宏与公式预留](07-事件宏与公式预留.md) | 定义事件和动作、JavaScript 宏的稳定对象 API，并明确公式仅预留兼容入口，本版本不支持求值。 |
+| [事件、宏与公式](07-事件宏与公式预留.md) | 定义事件和动作、JavaScript 宏的稳定对象 API，以及公式的值格式、前端显示求值与物化；服务端本版本不求值。 |
 | [任务执行与 AI](08-任务执行与AI.md) | 定义本地/托管执行、身份与输出授权、运行恢复和取消，以及许愿格结果管理与可选心流。 |
 | [扩展包、导入与模板](09-扩展包导入与模板.md) | 定义 PIKG 扩展的安装、引入、build 与升级，统一文件/剪贴板 Import 流水线，并说明模板与 Fork 的业务语义。 |
 | [演示与打印](10-演示与打印.md) | 定义实时视角、固定演示、独立会话与回放边界，以及 Frame 手工排版、流式分页和 PDF/打印输出。 |
@@ -24,24 +24,55 @@
 
 先阅读本页的定位与状态分域，再按职责进入主题文档。新功能应同时满足数据、宿主和运行契约；开发者可沿“数据模型 → Block/control → 事件与宏 → 扩展与导入”阅读，服务实现可沿“兼容格式 → 提交恢复 → 任务 → 权限资源”阅读。
 
-向下兼容覆盖文档、标准库与宿主 API；本版本公式只预留格式，不支持求值。具体 RPC、操作和错误枚举见 [服务 README](../../../src/frame/aiworkspace/README.md) 与 [协议 Schema](../../../src/frame/aiworkspace/schemas)。尚未落成具体 API/贡献 Schema 的能力，须完成版本化定义与契约验收后发布；说明性对象分组不等于已存在的函数名。
+向下兼容从首个正式发行版起覆盖文档、标准库与宿主 API；本版本公式由前端显示求值，服务端不求值。具体 RPC、操作和错误枚举见 [服务 README](../../../src/frame/aiworkspace/README.md) 与 [协议 Schema](../../../src/frame/aiworkspace/schemas)。尚未落成具体 API/贡献 Schema 的能力，须完成版本化定义与契约验收后发布；说明性对象分组不等于已存在的函数名。
 
 实现与设计不一致时，应登记并修正，不能静默削弱契约。历史依据及原章节的主题归属见 [设计来源与决策索引](13-设计来源与决策索引.md)。本目录是正文的唯一维护位置，原文件只保留入口。
 
 ## 目前实现与设计的GAP
 
-- 导出PDF 未实现
-- 带同步脚本的数据源 未实现
-- 自定义控件/block的时候没，可以定义toolbar / context menu 未知
-- 还不支持许工作区/画布 自定义toolbar ?
-- 权限 不能针对单个Block/数据源 配置权限，缺乏将BuckyOS用户组加入工作区逻辑组的配置 （这个需要专门做个TODO来优化底层和UI）
-- 不支持公式 
-- 没有正式定义 宏代码 和其运行环境
-- 需要梳理系统自带的标准block
-- 不能通过pikg安装import扩展，目前的import流程需要专门开TODO梳理来支持扩展
+是否支持写一个数据输入控件，验证数据有效才插入table数据源（包括检查是否与已有数据有冲突）
 
 
+> 2026-11-11 对照本目录正文与服务端 [src/frame/aiworkspace](../../../src/frame/aiworkspace)、Desktop [src/frame/desktop/src/app/aiworkspace](../../../src/frame/desktop/src/app/aiworkspace) 的代码核对。只列缺失或与设计不一致的部分；已实现但仍标为 experimental 的接口不单列。
 
+### 数据源与同步（[04](04-数据源发布与同步.md)）
+
+- **带同步脚本的数据源未实现**：Source 只支持服务内无凭据 HTTP GET 和同服务 Workspace 读取。`auth_mode: hosted` 的 Source 只登记、不执行（[server/src/source.rs](../../../src/frame/aiworkspace/server/src/source.rs)，注释写“等 Agent”）。AIWS manifest 没有 Source adapter 贡献类型；同步脚本的托管 run、凭据引用和输出范围校验都没有落地。
+
+### Block、控件与标准库（[05](05-Block控件与标准库.md)）
+
+- **扩展控件不能定义 toolbar / context menu**（原条目为“未知”，已核实）：内置 Block 的 TS 定义有 `actions`、近身工具栏 `toolbar`、`anchors`、`shape`、`resize`、`Simplified` / `Inspector` 入口（[ui/blocks/registry.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/registry.ts) `BlockDefinition`）。扩展的 `component.json`（manifest v3）只有 `config_schema`、`bindings`、`entry`、`events`、`default_size`、`catalog` 等字段，无法声明动作、工具栏、右键菜单、快捷键、连接锚点、最小尺寸/缩放方式、简化/属性面板入口或打印能力。扩展控件因此只拿到了内置 Block 宿主契约的一部分。
+- **需要梳理系统自带的标准 Block**：现在注册的有 table、richtext、record、asset（媒体）、note、shape、frame、connector、ink、wish，扩展宿主 html / declarative，课堂互动 Block（`ui/classroom`），以及 `sample.*` 示例（bar-chart、line-chart、metric、video）；控件有 mindmap 和 composite（含 grid 布局）。设计列出的 label 没有独立实现。内置 Block 的契约只写在 TS 代码里，没有像 component.json 那样带版本的公开声明（属性、绑定、事件），扩展开发者无法拿它作参照；`sample.*` 是否进入标准库也还没定。
+
+### 布局、模式与工具栏（[06](06-布局模式与用户状态.md)）
+
+- **不支持 Workspace / 画布自定义 toolbar**：Surface `config` 只有 `background`、`page_size`。没有 Workspace / Surface 级工具栏配置，也没有继承、追加、覆盖、隐藏的合成规则；工具栏和菜单都写死在 Desktop 代码里（`MainToolbar`、`MainMenu`、`ObjectToolbar`）。
+- **App 模式未实现**：没有“隐藏全部系统工具区”的呈现配置，也没有受控的退出、管理入口。
+
+### 事件、宏与公式（[07](07-事件宏与公式预留.md)）
+
+- **宏代码及其运行环境没有正式定义**：没有宏定义实体（代码版本、入口、参数、Workspace / Canvas 作用域），没有受限运行器，也没有稳定对象 API。最接近的是 HTML host API v3（`window.aiws`）和许愿格程序用的 `aiws` 包，都不是宏 API；后台宏也没有托管执行入口。
+- **统一动作模型不完整**：实例事件只能绑定 write / wish / open / notify 四种 handler（服务 README 的 Events and actions 一节）。没有声明参数、结果和所需能力的动作目录；工具栏、菜单、快捷键不走这套模型；由数据变化触发的自动化也没有提供。
+- **公式只有显示求值，缺输入和过期判断**：值格式、服务端行为、前端显示求值和物化已实现，规则见 [公式值与显示求值](07-事件宏与公式预留.md#公式值与显示求值)。缺的部分：编辑器不能用 `=` 前缀输入公式，公式值目前只能经 API 写入；只有表格视图显示求值结果，Record 属性中的公式不求值；表格复制到系统剪贴板时公式格输出为空（[ui/import/copyTable.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/import/copyTable.ts)）；物化只记录公式文本和物化者，没有输入版本和求值语义版本，`doc.freshness` 无法判断物化结果是否过期。
+
+### 任务执行与 AI（[08](08-任务执行与AI.md)）
+
+- **许愿格默认仍在服务内执行**：`default_execution` 默认是 `service`，`allow_service_execution` 默认为 true（[buckyos-api aiworkspace_client.rs](../../../src/kernel/buckyos-api/src/aiworkspace_client.rs)）。托管执行已经能把 run 派给 Owner 的 Agent（[server/src/wish/exec.rs](../../../src/frame/aiworkspace/server/src/wish/exec.rs) `dispatch_hosted`），但服务内执行要等 hosted DV（T3-9）通过后才关闭。
+- **心流未实现**：没有可选的心流工作模式和建议区。
+
+### 扩展、导入与模板（[09](09-扩展包导入与模板.md)）
+
+- **不能通过 PIKG 安装 import 扩展**：AIWS manifest 只有 `controls` 和 `workspace_templates` 两类贡献，没有 Importer 和 Source adapter。现有导入（draw.io、PDF、Office、表格、OPML / Markdown 大纲、SVG）写死在 Desktop 里，由 `classifyFile` 的结果逐个判断分派（[ui/canvas/CanvasView.tsx](../../../src/frame/desktop/src/app/aiworkspace/ui/canvas/CanvasView.tsx) `handleFiles`），每种格式有自己的对话框。没有“探测 → 候选 → 统一向导 → 损失报告”的公共流水线。需要专门开 TODO 梳理。
+- **剪贴板只在窗口内、同一 Workspace 内有效**：[ui/canvas/clipboard.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/canvas/clipboard.ts) 不使用系统剪贴板。跨 Workspace 粘贴（显式选择引用、物化导入或 Fork）和从系统剪贴板粘贴 AIWS 子图都不支持。
+- **模板实例的业务管理未实现**：模板只能新建 Workspace，没有实例登记、审核确认版本，也没有跨实例汇总。
+
+### 演示与打印（[10](10-演示与打印.md)）
+
+- **导出 PDF 与打印未实现**：没有打印宿主，没有页面定义（手工排版的区域、页序、纸张、边距），没有流式自动分页，也没有 PDF 输出。`BlockDefinition` 和 component.json 都不能声明打印能力（是否可拆分、断点、重复表头）。Surface `config.page_size` 是 draw.io 导入带来的页面设置，不参与分页。
+
+### 权限（[11](11-权限资源与保留.md)）
+
+- **不能针对单个 Block / 数据源配置权限，也不能把 BuckyOS 用户组加入工作区逻辑组**：后端已经支持按任意实体子树授权（`ws.grant` 的 `scope_entity_id`），但权限面板只能选“整个工作区”或“某张画布”（[ui/sources/PermissionsPanel.tsx](../../../src/frame/desktop/src/app/aiworkspace/ui/sources/PermissionsPanel.tsx)）。BuckyOS 用户组目前只能以 `group:<id>` 直接写进授权条目；没有带稳定组 ID、以 BuckyOS 组作为成员来源的 Workspace 权限组，组映射的变更也没有审计。这一项需要专门做 TODO，同时改底层和 UI。
 
 ## 定位与三层冻结边界
 
@@ -91,7 +122,7 @@ flowchart TD
 
 | 状态域 | 内容 | 版本与传播规则 |
 | --- | --- | --- |
-| 共享文档 | 数据实体、Block Tree、共享展现配置、任务定义、预留公式定义、显式保存的结果、共享标注 | 同一 Workspace 的逻辑事务与一致快照 |
+| 共享文档 | 数据实体、Block Tree、共享展现配置、任务定义、公式定义、显式保存的结果、共享标注 | 同一 Workspace 的逻辑事务与一致快照 |
 | 用户私有状态 | 表单草稿、视图偏好、用户持久 UI State | 按 Workspace + User + 命名空间保存，不推进共享内容版本 |
 | Session/Presence | 选区、焦点、拖动过程、实时视角、在线状态 | 独立实时通道，不进入共享提交历史 |
 | 运行状态 | Run、执行尝试、输入快照、候选计划、同步进度、恢复信息 | 由运行协议管理，不默认进入内容分享包 |
