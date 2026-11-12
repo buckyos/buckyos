@@ -25,6 +25,7 @@ import { ProjectedView, projectedAt } from '../data/ProjectedView'
 import { useRecords } from '../data/records'
 import { useControlView } from '../data/viewState'
 import { submitData } from '../data/write'
+import { UnboundSource } from '../data/SourceChooser'
 import { registerControlKeys } from '../data/keys'
 import { annotatedRecords, copyRecordLink, openControlPage, recordAnchor, useRecordFocus } from '../data/focus'
 import type { ControlBodyProps } from '../registry'
@@ -388,7 +389,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   }, [view.mode, size.w, size.h])
 
   if (!container) return null
-  if (!sourceId) return <div className="aiws-dc-empty">{t('aiworkspace.datactl.unbound')}</div>
+  if (!sourceId) return <UnboundSource containerId={containerId} />
   if (snapshot.error) return <div className="aiws-dc-empty aiws-error" role="alert">{t('aiworkspace.datactl.readFailed', { error: snapshot.error })}</div>
 
   const dragging = drag !== null

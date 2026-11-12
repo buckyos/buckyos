@@ -57,6 +57,8 @@ import { InstanceInspector } from '../controls/composite/Inspector'
 import { DefineControlDialog } from '../extensions/DefineControlDialog'
 import { isComposite, isFixedComposite, slotForDrop } from '../controls/composite/model'
 import { controlRegistry, type ControlCommandContext } from '../controls/registry'
+import { sourceTables } from '../controls/data/source'
+import { SourceChooser } from '../controls/data/SourceChooser'
 import { useTimedHidden } from '../controls/composite/visibility'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
 import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
@@ -183,6 +185,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [typeAhead] = useState(() => new Map<'typed', { id: string; text: string }>())
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [picker, setPicker] = useState<{ kind: 'add-view' | 'move-surface' } | null>(null)
+  /** A data control being inserted while the workspace has several tables it can show: which one (or a new one). */
+  const [sourceAsk, setSourceAsk] = useState<{ tables: EntityEnvelope[]; request: InsertRequest; world: { x: number; y: number } | null; parentId?: string
+    also?: (cellId: string, rect: { x: number; y: number; w: number; h: number }) => Promise<Operation[]>; afterId?: string | null } | null>(null)
   /** “定义为控件…” (扩展控件 P1): the Blocks the new composite is made of. */
   const [defining, setDefining] = useState<string[] | null>(null)
   const [catalog, setCatalog] = useState<{ tab: CatalogTab; key?: string; world: { x: number; y: number } | null; parentId?: string; afterId?: string | null } | null>(null)
@@ -447,6 +452,13 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     afterId?: string | null) => {
     const definition = request.entry.definition
     if (!definition.create || insertReasonOf(definition.type)) return false
+    // a data control shows the workspace's only table of its kind, asks among several, creates one when there is none
+    const source = request.entry.key.startsWith('control:') ? controlRegistry.get(definition.type)?.source : undefined
+    if (source && request.sourceId === undefined && !request.newSource) {
+      const tables = sourceTables(store, source.schemaId)
+      if (tables.length === 1) request = { ...request, sourceId: tables[0].entity_id }
+      else if (tables.length > 1) { setSourceAsk({ tables, request, world, parentId, also, afterId }); return false }
+    }
     // a flow page shows no connectors (连接线实现方案 §8.3)
     if (definition.type === 'connector' && !isFree) { store.notify('info', aiwsT('aiworkspace.canvas.flowNoConnectors')); return false }
     // under a node of a control: laid out by it, no lines inside (脑图方案 §7.2)
@@ -1380,7 +1392,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               <EditorToolbarContext.Provider value={toolbarSink}>
               <OpenWishContext.Provider value={shell.side === 'wish' ? wishOpen?.cellId ?? null : null}>
               <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
-                canLayout={canLayoutBlock} onCommitLayout={commitLayout} onMoveNodes={moveNodes} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)} hidden={timedHidden.size ? timedHidden : undefined}
+                canLayout={canLayoutBlock} onCommitLayout={commitLayout} onMoveNodes={moveNodes} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || sourceAsk || catalog || overlayOpen)} hidden={timedHidden.size ? timedHidden : undefined}
                 tool={tool} placing={placing ? { ...entrySize(placing.entry), label: placingTitle } : null}
                 ink={inkTool ? { style: inkStyleOf(inkPrefs), touchLock: inkPrefs.touchLock, control: inkControl } : null}
                 onPlace={(world) => {
@@ -1437,6 +1449,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             <StatusDock />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
             {defining && defining.length > 0 && <DefineControlDialog ids={defining} laid={laid} surfaceId={surfaceId} onClose={() => setDefining(null)} onDone={(ids) => { setDefining(null); setSelectionState(new Set(ids)) }} />}
+            {sourceAsk && <SourceChooser title={t('aiworkspace.datactl.source.title', { name: sourceAsk.request.title || sourceAsk.request.entry.title })} note={t('aiworkspace.datactl.source.note')}
+              tables={sourceAsk.tables} onClose={() => setSourceAsk(null)} onPick={(choice) => {
+              const { request, world, parentId, also, afterId } = sourceAsk
+              setSourceAsk(null)
+              void insert(choice === 'new' ? { ...request, newSource: true } : { ...request, sourceId: choice }, world, parentId, also, afterId)
+            }} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
               if (picker.kind === 'move-surface') moveToSurface(choice)
               else if (picker.kind === 'add-view' && single?.source_id) {

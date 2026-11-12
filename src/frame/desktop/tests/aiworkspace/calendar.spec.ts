@@ -196,3 +196,67 @@ test('CA07 a link to one occurrence turns to its day and opens it', async ({ pag
   await expect(page.getByTestId('aiws-cal-detail-when')).toContainText('20')
   await expect(page.getByTestId('aiws-cal-range-cal')).toContainText('16')
 })
+
+test('CA10 to-do lists on a calendar: the only one comes with an inserted calendar; the menu shows another to-do list and another calendar, and stops showing one', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `cal-todo ${Date.now()}`)
+  const TODO_FIELDS = [
+    { field_id: 'title', name: 'Title', type: 'text', required: true },
+    { field_id: 'status', name: 'Status', type: 'select', required: true, options: [{ option_id: 'todo', label: 'To do' }, { option_id: 'doing', label: 'In progress' }, { option_id: 'done', label: 'Done' }] },
+    { field_id: 'due', name: 'Due', type: 'date', nullable: true },
+    { field_id: 'order', name: 'Order', type: 'text', nullable: true },
+    { field_id: 'done_at', name: 'Completed', type: 'datetime', nullable: true },
+    { field_id: 'ext', name: 'Extension', type: 'json', nullable: true },
+  ]
+  // today on the browser's calendar (Asia/Shanghai): the week the calendar opens on
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
+  const todoList = (id: string, name: string, item: string, key: string) => [
+    { op: 'entity.create', entity_id: id, type_id: 'buckyos.table-source', schema_id: 'buckyos.todo@1', parent_id: 'data', order_key: key, name, payload: { title_field_id: 'title', fields: TODO_FIELDS } },
+    { op: 'table.insert_records', source_id: id, records: [{ record_id: `${id}-1`, values: { title: item, status: 'todo', due: today, order: 'm' } }] },
+  ]
+  expect((await api.commit(ALICE, ws, todoList('home', 'Home', 'Pay the rent', 'h'))).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+
+  // inserted: a new calendar table, and the workspace's only to-do list with it
+  await page.getByTestId('aiws-tool-catalog').click()
+  await page.getByTestId('aiws-catalog-entry-control-calendar').click()
+  await page.getByTestId('aiws-catalog-insert').click()
+  const calOf = async () => (await api.outline(ALICE, ws.workspace_id)).find((e: Json) => e.kind === 'calendar' && !e.deleted) as { entity_id: string; bindings: Record<string, string> } | undefined
+  await expect.poll(async () => (await calOf())?.bindings.todo).toBe('home')
+  const cal = (await calOf())!.entity_id
+  const due = (binding: string, record: string) => page.locator(`[data-proj^="${cal}~title~${binding}:${record}"]`).first()
+  await expect(due('todo', 'home-1')).toContainText('Pay the rent')
+
+  // the menu (the control selected first): another to-do list — the only one not shown yet goes in at once
+  expect((await api.commit(ALICE, ws, todoList('work', 'Work', 'Send the report', 'w'))).status).toBe('accepted')
+  const head = await page.getByTestId(`aiws-cal-head-${cal}`).boundingBox()
+  await page.mouse.click(head!.x + head!.width / 2, head!.y + 14)
+  const menu = async (item: string) => {
+    await page.getByTestId(`aiws-cal-menu-${cal}`).click()
+    await page.getByTestId(`aiws-ctl-menu-${item}`).click()
+  }
+  await menu('add-todo')
+  await expect.poll(async () => (await calOf())?.bindings.todo_2).toBe('work')
+  await expect(due('todo_2', 'work-1')).toContainText('Send the report')
+  // nothing left to add
+  await page.getByTestId(`aiws-cal-menu-${cal}`).click()
+  await expect(page.getByTestId('aiws-ctl-menu-add-todo')).toBeDisabled()
+  await page.getByTestId('aiws-canvas-view').screenshot({ path: 'test-results/aiworkspace-calendar/ca10-menu.png' })
+  await page.keyboard.press('Escape')
+
+  // another calendar: none in the workspace besides its own, so a new one
+  await menu('add-calendar')
+  await expect.poll(async () => Object.keys((await calOf())?.bindings ?? {}).sort()).toEqual(['events', 'events_2', 'todo', 'todo_2'])
+  const tables = (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.schema_id === 'buckyos.calendar@1' && !e.deleted)
+  expect(tables).toHaveLength(2)
+
+  // stop showing one: only the binding goes, the to-do list and its records stay
+  await menu('remove-table')
+  const chooser = page.getByTestId('aiws-source-chooser')
+  await expect(chooser.locator('[data-testid^="aiws-source-"]')).toHaveCount(3)
+  await expect(chooser.getByTestId('aiws-source-new')).toHaveCount(0)
+  await chooser.getByTestId('aiws-source-home').click()
+  await expect.poll(async () => Object.keys((await calOf())?.bindings ?? {}).sort()).toEqual(['events', 'events_2', 'todo_2'])
+  await expect(due('todo', 'home-1')).toHaveCount(0)
+  await expect(due('todo_2', 'work-1')).toBeVisible()
+  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'home', limit: 10 })).rows).toHaveLength(1)
+})

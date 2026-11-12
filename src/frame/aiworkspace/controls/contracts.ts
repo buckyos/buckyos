@@ -8,8 +8,9 @@
 
 import { CALENDAR_CONTROL, AGENDA_TEMPLATE, BAR_TEMPLATE, BLOCK_TEMPLATE, CARD_TEMPLATE, LIST_TEMPLATE, TODO_CONTROL } from './schedule.ts'
 
-/** Raised when a contract changes in a way a reader must know (a template's roles, a gesture's write, a property). */
-export const CONTRACT_VERSION = 1
+/** Raised when a contract changes in a way a reader must know (a template's roles, a gesture's write, a property, what a
+ * binding name means). */
+export const CONTRACT_VERSION = { todo: 1, calendar: 2 }
 const AUTHOR = 'did:bns:buckyos'
 
 export function todoContract(): Record<string, unknown> {
@@ -17,7 +18,7 @@ export function todoContract(): Record<string, unknown> {
     manifest_version: 4,
     ident: { author_did: AUTHOR, name: 'todo' },
     kind: 'builtin',
-    version: CONTRACT_VERSION,
+    version: CONTRACT_VERSION.todo,
     title: 'To-dos',
     description: TODO_CONTROL.summary,
     default_size: { w: 420, h: 520 },
@@ -62,7 +63,7 @@ export function calendarContract(): Record<string, unknown> {
     manifest_version: 4,
     ident: { author_did: AUTHOR, name: 'calendar' },
     kind: 'builtin',
-    version: CONTRACT_VERSION,
+    version: CONTRACT_VERSION.calendar,
     title: 'Calendar',
     description: CALENDAR_CONTROL.summary,
     default_size: { w: 860, h: 620 },
@@ -81,6 +82,7 @@ export function calendarContract(): Record<string, unknown> {
     bindings: {
       events: { accepts: ['buckyos.table-source'], schema_id: 'buckyos.calendar@1', required: true, title: 'Calendar', owned: 'created with the control' },
       todo: { accepts: ['buckyos.table-source'], schema_id: 'buckyos.todo@1', title: 'To-dos whose due dates are shown (read only)' },
+      'todo_*': { accepts: ['buckyos.table-source'], schema_id: 'buckyos.todo@1', title: 'Further to-do tables (any binding name starting with todo_)' },
       '*': { accepts: ['buckyos.table-source'], schema_id: 'buckyos.calendar@1', title: 'Further calendars (any other binding name)' },
     },
     templates: { bar: BAR_TEMPLATE, block: BLOCK_TEMPLATE, agenda_row: AGENDA_TEMPLATE },

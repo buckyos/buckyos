@@ -11,10 +11,11 @@ import type { Json } from '../../../api/types'
 export { AGENDA_TEMPLATE, BAR_TEMPLATE, BLOCK_TEMPLATE }
 
 export const CALENDAR_KIND = 'calendar'
-/** The binding of the main calendar; any other binding naming a calendar table is a further calendar, `todo` a to-do
- * table whose due dates are shown. */
+/** The binding of the main calendar; `todo` and `todo_<name>` are to-do tables whose due dates are shown, any other
+ * binding a further calendar. */
 export const EVENTS_BINDING = 'events'
 export const TODO_BINDING = 'todo'
+export const isTodoBinding = (name: string) => name === TODO_BINDING || name.startsWith(`${TODO_BINDING}_`)
 
 export type CalView = 'day' | 'week' | 'month' | 'agenda'
 export const CAL_VIEWS: CalView[] = ['day', 'week', 'month', 'agenda']

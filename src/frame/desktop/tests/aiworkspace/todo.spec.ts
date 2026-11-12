@@ -4,7 +4,7 @@
  * another client (an Agent) seen at once, read-only members, and the kernel's standard-table rules. */
 
 import type { Page } from '@playwright/test'
-import { asUser, openCanvas, test, expect, workspacePage, type Api } from './fixtures'
+import { asUser, fitAll, openCanvas, test, expect, workspacePage, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -188,4 +188,74 @@ test('TD06 a link to a record selects it; the record can be commented; page=cont
   await expect(page.locator('[data-proj="tl~title~a"]')).toContainText('Write the report')
   await page.getByTestId('aiws-control-page-back').click()
   await expect(page.getByTestId('aiws-canvas-view')).toBeVisible()
+})
+
+test('TD10 inserted from the catalog: no to-do table → one is created; one → it is shown; several → the person chooses (or a new one); an unbound control binds in place', async ({ page, api }) => {
+  const ws = await api.freeCanvas(ALICE, `todo-insert ${Date.now()}`)
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const outline = () => api.outline(ALICE, ws.workspace_id) as Promise<Json[]>
+  const tables = async (schema: string) => (await outline()).filter((e) => !e.deleted && e.type_id === 'buckyos.table-source' && e.schema_id === schema).map((e) => e.entity_id as string)
+  const controls = async (kind: string) => (await outline()).filter((e) => !e.deleted && e.kind === kind) as { entity_id: string; bindings: Record<string, string> }[]
+  const insertFromCatalog = async (kind: string) => {
+    await page.getByTestId('aiws-tool-catalog').click()
+    await page.getByTestId(`aiws-catalog-entry-control-${kind}`).click()
+    await page.getByTestId('aiws-catalog-insert').click()
+  }
+
+  // none: a new to-do table, bound at once (no reload), items can be added
+  await insertFromCatalog('todo')
+  await expect.poll(async () => (await tables('buckyos.todo@1')).length).toBe(1)
+  const [first] = await tables('buckyos.todo@1')
+  const [c1] = await controls('todo')
+  expect(c1.bindings).toEqual({ items: first })
+  await expect(page.getByTestId(`aiws-dc-bind-${c1.entity_id}`)).toHaveCount(0)
+  await expect(page.getByTestId(`aiws-todo-add-${c1.entity_id}`)).toBeVisible()
+
+  // one: the next to-do control shows it
+  await insertFromCatalog('todo')
+  await expect.poll(async () => (await controls('todo')).length).toBe(2)
+  expect((await controls('todo')).map((c) => c.bindings.items)).toEqual([first, first])
+  expect(await tables('buckyos.todo@1')).toEqual([first])
+
+  // several: asked; a new one, then a chosen one
+  expect((await api.commit(ALICE, ws, [{ op: 'entity.create', entity_id: 'second', type_id: 'buckyos.table-source', schema_id: 'buckyos.todo@1', parent_id: 'data', order_key: 's', name: 'Second', payload: { title_field_id: 'title', fields: FIELDS } }])).status).toBe('accepted')
+  await insertFromCatalog('todo')
+  const chooser = page.getByTestId('aiws-source-chooser')
+  await expect(chooser).toBeVisible()
+  await expect(chooser.locator('[data-testid^="aiws-source-"]')).toHaveCount(3)
+  await page.screenshot({ path: `${SHOTS}/td10-chooser.png` })
+  await chooser.getByTestId('aiws-source-new').click()
+  await expect.poll(async () => (await tables('buckyos.todo@1')).length).toBe(3)
+  const fresh = (await tables('buckyos.todo@1')).find((id) => id !== first && id !== 'second')
+  await expect.poll(async () => (await controls('todo')).map((c) => c.bindings.items).sort()).toEqual([first, first, fresh].sort())
+  await insertFromCatalog('todo')
+  await page.getByTestId('aiws-source-chooser').getByTestId('aiws-source-second').click()
+  await expect.poll(async () => (await controls('todo')).filter((c) => c.bindings.items === 'second').length).toBe(1)
+  // cancelled: nothing is inserted
+  await insertFromCatalog('todo')
+  await page.getByTestId('aiws-source-chooser').getByRole('button', { name: /^(取消|Cancel)$/ }).click()
+  await expect(page.getByTestId('aiws-source-chooser')).toHaveCount(0)
+  expect(await controls('todo')).toHaveLength(4)
+
+  // the calendar: none → created and bound as `events`
+  await insertFromCatalog('calendar')
+  await expect.poll(async () => (await tables('buckyos.calendar@1')).length).toBe(1)
+  const [cal] = await controls('calendar')
+  expect(cal.bindings).toEqual({ events: (await tables('buckyos.calendar@1'))[0] })
+  await expect(page.getByTestId(`aiws-dc-bind-${cal.entity_id}`)).toHaveCount(0)
+  await expect(page.getByTestId(`aiws-cal-${cal.entity_id}`)).toBeVisible()
+
+  // a control without its table (written by an Agent): it says so and binds in place, the same way
+  expect((await api.commit(ALICE, ws, [{ op: 'entity.create', entity_id: 'bare', type_id: 'buckyos.container', parent_id: 'free', order_key: 'z', placement: { x: 40, y: 900, w: 420, h: 360 },
+    payload: { kind: 'todo', layout: { mode: 'data' }, title: 'Bare' } }])).status).toBe('accepted')
+  await fitAll(page)
+  // in edit mode the first press selects the control, then its body takes input
+  const bind = page.getByTestId('aiws-dc-bind-bare')
+  const at = (await bind.boundingBox())!
+  await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2)
+  await expect(page.getByTestId('aiws-data-body-bare')).toHaveAttribute('data-active', 'true')
+  await bind.click()
+  await page.getByTestId('aiws-source-chooser').getByTestId(`aiws-source-${first}`).click()
+  await expect.poll(async () => (await outline()).find((e) => e.entity_id === 'bare')?.bindings).toEqual({ items: first })
+  await expect(page.getByTestId('aiws-todo-add-bare')).toBeAttached()
 })

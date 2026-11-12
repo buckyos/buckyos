@@ -6,7 +6,7 @@
  * Every Block subscribes to its own entry (`subscribeEntity`), so one Block's change re-renders
  * that Block alone. Children lists are kept per parent for the trees and the RenderHost. */
 
-import { isControlKind } from '@controls/contract'
+import { isControlKind, isDataControl } from '@controls/contract'
 import type { Capability, CommitEvent, ConnectorProjection, EntityEnvelope, Json, Operation, StoredPlacement } from '../api/types'
 import { Emitter } from './emitter'
 
@@ -50,6 +50,11 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     out.config = isControlKind(payload.kind as string) && payload.config && typeof payload.config === 'object' ? payload.config as Record<string, Json> : null
     out.def_id = (payload.def_ref as { entity_id?: string } | undefined)?.entity_id ?? null
     out.slot = typeof payload.slot === 'string' ? payload.slot : null
+    // a data control's or a composite's tables, by binding name (控件机制 TODO G2, G13)
+    const bindings = payload.bindings as Record<string, { entity_id?: unknown }> | undefined
+    out.bindings = (isDataControl(payload.kind as string) || payload.kind === 'composite') && bindings && typeof bindings === 'object'
+      ? Object.fromEntries(Object.entries(bindings).flatMap(([name, ref]) => (typeof ref?.entity_id === 'string' ? [[name, ref.entity_id]] : [])))
+      : null
   } else if (typeId === 'buckyos.cell') {
     out.locked = payload.locked === true ? true : null
     const view = payload.view as { type?: string; version?: number } | undefined
@@ -352,7 +357,7 @@ export class OutlineModel {
               if (op.op === 'entity.set_props') { touchedExtras = true; props.push({ key: op.key as string, props: (op.props as Record<string, unknown> | undefined) ?? {} }); continue }
               for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
                 if (['title', 'source', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation', 'config', 'slot',
-                  'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', 'ident', 'manifest_version', 'version', 'provenance', 'source_dir', 'deps', 'composition', 'config_schema', 'on', 'events', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
+                  'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', 'ident', 'manifest_version', 'version', 'provenance', 'source_dir', 'deps', 'composition', 'config_schema', 'on', 'events', 'bindings', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
                 if (op.op === 'entity.set_keys') payload[key.key] = key.value
               }
             }
@@ -370,6 +375,7 @@ export class OutlineModel {
                 config: current.type_id === 'buckyos.container' ? current.config ?? undefined
                   : current.ink_stroke || current.side || current.branch_color ? { ...(current.ink_stroke ? { stroke: current.ink_stroke } : {}), ...(current.side ? { side: current.side } : {}), ...(current.branch_color ? { branch_color: current.branch_color } : {}) } : undefined,
                 slot: current.slot ?? undefined,
+                bindings: current.bindings ? Object.fromEntries(Object.entries(current.bindings).map(([name, id]) => [name, { entity_id: id }])) : undefined,
                 presentation: current.live ? { live: true } : undefined,
                 surface_ref: current.viewport?.surface_id ? { entity_id: current.viewport.surface_id } : undefined,
                 center: current.viewport?.center ?? undefined, zoom: current.viewport?.zoom ?? undefined,

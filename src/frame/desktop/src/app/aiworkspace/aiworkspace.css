@@ -1314,6 +1314,13 @@
   border-radius: 6px; background: var(--cp-surface-opaque, var(--cp-surface)); color: var(--cp-text); outline: none; }
 .aiws-dc-empty { padding: 24px 12px; color: var(--cp-muted); text-align: center; font-size: 13px; }
 .aiws-dc-empty.is-hint { position: absolute; left: 0; right: 0; top: 8px; }
+.aiws-dc-bind { margin-top: 10px; padding: 6px 12px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); color: var(--cp-text); font: inherit; cursor: pointer; }
+.aiws-dc-bind:hover { border-color: var(--cp-accent); }
+.aiws-source-list { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; max-height: 50vh; overflow: auto; }
+.aiws-source-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; min-height: 44px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); color: var(--cp-text); font: inherit; text-align: left; cursor: pointer; }
+.aiws-source-item:hover, .aiws-source-item:focus-visible { border-color: var(--cp-accent); }
+.aiws-source-item > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.aiws-source-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aiws-dc-note { color: var(--cp-muted); font-size: 12px; padding: 4px 2px; }
 .aiws-root .aiws-dc-ghostbtn { border: 1px dashed var(--cp-border); background: none; border-radius: 8px; color: var(--cp-muted); padding: 6px 10px; cursor: pointer; justify-content: center; }
 .aiws-root .aiws-dc-ghostbtn:hover:not(:disabled) { color: var(--cp-text); border-color: var(--cp-accent); }

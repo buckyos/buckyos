@@ -58,8 +58,9 @@ read and change it.
 const CALENDAR_AGENT = `# calendar — the calendar control
 
 A \`buckyos.container\` with \`kind: "calendar"\`. It shows calendar tables (\`schema_id: "buckyos.calendar@1"\`) bound
-as \`bindings.events\` (and more bindings for more calendars; a \`buckyos.todo@1\` table bound as \`bindings.todo\` shows
-due dates). **Events are the table's records**: write the table, never Blocks.
+as \`bindings.events\` (more calendars under any other binding name), and the due dates of to-do tables
+(\`buckyos.todo@1\`, read only) bound as \`bindings.todo\` and \`bindings.todo_<name>\` — any number of each.
+**Events are the table's records**: write the table, never Blocks.
 
 ## The table (fields by id)
 

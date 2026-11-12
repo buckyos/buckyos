@@ -18,7 +18,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEven
 import { CalendarCheck2, ChevronLeft, ChevronRight, Ellipsis, Expand, Plus, Undo2 } from 'lucide-react'
 import { instantiate, type ProjectedNode, type Rect } from '@controls/projection'
 import { layoutAgenda, layoutMonth, layoutTimeGrid, minuteY, monthCell, monthDayAt, type MonthOptions, type TimedPiece } from '@controls/datalayout'
-import { calendarOccurrences, canonicalOriginal, eventAddOps, eventDeleteOps, eventEditOps, eventSkipOps, todoItem, viewerTimeZone, type EventChange, type EventTimes, type Json as SdkJson, type RecurrenceScope } from 'buckyos'
+import { CALENDAR_SCHEMA_ID, calendarOccurrences, canonicalOriginal, eventAddOps, eventDeleteOps, eventEditOps, eventSkipOps, todoItem, TODO_SCHEMA_ID, viewerTimeZone, type EventChange, type EventTimes, type Json as SdkJson, type RecurrenceScope } from 'buckyos'
+import { randomId } from '../../../api/ids'
 import type { Json, Operation } from '../../../api/types'
 import { useReadOnlyReason, useStore, useEntity, useWorkspaceUi } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
@@ -31,12 +32,14 @@ import { ProjectedView, projectedAt } from '../data/ProjectedView'
 import { useRecordSets } from '../data/records'
 import { useControlView } from '../data/viewState'
 import { submitData } from '../data/write'
+import { SourceChooser, UnboundSource } from '../data/SourceChooser'
+import { bindOps, freeBindingName, newSourceOps, sourceTables, surfaceFolderOf } from '../data/source'
 import type { ControlBodyProps } from '../registry'
 import { EventDetail } from './EventDetail'
 import { draftOf, draftTimes, EventForm, hhmm, locale, MiniMonth, QuickCreate, ScopeAsk, type EventDraft } from './EventForm'
 import {
   AGENDA_TEMPLATE, BAR_TEMPLATE, BLOCK_TEMPLATE, CAL_VIEW_KEYS, CAL_VIEWS, calendarDefaults, colorFor, dateOfDay, dayOfDate, DAY_MS, eventScope, isLong, localDayOf,
-  localInstant, localMidnight, minuteOf, place, rangeOf, stepAnchor, TODO_BINDING, weekdayOf, type CalendarView, type CalView, type Placed,
+  localInstant, localMidnight, minuteOf, place, rangeOf, stepAnchor, TODO_BINDING, EVENTS_BINDING, isTodoBinding, weekdayOf, type CalendarView, type CalView, type Placed,
 } from './model'
 
 const SNAP = 15
@@ -84,9 +87,9 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
   const ctl = useControlView<CalendarView>(containerId, calendarDefaults(loc, phone), CAL_VIEW_KEYS)
   const view = ctl.view
   const bindings = useMemo(() => container?.bindings ?? {}, [container?.bindings])
-  const calendars = useMemo(() => Object.entries(bindings).filter(([name]) => name !== TODO_BINDING).map(([binding, sourceId], i) => ({ binding, sourceId, color: colorFor(binding, i, container?.config) })), [bindings, container?.config])
-  const todoSource = bindings[TODO_BINDING] ?? null
-  const sourceIds = useMemo(() => [...calendars.map((c) => c.sourceId), ...(todoSource ? [todoSource] : [])], [calendars, todoSource])
+  const calendars = useMemo(() => Object.entries(bindings).filter(([name]) => !isTodoBinding(name)).map(([binding, sourceId], i) => ({ binding, sourceId, color: colorFor(binding, i, container?.config) })), [bindings, container?.config])
+  const todos = useMemo(() => Object.entries(bindings).filter(([name]) => isTodoBinding(name)).map(([binding, sourceId]) => ({ binding, sourceId })), [bindings])
+  const sourceIds = useMemo(() => [...calendars.map((c) => c.sourceId), ...todos.map((x) => x.sourceId)], [calendars, todos])
   const { sets, snapshots, version } = useRecordSets(sourceIds)
   const today = localDayOf(now)
   /** The day shown, as this window last moved to it (the person's saved date, `view.date`, follows; a saved date read
@@ -114,22 +117,56 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
         out.push(place(occ, c.binding, own))
       }
     }
-    if (todoSource && view.show_todo) {
-      for (const row of snapshots.get(todoSource)?.rows ?? []) {
+    for (const list of view.show_todo ? todos : []) {
+      if (hidden.has(list.binding)) continue
+      for (const row of snapshots.get(list.sourceId)?.rows ?? []) {
         const item = todoItem(row as never)
         if (!item.due) continue
         const day = dayOfDate(item.due)
         if (day < range.first || day > range.last) continue
         out.push({
-          occ: { id: `todo:${item.record_id}`, row: row as never, title: item.title, allDay: true, startDate: item.due, endDate: item.due, status: null, ext: {}, recurring: false, override: false, agentWritten: false },
-          calendar: TODO_BINDING, color: '#64748b', startDay: day, endDay: day, allDay: true, startMin: 0, endMin: 1440, todo: { recordId: item.record_id, done: item.done, sourceId: todoSource },
+          occ: { id: `${list.binding}:${item.record_id}`, row: row as never, title: item.title, allDay: true, startDate: item.due, endDate: item.due, status: null, ext: {}, recurring: false, override: false, agentWritten: false },
+          calendar: list.binding, color: '#64748b', startDay: day, endDay: day, allDay: true, startMin: 0, endMin: 1440, todo: { recordId: item.record_id, done: item.done, sourceId: list.sourceId },
         })
       }
     }
     return out
-  }, [snapshots, calendars, todoSource, view.show_todo, view.hidden, range.first, range.last, viewerTz])
+  }, [snapshots, calendars, todos, view.show_todo, view.hidden, range.first, range.last, viewerTz])
   const byId = useMemo(() => new Map(placed.map((p) => [p.occ.id, p])), [placed])
-  const sourceOf = (binding: string) => calendars.find((c) => c.binding === binding)?.sourceId ?? todoSource ?? ''
+  const sourceOf = (binding: string) => bindings[binding] ?? ''
+  // ---- which tables it shows (a document change): more calendars, to-do tables' due dates, or one fewer
+  const [bindAsk, setBindAsk] = useState<'calendar' | 'todo' | 'remove' | null>(null)
+  const canBind = !readOnlyNow && mode !== 'presentation_edit' && (container?.capabilities ?? []).includes('update')
+  const unbound = (schemaId: string) => sourceTables(store, schemaId).filter((table) => !Object.values(bindings).includes(table.entity_id))
+  const removable = Object.entries(bindings).filter(([name]) => name !== EVENTS_BINDING).map(([, id]) => store.outline.get(id)).filter((e): e is NonNullable<typeof e> => Boolean(e))
+  const bindTable = async (kind: 'calendar' | 'todo' | 'remove', choice: string) => {
+    setBindAsk(null)
+    const name = container?.title ?? t('aiworkspace.calendar.title')
+    let operations: Operation[]
+    if (kind === 'remove') {
+      const binding = Object.entries(bindings).find(([b, id]) => b !== EVENTS_BINDING && id === choice)?.[0]
+      if (!binding) return
+      operations = bindOps(containerId, { [binding]: null })
+    } else {
+      const binding = freeBindingName(bindings, kind === 'todo' ? TODO_BINDING : EVENTS_BINDING)
+      const tableId = choice === 'new' ? randomId('t') : choice
+      operations = []
+      if (choice === 'new') {
+        const folder = surfaceFolderOf(store, containerId)
+        if (!folder) return
+        operations.push(...newSourceOps(store, { binding, schemaId: CALENDAR_SCHEMA_ID, table: 'calendar' }, folder, tableId, t('aiworkspace.calendar.title')))
+      }
+      operations.push(...bindOps(containerId, { [binding]: tableId }))
+    }
+    const outcome = await store.submit({ editId: `bind:${containerId}`, label: t(kind === 'remove' ? 'aiworkspace.calendar.unbindLabel' : 'aiworkspace.datactl.source.bindLabel', { name }), operations })
+    if (outcome.status === 'rejected') store.notify('error', t('aiworkspace.datactl.rejected', { reason: outcome.errors?.[0]?.detail ?? outcome.detail ?? outcome.code }))
+  }
+  const askBind = (kind: 'calendar' | 'todo' | 'remove') => {
+    setPopover(null)
+    if (kind === 'calendar' && unbound(CALENDAR_SCHEMA_ID).length === 0) void bindTable('calendar', 'new')
+    else if (kind === 'todo' && unbound(TODO_SCHEMA_ID).length === 1) void bindTable('todo', unbound(TODO_SCHEMA_ID)[0].entity_id)
+    else setBindAsk(kind)
+  }
   const rowsOf = (sourceId: string) => (snapshots.get(sourceId)?.rows ?? []) as never[]
 
   // ---- session state
@@ -507,7 +544,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
   useEffect(() => registerControlKeys(containerId, (event) => keyRef.current(event)), [containerId])
 
   if (!container) return null
-  if (!calendars.length) return <div className="aiws-dc aiws-cal"><div className="aiws-dc-empty">{t('aiworkspace.datactl.unbound')}</div></div>
+  if (!calendars.length) return <div className="aiws-dc aiws-cal"><UnboundSource containerId={containerId} /></div>
   const errors = sourceIds.map((id) => snapshots.get(id)?.error).filter(Boolean)
 
   // ---- preview of a drag in progress (or a drop being written)
@@ -709,17 +746,27 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
           <MiniMonth value={dateOfDay(anchor)} today={dateOfDay(today)} weekStart={view.week_start} onPick={(date) => { go(dayOfDate(date)); setPopover(null) }} />
         </ControlPopover>
       )}
+      {bindAsk && (
+        <SourceChooser title={t(bindAsk === 'calendar' ? 'aiworkspace.calendar.addCalendarTitle' : bindAsk === 'todo' ? 'aiworkspace.calendar.addTodoTitle' : 'aiworkspace.calendar.removeTitle')}
+          note={bindAsk === 'remove' ? t('aiworkspace.calendar.removeNote') : undefined} allowNew={bindAsk === 'calendar'}
+          tables={bindAsk === 'remove' ? removable : unbound(bindAsk === 'calendar' ? CALENDAR_SCHEMA_ID : TODO_SCHEMA_ID)}
+          onPick={(choice) => void bindTable(bindAsk, choice)} onClose={() => setBindAsk(null)} />
+      )}
       {popover?.kind === 'menu' && (
         <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.datactl.viewMenu')} width={260} side="below">
           <ControlMenu label={t('aiworkspace.datactl.viewMenu')} onClose={() => setPopover(null)} items={[
             { id: 'week-mon', label: t('aiworkspace.calendar.weekStartsMonday'), checked: view.week_start === 0, icon: view.week_start === 0 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 0 }) },
             { id: 'week-sun', label: t('aiworkspace.calendar.weekStartsSunday'), checked: view.week_start === 6, icon: view.week_start === 6 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 6 }) },
-            ...(todoSource ? [{ id: 'todo', label: t('aiworkspace.calendar.showTodo'), checked: view.show_todo, icon: view.show_todo ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ show_todo: !view.show_todo }) } as MenuItem] : []),
-            ...(calendars.length > 1 ? calendars.map((c): MenuItem => {
+            ...(todos.length ? [{ id: 'todo', label: t('aiworkspace.calendar.showTodo'), checked: view.show_todo, icon: view.show_todo ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ show_todo: !view.show_todo }) } as MenuItem] : []),
+            ...(calendars.length + todos.length > 1 ? [...calendars, ...todos.map((x) => ({ ...x, color: '#64748b' }))].map((c): MenuItem => {
               const hidden = (view.hidden ?? []).includes(c.binding)
               return { id: `cal-${c.binding}`, label: store.outline.get(c.sourceId)?.name ?? c.binding, checked: !hidden, icon: <span className="aiws-cal-dot" style={{ background: hidden ? 'transparent' : c.color, borderColor: c.color }} />,
                 run: () => ctl.set({ hidden: hidden ? (view.hidden ?? []).filter((x) => x !== c.binding) : [...(view.hidden ?? []), c.binding] }) }
             }) : []),
+            ...(canBind ? ['separator',
+              { id: 'add-calendar', label: t('aiworkspace.calendar.addCalendar'), icon: <Plus size={14} />, run: () => askBind('calendar') },
+              { id: 'add-todo', label: t('aiworkspace.calendar.addTodo'), icon: <Plus size={14} />, disabled: unbound(TODO_SCHEMA_ID).length ? false : t('aiworkspace.calendar.noTodoTables'), run: () => askBind('todo') },
+              { id: 'remove-table', label: t('aiworkspace.calendar.removeTable'), disabled: removable.length ? false : t('aiworkspace.calendar.nothingToRemove'), run: () => askBind('remove') }] as (MenuItem | 'separator')[] : []),
             ...(host !== 'page' ? [{ id: 'page', label: t('aiworkspace.datactl.openAsPage'), icon: <Expand size={14} />, run: () => openControlPage(containerId) } as MenuItem] : []),
             'separator',
             { id: 'set-default', label: t('aiworkspace.datactl.setDefault'), disabled: ctl.setDefault ? false : ctl.canChange ? t('aiworkspace.datactl.alreadyDefault') : t('aiworkspace.datactl.noUpdate'), run: () => ctl.setDefault?.() },
