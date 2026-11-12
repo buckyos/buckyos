@@ -126,8 +126,12 @@ export class AiwsClient {
   getChanges(ws: Ws, epoch: string, after_seq: number, limit = 200) {
     return this.call<Result<ChangesPage>>('doc.get_changes', { ...ws, epoch, after_seq, limit })
   }
+  /** A Range-playable address of an asset (控件机制 TODO G17, H6): media play while they load. */
+  assetStreamUrl(ws: Ws, object_id: string) { return this.call<Result<{ url: string }>>('asset.stream_url', { ...ws, object_id }) }
+  /** The service's clock (控件机制 TODO G16): unix ms when it answered. */
+  wsTime() { return this.call<Result<{ server_ms: number }>>('ws.time', {}) }
   waitChanges(ws: Ws, epoch: string, after_seq: number, timeout_ms: number, signal?: AbortSignal) {
-    return this.call<Result<{ epoch: string; head_seq: number; timed_out: boolean; show_lock?: ShowLockInfo | null }>>('doc.wait_changes', { ...ws, epoch, after_seq, timeout_ms }, signal)
+    return this.call<Result<{ epoch: string; head_seq: number; timed_out: boolean; show_lock?: ShowLockInfo | null; server_ms?: number }>>('doc.wait_changes', { ...ws, epoch, after_seq, timeout_ms }, signal)
   }
 
   // ---- packages

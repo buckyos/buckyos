@@ -40,6 +40,8 @@ pub struct Limits {
     pub max_commit_bytes: usize,
     pub max_wait_ms: u64,
     pub max_asset_bytes: u64,
+    /// Audio and video assets (played by Range, 控件机制 TODO Q16).
+    pub max_media_bytes: u64,
     pub max_package_bytes: u64,
     /// Logical bytes one Workspace may occupy (D19); `None` = no quota.
     pub workspace_quota_bytes: Option<u64>,
@@ -56,7 +58,7 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_commit_bytes: 8 * 1024 * 1024, max_wait_ms: 30_000, max_asset_bytes: 32 * 1024 * 1024, max_package_bytes: 2 << 30,
+        Limits { max_commit_bytes: 8 * 1024 * 1024, max_wait_ms: 30_000, max_asset_bytes: 32 * 1024 * 1024, max_media_bytes: 2 << 30, max_package_bytes: 2 << 30,
                  workspace_quota_bytes: None, history_retention_ms: aiworkspace_store::workspace::HISTORY_RETENTION_MS, traffic_quota_bytes: None, public_base: None, web_dir: None }
     }
 }
@@ -450,6 +452,8 @@ fn okv(mut v: Value) -> Value {
 /// frozen yet (`proc.*` become stable with M3). The README method table mirrors this list.
 pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("ws.create", "stable"),
+    ("ws.ensure", "stable"),
+    ("ws.time", "stable"),
     ("ws.list", "stable"),
     ("ws.get_info", "stable"),
     ("ws.delete", "stable"),
@@ -539,7 +543,7 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("ext.upgrade", "experimental"),
     ("ext.export_template", "experimental"),
     ("ext.create_from_template", "experimental"),
-    ("asset.stream_url", "experimental"),
+    ("asset.stream_url", "stable"),
     ("session.create", "experimental"),
     ("session.list", "experimental"),
     ("session.list_mine", "experimental"),
@@ -579,7 +583,10 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
     let svc = &state.svc;
     let ws_id = || s(p, "workspace_id");
     Ok(okv(match method {
-        "ws.create" => svc.create_workspace(caller, p.get("title").and_then(Value::as_str).unwrap_or(""), p.get("workspace_id").and_then(Value::as_str))?,
+        "ws.create" => svc.create_workspace_with(caller, p.get("title").and_then(Value::as_str).unwrap_or(""), p.get("workspace_id").and_then(Value::as_str), p.get("name").and_then(Value::as_str))?,
+        "ws.ensure" => svc.ensure_workspace(caller, s(p, "name")?, p.get("title").and_then(Value::as_str))?,
+        // the service's clock for the clients' calibration (控件机制 TODO G16, Q10): any session, no Workspace
+        "ws.time" => json!({ "ok": true, "server_ms": (svc.clock)() }),
         "ws.list" => svc.list_workspaces(caller)?,
         "ws.get_info" => {
             let mut v = state.with_ws(ws_id()?, |ws| ws.info(caller))?;
@@ -886,11 +893,11 @@ async fn wait_changes(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsRe
         // the show lock rides along (第三期规划 §8.1): followers learn that writes are closed, and when they reopen
         let show_lock = || state.svc.show_locks.lock().unwrap().get(&id).filter(|l| l.expires_ms > (state.svc.clock)()).map(|l| l.to_json());
         if head > after {
-            return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": false, "show_lock": show_lock() }));
+            return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": false, "show_lock": show_lock(), "server_ms": (state.svc.clock)() }));
         }
         match tokio::time::timeout_at(deadline, rx.changed()).await {
             Ok(Ok(())) => continue,
-            _ => return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": true, "show_lock": show_lock() })),
+            _ => return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": true, "show_lock": show_lock(), "server_ms": (state.svc.clock)() })),
         }
     }
 }
@@ -982,8 +989,8 @@ async fn import_asset_object(state: &Arc<AppState>, params: &Value, caller: &Cal
             Some((_, _, obj)) => obj.clone(),
             None => s(&p, "obj_id")?.to_string(),
         };
-        let max = st.limits.max_asset_bytes;
-        let result = st.with_ws(&workspace, |ws| ws.stage_object(&c, &obj_id, max))?;
+        let (max, media) = (st.limits.max_asset_bytes, st.limits.max_media_bytes);
+        let result = st.with_ws(&workspace, |ws| ws.stage_upload(&c, &obj_id, max, media))?;
         if let Some((bucket, key, _)) = uploaded {
             if result["bucket_id"].as_str() != Some(bucket.as_str()) || result["key"].as_str() != Some(key.as_str()) {
                 st.svc.objects.unbind(&bucket, &key)?;

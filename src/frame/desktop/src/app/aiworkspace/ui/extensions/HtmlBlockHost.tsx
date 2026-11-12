@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Json } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import { useStore } from '../../state/hooks'
+import { serverClock } from '../../state/serverClock'
 import { useAiwsText } from '../../useAiwsText'
 import { AssetBlobImage } from './AssetBlobImage'
 import { blockRegistry, type BlockDefinition, type RenderContext } from '../blocks/registry'
@@ -16,6 +17,7 @@ import { makeBridge } from './bridge'
 import { EventNote } from './EventNote'
 import { raiseEvent } from './events'
 import { HtmlRuntime } from './htmlRuntime'
+import { onForwardedAction } from './actions'
 
 function Snapshot(context: RenderContext & { label?: string }) {
   const { t } = useAiwsText()
@@ -49,6 +51,7 @@ function HtmlActive(context: RenderContext) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
+  const runtimeRef = useRef<HtmlRuntime | null>(null)
   const source = context.documentDefinition
   const html = source?.kind === 'html' ? source.html : undefined
   const htmlKey = html ? JSON.stringify(html) : ''
@@ -66,12 +69,24 @@ function HtmlActive(context: RenderContext) {
     // `emit` of this runtime only: a rebuild remounts with the new `html`, the old runtime's late events are dropped
     const onEmit = (name: string, params: Record<string, Json>) => (runtime.alive ? raiseEvent({ store, instanceId: cellId, event: name, params, mode, interactive, openEntity, alive: () => runtime.alive }) : Promise.resolve({ handled: false, event_id: null }))
     const runtime = new HtmlRuntime(src, makeBridge(store, { cell, payload: context.payload, keyRevs: context.keyRevs, source: context.source, mode, interactive, onEmit }))
+    runtimeRef.current = runtime
     let cancelled = false
     runtime.onCrash = (message) => { if (!cancelled) { runtime.dispose(); setFailure(message) } }
-    runtime.mount(host).catch((error: unknown) => { if (!cancelled) setFailure(error instanceof Error ? error.message : String(error)) })
-    return () => { cancelled = true; runtime.dispose() }
+    // the service's clock (H5): its offset now and whenever it is measured again
+    const clock = serverClock(store.session)
+    const offClock = clock.subscribe(() => runtime.pushClock(clock.now() - Date.now()))
+    // declared actions forwarded to the running HTML (H2): the request `action:<id>`
+    let offForward: () => void = () => undefined
+    runtime.mount(host).then(() => {
+      runtime.pushClock(clock.now() - Date.now())
+      offForward = onForwardedAction(cellId, (id) => { void runtime.request(`action:${id}`, null).catch((error: unknown) => store.notify('error', error instanceof Error ? error.message : String(error))) })
+    }).catch((error: unknown) => { if (!cancelled) setFailure(error instanceof Error ? error.message : String(error)) })
+    return () => { cancelled = true; offClock(); offForward(); runtime.dispose(); if (runtimeRef.current === runtime) runtimeRef.current = null }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, htmlKey, cellId, mode, interactive, attempt])
+  // the instance's properties as they change reach the running extension (H1)
+  const configKey = JSON.stringify(context.payload.config ?? {})
+  useEffect(() => { runtimeRef.current?.pushConfig(JSON.parse(configKey) as Json) }, [configKey])
   if (!html) return <div className="aiws-warning">{t('aiworkspace.extension.html.unavailable')}</div>
   if (failure) {
     return (

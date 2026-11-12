@@ -29,8 +29,17 @@ pub fn list() -> Value {
 /// `control.describe { kind }`: the whole catalogue entry, with the self-description an Agent follows.
 pub fn describe(kind: &str) -> WsResult<Value> {
     let catalog = crate::wish::controls_catalog();
-    let control = catalog["controls"].as_array().into_iter().flatten().find(|c| c["kind"] == kind).cloned()
+    let mut control = catalog["controls"].as_array().into_iter().flatten().find(|c| c["kind"] == kind).cloned()
         .ok_or_else(|| WsError::not_found(format!("no control {kind:?} (control.list names them)")))?;
+    // an official data control's public contract (控件机制 TODO G13): component.json's shape, versioned
+    let contract = match kind {
+        "todo" => Some(include_str!("../../aiws/contracts/todo.json")),
+        "calendar" => Some(include_str!("../../aiws/contracts/calendar.json")),
+        _ => None,
+    };
+    if let Some(c) = contract.and_then(|c| serde_json::from_str::<Value>(c).ok()) {
+        control["contract"] = c;
+    }
     Ok(json!({ "ok": true, "control": control }))
 }
 

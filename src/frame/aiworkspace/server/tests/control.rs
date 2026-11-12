@@ -43,6 +43,10 @@ async fn import_and_export_a_mind_map() {
     let listed = srv.rpc("control.list", json!({})).await;
     assert!(listed["controls"].as_array().unwrap().iter().any(|c| c["kind"] == "mindmap"));
     assert!(srv.rpc("control.describe", json!({ "kind": "mindmap" })).await["control"]["agent"].as_str().unwrap().contains("\"auto\""));
+    // the official data controls carry their public contract (控件机制 TODO G13)
+    let todo = srv.rpc("control.describe", json!({ "kind": "todo" })).await;
+    assert_eq!((todo["control"]["contract"]["ident"]["name"].as_str(), todo["control"]["contract"]["bindings"]["items"]["schema_id"].as_str()), (Some("todo"), Some("buckyos.todo@1")), "{todo}");
+    assert!(srv.rpc("control.describe", json!({ "kind": "calendar" })).await["control"]["contract"]["templates"]["block"]["nodes"].is_array());
 
     let ws = srv.rpc("ws.create", json!({ "title": "controls" })).await;
     let id = ws["workspace_id"].as_str().unwrap().to_string();

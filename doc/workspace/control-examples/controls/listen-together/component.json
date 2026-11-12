@@ -1,0 +1,43 @@
+{
+  "manifest_version": 4,
+  "ident": { "author_did": "did:bns:buckyos", "name": "listen-together" },
+  "kind": "html",
+  "host_api": 4,
+  "title": "Listen together",
+  "description": "Plays a folder of audio for everyone at the same moment: the owner starts, pauses and skips from the toolbar (no need to start the control first), listeners follow by the service's clock, with a running waveform and the lyrics of a song that has a .lrc file of the same name. Anyone can listen on their own for a while; their volume and their own position are kept for them.",
+  "allow_no_source": true,
+  "default_size": { "w": 380, "h": 320 },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string", "title": "Title", "default": "Listen together", "maxLength": 64 },
+      "mode": { "type": "string", "title": "Play mode", "enum": ["order", "shuffle"], "default": "order" },
+      "track": { "type": "string", "title": "Current track", "description": "The file name of the playlist being played (empty: the first)" },
+      "anchor": {
+        "type": "object",
+        "title": "Broadcast",
+        "description": "{ pos_ms, at_ms, playing }: at service time at_ms the track was at pos_ms",
+        "properties": {
+          "pos_ms": { "type": "number", "minimum": 0 },
+          "at_ms": { "type": "number" },
+          "playing": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "bindings": {
+    "playlist": { "accepts": ["buckyos.dir"], "required": true, "title": "Playlist", "description": "A folder of audio files; a .lrc file of the same name holds a song's lyrics" }
+  },
+  "actions": [
+    { "id": "start", "title": "Start listening together", "needs": ["update"], "run": { "kind": "config", "props": { "anchor": { "pos_ms": 0, "at_ms": "{{now}}", "playing": true } } } },
+    { "id": "pause", "title": "Pause", "needs": ["update"], "run": { "kind": "forward" } },
+    { "id": "resume", "title": "Resume", "needs": ["update"], "run": { "kind": "forward" } },
+    { "id": "next", "title": "Next", "needs": ["update"], "run": { "kind": "forward" } },
+    { "id": "in_order", "title": "Play in order", "needs": ["update"], "run": { "kind": "config", "props": { "mode": "order" } } },
+    { "id": "shuffle", "title": "Shuffle", "needs": ["update"], "run": { "kind": "config", "props": { "mode": "shuffle" } } }
+  ],
+  "entry": { "html": "view.html", "css": "style.css", "js": "behavior.js" },
+  "catalog": { "group": "examples", "description": "A playlist everyone hears at the same moment" },
+  "agent": "AGENT.md",
+  "deps": []
+}

@@ -1,0 +1,13 @@
+# photo-vote
+
+Everyone picks up to `picks` photos of the bound folder `photos`; the cover shows the three with the most votes (ties in
+folder order). Run mode: a tap on a photo picks or unpicks it.
+
+- `votes` is a table with a `text` field marked `submitter: true` (the service fills it with the caller; each person has
+  one record and changes only theirs) and a `multi_select` field `picks` with `max_items` = `picks`. Create it with
+  `table.add_field` before binding; then run the action **Prepare the ballot** (or `table.add_option` yourself): one
+  option per photo, its label the file name.
+- Votes are records: insert yours with `table.insert_records` without the submitter field; a second insert answers
+  `SUBMITTER_EXISTS` with your record id — change that one with `table.set_values`.
+- The cover is computed by whoever reads (`doc.query { group: "picks", group_order: "count_desc", group_limit: 3 }`);
+  never write it back. Names of voters are visible to readers of the table (no anonymous vote in v1).

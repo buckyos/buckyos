@@ -54,6 +54,12 @@ export type ImportedAsset = { kind: 'file'; name: string; object_id: string; siz
 /** One file into a Workspace (design §3.6, Durable Data Schema §3.3): uploaded through NDM and bound into the
  * caller's own `assets` bucket at finalize, then taken over by the service into the Workspace owner's bucket.
  * A caller without a bucket of its own (a guest) uploads unbound and the service binds what it may read. */
+/** Workspace assets: 32 MiB each; audio and video up to 2 GiB (控件机制 TODO Q16; the service checks the sniffed type). */
+export const ASSET_LIMIT_BYTES = 32 * 1024 * 1024
+export const MEDIA_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+export const assetLimitOf = (file: Blob) => (/^(audio|video)\//.test(file.type) ? MEDIA_LIMIT_BYTES : ASSET_LIMIT_BYTES)
+const tooLarge = (file: Blob) => (assetLimitOf(file) === MEDIA_LIMIT_BYTES ? 'Audio and video are limited to 2 GiB per file.' : 'Workspace assets are limited to 32 MiB per file.')
+
 export async function uploadWorkspaceAsset(client: AiwsClient, workspaceId: string, file: File): Promise<StagedAsset> {
   const options = await client.transport.importOptions()
   const own = await client.transport.ownBucket('assets')
@@ -146,6 +152,10 @@ export interface WorkspaceSession {
   subscribeChanges(listener: (event: CommitEvent) => void): () => void
   /** Resolves once the change stream has been applied up to `seq`. */
   whenApplied(seq: number): Promise<void>
+  /** The service's clock now (unix ms), as one round trip measures it (控件机制 TODO G16); null without the service. */
+  serverTime(): Promise<{ server_ms: number; rtt_ms: number } | null>
+  /** An address that plays an asset by Range (G17, H6); null where there is none (offline). */
+  assetStreamUrl(objectId: string): Promise<string | null>
 
   outline(): Promise<EntityEnvelope[]>
   read<C>(entityId: string, selector?: Selector): Promise<ReadOk<C>>
@@ -346,6 +356,21 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   }
 
   info() { return this.wsInfo }
+
+  async assetStreamUrl(objectId: string) {
+    try { return unwrap(await this.client.assetStreamUrl(this.ws, objectId)).url } catch { return null }
+  }
+
+  async serverTime() {
+    const sent = performance.now()
+    try {
+      const r = unwrap(await this.client.wsTime())
+      const rtt = performance.now() - sent
+      return { server_ms: r.server_ms, rtt_ms: rtt }
+    } catch {
+      return null
+    }
+  }
   status() { return this.currentStatus }
   appliedSeq() { return this.applied }
   showLock() { return this.lock }
@@ -695,7 +720,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   // ---- assets (design §3.6): verified bytes first, then the reference is committed by the caller
 
   async uploadAsset(file: Blob, fileName?: string) {
-    if (file.size > 32 * 1024 * 1024) throw new Error('Workspace assets are limited to 32 MiB.')
+    if (file.size > assetLimitOf(file)) throw new Error(tooLarge(file))
     const source = file instanceof File ? file : new File([file], fileName ?? 'asset', { type: file.type })
     return uploadWorkspaceAsset(this.client, this.workspaceId, source)
   }
@@ -712,7 +737,8 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   }
 
   async importAssets(files: File[], folder: boolean, signal?: AbortSignal): Promise<ImportedAsset[]> {
-    if (files.some(file => file.size > 32 * 1024 * 1024)) throw new Error('Workspace assets are limited to 32 MiB per file.')
+    const big = files.find((file) => file.size > assetLimitOf(file))
+    if (big) throw new Error(tooLarge(big))
     const options = await this.client.transport.importOptions()
     const snapshot = await ndm.importFiles(files, { ...options, mode: folder ? 'single_dir' : 'multi_file', autoStartUpload: false, signal })
     try {

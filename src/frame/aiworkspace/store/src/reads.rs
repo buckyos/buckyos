@@ -366,6 +366,7 @@ impl Workspace {
         if let Some(g) = params.get("group").and_then(Value::as_str) {
             spec.group = Some(g.to_string());
         }
+        aiworkspace_core::filter::group_params(params, &mut spec)?;
         let mut out = if types::is_url_table(&source) {
             let reference = source.payload.get("source_ref").cloned().unwrap_or(Value::Null);
             let q = SourceQuery {

@@ -121,10 +121,12 @@ export class Api {
     return (await this.rpc(token, 'ws.get_info', { workspace_id: workspaceId })).head_seq
   }
 
-  /** `ext.build` of a control from files given as text or JSON (or a folder of `doc/workspace/hello-controls`). */
+  /** `ext.build` of a control from files given as text or JSON (or a folder of `doc/workspace/hello-controls`, or a path under `doc/workspace`). */
   async build(token: string, workspaceId: string, files: Record<string, unknown> | string, extra: Json = {}): Promise<Json> {
+    // a name: a folder of hello-controls; a path: a folder under doc/workspace (control-examples/controls/<name>)
+    const dir = typeof files === 'string' ? resolve(files.includes('/') ? '../../../doc/workspace' : '../../../doc/workspace/hello-controls/controls', files) : ''
     const list = typeof files === 'string'
-      ? readdirSync(resolve('../../../doc/workspace/hello-controls/controls', files)).map((name) => ({ name, base64: readFileSync(resolve('../../../doc/workspace/hello-controls/controls', files, name)).toString('base64') }))
+      ? readdirSync(dir).map((name) => ({ name, base64: readFileSync(resolve(dir, name)).toString('base64') }))
       : Object.entries(files).map(([name, v]) => ({ name, base64: Buffer.from(typeof v === 'string' ? v : JSON.stringify(v), 'utf8').toString('base64') }))
     const built = await this.rpc(token, 'ext.build', { workspace_id: workspaceId, files: list, ...extra })
     expect(built.status, JSON.stringify(built)).toBe('accepted')

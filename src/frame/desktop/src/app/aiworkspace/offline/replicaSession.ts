@@ -87,6 +87,9 @@ function reverted(touched: Touched[]): Touched[] {
 }
 
 export class ReplicaWorkspaceSession implements WorkspaceSession {
+  /** Offline there is no service clock to ask: the device's own is all there is. */
+  async serverTime() { return null }
+  async assetStreamUrl() { return null }
   readonly workspaceId: string
   readonly sessionId: string
   readonly offline: OfflineControls

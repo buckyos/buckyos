@@ -874,6 +874,11 @@ impl Workspace {
         self.local.query_row("SELECT value FROM local_meta WHERE key = 'owner'", [], |r| r.get(0)).optional().map_err(db_err)
     }
 
+    /// The name the Workspace was created with (控件机制 TODO G9): unique among its owner's, never changed, never exported.
+    pub fn name(&self) -> WsResult<Option<String>> {
+        self.local.query_row("SELECT value FROM local_meta WHERE key = 'name'", [], |r| r.get(0)).optional().map_err(db_err)
+    }
+
     /// Whose AICC the wish blocks use (AI Center Quota PRD §3.3): `workspace_owner` (default) or
     /// `current_user`.
     pub fn wish_aicc_mode(&self) -> WsResult<String> {
@@ -1272,14 +1277,18 @@ impl Workspace {
 
     pub fn info(&self, caller: &Caller) -> WsResult<Value> {
         let access = self.require_ws_any(caller)?;
-        Ok(json!({ "ok": true, "workspace_id": self.workspace_id, "title": self.title(), "epoch": self.epoch,
+        let mut info = json!({ "ok": true, "workspace_id": self.workspace_id, "title": self.title(), "epoch": self.epoch,
                    "head_seq": self.head_seq, "head_commit_id": self.head_commit_id, "base_seq": self.base_seq(), "format_version": FORMAT_VERSION,
                    "protocol_version": PROTOCOL_VERSION, "planner_version": aiworkspace_core::plan::PLANNER_VERSION,
                    "richtext_schema": aiworkspace_core::richtext::schema()["id"], "usage": self.usage()?,
                    "capabilities": access.ws_caps.names(), "principal": caller.principal,
                    "forked_from": meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                    "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose(),
-                   "wish_aicc_mode": self.wish_aicc_mode()?, "hosted_exec": self.hosted_exec()? }))
+                   "wish_aicc_mode": self.wish_aicc_mode()?, "hosted_exec": self.hosted_exec()? });
+        if let Some(name) = self.name()? {
+            info["name"] = json!(name);
+        }
+        Ok(info)
     }
 
     /// Any grant at all (workspace-level or scoped) is enough to know the Workspace exists.

@@ -1,0 +1,16 @@
+<div class="lt">
+  <header><span id="title"></span><span id="badge" class="badge"></span></header>
+  <div id="track" class="track"></div>
+  <canvas id="wave" class="wave" aria-label="Position"></canvas>
+  <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+  <ol id="lyrics" class="lyrics"></ol>
+  <footer>
+    <button id="live" type="button"></button>
+    <button id="prev" type="button" aria-label="Previous"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h2v10H3zM13 3v10L6 8z"/></svg></button>
+    <button id="play" type="button" aria-label="Play or pause"><svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11L13 8z"/></svg><svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h3v10H4zM9 3h3v10H9z"/></svg></button>
+    <button id="next" type="button" aria-label="Next"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11 3h2v10h-2zM3 3v10l7-5z"/></svg></button>
+    <input id="volume" type="range" min="0" max="1" step="0.05" aria-label="Volume">
+  </footer>
+  <button id="tap" class="tap" type="button" hidden>Tap to listen</button>
+  <audio id="audio" preload="auto"></audio>
+</div>

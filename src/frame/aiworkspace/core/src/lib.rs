@@ -20,6 +20,7 @@ pub mod plan_table;
 pub mod read;
 pub mod replica;
 pub mod richtext;
+pub mod standard;
 pub mod testkit;
 pub mod types;
 pub mod value;

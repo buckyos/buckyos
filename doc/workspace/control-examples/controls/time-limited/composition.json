@@ -1,0 +1,26 @@
+{
+  "layout": { "algorithm": "stack", "direction": "column", "padding": 12, "spacing": 8 },
+  "slots": {
+    "content": { "title": "Shown for a while", "visible": { "from": "first_open", "for_ms": "{{config.limit_ms}}" } }
+  },
+  "projections": {
+    "clock": {
+      "source": { "kind": "viewer" },
+      "placement": "top",
+      "layout": { "algorithm": "list", "item": { "h": 24 } },
+      "template": {
+        "nodes": [
+          { "id": "left", "view": "label", "when": "{{item.remaining_ms}}", "config": { "value": "{{item.remaining_ms}}", "format": "countdown", "font_size": 15, "weight": "bold", "font_color": "warning" } },
+          { "id": "gone", "view": "label", "when": "{{item.expired}}", "config": { "text": "Time is up", "muted": true } }
+        ]
+      }
+    }
+  },
+  "chrome": {
+    "background": "#fff8e6",
+    "radius": 12,
+    "border": "#e8c66a",
+    "title": { "text": "{{config.title}}" },
+    "empty": "Put the Blocks to show for a while here"
+  }
+}

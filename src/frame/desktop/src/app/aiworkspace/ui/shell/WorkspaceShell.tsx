@@ -33,11 +33,15 @@ import { SidePanel } from './SidePanel'
 import { StatusDetail, StatusDock } from './StatusSummary'
 import { TableImportHost } from '../import/TableImportDialog'
 import { OfficeImportHost } from '../import/ImportOfficeDialog'
+import { isDataControl } from '@controls/contract'
+import { ControlPage } from '../controls/data/ControlPage'
+import { onControlPage, requestRecordFocus } from '../controls/data/focus'
+import type { RecordTarget } from '../../links'
 
 export type { TopMode } from './shellContext'
 
 /** Where a link or an explicit open asked to land (UI improvement §4 rule 1). */
-export interface LaunchTarget { surfaceId?: string | null; blockId?: string | null }
+export interface LaunchTarget extends RecordTarget { surfaceId?: string | null; blockId?: string | null }
 
 /** Annotations in scope: under `parentId` or anchored to anything under it (plus the sources of Blocks there). */
 function useAnnotations(parentId: string | null, entities: EntityEnvelope[]): AnnotationMark[] {
@@ -117,6 +121,13 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   const [selected, setSelected] = useState<string | null>(null)
   // a link's target is the first focus request (the Surface becomes active below, once the outline says it exists)
   const [focus, setFocus] = useState<CanvasFocus | null>(() => (target?.surfaceId ? { surfaceId: target.surfaceId, blockId: target.blockId ?? null, nonce: 1 } : null))
+  // a link to a record of a data control (G12): the control turns to it once it is drawn
+  useEffect(() => { if (target?.blockId && target.record) requestRecordFocus(target.blockId, target.record, target.occurrence) }, [target])
+  // a data control as its own page (G14): asked by the link (`page=control`), by a record link on a phone, or by its menu
+  const [pageChoice, setPageChoice] = useState<string | null | undefined>(undefined)
+  useEffect(() => onControlPage((id) => setPageChoice(id)), [])
+  const linkPage = target?.blockId && (target.page === 'control' || (phone && target.record && isDataControl(store.outline.get(target.blockId)?.kind))) ? target.blockId : null
+  const pageControl = pageChoice === undefined ? linkPage : pageChoice
   const [draft, setDraft] = useState<CapturedAnchor | null>(null)
   const [activeAnnotation, setActiveAnnotation] = useState<string | null>(null)
   const [dialog, setDialog] = useState<DialogRequest | null>(null)
@@ -314,7 +325,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
                     <SidePanel tabs={SOURCES_SIDE_TABS} render={(tab) => (tab === 'collab' ? <PermissionsPanel /> : <StatusDetail />)} />
                   </div>
                 </div>
-              ) : <CanvasView focus={focus} />}
+              ) : pageControl && store.outline.get(pageControl) ? <ControlPage containerId={pageControl} onBack={() => setPageChoice(null)} /> : <CanvasView focus={focus} />}
             </div>
             {startRequest && !showSession && (
               <StartShowDialog initialPathId={startRequest.pathId} initialStepId={startRequest.stepId} onClose={() => setStartRequest(null)} transport={client.transport}

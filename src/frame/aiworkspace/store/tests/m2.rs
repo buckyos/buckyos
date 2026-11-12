@@ -189,3 +189,33 @@ fn a_show_clone_follows_the_source_workspaces_current_grants() {
     let ws = h.lock().unwrap();
     assert_eq!(ws.usage().unwrap()["clones"].as_i64().unwrap_or(0), 0);
 }
+
+#[test]
+fn audio_and_video_have_their_own_limit_and_may_be_chunk_lists() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "媒体", None).unwrap()["workspace_id"].as_str().unwrap().to_string();
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    // above one chunk, as the browser uploads a long video: a FileObject over a chunk list
+    let dir = tempfile::tempdir().unwrap();
+    let file = |name: &str, head: &[u8], fill: u8| {
+        let mut bytes = vec![fill; (32 << 20) + 4096];
+        bytes[..head.len()].copy_from_slice(head);
+        let path = dir.path().join(name);
+        std::fs::write(&path, &bytes).unwrap();
+        env.objects.store_file(&path, name).unwrap()
+    };
+    let video = file("clip.bin", b"\0\0\0\x18ftypisom\0\0\x02\0isommp41", 0);
+    assert!(ndn_lib::ObjId::new(&env.objects.file_chunk(&video).unwrap()).unwrap().is_chunk_list());
+    let (asset_limit, media_limit) = (32 << 20, 2 << 30);
+    assert_eq!(code(&ws.stage_upload(&alice(), &video, asset_limit, 32 << 20).unwrap_err().to_json()), "LIMIT_EXCEEDED");
+    let staged = ws.stage_upload(&alice(), &video, asset_limit, media_limit).unwrap();
+    assert_eq!((staged["media_type"].as_str(), staged["size"].as_u64()), (Some("video/mp4"), Some((32 << 20) + 4096)));
+    ok(&mut ws, &alice(), asset_ops(&video));
+    let pic = ws.read(&alice(), "pic", None).unwrap();
+    let content = &pic["content"]["payload"];
+    assert_eq!((content["media_type"].as_str(), content["size"].as_u64(), pic["content"]["availability"].as_str()), (Some("video/mp4"), Some((32 << 20) + 4096), Some("available")), "{pic}");
+    // anything else keeps the asset limit
+    let other = file("blob.bin", b"", 0xfe);
+    assert_eq!(code(&ws.stage_upload(&alice(), &other, asset_limit, media_limit).unwrap_err().to_json()), "LIMIT_EXCEEDED");
+}

@@ -1259,3 +1259,219 @@
   background: var(--cp-surface-opaque); color: var(--cp-text); cursor: pointer; }
 .aiws-wish-control-preview { max-height: 360px; overflow: auto; }
 .aiws-wish-control-art > svg { display: block; max-width: 100%; height: auto; }
+
+/* ---- label Block (控件机制 TODO G1) */
+.aiws-label-block { width: 100%; height: 100%; display: flex; }
+.aiws-label { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; width: 100%; height: 100%; box-sizing: border-box;
+  color: var(--cp-text); line-height: 1.35; min-width: 0; }
+.aiws-label:not(.is-wrap) { display: flex; flex-direction: column; }
+.aiws-label:not(.is-wrap) > .aiws-label-text { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.aiws-label.is-wrap > .aiws-label-text { overflow-wrap: anywhere; }
+.aiws-label.is-empty { color: var(--cp-muted); font-style: italic; }
+.aiws-label.is-editing { outline: none; cursor: text; display: block; overflow: visible; }
+.aiws-label.is-editing:empty::before { content: attr(data-placeholder); color: var(--cp-muted); }
+
+/* ---- data controls: their body in the frame, projected Blocks, gestures (控件机制 TODO G2–G7) */
+.aiws-frame-block.is-control > .aiws-data-body { position: absolute; inset: 0; pointer-events: none; }
+.aiws-frame-block.is-control > .aiws-data-body[data-active='true'] { pointer-events: auto; }
+.aiws-data-flow { position: relative; width: 100%; border: 1px solid var(--cp-border); border-radius: 12px; overflow: hidden; background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-data-flow.is-page { height: 100%; border: none; border-radius: 0; }
+.aiws-dc { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border);
+  border-radius: 12px; overflow: hidden; color: var(--cp-text); font-size: 14px; box-sizing: border-box; outline: none; user-select: none; -webkit-user-select: none; }
+.aiws-data-flow > .aiws-dc { border: none; border-radius: 0; }
+.aiws-dc.is-active { box-shadow: 0 1px 2px rgb(0 0 0 / 4%); }
+.aiws-dc:focus-visible { box-shadow: 0 0 0 2px var(--cp-accent); }
+.aiws-dc-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px; min-height: 24px; }
+.aiws-dc-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.aiws-dc-count { color: var(--cp-muted); font-size: 12px; white-space: nowrap; }
+.aiws-dc-spacer { flex: 1 1 auto; }
+.aiws-dc-seg { display: inline-flex; border: 1px solid var(--cp-border); border-radius: 8px; padding: 2px; gap: 2px; background: var(--cp-surface-2); flex: none; }
+.aiws-root .aiws-dc-seg > button { border: none; background: none; border-radius: 6px; padding: 3px 8px; font-size: 12px; color: var(--cp-muted); cursor: pointer; min-height: 24px; }
+.aiws-root .aiws-dc-seg > button.is-on { background: var(--cp-surface-opaque, var(--cp-surface)); color: var(--cp-text); box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+.aiws-dc-seg.is-small > button { padding: 2px 6px; }
+.aiws-root .aiws-dc-iconbtn { border: none; background: none; border-radius: 6px; width: 28px; height: 28px; justify-content: center; color: var(--cp-muted); cursor: pointer; flex: none; }
+.aiws-root .aiws-dc-iconbtn:hover:not(:disabled) { background: var(--cp-surface-2); color: var(--cp-text); }
+.aiws-dc-scroll { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 12px 12px; touch-action: pan-x pan-y; overscroll-behavior: contain; }
+.aiws-dc.is-phone .aiws-dc-scroll { padding: 0 8px 8px; }
+.aiws-dc-scroll.is-board { padding: 4px 12px 12px; }
+.aiws-dc.is-phone .aiws-dc-scroll.is-board { scroll-snap-type: x mandatory; }
+.aiws-dc-canvas { position: relative; min-width: 100%; }
+.aiws-proj { position: absolute; box-sizing: border-box; display: flex; }
+.aiws-proj > .aiws-shape-art { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.aiws-proj.is-label { align-items: stretch; }
+.aiws-dc.is-active .aiws-proj[data-proj-role='check'] { cursor: pointer; }
+.aiws-dc.is-active .aiws-proj[data-proj-role='body'], .aiws-dc.is-active .aiws-proj[data-proj-role='title'] { cursor: default; }
+.aiws-dc.is-dragging, .aiws-dc.is-dragging * { cursor: grabbing !important; }
+.aiws-proj.is-drag-source { opacity: 0.35; }
+.aiws-dc-ghost { position: absolute; inset: 0; pointer-events: none; z-index: 5; filter: drop-shadow(0 6px 14px rgb(0 0 0 / 18%)); }
+.aiws-dc-ghost-count { position: absolute; min-width: 20px; height: 20px; border-radius: 10px; background: var(--cp-accent); color: #fff; font-size: 12px; display: flex;
+  align-items: center; justify-content: center; padding: 0 5px; }
+.aiws-dc-insert { position: absolute; left: 0; height: 2px; background: var(--cp-accent); border-radius: 1px; pointer-events: none; z-index: 4; }
+.aiws-dc-insert::before { content: ''; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 4px; background: var(--cp-accent); }
+.aiws-dc-slot { position: absolute; border: 1.5px dashed color-mix(in srgb, var(--cp-accent) 60%, transparent); border-radius: 8px;
+  background: color-mix(in srgb, var(--cp-accent) 7%, transparent); box-sizing: border-box; pointer-events: none; }
+.aiws-dc-inline-edit { position: absolute; z-index: 6; box-sizing: border-box; font: inherit; font-size: 14px; padding: 2px 6px; border: 1px solid var(--cp-accent);
+  border-radius: 6px; background: var(--cp-surface-opaque, var(--cp-surface)); color: var(--cp-text); outline: none; }
+.aiws-dc-empty { padding: 24px 12px; color: var(--cp-muted); text-align: center; font-size: 13px; }
+.aiws-dc-empty.is-hint { position: absolute; left: 0; right: 0; top: 8px; }
+.aiws-dc-note { color: var(--cp-muted); font-size: 12px; padding: 4px 2px; }
+.aiws-root .aiws-dc-ghostbtn { border: 1px dashed var(--cp-border); background: none; border-radius: 8px; color: var(--cp-muted); padding: 6px 10px; cursor: pointer; justify-content: center; }
+.aiws-root .aiws-dc-ghostbtn:hover:not(:disabled) { color: var(--cp-text); border-color: var(--cp-accent); }
+.aiws-root .aiws-dc-ghostbtn:disabled { cursor: not-allowed; opacity: 0.6; }
+.aiws-dc-bulk { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-radius: 12px;
+  background: var(--cp-text); color: var(--cp-surface-opaque, #fff); box-shadow: var(--cp-shadow); z-index: 7; font-size: 13px; white-space: nowrap; }
+.aiws-dc-bulk > span { padding: 0 6px; }
+.aiws-root .aiws-dc-bulk > button { border: none; background: none; color: inherit; border-radius: 8px; padding: 4px 8px; cursor: pointer; }
+.aiws-root .aiws-dc-bulk > button:hover:not(:disabled) { background: rgb(255 255 255 / 14%); }
+
+/* the to-do control */
+.aiws-todo-add { flex: none; display: flex; align-items: center; gap: 6px; margin: 0 12px 8px; padding: 0 10px; border: 1px solid var(--cp-border); border-radius: 8px;
+  color: var(--cp-muted); background: var(--cp-surface-2); }
+.aiws-todo-add:focus-within { border-color: var(--cp-accent); background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-root .aiws-todo-add > input { flex: 1 1 auto; min-width: 0; border: none; background: none; outline: none; font: inherit; font-size: 14px; color: var(--cp-text); padding: 8px 0; }
+.aiws-todo-add-hint { opacity: 0.6; }
+.aiws-root .aiws-todo-donehead { position: absolute; left: 0; height: 30px; border: none; background: none; color: var(--cp-muted); font-size: 12px; font-weight: 600; padding: 0 4px;
+  cursor: pointer; justify-content: flex-start; }
+.aiws-root .aiws-todo-donehead:hover:not(:disabled) { color: var(--cp-text); }
+.aiws-board-col { position: absolute; border-radius: 10px; background: var(--cp-surface-2); box-sizing: border-box; scroll-snap-align: start; }
+.aiws-board-col.is-dropping { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--cp-accent) 55%, transparent); }
+.aiws-root .aiws-board-colhead { position: absolute; display: flex; align-items: center; gap: 6px; border: none; background: none; padding: 0 10px; font-size: 13px; font-weight: 600;
+  color: var(--cp-text); cursor: pointer; box-sizing: border-box; text-align: left; }
+.aiws-root .aiws-board-colhead.is-collapsed { flex-direction: column; justify-content: flex-start; padding: 10px 0; }
+.aiws-board-colhead.is-collapsed > .aiws-board-colname { writing-mode: vertical-rl; white-space: nowrap; }
+.aiws-board-colname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.aiws-board-colcount { color: var(--cp-muted); font-weight: 400; font-size: 12px; }
+.aiws-board-add, .aiws-board-addinput { position: absolute; height: 32px; box-sizing: border-box; }
+.aiws-board-addinput { font: inherit; font-size: 13px; padding: 4px 10px; border: 1px solid var(--cp-accent); border-radius: 8px; background: var(--cp-surface-opaque, var(--cp-surface));
+  color: var(--cp-text); outline: none; z-index: 3; }
+.aiws-board-newcol { position: absolute; top: 4px; display: flex; flex-direction: column; gap: 6px; }
+.aiws-board-newcol > input { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--cp-accent); border-radius: 8px; outline: none;
+  background: var(--cp-surface-opaque, var(--cp-surface)); color: var(--cp-text); }
+
+/* pop-overs of a data control (G5): beside the item on wide screens, a sheet from the bottom on phones */
+.aiws-ctl-popover { position: fixed; z-index: 80; box-sizing: border-box; max-height: min(80vh, 640px); overflow: auto; padding: 14px 14px 12px;
+  background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 14px; box-shadow: var(--cp-shadow); color: var(--cp-text); font-size: 14px; }
+.aiws-ctl-sheet-backdrop { position: fixed; inset: 0; z-index: 80; background: rgb(0 0 0 / 28%); display: flex; align-items: flex-end; }
+.aiws-ctl-popover.is-sheet { position: relative; width: 100%; max-height: 86vh; border-radius: 16px 16px 0 0; border-bottom: none; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+.aiws-ctl-sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--cp-border); margin: -6px auto 10px; }
+.aiws-root .aiws-ctl-popover-close { position: absolute; right: 8px; top: 8px; border: none; background: none; width: 28px; height: 28px; border-radius: 6px; justify-content: center;
+  color: var(--cp-muted); cursor: pointer; z-index: 1; }
+.aiws-root .aiws-ctl-popover-close:hover { background: var(--cp-surface-2); color: var(--cp-text); }
+.aiws-ctl-menu { display: flex; flex-direction: column; gap: 1px; margin: 14px -6px -4px; }
+.aiws-root .aiws-ctl-menu-item { display: flex; align-items: center; gap: 10px; border: none; background: none; text-align: left; padding: 8px 10px; border-radius: 8px;
+  font-size: 14px; color: var(--cp-text); cursor: pointer; min-height: 36px; }
+.aiws-root .aiws-ctl-menu-item:hover:not(:disabled), .aiws-root .aiws-ctl-menu-item:focus-visible { background: var(--cp-surface-2); outline: none; }
+.aiws-root .aiws-ctl-menu-item:disabled { color: var(--cp-muted); cursor: not-allowed; }
+.aiws-ctl-menu-item.is-danger { color: var(--cp-danger); }
+.aiws-ctl-menu-icon { width: 16px; display: inline-flex; justify-content: center; color: var(--cp-muted); }
+.aiws-ctl-menu-sep { height: 1px; background: var(--cp-border); margin: 4px 8px; }
+.aiws-ctl-form { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+.aiws-ctl-form-title { font: inherit; font-size: 17px; font-weight: 600; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; margin: 0 28px 0 -6px; background: none;
+  color: var(--cp-text); outline: none; }
+.aiws-ctl-form-title:hover:not(:disabled), .aiws-ctl-form-title:focus { border-color: var(--cp-border); }
+.aiws-ctl-form-row { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 8px; font-size: 13px; }
+.aiws-ctl-form-row > span:first-child, .aiws-ctl-form-label { color: var(--cp-muted); font-size: 13px; }
+.aiws-ctl-form-row input, .aiws-ctl-form-row select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--cp-border); border-radius: 6px;
+  background: var(--cp-surface-opaque, var(--cp-surface)); color: var(--cp-text); min-width: 0; }
+.aiws-ctl-form-pair { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.aiws-ctl-form-notes { display: flex; flex-direction: column; gap: 6px; }
+.aiws-ctl-form-body { border: 1px solid var(--cp-border); border-radius: 8px; min-height: 80px; max-height: 260px; overflow: auto; padding: 4px 8px; }
+.aiws-ctl-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; border-top: 1px solid var(--cp-border); }
+.aiws-root .aiws-danger-link { border: none; background: none; color: var(--cp-danger); cursor: pointer; padding: 6px 4px; font-size: 13px; }
+.aiws-root .aiws-danger-link:disabled { color: var(--cp-muted); cursor: not-allowed; }
+
+/* the calendar control (控件机制 TODO §0.1) */
+.aiws-cal-head { flex-wrap: wrap; row-gap: 6px; }
+.aiws-root .aiws-cal-today { border: 1px solid var(--cp-border); background: var(--cp-surface-opaque, var(--cp-surface)); border-radius: 8px; padding: 3px 10px; font-size: 13px; cursor: pointer; min-height: 28px; }
+.aiws-root .aiws-cal-today:hover:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-root .aiws-cal-range { border: none; background: none; font-size: 15px; font-weight: 600; padding: 3px 6px; border-radius: 6px; cursor: pointer; white-space: nowrap; color: var(--cp-text); }
+.aiws-root .aiws-cal-range:hover:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-cal-dayhead { flex: none; display: flex; border-bottom: 1px solid var(--cp-border); box-sizing: border-box; }
+.aiws-root .aiws-cal-dayname { display: flex; flex-direction: column; align-items: stretch; gap: 2px; border: none; background: none; padding: 4px 0 6px; cursor: pointer; box-sizing: border-box; height: 52px; }
+.aiws-cal-daynum { display: flex; justify-content: center; }
+.aiws-cal-daynum > .aiws-label { width: 30px; height: 30px; border-radius: 15px; flex: none; }
+.aiws-cal-dayname.is-today .aiws-cal-daynum > .aiws-label { background: var(--cp-accent); color: #fff; }
+.aiws-cal-dayname.is-today > .aiws-label:first-child { color: var(--cp-accent); }
+.aiws-cal-allday { flex: none; position: relative; border-bottom: 1px solid var(--cp-border); box-sizing: border-box; }
+.aiws-cal-allday-label { position: absolute; left: 0; top: 0; bottom: 0; display: flex; align-items: center; }
+.aiws-dc-scroll.aiws-cal-grid { padding: 0; }
+.aiws-cal-lines { position: absolute; top: 0; right: 0; bottom: 0;
+  background-image: linear-gradient(to right, var(--cp-border) 1px, transparent 1px), linear-gradient(to bottom, var(--cp-border) 1px, transparent 1px);
+  opacity: 0.7; pointer-events: none; }
+.aiws-cal-hour { position: absolute; left: 0; height: 14px; display: flex; }
+.aiws-cal-now { position: absolute; height: 2px; background: var(--cp-danger); z-index: 3; pointer-events: none; }
+.aiws-cal-now::before { content: ''; position: absolute; left: -5px; top: -4px; width: 10px; height: 10px; border-radius: 5px; background: var(--cp-danger); }
+.aiws-cal-create { position: absolute; border-radius: 6px; background: color-mix(in srgb, var(--cp-accent) 18%, transparent); border: 1.5px solid var(--cp-accent);
+  box-sizing: border-box; pointer-events: none; z-index: 2; }
+.aiws-proj.is-preview { z-index: 6; filter: drop-shadow(0 4px 10px rgb(0 0 0 / 18%)); pointer-events: none; }
+.aiws-root .aiws-cal-more { position: absolute; border: none; background: none; padding: 0 6px; font-size: 11px; color: var(--cp-muted); cursor: pointer; justify-content: flex-start; border-radius: 4px; z-index: 2; }
+.aiws-root .aiws-cal-more:hover { background: var(--cp-surface-2); color: var(--cp-text); }
+.aiws-cal-month { position: relative; flex: none; margin: 0; }
+.aiws-cal-mwd { position: absolute; top: 0; height: 26px; display: flex; }
+.aiws-cal-cell { position: absolute; box-sizing: border-box; border-top: 1px solid var(--cp-border); border-left: 1px solid var(--cp-border); }
+.aiws-cal-cell.is-weekend { background: color-mix(in srgb, var(--cp-surface-2) 55%, transparent); }
+.aiws-cal-cell.is-out .aiws-cal-cellnum { opacity: 0.45; }
+.aiws-cal-cellnum { position: absolute; left: 4px; top: 3px; width: 22px; height: 20px; display: flex; }
+.aiws-cal-cell.is-today .aiws-cal-cellnum > .aiws-label { background: var(--cp-accent); color: #fff; border-radius: 10px; }
+.aiws-dc-scroll.aiws-cal-agenda { padding: 0; }
+.aiws-cal-agenda-day { position: absolute; display: flex; border-bottom: 1px solid var(--cp-border); box-sizing: border-box; }
+.aiws-cal-agenda-day.is-today .aiws-label { color: var(--cp-accent); }
+.aiws-root .aiws-cal-fab { position: absolute; right: 16px; bottom: 16px; width: 48px; height: 48px; border-radius: 24px; border: none; background: var(--cp-accent); color: #fff;
+  justify-content: center; box-shadow: var(--cp-shadow); z-index: 5; }
+.aiws-cal-dot { display: inline-block; width: 10px; height: 10px; border-radius: 5px; border: 1.5px solid transparent; box-sizing: border-box; flex: none; }
+.aiws-cal-detail { display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
+.aiws-cal-detail-title { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; margin-right: 28px; overflow-wrap: anywhere; }
+.aiws-cal-detail-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.aiws-cal-detail-row > svg { flex: none; margin-top: 2px; color: var(--cp-muted); }
+.aiws-cal-maint { display: flex; flex-direction: column; gap: 3px; font-size: 12px; padding: 8px 10px; border-radius: 8px; background: var(--cp-surface-2); }
+.aiws-cal-maint-error { display: flex; gap: 6px; align-items: center; color: var(--cp-danger); }
+.aiws-cal-scope { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.aiws-cal-scope-q { font-weight: 600; margin: 0 28px 4px 0; }
+.aiws-root .aiws-cal-scope > button { justify-content: flex-start; border: 1px solid var(--cp-border); background: var(--cp-surface-opaque, var(--cp-surface)); border-radius: 8px; padding: 8px 10px; cursor: pointer; font-size: 14px; }
+.aiws-root .aiws-cal-scope > button:hover { border-color: var(--cp-accent); background: var(--aiws-selected-bg); }
+.aiws-cal-daylist { display: flex; flex-direction: column; gap: 2px; }
+.aiws-cal-daylist-title { font-weight: 600; margin: 0 28px 6px 0; }
+.aiws-root .aiws-cal-daylist-item { display: flex; align-items: center; gap: 8px; border: none; background: none; text-align: left; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.aiws-root .aiws-cal-daylist-item:hover { background: var(--cp-surface-2); }
+.aiws-cal-daylist-time { color: var(--cp-muted); font-size: 12px; min-width: 44px; }
+.aiws-cal-daylist-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-ctl-form-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.aiws-cal-rrule { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--cp-border); border-radius: 8px; font-size: 13px; }
+.aiws-cal-weekdays { display: flex; gap: 3px; flex-wrap: wrap; }
+.aiws-root .aiws-cal-weekdays > button { border: 1px solid var(--cp-border); background: none; border-radius: 14px; min-width: 36px; height: 28px; justify-content: center; font-size: 12px; cursor: pointer; }
+.aiws-root .aiws-cal-weekdays > button.is-on { background: var(--cp-accent); border-color: var(--cp-accent); color: #fff; }
+.aiws-cal-colors { display: flex; gap: 6px; flex-wrap: wrap; }
+.aiws-root .aiws-cal-swatch { width: 22px; height: 22px; border-radius: 11px; border: 2px solid transparent; padding: 0; cursor: pointer; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%); }
+.aiws-root .aiws-cal-swatch.is-on { border-color: var(--cp-text); }
+.aiws-cal-swatch.is-auto { background: conic-gradient(#2563eb, #16a34a, #d97706, #db2777, #2563eb); }
+.aiws-root .aiws-primary { background: var(--cp-accent); color: #fff; border: none; border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+.aiws-root .aiws-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.aiws-cal-mini { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.aiws-cal-mini-head { display: flex; align-items: center; justify-content: space-between; margin-right: 28px; font-weight: 600; }
+.aiws-root .aiws-cal-mini-head > button { border: none; background: none; font-size: 18px; width: 28px; height: 28px; justify-content: center; cursor: pointer; border-radius: 6px; }
+.aiws-cal-mini-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+.aiws-cal-mini-wd { font-size: 10px; color: var(--cp-muted); padding: 2px 0; }
+.aiws-root .aiws-cal-mini-grid > button { border: none; background: none; height: 30px; border-radius: 15px; justify-content: center; font-size: 13px; cursor: pointer; }
+.aiws-root .aiws-cal-mini-grid > button:hover { background: var(--cp-surface-2); }
+.aiws-cal-mini-grid > button.is-out { color: var(--cp-muted); }
+.aiws-cal-mini-grid > button.is-today { color: var(--cp-accent); font-weight: 700; }
+.aiws-root .aiws-cal-mini-grid > button.is-on { background: var(--cp-accent); color: #fff; }
+.aiws-composite-chrome > .aiws-composite-projections { position: absolute; inset: 0; pointer-events: none; }
+.aiws-composite-chrome > .aiws-composite-projections[data-active='true'] { pointer-events: auto; }
+.aiws-composite-projections .aiws-proj { cursor: pointer; }
+.aiws-proj.is-asset > img { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
+.aiws-composite-limited { position: absolute; right: 6px; top: -10px; font-size: 11px; padding: 1px 6px; border-radius: 8px; background: var(--cp-warning); color: #fff; pointer-events: none; }
+.aiws-broadcast { position: relative; width: 100%; height: 100%; background: #000; display: flex; flex-direction: column; }
+.aiws-broadcast > video { flex: 1 1 auto; min-height: 0; width: 100%; object-fit: contain; }
+.aiws-broadcast-bar { position: absolute; left: 6px; right: 6px; bottom: 6px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.aiws-root .aiws-broadcast-bar > button, .aiws-broadcast-live { display: inline-flex; align-items: center; gap: 4px; border: none; border-radius: 12px; padding: 3px 8px; font-size: 12px;
+  background: rgb(0 0 0 / 55%); color: #fff; cursor: pointer; }
+.aiws-broadcast-live { cursor: default; }
+.aiws-broadcast[data-live='true'][data-playing='true'] .aiws-broadcast-live { background: color-mix(in srgb, var(--cp-danger) 85%, transparent); }
+.aiws-broadcast-sep { flex: 1 1 auto; }
+.aiws-broadcast.is-audio { min-height: 64px; }
+.aiws-broadcast.is-audio > audio { width: 100%; }
+
+/* an empty media slot of a composite (an empty TV screen): who may change it chooses the video */
+.aiws-broadcast-choose { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--aiws-border, rgba(127, 127, 127, 0.4)); background: var(--aiws-panel, #fff); color: var(--aiws-text, #222); font-size: 13px; cursor: pointer; pointer-events: auto; z-index: 2; }
+.aiws-broadcast-choose:hover { background: var(--aiws-hover, rgba(127, 127, 127, 0.12)); }

@@ -1,5 +1,6 @@
 {
-  "description": "Block-control constants shared by the core (include_str!) and the Desktop: container kinds that are controls (their direct children may have \"auto\" placement components; `composite` is the host of every composite extension control, its definition named by `def_ref`) and the text views whose w / h may be \"auto\" (their size comes from the title).",
-  "control_kinds": ["mindmap", "composite"],
-  "text_views": ["mindnode", "shape", "richtext"]
+  "description": "Block-control constants shared by the core (include_str!) and the Desktop: container kinds that are controls (their direct children may have \"auto\" placement components; `composite` is the host of every composite extension control, its definition named by `def_ref`), the data controls among them (they show records of the tables they bind — projected, never stored as Blocks — hold no Blocks and have a numeric size) and the text views whose w / h may be \"auto\" (their size comes from the title).",
+  "control_kinds": ["mindmap", "composite", "todo", "calendar"],
+  "data_controls": ["todo", "calendar"],
+  "text_views": ["mindnode", "shape", "richtext", "label"]
 }

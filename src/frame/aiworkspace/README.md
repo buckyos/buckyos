@@ -57,7 +57,7 @@ everything but NDM uploads and bucket downloads works (the Rust tests). The Desk
 
 ## File and folder imports
 
-Nothing is copied: the FileObject the browser uploaded is the asset (`object_id` is its id). A single file is uploaded through WebSDK NDM with `bind` into the caller's own `user/aiworkspace/<user>/assets` (key `<workspace_id>/<object_id>`), then `asset.import_object { workspace_id, bucket_id, key }` registers it: the service reads the binding (`bucket.get`), checks workspace update/structure access, binds the object under `<workspace_id>/<object_id>` in the Workspace owner's `assets` bucket (a collaborator's upload moves there and its own key goes) and lists it as staged. A folder or several files are uploaded without `bind` (NDM's 24 h hold covers them) and each FileObject is registered with `asset.import_object { workspace_id, obj_id }`: the service authorizes the object at the trusted NDM gateway with the caller's own token, then binds it. The per-asset limit remains 32 MiB, including each leaf of a directory.
+Nothing is copied: the FileObject the browser uploaded is the asset (`object_id` is its id). A single file is uploaded through WebSDK NDM with `bind` into the caller's own `user/aiworkspace/<user>/assets` (key `<workspace_id>/<object_id>`), then `asset.import_object { workspace_id, bucket_id, key }` registers it: the service reads the binding (`bucket.get`), checks workspace update/structure access, binds the object under `<workspace_id>/<object_id>` in the Workspace owner's `assets` bucket (a collaborator's upload moves there and its own key goes) and lists it as staged. A folder or several files are uploaded without `bind` (NDM's 24 h hold covers them) and each FileObject is registered with `asset.import_object { workspace_id, obj_id }`: the service authorizes the object at the trusted NDM gateway with the caller's own token, then binds it. The per-asset limit is `max_asset_bytes` (32 MiB), including each leaf of a directory; an audio or video asset (by the sniffed media type) may be up to `max_media_bytes` (2 GiB, 控件机制 TODO Q16) and is played by Range from `asset.stream_url` (`services/aiworkspace/settings` holds both). Such an upload is the browser's multi-chunk FileObject: a self-contained `doc.export` lists it as missing (packages carry single chunks only).
 
 Directory roots and descendants become `buckyos.container` folders, and files become AssetRefs in one normal business commit. A canvas import also creates corresponding groups and asset cells. Online imports may be cancelled; after failure or refresh, reselecting the source uses NDM deduplication. There is no offline upload queue or automatic recovery of browser File handles. FileList-based folder pickers cannot enumerate empty folders; callers with an explicit directory tree can preserve them through the SDK. draw.io and workspace ZIP retain their format validation, while image replacement and generated snapshots use the same asset stage/commit semantics.
 
@@ -82,6 +82,8 @@ cargo test -p aiworkspace           # V23 + crash recovery — against the real 
 # REFERENCE_CYCLE, replay without the business schema), tests/clone.rs (tree.clone), tests/apply_log.rs;
 # store `cargo test -p aiworkspace-store --lib pack` (the ext.pack archive); server tests/ext.rs
 # (build, library, .pikg install, composite_controls_with_dependencies incl. ext.pack → ext.install)
+# standard tables and Workspace names: core tests/standard.rs (record rules on final values, undo, replay without them),
+# `--lib standard` (the RRULE subset); store tests/names.rs (ws.ensure under concurrency, conflicts, delete, packages)
 ```
 
 ## The two trees (phase two §4)
@@ -124,6 +126,14 @@ Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resourc
 `composite` (`def_ref`, `bindings`, `slot` on Block containers), the block-def keys `deps` / `composition`, the reference
 kind `def_dep` (live, strong), the error code `REFERENCE_CYCLE`, the operation `tree.clone`, `tree.move { slot }` and
 directory member names holding `/` (see “Extension controls”). 1.1 also added the value type `currency` (表格数据导入 TODO §6, Q2: format and protocol versions unchanged): a field `{ type: "currency", currency: "<ISO 4217>", scale?: 0–18 (default 2) }` stores `{ "amount": "<decimal of that scale>", "currency": "<code>" }` — the code always written out (a bare amount or number takes the field's default; changing the default, `table.update_field { changes: { currency } }`, never changes stored values); symbols and names (`$12`, `USD 12`) are refused. Values order by (code, amount); `lt / lte / gt / gte` only meet amounts of the operand's currency; `eq` / `ne` / `in` need the same code; no `unique`, no grouping. Migrations: `number | decimal → currency` (the target's default), `currency → decimal` (drops the code), `currency → text` (`"USD 12.00"`), `currency → currency` (another scale).
+
+The value type `json` (控件机制 TODO G8, versions unchanged): a field `{ type: "json" }` holds a JSON **object**, replaced whole (no path edits; concurrent writes of one cell conflict on its version) — at most 16 KiB canonical (`LIMIT_EXCEEDED`), nesting at most 8 levels (the object is one), every string within the text limit; `null` only on a nullable field; a `{ "$formula" }` object is refused (`INVALID_SCHEMA`), formulas compute no extension fields. Not sortable or groupable, no `unique`, `scale`, `options`, `currency` or `target_types`; filters only `is_empty` / `is_not_empty`; no migration to or from it.
+
+**Records owned by their submitter** (控件机制 TODO G20, Q14; versions unchanged). A `text` field may be declared `submitter: true` (at most one per table, never on a record property). The service fills it with the inserting principal on `table.insert_records`; a client value for it — on insert, `table.set_values` or `table.unset_values` — is `INVALID_OPERATION` (“the submitter is filled by the service”), whoever writes: undo, import and replay keep the recorded value. It is unique: a principal's second insert is `INVALID_OPERATION` / `SUBMITTER_EXISTS` with `data.record_id` of the record it already has. A caller holding `append` but not `update` on the table may `set_values` / `unset_values` only records whose submitter is itself, and one holding `append` but not `delete` may `delete_records` only those (others `PERMISSION_DENIED`); with `update`, any record's other fields. `submitter` is set or cleared (`table.add_field`, `table.update_field { changes: { submitter } }`) only while the table has no live records (`SCHEMA_CONFLICT`). Reading is unchanged: no record-level read grant exists, so an `append`-only caller without `read` sees the record it inserted in the Commit answer (`touched`) only, never through `doc.query` / `doc.read` (a vote readable by everyone who can read the canvas, Q13, needs `read` anyway).
+
+A `multi_select` field may declare `max_items` (1–1000): a value with more distinct options is `INVALID_SCHEMA` (“at most N options”). Setting or lowering it with `table.update_field { changes: { max_items } }` (`null` removes it) re-scans the live records like `required`.
+
+**Standard business tables** (控件机制 TODO G8–G10, [schemas/standard-tables.md](schemas/standard-tables.md)): a table whose `schema_id` is `buckyos.todo@1` or `buckyos.calendar@1` has standard fields with fixed ids and types and the business rules of that document, checked at admission only ([core/src/standard.rs](core/src/standard.rs), schema class, see “Validator classes”). The record rules judge every record a Commit inserted, changed or restored once, on its **final** values after the whole Commit (moving `start` and `end` together, or turning a timed event into an all-day one over a `table.set_values` and a `table.unset_values`, is one change; its undo replays the inverse operations in another order); a failure is `INVALID_SCHEMA` naming the record and field (`data: { entity_id, record_id, field_id }`) and the last operation that touched the record (`op_index`). `null` counts as absent. Of `ext`, only the keys the document gives a meaning are checked (an RRULE outside the subset is refused with a message naming the part); other keys pass.
 
 ## Presentation (第三期规划 §4–§6, §8, §11)
 
@@ -300,8 +310,9 @@ It may carry `title` (the label text), `config` (appearance, ≤ 64 KiB, not ins
 ## Block-controls (脑图方案, `notepads/done/aiworkspace-mindmap-todo.md` M0)
 
 Design: [脑图对象方案讨论](<../../../doc/workspace/脑图对象方案讨论.md>) v0.4. A **control** is a BlockTree container
-whose `kind` is a control id (`mindmap`, and `composite` — the host of every composite extension control, see
-“Composite controls” below; the list is `controls/core.json`, read by the core with `include_str!` and by the
+whose `kind` is a control id (`mindmap`; `composite` — the host of every composite extension control, see
+“Composite controls” below; and the data controls `todo` and `calendar`, see “Data controls” at the end of this
+section; the list is `controls/core.json`, read by the core with `include_str!` and by the
 Desktop): it lays out the Blocks it holds with a named algorithm the clients run (the shared module `controls/`), the
 core only judges shapes. A mind map's nodes are ordinary Cells: `parent_id` is the
 tree (a node's children are Cells under it), `order_key` the sibling order; edges are drawn, never stored.
@@ -310,7 +321,7 @@ tree (a node's children are Cells under it), `order_key` the sibling order; edge
   other value refused), `config` checked (`direction` right / left / both / down, `edge` curve / elbow / straight,
   `spacing { sibling?, level? }` in [0, 2000], `branch_colors` ≤ 64 colours; ≤ 64 KiB) and projected into the
   outline, `locked` as on a group. A control sits on a Surface, in a group, or inside another control (R24).
-- **Children** (`plan.rs` `child_allowed`): a control holds Cells, groups and controls; inside a tree control (the
+- **Children** (`plan.rs` `child_allowed`): a control holds Cells, groups and controls (a data control holds none); inside a tree control (the
   mind map) a Cell may hold Cells and containers too (its nearest container, walking up through Cells, is a control
   laying out a tree — `types::in_tree_control`). Anywhere else, a composite included, a Cell stays a leaf; `tree.move`
   of a Cell that holds Blocks out of a tree control is `CHILD_NOT_ALLOWED`. Connectors are drawn on the canvas, never
@@ -318,7 +329,8 @@ tree (a node's children are Cells under it), `order_key` the sibling order; edge
 - **`"auto"` placement** (`plan.rs` `check_placement`, protocol 1.1): each of `x`, `y`, `w`, `h` is a number or the
   string `"auto"` — not stored, computed by the control when shown; a number pins it. `x` / `y` may be `"auto"` only
   on a Block laid out by a control; `w` / `h` only on a control (its box wraps its children) or on a text view laid
-  out by one (`text_views` in `controls/core.json`: `mindnode`, `shape`, `richtext` — their size is their title's).
+  out by one (`text_views` in `controls/core.json`: `mindnode`, `shape`, `richtext`, `label` — their size is their
+  title's).
   A non-text view keeps a numeric size (also when its `view` changes). A control's own `x` / `y` name its origin
   (the first root's top-left), not its box. `"auto"` cannot leave a control (`tree.move` judges the new place). The
   children of a composite whose definition uses the `fixed` layout are not laid out: their `x` / `y` stay numbers.
@@ -346,6 +358,23 @@ for draw.io), `catalog.ts` + `mindmap.ts` (the control catalogue with each contr
 generated into `aiws/controls.json` by `deno run -A tools/build_catalog.ts`). Layout snapshots:
 `fixtures/mindmap/layout/*.json` (`MINDMAP_REGEN=1 deno test -A` after an intended change; the formula is not
 versioned, R18); outline cases shared with the service's parser: `fixtures/mindmap/outlines.json`.
+
+### Data controls (控件机制 TODO G2–G6, G13, G14)
+
+`todo` and `calendar` (`data_controls` in `controls/core.json`; `types.rs` `is_data_control`) show the records of the
+tables they bind as **projected Blocks**: a template of `label` / `shape` / `asset` nodes the clients instantiate per
+item, never stored, identity `<control>~<node>~<item>` (`controls/projection.ts`; an occurrence of a repeating event is
+the item `<record>@<original start>`). The container: `layout` implied (`{ mode: "data" }`), a numeric size (never
+`"auto"`), `bindings` checked as on a Cell (no `def_ref`, no `on`), no children at all (`child_allowed`); tables created
+with it in the same Commit under the canvas content folder are owned (`owns`, `plan.rs` `add_owns_edges`). The outline
+projects `bindings` (name → entity id) on data controls and composites. Layouts ship with the host
+(`controls/datalayout.ts`: `list`, `columns`, `month`, `time_grid`, `agenda`); gestures, writes, pop-overs, per-person
+views and the single-control page are the Desktop's (`ui/controls/data/`, `ui/controls/todo/`, `ui/controls/calendar/`).
+Their tables are the standard business tables (“Standard business tables” above). The public contracts are
+`aiws/contracts/todo.json` and `calendar.json` in `component.json`'s shape (`kind: "builtin"`, `version`, `config_schema`,
+`user_state`, `bindings` with `schema_id`, `templates`, `layouts`, `gestures`, `actions`, `agent`), generated from
+`controls/contracts.ts` by `deno run -A tools/build_catalog.ts` and returned by `control.describe { kind }` as
+`control.contract`.
 
 ## Extension controls (扩展控件 P0 + P1, `notepads/done/aiworkspace-extension-p0-todo.md`, `notepads/done/aiworkspace-extension-p1-todo.md`)
 
@@ -381,16 +410,17 @@ the core's “sibling names are unique” rule deduplicates concurrent builds an
 (one Workspace, one identity, one definition: Q1). The author is part of the identity, not the caller: whoever pulls
 and builds Alice's control keeps `author_did` Alice's. `def_id` stays the short host-local id.
 
-### `component.json` (`manifest_version: 3`, [schemas/component.schema.json](schemas/component.schema.json))
+### `component.json` (`manifest_version: 4`, [schemas/component.schema.json](schemas/component.schema.json))
 
 | Key | Shape |
 | --- | --- |
-| `manifest_version` | `1`, `2` or `3` (required). A build accepts every version up to its own and reads older ones as their newest form; newer versions only add optional keys (Q19). Version 2 adds `kind: composite` and non-empty `deps`, version 3 `events`, HTML `host_api: 3`, the declarative `button` and composite `events` / `grid`: an older file using one fails the build with a hint to raise it |
+| `manifest_version` | `1` … `4` (required). A build accepts every version up to its own and reads older ones as their newest form; newer versions only add optional keys (Q19). Version 2 adds `kind: composite` and non-empty `deps`, version 3 `events`, HTML `host_api: 3`, the declarative `button` and composite `events` / `grid`, version 4 (控件机制 TODO) `actions`, HTML `host_api: 4` and the composite `projections`, `media`, slot `visible`, events `from { projection }` and `on` (see “Manifest 4” below): an older file using one fails the build with a hint to raise it |
 | `ident` | `{ author_did, name }` (required) |
 | `kind` | `declarative` \| `html` \| `composite` (required). A composite has no `accepts` / `allow_no_source` (it is a container, not a Cell) and no `host_api` (it runs no code) |
 | `title` / `description` | ≤ 256 / ≤ 4000 characters (`title` required) |
-| `host_api` | positive integer: the host API the control was written for (`html.api_version` of an HTML control: 2, the default, or 3; the declarative interpreter is version 1) |
+| `host_api` | positive integer: the host API the control was written for (`html.api_version` of an HTML control: 2, the default, 3 or 4; the declarative interpreter is version 1) |
 | `events` | (version 3) `{ <name>: { title?, description?, params? } }`: the control's public events (next section, “Events and actions”); a composite declares its events in `composition.json` |
+| `actions` | (version 4) `[{ id, title, icon?, modes?, needs?, run }]`, ≤ 16: what the host offers on an instance's near toolbar (see “Manifest 4” below) |
 | `accepts`, `allow_no_source`, `default_size` | as on the definition: data types the main source may have, whether a Cell may have no source, `{ w, h }` |
 | `config_schema` | instance properties, the JSON Schema subset `type` / `enum` / `default` / `required` / `title` / `description` / `minimum` / `maximum` / `minLength` / `maxLength` (+ `properties` / `items` to nest); other keywords fail the build (A7). The Desktop validates values with it (`z.fromJSONSchema`) and builds the instance form from it; the core never checks values (Q15) |
 | `bindings` | named data inputs `{ <name>: { accepts?: [data types], required?: bool, title?, description? } }`, names `[a-z][a-z0-9_]{0,31}`, at most 32. An instance binds them in its Cell `bindings` (`{ <name>: { entity_id } }`); declarative items read them as `<name>.<expr>` (Q18), HTML through `aiws.input(name)` |
@@ -433,14 +463,15 @@ dependency record `derived: { build: { input_digest, builder_version, built_at }
 
 A composite lays out Blocks the user (or an Agent) puts into its slots and draws a frame around them (R23: the
 Chrome is drawn, the content is real Blocks — selectable, annotatable, connectable, addressable). Its
-`composition.json` says three things and nothing else; it never creates or deletes user Blocks:
+`composition.json` says what the table lists and nothing else; it never creates or deletes user Blocks:
 
 | Key | Shape |
 | --- | --- |
 | `layout` | `{ algorithm: "stack" \| "fixed" \| "grid", direction?: "column" \| "row", spacing?, padding?, columns?, gap? }`. `stack` puts the slots' children one after another (`direction`, `spacing` px; default column); `fixed` keeps every child at its own `x` / `y`; `grid` (version 3) fills `columns` (1…12, required) cells per row, `gap` apart, in slot order (its slots' placement is `stack`). `padding` is a number or `{ t, r, b, l }`; numbers in [0, 2000]. The algorithms ship with the host (K2: `controls/`); none is loaded from a package |
 | `slots` | `{ <name>: { accepts?, min?, max?, placement?, title? } }`, ≤ 16 names `[a-z][a-z0-9_]{0,31}`. `accepts` lists `cell:<author_did>#<name>` (an instance of that render control: in `deps` or already in the Workspace, never a composite), a view type (`richtext`, `shape`, …) or `container` (a group or a control); absent: any Block. `min` (0…64) is what inserting an instance creates, `max` (1…1000) what the clients allow. `placement`: `stack` (default), `top` / `bottom` (before / after the stacked slots) or `free` (children keep their `x` / `y`; the only placement of a `fixed` layout) |
 | `chrome` | `{ background?, radius?, border?, title?: { text, slot? }, empty? }`: colours ≤ 64 characters, `radius` in [0, 200], `title.text` ≤ 256 (drawn while `slot`, when given, is empty), `empty` ≤ 1000 (what an empty instance shows) |
-| `events` | (version 3) `{ <name>: { from: { slot, event }, title?, description? } }`: re-raises an event of a child in that slot (next section) |
+| `events` | (version 3) `{ <name>: { from: { slot, event }, title?, description? } }`: re-raises an event of a child in that slot (next section); version 4 adds `from: { projection, role? }` and a default handler `on` |
+| `projections`, `media`, slot `visible` | (version 4) Blocks projected from data, a slot's media played from a config anchor, a slot shown to each viewer for a while: see “Manifest 4” below |
 
 String values may hold `{{config.<key>}}` (a whole `spacing` / `padding` / `radius` may be one); the key must be a
 property of `config_schema` (the instance's `config` value, its default when unset). The build checks all of it
@@ -699,6 +730,43 @@ longer mounts HTML Blocks automatically while editing: the same rules as the can
 A host older than the definition (`api_version` above what it runs) shows the static snapshot with “needs host API
 n” instead of failing (Q33).
 
+### Manifest 4 and HTML host API 4 (控件机制 TODO G13, G16–G22, H1–H6)
+
+`manifest_version` 4 (`types.rs` `MANIFEST_VERSION`; files of versions 1–3 read as before). Examples of everything
+below: [doc/workspace/control-examples](../../../doc/workspace/control-examples/README.md) (TV screen, time-limited,
+photo vote, listen together; built by `server/tests/ext.rs` `control_examples_and_manifest_4`).
+
+**Actions** (`component.json` `actions`, `store/src/ext.rs` `check_actions`; the build writes them into the definition's
+`actions`, the outline projects a composite definition's as `def_actions`): ≤ 16 of `{ id, title, icon?, modes?: ["edit"
+| "view"], needs?: [capabilities], run: Handler | [Handler, ≤ 4] }`. The Desktop offers each on an instance's near
+toolbar in the modes it names (default both) to whoever holds `needs`, also in view mode and before an HTML control runs
+(`ui/canvas/CanvasView.tsx`, `ui/extensions/actions.ts`). Handlers: `write` / `wish` / `open` / `notify` as in `on`;
+`config { props }` — the instance's own properties, an `entity.set_props` with per-property `expect`; `forward` — handed
+to the running HTML as the request `action:<id>` (a control that is not running is started first). Strings may hold
+`{{now}}` (the service clock) and `{{config.<key>}}`. The `write` and `config` operations of one action are one Commit,
+as the person who clicked.
+
+**Composite (`composition.json`, `check_composition`, `check_projections`, `check_event_keys`)**:
+
+| Key | Shape |
+| --- | --- |
+| `projections` | `{ <name>: { source, mark?, template, layout, placement?, max_items? } }`, ≤ 8. `source.kind`: `records` (a bound table), `members` (a bound directory: `name`, `object_id`, `media_type`, `size`), `counts` (the elements of a list field of a bound table counted, most first: `key`, `count`, `rank`; a select's elements by option label; `of` joins another projection's items by key, ties in its order; `top` 1…100) or `viewer` (`principal`, `first_open`, `remaining_ms`). `mark { binding, field, as }`: `item.<as>` is true when the viewer's own (submitter's) record lists the item. `template.nodes` 1…32 of `{ id, view: label \| shape \| asset, box?, config?, when?, role? }`, placeholders `{{item.…}}`, `{{viewer.…}}`, `{{config.<key>}}`. `layout { algorithm: list \| grid, columns? (grid), gap?, item: { w?, h } }`; `placement` `top` / `stack` / `bottom` places the region like a slot; `max_items` 1…1000. Never stored; identities `<control>.<projection>~<node>~<item>` |
+| `media` | `{ slot, anchor, loop? }`: the media Block in `slot` plays where `config.<anchor>` = `{ pos_ms, at_ms, playing }` says (at server time `at_ms` it was at `pos_ms`), for every viewer by the service clock, by Range from `asset.stream_url`, without activation (`ui/media/BroadcastMedia.tsx`); a viewer's own pause / mute / “back to live” stay local; the end holds the last frame unless `config.<loop>` is true. An empty slot offers whoever has `update` and `structure` “choose a video or sound” through the system file picker |
+| slot `visible` | `{ from: "first_open", for_ms }` (`for_ms` ≤ a year or `{{config.<key>}}`): each viewer sees the slot's Blocks for `for_ms` from their first opening, recorded once in their user state `block:<id>/first_open` by the service clock (`ui/controls/composite/visibility.ts`). A presentation, not access control: edit mode shows everything with the frame marked “time-limited”, static views and exports do not hide |
+| event `from { projection, role? }` | raised in run mode by a press on a projected node of that role (default `body`), params `{ item, projection }` |
+| event `on` | the default handler(s), run when the instance binds none for that event (`ui/extensions/events.ts` `runHandlers`) |
+
+**HTML host API 4** (`html.api_version` 4, `host_api: 4`, manifest 4; hosts run 2, 3 and 4, `aiws.version` is the
+declared one; `ui/extensions/htmlRuntime.ts`, `bridge.ts`):
+
+| Member | |
+| --- | --- |
+| `aiws.onConfig(cb) → unsubscribe` | the instance's `config` as it changes (also refreshes `aiws.context.config`) |
+| `aiws.serverNow()` | the service clock (`ws.time`, calibrated by half the shortest of three round trips) |
+| `aiws.userState.get(key)` / `set(key, value)` | this person's state of this Block, key `block:<entity_id>/<key>` (`[A-Za-z0-9_.:-]{1,64}`) |
+| `aiws.mediaUrl(binding, member?)` | a Range-playable address of a bound audio / video asset or of a member of a bound directory (`asset.stream_url`; a blob URL when no stream address is available) |
+| `aiws.on('action:<id>', handler)` | a declared action forwarded by the host (`forward`) |
+
 ### Source upgrades and migrations (`ext.upgrade`, Q30)
 
 | Method | Caller, rights | Params → result |
@@ -742,7 +810,7 @@ n” instead of failing (Q33).
 - The library refuses a package whose `manifest_version` is above what the service reads; `ext.list_library` reports
   each package's `manifest_version`, so a client older than a package marks it “needs a newer version” and does not
   import it.
-- On phones composite and HTML Blocks are read-only (no new capability).
+- On phones the children of a composite take touches and an HTML Block can be activated as on a computer (控件机制 TODO G22, H3: only guests and replay never run them).
 - Replay and public / guest views keep `interactive` false: HTML Blocks show their snapshot, events run nothing,
   composites lay out as usual.
 
@@ -1022,14 +1090,19 @@ they were judged where the Commit was admitted. The doc comment of each validato
 | table-source | `validate_table_meta` | primitive | `title_field_id` names a live text field; `data_mode` never changes; `embedded` carries no `source_ref` |
 | table-source | `check_query_reference` | schema | `url_query` source: absolute URL without credentials, `query` object without cursor, version `live_head` / `fixed_revision{source_revision}` |
 | table-source | `plan_table.rs` `check_unique` | primitive | `unique` is a kernel-enforced cross-record constraint (`UNIQUE_VIOLATION`) |
-| table-source | `plan_table.rs` `required` / `nullable` checks (insert, set/unset, add/update/migrate field) | primitive | required values present, nulls only where allowed, tightening re-scans the live records (`SCHEMA_CONFLICT`) |
+| table-source | `plan_table.rs` `required` / `nullable` checks (insert, set/unset, add/update/migrate field) | primitive | required values present, nulls only where allowed, tightening (`required`, `nullable`, `max_items`) re-scans the live records (`INVALID_OPERATION`, `data { field_id, violating_records, total }`; `unique`: `UNIQUE_VIOLATION`); restoring a required field over records created meanwhile is `SCHEMA_CONFLICT` |
+| table-source | `plan_table.rs` submitter (`insert_records`, `set_values`, `unset_values`, `delete_records`, `restore_records`, `add_field`, `update_field`, `restore_field`; `init_entity`) | primitive | at most one `submitter` field, `text` only; the service fills it, clients never write it (undo, import, replay keep it); one live record per submitter (`SUBMITTER_EXISTS`, `UNIQUE_VIOLATION` on internal paths); without `update` / `delete` an `append` holder writes only its own records; set or cleared only on an empty table (`SCHEMA_CONFLICT`) |
+| table-source | `FieldDef::normalize` (`max_items`) | primitive | a `multi_select` value holds at most `max_items` options (`INVALID_SCHEMA`) |
 | table-source | `plan_table.rs` `check_body` | primitive | a record body is a live rich text under this table and the body of no other record |
 | table-source | `plan_table.rs` `delete_field` / `migrate_field` | primitive | the title field cannot be deleted and stays a text field |
+| table-source (standard) | `standard::check_table` (from `validate_schema`) | schema | `schema_id` `buckyos.todo@1` / `buckyos.calendar@1`: created with every standard field in its type; `title_field_id` is `title` |
+| table-source (standard) | `plan_table.rs` `delete_field` / `migrate_field` → `standard::check_field_change` | schema | a standard field is never deleted and keeps its type |
+| table-source (standard) | `standard::check_records` (end of `plan_commit`; records noted by `insert_records`, `set_values`, `unset_values`, `restore_records`) | schema | per record, on the Commit's final values: required fields; a timed event has `start` (and no dates), an all-day one `start_date` (and no times); `end` / `end_date` not before the start; `order` an order key; the `ext` keys with a meaning (RRULE subset, `exdate`, `recurrence_id` never with `rrule`, `tz`, `reminders`, …) |
 | richtext | `plan_richtext::create` / `apply_update` | primitive | document conforms to `buckyos.richtext.basic.v1`, block ids unique, CRDT update applies to a known base |
 | richtext | `entity_refs` (`richtext_ref_edge`) | reference | `object_embed` / `object_link` targets are indexed as references; existence judged by the planner's `check_ref_target` |
 | asset | `validate_asset` | primitive | `object_id` is a `type:hex` object id; `media_type` / `size` come from the verified content, never the client; `image { width, height }`; `poster` (an uploaded PNG / JPEG / WebP / GIF asset picturing the content: a video frame, a PDF's first page, a cover), `duration_ms`, `page_count` (positive integers); a new `object_id` without new values drops `image`, `poster`, `duration_ms`, `page_count` (`ASSET_CONTENT_KEYS`; doc/workspace/BuckyOS AI Workspace 多媒体对象.md) |
 | asset | `validate_asset` (object lookup) | reference | the object was uploaded and verified (`DEPENDENCY_UNAVAILABLE`); import tolerates a listed but missing object |
-| container | `container_primitive` (keys, kind, layout, system nodes) | primitive | tree node kinds `folder` / `surface` / `group` and the control kinds (`mindmap`, `composite`); `root` / `data` / `surfaces` only internal; kind never changes; `layout.mode` (implied by a control's kind; `def` for a composite); `system` only on a folder, `surface_id` only on a folder; `def_ref` / `bindings` only on a composite |
+| container | `container_primitive` (keys, kind, layout, system nodes) | primitive | tree node kinds `folder` / `surface` / `group` and the control kinds (`mindmap`, `composite`, `todo`, `calendar`); `root` / `data` / `surfaces` only internal; kind never changes; `layout.mode` (implied by a control's kind; `def` for a composite, `data` for a data control); `system` only on a folder, `surface_id` only on a folder; `def_ref` / `on` only on a composite, `bindings` on a composite or a data control |
 | container | `container_primitive` (`content_folder_id`) | reference | a Surface's content folder exists, is a folder and sits under `canvas-content` |
 | container (composite) | `composite_refs` | reference | `def_ref` is required, local, names a live `kind: composite` definition when created and never changes; `bindings` targets are data entities |
 | container | `check_slot` (`slot` of a group or a control) | reference | only inside a control; inside a composite required and a slot of the definition; elsewhere unique among siblings |
@@ -1094,6 +1167,14 @@ content token (a hash) it stands for. New kinds are protocol changes.
 | `folder_member` `{ name }` | one member of a resource directory (`buckyos.dir`, D01, D25) | the member's own rev (`m:<name>`); a removed member is `TARGET_DELETED` |
 | `entity_prop` `{ key, name }` | one property of an object key (`config`, `bindings`, `on`) of a Cell or container (扩展控件 P2, Q28) | the property's own rev (`p:<key>.<name>`; 0 when never written) |
 
+**Workspace names (控件机制 TODO G9).** A Workspace may have a `name`, `^[a-z0-9][a-z0-9._-]{0,63}$`, given to `ws.create` or
+`ws.ensure` and never changed (no method changes it); the title stays independent and editable. It is unique among the
+Workspaces of one owner (`local_meta` `owner` and `name` of `local.sqlite`, never exported). `ws.ensure { name, title? }` returns
+the caller's Workspace of that name or creates it; concurrent calls create one (the service serializes the lookup and the
+creation over an `(owner, name)` index read from the folders on first use). `ws.delete` frees the name. Fork, `ws.import`
+`new` and a restore that creates a missing Workspace carry no name; a restore over an existing Workspace keeps its name; a show
+clone has none.
+
 **Method levels (D11).** `stable` methods are the contract other Apps, Agents and SDKs may depend on: they change
 only with `protocol_version`, and each has a contract test against a recorded request / response shape
 (`server/tests/contract.rs`, `fixtures/protocol/stable-methods.json`; `AIWS_REGEN=1` re-records). `internal` methods serve the
@@ -1102,8 +1183,10 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 
 | Method | Level | Params (besides `workspace_id`) |
 | --- | --- | --- |
-| `ws.create` | stable | `title`, `workspace_id?` |
-| `ws.list`, `ws.get_info`, `ws.delete`, `ws.fork` | stable | |
+| `ws.create` | stable | `title`, `workspace_id?`, `name?` (see “Workspace names”; a name the caller already uses is `INVALID_OPERATION` / `NAME_CONFLICT` with `data.workspace_id`) → `workspace_id`, `epoch`, `head_seq`, `title`, `name?` |
+| `ws.ensure` | stable | `name`, `title?` (default: the name), no `workspace_id` → `workspace_id`, `name`, `title`, `epoch`, `head_seq`, `created` — the caller's Workspace of that name, created when it has none (callers as for `ws.create`) |
+| `ws.time` | stable | none → `server_ms` (unix ms of the service clock); any session, guests included |
+| `ws.list`, `ws.get_info`, `ws.delete`, `ws.fork` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one) |
 | `ws.grant` / `ws.revoke` / `ws.list_grants` | stable | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row (with `via_entry`) and the `owner` to a manager, only the rows that apply to the caller otherwise (`complete: false`, no owner). Subjects: see the table above |
 | `ws.list_subjects` | stable | principals a grant can name (static identities / zone users and `group:` subjects) |
 | `ws.create_entry` | stable | `capabilities[]`, `methods`, `scope_entity_id?`, `expires_at?` → `entry` (`manage` on the scope) |
@@ -1123,7 +1206,7 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `doc.read` | stable | `entity_id`, `selector?` — or `targets: [{ entity_id, selector? }]` |
 | `doc.list_children` | experimental | `entity_id`, `include_deleted?` |
 | `doc.list_annotations` | experimental | `target_ids?`, `parent_id?` — annotations anchored to those entities and/or placed under that parent, each with its resolved `anchor` |
-| `doc.query` | stable | `view_id` or `source_id`; `filter?`, `sorts?`, `fields?`, `group?`, `limit`, `cursor?`, `consistency?`, `source_revision?` |
+| `doc.query` | stable | `view_id` or `source_id`; `filter?`, `sorts?`, `fields?`, `group?`, `group_order?`, `group_limit?`, `limit`, `cursor?`, `consistency?`, `source_revision?`. `group` (a select, multi_select, boolean or date field) adds `groups: [{ key, count }]` over every matching row, by key; a `multi_select` row counts once under each of its options (an empty one under `""`). `group_order: "count_desc"` orders by count, most first, ties by key; `group_limit` (1–1000) keeps the first N after ordering (控件机制 TODO G21) |
 | `doc.freshness` | experimental | `entity_ids[]` — dependency-based freshness of results and wishes (computed in core) |
 | `doc.relations` | experimental | `entity_id` — outgoing / incoming references, Blocks showing it, produced results; unreadable referrers only as `hidden_incoming` |
 | `doc.list_versions` | experimental | `entity_id` — addressable versions (generated results, checkpoints) with their commits |
@@ -1135,7 +1218,7 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `doc.get_submission` | stable | `epoch`, `idempotency_key` |
 | `doc.undo` | stable | `epoch`, `commit_id`, `idempotency_key`, `mode?`, `plan_digest?`, `session_id?` |
 | `doc.get_changes` | stable | `epoch`, `after_seq`, `limit?`, `filter: { detail: "touched" }?` — each change carries `touched`, and (unless `touched` only) `ops` and the row delta `rows` (D20); `after_seq` below `base_seq` is `BASE_TOO_OLD` |
-| `doc.wait_changes` | stable | `epoch?`, `after_seq`, `timeout_ms?` (long poll) |
+| `doc.wait_changes` | stable | `epoch?`, `after_seq`, `timeout_ms?` (long poll) → `epoch`, `head_seq`, `timed_out`, `show_lock`, `server_ms` (unix ms when answering: clients calibrate against half the round trip, 控件机制 TODO G16) |
 | `doc.checkpoint`, `doc.export` | experimental | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?`; `doc.export` → `export_id`, `manifest`, `download: { bucket_id, key, version, obj_id, token }` (the package in the owner's `exports` bucket, 7 days; `GET /bucket/v1/<bucket_id>/<key>?token=`) |
 | `asset.import_object` | stable | `workspace_id` and either `bucket_id` + `key` (the uploader's own binding in `user/aiworkspace/<user>/assets`) or `obj_id` (an unbound, ready NDM FileObject the caller may read) → `object_id`, `media_type`, `size`, `expires_at`, `bucket_id`, `key`, `version` (staged under `<workspace_id>/<object_id>` in the owner's `assets` bucket) |
 | `replica.bootstrap` | internal | → `replica_id`, `epoch`, `head_seq`, `principal`, `prepared_at`, `download` (as `doc.export`) |
@@ -1162,7 +1245,7 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `session.invite`, `session.list_invites`, `session.revoke_invite`, `session.takeover`, `session.command`, `session.sample`, `session.notes`, `session.rtc` | experimental | see “Presentation sessions” |
 | `session.task`, `session.claim`, `session.respond`, `session.review`, `session.publish`, `session.react`, `session.feed_sample` | experimental | see “Presentation sessions” |
 | `session.events`, `session.watch`, `session.replay`, `session.post`, `session.list_posts`, `session.delete_post` | experimental | see “Presentation sessions” |
-| `asset.stream_url` | experimental | `object_id` (read access as for the asset route) → `url` (`/kapi/aiworkspace/stream/<token>`, 6 h), `media_type`, `size` |
+| `asset.stream_url` | stable | `object_id` (read access as for the asset route; an uploader its own staged upload) → `url` (`/kapi/aiworkspace/stream/<token>`, 6 h), `media_type`, `size`, `expires_at` |
 | `diag.list_unretained`, `diag.verify_refs` | internal | |
 
 **Commit size.** Two limits. One *request* (`doc.commit`, `doc.stage`, any kRPC call) is at most `Limits.max_commit_bytes` (8 MiB, the HTTP body limit). One *Commit* — the staged parts plus the final request, and a compensating Commit of `doc.undo` — is at most `max_commit_total_bytes` (32 MiB) and `max_ops` (50 000 operations, `aiworkspace-core` `Limits`, shared with the browser replica). A client sends a Commit that does not fit one request as `doc.stage { part: 0..N-2 }` + `doc.commit { staged: [digests], operations: <last part> }`; the service assembles it and runs the ordinary pipeline: one transaction, one `commit_id`, one change event, one undo unit. Parts live one hour under `(principal, idempotency_key, part)`, count as `staged` usage and are consumed by the final `doc.commit` whatever its outcome (`doc.prepare` does not consume); missing or expired parts answer `SNAPSHOT_EXPIRED` / `STAGED_PARTS_MISSING` (stage again), a part whose digest is not the one named `IDEMPOTENCY_MISMATCH`, an assembled Commit over the limits `LIMIT_EXCEEDED`. The websdk's `commitWithParts` (used by `AiWorkspaceClient.commit` and the Desktop client) does the cutting (6 MiB parts): callers make one `commit` call per Commit. Importers (PDF, Office, draw.io, tables) write one Commit per import and refuse an import over the limits before sending anything.
@@ -1189,7 +1272,7 @@ Operations (`operations[]` of a Commit): `entity.create|delete|restore|rename|se
 
 - **Export/replica download routes carry the `workspace_id`** (`/export/<workspace_id>/<export_id>`): there is no service-level database to look an export id up in.
 - **Objects are in the zone's named store**, retained by bindings in the owner's buckets (Storage above); ids and encodings are ndn-lib's, verified in `store/tests/kernel.rs` (V01). The `objects` bucket is a `data` bucket of retention DirObjects, not an `object` bucket of `jobj` roots: binding a `jobj` would keep only that object.
-- **Files are single `mix256` chunks (≤ 32 MiB)**; ChunkList for larger assets and record files is not written.
+- **Files are single `mix256` chunks (≤ 32 MiB)**; ChunkList for larger assets and record files is not written. Larger audio / video uploads are the browser's chunk-list FileObjects: staged, referenced and streamed, but not packed by a self-contained export (listed as missing).
 - **Undo `partial` mode** determines the applicable part by probing each inverse operation on its own.
 - **URL query sources** only reach adapters registered in the service (`fixture://` generated source for tests). There is no general HTTP fetcher: a URL in a document cannot make the service issue arbitrary requests.
 - Extra methods: `doc.outline`, `doc.source_capabilities`, `diag.verify_refs`.

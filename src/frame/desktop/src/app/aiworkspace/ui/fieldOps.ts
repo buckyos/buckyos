@@ -4,7 +4,7 @@ import { randomId } from '../api/ids'
 import type { ReadOk } from '../api/session'
 import type { CellPayload, FieldType, Json, KeyedContent, Operation } from '../api/types'
 
-export const CREATABLE_FIELD_TYPES: FieldType[] = ['text', 'number', 'decimal', 'currency', 'date', 'datetime', 'boolean', 'select', 'multi_select']
+export const CREATABLE_FIELD_TYPES: FieldType[] = ['text', 'number', 'decimal', 'currency', 'date', 'datetime', 'boolean', 'select', 'multi_select', 'json']
 
 /** A new field, and — when the view lists its columns explicitly — the field added to this view in the same commit. */
 export function addFieldOps(sourceId: string, cell: ReadOk<KeyedContent<CellPayload>>, name: string, type: FieldType, scale = 2, currency = 'USD'): Operation[] {

@@ -1,0 +1,426 @@
+{
+  "manifest_version": 4,
+  "ident": {
+    "author_did": "did:bns:buckyos",
+    "name": "todo"
+  },
+  "kind": "builtin",
+  "version": 1,
+  "title": "To-dos",
+  "description": "A to-do list that is also a board: the records of a to-do table, ticked, reordered and moved between status columns.",
+  "default_size": {
+    "w": 420,
+    "h": 520
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "enum": [
+          "list",
+          "board"
+        ],
+        "default": "list",
+        "title": "View"
+      },
+      "hide_done": {
+        "type": "boolean",
+        "default": false,
+        "title": "Hide completed"
+      },
+      "collapsed": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "title": "Folded columns (status options)"
+      }
+    }
+  },
+  "user_state": [
+    "mode",
+    "hide_done",
+    "collapsed"
+  ],
+  "bindings": {
+    "items": {
+      "accepts": [
+        "buckyos.table-source"
+      ],
+      "schema_id": "buckyos.todo@1",
+      "required": true,
+      "title": "To-do table",
+      "owned": "created with the control"
+    }
+  },
+  "templates": {
+    "list_row": {
+      "nodes": [
+        {
+          "id": "bg",
+          "view": "shape",
+          "role": "body",
+          "config": {
+            "shape": "rect",
+            "radius": 6,
+            "fill": "{{item.row_fill}}",
+            "stroke": "{{item.row_stroke}}",
+            "stroke_width": 1
+          }
+        },
+        {
+          "id": "check",
+          "view": "shape",
+          "role": "check",
+          "box": {
+            "x": 8,
+            "y": 9,
+            "w": 20,
+            "h": 20
+          },
+          "config": {
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 20 20",
+              "body": "<circle cx=\"10\" cy=\"10\" r=\"8.5\" style=\"fill:var(--aiws-shape-fill);stroke:var(--aiws-shape-stroke);stroke-width:1.5\"/>"
+            },
+            "fill": "{{item.check_fill}}",
+            "stroke": "{{item.check_stroke}}"
+          }
+        },
+        {
+          "id": "tick",
+          "view": "shape",
+          "role": "check",
+          "when": "{{item.done}}",
+          "box": {
+            "x": 8,
+            "y": 9,
+            "w": 20,
+            "h": 20
+          },
+          "config": {
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 20 20",
+              "body": "<path d=\"M6 10.4l2.6 2.6L14 7.6\" style=\"fill:none;stroke:var(--aiws-shape-stroke);stroke-width:2;stroke-linecap:round;stroke-linejoin:round\"/>"
+            },
+            "fill": "none",
+            "stroke": "#ffffff"
+          }
+        },
+        {
+          "id": "prio",
+          "view": "shape",
+          "role": "body",
+          "when": "{{item.priority_color}}",
+          "box": {
+            "x": 34,
+            "y": 15,
+            "w": 4,
+            "h": 8
+          },
+          "config": {
+            "shape": "rect",
+            "radius": 2,
+            "fill": "{{item.priority_color}}",
+            "stroke": "none"
+          }
+        },
+        {
+          "id": "title",
+          "view": "label",
+          "role": "title",
+          "edit": "title",
+          "box": {
+            "x": 42,
+            "r": 104
+          },
+          "config": {
+            "value": "{{item.title}}",
+            "font_size": 14,
+            "font_color": "{{item.title_color}}",
+            "strike": "{{item.done}}"
+          }
+        },
+        {
+          "id": "status",
+          "view": "label",
+          "role": "body",
+          "when": "{{item.doing}}",
+          "box": {
+            "w": 72,
+            "r": 100
+          },
+          "config": {
+            "value": "{{item.status_label}}",
+            "font_size": 11,
+            "font_color": "accent",
+            "align": "right"
+          }
+        },
+        {
+          "id": "due",
+          "view": "label",
+          "role": "body",
+          "box": {
+            "w": 88,
+            "r": 8
+          },
+          "config": {
+            "value": "{{item.due}}",
+            "format": "relative",
+            "font_size": 12,
+            "font_color": "{{item.due_color}}",
+            "align": "right"
+          }
+        },
+        {
+          "id": "note",
+          "view": "shape",
+          "role": "body",
+          "when": "{{item.noted}}",
+          "box": {
+            "x": 26,
+            "y": 8,
+            "w": 7,
+            "h": 7
+          },
+          "config": {
+            "shape": "ellipse",
+            "fill": "warning",
+            "stroke": "surface",
+            "stroke_width": 1.5
+          }
+        }
+      ]
+    },
+    "card": {
+      "nodes": [
+        {
+          "id": "bg",
+          "view": "shape",
+          "role": "body",
+          "config": {
+            "shape": "rect",
+            "radius": 8,
+            "fill": "surface",
+            "stroke": "{{item.card_stroke}}",
+            "stroke_width": 1
+          }
+        },
+        {
+          "id": "prio",
+          "view": "shape",
+          "role": "body",
+          "when": "{{item.priority_color}}",
+          "box": {
+            "x": 0,
+            "y": 8,
+            "w": 3,
+            "b": 8
+          },
+          "config": {
+            "shape": "rect",
+            "radius": 1.5,
+            "fill": "{{item.priority_color}}",
+            "stroke": "none"
+          }
+        },
+        {
+          "id": "check",
+          "view": "shape",
+          "role": "check",
+          "box": {
+            "x": 10,
+            "y": 10,
+            "w": 18,
+            "h": 18
+          },
+          "config": {
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 20 20",
+              "body": "<circle cx=\"10\" cy=\"10\" r=\"8.5\" style=\"fill:var(--aiws-shape-fill);stroke:var(--aiws-shape-stroke);stroke-width:1.5\"/>"
+            },
+            "fill": "{{item.check_fill}}",
+            "stroke": "{{item.check_stroke}}"
+          }
+        },
+        {
+          "id": "tick",
+          "view": "shape",
+          "role": "check",
+          "when": "{{item.done}}",
+          "box": {
+            "x": 10,
+            "y": 10,
+            "w": 18,
+            "h": 18
+          },
+          "config": {
+            "shape": "svg",
+            "svg": {
+              "viewBox": "0 0 20 20",
+              "body": "<path d=\"M6 10.4l2.6 2.6L14 7.6\" style=\"fill:none;stroke:var(--aiws-shape-stroke);stroke-width:2;stroke-linecap:round;stroke-linejoin:round\"/>"
+            },
+            "fill": "none",
+            "stroke": "#ffffff"
+          }
+        },
+        {
+          "id": "title",
+          "view": "label",
+          "role": "title",
+          "edit": "title",
+          "box": {
+            "x": 36,
+            "y": 9,
+            "r": 10,
+            "b": 6
+          },
+          "config": {
+            "value": "{{item.title}}",
+            "font_size": 13,
+            "font_color": "{{item.title_color}}",
+            "strike": "{{item.done}}",
+            "wrap": true,
+            "valign": "top"
+          }
+        },
+        {
+          "id": "due",
+          "view": "label",
+          "role": "body",
+          "when": "{{item.due}}",
+          "box": {
+            "x": 36,
+            "h": 18,
+            "b": 6,
+            "w": 110
+          },
+          "config": {
+            "value": "{{item.due}}",
+            "format": "relative",
+            "font_size": 11,
+            "font_color": "{{item.due_color}}"
+          }
+        },
+        {
+          "id": "tags",
+          "view": "label",
+          "role": "body",
+          "when": "{{item.tags}}",
+          "box": {
+            "r": 10,
+            "h": 18,
+            "b": 6,
+            "w": 110
+          },
+          "config": {
+            "value": "{{item.tags}}",
+            "font_size": 11,
+            "font_color": "muted",
+            "align": "right"
+          }
+        },
+        {
+          "id": "note",
+          "view": "shape",
+          "role": "body",
+          "when": "{{item.noted}}",
+          "box": {
+            "r": 6,
+            "y": 6,
+            "w": 7,
+            "h": 7
+          },
+          "config": {
+            "shape": "ellipse",
+            "fill": "warning",
+            "stroke": "none"
+          }
+        }
+      ]
+    }
+  },
+  "layouts": {
+    "list": {
+      "algorithm": "list",
+      "template": "list_row",
+      "item": {
+        "h": 38
+      },
+      "gap": 2,
+      "order": "order",
+      "groups": "open, then completed (folded)"
+    },
+    "board": {
+      "algorithm": "columns",
+      "template": "card",
+      "by": "status",
+      "column": {
+        "w": 260
+      },
+      "gap": 8,
+      "order": "order"
+    }
+  },
+  "gestures": [
+    {
+      "role": "check",
+      "press": "complete or reopen",
+      "writes": "table.set_values status (done / the first other option), done_at"
+    },
+    {
+      "role": "title",
+      "edit": "title",
+      "writes": "table.set_values title"
+    },
+    {
+      "role": "body",
+      "press": "select; a second press opens the details",
+      "drag": "reorder (list, column) or move to another column",
+      "writes": "table.set_values order (an order key between the neighbours), status"
+    }
+  ],
+  "events": {},
+  "actions": [
+    {
+      "id": "add",
+      "title": "Add a to-do",
+      "writes": "table.insert_records { title, status, order }"
+    },
+    {
+      "id": "add_column",
+      "title": "Add a column",
+      "needs": [
+        "structure"
+      ],
+      "writes": "table.add_option on status"
+    },
+    {
+      "id": "copy_link",
+      "title": "Copy link",
+      "link": "?block=<control>&record=<record>"
+    },
+    {
+      "id": "annotate",
+      "title": "Annotate",
+      "anchor": {
+        "kind": "table_record"
+      }
+    },
+    {
+      "id": "open_page",
+      "title": "Open as a page",
+      "link": "?block=<control>&page=control"
+    },
+    {
+      "id": "delete",
+      "title": "Delete",
+      "writes": "table.delete_records"
+    }
+  ],
+  "agent": "# todo — the to-do control (list and board)\n\nA `buckyos.container` with `kind: \"todo\"` on a canvas. It shows one to-do table (a `buckyos.table-source` with\n`schema_id: \"buckyos.todo@1\"`) bound as `bindings.items`. **The items are the table's records**: to add, complete,\nmove or rename a to-do, write the table (`table.insert_records` / `table.set_values`), never Blocks — the control\nshows the change at once. Nothing is stored per item in the control.\n\n## The table (fields by id)\n\n| field | type | meaning |\n| --- | --- | --- |\n| `title` | text, required | the to-do |\n| `status` | select, required | a column of the board, in option order; option `done` means completed (default options `todo`, `doing`, `done`) |\n| `due` | date | due date |\n| `order` | text | an order key (base-36 fractional index, as `order_key`): list and column order |\n| `done_at` | datetime | when it was completed |\n| `ext` | json object | `priority` (low / normal / high / urgent), `tags` (strings), `assignee`, `reminders` |\n\nA record's body (`table.set_body`, a rich text under the table) holds its notes.\n\n## The control\n\n`payload: { kind: \"todo\", layout: { mode: \"data\" }, title?, bindings: { items: { entity_id: <table> } }, config? }` with a\nnumeric `placement { x, y, w, h }` (it holds no Blocks). `config` is the default view: `mode` (`list` | `board`),\n`hide_done` (boolean), `collapsed` (status option ids of folded columns). Each person's own view is their user state.\n\n## Create one with doc.commit\n\n```json\n{ \"op\": \"entity.create\", \"entity_id\": \"todo1\", \"type_id\": \"buckyos.table-source\", \"schema_id\": \"buckyos.todo@1\", \"parent_id\": \"<content folder>\",\n  \"order_key\": \"a\", \"payload\": { \"title_field_id\": \"title\", \"fields\": [\n    { \"field_id\": \"title\", \"name\": \"Title\", \"type\": \"text\", \"required\": true },\n    { \"field_id\": \"status\", \"name\": \"Status\", \"type\": \"select\", \"required\": true, \"options\": [{ \"option_id\": \"todo\", \"label\": \"To do\" }, { \"option_id\": \"doing\", \"label\": \"In progress\" }, { \"option_id\": \"done\", \"label\": \"Done\" }] },\n    { \"field_id\": \"due\", \"name\": \"Due\", \"type\": \"date\", \"nullable\": true }, { \"field_id\": \"order\", \"name\": \"Order\", \"type\": \"text\", \"nullable\": true },\n    { \"field_id\": \"done_at\", \"name\": \"Completed\", \"type\": \"datetime\", \"nullable\": true }, { \"field_id\": \"ext\", \"name\": \"Extension\", \"type\": \"json\", \"nullable\": true }] } }\n{ \"op\": \"entity.create\", \"entity_id\": \"todoctl1\", \"type_id\": \"buckyos.container\", \"parent_id\": \"<surface>\", \"order_key\": \"b\",\n  \"placement\": { \"x\": 40, \"y\": 40, \"w\": 420, \"h\": 560 }, \"payload\": { \"kind\": \"todo\", \"layout\": { \"mode\": \"data\" }, \"bindings\": { \"items\": { \"entity_id\": \"todo1\" } } } }\n{ \"op\": \"table.insert_records\", \"source_id\": \"todo1\", \"records\": [{ \"record_id\": \"t1\", \"values\": { \"title\": \"Buy milk\", \"status\": \"todo\", \"order\": \"i\" } }] }\n```\n\nThe placement is numbers (never `\"auto\"`): a data control is sized like a Block.\n\n## The private schedule\n\nEvery person has a Workspace named `schedule` (`ws.ensure { name: \"schedule\" }`) whose to-do table has the fixed id\n`todo` (and calendar `calendar`). Use the `buckyos aiws todo` commands (or buckyos-websdk `ScheduleClient`) to\nread and change it.\n"
+}

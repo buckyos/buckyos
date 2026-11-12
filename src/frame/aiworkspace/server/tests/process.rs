@@ -183,7 +183,9 @@ async fn v23_service_api_end_to_end() {
     tokio::time::sleep(Duration::from_millis(150)).await;
     let c = s.rpc("tok-alice", "doc.commit", mixed_batch(&id, &epoch)).await;
     assert_eq!(c["status"], "accepted", "{c}");
-    let woke = tokio::time::timeout(Duration::from_secs(5), waiter).await.expect("wake-up").unwrap();
+    let mut woke = tokio::time::timeout(Duration::from_secs(5), waiter).await.expect("wake-up").unwrap();
+    assert!(woke["server_ms"].as_i64().is_some_and(|t| t > 1_700_000_000_000), "{woke}");
+    woke.as_object_mut().unwrap().remove("server_ms");
     assert_eq!(woke, json!({ "ok": true, "epoch": epoch, "head_seq": 7, "timed_out": false, "show_lock": null }));
     let quiet = s.rpc("tok-alice", "doc.wait_changes", json!({ "workspace_id": id, "epoch": epoch, "after_seq": 7, "timeout_ms": 100 })).await;
     assert_eq!(quiet["timed_out"], true);

@@ -1,0 +1,30 @@
+{
+  "manifest_version": 4,
+  "ident": { "author_did": "did:bns:buckyos", "name": "tv-screen" },
+  "kind": "composite",
+  "title": "TV screen",
+  "description": "A screen that broadcasts one video or sound: every viewer plays from where the broadcast is now, by the service's clock, whatever their device clock says. Who may change it chooses the video, starts and pauses the broadcast and makes their own position the broadcast's; a viewer's own pause and mute stay on their device.",
+  "default_size": { "w": 520, "h": 340 },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string", "title": "Title", "default": "TV" },
+      "background": { "type": "string", "title": "Frame colour", "default": "#d9dde5" },
+      "loop": { "type": "boolean", "title": "Loop", "default": false },
+      "broadcast": {
+        "type": "object",
+        "title": "Broadcast",
+        "description": "{ pos_ms, at_ms, playing }: at service time at_ms the video was at pos_ms. Written by the host's broadcast controls, one undoable Commit each.",
+        "properties": {
+          "pos_ms": { "type": "number", "minimum": 0 },
+          "at_ms": { "type": "number" },
+          "playing": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "entry": "composition.json",
+  "agent": "AGENT.md",
+  "catalog": { "group": "examples", "description": "Everyone watches the same video at the same moment" },
+  "deps": []
+}

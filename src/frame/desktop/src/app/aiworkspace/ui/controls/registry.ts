@@ -24,6 +24,22 @@ export interface ControlChromeProps {
   preview?: { rects: Map<string, { x: number; y: number; w: number; h: number }>; dragged: ReadonlySet<string>; parent: string | null; at: { x: number; y: number; w: number; h: number } | null } | null
 }
 
+/** A data control's own content (控件机制 TODO G2–G6): the records it projects, drawn and driven inside its frame. */
+export interface ControlBodyProps {
+  containerId: string
+  mode: CanvasMode
+  /** The body takes pointer and key input: view mode, or the control selected in edit mode (its frame moves it
+   * otherwise); a flow page or the control's own page always. */
+  active: boolean
+  size: { w: number; h: number }
+  zoom: number
+  /** Where it is drawn: on a canvas, as a Block of a flow page, or as its own page (G14). */
+  host: 'canvas' | 'flow' | 'page'
+  pointerType: 'mouse' | 'touch'
+  /** Phone layout (one column per screen, "Move to…" instead of drags). */
+  phone: boolean
+}
+
 /** What the control's keys and actions act with: the canvas's selection and editing. */
 export interface ControlCommandContext {
   store: WorkspaceStore
@@ -61,6 +77,13 @@ export interface ContainerDefinition {
     algorithm: 'tree' | 'fixed'
     solve: (src: ControlSource, containerId: string, opts: SolveOptions) => SolvedControl
   }
+  /** `layout` (default): the box wraps what the layout places; `box`: a data control sized and resized like a Block
+   * (its `w` / `h` are numbers), holding no Blocks of its own (控件机制 TODO G2, Q19). */
+  sizing?: 'layout' | 'box'
+  /** A box control's size when inserted. */
+  defaultSize?: { w: number; h: number }
+  /** A data control's content: what it projects from the tables it binds, with its own gestures and pop-overs. */
+  Body?: ComponentType<ControlBodyProps>
   /** Drawn in the container's frame under its children: implicit edges, fold handles, pins (R23: template children). */
   Chrome?: ComponentType<ControlChromeProps>
   /** The whole control as one self-contained Block on a flow page (§6.3). */
@@ -87,6 +110,11 @@ class ControlRegistry {
 }
 
 export const controlRegistry = new ControlRegistry()
+
+/** A data control (a box control with a body): sized like a Block, its content projected from data. */
+export function isBoxControl(kind: string | null | undefined): boolean {
+  return controlRegistry.get(kind)?.sizing === 'box'
+}
 
 /** Container kinds of the two trees that are not drawn on a canvas. */
 const NOT_BLOCK = new Set(['root', 'data', 'surfaces', 'folder', 'surface'])

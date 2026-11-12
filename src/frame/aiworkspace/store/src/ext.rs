@@ -185,12 +185,64 @@ pub fn content_digest<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) 
 
 const COMPONENT_KEYS: &[&str] = &[
     "manifest_version", "ident", "kind", "title", "description", "host_api", "accepts", "allow_no_source", "default_size", "config_schema", "bindings", "entry", "assets",
-    "catalog", "agent", "deps", "events",
+    "catalog", "agent", "deps", "events", "actions",
 ];
+const ACTION_HANDLER_KINDS: &[&str] = &["write", "wish", "open", "notify", "config", "forward"];
+
+/// (manifest 4, 控件机制 TODO H2) `actions [{ id, title, icon?, modes?, needs?, run }]`: what the host offers on the near
+/// toolbar of an instance (in view mode too), also before an HTML control runs — the host runs `run` (handlers as in
+/// `on`, plus `config` writing the instance's properties and `forward` handing it to the running HTML; strings may hold
+/// `{{now}}`, the service's clock).
+fn check_actions(v: &Value, file: &str, d: &mut Diags) {
+    let Some(list) = v.as_array().filter(|l| l.len() <= 16) else {
+        d.error(file, "actions: at most 16 of { id, title, icon?, modes?, needs?, run }");
+        return;
+    };
+    let mut ids = BTreeSet::new();
+    for (i, a) in list.iter().enumerate() {
+        let at = format!("actions[{i}]");
+        let Some(o) = a.as_object() else {
+            d.error(file, format!("{at} must be an object"));
+            continue;
+        };
+        for k in o.keys() {
+            if !matches!(k.as_str(), "id" | "title" | "icon" | "modes" | "needs" | "run" | "description") {
+                d.error(file, format!("{at}: unknown key {k} (id, title, icon, modes, needs, run, description)"));
+            }
+        }
+        if !o.get("id").and_then(Value::as_str).is_some_and(|id| is_event_name(id) && ids.insert(id.to_string())) {
+            d.error(file, format!("{at}.id: a unique name [a-z][a-z0-9_]{{0,31}}"));
+        }
+        if !o.get("title").and_then(Value::as_str).is_some_and(|t| !t.is_empty() && t.chars().count() <= 64) {
+            d.error(file, format!("{at}.title: 1…64 characters"));
+        }
+        if o.get("modes").is_some_and(|m| !m.as_array().is_some_and(|m| m.iter().all(|x| matches!(x.as_str(), Some("edit" | "view"))))) {
+            d.error(file, format!("{at}.modes: edit and / or view"));
+        }
+        if o.get("needs").is_some_and(|m| !m.as_array().is_some_and(|m| m.iter().all(|x| matches!(x.as_str(), Some("read" | "comment" | "append" | "update" | "structure" | "delete"))))) {
+            d.error(file, format!("{at}.needs: capabilities (update, structure …)"));
+        }
+        let handlers: Vec<&Value> = match o.get("run") {
+            Some(Value::Array(h)) if !h.is_empty() && h.len() <= 4 => h.iter().collect(),
+            Some(h @ Value::Object(_)) => vec![h],
+            _ => {
+                d.error(file, format!("{at}.run: a handler or 1…4 of them"));
+                vec![]
+            }
+        };
+        for h in handlers {
+            if !h.get("kind").and_then(Value::as_str).is_some_and(|k| ACTION_HANDLER_KINDS.contains(&k)) {
+                d.error(file, format!("{at}.run: kind is one of {}", ACTION_HANDLER_KINDS.join(", ")));
+            }
+        }
+    }
+}
 /// What only `manifest_version` 2 may use (P1).
 const V2_HINT: &str = "needs manifest_version 2 (raise it in component.json)";
 /// What only `manifest_version` 3 may use (P2 / P3).
 const V3_HINT: &str = "needs manifest_version 3 (raise it in component.json)";
+/// What only `manifest_version` 4 may use (控件机制 TODO G13, H2).
+const V4_HINT: &str = "needs manifest_version 4 (raise it in component.json)";
 const PARAM_TYPES: &[&str] = &["string", "number", "boolean", "object", "entity"];
 
 /// `events { <name>: { title?, description?, params?: { <p>: { type, required?, description? } } } }` of a render control
@@ -419,21 +471,28 @@ fn check_dimension(v: &Value, at: &str, max: f64, props: &Map<String, Value>, fi
 /// `stack` | `fixed`), `slots` (where user Blocks go: what they accept, how many, where), `chrome` (what the host draws
 /// around them). String values may say `{{config.<key>}}` for a property of `config_schema`. Answers the identities
 /// slots accept as `cell:<ident>`.
-fn check_composition(spec: &Value, config_schema: Option<&Value>, manifest_version: u64, file: &str, d: &mut Diags) -> (Vec<String>, Vec<(String, String, String)>) {
+/// What a composition declares besides its shape: the controls its slots accept, the events it re-raises from a slot's
+/// control (name, slot, event) and the events a projection's role raises (name, projection, role).
+type CompositionRefs = (Vec<String>, Vec<(String, String, String)>, Vec<(String, String, String)>);
+
+fn check_composition(spec: &Value, config_schema: Option<&Value>, manifest_version: u64, file: &str, d: &mut Diags) -> CompositionRefs {
     let mut cells = Vec::new();
     let mut bubbles = Vec::new();
+    let mut projected = Vec::new();
     let empty = Map::new();
     let props = config_schema.and_then(|s| s.get("properties")).and_then(Value::as_object).unwrap_or(&empty);
     let Some(o) = spec.as_object() else {
         d.error(file, "a composition is a JSON object { layout, slots, chrome?, events? }");
-        return (cells, bubbles);
+        return (cells, bubbles, projected);
     };
     for k in o.keys() {
         match k.as_str() {
             "layout" | "slots" | "chrome" => {}
             "events" if manifest_version < 3 => d.error(file, format!("events {V3_HINT}")),
             "events" => {}
-            _ => d.error(file, format!("unknown key {k} (a composition says layout, slots, chrome and events)")),
+            "projections" | "media" if manifest_version < 4 => d.error(file, format!("{k} {V4_HINT}")),
+            "projections" | "media" => {}
+            _ => d.error(file, format!("unknown key {k} (a composition says layout, slots, chrome, events, projections and media)")),
         }
     }
     let mut algorithm = "stack";
@@ -540,6 +599,19 @@ fn check_composition(spec: &Value, config_schema: Option<&Value>, manifest_versi
                         d.error(file, format!("{at}.title: at most 256 characters"));
                     }
                 }
+                "visible" if manifest_version < 4 => d.error(file, format!("{at}.visible {V4_HINT}")),
+                "visible" => {
+                    // shown to each viewer for a while from their first opening (控件机制 TODO G19): a presentation only
+                    let ok = v.get("from").and_then(Value::as_str) == Some("first_open") && v.as_object().is_some_and(|o| o.keys().all(|k| k == "from" || k == "for_ms"));
+                    if !ok {
+                        d.error(file, format!("{at}.visible: {{ from: \"first_open\", for_ms }}"));
+                    }
+                    match v.get("for_ms") {
+                        Some(n) if n.as_u64().is_some_and(|n| (1..=366 * 86_400_000).contains(&n)) => {}
+                        Some(Value::String(t)) => check_placeholders(t, &format!("{at}.visible.for_ms"), props, file, d),
+                        _ => d.error(file, format!("{at}.visible.for_ms: milliseconds (≤ a year) or {{{{config.<key>}}}}")),
+                    }
+                }
                 _ => d.error(file, format!("{at}: unknown key {k}")),
             }
         }
@@ -607,24 +679,164 @@ fn check_composition(spec: &Value, config_schema: Option<&Value>, manifest_versi
                         d.error(file, format!("{at}: an event name is [a-z][a-z0-9_]{{0,31}}"));
                     }
                     let from = e.get("from");
+                    // (manifest 4) a press on a role of a projection's template raises it (控件机制 TODO G13)
+                    if let Some(projection) = from.and_then(|f| f.get("projection")) {
+                        let role = from.and_then(|f| f.get("role")).and_then(Value::as_str).unwrap_or("body");
+                        match projection.as_str() {
+                            _ if manifest_version < 4 => d.error(file, format!("{at}.from.projection {V4_HINT}")),
+                            Some(p) if o.get("projections").and_then(|ps| ps.get(p)).is_some() && is_slot_name(role) => projected.push((name.clone(), p.to_string(), role.to_string())),
+                            _ => d.error(file, format!("{at}.from: {{ projection, role? }} (a projection of this composition and a role of its template)")),
+                        }
+                        check_event_keys(e, &at, manifest_version, file, d);
+                        continue;
+                    }
                     let (slot, event) = (from.and_then(|f| f.get("slot")).and_then(Value::as_str), from.and_then(|f| f.get("event")).and_then(Value::as_str));
                     match (slot, event) {
                         (Some(sl), Some(ev)) if slots.contains_key(sl) && is_event_name(ev) => bubbles.push((name.clone(), sl.to_string(), ev.to_string())),
                         (Some(sl), Some(_)) if !slots.contains_key(sl) => d.error(file, format!("{at}.from.slot {sl:?} is not a slot of this composition")),
                         _ => d.error(file, format!("{at}.from: {{ slot, event }} (a slot of this composition and an event of its controls)")),
                     }
-                    for k in e.as_object().into_iter().flatten().map(|(k, _)| k) {
-                        if !matches!(k.as_str(), "from" | "title" | "description") {
-                            d.error(file, format!("{at}: unknown key {k} (from, title, description)"));
-                        }
-                    }
+                    check_event_keys(e, &at, manifest_version, file, d);
                 }
             }
         }
     }
+    if let Some(ps) = o.get("projections").filter(|_| manifest_version >= 4) {
+        check_projections(ps, props, file, d);
+    }
+    if let Some(m) = o.get("media").filter(|_| manifest_version >= 4) {
+        // (G17) the media Block of a slot plays where `config.<anchor>` says
+        let slot_ok = m.get("slot").and_then(Value::as_str).is_some_and(|sl| slots.contains_key(sl));
+        let prop = |k: &str| m.get(k).and_then(Value::as_str).is_some_and(|p| props.is_empty() || props.contains_key(p));
+        if !slot_ok || !prop("anchor") || (m.get("loop").is_some() && !prop("loop")) || !m.as_object().is_some_and(|o| o.keys().all(|k| matches!(k.as_str(), "slot" | "anchor" | "loop"))) {
+            d.error(file, "media: { slot (a slot of this composition), anchor (a config property), loop? (a config property) }");
+        }
+    }
     cells.sort();
     cells.dedup();
-    (cells, bubbles)
+    (cells, bubbles, projected)
+}
+
+/// A composite event's keys: `from`, `title`, `description` and (manifest 4) `on` — the handler(s) it runs when the
+/// instance binds none of its own (a photo vote's pick toggles the picker's choice as soon as it is inserted).
+fn check_event_keys(e: &Value, at: &str, manifest_version: u64, file: &str, d: &mut Diags) {
+    for (k, v) in e.as_object().into_iter().flatten() {
+        match k.as_str() {
+            "from" | "title" | "description" => {}
+            "on" if manifest_version < 4 => d.error(file, format!("{at}.on {V4_HINT}")),
+            "on" => {
+                if let Err(err) = aiworkspace_core::types::check_on_shape(&json!({ "e": v })) {
+                    d.error(file, format!("{at}.on: {}", err.detail.replace("on.e: ", "")));
+                }
+            }
+            _ => d.error(file, format!("{at}: unknown key {k} (from, title, description, on)")),
+        }
+    }
+}
+
+/// (manifest 4, 控件机制 TODO G2, G13) `projections { <name>: { source, mark?, template, layout, placement?, max_items? } }`:
+/// Blocks projected from data — the host's projection, the shape checked here.
+fn check_projections(v: &Value, props: &Map<String, Value>, file: &str, d: &mut Diags) {
+    let Some(ps) = v.as_object() else {
+        d.error(file, "projections: an object of name → { source, template, layout }");
+        return;
+    };
+    if ps.len() > 8 {
+        d.error(file, "at most 8 projections");
+    }
+    for (name, p) in ps {
+        let at = format!("projections.{name}");
+        if !is_slot_name(name) {
+            d.error(file, format!("{at}: a projection name is [a-z][a-z0-9_]{{0,31}}"));
+        }
+        let Some(p) = p.as_object() else {
+            d.error(file, format!("{at} must be an object"));
+            continue;
+        };
+        for k in p.keys() {
+            if !matches!(k.as_str(), "source" | "mark" | "template" | "layout" | "placement" | "max_items") {
+                d.error(file, format!("{at}: unknown key {k} (source, mark, template, layout, placement, max_items)"));
+            }
+        }
+        let src = p.get("source");
+        let binding_ok = |b: Option<&Value>| b.and_then(Value::as_str).is_some_and(|b| b.len() <= 32 && b.chars().next().is_some_and(|c| c.is_ascii_lowercase()));
+        match src.and_then(|s| s.get("kind")).and_then(Value::as_str) {
+            Some("records" | "members") if binding_ok(src.and_then(|s| s.get("binding"))) => {}
+            Some("counts") if binding_ok(src.and_then(|s| s.get("binding"))) && src.and_then(|s| s.get("field")).and_then(Value::as_str).is_some() => {
+                if let Some(of) = src.and_then(|s| s.get("of")) {
+                    if !of.as_str().is_some_and(|o| ps.contains_key(o) && o != name) {
+                        d.error(file, format!("{at}.source.of: another projection of this composition"));
+                    }
+                }
+                if src.and_then(|s| s.get("top")).is_some_and(|t| !t.as_u64().is_some_and(|n| (1..=100).contains(&n))) {
+                    d.error(file, format!("{at}.source.top: 1…100"));
+                }
+            }
+            Some("viewer") => {}
+            _ => d.error(file, format!("{at}.source: {{ kind: records | members | counts | viewer, binding (a binding name), field? (counts) }}")),
+        }
+        if let Some(m) = p.get("mark") {
+            let ok = binding_ok(m.get("binding")) && m.get("field").and_then(Value::as_str).is_some() && m.get("as").and_then(Value::as_str).is_some_and(is_slot_name);
+            if !ok {
+                d.error(file, format!("{at}.mark: {{ binding, field, as }}"));
+            }
+        }
+        match p.get("template").and_then(|t| t.get("nodes")).and_then(Value::as_array) {
+            Some(nodes) if !nodes.is_empty() && nodes.len() <= 32 => {
+                let mut ids = BTreeSet::new();
+                for (i, n) in nodes.iter().enumerate() {
+                    let id = n.get("id").and_then(Value::as_str);
+                    let view = n.get("view").and_then(Value::as_str);
+                    if !id.is_some_and(is_slot_name) || !ids.insert(id.unwrap_or_default().to_string()) {
+                        d.error(file, format!("{at}.template.nodes[{i}].id: a unique name [a-z][a-z0-9_]{{0,31}}"));
+                    }
+                    if !matches!(view, Some("label" | "shape" | "asset")) {
+                        d.error(file, format!("{at}.template.nodes[{i}].view: label, shape or asset (the projected Blocks; Q1)"));
+                    }
+                    if n.get("role").is_some_and(|r| !r.as_str().is_some_and(is_slot_name)) {
+                        d.error(file, format!("{at}.template.nodes[{i}].role: a name [a-z][a-z0-9_]{{0,31}}"));
+                    }
+                    if let Some(c) = n.get("config").and_then(Value::as_object) {
+                        for (k, v) in c {
+                            if let Some(t) = v.as_str() {
+                                check_projection_placeholders(t, &format!("{at}.template.nodes[{i}].config.{k}"), props, file, d);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => d.error(file, format!("{at}.template: {{ nodes: [1…32 of {{ id, view: label | shape | asset, box?, config?, when?, role? }}] }}")),
+        }
+        match p.get("layout") {
+            Some(l) if matches!(l.get("algorithm").and_then(Value::as_str), Some("list" | "grid")) && l.get("item").and_then(|i| i.get("h")).is_some() => {
+                if l.get("algorithm").and_then(Value::as_str) == Some("grid") && l.get("columns").is_none() {
+                    d.error(file, format!("{at}.layout.columns required (grid)"));
+                }
+            }
+            _ => d.error(file, format!("{at}.layout: {{ algorithm: list | grid, columns? (grid), gap?, item: {{ w?, h }} }}")),
+        }
+        if p.get("placement").is_some_and(|v| !matches!(v.as_str(), Some("top" | "stack" | "bottom"))) {
+            d.error(file, format!("{at}.placement: top, stack or bottom"));
+        }
+        if p.get("max_items").is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=1000).contains(&n))) {
+            d.error(file, format!("{at}.max_items: 1…1000"));
+        }
+    }
+}
+
+/// A template value's placeholders: `{{item.…}}`, `{{viewer.…}}` (the data), `{{config.<key>}}` (a property).
+fn check_projection_placeholders(text: &str, at: &str, props: &Map<String, Value>, file: &str, d: &mut Diags) {
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        let Some(len) = rest[start..].find("}}") else { break };
+        let inner = rest[start + 2..start + len].trim();
+        match inner.split_once('.') {
+            Some(("item" | "viewer", path)) if !path.is_empty() => {}
+            Some(("config", key)) if props.is_empty() || props.contains_key(key) => {}
+            _ => d.error(file, format!("{at}: {{{{{inner}}}}} — a placeholder is {{{{item.<field>}}}}, {{{{viewer.<key>}}}} or {{{{config.<property>}}}}")),
+        }
+        rest = &rest[start + len + 2..];
+    }
 }
 
 fn text_file<'a>(files: &'a BTreeMap<&str, &SourceFile>, name: &str, what: &str, d: &mut Diags) -> Option<&'a str> {
@@ -827,6 +1039,14 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
     if !events.is_empty() {
         payload.insert("events".into(), Value::Object(events.clone()));
     }
+    match c.get("actions") {
+        None => {}
+        Some(_) if manifest_version < 4 => d.error(f, format!("actions {V4_HINT}")),
+        Some(v) => {
+            check_actions(v, f, &mut d);
+            payload.insert("actions".into(), v.clone());
+        }
+    }
     let mut slot_cells = Vec::new();
     let mut bubbles = Vec::new();
     let mut named: BTreeSet<String> = BTreeSet::from([COMPONENT_FILE.to_string()]);
@@ -877,7 +1097,23 @@ pub fn compose(files: &[SourceFile]) -> Result<Composed, Vec<Value>> {
             if let Some(t) = text_file(&by_name, file, "entry", &mut d) {
                 match serde_json::from_str::<Value>(t) {
                     Ok(spec) => {
-                        (slot_cells, bubbles) = check_composition(&spec, c.get("config_schema"), manifest_version, file, &mut d);
+                        let projected;
+                        (slot_cells, bubbles, projected) = check_composition(&spec, c.get("config_schema"), manifest_version, file, &mut d);
+                        // a projection's role raises its event with the item it was pressed on (控件机制 TODO G13)
+                        if !projected.is_empty() {
+                            let mut evs = Map::new();
+                            for (name, projection, role) in &projected {
+                                let mut e = json!({ "from": { "projection": projection, "role": role },
+                                                    "params": { "item": { "type": "string", "required": true }, "projection": { "type": "string" } } });
+                                for k in ["title", "description", "on"] {
+                                    if let Some(v) = spec["events"][name].get(k) {
+                                        e[k] = v.clone();
+                                    }
+                                }
+                                evs.insert(name.clone(), e);
+                            }
+                            payload.insert("events".into(), Value::Object(evs));
+                        }
                         payload.insert("composition".into(), spec);
                     }
                     Err(e) => d.json_error(file, &e),
@@ -1440,7 +1676,8 @@ impl Workspace {
             // a composite's events re-raise those of the controls its slots accept (Q26): the child event's params
             if !c.bubbles.is_empty() {
                 let comp = payload.get("composition").cloned().unwrap_or(Value::Null);
-                let mut evs = Map::new();
+                // the events a projection raises were written when the composition was read
+                let mut evs = payload.get("events").and_then(Value::as_object).cloned().unwrap_or_default();
                 for (name, slot, child_event) in &c.bubbles {
                     let accepted: Vec<String> = comp["slots"][slot]["accepts"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|a| a.strip_prefix("cell:")).map(str::to_string).collect();
                     let mut found = None;

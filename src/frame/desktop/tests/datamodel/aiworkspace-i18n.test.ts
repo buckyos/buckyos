@@ -29,6 +29,7 @@ import * as pdf from '../../src/i18n/aiworkspace/pdf.ts'
 import * as presentation from '../../src/i18n/aiworkspace/presentation.ts'
 import * as office from '../../src/i18n/aiworkspace/office.ts'
 import * as richtext from '../../src/i18n/aiworkspace/richtext.ts'
+import * as schedule from '../../src/i18n/aiworkspace/schedule.ts'
 import * as session from '../../src/i18n/aiworkspace/session.ts'
 import * as shell from '../../src/i18n/aiworkspace/shell.ts'
 import * as wish from '../../src/i18n/aiworkspace/wish.ts'
@@ -53,6 +54,7 @@ const PARTS: Part[] = [
   { name: 'ext', prefixes: ['ext'], ...ext },
   { name: 'import', prefixes: ['import'], ...imports },
   { name: 'office', prefixes: ['office'], ...office },
+  { name: 'schedule', prefixes: ['label', 'datactl', 'todo', 'calendar', 'broadcast'], ...schedule },
 ]
 
 const ROOT = new URL('../../', import.meta.url).pathname

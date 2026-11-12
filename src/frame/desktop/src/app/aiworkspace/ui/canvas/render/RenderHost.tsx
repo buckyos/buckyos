@@ -73,7 +73,8 @@ import { groupAt, movedPlacement, relativeTo, topLevel, type Laid } from '../lay
 import { foldBook } from '../../controls/folds'
 import { nodeMeasurer } from '../../controls/measure'
 import { isFixedComposite } from '../../controls/composite/model'
-import { controlRegistry, type ControlChromeProps } from '../../controls/registry'
+import { controlRegistry, isBoxControl, type ControlChromeProps } from '../../controls/registry'
+import { ShellContext } from '../../shell/shellContext'
 import { Camera, intersects, type Rect } from './camera'
 import { SpatialIndex } from './spatialIndex'
 import { TouchGestures, type OneFingerDrag, type Point, type TouchActions } from './touch'
@@ -321,6 +322,7 @@ export function RenderHost(props: RenderHostProps) {
   const [settled, setSettled] = useState(0)
   const pointerTypeRef = useRef('mouse')
   const pointer = usePointerType()
+  const shellPhone = useContext(ShellContext)?.phone ?? false
   const sizes = HANDLES[pointer]
   const [touch] = useState(() => new TouchGestures(camera))
   // ---- writing: the input, the live layer, the strokes being erased
@@ -1516,9 +1518,21 @@ export function RenderHost(props: RenderHostProps) {
   const zoom = camera.settledZoom
   // lines depend on the zoom only through screen-sized details (1 px minimum width, markers): steps of 25 % re-render them
   const lineZoom = Math.pow(1.25, Math.round(Math.log(zoom) / Math.log(1.25)))
-  /** What a control draws under its Blocks (its edges). */
+  /** What a control draws under its Blocks (its edges); a data control's body (its projected records), which takes
+   * the pointer in view mode, or once the control is selected in edit mode (until then its frame moves it). */
   const chromeOf = (l: Laid): ReactNode => {
-    const Chrome = controlRegistry.get(l.control?.kind)?.Chrome
+    const def = controlRegistry.get(l.control?.kind)
+    if (def?.Body) {
+      const Body = def.Body
+      const id = l.entity.entity_id
+      const active = mode === 'view' || mode === 'show' || (selection.size === 1 && selection.has(id) && !dragging && !l.locked)
+      return (
+        <div className="aiws-data-body" data-active={active ? 'true' : undefined} data-testid={`aiws-data-body-${id}`}>
+          <Body containerId={id} mode={mode} active={active} size={{ w: l.rect.w, h: l.rect.h }} zoom={zoom} host="canvas" pointerType={pointer} phone={shellPhone} />
+        </div>
+      )
+    }
+    const Chrome = def?.Chrome
     if (!Chrome) return null
     return <Chrome container={l} laid={laid} mode={mode} zoom={zoom} preview={nodePreview?.control === l.entity.entity_id ? nodePreview.preview : null} />
   }
@@ -1591,8 +1605,9 @@ export function RenderHost(props: RenderHostProps) {
   const hoverLaid = hover && !selection.has(hover) ? laid.get(hover) : undefined
   const hoverShape = hoverLaid ? shapeFor(hoverLaid.entity.entity_id) : null
   const hoverMeta = hover ? metaSink.get(hover) : undefined
-  // a control is sized by its layout: no handles of its own
-  const single = selected.length === 1 && policy.layout && canLayout(selected[0].id) && !selected[0].locked && !selected[0].line && !laid.get(selected[0].id)?.control && editing !== selected[0].id && !dragging ? selected[0] : null
+  // a control is sized by its layout: no handles of its own (a data control is sized like a Block)
+  const singleControl = selected.length === 1 ? laid.get(selected[0].id)?.control : undefined
+  const single = selected.length === 1 && policy.layout && canLayout(selected[0].id) && !selected[0].locked && !selected[0].line && (!singleControl || isBoxControl(singleControl.kind)) && editing !== selected[0].id && !dragging ? selected[0] : null
   const singleLaid = single ? laid.get(single.id) : undefined
   const handles = single ? (['nw', 'ne', 'se', 'sw'] as const).map((h, i) => ({ h, ...corners(single.rect, single.rotation)[i] })) : []
   const edges = single ? (['n', 'e', 's', 'w'] as const).map((h, i) => {

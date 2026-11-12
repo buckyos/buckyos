@@ -167,6 +167,10 @@ export interface EntityEnvelope {
   layout?: { mode: 'flow' | 'free' | 'tree' } | null
   /** A control's attributes (outline only; a Surface's `config` is not projected). */
   config?: Record<string, Json> | null
+  /** A data control's bound tables, by binding name (控件机制 TODO G2). */
+  bindings?: Record<string, string> | null
+  /** The business schema an entity follows (`buckyos.todo@1`, `buckyos.calendar@1`). */
+  schema_id?: string | null
   /** Folders: `canvas_content` (the area), `surface_content` (one Surface's folder) or `shows` (presentation paths). */
   system?: 'canvas_content' | 'surface_content' | 'shows' | null
   /** A content folder's Surface; a Surface's content folder. */
@@ -220,6 +224,8 @@ export interface EntityEnvelope {
   deps?: string[] | null
   composition?: Composition | null
   config_defaults?: Record<string, Json> | null
+  /** A composite definition's declared actions (manifest 4, 控件机制 TODO H2). */
+  def_actions?: Json[] | null
   /** The events a definition declares and the events an instance binds (扩展控件 P2; outline only). */
   def_events?: string[] | null
   on_events?: string[] | null
@@ -269,7 +275,7 @@ export interface Reference {
   workspace_id?: string
 }
 
-export type FieldType = 'text' | 'number' | 'decimal' | 'date' | 'datetime' | 'boolean' | 'select' | 'multi_select' | 'object_ref' | 'currency'
+export type FieldType = 'text' | 'number' | 'decimal' | 'date' | 'datetime' | 'boolean' | 'select' | 'multi_select' | 'object_ref' | 'currency' | 'json'
 
 export interface OptionDef { option_id: string; label: string }
 
@@ -287,6 +293,10 @@ export interface FieldDef {
   description?: string
   maintained_by?: 'human' | 'program'
   order_key?: string
+  /** A text field the service fills with the submitter (one per table; each person writes only their own record, G20). */
+  submitter?: boolean
+  /** A `multi_select` holds at most this many options (G20). */
+  max_items?: number
   def_rev: number
   type_rev: number
   values_rev: number
@@ -568,7 +578,9 @@ export interface ControlEvent {
   title?: string
   description?: string
   params?: Record<string, { type: 'string' | 'number' | 'boolean' | 'object' | 'entity'; required?: boolean; description?: string }>
-  from?: { slot: string; event: string }
+  from?: { slot?: string; event?: string; projection?: string; role?: string }
+  /** (a composite's, manifest 4) what the event does when the instance binds no handler of its own. */
+  on?: EventHandler | EventHandler[]
 }
 
 /** One handler of an instance's `on` (Q26). Strings may hold `{{event.<param>}}` / `{{config.<key>}}`. */
@@ -781,6 +793,10 @@ export interface QueryParams {
   limit?: number
   cursor?: string
   consistency?: 'snapshot' | 'best_effort'
+  /** Counts per value of a field (a `multi_select` counts each option once; 控件机制 TODO G21). */
+  group?: string
+  group_order?: 'count_desc'
+  group_limit?: number
 }
 
 export interface QueryPage {
@@ -792,6 +808,8 @@ export interface QueryPage {
   source_id: string
   diagnostics?: Diagnostic[]
   data_mode?: string
+  /** With `group`: the counts per value. */
+  groups?: { key: string; count: number }[]
 }
 
 export interface CollabState {

@@ -79,6 +79,21 @@ export function ValueEditor({ def, value, initialText, ariaLabel, onCommit, onCa
     settled.current = true
     onCommit(parsed.value)
   }
+  if (def.type === 'json') {
+    // an object written as JSON: Ctrl+Enter or leaving saves, Esc keeps the old value
+    return (
+      <span className="aiws-editor aiws-editor-json">
+        <textarea aria-label={ariaLabel} autoFocus rows={Math.min(12, Math.max(3, text.split('\n').length))} value={text} spellCheck={false}
+          onChange={(event) => { setText(event.target.value); setError(null) }}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); commit() }
+            if (event.key === 'Escape') { event.preventDefault(); cancel() }
+          }} />
+        {error && <span className="aiws-error" role="alert">{error}</span>}
+      </span>
+    )
+  }
   return (
     <span className="aiws-editor">
       <input

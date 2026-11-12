@@ -250,6 +250,8 @@ pub struct Planner<'a> {
     pub warnings: Vec<Value>,
     /// Records inserted by an append-only principal (the only ones it may see back).
     pub read_denied: BTreeSet<String>,
+    /// Records of standard tables this Commit wrote, with the last operation that did (`standard::check_records`).
+    pub standard_records: BTreeMap<(String, String), usize>,
 }
 
 pub type OpResult = WsResult<(Value, Option<Vec<Value>>)>;
@@ -292,6 +294,7 @@ impl<'a> Planner<'a> {
             reports: vec![],
             warnings: vec![],
             read_denied: BTreeSet::new(),
+            standard_records: BTreeMap::new(),
         }
     }
 
@@ -788,20 +791,34 @@ fn entity_purge(p: &mut Planner, op: &Value) -> OpResult {
 
 /// Own data (内核架构改进 D05): a Block created in this Commit together with the data it shows, under the
 /// canvas content folder, owns that data — unless the Block declares `data_ownership: "shared"`. The
-/// `owns` edge is added beside `bind`; data of the data tree (inserted in data mode) is never owned.
+/// `owns` edge is added beside `bind`; data of the data tree (inserted in data mode) is never owned. A data control
+/// (to-do, calendar) owns the tables of its `bindings` created with it the same way.
 fn add_owns_edges(p: &mut Planner) -> WsResult<()> {
     let seq = p.seq();
-    let created: Vec<EntityRow> = p.ov.entities.values().filter(|e| e.created_seq == seq && e.alive() && e.type_id == TYPE_CELL).cloned().collect();
-    for cell in created {
-        if cell.payload.get("data_ownership").and_then(Value::as_str) == Some("shared") {
+    let created: Vec<EntityRow> = p
+        .ov
+        .entities
+        .values()
+        .filter(|e| e.created_seq == seq && e.alive())
+        .filter(|e| e.type_id == TYPE_CELL || (e.type_id == TYPE_CONTAINER && crate::types::is_data_control(container_kind(e))))
+        .cloned()
+        .collect();
+    for block in created {
+        if block.payload.get("data_ownership").and_then(Value::as_str) == Some("shared") {
             continue;
         }
-        let Some(target) = cell.payload.get("source_ref").filter(|r| crate::value::reference_is_local(r)).and_then(crate::value::reference_entity_id).map(str::to_string) else { continue };
-        let Some(data) = p.ov.entity(&target)? else { continue };
-        if data.created_seq != seq || !data.alive() || !under_canvas_content(&p.ov, &target)? {
-            continue;
+        let targets: Vec<&Value> = match block.type_id.as_str() {
+            TYPE_CELL => block.payload.get("source_ref").into_iter().collect(),
+            _ => block.payload.get("bindings").and_then(Value::as_object).into_iter().flat_map(|b| b.values()).collect(),
+        };
+        for r in targets {
+            let Some(target) = Some(r).filter(|r| crate::value::reference_is_local(r)).and_then(crate::value::reference_entity_id).map(str::to_string) else { continue };
+            let Some(data) = p.ov.entity(&target)? else { continue };
+            if data.created_seq != seq || !data.alive() || !under_canvas_content(&p.ov, &target)? {
+                continue;
+            }
+            p.ov.add_ref(RefEdge::local(&block.entity_id, "", "owns", &target));
         }
-        p.ov.add_ref(RefEdge::local(&cell.entity_id, "", "owns", &target));
     }
     Ok(())
 }
@@ -1244,6 +1261,9 @@ pub fn plan_commit<'a>(
     if !p.conflicts.is_empty() {
         return Err(CommitFailure::Conflict(p.conflicts));
     }
+    if env.schema_checks {
+        crate::standard::check_records(&p).map_err(|(e, i)| reject(e, Some(i)))?;
+    }
     add_owns_edges(&mut p).map_err(|e| reject(e, None))?;
     if env.import {
         check_deferred_refs(&p).map_err(|e| reject(e, None))?;
@@ -1341,6 +1361,8 @@ pub fn child_allowed(parent: &EntityRow, in_control: bool, child_type: &str, chi
             },
             "surfaces" => child_type == TYPE_CONTAINER && child_kind == Some("surface"),
             "surface" | "group" => block(child_type),
+            // a data control's content is projected from its tables, never stored (控件机制 TODO Q19)
+            k if crate::types::is_data_control(k) => false,
             k if crate::types::is_control_kind(k) => block(child_type),
             _ => false,
         },
@@ -1380,7 +1402,9 @@ impl<'a> PlaceRules<'a> {
             _ => false,
         };
         let laid_out = !fixed && host.as_ref().is_some_and(|c| crate::types::is_control_kind(container_kind(c)));
-        let control = type_id == TYPE_CONTAINER && payload.get("kind").and_then(Value::as_str).is_some_and(crate::types::is_control_kind);
+        // a data control has the size its user gives it (it holds no Blocks to wrap)
+        let control = type_id == TYPE_CONTAINER
+            && payload.get("kind").and_then(Value::as_str).is_some_and(|k| crate::types::is_control_kind(k) && !crate::types::is_data_control(k));
         let text = type_id == TYPE_CELL && payload.get("view").and_then(|v| v.get("type")).and_then(Value::as_str).is_some_and(crate::types::is_text_view);
         Ok(PlaceRules { connector, internal: p.env.internal, laid_out, auto_size: control || (laid_out && text) })
     }

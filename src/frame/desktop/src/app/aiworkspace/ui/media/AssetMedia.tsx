@@ -9,7 +9,7 @@ import { ContentPreview } from '../../../../components/ContentPreview'
 import type { ContentRef } from '../../../../components/preview/types'
 import { describeError, type ReadOk } from '../../api/session'
 import type { AssetContent } from '../../api/types'
-import { useStore } from '../../state/hooks'
+import { useOutlineVersion, useStore } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
 import { useAiwsText } from '../../useAiwsText'
 import { consumeIntent, useIntent } from '../blocks/editorToolbar'
@@ -17,6 +17,7 @@ import { assetMediaType, fileBadge, formatDuration, mediaKindOf, playsInPlace, t
 import { assetSource, surfaceMediaSession } from './source'
 import { useSession } from '../../session/context'
 import { SessionMediaPlayer } from '../../session/media'
+import { BroadcastMedia, broadcastOf } from './BroadcastMedia'
 
 /** A stored picture (the asset itself or its poster) as a blob URL: the asset route needs the session token. */
 function usePictureUrl(store: WorkspaceStore, objectId: string | undefined, mediaType: string) {
@@ -61,6 +62,19 @@ export function AssetMedia(props: AssetMediaProps) {
   // on a session's stage a video or sound plays from the run Workspace, kept to the presenter's playback (第四期规划 §7.3.2)
   if (session && (kind === 'video' || kind === 'audio')) {
     return <SessionMediaPlayer entityId={props.asset.entity_id} objectId={payload.object_id} kind={kind} name={payload.file_name ?? props.asset.name ?? props.asset.entity_id} />
+  }
+  return <MediaOrBroadcast {...props} kind={kind} />
+}
+
+/** In a composite's media slot a video or sound is a broadcast (G17): it plays where the composite's anchor says. */
+function MediaOrBroadcast(props: AssetMediaProps & { kind: MediaKind }) {
+  const store = useStore()
+  useOutlineVersion()
+  const payload = props.asset.content.payload
+  const broadcast = props.kind === 'video' || props.kind === 'audio' ? broadcastOf(store, props.cellId) : null
+  if (broadcast) {
+    return <BroadcastMedia assetId={props.asset.entity_id} objectId={payload.object_id} kind={props.kind as 'video' | 'audio'} name={payload.file_name ?? props.asset.name ?? props.asset.entity_id}
+      compositeId={broadcast.compositeId} media={broadcast.media} config={broadcast.config} />
   }
   return <PlainAssetMedia {...props} />
 }

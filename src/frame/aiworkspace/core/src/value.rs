@@ -23,6 +23,8 @@ pub enum FieldType {
     ObjectRef,
     /// A money amount with its ISO 4217 currency (表格导入 TODO §6, format 1.1).
     Currency,
+    /// A JSON object replaced whole (控件机制 TODO G8): extension fields of the standard tables.
+    Json,
 }
 
 impl FieldType {
@@ -38,10 +40,11 @@ impl FieldType {
             FieldType::MultiSelect => "multi_select",
             FieldType::ObjectRef => "object_ref",
             FieldType::Currency => "currency",
+            FieldType::Json => "json",
         }
     }
     pub fn sortable(&self) -> bool {
-        !matches!(self, FieldType::MultiSelect | FieldType::ObjectRef)
+        !matches!(self, FieldType::MultiSelect | FieldType::ObjectRef | FieldType::Json)
     }
 }
 
@@ -83,11 +86,22 @@ pub struct FieldDef {
     /// The default currency of a `currency` field (ISO 4217 code), given to values written without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// A `text` field the service fills with the inserting principal (控件机制 TODO G20): unique, one per table.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub submitter: bool,
+    /// At most this many options in one `multi_select` value (1–1000, G20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u32>,
 }
 
 pub const TEXT_MAX_UTF16: usize = 65_536;
+/// A `json` value: at most this many canonical bytes and this many nested containers (the object itself is one).
+pub const JSON_MAX_BYTES: usize = 16 * 1024;
+pub const JSON_MAX_DEPTH: usize = 8;
 /// The scale of a `currency` field that does not give one.
 pub const CURRENCY_DEFAULT_SCALE: u8 = 2;
+/// The largest `max_items` a `multi_select` field may declare.
+pub const MAX_ITEMS_LIMIT: u32 = 1000;
 
 /// An ISO 4217 code: three uppercase ASCII letters (the list itself is not checked).
 pub fn is_currency_code(s: &str) -> bool {
@@ -162,6 +176,15 @@ impl FieldDef {
                 return bad("maintained_by must be human or program".into());
             }
         }
+        if self.submitter && self.ty != FieldType::Text {
+            return bad("submitter is only valid on text fields".into());
+        }
+        match (self.max_items, self.ty) {
+            (Some(n), FieldType::MultiSelect) if (1..=MAX_ITEMS_LIMIT).contains(&n) => {}
+            (Some(_), FieldType::MultiSelect) => return bad(format!("max_items must be 1-{MAX_ITEMS_LIMIT}")),
+            (Some(_), _) => return bad("max_items is only valid on multi_select fields".into()),
+            (None, _) => {}
+        }
         Ok(())
     }
 
@@ -182,6 +205,9 @@ impl FieldDef {
     /// Normalize a non-absent value. `null` passes only on nullable fields.
     /// `object_ref` is normalized structurally; target existence is the caller's check.
     pub fn normalize(&self, v: &Value) -> WsResult<Value> {
+        if self.ty == FieldType::Json {
+            return self.normalize_json(v);
+        }
         if is_formula(v) {
             // a formula of this field's return type (D18): saved as given, evaluated by readers, never here
             return check_formula(v).map(|_| v.clone()).map_err(|m| WsError::invalid_schema(format!("field {}: {m}", self.field_id)));
@@ -236,10 +262,33 @@ impl FieldDef {
                     }
                     set.insert(s.to_string());
                 }
+                if let Some(m) = self.max_items.filter(|m| set.len() > *m as usize) {
+                    return Err(bad(&format!("at most {m} options")));
+                }
                 Ok(Value::Array(set.into_iter().map(Value::String).collect()))
             }
             FieldType::ObjectRef => normalize_reference(v),
             FieldType::Currency => self.normalize_currency(v).map_err(|m| bad(&m)),
+            FieldType::Json => self.normalize_json(v),
+        }
+    }
+
+    /// An object, stored as given; a `{ "$formula" }` object is refused (a formula computes no extension fields).
+    fn normalize_json(&self, v: &Value) -> WsResult<Value> {
+        let bad = |m: &str| WsError::invalid_schema(format!("field {}: {m}", self.field_id));
+        match v {
+            Value::Null if self.nullable => Ok(Value::Null),
+            Value::Null => Err(WsError::invalid_schema(format!("field {} is not nullable", self.field_id))),
+            Value::Object(_) if is_formula(v) => Err(bad("a json field holds no formula")),
+            Value::Object(_) => {
+                check_json_tree(v, 1).map_err(|m| WsError::limit(format!("field {}: {m}", self.field_id)))?;
+                let len = crate::canonical::canonical_json(v).map_err(|e| bad(&e.detail))?.len();
+                if len > JSON_MAX_BYTES {
+                    return Err(WsError::limit(format!("field {}: {len} bytes, over {JSON_MAX_BYTES}", self.field_id)));
+                }
+                Ok(v.clone())
+            }
+            _ => Err(bad("expected a JSON object")),
         }
     }
 
@@ -268,6 +317,17 @@ impl FieldDef {
             _ => return Err("amount must be a decimal string or a number".into()),
         };
         Ok(json!({ "amount": normalize_decimal(&text, self.currency_scale())?, "currency": code }))
+    }
+}
+
+fn check_json_tree(v: &Value, depth: usize) -> Result<(), String> {
+    let text = |s: &str| if s.encode_utf16().count() > TEXT_MAX_UTF16 { Err("string too long".to_string()) } else { Ok(()) };
+    match v {
+        Value::Object(_) | Value::Array(_) if depth > JSON_MAX_DEPTH => Err(format!("nested deeper than {JSON_MAX_DEPTH} levels")),
+        Value::Object(o) => o.iter().try_for_each(|(k, x)| text(k).and_then(|_| check_json_tree(x, depth + 1))),
+        Value::Array(a) => a.iter().try_for_each(|x| check_json_tree(x, depth + 1)),
+        Value::String(s) => text(s),
+        _ => Ok(()),
     }
 }
 
@@ -703,7 +763,7 @@ pub fn compare(def: &FieldDef, a: &Value, b: &Value) -> Ordering {
             let ib = b.as_str().and_then(|s| def.option_index(s)).unwrap_or(usize::MAX);
             ia.cmp(&ib)
         }
-        FieldType::MultiSelect | FieldType::ObjectRef => Ordering::Equal,
+        FieldType::MultiSelect | FieldType::ObjectRef | FieldType::Json => Ordering::Equal,
         // grouped by code, then by amount (different currencies are never converted)
         FieldType::Currency => currency_parts(a).0.cmp(currency_parts(b).0).then_with(|| cmp_decimal(currency_parts(a).1, currency_parts(b).1)),
     }
@@ -936,5 +996,42 @@ mod tests {
         assert!(migration_supported(FieldType::Decimal, FieldType::Currency));
         assert!(!migration_supported(FieldType::Text, FieldType::Currency));
         assert!(!migration_supported(FieldType::Currency, FieldType::Number));
+    }
+
+    #[test]
+    fn json() {
+        let j = def(json!({"field_id":"ext","name":"ext","type":"json","nullable":true}));
+        let v = json!({"rrule":"FREQ=DAILY","reminders":[{"before_min":10}],"x":{"y":[1,2,{"z":null}]}});
+        assert_eq!(j.normalize(&v).unwrap(), v);
+        assert_eq!(j.normalize(&json!({})).unwrap(), json!({}));
+        assert_eq!(j.normalize(&Value::Null).unwrap(), Value::Null);
+        let strict = def(json!({"field_id":"ext","name":"ext","type":"json"}));
+        assert!(strict.normalize(&Value::Null).is_err());
+        // an object only, never a formula
+        for bad in [json!([1]), json!("{}"), json!(3), json!(true),
+            json!({"$formula":{"lang":"aiws","version":"1","expr":"1"}})] {
+            assert_eq!(j.normalize(&bad).unwrap_err().code, Code::InvalidSchema, "{bad} must be refused");
+        }
+        // 16 KiB canonical, 8 levels
+        let big = json!({"s": "x".repeat(JSON_MAX_BYTES)});
+        assert_eq!(j.normalize(&big).unwrap_err().code, Code::LimitExceeded);
+        assert!(j.normalize(&json!({"s": "x".repeat(JSON_MAX_BYTES - 10)})).is_ok());
+        let nest = |n: usize| (1..n).fold(json!({}), |v, _| json!({"a": v}));
+        assert!(j.normalize(&nest(JSON_MAX_DEPTH)).is_ok());
+        assert_eq!(j.normalize(&nest(JSON_MAX_DEPTH + 1)).unwrap_err().code, Code::LimitExceeded);
+        assert_eq!(j.normalize(&json!({"a":[[[[[[[[1]]]]]]]]})).unwrap_err().code, Code::LimitExceeded);
+        assert!(j.normalize(&json!({"n": 9007199254740992u64})).is_err());
+        // no unique, scale, options, currency or target types; not sortable; no migrations
+        for extra in [json!({"unique":true}), json!({"scale":2}), json!({"options":[{"option_id":"a","label":"A"}]}),
+            json!({"currency":"USD"}), json!({"target_types":["x"]})] {
+            let mut d = json!({"field_id":"e","name":"e","type":"json"});
+            d.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            assert!(FieldDef::from_value(&d).is_err(), "{extra}");
+        }
+        assert!(!FieldType::Json.sortable());
+        let text = def(json!({"field_id":"x","name":"x","type":"text"}));
+        assert!(!migration_supported(FieldType::Json, FieldType::Text));
+        assert!(!migration_supported(FieldType::Text, FieldType::Json));
+        assert!(migrate_value(&text, &j, &json!("{}")).is_err());
     }
 }

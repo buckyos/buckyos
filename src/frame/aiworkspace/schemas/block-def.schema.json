@@ -93,7 +93,7 @@
   "manifest_version": {
    "type": "integer",
    "minimum": 1,
-   "maximum": 3
+   "maximum": 4
   },
   "source_dir": {
    "type": "object",

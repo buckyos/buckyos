@@ -21,7 +21,37 @@ export interface CompositionSlot {
   max?: number
   placement?: SlotPlacement
   title?: string
+  /** (manifest 4, 控件机制 TODO G19) shown to each viewer for a while from their first opening: a presentation, not access
+   * control — design mode, static views, prints and exports show it always, marked. */
+  visible?: { from: 'first_open'; for_ms: number | string }
 }
+
+/** (manifest 4, 控件机制 TODO G2, G13, G21) Blocks projected from data — never stored: a template of label, shape and asset
+ * nodes instantiated per item, laid out as a list or a grid in a region of the composite (placed like a slot). */
+export interface CompositionProjection {
+  source:
+    /** The records of a bound table (`sort`: a field id, `-` in front descends). */
+    | { kind: 'records'; binding: string; sort?: string; limit?: number }
+    /** The members of a bound directory (`buckyos.dir`): `name`, `object_id`, `media_type`. */
+    | { kind: 'members'; binding: string; accept?: 'image' | 'audio' | 'video' | 'any' }
+    /** The elements of a list field of a bound table, counted (G21): `key`, `count`, most first; `of` joins the items of
+     * another projection by key (a counted photo shows as that photo). */
+    | { kind: 'counts'; binding: string; field: string; top?: number; of?: string }
+    /** One item: the viewer (`principal`, `first_open`, `remaining_ms`, `expired`). */
+    | { kind: 'viewer' }
+  /** `item.<as>` is true when the viewer's own record (the submitter's, G20) of `binding` lists the item's key in `field`. */
+  mark?: { binding: string; field: string; as: string }
+  template: { nodes: unknown[] }
+  layout: { algorithm: 'list' | 'grid'; columns?: number | string; gap?: number | string; item: { w?: number | string; h: number | string } }
+  placement?: 'top' | 'stack' | 'bottom'
+  /** At most this many items are shown (default 200). */
+  max_items?: number
+  /** A press on a node of this role raises the composite's event that names it (`events.<e>.from = { projection, role }`). */
+}
+
+/** (manifest 4, G17) The media Block of a slot plays as the instance's config says: `{ pos_ms, at_ms, playing }` in
+ * `config.<anchor>` (position `pos_ms` at server time `at_ms`), looping when `config.<loop>` is true. */
+export interface CompositionMedia { slot: string; anchor: string; loop?: string }
 
 /** A composite's `composition.json` (README “Composite controls”): layout, slots, chrome. */
 /** The layout algorithms this host ships (K2); a composition naming another one is laid out as a group. */
@@ -39,6 +69,29 @@ export interface Composition {
   }
   slots: Record<string, CompositionSlot>
   chrome?: { background?: string; radius?: number | string; border?: string; title?: { text: string; slot?: string }; empty?: string }
+  projections?: Record<string, CompositionProjection>
+  media?: CompositionMedia
+  events?: Record<string, { from?: { slot?: string; event?: string; projection?: string; role?: string }; title?: string; description?: string }>
+}
+
+const PROJECTION_MAX = 200
+
+/** A projection's region and its items' rectangles, `count` items laid out from `origin` within `width`. */
+export function projectionLayout(p: CompositionProjection, config: Record<string, unknown>, count: number, origin: { x: number; y: number }, width: number): { region: Rect; items: Rect[] } {
+  const n = Math.max(0, Math.min(count, p.max_items ?? PROJECTION_MAX))
+  const gap = dimension(p.layout?.gap, config, DEFAULT_SPACING)
+  const h = dimension(p.layout?.item?.h, config, 40) || 40
+  if (p.layout?.algorithm === 'grid') {
+    const columns = Math.max(1, Math.min(12, Math.round(dimension(p.layout.columns, config, 3)) || 1))
+    const w = dimension(p.layout.item?.w, config, 0) || Math.max(24, (width - gap * (columns - 1)) / columns)
+    const items = Array.from({ length: n }, (_, i) => ({ x: origin.x + (i % columns) * (w + gap), y: origin.y + Math.floor(i / columns) * (h + gap), w, h }))
+    // no items, no room (an empty cover takes no band)
+    const rows = Math.ceil(n / columns)
+    return { region: { x: origin.x, y: origin.y, w: columns * w + (columns - 1) * gap, h: rows ? rows * h + (rows - 1) * gap : 0 }, items }
+  }
+  const w = dimension(p.layout?.item?.w, config, 0) || width
+  const items = Array.from({ length: n }, (_, i) => ({ x: origin.x, y: origin.y + i * (h + gap), w, h }))
+  return { region: { x: origin.x, y: origin.y, w, h: n ? n * h + (n - 1) * gap : 0 }, items }
 }
 
 export const DEFAULT_SPACING = 8
@@ -96,7 +149,16 @@ export function paddingOf(composition: Composition | null, config: Record<string
 /** The slots in the order a stack lays them out: `top` ones, then `stack` ones, then `bottom` ones (each group in
  * the composition's order); `free` slots are not stacked. */
 export function stackedSlots(composition: Composition): string[] {
-  const by = (p: SlotPlacement) => Object.entries(composition.slots ?? {}).filter(([, s]) => (s.placement ?? (composition.layout.algorithm === 'fixed' || unknownAlgorithm(composition) ? 'free' : 'stack')) === p).map(([n]) => n)
+  return stackedRegions(composition).filter((r) => r.kind === 'slot').map((r) => r.name)
+}
+
+/** Slots and projections in stacking order (a projection is placed like a slot; `#` marks it in the regions map). */
+export function stackedRegions(composition: Composition): { kind: 'slot' | 'projection'; name: string }[] {
+  const free = composition.layout.algorithm === 'fixed' || unknownAlgorithm(composition) !== null
+  const slots = Object.entries(composition.slots ?? {}).map(([n, s]) => ({ kind: 'slot' as const, name: n, placement: s.placement ?? (free ? 'free' : 'stack') }))
+  const projections = Object.entries(composition.projections ?? {}).map(([n, p]) => ({ kind: 'projection' as const, name: n, placement: p.placement ?? 'stack' }))
+  const all = [...slots, ...projections]
+  const by = (p: string) => all.filter((r) => r.placement === p).map(({ kind, name }) => ({ kind, name }))
   return [...by('top'), ...by('stack'), ...by('bottom')]
 }
 
@@ -165,6 +227,7 @@ export function solveComposite(src: ControlSource, containerId: string, opts: So
     return { w: w ?? f.w, h: h ?? f.h }
   }
   const nodes = new Map<string, LaidNode>()
+  const regions = new Map<string, Rect>()
   const place = (e: ControlEntity, x: number, y: number, s: { w: number; h: number }, pinned: boolean) =>
     nodes.set(e.entity_id, { id: e.entity_id, x, y, w: s.w, h: s.h, parent: null, depth: 0, grow: row ? 'down' : 'right', pinned, hasChildren: false, collapsed: false })
   // the stacked slots in order, then what sits in no stacked slot (a free slot, an unknown one)
@@ -187,14 +250,28 @@ export function solveComposite(src: ControlSource, containerId: string, opts: So
     })
   } else {
     let cursor = row ? pad.l : top
-    for (const e of stacked) {
-      const s = size(e)
-      const p = e.placement ?? {}
-      const px = num(p.x)
-      const py = num(p.y)
-      if (px !== undefined && py !== undefined) { place(e, px, py, s, true); continue }
-      if (row) { place(e, px ?? cursor, py ?? top, s, false); cursor += s.w + spacing }
-      else { place(e, px ?? pad.l, py ?? cursor, s, false); cursor += s.h + spacing }
+    // the width projections fill: the composite's widest stacked Block, or a default
+    const fill = Math.max(240, ...stacked.map((e) => size(e).w))
+    const regionsInOrder = composition ? stackedRegions(composition) : []
+    for (const r of regionsInOrder) {
+      if (r.kind === 'projection') {
+        const proj = composition!.projections![r.name]
+        const count = opts.projectionCount?.(containerId, r.name) ?? 1
+        const laid = projectionLayout(proj, config, count, row ? { x: cursor, y: top } : { x: pad.l, y: cursor }, fill)
+        regions.set(r.name, laid.region)
+        const extent = row ? laid.region.w : laid.region.h
+        if (extent > 0) cursor += extent + spacing
+        continue
+      }
+      for (const e of stacked.filter((c) => c.slot === r.name)) {
+        const s = size(e)
+        const p = e.placement ?? {}
+        const px = num(p.x)
+        const py = num(p.y)
+        if (px !== undefined && py !== undefined) { place(e, px, py, s, true); continue }
+        if (row) { place(e, px ?? cursor, py ?? top, s, false); cursor += s.w + spacing }
+        else { place(e, px ?? pad.l, py ?? cursor, s, false); cursor += s.h + spacing }
+      }
     }
   }
   // free children keep their place; one without a numeric x / y (e.g. written for a stack) drops into a column below
@@ -206,12 +283,12 @@ export function solveComposite(src: ControlSource, containerId: string, opts: So
     place(e, num(e.placement?.x) ?? pad.l, num(e.placement?.y) ?? below, s, false)
     below += s.h + spacing
   }
-  const all = [...nodes.values()]
+  const all = [...nodes.values(), ...regions.values()]
   const extent = all.reduce((b, n) => ({ x: Math.max(b.x, n.x + n.w), y: Math.max(b.y, n.y + n.h) }), { x: 0, y: 0 })
   const minW = all.length === 0 ? EMPTY_BOX.w : 0
   const minH = all.length === 0 ? EMPTY_BOX.h : 0
   const bounds: Rect = { x: 0, y: 0, w: Math.max(minW, extent.x + pad.r, pad.l + pad.r), h: Math.max(minH, extent.y + pad.b, top + pad.b) }
-  return { id: containerId, config: mindmapConfig(undefined), layout: { nodes, bounds }, nested }
+  return { id: containerId, config: mindmapConfig(undefined), layout: { nodes, bounds }, nested, regions }
 }
 
 /** The `composite` host kind for Agents (the catalogue): which control an instance is, is its definition's. */

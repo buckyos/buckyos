@@ -92,8 +92,8 @@ pub fn record_schema(payload: &JsonMap) -> WsResult<BTreeMap<String, FieldDef>> 
         let key = o.remove("key").ok_or_else(|| bad("property needs key"))?;
         o.insert("field_id".into(), key);
         let def = FieldDef::from_value(&Value::Object(o))?;
-        if def.unique {
-            return Err(bad("unique is not supported on record properties"));
+        if def.unique || def.submitter {
+            return Err(bad("unique and submitter are not supported on record properties"));
         }
         if out.insert(def.field_id.clone(), def).is_some() {
             return Err(bad("duplicate property key"));
@@ -169,7 +169,7 @@ pub const MAX_BLOCK_DEF_BYTES: usize = 512 * 1024;
 pub const HTML_API_VERSION: u64 = 2;
 /// The newest Block host API a control may be written for (扩展控件 P2: `emit`, `createBlock.parent`, `interactive`);
 /// hosts run every version from 2 on.
-pub const HTML_API_LATEST: u64 = 3;
+pub const HTML_API_LATEST: u64 = 4;
 /// Events one control declares, handlers one event of an instance binds, and the size of an instance's `on` (Q26).
 pub const MAX_EVENTS: usize = 16;
 pub const MAX_EVENT_HANDLERS: usize = 4;
@@ -222,7 +222,7 @@ fn view_source_type(view_type: &str) -> Option<&'static str> {
     })
 }
 
-const DATA_SOURCE_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_RECORD, TYPE_ASSET, TYPE_WISH, TYPE_ANNOTATION, TYPE_BLOCK_DEF];
+const DATA_SOURCE_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_RECORD, TYPE_ASSET, TYPE_WISH, TYPE_ANNOTATION, TYPE_BLOCK_DEF, TYPE_DIR];
 
 /// Named data bindings of a Block or a composite (`{ <name>: { entity_id, selector? } }`, at most
 /// `MAX_BINDINGS`); the targets are judged (reference class) when `check`.
@@ -866,7 +866,7 @@ fn container_primitive(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
         ("folder" | "surface" | "group", None) => {}
         (k, None) if is_control_kind(k) => {}
         ("root" | "data" | "surfaces", None) if p.env.internal => {}
-        (_, None) => return Err(bad("container kind must be folder, surface, group or a control (mindmap, composite)")),
+        (_, None) => return Err(bad(format!("container kind must be folder, surface, group or a control ({})", controls_contract().0.join(", ")))),
         (k, Some(b)) if b.payload.get("kind").and_then(Value::as_str) == Some(k) => {}
         _ => return Err(WsError::invalid_op("container kind cannot be changed")),
     }
@@ -924,8 +924,15 @@ fn container_primitive(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
         if let Some(on) = e.payload.get("on") {
             check_on_shape(on)?;
         }
+    } else if is_data_control(&kind) {
+        // a data control shows the tables it binds: named inputs checked as on a Cell
+        if let Some(k) = ["def_ref", "on"].into_iter().find(|k| e.payload.contains_key(*k)) {
+            return Err(bad(format!("{k} is not valid on a {kind}")));
+        }
+        let changed = before.is_none_or(|b| b.payload.get("bindings") != e.payload.get("bindings"));
+        normalize_bindings(p, &mut e.payload, p.env.import || changed)?;
     } else if let Some(k) = ["def_ref", "bindings", "on"].into_iter().find(|k| e.payload.contains_key(*k)) {
-        return Err(bad(format!("{k} is only valid on a composite")));
+        return Err(bad(format!("{k} is only valid on a composite or a data control")));
     }
     let block = kind == "group" || control;
     if e.payload.contains_key("slot") && !block {
@@ -997,12 +1004,12 @@ fn container_schema(e: &EntityRow) -> WsResult<()> {
 /// The constants the core shares with the Desktop's control registry (one file, read by both).
 const CONTROLS_JSON: &str = include_str!("../../controls/core.json");
 
-fn controls_contract() -> &'static (Vec<String>, Vec<String>) {
-    static C: std::sync::OnceLock<(Vec<String>, Vec<String>)> = std::sync::OnceLock::new();
+fn controls_contract() -> &'static (Vec<String>, Vec<String>, Vec<String>) {
+    static C: std::sync::OnceLock<(Vec<String>, Vec<String>, Vec<String>)> = std::sync::OnceLock::new();
     C.get_or_init(|| {
         let v: Value = serde_json::from_str(CONTROLS_JSON).expect("controls/core.json is valid JSON");
         let list = |k: &str| v[k].as_array().expect("controls/core.json lists").iter().map(|s| s.as_str().unwrap().to_string()).collect();
-        (list("control_kinds"), list("text_views"))
+        (list("control_kinds"), list("text_views"), list("data_controls"))
     })
 }
 
@@ -1010,6 +1017,13 @@ fn controls_contract() -> &'static (Vec<String>, Vec<String>) {
 /// Blocks it holds with its named algorithm. `mindmap` is the first.
 pub fn is_control_kind(kind: &str) -> bool {
     controls_contract().0.iter().any(|k| k == kind)
+}
+
+/// Data controls (控件机制 TODO G2, Q19): the official to-do and calendar. They show the records of the tables they bind
+/// (`bindings`) as projected Blocks the clients compute and never store, hold no Blocks themselves and have a numeric
+/// size the user sets.
+pub fn is_data_control(kind: &str) -> bool {
+    controls_contract().2.iter().any(|k| k == kind)
 }
 
 /// Text views (R17): their size comes from the title, so their `w` / `h` may be `"auto"` inside a control.
@@ -1031,6 +1045,7 @@ fn control_layout(kind: &str) -> &'static str {
     match kind {
         "mindmap" => "tree",
         COMPOSITE => "def",
+        k if is_data_control(k) => "data",
         _ => "free",
     }
 }
@@ -1652,8 +1667,9 @@ fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
 
 /// The newest `component.json` / definition `manifest_version` this core reads (扩展控件 P0, Q19: older ones stay
 /// readable). 2 (P1) adds `kind: composite`, `composition` and non-empty `deps`; 3 (P2 / P3) `events`, the declarative
-/// `button`, composite `events`, HTML host API 3 and Workspace templates.
-pub const MANIFEST_VERSION: u64 = 3;
+/// `button`, composite `events`, HTML host API 3 and Workspace templates; 4 (控件机制 TODO G13, G17, G19, H2) composite
+/// `projections`, `media`, slot `visible`, events raised by a projection's role, `actions`, HTML host API 4.
+pub const MANIFEST_VERSION: u64 = 4;
 /// Definitions one definition may depend on (`deps`).
 pub const MAX_DEF_DEPS: usize = 32;
 /// Slots of a composite (`composition.slots`).
@@ -2353,6 +2369,7 @@ pub fn validate_primitive(p: &mut Planner, before: Option<&EntityRow>, e: &mut E
 pub fn validate_schema(p: &mut Planner, before: Option<&EntityRow>, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
     SCHEMA_RUNS.with(|c| c.set(c.get() + 1));
     match e.type_id.as_str() {
+        TYPE_TABLE => crate::standard::check_table(p, before, e, changed),
         TYPE_CONTAINER => container_schema(e),
         TYPE_RECORD => validate_record(p, e, changed),
         TYPE_CELL => validate_cell(p, e, changed),
@@ -2547,6 +2564,9 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
                     values_rev: 0,
                     deleted_seq: None,
                 });
+            }
+            if recorded.iter().filter(|f| f["submitter"] == json!(true)).count() > 1 {
+                return Err(bad("a table has at most one submitter field"));
             }
             if let Some(t) = title {
                 row.payload.insert("title_field_id".into(), t);

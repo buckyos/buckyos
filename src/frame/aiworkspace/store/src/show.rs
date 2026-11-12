@@ -151,7 +151,7 @@ impl Service {
             let local = Connection::open(tmp.join("local.sqlite")).map_err(db_err)?;
             local
                 .execute_batch(&format!(
-                    "DELETE FROM locks; DELETE FROM lock_events; DELETE FROM staged_assets; DELETE FROM staged_commits; DELETE FROM user_state; DELETE FROM local_meta WHERE key = 'show_clones'; \
+                    "DELETE FROM locks; DELETE FROM lock_events; DELETE FROM staged_assets; DELETE FROM staged_commits; DELETE FROM user_state; DELETE FROM local_meta WHERE key IN ('show_clones', 'name'); \
                      UPDATE runs SET state = 'interrupted' WHERE state IN ({});", crate::wish::runs::active_states_sql()
                 ))
                 .map_err(db_err)?;

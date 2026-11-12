@@ -1,0 +1,14 @@
+{
+  "layout": { "algorithm": "stack", "direction": "column", "padding": 14 },
+  "slots": {
+    "screen": { "accepts": ["asset"], "max": 1, "title": "Screen" }
+  },
+  "media": { "slot": "screen", "anchor": "broadcast", "loop": "loop" },
+  "chrome": {
+    "background": "{{config.background}}",
+    "radius": 18,
+    "border": "#9aa1ad",
+    "title": { "text": "{{config.title}}" },
+    "empty": "No video yet"
+  }
+}

@@ -12,7 +12,7 @@ import { onInsertDefinition } from '../extensions/extEvents'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { looksLikeDrawio } from '@drawio/file'
 import { svgShapeFromDocument } from '@drawio/svg'
-import { isControlKind } from '@controls/contract'
+import { isControlKind, isDataControl } from '@controls/contract'
 import { ALL_AUTO, fixed } from '@controls/placement'
 import { Group, Lock, LockOpen, MessageSquarePlus, Sparkles, Ungroup } from 'lucide-react'
 import { describeError } from '../../api/session'
@@ -57,6 +57,7 @@ import { InstanceInspector } from '../controls/composite/Inspector'
 import { DefineControlDialog } from '../extensions/DefineControlDialog'
 import { isComposite, isFixedComposite, slotForDrop } from '../controls/composite/model'
 import { controlRegistry, type ControlCommandContext } from '../controls/registry'
+import { useTimedHidden } from '../controls/composite/visibility'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
 import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
 import { connectorChangeOps, createConnectorOp, freezeOps, type ConnectorChange, type NewConnector } from './connectors/ops'
@@ -87,6 +88,7 @@ import { BlockInspector, ContextMenu, NearToolbar, type NearAction } from './too
 import { InkBar } from '../../ink/InkBar'
 import { InkControl } from '../../ink/input'
 import { inkStyleOf, useInkPrefs } from '../../ink/prefs'
+import { actionOffered, configDefaults, declaredActions, runAction, type ActionHost } from '../extensions/actions'
 
 export interface CanvasFocus { surfaceId: string; blockId: string | null; nonce: number }
 
@@ -196,11 +198,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const collapsed = collapsedChoice ?? shell.size === 'narrow'
   const [camera] = useState(() => new Camera())
   const [budget] = useState(() => createBudget(surface.layout?.mode === 'free' ? undefined : { editors: 200, html: 8 }))
-  // design / run mode (Q27): this window's switch; guests and phones never run extensions here
-  const runMode = useRunMode(store.runMode, mode, shell.phone || shell.identity.guest)
+  // design / run mode (Q27): this window's switch; guests never run extensions here
+  // composites and data controls take touches on phones too (控件机制 TODO G22: the target user has only a phone)
+  const runMode = useRunMode(store.runMode, mode, shell.identity.guest)
   const runContext = useMemo(() => ({ interactive: runMode.interactive }), [runMode.interactive])
   const isFree = surface.layout?.mode === 'free'
   const { laid, index, shapeBook } = useSurfaceLayout(surfaceId)
+  // Blocks of time-limited slots this viewer's time is up for (G19): hidden on their screen only
+  const timedHidden = useTimedHidden(laid, mode)
   /** The page settings of the Surface (draw.io 导入 TODO §2.5): its background colour. */
   const surfaceLook = useSurfaceConfig(surfaceId)
   // the Editor of the Block being edited hands its tools to the near toolbar (标准对象的交互改进 §5.4)
@@ -500,7 +505,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       for (const op of operations) {
         if (op.op !== 'entity.create' || op.parent_id !== parent) continue
         const kind = (op.payload as { kind?: string } | undefined)?.kind
-        op.placement = op.type_id === 'buckyos.container' && isControlKind(kind) ? { ...ALL_AUTO } : { x: 'auto', y: 'auto', w: size.w, h: size.h }
+        op.placement = op.type_id === 'buckyos.container' && isControlKind(kind) && !isDataControl(kind) ? { ...ALL_AUTO } : { x: 'auto', y: 'auto', w: size.w, h: size.h }
       }
     }
     if (also) {
@@ -1226,6 +1231,18 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         }
       }
     }
+    // an extension control's declared actions (manifest 4, 控件机制 TODO H2): in the modes they name, to whoever has what
+    // they need — also in view mode and before an HTML control runs
+    if (!singleLocked && (single.kind === 'composite' || context?.documentDefinition)) {
+      const host: ActionHost = single.kind === 'composite'
+        ? { instanceId: single.entity_id, mode, title: single.title ?? store.outline.get(single.def_id ?? '')?.title ?? single.entity_id, defaults: (store.outline.get(single.def_id ?? '')?.config_defaults ?? {}) as Record<string, Json>, openEntity: ui.openEntity }
+        : { instanceId: single.entity_id, mode, title: context?.documentDefinition?.title ?? single.title ?? single.entity_id, defaults: configDefaults(context?.documentDefinition?.config_schema), openEntity: ui.openEntity, activate: context?.activateEditor }
+      const declared = declaredActions(single.kind === 'composite' ? store.outline.get(single.def_id ?? '')?.def_actions : context?.documentDefinition?.actions)
+      for (const a of declared) {
+        if (!actionOffered(a, mode, single.capabilities)) continue
+        typeItems.push({ kind: 'button', id: `ext-action-${a.id}`, label: a.title, run: () => { void runAction(store, host, a).catch((error: unknown) => store.notify('error', t('aiworkspace.canvas.extensionActionFailed', { reason: describeError(error) }))) } })
+      }
+    }
     // the type's own tools: edit mode only, never on a locked object (§5.3)
     if (definition?.toolbar && context && mode === 'edit' && !singleLocked) {
       try { typeItems.push(...definition.toolbar(context, store)) } catch (error) { console.error('[aiworkspace] block toolbar failed', error) }
@@ -1363,7 +1380,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               <EditorToolbarContext.Provider value={toolbarSink}>
               <OpenWishContext.Provider value={shell.side === 'wish' ? wishOpen?.cellId ?? null : null}>
               <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
-                canLayout={canLayoutBlock} onCommitLayout={commitLayout} onMoveNodes={moveNodes} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)}
+                canLayout={canLayoutBlock} onCommitLayout={commitLayout} onMoveNodes={moveNodes} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)} hidden={timedHidden.size ? timedHidden : undefined}
                 tool={tool} placing={placing ? { ...entrySize(placing.entry), label: placingTitle } : null}
                 ink={inkTool ? { style: inkStyleOf(inkPrefs), touchLock: inkPrefs.touchLock, control: inkControl } : null}
                 onPlace={(world) => {

@@ -6,9 +6,15 @@ import { compositeControl } from './composite/definition'
 import { mindmapControl } from './mindmap/definition'
 import { mindnodeDefinition } from './mindmap/nodeBlock'
 import { controlRegistry } from './registry'
+import { todoControl } from './todo/definition'
+import { calendarControl } from './calendar/definition'
+import { labelDefinition } from '../blocks/labelBlock'
 
 export function registerControls() {
   controlRegistry.register(mindmapControl)
   controlRegistry.register(compositeControl)
+  controlRegistry.register(todoControl)
+  controlRegistry.register(calendarControl)
   blockRegistry.register(mindnodeDefinition)
+  blockRegistry.register(labelDefinition)
 }

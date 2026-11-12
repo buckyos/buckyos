@@ -1,0 +1,28 @@
+{
+  "manifest_version": 4,
+  "ident": { "author_did": "did:bns:buckyos", "name": "photo-vote" },
+  "kind": "composite",
+  "title": "Photo vote",
+  "description": "Everyone picks a few photos of a bound folder; the cover shows the photos with the most votes. Each person has one choice of their own (at most `picks` photos), can change it and can change only theirs — the vote table's submitter field is filled by the service. The cover is computed by whoever looks, never written back.",
+  "default_size": { "w": 520, "h": 460 },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string", "title": "Title", "default": "Pick your favourites" },
+      "picks": { "type": "integer", "title": "Photos each person picks", "default": 3, "minimum": 1, "maximum": 20 },
+      "columns": { "type": "integer", "title": "Columns", "default": 4, "minimum": 1, "maximum": 8 }
+    }
+  },
+  "bindings": {
+    "photos": { "accepts": ["buckyos.dir"], "required": true, "title": "Photos", "description": "A folder of photos (resources)" },
+    "votes": { "accepts": ["buckyos.table-source"], "required": true, "title": "Votes", "description": "A table with a text field marked submitter and a multi_select field `picks` (max_items = picks); `Prepare the ballot` fills its options from the photos" }
+  },
+  "actions": [
+    { "id": "prepare", "title": "Prepare the ballot", "needs": ["structure"], "description": "An option of `picks` for every photo of the folder that has none yet (run again after adding photos)",
+      "run": { "kind": "write", "target": "votes", "what": "addOptions", "args": { "field": "picks", "from": "photos", "accept": "image" } } }
+  ],
+  "entry": "composition.json",
+  "agent": "AGENT.md",
+  "catalog": { "group": "examples", "description": "Pick photos; the cover shows the favourites" },
+  "deps": []
+}

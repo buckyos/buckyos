@@ -57,16 +57,28 @@ export function zoneOrigin(): string {
 
 export interface PageSurface { id: string; title: string }
 
-/** A Workspace's page: `<public_base>/<workspace slug>[/<surface slug>?id=<surface id>[&block=]]`; null without a
- * public base (then there is no page to link to). */
-export function workspacePageUrl(publicBase: string | null | undefined, workspaceTitle: string, surface?: PageSurface | null, blockId?: string | null): string | null {
+/** What a link may point at inside a Block (控件机制 TODO G12): a record a data control shows (`record`), one occurrence
+ * of a repeating event (`occ`: its original start), and the control as a page of its own (`page=control`, G14). */
+export interface RecordTarget { record?: string | null; occurrence?: string | null; page?: 'control' | null }
+
+/** A Workspace's page: `<public_base>/<workspace slug>[/<surface slug>?id=<surface id>[&block=][&record=][&occ=][&page=]]`;
+ * null without a public base (then there is no page to link to). */
+export function workspacePageUrl(publicBase: string | null | undefined, workspaceTitle: string, surface?: PageSurface | null, blockId?: string | null, inner?: RecordTarget): string | null {
   if (!publicBase) return null
   const base = publicBase.replace(/\/+$/, '')
   const ws = workspaceSlug(workspaceTitle)
   if (!surface) return `${base}/${ws}`
-  const query = new URLSearchParams({ id: surface.id })
+  return `${base}/${ws}/${surfaceSlug(surface.title)}?${targetQuery(surface.id, blockId, inner)}`
+}
+
+/** The query naming a Surface, a Block in it and what inside the Block. */
+export function targetQuery(surfaceId: string, blockId?: string | null, inner?: RecordTarget): URLSearchParams {
+  const query = new URLSearchParams({ id: surfaceId })
   if (blockId) query.set('block', blockId)
-  return `${base}/${ws}/${surfaceSlug(surface.title)}?${query}`
+  if (inner?.record) query.set('record', inner.record)
+  if (inner?.occurrence) query.set('occ', inner.occurrence)
+  if (inner?.page) query.set('page', inner.page)
+  return query
 }
 
 /** `https://aiws-<label>.<zoneHost>`: a Workspace's origin from a Zone host, when no service told it (Settings lists). */
@@ -74,11 +86,13 @@ export function workspaceOriginOn(zoneHost: string, workspaceId: string): string
   return `https://aiws-${workspaceId.replace(/^ws_/, '')}.${zoneHost}`
 }
 
-/** What a page's address asks to open: `id` names the Surface, `block` the Block in it. */
+/** What a page's address asks to open: `id` names the Surface, `block` the Block in it, `record` / `occ` a record (an
+ * occurrence) the Block shows, `page=control` the Block as its own page. */
 export function targetOf(search: URLSearchParams): LaunchTarget | null {
   const surfaceId = search.get('id')
   const blockId = search.get('block')
-  return surfaceId || blockId ? { surfaceId, blockId } : null
+  if (!surfaceId && !blockId) return null
+  return { surfaceId, blockId, record: search.get('record'), occurrence: search.get('occ'), page: search.get('page') === 'control' ? 'control' : null }
 }
 
 /** The Desktop login on the Zone host, coming back to the current address afterwards (a guest who wants to sign in, a

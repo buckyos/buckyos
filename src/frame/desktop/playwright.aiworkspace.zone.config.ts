@@ -13,9 +13,9 @@ const address = gatewayIp?.includes(':') ? `[${gatewayIp}]` : gatewayIp
 const outputDir = resolve(process.env.BUCKYOS_E2E_OUTPUT_DIR || 'test-results/aiworkspace-zone')
 
 export default defineConfig(dv, {
-  testMatch: ['aiworkspace.spec.ts', 'aiworkspace.mobile.spec.ts', 'aiworkspace.journeys.spec.ts', 'aiworkspace.logic.spec.ts', 'aiworkspace.integrity.spec.ts'],
+  testMatch: ['aiworkspace.spec.ts', 'aiworkspace.mobile.spec.ts', 'aiworkspace.journeys.spec.ts', 'aiworkspace.logic.spec.ts', 'aiworkspace.integrity.spec.ts', 'aiworkspace.controls.spec.ts'],
   projects: [
-    { name: 'chromium-real-zone', testMatch: ['aiworkspace.spec.ts', 'aiworkspace.journeys.spec.ts', 'aiworkspace.logic.spec.ts', 'aiworkspace.integrity.spec.ts'], use: { ...devices['Desktop Chrome'], viewport: { width: 1600, height: 1000 } } },
+    { name: 'chromium-real-zone', testMatch: ['aiworkspace.spec.ts', 'aiworkspace.journeys.spec.ts', 'aiworkspace.logic.spec.ts', 'aiworkspace.integrity.spec.ts', 'aiworkspace.controls.spec.ts'], use: { ...devices['Desktop Chrome'], viewport: { width: 1600, height: 1000 } } },
     { name: 'chromium-real-zone-mobile', testMatch: 'aiworkspace.mobile.spec.ts', use: { ...devices['Pixel 7'], viewport: { width: 375, height: 812 } } },
   ],
   outputDir,

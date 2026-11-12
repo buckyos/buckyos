@@ -489,6 +489,7 @@
         "epoch": "string",
         "head_seq": "number",
         "ok": "boolean",
+        "server_ms": "number",
         "show_lock": null,
         "timed_out": "boolean"
       }
@@ -834,6 +835,20 @@
       }
     },
     {
+      "method": "asset.stream_url",
+      "params": {
+        "object_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "expires_at": "string",
+        "media_type": "string",
+        "ok": "boolean",
+        "size": "number",
+        "url": "string"
+      }
+    },
+    {
       "method": "ws.import",
       "params": {
         "bucket_id": "string",
@@ -927,6 +942,60 @@
         "commit_parts": "number",
         "ok": "boolean",
         "removed": "number"
+      }
+    },
+    {
+      "method": "ws.ensure",
+      "params": {
+        "name": "string",
+        "title": "string"
+      },
+      "result": {
+        "created": "boolean",
+        "epoch": "string",
+        "head_seq": "number",
+        "name": "string",
+        "ok": "boolean",
+        "title": "string",
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "ws.ensure",
+      "params": {
+        "name": "string"
+      },
+      "result": {
+        "created": "boolean",
+        "epoch": "string",
+        "head_seq": "number",
+        "name": "string",
+        "ok": "boolean",
+        "title": "string",
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "ws.create",
+      "params": {
+        "name": "string",
+        "title": "string"
+      },
+      "result": {
+        "epoch": "string",
+        "head_seq": "number",
+        "name": "string",
+        "ok": "boolean",
+        "title": "string",
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "ws.time",
+      "params": {},
+      "result": {
+        "ok": "boolean",
+        "server_ms": "number"
       }
     },
     {

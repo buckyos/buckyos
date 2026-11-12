@@ -147,6 +147,7 @@ async fn buckyos_service_main(fixtures: bool) {
         max_commit_bytes: settings.max_commit_bytes as usize,
         max_wait_ms: settings.max_wait_ms,
         max_asset_bytes: settings.max_asset_bytes,
+        max_media_bytes: settings.max_media_bytes,
         workspace_quota_bytes: settings.quota_bytes,
         history_retention_ms: settings.history_retention_days as i64 * 24 * 3_600_000,
         traffic_quota_bytes: settings.traffic_quota_bytes,

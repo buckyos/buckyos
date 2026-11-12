@@ -120,6 +120,8 @@ pub struct AiWorkspaceSettings {
     pub max_wait_ms: u64,
     /// Upper bound of one uploaded asset, in bytes (single chunk in this phase).
     pub max_asset_bytes: u64,
+    /// Upper bound of one uploaded audio or video asset (played by Range from `asset.stream_url`), in bytes.
+    pub max_media_bytes: u64,
     /// Wish runs (xllm executor, program runner).
     pub wish: AiWorkspaceWishSettings,
     /// Logical bytes one Workspace may occupy (内核架构改进 D19); `None` = no quota.
@@ -185,6 +187,7 @@ impl Default for AiWorkspaceSettings {
             max_ops: 10_000,
             max_wait_ms: 30_000,
             max_asset_bytes: 32 * 1024 * 1024,
+            max_media_bytes: 2 << 30,
             wish: AiWorkspaceWishSettings::default(),
             quota_bytes: None,
             history_retention_days: 30,

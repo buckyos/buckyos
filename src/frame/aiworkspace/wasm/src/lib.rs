@@ -331,6 +331,10 @@ impl Replica {
         if let Some(s) = p.get("sorts").and_then(Value::as_array) {
             spec.sorts = s.clone();
         }
+        if let Some(g) = p.get("group").and_then(Value::as_str) {
+            spec.group = Some(g.to_string());
+        }
+        aiworkspace_core::filter::group_params(&p, &mut spec).map_err(fail)?;
         let source_id = source_id.ok_or_else(|| fail(WsError::invalid_op("source_id or view_id required")))?;
         let source = m.entity(&source_id).map_err(fail)?.filter(|e| e.alive()).ok_or_else(|| fail(WsError::not_found("table not found")))?;
         if aiworkspace_core::types::is_url_table(&source) {

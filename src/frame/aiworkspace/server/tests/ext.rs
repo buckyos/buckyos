@@ -371,7 +371,7 @@ fn composite_controls_with_dependencies() {
         assert_eq!(idents.len(), 2, "{ex}");
         let board_entry = ex["manifest"]["controls"].as_array().unwrap().iter().find(|c| c["kind"] == "composite").unwrap();
         assert_eq!(board_entry["deps"], json!(["did:bns:alice#card"]));
-        assert_eq!(ex["manifest"]["manifest_version"], 3);
+        assert_eq!(ex["manifest"]["manifest_version"], 4);
         let only = srv.rpc("ext.export", json!({ "entity_ids": [board_id] })).await;
         assert_eq!(only["manifest"]["controls"].as_array().unwrap().len(), 2, "the closure follows def_dep");
         let pull = srv.rpc("ext.export", json!({ "entity_ids": [board_id], "purpose": "pull" })).await;
@@ -642,7 +642,7 @@ fn workspace_templates_from_snapshot_to_new_workspaces() {
         assert_eq!(count(&srv.rpc("ws.list", json!({})).await), before, "installing creates no Workspace");
         let lib = srv.rpc("ext.list_library", json!({})).await;
         let pkg = lib["packages"].as_array().unwrap().iter().find(|p| p["pkg_id"] == "team-kit").unwrap().clone();
-        assert_eq!((pkg["templates"][0]["id"].as_str(), pkg["controls"][0]["ident"].as_str(), pkg["manifest_version"].as_i64()), (Some("team-board"), Some("did:bns:alice#kpi"), Some(3)), "{pkg}");
+        assert_eq!((pkg["templates"][0]["id"].as_str(), pkg["controls"][0]["ident"].as_str(), pkg["manifest_version"].as_i64()), (Some("team-board"), Some("did:bns:alice#kpi"), Some(4)), "{pkg}");
 
         // two creations, two independent Workspaces; parameters replaced, the reset table empty, the instance bound
         let a = srv.rpc("ext.create_from_template", json!({ "pkg_id": "team-kit", "template_id": "team-board", "params": { "team_name": "Red" } })).await;
@@ -669,4 +669,75 @@ fn workspace_templates_from_snapshot_to_new_workspaces() {
         let r = srv.rpc("ext.install", json!({ "pikg": { "bucket_id": packed["bucket_id"], "key": packed["key"] } })).await;
         assert_eq!(r["templates"], json!(["team-board"]), "{r}");
     })
+}
+
+/// The 控件机制 examples (doc/workspace/control-examples): each builds as it is and its definition carries what the hosts
+/// need — the actions, the projected event with its default handler, the outline's `def_actions`; manifest 4's keys
+/// are refused below it and checked (控件机制 TODO G13, G17, G19, H2).
+#[test]
+fn control_examples_and_manifest_4() {
+    run_test(|| async move {
+        let mut srv = Srv::start(tempfile::tempdir().unwrap(), model()).await;
+        workspace(&mut srv, "Examples").await;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../doc/workspace/control-examples/controls");
+        let files_of = |name: &str| -> Vec<(String, String)> {
+            let mut files: Vec<(String, String)> = std::fs::read_dir(root.join(name)).unwrap()
+                .map(|e| { let e = e.unwrap(); (e.file_name().to_string_lossy().into_owned(), std::fs::read_to_string(e.path()).unwrap()) })
+                .collect();
+            files.sort();
+            files
+        };
+        let mut defs = std::collections::BTreeMap::new();
+        for name in ["tv-screen", "time-limited", "photo-vote", "listen-together"] {
+            let files = files_of(name);
+            let refs: Vec<(&str, String)> = files.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+            let r = srv.rpc("ext.build", json!({ "files": upload(&srv, name, &refs).await })).await;
+            assert_eq!(r["status"], "accepted", "{name}: {r}");
+            defs.insert(name, r["def_entity_id"].as_str().unwrap().to_string());
+        }
+        let payload = |v: Value| v["content"]["payload"].clone();
+        let vote = payload(srv.rpc("doc.read", json!({ "entity_id": defs["photo-vote"] })).await);
+        assert_eq!(vote["manifest_version"], 4);
+        assert_eq!(vote["actions"][0]["id"], "prepare");
+        assert_eq!(vote["events"]["pick"]["from"], json!({ "projection": "photos", "role": "pick" }));
+        assert_eq!(vote["events"]["pick"]["on"]["what"], "toggle");
+        assert_eq!(vote["events"]["pick"]["params"]["item"]["type"], "string");
+        let listen = payload(srv.rpc("doc.read", json!({ "entity_id": defs["listen-together"] })).await);
+        assert_eq!(listen["actions"].as_array().map(Vec::len), Some(6));
+        assert_eq!(listen["html"]["api_version"], 4, "{listen}");
+        let outline = srv.rpc("doc.outline", json!({})).await;
+        let env = outline["entities"].as_array().unwrap().iter().find(|e| e["entity_id"] == defs["photo-vote"].as_str()).unwrap().clone();
+        assert_eq!(env["def_actions"][0]["id"], "prepare", "{env}");
+        assert!(env["composition"]["projections"]["cover"].is_object());
+
+        // below manifest 4 the new keys get a hint; wrong shapes are refused
+        let tv = files_of("tv-screen");
+        let mut c: Value = serde_json::from_str(&tv.iter().find(|(n, _)| n == "component.json").unwrap().1).unwrap();
+        let comp: Value = serde_json::from_str(&tv.iter().find(|(n, _)| n == "composition.json").unwrap().1).unwrap();
+        let try_build = async |c: &Value, comp: &Value| {
+            let files = [("component.json", c.to_string()), ("composition.json", comp.to_string())];
+            srv.rpc("ext.build", json!({ "files": upload(&srv, "tv-bad", &files).await })).await
+        };
+        c["manifest_version"] = json!(3);
+        let r = try_build(&c, &comp).await;
+        assert!(diag_text(&r).contains("needs manifest_version 4"), "{r}");
+        c["manifest_version"] = json!(4);
+        c["actions"] = json!([{ "id": "go", "title": "Go", "run": { "kind": "delete" } }]);
+        let r = try_build(&c, &comp).await;
+        assert!(diag_text(&r).contains("actions[0].run"), "{r}");
+        c.as_object_mut().unwrap().remove("actions");
+        let mut bad = comp.clone();
+        bad["media"] = json!({ "slot": "nope", "anchor": "broadcast" });
+        let r = try_build(&c, &bad).await;
+        assert!(diag_text(&r).contains("media:"), "{r}");
+        let mut bad = comp.clone();
+        bad["slots"]["screen"]["visible"] = json!({ "from": "first_open", "for_ms": "{{config.nope}}" });
+        let r = try_build(&c, &bad).await;
+        assert_eq!(r["error"]["code"], "BUILD_FAILED", "{r}");
+        let mut bad = comp.clone();
+        bad["projections"] = json!({ "p": { "source": { "kind": "viewer" }, "layout": { "algorithm": "list", "item": { "h": 20 } }, "template": { "nodes": [{ "id": "a", "view": "label" }] } } });
+        bad["events"] = json!({ "tap": { "from": { "projection": "p" }, "on": { "kind": "forward" } } });
+        let r = try_build(&c, &bad).await;
+        assert!(diag_text(&r).contains("events.tap.on"), "{r}");
+    });
 }

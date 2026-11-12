@@ -351,7 +351,7 @@ test('UI-M05 a mind map on a phone (脑图 R14): read and fold only — a tap se
   expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq).toBe(seq)
 })
 
-test('UI-M06 extension controls on a phone (扩展控件 M6): read-only — a tap on an HTML control mounts nothing, a composite lays out, nothing is written', async ({ page, api }) => {
+test('UI-M06 extension controls on a phone (扩展控件 M6; 控件机制 G22, H3): they run — a tap starts an HTML control, a composite lays out; looking writes nothing', async ({ page, api }) => {
   const ws = await api.freeCanvas(ALICE, `phone ext ${Date.now()}`)
   const card = await api.build(ALICE, ws.workspace_id, 'hello-card')
   const board = await api.build(ALICE, ws.workspace_id, 'hello-board')
@@ -366,13 +366,13 @@ test('UI-M06 extension controls on a phone (扩展控件 M6): read-only — a ta
   await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')
   const seq = (await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq
   await expect(page.getByTestId('aiws-html-static-hc')).toBeVisible()
-  await expect(page.getByTestId('aiws-run-toggle')).toHaveCount(0)
-  await expect(page.getByTestId('aiws-html-start-hc')).toHaveCount(0)
+  // phones run controls like any view mode (G22: only guests are locked out)
+  await expect(page.getByTestId('aiws-run-toggle')).toHaveAttribute('data-interactive', 'true')
   const fingers = await Fingers.of(page)
   const box = (await page.getByTestId('aiws-html-static-hc').boundingBox())!
   await fingers.tap({ x: box.x + box.width / 2, y: box.y + box.height / 2 })
-  await page.waitForTimeout(500)
-  await expect(page.locator('.aiws-html-frame')).toHaveCount(0)
+  await expect(page.locator('.aiws-html-frame')).toHaveCount(1)
+  await expect(page.frameLocator('.aiws-html-frame').locator('#title')).toHaveText('Phone')
   await expect(page.getByTestId('aiws-composite-chrome-board')).toBeVisible()
   await expect(page.getByTestId('aiws-html-static-bc')).toBeVisible()
   expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq).toBe(seq)

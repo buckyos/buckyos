@@ -1,0 +1,26 @@
+html, body { margin: 0; height: 100%; font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1d2330; background: #f6f4fb; }
+.lt { position: relative; display: flex; flex-direction: column; gap: 6px; height: 100%; box-sizing: border-box; padding: 10px 12px; }
+header { display: flex; align-items: center; justify-content: space-between; font-weight: 600; }
+.badge { font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 999px; background: #e6e1f5; color: #4b3f80; }
+.badge.own { background: #fdecd2; color: #7a4a06; }
+.track { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wave { width: 100%; height: 44px; touch-action: none; cursor: pointer; }
+.times { display: flex; justify-content: space-between; font-size: 11px; color: #6b7280; font-variant-numeric: tabular-nums; }
+.lyrics { flex: 1; min-height: 0; margin: 0; padding: 0; list-style: none; overflow: hidden; text-align: center; color: #8a8fa0; }
+.lyrics li { padding: 2px 0; transition: color .2s; }
+.lyrics li.now { color: #1d2330; font-weight: 600; }
+footer { display: flex; align-items: center; gap: 6px; }
+footer button { min-width: 36px; height: 32px; border: 1px solid #d4d0e4; border-radius: 8px; background: #fff; font-size: 14px; touch-action: manipulation; }
+footer #live { font-size: 12px; padding: 0 8px; }
+footer svg { width: 14px; height: 14px; fill: currentColor; vertical-align: middle; }
+#play .i-pause, #play.playing .i-play { display: none; }
+#play.playing .i-pause { display: inline; }
+footer input { flex: 1; min-width: 60px; }
+.tap { position: absolute; inset: 0; margin: auto; width: 160px; height: 44px; border-radius: 999px; border: none; background: #4b3f80; color: #fff; font-size: 14px; }
+@media (prefers-color-scheme: dark) {
+  html, body { color: #e8e6f2; background: #1d1b26; }
+  .badge { background: #3a3358; color: #d9d2ff; }
+  .badge.own { background: #4d3a17; color: #ffd99a; }
+  .lyrics li.now { color: #fff; }
+  footer button { background: #2a2736; border-color: #423d55; color: #e8e6f2; }
+}

@@ -15,6 +15,7 @@ pub const MAX_DEPTH: usize = 5;
 pub const MAX_NODES: usize = 64;
 pub const MAX_ARGS: usize = 32;
 pub const MAX_SORTS: usize = 4;
+pub const MAX_GROUP_LIMIT: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator {
@@ -57,7 +58,7 @@ impl Operator {
     fn allowed(&self, t: FieldType) -> bool {
         use FieldType::*;
         match self {
-            Operator::Eq | Operator::Ne => !matches!(t, MultiSelect),
+            Operator::Eq | Operator::Ne => !matches!(t, MultiSelect | Json),
             Operator::Lt | Operator::Lte | Operator::Gt | Operator::Gte => {
                 matches!(t, Number | Decimal | Date | Datetime | Currency)
             }
@@ -295,6 +296,28 @@ pub struct QuerySpec {
     pub cursor: Option<String>,
     pub best_effort: bool,
     pub with_meta: bool,
+    /// `group_order: "count_desc"`: groups by count, most first, ties by key (控件机制 TODO G21).
+    pub group_by_count: bool,
+    /// `group_limit`: the first N groups after ordering.
+    pub group_limit: Option<usize>,
+}
+
+/// `group_order` / `group_limit` of `doc.query` (G21).
+pub fn group_params(params: &Value, spec: &mut QuerySpec) -> WsResult<()> {
+    spec.group_by_count = match params.get("group_order") {
+        None | Some(Value::Null) => false,
+        Some(v) if v == "count_desc" => true,
+        Some(_) => return Err(WsError::invalid_op("group_order must be count_desc")),
+    };
+    spec.group_limit = match params.get("group_limit") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_u64()
+                .filter(|n| (1..=MAX_GROUP_LIMIT).contains(n))
+                .ok_or_else(|| WsError::limit(format!("group_limit must be 1..{MAX_GROUP_LIMIT}")))? as usize,
+        ),
+    };
+    Ok(())
 }
 
 pub fn live_fields(ctx: &dyn ReadCtx, source_id: &str) -> WsResult<Vec<FieldRow>> {
@@ -362,8 +385,8 @@ pub fn run_query(ctx: &dyn ReadCtx, source: &EntityRow, spec: &QuerySpec) -> WsR
     });
     let group_def = match &spec.group {
         Some(g) => match live.get(g) {
-            Some(d) if matches!(d.ty, FieldType::Select | FieldType::Boolean | FieldType::Date) => Some(d.clone()),
-            Some(_) => return Err(WsError::invalid_op("group supports select, boolean and date fields")),
+            Some(d) if matches!(d.ty, FieldType::Select | FieldType::MultiSelect | FieldType::Boolean | FieldType::Date) => Some(d.clone()),
+            Some(_) => return Err(WsError::invalid_op("group supports select, multi_select, boolean and date fields")),
             None => {
                 diagnostics.push(json!({ "key": "group", "code": "FIELD_DELETED", "field_id": g }));
                 None
@@ -424,15 +447,31 @@ pub fn run_query(ctx: &dyn ReadCtx, source: &EntityRow, spec: &QuerySpec) -> WsR
     let mut groups = None;
     if let Some(gd) = &group_def {
         let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+        let key = |v: Option<&Value>| match v {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(s)) => s.clone(),
+            Some(v) => v.to_string(),
+        };
         for r in &rows {
-            let k = match r.values.get(&gd.field_id) {
-                None | Some(Value::Null) => String::new(),
-                Some(Value::String(s)) => s.clone(),
-                Some(v) => v.to_string(),
-            };
-            *counts.entry(k).or_default() += 1;
+            match r.values.get(&gd.field_id) {
+                // a list counts once under each of its elements, an empty one under ""
+                Some(Value::Array(a)) if !a.is_empty() => {
+                    for x in a {
+                        *counts.entry(key(Some(x))).or_default() += 1;
+                    }
+                }
+                Some(Value::Array(_)) => *counts.entry(String::new()).or_default() += 1,
+                v => *counts.entry(key(v)).or_default() += 1,
+            }
         }
-        groups = Some(counts.into_iter().map(|(k, n)| json!({ "key": k, "count": n })).collect::<Vec<_>>());
+        let mut list: Vec<(String, u64)> = counts.into_iter().collect();
+        if spec.group_by_count {
+            list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        }
+        if let Some(n) = spec.group_limit {
+            list.truncate(n);
+        }
+        groups = Some(list.into_iter().map(|(k, n)| json!({ "key": k, "count": n })).collect::<Vec<_>>());
     }
 
     let start = match &cursor {

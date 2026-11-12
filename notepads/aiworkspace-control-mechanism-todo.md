@@ -347,3 +347,92 @@
 - [Goal Session 继续推进 TODO](./opendan-goal-session-next-todo.md)：D4、E2、E3 “等日历 / 待办接入”，接入点是本单 P0–P2；C0 的 `--url` 与 F2（为 Goal 做一个基于 AIWS 的 app）落在 G12、G14。
 - [Jarvis 默认 Goal TODO](./jarvis-default-goal-session-todo.md) §5.2、§5.3：“正式日程存 workflow”的旧表述按 D4 改为 AIWS 业务数据。
 - [kernel README 的 GAP](../doc/workspace/kernel/README.md)：label 未实现（G1）、内置契约没有公开声明（G13 只做两个官方控件）、App 模式（G14 只做最小版本）、扩展清单缺动作和属性面板入口（H2 只补这两项）、数据变化自动化（本单不依赖）。
+
+## 7. 实施记录（2026-11-11 至 11-12，已完成、未提交）
+
+按 §4 的顺序实施，未提交。随做随记，最后整理成交付说明。
+
+### 7.1 已完成
+
+| 项 | 落点 | 验证 |
+| --- | --- | --- |
+| G8 `json` 字段类型 | core `value.rs`、`filter.rs`（只有 `is_empty` / `is_not_empty`）；Desktop `values.ts`、`ValueEditor.tsx`（JSON 文本框）、`fieldOps.ts` 可新建 | core 单测 |
+| G8 标准表与内置校验 | 契约 `src/frame/aiworkspace/schemas/standard-tables.md`；core `standard.rs`：**在整个 Commit 末尾**对动过的记录判一次（逐操作判会让“定时 ↔ 全天”这类改动的撤销在中间态被误拒），只在准入时跑；标准字段不能删、不能改类型；RRULE 子集校验 | `core/tests/standard.rs` |
+| G9 Workspace 唯一名字、`ws.ensure` | store `service.rs`（服务级索引 + 锁，并发只建一个）、`workspace.rs`（`local_meta.name`）；`ws.create { name? }`、`ws.list` / `ws.get_info` 返回 `name`；删除释放；fork / 新导入不带名字；放映克隆去掉名字 | `store/tests/names.rs`（8 线程并发） |
+| G16 服务端时间（P3 提前做） | `doc.wait_changes` 带 `server_ms`；`ws.time` | server 合约夹具重录 |
+| 数据控件 kind | `controls/core.json` 加 `todo`、`calendar` 和 `data_controls`；core：可带 `bindings`（`bind` 引用，插入时一起建的表归控件所有）、不收子 Block、必须数值尺寸、`layout { mode: "data" }`；大纲投影 `bindings`（名字 → 实体 ID） | core 单测、e2e |
+| G10 重复规则 | websdk `src/aiws_rrule.ts`：解析 / 输出 / 描述（中英）/ 主流日历的“重复”菜单选项 / 按时区展开（DTSTART 恒为第一次，EXDATE 计入 COUNT） | `tests/aiws_rrule.test.ts` 16 条 |
+| G11 业务操作 | websdk `src/aiws_schedule.ts`：标准表字段、建表操作、排序键（与 core 同算法）、待办的增 / 完成 / 移动 / 改、日程的发生项展开（覆盖记录、排除、Agent 写入的发生项）、仅此一次 / 此后全部 / 全部的改与删、跳过、推迟；`ScheduleClient`（`ws.ensure("schedule")` + 固定 ID `todo` / `calendar` + 一个放着两个控件的页面） | `tests/aiws_schedule.test.ts` 14 条 |
+| G1 label | Desktop `ui/blocks/labelBlock.tsx`：常量（title）或绑定值（Record 属性 / 表格单元格），格式（日期、相对时间、数字…），`LabelArt` 供投影用 | tsc、lint |
+| G2 投影 | 共享 `controls/projection.ts`（模板、占位符、身份 `<控件>~<模板节点>~<数据项>`、可见范围才实例化）；Desktop `ui/controls/data/ProjectedView.tsx`（label / shape / asset 轻量绘制，主题色 token） | deno 测试 |
+| G3 布局 | 共享 `controls/datalayout.ts`：`list`、`columns`、`month`（泳道、跨周横条、“+N 更多”）、`time_grid`（重叠并排、向右伸展）、`agenda` | deno 测试 7 条 |
+| G4 手势 | Desktop `ui/controls/data/gestures.ts`（鼠标 4px 起拖；触摸长按起拖，不动抬起就是菜单；Esc 取消）、`write.ts`（一次 Commit、本地叠加、被拒回滚并提示） | e2e |
+| G5 弹层 | `ui/controls/data/ControlPopover.tsx`（屏幕坐标、手机底部抽屉、`ControlMenu`） | e2e |
+| G6 状态分域 | `ui/controls/data/viewState.ts`：实例 `config` 是默认，本人切换写 `block:<id>/view`，“设为默认”一个 `entity.set_props` | e2e TD03 |
+| 宿主接入 | `ContainerDefinition` 加 `sizing: 'box'`、`Body`；`layout.ts` / `RenderHost` 让数据控件像 Block 一样缩放，编辑模式下选中后 body 才接管指针（之前框体负责移动），查看模式直接可用；`DataFlow` 用于流式页和单控件页 | e2e |
+| 待办控件（P0） | `ui/controls/todo/`：列表（快速添加、勾选、拖动排序带插入线、已完成折叠、多选批量、键盘）、看板（按状态分列、拖到别列改状态带占位、列内排序、折叠列、加一列 = 加状态选项，无 `structure` 显示原因）、详情弹层（标题、状态、截止、优先级、标签、正文） | `tests/aiworkspace/todo.spec.ts` 5 条全过 |
+
+| 日历控件（P1） | `ui/controls/calendar/`：日 / 周 / 月 / 日程四视图、今天 / 翻页 / 小月历、T D W M A ← → N 快捷键；全天行、跨天横条、重叠并排、“+N 更多”、当前时间线、按日历着色、待办截止日期（只读）；点空白或拖出时段新建（就地输入标题，“更多选项”展开完整表单：全天、起止、重复、地点、提醒、颜色、日历）；拖动改期（15 分钟、跨天，开始和结束同一个 Commit，Alt 拖动是复制）、拖底边改结束；重复事件先问“仅此一次 / 此后全部 / 全部”；详情弹层显示重复规则、例外、Agent 写入的发生项、维护状态（覆盖到哪天、最近一次成功、错误，链到任务中心）、正文；跳过这次、复制、删除 | `tests/aiworkspace/calendar.spec.ts` 6 条全过 |
+| Agent 命令（P2 的一部分） | websdk `cli/modules/aiws_schedule.ts`：`buckyos aiws todo list/add/done/undone/update/move/rm`、`buckyos aiws cal list/add/update/rm/skip/postpone`，都经 `ScheduleClient`（只用 stable 方法） | `tests/aiworkspace/schedule.spec.ts`（同一路径对真实服务：并发首次使用只建一个、增删改、跳过、推迟、控件实时看到） |
+
+| G12 定位到记录 | `links.ts`：地址加 `record`、`occ`（发生项的原始开始时间）、`page=control`；`ui/controls/data/focus.ts`：Shell 请求、控件 body 挂载后接收（待办：展开所在分组 / 列并选中；日历：翻到那一天、选中并打开详情）；“复制链接”“批注”（锚到 `table_record` 选择器）进了待办菜单和日程详情；有批注的条目带标记 | TD06、CA07 |
+| G14 单控件页 | `ui/controls/data/ControlPage.tsx`：`page=control`、手机上打开记录链接、控件菜单“单独页面打开”；手机默认：日历日程列表、待办列表 | TD06 |
+| G13 公开契约 | 模板移到共享 `controls/schedule.ts`；`controls/contracts.ts` 按 `component.json` 的形状生成 `aiws/contracts/todo.json`、`calendar.json`（标识 `did:bns:buckyos#todo`、`kind: builtin`、版本 1：属性与个人保留的键、绑定与 `schema_id`、模板、布局、手势及其写入、菜单动作、Agent 自述），`control.describe` 返回 `control.contract` | deno 测试（文件是最新生成、模板只用 label / shape / asset、手势的角色出自模板）、`server/tests/control.rs` |
+| G13 能力开放（manifest 4） | `composition.json`：`projections`（`records` / `members` / `counts` / `viewer` 数据源，`mark` 标出本人选择，`list` / `grid` 布局，空的投影不占位）、事件 `from { projection, role }` 与默认处理 `on`、`media`、slot `visible`；`component.json` 的 `actions`；内核 `store/src/ext.rs`、websdk `aiws_ext.ts`、JSON Schema 同步；大纲给组合定义带 `def_actions` | `server/tests/ext.rs` `control_examples_and_manifest_4`、websdk `aiws_ext.test.ts` |
+| G16 / G17 电视屏 | `ui/media/BroadcastMedia.tsx`：按锚点和服务端时钟跟播（偏差 > 400 ms 跳转、80–400 ms 调速），本机暂停 / 静音 / 回到直播，有修改权的人开始 / 暂停 / 设为播出进度 / 从头 / 换视频（资产与锚点同一 Commit）；空的 media slot 显示“选择视频或音频”（系统选择器，Zone 优先）；视频音频上限 2 GiB（内核 `max_media_bytes`，Desktop `assetLimitOf`） | e2e CE01（设备时钟慢 30 秒仍误差 < 1 秒、暂停跟随、读者看不到播出控制、读者改锚点被拒） |
+| G18 / G19 限时可见 | `visibility.ts`：首次打开时间按服务端时钟写进本人 User State，到时只对本人隐藏；编辑模式全部显示并标“限时内容”；观众投影（`viewer`：`remaining_ms`、`expired`）、label 新格式 `countdown` | e2e CE02（倒计时、到时隐藏、重新打开仍隐藏、文档不变、编辑模式可见） |
+| G20 / G21 照片投票 | 内核（后台子任务）：`submitter` 字段、`max_items`、`doc.query` 的 `group_order` / `group_limit`、多选按元素计数；Desktop 写入 `toggle`（按选项名或 ID 改本人那条记录）、`addOptions`（按目录文件建选项，选项 ID 由文件名生成）；计数和标记按选项名对上照片 | `core/tests/vote.rs`、e2e CE03（准备选票、三张上限、两人、封面一致、API 改别人 / 伪造提交者 / 四张都被拒） |
+| G22 手机 | 运行模式只对访客锁定，手机不再锁 | 未在真机验证 |
+| H1–H6 一起听 | HTML API 4：`onConfig`、`serverNow`、`userState`、`mediaUrl`；声明动作在近身工具栏（查看模式也有，不必先激活），`forward` 先启动再转交 | e2e CE04（工具栏开始写锚点且不启动控件、读者没有动作、跟播误差 < 1 秒、下一首立即跟上、音量进本人状态） |
+| 示例包 | `doc/workspace/control-examples/`：`tv-screen`、`time-limited`、`photo-vote`（composite）、`listen-together`（HTML），`aiws-manifest.json` manifest 4 | websdk `verifyBundle` 整包核对、服务端逐个 `ext.build` |
+
+### 7.2 偏差与说明
+
+- 数据控件的子节点只有投影，不收 slot 里的真实 Block（G2 写的“和持久化子节点一起参与布局”留给 G13 把能力开放到组合控件时再做：组合控件已有 slot，投影区画在它的外观层上）。
+- `table.set_values` / `delete_records` / `add_option` 一律要求 `expect`（内核原有规则），业务操作模块总是带上读到的版本。
+
+- 日历的周 / 日视图把跨天的定时事件画在全天行（主流日历的做法），月视图按开始时间排同一天的事件。
+- 待办截止日期在日历上是只读的灰色横条，点开是待办的摘要。
+- 日历“当前显示哪天”同时记在会话里：个人视图的服务端值晚到时会覆盖刚写的本地值（用户状态模块原有的竞态：写入已发出、拉取的结果更旧），会话值保证链接定位后不被拉回。
+- 组合控件的事件可以带默认处理 `events.<e>.on`（实例没绑自己的处理时用它）：照片投票插入后点照片就能投，不需要再给实例配 `on`。
+- 照片文件名不是合法的选项 ID：选项 ID 由文件名生成（小写字母数字加短哈希），选项名就是文件名；`toggle`、计数、本人标记都按选项名对上照片。“准备选票”是投票控件声明的动作（需要 `structure`）。
+- 声明动作放在 Canvas 的近身工具栏统一处理（HTML Block 和组合控件都走这里），不放进 Block 自己的 `toolbar`（后者只在编辑模式出现）。
+- 投票的子任务把媒体上限命名为 `max_media_bytes`，覆盖音频和视频（一起听要放一小时的播客；音频原本就到 2 GiB），不是只放开视频。
+- 桌面端读者打开画布默认仍是编辑模式（原有行为），要切到查看模式才能投票 / 一起听；手机上自由画布默认查看模式。
+- Agent 生成的链接形如 `<workspace page>?id=schedule-board&block=schedule-board-calendar&record=<id>&occ=<原始开始>`（私人日程的页面和控件 ID 固定）。
+
+### 7.3 待做与未验证
+
+G23 文档已改（2026-11-12）：kernel 05（宿主可信时间、HTML API 4、声明动作、投影子节点、数据控件、manifest 4 组合定义、label 契约、两个标准控件与公开契约、两种看板）、06（单控件页、控件配置的状态分域、slot 对单个观众的可见性）、02（URL 目标参数、Workspace 唯一名字、`json` 值 Schema、按提交者归属的记录与 `max_items`、分组计数、标准业务 schema 的登记与校验）、11（按提交者归属的记录的写入资格、按类型的资产上限）、kernel README GAP、扩展实现思路 §5 看板拆两行、服务 README。手册已改：`aiworkspace_template_dev`（`json` 类型、标准表、数据控件与 `buckyos aiws todo` / `cal`、manifest 4、新的写入种类）。
+
+没做：H2 的属性面板入口（`inspector`，GAP 里保留）；声明动作只进近身工具栏，不进右键菜单；扩展还做不出记录投影看板（组合控件的投影只有 list / grid）；单控件页只支持两个数据控件。
+
+未验证：手机真机、macOS / Windows、SN Zone；打印 / 静态表现；日历拖动、看板拖动等交互只在本地 e2e 跑过；流式地址在服务端从头读到目标位置（`named_store` 有按偏移读的接口，未接；本机 8.3 MB 文件跳到 5.5 MB 处 167 ms，大文件深处未测）。
+
+基线问题：Playwright 夹具（本地 `api.demo` 和真实 Zone DV 的 `aiworkspace.fixtures.ts`）在 Node 里加载 Desktop 的 `api/client.ts`，websdk 的 Node 入口原来不导出 `commitWithParts`，这些用例在未改动的代码上就加载失败。DV 时已修：websdk `src/node.ts` 加导出（`parseAccessDenial` 本来就经 `sdk_core` 导出，上面原记录有误）。UI-M01 在“桌面上下文仍被认成手机”（`data-phone="true"`）处失败，与本单无关。
+
+### 7.4 本机 Zone DV（2026-11-12）
+
+部署：`uv run buckyos-build.py -s aiworkspace desktop`（同时重建 SDK / CLI），核对 rootfs 其余二进制与 `/opt/buckyos` 相同后 `uv run start.py`。
+
+新增 DV 用例 `src/frame/desktop/tests/dv/aiworkspace.controls.spec.ts`（已加进 `playwright.aiworkspace.zone.config.ts`）：owner 在桌面，临时成员在手机（Pixel 7 上下文），四个示例按仓库里的样子 `ext.build`。跑法：`AIWS_DV_MEDIA_DIR=<媒体目录> BUCKYOS_UI_DV_TLS_SPKI=<Zone 证书 SPKI> BUCKYOS_TEST_ADMIN_PASSWORD=… playwright test -c playwright.aiworkspace.zone.config.ts aiworkspace.controls`。媒体用 ffmpeg 生成：`tv-big.webm`（44 MB，VP8 + Opus，200 秒）、`tv-small.webm`、`podcast-1h.webm`（8.3 MB，Opus，1 小时）、`a song.webm` / `a song.lrc` / `b song.webm`。
+
+结果：5 条全部通过。
+
+| 场景 | 验到的 |
+| --- | --- |
+| 私人日程（§5.1、§5.2 部分） | devtest 原来没有 `schedule`：CLI 第一次 `todo add` 建出 Workspace、两张表和日程页（测完删除）；控件里快速添加（回车继续）、勾选完成与 CLI 列表一致；CLI 加、改的待办在打开的控件里 10 秒内出现；截止日期显示在日历全天行；CLI 加的事件出现在周视图；直接写“结束早于开始”被内核拒；`record=` 链接选中那条，`page=control` 是单控件页；成员列表里没有、读不到，成员自己的 `schedule` 是另一个 Workspace |
+| 电视屏（§5.3 1–7） | 系统选择器从 Zone 选 44 MB 视频；owner 设备时钟慢 30 秒，锚点仍按服务端时钟；2 分钟后成员手机打开、点出声，在 121.7 秒处，偏差 0.17 秒；暂停停在同一位置、继续跟上；成员本机暂停只影响自己，“回到直播”回到播出位置；换视频后从 0 开始；读者看不到操作，API 改锚点被拒 |
+| 限时可见（§5.4 1–4，打印未测） | 时限 60 秒：A 在 61.1 秒消失，B 晚 30 秒打开、92.5 秒消失；A 刷新后仍隐藏；文档没变；owner 编辑模式全部可见并带“限时内容”标记 |
+| 照片投票（§5.5 1–5，缩略 / 静态未测） | owner 在工具栏“准备选票”；两人手机上同时投第一票都记上；各选 3 张、成员改选一次；第 4 张被拒并提示；三端封面一致（同票按目录顺序）；成员经 API 改 owner 的记录、伪造提交者、选 4 张都被拒 |
+| 一起听（§5.6） | owner 不运行控件，在工具栏“开始”，只写一个 Commit；成员手机点按后从直播位置播、显示 3 行歌词；下一首、暂停、继续，手机上已运行的播放器跟上；播客从第 40 分钟播：Range 从 5.5 MB 处读（文件 8.3 MB），跳转 167 ms；成员调的音量是自己的用户状态，刷新后还在，文档里没有；读者桌面工具栏上没有任何动作 |
+
+回归：既有真实 Zone DV `aiworkspace.extensions`（控件在 Desktop 新建与重建、库、两个账号互用、CLI 打包安装）4 条全过。`playwright.aiworkspace.zone.config.ts` 原有 11 条 6 过 5 失败，都与本单无关：journeys 2 条、`aiworkspace.spec` 2 条找中文标签而页面是英文（新成员和 Workspace 子域按浏览器语言）；`aiworkspace.mobile` 1 条断言“手机只读”（10-15 写的），样例的文档页在手机上是可编辑的富文本（flow 页不在本单改动内），另有手机项目的 Service Worker 证书错误（`BUCKYOS_UI_DV_TLS_SPKI` 对它不起作用）。
+
+DV 中改的是用例本身，产品代码没改：admin 的“我的文件”是 `/home`（列出所有成员），要先进自己的文件夹；已选中照片上盖着“本人”圆环，Playwright 的可点检查拦住点按（真实手指落在圆环上，同样是 `pick`），改为按坐标点；手机刷新后要等 HTML 控件的启动层出现再点，太早点只会选中。
+
+DV 中看到、待 owner 定：
+
+- CLI 第一次建日程时，标题跟运行 CLI 的机器语言（这次是 Schedule / Calendar / To-do）。Agent 容器是英文环境时，中文用户的日程也会是英文标题。
+- 手机刷新后选中状态恢复，读者在查看模式下看到“Open definition”工具条；刷新后一起听是否自动续播没有断言（截图停在 ▶ 40:01）。
+- DV 临时成员删除后 `/home/dvaiws*` 文件夹留在 Zone（夹具原有行为）。

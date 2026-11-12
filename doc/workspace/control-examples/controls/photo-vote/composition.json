@@ -1,0 +1,47 @@
+{
+  "layout": { "algorithm": "stack", "direction": "column", "padding": 12, "spacing": 10 },
+  "slots": {
+    "notes": { "accepts": ["richtext", "label"], "max": 1, "placement": "bottom", "title": "Notes" }
+  },
+  "projections": {
+    "cover": {
+      "source": { "kind": "counts", "binding": "votes", "field": "picks", "top": 3, "of": "photos" },
+      "placement": "top",
+      "layout": { "algorithm": "grid", "columns": 3, "gap": 8, "item": { "h": 140 } },
+      "template": {
+        "nodes": [
+          { "id": "img", "view": "asset", "config": { "object_id": "{{item.object_id}}", "media_type": "{{item.media_type}}", "alt": "{{item.name}}" } },
+          { "id": "badge", "view": "shape", "box": { "x": 6, "b": 6, "w": 64, "h": 22 }, "config": { "shape": "rect", "radius": 11, "fill": "#000000/0.55", "stroke": "none" } },
+          { "id": "count", "view": "label", "box": { "x": 6, "b": 6, "w": 64, "h": 22 }, "config": { "value": "{{item.count}}", "format": "number", "align": "center", "weight": "bold", "font_color": "#ffffff" } }
+        ]
+      }
+    },
+    "photos": {
+      "source": { "kind": "members", "binding": "photos", "accept": "image" },
+      "mark": { "binding": "votes", "field": "picks", "as": "mine" },
+      "placement": "stack",
+      "layout": { "algorithm": "grid", "columns": "{{config.columns}}", "gap": 8, "item": { "h": 104 } },
+      "template": {
+        "nodes": [
+          { "id": "img", "view": "asset", "role": "pick", "config": { "object_id": "{{item.object_id}}", "media_type": "{{item.media_type}}", "alt": "{{item.name}}" } },
+          { "id": "ring", "view": "shape", "role": "pick", "when": "{{item.mine}}", "config": { "shape": "rect", "radius": 4, "fill": "none", "stroke": "accent", "stroke_width": 4 } },
+          { "id": "dot", "view": "shape", "role": "pick", "when": "{{item.mine}}", "box": { "r": 6, "y": 6, "w": 22, "h": 22 }, "config": { "shape": "ellipse", "fill": "accent", "stroke": "#ffffff", "stroke_width": 2 } }
+        ]
+      }
+    }
+  },
+  "events": {
+    "pick": {
+      "from": { "projection": "photos", "role": "pick" },
+      "title": "A photo was picked or unpicked",
+      "on": { "kind": "write", "target": "votes", "what": "toggle", "args": { "field": "picks", "value": "{{event.item}}", "max": "{{config.picks}}" } }
+    }
+  },
+  "chrome": {
+    "background": "#f7f7fb",
+    "radius": 12,
+    "border": "#d9d9e6",
+    "title": { "text": "{{config.title}}" },
+    "empty": "Bind a folder of photos"
+  }
+}

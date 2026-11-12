@@ -1,0 +1,19 @@
+{
+  "manifest_version": 4,
+  "ident": { "author_did": "did:bns:buckyos", "name": "time-limited" },
+  "kind": "composite",
+  "title": "Visible for a while",
+  "description": "Shows the Blocks put in it to each viewer for a while from the first time that viewer opened it, with the time left; then they are hidden for that viewer. A presentation, not access control: the shared document does not change, design mode shows everything marked, prints and exports show everything.",
+  "default_size": { "w": 360, "h": 240 },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string", "title": "Title", "default": "For a short while" },
+      "limit_ms": { "type": "integer", "title": "Visible for (ms)", "default": 60000, "minimum": 1000 }
+    }
+  },
+  "entry": "composition.json",
+  "agent": "AGENT.md",
+  "catalog": { "group": "examples", "description": "Each viewer sees it for a while after opening" },
+  "deps": []
+}

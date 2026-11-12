@@ -54,6 +54,13 @@ export function formatValue(def: ValueDef, value: Json | undefined): string {
       const money = moneyParts(value)
       return money ? formatMoney(money.amount, money.currency) : typeof value === 'string' || typeof value === 'number' ? String(value) : JSON.stringify(value)
     }
+    case 'json': {
+      // an object of extension keys: its keys and short values in one line
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return JSON.stringify(value)
+      const parts = Object.entries(value).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+      const line = parts.join(', ')
+      return line.length > 120 ? `${line.slice(0, 119)}…` : line
+    }
     default: return typeof value === 'string' || typeof value === 'number' ? String(value) : JSON.stringify(value)
   }
 }
@@ -67,6 +74,7 @@ export function editText(def: ValueDef, value: Json | undefined): string {
     const pad = (n: number) => String(n).padStart(2, '0')
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
   }
+  if (def.type === 'json') return JSON.stringify(value, null, 2)
   if (def.type === 'currency') {
     // the field's own currency as a bare amount, any other with its code
     const money = moneyParts(value)
@@ -102,6 +110,14 @@ export function parseInput(def: ValueDef, text: string): { ok: true; value: Inpu
       const date = new Date(text)
       return Number.isNaN(date.getTime()) ? { ok: false, error: aiwsT('aiworkspace.data.value.invalidDateTime') } : { ok: true, value: date.toISOString() }
     }
+    case 'json': {
+      try {
+        const value = JSON.parse(text) as Json
+        return value && typeof value === 'object' && !Array.isArray(value) ? { ok: true, value } : { ok: false, error: aiwsT('aiworkspace.data.value.invalidJson') }
+      } catch {
+        return { ok: false, error: aiwsT('aiworkspace.data.value.invalidJson') }
+      }
+    }
     default: return { ok: true, value: text }
   }
 }
@@ -110,7 +126,7 @@ export const FIELD_TYPE_LABEL: Readonly<Record<FieldType, string>> = localizedLa
   text: 'aiworkspace.data.fieldType.text', number: 'aiworkspace.data.fieldType.number', decimal: 'aiworkspace.data.fieldType.decimal',
   date: 'aiworkspace.data.fieldType.date', datetime: 'aiworkspace.data.fieldType.datetime', boolean: 'aiworkspace.data.fieldType.boolean',
   select: 'aiworkspace.data.fieldType.select', multi_select: 'aiworkspace.data.fieldType.multiSelect', object_ref: 'aiworkspace.data.fieldType.objectRef',
-  currency: 'aiworkspace.data.fieldType.currency',
+  currency: 'aiworkspace.data.fieldType.currency', json: 'aiworkspace.data.fieldType.json',
 })
 
 /** Filter operators per type (design §3.5.3 matrix). */
@@ -126,6 +142,7 @@ export function operatorsFor(type: FieldType): { id: string; label: string; need
     case 'number': case 'decimal': case 'currency': case 'date': case 'datetime': return [...eq, ...order, ...empty]
     case 'boolean': case 'select': case 'object_ref': return [...eq, ...empty]
     case 'multi_select': return [{ id: 'has_any', label: aiwsT('aiworkspace.data.operator.hasAny'), needsValue: true }, { id: 'has_all', label: aiwsT('aiworkspace.data.operator.hasAll'), needsValue: true }, ...empty]
+    case 'json': return empty
   }
 }
 

@@ -1,8 +1,8 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/component/3",
- "title": "component.json of an AI Workspace control (扩展控件 P0–P3: manifest_version 3)",
- "description": "The interface and file layout of one control's source directory. `ext.build` checks it with the Rust validator (store/src/ext.rs), clients pre-check it with buckyos-websdk src/aiws_ext.ts. Version 2 (P1) adds `kind: composite` (entry composition.json, see composition.schema.json) and non-empty `deps`; version 3 (P2) adds `events`, `host_api: 3` for HTML controls and the declarative `button` item. A file of an older version using a newer key fails the build with a hint to raise it. Newer manifest versions only add optional keys; older ones stay readable (Q19). A composite declares its events in composition.json.",
+ "$id": "buckyos.ai-workspace/component/4",
+ "title": "component.json of an AI Workspace control (扩展控件 P0–P3, 控件机制: manifest_version 4)",
+ "description": "The interface and file layout of one control's source directory. `ext.build` checks it with the Rust validator (store/src/ext.rs), clients pre-check it with buckyos-websdk src/aiws_ext.ts. Version 2 (P1) adds `kind: composite` (entry composition.json, see composition.schema.json) and non-empty `deps`; version 3 (P2) adds `events`, `host_api: 3` for HTML controls and the declarative `button` item. A file of an older version using a newer key fails the build with a hint to raise it. Newer manifest versions only add optional keys; older ones stay readable (Q19). A composite declares its events in composition.json. Version 4 (控件机制 TODO) adds `actions` (what the host offers on an instance's toolbar, also before an HTML control runs), `host_api: 4` for HTML controls (aiws.onConfig, serverNow, userState, mediaUrl) and, in composition.json, projections, media and per-viewer visibility.",
  "type": "object",
  "additionalProperties": false,
  "required": [
@@ -16,7 +16,7 @@
   "manifest_version": {
    "type": "integer",
    "minimum": 1,
-   "maximum": 3
+   "maximum": 4
   },
   "ident": {
    "$ref": "#/$defs/ident"
@@ -42,7 +42,7 @@
    "type": "integer",
    "minimum": 1,
    "default": 1,
-   "description": "The host API the control was written for: html 2 or 3 (3 needs manifest_version 3: aiws.emit, createBlock parent / slot, context.interactive); the declarative interpreter is 1."
+   "description": "The host API the control was written for: html 2, 3 (needs manifest_version 3: aiws.emit, createBlock parent / slot, context.interactive) or 4 (needs manifest_version 4: aiws.onConfig, serverNow, userState, mediaUrl, forwarded actions); the declarative interpreter is 1."
   },
   "accepts": {
    "$ref": "#/$defs/data_types"
@@ -165,6 +165,115 @@
     }
    },
    "description": "Public events (manifest_version 3, Q26): an HTML control raises one with aiws.emit(name, params), a declarative one with a button item { kind: button, label, emit, params? }. An instance binds handlers in its `on`. ≤ 16 events, ≤ 16 params each."
+  },
+  "actions": {
+   "type": "array",
+   "maxItems": 16,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "title",
+     "run"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+     },
+     "description": {
+      "type": "string",
+      "maxLength": 4000
+     },
+     "icon": {
+      "type": "string",
+      "maxLength": 64
+     },
+     "modes": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "edit",
+        "view"
+       ]
+      },
+      "uniqueItems": true,
+      "default": [
+       "edit",
+       "view"
+      ]
+     },
+     "needs": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "read",
+        "comment",
+        "append",
+        "update",
+        "structure",
+        "delete"
+       ]
+      },
+      "uniqueItems": true,
+      "description": "the capabilities on the instance the person must have for it to be offered"
+     },
+     "run": {
+      "oneOf": [
+       {
+        "type": "object",
+        "required": [
+         "kind"
+        ],
+        "properties": {
+         "kind": {
+          "enum": [
+           "write",
+           "wish",
+           "open",
+           "notify",
+           "config",
+           "forward"
+          ]
+         }
+        },
+        "description": "as an event handler (write { target, what, args }, wish { wish_id, inputs }, open { target }, notify { text }), or config { props } (the instance's own properties, one undoable Commit), or forward (handed to the running HTML as the request action:<id>; a control not running is started first). Strings may hold {{now}} (the service's clock) and {{config.<key>}}."
+       },
+       {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 4,
+        "items": {
+         "type": "object",
+         "required": [
+          "kind"
+         ],
+         "properties": {
+          "kind": {
+           "enum": [
+            "write",
+            "wish",
+            "open",
+            "notify",
+            "config",
+            "forward"
+           ]
+          }
+         },
+         "description": "as an event handler (write { target, what, args }, wish { wish_id, inputs }, open { target }, notify { text }), or config { props } (the instance's own properties, one undoable Commit), or forward (handed to the running HTML as the request action:<id>; a control not running is started first). Strings may hold {{now}} (the service's clock) and {{config.<key>}}."
+        }
+       }
+      ]
+     }
+    }
+   },
+   "description": "manifest_version 4 (控件机制 TODO H2): actions the host offers on an instance's near toolbar in the modes named, to whoever has the capabilities needed — in view mode too, and before an HTML control runs. Like an event, an action is the person's own act, with their rights."
   }
  },
  "$defs": {

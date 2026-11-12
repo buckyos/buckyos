@@ -147,7 +147,9 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     let lock_ids: Vec<Value> = lock["locks"].as_array().map(|a| a.iter().map(|l| l["lock_id"].clone()).collect()).unwrap_or_default();
     s.rpc("lock.release", wsp(json!({ "lock_ids": lock_ids }))).await;
     let uploaded = s.nfs.put("alice", "assets", "upload/hello.txt", b"hello contract".to_vec()).await;
-    s.rpc("asset.import_object", wsp(json!({ "bucket_id": uploaded["bucket_id"], "key": uploaded["key"] }))).await;
+    let staged = s.rpc("asset.import_object", wsp(json!({ "bucket_id": uploaded["bucket_id"], "key": uploaded["key"] }))).await;
+    // the uploader plays back what it staged (控件机制 TODO G17)
+    s.rpc("asset.stream_url", wsp(json!({ "object_id": staged["object_id"] }))).await;
     let export = s.http.post(&s.base).json(&json!({ "method": "doc.export", "params": wsp(json!({ "mode": "share", "self_contained": true })), "sys": [9000, "tok-alice"] })).send().await.unwrap().json::<Value>().await.unwrap();
     let pkg = s.nfs.fetch(&export["result"]["download"]).await;
     let package = s.nfs.put("alice", "exports", "import/contract.bcanvas", pkg).await;
@@ -159,6 +161,12 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     s.rpc("ws.delete_checkpoint", wsp(json!({ "snapshot_id": cp["result"]["snapshot"] }))).await;
     s.rpc("ws.purge_deleted", wsp(json!({}))).await;
     s.rpc("ws.clear_staged", wsp(json!({}))).await;
+    // named Workspaces (控件机制 TODO G9) and the service clock (G16)
+    let named = s.rpc("ws.ensure", json!({ "name": "contract", "title": "契约" })).await;
+    let again = s.rpc("ws.ensure", json!({ "name": "contract" })).await;
+    assert_eq!((&named["created"], &again["created"], &again["workspace_id"]), (&json!(true), &json!(false), &named["workspace_id"]));
+    s.rpc("ws.create", json!({ "title": "命名", "name": "contract-2" })).await;
+    s.rpc("ws.time", json!({})).await;
     let forked = s.rpc("ws.fork", wsp(json!({}))).await;
     s.rpc("ws.delete", json!({ "workspace_id": forked["workspace_id"] })).await;
     s.rpc("ws.delete", json!({ "workspace_id": imported["workspace_id"] })).await;

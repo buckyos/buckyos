@@ -1,8 +1,8 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/composition/2",
- "title": "composition.json of a composite control (扩展控件 P1 K3; P2 events, P3 grid)",
- "description": "Three things only: the layout its children get (an algorithm the host ships: stack or fixed, K2), the slots user content lives in, and the Chrome drawn around them from config (R23). It never creates or deletes user Blocks: they stay real Blocks of the BlockTree, each carrying `slot`. `ext.build` checks it (store/src/ext.rs), the Desktop draws it (ui/controls/composite/); the core keeps only its shape (an object ≤ 64 KiB, ≤ 16 slots). String values may be `{{config.<key>}}` with the key declared in config_schema.properties. `events` (manifest_version 3) re-raises events of the children in a slot; `grid` (P3) fills cells row by row.",
+ "$id": "buckyos.ai-workspace/composition/3",
+ "title": "composition.json of a composite control (扩展控件 P1 K3; P2 events, P3 grid; 控件机制 manifest 4: projections, media, visible)",
+ "description": "Three things only: the layout its children get (an algorithm the host ships: stack or fixed, K2), the slots user content lives in, and the Chrome drawn around them from config (R23). It never creates or deletes user Blocks: they stay real Blocks of the BlockTree, each carrying `slot`. `ext.build` checks it (store/src/ext.rs), the Desktop draws it (ui/controls/composite/); the core keeps only its shape (an object ≤ 64 KiB, ≤ 16 slots). String values may be `{{config.<key>}}` with the key declared in config_schema.properties. `events` (manifest_version 3) re-raises events of the children in a slot; `grid` (P3) fills cells row by row. Manifest 4 (控件机制 TODO G2, G13, G17, G19, G21) adds `projections` (Blocks projected from bound data, never stored), `media` (a slot's media Block plays from an anchor in the config, by the service's clock) and a slot's `visible` (shown to each viewer for a while from their first opening: a presentation, not access control); an event may come from a press on a projected node (`from { projection, role }`).",
  "type": "object",
  "additionalProperties": false,
  "required": [
@@ -153,6 +153,32 @@
      "title": {
       "type": "string",
       "maxLength": 256
+     },
+     "visible": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "from",
+       "for_ms"
+      ],
+      "properties": {
+       "from": {
+        "const": "first_open"
+       },
+       "for_ms": {
+        "oneOf": [
+         {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 31536000000
+         },
+         {
+          "$ref": "#/$defs/config_ref"
+         }
+        ]
+       }
+      },
+      "description": "manifest_version 4: each viewer sees the slot's Blocks for `for_ms` from their own first opening (user state, the service's clock); design mode, static views, prints and exports show them, marked"
      }
     }
    }
@@ -230,10 +256,7 @@
      "from": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-       "slot",
-       "event"
-      ],
+      "required": [],
       "properties": {
        "slot": {
         "type": "string",
@@ -242,8 +265,17 @@
        "event": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]{0,31}$"
+       },
+       "projection": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,31}$"
+       },
+       "role": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,31}$"
        }
-      }
+      },
+      "description": "{ slot, event }: a child's event re-raised; { projection, role? } (manifest_version 4): a press on a projected node of that role (default body) in run mode, with params { item, projection }"
      }
     },
     "required": [
@@ -251,6 +283,405 @@
     ]
    },
    "description": "Events of the composite (manifest_version 3, Q26): each re-raises the event `from.event` of a child in `from.slot`; the slot must accept at least one cell:<ident> whose definition declares it (EVENT_UNDECLARED). An instance binds handlers in its `on`."
+  },
+  "projections": {
+   "type": "object",
+   "maxProperties": 8,
+   "propertyNames": {
+    "pattern": "^[a-z][a-z0-9_]{0,31}$"
+   },
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "source",
+     "template",
+     "layout"
+    ],
+    "properties": {
+     "source": {
+      "oneOf": [
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "kind",
+         "binding"
+        ],
+        "properties": {
+         "kind": {
+          "const": "records"
+         },
+         "binding": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$"
+         },
+         "sort": {
+          "type": "string",
+          "maxLength": 64
+         },
+         "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+         }
+        }
+       },
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "kind",
+         "binding"
+        ],
+        "properties": {
+         "kind": {
+          "const": "members"
+         },
+         "binding": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$"
+         },
+         "accept": {
+          "enum": [
+           "image",
+           "audio",
+           "video",
+           "any"
+          ]
+         }
+        }
+       },
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "kind",
+         "binding",
+         "field"
+        ],
+        "properties": {
+         "kind": {
+          "const": "counts"
+         },
+         "binding": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$"
+         },
+         "field": {
+          "type": "string",
+          "maxLength": 64
+         },
+         "top": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+         },
+         "of": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$"
+         }
+        }
+       },
+       {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "kind"
+        ],
+        "properties": {
+         "kind": {
+          "const": "viewer"
+         }
+        }
+       }
+      ],
+      "description": "records of a bound table; members of a bound directory (name, object_id, media_type, size); the elements of a list field counted, most first (key, count, rank; a select's elements by option label; `of` joins another projection's items by key); the viewer (principal, first_open, remaining_ms)"
+     },
+     "mark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "binding",
+       "field",
+       "as"
+      ],
+      "properties": {
+       "binding": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,31}$"
+       },
+       "field": {
+        "type": "string",
+        "maxLength": 64
+       },
+       "as": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,31}$"
+       }
+      },
+      "description": "item.<as> is true when the viewer's own record (the submitter's) of the table lists the item's key in field"
+     },
+     "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "nodes"
+      ],
+      "properties": {
+       "nodes": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 32,
+        "items": {
+         "type": "object",
+         "additionalProperties": false,
+         "required": [
+          "id",
+          "view"
+         ],
+         "properties": {
+          "id": {
+           "type": "string",
+           "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "view": {
+           "enum": [
+            "label",
+            "shape",
+            "asset"
+           ]
+          },
+          "box": {
+           "type": "object",
+           "additionalProperties": false,
+           "properties": {
+            "x": {
+             "oneOf": [
+              {
+               "type": "number",
+               "minimum": 0,
+               "maximum": 4000
+              },
+              {
+               "type": "string",
+               "maxLength": 128,
+               "description": "`{{item.<k>}}`, `{{config.<k>}}`, `{{viewer.<k>}}` or `<n>%`"
+              }
+             ]
+            },
+            "y": {
+             "oneOf": [
+              {
+               "type": "number",
+               "minimum": 0,
+               "maximum": 4000
+              },
+              {
+               "type": "string",
+               "maxLength": 128,
+               "description": "`{{item.<k>}}`, `{{config.<k>}}`, `{{viewer.<k>}}` or `<n>%`"
+              }
+             ]
+            },
+            "w": {
+             "oneOf": [
+              {
+               "type": "number",
+               "minimum": 0,
+               "maximum": 4000
+              },
+              {
+               "type": "string",
+               "maxLength": 128,
+               "description": "`{{item.<k>}}`, `{{config.<k>}}`, `{{viewer.<k>}}` or `<n>%`"
+              }
+             ]
+            },
+            "h": {
+             "oneOf": [
+              {
+               "type": "number",
+               "minimum": 0,
+               "maximum": 4000
+              },
+              {
+               "type": "string",
+               "maxLength": 128,
+               "description": "`{{item.<k>}}`, `{{config.<k>}}`, `{{viewer.<k>}}` or `<n>%`"
+              }
+             ]
+            },
+            "r": {
+             "oneOf": [
+              {
+               "type": "number",
+               "minimum": 0,
+               "maximum": 4000
+              },
+              {
+               "type": "string",
+               "maxLength": 128,
+               "description": "`{{item.<k>}}`, `{{config.<k>}}`, `{{viewer.<k>}}` or `<n>%`"
+              }
+             ]
+            },
+            "b": {
+             "oneOf": [
+              {
+               "type": "number",
+               "minimum": 0,
+               "maximum": 4000
+              },
+              {
+               "type": "string",
+               "maxLength": 128,
+               "description": "`{{item.<k>}}`, `{{config.<k>}}`, `{{viewer.<k>}}` or `<n>%`"
+              }
+             ]
+            }
+           }
+          },
+          "config": {
+           "type": "object",
+           "description": "the Block's config; strings may hold {{item.<k>}}, {{config.<k>}}, {{viewer.<k>}}"
+          },
+          "when": {
+           "type": "string",
+           "maxLength": 128,
+           "description": "shown when this placeholder is truthy (`!` negates)"
+          },
+          "role": {
+           "type": "string",
+           "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "edit": {
+           "type": "string",
+           "maxLength": 64
+          }
+         }
+        }
+       }
+      }
+     },
+     "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "algorithm",
+       "item"
+      ],
+      "properties": {
+       "algorithm": {
+        "enum": [
+         "list",
+         "grid"
+        ]
+       },
+       "columns": {
+        "oneOf": [
+         {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+         },
+         {
+          "$ref": "#/$defs/config_ref"
+         }
+        ]
+       },
+       "gap": {
+        "oneOf": [
+         {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2000
+         },
+         {
+          "$ref": "#/$defs/config_ref"
+         }
+        ]
+       },
+       "item": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "h"
+        ],
+        "properties": {
+         "w": {
+          "oneOf": [
+           {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 4000
+           },
+           {
+            "type": "string",
+            "maxLength": 128,
+            "description": "`{{item.<k>}}`, `{{config.<k>}}`, `{{viewer.<k>}}` or `<n>%`"
+           }
+          ]
+         },
+         "h": {
+          "oneOf": [
+           {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 4000
+           },
+           {
+            "type": "string",
+            "maxLength": 128,
+            "description": "`{{item.<k>}}`, `{{config.<k>}}`, `{{viewer.<k>}}` or `<n>%`"
+           }
+          ]
+         }
+        }
+       }
+      }
+     },
+     "placement": {
+      "enum": [
+       "top",
+       "stack",
+       "bottom"
+      ],
+      "default": "stack"
+     },
+     "max_items": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     }
+    }
+   },
+   "description": "manifest_version 4: Blocks projected from data — a template of label, shape and asset nodes instantiated per item, laid out as a list or a grid in a region placed like a slot. Never stored; identities `<control>.<projection>~<node>~<item>`."
+  },
+  "media": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "slot",
+    "anchor"
+   ],
+   "properties": {
+    "slot": {
+     "type": "string",
+     "pattern": "^[a-z][a-z0-9_]{0,31}$"
+    },
+    "anchor": {
+     "type": "string",
+     "maxLength": 64,
+     "description": "a config property holding { pos_ms, at_ms, playing }: at server time at_ms the media was at pos_ms"
+    },
+    "loop": {
+     "type": "string",
+     "maxLength": 64,
+     "description": "a boolean config property"
+    }
+   },
+   "description": "manifest_version 4: the media Block of the slot plays where the anchor says, for every viewer by the service's clock; a viewer's own pause and mute stay on their device"
   }
  },
  "$defs": {

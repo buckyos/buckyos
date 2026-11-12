@@ -314,7 +314,11 @@ impl Workspace {
     /// byte. `binding` names where the uploader bound it (`bucket.get` proves it); without one the server binds the
     /// object itself (the caller's right to read it was checked at the NDM gateway).
     pub fn stage_object(&mut self, caller: &Caller, object_id: &str, max_bytes: u64) -> WsResult<Value> {
-        const MAX_MEDIA_BYTES: u64 = 2 << 30;
+        self.stage_upload(caller, object_id, max_bytes, max_bytes)
+    }
+
+    /// [`Self::stage_object`] of a user upload: audio and video may be up to `max_media_bytes`.
+    pub fn stage_upload(&mut self, caller: &Caller, object_id: &str, max_bytes: u64, max_media_bytes: u64) -> WsResult<Value> {
         require_update(&self.require_ws_any(caller)?)?;
         if !object_id.starts_with("cyfile:") {
             return Err(WsError::invalid_op("an asset must be a FileObject; import folders as workspace containers"));
@@ -324,8 +328,8 @@ impl Workspace {
         }
         let size = self.objects.file_size(object_id)?;
         let media_type = sniff_prefix(&self.objects.file_head(object_id, 512)?);
-        // audio and video play by Range from the stream route (第四期规划 §7.3.2, §7.3.5): up to 2 GiB
-        let max_bytes = if media_type.starts_with("audio/") || media_type.starts_with("video/") { max_bytes.max(MAX_MEDIA_BYTES) } else { max_bytes };
+        // audio and video play by Range from the stream route (第四期规划 §7.3.2, §7.3.5; 控件机制 TODO Q16): their own limit
+        let max_bytes = if media_type.starts_with("audio/") || media_type.starts_with("video/") { max_media_bytes } else { max_bytes };
         if size > max_bytes {
             return Err(WsError::limit(format!("workspace assets are limited to {max_bytes} bytes")));
         }

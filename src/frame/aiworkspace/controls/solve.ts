@@ -4,7 +4,7 @@
  * the canvas, the static SVG and the exports, so every reader sees the same map. */
 
 import { solveComposite } from './composite.ts'
-import { COMPOSITE, isControlKind, isTextView } from './contract.ts'
+import { COMPOSITE, isControlKind, isDataControl, isTextView } from './contract.ts'
 import { NODE_PAD, NodeMeasurer } from './measure.ts'
 import { num, type StoredPlacement } from './placement.ts'
 import { layoutTree, mindmapConfig, type LaidNode, type MindmapConfig, type Rect, type TreeLayout, type TreeNode } from './tree.ts'
@@ -38,6 +38,8 @@ export interface SolveOptions {
   collapsed?: (containerId: string) => ReadonlySet<string> | undefined
   /** The size of a Block without a numeric one (a non-text view the core would refuse, an old document). */
   fallbackSize?: (e: ControlEntity) => { w: number; h: number }
+  /** How many items a composite's projection has now (the reader's data; absent: one row is reserved). */
+  projectionCount?: (containerId: string, projection: string) => number | undefined
 }
 
 export interface SolvedControl {
@@ -46,6 +48,8 @@ export interface SolvedControl {
   layout: TreeLayout
   /** Nested controls among the nodes, solved first. */
   nested: Map<string, SolvedControl>
+  /** A composite's projection regions (relative to its origin), by projection name. */
+  regions?: Map<string, Rect>
 }
 
 /** Is `e` a Block that belongs to the tree of a control (a Cell, or a container drawn on a canvas)? */
@@ -91,9 +95,24 @@ export function solveControl(src: ControlSource, containerId: string, opts: Solv
   return { id: containerId, config, layout: layoutTree(roots, config), nested }
 }
 
-/** Solve any control by its kind: a composite from its definition's composition, a mind map as a tree. */
+/** A data control (to-do, calendar): no Blocks to lay out, its box is the size its user gave it (its own reader
+ * projects the records into it). */
+export function solveBox(src: ControlSource, containerId: string, opts: SolveOptions): SolvedControl {
+  const container = src.get(containerId)
+  const p = container?.placement ?? {}
+  const f = container ? opts.fallbackSize?.(container) : undefined
+  const w = num(p.w) ?? f?.w ?? 480
+  const h = num(p.h) ?? f?.h ?? 360
+  return { id: containerId, config: mindmapConfig(undefined), layout: { nodes: new Map(), bounds: { x: 0, y: 0, w, h } }, nested: new Map() }
+}
+
+/** Solve any control by its kind: a composite from its definition's composition, a data control by its box, a mind
+ * map as a tree. */
 export function solveAny(src: ControlSource, containerId: string, opts: SolveOptions): SolvedControl {
-  return src.get(containerId)?.kind === COMPOSITE ? solveComposite(src, containerId, opts) : solveControl(src, containerId, opts)
+  const kind = src.get(containerId)?.kind
+  if (kind === COMPOSITE) return solveComposite(src, containerId, opts)
+  if (isDataControl(kind)) return solveBox(src, containerId, opts)
+  return solveControl(src, containerId, opts)
 }
 
 export interface PlacedNode extends LaidNode {

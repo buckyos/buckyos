@@ -542,7 +542,7 @@ pub fn apply(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
         if let Some(plan) = run["detail"]["plans"].get(&digest) {
             // the result files were staged when the candidate was collected: bound again for this Commit
             for a in plan["assets"].as_array().into_iter().flatten() {
-                ws.stage_object(caller, a["object_id"].as_str().unwrap_or(""), state.limits.max_asset_bytes)?;
+                ws.stage_upload(caller, a["object_id"].as_str().unwrap_or(""), state.limits.max_asset_bytes, state.limits.max_media_bytes)?;
             }
         }
         let applied = ws.wish_apply(caller, run_id, &digest, p.get("session_id").and_then(Value::as_str))?;

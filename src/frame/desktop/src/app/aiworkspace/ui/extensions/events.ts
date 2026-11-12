@@ -120,7 +120,8 @@ export async function raiseEvent(args: RaiseArgs): Promise<{ handled: boolean; e
 
 async function runHandlers(args: RaiseArgs, entityId: string, payload: InstancePayload, def: BlockDefPayload | undefined, event: string, params: Record<string, Json>, eventId: string): Promise<boolean> {
   const { store } = args
-  const handlers = handlersOf(payload.on?.[event])
+  // the instance's own handlers, else the definition's default (a composite's `events.<e>.on`, manifest 4)
+  const handlers = handlersOf(payload.on?.[event] ?? def?.events?.[event]?.on)
   if (handlers.length === 0) return false
   const scope = { event: params, config: { ...defaultsOf(def), ...(payload.config ?? {}) } }
   const filled = handlers.map((h) => fillTemplate(h as unknown as Json, scope) as unknown as EventHandler)

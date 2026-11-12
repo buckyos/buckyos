@@ -283,6 +283,14 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
             if let Some(d) = e.payload.get("def_ref").and_then(|r| r.get("entity_id")) {
                 env["def_id"] = d.clone();
             }
+            // a data control projects the tables it binds, a composite its projections' data (控件机制 TODO G2, G13):
+            // their ids, by binding name
+            if env["kind"].as_str().is_some_and(|k| types::is_data_control(k) || k == types::COMPOSITE) {
+                if let Some(b) = e.payload.get("bindings").and_then(Value::as_object) {
+                    let ids: Map<String, Value> = b.iter().filter_map(|(k, v)| v.get("entity_id").map(|id| (k.clone(), id.clone()))).collect();
+                    env["bindings"] = Value::Object(ids);
+                }
+            }
             if let Some(v) = e.payload.get("slot") {
                 env["slot"] = v.clone();
             }
@@ -365,6 +373,10 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
                 let defaults: Map<String, Value> = e.payload.get("config_schema").and_then(|s| s.get("properties")).and_then(Value::as_object).into_iter().flatten()
                     .filter_map(|(k, p)| p.get("default").map(|d| (k.clone(), d.clone()))).collect();
                 env["config_defaults"] = Value::Object(defaults);
+                // its declared actions (manifest 4, 控件机制 TODO H2): offered on the instance's toolbar
+                if let Some(a) = e.payload.get("actions").filter(|a| a.is_array()) {
+                    env["def_actions"] = a.clone();
+                }
             }
         }
         TYPE_ANNOTATION => {

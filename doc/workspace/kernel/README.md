@@ -33,7 +33,7 @@
 是否支持写一个数据输入控件，验证数据有效才插入table数据源（包括检查是否与已有数据有冲突）
 
 
-> 2026-11-11 对照本目录正文与服务端 [src/frame/aiworkspace](../../../src/frame/aiworkspace)、Desktop [src/frame/desktop/src/app/aiworkspace](../../../src/frame/desktop/src/app/aiworkspace) 的代码核对。只列缺失或与设计不一致的部分；已实现但仍标为 experimental 的接口不单列。
+> 2026-11-11 对照本目录正文与服务端 [src/frame/aiworkspace](../../../src/frame/aiworkspace)、Desktop [src/frame/desktop/src/app/aiworkspace](../../../src/frame/desktop/src/app/aiworkspace) 的代码核对。只列缺失或与设计不一致的部分；已实现但仍标为 experimental 的接口不单列。2026-11-12 按[控件机制完善 TODO](../../../notepads/aiworkspace-control-mechanism-todo.md)的实施更新：label（G1）、两个官方控件的公开契约（G13）、单控件页（G14）、扩展清单的动作（H2）已完成，下文对应条目标为“已部分解决”。
 
 ### 数据源与同步（[04](04-数据源发布与同步.md)）
 
@@ -41,18 +41,18 @@
 
 ### Block、控件与标准库（[05](05-Block控件与标准库.md)）
 
-- **扩展控件不能定义 toolbar / context menu**（原条目为“未知”，已核实）：内置 Block 的 TS 定义有 `actions`、近身工具栏 `toolbar`、`anchors`、`shape`、`resize`、`Simplified` / `Inspector` 入口（[ui/blocks/registry.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/registry.ts) `BlockDefinition`）。扩展的 `component.json`（manifest v3）只有 `config_schema`、`bindings`、`entry`、`events`、`default_size`、`catalog` 等字段，无法声明动作、工具栏、右键菜单、快捷键、连接锚点、最小尺寸/缩放方式、简化/属性面板入口或打印能力。扩展控件因此只拿到了内置 Block 宿主契约的一部分。
-- **需要梳理系统自带的标准 Block**：现在注册的有 table、richtext、record、asset（媒体）、note、shape、frame、connector、ink、wish，扩展宿主 html / declarative，课堂互动 Block（`ui/classroom`），以及 `sample.*` 示例（bar-chart、line-chart、metric、video）；控件有 mindmap 和 composite（含 grid 布局）。设计列出的 label 没有独立实现。内置 Block 的契约只写在 TS 代码里，没有像 component.json 那样带版本的公开声明（属性、绑定、事件），扩展开发者无法拿它作参照；`sample.*` 是否进入标准库也还没定。
+- **扩展控件不能定义 context menu 等入口**（已部分解决）：内置 Block 的 TS 定义有 `actions`、近身工具栏 `toolbar`、`anchors`、`shape`、`resize`、`Simplified` / `Inspector` 入口（[ui/blocks/registry.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/registry.ts) `BlockDefinition`）。扩展的 `component.json` 自 manifest 4 起可以声明 `actions`（H2，[store/src/ext.rs](../../../src/frame/aiworkspace/store/src/ext.rs) `check_actions`），宿主按 `modes`、`needs` 放到近身工具栏，见 [05 扩展声明的动作](05-Block控件与标准库.md#扩展声明的动作)。仍无法声明右键菜单、快捷键、连接锚点、最小尺寸/缩放方式、简化/属性面板入口或打印能力；声明的动作也不进右键菜单。扩展控件因此只拿到了内置 Block 宿主契约的一部分。
+- **需要梳理系统自带的标准 Block**（已部分解决）：现在注册的有 table、richtext、record、asset（媒体）、label、note、shape、frame、connector、ink、wish，扩展宿主 html / declarative，课堂互动 Block（`ui/classroom`），以及 `sample.*` 示例（bar-chart、line-chart、metric、video）；控件有 mindmap、composite（含 grid 布局）和数据控件 todo、calendar。label 已实现（G1，[ui/blocks/labelBlock.tsx](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/labelBlock.tsx)）。只有 todo、calendar 两个官方控件有带版本的公开契约（G13，`aiws/contracts/<kind>.json`，`control.describe` 返回）；其余内置 Block 和 mindmap 的契约仍只写在 TS 代码里，扩展开发者无法拿它作参照；`sample.*` 是否进入标准库也还没定。
 
 ### 布局、模式与工具栏（[06](06-布局模式与用户状态.md)）
 
 - **不支持 Workspace / 画布自定义 toolbar**：Surface `config` 只有 `background`、`page_size`。没有 Workspace / Surface 级工具栏配置，也没有继承、追加、覆盖、隐藏的合成规则；工具栏和菜单都写死在 Desktop 代码里（`MainToolbar`、`MainMenu`、`ObjectToolbar`）。
-- **App 模式未实现**：没有“隐藏全部系统工具区”的呈现配置，也没有受控的退出、管理入口。
+- **App 模式只有最小版本**（已部分解决）：单控件页（G14，`page=control`，[ui/controls/data/ControlPage.tsx](../../../src/frame/desktop/src/app/aiworkspace/ui/controls/data/ControlPage.tsx)）让一个数据控件占满窗口。没有“隐藏全部系统工具区”的通用呈现配置，也没有受控的退出、管理入口。
 
 ### 事件、宏与公式（[07](07-事件宏与公式预留.md)）
 
-- **宏代码及其运行环境没有正式定义**：没有宏定义实体（代码版本、入口、参数、Workspace / Canvas 作用域），没有受限运行器，也没有稳定对象 API。最接近的是 HTML host API v3（`window.aiws`）和许愿格程序用的 `aiws` 包，都不是宏 API；后台宏也没有托管执行入口。
-- **统一动作模型不完整**：实例事件只能绑定 write / wish / open / notify 四种 handler（服务 README 的 Events and actions 一节）。没有声明参数、结果和所需能力的动作目录；工具栏、菜单、快捷键不走这套模型；由数据变化触发的自动化也没有提供。
+- **宏代码及其运行环境没有正式定义**：没有宏定义实体（代码版本、入口、参数、Workspace / Canvas 作用域），没有受限运行器，也没有稳定对象 API。最接近的是 HTML host API（`window.aiws`，现为 v4）和许愿格程序用的 `aiws` 包，都不是宏 API；后台宏也没有托管执行入口。
+- **统一动作模型不完整**：实例事件只能绑定 write / wish / open / notify 四种 handler（服务 README 的 Events and actions 一节）；扩展清单的 `actions` 另有 config / forward，并声明所需能力，但没有参数和结果。没有统一的动作目录；内置工具栏、菜单、快捷键不走这套模型；由数据变化触发的自动化也没有提供。
 - **公式只有显示求值，缺输入和过期判断**：值格式、服务端行为、前端显示求值和物化已实现，规则见 [公式值与显示求值](07-事件宏与公式预留.md#公式值与显示求值)。缺的部分：编辑器不能用 `=` 前缀输入公式，公式值目前只能经 API 写入；只有表格视图显示求值结果，Record 属性中的公式不求值；表格复制到系统剪贴板时公式格输出为空（[ui/import/copyTable.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/import/copyTable.ts)）；物化只记录公式文本和物化者，没有输入版本和求值语义版本，`doc.freshness` 无法判断物化结果是否过期。
 
 ### 任务执行与 AI（[08](08-任务执行与AI.md)）

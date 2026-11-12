@@ -573,7 +573,7 @@ test('Q33 a host older than the definition: a layout it does not ship is a marke
     { op: 'entity.create', entity_id: 'd-radial', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'd1',
       payload: { def_id: 'radial-e2e', kind: 'composite', title: 'Radial', composition: { layout: { algorithm: 'radial' }, slots: { items: {} } } } },
     { op: 'entity.create', entity_id: 'd-future', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'd2',
-      payload: { def_id: 'future-e2e', kind: 'html', title: 'Future', allow_no_source: true, html: { html: '<div/>', js: 'aiws.ready()', api_version: 4 } } },
+      payload: { def_id: 'future-e2e', kind: 'html', title: 'Future', allow_no_source: true, html: { html: '<div/>', js: 'aiws.ready()', api_version: 5 } } },
     { op: 'entity.create', entity_id: 'ring', type_id: 'buckyos.container', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 'auto', h: 'auto' }, payload: { kind: 'composite', def_ref: { entity_id: 'd-radial' } } },
     { op: 'entity.create', entity_id: 'r1', type_id: 'buckyos.cell', parent_id: 'ring', order_key: 'a', placement: { x: 20, y: 30, w: 160, h: 80 }, payload: { view: { type: 'shape' }, slot: 'items', title: 'one', config: { shape: 'rect' } } },
     { op: 'entity.create', entity_id: 'future', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'b', placement: { x: 500, y: 40, w: 240, h: 140 }, payload: { view: { type: 'html' }, def_ref: { entity_id: 'd-future' } } },
@@ -583,7 +583,7 @@ test('Q33 a host older than the definition: a layout it does not ship is a marke
   await expect(page.getByTestId('aiws-composite-unknown-ring')).toContainText('radial')
   await expect(page.getByTestId('aiws-canvas-block-r1')).toBeVisible()
   await expect(page.getByTestId('aiws-block-fallback-future')).toHaveAttribute('data-reason', 'unsupported_api')
-  await expect(page.getByTestId('aiws-block-fallback-future')).toContainText('需要宿主 API 4')
+  await expect(page.getByTestId('aiws-block-fallback-future')).toContainText('需要宿主 API 5')
   await runMode(page, true)
   await expect(page.locator('.aiws-html-frame')).toHaveCount(0)
 })

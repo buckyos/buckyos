@@ -27,7 +27,7 @@ export interface CatalogEntry {
   defEntity?: EntityEnvelope
 }
 
-export const STANDARD_ORDER = ['richtext', 'shape:text', 'note', 'shape', 'connector', 'frame', 'mindmap', 'table', 'asset', 'wish']
+export const STANDARD_ORDER = ['richtext', 'shape:text', 'note', 'shape', 'connector', 'frame', 'mindmap', 'todo', 'calendar', 'table', 'asset', 'wish', 'label']
 
 /** A control as an insertable entry: its definition creates the container and the first Block (selected and edited). */
 const controlEntries = new Map<string, BlockDefinition>()
@@ -36,8 +36,9 @@ function controlEntry(def: ContainerDefinition): BlockDefinition {
   if (!entry) {
     entry = {
       type: def.kind, version: def.version, get title() { return def.title }, accepts: [], allowNoSource: true, pureUi: true,
-      defaultSize: { w: 120, h: 44 }, cost: { editor: false, html: false }, Static: () => null, create: def.create,
-      catalog: { group: 'layout', get description() { return def.agent.summary }, needs: 'none', editAfterInsert: true, standard: true },
+      defaultSize: def.defaultSize ?? { w: 120, h: 44 }, cost: { editor: false, html: false }, Static: () => null, create: def.create,
+      // a data control (to-do, calendar) is selected after insertion, not edited: it is used right away
+      catalog: { group: def.sizing === 'box' ? 'data' : 'layout', get description() { return def.agent.summary }, needs: 'none', editAfterInsert: def.sizing !== 'box', standard: true },
     }
     controlEntries.set(def.kind, entry)
   }
@@ -79,7 +80,7 @@ export function registryEntries(): CatalogEntry[] {
     // composite instances are inserted from their definitions (the extension entries), never as a bare host
     if (def.kind === 'composite') continue
     const definition = controlEntry(def)
-    out.push({ key: `control:${def.kind}`, definition, catalog: definition.catalog!, title: definition.title, group: 'layout' })
+    out.push({ key: `control:${def.kind}`, definition, catalog: definition.catalog!, title: definition.title, group: definition.catalog!.group })
   }
   const rank = (entry: CatalogEntry) => { const i = STANDARD_ORDER.indexOf(entry.variant ? `${entry.definition.type}:${entry.variant}` : entry.definition.type); return i < 0 ? 100 : i }
   const { compare } = aiwsText()

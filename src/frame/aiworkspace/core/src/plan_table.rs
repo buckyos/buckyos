@@ -104,7 +104,7 @@ fn norm_value(p: &Planner, def: &FieldDef, v: &Value) -> WsResult<Value> {
 
 /// `unique` is enforced at the authoritative commit boundary, over live records.
 fn check_unique(p: &Planner, source_id: &str, def: &FieldDef) -> WsResult<()> {
-    if !def.unique {
+    if !def.unique && !def.submitter {
         return Ok(());
     }
     let mut seen: BTreeMap<String, String> = BTreeMap::new();
@@ -132,6 +132,72 @@ fn check_unique(p: &Planner, source_id: &str, def: &FieldDef) -> WsResult<()> {
     dup.dedup();
     Err(WsError::sub(Code::InvalidOperation, "UNIQUE_VIOLATION", format!("duplicate value in unique field {}", def.field_id))
         .with_data(json!({ "field_id": def.field_id, "record_ids": dup })))
+}
+
+/// The table's submitter field (控件机制 TODO G20).
+fn submitter_field(p: &Planner, sid: &str) -> WsResult<Option<String>> {
+    Ok(p.ov.fields(sid)?.into_iter().find(|f| f.alive() && f.def.submitter).map(|f| f.field_id))
+}
+
+/// The service fills and guards the submitter; undo, import and replay keep what was recorded.
+fn service_fills(p: &Planner) -> bool {
+    !(p.env.internal || p.env.import)
+}
+
+const SUBMITTER_FILLED: &str = "the submitter is filled by the service";
+
+/// Whether the caller writes only the records it submitted: it lacks `cap` on a table with a submitter field but
+/// holds `append` there. Without `cap` and without that, the usual `PERMISSION_DENIED`.
+fn own_records_only(p: &Planner, sid: &str, cap: Cap, sub: Option<&str>) -> WsResult<bool> {
+    if p.can(sid, cap)? {
+        return Ok(false);
+    }
+    if sub.is_none() || !p.can(sid, Cap::Append)? {
+        p.require(sid, cap)?;
+    }
+    Ok(true)
+}
+
+fn check_own(p: &Planner, sid: &str, sub: &str, rid: &str) -> WsResult<()> {
+    match p.ov.record(sid, rid)? {
+        Some(r) if r.values.get(sub).and_then(Value::as_str) != Some(p.env.principal.as_str()) => {
+            Err(WsError::denied(format!("record {rid} belongs to another submitter")))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The live record `principal` submitted, if any.
+fn submitted_by(p: &Planner, sid: &str, sub: &str, principal: &str) -> WsResult<Option<String>> {
+    let mut found = None;
+    p.ov.scan_records(sid, &mut |r| {
+        if r.alive() && r.values.get(sub).and_then(Value::as_str) == Some(principal) {
+            found = Some(r.record_id.clone());
+        }
+        Ok(found.is_none())
+    })?;
+    Ok(found)
+}
+
+fn has_live_records(p: &Planner, sid: &str) -> WsResult<bool> {
+    let mut any = false;
+    p.ov.scan_records(sid, &mut |r| {
+        any |= r.alive();
+        Ok(!any)
+    })?;
+    Ok(any)
+}
+
+/// Turning a field into the submitter (or back) re-owns no record: only on an empty table, one per table.
+fn check_submitter_change(p: &Planner, sid: &str, fid: &str) -> WsResult<()> {
+    if p.ov.fields(sid)?.iter().any(|f| f.alive() && f.def.submitter && f.field_id != fid) {
+        return Err(WsError::invalid_schema("a table has at most one submitter field"));
+    }
+    if has_live_records(p, sid)? {
+        return Err(WsError::new(Code::SchemaConflict, "the submitter field can only be set or cleared while the table has no records")
+            .with_data(json!({ "entity_id": sid, "selector": field_sel(fid) })));
+    }
+    Ok(())
 }
 
 /// Provenance rule (§3.4.7), decided by the backend from the trusted origin:
@@ -205,6 +271,7 @@ fn insert_records(p: &mut Planner, op: &Value) -> OpResult {
     let types_ok = check_type_revs(p, &sid, op)?;
     let fields: BTreeMap<String, FieldRow> =
         p.ov.fields(&sid)?.into_iter().filter(|f| f.alive()).map(|f| (f.field_id.clone(), f)).collect();
+    let sub = fields.values().find(|f| f.def.submitter).map(|f| f.field_id.clone()).filter(|_| service_fills(p));
     let seq = p.seq();
     let (mut touched_fields, mut inverse, mut norm_records) = (BTreeSet::new(), Vec::new(), Vec::new());
     for (i, r) in records.iter().enumerate() {
@@ -234,6 +301,9 @@ fn insert_records(p: &mut Planner, op: &Value) -> OpResult {
             let f = fields
                 .get(fid)
                 .ok_or_else(|| WsError::invalid_schema(format!("unknown field {fid}")).at(format!("/records/{i}/values/{fid}")))?;
+            if sub.as_deref() == Some(fid.as_str()) {
+                return Err(WsError::invalid_op(SUBMITTER_FILLED).at(format!("/records/{i}/values/{fid}")));
+            }
             let n = norm_value(p, &f.def, v).map_err(|e| e.at(format!("/records/{i}/values/{fid}")))?;
             if f.def.ty == FieldType::ObjectRef && !n.is_null() {
                 p.ov.add_ref(value_ref_edge(&sid, rid, fid, &n));
@@ -242,6 +312,17 @@ fn insert_records(p: &mut Planner, op: &Value) -> OpResult {
             rec.revs.insert(fid.clone(), seq);
             apply_meta(p, &mut rec, fid, op.get("derived"));
             touched_fields.insert(fid.clone());
+        }
+        if let Some(sf) = &sub {
+            // one record per submitter (G20): the caller edits the one it has
+            if let Some(existing) = submitted_by(p, &sid, sf, &p.env.principal)? {
+                return Err(WsError::sub(Code::InvalidOperation, "SUBMITTER_EXISTS", format!("{} already submitted record {existing}", p.env.principal))
+                    .with_data(json!({ "record_id": existing }))
+                    .at(format!("/records/{i}")));
+            }
+            rec.values.insert(sf.clone(), json!(p.env.principal));
+            rec.revs.insert(sf.clone(), seq);
+            touched_fields.insert(sf.clone());
         }
         for f in fields.values() {
             if f.def.required && !rec.values.contains_key(&f.field_id) {
@@ -269,6 +350,7 @@ fn insert_records(p: &mut Planner, op: &Value) -> OpResult {
         }
         norm_records.push(n);
         p.ov.put_record(rec);
+        crate::standard::touch_record(p, &src, rid);
         p.touch(&sid, sel(record_sel(rid)), "value");
         if append_only {
             p.read_denied.insert(rid.to_string());
@@ -303,7 +385,8 @@ fn set_values(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
     only_keys(op, &["source_id", "field_type_revs", "values", "derived"])?;
     let src = source(p, op, true)?;
     let sid = src.entity_id.clone();
-    p.require(&sid, Cap::Update)?;
+    let sub = submitter_field(p, &sid)?;
+    let own_only = own_records_only(p, &sid, Cap::Update, sub.as_deref())?;
     let items = get_array(op, "values")?;
     if items.is_empty() || items.len() > p.env.limits.max_set_values {
         return Err(WsError::limit(format!("values must contain 1..{} items", p.env.limits.max_set_values)));
@@ -316,6 +399,12 @@ fn set_values(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
     for (i, item) in items.iter().enumerate() {
         let rid = get_str(item, "record_id")?;
         let fid = get_str(item, "field_id")?;
+        if sub.as_deref() == Some(fid) && service_fills(p) {
+            return Err(WsError::invalid_op(SUBMITTER_FILLED).at(format!("/values/{i}")));
+        }
+        if own_only {
+            check_own(p, &sid, sub.as_deref().unwrap_or_default(), rid).map_err(|e| e.at(format!("/values/{i}")))?;
+        }
         if !field_cache.contains_key(fid) {
             field_cache.insert(fid.to_string(), live_field(p, &sid, fid)?);
         }
@@ -382,6 +471,7 @@ fn set_values(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
         rec.revs.insert(fid.to_string(), seq);
         rec.rev = seq;
         p.ov.put_record(rec);
+        crate::standard::touch_record(p, &src, rid);
         touched_fields.insert(fid.to_string());
         p.touch(&sid, sel(cell_sel(rid, fid)), "value");
         match old {
@@ -426,7 +516,8 @@ fn delete_records(p: &mut Planner, op: &Value) -> OpResult {
     only_keys(op, &["source_id", "records", "owned_bodies"])?;
     let src = source(p, op, true)?;
     let sid = src.entity_id.clone();
-    p.require(&sid, Cap::Delete)?;
+    let sub = submitter_field(p, &sid)?;
+    let own_only = own_records_only(p, &sid, Cap::Delete, sub.as_deref())?;
     let delete_bodies = match op.get("owned_bodies").and_then(Value::as_str).unwrap_or("delete") {
         "delete" => true,
         "detach" => false,
@@ -436,6 +527,9 @@ fn delete_records(p: &mut Planner, op: &Value) -> OpResult {
     let (mut ok, mut inverse_records, mut inverse_bodies, mut touched_fields) = (true, Vec::new(), Vec::new(), BTreeSet::new());
     for (i, item) in get_array(op, "records")?.iter().enumerate() {
         let rid = get_str(item, "record_id")?;
+        if own_only {
+            check_own(p, &sid, sub.as_deref().unwrap_or_default(), rid).map_err(|e| e.at(format!("/records/{i}")))?;
+        }
         let mut rec = match live_record(p, &sid, rid) {
             Ok(r) => r,
             Err(e) if e.code == Code::TargetDeleted => {
@@ -489,12 +583,16 @@ fn restore_records(p: &mut Planner, op: &Value) -> OpResult {
     only_keys(op, &["source_id", "records"])?;
     let src = source(p, op, true)?;
     let sid = src.entity_id.clone();
-    p.require(&sid, Cap::Delete)?;
+    let sub = submitter_field(p, &sid)?;
+    let own_only = own_records_only(p, &sid, Cap::Delete, sub.as_deref())?;
     let seq = p.seq();
     let fields: Vec<FieldRow> = p.ov.fields(&sid)?.into_iter().filter(|f| f.alive()).collect();
     let (mut ok, mut inverse, mut touched_fields) = (true, Vec::new(), BTreeSet::new());
     for (i, item) in get_array(op, "records")?.iter().enumerate() {
         let rid = get_str(item, "record_id")?;
+        if own_only {
+            check_own(p, &sid, sub.as_deref().unwrap_or_default(), rid).map_err(|e| e.at(format!("/records/{i}")))?;
+        }
         let mut rec = p.ov.record(&sid, rid)?.ok_or_else(|| WsError::not_found(format!("record {rid} not found")))?;
         if rec.alive() {
             return Err(WsError::invalid_op(format!("record {rid} is not deleted")));
@@ -527,6 +625,7 @@ fn restore_records(p: &mut Planner, op: &Value) -> OpResult {
         touched_fields.extend(rec.values.keys().cloned());
         let refs = record_refs(p, &rec)?;
         p.ov.put_record(rec);
+        crate::standard::touch_record(p, &src, rid);
         for r in refs {
             p.ov.add_ref(r);
         }
@@ -621,6 +720,9 @@ fn add_field(p: &mut Planner, op: &Value) -> OpResult {
     if def.required && backfill.is_none() && !rows.is_empty() {
         return Err(WsError::invalid_op("a required field needs a backfill value for existing records"));
     }
+    if def.submitter {
+        check_submitter_change(p, &sid, &def.field_id)?;
+    }
     if let Some(b) = &backfill {
         for mut r in rows {
             r.values.insert(def.field_id.clone(), b.clone());
@@ -662,7 +764,8 @@ fn violations(p: &Planner, sid: &str, def: &FieldDef) -> WsResult<(usize, Vec<St
     p.ov.scan_records(sid, &mut |r| {
         if r.alive() {
             let v = r.values.get(&def.field_id);
-            let bad = (def.required && v.is_none()) || (!def.nullable && v.is_some_and(Value::is_null));
+            let too_many = def.max_items.is_some_and(|m| v.and_then(Value::as_array).is_some_and(|a| a.len() > m as usize));
+            let bad = (def.required && v.is_none()) || (!def.nullable && v.is_some_and(Value::is_null)) || too_many;
             if bad {
                 total += 1;
                 if sample.len() < 100 {
@@ -729,6 +832,24 @@ fn update_field(p: &mut Planner, op: &Value) -> OpResult {
                 tightened |= if k == "nullable" { *slot && !b } else { !*slot && b };
                 *slot = b;
             }
+            // who submitted a record is never re-assigned: only an empty table changes its submitter field
+            "submitter" => {
+                let b = v.as_bool().ok_or_else(|| WsError::invalid_op("submitter must be a boolean"))?;
+                if b != f.def.submitter {
+                    check_submitter_change(p, &sid, fid)?;
+                }
+                restore.insert(k.clone(), json!(f.def.submitter));
+                f.def.submitter = b;
+            }
+            "max_items" => {
+                let n = match v {
+                    Value::Null => None,
+                    _ => Some(v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| WsError::invalid_op("max_items must be an integer or null"))?),
+                };
+                restore.insert(k.clone(), json!(f.def.max_items));
+                tightened |= n.is_some_and(|n| f.def.max_items.map_or(true, |old| n < old));
+                f.def.max_items = n;
+            }
             _ => return Err(WsError::invalid_op(format!("field property {k} cannot be changed here"))),
         }
     }
@@ -783,6 +904,9 @@ fn delete_field(p: &mut Planner, op: &Value) -> OpResult {
     if src.payload.get("title_field_id").and_then(Value::as_str) == Some(fid) {
         return Err(WsError::invalid_op("the title field cannot be deleted"));
     }
+    if p.env.schema_checks {
+        crate::standard::check_field_change(&src, fid, None)?;
+    }
     for r in field_refs(p, &sid, &f)? {
         p.ov.del_ref(r);
     }
@@ -824,6 +948,9 @@ fn restore_field(p: &mut Planner, op: &Value) -> OpResult {
         return Ok((op.clone(), None));
     }
     name_free(p, &sid, &f.def.name, fid)?;
+    if f.def.submitter && submitter_field(p, &sid)?.is_some() {
+        return Err(WsError::invalid_schema("a table has at most one submitter field"));
+    }
     let seq = p.seq();
     f.deleted_seq = None;
     f.def_rev = seq;
@@ -1054,6 +1181,9 @@ fn migrate_field(p: &mut Planner, op: &Value) -> OpResult {
         }
     }
     let target = FieldDef::from_value(&to_json)?;
+    if p.env.schema_checks {
+        crate::standard::check_field_change(&src, fid, Some(target.ty))?;
+    }
     if !value::migration_supported(from.ty, target.ty) {
         return Err(WsError::sub(Code::InvalidOperation, "MIGRATION_UNSUPPORTED",
             format!("{} → {} is not supported", from.ty.as_str(), target.ty.as_str())));

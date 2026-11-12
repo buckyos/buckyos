@@ -41,6 +41,9 @@ pub struct Service {
     open: Mutex<HashMap<String, WsHandle>>,
     /// Workspace ids handed out by [`Service::allocate_workspace_id`] whose folder is not in place yet.
     reserved: Mutex<HashSet<String>>,
+    /// `(owner, name) → workspace id` of the named Workspaces (控件机制 TODO G9), built from the folders on first use. Its
+    /// lock serializes a lookup with the creation that follows, so one name never makes two Workspaces.
+    names: Mutex<Option<HashMap<(String, String), String>>>,
 }
 
 /// A Workspace id this service will not hand out again until the lease is dropped — by then its folder exists
@@ -104,6 +107,7 @@ impl Service {
             session_retention_ms: crate::session::DEFAULT_RETENTION_MS,
             open: Mutex::new(HashMap::new()),
             reserved: Mutex::new(HashSet::new()),
+            names: Mutex::new(None),
         };
         // no connection survived a restart
         svc.sessions.all_offline()?;
@@ -267,6 +271,70 @@ impl Service {
 
     /// `ws.create`: built under a temporary name, renamed into place when complete.
     pub fn create_workspace(&self, caller: &Caller, title: &str, workspace_id: Option<&str>) -> WsResult<Value> {
+        self.create_workspace_with(caller, title, workspace_id, None)
+    }
+
+    /// `ws.create { name? }`: a name already used by one of the caller's Workspaces is `NAME_CONFLICT`.
+    pub fn create_workspace_with(&self, caller: &Caller, title: &str, workspace_id: Option<&str>, name: Option<&str>) -> WsResult<Value> {
+        let Some(name) = name else { return self.create_folder(caller, title, workspace_id, None) };
+        require_may_own(caller)?;
+        check_workspace_name(name)?;
+        let mut names = self.names.lock().unwrap();
+        let index = self.name_index(&mut names)?;
+        if let Some(id) = index.get(&(caller.principal.clone(), name.to_string())).filter(|id| self.ws_dir(id).exists()) {
+            return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("a workspace named {name} already exists"))
+                .with_data(json!({ "workspace_id": id })));
+        }
+        let info = self.create_folder(caller, title, workspace_id, Some(name))?;
+        index.insert((caller.principal.clone(), name.to_string()), info["workspace_id"].as_str().unwrap_or_default().to_string());
+        Ok(info)
+    }
+
+    /// `ws.ensure`: the caller's Workspace of that name, created (titled `title`, else the name) when it has none.
+    /// Concurrent calls for one name create one Workspace.
+    pub fn ensure_workspace(&self, caller: &Caller, name: &str, title: Option<&str>) -> WsResult<Value> {
+        require_may_own(caller)?;
+        check_workspace_name(name)?;
+        let mut names = self.names.lock().unwrap();
+        let index = self.name_index(&mut names)?;
+        let key = (caller.principal.clone(), name.to_string());
+        if let Some(id) = index.get(&key).cloned() {
+            if self.ws_dir(&id).exists() {
+                let handle = self.workspace(&id)?;
+                let ws = handle.lock().unwrap();
+                return Ok(json!({ "ok": true, "workspace_id": id, "name": name, "title": ws.title(), "epoch": ws.epoch, "head_seq": ws.head_seq, "created": false }));
+            }
+            index.remove(&key);
+        }
+        let mut info = self.create_folder(caller, title.unwrap_or(name), None, Some(name))?;
+        index.insert(key, info["workspace_id"].as_str().unwrap_or_default().to_string());
+        info["created"] = json!(true);
+        Ok(info)
+    }
+
+    /// The name index, read from every Workspace's `local.sqlite` (`owner`, `name`) the first time it is needed.
+    fn name_index<'a>(&self, names: &'a mut Option<HashMap<(String, String), String>>) -> WsResult<&'a mut HashMap<(String, String), String>> {
+        if names.is_none() {
+            let mut index = HashMap::new();
+            for id in self.workspace_ids()? {
+                let path = self.ws_dir(&id).join("local.sqlite");
+                let Ok(local) = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) else { continue };
+                let meta = |key: &str| local.query_row("SELECT value FROM local_meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).ok();
+                if let (Some(owner), Some(name)) = (meta("owner"), meta("name")) {
+                    index.insert((owner, name), id);
+                }
+            }
+            *names = Some(index);
+        }
+        Ok(names.as_mut().unwrap())
+    }
+
+    /// Forget the name index (a Workspace went or was replaced); the next use reads the folders again.
+    fn names_changed(&self) {
+        *self.names.lock().unwrap() = None;
+    }
+
+    fn create_folder(&self, caller: &Caller, title: &str, workspace_id: Option<&str>, name: Option<&str>) -> WsResult<Value> {
         require_may_own(caller)?;
         let lease = match workspace_id {
             Some(id) if is_workspace_id(id) => None,
@@ -282,7 +350,11 @@ impl Service {
         }
         let tmp = self.tmp_dir();
         let ws = Workspace::create(&tmp, &id, title, &caller.principal, self.objects.clone(), self.clock.clone())?;
-        let info = json!({ "ok": true, "workspace_id": id, "epoch": ws.epoch, "head_seq": 0, "title": title });
+        let mut info = json!({ "ok": true, "workspace_id": id, "epoch": ws.epoch, "head_seq": 0, "title": title });
+        if let Some(name) = name {
+            ws.local.execute("INSERT INTO local_meta (key, value) VALUES ('name', ?1)", [name]).map_err(db_err)?;
+            info["name"] = json!(name);
+        }
         drop(ws);
         std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         Ok(info)
@@ -333,8 +405,12 @@ impl Service {
             let Ok(access) = ws.listing_access(caller) else { continue };
             let reads = access.ws_caps.has(Cap::Read) || access.scoped.values().any(|c| c.has(Cap::Read));
             if reads {
-                out.push(json!({ "workspace_id": name, "title": ws.title(), "head_seq": ws.head_seq, "epoch": ws.epoch,
-                                 "capabilities": access.ws_caps.names() }));
+                let mut item = json!({ "workspace_id": name, "title": ws.title(), "head_seq": ws.head_seq, "epoch": ws.epoch,
+                                       "capabilities": access.ws_caps.names() });
+                if let Ok(Some(n)) = ws.name() {
+                    item["name"] = json!(n);
+                }
+                out.push(item);
             }
         }
         out.sort_by(|a, b| a["workspace_id"].as_str().cmp(&b["workspace_id"].as_str()));
@@ -347,14 +423,18 @@ impl Service {
         std::fs::rename(self.ws_dir(id), dst).map_err(io)
     }
 
-    /// `ws.delete`: moved to the trash folder; nothing is physically removed in this phase.
+    /// `ws.delete`: moved to the trash folder; nothing is physically removed in this phase. Its name is free again.
     pub fn delete_workspace(&self, caller: &Caller, id: &str) -> WsResult<Value> {
         {
             let handle = self.workspace(id)?;
             let ws = handle.lock().unwrap();
             ws.require_ws(caller, Cap::Manage)?;
         }
+        let mut names = self.names.lock().unwrap();
         self.trash(id)?;
+        if let Some(index) = names.as_mut() {
+            index.retain(|_, v| v != id);
+        }
         Ok(json!({ "ok": true }))
     }
 
@@ -469,6 +549,8 @@ impl Service {
         } else {
             std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         }
+        // a restore over a Workspace keeps its name (its `local_meta` moved over); a new or restored folder has none
+        self.names_changed();
         Ok(info)
     }
 
@@ -551,6 +633,21 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> WsResult<()> {
     f.write_all(bytes).map_err(io)?;
     f.sync_all().map_err(io)?;
     std::fs::rename(&tmp, path).map_err(io)
+}
+
+/// A Workspace name (控件机制 TODO G9): `^[a-z0-9][a-z0-9._-]{0,63}$`.
+pub fn is_workspace_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    (1..=64).contains(&b.len())
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-'))
+}
+
+fn check_workspace_name(name: &str) -> WsResult<()> {
+    if !is_workspace_name(name) {
+        return Err(WsError::invalid_op("name must match ^[a-z0-9][a-z0-9._-]{0,63}$"));
+    }
+    Ok(())
 }
 
 pub fn require_may_own(caller: &Caller) -> WsResult<()> {

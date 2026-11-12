@@ -9,6 +9,10 @@
  *       createBlock, batch(fn)
  *   v3 (扩展控件 P2/P3): emit(name, params), context.interactive, createBlock({ parent, slot }); a
  *       definition of version 2 runs as before (`aiws.version` is the version it declares)
+ *   v4 (控件机制 TODO H1, H4–H6): onConfig(cb) — the instance's properties as they change (also in
+ *       `context.config`); serverNow() — the service's clock; userState.get(key) / set(key, value) — this
+ *       person's own state of this Block (`block:<id>/<key>`); mediaUrl(binding, member?) — a Range-playable
+ *       address of a bound audio / video asset (or a member of a bound directory)
  *   locale: the host's language when the iframe starts ('en', 'zh-CN', …; also the document's `lang`),
  *       so an extension can show its own text in it; a language the extension has no text for should
  *       read English, as the host does.
@@ -21,8 +25,8 @@ import type { Json, Operation } from '../../api/types'
 import { aiwsT, currentAiwsLocale } from '../../i18n'
 
 /** The host API versions this host runs (Q19: newer versions only add members); the newest is what it speaks. */
-export const HTML_API_VERSIONS = [2, 3] as const
-export const HTML_API_VERSION = 3
+export const HTML_API_VERSIONS = [2, 3, 4] as const
+export const HTML_API_VERSION = 4
 /** A definition that names no version was written for API 2. */
 export const HTML_API_DEFAULT = 2
 /** The version an HTML definition runs on, or null when this host is older than it (Q33: shown as its snapshot). */
@@ -54,6 +58,10 @@ export interface HostBridge {
   asset?: (name: string) => Promise<{ bytes: Uint8Array; media_type: string }>
   /** v3: raise a declared event (the host runs the instance's handlers in run mode). */
   emit?: (name: string, params: Record<string, Json>) => Promise<{ handled: boolean; event_id: string | null }>
+  /** v4: this person's own state of the Block (H4). */
+  userState?: (action: 'get' | 'set', key: string, value: Json | null) => Promise<Json>
+  /** v4: a Range-playable address of a bound medium (H6). */
+  mediaUrl?: (binding: string, member: string | null) => Promise<Json>
 }
 
 export interface HtmlSource { html: string; css?: string; js?: string; api_version?: number }
@@ -64,7 +72,7 @@ type Pending = { resolve: (value: Json) => void; reject: (error: Error) => void;
 function bootstrap(nonce: string, locale: string, version: number): string {
   return `
 (function(){
-  var seq = 0, waiting = {}, handlers = {}, watchers = {}, currentBatch = null, assets = {};
+  var seq = 0, waiting = {}, handlers = {}, watchers = {}, currentBatch = null, assets = {}, configWatchers = [], clockOffset = ${JSON.stringify(0)};
   var nonce = ${JSON.stringify(nonce)};
   var noHandler = ${JSON.stringify(aiwsT('aiworkspace.extension.noHandler'))};
   function send(type, payload, id){ parent.postMessage({ aiws: nonce, type: type, id: id, payload: payload }, '*'); }
@@ -78,6 +86,8 @@ function bootstrap(nonce: string, locale: string, version: number): string {
     var m = event.data; if (!m || m.aiws !== nonce) return;
     if (m.type === 'result') { var w = waiting[m.id]; if (!w) return; delete waiting[m.id]; if (m.error) w.reject(new Error(m.error)); else w.resolve(m.payload); return; }
     if (m.type === 'event') { var list = watchers[m.payload && m.payload.name] || []; list.forEach(function(cb){ try { cb(m.payload); } catch (e) { setTimeout(function(){ throw e; }, 0); } }); return; }
+    if (m.type === 'config') { context.config = m.payload || {}; configWatchers.forEach(function(cb){ try { cb(context.config); } catch (e) { setTimeout(function(){ throw e; }, 0); } }); return; }
+    if (m.type === 'clock') { clockOffset = Number(m.payload && m.payload.offset) || 0; return; }
     if (m.type === 'request') {
       var h = handlers[m.name];
       if (!h) { send('response', { error: noHandler.replace('{{name}}', function(){ return m.name; }) }, m.id); return; }
@@ -139,6 +149,13 @@ function bootstrap(nonce: string, locale: string, version: number): string {
     text: function(name){ return { setMarkdown: function(md){ return write('setMarkdown', name, { markdown: String(md) }); } }; },
     createBlock: function(spec){ return write('createBlock', '', spec || {}); },
     ${version >= 3 ? `emit: function(name, params){ return call('emit', { name: String(name), params: params || {} }); },` : ''}
+    ${version >= 4 ? `onConfig: function(cb){ configWatchers.push(cb); return function(){ configWatchers = configWatchers.filter(function(x){ return x !== cb; }); }; },
+    serverNow: function(){ return Date.now() + clockOffset; },
+    userState: {
+      get: function(key){ return call('userState', { action: 'get', key: String(key), value: null }); },
+      set: function(key, value){ return call('userState', { action: 'set', key: String(key), value: value === undefined ? null : value }); }
+    },
+    mediaUrl: function(binding, member){ return call('mediaUrl', { binding: String(binding), member: member == null ? null : String(member) }); },` : ''}
     batch: function(fn, label){
       return call('batch', { action: 'begin', id: null, label: label || '' }).then(function(id){
         var prev = currentBatch; currentBatch = id;
@@ -237,6 +254,16 @@ export class HtmlRuntime {
     this.pending.clear()
   }
 
+  /** v4 (H1): the instance's properties changed — the running extension hears it (`aiws.onConfig`). */
+  pushConfig(config: Json) {
+    if (this.version >= 4) this.post('config', null, config)
+  }
+
+  /** v4 (H5): the offset of the service's clock from this device's (`aiws.serverNow()`). */
+  pushClock(offsetMs: number) {
+    if (this.version >= 4) this.post('clock', null, { offset: offsetMs })
+  }
+
   /** Ask the extension to handle `name` (e.g. `analyze`, `execute`, `render`). */
   request(name: string, payload: Json, timeoutMs = CALL_TIMEOUT_MS): Promise<Json> {
     if (this.disposed) return Promise.reject(new Error(aiwsT('aiworkspace.extension.unloaded')))
@@ -280,7 +307,7 @@ export class HtmlRuntime {
       case 'notify':
         this.bridge.notify(String((message.payload as { text?: string } | undefined)?.text ?? ''))
         return
-      case 'read': case 'query': case 'submit': case 'upload': case 'snapshot': case 'input': case 'outline': case 'write': case 'batch': case 'watch': case 'asset': case 'emit': {
+      case 'read': case 'query': case 'submit': case 'upload': case 'snapshot': case 'input': case 'outline': case 'write': case 'batch': case 'watch': case 'asset': case 'emit': case 'userState': case 'mediaUrl': {
         const id = message.id ?? 0
         void this.handle(message.type, message.payload ?? null).then(
           (value) => this.post('result', id, value),
@@ -318,6 +345,12 @@ export class HtmlRuntime {
         const result = await need(this.bridge.emit)(String(p.name ?? ''), params)
         return result as unknown as Json
       }
+      case 'userState':
+        if (this.version < 4) throw new Error(aiwsT('aiworkspace.extension.unknownCall', { type }))
+        return need(this.bridge.userState)(p.action === 'set' ? 'set' : 'get', String(p.key ?? ''), p.value ?? null)
+      case 'mediaUrl':
+        if (this.version < 4) throw new Error(aiwsT('aiworkspace.extension.unknownCall', { type }))
+        return need(this.bridge.mediaUrl)(String(p.binding ?? ''), typeof p.member === 'string' ? p.member : null)
       case 'asset': {
         const got = await need(this.bridge.asset)(String(p.name ?? ''))
         return { bytes: Array.from(got.bytes), media_type: got.media_type }
