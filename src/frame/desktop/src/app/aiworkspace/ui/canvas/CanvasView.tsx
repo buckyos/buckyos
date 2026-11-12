@@ -57,8 +57,9 @@ import { InstanceInspector } from '../controls/composite/Inspector'
 import { DefineControlDialog } from '../extensions/DefineControlDialog'
 import { isComposite, isFixedComposite, slotForDrop } from '../controls/composite/model'
 import { controlRegistry, type ControlCommandContext } from '../controls/registry'
-import { sourceTables, standardTableOf } from '../controls/data/source'
-import { SourceChooser } from '../controls/data/SourceChooser'
+import { standardTableOf } from '../controls/data/source'
+import { bindPlacement, findData } from '../controls/data/binding'
+import { bindDialogs } from '../controls/data/dialogBus'
 import { useTimedHidden } from '../controls/composite/visibility'
 import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
 import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
@@ -185,9 +186,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [typeAhead] = useState(() => new Map<'typed', { id: string; text: string }>())
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [picker, setPicker] = useState<{ kind: 'add-view' | 'move-surface' } | null>(null)
-  /** A data control being inserted while the workspace has several tables it can show: which one (or a new one). */
-  const [sourceAsk, setSourceAsk] = useState<{ tables: EntityEnvelope[]; request: InsertRequest; world: { x: number; y: number } | null; parentId?: string
-    also?: (cellId: string, rect: { x: number; y: number; w: number; h: number }) => Promise<Operation[]>; afterId?: string | null } | null>(null)
   /** “定义为控件…” (扩展控件 P1): the Blocks the new composite is made of. */
   const [defining, setDefining] = useState<string[] | null>(null)
   const [catalog, setCatalog] = useState<{ tab: CatalogTab; key?: string; world: { x: number; y: number } | null; parentId?: string; afterId?: string | null } | null>(null)
@@ -452,14 +450,13 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     afterId?: string | null) => {
     const definition = request.entry.definition
     if (!definition.create || insertReasonOf(definition.type)) return false
-    // a data control shows the workspace's only table of its kind, asks among several, creates one when there is none;
-    // a standard table (the toolbar's table group) asks whenever the workspace has one of its schema
-    const source = request.entry.key.startsWith('control:') ? controlRegistry.get(definition.type)?.source : undefined
-    const schemaId = source?.schemaId ?? (definition.type === 'table' ? standardTableOf(request.entry.config)?.schemaId : undefined)
-    if (schemaId && request.sourceId === undefined && !request.newSource) {
-      const tables = sourceTables(store, schemaId)
-      if (source && tables.length === 1) request = { ...request, sourceId: tables[0].entity_id }
-      else if (tables.length > (source ? 1 : 0)) { setSourceAsk({ tables, request, world, parentId, also, afterId }); return false }
+    // a standard table (the catalog's table variants) asks whenever the workspace has one of its schema: show it in a new
+    // table view, or create a new one (a control's data is settled by its on_bind below)
+    const standard = definition.type === 'table' && request.sourceId === undefined ? standardTableOf(request.entry.config) : null
+    if (standard && findData(store, { schema_id: standard.schemaId }).length > 0) {
+      const picked = await bindDialogs.pickOne({ title: request.title || request.entry.title, note: aiwsT('aiworkspace.datactl.source.standardNote'), query: { schema_id: standard.schemaId }, allow_new: true })
+      if (picked === null) return false
+      if (typeof picked === 'string') request = { ...request, sourceId: picked }
     }
     // a flow page shows no connectors (连接线实现方案 §8.3)
     if (definition.type === 'connector' && !isFree) { store.notify('info', aiwsT('aiworkspace.canvas.flowNoConnectors')); return false }
@@ -525,8 +522,24 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (also) {
       try { operations = [...operations, ...await also(cellId, { ...spot, ...size })] } catch (error) { store.notify('error', aiwsT('aiworkspace.canvas.insertFailed', { name: request.entry.title, reason: describeError(error) })); return false }
     }
+    // the controls it places settle their data (on_bind from parent to child, on_init_control back up): one Commit
+    const bound = await bindPlacement(store, operations, { folderId: contentFolderId, dialogs: bindDialogs })
+    if (!bound.ok) {
+      if (bound.message) store.notify('error', aiwsT('aiworkspace.canvas.insertFailed', { name: request.entry.title, reason: bound.message }))
+      return false
+    }
+    operations = bound.operations
     const outcome = await store.submit({ editId: `insert:${cellId}`, label: aiwsT('aiworkspace.canvas.insertNamed', { name: request.entry.title }), operations })
     if (outcome.status !== 'accepted' && outcome.status !== 'saved_locally') return false
+    // what a placed control runs once it is there (its on_init_control's `then`)
+    for (const step of bound.then) {
+      const placed = store.outline.get(step.node)
+      const def = placed?.def_id ? store.outline.get(placed.def_id) : undefined
+      const action = declaredActions(def?.def_actions).find((a) => a.id === step.action)
+      if (!placed || !action) continue
+      const host: ActionHost = { instanceId: step.node, mode, title: placed.title ?? def?.title ?? step.node, defaults: (def?.config_defaults ?? {}) as Record<string, Json>, openEntity: ui.openEntity }
+      void runAction(store, host, action).catch((error: unknown) => store.notify('error', aiwsT('aiworkspace.canvas.extensionActionFailed', { reason: describeError(error) })))
+    }
     if (isFree) setSelectionState(new Set([cellId]))
     if (request.entry.catalog.editAfterInsert && !request.sourceId && policy.editContent) {
       // a new wish opens its task in the right panel (it is not laid out yet when this runs)
@@ -534,7 +547,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     }
     return true
     // eslint-disable-next-line react-hooks/exhaustive-deps -- centreSpot reads the camera at call time
-  }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, noteReason, policy.editContent, setEditing, setSide])
+  }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, noteReason, policy.editContent, setEditing, setSide, mode, ui.openEntity])
 
   /** Add a note at `world` (null: the centre of the view) on a free canvas: written in place where content is edited,
    * else (view mode, a phone) written first in the annotations panel and placed when saved. */
@@ -1394,7 +1407,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               <EditorToolbarContext.Provider value={toolbarSink}>
               <OpenWishContext.Provider value={shell.side === 'wish' ? wishOpen?.cellId ?? null : null}>
               <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
-                canLayout={canLayoutBlock} onCommitLayout={commitLayout} onMoveNodes={moveNodes} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || sourceAsk || catalog || overlayOpen)} hidden={timedHidden.size ? timedHidden : undefined}
+                canLayout={canLayoutBlock} onCommitLayout={commitLayout} onMoveNodes={moveNodes} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)} hidden={timedHidden.size ? timedHidden : undefined}
                 tool={tool} placing={placing ? { ...entrySize(placing.entry), label: placingTitle } : null}
                 ink={inkTool ? { style: inkStyleOf(inkPrefs), touchLock: inkPrefs.touchLock, control: inkControl } : null}
                 onPlace={(world) => {
@@ -1451,13 +1464,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             <StatusDock />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
             {defining && defining.length > 0 && <DefineControlDialog ids={defining} laid={laid} surfaceId={surfaceId} onClose={() => setDefining(null)} onDone={(ids) => { setDefining(null); setSelectionState(new Set(ids)) }} />}
-            {sourceAsk && <SourceChooser title={t('aiworkspace.datactl.source.title', { name: sourceAsk.request.title || sourceAsk.request.entry.title })}
-              note={t(sourceAsk.request.entry.key.startsWith('control:') ? 'aiworkspace.datactl.source.note' : 'aiworkspace.datactl.source.standardNote')}
-              tables={sourceAsk.tables} onClose={() => setSourceAsk(null)} onPick={(choice) => {
-              const { request, world, parentId, also, afterId } = sourceAsk
-              setSourceAsk(null)
-              void insert(choice === 'new' ? { ...request, newSource: true } : { ...request, sourceId: choice }, world, parentId, also, afterId)
-            }} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
               if (picker.kind === 'move-surface') moveToSurface(choice)
               else if (picker.kind === 'add-view' && single?.source_id) {

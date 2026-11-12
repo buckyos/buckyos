@@ -33,6 +33,7 @@ import { SidePanel } from './SidePanel'
 import { StatusDetail, StatusDock } from './StatusSummary'
 import { TableImportHost } from '../import/TableImportDialog'
 import { OfficeImportHost } from '../import/ImportOfficeDialog'
+import { BindDialogHost } from '../controls/data/BindDialogs'
 import { isDataControl } from '@controls/contract'
 import { ControlPage } from '../controls/data/ControlPage'
 import { onControlPage, requestRecordFocus } from '../controls/data/focus'
@@ -347,6 +348,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
             {dialog?.kind === 'delete-surface' && <SurfaceDeleteDialog key={dialog.surface.entity_id} surface={dialog.surface} onClose={() => setDialog(null)} onDeleted={(next) => { if (next) selectSurface(next) }} />}
             <TableImportHost />
             <OfficeImportHost />
+            <BindDialogHost />
           </WorkspaceUiContext.Provider>
         )}
       </ShellContext.Provider>

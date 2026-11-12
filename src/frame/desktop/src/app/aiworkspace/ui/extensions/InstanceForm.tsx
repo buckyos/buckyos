@@ -40,7 +40,8 @@ export function InstanceForm({ def, config, bindings, onConfig, onBindings, comm
     else next[key] = value
     onConfig(next)
   }
-  const named = Object.entries(def.bindings ?? {})
+  // a list binding (`many`) is settled by on_bind and its re-bind, not by one choice here
+  const named = Object.entries(def.bindings ?? {}).filter(([, b]) => !b.many)
   if (props.length === 0 && named.length === 0) return null
   return (
     <div className="aiws-instance-form" data-testid="aiws-instance-form">

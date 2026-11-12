@@ -118,8 +118,6 @@ export interface InsertRequest {
   title?: string
   /** Existing data the new Block shows (needs `data`, or an extension that binds data). */
   sourceId?: string
-  /** A data control gets a new table even when the workspace has tables it could show. */
-  newSource?: boolean
   /** The file to upload first (needs `file`). */
   file?: File
   /** What is already known of `file` (its poster, size, length; 多媒体对象 §3), else worked out on insertion. */

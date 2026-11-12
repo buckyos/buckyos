@@ -10,6 +10,7 @@
 import { useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { compositeOf, projectionLayout, templated, type Composition, type CompositionProjection } from '@controls/composite'
 import { instantiate, type ProjectedNode, type Template } from '@controls/projection'
+import { boundIds } from 'buckyos'
 import type { FieldDef, Json, KeyedContent, QueryRow } from '../../../api/types'
 import { useEntity, useLoad, useStore, useUserState, useVersion } from '../../../state/hooks'
 import { RunModeContext } from '../../../state/runMode'
@@ -19,6 +20,7 @@ import { raiseEvent } from '../../extensions/events'
 import type { CanvasMode } from '../../blocks/registry'
 import { ProjectedView, projectedAt } from '../data/ProjectedView'
 import { useRecordSets } from '../data/records'
+import { dataColors } from '../data/colors'
 import { projectionCounts } from './counts'
 
 export const firstOpenKey = (containerId: string) => `block:${containerId}/first_open`
@@ -74,14 +76,17 @@ export function CompositeProjections({ containerId, regions, mode }: { container
   const { composition, config } = compositeOf(store.outline, containerId)
   const projections = useMemo(() => Object.entries(composition?.projections ?? {}), [composition])
   const bindings = useMemo(() => container?.bindings ?? {}, [container?.bindings])
+  // a list binding (`many`) feeds a records / counts projection from each of its tables; each data its colour (Q3)
+  const idsOf = useCallback((name: string) => boundIds(bindings[name]), [bindings])
+  const colors = useMemo(() => dataColors(Object.values(bindings).flatMap((v) => boundIds(v)), config as Record<string, Json>), [bindings, config])
   const tableIds = useMemo(() => [...new Set(projections.flatMap(([, p]) => {
     const ids: string[] = []
-    if (p.source.kind === 'records' || p.source.kind === 'counts') { const id = bindings[p.source.binding]; if (id) ids.push(id) }
-    if (p.mark) { const id = bindings[p.mark.binding]; if (id) ids.push(id) }
+    if (p.source.kind === 'records' || p.source.kind === 'counts') ids.push(...idsOf(p.source.binding))
+    if (p.mark) ids.push(...idsOf(p.mark.binding).slice(0, 1))
     return ids
-  }))].filter((id) => store.outline.get(id)?.type_id === 'buckyos.table-source'), [projections, bindings, store])
+  }))].filter((id) => store.outline.get(id)?.type_id === 'buckyos.table-source'), [projections, idsOf, store])
   const { snapshots } = useRecordSets(tableIds)
-  const dirId = projections.map(([, p]) => (p.source.kind === 'members' ? bindings[p.source.binding] : undefined)).find(Boolean) ?? null
+  const dirId = projections.map(([, p]) => (p.source.kind === 'members' ? idsOf(p.source.binding)[0] : undefined)).find(Boolean) ?? null
   const members = useDirMembers(store, dirId ?? null)
   const viewerClock = useViewerClock(containerId, mode !== 'edit' && mode !== 'presentation_edit')
   const principal = store.session.info().principal ?? null
@@ -91,7 +96,7 @@ export function CompositeProjections({ containerId, regions, mode }: { container
     const out = new Map<string, Item[]>()
     const mineOf = (p: CompositionProjection): Set<string> => {
       if (!p.mark) return new Set()
-      const tableId = bindings[p.mark.binding]
+      const tableId = idsOf(p.mark.binding)[0]
       const snap = tableId ? snapshots.get(tableId) : undefined
       const submitter = snap?.fields.find((f) => f.submitter)?.field_id
       const own = submitter && principal ? snap?.rows.find((r) => r.values[submitter] === principal) : undefined
@@ -110,13 +115,17 @@ export function CompositeProjections({ containerId, regions, mode }: { container
           .map(([key, m]) => ({ key, scope: { item: mark(key, { key, name: key, object_id: m.object_id, media_type: m.media_type, size: m.size }) } }))
       }
       if (src.kind === 'records') {
-        const rows = [...(snapshots.get(bindings[src.binding] ?? '')?.rows ?? [])]
+        const tables = idsOf(src.binding)
+        const rows = tables.flatMap((table) => (snapshots.get(table)?.rows ?? []).map((r) => ({ r, table })))
         if (src.sort) {
           const desc = src.sort.startsWith('-')
           const f = desc ? src.sort.slice(1) : src.sort
-          rows.sort((a, b) => { const x = String(a.values[f] ?? ''), y = String(b.values[f] ?? ''); return (x < y ? -1 : x > y ? 1 : 0) * (desc ? -1 : 1) })
+          rows.sort((a, b) => { const x = String(a.r.values[f] ?? ''), y = String(b.r.values[f] ?? ''); return (x < y ? -1 : x > y ? 1 : 0) * (desc ? -1 : 1) })
         }
-        return rows.slice(0, src.limit ?? 200).map((r) => ({ key: r.record_id, scope: { item: mark(r.record_id, { key: r.record_id, id: r.record_id, ...r.values }) } }))
+        return rows.slice(0, src.limit ?? 200).map(({ r, table }) => {
+          const key = tables.length > 1 ? `${table}/${r.record_id}` : r.record_id
+          return { key, scope: { item: mark(key, { key, id: r.record_id, ...r.values, binding: src.binding, source: table, binding_color: colors.get(table) ?? null }) } }
+        })
       }
       if (src.kind === 'viewer') {
         const remaining = remainingOf(composition, config, viewerClock.firstOpen, viewerClock.now)
@@ -129,13 +138,15 @@ export function CompositeProjections({ containerId, regions, mode }: { container
     for (const [name, p] of projections) {
       if (p.source.kind !== 'counts') continue
       const src = p.source
-      const snap = snapshots.get(bindings[src.binding] ?? '')
-      const field = snap?.fields.find((f) => f.field_id === src.field || f.name === src.field)
-      const label = labelsOf(field)
       const counts = new Map<string, number>()
-      for (const r of snap?.rows ?? []) {
-        const v = r.values[field?.field_id ?? src.field]
-        for (const k of Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]) counts.set(label(String(k)), (counts.get(label(String(k))) ?? 0) + 1)
+      for (const table of idsOf(src.binding)) {
+        const snap = snapshots.get(table)
+        const field = snap?.fields.find((f) => f.field_id === src.field || f.name === src.field)
+        const label = labelsOf(field)
+        for (const r of snap?.rows ?? []) {
+          const v = r.values[field?.field_id ?? src.field]
+          for (const k of Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]) counts.set(label(String(k)), (counts.get(label(String(k))) ?? 0) + 1)
+        }
       }
       const joined = src.of ? new Map((out.get(src.of) ?? []).map((i, index) => [i.key, { i, index }])) : null
       // most first; ties in the joined projection's order (the directory's), else by key
@@ -145,7 +156,7 @@ export function CompositeProjections({ containerId, regions, mode }: { container
       out.set(name, ranked.map(([key, count], rank) => ({ key, scope: { item: { ...((joined?.get(key)?.i.scope.item as Record<string, unknown> | undefined) ?? {}), key, count, rank: rank + 1 } } })))
     }
     return out
-  }, [projections, members, snapshots, bindings, principal, viewerClock.firstOpen, viewerClock.now, composition, config])
+  }, [projections, members, snapshots, idsOf, colors, principal, viewerClock.firstOpen, viewerClock.now, composition, config])
 
   // the canvas layout reserves room for the items there are
   useEffect(() => {

@@ -195,7 +195,7 @@ test('TD10 inserted from the catalog: no to-do table → one is created; one →
   await openCanvas(page, ALICE, ws.workspace_id)
   const outline = () => api.outline(ALICE, ws.workspace_id) as Promise<Json[]>
   const tables = async (schema: string) => (await outline()).filter((e) => !e.deleted && e.type_id === 'buckyos.table-source' && e.schema_id === schema).map((e) => e.entity_id as string)
-  const controls = async (kind: string) => (await outline()).filter((e) => !e.deleted && e.kind === kind) as { entity_id: string; bindings: Record<string, string> }[]
+  const controls = async (kind: string) => (await outline()).filter((e) => !e.deleted && e.kind === kind) as { entity_id: string; bindings: Record<string, string | string[]> }[]
   const insertFromCatalog = async (kind: string) => {
     await page.getByTestId('aiws-tool-catalog').click()
     await page.getByTestId(`aiws-catalog-entry-control-${kind}`).click()
@@ -237,15 +237,14 @@ test('TD10 inserted from the catalog: no to-do table → one is created; one →
   await expect(page.getByTestId('aiws-source-chooser')).toHaveCount(0)
   expect(await controls('todo')).toHaveLength(4)
 
-  // the calendar: none → created and bound as `events`
+  // the calendar (its contract's on_bind): no calendar table → one created, in the list `events` …
   await insertFromCatalog('calendar')
   await expect.poll(async () => (await tables('buckyos.calendar@1')).length).toBe(1)
   const [cal] = await controls('calendar')
-  // … and shows the due dates of every to-do table
+  // … and every to-do table in the list `todo`, its due dates shown
   const todoIds = await tables('buckyos.todo@1')
-  expect(Object.keys(cal.bindings).sort()).toEqual(['events', 'todo', 'todo_2', 'todo_3'])
-  expect(cal.bindings.events).toBe((await tables('buckyos.calendar@1'))[0])
-  expect([cal.bindings.todo, cal.bindings.todo_2, cal.bindings.todo_3].sort()).toEqual([...todoIds].sort())
+  expect(cal.bindings.events).toEqual([(await tables('buckyos.calendar@1'))[0]])
+  expect([...(cal.bindings.todo as string[])].sort()).toEqual([...todoIds].sort())
   await expect(page.getByTestId(`aiws-dc-bind-${cal.entity_id}`)).toHaveCount(0)
   await expect(page.getByTestId(`aiws-cal-${cal.entity_id}`)).toBeVisible()
 

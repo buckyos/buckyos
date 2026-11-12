@@ -56,6 +56,8 @@ test('a control from home: build, an instance with a binding, rebuild, a refused
   await catalog.getByTestId('aiws-instance-config-label').fill('数量')
   await catalog.getByTestId('aiws-catalog-insert').click()
   await expect(catalog).toBeHidden()
+  // placed once its bindings are settled (on_bind)
+  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).some((e: { type_id: string; def_id?: string }) => e.type_id === 'buckyos.cell' && e.def_id === defId)).toBe(true)
   const cell = (await api.outline(ALICE, ws.workspace_id)).find((e: { type_id: string; def_id?: string }) => e.type_id === 'buckyos.cell' && e.def_id === defId)
   expect(cell).toBeTruthy()
   const cellRead = await api.read(ALICE, ws.workspace_id, cell.entity_id)
@@ -171,6 +173,8 @@ test('composite controls: inserted from the catalogue, laid out from the composi
   await catalog.getByTestId('aiws-instance-config-title').fill('Sprint')
   await catalog.getByTestId('aiws-catalog-insert').click()
   await expect(catalog).toBeHidden()
+  // placed once its bindings are settled (on_bind)
+  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).some((e: J) => e.kind === 'composite')).toBe(true)
   const instance = (await api.outline(ALICE, ws.workspace_id)).find((e: J) => e.kind === 'composite') as J
   expect(instance.def_id).toBe(boardId)
   const id = String(instance.entity_id)

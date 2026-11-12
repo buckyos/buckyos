@@ -5,7 +5,7 @@ import type { BindDialogs, DataQuery } from 'buckyos'
 
 export type Ask =
   | { kind: 'one'; title: string; note?: string; query: DataQuery; allowNew: boolean; current: string | null; resolve: (v: string | { new: true } | null) => void }
-  | { kind: 'many'; title: string; note?: string; query: DataQuery; preselect: 'all' | 'none' | string[]; resolve: (v: string[] | null) => void }
+  | { kind: 'many'; title: string; note?: string; query: DataQuery; preselect: 'all' | 'none' | string[]; allowNew: boolean; resolve: (v: (string | { new: true })[] | null) => void }
   | { kind: 'confirm'; title: string; text: string; resolve: (v: boolean) => void }
 
 const hosts = new Set<(ask: Ask) => void>()
@@ -24,6 +24,6 @@ function open(ask: Ask) {
 /** The dialogs a placement or a re-bind asks on this page. */
 export const bindDialogs: BindDialogs = {
   pickOne: (o) => new Promise((resolve) => open({ kind: 'one', title: o.title, note: o.note, query: o.query, allowNew: o.allow_new === true, current: o.current ?? null, resolve })),
-  pickMany: (o) => new Promise((resolve) => open({ kind: 'many', title: o.title, note: o.note, query: o.query, preselect: o.preselect ?? 'none', resolve })),
+  pickMany: (o) => new Promise((resolve) => open({ kind: 'many', title: o.title, note: o.note, query: o.query, preselect: o.preselect ?? 'none', allowNew: o.allow_new === true, resolve })),
   confirm: (o) => new Promise((resolve) => open({ kind: 'confirm', title: o.title, text: o.text, resolve })),
 }

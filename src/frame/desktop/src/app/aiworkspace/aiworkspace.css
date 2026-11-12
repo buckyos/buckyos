@@ -1336,6 +1336,12 @@
 .aiws-source-item:hover, .aiws-source-item:focus-visible { border-color: var(--cp-accent); }
 .aiws-source-item > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .aiws-source-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-source-item.is-selected { border-color: var(--cp-accent); background: var(--aiws-selected-bg); }
+/* the binding dialogs: a sheet from the bottom on a phone (控件 on_bind TODO §2.2) */
+@media (max-width: 640px) {
+  .aiws-modal-backdrop:has(> .aiws-bind-dialog) { align-items: flex-end; padding: 0; }
+  .aiws-bind-dialog { width: 100%; max-width: none; max-height: 80vh; border-radius: 16px 16px 0 0; overflow: auto; }
+}
 .aiws-dc-note { color: var(--cp-muted); font-size: 12px; padding: 4px 2px; }
 .aiws-root .aiws-dc-ghostbtn { border: 1px dashed var(--cp-border); background: none; border-radius: 8px; color: var(--cp-muted); padding: 6px 10px; cursor: pointer; justify-content: center; }
 .aiws-root .aiws-dc-ghostbtn:hover:not(:disabled) { color: var(--cp-text); border-color: var(--cp-accent); }

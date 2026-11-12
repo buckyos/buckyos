@@ -246,3 +246,48 @@ test('CE04 listen together: started from the toolbar without running it, a liste
   expect(JSON.stringify(await config(api, ws, 'listen'))).not.toContain('0.3')
   await bobContext.close()
 })
+
+test('CE05 photo vote placed from the catalog: its on_bind asks which photo folder, creates its own votes table; its on_init_control prepares the ballot', async ({ page, api }) => {
+  const { ws, def } = await exampleWorkspace(api, 'photo-vote', 'vote-bind-e2e')
+  const folder = async (id: string, names: string[]) => {
+    const members: Record<string, J> = {}
+    for (const [i, n] of names.entries()) members[n] = { kind: 'file', object_id: (await api.uploadAsset(ALICE, ws.workspace_id, png(40 * i, 120, 200))).object_id }
+    return { op: 'entity.create', entity_id: id, type_id: 'buckyos.dir', parent_id: 'data', order_key: id, name: id, payload: { members } }
+  }
+  expect((await api.commit(ALICE, ws, [await folder('trip', ['Beach.png', 'Hill.png', 'Lake.png']), await folder('party', ['Cake.png'])])).status).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  const insert = async () => {
+    await page.getByTestId('aiws-tool-catalog').click()
+    await page.getByTestId(`aiws-catalog-entry-def-${def}`).click()
+    await page.getByTestId('aiws-catalog-insert').click()
+  }
+  await insert()
+  // two photo folders: asked which (no "new": a folder of photos is not created here)
+  const dialog = page.getByTestId('aiws-source-chooser')
+  await expect(dialog.getByTestId('aiws-source-party')).toBeVisible()
+  await expect(dialog.getByTestId('aiws-source-new')).toHaveCount(0)
+  await dialog.getByTestId('aiws-source-trip').click()
+  const instance = async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: J) => e.kind === 'composite' && e.def_id === def && !e.deleted)
+  await expect.poll(async () => (await instance()).length).toBe(1)
+  const [vote] = await instance()
+  expect(vote.bindings.photos).toBe('trip')
+  // its own votes table: a submitter field and three picks at most, owned by the control
+  const votes = (await api.read(ALICE, ws.workspace_id, vote.bindings.votes)).content
+  expect(votes.fields.find((f: J) => f.field_id === 'voter').submitter).toBe(true)
+  expect(votes.fields.find((f: J) => f.field_id === 'picks').max_items).toBe(3)
+  // …and the ballot prepared right after (the declared action): one option per photo of the folder
+  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, vote.bindings.votes)).content.fields.find((f: J) => f.field_id === 'picks').options.map((o: J) => o.label).sort(), { timeout: 15_000 })
+    .toEqual(['Beach.png', 'Hill.png', 'Lake.png'])
+  await expect(page.locator(`[data-proj^="${vote.entity_id}.photos~img~"]`)).toHaveCount(3)
+
+  // a second one: another votes table (when: always); cancelled: nothing placed
+  await insert()
+  await dialog.getByTestId('aiws-source-party').click()
+  await expect.poll(async () => (await instance()).length).toBe(2)
+  const tables = new Set((await instance()).map((e: J) => e.bindings.votes))
+  expect(tables.size).toBe(2)
+  await insert()
+  await dialog.getByTestId('aiws-bind-cancel').click()
+  await expect(dialog).toHaveCount(0)
+  expect(await instance()).toHaveLength(2)
+})

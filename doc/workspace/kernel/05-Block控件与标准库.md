@@ -229,22 +229,47 @@ Frame 的视觉区域、成员关系、演示目标与打印页用途必须分�
 | 控件 | 绑定 | 视图 | 记录上的操作 |
 | --- | --- | --- | --- |
 | `todo` | `items`：待办表（必填） | 列表、看板（按 `status` 分列）；隐藏已完成、折叠的列 | 快速添加、勾选完成、拖动排序或换列、加一列（即加 `status` 选项，需要 `structure`）、详情、复制链接、批注、单独页面打开、删除 |
-| `calendar` | `events`：日程表（必填）；`todo`、`todo_<名字>`：待办表，可绑多张，截止日期只读显示；其他名字：更多日程表 | 月、周、日、日程；周起始日、一天起始时间、是否显示待办、隐藏的日历或待办表 | 点空白或拖出时段新建、拖动改期（吸附 15 分钟、可跨天）、拖底边改结束、跳过这一次、复制、删除、复制链接、批注 |
+| `calendar` | `events`：日程表，必填，列表（`many`）；`todo`：待办表，列表，截止日期只读显示 | 月、周、日、日程；周起始日、一天起始时间、是否显示待办、隐藏的表 | 点空白或拖出时段新建、拖动改期（吸附 15 分钟、可跨天）、拖底边改结束、跳过这一次、复制、删除、复制链接、批注 |
 
-在画布上插入时，宿主按主绑定（`items` / `events`）的 `schema_id` 找工作区里的表：
+两个控件都没有自己的 on_bind，插入时按契约声明走默认规则（见下节）：待办的 `items` 没有就新建、一张就绑、多张让人选；日历的 `events` 同样处理，`todo` 是列表，工作区里的待办表全部带上。每张表一个颜色（宿主统一分配）。日历菜单的“显示哪些表…”是通用的改绑定。隐藏某张表只是自己的视图，不改文档。
 
-- 没有：在当前画布的内容文件夹里新建一张，和控件在同一个 Commit 里创建，归控件所有；与同级重名时名字后加 ` (2)`、` (3)`。
-- 只有一张：直接绑定它。
-- 有多张：让用户选一张或新建一张。
+两者的公开契约用与扩展 `component.json` 相同的形状声明：`manifest_version` 4、`ident { author_did: "did:bns:buckyos", name }`、`kind: "builtin"`、契约版本 `version`（待办 1，日历 2）、`config_schema`、`user_state`（每人自己保存的属性）、带 `schema_id` 的 `bindings`、投影用的 `templates`、`layouts`、各 `role` 的手势及其写入、`actions` 和给 Agent 的 `agent` 自述。契约由标准库代码生成为 `aiws/contracts/<kind>.json`，`control.describe { kind }` 在返回的 `control.contract` 中给出。模板的 role、手势的写入或属性发生读者需要知道的变化时提升契约版本。
 
-没有绑定表格的控件（例如 Agent 只建了容器）显示同一个入口，选定后用 `entity.set_props { key: "bindings" }` 写入绑定。
+### 放置控件时的绑定：on_bind 与 on_init_control
 
-日历的待办表是可选绑定：插入时把工作区里的待办表全部一并绑定（`todo`、`todo_2`……）。每张待办表按顺序取日历之后的颜色，`config.colors` 可以按绑定名另设。之后在日历的菜单里可以：
+控件被放到画布上之前，要先定下绑定哪些数据（[控件 on_bind TODO](../../../notepads/aiworkspace-control-on-bind-todo.md)）。一次插入可能带出一棵控件树（组合控件和它各个 slot 的第一批 Block），宿主按两个事件处理：
 
-- 再显示一张日历表（工作区里没有未显示的就新建一张），绑定名 `events_2`、`events_3`……
-- 显示某张待办表的截止日期，绑定名 `todo_2`……
-- 不再显示某张表：只去掉绑定，表格和记录都还在。
+- `on_bind`，从父到子：每个控件决定自己的绑定，子控件能拿到父控件已定的绑定（`ctx.parent`）。
+- `on_init_control`，从子到父：父控件最后检查子控件是否都就绪。
 
-隐藏某张表只是自己的视图，不改文档。
+任一控件失败或用户取消，整次插入都不发生。新建的数据放进当前画布的内容文件夹，同级重名时改名，归建它的控件所有（`owns`）；新建数据、控件和绑定在同一个 Commit 里。
 
-两者的公开契约用与扩展 `component.json` 相同的形状声明：`manifest_version` 4、`ident { author_did: "did:bns:buckyos", name }`、`kind: "builtin"`、契约版本 `version`（当前为 1）、`config_schema`、`user_state`（每人自己保存的属性）、带 `schema_id` 的 `bindings`、投影用的 `templates`、`layouts`、各 `role` 的手势及其写入、`actions` 和给 Agent 的 `agent` 自述。契约由标准库代码生成为 `aiws/contracts/<kind>.json`，`control.describe { kind }` 在返回的 `control.contract` 中给出。模板的 role、手势的写入或属性发生读者需要知道的变化时提升契约版本。
+调用时机：从目录、工具栏、流式页插入；未绑定控件上的“选择或新建”；改绑定（日历的“显示哪些表…”、组合控件属性面板的“更改绑定的数据…”，`ctx.reason` 为 `rebind`）；Agent 用 `buckyos aiws place`（`no_ui`，见下）。复制粘贴和导入不调用。
+
+**绑定的声明与存储**：`component.json` 的 `bindings` 和内置控件契约里，每个绑定可以写 `accepts`、`required`、`title`、`description`，以及：
+
+- `schema_id`：只接受这种业务 schema 的表；是内核登记的标准表（`buckyos.todo@1`、`buckyos.calendar@1`）时，宿主还能新建。
+- `many`：可以绑多张。实例的 `bindings` 里，这个绑定是列表 `[{ entity_id }, …]`（最多 32 项，不能重复），大纲里输出为 id 列表。
+
+**默认规则**（控件没写 on_bind 时按声明执行）：先用调用方给定的；再用父控件已绑、类型对得上的；其余按下表。
+
+| 声明 | 没有可用数据 | 只有一份 | 有多份 |
+| --- | --- | --- | --- |
+| 必填、单张 | 能建就新建；建不了就失败并说明（“工作区里还没有可用的 X”） | 直接绑 | 让人选一份，能建就可选“新建” |
+| `many` | 必填时同上；可选时不绑 | 绑上 | 全部绑上 |
+| 可选、单张 | 不绑 | 直接绑 | 不绑 |
+
+改绑定的默认做法：每个绑定一个对话框，单张绑定单选（标出当前的），列表绑定多选（预选现有的）。默认的 on_init_control：自己或任一子控件还缺必填绑定就失败。
+
+**默认对话框**：宿主提供 `pickOne`（单选，可带“新建”）、`pickMany`（多选，可带“新建”）、`confirm`，列出名字和所在的画布或文件夹，手机上从底部弹出。
+
+**组合控件的声明**（manifest 5，`component.json`）：组合控件没有代码，用步骤声明：
+
+- `on_bind`：最多 16 步，每步是 `{ binding, pick: "one" | "many" | "all", title?, allow_new? }`、`{ binding, from_parent: "<父控件的绑定名>" }` 或 `{ binding, create: { standard } | { table: { name, fields, title_field_id? } } | { dir: { name } }, when?: "missing" | "always" }`；步骤没写到的绑定按默认规则。
+- `on_init_control`：`{ require: "children" }`（默认）或 `{ then: { action } }`（插入后跑一个声明过的动作）。
+
+构建时内核检查步骤：绑定名要已声明，`pick: many | all` 要求绑定是 `many`，`create.standard` 要是登记的标准表，`then` 要是声明过的动作。照片投票示例用这套：选照片目录、为这次投票新建投票表、插入后准备选票。HTML 控件在 `behavior.js` 里写 `aiws.on('bind')` 是下一步，现在 HTML 控件按默认规则。
+
+**颜色**：列表绑定的每份数据由宿主按顺序从同一调色板分配颜色，`config.colors { <entity_id>: "#rrggbb" }` 可以另设；组合控件投影出的每条记录带 `item.binding`、`item.source`（表的 id）、`item.binding_color`。
+
+**Agent**：`buckyos aiws place <控件> --workspace <ws> --surface <画布> [--bind "name=id[,id];…"]` 跑同一个 on_bind 和 on_init_control，固定 `no_ui`：给定的绑定直接用，不需要选择的步骤照常执行（没有就新建、只有一份就绑），需要人来选时失败（`NEEDS_UI`）并说明要给哪个绑定；`then` 里的动作在输出中列出，由 Agent 自己执行。执行器是 websdk `aiws_bind.ts`，Desktop 与 CLI 共用。

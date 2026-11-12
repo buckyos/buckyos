@@ -25,7 +25,7 @@ export function BindDialogHost() {
 
 function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return createPortal(
-    <Modal label={title} testId="aiws-bind-dialog" className="aiws-bind-dialog" onClose={onClose}>{children}</Modal>,
+    <Modal label={title} testId="aiws-source-chooser" className="aiws-bind-dialog" onClose={onClose}>{children}</Modal>,
     (document.querySelector('.aiws-root') as HTMLElement | null) ?? document.body,
   )
 }
@@ -62,11 +62,12 @@ function PickOne({ ask, onDone }: { ask: Extract<Ask, { kind: 'one' }>; onDone: 
   )
 }
 
-function PickMany({ ask, onDone }: { ask: Extract<Ask, { kind: 'many' }>; onDone: (v: string[] | null) => void }) {
+function PickMany({ ask, onDone }: { ask: Extract<Ask, { kind: 'many' }>; onDone: (v: (string | { new: true })[] | null) => void }) {
   const store = useStore()
   const { t } = useAiwsText()
   const data = findData(store, ask.query)
   const [chosen, setChosen] = useState<Set<string>>(() => new Set(ask.preselect === 'all' ? data.map((d) => d.entity_id) : ask.preselect === 'none' ? [] : ask.preselect))
+  const [fresh, setFresh] = useState(false)
   const toggle = (id: string) => setChosen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
   const title = t('aiworkspace.datactl.source.choose', { name: ask.title })
   return (
@@ -75,10 +76,15 @@ function PickMany({ ask, onDone }: { ask: Extract<Ask, { kind: 'many' }>; onDone
       {ask.note && <div className="aiws-muted">{ask.note}</div>}
       <div className="aiws-source-list" role="list">
         {data.map((d) => <DataRow key={d.entity_id} id={d.entity_id} title={d.title ?? d.entity_id} place={d.place ?? ''} selected={chosen.has(d.entity_id)} onClick={() => toggle(d.entity_id)} />)}
-        {data.length === 0 && <div className="aiws-muted">{t('aiworkspace.datactl.source.none')}</div>}
+        {data.length === 0 && !ask.allowNew && <div className="aiws-muted">{t('aiworkspace.datactl.source.none')}</div>}
+        {ask.allowNew && (
+          <button type="button" role="listitem" className={`aiws-source-item${fresh ? ' is-selected' : ''}`} aria-pressed={fresh} data-testid="aiws-source-new" onClick={() => setFresh((v) => !v)}>
+            {fresh ? <Check size={16} aria-hidden="true" /> : <Plus size={16} aria-hidden="true" />}<span className="aiws-source-name">{t('aiworkspace.datactl.source.new')}</span>
+          </button>
+        )}
       </div>
       <div className="aiws-dialog-actions">
-        <button type="button" className="is-primary" data-testid="aiws-bind-confirm" onClick={() => onDone(data.map((d) => d.entity_id).filter((id) => chosen.has(id)))}>{t('aiworkspace.datactl.source.done')}</button>
+        <button type="button" className="is-primary" data-testid="aiws-bind-confirm" onClick={() => onDone([...data.map((d) => d.entity_id).filter((id) => chosen.has(id)), ...(fresh ? [{ new: true as const }] : [])])}>{t('aiworkspace.datactl.source.done')}</button>
         <button type="button" data-testid="aiws-bind-cancel" onClick={() => onDone(null)}>{t('aiworkspace.common.cancel')}</button>
       </div>
     </Sheet>

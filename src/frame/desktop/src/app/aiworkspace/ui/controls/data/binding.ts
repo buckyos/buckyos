@@ -108,7 +108,7 @@ export async function bindPlacement(store: WorkspaceStore, operations: Operation
     parent: outer && outerDeclared ? { decls: outerDeclared.decls, bound: (outer.bindings ?? {}) as Bound } : null,
   })
   if (!outcome.ok) return { ok: false, message: failureText(outcome.error, (node) => placed.get(node)?.declared.decls) }
-  const made = createData(store, outcome.results, opts.folderId)
+  const made = createData(store, outcome.results, opts.folderId, operations)
   for (const [id, result] of outcome.results) {
     const p = placed.get(id)
     if (!p) continue
@@ -121,10 +121,12 @@ export async function bindPlacement(store: WorkspaceStore, operations: Operation
   return { ok: true, operations: [...made.ops, ...operations], then: outcome.then }
 }
 
-/** Operations creating what the bindings asked for, in `folderId` (names free among its children). */
-function createData(store: WorkspaceStore, results: Parameters<typeof createOps>[0], folderId: string) {
-  const taken = new Set(store.outline.childrenOf(folderId).filter((e) => !e.deleted).map((e) => e.name).filter((n): n is string => Boolean(n)))
-  let last = store.outline.childrenOf(folderId).at(-1)?.order_key ?? undefined
+/** Operations creating what the bindings asked for, in `folderId`: after its children and whatever `alongside` puts there,
+ * names free among them. */
+function createData(store: WorkspaceStore, results: Parameters<typeof createOps>[0], folderId: string, alongside: Operation[] = []) {
+  const siblings = alongside.filter((op) => op.op === 'entity.create' && op.parent_id === folderId)
+  const taken = new Set([...store.outline.childrenOf(folderId).filter((e) => !e.deleted).map((e) => e.name), ...siblings.map((op) => op.name as string | undefined)].filter((n): n is string => Boolean(n)))
+  let last = [store.outline.childrenOf(folderId).at(-1)?.order_key, ...siblings.map((op) => op.order_key as string | undefined)].filter((k): k is string => Boolean(k)).sort().at(-1)
   return createOps(results, {
     folderId, newId: () => randomId('d'),
     orderKey: () => { last = store.core.order_key_between(last, undefined); return last },

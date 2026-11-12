@@ -168,8 +168,9 @@ export interface EntityEnvelope {
   layout?: { mode: 'flow' | 'free' | 'tree' } | null
   /** A control's attributes (outline only; a Surface's `config` is not projected). */
   config?: Record<string, Json> | null
-  /** A data control's bound tables, by binding name (控件机制 TODO G2). */
-  bindings?: Record<string, string> | null
+  /** A data control's or a composite's bound data, by binding name: one id, or a list for a `many` binding (控件机制 TODO
+   * G2; 控件 on_bind TODO Q2). */
+  bindings?: Record<string, string | string[]> | null
   /** The business schema an entity follows (`buckyos.todo@1`, `buckyos.calendar@1`). */
   schema_id?: string | null
   /** Folders: `canvas_content` (the area), `surface_content` (one Surface's folder) or `shows` (presentation paths). */

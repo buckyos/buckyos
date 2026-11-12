@@ -84,9 +84,6 @@ export interface ContainerDefinition {
   defaultSize?: { w: number; h: number }
   /** A data control's content: what it projects from the tables it binds, with its own gestures and pop-overs. */
   Body?: ComponentType<ControlBodyProps>
-  /** The standard table a data control needs: inserted (or found unbound) it takes the workspace's only one, asks
-   * among several, creates one when there is none. */
-  source?: DataSource
   /** Drawn in the container's frame under its children: implicit edges, fold handles, pins (R23: template children). */
   Chrome?: ComponentType<ControlChromeProps>
   /** The whole control as one self-contained Block on a flow page (§6.3). */
@@ -104,9 +101,6 @@ export interface ContainerDefinition {
   /** What Agents read (R11, §8.1): the shared catalogue entry. */
   agent: ControlDescriptor
 }
-
-/** A data control's table: the binding it goes in, its schema, and the standard table to create. */
-export interface DataSource { binding: string; schemaId: string; table: 'todo' | 'calendar' }
 
 class ControlRegistry {
   private readonly defs = new Map<string, ContainerDefinition>()

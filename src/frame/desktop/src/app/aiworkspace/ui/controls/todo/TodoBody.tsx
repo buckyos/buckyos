@@ -15,7 +15,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import { ArrowDownToLine, ArrowUpToLine, Check, ChevronDown, ChevronRight, Columns3, CornerDownLeft, Ellipsis, Expand, FolderInput, Link2, List, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Trash2, Undo2 } from 'lucide-react'
 import { columnDropAt, insertionAt, layoutColumns, layoutList, type LaidColumn } from '@controls/datalayout'
 import { instantiate, type ProjectedNode, type Rect } from '@controls/projection'
-import { deleteRecordsOp, orderAt, orderKeysBetween, sortTodos, TODO_DONE, todoAddOps, todoCompleteOps, todoMoveOps, todoUpdateOps, type TodoItem } from 'buckyos'
+import { boundIds, deleteRecordsOp, orderAt, orderKeysBetween, sortTodos, TODO_DONE, todoAddOps, todoCompleteOps, todoMoveOps, todoUpdateOps, type TodoItem } from 'buckyos'
 import type { Json, Operation } from '../../../api/types'
 import { useEntity, useReadOnlyReason, useStore, useWorkspaceUi } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
@@ -25,7 +25,7 @@ import { ProjectedView, projectedAt } from '../data/ProjectedView'
 import { useRecords } from '../data/records'
 import { useControlView } from '../data/viewState'
 import { submitData } from '../data/write'
-import { UnboundSource } from '../data/SourceChooser'
+import { UnboundSource } from '../data/BindDialogs'
 import { registerControlKeys } from '../data/keys'
 import { annotatedRecords, copyRecordLink, openControlPage, recordAnchor, useRecordFocus } from '../data/focus'
 import type { ControlBodyProps } from '../registry'
@@ -49,7 +49,7 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
   const { t } = useAiwsText()
   const store = useStore()
   const container = useEntity(containerId)
-  const sourceId = container?.bindings?.[ITEMS_BINDING] ?? null
+  const sourceId = boundIds(container?.bindings?.[ITEMS_BINDING])[0] ?? null
   const source = useEntity(sourceId ?? '')
   const { set, snapshot } = useRecords(sourceId)
   const ctl = useControlView<TodoView>(containerId, TODO_VIEW_DEFAULTS, TODO_VIEW_KEYS)

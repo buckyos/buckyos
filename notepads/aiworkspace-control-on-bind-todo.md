@@ -303,7 +303,7 @@ HTML 控件：
   - `state/outline.ts`
 - 示例：`doc/workspace/control-examples/controls/{photo-vote,listen-together}`。
 
-## 7. 实施记录（2026-11-12，进行中、未提交）
+## 7. 实施记录（2026-11-12，已实施、已部署本机 Zone 做 DV，未提交）
 
 已完成：
 
@@ -333,12 +333,66 @@ HTML 控件：
 - deno 控件测试 34 条通过；
 - websdk jest：`aiws_bind` 10 条，`aiws_ext` / `aiws_schedule` 共 40 条，通过。
 
-暂停：T3–T5、T7 的 Desktop 部分。原因是同一时间有另一处未提交的工作在改同一批文件：工具栏的标准表变体，涉及 `CanvasView.tsx`、`catalog.ts`、`InsertCatalog.tsx`、`ObjectToolbar.tsx`、`builtin.tsx`、`calendar/`、`data/source.ts`。它是在 §7.5 的专门实现（`source.ts`、`SourceChooser`）上继续扩展，而 T4 要收回这套实现。
+Desktop 部分（owner 提交并说“继续”之后）：
 
-事故：我删了 `ui/controls/data/source.ts` 和 `SourceChooser.tsx`，这两个文件当时在工作区里有别处未提交的修改。已从 HEAD 恢复，并按调用方重建了丢失的 `standardTableOf`（读 `config.standard` 的 `todo` / `calendar`）。我在 11-12 早些时候把 `freeBindingName` 改成接受 `Record<string, unknown>`，这一处也补回了。那两个文件里如果还有别的未提交修改，已经找不回来。
+- **T3 默认对话框**：
+  - `ui/controls/data/BindDialogs.tsx`：`pickOne` / `pickMany` / `confirm`，“新建”可勾选，手机上从底部弹出，渲染在 `.aiws-root` 上；
+  - `dialogBus.ts` 是请求总线，工作区页面挂一个 `BindDialogHost`；
+  - 对话框的 test id 沿用 `aiws-source-chooser`。
+- **T4 接入**：
+  - `ui/controls/data/binding.ts` 的 `bindPlacement`：从插入的操作里找出控件树（数据控件按契约；组合控件、HTML / 声明式 Cell 按定义），按两个事件的顺序执行，新建的数据和绑定并进同一个 Commit，数据的排序键和名字避开同一次插入里的其他数据；
+  - `CanvasView.insert` 所有插入都走它，插入后执行 `then` 动作；
+  - `bindControl` 处理未绑定占位的“选择或新建”和改绑定（日历的“显示哪些表…”、组合控件属性面板的“更改绑定的数据…”）；
+  - 目录插入扩展时不再要求先选完必填绑定；`InstanceForm` 不再显示列表绑定的下拉框。
+- **T5 内置控件迁移**：
+  - 删了 `ContainerDefinition.source`、`SourceChooser.tsx`、`CanvasView` 里的专门分支、日历菜单的三项、日历 `create` 里的“绑上全部待办表”；
+  - 待办 / 日历的 `create` 只建容器；
+  - 日历按列表读 `events` / `todo`，隐藏和颜色按表的 id；
+  - 内置控件的绑定标题本地化（`待办表`、`日历表`……）；
+  - 别处做的“标准表变体”（表格 Block 的 `config.standard`）保留原规则（工作区里已有这类表就问），改用同一个 `pickOne`；`source.ts` 只剩它要的 `standardTableOf` 和 `freeTableName`。
+- **T7 颜色**：`ui/controls/data/colors.ts` 统一分配；组合控件投影的每条记录带 `item.binding`、`item.source`、`item.binding_color`；列表绑定的 records / counts 投影读所有表。
+- **T8**：websdk `cli/modules/aiws_place.ts`：`buckyos aiws place <todo|calendar|定义> --workspace --surface [--bind "a=x;b=y,z"]`，`no_ui`，一个 Commit，输出 `then` 动作。
+- **其他**：
+  - 本地大纲镜像按列表读绑定；
+  - WASM 已重建；
+  - websdk 私人日程页的日历绑定改为列表；
+  - `pickMany` 可返回“新建”（websdk 测试 11 条）。
+- **T9 文档**：
+  - kernel 05：新节“放置控件时的绑定：on_bind 与 on_init_control”，标准控件一节改写；
+  - kernel 02：列表绑定；
+  - 手册 `aiworkspace_template_dev`：`bindings` 的 `many` / `schema_id`、manifest 5 步骤、`place`；
+  - 控件自述（`controls/schedule.ts`）改为先用 `place`。
 
-Desktop 现状：
+验证：
 
-- 新文件 `ui/controls/data/{binding.ts,BindDialogs.tsx,dialogBus.ts}` 已写好，还没接到任何入口上；
-- 大纲镜像暂时仍按单个 id 读绑定（列表会被丢掉），等 T5 一起改；
-- websdk 私人日程页的日历绑定暂时仍写单个对象，等 Desktop 能读列表再改。
+- Desktop `tsc` / `eslint` 无报错；
+- e2e：TD10（没有 / 一张 / 多张 / 取消 / 日历 / 未绑定就地绑定）、CA10（插入带上全部待办表；“显示哪些表…”多选、新建日历表、去掉一张、取消不改；每张表颜色不同；之后插入的日历带上全部表）、CE05（照片投票：选目录、建投票表、准备选票、第二个实例另建一张表、取消不插入）。
+
+还没做：
+
+- HTML 控件的 `aiws.on('bind')`（第二步）；
+- `place` 只放容器，不建组合控件各 slot 的第一批 Block；
+- `then` 动作 CLI 不执行，只列出。
+
+回归（本地 e2e，串行跑）：
+
+- todo / calendar / schedule / control-examples / extensions / mindmap / ui：全过；extensions 有两条用例在插入后加了等待，因为插入现在要先走 on_bind，是异步的；
+- features / file-picker / canvas / connectors / flow / presentation：68 条通过；
+- CN17（锚点）失败，组合控件复制粘贴 / 选择偶发失败：在 HEAD 上同样失败，与本次无关。
+
+本机 Zone DV（`uv run buckyos-build.py -s aiworkspace desktop` + `uv run start.py`，`playwright.aiworkspace.zone.config.ts aiworkspace.controls`，6 条全过）：
+
+- 原有 5 条（控件机制 TODO §7.4）在新契约下照常通过；
+- 新增 `[ctl] on_bind`：
+  - 服务给出的日历契约是 version 2，`events` 为 `many`；
+  - Agent 用 `buckyos aiws place`：
+    - 没有待办表时新建一张，并归控件所有；
+    - 用 `--bind` 指定时按指定的绑；
+    - 有两张待办表、又不给 `--bind` 时，失败为 `NEEDS_UI`，并说出是哪个绑定；
+    - 日历新建自己的日历表，并带上全部待办表；
+    - 照片投票有两个目录、不给 `--bind` 时失败，说出 `photos`；给了之后新建投票表（`voter` 是提交人字段），`then` 为 `["prepare"]`；
+  - owner 在浏览器里从目录插入照片投票：弹出选目录对话框，选 `party`，新建投票表，选票准备好（选项是 `Cake.png`）。
+- DV 发现并修了一处：`place` 原来默认都放在 (40,40)，Agent 连续放的控件会叠在一起。现在默认放在画布上已有 Block 的右边，DV 断言了依次右移。
+- 注意：DV 调用的是 websdk 的 `cli/dist/cli.mjs`，改 `cli/modules` 后要 `npx vite build --config vite.cli.config.ts`。
+
+没在 DV 里覆盖：手机上的选择对话框（底部弹出，没在真实 Zone 或真机上看过）、普通成员插入、日历“显示哪些表…”在真实 Zone 上的操作。

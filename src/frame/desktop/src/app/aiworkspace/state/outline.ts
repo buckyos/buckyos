@@ -50,10 +50,15 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     out.config = isControlKind(payload.kind as string) && payload.config && typeof payload.config === 'object' ? payload.config as Record<string, Json> : null
     out.def_id = (payload.def_ref as { entity_id?: string } | undefined)?.entity_id ?? null
     out.slot = typeof payload.slot === 'string' ? payload.slot : null
-    // a data control's or a composite's tables, by binding name (控件机制 TODO G2, G13)
-    const bindings = payload.bindings as Record<string, { entity_id?: unknown }> | undefined
+    // a data control's or a composite's data, by binding name: an id, or a list for a `many` binding (控件机制 TODO G2, G13)
+    const bindings = payload.bindings as Record<string, { entity_id?: unknown } | { entity_id?: unknown }[]> | undefined
+    const idOf = (ref: { entity_id?: unknown } | null | undefined) => (typeof ref?.entity_id === 'string' ? ref.entity_id : null)
     out.bindings = (isDataControl(payload.kind as string) || payload.kind === 'composite') && bindings && typeof bindings === 'object'
-      ? Object.fromEntries(Object.entries(bindings).flatMap(([name, ref]) => (typeof ref?.entity_id === 'string' ? [[name, ref.entity_id]] : [])))
+      ? Object.fromEntries(Object.entries(bindings).flatMap(([name, ref]): [string, string | string[]][] => {
+        if (Array.isArray(ref)) return [[name, ref.map(idOf).filter((id): id is string => id !== null)]]
+        const id = idOf(ref)
+        return id ? [[name, id]] : []
+      }))
       : null
   } else if (typeId === 'buckyos.cell') {
     out.locked = payload.locked === true ? true : null
@@ -375,7 +380,7 @@ export class OutlineModel {
                 config: current.type_id === 'buckyos.container' ? current.config ?? undefined
                   : current.ink_stroke || current.side || current.branch_color ? { ...(current.ink_stroke ? { stroke: current.ink_stroke } : {}), ...(current.side ? { side: current.side } : {}), ...(current.branch_color ? { branch_color: current.branch_color } : {}) } : undefined,
                 slot: current.slot ?? undefined,
-                bindings: current.bindings ? Object.fromEntries(Object.entries(current.bindings).map(([name, id]) => [name, { entity_id: id }])) : undefined,
+                bindings: current.bindings ? Object.fromEntries(Object.entries(current.bindings).map(([name, id]) => [name, Array.isArray(id) ? id.map((x) => ({ entity_id: x })) : { entity_id: id }])) : undefined,
                 presentation: current.live ? { live: true } : undefined,
                 surface_ref: current.viewport?.surface_id ? { entity_id: current.viewport.surface_id } : undefined,
                 center: current.viewport?.center ?? undefined, zoom: current.viewport?.zoom ?? undefined,

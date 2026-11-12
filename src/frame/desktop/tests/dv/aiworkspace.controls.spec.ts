@@ -596,3 +596,74 @@ test('[ctl] listen together: started from the toolbar without running it; a phon
     await info.attach('phone-errors', { body: Buffer.from(JSON.stringify(errors)), contentType: 'application/json' })
   }
 })
+
+// ---- 控件 on_bind TODO §5 on the Zone: an Agent places controls (no_ui), a person inserts one from the catalog
+
+test('[ctl] on_bind: the Agent places to-do / calendar / photo vote with buckyos aiws place (no dialogs); the owner inserts a photo vote from the catalog and chooses its folder', async ({ owner, baseURL }, info) => {
+  test.setTimeout(300_000)
+  const ws = await freeCanvas(owner)
+  const place = (...args: string[]) => cli(owner, baseURL!, 'aiws', 'place', ...args, '--workspace', ws.workspace_id, '--surface', 'free')
+  const outlineOf = async () => (await outline(owner, ws)) as J[]
+  const todoTables = async () => (await outlineOf()).filter((e) => !e.deleted && e.schema_id === 'buckyos.todo@1').map((e) => e.entity_id as string)
+
+  // the contract the service hands out: lists for the calendar's tables
+  const contract = (await owner.client.ok<J>('control.describe', { kind: 'calendar' })).control.contract
+  expect(contract.version).toBe(2)
+  expect(contract.bindings.events).toMatchObject({ many: true, required: true, schema_id: 'buckyos.calendar@1' })
+
+  // no to-do table: created on the canvas, owned by the control
+  const first = place('todo')
+  expect((await todoTables())).toEqual([first.bindings.items.entity_id])
+  // two to-do tables: a person would choose — the Agent is told which binding to give, then gives it
+  const second = place('todo', '--bind', `items=${first.bindings.items.entity_id}`)
+  expect(second.bindings.items.entity_id).toBe(first.bindings.items.entity_id)
+  await accepted(owner, ws, [{ op: 'entity.create', entity_id: 'home', type_id: 'buckyos.table-source', schema_id: 'buckyos.todo@1', parent_id: 'data', order_key: 'h', name: 'Home',
+    payload: { title_field_id: 'title', fields: [
+      { field_id: 'title', name: 'Title', type: 'text', required: true },
+      { field_id: 'status', name: 'Status', type: 'select', required: true, options: [{ option_id: 'todo', label: 'To do' }, { option_id: 'done', label: 'Done' }] },
+      { field_id: 'due', name: 'Due', type: 'date', nullable: true }, { field_id: 'order', name: 'Order', type: 'text', nullable: true },
+      { field_id: 'done_at', name: 'Completed', type: 'datetime', nullable: true }, { field_id: 'ext', name: 'Extension', type: 'json', nullable: true }] } }])
+  let refused = ''
+  try { place('todo') } catch (error) { refused = String(error) }
+  expect(refused).toContain('NEEDS_UI')
+  expect(refused).toContain('items')
+  // a calendar: its own new table, and every to-do list
+  const cal = place('calendar')
+  expect(cal.bindings.events).toHaveLength(1)
+  expect(cal.bindings.todo.map((b: J) => b.entity_id).sort()).toEqual((await todoTables()).sort())
+  // each placed to the right of the last, not on top of it
+  const xOf = async (id: string) => (await outlineOf()).find((e) => e.entity_id === id)!.placement.x as number
+  expect(await xOf(second.entity_id)).toBeGreaterThan(await xOf(first.entity_id))
+  expect(await xOf(cal.entity_id)).toBeGreaterThan(await xOf(second.entity_id))
+
+  // photo vote (manifest 5 steps): the folder given, its votes table created, the ballot action listed for the Agent
+  await build(owner, ws, 'photo-vote')
+  const members: Record<string, J> = {}
+  for (const [i, n] of ['Beach.png', 'Hill.png'].entries()) members[n] = { kind: 'file', object_id: await upload(owner, ws, png(60 * i, 120, 200)) }
+  await accepted(owner, ws, [{ op: 'entity.create', entity_id: 'trip', type_id: 'buckyos.dir', parent_id: 'data', order_key: 't', name: 'trip', payload: { members } },
+    { op: 'entity.create', entity_id: 'party', type_id: 'buckyos.dir', parent_id: 'data', order_key: 'u', name: 'party', payload: { members: { 'Cake.png': members['Beach.png'] } } }])
+  let asked = ''
+  try { place('did:bns:buckyos#photo-vote') } catch (error) { asked = String(error) }
+  expect(asked).toContain('photos')
+  const vote = place('did:bns:buckyos#photo-vote', '--bind', 'photos=trip')
+  expect(vote.bindings.photos.entity_id).toBe('trip')
+  expect(vote.then).toEqual(['prepare'])
+  const votes = (await readEntity(owner, ws, vote.bindings.votes.entity_id)).content
+  expect(votes.fields.find((f: J) => f.field_id === 'voter').submitter).toBe(true)
+  await info.attach('place', { body: Buffer.from(JSON.stringify({ first, cal, vote })), contentType: 'application/json' })
+
+  // the owner, in the browser: a photo vote from the catalog asks which folder, creates its votes table, prepares the ballot
+  const page = owner.page
+  await open(owner, ws)
+  const def = (await outlineOf()).find((e) => e.type_id === 'buckyos.block-def' && e.ident === 'did:bns:buckyos#photo-vote')!.entity_id
+  const before = (await outlineOf()).filter((e) => e.kind === 'composite' && !e.deleted).length
+  await page.getByTestId('aiws-tool-catalog').click()
+  await page.getByTestId(`aiws-catalog-entry-def-${def}`).click()
+  await page.getByTestId('aiws-catalog-insert').click()
+  const dialog = page.getByTestId('aiws-source-chooser')
+  await dialog.getByTestId('aiws-source-party').click()
+  await expect.poll(async () => (await outlineOf()).filter((e) => e.kind === 'composite' && !e.deleted).length, { timeout: 30_000 }).toBe(before + 1)
+  const inserted = (await outlineOf()).find((e) => e.kind === 'composite' && !e.deleted && e.bindings?.photos === 'party')!
+  await expect.poll(async () => (await readEntity(owner, ws, inserted.bindings.votes)).content.fields.find((f: J) => f.field_id === 'picks').options.map((o: J) => o.label), { timeout: 30_000 }).toEqual(['Cake.png'])
+  await screenshot(page, info, 'on-bind-vote')
+})

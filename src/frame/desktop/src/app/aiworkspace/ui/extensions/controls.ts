@@ -30,11 +30,6 @@ export function configProblems(def: BlockDefPayload | undefined, config: Record<
   }
 }
 
-/** Required bindings left unbound. */
-export function missingBindings(def: BlockDefPayload | undefined, bindings: Record<string, string>): string[] {
-  return Object.entries(def?.bindings ?? {}).filter(([name, b]) => b.required && !bindings[name]).map(([name]) => name)
-}
-
 
 /** The newest `manifest_version` this host reads (扩展控件 P2/P3); a package above it is listed, never imported (Q33). */
 export const HOST_MANIFEST_VERSION = 5

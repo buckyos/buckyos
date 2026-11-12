@@ -32,7 +32,16 @@ A record's body (\`table.set_body\`, a rich text under the table) holds its note
 numeric \`placement { x, y, w, h }\` (it holds no Blocks). \`config\` is the default view: \`mode\` (\`list\` | \`board\`),
 \`hide_done\` (boolean), \`collapsed\` (status option ids of folded columns). Each person's own view is their user state.
 
-## Create one with doc.commit
+## Place one
+
+\`buckyos aiws place todo --workspace <ws> --surface <canvas> [--bind "items=<table>"]\` runs the control's on_bind the
+way a person's insertion does: no to-do table in the workspace → one is created on the canvas (owned by the control),
+exactly one → it is shown, several → give \`--bind\` (the command fails with \`NEEDS_UI\` naming the binding). It answers the
+control's id and the table it shows; add items with \`table.insert_records\` or \`buckyos aiws todo\` (for the schedule).
+
+## By hand (doc.commit)
+
+Only when the command is not at hand: create the table and the control in one Commit.
 
 \`\`\`json
 { "op": "entity.create", "entity_id": "todo1", "type_id": "buckyos.table-source", "schema_id": "buckyos.todo@1", "parent_id": "<content folder>",
@@ -83,7 +92,15 @@ override record; "skip today" adds the original to \`ext.exdate\`.
 with a numeric placement. \`config\`: \`view\` (\`day\` | \`week\` | \`month\` | \`agenda\`), \`week_start\` (0 Monday … 6 Sunday),
 \`day_start\` (first hour shown), \`colors\` (\`{ <table entity id>: "#rrggbb" }\`; otherwise each table gets the next colour).
 
-## Create one with doc.commit
+## Place one
+
+\`buckyos aiws place calendar --workspace <ws> --surface <canvas> [--bind "events=<table>;todo=<t1>,<t2>"]\` runs the
+control's on_bind: no calendar table → one is created on the canvas, one → shown, several → give \`--bind\`; every to-do
+table of the workspace is added to \`todo\` unless you give the list.
+
+## By hand (doc.commit)
+
+Only when the command is not at hand: create the table and the control in one Commit.
 
 \`\`\`json
 { "op": "entity.create", "entity_id": "calctl1", "type_id": "buckyos.container", "parent_id": "<surface>", "order_key": "c",

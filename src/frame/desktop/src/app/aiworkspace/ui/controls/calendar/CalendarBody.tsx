@@ -15,11 +15,10 @@
  * The person's view and date are theirs (`block:<id>/view`, G6); "Set as default" writes the instance config. */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { CalendarCheck2, ChevronLeft, ChevronRight, Ellipsis, Expand, Plus, Undo2 } from 'lucide-react'
+import { CalendarCheck2, ChevronLeft, ChevronRight, Ellipsis, Expand, Plus, Table2, Undo2 } from 'lucide-react'
 import { instantiate, type ProjectedNode, type Rect } from '@controls/projection'
 import { layoutAgenda, layoutMonth, layoutTimeGrid, minuteY, monthCell, monthDayAt, type MonthOptions, type TimedPiece } from '@controls/datalayout'
-import { CALENDAR_SCHEMA_ID, calendarOccurrences, canonicalOriginal, eventAddOps, eventDeleteOps, eventEditOps, eventSkipOps, todoItem, TODO_SCHEMA_ID, viewerTimeZone, type EventChange, type EventTimes, type Json as SdkJson, type RecurrenceScope } from 'buckyos'
-import { randomId } from '../../../api/ids'
+import { boundIds, calendarOccurrences, canonicalOriginal, eventAddOps, eventDeleteOps, eventEditOps, eventSkipOps, todoItem, viewerTimeZone, type EventChange, type EventTimes, type Json as SdkJson, type RecurrenceScope } from 'buckyos'
 import type { Json, Operation } from '../../../api/types'
 import { useReadOnlyReason, useStore, useEntity, useWorkspaceUi } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
@@ -32,14 +31,16 @@ import { ProjectedView, projectedAt } from '../data/ProjectedView'
 import { useRecordSets } from '../data/records'
 import { useControlView } from '../data/viewState'
 import { submitData } from '../data/write'
-import { SourceChooser, UnboundSource } from '../data/SourceChooser'
-import { bindOps, freeBindingName, newSourceOps, sourceTables, surfaceFolderOf } from '../data/source'
+import { UnboundSource } from '../data/BindDialogs'
+import { bindControl } from '../data/binding'
+import { dataColors } from '../data/colors'
+import { bindDialogs } from '../data/dialogBus'
 import type { ControlBodyProps } from '../registry'
 import { EventDetail } from './EventDetail'
 import { draftOf, draftTimes, EventForm, hhmm, locale, MiniMonth, QuickCreate, ScopeAsk, type EventDraft } from './EventForm'
 import {
-  AGENDA_TEMPLATE, BAR_TEMPLATE, BLOCK_TEMPLATE, CAL_VIEW_KEYS, CAL_VIEWS, calendarDefaults, colorFor, dateOfDay, dayOfDate, DAY_MS, eventScope, isLong, localDayOf,
-  localInstant, localMidnight, minuteOf, place, rangeOf, stepAnchor, TODO_BINDING, EVENTS_BINDING, isTodoBinding, weekdayOf, type CalendarView, type CalView, type Placed,
+  AGENDA_TEMPLATE, BAR_TEMPLATE, BLOCK_TEMPLATE, CAL_VIEW_KEYS, CAL_VIEWS, calendarDefaults, dateOfDay, dayOfDate, DAY_MS, eventScope, isLong, localDayOf,
+  localInstant, localMidnight, minuteOf, place, rangeOf, stepAnchor, TODO_BINDING, EVENTS_BINDING, weekdayOf, type CalendarView, type CalView, type Placed,
 } from './model'
 
 const SNAP = 15
@@ -87,9 +88,11 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
   const ctl = useControlView<CalendarView>(containerId, calendarDefaults(loc, phone), CAL_VIEW_KEYS)
   const view = ctl.view
   const bindings = useMemo(() => container?.bindings ?? {}, [container?.bindings])
-  const calendars = useMemo(() => Object.entries(bindings).filter(([name]) => !isTodoBinding(name)).map(([binding, sourceId], i) => ({ binding, sourceId, color: colorFor(binding, i, container?.config) })), [bindings, container?.config])
-  // each to-do list its own colour, after the calendars' (`config.colors` names one per binding)
-  const todos = useMemo(() => Object.entries(bindings).filter(([name]) => isTodoBinding(name)).map(([binding, sourceId], i) => ({ binding, sourceId, color: colorFor(binding, calendars.length + i, container?.config) })), [bindings, calendars.length, container?.config])
+  // the tables it shows (lists): calendars, then to-do lists, each its colour from the host's palette (控件 on_bind TODO Q3);
+  // an entry's `binding` is its table's id, the key of `hidden` and of `config.colors`
+  const colors = useMemo(() => dataColors([...boundIds(bindings[EVENTS_BINDING]), ...boundIds(bindings[TODO_BINDING])], container?.config), [bindings, container?.config])
+  const calendars = useMemo(() => boundIds(bindings[EVENTS_BINDING]).map((id) => ({ binding: id, sourceId: id, color: colors.get(id)! })), [bindings, colors])
+  const todos = useMemo(() => boundIds(bindings[TODO_BINDING]).map((id) => ({ binding: id, sourceId: id, color: colors.get(id)! })), [bindings, colors])
   const sourceIds = useMemo(() => [...calendars.map((c) => c.sourceId), ...todos.map((x) => x.sourceId)], [calendars, todos])
   const { sets, snapshots, version } = useRecordSets(sourceIds)
   const today = localDayOf(now)
@@ -126,7 +129,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
         const day = dayOfDate(item.due)
         if (day < range.first || day > range.last) continue
         out.push({
-          occ: { id: `${list.binding}:${item.record_id}`, row: row as never, title: item.title, allDay: true, startDate: item.due, endDate: item.due, status: null, ext: {}, recurring: false, override: false, agentWritten: false },
+          occ: { id: `todo:${item.record_id}@${list.sourceId}`, row: row as never, title: item.title, allDay: true, startDate: item.due, endDate: item.due, status: null, ext: {}, recurring: false, override: false, agentWritten: false },
           calendar: list.binding, color: list.color, startDay: day, endDay: day, allDay: true, startMin: 0, endMin: 1440, todo: { recordId: item.record_id, done: item.done, sourceId: list.sourceId },
         })
       }
@@ -134,39 +137,13 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
     return out
   }, [snapshots, calendars, todos, view.show_todo, view.hidden, range.first, range.last, viewerTz])
   const byId = useMemo(() => new Map(placed.map((p) => [p.occ.id, p])), [placed])
-  const sourceOf = (binding: string) => bindings[binding] ?? ''
-  // ---- which tables it shows (a document change): more calendars, to-do tables' due dates, or one fewer
-  const [bindAsk, setBindAsk] = useState<'calendar' | 'todo' | 'remove' | null>(null)
+  const sourceOf = (id: string) => id
+  // ---- which tables it shows (a document change): the generic re-bind of its contract's lists (控件 on_bind TODO Q1)
   const canBind = !readOnlyNow && mode !== 'presentation_edit' && (container?.capabilities ?? []).includes('update')
-  const unbound = (schemaId: string) => sourceTables(store, schemaId).filter((table) => !Object.values(bindings).includes(table.entity_id))
-  const removable = Object.entries(bindings).filter(([name]) => name !== EVENTS_BINDING).map(([, id]) => store.outline.get(id)).filter((e): e is NonNullable<typeof e> => Boolean(e))
-  const bindTable = async (kind: 'calendar' | 'todo' | 'remove', choice: string) => {
-    setBindAsk(null)
-    const name = container?.title ?? t('aiworkspace.calendar.title')
-    let operations: Operation[]
-    if (kind === 'remove') {
-      const binding = Object.entries(bindings).find(([b, id]) => b !== EVENTS_BINDING && id === choice)?.[0]
-      if (!binding) return
-      operations = bindOps(containerId, { [binding]: null })
-    } else {
-      const binding = freeBindingName(bindings, kind === 'todo' ? TODO_BINDING : EVENTS_BINDING)
-      const tableId = choice === 'new' ? randomId('t') : choice
-      operations = []
-      if (choice === 'new') {
-        const folder = surfaceFolderOf(store, containerId)
-        if (!folder) return
-        operations.push(...newSourceOps(store, { binding, schemaId: CALENDAR_SCHEMA_ID, table: 'calendar' }, folder, tableId, t('aiworkspace.calendar.title')))
-      }
-      operations.push(...bindOps(containerId, { [binding]: tableId }))
-    }
-    const outcome = await store.submit({ editId: `bind:${containerId}`, label: t(kind === 'remove' ? 'aiworkspace.calendar.unbindLabel' : 'aiworkspace.datactl.source.bindLabel', { name }), operations })
-    if (outcome.status === 'rejected') store.notify('error', t('aiworkspace.datactl.rejected', { reason: outcome.errors?.[0]?.detail ?? outcome.detail ?? outcome.code }))
-  }
-  const askBind = (kind: 'calendar' | 'todo' | 'remove') => {
+  const chooseTables = async () => {
     setPopover(null)
-    if (kind === 'calendar' && unbound(CALENDAR_SCHEMA_ID).length === 0) void bindTable('calendar', 'new')
-    else if (kind === 'todo' && unbound(TODO_SCHEMA_ID).length === 1) void bindTable('todo', unbound(TODO_SCHEMA_ID)[0].entity_id)
-    else setBindAsk(kind)
+    const result = await bindControl(store, containerId, 'rebind', bindDialogs, t('aiworkspace.datactl.source.bindLabel', { name: container?.title ?? t('aiworkspace.calendar.title') }))
+    if (result !== 'done' && result !== 'cancelled') store.notify('error', t('aiworkspace.datactl.rejected', { reason: result }))
   }
   const rowsOf = (sourceId: string) => (snapshots.get(sourceId)?.rows ?? []) as never[]
 
@@ -747,12 +724,6 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
           <MiniMonth value={dateOfDay(anchor)} today={dateOfDay(today)} weekStart={view.week_start} onPick={(date) => { go(dayOfDate(date)); setPopover(null) }} />
         </ControlPopover>
       )}
-      {bindAsk && (
-        <SourceChooser title={t(bindAsk === 'calendar' ? 'aiworkspace.calendar.addCalendarTitle' : bindAsk === 'todo' ? 'aiworkspace.calendar.addTodoTitle' : 'aiworkspace.calendar.removeTitle')}
-          note={bindAsk === 'remove' ? t('aiworkspace.calendar.removeNote') : undefined} allowNew={bindAsk === 'calendar'}
-          tables={bindAsk === 'remove' ? removable : unbound(bindAsk === 'calendar' ? CALENDAR_SCHEMA_ID : TODO_SCHEMA_ID)}
-          onPick={(choice) => void bindTable(bindAsk, choice)} onClose={() => setBindAsk(null)} />
-      )}
       {popover?.kind === 'menu' && (
         <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.datactl.viewMenu')} width={260} side="below">
           <ControlMenu label={t('aiworkspace.datactl.viewMenu')} onClose={() => setPopover(null)} items={[
@@ -764,10 +735,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
               return { id: `cal-${c.binding}`, label: store.outline.get(c.sourceId)?.name ?? c.binding, checked: !hidden, icon: <span className="aiws-cal-dot" style={{ background: hidden ? 'transparent' : c.color, borderColor: c.color }} />,
                 run: () => ctl.set({ hidden: hidden ? (view.hidden ?? []).filter((x) => x !== c.binding) : [...(view.hidden ?? []), c.binding] }) }
             }) : []),
-            ...(canBind ? ['separator',
-              { id: 'add-calendar', label: t('aiworkspace.calendar.addCalendar'), icon: <Plus size={14} />, run: () => askBind('calendar') },
-              { id: 'add-todo', label: t('aiworkspace.calendar.addTodo'), icon: <Plus size={14} />, disabled: unbound(TODO_SCHEMA_ID).length ? false : t('aiworkspace.calendar.noTodoTables'), run: () => askBind('todo') },
-              { id: 'remove-table', label: t('aiworkspace.calendar.removeTable'), disabled: removable.length ? false : t('aiworkspace.calendar.nothingToRemove'), run: () => askBind('remove') }] as (MenuItem | 'separator')[] : []),
+            ...(canBind ? ['separator', { id: 'tables', label: t('aiworkspace.calendar.chooseTables'), icon: <Table2 size={14} />, run: () => void chooseTables() }] as (MenuItem | 'separator')[] : []),
             ...(host !== 'page' ? [{ id: 'page', label: t('aiworkspace.datactl.openAsPage'), icon: <Expand size={14} />, run: () => openControlPage(containerId) } as MenuItem] : []),
             'separator',
             { id: 'set-default', label: t('aiworkspace.datactl.setDefault'), disabled: ctl.setDefault ? false : ctl.canChange ? t('aiworkspace.datactl.alreadyDefault') : t('aiworkspace.datactl.noUpdate'), run: () => ctl.setDefault?.() },

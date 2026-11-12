@@ -11,11 +11,9 @@ import type { Json } from '../../../api/types'
 export { AGENDA_TEMPLATE, BAR_TEMPLATE, BLOCK_TEMPLATE }
 
 export const CALENDAR_KIND = 'calendar'
-/** The binding of the main calendar; `todo` and `todo_<name>` are to-do tables whose due dates are shown, any other
- * binding a further calendar. */
+/** The calendar tables it shows (a list binding), and the to-do tables whose due dates it shows (a list binding). */
 export const EVENTS_BINDING = 'events'
 export const TODO_BINDING = 'todo'
-export const isTodoBinding = (name: string) => name === TODO_BINDING || name.startsWith(`${TODO_BINDING}_`)
 
 export type CalView = 'day' | 'week' | 'month' | 'agenda'
 export const CAL_VIEWS: CalView[] = ['day', 'week', 'month', 'agenda']
@@ -146,10 +144,6 @@ export const isLong = (p: Placed) => p.allDay || p.endDay > p.startDay
 // ---- colours
 
 export const CALENDAR_COLORS = ['#2563eb', '#16a34a', '#d97706', '#db2777', '#7c3aed', '#0891b2', '#dc2626', '#4b5563']
-export function colorFor(binding: string, index: number, config: Record<string, Json> | null | undefined): string {
-  const set = (config?.colors as Record<string, Json> | undefined)?.[binding]
-  return typeof set === 'string' && /^#[0-9a-fA-F]{6}$/.test(set) ? set : CALENDAR_COLORS[index % CALENDAR_COLORS.length]
-}
 
 /** How an event is painted: tentative ones paler, cancelled ones struck, a selected one outlined. */
 export function eventScope(p: Placed, opts: { selected: boolean; dragging: boolean; text: string; time: string; mode: 'bar' | 'block' | 'agenda'; height?: number; continues?: boolean }) {

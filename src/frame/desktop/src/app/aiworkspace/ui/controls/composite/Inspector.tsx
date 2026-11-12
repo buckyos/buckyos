@@ -10,6 +10,8 @@ import { useAiwsText } from '../../../useAiwsText'
 import { changedProps, submitProps, type PropKey } from '../../blocks/ops'
 import { configProblems } from '../../extensions/controls'
 import { EventsForm } from '../../extensions/EventsForm'
+import { bindControl } from '../data/binding'
+import { bindDialogs } from '../data/dialogBus'
 import { InstanceForm } from '../../extensions/InstanceForm'
 
 interface InstancePayload { config?: Record<string, Json>; bindings?: Record<string, { entity_id: string }>; on?: EventBindings; def_ref?: { entity_id: string } }
@@ -29,7 +31,7 @@ export function InstanceInspector({ entity, readOnly }: { entity: EntityEnvelope
   const defPayload = def.data?.entity_id === defId ? def.data.content.payload : undefined
   if (!payload || !defPayload) return <div className="aiws-muted">{t('aiworkspace.ext.composite.loading')}</div>
   const config = payload.config ?? {}
-  const bindings = Object.fromEntries(Object.entries(payload.bindings ?? {}).map(([k, v]) => [k, v.entity_id]))
+  const bindings = Object.fromEntries(Object.entries(payload.bindings ?? {}).flatMap(([k, v]) => (Array.isArray(v) ? [] : [[k, v.entity_id]])))
   const write = (key: PropKey, before: Record<string, Json> | undefined, after: Record<string, Json>, label: string) => {
     if (readOnly) return
     void submitProps(store, { entityId: id, key, props: changedProps(before, after), keyRevs: revs, defId, label })
@@ -41,6 +43,11 @@ export function InstanceInspector({ entity, readOnly }: { entity: EntityEnvelope
       <InstanceForm def={defPayload} config={config} bindings={bindings} commitOnBlur
         onConfig={(next) => write('config', config, next, t('aiworkspace.ext.composite.setConfig'))}
         onBindings={(next) => write('bindings', payload.bindings as Record<string, Json> | undefined, Object.fromEntries(Object.entries(next).map(([k, v]) => [k, { entity_id: v }])), t('aiworkspace.ext.composite.setBindings'))} />
+      {Object.keys(defPayload.bindings ?? {}).length > 0 && (
+        <button type="button" className="aiws-link" data-testid="aiws-instance-rebind" onClick={() => void bindControl(store, id, 'rebind', bindDialogs, t('aiworkspace.ext.composite.setBindings')).then((r) => {
+          if (r !== 'done' && r !== 'cancelled') store.notify('error', t('aiworkspace.datactl.rejected', { reason: r }))
+        })}>{t('aiworkspace.ext.composite.rebind')}</button>
+      )}
     </fieldset>
   )
   return (
