@@ -189,7 +189,7 @@ test('UI12/UI13 failure keeps old results; manual edits are protected; versions 
 
 test('UI20 two clients apply the same wish: only one application is accepted', async ({ page, api, browser }) => {
   const ws = await api.demo(ALICE, 'quarterly', `wish3 ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update', 'structure', 'append', 'delete', 'comment'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'structure', 'append', 'delete', 'comment'] }] })
   await openCanvas(page, ALICE, ws.workspace_id)
   const other = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const page2 = await other.newPage()

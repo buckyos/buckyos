@@ -55,7 +55,7 @@ impl Workspace {
 
     /// `proc.start`: fix the inputs in one consistent read and store the candidate.
     pub fn proc_start(&mut self, caller: &Caller, program: &str, params: &Value, idem_key: &str) -> WsResult<Value> {
-        self.require_run(caller)?;
+        self.require_run(caller, None)?;
         check_idempotency_key(idem_key)?;
         if program != MOCK_PROGRAM {
             return Err(WsError::new(Code::MissingExtension, format!("unknown program {program}")));

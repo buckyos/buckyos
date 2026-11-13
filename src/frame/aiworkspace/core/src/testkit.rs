@@ -37,6 +37,7 @@ impl MemWorkspace {
             replay: false,
             peer_id: 1,
             limits: self.limits.clone(),
+            creator: None,
         }
     }
 

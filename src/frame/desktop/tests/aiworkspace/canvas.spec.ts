@@ -111,7 +111,7 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   await expect(page.getByTestId('aiws-delete-blocked')).toContainText('仍被引用')
   await expect(page.getByTestId('aiws-delete-confirm')).toHaveCount(0)
   // bob reads only the data tree: the same pre-check tells him nothing about the Blocks
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', scope_entity_id: 'data', capabilities: ['read', 'delete'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'data', allow: ['read', 'delete'] }] })
   const prepared = await api.rpc(BOB, 'doc.prepare', { protocol_version: '1.0', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: 'bob-pre', session_id: 'bob', operations: [{ op: 'entity.delete', entity_id: 'intro', expect: { rev: (await api.read(BOB, ws.workspace_id, 'intro')).life_rev } }] })
   expect(prepared.status).toBe('rejected')
   expect(prepared.errors[0].data.referrers).toEqual([])
@@ -288,7 +288,7 @@ test('trackpad wheel preserves horizontal and vertical table scrolling with over
 test('UI06 two clients move the same Block: the later arrival wins, the other is told and can re-apply', async ({ page, api, browser }) => {
   const ws = await api.demo(ALICE, 'quarterly', `ui06 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update', 'structure', 'append', 'delete', 'comment'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'structure', 'append', 'delete', 'comment'] }] })
   const other = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const page2 = await other.newPage()
   await openCanvas(page2, BOB, ws.workspace_id)

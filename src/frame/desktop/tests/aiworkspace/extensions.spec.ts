@@ -408,7 +408,7 @@ test('P2 view mode runs: a collaborator with update writes through a button, a r
   const built = await api.build(ALICE, ws.workspace_id, BUTTON_FILES)
   expect((await api.commit(ALICE, ws, [TASK(), { op: 'entity.create', entity_id: 'btn', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 240, h: 140 },
     payload: { view: { type: 'declarative' }, def_ref: { entity_id: built.def_entity_id }, bindings: { task: { entity_id: 'task' } }, on: WRITE_STATUS } }])).status).toBe('accepted')
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
   await api.rpc(BOB, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'canvas:mode': 'view' } })
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const page = await context.newPage()
@@ -419,7 +419,7 @@ test('P2 view mode runs: a collaborator with update writes through a button, a r
   await page.getByTestId('aiws-decl-button-completed').click()
   await expect(page.getByTestId('aiws-notice').filter({ hasText: '不能修改数据 task' }).last()).toBeVisible()
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update'] }] })
   await openCanvas(page, BOB, ws.workspace_id)
   await page.getByTestId('aiws-decl-button-completed').click()
   await expect.poll(() => status(api, ws.workspace_id)).toBe('done')
@@ -432,7 +432,9 @@ test('P2 a guest of a public link views and its HTML control runs by itself: a c
   const built = await api.build(ALICE, ws.workspace_id, DONE_FILES('done'))
   expect((await api.commit(ALICE, ws, [TASK(), { op: 'entity.create', entity_id: 'card', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 260, h: 200 },
     payload: { view: { type: 'html' }, def_ref: { entity_id: built.def_entity_id }, bindings: { task: { entity_id: 'task' } }, on: WRITE_STATUS } }])).status).toBe('accepted')
-  await api.rpc(ALICE, 'ws.create_entry', { workspace_id: ws.workspace_id, capabilities: ['read'], methods: { guest: true, password: false, self_register: false, did_login: false } })
+  // a public link: anonymous access on, `@guest` reads (权限需求 §4.2)
+  await api.rpc(ALICE, 'acl.set_anonymous', { workspace_id: ws.workspace_id, enabled: true })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: '@guest', allow: ['read'] }] })
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const page = await context.newPage()
   await openWorkspacePage(page, { guest: true }, ws.workspace_id)

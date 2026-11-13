@@ -5,6 +5,7 @@
       "entities": [
         {
           "content_rev": 1,
+          "created_by": "alice",
           "created_seq": 1,
           "deleted_seq": null,
           "derived_json": null,
@@ -22,6 +23,7 @@
         },
         {
           "content_rev": 1,
+          "created_by": "alice",
           "created_seq": 1,
           "deleted_seq": null,
           "derived_json": null,
@@ -39,6 +41,7 @@
         },
         {
           "content_rev": 1,
+          "created_by": "alice",
           "created_seq": 1,
           "deleted_seq": null,
           "derived_json": null,
@@ -134,6 +137,7 @@
       "entities": [
         {
           "content_rev": 2,
+          "created_by": "alice",
           "created_seq": 2,
           "deleted_seq": null,
           "derived_json": null,
@@ -151,6 +155,7 @@
         },
         {
           "content_rev": 2,
+          "created_by": "alice",
           "created_seq": 2,
           "deleted_seq": null,
           "derived_json": null,
@@ -168,6 +173,7 @@
         },
         {
           "content_rev": 2,
+          "created_by": "alice",
           "created_seq": 2,
           "deleted_seq": null,
           "derived_json": null,
@@ -261,6 +267,7 @@
       "entities": [
         {
           "content_rev": 3,
+          "created_by": "alice",
           "created_seq": 2,
           "deleted_seq": null,
           "derived_json": null,
@@ -278,6 +285,7 @@
         },
         {
           "content_rev": 3,
+          "created_by": "alice",
           "created_seq": 1,
           "deleted_seq": null,
           "derived_json": null,
@@ -356,6 +364,7 @@
       "entities": [
         {
           "content_rev": 4,
+          "created_by": "alice",
           "created_seq": 1,
           "deleted_seq": null,
           "derived_json": null,
@@ -447,6 +456,7 @@
       "entities": [
         {
           "content_rev": 2,
+          "created_by": "alice",
           "created_seq": 2,
           "deleted_seq": 6,
           "derived_json": null,
@@ -476,6 +486,7 @@
       "entities": [
         {
           "content_rev": 2,
+          "created_by": "alice",
           "created_seq": 2,
           "deleted_seq": null,
           "derived_json": null,
@@ -502,5 +513,5 @@
     }
   ],
   "description": "Row deltas of core/tests/apply_log.rs's scripted history and the digest of the state they produce (D20). Applied without a planner; regenerate with AIWS_REGEN=1.",
-  "digest": "7cafd00ceb482f4766e9a3597e35a303d1c17e4ae690852c176c36ec3863c01b"
+  "digest": "e7091c1062e1e956d4e9d8f669eb82f5b5cbc4c3fee9a6eb61c5096deabec9c4"
 }

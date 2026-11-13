@@ -66,6 +66,9 @@ pub struct PlanEnv {
     /// CRDT peer used for backend-authored rich text operations.
     pub peer_id: u64,
     pub limits: Limits,
+    /// Who new entities are recorded as created by (R6, R16): the principal the writer was judged as; `None` = the
+    /// writer.
+    pub creator: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -447,11 +450,26 @@ impl<'a> Planner<'a> {
     }
 
     /// The siblings under `parent` as naming sees them (cached while operations only create).
+    /// The siblings under `parent` the caller can read: names are unique among what one reader sees, so a sibling the
+    /// caller cannot read never answers `NAME_CONFLICT` nor pushes a name aside (权限需求 V4); a reader of both reaches
+    /// the second by `~<id>` (path shadowing).
     pub fn siblings(&mut self, parent: &str) -> WsResult<Vec<crate::naming::Sibling>> {
         if let Some(s) = self.sibling_cache.get(parent) {
             return Ok(s.clone());
         }
-        let s = crate::naming::siblings(&self.ov, parent)?;
+        let mut s = crate::naming::siblings(&self.ov, parent)?;
+        let mut readable = Vec::with_capacity(s.len());
+        for sib in &s {
+            readable.push(match self.ov.entity(&sib.entity_id)? {
+                Some(e) => self.access.can_read(&self.ov, &e)?,
+                None => true,
+            });
+        }
+        let mut i = 0;
+        s.retain(|_| {
+            i += 1;
+            readable[i - 1]
+        });
         self.sibling_cache.insert(parent.to_string(), s.clone());
         Ok(s)
     }
@@ -1587,7 +1605,11 @@ fn connector_placement(op: &Value, rules: PlaceRules) -> WsResult<Option<Value>>
 }
 
 fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
-    only_keys(op, &["entity_id", "type_id", "schema_version", "schema_id", "name", "parent_id", "order_key", "placement", "payload", "scope"])?;
+    if p.env.replay {
+        only_keys(op, &["entity_id", "type_id", "schema_version", "schema_id", "name", "parent_id", "order_key", "placement", "payload", "scope", "created_by"])?;
+    } else {
+        only_keys(op, &["entity_id", "type_id", "schema_version", "schema_id", "name", "parent_id", "order_key", "placement", "payload", "scope"])?;
+    }
     let id = get_str(op, "entity_id")?;
     check_id("entity_id", id)?;
     let type_id = get_str(op, "type_id")?;
@@ -1663,11 +1685,17 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
         payload: Map::new(),
         key_revs: BTreeMap::new(),
         derived: None,
+        created_by: None,
         created_seq: seq,
         meta_rev: seq,
         content_rev: seq,
         life_rev: seq,
         deleted_seq: None,
+    };
+    // the creator (R6): who the writer was judged as; history carries it when that is not the writer itself
+    row.created_by = match (p.env.replay, op.get("created_by").and_then(Value::as_str)) {
+        (true, Some(c)) => Some(c.to_string()),
+        _ => Some(p.env.creator.clone().unwrap_or_else(|| p.env.principal.clone())),
     };
     // the edge exists before type initialization so adapters can see the tree position
     p.ov.put_edge(TreeEdge { child_id: id.to_string(), parent_id: parent_id.to_string(), order_key: order_key.to_string(), placement, struct_rev: seq });
@@ -1678,6 +1706,9 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
         norm["payload"] = stored_payload;
     } else {
         row.payload = payload; // unknown extension: kept verbatim (V20)
+    }
+    if row.created_by.as_deref() != Some(p.env.principal.as_str()) {
+        norm["created_by"] = json!(row.created_by);
     }
     for k in row.payload.keys() {
         row.key_revs.insert(k.clone(), seq);

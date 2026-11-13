@@ -55,13 +55,15 @@ pub fn execution_context(ws: &Workspace, caller: &Caller, wish_id: &str, payload
         Mode::Hosted => {
             let cfg = hosted.ok_or_else(|| missing("hosted execution is not configured"))?;
             let agent = cfg["agent_id"].as_str().filter(|a| !a.is_empty()).ok_or_else(|| missing("the owner configured no agent"))?;
-            (json!({ "kind": "agent", "principal": agent, "owner": owner, "config_digest": cfg["digest"] }), json!({ "principal": owner, "kind": "agent" }))
+            (json!({ "kind": "agent", "principal": agent, "owner": owner, "config_digest": cfg["digest"], "limits": cfg["limits"] }), json!({ "principal": owner, "kind": "agent" }))
         }
     };
     let payload_map = payload.as_object().cloned().unwrap_or_default();
     let contract: Vec<Value> = payload["analysis"]["output_contract"]["results"].as_array().map(|a| a.iter().map(|r| json!({ "name": r["name"], "type": r["type"] })).collect()).unwrap_or_default();
     Ok(json!({
         "trigger": caller.principal,
+        // the class the trigger signed in as: the service acts for it later as the same kind of caller (权限需求 R14)
+        "trigger_identity": caller.identity_json(),
         "executor": executor,
         "location": mode.as_str(),
         "ai": aicc,
@@ -76,6 +78,20 @@ pub fn execution_context(ws: &Workspace, caller: &Caller, wish_id: &str, payload
 
 fn now_ms(ws: &Workspace) -> i64 {
     (ws.clock)()
+}
+
+/// Whether `caller` is the executor a run's context names: the principal itself, or — a hosted run names the Agent by
+/// its AgentId — that Agent's session (its DID, or the app it signs in as).
+fn is_executor(caller: &Caller, named: &str) -> bool {
+    if named.is_empty() {
+        return false;
+    }
+    if caller.principal == named {
+        return true;
+    }
+    caller.is_agent()
+        && (caller.app_id.as_deref() == Some(named)
+            || name_lib::DID::from_str(&caller.principal).ok().and_then(|d| buckyos_api::AgentId::from_agent_did(&d).ok()).is_some_and(|a| a.as_str() == named))
 }
 
 /// The executor record a new run starts with; the claim token leaves the service once, in the
@@ -96,12 +112,18 @@ pub fn claim(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
         if run["detail"]["context"]["expires_at"].as_str().is_some_and(|e| e < ws.now().as_str()) {
             return Err(WsError::new(Code::RunRevoked, "the run's execution context expired"));
         }
+        // only the executor the context names claims (权限需求 S6, R30): the configured Agent of a hosted run, whoever
+        // started a local one — a leaked claim token alone is not enough
+        let named = run["detail"]["context"]["executor"]["principal"].as_str().unwrap_or("");
+        if !is_executor(caller, named) {
+            return Err(WsError::denied("this run is executed by another principal"));
+        }
         Ok((ws.wish_run_claim(run_id, token, &executor)?, run["program"].as_str().unwrap_or("").to_string()))
     })?;
     if program == super::PROGRAM_XLLM {
         // the run's own principal opens the stage: what the executor may read is what the trigger may
-        let principal = state.with_ws(ws_id, |ws| Ok(ws.wish_run(caller, run_id)?["principal"].as_str().unwrap_or("").to_string()))?;
-        let as_run = Caller { principal, ..Caller::user("") };
+        let run = state.with_ws(ws_id, |ws| ws.wish_run(caller, run_id))?;
+        let as_run = tokio::runtime::Handle::current().block_on(super::delegated(state, ws_id, &run));
         match stages::host_open(state, &as_run, ws_id, run_id) {
             Ok(stage) => claimed["stage"] = stage,
             Err(e) => {
@@ -129,7 +151,20 @@ fn hosted_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) 
 /// `proc.tool { run_id, attempt, name, args }`.
 pub async fn tool(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> WsResult<Value> {
     let (st, c, w, body) = (state.clone(), caller.clone(), ws_id.to_string(), p.clone());
-    let (stage, _, _) = tokio::task::spawn_blocking(move || hosted_stage(&st, &c, &w, &body)).await.map_err(|e| WsError::io(e.to_string()))??;
+    let (stage, run_id, _) = tokio::task::spawn_blocking(move || hosted_stage(&st, &c, &w, &body)).await.map_err(|e| WsError::io(e.to_string()))??;
+    // the owner's tool-round limit of a hosted run (权限需求 R30)
+    let (st, c, w, rid) = (state.clone(), caller.clone(), ws_id.to_string(), run_id.clone());
+    let limit = tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| Ok(ws.wish_run(&c, &rid)?["detail"]["context"]["executor"]["limits"]["max_tool_iterations"].as_u64())))
+        .await
+        .map_err(|e| WsError::io(e.to_string()))??;
+    if let Some(max) = limit {
+        let mut calls = state.wish.tool_calls.lock().unwrap();
+        let n = calls.entry(run_id).or_insert(0);
+        *n += 1;
+        if *n > max {
+            return Err(WsError::limit(format!("the owner allows {max} tool rounds per hosted run")));
+        }
+    }
     let name = p.get("name").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("name required"))?;
     Ok(stages::host_tool(&stage, name, p.get("args").unwrap_or(&Value::Null)).await)
 }
@@ -220,8 +255,8 @@ pub fn report(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) ->
         Ok(Some(provided))
     })?;
     if let Some(provided) = provided.filter(|v| v.get("progress").is_none()) {
-        let principal = state.with_ws(ws_id, |ws| Ok(ws.wish_run(caller, &run_id)?["principal"].as_str().unwrap_or("").to_string()))?;
-        let as_run = Caller { principal, ..Caller::user("") };
+        let run = state.with_ws(ws_id, |ws| ws.wish_run(caller, &run_id))?;
+        let as_run = tokio::runtime::Handle::current().block_on(super::delegated(state, ws_id, &run));
         let (st, ws, rid) = (state.clone(), ws_id.to_string(), run_id.clone());
         if provided["stage_host"] == json!(true) {
             let stage = state.wish.hosted(&run_id).ok_or_else(|| WsError::invalid_op("the run has no open stage: claim it first"))?;

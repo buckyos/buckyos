@@ -223,9 +223,9 @@ fn templates(p: &Value) -> WsResult<Vec<Value>> {
 pub fn export_template(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
     use base64::Engine;
     let data = p.get("data").map(|_| strings(p, "data")).transpose()?.unwrap_or_default();
-    let (item, controls, files) = state.with_ws(s(p, "workspace_id")?, |ws| ws.ext_export_template(caller, &strings(p, "surfaces")?, &data, p.get("template").unwrap_or(&Value::Null)))?;
+    let (item, controls, files, dropped) = state.with_ws(s(p, "workspace_id")?, |ws| ws.ext_export_template(caller, &strings(p, "surfaces")?, &data, p.get("template").unwrap_or(&Value::Null)))?;
     let files: Vec<Value> = files.iter().map(|(path, b)| json!({ "path": path, "size": b.len(), "base64": base64::engine::general_purpose::STANDARD.encode(b) })).collect();
-    Ok(json!({ "ok": true, "template": item, "controls": controls, "files": files }))
+    Ok(json!({ "ok": true, "template": item, "controls": controls, "files": files, "dropped_permission_entries": dropped }))
 }
 
 /// `ext.create_from_template { pkg_id, template_id, title?, params? }` (P3): a new Workspace from a template of the

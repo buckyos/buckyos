@@ -42,7 +42,7 @@ test('snapshot remains readable to collaborators and after package import', asyn
   })
   const read = await api.read(ALICE, ws.workspace_id, 'blk-ext')
   const id = read.content.payload.config.snapshot.object_id
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
   const response = await fetch(`${api.base}/asset/${ws.workspace_id}/${id}`, { headers: { authorization: `Bearer ${BOB}` } })
   expect(await response.text()).toContain('中文快照')
   const ex = await api.rpc(ALICE, 'doc.export', { workspace_id: ws.workspace_id, mode: 'share', self_contained: true })

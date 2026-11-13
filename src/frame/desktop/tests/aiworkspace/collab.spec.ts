@@ -91,7 +91,7 @@ test('(c) Chinese IME input into the rich text survives a reload; backend AST eq
 
 test('(d) two users: rich text converges, different fields both succeed, same field shows a conflict and keeps my input', async ({ browser, api }) => {
   const ws = await api.sample(ALICE, `d ${Date.now()}`)
-  expect((await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update', 'append', 'comment'] })).ok).toBe(true)
+  expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'append', 'comment'] }] })).ok).toBe(true)
   const aliceContext = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const bobContext = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const alice = await aliceContext.newPage()
@@ -318,7 +318,7 @@ test('(f) Mock run: candidate, apply, simulated labels, and undo of the whole ap
 
 test('(g) one control instance, two people: A changes the colour, B the text — both kept, each a write of its own property', async ({ browser, api }) => {
   const ws = await api.freeCanvas(ALICE, `props ${Date.now()}`)
-  expect((await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update', 'append', 'comment'] })).ok).toBe(true)
+  expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'append', 'comment'] }] })).ok).toBe(true)
   const built = await api.build(ALICE, ws.workspace_id, {
     'component.json': { manifest_version: 3, ident: { author_did: 'did:bns:alice', name: 'props-e2e' }, kind: 'declarative', title: 'Props', allow_no_source: true, entry: 'declarative.json',
       config_schema: { type: 'object', properties: { color: { type: 'string', default: '#000000' }, text: { type: 'string', default: 'a' } } } },

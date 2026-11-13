@@ -268,8 +268,9 @@ async function loadPublicWorkspaces(zoneHost: string): Promise<Section<PublicWor
     const managed = workspaces.filter((workspace) => workspace.capabilities.includes('manage'))
     const grants = await Promise.all(
       managed.map(async (workspace) => {
-        const { grants: rows } = unwrapAiws(await client.wsListGrants({ workspace_id: workspace.workspace_id }))
-        return rows.some((grant) => grant.subject === 'public') ? workspace : null
+        // open to anyone: anonymous access on and `@guest` allowed something (AI Workspace 权限需求 §4.2)
+        const all = unwrapAiws(await client.aclQueryAll({ workspace_id: workspace.workspace_id }))
+        return all.anonymous && all.entries.some((entry) => entry.subject === '@guest' && entry.allow.length > 0) ? workspace : null
       }),
     )
     return grants

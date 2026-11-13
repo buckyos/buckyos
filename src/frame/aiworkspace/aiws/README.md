@@ -20,7 +20,7 @@ export default async function main(aiws) {
 - Call it once, before anything else. Reading an input or a field that is not declared throws (`field X is not declared`), so a trial run shows it at once instead of a later run silently reading an empty value.
 - The host resolves the declaration into the **manifest**: each field by its id and the name it has now. Every later run materializes only these inputs and fields, under these names — a field or a table renamed later changes nothing; a declared field deleted or changed to another type stops the wish before it runs ("needs coding").
 - `ai`: a macro that does not declare `ai.complete` / `ai.map` cannot call them. The limits are per run; the workspace's own limits cap them. `ai.complete.models: ['llm.code']` allows models other than the default.
-- `zone: ['/kapi/…']` lists the Zone resources the macro reads (`aiws.zone.fetch`); `resources: { timeout_secs }` a shorter time limit.
+- `zone: ['/kapi/…']` lists the Zone resources the macro reads (`aiws.zone.fetch`, GET / HEAD only; nothing unlisted is reached); `resources: { timeout_secs }` a shorter time limit.
 
 ## 2. Reading inputs
 
@@ -112,7 +112,7 @@ const res = await aiws.zone.fetch('/kapi/some-service/…')      // a path of th
 const data = await res.json()
 ```
 
-The request goes with the session of whoever runs the wish (the user's browser, or the Agent), and only to this Zone's hosts; anything else is refused (`ZONE_ONLY`). What a macro reads this way is not part of its snapshot: the results' freshness cannot follow it, so data the macro uses every time should be a declared input instead. List what you read in `declare({ zone: [...] })`.
+The request goes with the session of whoever runs the wish (the user's browser, or the Agent), and only to this Zone's hosts (else `ZONE_ONLY`). A macro only reads: GET or HEAD (else `ZONE_READ_ONLY`), and only under a path prefix (or URL prefix) it lists in `declare({ zone: [...] })` (else `ZONE_NOT_DECLARED`). What a macro reads this way is not part of its snapshot: the results' freshness cannot follow it, so data the macro uses every time should be a declared input instead.
 
 ## 8. What a macro does not do
 

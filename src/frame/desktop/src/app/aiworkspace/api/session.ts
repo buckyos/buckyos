@@ -5,6 +5,7 @@
  * replica (design §6): reads come from the Replica Worker's working view, `commit` becomes
  * "saved on this device → queued → sent". Nothing above this file talks to the client directly. */
 
+import * as legacyGrants from './legacyGrants'
 import type { AccessDenial, AdjustLocation, DenyReason } from 'buckyos'
 import { ndm } from 'buckyos'
 import { AiwsClient, ServiceFailure, unwrap } from './client'
@@ -571,13 +572,13 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   }
 
   async listGrants() {
-    try { const r = unwrap(await this.client.wsListGrants(this.ws)); return { grants: r.grants, complete: r.complete, owner: r.owner, principal: r.principal } } catch (error) { return this.fail(error) }
+    try { return await legacyGrants.listGrants(this.client, this.ws) } catch (error) { return this.fail(error) }
   }
   async grant(subject: string, capabilities: Capability[], scopeEntityId?: string) {
-    try { unwrap(await this.client.wsGrant(this.ws, subject, capabilities, scopeEntityId)) } catch (error) { return this.fail(error) }
+    try { await legacyGrants.grant(this.client, this.ws, subject, capabilities, scopeEntityId) } catch (error) { return this.fail(error) }
   }
   async revoke(subject: string, scopeEntityId?: string) {
-    try { unwrap(await this.client.wsRevoke(this.ws, subject, scopeEntityId)) } catch (error) { return this.fail(error) }
+    try { await legacyGrants.revoke(this.client, this.ws, subject, scopeEntityId) } catch (error) { return this.fail(error) }
   }
   async listSubjects() {
     try { return unwrap(await this.client.wsListSubjects(this.ws)).subjects } catch (error) { return this.fail(error) }

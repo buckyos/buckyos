@@ -21,6 +21,8 @@
         "workspace_id": "string"
       },
       "result": {
+        "acl_rev": "number",
+        "anonymous": "boolean",
         "base_seq": "number",
         "capabilities": [
           "string"
@@ -34,7 +36,9 @@
           "digest": "string",
           "enabled": "boolean"
         },
+        "judged_as": "string",
         "ok": "boolean",
+        "owner": "boolean",
         "planner_version": "number",
         "principal": "string",
         "protocol_version": "string",
@@ -286,6 +290,7 @@
           "record_count": "number"
         },
         "content_rev": "number",
+        "created_by": "string",
         "deleted": "boolean",
         "entity_id": "string",
         "head_seq": "number",
@@ -612,6 +617,7 @@
               "entities": [
                 {
                   "content_rev": "number",
+                  "created_by": "string",
                   "created_seq": "number",
                   "deleted_seq": null,
                   "derived_json": null,
@@ -695,6 +701,7 @@
         "workspace_id": "string"
       },
       "result": {
+        "acl_rev": "number",
         "epoch": "string",
         "head_seq": "number",
         "ok": "boolean",
@@ -704,38 +711,306 @@
       }
     },
     {
-      "method": "ws.grant",
+      "method": "acl.set",
       "params": {
-        "capabilities": [
-          "string"
+        "changes": [
+          {
+            "allow": [
+              "string"
+            ],
+            "deny": [
+              "string"
+            ],
+            "resource": "string",
+            "subject": "string"
+          }
         ],
-        "subject": "string",
         "workspace_id": "string"
       },
       "result": {
+        "acl_rev": "number",
+        "changes": [
+          {
+            "allow": [
+              "string"
+            ],
+            "deny": [
+              "string"
+            ],
+            "resource": {
+              "entity_id": "string",
+              "path": "string"
+            },
+            "subject": "string"
+          }
+        ],
         "ok": "boolean"
       }
     },
     {
-      "method": "ws.list_grants",
+      "method": "acl.set_group",
+      "params": {
+        "group_id": "string",
+        "title": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "acl_rev": "number",
+        "created": "boolean",
+        "group": {
+          "description": "string",
+          "group_id": "string",
+          "title": "string"
+        },
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "acl.members",
+      "params": {
+        "add": [
+          "string"
+        ],
+        "group_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "acl_rev": "number",
+        "added": "number",
+        "group_id": "string",
+        "ok": "boolean",
+        "removed": "number"
+      }
+    },
+    {
+      "method": "acl.set",
+      "params": {
+        "changes": [
+          {
+            "allow": [
+              "string"
+            ],
+            "resource": "string",
+            "subject": "string"
+          }
+        ],
+        "workspace_id": "string"
+      },
+      "result": {
+        "acl_rev": "number",
+        "changes": [
+          {
+            "allow": [
+              "string"
+            ],
+            "deny": [],
+            "resource": {
+              "entity_id": null,
+              "path": "string"
+            },
+            "subject": "string"
+          }
+        ],
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "acl.groups",
       "params": {
         "workspace_id": "string"
       },
       "result": {
+        "anonymous": "boolean",
         "complete": "boolean",
-        "grants": [
+        "groups": [
           {
-            "capabilities": [
+            "created_at": "string",
+            "created_by": "string",
+            "description": "string",
+            "group_id": "string",
+            "member": "boolean",
+            "members": [
+              {
+                "added_at": "string",
+                "added_by": "string",
+                "member": "string",
+                "via_entry": null
+              }
+            ],
+            "subject": "string",
+            "title": "string"
+          }
+        ],
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "acl.query",
+      "params": {
+        "by": "string",
+        "expand": "boolean",
+        "resource": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "anonymous": "boolean",
+        "by": "string",
+        "macros": [],
+        "ok": "boolean",
+        "resource": {
+          "entity_id": "string",
+          "path": "string"
+        },
+        "subjects": [
+          {
+            "effective": [
               "string"
             ],
-            "scope_entity_id": null,
-            "subject": "string",
+            "entries": [],
+            "kind": "string",
+            "principal": "string",
+            "subject": "string"
+          }
+        ]
+      }
+    },
+    {
+      "method": "acl.query",
+      "params": {
+        "by": "string",
+        "subject": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "by": "string",
+        "entries": [
+          {
+            "allow": [
+              "string"
+            ],
+            "deny": [],
+            "resource": {
+              "entity_id": null,
+              "path": "string"
+            },
+            "updated_at": "string",
+            "updated_by": "string"
+          }
+        ],
+        "group": {
+          "description": "string",
+          "group_id": "string",
+          "title": "string"
+        },
+        "kind": "string",
+        "members": [
+          {
+            "member": "string",
             "via_entry": null
+          }
+        ],
+        "ok": "boolean",
+        "subject": "string"
+      }
+    },
+    {
+      "method": "acl.query",
+      "params": {
+        "by": "string",
+        "principal": "string",
+        "resource": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "by": "string",
+        "capabilities": [
+          {
+            "allowed": "boolean",
+            "capability": "string",
+            "decided_by": {
+              "kind": "string",
+              "resource": {
+                "entity_id": "string",
+                "path": "string"
+              },
+              "subject": "string",
+              "tier": "string"
+            },
+            "owner": "boolean"
+          }
+        ],
+        "effective": [
+          "string"
+        ],
+        "judgment": {
+          "agent_as_owner": "boolean",
+          "direct": "boolean",
+          "groups": [
+            {
+              "group_id": "string",
+              "title": "string",
+              "via": [
+                {
+                  "member": "string",
+                  "via_entry": null
+                }
+              ]
+            }
+          ],
+          "guest": "boolean",
+          "judged_as": "string",
+          "member": "boolean",
+          "owner": "boolean"
+        },
+        "ok": "boolean",
+        "principal": "string",
+        "resource": {
+          "entity_id": "string",
+          "path": "string"
+        }
+      }
+    },
+    {
+      "method": "acl.query",
+      "params": {
+        "by": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "anonymous": "boolean",
+        "by": "string",
+        "complete": "boolean",
+        "entries": [
+          {
+            "allow": [
+              "string"
+            ],
+            "deny": [],
+            "kind": "string",
+            "resource": {
+              "entity_id": null,
+              "path": "string"
+            },
+            "subject": "string",
+            "updated_at": "string",
+            "updated_by": "string"
           }
         ],
         "ok": "boolean",
         "owner": "string",
         "principal": "string"
+      }
+    },
+    {
+      "method": "acl.set_anonymous",
+      "params": {
+        "enabled": "boolean",
+        "workspace_id": "string"
+      },
+      "result": {
+        "acl_rev": "number",
+        "anonymous": "boolean",
+        "ok": "boolean"
       }
     },
     {
@@ -752,14 +1027,30 @@
       }
     },
     {
-      "method": "ws.revoke",
+      "method": "acl.set",
       "params": {
-        "subject": "string",
+        "changes": [
+          {
+            "resource": "string",
+            "subject": "string"
+          }
+        ],
         "workspace_id": "string"
       },
       "result": {
-        "ok": "boolean",
-        "removed": "number"
+        "acl_rev": "number",
+        "changes": [
+          {
+            "allow": [],
+            "deny": [],
+            "resource": {
+              "entity_id": "string",
+              "path": "string"
+            },
+            "subject": "string"
+          }
+        ],
+        "ok": "boolean"
       }
     },
     {
@@ -801,11 +1092,58 @@
       }
     },
     {
+      "method": "acl.set_group",
+      "params": {
+        "group_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "acl_rev": "number",
+        "created": "boolean",
+        "group": {
+          "description": "string",
+          "group_id": "string",
+          "title": "string"
+        },
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "acl.set",
+      "params": {
+        "changes": [
+          {
+            "allow": [
+              "string"
+            ],
+            "subject": "string"
+          }
+        ],
+        "workspace_id": "string"
+      },
+      "result": {
+        "acl_rev": "number",
+        "changes": [
+          {
+            "allow": [
+              "string"
+            ],
+            "deny": [],
+            "resource": {
+              "entity_id": null,
+              "path": "string"
+            },
+            "subject": "string"
+          }
+        ],
+        "ok": "boolean"
+      }
+    },
+    {
       "method": "ws.create_entry",
       "params": {
-        "capabilities": [
-          "string"
-        ],
+        "group_id": "string",
+        "max_joins": "number",
         "methods": {
           "guest": "boolean"
         },
@@ -813,20 +1151,18 @@
       },
       "result": {
         "entry": {
-          "capabilities": [
-            "string"
-          ],
           "created_at": "number",
           "created_by": "string",
           "entry_id": "string",
           "expires_at": null,
+          "group_id": "string",
+          "max_joins": "number",
           "methods": {
             "did_login": "boolean",
             "guest": "boolean",
             "password": "boolean",
             "self_register": "boolean"
           },
-          "scope_entity_id": null,
           "state": "string",
           "workspace_id": "string"
         },
@@ -863,20 +1199,19 @@
       "result": {
         "entries": [
           {
-            "capabilities": [
-              "string"
-            ],
             "created_at": "number",
             "created_by": "string",
             "entry_id": "string",
             "expires_at": null,
+            "group_id": "string",
+            "joined": "number",
+            "max_joins": "number",
             "methods": {
               "did_login": "boolean",
               "guest": "boolean",
               "password": "boolean",
               "self_register": "boolean"
             },
-            "scope_entity_id": null,
             "state": "string",
             "workspace_id": "string"
           }
@@ -890,42 +1225,50 @@
         "entry_id": "string"
       },
       "result": {
-        "capabilities": [
-          "string"
-        ],
         "entry_id": "string",
-        "granted": "boolean",
+        "group_id": "string",
         "joined": "boolean",
         "ok": "boolean",
         "path": "string",
-        "scope_entity_id": null,
         "workspace_id": "string"
       }
     },
     {
       "method": "ws.close_entry",
       "params": {
-        "entry_id": "string"
+        "entry_id": "string",
+        "remove_members": "boolean"
       },
       "result": {
         "entry": {
-          "capabilities": [
-            "string"
-          ],
           "created_at": "number",
           "created_by": "string",
           "entry_id": "string",
           "expires_at": null,
+          "group_id": "string",
+          "max_joins": "number",
           "methods": {
             "did_login": "boolean",
             "guest": "boolean",
             "password": "boolean",
             "self_register": "boolean"
           },
-          "scope_entity_id": null,
           "state": "string",
           "workspace_id": "string"
         },
+        "ok": "boolean",
+        "removed_members": "number"
+      }
+    },
+    {
+      "method": "acl.delete_group",
+      "params": {
+        "group_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "acl_rev": "number",
+        "group_id": "string",
         "ok": "boolean"
       }
     },
@@ -1060,6 +1403,12 @@
         "head_seq": "number",
         "missing": [],
         "ok": "boolean",
+        "permission_design": {
+          "entries": "number",
+          "groups": "number",
+          "macros": "number",
+          "skipped": []
+        },
         "replaced": "boolean",
         "semantics": "string",
         "workspace_id": "string"
@@ -1148,6 +1497,8 @@
         "workspace_id": "string"
       },
       "result": {
+        "acl_rev": "number",
+        "anonymous": "boolean",
         "base_seq": "number",
         "capabilities": [
           "string"
@@ -1161,7 +1512,9 @@
           "digest": "string",
           "enabled": "boolean"
         },
+        "judged_as": "string",
         "ok": "boolean",
+        "owner": "boolean",
         "planner_version": "number",
         "principal": "string",
         "protocol_version": "string",
@@ -1218,6 +1571,86 @@
             "rev": "number"
           }
         ]
+      }
+    },
+    {
+      "method": "acl.bind_macro",
+      "params": {
+        "group_id": "string",
+        "mode": "string",
+        "wish": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "acl_rev": "number",
+        "binding": {
+          "group_id": "string",
+          "mode": "string"
+        },
+        "ok": "boolean",
+        "warning": "string",
+        "wish_id": "string"
+      }
+    },
+    {
+      "method": "acl.bind_macro",
+      "params": {
+        "group_id": null,
+        "wish": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "acl_rev": "number",
+        "binding": null,
+        "ok": "boolean",
+        "warning": "string",
+        "wish_id": "string"
+      }
+    },
+    {
+      "method": "acl.audit",
+      "params": {
+        "limit": "number",
+        "workspace_id": "string"
+      },
+      "result": {
+        "items": [
+          {
+            "action": "string",
+            "actor": "string",
+            "after": [
+              {
+                "allow": [
+                  "string"
+                ],
+                "deny": [
+                  "string"
+                ],
+                "resource": {
+                  "entity_id": "string",
+                  "path": "string"
+                },
+                "subject": "string"
+              }
+            ],
+            "at": "string",
+            "before": [
+              null
+            ],
+            "judged_as": null,
+            "seq": "number",
+            "target": [
+              {
+                "resource": {
+                  "entity_id": "string",
+                  "path": "string"
+                },
+                "subject": "string"
+              }
+            ]
+          }
+        ],
+        "ok": "boolean"
       }
     },
     {
@@ -1278,7 +1711,15 @@
             "digest": "string",
             "wish_id": "string"
           },
-          "trigger": "string"
+          "trigger": "string",
+          "trigger_identity": {
+            "class": "string",
+            "did": null,
+            "kind": null,
+            "owner": null,
+            "principal": "string",
+            "restricted": "boolean"
+          }
         },
         "created_at": "string",
         "dispatch": null,
@@ -1370,7 +1811,15 @@
                 "digest": "string",
                 "wish_id": "string"
               },
-              "trigger": "string"
+              "trigger": "string",
+              "trigger_identity": {
+                "class": "string",
+                "did": null,
+                "kind": null,
+                "owner": null,
+                "principal": "string",
+                "restricted": "boolean"
+              }
             },
             "created_at": "string",
             "dispatch": null,
@@ -1656,7 +2105,15 @@
             "digest": "string",
             "wish_id": "string"
           },
-          "trigger": "string"
+          "trigger": "string",
+          "trigger_identity": {
+            "class": "string",
+            "did": null,
+            "kind": null,
+            "owner": null,
+            "principal": "string",
+            "restricted": "boolean"
+          }
         },
         "created_at": "string",
         "dispatch": null,
@@ -1790,7 +2247,15 @@
             "digest": "string",
             "wish_id": "string"
           },
-          "trigger": "string"
+          "trigger": "string",
+          "trigger_identity": {
+            "class": "string",
+            "did": null,
+            "kind": null,
+            "owner": null,
+            "principal": "string",
+            "restricted": "boolean"
+          }
         },
         "created_at": "string",
         "dispatch": null,
@@ -1863,6 +2328,14 @@
           "user_id": "string"
         },
         "applied": {
+          "applied_by": "string",
+          "attribution": {
+            "applied_by": "string",
+            "executed_by": "string",
+            "judged_as": "string",
+            "macro": null,
+            "triggered_by": "string"
+          },
           "commit": {
             "commit_id": "string",
             "replayed": "boolean",
@@ -1964,7 +2437,15 @@
             "digest": "string",
             "wish_id": "string"
           },
-          "trigger": "string"
+          "trigger": "string",
+          "trigger_identity": {
+            "class": "string",
+            "did": null,
+            "kind": null,
+            "owner": null,
+            "principal": "string",
+            "restricted": "boolean"
+          }
         },
         "created_at": "string",
         "dispatch": null,
@@ -2127,7 +2608,15 @@
             "digest": "string",
             "wish_id": "string"
           },
-          "trigger": "string"
+          "trigger": "string",
+          "trigger_identity": {
+            "class": "string",
+            "did": null,
+            "kind": null,
+            "owner": null,
+            "principal": "string",
+            "restricted": "boolean"
+          }
         },
         "created_at": "string",
         "dispatch": null,
@@ -2249,6 +2738,13 @@
         "excluded_entities": "number",
         "head_seq": "number",
         "ok": "boolean",
+        "permission_design": {
+          "dropped": [],
+          "entries": "number",
+          "groups": "number",
+          "macros": "number",
+          "skipped": []
+        },
         "workspace_id": "string"
       }
     },

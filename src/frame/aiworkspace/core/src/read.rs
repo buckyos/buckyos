@@ -53,6 +53,10 @@ pub fn envelope(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult<V
     if let Some(d) = &e.derived {
         m.insert("derived".into(), d.clone());
     }
+    // who created it (权限需求 R6): what `@creator` entries are judged against
+    if let Some(c) = &e.created_by {
+        m.insert("created_by".into(), json!(c));
+    }
     if let Some(edge) = ctx.edge(&e.entity_id)? {
         m.insert("parent_id".into(), json!(edge.parent_id));
         m.insert("order_key".into(), json!(edge.order_key));

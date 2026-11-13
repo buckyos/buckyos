@@ -1884,7 +1884,7 @@ fn is_sha256_digest(s: &str) -> bool {
 pub const BLOCK_DEF_KEYS: &[&str] = &[
     "def_id", "version", "kind", "title", "accepts", "allow_no_source", "default_size", "declarative", "html", "config_schema", "actions", "inspector", "description",
     "ident", "manifest_version", "source_dir", "bindings", "catalog", "agent", "provenance", "deps", "composition", "events",
-    "on_bind", "on_init_control",
+    "on_bind", "on_init_control", "trusted",
 ];
 
 /// A slot name of a composite (`composition.slots`): `[a-z][a-z0-9_]{0,31}`.
@@ -1912,8 +1912,27 @@ fn deps_reach(ctx: &dyn ReadCtx, from: &str, target: &str, path: &mut Vec<String
 /// Validator class: primitive (`deps` shape; only builds and imports write it) and reference (`source_dir` names a
 /// live resource directory; each `deps` entry a live definition, without closing a cycle — `REFERENCE_CYCLE`;
 /// both judged when written).
+/// The keys of an HTML definition that are code a viewer's browser runs (权限需求 R37).
+const HTML_CODE_KEYS: &[&str] = &["kind", "html", "on_bind", "on_init_control"];
+
 fn block_def_primitive(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
     let is_changed = |k: &str| changed.is_none_or(|c| c.iter().any(|x| x == k));
+    // writing an HTML definition's code, or vouching for it, is a manager's (权限需求 R37, Q11); whoever does it marks
+    // the definition `trusted` — a viewer's host runs only trusted code by itself (view mode)
+    let html = e.payload.get("kind").and_then(Value::as_str) == Some("html");
+    let code = html && HTML_CODE_KEYS.iter().any(|k| is_changed(k));
+    let vouched = changed.is_some_and(|c| c.iter().any(|x| x == "trusted"));
+    if code || vouched {
+        if !(p.env.import || p.env.internal || p.env.replay) {
+            p.require(&e.entity_id, crate::access::Cap::Manage)?;
+        }
+        if html {
+            e.payload.insert("trusted".into(), json!({ "by": p.env.principal, "rev": p.seq() }));
+            e.key_revs.insert("trusted".into(), p.seq());
+        } else {
+            e.payload.remove("trusted");
+        }
+    }
     if let Some(d) = e.payload.get("source_dir") {
         let o = d.as_object().filter(|o| o.len() == 1).ok_or_else(|| bad("source_dir must be { entity_id }"))?;
         let id = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("source_dir.entity_id must be an entity id"))?;
@@ -2000,6 +2019,11 @@ fn check_composition_shape(v: &Value) -> WsResult<()> {
 /// Validator class: schema (the payload's keys and shapes).
 fn block_def_schema(e: &mut EntityRow) -> WsResult<()> {
     check_keys(&e.payload, BLOCK_DEF_KEYS, "block_def")?;
+    if let Some(t) = e.payload.get("trusted") {
+        if !(t.is_boolean() || t.get("by").is_some_and(Value::is_string)) {
+            return Err(bad("trusted is written by the service (who vouched for the code, at which revision)"));
+        }
+    }
     let def_id = e.payload.get("def_id").and_then(Value::as_str).ok_or_else(|| bad("block_def needs def_id"))?;
     if !is_renderer_id(def_id) {
         return Err(bad("def_id must be a renderer id"));

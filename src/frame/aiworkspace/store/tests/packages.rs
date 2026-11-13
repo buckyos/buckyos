@@ -140,7 +140,7 @@ fn v05_clone() {
     assert_eq!(copy.info(&alice()).unwrap()["cloned_from"], f["cloned_from"]);
     assert!(copy.read(&bob(), "tasks", None).is_err(), "grants are not copied");
     assert!(copy.read(&alice(), "bob-private", None).is_err(), "personal entities are not copied");
-    assert_eq!(copy.list_grants(&alice()).unwrap()["grants"].as_array().unwrap().len(), 1);
+    assert_eq!(copy.acl_query(&alice(), &json!({ "by": "entity", "resource": "/" }), None).unwrap()["subjects"].as_array().unwrap().len(), 1, "only @owner");
     assert_eq!(copy.read(&alice(), "note-budget", None).unwrap()["content"]["anchor"]["state"], "resolved");
     // C7: the objects are shared in the named store, the usage is not: the copy counts its whole content and every
     // asset as its own (kernel doc 11), nothing stays staged, nothing counts on the source

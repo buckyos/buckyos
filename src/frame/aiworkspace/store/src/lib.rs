@@ -1,5 +1,6 @@
 //! aiworkspace-store: SQLite persistence, NamedObject/asset storage, packages.
 
+pub mod acl;
 pub mod docdb;
 pub mod entries;
 pub mod export;

@@ -187,7 +187,7 @@ async fn v23_service_api_end_to_end() {
     let mut woke = tokio::time::timeout(Duration::from_secs(5), waiter).await.expect("wake-up").unwrap();
     assert!(woke["server_ms"].as_i64().is_some_and(|t| t > 1_700_000_000_000), "{woke}");
     woke.as_object_mut().unwrap().remove("server_ms");
-    assert_eq!(woke, json!({ "ok": true, "epoch": epoch, "head_seq": 7, "timed_out": false, "show_lock": null }));
+    assert_eq!(woke, json!({ "ok": true, "epoch": epoch, "head_seq": 7, "acl_rev": 0, "timed_out": false, "show_lock": null }));
     let quiet = s.rpc("tok-alice", "doc.wait_changes", json!({ "workspace_id": id, "epoch": epoch, "after_seq": 7, "timeout_ms": 100 })).await;
     assert_eq!(quiet["timed_out"], true);
     let changes = s.rpc("tok-alice", "doc.get_changes", json!({ "workspace_id": id, "epoch": epoch, "after_seq": 6 })).await;
@@ -273,7 +273,7 @@ async fn an_uploaded_asset_is_taken_over_by_the_workspace_owner() {
     let bobs = nfs.put("alice", "assets", "upload/b.txt", b"other".to_vec()).await;
     assert_eq!(srv.rpc("tok-bob", "asset.import_object", json!({"workspace_id": id, "bucket_id": bobs["bucket_id"], "key": bobs["key"]})).await["error"]["code"], "PERMISSION_DENIED");
     // a collaborator's upload lands in the owner's bucket
-    srv.rpc("tok-alice", "ws.grant", json!({"workspace_id": id, "subject": "bob", "capabilities": ["read", "update"]})).await;
+    srv.rpc("tok-alice", "acl.set", json!({"workspace_id": id, "changes": [{"subject": "bob", "allow": ["read", "update"]}]})).await;
     let from_bob = srv.upload_asset(&nfs, "tok-bob", "bob", &id, b"from bob".to_vec()).await;
     let bob_object = from_bob["object_id"].as_str().unwrap();
     assert_eq!(from_bob["bucket_id"], "user/aiworkspace/alice/assets", "{from_bob}");
@@ -298,7 +298,7 @@ async fn a_restore_journal_recovers_an_interrupted_replacement() {
     let srv = Server::start(dir.path(), &nfs, None).await;
     let workspace = srv.rpc("tok-alice", "ws.create", json!({"title": "restore"})).await;
     let id = workspace["workspace_id"].as_str().unwrap();
-    assert_eq!(srv.rpc("tok-alice", "ws.grant", json!({"workspace_id": id, "subject": "bob", "capabilities": ["read"]})).await["ok"], true);
+    assert_eq!(srv.rpc("tok-alice", "acl.set", json!({"workspace_id": id, "changes": [{"subject": "bob", "allow": ["read"]}]})).await["ok"], true);
     let first_package = srv.export_package(&nfs, "tok-alice", id).await;
     let (accepted, _) = srv.import(&nfs, "tok-alice", "alice", first_package, json!({"semantics": "restore", "replace": true})).await;
     assert_eq!(accepted["ok"], true, "{accepted}");

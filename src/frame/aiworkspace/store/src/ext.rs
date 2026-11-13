@@ -2110,7 +2110,7 @@ impl Workspace {
         let mut template_files = BTreeMap::new();
         for t in templates {
             let list = |k: &str| -> Vec<String> { t.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect() };
-            let (item, controls, files) = self.ext_export_template(caller, &list("surfaces"), &list("data"), t.get("template").unwrap_or(&Value::Null))?;
+            let (item, controls, files, _) = self.ext_export_template(caller, &list("surfaces"), &list("data"), t.get("template").unwrap_or(&Value::Null))?;
             if items.iter().any(|i: &Value| i["id"] == item["id"]) {
                 return Err(WsError::invalid_op(format!("template {} is listed twice", item["id"])));
             }

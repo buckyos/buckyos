@@ -37,6 +37,24 @@ pub trait Authenticator: Send + Sync {
     }
     /// The Zone's sign-in switches (`system/sso/settings`, defaults when absent).
     async fn sso_settings(&self) -> Result<SsoSettings, AccessDenial>;
+    /// A principal someone asks about (`acl.query`), as a caller of the kind it is: an Agent with its owner, an
+    /// External DID, a guest or link, an account. Memberships are settled separately.
+    async fn caller_for(&self, principal: &str) -> Caller {
+        guessed_caller(principal)
+    }
+}
+
+/// The kind of a principal from its form alone.
+pub fn guessed_caller(principal: &str) -> Caller {
+    if principal.starts_with("guest:") || principal.starts_with("link:") {
+        let mut c = Caller::service(principal);
+        c.class = CallerClass::Guest;
+        return c;
+    }
+    if principal.starts_with("did:") {
+        return Caller::external(principal);
+    }
+    Caller::user(principal)
 }
 
 /// Standalone test mode: a fixed table of static tokens. Memberships (`groups`, `contacts`) are read again from
@@ -60,6 +78,8 @@ pub enum StaticClass {
     /// The principal is the DID.
     External,
     Service,
+    /// An Agent (its DID); `owner` names the account it belongs to.
+    Agent,
 }
 
 #[derive(Clone, Deserialize)]
@@ -84,6 +104,9 @@ pub struct StaticIdentity {
     pub contacts_unavailable: bool,
     #[serde(default)]
     pub auth_method: Option<String>,
+    /// An Agent's owner (class `agent`).
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
 #[async_trait]
@@ -98,6 +121,16 @@ impl Authenticator for StaticTokens {
             }
             StaticClass::External => Caller::external(&id.principal),
             StaticClass::Service => Caller::service(&id.principal),
+            StaticClass::Agent => match &id.owner {
+                Some(o) => {
+                    let mut c = Caller::agent_of(&id.principal, o);
+                    if let (Some(owner), Some(oid)) = (c.acting_for.as_deref_mut(), self.tokens.values().find(|t| &t.principal == o)) {
+                        owner.class = CallerClass::Account { restricted: oid.restricted, did: oid.did.clone(), groups: oid.groups.clone() };
+                    }
+                    c
+                }
+                None => Caller::agent(&id.principal),
+            },
         };
         caller.app_id = id.app_id.clone();
         caller.auth_method = id.auth_method.clone();
@@ -133,6 +166,22 @@ impl Authenticator for StaticTokens {
     async fn sso_settings(&self) -> Result<SsoSettings, AccessDenial> {
         Ok(self.sso.clone())
     }
+    async fn caller_for(&self, principal: &str) -> Caller {
+        let Some(id) = self.tokens.values().find(|t| t.principal == principal) else { return guessed_caller(principal) };
+        match id.class {
+            StaticClass::Account => {
+                let mut c = Caller::account(&id.principal, id.restricted);
+                c.class = CallerClass::Account { restricted: id.restricted, did: id.did.clone(), groups: Vec::new() };
+                c
+            }
+            StaticClass::External => Caller::external(&id.principal),
+            StaticClass::Service => Caller::service(&id.principal),
+            StaticClass::Agent => match &id.owner {
+                Some(o) => Caller::agent_of(&id.principal, o),
+                None => Caller::agent(&id.principal),
+            },
+        }
+    }
 }
 
 /// System mode: session tokens issued by verify-hub, checked by the service
@@ -160,7 +209,11 @@ impl Authenticator for RuntimeAuth {
         let mut caller = match claims.principal_kind {
             TokenPrincipalKind::User if token_is_external(&verified) => Caller::external(&principal),
             TokenPrincipalKind::User => Caller::account(&principal, ceiling.restricted),
-            TokenPrincipalKind::Agent => Caller::agent(&principal),
+            // an Agent acts as itself; a Workspace that configured nothing for it judges it as its owner (权限需求 R16)
+            TokenPrincipalKind::Agent => match agent_owner(&principal).await {
+                Some(owner) => Caller::agent_of(&principal, &owner),
+                None => Caller::agent(&principal),
+            },
             _ => Caller::service(&principal),
         };
         // a service names itself in `appid` (kernel and frame services sign in with the device as subject); anyone
@@ -281,6 +334,14 @@ impl Authenticator for RuntimeAuth {
             }
         }
     }
+    async fn caller_for(&self, principal: &str) -> Caller {
+        if principal.starts_with("did:") {
+            if let Some(owner) = agent_owner(principal).await {
+                return Caller::agent_of(principal, &owner);
+            }
+        }
+        guessed_caller(principal)
+    }
     async fn sso_settings(&self) -> Result<SsoSettings, AccessDenial> {
         use buckyos_api::{get_buckyos_api_runtime, SystemConfigError, SSO_SETTINGS_KEY};
         let runtime = get_buckyos_api_runtime().map_err(|_| unavailable())?;
@@ -297,4 +358,25 @@ impl Authenticator for RuntimeAuth {
             }
         }
     }
+}
+
+/// The account an Agent DID belongs to, from its AgentSpec (`users/<u>/agents/<id>/spec`): a trusted source, never
+/// a request parameter (权限需求 R16). Cached once found; `None` when it is no Agent of this Zone.
+pub async fn agent_owner(subject: &str) -> Option<String> {
+    static CACHE: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
+    if let Some(hit) = CACHE.lock().unwrap().as_ref().and_then(|m| m.get(subject).cloned()) {
+        return Some(hit);
+    }
+    let did = name_lib::DID::from_str(subject).ok()?;
+    let agent_id = buckyos_api::AgentId::from_agent_did(&did).ok()?;
+    let client = buckyos_api::get_buckyos_api_runtime().ok()?.get_system_config_client().await.ok()?;
+    for user in client.list("users").await.ok()? {
+        let Ok(spec) = client.get(&buckyos_api::agent_spec_key(&user, &agent_id)).await else { continue };
+        let Ok(spec) = serde_json::from_str::<buckyos_api::AgentSpec>(&spec.value) else { continue };
+        if spec.agent_doc.id == did {
+            CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(subject.to_string(), user.clone());
+            return Some(user);
+        }
+    }
+    None
 }

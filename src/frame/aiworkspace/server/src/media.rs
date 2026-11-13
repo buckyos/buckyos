@@ -384,7 +384,7 @@ fn finish(state: &Arc<AppState>, session: &str, done: Finished) {
     tokio::spawn(async move {
         let r = blocking(move || {
             let s = st.svc.sessions.require(&sid)?;
-            let owner = Caller::user(&s.owner);
+            let owner = Caller::internal(&s.owner);
             st.svc.with_run(&s, |ws| ws.session_voice_segment(&owner, &s.presenter, &done.bytes, done.index, done.t_start, done.t_end, done.lost_ms).map(|_| ()))
         })
         .await;

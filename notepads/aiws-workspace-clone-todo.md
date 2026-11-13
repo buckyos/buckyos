@@ -1,6 +1,6 @@
 # AIWS 工作区 Clone TODO
 
-状态：C1、C2、C5、C7 已实施（2026-11-13，未提交）；C3、C4、C6 等权限需求第 1 步（逻辑组模型、实体 `created_by`），未做。实施记录见 §5。
+状态：C1、C2、C5、C7 已实施（2026-11-13）；C3、C4、C6 随权限需求第 1 步一起实施（2026-11-13，见 [权限实施 TODO](aiws-permission-system-todo.md) §3.1、§3.3）。实施记录见 §5。
 
 日期：2026-11-13。源码基线：buckyos `aee37a21a`。
 
@@ -54,15 +54,15 @@
   - Desktop：`api/client.ts` 的 `wsFork`、`api/types.ts` 的 `forked_from`、`ui/WorkspaceList.tsx`、`ui/shell/MainMenu.tsx`、`i18n/aiworkspace/shell.ts` 的文案。本版本不调整 UI，这里只随改名同步名字和文案，不改交互。
   - 手册：`aiworkspace_template_dev` 里“`ws.fork` for a copy inside this Zone”一句。
   - 测试：store `tests/{sso,names,packages,guest}.rs`，server `tests/{contract,quality,process,sso}.rs`，Desktop `tests/aiworkspace/features.spec.ts`、`tests/dv/aiworkspace.integrity.spec.ts`（测试 ID `aiws-fork`）。
-- [ ] **C3 带上权限设计（权限需求 R12）。** 未做：等第 1 步，见 §5。
+- [x] **C3 带上权限设计（权限需求 R12）。** 有 `manage` 时 Clone 带权限设计，被排除实体上的条目丢弃并在返回的 `permission_design.dropped` 里报告。
   - 有源工作区 `manage` 的人 Clone 时，带上权限设计：逻辑组的定义、授给逻辑组和固定组的条目（允许与拒绝）、宏的组绑定。
   - 不带：组成员、授给单个调用者的条目、公共匿名访问开关、分享入口。
   - 只有 `export` 的人 Clone，不带权限设计。
   - 条目指向的实体没有被复制过来（读不到而被排除）时，丢弃该条目，在返回里报告。
   - 依赖权限需求第 1 步（逻辑组模型）。
-- [ ] **C4 创建者。** 未做：等第 1 步，见 §5。 副本里实体的创建者（`created_by`）是发起 Clone 的人（权限需求 R6）。
+- [x] **C4 创建者。** 副本里实体的创建者（`created_by`）是发起 Clone 的人（权限需求 R6），由导入 Commit 的计划器记下。
 - [x] **C5 来源记录。** 保留 `cloned_from` 作为出处，不建立上下游关系：没有同步、合并，来源被删除不影响副本。
-- [ ] **C6 新建导入。** 未做：等第 1 步，见 §5。 `ws.import new` 按同一规则处理权限设计（权限需求 R12）。
+- [x] **C6 新建导入。** 管理者导出的包在 manifest 带 `permission_design`，`ws.import new`（以及原工作区已不存在的 `restore`）按同一规则装入它（权限需求 R12）。
 - [x] **C7 额度。** 核对副本的逻辑占用是否按完整内容计入新工作区。内核文档 11 规定“资源归属独立于底层是否去重”，即使对象在 named store 里共享，新工作区也按自己的逻辑占用计算。
 
 ## 3. 已确认（owner 2026-11-13）

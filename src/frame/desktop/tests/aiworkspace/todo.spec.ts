@@ -36,7 +36,7 @@ async function todoWorkspace(api: Api, title: string, bobCaps = ['read', 'update
     ] },
   ])
   expect(made.status, JSON.stringify(made)).toBe('accepted')
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: bobCaps })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: bobCaps }] })
   return ws
 }
 

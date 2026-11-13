@@ -349,7 +349,8 @@ impl Service {
             return Err(WsError::sub(Code::InvalidOperation, "ID_CONFLICT", "workspace already exists"));
         }
         let tmp = self.tmp_dir();
-        let ws = Workspace::create(&tmp, &id, title, &caller.principal, self.objects.clone(), self.clock.clone())?;
+        // an Agent's Workspace belongs to its owner (权限需求 R16)
+        let ws = Workspace::create(&tmp, &id, title, caller.owner_principal(), self.objects.clone(), self.clock.clone())?;
         let mut info = json!({ "ok": true, "workspace_id": id, "epoch": ws.epoch, "head_seq": 0, "title": title });
         if let Some(name) = name {
             ws.local.execute("INSERT INTO local_meta (key, value) VALUES ('name', ?1)", [name]).map_err(db_err)?;
@@ -376,7 +377,7 @@ impl Service {
         Ok(out)
     }
 
-    /// `group:` / `contact:` subjects granted anywhere in this deployment (what `ws.list` may depend on).
+    /// `group:` / `contact:` member specs anywhere in this deployment (what `ws.list` may depend on).
     pub fn dynamic_subjects(&self) -> WsResult<Vec<String>> {
         let mut out = std::collections::BTreeSet::new();
         for name in self.workspace_ids()? {
@@ -386,9 +387,8 @@ impl Service {
         Ok(out.into_iter().collect())
     }
 
-    /// `ws.list`: Workspaces on which the caller holds any grant with `read`. A guest reaches public Workspaces by
-    /// their links only, never by enumeration; other restricted callers list what was granted to them (no `public`,
-    /// no `*`).
+    /// `ws.list`: the caller's own Workspaces and those naming it or one of its groups (权限需求 R8) — never one it
+    /// could only enter anonymously. A guest reaches Workspaces by their links only, never by enumeration.
     pub fn list_workspaces(&self, caller: &Caller) -> WsResult<Value> {
         let mut out = Vec::new();
         if caller.is_guest() {
@@ -402,9 +402,8 @@ impl Service {
                 continue;
             }
             // a membership that cannot be checked leaves the Workspace out of the list (opening it says why)
-            let Ok(access) = ws.listing_access(caller) else { continue };
-            let reads = access.ws_caps.has(Cap::Read) || access.scoped.values().any(|c| c.has(Cap::Read));
-            if reads {
+            let Ok(Some(access)) = ws.listed(caller) else { continue };
+            {
                 let mut item = json!({ "workspace_id": name, "title": ws.title(), "head_seq": ws.head_seq, "epoch": ws.epoch,
                                        "capabilities": access.ws_caps.names() });
                 if let Ok(Some(n)) = ws.name() {
@@ -423,12 +422,14 @@ impl Service {
         std::fs::rename(self.ws_dir(id), dst).map_err(io)
     }
 
-    /// `ws.delete`: moved to the trash folder; nothing is physically removed in this phase. Its name is free again.
+    /// `ws.delete` (the owner only, 权限需求 R17): moved to the trash folder; nothing is physically removed in this phase.
+    /// Its name is free again.
     pub fn delete_workspace(&self, caller: &Caller, id: &str) -> WsResult<Value> {
         {
             let handle = self.workspace(id)?;
             let ws = handle.lock().unwrap();
-            ws.require_ws(caller, Cap::Manage)?;
+            ws.require_owner(caller)?;
+            ws.audit(caller, "workspace.delete", &json!({ "workspace_id": id }), None, None)?;
         }
         let mut names = self.names.lock().unwrap();
         self.trash(id)?;
@@ -440,8 +441,9 @@ impl Service {
 
     /// `ws.import`. The semantics must be chosen explicitly:
     /// `new` (as `ws.clone`: fresh id, importer becomes owner, `cloned_from` records the package's snapshot) or `restore` (keeps the
-    /// package's id; replacing an existing Workspace needs `replace: true` *and*
-    /// `manage` on the existing one — nothing inside the package grants anything).
+    /// package's id; replacing an existing Workspace needs `replace: true` *and* being its owner (权限需求 R17) —
+    /// nothing inside the package grants anything). `design`: the permission design a `new` import starts with (the
+    /// service read it from a source the caller manages; R12).
     pub fn import(&self, caller: &Caller, package: &Path, semantics: &str, replace: bool) -> WsResult<Value> {
         require_may_own(caller)?;
         let pkg = open_package(package, &self.objects)?;
@@ -471,7 +473,7 @@ impl Service {
                     // judged on the existing folder only; indistinguishable from "cannot create" when denied
                     let denied = || WsError::denied("restore is not permitted");
                     let handle = self.workspace(&source_id).map_err(|_| denied())?;
-                    let allowed = handle.lock().unwrap().access(caller)?.ws_caps.has(Cap::Manage);
+                    let allowed = handle.lock().unwrap().access(caller)?.is_owner();
                     if !allowed || !replace {
                         return Err(denied());
                     }
@@ -492,8 +494,8 @@ impl Service {
         let personal = if personal_backup { pkg.personal } else { vec![] };
         // a restore over an existing Workspace keeps its owner, whose buckets hold its objects
         let owner = match existing {
-            true => self.workspace(&id)?.lock().unwrap().owner()?.unwrap_or_else(|| caller.principal.clone()),
-            false => caller.principal.clone(),
+            true => self.workspace(&id)?.lock().unwrap().owner()?.unwrap_or_else(|| caller.owner_principal().to_string()),
+            false => caller.owner_principal().to_string(),
         };
         let tmp = self.tmp_dir();
         let spec = LoadSpec { workspace_id: &id, title, content_root, collab, personal, cloned_from };
@@ -504,8 +506,23 @@ impl Service {
                 return Err(e); // the existing Workspace, if any, is untouched
             }
         };
+        // a new Workspace starts with the package's permission design, if a manager exported it (R12); a restore over
+        // an existing one keeps that one's permissions (below)
+        let mut ws = ws;
+        let design = match (existing, m.get("permission_design").filter(|d| d.is_object())) {
+            (false, Some(d)) => match ws.load_permission_design(caller, d) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    drop(ws);
+                    self.discard(&tmp);
+                    return Err(e);
+                }
+            },
+            _ => None,
+        };
         let info = json!({ "ok": true, "workspace_id": id, "epoch": ws.epoch, "head_seq": ws.head_seq, "content_root": content_root,
-                           "semantics": semantics, "replaced": existing, "missing": m["missing"], "external_sources": m["external_sources"] });
+                           "semantics": semantics, "replaced": existing, "missing": m["missing"], "external_sources": m["external_sources"],
+                           "permission_design": design });
         drop(ws);
         if existing {
             let handle = self.workspace(&id)?;
@@ -513,16 +530,28 @@ impl Service {
             if !self.is_current_workspace(&id, &handle) {
                 return Err(WsError::new(Code::WriterBusy, "workspace writer was replaced; retry"));
             }
-            active.require_ws(caller, Cap::Manage)?;
-            // restoring content does not change who may access it: grants and entries move over, runs and uploads do not
+            active.require_owner(caller)?;
+            // restoring content does not change who may access it: the permissions (design, members, entries, the
+            // operation record) move over, runs and uploads do not; entities keep who created them (R6)
             let old_local = self.ws_dir(&id).join("local.sqlite");
             let conn = rusqlite::Connection::open(tmp.join("local.sqlite")).map_err(crate::docdb::db_err)?;
             conn.execute("ATTACH DATABASE ?1 AS old", [old_local.to_string_lossy().as_ref()]).map_err(crate::docdb::db_err)?;
-            conn.execute_batch("DELETE FROM grants; INSERT INTO grants SELECT * FROM old.grants; \
+            conn.execute_batch("DELETE FROM acl_entries; INSERT INTO acl_entries SELECT * FROM old.acl_entries; \
+                                DELETE FROM acl_groups; INSERT INTO acl_groups SELECT * FROM old.acl_groups; \
+                                DELETE FROM acl_members; INSERT INTO acl_members SELECT * FROM old.acl_members; \
+                                DELETE FROM acl_macro_bindings; INSERT INTO acl_macro_bindings SELECT * FROM old.acl_macro_bindings; \
+                                DELETE FROM acl_audit; INSERT INTO acl_audit SELECT * FROM old.acl_audit; \
                                 INSERT INTO share_entries SELECT * FROM old.share_entries; \
                                 INSERT OR REPLACE INTO local_meta SELECT * FROM old.local_meta; DETACH DATABASE old;")
                 .map_err(crate::docdb::db_err)?;
             drop(conn);
+            let old_doc = self.ws_dir(&id).join("doc.sqlite");
+            let doc = rusqlite::Connection::open(tmp.join("doc.sqlite")).map_err(crate::docdb::db_err)?;
+            doc.execute("ATTACH DATABASE ?1 AS old", [old_doc.to_string_lossy().as_ref()]).map_err(crate::docdb::db_err)?;
+            doc.execute_batch("UPDATE entities SET created_by = (SELECT o.created_by FROM old.entities o WHERE o.entity_id = entities.entity_id) \
+                               WHERE entity_id IN (SELECT entity_id FROM old.entities WHERE created_by IS NOT NULL); DETACH DATABASE old;")
+                .map_err(crate::docdb::db_err)?;
+            drop(doc);
             let backup = random_id("restore_");
             write_atomic(&tmp.join("restore-intent.json"), json!({"workspace_id": id, "backup": backup}).to_string().as_bytes())?;
             let backup_path = self.data_dir.join("trash").join(&backup);
@@ -555,15 +584,19 @@ impl Service {
     }
 
     /// `ws.clone`: materialize what the caller may read, then load it as a new
-    /// Workspace. No grants, runs, uploads or personal entities are copied;
-    /// rich texts start new lineages. `cloned_from` is provenance only.
+    /// Workspace the caller (an Agent: its owner) owns. No members, single callers' entries, entries, runs, uploads or
+    /// personal entities are copied; rich texts start new lineages; the caller created every entity (R6). With
+    /// `manage` on the source the permission design comes along (R12); entries on entities left out are dropped and
+    /// reported. `cloned_from` is provenance only.
     pub fn clone_workspace(&self, caller: &Caller, source_id: &str) -> WsResult<Value> {
         require_may_own(caller)?;
-        let (cp, title) = {
+        let (cp, title, design) = {
             let handle = self.workspace(source_id)?;
             let ws = handle.lock().unwrap();
             let access = ws.require_ws(caller, Cap::Export)?;
-            (ws.materialize_for(&access, "clone_source", &caller.principal)?, ws.title())
+            let cp = ws.materialize_for(&access, "clone_source", &caller.principal)?;
+            let design = if access.ws_caps.has(Cap::Manage) { Some(ws.permission_design(&|id| cp.objects.contains_key(id))?) } else { None };
+            (cp, ws.title(), design)
         };
         let lease = self.allocate_workspace_id()?;
         let id = lease.id.clone();
@@ -576,15 +609,30 @@ impl Service {
             personal: vec![],
             cloned_from: Some(json!({ "workspace_id": source_id, "snapshot": cp.snapshot_id })),
         };
-        let ws = match load_workspace(&tmp, spec, caller, &caller.principal, self.objects.clone(), self.clock.clone()) {
+        let mut ws = match load_workspace(&tmp, spec, caller, caller.owner_principal(), self.objects.clone(), self.clock.clone()) {
             Ok(ws) => ws,
             Err(e) => {
                 self.discard(&tmp);
                 return Err(e);
             }
         };
+        let loaded = match &design {
+            Some((d, dropped)) => match ws.load_permission_design(caller, d) {
+                Ok(mut v) => {
+                    v["dropped"] = json!(dropped);
+                    Some(v)
+                }
+                Err(e) => {
+                    drop(ws);
+                    self.discard(&tmp);
+                    return Err(e);
+                }
+            },
+            None => None,
+        };
         let info = json!({ "ok": true, "workspace_id": id, "epoch": ws.epoch, "head_seq": ws.head_seq, "content_root": cp.content_root,
-                           "cloned_from": { "workspace_id": source_id, "snapshot": cp.snapshot_id }, "excluded_entities": cp.excluded });
+                           "cloned_from": { "workspace_id": source_id, "snapshot": cp.snapshot_id }, "excluded_entities": cp.excluded,
+                           "permission_design": loaded });
         drop(ws);
         std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         Ok(info)
@@ -604,19 +652,28 @@ impl Service {
         let title = title.filter(|t| !t.trim().is_empty()).or_else(|| tf.item["title"].as_str()).unwrap_or("Workspace").to_string();
         let tmp = self.tmp_dir();
         let spec = LoadSpec { workspace_id: &id, title: &title, content_root: &root, collab: Default::default(), personal: vec![], cloned_from: None };
-        let mut ws = match load_workspace(&tmp, spec, caller, &caller.principal, self.objects.clone(), self.clock.clone()) {
+        let mut ws = match load_workspace(&tmp, spec, caller, caller.owner_principal(), self.objects.clone(), self.clock.clone()) {
             Ok(ws) => ws,
             Err(e) => {
                 self.discard(&tmp);
                 return Err(e);
             }
         };
-        if let Err(e) = ws.template_finish(caller, &tf.item, params) {
-            drop(ws);
-            self.discard(&tmp);
-            return Err(e);
-        }
-        let info = json!({ "ok": true, "workspace_id": id, "title": title, "epoch": ws.epoch, "head_seq": ws.head_seq, "template": tf.item["id"] });
+        // the template's permission design (R11): groups without members, anonymous access off
+        let design = match tf.permission_design() {
+            Ok(Some(d)) => ws.load_permission_design(caller, &d).map(Some),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        };
+        let design = match design.and_then(|d| ws.template_finish(caller, &tf.item, params).map(|_| d)) {
+            Ok(d) => d,
+            Err(e) => {
+                drop(ws);
+                self.discard(&tmp);
+                return Err(e);
+            }
+        };
+        let info = json!({ "ok": true, "workspace_id": id, "title": title, "epoch": ws.epoch, "head_seq": ws.head_seq, "template": tf.item["id"], "permission_design": design });
         drop(ws);
         std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         Ok(info)

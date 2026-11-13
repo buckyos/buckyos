@@ -1,5 +1,5 @@
 //! Contract tests of the stable kRPC methods (内核架构改进 D11, T0-3): every `stable` method of
-//! `METHOD_LEVELS` is exercised once over HTTP and the *shape* of its request and response (keys and
+//! `METHODS` is exercised once over HTTP and the *shape* of its request and response (keys and
 //! value types, never the volatile values) is compared with `fixtures/protocol/stable-methods.json`.
 //! `AIWS_REGEN=1` re-records the file. The README method table must list the same levels.
 
@@ -8,7 +8,7 @@ mod nfs;
 
 use aiworkspace_server::auth::StaticTokens;
 use aiworkspace_server::wish::WishConfig;
-use aiworkspace_server::{build_router, AppState, Limits, METHOD_LEVELS};
+use aiworkspace_server::{build_router, AppState, Limits, METHODS};
 use aiworkspace_store::Service;
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -131,18 +131,30 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     s.rpc("doc.query", wsp(json!({ "sql": "SELECT \"标题\", \"数\" FROM \"/data/表\" ORDER BY _id LIMIT 10" }))).await;
     s.rpc("doc.get_changes", wsp(json!({ "epoch": epoch, "after_seq": 0 }))).await;
     s.rpc("doc.wait_changes", wsp(json!({ "epoch": epoch, "after_seq": head, "timeout_ms": 50 }))).await;
-    s.rpc("ws.grant", wsp(json!({ "subject": "bob", "capabilities": ["read"] }))).await;
-    s.rpc("ws.list_grants", wsp(json!({}))).await;
+    // permissions (权限需求 §4): entries by path, groups and members, anonymous access, queries, the record
+    s.rpc("acl.set", wsp(json!({ "changes": [{ "subject": "bob", "resource": "/data/表", "allow": ["read"], "deny": ["comment"] }] }))).await;
+    s.rpc("acl.set_group", wsp(json!({ "group_id": "teachers", "title": "老师" }))).await;
+    s.rpc("acl.members", wsp(json!({ "group_id": "teachers", "add": ["bob", "group:staff"] }))).await;
+    s.rpc("acl.set", wsp(json!({ "changes": [{ "subject": "@teachers", "resource": "/", "allow": ["read", "update"] }] }))).await;
+    s.rpc("acl.groups", wsp(json!({}))).await;
+    s.rpc("acl.query", wsp(json!({ "by": "entity", "resource": "/data/表", "expand": true }))).await;
+    s.rpc("acl.query", wsp(json!({ "by": "subject", "subject": "@teachers" }))).await;
+    s.rpc("acl.query", wsp(json!({ "by": "explain", "resource": "/data/表", "principal": "bob" }))).await;
+    s.rpc("acl.query", wsp(json!({ "by": "all" }))).await;
+    s.rpc("acl.set_anonymous", wsp(json!({ "enabled": false }))).await;
     s.rpc("ws.list_subjects", json!({})).await;
-    s.rpc("ws.revoke", wsp(json!({ "subject": "bob" }))).await;
+    s.rpc("acl.set", wsp(json!({ "changes": [{ "subject": "bob", "resource": "/data/表" }] }))).await;
     s.rpc("ws.set_user_state", wsp(json!({ "entries": { "panel": { "open": true } } }))).await;
     s.rpc("ws.get_user_state", wsp(json!({}))).await;
-    let entry = s.rpc("ws.create_entry", wsp(json!({ "capabilities": ["read"], "methods": { "guest": true } }))).await;
+    s.rpc("acl.set_group", wsp(json!({ "group_id": "visitors" }))).await;
+    s.rpc("acl.set", wsp(json!({ "changes": [{ "subject": "@visitors", "allow": ["read"] }] }))).await;
+    let entry = s.rpc("ws.create_entry", wsp(json!({ "group_id": "visitors", "methods": { "guest": true }, "max_joins": 10 }))).await;
     let entry_id = entry["entry"]["entry_id"].as_str().unwrap().to_string();
     s.call(None, "entry.describe", json!({ "entry_id": entry_id })).await;
     s.rpc("ws.list_entries", wsp(json!({}))).await;
     s.call(Some("tok-bob"), "ws.join_entry", json!({ "entry_id": entry_id })).await;
-    s.rpc("ws.close_entry", json!({ "entry_id": entry_id })).await;
+    s.rpc("ws.close_entry", json!({ "entry_id": entry_id, "remove_members": true })).await;
+    s.rpc("acl.delete_group", wsp(json!({ "group_id": "visitors" }))).await;
     let lock = s.rpc("lock.acquire", wsp(json!({ "entity_ids": ["t1"], "session_id": "s1" }))).await;
     let lock_ids: Vec<Value> = lock["locks"].as_array().map(|a| a.iter().map(|l| l["lock_id"].clone()).collect()).unwrap_or_default();
     s.rpc("lock.list", wsp(json!({}))).await;
@@ -170,6 +182,10 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     let info = s.rpc("ws.get_info", wsp(json!({}))).await;
     s.rpc("doc.commit", commit(&ws, info["epoch"].as_str().unwrap(), "wish-1", json!([{ "op": "entity.create", "entity_id": "w1", "type_id": "buckyos.wish", "parent_id": "data", "order_key": "w",
         "payload": { "prompt": "写一句欢迎词", "executor": "xllm", "output_mode": "overwrite" } }]))).await;
+    // a macro bound to a group (§4.5), and the operation record of everything above
+    s.rpc("acl.bind_macro", wsp(json!({ "wish": "w1", "group_id": "teachers", "mode": "intersection" }))).await;
+    s.rpc("acl.bind_macro", wsp(json!({ "wish": "w1", "group_id": null }))).await;
+    s.rpc("acl.audit", wsp(json!({ "limit": 5 }))).await;
     let start = s.rpc("proc.start", wsp(json!({ "program": "wish.xllm@1", "idempotency_key": "w-a", "params": { "wish_id": "w1", "stage": "analyze", "execution": { "mode": "local" } } }))).await;
     let run_id = start["run_id"].as_str().unwrap().to_string();
     s.rpc("proc.list", wsp(json!({ "wish_id": "w1" }))).await;
@@ -203,7 +219,7 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     s.rpc("ws.delete", json!({ "workspace_id": imported["workspace_id"] })).await;
 
     // every stable method was exercised (or is listed as not coverable here)
-    let stable: Vec<&str> = METHOD_LEVELS.iter().filter(|(_, l)| *l == "stable").map(|(m, _)| *m).collect();
+    let stable: Vec<&str> = METHODS.iter().filter(|m| m.level == "stable").map(|m| m.method).collect();
     let seen: std::collections::BTreeSet<&str> = s.steps.iter().filter_map(|st| st["method"].as_str()).collect();
     for m in &stable {
         assert!(seen.contains(m) || NOT_COVERED.iter().any(|(n, _)| n == m), "stable method {m} has no contract step");
@@ -256,6 +272,22 @@ fn readme_method_table_mirrors_the_levels() {
             rest = &after[end + 1..];
         }
     }
-    let code: std::collections::BTreeMap<String, String> = METHOD_LEVELS.iter().map(|(m, l)| (m.to_string(), l.to_string())).collect();
-    assert_eq!(listed, code, "README method table and METHOD_LEVELS differ");
+    let code: std::collections::BTreeMap<String, String> = METHODS.iter().map(|m| (m.method.to_string(), m.level.to_string())).collect();
+    assert_eq!(listed, code, "README method table and METHODS differ");
+}
+
+/// The README's authorization table is generated from `METHODS` (权限需求 R21); `AIWS_REGEN=1` writes it.
+#[test]
+fn readme_authorization_table_is_generated() {
+    const BEGIN: &str = "<!-- authorization-table:begin (generated from server/src/methods.rs; AIWS_REGEN=1) -->\n";
+    const END: &str = "<!-- authorization-table:end -->";
+    let readme = std::fs::read_to_string(README).unwrap();
+    let (head, rest) = readme.split_once(BEGIN).expect("the README has the authorization table markers");
+    let (_, tail) = rest.split_once(END).expect("the README has the authorization table end marker");
+    let table = aiworkspace_server::methods::authorization_table();
+    if std::env::var("AIWS_REGEN").is_ok() {
+        std::fs::write(README, format!("{head}{BEGIN}{table}{END}{tail}")).unwrap();
+        return;
+    }
+    assert_eq!(rest.split_once(END).unwrap().0, table, "README authorization table is stale; regenerate with AIWS_REGEN=1");
 }

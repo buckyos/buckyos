@@ -20,12 +20,6 @@ fn a_run_only_subject_starts_runs_but_cannot_commit() {
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
     assert!(ws.grant(&alice(), "bob", None, &["read".into(), "run".into()]).is_ok());
-    assert!(ws.grant_with(&alice(), "carol", None, &["read".into()], Some("d1"), None).is_err(), "delegation fields need run");
-    ws.grant_with(&alice(), "carol", None, &["read".into(), "run".into()], Some("digest-1"), Some(&json!([{ "name": "summary", "parent_id": "data" }]))).unwrap();
-    let grants = ws.list_grants(&alice()).unwrap();
-    let carol = grants["grants"].as_array().unwrap().iter().find(|g| g["subject"] == "carol").unwrap();
-    assert_eq!((carol["task_digest"].as_str(), carol["outputs"][0]["name"].as_str()), (Some("digest-1"), Some("summary")));
-    assert_eq!(ws.run_grants(&Caller::user("carol")).unwrap()[0].1.as_deref(), Some("digest-1"));
     // bob writes nothing by hand, but runs the Mock
     let denied = commit(&mut ws, &bob(), json!([{ "op": "entity.rename", "entity_id": "tasks", "name": "x", "expect": { "rev": 1 } }]));
     assert_eq!(code(&denied), "PERMISSION_DENIED", "{denied}");

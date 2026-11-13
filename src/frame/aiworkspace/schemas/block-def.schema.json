@@ -436,6 +436,30 @@
      "const": "script"
     }
    ]
+  },
+  "trusted": {
+   "description": "Who vouched for an HTML definition's code (权限需求 R37): written by the service when a holder of manage writes or confirms the code — { by, rev }; a viewer's host runs only trusted code by itself",
+   "oneOf": [
+    {
+     "type": "boolean"
+    },
+    {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "by",
+      "rev"
+     ],
+     "properties": {
+      "by": {
+       "type": "string"
+      },
+      "rev": {
+       "type": "integer"
+      }
+     }
+    }
+   ]
   }
  },
  "$defs": {

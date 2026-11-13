@@ -104,7 +104,7 @@ async function typeAtEnd(page: Page, blockId: string, text: string) {
 
 test('write locks: policy toggle, acquire, holder display, break, LOCK_LOST keeps my edits, re-acquire', async ({ browser, api }) => {
   const ws = await api.sample(ALICE, `lock ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update', 'append', 'comment'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'append', 'comment'] }] })
   const aliceContext = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const bobContext = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const alice = await aliceContext.newPage()
@@ -185,14 +185,14 @@ test('write locks: policy toggle, acquire, holder display, break, LOCK_LOST keep
 
 test('a refused rich text update is kept as a recoverable draft and the editor returns to the confirmed content', async ({ browser, api }) => {
   const ws = await api.sample(ALICE, `draft ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update'] }] })
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const bob = await context.newPage()
   await openWorkspace(bob, BOB, ws.workspace_id)
   await typeAtEnd(bob, 'n-end', '被接受的一句。')
   await expectAllCommitted(bob)
   // the permission is withdrawn while bob keeps typing
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
   await bob.keyboard.type('不会被接受的一句。')
   await expect(bob.getByTestId('aiws-notice').filter({ hasText: 'PERMISSION_DENIED' })).toContainText('已保留为草稿')
   await expect(bob.getByTestId('aiws-save-summary')).toHaveAttribute('data-attention', '1')

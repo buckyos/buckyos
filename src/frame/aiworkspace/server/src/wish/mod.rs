@@ -136,11 +136,13 @@ pub struct WishRuntime {
     active: Mutex<HashMap<String, Arc<ActiveRun>>>,
     /// run id → the stage an executor works on, from its claim to its report
     hosted: Mutex<HashMap<String, Arc<StageState>>>,
+    /// run id → the stage tool calls of a hosted run so far (its `limits.max_tool_iterations`, 权限需求 R30)
+    pub tool_calls: Mutex<HashMap<String, u64>>,
 }
 
 impl WishRuntime {
     pub fn new(config: WishConfig) -> Arc<WishRuntime> {
-        Arc::new(WishRuntime { config, active: Mutex::default(), hosted: Mutex::default() })
+        Arc::new(WishRuntime { config, active: Mutex::default(), hosted: Mutex::default(), tool_calls: Mutex::default() })
     }
 
     pub fn active(&self, run_id: &str) -> Option<Arc<ActiveRun>> {
@@ -191,6 +193,9 @@ pub struct StageState {
     /// What ends a run of the stored macro that failed (`PROGRAM_FAILED`, `MACRO_CODE_CHANGED`).
     pub failure: Mutex<Option<WsError>>,
     pub budget: Value,
+    /// Whose AI the run uses (its `aicc.user_id`): the AI answer cache is kept per that user, so one person's executor
+    /// never answers another's runs from what it wrote (权限需求 R35).
+    pub ai_user: String,
     prompts: Vec<String>,
     tool_calls: AtomicU32,
     program_runs: AtomicU32,
@@ -335,6 +340,17 @@ fn s<'a>(p: &'a Value, k: &str) -> WsResult<&'a str> {
     p.get(k).and_then(Value::as_str).ok_or_else(|| WsError::invalid_op(format!("{k} required")))
 }
 
+/// The caller a run acts for (权限需求 R14): its trigger as recorded — class, restriction, an Agent with its owner — with
+/// its group and contact memberships settled now for this Workspace. Never `Caller::user(<name>)`: a Limited trigger
+/// stays Limited, a member of a group keeps that group, a refused group stays refusing.
+pub async fn delegated(state: &Arc<AppState>, ws_id: &str, run: &Value) -> Caller {
+    let principal = run["principal"].as_str().unwrap_or("");
+    let identity = &run["detail"]["context"]["trigger_identity"];
+    let mut c = if identity.is_object() { Caller::delegated(identity, principal) } else { Caller::delegated(&json!({ "class": "account", "restricted": true }), principal) };
+    crate::prepare_caller(state, &mut c, "proc.delegate", Some(ws_id)).await;
+    c
+}
+
 /// `proc.start` for `wish.xllm@1` (stages `analyze`, `code`, `run`) and `wish.mock@1` (`run`).
 pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str, params: &Value, idem: &str) -> WsResult<Value> {
     let wish_id = s(params, "wish_id")?.to_string();
@@ -355,10 +371,13 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
         // the execution context (§9.6): named in full, or the run does not start
         let mode_name = params["execution"]["mode"].as_str().map(str::to_string).unwrap_or_else(|| state.wish.config.default_execution.clone());
         let mode = exec::Mode::parse(&mode_name).ok_or_else(|| WsError::invalid_op(format!("unknown execution mode {mode_name}")))?;
-        // hosted execution is what a collaborator with only `run` on the wish gets (D22); a local run writes as the caller
-        let needed = if mode == exec::Mode::Hosted { "run" } else { "update" };
-        if !read["capabilities"].as_array().is_some_and(|c| c.iter().any(|x| x == needed)) {
-            return Err(WsError::denied(format!("running a wish {} needs the {needed} capability on it", mode.as_str())));
+        // analysis and coding change the macro and hand the caller's words to a model: `update` on the wish (权限需求
+        // R29); running it: `run` or any editing right on the wish (R22), wherever it executes
+        let has = |c: &str| read["capabilities"].as_array().is_some_and(|caps| caps.iter().any(|x| x == c));
+        let allowed = if stage == STAGE_RUN { ["run", "update", "append", "delete", "structure"].iter().any(|c| has(c)) } else { has("update") };
+        if !allowed {
+            let needed = if stage == STAGE_RUN { "run" } else { "update" };
+            return Err(WsError::denied(format!("the {stage} stage of a wish needs the {needed} capability on it")));
         }
         let executor = read["content"]["payload"]["executor"].as_str().unwrap_or("");
         if (program == PROGRAM_XLLM && executor != "xllm") || (program == PROGRAM_MOCK && executor != "mock") {
@@ -376,6 +395,13 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
         }
         let aicc = run_attribution(ws, caller, mode)?;
         let hosted = if mode == exec::Mode::Hosted { Some(ws.hosted_exec_admits(caller, &wish_id)?) } else { None };
+        // the owner's limits on hosted runs are enforced, not just stored (权限需求 R30)
+        if let Some(max) = hosted.as_ref().and_then(|c| c["limits"]["max_runs_per_day"].as_u64()) {
+            let since = aiworkspace_core::value::format_utc_ms((ws.clock)() - 24 * 3_600_000);
+            if ws.hosted_runs_since(&since)? >= max {
+                return Err(WsError::limit(format!("the owner allows {max} hosted runs a day; try again later")));
+            }
+        }
         let context = exec::execution_context(ws, caller, &wish_id, &read["content"]["payload"], mode, &aicc, hosted.as_ref())?;
         let (exec_record, claim) = if program == PROGRAM_MOCK { (json!({ "mode": "mock", "attempt": 0 }), None) } else { exec::new_exec_record(mode) };
         let payload = &read["content"]["payload"];
@@ -396,11 +422,9 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
     if !replayed && program == PROGRAM_XLLM && mode == exec::Mode::Hosted {
         let (st, w, rid, token, cfg, ctx) = (state.clone(), ws_id.to_string(), run_id.clone(), claim.clone().unwrap_or_default(), hosted.clone().unwrap_or(Value::Null), context.clone());
         tokio::runtime::Handle::current().spawn(async move {
-            let mut dispatch = exec::dispatch_hosted(&st, &w, &rid, &token, &cfg, &ctx).await;
-            if dispatch["status"] == json!("unavailable") {
-                // nobody got the token: whoever may read the run (its trigger, an editor) hands it to an executor
-                dispatch["claim_token"] = json!(token);
-            }
+            // the claim token goes to the configured Agent only, never into the run's detail (权限需求 S6, R30): when the
+            // dispatch fails the run waits for a retry or a cancel
+            let dispatch = exec::dispatch_hosted(&st, &w, &rid, &token, &cfg, &ctx).await;
             let _ = st.with_ws(&w, |ws| ws.wish_run_set(&rid, None, None, None, None, Some(&json!({ "dispatch": dispatch }))));
         });
     }
@@ -472,6 +496,9 @@ pub fn plan_for(ws: &mut aiworkspace_store::workspace::Workspace, caller: &Calle
 /// `proc.apply`: re-stage the plan's assets (content-addressed: the same ids), then commit it.
 pub fn apply(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> WsResult<Value> {
     let run_id = s(p, "run_id")?;
+    // the trigger, its memberships settled before the Workspace's writer is taken
+    let seen = state.with_ws(ws_id, |ws| ws.wish_run(caller, run_id))?;
+    let trigger = tokio::runtime::Handle::current().block_on(delegated(state, ws_id, &seen));
     state.with_ws(ws_id, |ws| {
         let run = ws.wish_run(caller, run_id)?;
         // the delegation still holds (D16, §9.5): the task configuration the run bound, the attempt that
@@ -485,6 +512,15 @@ pub fn apply(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
             if aiworkspace_core::wish::basis_digest(&payload)[..32] != *bound {
                 return Err(WsError::new(Code::DelegationStale, "the wish configuration changed after the run was started; run it again under the current configuration").with_data(json!({ "bound": bound })));
             }
+        }
+        // a hosted run still runs under the owner's configuration it was started with, within its context's life (R30)
+        if let Some(bound) = run["detail"]["context"]["executor"]["config_digest"].as_str() {
+            if ws.hosted_exec()?["digest"].as_str() != Some(bound) {
+                return Err(WsError::new(Code::DelegationStale, "the owner's hosted execution configuration changed after the run was started; run it again").with_data(json!({ "bound": bound })));
+            }
+        }
+        if run["detail"]["context"]["expires_at"].as_str().is_some_and(|e| e < ws.now().as_str()) {
+            return Err(WsError::new(Code::DelegationStale, "the run's execution context expired; run it again"));
         }
         if let (Some(produced), Some(current)) = (run["detail"]["exec"]["provided"]["attempt"].as_u64(), run["detail"]["exec"]["attempt"].as_u64()) {
             if produced != current {
@@ -501,7 +537,13 @@ pub fn apply(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
                 ws.stage_upload(caller, a["object_id"].as_str().unwrap_or(""), state.limits.max_asset_bytes, state.limits.max_media_bytes)?;
             }
         }
-        let applied = ws.wish_apply(caller, run_id, &digest, p.get("session_id").and_then(Value::as_str))?;
+        // written as the macro identity ∩ the declared outputs, not as whoever clicks apply (§4.5, R28): the trigger's
+        // permissions as they are now, bounded by the wish's group when it is bound with `intersection`
+        let wish_id = run["params"]["wish_id"].as_str().unwrap_or("");
+        let identity = ws.macro_access(&trigger, wish_id)?;
+        let attribution = json!({ "triggered_by": run["principal"], "executed_by": run["detail"]["exec"]["executor"]["principal"], "applied_by": caller.principal,
+                                  "judged_as": identity.principal, "macro": ws.macro_binding(wish_id)?.map(|(g, m)| json!({ "group_id": g, "mode": m })) });
+        let applied = ws.wish_apply_as(caller, run_id, &digest, p.get("session_id").and_then(Value::as_str), Some(identity), Some(attribution))?;
         let run = ws.wish_run(caller, run_id)?;
         let mut v = run_view(&state.wish, &run, true);
         v["applied"] = applied;

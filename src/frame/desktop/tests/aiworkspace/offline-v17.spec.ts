@@ -7,7 +7,7 @@ const BOB = 'tok-bob'
 
 test('V17 reconnect after others deleted a record and changed the same cell: both inputs need attention, nothing is applied twice, the record stays deleted', async ({ page, api, net }) => {
   const ws = await api.sample(ALICE, `v17-conflict ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update', 'delete'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'delete'] }] })
   await prepareOffline(page, net, ALICE, ws.workspace_id)
   await net.down()
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'offline', { timeout: 40_000 })
@@ -63,7 +63,7 @@ test('V17 reconnect after others deleted a record and changed the same cell: bot
 
 test('V17 permission revoked while offline: the old right is not honoured, the input is kept and readable; later it can be sent again', async ({ page, api, net }) => {
   const ws = await api.sample(ALICE, `v17-revoke ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update'] }] })
   await prepareOffline(page, net, BOB, ws.workspace_id)
   await net.down()
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'offline', { timeout: 40_000 })
@@ -79,7 +79,7 @@ test('V17 permission revoked while offline: the old right is not honoured, the i
   expect((await saveSummary(page)).pending).toBe(2)
 
   // (i) alice takes the write permission away
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
   const head = await api.headSeq(ALICE, ws.workspace_id)
   await net.up()
   await expect.poll(async () => (await saveSummary(page)).attention, { timeout: 40_000 }).toBe(2)
@@ -103,7 +103,7 @@ test('V17 permission revoked while offline: the old right is not honoured, the i
   expect((await saveSummary(page)).pending).toBe(2)
 
   // the permission comes back: the kept inputs are sent again unchanged, exactly once each
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update'] }] })
   await entry.getByTestId('aiws-edit-requeue').click()
   await expect.poll(async () => (await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-43', 'owner')).value, { timeout: 30_000 }).toBe('bob 离线写的')
   await rich.getByTestId('aiws-edit-requeue').click()
@@ -116,12 +116,12 @@ test('V17 permission revoked while offline: the old right is not honoured, the i
 
 test('V17 access removed entirely while offline: sending stops, everything is kept and exportable', async ({ page, api, net }) => {
   const ws = await api.sample(ALICE, `v17-noaccess ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update'] }] })
   await prepareOffline(page, net, BOB, ws.workspace_id)
   await net.down()
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'offline', { timeout: 40_000 })
   await expect(await editCell(page, 'task-43', '负责人', 'owner', '无权后仍保留')).toHaveAttribute('data-state', 'saved_locally')
-  await api.rpc(ALICE, 'ws.revoke', { workspace_id: ws.workspace_id, subject: 'bob' })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob' }] })
   const head = await api.headSeq(ALICE, ws.workspace_id)
   await net.up()
   await expect(page.getByTestId('aiws-stopped')).toContainText('已停止发送', { timeout: 40_000 })

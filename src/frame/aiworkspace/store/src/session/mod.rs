@@ -126,7 +126,7 @@ impl Actor {
     /// The Access the actor reads the run Workspace with in session methods (the grants say the same for direct reads).
     pub fn access(&self) -> Access {
         let caps = if self.role.reviews() { CapSet::ALL } else { CapSet(Cap::Read as u16) };
-        Access { principal: self.principal.clone(), ws_caps: caps, scoped: BTreeMap::new() }
+        Access::uniform(&self.principal, caps)
     }
 }
 
@@ -529,13 +529,16 @@ impl Service {
             let local = Connection::open(tmp.join("local.sqlite")).map_err(db_err)?;
             local
                 .execute_batch(
-                    "DELETE FROM grants; DELETE FROM share_entries; DELETE FROM publications; DELETE FROM referrers; DELETE FROM locks; \
+                    "DELETE FROM acl_entries; DELETE FROM acl_groups; DELETE FROM acl_members; DELETE FROM acl_macro_bindings; DELETE FROM acl_audit; \
+                     DELETE FROM share_entries; DELETE FROM publications; DELETE FROM publication_versions; DELETE FROM referrers; DELETE FROM locks; \
                      DELETE FROM lock_events; DELETE FROM staged_assets; DELETE FROM staged_commits; DELETE FROM user_state; DELETE FROM runs; DELETE FROM local_meta;",
                 )
                 .map_err(db_err)?;
-            local.execute("INSERT INTO grants (subject, scope_entity_id, capabilities) VALUES (?1, '', ?2)", params![owner, CapSet::ALL.0]).map_err(db_err)?;
+            // the owner holds everything as the owner (权限需求 §4.2); the presenter gets an entry of its own
             if presenter != owner {
-                local.execute("INSERT INTO grants (subject, scope_entity_id, capabilities) VALUES (?1, '', ?2)", params![presenter, PRESENTER_CAPS]).map_err(db_err)?;
+                local
+                    .execute("INSERT INTO acl_entries (subject, scope_entity_id, allow, deny, updated_by, updated_at) VALUES (?1, '', ?2, 0, ?3, '')", params![presenter, PRESENTER_CAPS, owner])
+                    .map_err(db_err)?;
             }
             local.execute("INSERT INTO local_meta (key, value) VALUES ('owner', ?1)", [owner]).map_err(db_err)?;
             Ok(point)
@@ -566,6 +569,11 @@ impl Service {
         let path_id = s(p, "path_id")?.to_string();
         let policy = normalize_policy(p.get("policy"))?;
         let presenter = p.get("presenter").and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or(&caller.principal).to_string();
+        // the presenter is a person of this Zone (权限需求 R27): never a guest, a link, a group or a made-up name (the
+        // service checks the Zone's users before this)
+        if presenter.starts_with("guest:") || presenter.starts_with("link:") || presenter.starts_with('@') || presenter.chars().any(char::is_whitespace) || presenter.len() > 256 {
+            return Err(WsError::invalid_op("presenter must be an account of this Zone"));
+        }
         let title = {
             let handle = self.workspace(&source_id)?;
             let ws = handle.lock().unwrap();
@@ -584,7 +592,7 @@ impl Service {
         }
         let session_id = random_id("se_");
         let (run_id, point) = self.clone_for_session(&source_id, &session_id, &caller.principal, &presenter, &path_id)?;
-        let owner = Caller::user(&caller.principal);
+        let owner = Caller::internal(&caller.principal);
         let baseline = {
             let handle = self.workspace(&run_id)?;
             let mut ws = handle.lock().unwrap();
@@ -634,7 +642,7 @@ impl Service {
             crate::CallerClass::Guest => "guest",
             crate::CallerClass::Service => "service",
         };
-        if let Some(i) = via.filter(|i| i.session_id == s.session_id && i.revoked_ms.is_none()) {
+        if let Some(i) = via.filter(|i| i.session_id == s.session_id && i.usable((self.clock)())) {
             match i.kind.as_str() {
                 "pt" => return Ok(Some(Actor { principal: s.presenter.clone(), role: Role::Prompter, class: "account".into(), level: "verified", name: s.presenter.clone() })),
                 "dt" => return Ok(Some(Actor { principal: display_principal(&i.invite_id), role: Role::Display, class: "display".into(), level: "guest", name: i.label.clone().unwrap_or_else(|| "Display".into()) })),
@@ -751,7 +759,7 @@ impl Service {
                                 "title": first.as_ref().map(|f| f["title"].clone()), "surface_id": first.as_ref().map(|f| f["surface_id"].clone()),
                                 "black": false, "free": false, "transition": "fade", "nonce": 1, "media": {}, "rect": Value::Null, "updated_ms": now });
             ws.set_stage(&stage, NewEvent { actor: &actor.principal, scope: "public", track: "public", kind: "session.start", command_id: None, data: json!({ "stage": stage }), t_rel_ms: Some(0) })?;
-            let owner = Caller::user(&s.owner);
+            let owner = Caller::internal(&s.owner);
             ws.refresh_feeds(&owner, &actor.principal, &format!("start/{}", s.session_id), &FeedSel::all(), &participants)?;
             Ok(stage)
         })?;
@@ -771,7 +779,7 @@ impl Service {
         }
         let now = (self.clock)();
         self.with_run(s, |ws| {
-            let owner = Caller::user(&s.owner);
+            let owner = Caller::internal(&s.owner);
             // open tasks close with the session: nothing more is accepted
             let open: Vec<String> = ws.session_entities(TYPE_TASK)?.into_iter().filter(|t| t.payload.get("state") == Some(&json!("open"))).map(|t| t.entity_id).collect();
             if !open.is_empty() {
@@ -801,7 +809,7 @@ impl Service {
         Ok(json!({ "ok": true, "state": s.state, "expires_at": format_utc_ms(now + retention_ms) }))
     }
 
-    /// `session.save` (§8, Q12): the owner (or a manager of the source) keeps the session: an archive manifest naming
+    /// `session.save` (§8, Q12): the owner keeps the session: an archive manifest naming
     /// the baseline, the final snapshot, the event range, the voice segments and what is missing, and a `session`
     /// retention set pinning every object they need — no 30-day history rule applies to it.
     pub fn session_save(&self, s: &mut SessionRow, actor: &Actor) -> WsResult<Value> {
@@ -948,6 +956,15 @@ impl Service {
             Some(_) => return Err(WsError::invalid_op("config must be a small object")),
         };
         let label = p.get("label").and_then(Value::as_str).map(|l| l.chars().take(128).collect::<String>());
+        // a link may stop working by itself (权限需求 R27): `expires_at` in unix seconds
+        let mut config = config;
+        match p.get("expires_at") {
+            None | Some(Value::Null) => {}
+            Some(v) => {
+                let e = v.as_i64().filter(|e| *e * 1000 > (self.clock)()).ok_or_else(|| WsError::invalid_op("expires_at must be unix seconds in the future"))?;
+                config["expires_at"] = json!(e);
+            }
+        }
         let row = InviteRow {
             invite_id: random_id("iv_"),
             session_id: s.session_id.clone(),
@@ -962,12 +979,7 @@ impl Service {
         self.sessions.add_invite(&row)?;
         if kind == "dt" || kind == "pt" {
             // a display or a prompter reads the public projection of the run Workspace under the link's own subject
-            self.with_run(s, |ws| {
-                ws.local
-                    .execute("INSERT OR REPLACE INTO grants (subject, scope_entity_id, capabilities, via_entry) VALUES (?1, '', ?2, ?3)", params![display_principal(&row.invite_id), Cap::Read as u16, row.invite_id])
-                    .map_err(db_err)?;
-                Ok(())
-            })?;
+            self.with_run(s, |ws| invite_member(ws, &s.owner, &row.invite_id, &display_principal(&row.invite_id)))?;
         }
         Ok(json!({ "ok": true, "invite": row.to_json() }))
     }
@@ -987,11 +999,12 @@ impl Service {
             return Err(WsError::denied("the owner or the presenter revokes links"));
         }
         let revoked = self.sessions.revoke_invite(&s.session_id, invite_id, (self.clock)())?;
+        if revoked {
+            // those who joined through it leave the session too (权限需求 R27, Q17)
+            self.sessions.remove_participants_via(&s.session_id, invite_id)?;
+        }
         if revoked && s.alive() {
-            self.with_run(s, |ws| {
-                ws.local.execute("DELETE FROM grants WHERE via_entry = ?1", [invite_id]).map_err(db_err)?;
-                Ok(())
-            })?;
+            self.with_run(s, |ws| drop_invite_group(ws, &s.owner, invite_id))?;
         }
         Ok(json!({ "ok": true, "revoked": revoked }))
     }
@@ -1013,10 +1026,10 @@ impl Service {
             let row = ParticipantRow { principal: actor.principal.clone(), class: actor.class.clone(), level: actor.level.into(), name: name.clone(),
                                        role: actor.role.as_str().into(), via_invite: None, joined_ms: now, last_seen_ms: now, online: true };
             let first = self.sessions.upsert_participant(&s.session_id, &row)?;
-            let my = self.with_run(s, |ws| ws.ensure_my_feeds(&Caller::user(&s.owner), &actor.principal))?;
+            let my = self.with_run(s, |ws| ws.ensure_my_feeds(&Caller::internal(&s.owner), &actor.principal))?;
             return Ok((Actor { name, ..actor }, my, first));
         }
-        let Some(inv) = invite.filter(|i| i.kind == "at" && i.session_id == s.session_id && i.revoked_ms.is_none()) else {
+        let Some(inv) = invite.filter(|i| i.kind == "at" && i.session_id == s.session_id && i.usable((self.clock)())) else {
             return Err(WsError::sub(Code::NotFound, "SESSION_NOT_FOUND", "session not found, or you were not invited"));
         };
         if s.access != "open" {
@@ -1032,16 +1045,11 @@ impl Service {
             crate::CallerClass::Service => ("service", "verified"),
         };
         let name = name.map(clean_name).filter(|n| !n.is_empty()).unwrap_or_else(|| caller.principal.clone());
-        self.with_run(s, |ws| {
-            ws.local
-                .execute("INSERT OR IGNORE INTO grants (subject, scope_entity_id, capabilities, via_entry) VALUES (?1, '', ?2, ?3)", params![caller.principal, Cap::Read as u16, inv.invite_id])
-                .map_err(db_err)?;
-            Ok(())
-        })?;
+        self.with_run(s, |ws| invite_member(ws, &s.owner, &inv.invite_id, &caller.principal))?;
         let row = ParticipantRow { principal: caller.principal.clone(), class: class.into(), level: level.into(), name: name.clone(), role: "audience".into(),
                                    via_invite: Some(inv.invite_id.clone()), joined_ms: now, last_seen_ms: now, online: true };
         let first = self.sessions.upsert_participant(&s.session_id, &row)?;
-        let my = self.with_run(s, |ws| ws.ensure_my_feeds(&Caller::user(&s.owner), &caller.principal))?;
+        let my = self.with_run(s, |ws| ws.ensure_my_feeds(&Caller::internal(&s.owner), &caller.principal))?;
         let actor = Actor { principal: caller.principal.clone(), role: Role::Participant, class: class.into(), level, name };
         Ok((actor, my, first))
     }
@@ -1064,6 +1072,31 @@ fn s_kind(k: &str) -> WsResult<&'static str> {
 /// The grant subject and principal of a display or prompter link.
 pub fn display_principal(invite_id: &str) -> String {
     format!("link:{invite_id}")
+}
+
+/// Each link of a session is a logical group of its run Workspace (权限需求 R27): it reads the Workspace, its display
+/// or prompter and those who joined through it are its members, and revoking the link takes the group away.
+fn invite_member(ws: &Workspace, owner: &str, invite_id: &str, member: &str) -> WsResult<()> {
+    let now = ws.now();
+    ws.acl_txn(&Caller::internal(owner), |tx| {
+        tx.execute("INSERT OR IGNORE INTO acl_groups (group_id, title, description, created_by, created_at) VALUES (?1, ?1, 'session link', ?2, ?3)", params![invite_id, owner, now])
+            .map_err(db_err)?;
+        tx.execute("INSERT OR IGNORE INTO acl_entries (subject, scope_entity_id, allow, deny, updated_by, updated_at) VALUES (?1, '', ?2, 0, ?3, ?4)", params![format!("@{invite_id}"), Cap::Read as u16, owner, now])
+            .map_err(db_err)?;
+        tx.execute("INSERT OR IGNORE INTO acl_members (group_id, member, via_entry, added_by, added_at) VALUES (?1, ?2, ?1, ?3, ?4)", params![invite_id, member, owner, now]).map_err(db_err)?;
+        Ok(((), vec![crate::acl::AuditItem { action: "session.link_member", target: json!({ "group_id": invite_id }), before: None, after: Some(json!({ "member": member })) }]))
+    })?;
+    Ok(())
+}
+
+fn drop_invite_group(ws: &Workspace, owner: &str, invite_id: &str) -> WsResult<()> {
+    ws.acl_txn(&Caller::internal(owner), |tx| {
+        tx.execute("DELETE FROM acl_members WHERE group_id = ?1", [invite_id]).map_err(db_err)?;
+        tx.execute("DELETE FROM acl_entries WHERE subject = ?1", [format!("@{invite_id}")]).map_err(db_err)?;
+        tx.execute("DELETE FROM acl_groups WHERE group_id = ?1", [invite_id]).map_err(db_err)?;
+        Ok(((), vec![crate::acl::AuditItem { action: "session.revoke_link", target: json!({ "group_id": invite_id }), before: None, after: None }]))
+    })?;
+    Ok(())
 }
 
 fn clean_name(n: &str) -> String {
@@ -1507,7 +1540,7 @@ impl Service {
                 _ => {}
             }
         }
-        let owner = Caller::user(&s.owner);
+        let owner = Caller::internal(&s.owner);
         self.with_run(s, |ws| {
             let mut ops = Vec::new();
             let mut overrides = BTreeMap::new();
@@ -1630,7 +1663,7 @@ impl Service {
         self.live(s)?;
         self.may_interact(s, actor)?;
         let task_id = s_str(p, "task_id")?.to_string();
-        let owner = Caller::user(&s.owner);
+        let owner = Caller::internal(&s.owner);
         let now = format_utc_ms((self.clock)());
         self.with_run(s, |ws| {
             let t = ws.entity_row(&task_id).ok().filter(|e| e.type_id == TYPE_TASK).ok_or_else(|| WsError::not_found(format!("task {task_id} not found")))?;
@@ -1680,7 +1713,7 @@ impl Service {
         if content.to_string().len() > 64 * 1024 {
             return Err(WsError::limit("an answer is limited to 64 KiB"));
         }
-        let owner = Caller::user(&s.owner);
+        let owner = Caller::internal(&s.owner);
         let now = format_utc_ms((self.clock)());
         self.with_run(s, |ws| {
             let t = ws.entity_row(&task_id).ok().filter(|e| e.type_id == TYPE_TASK).ok_or_else(|| WsError::not_found(format!("task {task_id} not found")))?;
@@ -1743,7 +1776,7 @@ impl Service {
         }
         let rid = s_str(p, "response_id")?.to_string();
         let review = p.get("review").filter(|v| v.is_object()).cloned().ok_or_else(|| WsError::invalid_op("review must be an object"))?;
-        let owner = Caller::user(&s.owner);
+        let owner = Caller::internal(&s.owner);
         let now = format_utc_ms((self.clock)());
         self.with_run(s, |ws| {
             let r = ws.entity_row(&rid).ok().filter(|e| e.type_id == TYPE_RESPONSE).ok_or_else(|| WsError::not_found(format!("response {rid} not found")))?;
@@ -1773,7 +1806,7 @@ impl Service {
         let task_id = s_str(p, "task_id")?.to_string();
         let command = p.get("command_id").and_then(Value::as_str).filter(|c| !c.is_empty() && c.len() <= 96).ok_or_else(|| WsError::invalid_op("command_id required"))?;
         let content = p.get("content").cloned().unwrap_or(Value::Null);
-        let owner = Caller::user(&s.owner);
+        let owner = Caller::internal(&s.owner);
         let now = format_utc_ms((self.clock)());
         self.with_run(s, |ws| {
             ws.entity_row(&task_id).ok().filter(|e| e.type_id == TYPE_TASK).ok_or_else(|| WsError::not_found(format!("task {task_id} not found")))?;
@@ -1819,7 +1852,7 @@ impl Service {
         }
         let now = (self.clock)();
         let participants = self.sessions.participants(&s.session_id)?;
-        let owner = Caller::user(&s.owner);
+        let owner = Caller::internal(&s.owner);
         self.with_run(s, |ws| {
             if let Some(prior) = ws.event_by_command(&actor.principal, id)? {
                 return Ok(json!({ "ok": true, "duplicate": true, "event": prior, "stage": ws.stage() }));

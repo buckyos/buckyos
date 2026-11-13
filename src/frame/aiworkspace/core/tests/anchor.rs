@@ -284,7 +284,7 @@ fn only_the_author_reanchors() {
 fn list_annotations_by_target_and_page() {
     let mut ws = setup(json!([para("p1", "甲")]));
     tasks(&mut ws);
-    let carol = Access { principal: "carol".into(), ws_caps: CapSet(Cap::Read as u16 | Cap::Comment as u16), scoped: Default::default() };
+    let carol = Access::granted("carol", CapSet(Cap::Read as u16 | Cap::Comment as u16), []);
     ws.ok(json!([note("n1", json!({ "target": block("p1") })), note("n2", json!({ "target": { "entity_id": "tasks" } }))]));
     let env = ws.env("carol", "human", None, false);
     let mut mine = note("n3", json!({ "target": block("p1") }));

@@ -110,7 +110,7 @@ test('UI-P02 three floating toolbars and the bottom-right status area, no naviga
 
 test('UI-P03 rename in place: Enter one commit, Esc none, a concurrent rename keeps my input; the preset icon is shared', async ({ page, api, browser }) => {
   const ws = await blankCanvas(api, `p03 ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
   await openCanvas(page, ALICE, ws.workspace_id)
   const head = await api.headSeq(ALICE, ws.workspace_id)
   // Esc: nothing is written, the blur that follows saves nothing
@@ -384,7 +384,7 @@ test('UI-P08 view mode hides creation, the data-source view keeps the session; p
 
 test('UI-P10/P11 collaboration opens the permissions; the share link points at the Surface, carries no token and grants nothing', async ({ page, api, browser }) => {
   const ws = await api.demo(ALICE, 'quarterly', `p10 ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
   await openCanvas(page, ALICE, ws.workspace_id)
   await page.getByTestId('aiws-collab').click()
   await expect(page.getByTestId('aiws-side-panel').getByTestId('aiws-permissions')).toContainText('全部授权')
@@ -436,9 +436,10 @@ test('UI-P16 one-click public link: a guest opens it without signing in, reads a
   await expect(page.getByTestId('aiws-share-panel')).toContainText('无需登录')
   const link = await page.getByTestId('aiws-share-link').inputValue()
   expect(link).not.toMatch(/tok-|gt_/)
-  // what the click wrote: a `public` grant with read + comment, nothing more; the link itself is unchanged
-  const grants = await api.rpc(ALICE, 'ws.list_grants', { workspace_id: ws.workspace_id })
-  expect(grants.grants.find((g: { subject: string }) => g.subject === 'public')?.capabilities).toEqual(['read', 'comment'])
+  // what the click wrote: anonymous access on and `@guest` with read + comment, nothing more; the link itself is unchanged
+  const all = await api.rpc(ALICE, 'acl.query', { workspace_id: ws.workspace_id, by: 'all' })
+  expect(all.anonymous).toBe(true)
+  expect(all.entries.find((e: { subject: string }) => e.subject === '@guest')?.allow).toEqual(['read', 'comment'])
   await page.keyboard.press('Escape')
   await page.getByTestId('aiws-collab').click()
   await expect(page.locator('[data-testid="aiws-grant"][data-subject="public"]')).toContainText('无需登录')

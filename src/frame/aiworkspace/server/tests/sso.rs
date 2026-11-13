@@ -1,7 +1,7 @@
 //! Hybrid SSO against the real process (standalone identities from tokens.json): restricted classes (a Limited
-//! account, an External DID) never match `*` and own nothing, `group:` / `contact:` grants, share entries
-//! (`entry.describe` without a session, guests, `ws.join_entry` with method and Zone checks), and the D-4 denial on
-//! the wire.
+//! account, an External DID) are never in a `*` group and own nothing, `group:` / `contact:` members of logical
+//! groups, share entries leading into a group (`entry.describe` without a session, guests, `ws.join_entry` with method
+//! and Zone checks), and the D-4 denial on the wire.
 
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
@@ -108,8 +108,11 @@ async fn restricted_classes_entries_and_denials() {
     }
     assert_eq!(srv.rpc("tok-app", "ws.create", json!({ "title": "a service may" })).await["ok"], json!(true));
 
-    // `*` reaches ordinary accounts only; for a restricted caller "missing" and "not shared" give one neutral answer
-    srv.rpc("tok-alice", "ws.grant", json!({ "workspace_id": id, "subject": "*", "capabilities": ["read"] })).await;
+    // a group of every ordinary account (`*`) leaves restricted callers out; for them "missing" and "not shared" give one
+    // neutral answer
+    srv.rpc("tok-alice", "acl.set_group", json!({ "workspace_id": id, "group_id": "zone" })).await;
+    srv.rpc("tok-alice", "acl.members", json!({ "workspace_id": id, "group_id": "zone", "add": ["*"] })).await;
+    srv.rpc("tok-alice", "acl.set", json!({ "workspace_id": id, "changes": [{ "subject": "@zone", "allow": ["read"] }] })).await;
     assert_eq!(srv.rpc("tok-bob", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read"]));
     for tok in ["tok-lim", "tok-ext", "tok-app", GUEST] {
         let r = srv.rpc(tok, "ws.get_info", wsp.clone()).await;
@@ -123,14 +126,18 @@ async fn restricted_classes_entries_and_denials() {
     let other = srv.rpc("tok-bob", "ws.get_info", json!({ "workspace_id": "ws_aaaaaaaaaaaaaaaaaaaaaaaaaa" })).await;
     assert_eq!((code(&other), reason(&other)), ("NOT_FOUND", "resource_grant_missing"));
     // a reader that may not manage: PERMISSION_DENIED, same reason
-    let r = srv.rpc("tok-bob", "ws.grant", json!({ "workspace_id": id, "subject": "bob", "capabilities": ["manage"] })).await;
+    let r = srv.rpc("tok-bob", "acl.set", json!({ "workspace_id": id, "changes": [{ "subject": "bob", "allow": ["manage"] }] })).await;
     assert_eq!((code(&r), reason(&r)), ("PERMISSION_DENIED", "resource_grant_missing"));
 
-    // system groups and contact groups
-    srv.rpc("tok-alice", "ws.grant", json!({ "workspace_id": id, "subject": "group:customers", "capabilities": ["read"] })).await;
-    srv.rpc("tok-alice", "ws.grant", json!({ "workspace_id": id, "subject": "contact:did:bns:alice#vip", "capabilities": ["read", "comment"] })).await;
+    // system groups and contact groups are members of logical groups (权限需求 §4.2)
+    srv.rpc("tok-alice", "acl.set_group", json!({ "workspace_id": id, "group_id": "customers" })).await;
+    srv.rpc("tok-alice", "acl.members", json!({ "workspace_id": id, "group_id": "customers", "add": ["group:customers"] })).await;
+    srv.rpc("tok-alice", "acl.set", json!({ "workspace_id": id, "changes": [{ "subject": "@customers", "allow": ["read"] }] })).await;
+    srv.rpc("tok-alice", "acl.set_group", json!({ "workspace_id": id, "group_id": "vip" })).await;
+    srv.rpc("tok-alice", "acl.members", json!({ "workspace_id": id, "group_id": "vip", "add": ["contact:did:bns:alice#vip"] })).await;
+    srv.rpc("tok-alice", "acl.set", json!({ "workspace_id": id, "changes": [{ "subject": "@vip", "allow": ["read", "comment"] }] })).await;
     // someone else's contact group cannot be named (it would let a manager probe it)
-    let r = srv.rpc("tok-alice", "ws.grant", json!({ "workspace_id": id, "subject": "contact:did:bns:bob#friends", "capabilities": ["read"] })).await;
+    let r = srv.rpc("tok-alice", "acl.members", json!({ "workspace_id": id, "group_id": "vip", "add": ["contact:did:bns:bob#friends"] })).await;
     assert_eq!(code(&r), "INVALID_OPERATION", "{r}");
     assert_eq!(srv.rpc("tok-lim", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read"]));
     assert_eq!(srv.rpc("tok-lim2", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read", "comment"]));
@@ -140,10 +147,12 @@ async fn restricted_classes_entries_and_denials() {
     assert_eq!(listed(srv.rpc("tok-lim", "ws.list", json!({})).await), vec![id.clone()]);
     assert_eq!(listed(srv.rpc("tok-ext", "ws.list", json!({})).await), Vec::<String>::new());
 
-    // a share entry: methods as created, public description without a session
-    let r = srv.rpc("tok-bob", "ws.create_entry", json!({ "workspace_id": id, "capabilities": ["read"], "methods": { "guest": true } })).await;
+    // a share entry leads into a group (R8): methods as created, public description without a session
+    srv.rpc("tok-alice", "acl.set_group", json!({ "workspace_id": id, "group_id": "visitors" })).await;
+    srv.rpc("tok-alice", "acl.set", json!({ "workspace_id": id, "changes": [{ "subject": "@visitors", "allow": ["read", "comment", "append"] }] })).await;
+    let r = srv.rpc("tok-bob", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors", "methods": { "guest": true } })).await;
     assert_eq!((code(&r), reason(&r)), ("PERMISSION_DENIED", "resource_grant_missing"), "manage is needed");
-    let created = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "capabilities": ["read", "comment", "append"],
+    let created = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors",
                                                                    "methods": { "guest": true, "password": true, "did_login": true } })).await;
     let entry_id = created["entry"]["entry_id"].as_str().unwrap().to_string();
     assert!(entry_id.starts_with(&format!("{id}~se_")), "{created}");
@@ -160,41 +169,44 @@ async fn restricted_classes_entries_and_denials() {
     }
     assert_eq!(srv.rpc("tok-alice", "ws.list_entries", wsp.clone()).await["entries"].as_array().unwrap().len(), 1);
 
-    // an entry open to guests lets anyone in at once — a guest, an External (the `*` grant does not apply to them)
+    // S2: the Workspace id alone lets nobody in; presenting the entry joins its group
+    for tok in [GUEST, "tok-ext"] {
+        assert_eq!(reason(&srv.rpc(tok, "ws.get_info", wsp.clone()).await), "resource_grant_missing", "{tok}");
+    }
+    // a local account by password (exclusive invite sessions count as local); the DID way is turned off by the Zone,
+    // but the entry is open to guests, so the External joins all the same; a guest joins with its browser's token
+    let joined = srv.rpc("tok-lim", "ws.join_entry", json!({ "entry_id": entry_id })).await;
+    assert_eq!((joined["group_id"].clone(), joined["path"].clone(), joined["joined"].clone()), (json!("visitors"), json!(page), json!(true)), "{joined}");
+    assert_eq!(srv.rpc("tok-lim", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read", "append", "comment"]));
+    assert_eq!(srv.rpc("tok-ext", "ws.join_entry", json!({ "entry_id": entry_id })).await["joined"], json!(true));
+    assert_eq!(srv.rpc(GUEST, "ws.join_entry", json!({ "entry_id": entry_id })).await["joined"], json!(true));
     for tok in [GUEST, "tok-ext"] {
         assert_eq!(srv.rpc(tok, "ws.get_info", wsp.clone()).await["capabilities"], json!(["read", "append", "comment"]), "{tok}");
     }
-    // a signed-in visitor joins: a local account by password (exclusive invite sessions count as local) gets a grant;
-    // the DID way is turned off by the Zone, so the External uses the entry as a guest would (no grant); a guest
-    // does not join
-    let joined = srv.rpc("tok-lim", "ws.join_entry", json!({ "entry_id": entry_id })).await;
-    assert_eq!((joined["capabilities"].clone(), joined["path"].clone(), joined["granted"].clone()), (json!(["read", "append", "comment"]), json!(page), json!(true)), "{joined}");
-    assert_eq!(srv.rpc("tok-lim", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read", "append", "comment"]));
-    let as_guest = srv.rpc("tok-ext", "ws.join_entry", json!({ "entry_id": entry_id })).await;
-    assert_eq!((as_guest["granted"].clone(), as_guest["capabilities"].clone()), (json!(false), json!(["read", "append", "comment"])), "{as_guest}");
     use buckyos_api::{AdjustLocation, AdjustParty, DenyReason};
-    assert_eq!(krpc_denial(&srv.raw(Some(GUEST), "ws.join_entry", json!({ "entry_id": entry_id })).await).reason, DenyReason::SessionKindNotAllowed);
-    let did_only = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "capabilities": ["read"], "methods": { "did_login": true } })).await;
+    let did_only = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors", "methods": { "did_login": true } })).await;
     let d = krpc_denial(&srv.raw(Some("tok-ext"), "ws.join_entry", json!({ "entry_id": did_only["entry"]["entry_id"] })).await);
     assert_eq!((d.reason, d.adjust.party, d.adjust.location), (DenyReason::ZoneMethodDisabled, AdjustParty::Admin, Some(AdjustLocation::CpSsoSettings)));
     assert_eq!(d.method.as_deref(), Some("ws.join_entry"));
-    let password_only = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "capabilities": ["read"], "methods": { "password": true } })).await;
+    let password_only = srv.rpc("tok-alice", "ws.create_entry", json!({ "workspace_id": id, "group_id": "visitors", "methods": { "password": true } })).await;
     let d = krpc_denial(&srv.raw(Some("tok-ext"), "ws.join_entry", json!({ "entry_id": password_only["entry"]["entry_id"] })).await);
     assert_eq!(d.reason, DenyReason::EntryUnavailable);
+    assert_eq!(krpc_denial(&srv.raw(Some(GUEST), "ws.join_entry", json!({ "entry_id": password_only["entry"]["entry_id"] })).await).reason, DenyReason::EntryUnavailable);
     assert_eq!(krpc_denial(&srv.raw(Some("tok-lim"), "ws.join_entry", json!({ "entry_id": "garbage" })).await).reason, DenyReason::EntryUnavailable);
-    let grants = srv.rpc("tok-alice", "ws.list_grants", wsp.clone()).await;
-    let row = grants["grants"].as_array().unwrap().iter().find(|g| g["subject"] == "acme-c1").cloned().unwrap();
+    let groups = srv.rpc("tok-alice", "acl.groups", wsp.clone()).await;
+    let visitors = groups["groups"].as_array().unwrap().iter().find(|g| g["group_id"] == "visitors").cloned().unwrap();
+    let row = visitors["members"].as_array().unwrap().iter().find(|m| m["member"] == "acme-c1").cloned().unwrap();
     assert_eq!(row["via_entry"], json!(entry_id));
 
-    // closing: the description becomes unavailable, guests are out, joins stop, joined grants stay
-    let r = srv.rpc("tok-alice", "ws.close_entry", json!({ "workspace_id": id, "entry_id": entry_id })).await;
-    assert_eq!(r["entry"]["state"], "closed");
+    // closing with remove_members: the description becomes unavailable, joins stop, those who came through it leave
+    let r = srv.rpc("tok-alice", "ws.close_entry", json!({ "workspace_id": id, "entry_id": entry_id, "remove_members": true })).await;
+    assert_eq!((r["entry"]["state"].as_str(), r["removed_members"].as_u64()), (Some("closed"), Some(3)));
     assert_eq!(srv.raw(None, "entry.describe", json!({ "entry_id": entry_id })).await["result"]["state"], "unavailable");
     for tok in [GUEST, "tok-ext"] {
         assert_eq!(reason(&srv.rpc(tok, "ws.get_info", wsp.clone()).await), "resource_grant_missing", "{tok}");
     }
     assert_eq!(krpc_denial(&srv.raw(Some("tok-lim2"), "ws.join_entry", json!({ "entry_id": entry_id })).await).reason, DenyReason::EntryUnavailable);
-    assert_eq!(srv.rpc("tok-lim", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read", "append", "comment"]));
+    assert_eq!(srv.rpc("tok-lim", "ws.get_info", wsp.clone()).await["capabilities"], json!(["read"]), "still in @customers");
     let r = srv.rpc("tok-alice", "ws.close_entry", json!({ "workspace_id": "ws_aaaaaaaaaaaaaaaaaaaaaaaaaa", "entry_id": entry_id })).await;
     assert_eq!(code(&r), "NOT_FOUND", "the workspace named beside the entry must be its own");
 

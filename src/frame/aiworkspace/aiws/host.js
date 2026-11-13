@@ -5,7 +5,8 @@
 //   sql          → the stage's `proc.tool sql` (the service runs it on the run's snapshot)
 //   ai.complete  → one inference with the executor's own AI session (`infer`), cached in `proc.tool llm_cache`
 //   llm.map      → per-item judgements: batches, schema checks, single retries, a per-item cache
-//   zone.fetch   → a resource of this Zone with the executor's session (`zoneFetch`); anything else is refused
+//   zone.fetch   → GET / HEAD of a resource of this Zone its `declare.zone` lists, with the executor's session
+//                  (`zoneFetch`); anything else is refused (权限需求 R34)
 //
 // The executor gives: `tool(name, args)` (its `proc.tool`), `infer({ model, messages, schema, max_tokens })` →
 // `{ text, tokens? }` (throws with `code` AI_QUOTA_EXHAUSTED / AI_QUOTA_BUDGET_EXCEEDED / AI_RESOURCE_NOT_PERMITTED /
@@ -106,6 +107,21 @@ export function inZone(url, zoneHosts) {
   return zoneHosts.some((z) => {
     const h = String(z).toLowerCase()
     return host === h || host.endsWith(`.${h}`)
+  })
+}
+
+/** Whether `declared.zone` (path prefixes such as `/kapi/x/`, or URL prefixes) lists `url`. */
+export function declaredZone(declared, url) {
+  const list = declared && Array.isArray(declared.zone) ? declared.zone : []
+  return list.some((entry) => {
+    const e = String(entry)
+    if (e.startsWith('/')) return url.pathname === e || url.pathname.startsWith(e.endsWith('/') ? e : `${e}/`)
+    try {
+      const d = new URL(e)
+      return d.origin === url.origin && (url.pathname === d.pathname || url.pathname.startsWith(d.pathname.endsWith('/') ? d.pathname : `${d.pathname}/`))
+    } catch {
+      return false
+    }
   })
 }
 
@@ -248,8 +264,13 @@ export function createBridgeHost({ tool, infer, zoneFetch, zoneHosts = [], zoneO
       return { error: `${req.url} is not a URL or a path of this Zone`, code: 'ZONE_ONLY' }
     }
     if (!['http:', 'https:'].includes(url.protocol) || !inZone(url, zoneHosts)) return { error: `${url.origin} is outside this Zone: a macro only reaches the Zone's own resources`, code: 'ZONE_ONLY' }
+    // a macro reads the Zone, it never changes it, and only where it said it would (权限需求 R34): GET / HEAD of a
+    // resource its `declare.zone` lists (a path prefix, or a URL prefix of the Zone's hosts)
+    const method = String(req.method ?? 'GET').toUpperCase()
+    if (method !== 'GET' && method !== 'HEAD') return { error: `zone.fetch ${method}: a macro only reads the Zone (GET or HEAD)`, code: 'ZONE_READ_ONLY' }
+    if (!declaredZone(declaredOf(req), url)) return { error: `${url.origin}${url.pathname} is not in declare.zone: list what the macro reads`, code: 'ZONE_NOT_DECLARED' }
     try {
-      const r = await zoneFetch(url.href, { method: req.method ?? 'GET', headers: req.headers ?? {}, body: req.body ?? null })
+      const r = await zoneFetch(url.href, { method, headers: req.headers ?? {}, body: null })
       return { ...r, url: url.origin + url.pathname }
     } catch (error) {
       return refusal(error)

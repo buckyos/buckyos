@@ -86,7 +86,7 @@ test('CE01 TV screen: an empty screen takes a sound from the picker; viewers pla
   await expect(player).toBeAttached({ timeout: 15_000 })
 
   // started 3 s ago at 2 s: a viewer whose device clock is 30 s behind plays at about 5 s
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
   const at = await serverNow(api)
   const read = await api.read(ALICE, ws.workspace_id, 'tv')
   expect((await api.commit(ALICE, ws, [{ op: 'entity.set_props', entity_id: 'tv', key: 'config', props: { broadcast: { pos_ms: 2000, at_ms: at - 3000, playing: true } }, expect: { broadcast: read.content.key_revs['p:config.broadcast'] ?? 0 } }])).status).toBe('accepted')
@@ -152,8 +152,8 @@ test('CE03 photo vote: the ballot prepared from the toolbar; one choice per pers
     ] } },
     composite('vote', def, { bindings: { photos: { entity_id: 'photos' }, votes: { entity_id: 'votes' } } }),
   ])).status).toBe('accepted')
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', scope_entity_id: 'votes', capabilities: ['read', 'append'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'votes', allow: ['read', 'append'] }] })
 
   await openCanvas(page, ALICE, ws.workspace_id)
   await expect(page.locator('[data-proj^="vote.photos~img~"]')).toHaveCount(8, { timeout: 15_000 })
@@ -211,7 +211,7 @@ test('CE04 listen together: started from the toolbar without running it, a liste
     { op: 'entity.create', entity_id: 'listen', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 60, y: 60, w: 380, h: 320 },
       payload: { view: { type: 'html' }, def_ref: { entity_id: def }, bindings: { playlist: { entity_id: 'playlist' } } } },
   ])).status).toBe('accepted')
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
 
   await openCanvas(page, ALICE, ws.workspace_id)
   await page.getByTestId('aiws-canvas-block-listen').click()

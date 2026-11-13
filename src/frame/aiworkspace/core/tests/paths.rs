@@ -86,8 +86,7 @@ fn one_path_syntax_judged_by_the_caller() {
     assert_eq!(path::path_of(ctx, &full(), "orders").unwrap(), "/data/销售-2026/订单");
     assert_eq!(path::resolve(ctx, &full(), "/data/nope").unwrap_err().code.as_str(), "NOT_FOUND");
     // a grant on the folder only: paths start at the highest readable ancestor, never naming the others
-    let mut scoped = Access { principal: "bob".into(), ws_caps: CapSet::NONE, scoped: Default::default() };
-    scoped.scoped.insert("sales-folder".into(), CapSet::parse(&["read".into()]).unwrap());
+    let scoped = Access::granted("bob", CapSet::NONE, [("sales-folder".to_string(), CapSet::parse(&["read".into()]).unwrap())]);
     assert_eq!(path::path_of(ctx, &scoped, "orders").unwrap(), "~sales-folder/订单");
     assert_eq!(path::resolve(ctx, &scoped, "~sales-folder/订单").unwrap(), "orders");
     assert_eq!(path::resolve(ctx, &scoped, "/data/销售-2026/订单").unwrap_err().code.as_str(), "NOT_FOUND", "an unreadable step is not there");

@@ -271,7 +271,9 @@ impl Workspace {
             .map(|a| json!({ "id": a, "reason": if self_contained { "unavailable" } else { "external" } }))
             .collect();
         missing.extend(cp.unresolved.iter().filter(|u| u.get("to").is_some()).map(|u| json!({ "ref": u["to"], "reason": "external" })));
-        let manifest = json!({
+        // a manager's package carries the permission design (权限需求 R12): a new import starts with it; members never travel
+        let design = if access.ws_caps.has(Cap::Manage) { Some(self.permission_design(&|id| cp.objects.contains_key(id))?.0) } else { None };
+        let mut manifest = json!({
             "format": PACKAGE_FORMAT, "format_version": FORMAT_VERSION, "export_mode": mode,
             // only true when everything in the declared scope really is inside the package
             "self_contained": self_contained && missing.is_empty() && external.is_empty(),
@@ -283,6 +285,9 @@ impl Workspace {
             "collab": collab, "personal_entities": personal_count, "notes_included": notes,
             "exported_at": now, "exported_by": caller.principal,
         });
+        if let Some(d) = design {
+            manifest["permission_design"] = d;
+        }
         zip.start_file("manifest.json", opts).map_err(zerr)?;
         zip.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes()).map_err(io)?;
         zip.finish().map_err(zerr)?.sync_all().map_err(io)?;
@@ -635,7 +640,7 @@ pub fn load_workspace(
         }
         let req = json!({ "protocol_version": PROTOCOL_VERSION, "workspace_id": ws.workspace_id, "epoch": ws.epoch,
                           "idempotency_key": key, "origin": "import", "operations": ops });
-        let r = ws.commit(&req, caller, &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false, as_build: false, as_session: false });
+        let r = ws.commit(&req, caller, &CommitOpts { internal: true, import: true, undoes: None, as_principal: None, maintenance: false, as_source: false, as_build: false, as_session: false, authorize_as: None, attribution: None });
         if r["status"] != json!("accepted") {
             return Err(WsError::invalid_schema("package content was rejected").with_data(r));
         }
@@ -662,8 +667,10 @@ pub fn load_workspace(
     Ok(ws)
 }
 
+/// Staging bytes reserves room for a later Commit, which is judged where it writes: any writer may stage — one with
+/// update or structure rights on a single canvas included (权限需求 R22, E1, E2).
 fn require_update(access: &Access) -> WsResult<()> {
-    if !access.ws_caps.has(Cap::Update) && !access.ws_caps.has(Cap::Structure) {
+    if !access.anywhere(Cap::Update) && !access.anywhere(Cap::Structure) && !access.anywhere(Cap::Append) {
         return Err(WsError::denied("update or structure capability required"));
     }
     Ok(())

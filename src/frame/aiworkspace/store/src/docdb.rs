@@ -30,7 +30,7 @@ fn json_of<T: serde::de::DeserializeOwned>(what: &str, text: &str) -> WsResult<T
 }
 
 const ENTITY_COLS: &str = "entity_id, type_id, schema_version, scope, name, write_policy, payload_json, key_revs_json, \
-                           created_seq, meta_rev, content_rev, life_rev, deleted_seq, derived_json, schema_id";
+                           created_seq, meta_rev, content_rev, life_rev, deleted_seq, derived_json, schema_id, created_by";
 
 type RawEntity = (EntityRow, String, String, Option<String>);
 
@@ -47,6 +47,7 @@ fn entity_row(r: &Row) -> rusqlite::Result<RawEntity> {
             payload: JsonMap::new(),
             key_revs: BTreeMap::new(),
             derived: None,
+            created_by: r.get(15)?,
             created_seq: r.get(8)?,
             meta_rev: r.get(9)?,
             content_rev: r.get(10)?,
@@ -347,13 +348,13 @@ pub fn apply_changes(tx: &Connection, c: &Changes, seq: u64) -> WsResult<WriteSt
     {
         let mut st = tx
             .prepare_cached(&format!(
-                "INSERT OR REPLACE INTO entities ({ENTITY_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
+                "INSERT OR REPLACE INTO entities ({ENTITY_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)"
             ))
             .map_err(db_err)?;
         for e in c.entities.values() {
             st.execute(params![
                 e.entity_id, e.type_id, e.schema_version, e.scope, e.name, e.write_policy, text(&e.payload), text(&e.key_revs),
-                e.created_seq, e.meta_rev, e.content_rev, e.life_rev, e.deleted_seq, e.derived.as_ref().map(text), e.schema_id
+                e.created_seq, e.meta_rev, e.content_rev, e.life_rev, e.deleted_seq, e.derived.as_ref().map(text), e.schema_id, e.created_by
             ])
             .map_err(db_err)?;
             stats.entities += 1;

@@ -53,7 +53,7 @@ fn script() -> Vec<Value> {
 }
 
 fn env(seq: u64) -> PlanEnv {
-    PlanEnv { seq, principal: "alice".into(), origin: "human".into(), run_id: None, now: "2026-10-23T00:00:00.000Z".into(), internal: false, import: false, schema_checks: true, replay: false, peer_id: 7, limits: Limits::default() }
+    PlanEnv { seq, principal: "alice".into(), origin: "human".into(), run_id: None, now: "2026-10-23T00:00:00.000Z".into(), internal: false, import: false, schema_checks: true, replay: false, peer_id: 7, limits: Limits::default(), creator: None }
 }
 
 #[test]

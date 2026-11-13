@@ -204,7 +204,7 @@ test('persistent storage refused by the browser: offline is unavailable with the
 
 test('a reader without workspace-level read cannot prepare: the backend\'s refusal is shown', async ({ page, api, net }) => {
   const ws = await api.sample(ALICE, `scoped ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', scope_entity_id: 'surface-main', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'surface-main', allow: ['read'] }] })
   await openDesktop(page, net, 'tok-bob')
   await grantPersistence(page.context(), page)
   await openCard(page, ws.workspace_id)

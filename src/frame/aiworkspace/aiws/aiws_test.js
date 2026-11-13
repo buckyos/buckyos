@@ -234,15 +234,21 @@ Deno.test('host.js: llm.map batches, checks, retries and caches per item', async
   assertEquals((await host.handle('llm.map', { items: ['a', 'b'], instruction: '情感', schema, declare })).code, 'AI_BUDGET_EXCEEDED')
 })
 
-Deno.test('host.js: zone.fetch reaches only the Zone', async () => {
+Deno.test('host.js: zone.fetch reads only the Zone, only what declare.zone lists (权限需求 R34)', async () => {
   const fetched = []
-  const host = createBridgeHost({ tool: async () => ({}), infer: async () => ({}), zoneFetch: async (url) => { fetched.push(url); return { status: 200, headers: {}, text: 'ok' } },
+  const host = createBridgeHost({ tool: async () => ({}), infer: async () => ({}), zoneFetch: async (url, init) => { fetched.push([url, init.method]); return { status: 200, headers: {}, text: 'ok' } },
     zoneHosts: ['test.buckyos.io'], zoneOrigin: 'https://test.buckyos.io' })
-  assertEquals((await host.handle('zone.fetch', { url: '/kapi/a' })).url, 'https://test.buckyos.io/kapi/a')
-  assertEquals((await host.handle('zone.fetch', { url: 'https://app.test.buckyos.io/x' })).status, 200)
-  assertEquals((await host.handle('zone.fetch', { url: 'https://example.com/x' })).code, 'ZONE_ONLY')
-  assertEquals((await host.handle('zone.fetch', { url: 'https://evil-test.buckyos.io.example.com/' })).code, 'ZONE_ONLY')
-  assertEquals(fetched, ['https://test.buckyos.io/kapi/a', 'https://app.test.buckyos.io/x'])
+  const declare = { inputs: {}, zone: ['/kapi/a', 'https://app.test.buckyos.io/x'] }
+  assertEquals((await host.handle('zone.fetch', { url: '/kapi/a', declare })).url, 'https://test.buckyos.io/kapi/a')
+  assertEquals((await host.handle('zone.fetch', { url: '/kapi/a/b?c=1', method: 'head', declare })).status, 200)
+  assertEquals((await host.handle('zone.fetch', { url: 'https://app.test.buckyos.io/x', declare })).status, 200)
+  assertEquals((await host.handle('zone.fetch', { url: 'https://example.com/x', declare })).code, 'ZONE_ONLY')
+  assertEquals((await host.handle('zone.fetch', { url: 'https://evil-test.buckyos.io.example.com/', declare })).code, 'ZONE_ONLY')
+  // writes are refused, and so is anything the macro did not declare
+  assertEquals((await host.handle('zone.fetch', { url: '/kapi/a', method: 'POST', body: '{}', declare })).code, 'ZONE_READ_ONLY')
+  assertEquals((await host.handle('zone.fetch', { url: '/kapi/ab', declare })).code, 'ZONE_NOT_DECLARED')
+  assertEquals((await host.handle('zone.fetch', { url: '/kapi/a', declare: { inputs: {} } })).code, 'ZONE_NOT_DECLARED')
+  assertEquals(fetched, [['https://test.buckyos.io/kapi/a', 'GET'], ['https://test.buckyos.io/kapi/a/b?c=1', 'HEAD'], ['https://app.test.buckyos.io/x', 'GET']])
 })
 
 Deno.test('host.js: schema subset, JSON extraction and canonical keys', async () => {

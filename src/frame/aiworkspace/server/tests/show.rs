@@ -84,7 +84,7 @@ impl Server {
             assert_eq!(r["status"], "accepted", "{r}");
         }
         for (who, caps) in [("bob", json!(["read", "update", "structure"])), ("carol", json!(["read"]))] {
-            let r = self.rpc("tok-alice", "ws.grant", json!({ "workspace_id": id, "subject": who, "capabilities": caps })).await;
+            let r = self.rpc("tok-alice", "acl.set", json!({ "workspace_id": id, "changes": [{ "subject": who, "allow": caps }] })).await;
             assert_eq!(r["ok"], true, "{r}");
         }
         (id, epoch)
@@ -246,7 +246,9 @@ async fn notes_follow_the_presenters_current_memberships() {
     let dir = tempfile::tempdir().unwrap();
     let srv = Server::start(dir.path()).await;
     let (ws, _) = srv.presentation().await;
-    srv.rpc("tok-alice", "ws.grant", json!({ "workspace_id": ws, "subject": "group:presenters", "capabilities": ["read"] })).await;
+    srv.rpc("tok-alice", "acl.set_group", json!({ "workspace_id": ws, "group_id": "presenters" })).await;
+    srv.rpc("tok-alice", "acl.members", json!({ "workspace_id": ws, "group_id": "presenters", "add": ["group:presenters"] })).await;
+    srv.rpc("tok-alice", "acl.set", json!({ "workspace_id": ws, "changes": [{ "subject": "@presenters", "allow": ["read"] }] })).await;
     let show = srv.rpc("tok-dave", "show.start", json!({ "workspace_id": ws, "path_id": "path-guide" })).await;
     assert_eq!(show["locked"], json!(false), "{show}");
     let (show_id, token) = (show["show_id"].as_str().unwrap().to_string(), show["prompter_token"].as_str().unwrap().to_string());

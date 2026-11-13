@@ -194,7 +194,7 @@ fn deliver(actor: &Actor, out: &Outgoing) -> Option<Value> {
 /// The link a request carries (`params.link`), if it names a live one.
 pub fn link_of(state: &AppState, p: &Value) -> Option<InviteRow> {
     let t = p.get("link").and_then(Value::as_str).filter(|t| aiworkspace_store::session::is_link_token(t))?;
-    state.svc.sessions.invite_by_token(t).ok().flatten()
+    state.svc.sessions.invite_by_token(t).ok().flatten().filter(|i| i.usable((state.svc.clock)()))
 }
 
 /// A display or prompter link used as the session token (`sys[1]`): its own subject reads the run Workspace.
@@ -202,7 +202,7 @@ pub fn link_caller(state: &AppState, token: &str) -> Option<(Caller, InviteRow)>
     if !aiworkspace_store::session::is_link_token(token) || token.starts_with("at_") {
         return None;
     }
-    let invite = state.svc.sessions.invite_by_token(token).ok().flatten()?;
+    let invite = state.svc.sessions.invite_by_token(token).ok().flatten().filter(|i| i.usable((state.svc.clock)()))?;
     Some((Caller::link(&invite.invite_id), invite))
 }
 
@@ -210,6 +210,13 @@ pub fn link_caller(state: &AppState, token: &str) -> Option<(Caller, InviteRow)>
 pub async fn handle(state: &Arc<AppState>, method: &str, p: &Value, caller: Caller, link: Option<InviteRow>) -> WsResult<Value> {
     match method {
         "session.create" => {
+            // a presenter other than the caller must be an account of this Zone (权限需求 R27)
+            if let Some(other) = p.get("presenter").and_then(Value::as_str).filter(|x| !x.is_empty() && *x != caller.principal) {
+                let known = state.auth.subjects().await.iter().any(|v| v["subject"].as_str() == Some(other) && v["kind"] == json!("user"));
+                if !known {
+                    return Err(WsError::invalid_op("presenter must be an account of this Zone"));
+                }
+            }
             let (st, c, p) = (state.clone(), caller.clone(), p.clone());
             return blocking(move || st.svc.session_create(&c, &p)).await;
         }
@@ -371,7 +378,7 @@ async fn call(state: &Arc<AppState>, s: SessionRow, actor: &Actor, method: &str,
             blocking(move || st.svc.with_run(&row, |ws| {
                 let mut notes = serde_json::Map::new();
                 if let Some(id) = row.baseline["notes_entity_id"].as_str() {
-                    for r in &ws.table_rows(&Caller::user(&row.owner), id, 1000)? {
+                    for r in &ws.table_rows(&Caller::internal(&row.owner), id, 1000)? {
                         notes.insert(r["values"]["target_id"].as_str().unwrap_or("").to_string(), r["values"]["notes"].clone());
                     }
                 }
@@ -751,7 +758,7 @@ pub fn spawn_timers(state: Arc<AppState>) {
                     st.svc.with_run(&s, |ws| {
                         let mut stage = ws.stage();
                         if !feeds.is_empty() {
-                            ws.refresh_feeds(&Caller::user(&s.owner), &s.presenter, &format!("tick/{}", s.session_id), &FeedSel::of(&feeds), &participants)?;
+                            ws.refresh_feeds(&Caller::internal(&s.owner), &s.presenter, &format!("tick/{}", s.session_id), &FeedSel::of(&feeds), &participants)?;
                         }
                         if stage.get("step_id").is_some() && stage["followers"].as_u64() != Some(followers as u64) {
                             stage["followers"] = json!(followers);

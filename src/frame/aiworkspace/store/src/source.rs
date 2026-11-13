@@ -2,13 +2,15 @@
 //!
 //! A data entity with a `source` attribute is read-only for Blocks and people: its content is written only by
 //! a *refresh* — a run (`source.refresh@1`) whose candidate is validated and then committed with origin `source`,
-//! one Source at a time (each refresh is its own atomic Commit). Publishing an entity grants the `public`
-//! subject read on it and registers a name; the link is the URL projection of the reference object (D21), and
-//! another Workspace inserts it as a `source{kind: workspace}`. Referrers register themselves (a weak record:
-//! it never blocks an unpublish; the consumer then reads `unavailable`).
+//! one Source at a time (each refresh is its own atomic Commit). Publishing an entity (an inner-path publication,
+//! 权限需求 R26) gives the publication's own subject (`@pub:<entity_id>`) `read` on it and registers a name; readers
+//! come through the publication routes only, never into the Workspace. The link is the URL projection of the
+//! reference object (D21), and another Workspace inserts it as a `source{kind: workspace}`. Referrers register
+//! themselves (a weak record: it never blocks an unpublish; the consumer then reads `unavailable`).
 
 use crate::docdb::db_err;
-use crate::workspace::{random_id, Caller, CommitOpts, Workspace, PUBLIC_SUBJECT};
+use crate::acl::{AuditItem, PUB_PREFIX};
+use crate::workspace::{random_id, Caller, CommitOpts, Workspace};
 use aiworkspace_core::access::Cap;
 use aiworkspace_core::canonical::{canonical_json, sha256_hex};
 use aiworkspace_core::id::check_idempotency_key;
@@ -27,6 +29,8 @@ pub const PUB_FORMAT: &str = "buckyos.ai-workspace/pub/1.0";
 /// Types that can carry a Source and be published.
 pub const SOURCED_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_RECORD, TYPE_ASSET, TYPE_DIR];
 const RECORDS_PER_OP: usize = 1000;
+/// Referrer records one publication keeps (V3).
+const MAX_REFERRERS: i64 = 256;
 
 /// What a fetch produced for one entity.
 #[derive(Debug, Clone)]
@@ -46,18 +50,19 @@ pub fn pub_name(s: &str) -> String {
     ascii.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-").chars().take(64).collect()
 }
 
-fn public_reader() -> Caller {
-    Caller::service(PUBLIC_SUBJECT)
+/// The subject of the publication of `entity_id`.
+pub fn publication_subject(entity_id: &str) -> String {
+    format!("{PUB_PREFIX}{entity_id}")
 }
 
 impl Workspace {
     // ---- publishing (D26, T4-4)
 
-    /// `ws.publish { entity_id, name? }` (`manage`): the `public` subject may read the entity; the name (default:
-    /// the entity's own, slugified) becomes the last segment of the link. Publishing again under another name
-    /// keeps the old name as an alias, so old links keep resolving.
+    /// `ws.publish { entity_id, name? }` (`manage` on the entity): the publication's subject may read the entity; the
+    /// name (default: the entity's own, slugified) becomes the last segment of the link. Publishing again under another
+    /// name keeps the old name as an alias, so old links keep resolving. It does not open the Workspace to anyone.
     pub fn publish_entity(&mut self, caller: &Caller, entity_id: &str, name: Option<&str>) -> WsResult<Value> {
-        self.require_ws(caller, Cap::Manage)?;
+        self.require_on(caller, Some(entity_id), Cap::Manage)?;
         let now = self.now();
         let e = {
             let ctx = self.ctx(&now);
@@ -78,28 +83,61 @@ impl Workspace {
         if taken.as_deref().is_some_and(|t| t != entity_id) {
             return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("{name} already names another publication")));
         }
-        self.grant_with(caller, PUBLIC_SUBJECT, Some(entity_id), &["read".to_string()], None, None)?;
-        self.local.execute("UPDATE publications SET current = 0 WHERE entity_id = ?1", [entity_id]).map_err(db_err)?;
-        self.local
-            .execute("INSERT OR REPLACE INTO publications (name, entity_id, created_at, created_by, current) VALUES (?1, ?2, ?3, ?4, 1)", params![name, entity_id, now, caller.principal])
+        let subject = publication_subject(entity_id);
+        self.acl_txn(caller, |tx| {
+            tx.execute(
+                "INSERT OR REPLACE INTO acl_entries (subject, scope_entity_id, allow, deny, updated_by, updated_at) VALUES (?1, ?2, ?3, \
+                 COALESCE((SELECT deny FROM acl_entries WHERE subject = ?1 AND scope_entity_id = ?2), 0), ?4, ?5)",
+                params![subject, entity_id, Cap::Read as u16, caller.principal, now],
+            )
             .map_err(db_err)?;
+            tx.execute("UPDATE publications SET current = 0 WHERE entity_id = ?1", [entity_id]).map_err(db_err)?;
+            tx.execute("INSERT OR REPLACE INTO publications (name, entity_id, created_at, created_by, current) VALUES (?1, ?2, ?3, ?4, 1)", params![name, entity_id, now, caller.principal])
+                .map_err(db_err)?;
+            Ok(((), vec![AuditItem { action: "publish", target: json!({ "entity_id": entity_id, "subject": subject }), before: None, after: Some(json!({ "name": name })) }]))
+        })?;
         Ok(self.publication_json(&name, entity_id, &now, &caller.principal)?)
     }
 
-    /// `ws.unpublish { entity_id }` (`manage`): every name of the entity goes, and so does the public grant;
-    /// referrers keep their records and read `unavailable` from now on.
+    /// `ws.unpublish { entity_id }` (`manage` on the entity): every name of the entity goes, and so does the
+    /// publication's entry; referrers keep their records and read `unavailable` from now on.
     pub fn unpublish(&mut self, caller: &Caller, entity_id: &str) -> WsResult<Value> {
-        self.require_ws(caller, Cap::Manage)?;
-        let n = self.local.execute("DELETE FROM publications WHERE entity_id = ?1", [entity_id]).map_err(db_err)?;
-        self.local.execute("DELETE FROM grants WHERE subject = ?1 AND scope_entity_id = ?2", params![PUBLIC_SUBJECT, entity_id]).map_err(db_err)?;
+        let names: Vec<String> = {
+            let mut st = self.local.prepare("SELECT name FROM publications WHERE entity_id = ?1").map_err(db_err)?;
+            let rows = st.query_map([entity_id], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
+            rows
+        };
+        if names.is_empty() {
+            self.require_ws_any(caller)?;
+            return Ok(json!({ "ok": true, "entity_id": entity_id, "removed": 0 }));
+        }
+        // a deleted entity's publication can still be taken down by a Workspace manager
+        let now = self.now();
+        let live = self.ctx(&now).entity(entity_id)?.is_some_and(|e| e.alive());
+        self.require_on(caller, live.then_some(entity_id), Cap::Manage)?;
+        let subject = publication_subject(entity_id);
+        let (n, _) = self.acl_txn(caller, |tx| {
+            let n = tx.execute("DELETE FROM publications WHERE entity_id = ?1", [entity_id]).map_err(db_err)?;
+            tx.execute("DELETE FROM acl_entries WHERE subject = ?1", [&subject]).map_err(db_err)?;
+            tx.execute("DELETE FROM publication_versions WHERE entity_id = ?1", [entity_id]).map_err(db_err)?;
+            tx.execute("DELETE FROM publication_reads WHERE entity_id = ?1", [entity_id]).map_err(db_err)?;
+            Ok((n, vec![AuditItem { action: "unpublish", target: json!({ "entity_id": entity_id, "subject": subject }), before: Some(json!({ "names": names })), after: None }]))
+        })?;
         Ok(json!({ "ok": true, "entity_id": entity_id, "removed": n }))
     }
 
     fn publication_json(&self, name: &str, entity_id: &str, at: &str, by: &str) -> WsResult<Value> {
         let referrers: i64 = self.local.query_row("SELECT COUNT(*) FROM referrers WHERE entity_id = ?1", [entity_id], |r| r.get(0)).map_err(db_err)?;
-        Ok(json!({ "ok": true, "entity_id": entity_id, "name": name, "path": format!("/{}/{}", self.workspace_slug(), name),
+        let (reads, last): (i64, Option<String>) = self
+            .local
+            .query_row("SELECT reads, last_read_at FROM publication_reads WHERE entity_id = ?1", [entity_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(db_err)?
+            .unwrap_or((0, None));
+        Ok(json!({ "ok": true, "entity_id": entity_id, "name": name, "path": format!("/{}/{}", self.workspace_slug(), name), "kind": "inner_path",
+                   "subject": publication_subject(entity_id),
                    "reference": { "workspace_id": self.workspace_id, "entity_id": entity_id, "mode": "live" },
-                   "published_at": at, "published_by": by, "referrers": referrers }))
+                   "published_at": at, "published_by": by, "referrers": referrers, "reads": reads, "last_read_at": last }))
     }
 
     /// The workspace's own segment of a link (D21): its title, slugified; the id is in the host. Empty, or one of
@@ -140,12 +178,20 @@ impl Workspace {
         self.local.query_row("SELECT name, entity_id FROM publications WHERE entity_id = ?1 AND current = 1", [name_or_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(db_err)
     }
 
-    /// The published content of a name (no session: the `public` subject reads it). `fixed` also names the
+    /// The published content of a name (no session: the publication's own subject reads it). `fixed` also names the
     /// entity's content object (D03 `{ content_root }`), the version a consumer can pin.
     pub fn public_content(&self, name_or_id: &str, fixed: bool, with_bytes: bool) -> WsResult<Value> {
         let (name, entity_id) = self.publication(name_or_id)?.ok_or_else(|| WsError::not_found("no such publication"))?;
-        let reader = public_reader();
-        let access = self.require_ws_any(&reader)?;
+        let reader = Caller::publication_reader(&entity_id);
+        let access = self.require_ws_any(&reader).map_err(|_| WsError::not_found("no such publication"))?;
+        // an inner-path publication's reads are counted here (权限需求 R26): what MyContent will be told
+        self.local
+            .execute(
+                "INSERT INTO publication_reads (entity_id, reads, last_read_at) VALUES (?1, 1, ?2) \
+                 ON CONFLICT (entity_id) DO UPDATE SET reads = reads + 1, last_read_at = excluded.last_read_at",
+                params![entity_id, self.now()],
+            )
+            .map_err(db_err)?;
         let now = self.now();
         let ctx = self.ctx(&now);
         let e = readable_entity(&ctx, &access, &entity_id)?;
@@ -190,15 +236,28 @@ impl Workspace {
             let mut members = std::collections::BTreeMap::new();
             self.objects.entity_members(&root, &e.type_id, &mut members)?;
             self.objects.retain(&self.bucket(crate::objects::EXPORTS)?, &format!("{}/fixed/{root}", self.workspace_id), &members)?;
+            // the versions this publication handed out are the only fixed versions it serves (S1)
+            self.local.execute("INSERT OR IGNORE INTO publication_versions (content_root, entity_id, created_at) VALUES (?1, ?2, ?3)", params![root, entity_id, self.now()]).map_err(db_err)?;
             v["content_root"] = json!(root);
             v["reference"] = json!({ "workspace_id": self.workspace_id, "entity_id": entity_id, "mode": "fixed", "version": { "content_root": root } });
         }
         Ok(v)
     }
 
-    /// The content a consumer pinned (`version.content_root`), read back from the named store: valid as long as
-    /// it is there (its `exports` binding keeps it seven days after the last fixed read).
-    pub fn public_fixed_content(&self, content_root: &str) -> WsResult<Value> {
+    /// The content a consumer pinned (`version.content_root`) of the publication `name_or_id`, read back from the named
+    /// store: only a version this publication handed out while it is published (S1, R26), and valid as long as it is
+    /// there (its `exports` binding keeps it seven days after the last fixed read). Anything else is not found.
+    pub fn public_fixed_content(&self, name_or_id: &str, content_root: &str) -> WsResult<Value> {
+        let (_, entity_id) = self.publication(name_or_id)?.ok_or_else(|| WsError::not_found("no such publication"))?;
+        let ours: bool = self
+            .local
+            .query_row("SELECT 1 FROM publication_versions WHERE content_root = ?1 AND entity_id = ?2", params![content_root, entity_id], |_| Ok(true))
+            .optional()
+            .map_err(db_err)?
+            .unwrap_or(false);
+        if !ours || self.require_ws_any(&Caller::publication_reader(&entity_id)).is_err() {
+            return Err(WsError::not_found("no such publication version"));
+        }
         if !self.objects.has_object(content_root) {
             return Err(WsError::new(Code::VersionNotRetained, "that fixed version is no longer retained"));
         }
@@ -217,8 +276,20 @@ impl Workspace {
     // ---- referrers (D26, T4-6)
 
     /// A consumer registered that it reads `entity_id` (same service: at insert; other Zones: over HTTP). Weak.
+    /// Unauthenticated over HTTP (V3): a record is small, names a Workspace id, and a publication keeps at most
+    /// `MAX_REFERRERS` of them (the oldest go) — a weak, bounded hint, never a grant.
     pub fn register_referrer(&self, entity_id: &str, referrer: &Value) -> WsResult<()> {
+        let text = referrer.to_string();
+        if text.len() > 2048 || !referrer["workspace_id"].as_str().is_some_and(aiworkspace_core::id::is_workspace_id) {
+            return Err(WsError::invalid_op("a referrer names its workspace_id (ws_…) in under 2 KiB"));
+        }
         let key = sha256_hex(canonical_json(referrer)?.as_bytes())[..32].to_string();
+        self.local
+            .execute(
+                "DELETE FROM referrers WHERE entity_id = ?1 AND referrer_key IN (SELECT referrer_key FROM referrers WHERE entity_id = ?1 ORDER BY registered_at DESC LIMIT -1 OFFSET ?2)",
+                params![entity_id, MAX_REFERRERS - 1],
+            )
+            .map_err(db_err)?;
         self.local
             .execute("INSERT OR REPLACE INTO referrers (entity_id, referrer_key, referrer_json, registered_at) VALUES (?1, ?2, ?3, ?4)", params![entity_id, key, referrer.to_string(), self.now()])
             .map_err(db_err)?;
@@ -305,7 +376,9 @@ impl Workspace {
         }
         let principal = run["principal"].as_str().unwrap_or("").to_string();
         let entity_id = run["params"]["entity_id"].as_str().unwrap_or("").to_string();
-        let caller = Caller::user(&principal);
+        // the service writes a refresh in its own declared name for the owner (权限需求 R14, I3/I4): the trigger's
+        // `update` on the entity was judged when the refresh started; the Commit is recorded as the trigger
+        let caller = Caller::internal(&self.owner()?.unwrap_or_default());
         let ops = match self.source_ops(&caller, &entity_id, fetched) {
             Ok(ops) => ops,
             Err(e) => {
@@ -508,12 +581,18 @@ impl Workspace {
 
 impl Workspace {
     /// The Surface a link names (D21 `/<workspace_name>/<surface_name>`): by name, else by title.
+    /// Only a Surface anyone may read is named here (the page route has no session; 权限需求 V2): anything else is left to
+    /// the page, which resolves it once signed in.
     pub fn surface_by_name(&self, name: &str) -> WsResult<Option<String>> {
+        let anyone = self.access(&Caller::anonymous())?;
         let now = self.now();
         let ctx = self.ctx(&now);
         let wanted = pub_name(name);
         for edge in ctx.children(SURFACES_ID)? {
             let Some(e) = ctx.entity(&edge.child_id)?.filter(|e| e.alive()) else { continue };
+            if !anyone.can_read(&ctx, &e)? {
+                continue;
+            }
             let title = e.payload.get("title").and_then(Value::as_str).unwrap_or("");
             if e.name.as_deref() == Some(name) || e.entity_id == name || pub_name(title) == wanted || pub_name(e.name.as_deref().unwrap_or("")) == wanted {
                 return Ok(Some(e.entity_id));

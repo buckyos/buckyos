@@ -278,7 +278,7 @@ test('UI-M03 the guide on a phone (第三期规划 §7.3): offered in the one to
 
 test('UI-M04 notes on a phone: a public link guest long-presses blank canvas or uses the annotate menu, writes the note and finds it where it asked', async ({ page, api }) => {
   const ws = await quarterly(api, `m04 ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'public', capabilities: ['read', 'comment'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'public', allow: ['read', 'comment'] }] })
   await openWorkspacePage(page, { guest: true }, ws.workspace_id)
   await expect(page.getByTestId('aiws-principal')).toHaveAttribute('data-guest', 'true')
   await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')

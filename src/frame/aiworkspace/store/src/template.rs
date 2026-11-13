@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// `snapshot.json` `format`.
 pub const SNAPSHOT_FORMAT: &str = "aiws-template/1";
+/// `templates/<id>/permissions.json { format, design }`: the template's permission design (权限需求 R11).
+pub const PERMISSIONS_FORMAT: &str = "aiws-permissions/1";
 const PARAM_TYPES: &[&str] = &["string", "number", "boolean"];
 
 fn invalid(detail: impl Into<String>) -> WsError {
@@ -103,6 +105,16 @@ impl TemplateFiles {
     }
 
     /// Put its NamedObjects and chunks into `store` (each verified against its name): what `load_workspace` reads.
+    /// The template's permission design, if it carries one.
+    pub fn permission_design(&self) -> WsResult<Option<Value>> {
+        let Some(b) = self.files.get("permissions.json") else { return Ok(None) };
+        let v: Value = serde_json::from_slice(b).map_err(|e| invalid(format!("permissions.json: {e}")))?;
+        if v["format"] != json!(PERMISSIONS_FORMAT) || !v["design"].is_object() {
+            return Err(invalid(format!("permissions.json: format must be {PERMISSIONS_FORMAT} with a design")));
+        }
+        Ok(Some(v["design"].clone()))
+    }
+
     pub fn load_into(&self, store: &crate::objects::ObjectStore) -> WsResult<()> {
         for (name, bytes) in &self.files {
             if let Some(f) = name.strip_prefix("objects/") {
@@ -159,8 +171,8 @@ pub fn verify_templates(items: &[Value], files: &BTreeMap<String, Vec<u8>>, cont
         if o.get("digest").and_then(Value::as_str) != Some(digest.as_str()) {
             return Err(invalid(format!("{dir}: the files do not match the template digest (tampered or incomplete)")));
         }
-        if let Some(n) = mine.keys().find(|n| *n != "snapshot.json" && !n.starts_with("objects/") && !n.starts_with("chunks/")) {
-            return Err(invalid(format!("{dir}{n} is neither the snapshot, an object nor a chunk")));
+        if let Some(n) = mine.keys().find(|n| *n != "snapshot.json" && *n != "permissions.json" && !n.starts_with("objects/") && !n.starts_with("chunks/")) {
+            return Err(invalid(format!("{dir}{n} is neither the snapshot, the permission design, an object nor a chunk")));
         }
         let tf = TemplateFiles { item: t.clone(), files: mine };
         let root = tf.content_root()?;
@@ -182,7 +194,8 @@ impl Workspace {
     /// `ext.export_template { surfaces, data?, template: { id, title, description?, params?, reset? } }` (README “Workspace
     /// templates”): the template's manifest item, the control definitions it needs (`controls`: entity ids, for the
     /// package) and its files (`templates/<id>/…`) by bundle path.
-    pub fn ext_export_template(&self, caller: &Caller, surfaces: &[String], data: &[String], spec: &Value) -> WsResult<(Value, Vec<String>, BTreeMap<String, Vec<u8>>)> {
+    /// The fourth part: permission entries left behind because their resource is not in the template (reported, §4.3).
+    pub fn ext_export_template(&self, caller: &Caller, surfaces: &[String], data: &[String], spec: &Value) -> WsResult<(Value, Vec<String>, BTreeMap<String, Vec<u8>>, Vec<Value>)> {
         let access = self.require_ws_any(caller)?;
         let id = spec.get("id").and_then(Value::as_str).filter(|i| is_template_id(i)).ok_or_else(|| WsError::invalid_op("template.id: [a-z0-9][a-z0-9-]{0,63}"))?;
         let title = spec.get("title").and_then(Value::as_str).filter(|t| !t.is_empty() && t.chars().count() <= 256).ok_or_else(|| WsError::invalid_op("template.title: 1…256 characters"))?;
@@ -275,6 +288,19 @@ impl Workspace {
         let mut snapshot = serde_json::to_string_pretty(&json!({ "format": SNAPSHOT_FORMAT, "content_root": m.content_root, "entities": m.objects.len() })).map_err(|e| WsError::io(e.to_string()))?;
         snapshot.push('\n');
         rel.insert("snapshot.json".into(), snapshot.into_bytes());
+        // a manager's template carries the permission design (权限需求 §4.3, R11): groups, their and the fixed groups'
+        // entries on what the template holds, macro bindings — never a single caller or a member
+        let mut dropped_entries = Vec::new();
+        if access.ws_caps.has(Cap::Manage) {
+            let (design, dropped) = self.permission_design(&|id| set.contains(id))?;
+            dropped_entries = dropped;
+            let has_any = ["groups", "entries", "macros"].iter().any(|k| design[*k].as_array().is_some_and(|a| !a.is_empty()));
+            if has_any {
+                let mut text = serde_json::to_string_pretty(&json!({ "format": PERMISSIONS_FORMAT, "design": design })).map_err(|e| WsError::io(e.to_string()))?;
+                text.push('\n');
+                rel.insert("permissions.json".into(), text.into_bytes());
+            }
+        }
         // what the snapshot's definitions are, by identity (the package must carry them), and the host APIs they speak
         let (mut controls, mut idents) = (Vec::new(), Vec::new());
         let (mut html, mut decl) = (0u64, 0u64);
@@ -318,7 +344,7 @@ impl Workspace {
             item["reset"] = json!({ "tables": tables });
         }
         let files = rel.into_iter().map(|(n, b)| (format!("templates/{id}/{n}"), b)).collect();
-        Ok((item, controls, files))
+        Ok((item, controls, files, dropped_entries))
     }
 
     fn under(&self, ctx: &dyn ReadCtx, id: &str, ancestor: &str) -> WsResult<bool> {

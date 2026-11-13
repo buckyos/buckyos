@@ -68,7 +68,7 @@ test('directory data shows members, uploads, renames and removes files persisten
 
 test('directory references open their contents and a reader cannot change members', async ({ page, browser, api }) => {
   const { ws } = await directoryWorkspace(api)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
   await openDirectory(page, ALICE, ws.workspace_id)
   await member(page, 'nested').getByTestId('aiws-directory-open').click()
   await expect(page.getByTestId('aiws-detail-empty-dir')).toBeVisible()

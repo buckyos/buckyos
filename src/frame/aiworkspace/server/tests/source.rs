@@ -64,7 +64,9 @@ fn own_publication_link_reads_directly() {
 #[test]
 fn publish_insert_refresh_and_unpublish() {
     run_test(|| async move {
-    let mut srv = Srv::start(tempfile::tempdir().unwrap(), model()).await;
+    // the local CSV server below is on 127.0.0.1: this deployment lets Sources reach it (权限需求 R38 refuses it by default)
+    let limits = aiworkspace_server::Limits { fetch_private: true, ..Default::default() };
+    let mut srv = Srv::start_with_limits(tempfile::tempdir().unwrap(), model(), json!({ "tok-alice": { "principal": "alice" } }), limits).await;
     // the publisher
     let a = srv.rpc("ws.create", json!({ "title": "发布方 季度" })).await["workspace_id"].as_str().unwrap().to_string();
     srv.ws = a.clone();
@@ -185,5 +187,28 @@ fn publish_insert_refresh_and_unpublish() {
     let done = srv.wait(run["run_id"].as_str().unwrap()).await;
     assert_eq!(done["state"], "failed", "{done}");
     assert_eq!(json!({ "rows": srv.records("imported").await })["rows"].as_array().unwrap().len(), 4);
+    });
+}
+
+/// R38 (S3): a URL Source reaches public addresses only — not loopback, a private network, `localhost` or the Zone's own
+/// hosts — and the refresh says why.
+#[test]
+fn url_sources_reach_public_addresses_only() {
+    run_test(|| async move {
+    let limits = aiworkspace_server::Limits { public_base: Some("https://aiws-{workspace_id}.zone.invalid".into()), ..Default::default() };
+    let mut srv = Srv::start_with_limits(tempfile::tempdir().unwrap(), model(), json!({ "tok-alice": { "principal": "alice" } }), limits).await;
+    let http = csv_server().await;
+    let ws = srv.rpc("ws.create", json!({ "title": "抓取" })).await["workspace_id"].as_str().unwrap().to_string();
+    srv.ws = ws;
+    let urls = [format!("{http}/data.csv"), "http://localhost:9/x.csv".to_string(), "http://10.0.0.1/x.csv".to_string(), "http://[::1]/x.csv".to_string(), "https://other.zone.invalid/x.csv".to_string()];
+    for (i, url) in urls.iter().enumerate() {
+        let (id, key) = (format!("u{i}"), ["b", "c", "d", "e", "f"][i]);
+        srv.commit(json!([{ "op": "entity.create", "entity_id": id, "type_id": "buckyos.table-source", "parent_id": "data", "order_key": key, "name": id, "payload": { "source": { "kind": "url", "url": url } } }])).await;
+        let run = srv.rpc("proc.start", json!({ "program": "source.refresh@1", "idempotency_key": format!("k{i}"), "params": { "entity_id": id } })).await;
+        let done = srv.wait(run["run_id"].as_str().unwrap()).await;
+        assert_eq!(done["state"], "failed", "{url}: {done}");
+        let why = done.to_string();
+        assert!(why.contains("not a public address") || why.contains("is this Zone"), "{url}: {why}");
+    }
     });
 }

@@ -2,10 +2,11 @@
 //! version 4 is FORMAT 1.0 (内核架构改进 §13.6): reference `mode` / `integrity`, the pure-application commit delta,
 //! the retention roots and the usage ledger, `user_state.revision`; version 5 keeps objects in the named
 //! store, retained by bucket bindings (`bucket_key` / `bucket_version`, doc/workspace `BuckyOS AiWorkspace
-//! Durable Data Schema.md`); version 6 gives every entity but the root a name (核心 API 调整 R14, R19). Version 5
-//! stores are converted when opened (`naming::backfill`); older ones are refused, not migrated.
+//! Durable Data Schema.md`); version 6 gives every entity but the root a name (核心 API 调整 R14, R19); version 7
+//! records who created each entity and how each Commit was attributed (权限需求 R6, R16, R31). Version 5 and 6
+//! stores are converted when opened; older ones are refused, not migrated.
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 6;
+pub const STORAGE_SCHEMA_VERSION: u32 = 7;
 
 /// The document database: the working form of one portable Workspace.
 pub const DOC_DDL: &str = r#"
@@ -29,7 +30,8 @@ CREATE TABLE entities (
   meta_rev       INTEGER NOT NULL,
   content_rev    INTEGER NOT NULL,
   life_rev       INTEGER NOT NULL,
-  deleted_seq    INTEGER
+  deleted_seq    INTEGER,
+  created_by     TEXT
 ) WITHOUT ROWID;
 
 CREATE TABLE tree_edges (
@@ -116,6 +118,7 @@ CREATE TABLE commits (
   message        TEXT,
   accepted_at    TEXT NOT NULL,
   result_json    TEXT NOT NULL,
+  attribution_json TEXT,
   UNIQUE (principal, idem_key)
 );
 
@@ -188,19 +191,9 @@ pub const REPLICA_TABLES: &[&str] = &[
     "assets",
 ];
 
-/// Deployment-local state: grants, locks, runs, staged uploads. Never exported.
+/// Deployment-local state: permissions, locks, runs, staged uploads. Never exported.
 pub const LOCAL_DDL: &str = r#"
 CREATE TABLE local_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
-
-CREATE TABLE grants (
-  subject         TEXT NOT NULL,
-  scope_entity_id TEXT NOT NULL DEFAULT '',
-  capabilities    INTEGER NOT NULL,
-  via_entry       TEXT,
-  task_digest     TEXT,
-  outputs_json    TEXT,
-  PRIMARY KEY (subject, scope_entity_id)
-) WITHOUT ROWID;
 
 CREATE TABLE publications (
   name        TEXT PRIMARY KEY,
@@ -217,17 +210,6 @@ CREATE TABLE referrers (
   referrer_json TEXT NOT NULL,
   registered_at TEXT NOT NULL,
   PRIMARY KEY (entity_id, referrer_key)
-) WITHOUT ROWID;
-
-CREATE TABLE share_entries (
-  entry_id        TEXT PRIMARY KEY,
-  scope_entity_id TEXT NOT NULL DEFAULT '',
-  capabilities    INTEGER NOT NULL,
-  methods         INTEGER NOT NULL,
-  state           TEXT NOT NULL,
-  expires_at      INTEGER,
-  created_by      TEXT NOT NULL,
-  created_at      INTEGER NOT NULL
 ) WITHOUT ROWID;
 
 CREATE TABLE locks (
@@ -280,8 +262,80 @@ CREATE TABLE staged_assets (
 ) WITHOUT ROWID;
 "#;
 
-/// Tables of `local.sqlite` that came after the first format: made on every open.
+/// Tables of `local.sqlite` that came after the first format: made on every open. The permission tables (权限需求 §4.3,
+/// R2–R8, R19, R28) replaced `grants`; an old `grants` table and an entry table of the template form are dropped when
+/// opened, not migrated.
 pub const LOCAL_ADDED_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS acl_entries (
+  subject         TEXT NOT NULL,
+  scope_entity_id TEXT NOT NULL DEFAULT '',
+  allow           INTEGER NOT NULL DEFAULT 0,
+  deny            INTEGER NOT NULL DEFAULT 0,
+  updated_by      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  PRIMARY KEY (subject, scope_entity_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS acl_entries_scope ON acl_entries(scope_entity_id);
+
+CREATE TABLE IF NOT EXISTS acl_groups (
+  group_id    TEXT PRIMARY KEY,
+  title       TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  created_by  TEXT NOT NULL,
+  created_at  TEXT NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS acl_members (
+  group_id  TEXT NOT NULL,
+  member    TEXT NOT NULL,
+  via_entry TEXT,
+  added_by  TEXT NOT NULL,
+  added_at  TEXT NOT NULL,
+  PRIMARY KEY (group_id, member)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS acl_macro_bindings (
+  wish_id  TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  mode     TEXT NOT NULL,
+  set_by   TEXT NOT NULL,
+  set_at   TEXT NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS acl_audit (
+  seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+  at          TEXT NOT NULL,
+  actor       TEXT NOT NULL,
+  judged_as   TEXT,
+  action      TEXT NOT NULL,
+  target_json TEXT NOT NULL,
+  before_json TEXT,
+  after_json  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS publication_reads (
+  entity_id    TEXT PRIMARY KEY,
+  reads        INTEGER NOT NULL DEFAULT 0,
+  last_read_at TEXT
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS publication_versions (
+  content_root TEXT PRIMARY KEY,
+  entity_id    TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS share_entries (
+  entry_id   TEXT PRIMARY KEY,
+  group_id   TEXT NOT NULL,
+  methods    INTEGER NOT NULL,
+  state      TEXT NOT NULL,
+  expires_at INTEGER,
+  max_joins  INTEGER,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS staged_commits (
   principal  TEXT NOT NULL,
   idem_key   TEXT NOT NULL,

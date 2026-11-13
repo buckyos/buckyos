@@ -8,6 +8,7 @@ pub mod buckets;
 pub mod control;
 pub mod ext;
 pub mod media;
+pub mod methods;
 pub mod obj_provider;
 pub mod pages;
 pub mod session;
@@ -32,6 +33,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
+pub use methods::METHODS;
 
 pub const HTTP_PATH: &str = "/kapi/aiworkspace";
 
@@ -54,12 +56,15 @@ pub struct Limits {
     /// The Desktop build this service serves the AI Workspace page from on a Workspace's own host (T4-8, `pages`);
     /// `None` = the page is not available here.
     pub web_dir: Option<std::path::PathBuf>,
+    /// URL Sources may fetch loopback and private addresses (权限需求 R38 forbids it; standalone tests only).
+    pub fetch_private: bool,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Limits { max_commit_bytes: 8 * 1024 * 1024, max_wait_ms: 30_000, max_asset_bytes: 32 * 1024 * 1024, max_media_bytes: 2 << 30, max_package_bytes: 2 << 30,
-                 workspace_quota_bytes: None, history_retention_ms: aiworkspace_store::workspace::HISTORY_RETENTION_MS, traffic_quota_bytes: None, public_base: None, web_dir: None }
+                 workspace_quota_bytes: None, history_retention_ms: aiworkspace_store::workspace::HISTORY_RETENTION_MS, traffic_quota_bytes: None, public_base: None, web_dir: None,
+                 fetch_private: false }
     }
 }
 
@@ -68,6 +73,7 @@ impl Default for Limits {
 pub enum Wake {
     Head { workspace_id: String, epoch: String, head_seq: u64 },
     Locks { workspace_id: String, counter: u64 },
+    Acl { workspace_id: String, acl_rev: u64 },
 }
 
 pub struct AppState {
@@ -78,6 +84,8 @@ pub struct AppState {
     /// Non-public shows (third phase §11.3): in memory, ended by a restart.
     pub shows: show::Shows,
     heads: Arc<Mutex<HashMap<String, watch::Sender<u64>>>>,
+    /// Each open Workspace's permission revision (权限需求 R4): `doc.wait_changes` returns when it moves.
+    acls: Arc<Mutex<HashMap<String, watch::Sender<u64>>>>,
     /// The NDM gateway (nfs-server origin) that judges whether a caller may read an object it asks to import.
     pub ndm_gateway: std::sync::OnceLock<String>,
     /// Each user's control library (扩展控件 P0, A5): `library.sqlite` in the data folder, files in the `library` buckets.
@@ -97,7 +105,9 @@ impl AppState {
         svc.history_retention_ms = limits.history_retention_ms;
         svc.traffic_quota = limits.traffic_quota_bytes;
         let heads: Arc<Mutex<HashMap<String, watch::Sender<u64>>>> = Arc::default();
+        let acls: Arc<Mutex<HashMap<String, watch::Sender<u64>>>> = Arc::default();
         let hook_heads = heads.clone();
+        let hook_acls = acls.clone();
         svc.on_open = Some(Box::new(move |ws: &mut Workspace| {
             let tx = hook_heads
                 .lock()
@@ -122,9 +132,18 @@ impl AppState {
                     let _ = w.send(Wake::Locks { workspace_id: id.clone(), counter: n });
                 }
             }));
+            let acl_tx = hook_acls.lock().unwrap().entry(ws.workspace_id.clone()).or_insert_with(|| watch::channel(ws.acl_rev()).0).clone();
+            let _ = acl_tx.send(ws.acl_rev());
+            let (id, wake_acl) = (ws.workspace_id.clone(), wake.clone());
+            ws.on_acl_change = Some(Box::new(move |rev| {
+                let _ = acl_tx.send(rev);
+                if let Some(w) = &wake_acl {
+                    let _ = w.send(Wake::Acl { workspace_id: id.clone(), acl_rev: rev });
+                }
+            }));
         }));
         let library = aiworkspace_store::library::Library::open(&svc.data_dir.join("library.sqlite"), svc.objects.clone()).expect("the control library database opens");
-        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, ndm_gateway: std::sync::OnceLock::new(), library,
+        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, acls, ndm_gateway: std::sync::OnceLock::new(), library,
                             rooms: session::Rooms::default(), media: media::Media::default(), streams: stream::Streams::default() })
     }
 
@@ -282,7 +301,8 @@ fn failure_json(e: &WsError, caller: Option<&Caller>, method: &str) -> Value {
 /// Settle the `group:` / `contact:` memberships the request can depend on, before any Workspace is locked: those
 /// of the Workspace named in `params` (every Workspace for `ws.list`).
 pub(crate) async fn prepare_caller(state: &Arc<AppState>, caller: &mut Caller, method: &str, workspace_id: Option<&str>) {
-    if !matches!(caller.class, CallerClass::Account { .. } | CallerClass::External { .. }) {
+    let person = matches!(caller.class, CallerClass::Account { .. } | CallerClass::External { .. });
+    if !person && caller.acting_for.is_none() {
         return;
     }
     let st = state.clone();
@@ -296,8 +316,38 @@ pub(crate) async fn prepare_caller(state: &Arc<AppState>, caller: &mut Caller, m
     .await
     .unwrap_or_default();
     if !subjects.is_empty() {
-        state.auth.resolve_subjects(caller, &subjects).await;
+        if person {
+            state.auth.resolve_subjects(caller, &subjects).await;
+        }
+        // an Agent judged as its owner holds the owner's memberships (权限需求 R16)
+        if let Some(owner) = caller.acting_for.as_deref_mut() {
+            state.auth.resolve_subjects(owner, &subjects).await;
+        }
     }
+}
+
+/// `acl.query` about someone else (`principal`): that caller as the service knows it, its memberships settled.
+fn other_principal(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Option<Caller>> {
+    let Some(principal) = p.get("principal").and_then(Value::as_str).filter(|x| *x != caller.principal) else {
+        // `subject` naming a single caller asks about that caller too
+        return match p.get("subject").and_then(Value::as_str).filter(|x| *x != caller.principal && !x.starts_with('@')) {
+            Some(x) => other_principal(state, &json!({ "principal": x, "workspace_id": p["workspace_id"] }), caller),
+            None => Ok(None),
+        };
+    };
+    let ws = s(p, "workspace_id")?.to_string();
+    let handle = tokio::runtime::Handle::current();
+    let mut other = handle.block_on(state.auth.caller_for(principal));
+    let subjects = state.with_ws(&ws, |w| w.dynamic_subjects()).unwrap_or_default();
+    if !subjects.is_empty() {
+        if matches!(other.class, CallerClass::Account { .. } | CallerClass::External { .. }) {
+            handle.block_on(state.auth.resolve_subjects(&mut other, &subjects));
+        }
+        if let Some(owner) = other.acting_for.as_deref_mut() {
+            handle.block_on(state.auth.resolve_subjects(owner, &subjects));
+        }
+    }
+    Ok(Some(other))
 }
 
 pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Response {
@@ -336,9 +386,11 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         (false, Some(token)) if token.starts_with("rt_") => {
             // a run token (M3): the run's execution identity, for that run only
             let ws_id = params.get("workspace_id").and_then(Value::as_str).map(str::to_string);
-            match run_token_caller(&state, ws_id.as_deref(), token, &method) {
+            match run_token_caller(&state, ws_id.as_deref(), token, &method).await {
                 Ok(c) => Some(c),
-                Err(e) => return rpc_error(seq, &e),
+                // an executor learns that its attempt is over as a business failure, like any other refusal of its run
+                Err(TokenRefusal::Revoked(e)) => return Json(json!({ "result": { "ok": false, "error": e.to_json() }, "sys": [seq] })).into_response(),
+                Err(TokenRefusal::Invalid(e)) => return rpc_error(seq, &e),
             }
         }
         (false, Some(token)) => match Caller::guest(token) {
@@ -362,13 +414,21 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
             .or_else(|| params.get("entry_id").and_then(Value::as_str).and_then(split_entry_id).map(|(ws, _)| ws));
         prepare_caller(&state, c, &method, workspace_id).await;
     }
-    // naming a contact group in a grant is for its owner: the store compares the group's owner with the caller's DID
+    // naming a contact group as a member is for its owner: the store compares the group's owner with the caller's DID
     let mut ready: WsResult<()> = Ok(());
-    if method == "ws.grant" && params.get("subject").and_then(Value::as_str).is_some_and(|s| s.starts_with(CONTACT_PREFIX)) {
+    let adds_contact = params.get("add").and_then(Value::as_array).is_some_and(|a| a.iter().any(|m| m.as_str().is_some_and(|s| s.starts_with(CONTACT_PREFIX))));
+    if method == "acl.members" && adds_contact {
         if let Some(c) = caller.as_mut() {
             ready = state.auth.load_did(c).await.map_err(|_| {
                 WsError::refused(Code::PermissionDenied, Deny::AuthorizationUnavailable, "the caller's DID could not be read; retry later")
             });
+        }
+    }
+    // the method table's generic checks (权限需求 R21) come before any handler
+    if ready.is_ok() && prompter.is_none() {
+        if let Some(c) = caller.clone() {
+            let (st, m, p) = (state.clone(), method.clone(), params.clone());
+            ready = blocking(move || precheck(&st, &m, &p, &c)).await;
         }
     }
     let result = if let Err(e) = ready {
@@ -445,138 +505,44 @@ fn okv(mut v: Value) -> Value {
     v
 }
 
-/// Every kRPC method and its level (内核架构改进 D11): `stable` methods change only with the protocol
-/// version and each has a contract test (`server/tests/contract.rs`, `fixtures/protocol/`); `internal`
-/// methods serve the Desktop and diagnostics and may change with it; `experimental` methods are not
-/// frozen yet (`proc.*` become stable with M3). The README method table mirrors this list.
-pub const METHOD_LEVELS: &[(&str, &str)] = &[
-    ("ws.create", "stable"),
-    ("ws.ensure", "stable"),
-    ("ws.time", "stable"),
-    ("ws.list", "stable"),
-    ("ws.get_info", "stable"),
-    ("ws.delete", "stable"),
-    ("ws.clone", "stable"),
-    ("ws.grant", "stable"),
-    ("ws.revoke", "stable"),
-    ("ws.list_grants", "stable"),
-    ("ws.list_subjects", "stable"),
-    ("ws.create_entry", "stable"),
-    ("ws.list_entries", "stable"),
-    ("ws.close_entry", "stable"),
-    ("ws.join_entry", "stable"),
-    ("entry.describe", "stable"),
-    ("ws.get_user_state", "stable"),
-    ("ws.set_user_state", "stable"),
-    ("ws.import", "stable"),
-    ("ws.release_retention", "stable"),
-    ("ws.delete_checkpoint", "stable"),
-    ("ws.purge_deleted", "stable"),
-    ("ws.clear_staged", "stable"),
-    ("doc.resolve", "stable"),
-    ("doc.read", "stable"),
-    ("doc.list", "stable"),
-    ("doc.find", "stable"),
-    ("doc.query", "stable"),
-    ("doc.prepare", "stable"),
-    ("doc.commit", "stable"),
-    ("doc.stage", "stable"),
-    ("doc.get_submission", "stable"),
-    ("doc.undo", "stable"),
-    ("doc.get_changes", "stable"),
-    ("doc.wait_changes", "stable"),
-    ("asset.import_object", "stable"),
-    ("lock.acquire", "stable"),
-    ("lock.renew", "stable"),
-    ("lock.release", "stable"),
-    ("lock.break", "stable"),
-    ("lock.list", "stable"),
-    ("doc.outline", "internal"),
-    ("doc.source_capabilities", "internal"),
-    ("doc.source_query", "internal"),
-    ("doc.index", "internal"),
-    ("doc.get_collab_state", "internal"),
-    ("replica.bootstrap", "internal"),
-    ("show.start", "internal"),
-    ("show.heartbeat", "internal"),
-    ("show.publish", "internal"),
-    ("show.command", "internal"),
-    ("show.watch", "internal"),
-    ("show.notes", "internal"),
-    ("show.end", "internal"),
-    ("diag.list_unretained", "internal"),
-    ("diag.verify_refs", "internal"),
-    ("doc.list_annotations", "experimental"),
-    ("doc.freshness", "experimental"),
-    ("doc.relations", "experimental"),
-    ("doc.list_versions", "experimental"),
-    ("doc.restore_version", "experimental"),
-    ("doc.checkpoint", "experimental"),
-    ("doc.export", "experimental"),
-    ("proc.start", "stable"),
-    ("proc.get", "stable"),
-    ("proc.apply", "stable"),
-    ("proc.cancel", "stable"),
-    ("proc.list", "stable"),
-    ("proc.claim", "stable"),
-    ("proc.heartbeat", "stable"),
-    ("proc.report", "stable"),
-    ("proc.tool", "stable"),
-    ("proc.program", "stable"),
-    ("proc.files", "stable"),
-    ("ws.set_hosted_exec", "experimental"),
-    ("ws.publish", "experimental"),
-    ("ws.unpublish", "experimental"),
-    ("ws.list_publications", "experimental"),
-    ("ws.list_referrers", "experimental"),
-    ("control.list", "experimental"),
-    ("control.describe", "experimental"),
-    ("control.import", "experimental"),
-    ("control.export", "experimental"),
-    ("ext.build", "experimental"),
-    ("ext.export", "experimental"),
-    ("ext.install", "experimental"),
-    ("ext.list_library", "experimental"),
-    ("ext.uninstall", "experimental"),
-    ("ext.library_bundle", "experimental"),
-    ("ext.import", "experimental"),
-    ("ext.pack", "experimental"),
-    ("ext.upgrade", "experimental"),
-    ("ext.export_template", "experimental"),
-    ("ext.create_from_template", "experimental"),
-    ("asset.stream_url", "stable"),
-    ("session.create", "experimental"),
-    ("session.list", "experimental"),
-    ("session.list_mine", "experimental"),
-    ("session.get", "experimental"),
-    ("session.join", "experimental"),
-    ("session.start", "experimental"),
-    ("session.end", "experimental"),
-    ("session.save", "experimental"),
-    ("session.delete", "experimental"),
-    ("session.set_access", "experimental"),
-    ("session.invite", "experimental"),
-    ("session.list_invites", "experimental"),
-    ("session.revoke_invite", "experimental"),
-    ("session.takeover", "experimental"),
-    ("session.command", "experimental"),
-    ("session.sample", "experimental"),
-    ("session.task", "experimental"),
-    ("session.claim", "experimental"),
-    ("session.respond", "experimental"),
-    ("session.review", "experimental"),
-    ("session.publish", "experimental"),
-    ("session.react", "experimental"),
-    ("session.events", "experimental"),
-    ("session.watch", "experimental"),
-    ("session.replay", "experimental"),
-    ("session.notes", "experimental"),
-    ("session.feed_sample", "experimental"),
-    ("session.post", "experimental"),
-    ("session.list_posts", "experimental"),
-    ("session.delete_post", "experimental"),
-    ("session.rtc", "experimental"),
-];
+/// The Workspace a request is about: named, or the one an entry id names.
+fn workspace_of(p: &Value) -> Option<String> {
+    p.get("workspace_id").and_then(Value::as_str).or_else(|| p.get("entry_id").and_then(Value::as_str).and_then(split_entry_id).map(|(ws, _)| ws)).map(str::to_string)
+}
+
+/// The generic checks of a method's row in [`METHODS`]: who may own, the owner, membership, a capability on the
+/// Workspace or on the entity a parameter names. A read's per-entity filtering stays with its handler (an unreadable
+/// entity is NOT_FOUND there, not refused here).
+fn precheck(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> WsResult<()> {
+    use aiworkspace_core::access::Cap;
+    use methods::Check;
+    let Some(spec) = methods::spec(method) else { return Ok(()) };
+    for check in spec.checks {
+        match check {
+            Check::MayOwn => require_may_own(caller)?,
+            Check::Owner | Check::Member | Check::Ws(_) | Check::Entity(..) => {
+                let Some(ws_id) = workspace_of(p) else { continue };
+                if matches!(check, Check::Entity(Cap::Read, _)) {
+                    continue;
+                }
+                state.with_ws(&ws_id, |ws| match check {
+                    Check::Owner => ws.require_owner(caller).map(|_| ()),
+                    Check::Member => ws.require_ws_any(caller).map(|_| ()),
+                    Check::Ws(cap) => ws.require_ws(caller, *cap).map(|_| ()),
+                    Check::Entity(cap, param) => {
+                        let access = ws.require_ws_any(caller)?;
+                        let Some(target) = p.get(*param).and_then(Value::as_str) else { return Ok(()) };
+                        let scope = ws.resolve_resource(&access, target)?;
+                        ws.require_on(caller, (!scope.is_empty()).then_some(scope.as_str()), *cap).map(|_| ())
+                    }
+                    _ => Ok(()),
+                })?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 /// Synchronous method dispatch. Every method authorizes against the grants of
 /// the trusted `caller`.
@@ -597,12 +563,24 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             v
         }
         "ws.delete" => svc.delete_workspace(caller, ws_id()?)?,
-        "ws.grant" => state.with_ws(ws_id()?, |ws| {
-            ws.grant_with(caller, s(p, "subject")?, p.get("scope_entity_id").and_then(Value::as_str), &strings(p, "capabilities")?,
-                          p.get("task_digest").and_then(Value::as_str), p.get("outputs").filter(|o| !o.is_null()))
+        // permissions (权限需求 §4): entries, groups and members, the anonymous switch, macro bindings, the record
+        "acl.set" => state.with_ws(ws_id()?, |ws| ws.acl_set(caller, p.get("changes").unwrap_or(&Value::Null)))?,
+        "acl.query" => {
+            let other = other_principal(state, p, caller)?;
+            state.with_ws(ws_id()?, |ws| ws.acl_query(caller, p, other.as_ref()))?
+        }
+        "acl.groups" => state.with_ws(ws_id()?, |ws| ws.acl_groups(caller))?,
+        "acl.set_group" => state.with_ws(ws_id()?, |ws| ws.acl_set_group(caller, s(p, "group_id")?, p.get("title").and_then(Value::as_str), p.get("description").and_then(Value::as_str)))?,
+        "acl.delete_group" => state.with_ws(ws_id()?, |ws| ws.acl_delete_group(caller, s(p, "group_id")?))?,
+        "acl.members" => state.with_ws(ws_id()?, |ws| {
+            let list = |k: &str| -> WsResult<Vec<String>> { if p.get(k).is_some_and(|v| !v.is_null()) { strings(p, k) } else { Ok(Vec::new()) } };
+            ws.acl_members(caller, s(p, "group_id")?, &list("add")?, &list("remove")?)
         })?,
-        "ws.revoke" => state.with_ws(ws_id()?, |ws| ws.revoke(caller, s(p, "subject")?, p.get("scope_entity_id").and_then(Value::as_str)))?,
-        "ws.list_grants" => state.with_ws(ws_id()?, |ws| ws.list_grants(caller))?,
+        "acl.set_anonymous" => state.with_ws(ws_id()?, |ws| ws.acl_set_anonymous(caller, p.get("enabled").and_then(Value::as_bool).ok_or_else(|| WsError::invalid_op("enabled must be a boolean"))?))?,
+        "acl.bind_macro" => state.with_ws(ws_id()?, |ws| {
+            ws.acl_bind_macro(caller, s(p, "wish")?, p.get("group_id").and_then(Value::as_str), p.get("mode").and_then(Value::as_str).unwrap_or("union"))
+        })?,
+        "acl.audit" => state.with_ws(ws_id()?, |ws| ws.acl_audit(caller, p.get("after").and_then(Value::as_i64).unwrap_or(0), p.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize))?,
         "ws.get_user_state" => state.with_ws(ws_id()?, |ws| ws.get_user_state(caller))?,
         "ws.set_user_state" => state.with_ws(ws_id()?, |ws| ws.set_user_state(caller, p.get("entries").unwrap_or(&Value::Null), p.get("expect")))?,
         "ws.list_subjects" => {
@@ -613,18 +591,19 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         }
         "ws.clone" => svc.clone_workspace(caller, ws_id()?)?,
         "ws.create_entry" => state.with_ws(ws_id()?, |ws| {
-            let caps = strings(p, "capabilities")?;
             let methods = parse_entry_methods(p.get("methods").unwrap_or(&Value::Null))?;
-            let expires_at = match p.get("expires_at") {
-                None | Some(Value::Null) => None,
-                Some(v) => Some(v.as_i64().ok_or_else(|| WsError::invalid_op("expires_at must be unix seconds"))?),
+            let int = |k: &str| -> WsResult<Option<i64>> {
+                match p.get(k) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(v) => Ok(Some(v.as_i64().ok_or_else(|| WsError::invalid_op(format!("{k} must be an integer")))?)),
+                }
             };
-            ws.create_entry(caller, p.get("scope_entity_id").and_then(Value::as_str), &caps, methods, expires_at)
+            ws.create_entry(caller, s(p, "group_id")?, methods, int("expires_at")?, int("max_joins")?)
         })?,
         "ws.list_entries" => state.with_ws(ws_id()?, |ws| ws.list_entries(caller))?,
         "ws.close_entry" => {
             let (ws, local) = entry_of(p)?;
-            state.with_ws(ws, |w| w.close_entry(caller, local))?
+            state.with_ws(ws, |w| w.close_entry(caller, local, p.get("remove_members").and_then(Value::as_bool).unwrap_or(false)))?
         }
         "doc.outline" => state.with_ws(ws_id()?, |ws| ws.outline(caller))?,
         // Block-controls (脑图方案 §8.1): the catalogue needs a session only; import / export act in a Workspace
@@ -769,14 +748,34 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
 /// Methods a run token may call: the run's own lifecycle and reads of the Workspace it runs in.
 const RUN_TOKEN_METHODS: &[&str] = &["proc.get", "proc.heartbeat", "proc.report", "proc.tool", "proc.program", "proc.files", "proc.list", "ws.get_info", "doc.read", "doc.query", "doc.resolve", "doc.outline", "doc.list"];
 
-fn run_token_caller(state: &Arc<AppState>, ws_id: Option<&str>, token: &str, method: &str) -> Result<Caller, String> {
+enum TokenRefusal {
+    Invalid(String),
+    Revoked(WsError),
+}
+
+/// The holder of a run token acts as the run's trigger (权限需求 R14, R15): the class it signed in as, its memberships
+/// settled now, for that run only.
+async fn run_token_caller(state: &Arc<AppState>, ws_id: Option<&str>, token: &str, method: &str) -> Result<Caller, TokenRefusal> {
     if !RUN_TOKEN_METHODS.contains(&method) {
-        return Err(format!("a run token cannot call {method}"));
+        return Err(TokenRefusal::Invalid(format!("a run token cannot call {method}")));
     }
-    let ws_id = ws_id.ok_or_else(|| "workspace_id required".to_string())?;
-    let found = state.with_ws(ws_id, |ws| ws.wish_run_by_token(token)).map_err(|e| e.to_string())?;
-    let (run, _) = found.ok_or_else(|| "invalid run token".to_string())?;
-    Ok(Caller::run_token(run["principal"].as_str().unwrap_or(""), run["run_id"].as_str().unwrap_or("")))
+    let ws_id = ws_id.ok_or_else(|| TokenRefusal::Invalid("workspace_id required".to_string()))?;
+    // valid only for its attempt while that attempt is the run's current one and the run is executing (权限需求 S5, R15)
+    let found = state
+        .with_ws(ws_id, |ws| {
+            let Some((run, attempt)) = ws.wish_run_by_token(token)? else { return Ok(None) };
+            ws.wish_run_check_attempt(&run, attempt)?;
+            if run["state"] != json!("running") {
+                return Err(WsError::new(Code::RunRevoked, format!("the run is {}: its run token is no longer valid", run["state"].as_str().unwrap_or("?"))));
+            }
+            Ok(Some(run))
+        })
+        .map_err(|e| if e.code == Code::RunRevoked { TokenRefusal::Revoked(e) } else { TokenRefusal::Invalid(e.to_string()) })?;
+    let run = found.ok_or_else(|| TokenRefusal::Invalid("invalid run token".to_string()))?;
+    let mut caller = wish::delegated(state, ws_id, &run).await;
+    caller.kind = Some("run".into());
+    caller.run_scope = run["run_id"].as_str().map(str::to_string);
+    Ok(caller)
 }
 
 /// `entry_id` of `params` as (Workspace, entry within it); a `workspace_id` given beside it must name the same one.
@@ -843,7 +842,7 @@ fn entry_admits(bits: u8, settings: &SsoSettings, method: Option<AuthMethod>) ->
     }
 }
 
-/// `ws.join_entry { entry_id }`: a signed-in visitor takes the entry's template as its own grant.
+/// `ws.join_entry { entry_id }`: a visitor — signed in, or a guest with its browser's token — joins the entry's group (R8).
 async fn join_entry(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
     let unavailable = || WsError::refused(Code::NotFound, Deny::EntryUnavailable, "the entry is closed, expired or does not exist");
     let entry_id = s(p, "entry_id")?.to_string();
@@ -853,6 +852,7 @@ async fn join_entry(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResu
     })?;
     let method = match caller.class {
         CallerClass::External { .. } => Some(AuthMethod::DidFederation),
+        CallerClass::Guest => None,
         _ => caller.auth_method.as_deref().and_then(AuthMethod::parse),
     };
     let (st, c) = (state.clone(), caller.clone());
@@ -870,11 +870,13 @@ fn is_wish_run(state: &Arc<AppState>, ws_id: &str, run_id: &str) -> bool {
     state.with_ws(ws_id, |ws| Ok(ws.run_program(run_id))).ok().flatten().is_some_and(|p| wish::is_wish(&p))
 }
 
-/// `doc.wait_changes`: long poll; returns as soon as `head_seq > after_seq` or on timeout.
-/// It only ever says "there is something new" — content comes from `get_changes`.
+/// `doc.wait_changes`: long poll; returns as soon as `head_seq > after_seq`, or the permissions moved past
+/// `after_acl_rev` (权限需求 R4: the caller reads its capabilities again), or on timeout. It only ever says "there is
+/// something new" — content comes from `get_changes`, capabilities from `ws.get_info` / reads.
 async fn wait_changes(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
     let id = s(p, "workspace_id")?.to_string();
     let after = p.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
+    let after_acl = p.get("after_acl_rev").and_then(Value::as_u64);
     let timeout = p.get("timeout_ms").and_then(Value::as_u64).unwrap_or(state.limits.max_wait_ms).min(state.limits.max_wait_ms);
     let (st, c, wid, epoch) = (state.clone(), caller.clone(), id.clone(), p.get("epoch").and_then(Value::as_str).map(str::to_string));
     let info = tokio::task::spawn_blocking(move || st.with_ws(&wid, |ws| ws.info(&c)))
@@ -886,17 +888,24 @@ async fn wait_changes(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsRe
         }
     }
     let mut rx = state.heads.lock().unwrap().get(&id).map(|tx| tx.subscribe()).ok_or_else(|| WsError::not_found("workspace not found"))?;
+    let mut acl_rx = state.acls.lock().unwrap().get(&id).map(|tx| tx.subscribe()).ok_or_else(|| WsError::not_found("workspace not found"))?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout);
     loop {
         let head = *rx.borrow_and_update();
+        let acl = *acl_rx.borrow_and_update();
         // the show lock rides along (第三期规划 §8.1): followers learn that writes are closed, and when they reopen
         let show_lock = || state.svc.show_locks.lock().unwrap().get(&id).filter(|l| l.expires_ms > (state.svc.clock)()).map(|l| l.to_json());
-        if head > after {
-            return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": false, "show_lock": show_lock(), "server_ms": (state.svc.clock)() }));
+        let acl_moved = after_acl.is_some_and(|a| acl > a);
+        if head > after || acl_moved {
+            return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "acl_rev": acl, "timed_out": false, "show_lock": show_lock(), "server_ms": (state.svc.clock)() }));
         }
-        match tokio::time::timeout_at(deadline, rx.changed()).await {
-            Ok(Ok(())) => continue,
-            _ => return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": true, "show_lock": show_lock(), "server_ms": (state.svc.clock)() })),
+        tokio::select! {
+            r = tokio::time::timeout_at(deadline, rx.changed()) => if !matches!(r, Ok(Ok(()))) {
+                return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "acl_rev": acl, "timed_out": true, "show_lock": show_lock(), "server_ms": (state.svc.clock)() }));
+            },
+            r = tokio::time::timeout_at(deadline, acl_rx.changed()) => if !matches!(r, Ok(Ok(()))) {
+                return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "acl_rev": acl, "timed_out": true, "show_lock": show_lock(), "server_ms": (state.svc.clock)() }));
+            },
         }
     }
 }

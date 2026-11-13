@@ -47,9 +47,11 @@ function HtmlStatic(context: RenderContext) {
 }
 
 /** View mode: running while the canvas runs, as long as a slot of the `html` budget is free — not tied to what is
- * selected or edited; otherwise its snapshot. */
+ * selected or edited; otherwise its snapshot. Only code a manager vouched for runs by itself (权限需求 R37): an
+ * untrusted definition shows its snapshot, and starts on a click like in design mode. */
 function HtmlView(context: RenderContext) {
-  const live = context.interactive && context.mode === 'view'
+  const trusted = Boolean(context.documentDefinition?.trusted)
+  const live = context.interactive && context.mode === 'view' && trusted
   const slot = useBudgetSlot(live ? 'html' : null)
   return live && slot ? <HtmlActive {...context} live /> : <HtmlStatic {...context} />
 }

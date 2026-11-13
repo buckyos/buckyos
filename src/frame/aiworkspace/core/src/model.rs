@@ -122,6 +122,10 @@ pub struct EntityRow {
     /// which input versions it read. Entity-level metadata, not part of the type's payload.
     #[serde(default)]
     pub derived: Option<Value>,
+    /// Who created it (权限需求 R6): the principal the creating Commit was judged as; `@creator` entries apply to them.
+    /// Kept by this deployment only (never part of the content); `None` for the system nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
     pub created_seq: u64,
     pub meta_rev: u64,
     pub content_rev: u64,
@@ -620,6 +624,7 @@ pub fn system_container(id: &str, kind: &str, name: Option<&str>, title: Option<
         payload,
         key_revs,
         derived: None,
+        created_by: None,
         created_seq: 0,
         meta_rev: 0,
         content_rev: 0,

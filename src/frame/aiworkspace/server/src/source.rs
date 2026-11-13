@@ -84,7 +84,7 @@ pub fn tick(state: &Arc<AppState>) {
                     continue;
                 }
                 let idem = format!("source-timer/{id}/{}", (ws.clock)() / 60_000);
-                if let Ok(run) = ws.source_refresh_start(&Caller::user(&owner), &id, &idem) {
+                if let Ok(run) = ws.source_refresh_start(&Caller::internal(&owner), &id, &idem) {
                     if run["replayed"] != json!(true) {
                         out.push(run["run_id"].as_str().unwrap_or("").to_string());
                     }
@@ -118,7 +118,7 @@ async fn fetch(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Valu
             let envelope = tokio::task::spawn_blocking(move || {
                 st.with_ws(&ws, |w| {
                     let v = match &root {
-                        Some(r) => w.public_fixed_content(r)?,
+                        Some(r) => w.public_fixed_content(&ent, r)?,
                         None => w.public_content(&ent, fixed, true)?,
                     };
                     if let Some((_, entity_id)) = w.publication(&ent)? {
@@ -142,7 +142,7 @@ async fn fetch(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Valu
         } else if source["mode"] == json!("fixed") {
             url.push_str("&fixed=1");
         }
-        let (body, _ctype) = http_get(&url).await?;
+        let (body, _ctype) = http_get(state, &url).await?;
         let envelope: Value = serde_json::from_slice(&body).map_err(|e| WsError::new(Code::DependencyUnavailable, format!("the publication did not answer JSON: {e}")))?;
         if envelope["format"] != json!(PUB_FORMAT) {
             return Err(WsError::new(Code::DependencyUnavailable, "the URL is not an AI Workspace publication"));
@@ -155,7 +155,7 @@ async fn fetch(state: &Arc<AppState>, ws_id: &str, consumer: &str, source: &Valu
         return Ok((from_envelope(&envelope)?, body.len() as u64, root));
     }
     let url = source["url"].as_str().ok_or_else(|| WsError::invalid_op("source.url required"))?;
-    let (body, ctype) = http_get(url).await?;
+    let (body, ctype) = http_get(state, url).await?;
     let bytes = body.len() as u64;
     Ok((parse_body(&body, &ctype, source)?, bytes, None))
 }
@@ -192,10 +192,84 @@ fn own_zone(state: &Arc<AppState>) -> Option<String> {
 }
 
 /// One GET without credentials, bounded in time and size.
-async fn http_get(url: &str) -> WsResult<(Vec<u8>, String)> {
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS)).build().map_err(|e| WsError::io(e.to_string()))?;
+/// Redirects one fetch follows, each hop checked like the first.
+const MAX_REDIRECTS: usize = 5;
+
+/// Whether an address is on the public Internet: not loopback, private, link-local, shared (CGNAT), multicast,
+/// unspecified, broadcast or documentation space (权限需求 R38).
+fn public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_multicast() || v4.is_unspecified() || v4.is_broadcast() || v4.is_documentation()
+                || o[0] == 0 || (o[0] == 100 && (o[1] & 0xc0) == 64) || (o[0] == 192 && o[1] == 0 && o[2] == 0) || o[0] >= 240)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return public_ip(IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || (seg[0] & 0xfe00) == 0xfc00 || (seg[0] & 0xffc0) == 0xfe80 || seg[0] == 0x2001 && seg[1] == 0x0db8)
+        }
+    }
+}
+
+/// The address one hop goes to: a public one, resolved now and pinned for the request (no rebinding in between);
+/// never the Zone's own hosts. Credentials in the URL are refused earlier (`check_absolute_url`) and here again.
+async fn public_address(state: &Arc<AppState>, url: &reqwest::Url) -> WsResult<std::net::SocketAddr> {
+    let refused = |m: String| WsError::new(Code::DependencyUnavailable, m);
+    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
+        return Err(refused("a Source fetches http(s) URLs without credentials".into()));
+    }
+    let host = url.host_str().ok_or_else(|| refused("the URL names no host".into()))?.trim_end_matches('.').to_ascii_lowercase();
+    if let Some(zone) = own_zone(state) {
+        if host == zone || host.ends_with(&format!(".{zone}")) {
+            return Err(refused(format!("{host} is this Zone: read its data through a workspace Source, not a URL")));
+        }
+    }
+    if host == "localhost" || host.ends_with(".localhost") {
+        return Err(refused(format!("{host} is not a public address")));
+    }
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addrs: Vec<std::net::SocketAddr> = match url.host() {
+        Some(url::Host::Ipv4(ip)) => vec![std::net::SocketAddr::new(ip.into(), port)],
+        Some(url::Host::Ipv6(ip)) => vec![std::net::SocketAddr::new(ip.into(), port)],
+        _ => tokio::net::lookup_host((host.as_str(), port)).await.map_err(|e| refused(format!("{host} does not resolve: {e}")))?.collect(),
+    };
+    let first = *addrs.first().ok_or_else(|| refused(format!("{host} does not resolve")))?;
+    if !state.limits.fetch_private {
+        if let Some(bad) = addrs.iter().find(|a| !public_ip(a.ip())) {
+            return Err(refused(format!("{host} resolves to {} which is not a public address", bad.ip())));
+        }
+    }
+    Ok(first)
+}
+
+/// One GET without credentials, bounded in time and size, to public addresses only; redirects are followed by hand so
+/// that every hop is checked (R38).
+async fn http_get(state: &Arc<AppState>, url: &str) -> WsResult<(Vec<u8>, String)> {
     let unavailable = |m: String| WsError::new(Code::DependencyUnavailable, m);
-    let resp = client.get(url).header(header::ACCEPT, "application/json, text/csv, text/markdown, text/plain, image/*;q=0.9, */*;q=0.5").send().await.map_err(|e| unavailable(format!("fetch failed: {e}")))?;
+    let mut current = reqwest::Url::parse(url).map_err(|e| unavailable(format!("invalid URL: {e}")))?;
+    let mut hops = 0;
+    let resp = loop {
+        let addr = public_address(state, &current).await?;
+        let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS)).redirect(reqwest::redirect::Policy::none());
+        if let Some(url::Host::Domain(name)) = current.host() {
+            builder = builder.resolve(name, addr);
+        }
+        let client = builder.build().map_err(|e| WsError::io(e.to_string()))?;
+        let resp = client.get(current.clone()).header(header::ACCEPT, "application/json, text/csv, text/markdown, text/plain, image/*;q=0.9, */*;q=0.5").send().await.map_err(|e| unavailable(format!("fetch failed: {e}")))?;
+        if !resp.status().is_redirection() {
+            break resp;
+        }
+        hops += 1;
+        if hops > MAX_REDIRECTS {
+            return Err(unavailable(format!("more than {MAX_REDIRECTS} redirects")));
+        }
+        let location = resp.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()).ok_or_else(|| unavailable("a redirect without a location".into()))?;
+        current = current.join(location).map_err(|e| unavailable(format!("invalid redirect: {e}")))?;
+    };
     if !resp.status().is_success() {
         return Err(unavailable(format!("the source answered HTTP {}", resp.status().as_u16())));
     }
@@ -378,7 +452,7 @@ pub(crate) async fn published(state: &Arc<AppState>, ws_id: &str, name: &str, q:
     let result = tokio::task::spawn_blocking(move || {
         st.with_ws(&w, |ws| match fixed.as_deref() {
             Some(root) if root != "1" => {
-                let mut v = ws.public_fixed_content(root)?;
+                let mut v = ws.public_fixed_content(&n, root)?;
                 v["name"] = json!(n);
                 Ok(v)
             }

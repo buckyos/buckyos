@@ -110,15 +110,15 @@ fn grants_as_seen_by_non_managers_and_canvas_permissions() {
     // a canvas permission is two rows: the Surface and its content folder (phase two §6.3)
     ws.grant(&alice(), "bob", Some("surface-main"), &["structure".into(), "update".into()]).unwrap();
     ws.grant(&alice(), "bob", Some("surface-main-content"), &["structure".into(), "update".into(), "append".into()]).unwrap();
-    let all = ws.list_grants(&alice()).unwrap();
-    assert_eq!(all["complete"], true);
-    assert_eq!(all["grants"].as_array().unwrap().len(), 5);
-    // bob sees only his own rows, not carol's
-    let mine = ws.list_grants(&bob()).unwrap();
-    assert_eq!(mine["complete"], false);
-    let subjects: Vec<&str> = mine["grants"].as_array().unwrap().iter().map(|g| g["subject"].as_str().unwrap()).collect();
-    assert!(subjects.iter().all(|s| *s == "bob"), "{subjects:?}");
-    assert_eq!(subjects.len(), 3);
+    let all = ws.acl_query(&alice(), &json!({ "by": "entity", "resource": "/" }), None).unwrap();
+    let subjects: Vec<&str> = all["subjects"].as_array().unwrap().iter().map(|g| g["subject"].as_str().unwrap()).collect();
+    assert_eq!(subjects, ["@owner", "bob", "carol"]);
+    // bob sees only his own entries, not carol's
+    let mine = ws.acl_query(&bob(), &json!({ "by": "subject" }), None).unwrap();
+    assert_eq!(mine["subject"], "bob");
+    assert_eq!(mine["entries"].as_array().unwrap().len(), 3);
+    assert_eq!(ws.acl_query(&bob(), &json!({ "by": "subject", "subject": "carol" }), None).unwrap_err().code.as_str(), "PERMISSION_DENIED");
+    assert_eq!(ws.acl_query(&bob(), &json!({ "by": "entity", "resource": "/" }), None).unwrap_err().code.as_str(), "PERMISSION_DENIED");
     // bob can place a Block on the Surface and create data in its content folder, but not touch first-level data
     let life = ws.read(&bob(), "cell-info", None).unwrap()["life_rev"].clone();
     let _ = life;

@@ -73,7 +73,8 @@
 
 ### 权限（[11](11-权限资源与保留.md)）
 
-- **不能针对单个 Block / 数据源配置权限，也不能把 BuckyOS 用户组加入工作区逻辑组**：后端已经支持按任意实体子树授权（`ws.grant` 的 `scope_entity_id`），但权限面板只能选“整个工作区”或“某张画布”（[ui/sources/PermissionsPanel.tsx](../../../src/frame/desktop/src/app/aiworkspace/ui/sources/PermissionsPanel.tsx)）。BuckyOS 用户组目前只能以 `group:<id>` 直接写进授权条目；没有带稳定组 ID、以 BuckyOS 组作为成员来源的 Workspace 权限组，组映射的变更也没有审计。这一项需要专门做 TODO，同时改底层和 UI。
+- **内核已具备，界面未跟上**：权限内核按[权限系统整理需求](../../../notepads/aiws-permission-system-prd.md)实施（[实施记录](../../../notepads/aiws-permission-system-todo.md)）——按路径的允许 / 拒绝条目、逻辑组（BuckyOS 用户组、联系人组、`*` 作成员）、固定组 `@owner` `@all` `@guest` `@creator`、查询与解释、操作记录、宏的组绑定，接口 `acl.*`，CLI `buckyos aiws acl` / `acl-edit`。权限面板仍是旧的“主体 × 工作区或画布”界面，经 Desktop 的映射层（`api/legacyGrants.ts`）写到新模型；按用户 / 组编辑资源、按实体查看与设置、组成员编辑等界面是后续 UI（需求 §6）。
+- **不可变发布与 MyContent 登记未做**：需要 ShareContentMgr 先接受对象作为分享来源、登记服务的 inner-path 发布并接收访问统计（需求 R26、§8 第 5 步的前提）。
 
 ## 定位与三层冻结边界
 

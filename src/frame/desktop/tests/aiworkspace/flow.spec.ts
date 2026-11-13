@@ -203,7 +203,7 @@ test('FP04 Markdown source ("notepad") mode: typed text reaches the rich text bl
 
 test('FP05 source mode and a colleague: changes from elsewhere come in, my typing is kept', async ({ browser, api }) => {
   const ws = await api.sample(ALICE, `fp05 ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update', 'append', 'comment'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'append', 'comment'] }] })
   const aliceContext = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const bobContext = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
   const alice = await aliceContext.newPage()

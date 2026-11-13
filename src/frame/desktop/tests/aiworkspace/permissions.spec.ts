@@ -50,8 +50,8 @@ test('UI14 presets, canvas permissions and what a restricted principal can see',
   expect(after.grants.filter((g: { subject: string }) => g.subject === 'bob')).toHaveLength(1)
   expect((await api.rpc(BOB, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'sales' })).ok).toBe(true)
   // a principal reading only a subtree learns nothing about referrers or dependencies elsewhere
-  await api.rpc(ALICE, 'ws.revoke', { workspace_id: ws.workspace_id, subject: 'bob' })
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', scope_entity_id: 'sf-detail-content', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob' }] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'sf-detail-content', allow: ['read'] }] })
   const relations = await api.rpc(BOB, 'doc.relations', { workspace_id: ws.workspace_id, entity_id: 'bob-note' })
   expect(relations.ok).toBe(true)
   expect(relations.hidden_incoming).toBe(false)
@@ -65,7 +65,7 @@ test('UI14 presets, canvas permissions and what a restricted principal can see',
 
 test('内核架构改进 D22: the owner configures hosted execution; a reader only sees it; whose AI a run uses is no setting', async ({ page, browser, api }) => {
   const ws = await api.demo(ALICE, 'quarterly', `hosted ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read'] }] })
   await openWorkspace(page, ALICE, ws.workspace_id)
   await page.getByTestId('aiws-top-sources').click()
   await page.getByTestId('aiws-left-permissions').click()

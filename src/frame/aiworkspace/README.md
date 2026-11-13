@@ -923,8 +923,9 @@ service resolves the declaration into the **manifest** (`{ inputs: { <name>: { e
 type }] } }, results: { <name>: { type, code_digest? } }, ai?, zone?, params?, resources? }`, `core::wish::check_manifest`), shown in
 the wish's `body`. Every executor runs `lib/run.js` exactly the same way; what leaves the snapshot goes through its bridge
 (`globalThis.__aiwsBridge(op, req)`; the hosted runner speaks it over stdio, `lib/run.js --bridge`), answered by `aiws/host.js`:
-`sql` → `proc.tool sql`, `ai.complete` / `llm.map` → the executor's own AI session with `proc.tool llm_cache`, `zone.fetch` → the
-executor's session, the Zone's hosts only (`ZONE_ONLY` otherwise). Limits: the smaller of what the macro declares and the stage's
+`sql` → `proc.tool sql`, `ai.complete` / `llm.map` → the executor's own AI session with `proc.tool llm_cache` (kept per AI-paying user:
+one person's executor never answers another's runs), `zone.fetch` → the executor's session, the Zone's hosts only (`ZONE_ONLY`), GET / HEAD
+only (`ZONE_READ_ONLY`), under a prefix of `declare.zone` only (`ZONE_NOT_DECLARED`; 权限需求 R34). Limits: the smaller of what the macro declares and the stage's
 `budget`; an undeclared AI capability is `AI_NOT_DECLARED`, a spent one `AI_BUDGET_EXCEEDED`.
 
 **Stage tools of an executor** (`proc.tool { run_id, attempt, name, args }`, answers `{ status: ok | error, text?, code? }`): the
@@ -1178,45 +1179,74 @@ token is checked with `verify_session_token_opened(token, aiworkspace)` — a re
 `aiworkspace` scope is refused before anything else; the class comes from the claims (`principal_kind`, `external`,
 `restricted`, `auth_method`), never from the shape of the principal. Restricted accounts, Externals and guests own
 nothing: `ws.create`, `ws.import`, `ws.clone` and `ws.list_subjects` refuse them
-(`session_kind_not_allowed`); `ws.list` shows them only Workspaces granted to them (by name, group, contact or a joined
-entry — never through `public` or `*`).
+(`session_kind_not_allowed`). `ws.list` shows anyone only the Workspaces it owns or whose entries or groups name it —
+never one it could only enter anonymously.
 
-**Grant subjects** and whom they match:
+**Permissions** (权限需求 `notepads/aiws-permission-system-prd.md` §4; `store/src/acl.rs`, `core/src/access.rs`). One ACL of
+entries `subject × resource → allow, deny` (9 capabilities), kept in `local.sqlite` (`acl_entries`), never in the
+document's history. Interfaces name a resource by the core API path (`/`, `/data/销售`, `~<id>/…`) or an entity id;
+storage binds the entity id (`""` = `/`), so a rename or a move keeps the entry with its entity. Each step of a path must
+be readable; personal and session scoped entities are not targets. Subjects:
 
-| Subject | Matches |
+| Subject | Who |
 | --- | --- |
-| `<user id>` / `<did>` | that account / that External (exact principal) |
-| `public` | everyone, guests included (a public link; never `manage`) |
-| `*` | unrestricted accounts only (not Limited, External, guests or services) |
-| `group:<id>` | accounts in that system user group (`users/<id>/settings.groups`) |
-| `contact:<owner_did>#<tag>` | DIDs in that owner's contact group (msg-center `contact.check_membership`, projections included); only the owner (caller DID = `<owner_did>`) may write such a grant, so nobody probes someone else's groups |
+| `<user id>` / `<did>` / `guest:…` / `link:…` | that single caller (an Agent's DID too: naming it anywhere here makes the Agent a subject of its own, Q29) |
+| `@<group id>` | the members of a logical group of this Workspace (`acl_groups`, `acl_members`) |
+| `@owner` | the owner (`local_meta.owner`): always everything, takes no entry, cannot be refused |
+| `@all` | everyone who may enter: group members, callers with an entry, `@guest` when it exists; never `manage` / `run` |
+| `@guest` | anonymous visitors and signed-in callers in no group — only while anonymous access is on (`acl.set_anonymous`); never `manage` / `run` |
+| `@creator` | for each entity, the principal that created it (`entities.created_by`); never `manage` |
+| `@pub:<entity id>` | the readers of that entity's inner-path publication (`ws.publish`), `read` only; they come through the publication routes, never into the Workspace |
+
+Group members (never another group): a principal, `group:<id>` (a system user group: `users/<id>/settings.groups`), `contact:<owner_did>#<tag>`
+(that owner's contact group, msg-center `contact.check_membership`; only the owner, caller DID = `<owner_did>`, adds one),
+`*` (every unrestricted account; not Limited, External, guests or services).
+
+A capability on entity E is decided by the nearest layer — E, each ancestor, then `/` — with an entry mentioning it; in that
+layer by the most specific tier mentioning it — single caller, then groups and `@creator`, then `@guest` and `@all` —
+and inside the tier a `deny` wins. Nothing mentions it: refused. Personal and session scopes are judged as before
+(`user:` / `presenter` / `participant:`). An **Agent** acts as itself; while no entry or membership names its DID here, it
+is judged as its owner (from its AgentSpec, never from the request) and Workspaces it creates belong to that owner (R16).
 
 Group and contact membership is settled per request, before the Workspace's writer is locked: the server lists the
-Workspace's `group:` / `contact:` subjects (every Workspace's for `ws.list`) and asks system-config (the account's
-groups; its DID from `users/<id>/doc`) and msg-center. A membership that cannot be checked refuses the request with
-`authorization_unavailable` unless the caller already holds every capability; nothing is cached. A show's notes are read
-with the presenter's memberships settled again at each `show.notes`.
+Workspace's `group:` / `contact:` members (every Workspace's for `ws.list`) and asks system-config (the account's
+groups; its DID from `users/<id>/doc`) and msg-center — for an Agent judged as its owner, the owner's. A membership that
+cannot be checked refuses the request with `authorization_unavailable` when that group holds any entry (one group less
+may turn a refusal into an allowance), never for the owner; nothing is cached. A show's notes are read with the
+presenter's memberships settled again at each `show.notes`.
+
+Only the owner (R17): giving or taking `manage` (an entry touching it, the members of a group holding it), `ws.delete`,
+`ws.set_hosted_exec`, a restore over the Workspace (`ws.import restore`). Managers do the rest: groups, members, entries
+without `manage` (denials included), anonymous access, share entries, publications, macro bindings, maintenance. Every
+change is one record in `acl_audit` (who, judged as whom, when, the object with its path then, before, after; `acl.audit`),
+bumps `acl_rev` (`ws.get_info`), wakes `doc.wait_changes { after_acl_rev }` and publishes the kevent
+`…/aiworkspace/<ws>/acl`. A purged entity takes its entries along; a deleted one keeps them for a restore.
+
+**The permission design** — group definitions, the entries of groups and fixed groups, macro bindings — travels with a
+template (`templates/<id>/permissions.json`, written when a manager exports), a Clone and a package (`permission_design`
+in the manifest) made by a manager, and loads into the new Workspace with no members and anonymous access off. Members,
+single callers' entries, the anonymous switch and share entries never travel; a restore over a Workspace keeps that
+Workspace's own.
 
 **Guests.** A link's visitor has no session: `sys[1]` (or the bearer of the asset route) carries a guest
 token instead, `gt_` + base64url of 32 random bytes (`name_lib::bearer_token` form) the browser made up and keeps. The caller is
-then `guest:<26 chars>` (derived from the token's SHA-256, never the token itself), reaches the grants of subject
-`public` and the active entries open to guests (as everyone does), and cannot own anything. `ws.get_info` returns `principal` so a guest
-learns who it is.
+then `guest:<26 chars>` (derived from the token's SHA-256, never the token itself), reaches `@guest`'s entries while
+anonymous access is on and what a share entry it joined gives, and cannot own anything. `ws.get_info` returns `principal`
+(and `judged_as`) so a guest learns who it is.
 
-**Share entries** (`local.sqlite` `share_entries`, beside the grants): a link that offers ways in — `methods`
-`{ guest, password, self_register, did_login }` (`self_register` implies `password`) — and a capability template (never
-`manage`) on the Workspace or an entity subtree, optionally until `expires_at` (unix seconds). The id names its Workspace,
-`<workspace_id>~se_<26 chars>`, so a link resolves without a service-wide index; the visitor's page is
+**Share entries** (`local.sqlite` `share_entries`, R8): a link that offers ways in — `methods`
+`{ guest, password, self_register, did_login }` (`self_register` implies `password`) — into one logical group (never one
+holding `manage` or `run`), optionally until `expires_at` (unix seconds) and for at most `max_joins` people. The id names
+its Workspace, `<workspace_id>~se_<26 chars>`, so a link resolves without a service-wide index; the visitor's page is
 `/sso/entry?service=aiworkspace&entry=<entry_id>`.
 
-- While an entry open to guests is active (not closed, not expired), every caller — guests, accounts, Externals,
-  services — gets the template on its scope, computed per request (anyone could come in anonymously anyway).
-- `ws.join_entry` gives a signed-in visitor (account or External) the template as a grant of its own (merged into
-  what it already holds there; `via_entry` records the entry), if the entry ∩ the Zone switches (`system/sso/settings`)
-  admit the session's sign-in method: `did_federation` needs `did_login`, any local method `password` /
-  `self_register`. An entry open to guests that does not admit the session still lets it in, as anyone: the join
-  succeeds with `granted: false` and writes no grant (the access ends with the entry). Joining again changes nothing;
-  nobody becomes the owner. Closing an entry does not take back joined grants (`ws.revoke` does).
+- Nobody gets anything from an entry without presenting it: `ws.join_entry` makes the visitor a member of the group
+  (`via_entry`). A signed-in visitor (account or External) joins if the entry ∩ the Zone switches (`system/sso/settings`)
+  admit the session's sign-in method — `did_federation` needs `did_login`, any local method `password` / `self_register`
+  — or if the entry is open to guests; a guest (its token) joins an entry open to guests. Joining again changes nothing;
+  nobody becomes the owner. A member of a group is no longer in `@guest`.
+- `ws.close_entry { entry_id, remove_members? }` stops new joins; with `remove_members` those who joined through it leave
+  the group too.
 - `entry.describe` is public (no session): `buckyos_api::EntryDescription` (`state`, `resource: { kind: "workspace",
   title, owner_name, path }` — `path` is the workspace's page on its own origin, `https://aiws-<id>.<zonehost>/<workspace
   slug>`, or `/` without a public base —, the entry's own `methods`, `expires_at`) plus `ok: true`; a missing,
@@ -1386,7 +1416,7 @@ Workspace (`clone_for_session`).
 only with `protocol_version`, and each has a contract test against a recorded request / response shape
 (`server/tests/contract.rs`, `fixtures/protocol/stable-methods.json`; `AIWS_REGEN=1` re-records). `internal` methods serve the
 Desktop and diagnostics and change with it. `experimental` methods are not frozen yet (`proc.*` became stable with the
-browser-first execution and the three wish stages). The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
+browser-first execution and the three wish stages). The list is `server/src/methods.rs` `METHODS`; this table mirrors its levels, and the authorization table below is generated from it.
 
 | Method | Level | Params (besides `workspace_id`) |
 | --- | --- | --- |
@@ -1395,12 +1425,19 @@ browser-first execution and the three wish stages). The list is `server/src/lib.
 | `ws.time` | stable | none → `server_ms` (unix ms of the service clock); any session, guests included |
 | `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.cloned_from` names the source of a clone or a `new` import) |
 | `ws.clone` | stable | none → `workspace_id`, `epoch`, `head_seq`, `content_root`, `cloned_from { workspace_id, snapshot }`, `excluded_entities` — a new Workspace the caller owns, copied from what the caller may read (workspace-level `export`; see “Workspace clone”) |
-| `ws.grant` / `ws.revoke` / `ws.list_grants` | stable | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row (with `via_entry`) and the `owner` to a manager, only the rows that apply to the caller otherwise (`complete: false`, no owner). Subjects: see the table above |
-| `ws.list_subjects` | stable | principals a grant can name (static identities / zone users and `group:` subjects) |
-| `ws.create_entry` | stable | `capabilities[]`, `methods`, `scope_entity_id?`, `expires_at?` → `entry` (`manage` on the scope) |
-| `ws.list_entries` | stable | → `entries` on scopes the caller manages |
-| `ws.close_entry` | stable | `entry_id` (`workspace_id` optional, must match) → `entry` |
-| `ws.join_entry` | stable | `entry_id` only → `workspace_id`, `entry_id`, `scope_entity_id`, `capabilities`, `joined`, `granted`, `path` |
+| `acl.set` | stable | `changes: [{ subject, resource?, allow?, deny? }]` (≤ 500): each replaces the subject's entry on the resource (path or id, default `/`; both empty removes it), all or none, one record; `manage` on each resource, the owner's when `manage` is touched |
+| `acl.query` | stable | `by: entity` (`resource`, `expand?`: every subject with entries on its chain, their effective capabilities, each entry's source — direct, inherited, workspace — and what a denial overrides; macros bound to those groups and who may change them; managers), `by: subject` (`subject?`: its entries; for a group, its members; for a single caller, its judgment — groups and how, `@guest`, judged as), `by: explain` (`resource`, `principal?`: each capability allowed or refused and by which entry), `by: all` (every entry, `complete: true`, for a manager; the caller's own otherwise). Anyone may ask about itself; the rest is the managers' |
+| `acl.groups` | stable | every group with its members (`via_entry`) for a manager; the caller's own groups otherwise |
+| `acl.set_group` / `acl.delete_group` | stable | `group_id` (`[a-z0-9][a-z0-9_-]{0,63}`, never `owner`, `all`, `guest`, `creator`, `pub`), `title?`, `description?`; deleting takes the group's entries, members and macro bindings along and closes its entries |
+| `acl.members` | stable | `group_id`, `add?`, `remove?`: principals, `group:<id>`, `contact:<your did>#<tag>`, `*` |
+| `acl.set_anonymous` | stable | `enabled`: whether `@guest` exists here |
+| `acl.bind_macro` | stable | `wish` (path or id), `group_id` (null unbinds), `mode: union \| intersection` (§4.5); whoever may change the wish holds the group's permissions through it, so the group never holds `manage` |
+| `acl.audit` | stable | `after?`, `limit?`: the operation record (`manage`) |
+| `ws.list_subjects` | stable | principals an entry or a group can name (static identities / zone users and `group:` member specs) |
+| `ws.create_entry` | stable | `group_id`, `methods`, `expires_at?`, `max_joins?` → `entry` (`manage`) |
+| `ws.list_entries` | stable | → `entries`, each with how many `joined` (`manage`) |
+| `ws.close_entry` | stable | `entry_id` (`workspace_id` optional, must match), `remove_members?` → `entry`, `removed_members` |
+| `ws.join_entry` | stable | `entry_id` only (a session or a guest token) → `workspace_id`, `entry_id`, `group_id`, `joined`, `path` |
 | `entry.describe` | stable | `entry_id` only, no session → `EntryDescription` |
 | `ws.get_user_state` / `ws.set_user_state` | stable | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
 | `ws.import` | stable | `bucket_id` + `key` (the package the caller bound into its own `user/aiworkspace/<user>/exports`; a successful import consumes it) or `obj_id` (an unbound FileObject the caller may read, judged at the NDM gateway), `semantics: "restore" \| "new"`, `replace?` |
@@ -1457,6 +1494,146 @@ browser-first execution and the three wish stages). The list is `server/src/lib.
 | `session.events`, `session.watch`, `session.replay`, `session.post`, `session.list_posts`, `session.delete_post` | experimental | see “Presentation sessions” |
 | `asset.stream_url` | stable | `object_id` (read access as for the asset route; an uploader its own staged upload) → `url` (`/kapi/aiworkspace/stream/<token>`, 6 h), `media_type`, `size`, `expires_at` |
 | `diag.list_unretained`, `diag.verify_refs` | internal | |
+
+How each method is authorized (权限需求 R21): dispatch enforces the generic checks (who may own, the owner, membership,
+a capability on `/` or on a named entity) before the handler, which keeps its finer ones.
+
+<!-- authorization-table:begin (generated from server/src/methods.rs; AIWS_REGEN=1) -->
+| Method | Level | Authorization |
+| --- | --- | --- |
+| `ws.create` | stable | may own (unrestricted account or service) |
+| `ws.ensure` | stable | may own (unrestricted account or service) |
+| `ws.time` | stable | a session |
+| `ws.list` | stable | a session |
+| `ws.get_info` | stable | may enter |
+| `ws.delete` | stable | the owner |
+| `ws.clone` | stable | may own (unrestricted account or service); `export` on `/` |
+| `acl.set` | stable | `manage` on each resource; the owner when `manage` is touched |
+| `acl.query` | stable | may enter; anyone about itself, `manage` about others |
+| `acl.groups` | stable | may enter |
+| `acl.set_group` | stable | `manage` on `/` |
+| `acl.delete_group` | stable | `manage` on `/` |
+| `acl.members` | stable | `manage` on `/` |
+| `acl.set_anonymous` | stable | `manage` on `/` |
+| `acl.bind_macro` | stable | `manage` on `/` |
+| `acl.audit` | stable | `manage` on `/` |
+| `ws.list_subjects` | stable | may own (unrestricted account or service) |
+| `ws.create_entry` | stable | `manage` on `/` |
+| `ws.list_entries` | stable | `manage` on `/` |
+| `ws.close_entry` | stable | `manage` on `/` |
+| `ws.join_entry` | stable | a person presenting an active entry the Zone switches admit |
+| `entry.describe` | stable | none (no session) |
+| `ws.get_user_state` | stable | may enter |
+| `ws.set_user_state` | stable | may enter |
+| `ws.import` | stable | may own (unrestricted account or service); a restore over a Workspace: its owner |
+| `ws.release_retention` | stable | `manage` on `/` |
+| `ws.delete_checkpoint` | stable | `manage` on `/` |
+| `ws.purge_deleted` | stable | `manage` on `/` |
+| `ws.clear_staged` | stable | `manage` on `/` |
+| `doc.resolve` | stable | may enter; `read` on each entity |
+| `doc.read` | stable | may enter; `read` on each entity |
+| `doc.list` | stable | may enter; `read` on each entity |
+| `doc.find` | stable | may enter; `read` on each entity |
+| `doc.query` | stable | may enter; `read` on each entity |
+| `doc.prepare` | stable | each operation's capability on its target (`schemas/operations.json`) |
+| `doc.commit` | stable | each operation's capability on its target (`schemas/operations.json`) |
+| `doc.stage` | stable | may enter |
+| `doc.get_submission` | stable | may enter |
+| `doc.undo` | stable | each operation's capability on its target (`schemas/operations.json`) |
+| `doc.get_changes` | stable | may enter; `read` on each entity |
+| `doc.wait_changes` | stable | may enter |
+| `asset.import_object` | stable | a write right anywhere (the Commit that references it is judged where it writes) |
+| `lock.acquire` | stable | a write right on each entity |
+| `lock.renew` | stable | may enter |
+| `lock.release` | stable | may enter |
+| `lock.break` | stable | `manage` on `entity_id` |
+| `lock.list` | stable | may enter; `read` on each entity |
+| `doc.outline` | internal | may enter; `read` on each entity |
+| `doc.source_capabilities` | internal | may enter; `read` on each entity |
+| `doc.source_query` | internal | may enter; `read` on each entity |
+| `doc.index` | internal | may enter; `read` on each entity |
+| `doc.get_collab_state` | internal | `read` on `entity_id` |
+| `replica.bootstrap` | internal | may enter; `read` on each entity |
+| `show.start` | internal | `read` on `/`; a Workspace-level write right locks it; anyone else presents read-only |
+| `show.heartbeat` | internal | the presenter's read; a prompter token |
+| `show.publish` | internal | the presenter's read; a prompter token |
+| `show.command` | internal | the presenter's read; a prompter token |
+| `show.watch` | internal | the presenter's read; a prompter token |
+| `show.notes` | internal | the presenter's read; a prompter token |
+| `show.end` | internal | the presenter, or `manage` |
+| `diag.list_unretained` | internal | `manage` on `/` |
+| `diag.verify_refs` | internal | `manage` on `/` |
+| `doc.list_annotations` | experimental | may enter; `read` on each entity |
+| `doc.freshness` | experimental | may enter; `read` on each entity |
+| `doc.relations` | experimental | `read` on `entity_id` |
+| `doc.list_versions` | experimental | `read` on `entity_id` |
+| `doc.restore_version` | experimental | `read` on `entity_id` |
+| `doc.checkpoint` | experimental | `export` on `/` |
+| `doc.export` | experimental | `export` on `/` |
+| `proc.start` | stable | a Source: `update` on it; a wish: `update` for analyze / code, `run` or a write right for run, on the wish |
+| `proc.get` | stable | one's own run, or `update` / `manage` on its wish |
+| `proc.apply` | stable | one's own run, or `update` / `manage` on its wish; written as the macro identity ∩ the declared outputs |
+| `proc.cancel` | stable | one's own run, or `update` / `manage` on its wish |
+| `proc.list` | stable | may enter |
+| `proc.claim` | stable | the executor the run's context names, with its claim token |
+| `proc.heartbeat` | stable | the run's token, while its attempt is current and running |
+| `proc.report` | stable | the run's token, while its attempt is current and running |
+| `proc.tool` | stable | the run's token, while its attempt is current and running |
+| `proc.program` | stable | the run's token, while its attempt is current and running |
+| `proc.files` | stable | the run's token, while its attempt is current and running |
+| `ws.set_hosted_exec` | experimental | the owner |
+| `ws.publish` | experimental | `manage` on `entity_id` |
+| `ws.unpublish` | experimental | `manage` on the entity (on `/` once it is deleted) |
+| `ws.list_publications` | experimental | may enter; `read` on each entity |
+| `ws.list_referrers` | experimental | `read` on `entity_id` |
+| `control.list` | experimental | a session |
+| `control.describe` | experimental | a session |
+| `control.import` | experimental | each operation's capability on its target (`schemas/operations.json`) |
+| `control.export` | experimental | may enter; `read` on each entity |
+| `ext.build` | experimental | each operation's capability on its target (`schemas/operations.json`) |
+| `ext.export` | experimental | may enter; `read` on each entity |
+| `ext.install` | experimental | into the caller's own library (the control panel installs into anyone's) |
+| `ext.list_library` | experimental | may own (unrestricted account or service) |
+| `ext.uninstall` | experimental | may own (unrestricted account or service) |
+| `ext.library_bundle` | experimental | may own (unrestricted account or service) |
+| `ext.import` | experimental | may own (unrestricted account or service); each operation's capability on its target (`schemas/operations.json`) |
+| `ext.pack` | experimental | may own (unrestricted account or service); may enter; `read` on each entity |
+| `ext.upgrade` | experimental | may own (unrestricted account or service); each operation's capability on its target (`schemas/operations.json`) |
+| `ext.export_template` | experimental | may enter; `export` on each Surface; the permission design with `manage` |
+| `ext.create_from_template` | experimental | may own (unrestricted account or service) |
+| `asset.stream_url` | stable | the session's roles and links |
+| `session.create` | experimental | the session's roles and links |
+| `session.list` | experimental | the session's roles and links |
+| `session.list_mine` | experimental | the session's roles and links |
+| `session.get` | experimental | the session's roles and links |
+| `session.join` | experimental | the session's roles and links |
+| `session.start` | experimental | the session's roles and links |
+| `session.end` | experimental | the session's roles and links |
+| `session.save` | experimental | the session's roles and links |
+| `session.delete` | experimental | the session's roles and links |
+| `session.set_access` | experimental | the session's roles and links |
+| `session.invite` | experimental | the session's roles and links |
+| `session.list_invites` | experimental | the session's roles and links |
+| `session.revoke_invite` | experimental | the session's roles and links |
+| `session.takeover` | experimental | the session's roles and links |
+| `session.command` | experimental | the session's roles and links |
+| `session.sample` | experimental | the session's roles and links |
+| `session.task` | experimental | the session's roles and links |
+| `session.claim` | experimental | the session's roles and links |
+| `session.respond` | experimental | the session's roles and links |
+| `session.review` | experimental | the session's roles and links |
+| `session.publish` | experimental | the session's roles and links |
+| `session.react` | experimental | the session's roles and links |
+| `session.events` | experimental | the session's roles and links |
+| `session.watch` | experimental | the session's roles and links |
+| `session.replay` | experimental | the session's roles and links |
+| `session.notes` | experimental | the session's roles and links |
+| `session.feed_sample` | experimental | the session's roles and links |
+| `session.post` | experimental | the session's roles and links |
+| `session.list_posts` | experimental | the session's roles and links |
+| `session.delete_post` | experimental | the session's roles and links |
+| `session.rtc` | experimental | the session's roles and links |
+<!-- authorization-table:end -->
 
 **Commit size.** Two limits. One *request* (`doc.commit`, `doc.stage`, any kRPC call) is at most `Limits.max_commit_bytes` (8 MiB, the HTTP body limit). One *Commit* — the staged parts plus the final request, and a compensating Commit of `doc.undo` — is at most `max_commit_total_bytes` (32 MiB) and `max_ops` (50 000 operations, `aiworkspace-core` `Limits`, shared with the browser replica). A client sends a Commit that does not fit one request as `doc.stage { part: 0..N-2 }` + `doc.commit { staged: [digests], operations: <last part> }`; the service assembles it and runs the ordinary pipeline: one transaction, one `commit_id`, one change event, one undo unit. Parts live one hour under `(principal, idempotency_key, part)`, count as `staged` usage and are consumed by the final `doc.commit` whatever its outcome (`doc.prepare` does not consume); missing or expired parts answer `SNAPSHOT_EXPIRED` / `STAGED_PARTS_MISSING` (stage again), a part whose digest is not the one named `IDEMPOTENCY_MISMATCH`, an assembled Commit over the limits `LIMIT_EXCEEDED`. The websdk's `commitWithParts` (used by `AiWorkspaceClient.commit` and the Desktop client) does the cutting (6 MiB parts): callers make one `commit` call per Commit. Importers (PDF, Office, draw.io, tables) write one Commit per import and refuse an import over the limits before sending anything.
 

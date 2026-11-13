@@ -183,7 +183,11 @@ impl InviteRow {
     pub fn to_json(&self) -> Value {
         json!({ "invite_id": self.invite_id, "kind": self.kind, "token": self.token, "label": self.label, "config": self.config,
                 "created_by": self.created_by, "created_at": aiworkspace_core::value::format_utc_ms(self.created_ms),
-                "revoked": self.revoked_ms.is_some() })
+                "expires_at": self.config.get("expires_at"), "revoked": self.revoked_ms.is_some() })
+    }
+    /// A link works until it is revoked or its `expires_at` (unix seconds) passes (权限需求 R27).
+    pub fn usable(&self, now_ms: i64) -> bool {
+        self.revoked_ms.is_none() && self.config.get("expires_at").and_then(Value::as_i64).is_none_or(|e| e * 1000 > now_ms)
     }
 }
 
@@ -351,6 +355,11 @@ impl Sessions {
             )?;
             Ok(!existed)
         })
+    }
+
+    /// Those who joined through a link leave with it (权限需求 R27, Q17).
+    pub fn remove_participants_via(&self, session_id: &str, invite_id: &str) -> WsResult<usize> {
+        self.with(|c| c.execute("DELETE FROM session_participants WHERE session_id = ?1 AND via_invite = ?2", params![session_id, invite_id]))
     }
 
     pub fn participant(&self, session_id: &str, principal: &str) -> WsResult<Option<ParticipantRow>> {

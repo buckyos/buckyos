@@ -650,7 +650,9 @@ sent by reference (`assetUploader`, Q22).
 - Record schemas cannot be edited. Annotations cannot be edited after creation (re-anchoring exists in the
   protocol, not in the UI), are always shared and of kind `note`. Annotation cards are drawn next to rich
   text only; table cells show a mark. Embedded (read-only, static) rich text shows no annotations.
-- No UI for grants (`ws.grant` / `ws.revoke`), checkpoints, `diag.*`; no partial undo (`mode: "partial"`):
+- The permission panel and share dialog still work in grants (subject × workspace or canvas → capabilities), mapped onto the
+  service's entries and logical groups by `api/legacyGrants.ts` (权限需求 §6 replaces these screens); no UI for checkpoints,
+  `diag.*`; no partial undo (`mode: "partial"`):
   an undo that conflicts is reported and does nothing.
 - Rich text: no UI to create a `link` mark or set an ordered list's start; no remote cursors; the caret is
   not restored after an undo. Drafts of refused updates live in `localStorage`, can be read and copied as

@@ -562,7 +562,7 @@ fn wishes_dependency_records_freshness_and_relations() {
     assert_eq!(f["status"], "unavailable");
     assert_eq!(f["inputs"][2]["reason"], "deleted");
     // unreadable input: unknown, with nothing about it leaked
-    let carol = Access { principal: "carol".into(), ws_caps: CapSet::NONE, scoped: [("s1-content".to_string(), CapSet(Cap::Read as u16)), ("s1".to_string(), CapSet(Cap::Read as u16))].into() };
+    let carol = Access::granted("carol", CapSet::NONE, [("s1-content".to_string(), CapSet(Cap::Read as u16)), ("s1".to_string(), CapSet(Cap::Read as u16))]);
     let f = entity_freshness(&ws.store, &carol, "sum-1").unwrap();
     assert_eq!(f["status"], "unknown");
     assert_eq!(f["inputs"][0]["readable"], false);
@@ -590,7 +590,7 @@ fn delete_precheck_names_only_readable_referrers() {
     ws.ok(json!(surface("s1", "free")));
     ws.ok(json!([table("t1", DATA_ID), cell("c1", "s1", Some("t1"), "table", json!({ "x": 0, "y": 0, "w": 1, "h": 1 }))]));
     // bob reads the data tree but not the Surface holding the Block that references the table
-    let bob = Access { principal: "bob".into(), ws_caps: CapSet(Cap::Delete as u16), scoped: [(DATA_ID.to_string(), CapSet(Cap::Read as u16 | Cap::Delete as u16))].into() };
+    let bob = Access::granted("bob", CapSet(Cap::Delete as u16), [(DATA_ID.to_string(), CapSet(Cap::Read as u16 | Cap::Delete as u16))]);
     let env = ws.env("bob", "human", None, false);
     let life = ws.store.entities["t1"].life_rev;
     let f = ws.commit_with(&bob, &env, &MemWorkspace::request(json!([{ "op": "entity.delete", "entity_id": "t1", "expect": { "rev": life } }]))).err().unwrap().to_json();

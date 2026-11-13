@@ -24,7 +24,7 @@ async function showWorkspace(api: Api, title: string, grants: { subject: string;
     const result = await api.commit(ALICE, ws, commit.operations, `presentation/${index + 1}`)
     expect(result.status, JSON.stringify(result)).toBe('accepted')
   }
-  for (const g of grants) expect((await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, ...g })).ok).toBe(true)
+  for (const g of grants) expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: g.subject, allow: g.capabilities }] })).ok).toBe(true)
   return ws
 }
 

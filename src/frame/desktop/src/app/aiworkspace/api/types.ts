@@ -591,6 +591,8 @@ export interface BlockDefPayload {
   default_size?: { w: number; h: number }
   declarative?: Record<string, Json>
   html?: { html: string; css?: string; js?: string; api_version?: number }
+  /** Who vouched for the HTML code (权限需求 R37): written by the service when a holder of `manage` writes or confirms it. */
+  trusted?: boolean | { by: string; rev: number }
   config_schema?: Json
   actions?: Json
   inspector?: Json
@@ -975,26 +977,35 @@ export interface StagedAsset { object_id: string; media_type: string; size: numb
 
 export interface ExportResult { export_id: string; download: BucketDownload; manifest: { export_mode: string; content_root: string; self_contained: boolean; missing: unknown[]; excluded_entities: number; [key: string]: unknown } }
 
-/** `via_entry`: the share entry whose join wrote the row. Subjects: a principal (user id, External DID), `public`,
- * `*` (unrestricted accounts), `group:<id>`, `contact:<owner_did>#<tag>`. */
+/** The permission panel's view of an allowance (`api/legacyGrants.ts` maps it onto entries and groups until the
+ * permission UI of 权限需求 §6 replaces it). Subjects: a principal (user id, External DID), `public` (`@guest` with
+ * anonymous access on), `*`, `group:<id>`, `contact:<owner_did>#<tag>` (each a one-member logical group). */
 export interface Grant { subject: string; scope_entity_id: string | null; capabilities: Capability[]; via_entry?: string | null }
 
-/** A share entry (hybrid SSO contract §8.3): its id names the workspace (`<workspace_id>~se_…`); times are unix seconds. */
+/** A share entry (hybrid SSO contract §8.3, 权限需求 R8): its id names the workspace (`<workspace_id>~se_…`); a visitor
+ * joins `group_id`; times are unix seconds. `joined`: how many came in through it (`ws.list_entries`). */
 export interface ShareEntry {
   entry_id: string
   workspace_id: string
-  scope_entity_id: string | null
-  capabilities: Capability[]
+  group_id: string
   methods: { guest: boolean; password: boolean; self_register: boolean; did_login: boolean }
   state: 'active' | 'closed' | 'expired'
   expires_at: number | null
+  max_joins: number | null
   created_by: string
   created_at: number
+  joined?: number
 }
 
-/** `ws.join_entry`: what the caller now holds through the entry — a grant of its own (`granted`), or, for an entry open
- * to guests that does not admit its sign-in method, the entry's access as anyone has it (no grant, ends with the entry). */
-export interface EntryJoin { workspace_id: string; entry_id: string; scope_entity_id: string | null; capabilities: Capability[]; joined: boolean; granted: boolean; path: string }
+/** `ws.join_entry`: the caller is now a member of the entry's group (`joined` false: it already was). */
+export interface EntryJoin { workspace_id: string; entry_id: string; group_id: string; joined: boolean; path: string }
+
+/** One change of `acl.set`: the subject's entry on the resource (a path or an entity id; both lists empty removes it). */
+export interface AclChange { subject: string; resource?: string; allow?: Capability[]; deny?: Capability[] }
+/** An entry as `acl.query { by: all }` lists it. */
+export interface AclEntry { subject: string; kind: 'single' | 'group' | 'fixed' | 'publication'; resource: { entity_id: string | null; path: string }; allow: Capability[]; deny: Capability[]; updated_by: string; updated_at: string }
+export interface AclEntryList { entries: AclEntry[]; complete: boolean; owner: string | null; principal: string; anonymous: boolean }
+export interface AclGroup { group_id: string; subject: string; title: string; description: string; member: boolean; members?: { member: string; via_entry: string | null }[] }
 /** `complete`: the caller is a manager and saw every row; otherwise only the rows that apply to them. */
 export interface GrantList { grants: Grant[]; complete: boolean; owner: string | null; principal: string }
 

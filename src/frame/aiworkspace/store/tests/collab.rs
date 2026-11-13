@@ -375,7 +375,8 @@ fn v18_controlled_processing() {
     let candidate = run["candidate"].clone();
     assert_eq!(ws.proc_cancel(&alice(), run["run_id"].as_str().unwrap()).unwrap()["state"], "cancelled");
     assert_eq!(ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap_err().code.as_str(), "RUN_CANCELLED");
-    assert_eq!(code(&ws.commit(&candidate, &alice(), &CommitOpts::default())), "RUN_CANCELLED");
+    // a run's candidate never goes in as a plain Commit, cancelled or not (权限需求 R32)
+    assert_eq!(code(&ws.commit(&candidate, &alice(), &CommitOpts::default())), "INVALID_OPERATION");
     // cancelling something that already applied says so
     let run = start(&mut ws, "apply-then-cancel", &json!({ "today": "2027-01-01" }));
     ws.proc_apply(&alice(), run["run_id"].as_str().unwrap(), Some("s1")).unwrap();

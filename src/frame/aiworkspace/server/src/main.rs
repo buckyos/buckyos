@@ -170,6 +170,11 @@ async fn buckyos_service_main(fixtures: bool) {
                     buckyos_api::obj_event_key("aiworkspace", &[workspace_id.as_str()], "locks"),
                     serde_json::json!({ "counter": counter }),
                 ),
+                // permissions changed (权限需求 R4): clients read their capabilities again
+                Wake::Acl { workspace_id, acl_rev } => (
+                    buckyos_api::obj_event_key("aiworkspace", &[workspace_id.as_str()], "acl"),
+                    serde_json::json!({ "acl_rev": acl_rev }),
+                ),
             };
             if let Err(e) = client.pub_event(&path, data).await {
                 log::debug!("kevent publish {path} failed: {:?}", e); // clients fall back to wait_changes

@@ -213,6 +213,7 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         stored,
         failure: Mutex::new(None),
         budget: budget(&state.wish.config, &stage_name),
+        ai_user: run["detail"]["aicc"]["user_id"].as_str().unwrap_or("").to_string(),
         prompts,
         tool_calls: Default::default(),
         program_runs: Default::default(),
@@ -967,7 +968,8 @@ fn cache_key_ok(k: &str) -> bool {
 /// `llm_cache { get: [key…] }` → `{ hits: { key: value } }`; `{ put: [{ key, value }] }` → `{ ok }` (浏览器优先 T1-5).
 /// The workspace's cache of AI answers, by content: the executor computes the keys and calls the model.
 fn llm_cache(st: &Arc<StageState>, args: &Value) -> Value {
-    let dir = st.ws_dir.join("cache").join("llm_map");
+    let user = aiworkspace_core::canonical::sha256_hex(st.ai_user.as_bytes());
+    let dir = st.ws_dir.join("cache").join("llm_map").join(&user[..32]);
     if let Some(keys) = args.get("get").and_then(Value::as_array) {
         if keys.len() > CACHE_MAX_KEYS {
             return tool_error(format!("llm_cache: at most {CACHE_MAX_KEYS} keys per call"), None);

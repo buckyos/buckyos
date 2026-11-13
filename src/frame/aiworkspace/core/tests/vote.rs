@@ -30,7 +30,7 @@ fn votes() -> MemWorkspace {
 }
 
 fn voter(name: &str) -> Access {
-    Access { principal: name.into(), ws_caps: CapSet(Cap::Read as u16 | Cap::Append as u16), scoped: Default::default() }
+    Access::granted(name, CapSet(Cap::Read as u16 | Cap::Append as u16), [])
 }
 
 fn run(ws: &mut MemWorkspace, who: &Access, internal: bool, ops: Value) -> Result<u64, Value> {
@@ -120,7 +120,7 @@ fn each_voter_owns_one_record_the_service_fills_in() {
     assert_eq!(record(&ws, "d1").values["who"], "dave");
     assert_eq!(run(&mut ws, &alice, true, insert("d2", json!({ "who": "dave" }))).unwrap_err()["sub_code"], "UNIQUE_VIOLATION");
     // read alone writes nothing; append alone on a table without a submitter still edits nothing
-    let reader = Access { principal: "erin".into(), ws_caps: CapSet(Cap::Read as u16), scoped: Default::default() };
+    let reader = Access::granted("erin", CapSet(Cap::Read as u16), []);
     assert_eq!(code(&run(&mut ws, &reader, false, insert("e1", json!({}))).unwrap_err()), "PERMISSION_DENIED");
     run(&mut ws, &alice, false, json!([{ "op": "entity.create", "entity_id": "plain", "type_id": TYPE_TABLE, "parent_id": "data", "order_key": "c",
         "payload": { "fields": [{ "field_id": "t", "name": "T", "type": "text" }] } }])).unwrap();

@@ -243,7 +243,7 @@ fn bindings_stay_on_one_free_canvas() {
     assert_eq!(code(&ws.fail(set("l2", "end", bound("d"), &ws))), "INVALID_OPERATION");
     ws.ok(set("l2", "route", json!("elbow"), &ws));
     // an unreadable target reads as missing: an id does not bypass the read check
-    let dave = Access { principal: "dave".into(), ws_caps: CapSet::NONE, scoped: [("g1".to_string(), CapSet::ALL)].into() };
+    let dave = Access::granted("dave", CapSet::NONE, [("g1".to_string(), CapSet::ALL)]);
     let env = ws.env("dave", "human", None, false);
     let req = |end: &str| MemWorkspace::request(json!([line("dl", "g1", box_(0.0, 0.0, 10.0, 10.0), json!({ "start": bound("e"), "end": bound(end) }))]));
     assert_eq!(code(&ws.commit_with(&dave, &env, &req("a")).err().unwrap().to_json()), "REFERENCE_BROKEN");

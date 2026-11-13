@@ -24,7 +24,7 @@ async function mindWorkspace(api: Api, title: string) {
     const result = await api.commit(ALICE, ws, commit.operations) as { status: string }
     expect(result.status, JSON.stringify(result)).toBe('accepted')
   }
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read', 'update', 'append', 'structure', 'delete', 'comment'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', allow: ['read', 'update', 'append', 'structure', 'delete', 'comment'] }] })
   return ws
 }
 

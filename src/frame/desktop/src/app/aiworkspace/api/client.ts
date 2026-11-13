@@ -2,8 +2,8 @@
  * method, no behaviour of its own: retries, idempotency and the change stream live in session.ts. */
 
 import type {
-  AnnotationRead, BucketBinding, BucketDownload, ChangesPage, ClonedFrom, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult, StagedAsset,
-  QueryPage, QueryParams, ReadResult, Result, RunView, SqlParams, SqlResult, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json,
+  AnnotationRead, BucketBinding, BucketDownload, ChangesPage, ClonedFrom, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, AclChange, AclEntryList, AclGroup, ListAnnotationsParams, LockInfo, PrepareResult, StagedAsset,
+  QueryPage, QueryParams, ReadResult, Result, RunView, SqlParams, SqlResult, Selector, WorkspaceInfo, WorkspaceSummary, Json,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, WishStageFiles, HostedExecConfig, Publication, Referrer,
   ExtBuildResult, ExtExportResult, ExtMigration, ExtPackResult, LibraryPackage, TemplateSpec,
@@ -30,13 +30,13 @@ export class AiwsClient {
   wsGetInfo(ws: Ws) { return this.call<Result<WorkspaceInfo>>('ws.get_info', ws) }
   wsDelete(ws: Ws) { return this.call<Result<object>>('ws.delete', ws) }
   wsClone(ws: Ws) { return this.call<Result<{ workspace_id: string; epoch: string; content_root: string; cloned_from: ClonedFrom; excluded_entities: number }>>('ws.clone', ws) }
-  wsGrant(ws: Ws, subject: string, capabilities: Capability[], scope_entity_id?: string) {
-    return this.call<Result<object>>('ws.grant', { ...ws, subject, capabilities, ...(scope_entity_id ? { scope_entity_id } : {}) })
-  }
-  wsRevoke(ws: Ws, subject: string, scope_entity_id?: string) {
-    return this.call<Result<object>>('ws.revoke', { ...ws, subject, ...(scope_entity_id ? { scope_entity_id } : {}) })
-  }
-  wsListGrants(ws: Ws) { return this.call<Result<GrantList>>('ws.list_grants', ws) }
+  // permissions (README “Permissions”, 权限需求 §4): entries by path, logical groups, anonymous access
+  aclSet(ws: Ws, changes: AclChange[]) { return this.call<Result<{ acl_rev: number }>>('acl.set', { ...ws, changes }) }
+  aclQueryAll(ws: Ws) { return this.call<Result<AclEntryList>>('acl.query', { ...ws, by: 'all' }) }
+  aclGroups(ws: Ws) { return this.call<Result<{ groups: AclGroup[]; complete: boolean; anonymous: boolean }>>('acl.groups', ws) }
+  aclSetGroup(ws: Ws, group_id: string, title?: string) { return this.call<Result<object>>('acl.set_group', { ...ws, group_id, ...(title ? { title } : {}) }) }
+  aclMembers(ws: Ws, group_id: string, add: string[], remove: string[] = []) { return this.call<Result<object>>('acl.members', { ...ws, group_id, add, remove }) }
+  aclSetAnonymous(ws: Ws, enabled: boolean) { return this.call<Result<object>>('acl.set_anonymous', { ...ws, enabled }) }
   wsSetHostedExec(ws: Ws, config: HostedExecConfig) { return this.call<Result<{ hosted_exec: HostedExecConfig }>>('ws.set_hosted_exec', { ...ws, config: config as unknown as Json }) }
   wsListSubjects(ws: Ws) { return this.call<Result<{ subjects: Subject[] }>>('ws.list_subjects', ws) }
   // ---- publication by path (内核架构改进 D26)
@@ -74,12 +74,12 @@ export class AiwsClient {
   extInstallBound(binding: { bucket_id: string; key: string }) {
     return this.call<Result<{ pkg_id: string; version: string; action: string; controls: Json[] }>>('ext.install', { pikg: binding, mode: 'dev' })
   }
-  // share entries (hybrid SSO contract §8.3): links that offer sign-in methods and grant a template
-  wsCreateEntry(ws: Ws, params: { capabilities: Capability[]; methods: ShareEntry['methods']; scope_entity_id?: string; expires_at?: number }) {
+  // share entries (hybrid SSO contract §8.3, 权限需求 R8): links that offer sign-in methods into a logical group
+  wsCreateEntry(ws: Ws, params: { group_id: string; methods: ShareEntry['methods']; expires_at?: number; max_joins?: number }) {
     return this.call<Result<{ entry: ShareEntry }>>('ws.create_entry', { ...ws, ...params })
   }
   wsListEntries(ws: Ws) { return this.call<Result<{ entries: ShareEntry[] }>>('ws.list_entries', ws) }
-  wsCloseEntry(ws: Ws, entry_id: string) { return this.call<Result<{ entry: ShareEntry }>>('ws.close_entry', { ...ws, entry_id }) }
+  wsCloseEntry(ws: Ws, entry_id: string, remove_members = false) { return this.call<Result<{ entry: ShareEntry; removed_members: number }>>('ws.close_entry', { ...ws, entry_id, remove_members }) }
   wsJoinEntry(entry_id: string) { return this.call<Result<EntryJoin>>('ws.join_entry', { entry_id }) }
   wsGetUserState(ws: Ws) { return this.call<Result<{ entries: Record<string, Json>; updated_at: Record<string, string>; revisions: Record<string, number> }>>('ws.get_user_state', ws) }
   /** `expect: { key: revision }` makes a write conditional (D13): a moved revision is a REVISION_CONFLICT. */

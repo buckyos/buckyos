@@ -50,7 +50,13 @@ fn the_workspace_host_serves_the_page_its_files_and_canonical_surface_links() {
         assert!(r.headers()["content-type"].to_str().unwrap().starts_with("text/html"), "{path}");
         assert_eq!(r.text().await.unwrap(), "<!doctype html><title>aiws page</title>", "{path}");
     }
-    // a Surface named without its id: the canonical address, the rest of the query kept
+    // a Surface nobody may read anonymously is not resolved by name here (权限需求 V2): the page resolves it once signed in
+    let r = get("/sales-2026/overview", html).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.text().await.unwrap(), "<!doctype html><title>aiws page</title>");
+    srv.rpc("acl.set_anonymous", json!({ "enabled": true })).await;
+    srv.rpc("acl.set", json!({ "changes": [{ "subject": "@guest", "resource": "sf-overview", "allow": ["read"] }] })).await;
+    // one anyone may read: named without its id, the canonical address, the rest of the query kept
     let r = get("/sales-2026/overview", html).await;
     assert_eq!(r.status(), 307);
     assert_eq!(r.headers()["location"], "/sales-2026/overview?id=sf%2Doverview");
@@ -75,7 +81,8 @@ fn the_workspace_host_serves_the_page_its_files_and_canonical_surface_links() {
     // a request that is not for a Workspace host is no page either
     assert_eq!(http.get(format!("{origin}/sales-2026")).header("x-forwarded-host", "zone.invalid").send().await.unwrap().status(), 404);
     // the entry page names the Workspace's page on its own origin
-    let created = srv.rpc("ws.create_entry", json!({ "capabilities": ["read"], "methods": { "guest": true } })).await;
+    srv.rpc("acl.set_group", json!({ "group_id": "visitors" })).await;
+    let created = srv.rpc("ws.create_entry", json!({ "group_id": "visitors", "methods": { "guest": true } })).await;
     let described = srv.rpc("entry.describe", json!({ "entry_id": created["entry"]["entry_id"] })).await;
     assert_eq!(described["resource"]["path"], json!(format!("https://{host}/sales-2026")));
     });

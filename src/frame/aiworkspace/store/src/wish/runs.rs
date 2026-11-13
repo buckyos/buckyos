@@ -57,12 +57,20 @@ impl Workspace {
             .ok_or_else(|| WsError::not_found("run not found"))
     }
 
-    /// A run as the caller sees it: its own, or — holding `run` or an editing right here — anyone's (D08:
-    /// a run is the Workspace's, its result is written as the run's identity whoever applies it).
+    /// A run as the caller sees it: its own, or — holding `update` or `manage` on its wish — anyone's (D08: a run is
+    /// the Workspace's, its result is written as the run's identity whoever applies it). `run` alone shows only one's
+    /// own runs (权限需求 R22, E4).
     pub fn wish_run(&self, caller: &Caller, run_id: &str) -> WsResult<Value> {
         let access = self.require_ws_any(caller)?;
         let r = self.wish_row(run_id)?;
-        let visible = r["principal"] == json!(caller.principal) || access.ws_caps.may_run() || access.ws_caps.has(Cap::Manage);
+        let caps = match r["params"]["wish_id"].as_str() {
+            Some(w) => {
+                let now = self.now();
+                access.caps(&self.ctx(&now), w)?
+            }
+            None => access.ws_caps,
+        };
+        let visible = r["principal"] == json!(caller.principal) || caps.has(Cap::Update) || caps.has(Cap::Manage);
         if !visible || !is_wish_program(r["program"].as_str().unwrap_or("")) {
             return Err(WsError::not_found("run not found"));
         }
@@ -79,7 +87,7 @@ impl Workspace {
     /// [`Self::wish_run_create`] with more initial detail (the execution context and executor record of
     /// 内核架构改进 §9.6 / M3: `context`, `exec`).
     pub fn wish_run_create_with(&mut self, caller: &Caller, program: &str, params: &Value, idem_key: &str, aicc: &Value, detail: &Value) -> WsResult<(String, bool)> {
-        self.require_run(caller)?;
+        self.require_run(caller, params.get("wish_id").and_then(Value::as_str))?;
         check_idempotency_key(idem_key)?;
         let digest = sha256_hex(canonical_json(params)?.as_bytes());
         let existing: Option<(String, String)> = self
@@ -254,6 +262,18 @@ impl Workspace {
         ids.iter().map(|id| self.wish_row(id)).collect()
     }
 
+    /// Hosted runs started since `since` (`format_utc_ms`): what the owner's daily limit counts (权限需求 R30).
+    pub fn hosted_runs_since(&self, since: &str) -> WsResult<u64> {
+        self.local
+            .query_row(
+                "SELECT COUNT(*) FROM runs WHERE created_at >= ?1 AND json_extract(result_json, '$.context.location') = 'hosted'",
+                [since],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n.max(0) as u64)
+            .map_err(db_err)
+    }
+
     /// Runs some worker should own (restart reconciliation).
     pub fn wish_runs_active(&self) -> WsResult<Vec<Value>> {
         let mut st = self
@@ -282,6 +302,12 @@ impl Workspace {
     /// Commit a previewed plan (§11.4): one ordinary Commit as the caller, with the plan's preconditions,
     /// idempotent by run and plan. Conflicts and rejections keep the candidate.
     pub fn wish_apply(&mut self, caller: &Caller, run_id: &str, plan_digest: &str, session_id: Option<&str>) -> WsResult<Value> {
+        self.wish_apply_as(caller, run_id, plan_digest, session_id, None, None)
+    }
+
+    /// [`Self::wish_apply`] authorized as `identity` (the run's macro identity, 权限需求 R28) and recorded with who
+    /// triggered, executed and applied it (R31).
+    pub fn wish_apply_as(&mut self, caller: &Caller, run_id: &str, plan_digest: &str, session_id: Option<&str>, identity: Option<aiworkspace_core::access::Access>, attribution: Option<Value>) -> WsResult<Value> {
         let run = self.wish_run(caller, run_id)?;
         let state = run["state"].as_str().unwrap_or("");
         if state == "succeeded" {
@@ -320,10 +346,10 @@ impl Workspace {
         }
         self.wish_run_set(run_id, Some("applying"), None, None, None, Some(&json!({ "applying": { "plan_digest": plan_digest, "idempotency_key": request["idempotency_key"] } })))?;
         // written as the run's execution identity: every apply of this run meets one idempotency record (D08)
-        let opts = CommitOpts { as_principal: run["principal"].as_str().map(str::to_string), ..CommitOpts::default() };
+        let opts = CommitOpts { as_principal: run["principal"].as_str().map(str::to_string), authorize_as: identity, attribution: attribution.clone(), ..CommitOpts::default() };
         let result = self.commit(&request, caller, &opts);
         let status = result["status"].as_str().unwrap_or("rejected").to_string();
-        let applied = json!({ "plan_digest": plan_digest, "status": status, "commit": result });
+        let applied = json!({ "plan_digest": plan_digest, "status": status, "commit": result, "applied_by": caller.principal, "attribution": attribution });
         let next = match status.as_str() {
             "accepted" => "succeeded",
             "conflict" => "conflict",
@@ -333,17 +359,19 @@ impl Workspace {
         Ok(applied)
     }
 
-    /// Results may only land where the task declared (D16, §9.4): the wish entity, the declared output
-    /// container (and what is under it), results the wish already produced, and the inputs it derives
-    /// columns for. Anything else is `PERMISSION_DENIED` / `OUTPUT_NOT_DECLARED`, whatever the writer may do by hand.
+    /// Results may only land where the task declared (D16, §9.4; 权限需求 R33): the wish entity, the results it already
+    /// produced, the declared output container (and what is under it; undeclared: the folder the wish lives in), and the
+    /// declared Surface — or, with none declared, the Surface of a Block showing this wish. A run's `location` only
+    /// chooses among those. An input is never a root: it is written only as itself, by a derived-column result the
+    /// output contract declares. Anything else is `PERMISSION_DENIED` / `OUTPUT_NOT_DECLARED`, whatever the writer may
+    /// do by hand.
     fn check_output_declaration(&self, run: &Value, ops: &[Value]) -> WsResult<()> {
         let wish_id = run["params"]["wish_id"].as_str().unwrap_or("").to_string();
         let now = self.now();
         let ctx = self.ctx(&now);
         let Some(wish) = ctx.entity(&wish_id)? else { return Ok(()) };
-        // the declared output container, or — undeclared — the folder the wish lives in
-        let container = wish.payload.get("output").and_then(|o| o.get("container_id")).and_then(Value::as_str).map(str::to_string)
-            .or_else(|| ctx.edge(&wish_id).ok().flatten().map(|e| e.parent_id));
+        let output = wish.payload.get("output").cloned().unwrap_or(Value::Null);
+        let container = output.get("container_id").and_then(Value::as_str).map(str::to_string).or_else(|| ctx.edge(&wish_id).ok().flatten().map(|e| e.parent_id));
         let mut allowed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         allowed.insert(wish_id.clone());
         for (_, b) in aiworkspace_core::wish::current_results(&wish.payload) {
@@ -351,28 +379,43 @@ impl Workspace {
                 allowed.insert(id.to_string());
             }
         }
-        for i in wish.payload.get("inputs").and_then(Value::as_array).into_iter().flatten() {
-            if let Some(id) = i["entity_id"].as_str() {
-                allowed.insert(id.to_string());
-            }
-        }
         if let Some(c) = &container {
             allowed.insert(c.clone());
         }
-        // the Blocks showing the results go on the declared Surface (or the one the run was started from)
-        if let Some(sf) = wish.payload.get("output").and_then(|o| o.get("surface_id")).and_then(Value::as_str) {
-            allowed.insert(sf.to_string());
+        // the Surface results show on: the declared one; else the one a Block showing this wish sits on (where the run
+        // was started from, when the client says so)
+        let shows_wish = |cell: &str| -> WsResult<bool> {
+            Ok(ctx.entity(cell)?.is_some_and(|c| c.payload.get("source_ref").and_then(|r| r.get("entity_id")).and_then(Value::as_str) == Some(wish_id.as_str())))
+        };
+        match output.get("surface_id").and_then(Value::as_str) {
+            Some(sf) => {
+                allowed.insert(sf.to_string());
+            }
+            None => {
+                if let Some(cell) = run["params"]["location"]["cell_id"].as_str() {
+                    if shows_wish(cell)? {
+                        if let Some(e) = ctx.edge(cell)? {
+                            allowed.insert(e.parent_id);
+                        }
+                    }
+                }
+            }
         }
-        if let Some(sf) = run["params"]["location"]["surface_id"].as_str() {
-            allowed.insert(sf.to_string());
-        }
-        if let Some(cell) = run["params"]["location"]["cell_id"].as_str() {
-            if let Some(e) = ctx.edge(cell)? {
-                allowed.insert(e.parent_id);
+        // inputs: written only as themselves, by a declared derived-column result
+        let declares_columns = wish.payload.get("analysis").and_then(|a| a["output_contract"]["results"].as_array()).is_some_and(|rs| rs.iter().any(|r| matches!(r["type"].as_str(), Some("columns" | "table_columns"))));
+        let mut exact: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        if declares_columns {
+            for i in wish.payload.get("inputs").and_then(Value::as_array).into_iter().flatten() {
+                if let Some(id) = i["entity_id"].as_str() {
+                    exact.insert(id.to_string());
+                }
             }
         }
         // inside a declared place: the entity itself, or anything under one of them (results folders included)
         let inside = |id: &str| -> WsResult<bool> {
+            if exact.contains(id) {
+                return Ok(true);
+            }
             let mut cur = id.to_string();
             for _ in 0..4096 {
                 if allowed.contains(&cur) {
@@ -392,7 +435,7 @@ impl Workspace {
             let parent = op.get("parent_id").and_then(Value::as_str);
             let ok = match name {
                 "entity.create" => {
-                    let fine = parent.is_some_and(|p| created.contains(p)) || parent.map_or(false, |p| inside(p).unwrap_or(false));
+                    let fine = parent.is_some_and(|p| created.contains(p)) || parent.map_or(false, |p| !exact.contains(p) && inside(p).unwrap_or(false));
                     if fine {
                         created.insert(target.to_string());
                     }

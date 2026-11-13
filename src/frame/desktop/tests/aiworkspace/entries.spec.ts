@@ -77,9 +77,12 @@ test('UI-SSO1 entry links: create with chosen ways in, Zone-closed ways marked, 
 test('UI-SSO2 a restricted session owns nothing and is told the category of a refusal', async ({ page, api }) => {
   const shared = await api.demo(ALICE, 'quarterly', `sso2 shared ${Date.now()}`)
   const hidden = await api.demo(ALICE, 'quarterly', `sso2 hidden ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: shared.workspace_id, subject: '*', capabilities: ['read'] })
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: shared.workspace_id, subject: 'acme-c1', capabilities: ['read', 'comment'] })
-  // the service refuses creation with its reason; `*` does not reach the Limited account
+  // a group of every ordinary account (`*`) does not reach the Limited account (权限需求 §4.2)
+  await api.rpc(ALICE, 'acl.set_group', { workspace_id: shared.workspace_id, group_id: 'zone' })
+  await api.rpc(ALICE, 'acl.members', { workspace_id: shared.workspace_id, group_id: 'zone', add: ['*'] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: shared.workspace_id, changes: [{ subject: '@zone', allow: ['read'] }] })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: shared.workspace_id, changes: [{ subject: 'acme-c1', allow: ['read', 'comment'] }] })
+  // the service refuses creation with its reason
   const created = await api.rpc(LIMITED, 'ws.create', { title: 'x' })
   expect([created.error.code, created.error.denial.reason]).toEqual(['PERMISSION_DENIED', 'session_kind_not_allowed'])
   expect((await api.rpc(LIMITED, 'ws.get_info', { workspace_id: shared.workspace_id })).capabilities).toEqual(['read', 'comment'])

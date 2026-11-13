@@ -411,8 +411,10 @@ fn executors_claim_report_and_the_service_plans_what_their_stage_collected() {
         got = srv.rpc("proc.get", json!({ "run_id": run_id })).await;
     }
     assert_eq!(got["dispatch"]["status"], "unavailable", "{got}");
-    let claimed = srv.rpc("proc.claim", json!({ "run_id": run_id, "claim_token": got["dispatch"]["claim_token"] })).await;
-    assert_eq!(claimed["attempt"], 1);
+    // S6: the claim token never shows in the run, and only the configured Agent claims (a token alone is not enough)
+    assert!(got["dispatch"].get("claim_token").is_none() && !got.to_string().contains("ct_"), "{got}");
+    let refused = srv.call_as("tok-alice", "proc.claim", json!({ "workspace_id": ws, "run_id": run_id, "claim_token": "ct_aaaaaaaaaaaaaaaaaaaaaaaaaa" })).await;
+    assert_eq!(refused["result"]["error"]["code"], "PERMISSION_DENIED", "{refused}");
     });
 }
 
@@ -427,7 +429,7 @@ fn local_runs_use_the_starters_ai_hosted_runs_the_owners() {
     })).await;
     setup(&mut srv).await;
     for who in ["bob", "did:web:eve.example.com"] {
-        srv.rpc("ws.grant", json!({ "subject": who, "capabilities": ["read", "comment", "update"] })).await;
+        srv.rpc("acl.set", json!({ "changes": [{ "subject": who, "allow": ["read", "comment", "update"] }] })).await;
     }
     assert!(srv.rpc("ws.get_info", json!({})).await.get("wish_aicc_mode").is_none(), "no workspace setting: where it runs decides");
     assert_eq!(srv.rpc("ws.get_info", json!({})).await["wish_execution"], json!({ "default": "local" }));

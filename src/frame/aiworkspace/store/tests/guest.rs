@@ -1,9 +1,12 @@
-//! Public links: the `public` grant subject applies to everyone, a guest (a principal derived from a
-//! browser-made token) reaches nothing else, keeps its own annotations, and owns no workspace.
+//! Anonymous access (权限需求 §4.2): with the switch on, `@guest` — anonymous visitors (a principal derived from a
+//! browser-made token) and signed-in people in no group — gets what its entries say; a guest reaches nothing else,
+//! keeps its own annotations, and owns no workspace.
 
 mod common;
 use aiworkspace_store::service::require_may_own;
-use aiworkspace_store::workspace::{Caller, PUBLIC_SUBJECT};
+use aiworkspace_store::workspace::Caller;
+
+const PUBLIC_SUBJECT: &str = "public";
 use common::*;
 use serde_json::json;
 
@@ -26,30 +29,41 @@ fn guest_principals_come_from_the_token_only() {
 }
 
 #[test]
-fn a_public_grant_opens_the_workspace_to_guests_and_star_does_not() {
+fn anonymous_access_opens_the_workspace_to_guests_and_zone_groups_do_not() {
     let env = env();
     let id = project(&env);
     let guest = Caller::guest(GUEST_TOKEN).unwrap();
     let handle = env.svc.workspace(&id).unwrap();
     let mut ws = handle.lock().unwrap();
-    // nothing yet: the workspace does not exist for the guest, `*` is for signed-in principals only
+    // nothing yet: the workspace does not exist for the guest; a group of every Zone account is for signed-in people
     assert_eq!(code(&ws.info(&guest).unwrap_err().to_json()), "NOT_FOUND");
-    ws.grant(&alice(), "*", None, &["read".into()]).unwrap();
+    ws.acl_set_group(&alice(), "zone", Some("Zone"), None).unwrap();
+    ws.acl_members(&alice(), "zone", &["*".into()], &[]).unwrap();
+    ws.acl_set(&alice(), &json!([{ "subject": "@zone", "resource": "/", "allow": ["read"] }])).unwrap();
     assert_eq!(code(&ws.info(&guest).unwrap_err().to_json()), "NOT_FOUND");
     assert_eq!(ws.info(&bob()).unwrap()["capabilities"], json!(["read"]));
 
-    // the public link: read + comment for everyone, guests and zone users alike
-    ws.grant(&alice(), PUBLIC_SUBJECT, None, &["read".into(), "comment".into()]).unwrap();
+    // `@guest` entries do nothing while anonymous access is off
+    ws.acl_set(&alice(), &json!([{ "subject": "@guest", "resource": "/", "allow": ["read", "comment"] }])).unwrap();
+    assert_eq!(code(&ws.info(&guest).unwrap_err().to_json()), "NOT_FOUND");
+    // switched on: read + comment for guests; bob is in a group, so not in `@guest` (Q2)
+    ws.acl_set_anonymous(&alice(), true).unwrap();
     let info = ws.info(&guest).unwrap();
     assert_eq!(info["capabilities"], json!(["read", "comment"]));
     assert_eq!(info["principal"], json!(guest.principal));
-    assert_eq!(ws.info(&bob()).unwrap()["capabilities"], json!(["read", "comment"]), "public ∪ *");
+    assert_eq!(ws.info(&bob()).unwrap()["capabilities"], json!(["read"]), "a group member is not in @guest");
+    // signed in, but in no group: in `@guest`
+    assert_eq!(ws.info(&Caller::account("lim", true)).unwrap()["capabilities"], json!(["read", "comment"]));
     assert!(ws.outline(&guest).unwrap()["entities"].as_array().unwrap().len() > 5);
-    // what the guest sees of the grants: the rows that apply to it, no names
-    let grants = ws.list_grants(&guest).unwrap();
-    assert_eq!(grants["complete"], json!(false));
-    let subjects: Vec<&str> = grants["grants"].as_array().unwrap().iter().map(|g| g["subject"].as_str().unwrap()).collect();
-    assert_eq!(subjects, vec![PUBLIC_SUBJECT]);
+    // what the guest learns of the permissions: its own judgment, no names
+    let mine = ws.acl_query(&guest, &json!({ "by": "subject" }), None).unwrap();
+    assert_eq!((mine["judgment"]["guest"].as_bool(), mine["entries"].as_array().unwrap().len()), (Some(true), 0));
+    assert_eq!(code(&ws.acl_query(&guest, &json!({ "by": "entity", "resource": "/" }), None).unwrap_err().to_json()), "PERMISSION_DENIED");
+    // `@all`: everyone who may enter, the guest included
+    ws.acl_set(&alice(), &json!([{ "subject": "@all", "resource": "/", "allow": ["read", "export"] }])).unwrap();
+    assert_eq!(ws.info(&bob()).unwrap()["capabilities"], json!(["read", "export"]));
+    assert_eq!(ws.info(&guest).unwrap()["capabilities"], json!(["read", "comment", "export"]), "@guest and @all are one tier");
+    ws.acl_set(&alice(), &json!([{ "subject": "@all", "resource": "/" }])).unwrap();
 
     // a guest annotates (and the annotation names the guest, plus the display name it chose)
     ok(&mut ws, &guest, json!([{ "op": "entity.create", "entity_id": "guest-note", "type_id": "buckyos.annotation", "parent_id": "data",
@@ -67,16 +81,21 @@ fn a_public_grant_opens_the_workspace_to_guests_and_star_does_not() {
     let r = commit(&mut ws, &guest, json!([{ "op": "entity.set_keys", "entity_id": "tasks", "keys": [{ "key": "title", "value": "x" }] }]));
     assert_eq!(r["status"], "rejected", "{r}");
     ok(&mut ws, &guest, json!([{ "op": "entity.delete", "entity_id": "guest-note", "expect": { "rev": note["life_rev"] } }]));
-    assert_eq!(code(&ws.grant(&guest, "bob", None, &["read".into()]).unwrap_err().to_json()), "PERMISSION_DENIED");
-    assert_eq!(code(&ws.grant(&alice(), PUBLIC_SUBJECT, None, &["read".into(), "manage".into()]).unwrap_err().to_json()), "INVALID_OPERATION");
+    assert_eq!(code(&ws.acl_set(&guest, &json!([{ "subject": "bob", "allow": ["read"] }])).unwrap_err().to_json()), "PERMISSION_DENIED");
+    for bad in [json!(["read", "manage"]), json!(["run"])] {
+        assert_eq!(code(&ws.acl_set(&alice(), &json!([{ "subject": "@guest", "allow": bad }])).unwrap_err().to_json()), "INVALID_OPERATION");
+    }
 
-    // the link is withdrawn: the guest is out at once, bob keeps `*`
-    ws.revoke(&alice(), PUBLIC_SUBJECT, None).unwrap();
+    // the switch goes off: the guest is out at once, bob keeps his group's; on again, `@guest` is back
+    ws.acl_set_anonymous(&alice(), false).unwrap();
     assert_eq!(code(&ws.info(&guest).unwrap_err().to_json()), "NOT_FOUND");
     assert_eq!(ws.info(&bob()).unwrap()["capabilities"], json!(["read"]));
+    ws.acl_set_anonymous(&alice(), true).unwrap();
+    assert_eq!(ws.info(&guest).unwrap()["capabilities"], json!(["read", "comment"]));
     drop(ws);
-    // a guest owns and enumerates nothing
+    // a guest owns and enumerates nothing; nobody lists a Workspace it may only enter anonymously (R8)
     assert_eq!(env.svc.list_workspaces(&guest).unwrap()["workspaces"], json!([]));
+    assert!(!env.svc.list_workspaces(&Caller::account("lim", true)).unwrap()["workspaces"].as_array().unwrap().iter().any(|w| w["workspace_id"] == json!(id)));
     assert_eq!(code(&env.svc.create_workspace(&guest, "x", None).unwrap_err().to_json()), "PERMISSION_DENIED");
     assert_eq!(code(&env.svc.clone_workspace(&guest, &id).unwrap_err().to_json()), "PERMISSION_DENIED");
 }
@@ -185,7 +204,6 @@ fn a_comment_only_guest_adds_and_handles_its_own_notes() {
     ok(&mut ws, &guest, json!([{ "op": "tree.place", "entity_id": "g-cell2", "placement": { "x": 320, "y": 0, "w": 220, "h": 160 } }]));
 
     // without `comment` (read only) nothing of this is possible
-    ws.revoke(&alice(), PUBLIC_SUBJECT, None).unwrap();
     ws.grant(&alice(), PUBLIC_SUBJECT, None, &["read".into()]).unwrap();
     assert_eq!(caps_of(&ws, &guest, "g-cell"), vec!["read"]);
     denied(&mut ws, json!([{ "op": "tree.place", "entity_id": "g-cell", "placement": { "x": 1, "y": 1, "w": 10, "h": 10 } }]));

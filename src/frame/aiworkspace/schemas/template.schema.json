@@ -2,7 +2,7 @@
  "$schema": "https://json-schema.org/draft/2020-12/schema",
  "$id": "template.schema.json",
  "title": "An entry of aiws-manifest.json workspace_templates (扩展控件 P3, Q32)",
- "description": "A Workspace template is a snapshot: templates/<id>/snapshot.json { format: \"aiws-template/1\", content_root, entities } plus its content closure as templates/<id>/objects/<object id> (canonical JSON NamedObjects) and templates/<id>/chunks/<chunk id> (bytes). `digest` covers every file under templates/<id>/ like a control's digest. Creating a Workspace from it (ext.create_from_template) loads the snapshot as a new Workspace, then replaces {{params.<k>}} and clears the rows of reset.tables in one internal Commit. Installing never creates a Workspace.",
+ "description": "A Workspace template is a snapshot: templates/<id>/snapshot.json { format: \"aiws-template/1\", content_root, entities } plus its content closure as templates/<id>/objects/<object id> (canonical JSON NamedObjects) and templates/<id>/chunks/<chunk id> (bytes), and — exported by a manager — templates/<id>/permissions.json { format: \"aiws-permissions/1\", design: { groups, entries, macros } } (权限需求 R11: logical groups, the entries of groups and of @all / @guest / @creator, macro bindings; never members or single callers). `digest` covers every file under templates/<id>/ like a control's digest. Creating a Workspace from it (ext.create_from_template) loads the snapshot as a new Workspace, then loads the permission design (groups without members, anonymous access off), replaces {{params.<k>}} and clears the rows of reset.tables in one internal Commit. Installing never creates a Workspace.",
  "type": "object",
  "additionalProperties": false,
  "required": [

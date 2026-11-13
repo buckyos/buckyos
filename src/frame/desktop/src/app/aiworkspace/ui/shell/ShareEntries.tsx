@@ -9,6 +9,7 @@ import type { EntryMethod } from 'buckyos'
 import { describeEntry } from '../../../../api/sso'
 import { unwrap, type AiwsClient } from '../../api/client'
 import { describeError } from '../../api/session'
+import { createEntry, entryCapabilities } from '../../api/legacyGrants'
 import type { ShareEntry } from '../../api/types'
 import { entryUrl } from '../../links'
 import { useLoad } from '../../state/hooks'
@@ -65,7 +66,7 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
   const offered = METHODS.some((m) => methods[m.key])
   const create = () => run('aiworkspace.shell.share.entryCreateFailed', async () => {
     const caps = ENTRY_PRESETS.find((p) => p.id === preset)?.caps ?? ['read']
-    const { entry } = unwrap(await client.wsCreateEntry({ workspace_id: workspaceId }, { capabilities: caps, methods }))
+    const entry = await createEntry(client, { workspace_id: workspaceId }, caps, methods)
     return (await copyLink(entryUrl(entry.entry_id))) ? t('aiworkspace.shell.share.entryCreated') : t('aiworkspace.shell.share.entryCreatedManual')
   })
   const copyEntry = (entry: ShareEntry) => {
@@ -115,7 +116,7 @@ export function ShareEntries({ client, workspaceId }: { client: AiwsClient; work
                       {t(m.label)}{off.includes(m.key) && <> · {t('aiworkspace.shell.share.zoneDisabled')}</>}
                     </span>
                   ))}
-                  <span className="aiws-muted">{presetLabel(entry.capabilities)}</span>
+                  <span className="aiws-muted">{presetLabel(entryCapabilities(entry))}</span>
                 </div>
                 <button type="button" data-testid="aiws-share-entry-close" disabled={busy} onClick={() => close(entry)}>{t('aiworkspace.shell.share.entryClose')}</button>
               </div>
