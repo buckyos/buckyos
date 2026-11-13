@@ -51,8 +51,8 @@ export interface RenderContext {
   dataState: DataState
   size: { w: number; h: number }
   zoom: number
-  /** The canvas runs this Block (扩展控件 P2, Q27): a declarative `button` is enabled, a click on an HTML Block mounts it,
-   * events run their handlers. False in design mode, on replays, for guests and on phones. */
+  /** The canvas runs this Block (扩展控件 P2, Q27): a declarative `button` is enabled, an HTML Block runs (in view mode
+   * by itself, else on a click), events run their handlers. False in design mode and on stages that do not run. */
   interactive: boolean
   /** Explicit activation ("edit content" / double-click in edit mode); the host mounts the Editor. */
   activateEditor: () => void

@@ -1,6 +1,6 @@
 /* Mount budget (phase two §9.3 rule 8): how many editors and HTML runtimes may be mounted at once. */
 
-import { createContext } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 
 export interface MountBudget { editors: number; html: number }
 export const DEFAULT_BUDGET: MountBudget = { editors: 6, html: 4 }
@@ -26,3 +26,18 @@ export class BudgetCounter {
 
 export const BudgetContext = createContext<BudgetCounter>(new BudgetCounter(DEFAULT_BUDGET))
 export function createBudget(limits: MountBudget = DEFAULT_BUDGET) { return new BudgetCounter(limits) }
+
+/** Reserve one slot of the budget while mounted; `false` when the limit is reached (no kind asked: `true`). */
+export function useBudgetSlot(kind: keyof MountBudget | null): boolean {
+  const budget = useContext(BudgetContext)
+  const [granted, setGranted] = useState<boolean>(false)
+  useEffect(() => {
+    if (!kind) return
+    let held = false
+    const attempt = () => { if (!held && budget.take(kind)) { held = true; setGranted(true) } }
+    attempt()
+    const off = budget.subscribe(attempt)
+    return () => { off(); if (held) budget.give(kind); setGranted(false) }
+  }, [budget, kind])
+  return kind ? granted : true
+}

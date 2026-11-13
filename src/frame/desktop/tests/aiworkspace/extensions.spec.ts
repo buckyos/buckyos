@@ -427,6 +427,38 @@ test('P2 view mode runs: a collaborator with update writes through a button, a r
   await context.close()
 })
 
+test('P2 a guest of a public link views and its HTML control runs by itself: a click on the canvas does not stop it; its write is refused (owner 11-12)', async ({ browser, api }) => {
+  const ws = await api.freeCanvas(ALICE, `guest-run-e2e ${Date.now()}`)
+  const built = await api.build(ALICE, ws.workspace_id, DONE_FILES('done'))
+  expect((await api.commit(ALICE, ws, [TASK(), { op: 'entity.create', entity_id: 'card', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 260, h: 200 },
+    payload: { view: { type: 'html' }, def_ref: { entity_id: built.def_entity_id }, bindings: { task: { entity_id: 'task' } }, on: WRITE_STATUS } }])).status).toBe('accepted')
+  await api.rpc(ALICE, 'ws.create_entry', { workspace_id: ws.workspace_id, capabilities: ['read'], methods: { guest: true, password: false, self_register: false, did_login: false } })
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
+  const page = await context.newPage()
+  await openWorkspacePage(page, { guest: true }, ws.workspace_id)
+  await expect(page.getByTestId('aiws-principal')).toHaveAttribute('data-guest', 'true')
+  if (await page.getByTestId('aiws-top-canvas').isVisible().catch(() => false)) await page.getByTestId('aiws-top-canvas').click()
+  // nothing chosen: a guest views, and view mode runs
+  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view', { timeout: 30_000 })
+  await expect(page.getByTestId('aiws-run-toggle')).toHaveAttribute('data-interactive', 'true')
+  await expect(page.getByTestId('aiws-html-active-card')).toBeVisible()
+  const frame = page.frameLocator('.aiws-html-frame')
+  await expect(frame.locator('#done')).toBeVisible()
+  await frame.locator('#out').evaluate((el) => { el.setAttribute('data-mark', 'same-runtime') })
+  // clicks on the empty canvas and on another place: the same runtime keeps running
+  await page.mouse.click(1200, 700)
+  await page.mouse.click(900, 500)
+  await page.waitForTimeout(500)
+  await expect(page.getByTestId('aiws-html-active-card')).toBeVisible()
+  await expect(frame.locator('#out')).toHaveAttribute('data-mark', 'same-runtime')
+  // it runs for the guest, but what it writes needs update
+  const head = await api.headSeq(ALICE, ws.workspace_id)
+  await frame.locator('#done').click()
+  await expect(page.getByTestId('aiws-notice').filter({ hasText: '不能修改数据 task' }).last()).toBeVisible()
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
+  await context.close()
+})
+
 test('P2 a composite re-raises its card\'s event: hello-card Done → hello-board card_done → the board\'s notice', async ({ page, api }) => {
   const ws = await api.freeCanvas(ALICE, `bubble-e2e ${Date.now()}`)
   const card = await api.build(ALICE, ws.workspace_id, 'hello-card')

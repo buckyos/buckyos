@@ -8,7 +8,7 @@ import type { AiwsClient } from '../../api/client'
 import type { EntityEnvelope, WorkspaceInfo } from '../../api/types'
 import { localizedLabels } from '../../i18n'
 import { workspacePageUrl, WORKSPACE_ROUTE, zoneOrigin } from '../../links'
-import { useUserState } from '../../state/hooks'
+import { useStore, useUserState } from '../../state/hooks'
 import { CANVAS_MODES, type CanvasMode } from '../blocks/registry'
 import type { OfflineActions } from '../WorkspaceView'
 
@@ -118,12 +118,15 @@ export interface ShellApi {
 export const ShellContext = createContext<ShellApi | null>(null)
 
 /** The canvas sub-mode (user work state `canvas:mode`); a phone views a free canvas and edits a flow page (§16.5),
- * and leaves the stored mode alone. */
+ * and leaves the stored mode alone. Not chosen yet: a guest of a public link who may not change the document views it
+ * (and its controls run, Q27; owner 11-12), everyone else edits. */
 export function useCanvasMode(): CanvasMode {
   const shell = useContext(ShellContext)
+  const store = useStore()
   const state = useUserState<CanvasMode>('canvas:mode')
   if (shell?.phone) return shell.activeSurface && shell.activeSurface.layout?.mode !== 'free' ? 'edit' : 'view'
-  return state && CANVAS_MODES.includes(state) ? state : 'edit'
+  if (state && CANVAS_MODES.includes(state)) return state
+  return shell?.identity.guest && !store.session.info().capabilities.includes('update') ? 'view' : 'edit'
 }
 
 export const ZOOM_PRESETS = [25, 50, 75, 100, 150, 200]

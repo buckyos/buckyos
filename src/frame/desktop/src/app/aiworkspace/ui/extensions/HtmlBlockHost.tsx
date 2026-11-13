@@ -1,8 +1,9 @@
 /* eslint-disable react-refresh/only-export-components -- Block definitions bundle their renderers */
 /* The `html` Block (phase two §10.4): a Block whose definition entity carries HTML / CSS / JS. In
- * edit and view mode it shows its last static snapshot (or a placeholder) and runs only after
- * explicit activation; while mounted, the extension talks to the host through `window.aiws`.
- * Crashes and silence fall back to the snapshot; other Blocks are unaffected. */
+ * edit mode it shows its last static snapshot (or a placeholder) and runs only after explicit
+ * activation; in view mode it runs by itself while the canvas runs (Q27, owner 11-12: a click elsewhere
+ * does not stop it), within the `html` budget. While mounted, the extension talks to the host through
+ * `window.aiws`. Crashes and silence fall back to the snapshot; other Blocks are unaffected. */
 
 import { useEffect, useRef, useState } from 'react'
 import type { Json } from '../../api/types'
@@ -11,6 +12,7 @@ import { useStore } from '../../state/hooks'
 import { serverClock } from '../../state/serverClock'
 import { useAiwsText } from '../../useAiwsText'
 import { AssetBlobImage } from './AssetBlobImage'
+import { useBudgetSlot } from '../blocks/budget'
 import { blockRegistry, type BlockDefinition, type RenderContext } from '../blocks/registry'
 import { cellOp } from '../blocks/ops'
 import { makeBridge } from './bridge'
@@ -44,8 +46,16 @@ function HtmlStatic(context: RenderContext) {
   )
 }
 
-/** Mounted after activation: the real runtime. */
-function HtmlActive(context: RenderContext) {
+/** View mode: running while the canvas runs, as long as a slot of the `html` budget is free — not tied to what is
+ * selected or edited; otherwise its snapshot. */
+function HtmlView(context: RenderContext) {
+  const live = context.interactive && context.mode === 'view'
+  const slot = useBudgetSlot(live ? 'html' : null)
+  return live && slot ? <HtmlActive {...context} live /> : <HtmlStatic {...context} />
+}
+
+/** Mounted after activation (or by itself in view mode, `live`: nothing to stop or go back to): the real runtime. */
+function HtmlActive(context: RenderContext & { live?: boolean }) {
   const store = useStore()
   const { t } = useAiwsText()
   const hostRef = useRef<HTMLDivElement>(null)
@@ -94,7 +104,7 @@ function HtmlActive(context: RenderContext) {
         <div className="aiws-error" role="alert">{t('aiworkspace.extension.html.failed', { error: failure })}</div>
         <Snapshot {...context} />
         <button type="button" className="aiws-link" onClick={() => { setFailure(null); setAttempt((n) => n + 1) }}>{t('aiworkspace.extension.html.runAgain')}</button>
-        <button type="button" className="aiws-link" onClick={deactivate}>{t('aiworkspace.extension.html.backToStatic')}</button>
+        {!context.live && <button type="button" className="aiws-link" onClick={deactivate}>{t('aiworkspace.extension.html.backToStatic')}</button>}
       </div>
     )
   }
@@ -102,7 +112,7 @@ function HtmlActive(context: RenderContext) {
     <div className="aiws-html-active" data-testid={`aiws-html-active-${context.cell.entity_id}`}>
       <div ref={hostRef} className="aiws-html-host" />
       <EventNote cellId={cellId} />
-      <div className="aiws-html-bar"><span className="aiws-muted">{t('aiworkspace.extension.html.mounted', { name: source?.title ?? context.payload.def_ref?.entity_id ?? '' })}</span><button type="button" className="aiws-link" onClick={deactivate}>{t('aiworkspace.extension.html.stop')}</button></div>
+      {!context.live && <div className="aiws-html-bar"><span className="aiws-muted">{t('aiworkspace.extension.html.mounted', { name: source?.title ?? context.payload.def_ref?.entity_id ?? '' })}</span><button type="button" className="aiws-link" onClick={deactivate}>{t('aiworkspace.extension.html.stop')}</button></div>}
     </div>
   )
 }
@@ -110,7 +120,7 @@ function HtmlActive(context: RenderContext) {
 export const htmlBlock: BlockDefinition = {
   type: 'html', version: 1, definitionKind: 'html', get title() { return aiwsT('aiworkspace.extension.html.title') }, accepts: ['buckyos.table-source', 'buckyos.richtext', 'buckyos.record', 'buckyos.asset-ref', 'buckyos.wish', 'buckyos.annotation'], allowNoSource: true,
   defaultSize: { w: 480, h: 320 }, cost: { editor: true, html: true },
-  Static: HtmlStatic, Editor: HtmlActive,
+  Static: HtmlStatic, View: HtmlView, Editor: HtmlActive,
   catalog: { group: 'extension', get description() { return aiwsT('aiworkspace.extension.html.description') }, needs: 'definition' },
   actions: [
     { id: 'run', get label() { return aiwsT('aiworkspace.extension.html.run') }, modes: ['edit'], run: (context) => context.activateEditor(), key: 'Enter' },

@@ -19,7 +19,7 @@ pnpm run build
 
 ## 开源软件清单
 
-设置 → 通用 → 开源软件展示实际解析的依赖版本、许可证标识、项目来源及随包提供的许可原文。清单位于 `public/open-source/`，由 [`src/tools/generate_open_source.py`](../../tools/generate_open_source.py) 生成；不要手改生成文件。相同软件的不同版本分别列出。
+设置 → 通用 → 开源软件展示实际解析的依赖版本、许可证标识、项目来源及随包提供的许可原文。清单位于 `public/open-source/`，由 [`src/tools/generate_open_source.py`](../../tools/generate_open_source.py) 生成；不要手改生成文件。列表先合并同一仓库的组件及同名软件的多个版本，再按名称前缀、npm 命名空间及明确的软件系列归组，例如 `serde`、`react`、`tokio`、`proc-macro`。跨项目归组显示“系列”标记，每个项目只归入一个系列，避免桥接包把多个系列串成一个大组。点击分组后可搜索组件、逐项查看确切版本、来源及许可原文；主列表搜索组件名也能找到所属分组。名称归组不代表来自同一上游项目或使用同一许可证，不删减生成清单的原始软件包记录。
 
 `pnpm run build` 在更新 SDK 依赖后运行 `pnpm run licenses:generate`，刷新 Desktop 生产依赖（含传递依赖）与内置素材，其他模块保留仓库内快照并在“清单范围”中标注。完整系统构建在 Desktop 被本轮重建后再次汇总全部模块，并同步到 `dist/` 和 `rootfs/bin/control-panel/web/`。`--skip-web` 或只选择 Rust 模块不会刷新清单；这些开发构建保留上一次 Desktop 构建的清单。开源清单不进入 Desktop service worker 的预缓存，以便构建结束后的汇总可即时生效。
 

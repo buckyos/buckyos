@@ -770,6 +770,7 @@ main[data-wallpaper='image'] .swiper-pagination-bullet-active {
 /* A loading spinner that stops reads as "frozen": keep the ring turning
    (slower) under reduced motion, drop only the decorative pulse/float. */
 @media (prefers-reduced-motion: reduce) {
+  .animate-spin,
   .cp-orb__ring {
     animation-duration: 1.4s !important;
     animation-iteration-count: infinite !important;

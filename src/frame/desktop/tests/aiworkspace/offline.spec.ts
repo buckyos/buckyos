@@ -11,7 +11,8 @@ test('Block snapshots are cached and displayed after an offline cold start', asy
     { op: 'entity.create', entity_id: 'snapshot-def', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'zz', payload: { def_id: 'test.snapshot', kind: 'html', allow_no_source: true, html: { html: '<div/>', js: 'aiws.ready()' } } },
     { op: 'entity.create', entity_id: 'snapshot-cell', type_id: 'buckyos.cell', parent_id: 'surface-main', order_key: 'zz', payload: { view: { type: 'html' }, def_ref: { entity_id: 'snapshot-def' }, config: { snapshot: { object_id: asset.object_id } } } },
   ])).status).toBe('accepted')
-  await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'canvas:mode': 'view' } })
+  // design mode shows the snapshot (view mode would run the control)
+  await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'canvas:mode': 'edit' } })
   await prepareOffline(page, net, ALICE, ws.workspace_id)
   await serviceWorkerReady(page)
   await expect(page.getByTestId('aiws-prepare-report')).toContainText('资产已缓存 2 个')

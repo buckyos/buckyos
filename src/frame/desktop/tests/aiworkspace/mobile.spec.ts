@@ -351,7 +351,7 @@ test('UI-M05 a mind map on a phone (脑图 R14): read and fold only — a tap se
   expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq).toBe(seq)
 })
 
-test('UI-M06 extension controls on a phone (扩展控件 M6; 控件机制 G22, H3): they run — a tap starts an HTML control, a composite lays out; looking writes nothing', async ({ page, api }) => {
+test('UI-M06 extension controls on a phone (扩展控件 M6; 控件机制 G22, H3): they run — an HTML control by itself, a tap elsewhere does not stop it, a composite lays out; looking writes nothing', async ({ page, api }) => {
   const ws = await api.freeCanvas(ALICE, `phone ext ${Date.now()}`)
   const card = await api.build(ALICE, ws.workspace_id, 'hello-card')
   const board = await api.build(ALICE, ws.workspace_id, 'hello-board')
@@ -365,16 +365,20 @@ test('UI-M06 extension controls on a phone (扩展控件 M6; 控件机制 G22, H
   await openOnPhone(page, ws.workspace_id)
   await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')
   const seq = (await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq
-  await expect(page.getByTestId('aiws-html-static-hc')).toBeVisible()
-  // phones run controls like any view mode (G22: only guests are locked out)
+  // phones run controls like any view mode (G22): HTML controls by themselves (owner 11-12), one in a composite's slot too
   await expect(page.getByTestId('aiws-run-toggle')).toHaveAttribute('data-interactive', 'true')
+  await expect(page.getByTestId('aiws-html-active-hc')).toBeVisible()
+  await expect(page.getByTestId('aiws-html-active-bc')).toBeVisible()
+  await expect(page.locator('.aiws-html-frame')).toHaveCount(2)
+  await expect(page.frameLocator('.aiws-html-frame').first().locator('#title')).toHaveText('Phone')
+  // a tap on the empty canvas selects nothing and stops nothing
   const fingers = await Fingers.of(page)
-  const box = (await page.getByTestId('aiws-html-static-hc').boundingBox())!
-  await fingers.tap({ x: box.x + box.width / 2, y: box.y + box.height / 2 })
-  await expect(page.locator('.aiws-html-frame')).toHaveCount(1)
-  await expect(page.frameLocator('.aiws-html-frame').locator('#title')).toHaveText('Phone')
+  const viewport = page.viewportSize()!
+  await fingers.tap({ x: viewport.width - 30, y: viewport.height - 120 })
+  await page.waitForTimeout(500)
+  await expect(page.locator('.aiws-html-frame')).toHaveCount(2)
+  await expect(page.getByTestId('aiws-html-active-hc')).toBeVisible()
   await expect(page.getByTestId('aiws-composite-chrome-board')).toBeVisible()
-  await expect(page.getByTestId('aiws-html-static-bc')).toBeVisible()
   expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq).toBe(seq)
 })
 

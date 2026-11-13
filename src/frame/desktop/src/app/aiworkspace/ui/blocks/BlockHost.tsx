@@ -4,7 +4,7 @@
  * expensive implementations, and localises every failure: a missing renderer, unreadable data or a
  * throwing component becomes a fallback inside this Block, never a broken workspace. */
 
-import { Component, type ErrorInfo, type ReactNode, memo, useContext, useEffect, useState } from 'react'
+import { Component, type ErrorInfo, type ReactNode, memo, useContext, useEffect } from 'react'
 import { TriangleAlert } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { CellPayload, EntityEnvelope } from '../../api/types'
@@ -13,7 +13,7 @@ import { useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { AssetBlobImage } from '../extensions/AssetBlobImage'
 import { linkAffordance, shapeOf, sourceLabel } from './affordances'
-import { BudgetContext, type MountBudget } from './budget'
+import { useBudgetSlot, type MountBudget } from './budget'
 import { BlockMetaContext } from './editorToolbar'
 import type { CanvasMode, RenderContext } from './registry'
 import { useBlockContext } from './useBlockContext'
@@ -35,21 +35,6 @@ export interface BlockHostProps {
   lod?: Lod
   /** Embedded inside rich text: always static, never an editor. */
   depth?: number
-}
-
-/** Reserve one slot of the budget while mounted; `false` when the limit is reached. */
-function useBudgetSlot(kind: keyof MountBudget | null): boolean {
-  const budget = useContext(BudgetContext)
-  const [granted, setGranted] = useState<boolean>(false)
-  useEffect(() => {
-    if (!kind) return
-    let held = false
-    const attempt = () => { if (!held && budget.take(kind)) { held = true; setGranted(true) } }
-    attempt()
-    const off = budget.subscribe(attempt)
-    return () => { off(); if (held) budget.give(kind); setGranted(false) }
-  }, [budget, kind])
-  return kind ? granted : true
 }
 
 interface BoundaryProps { children: ReactNode; fallback: (error: Error, reset: () => void) => ReactNode; resetKey: string }

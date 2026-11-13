@@ -201,9 +201,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const collapsed = collapsedChoice ?? shell.size === 'narrow'
   const [camera] = useState(() => new Camera())
   const [budget] = useState(() => createBudget(surface.layout?.mode === 'free' ? undefined : { editors: 200, html: 8 }))
-  // design / run mode (Q27): this window's switch; guests never run extensions here
+  // design / run mode (Q27): this window's switch; view mode runs, for guests too (owner 11-12)
   // composites and data controls take touches on phones too (控件机制 TODO G22: the target user has only a phone)
-  const runMode = useRunMode(store.runMode, mode, shell.identity.guest)
+  const runMode = useRunMode(store.runMode, mode)
   const runContext = useMemo(() => ({ interactive: runMode.interactive }), [runMode.interactive])
   const isFree = surface.layout?.mode === 'free'
   const { laid, index, shapeBook } = useSurfaceLayout(surfaceId)

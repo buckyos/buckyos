@@ -124,7 +124,9 @@ buckyos system info                                 # BuckyOS version, build_ver
 
 #### Settings: where each one is managed
 - Desktop Settings → General → Open-source software lists the build's resolved dependency versions and licenses;
-  select a package for its project source and bundled license notices. Catalog coverage marks missing metadata and
+  the list groups projects into name families; a family can include distinct upstream projects and licenses.
+  Select a group, then search or select a component for its exact version, source and bundled license notices.
+  Searching a component name also finds its group. Catalog coverage marks missing metadata and
   saved snapshots from modules that were not refreshed. This is build inventory, not a live scan of installed apps,
   container base images or the host OS; do not use it as proof that every runtime component was inventoried.
 - Agents: `buckyos agent list`, `agent get|profile-get <agent_id>` (raw host name like `xiaobai.test.buckyos.io`, not

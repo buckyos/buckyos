@@ -709,7 +709,10 @@ inside a mounted HTML Block, `emit` is refused (the extension gets `{ handled: f
 
 The canvas has a local, unpersisted `interactive` flag (not in `user_state`), switched with ▶ / ✎ on the toolbar.
 Defaults: `edit` → design, `view` → run, a non-public `show` → run only for Blocks marked `presentation.live`,
-replay and guests → off and locked. In run mode clicking an HTML Block activates it (still within the `html` budget), a
+replay → off and locked; guests and phones run like anyone in view mode (owner 2026-11-12). A canvas mode not chosen
+yet is `view` for a guest without `update`, else `edit`. In view mode an HTML Block runs
+by itself while the canvas runs (within the `html` budget, over it its snapshot) and keeps running whatever is clicked
+or selected; in edit mode's run mode clicking an HTML Block activates it (also within the budget). A
 declarative `button` is enabled and handlers run; a composite's frame does not catch its children's clicks. In design
 mode a click selects and moves, an `emit` runs nothing and the Block shows a corner note “event X (design mode, not
 run)”; “Run once” stays. Writes from handlers and from `aiws.record().set` etc. need `policy.writes`, **or** view mode

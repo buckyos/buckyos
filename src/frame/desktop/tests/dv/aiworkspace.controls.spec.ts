@@ -540,10 +540,9 @@ test('[ctl] listen together: started from the toolbar without running it; a phon
     ranges.push({ url: response.url().replace(/stream\/.*/, 'stream/…'), range: response.request().headers().range ?? null, status: response.status(), contentRange: headers['content-range'] ?? null, length: headers['content-length'] ?? null })
   })
   try {
-    // the member taps it on the phone: it plays where the broadcast is, with the lyrics
+    // the member opens it on the phone: it runs by itself (view mode) and plays where the broadcast is, with the lyrics
     await open(phone, ws)
-    await expect(phone.page.getByTestId('aiws-html-start-listen')).toBeAttached({ timeout: 30_000 })
-    await phone.page.getByTestId('aiws-canvas-block-listen').tap()
+    await expect(phone.page.getByTestId('aiws-html-active-listen')).toBeVisible({ timeout: 30_000 })
     const frame = phone.page.frameLocator('.aiws-html-frame')
     await expect(frame.locator('#track')).toHaveText('a song.webm', { timeout: 30_000 })
     await expect(frame.locator('#lyrics li')).toHaveCount(3)
@@ -587,8 +586,7 @@ test('[ctl] listen together: started from the toolbar without running it; a phon
     expect(JSON.stringify(await config(owner, ws, 'listen'))).not.toContain('0.3')
     await phone.page.reload()
     await showCanvas(phone.page)
-    await expect(phone.page.getByTestId('aiws-html-start-listen')).toBeAttached({ timeout: 30_000 })
-    await phone.page.getByTestId('aiws-canvas-block-listen').tap()
+    await expect(phone.page.getByTestId('aiws-html-active-listen')).toBeVisible({ timeout: 30_000 })
     await expect(phone.page.frameLocator('.aiws-html-frame').locator('#volume')).toHaveValue('0.3', { timeout: 30_000 })
     await screenshot(phone.page, info, 'listen-phone')
   } finally {
