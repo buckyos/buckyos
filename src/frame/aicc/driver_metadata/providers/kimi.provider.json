@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 9,
+  "revision_seq": 10,
   "provider_profile_id": "kimi",
   "models": [
     {
@@ -44,6 +44,22 @@
     {"model_driver": "kimi", "variant": "reasoning-max", "match": {"origin_model_id": "kimi-k3.1-pro", "variant": "reasoning-max"}, "provider_options": {"reasoning_effort": "max"}}
   ],
   "model_pricing": [
+    {
+      "pricing": {
+        "source_url": "https://platform.kimi.com/docs/pricing/chat",
+        "verified_at": "2026-11-12",
+        "currency": "CNY",
+        "input_token": 1.3e-05,
+        "output_token": 6.8e-05,
+        "cache_input_token": 1.3e-06,
+        "cache_write_input_token": 1.3e-05,
+        "cache_write_1h_input_token": 2.6e-05
+      },
+      "match": {
+        "provider_model_id": "kimi-k3.1-pro",
+        "region": "china"
+      }
+    },
     {
       "pricing": {
         "source_url": "https://platform.kimi.com/docs/pricing/chat",

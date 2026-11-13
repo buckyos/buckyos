@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "2026-11-02.1",
-  "checked_at": "2026-11-02",
+  "revision": "2026-11-12.1",
+  "checked_at": "2026-11-12",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -1038,7 +1038,11 @@
           "evidence_summary": "Video create posts model/prompt to /v1/videos and returns a video task that is retrieved until completed.",
           "video_generate_scenarios": [
             "keyframe"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
+          }
         },
         {
           "id": "openai.videos.edits.v1",
@@ -1097,7 +1101,11 @@
             "https://platform.openai.com/docs/api-reference/videos",
             "https://platform.openai.com/docs/api-reference/videos/retrieve"
           ],
-          "evidence_summary": "The OpenAI Videos API (CreateVideoEdit in the official OpenAPI spec, marked deprecated) posts the completed source video and an edit prompt, and nothing else, to /v1/videos/edits and returns the same video job, which is retrieved until completed."
+          "evidence_summary": "The OpenAI Videos API (CreateVideoEdit in the official OpenAPI spec, marked deprecated) posts the completed source video and an edit prompt, and nothing else, to /v1/videos/edits and returns the same video job, which is retrieved until completed.",
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
+          }
         }
       ]
     },
@@ -1584,6 +1592,14 @@
                 "thinking_level": "high"
               }
             }
+          }
+        },
+        {
+          "model_ids": [
+            "gemini-2.5-flash-lite"
+          ],
+          "variants": {
+            "reasoning-none": {}
           }
         }
       ],
@@ -2407,7 +2423,10 @@
             "https://fal.ai/models/fal-ai/esrgan/api",
             "https://fal.ai/docs/documentation/model-apis/inference/queue"
           ],
-          "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle uses the app root, with canonical result retrieval at /requests/{request_id} and a returned response_url ending in /response."
+          "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle uses the app root, with canonical result retrieval at /requests/{request_id} and a returned response_url ending in /response.",
+          "aicc_error_code_by_scenario": {
+            "validation": "invalid_request"
+          }
         },
         {
           "id": "fal.imageutils-rembg.queue-v1",
@@ -2485,7 +2504,10 @@
             "https://fal.ai/docs/model-api-reference/image-generation-api/imageutils",
             "https://fal.ai/docs/documentation/model-apis/inference/queue"
           ],
-          "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle strips the /rembg subpath to the fal-ai/imageutils app root, while returned response_url uses the /response alias."
+          "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle strips the /rembg subpath to the fal-ai/imageutils app root, while returned response_url uses the /response alias.",
+          "aicc_error_code_by_scenario": {
+            "validation": "invalid_request"
+          }
         },
         {
           "id": "fal.deepfilternet3.queue-v1",
@@ -2567,7 +2589,10 @@
             "https://fal.ai/models/fal-ai/deepfilternet3/api",
             "https://fal.ai/docs/documentation/model-apis/inference/queue"
           ],
-          "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle exposes canonical result retrieval and the returned /response alias."
+          "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle exposes canonical result retrieval and the returned /response alias.",
+          "aicc_error_code_by_scenario": {
+            "validation": "invalid_request"
+          }
         },
         {
           "id": "fal.video-upscaler.queue-v1",
@@ -2642,7 +2667,10 @@
             "https://fal.ai/models/fal-ai/video-upscaler/api",
             "https://fal.ai/docs/documentation/model-apis/inference/queue"
           ],
-          "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and accepts hosted HTTP(S) URLs or Base64 data URIs through fal Files. Queue lifecycle exposes canonical result retrieval and the returned /response alias."
+          "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and accepts hosted HTTP(S) URLs or Base64 data URIs through fal Files. Queue lifecycle exposes canonical result retrieval and the returned /response alias.",
+          "aicc_error_code_by_scenario": {
+            "validation": "invalid_request"
+          }
         }
       ]
     },
@@ -3285,7 +3313,7 @@
         "llm": [
           "openai/gpt-6.1-sol",
           "openai/gpt-6.1-terra",
-          "openai/gpt-5.6",
+          "openai/gpt-5.6-luna",
           "openai/gpt-5.5",
           "openai/gpt-5.4",
           "anthropic/claude-fable-5",
@@ -3322,7 +3350,6 @@
           "openai/gpt-5.4-nano",
           "openai/gpt-5.4-pro",
           "openai/gpt-5.5-pro",
-          "openai/gpt-5.6-luna",
           "openai/gpt-5.6-sol",
           "openai/gpt-5.6-terra",
           "openai/gpt-6-astra",
@@ -3554,43 +3581,6 @@
         },
         {
           "model_ids": [
-            "openai/gpt-5.6"
-          ],
-          "variants": {
-            "reasoning-none": {
-              "reasoning": {
-                "effort": "none"
-              }
-            },
-            "reasoning-low": {
-              "reasoning": {
-                "effort": "low"
-              }
-            },
-            "reasoning-medium": {
-              "reasoning": {
-                "effort": "medium"
-              }
-            },
-            "reasoning-high": {
-              "reasoning": {
-                "effort": "high"
-              }
-            },
-            "reasoning-xhigh": {
-              "reasoning": {
-                "effort": "xhigh"
-              }
-            },
-            "reasoning-max": {
-              "reasoning": {
-                "effort": "max"
-              }
-            }
-          }
-        },
-        {
-          "model_ids": [
             "openai/gpt-5.5",
             "openai/gpt-5.4"
           ],
@@ -3736,10 +3726,348 @@
               }
             }
           }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.6-luna"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "anthropic/claude-fable-5",
+            "anthropic/claude-fable-5.1",
+            "anthropic/claude-haiku-5.5",
+            "anthropic/claude-opus-4.7",
+            "anthropic/claude-opus-4.8",
+            "anthropic/claude-opus-5",
+            "anthropic/claude-opus-5.5",
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-sonnet-5.5",
+            "openai/gpt-6-astra"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "anthropic/claude-opus-4.6",
+            "anthropic/claude-sonnet-4.6"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek/deepseek-v4-flash-vision-exp"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek/deepseek-v4-flash",
+            "deepseek/deepseek-v4-pro",
+            "z-ai/glm-5.2"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek/deepseek-v4.1-flash",
+            "moonshotai/kimi-k3",
+            "z-ai/glm-5.3"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.1-pro-preview",
+            "google/gemini-3.1-pro-preview-customtools",
+            "google/gemini-3.5-flash",
+            "google/gemini-3.5-flash-lite",
+            "google/gemini-3.6-flash",
+            "google/gemini-3.7-flash",
+            "google/gemini-3.8-flash",
+            "google/gemini-4-argon"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.3-codex"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.4-mini",
+            "openai/gpt-5.4-nano"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.4-pro",
+            "openai/gpt-5.5-pro"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.6-sol",
+            "openai/gpt-5.6-terra",
+            "openai/gpt-6-luna",
+            "openai/gpt-6-sol"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen/qwen3.8-2.4t-a95b",
+            "qwen/qwen3.8-27b"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
         }
       ],
       "test_model_ids": {
-        "llm": "openai/gpt-5.6",
+        "llm": "openai/gpt-5.6-luna",
         "vision.ocr": "anthropic/claude-sonnet-5.5",
         "vision.caption": "anthropic/claude-sonnet-5.5",
         "image.txt2img": "openai/gpt-image-2",
@@ -4669,7 +4997,10 @@
             "keyframe",
             "keyframes",
             "reference-images"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         }
       ],
       "official_aggregated_model_ids": {
@@ -5006,7 +5337,6 @@
       "official_variant_rules": [
         {
           "model_ids": [
-            "glm-5.3",
             "glm-5.2",
             "glm-5.1",
             "glm-5-turbo",
@@ -5503,7 +5833,10 @@
           "evidence_summary": "GLM video generation submits to videos/generations and polls async-result until video_result is available. The official MetaGLM cookbook shows successful query responses with id=None and a request_id; polling must retain the original submitted task ID.",
           "video_generate_scenarios": [
             "keyframe"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_parameters": "invalid_request"
+          }
         }
       ]
     },
@@ -6209,7 +6542,10 @@
             "keyframe",
             "keyframes",
             "reference-images"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         },
         {
           "id": "doubao-agent-plan.tts.plan-v3",
@@ -6547,7 +6883,10 @@
           "official_sources": [
             "https://www.volcengine.com/docs/6561/1354868?lang=zh"
           ],
-          "evidence_summary": "Doubao Voice ASR standard submits one absolute audio URL to the AUC bigmodel submit path with resource id volc.seedasr.auc, then polls the query path with the returned X-Api-Request-Id until X-Api-Status-Code reports 20000000 and the transcript arrives in result.text."
+          "evidence_summary": "Doubao Voice ASR standard submits one absolute audio URL to the AUC bigmodel submit path with resource id volc.seedasr.auc, then polls the query path with the returned X-Api-Request-Id until X-Api-Status-Code reports 20000000 and the transcript arrives in result.text.",
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         }
       ]
     },
@@ -6915,7 +7254,10 @@
             "keyframe",
             "keyframes",
             "reference-images"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         },
         {
           "id": "doubao.embedding-multimodal.v3",
@@ -7730,6 +8072,10 @@
             "usage": {
               "image_count": 1
             }
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
           }
         },
         {
@@ -7821,6 +8167,10 @@
             "usage": {
               "image_count": 1
             }
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
           }
         },
         {
@@ -7966,6 +8316,10 @@
             "video.generate": [
               "wan2.6-t2v"
             ]
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
           }
         },
         {
@@ -8062,7 +8416,11 @@
           "forbidden_body_paths": [
             "/input/img_url",
             "/parameters/size"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
+          }
         }
       ]
     },
@@ -9993,6 +10351,11 @@
               "gpt-image-2.5-flare",
               "gpt-image-2.5-sunburst"
             ]
+          },
+          "cross_provider_target": {
+            "provider_driver": "openai",
+            "contract_id": "openai.images.edits.v1",
+            "api_type": "image.img2img"
           }
         },
         {
@@ -10301,20 +10664,6 @@
               "gemini-4-argon",
               "gemini-3.8-flash"
             ]
-          },
-          "forbidden_body_paths_by_model": {
-            "kimi-k3.1-pro": [
-              "/thinking"
-            ]
-          },
-          "optional_body_values_by_model": {
-            "kimi-k3.1-pro": {
-              "/temperature": 1,
-              "/top_p": 0.95,
-              "/n": 1,
-              "/presence_penalty": 0,
-              "/frequency_penalty": 0
-            }
           }
         },
         {

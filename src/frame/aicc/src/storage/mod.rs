@@ -17,9 +17,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
-use sqlx::{Any, AnyPool, Executor, QueryBuilder, Row};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+use sqlx::{Any, AnyPool, ConnectOptions, Connection, Executor, QueryBuilder, Row};
 use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 use std::sync::Once;
+use std::time::Duration;
 
 mod quota;
 pub(crate) use quota::{AdmitOutcome, AttemptAdmission, QuotaWriteError, SettleOutcome};
@@ -303,14 +306,53 @@ impl AiccStorage {
             8
         };
         let sqlite = backend == RdbBackend::Sqlite;
+        if sqlite && connections > 1 {
+            let options =
+                SqliteConnectOptions::from_str(connection)?.journal_mode(SqliteJournalMode::Wal);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            let mut delay = Duration::from_millis(100);
+            loop {
+                match options.connect().await {
+                    Ok(mut connection) => {
+                        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+                            .fetch_one(&mut connection)
+                            .await?;
+                        connection.close().await?;
+                        if !mode.eq_ignore_ascii_case("wal") {
+                            return Err(StorageError::InvalidRecord(format!(
+                                "SQLite WAL mode is required, got {mode}"
+                            )));
+                        }
+                        break;
+                    }
+                    Err(error) => {
+                        let error = StorageError::from(error);
+                        if !error.is_retryable() || tokio::time::Instant::now() >= deadline {
+                            return Err(error);
+                        }
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(1));
+                    }
+                }
+            }
+        }
         let pool = AnyPoolOptions::new()
             .max_connections(connections)
-            .after_connect(move |connection, _| Box::pin(async move {
-                if sqlite {
-                    sqlx::query("PRAGMA journal_mode=WAL").execute(connection).await?;
-                }
-                Ok(())
-            }))
+            .after_connect(move |connection, _| {
+                Box::pin(async move {
+                    if sqlite && connections > 1 {
+                        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+                            .fetch_one(connection)
+                            .await?;
+                        if !mode.eq_ignore_ascii_case("wal") {
+                            return Err(sqlx::Error::Protocol(format!(
+                                "SQLite WAL mode is required, got {mode}"
+                            )));
+                        }
+                    }
+                    Ok(())
+                })
+            })
             .connect(connection)
             .await?;
         let storage = Self { pool, backend };
@@ -464,15 +506,29 @@ impl AiccStorage {
              (obj_id,tenant_id,user_id,caller_app_id,created_at_ms) VALUES (?,?,?,?,?)
              ON CONFLICT(obj_id) DO NOTHING",
         );
-        sqlx::query(&sql)
-            .bind(obj_id)
-            .bind(tenant_id)
-            .bind(user_id)
-            .bind(caller_app_id.unwrap_or_default())
-            .bind(created_at_ms)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        let mut delay = Duration::from_millis(100);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match sqlx::query(&sql)
+                .bind(obj_id)
+                .bind(tenant_id)
+                .bind(user_id)
+                .bind(caller_app_id.unwrap_or_default())
+                .bind(created_at_ms)
+                .execute(&self.pool)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    let error = StorageError::from(error);
+                    if !error.is_retryable() || tokio::time::Instant::now() >= deadline {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(1));
+                }
+            }
+        }
     }
 
     pub(crate) async fn artifact_owner(
@@ -1581,11 +1637,13 @@ fn execution_is_terminal(state: ExecutionState) -> bool {
     )
 }
 
-fn storage_error(_: StorageError) -> AiccError {
-    AiccError::new(
+fn storage_error(error: StorageError) -> AiccError {
+    let mut result = AiccError::new(
         AiccErrorCode::InternalError,
         "persistent AICC storage operation failed",
-    )
+    );
+    result.retriable = error.is_retryable();
+    result
 }
 
 fn inventory_from_row(row: AnyRow) -> StorageResult<InventoryLkgsRecord> {
@@ -2250,6 +2308,85 @@ mod tests {
             storage.artifact_owner("cyfile:new").await.unwrap(),
             Some(("tenant".to_string(), "user".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn artifact_scope_write_retries_writer_contention() {
+        let dir = tempfile::tempdir().unwrap();
+        let connection = format!("sqlite://{}?mode=rwc", dir.path().join("aicc.db").display());
+        let storage = std::sync::Arc::new(
+            AiccStorage::open(&connection, RdbBackend::Sqlite)
+                .await
+                .unwrap(),
+        );
+        let mut connections = Vec::new();
+        for _ in 0..8 {
+            let mut connection = storage.pool.acquire().await.unwrap();
+            sqlx::query("PRAGMA busy_timeout=1")
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            connections.push(connection);
+        }
+        drop(connections);
+        let mut writer = storage.pool.begin().await.unwrap();
+        sqlx::query("INSERT INTO aicc_artifact_scope VALUES ('held','tenant','user','',0)")
+            .execute(&mut *writer)
+            .await
+            .unwrap();
+        let pending = storage.clone();
+        let write = tokio::spawn(async move {
+            pending
+                .remember_artifact_scope("cyfile:retry", "tenant", "user", None, 1)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!write.is_finished());
+        writer.rollback().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), write)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            storage.artifact_owner("cyfile:retry").await.unwrap(),
+            Some(("tenant".into(), "user".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_wal_initialization_retries_an_existing_read_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}?mode=rwc", dir.path().join("aicc.db").display());
+        let mut connection = SqliteConnectOptions::from_str(&url)
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE held (value INTEGER)")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        let mut reader = connection.begin().await.unwrap();
+        sqlx::query("SELECT * FROM held")
+            .fetch_all(&mut *reader)
+            .await
+            .unwrap();
+        let opening =
+            tokio::spawn(async move { AiccStorage::open(&url, RdbBackend::Sqlite).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!opening.is_finished());
+        reader.rollback().await.unwrap();
+        let storage = tokio::time::timeout(Duration::from_secs(10), opening)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&storage.pool)
+            .await
+            .unwrap();
+        assert_eq!(mode, "wal");
     }
 
     #[tokio::test]

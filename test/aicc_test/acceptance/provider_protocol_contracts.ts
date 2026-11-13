@@ -98,6 +98,7 @@ export type ProviderProtocolContract = {
   forbidden_body_paths?: string[];
   forbidden_body_paths_by_model?: Record<string, string[]>;
   canonical_request_overrides?: Record<string, unknown>;
+  cross_provider_target?: { provider_driver: string; contract_id: string; api_type: string };
   generation_config?: {
     allowed_fields: string[];
     thinking_level_values?: string[];
@@ -849,6 +850,14 @@ export function validateProviderProtocolCatalog(
           throw new Error(
             `${id}.provider_artifact_identity.cross_provider_reuse is invalid`,
           );
+        }
+      }
+      if (contract.cross_provider_target !== undefined) {
+        const target = object(contract.cross_provider_target, `${id}.cross_provider_target`);
+        const targetProvider = (root.providers as ProviderProtocolCatalog["providers"])
+          .find((provider) => provider.provider_driver === target.provider_driver);
+        if (!targetProvider?.contracts.some((candidate) => candidate.id === target.contract_id && candidate.api_types.includes(String(target.api_type)))) {
+          throw new Error(`${id}.cross_provider_target references an unknown Provider contract/API`);
         }
       }
       const sources = stringArray(
@@ -1670,7 +1679,10 @@ function validateNestedProviderBody(
       errors.push(`body field ${field} must be a positive integer`);
     }
   }
-  if (
+  if (contract.operation === "ark.contents.generate" && apiType === "video.edit") {
+    if (body.duration !== -1) errors.push("video edit duration must equal -1");
+    if (body.ratio !== "adaptive") errors.push("video edit ratio must equal adaptive");
+  } else if (
     ["ark.contents.generate", "videos.generate", "video_generation.v2.create"]
       .includes(contract.operation) &&
     body.duration !== undefined &&
@@ -2643,6 +2655,32 @@ export function buildT15Manifest(
             response_fixture: `${contract.id}.inline-artifact-success`,
           } as AcceptanceCase);
         }
+        if (contract.cross_provider_target) {
+          const target = contract.cross_provider_target;
+          const targetProvider = catalog.providers.find((provider) => provider.provider_driver === target.provider_driver)!;
+          const targetContract = targetProvider.contracts.find((candidate) => candidate.id === target.contract_id)!;
+          cases.push({
+            ...common,
+            case_id: caseId(`t1.5.resource.${common.provider_driver}.${contract.id}.${apiType}.to.${target.provider_driver}.${target.contract_id}.${target.api_type}.cross-provider`),
+            tags: [...common.tags!, "generated_artifact_id", "cross_provider_artifact_id"],
+            provider_driver: target.provider_driver,
+            provider_instance: `t15-${target.provider_driver}`,
+            expected_provider_instance: `t15-${target.provider_driver}`,
+            api_type: target.api_type,
+            method: methodsForApiType(target.api_type)[0],
+            protocol_contract_id: target.contract_id,
+            protocol_adapter_id: targetContract.protocol_adapter_id,
+            provider_api_version: targetContract.api_version,
+            mock_scenario: "success",
+            expected_wire_fixture: `${target.contract_id}.request.cross-provider-resource`,
+            response_fixture: `${target.contract_id}.success`,
+            artifact_source_provider_driver: common.provider_driver,
+            artifact_source_contract_id: contract.id,
+            artifact_source_api_type: apiType,
+            artifact_source_model_id: contractTestModelId(provider, contract, apiType),
+            artifact_target_expect_provider_id: false,
+          } as AcceptanceCase);
+        }
         const artifactIdentity = contract.provider_artifact_identity;
         if (
           artifactIdentity?.accepts_api_types.includes(apiType) &&
@@ -2785,12 +2823,12 @@ export function buildT15Manifest(
               ),
               priority: "P1",
               mock_scenario: scenario,
-              expected_task_status: "failed",
-              expected_error_class: "provider_protocol_failed",
+              expected_task_status: scenario === "async_poll_timeout" ? "running" : "failed",
+              expected_error_class: scenario === "async_poll_timeout" ? null : "provider_protocol_failed",
               expected_wire_fixture: `${contract.id}.request.async`,
               response_fixture: `${contract.id}.${scenario}`,
               timeout_ms: scenario === "async_poll_timeout"
-                ? 5_000
+                ? 15_000
                 : common.timeout_ms,
             } as AcceptanceCase);
           }

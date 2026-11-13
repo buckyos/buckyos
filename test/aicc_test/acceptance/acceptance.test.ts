@@ -5,7 +5,8 @@ import {
   openrouterDecisionFixture,
 } from "./decision.ts";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
@@ -82,7 +83,7 @@ import {
   CLOUD_TEST_MOUNT_V2,
   cloudUpdateTombstones,
 } from "./cloud_update_cases.ts";
-import { backupCloudUpdateConfig } from "./cloud_update_transaction.ts";
+import { backupCloudUpdateConfig, isolateCloudMetadataOverrides } from "./cloud_update_transaction.ts";
 import { withMockQuotaTruth } from "./quota_transaction.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
@@ -120,6 +121,8 @@ import {
   channelDisablesCase,
   scopeProtocolModels,
   protocolModelIds,
+  TaskWaitTimeout,
+  terminal as waitT15Task,
 } from "./run_t15_gateway.ts";
 import {
   createT15MockHandler,
@@ -292,6 +295,11 @@ function t15ProviderRequest(
       t15FieldValue(field, contract, model, apiType),
     ]),
   );
+  if (contract.operation === "ark.contents.generate" && apiType === "video.edit") {
+    fields.duration = -1;
+    fields.ratio = "adaptive";
+    fields.omni_reference_task_type = "edit";
+  }
   for (
     const [pointer, value] of Object.entries({
       ...(contract.required_body_values ?? {}),
@@ -491,6 +499,104 @@ test("cloud update fixtures replace complete catalog files and tombstone every c
       "known_provider:aicc-cloud-update-openai",
     ],
   );
+});
+
+test("cloud isolation removes whole catalog files by identity and restores their bytes and modes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "aicc-cloud-isolation-"));
+  const original = JSON.stringify({schema_version: 1, model_drivers: [
+    {model_driver_id: "openai", models: [{id: "target"}, {id: "unrelated-model-in-same-file"}]},
+    {model_driver_id: "kimi", models: [{id: "keep"}]},
+  ], provider_rules: [{provider_profile_id: "openai"}], known_providers: [{catalog_id: "cloud-test"}]}, null, 2) + "\n";
+  let stored = original;
+  const client: RpcClient = {call: async (method, params) => {
+    if (method === "sys_config_get") return {value: stored};
+    assert.equal(method, "sys_config_set");
+    stored = (params as {value: string}).value;
+    return null;
+  }};
+  try {
+    await mkdir(join(root, "models"));
+    await mkdir(join(root, "providers"));
+    const file = join(root, "models", "custom-name.json");
+    const bytes = ' {"model_driver_id":"openai","models":[{"id":"target"},{"id":"another"}]}\n';
+    await writeFile(file, bytes);
+    await chmod(file, 0o640);
+    const before = await stat(file);
+    await writeFile(join(root, "models", "kimi.json"), '{"model_driver_id":"kimi"}');
+    await writeFile(join(root, "providers", "openai.json"), '{"provider_profile_id":"openai"}');
+    const restore = await isolateCloudMetadataOverrides({systemConfig: client, localRoot: root, catalogs: [
+      {catalog_kind: "model_driver", catalog_id: "openai"},
+      {catalog_kind: "known_provider", catalog_id: "cloud-test"},
+    ]});
+    await assert.rejects(readFile(file), {code: "ENOENT"});
+    assert.deepEqual(JSON.parse(stored).model_drivers, [{model_driver_id: "kimi", models: [{id: "keep"}]}]);
+    assert.deepEqual(JSON.parse(stored).provider_rules, [{provider_profile_id: "openai"}]);
+    assert.deepEqual(JSON.parse(stored).known_providers, []);
+    assert.equal(await readFile(join(root, "providers", "openai.json"), "utf8"), '{"provider_profile_id":"openai"}');
+    assert.equal(await readFile(join(root, "models", "kimi.json"), "utf8"), '{"model_driver_id":"kimi"}');
+    await restore();
+    await restore();
+    assert.equal(stored, original);
+    assert.equal(await readFile(file, "utf8"), bytes);
+    assert.equal((await stat(file)).mode, before.mode);
+    assert.deepEqual((await readdir(join(root, "models"))).sort(), ["custom-name.json", "kimi.json"]);
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("cloud isolation rolls back moved files when setup fails after a system-config write", async () => {
+  const root = await mkdtemp(join(tmpdir(), "aicc-cloud-rollback-"));
+  const original = '{"schema_version":1,"provider_rules":[{"provider_profile_id":"openai"}]}';
+  let stored = original;
+  let writes = 0;
+  const client: RpcClient = {call: async (method, params) => {
+    if (method === "sys_config_get") return {value: stored};
+    stored = (params as {value: string}).value;
+    if (++writes === 1) throw new Error("connection lost after write");
+    return null;
+  }};
+  try {
+    await mkdir(join(root, "providers"));
+    const file = join(root, "providers", "override.json");
+    const bytes = '{"provider_profile_id":"openai","models":[{"id":"whole-file"}]}';
+    await writeFile(file, bytes);
+    await assert.rejects(isolateCloudMetadataOverrides({systemConfig: client, localRoot: root,
+      catalogs: [{catalog_kind: "provider_rules", catalog_id: "openai"}]}), /connection lost/);
+    assert.equal(stored, original);
+    assert.equal(await readFile(file, "utf8"), bytes);
+    assert.deepEqual(await readdir(join(root, "providers")), ["override.json"]);
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("cloud metadata restoration retries with refreshed authentication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "aicc-cloud-auth-"));
+  const original = '{"schema_version":1,"model_drivers":[{"model_driver_id":"openai"}]}';
+  let expired = false;
+  const client: RpcClient = {call: async (method) => {
+    if (method === "sys_config_get") return {value: original};
+    if (expired) throw new Error("ExpiredSignature");
+    return null;
+  }};
+  try {
+    const restore = await isolateCloudMetadataOverrides({systemConfig: client, localRoot: root,
+      catalogs: [{catalog_kind: "model_driver", catalog_id: "openai"}]});
+    expired = true;
+    await assert.rejects(restore(), AggregateError);
+    let restored = 0;
+    await restore({call: async (method, params) => {
+      assert.equal(method, "sys_config_set");
+      assert.equal((params as {value: string}).value, original);
+      restored += 1;
+      return null;
+    }});
+    await restore();
+    assert.equal(restored, 1);
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
 });
 
 test("cloud update config cleanup retries with refreshed authentication", async () => {
@@ -5946,6 +6052,19 @@ test("T2 excludes independently callable metadata variants", async () => {
   assert.ok(cells.every((cell) => !cell.provider_model_id.includes(":")));
 });
 
+test("report secret checks catch escaped and embedded keys while preserving case IDs", () => {
+  for (const prefix of ["", "\n", "\t", "\\n", "\\t", "error_", "error-"]) {
+    const report = { error: `${prefix}sk-proj-example123456789` };
+    assert.throws(() => assertNoSecrets(report), /sensitive data/);
+    assert.doesNotThrow(() => assertNoSecrets(redact(report)));
+    assert.ok(!JSON.stringify(redact(report)).includes("sk-proj-"));
+  }
+  const report = { case_id: "t1.5.sn.image.inpaint.task-result-artifact" };
+  assert.deepEqual(redact(report), report);
+  assert.doesNotThrow(() => assertNoSecrets(report));
+  assert.throws(() => assertNoSecrets({error: "sk-task-result-artifact"}), /sensitive data/);
+});
+
 test("report redaction removes secrets and totals statuses", () => {
   const safe = redact({
     api_key: "sk-secret-value-1234567890",
@@ -6828,5 +6947,94 @@ test("SN FlashX retains independent T2 cells and never deduplicates to Flash", a
   assert.equal(cells.filter((cell) => cell.baseline_status === "active").length, 6);
   for (const model of ["glm-5.3-flash", "glm-5.3-flashx"]) {
     assert.equal(cells.filter((cell) => cell.provider_model_id === model && cell.baseline_status === "active").length, 3);
+  }
+});
+
+test("native client errors retain explicit canonical classifications without changing synchronous errors", async () => {
+  const cases = buildT15Manifest(await loadProviderProtocolCatalog());
+  for (const caseId of [
+    "t1.5.openai.openai.videos.v1.video.generate.error.invalid_request",
+    "t1.5.openai.openai.videos.v1.video.generate.error.not_found",
+    "t1.5.openrouter.openrouter.videos.v1.video.generate.error.invalid_request",
+    "t1.5.glm.glm.videos.generations.v4.video.generate.error.invalid_parameters",
+    "t1.5.fal.fal.esrgan.queue-v1.image.upscale.error.validation",
+    "t1.5.doubao.doubao.video-tasks.v3.video.generate.error.invalid_request",
+    "t1.5.qwen.qwen.dashscope.image_synthesis.v1.image.txt2img.error.not_found",
+  ]) assert.equal(cases.find((item) => item.case_id === caseId)?.expected_aicc_error_code, "invalid_request", caseId);
+  for (const caseId of [
+    "t1.5.openai.openai.responses.v1.llm.error.not_found",
+    "t1.5.google-gemini.gemini.interactions.v1beta.llm.error.invalid_argument",
+    "t1.5.openrouter.openrouter.responses.v1.llm.error.invalid_request",
+    "t1.5.sn-ai-provider.sn.openai-responses.v1.llm.error.invalid_argument",
+  ]) assert.equal(cases.find((item) => item.case_id === caseId)?.expected_aicc_error_code, "provider_error", caseId);
+});
+
+test("Seedance edit preserves duration while generation rejects invalid duration", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const [driver, id] of [["doubao", "doubao.video-tasks.v3"], ["doubao-agent-plan", "doubao-agent-plan.video-tasks.plan-v3"]]) {
+    const contract = protocolContract(catalog, driver, id);
+    const model = catalog.providers.find((provider) => provider.provider_driver === driver)!.test_model_ids["video.edit"];
+    const wire = t15ProviderRequest("http://localhost", contract, model, {}, "video.edit");
+    const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(wire.init.headers), body: JSON.parse(String(wire.init.body)) };
+    assert.deepEqual(validateProviderRequest(contract, captured, "video.edit"), []);
+    for (const duration of [5, 0, -2, -1.5]) {
+      captured.body.duration = duration;
+      assert.ok(validateProviderRequest(contract, captured, "video.edit").includes("video edit duration must equal -1"));
+    }
+    captured.body.duration = -1;
+    assert.ok(validateProviderRequest(contract, captured, "video.generate").includes("duration must be a positive integer"));
+  }
+});
+
+test("native polling wait timeouts are distinct from failed TaskMgr outcomes", async () => {
+  const value = { status: "running", task_id: "polling-task" };
+  await assert.rejects(() => waitT15Task({} as GatewaySession, value, 0), (error) => error instanceof TaskWaitTimeout && error.taskId === "polling-task");
+  const session = { taskManager: { call: async () => ({ phase: "Terminal", outcome: "Failed", error: {code: "provider_error"} }) } } as unknown as GatewaySession;
+  await assert.rejects(() => waitT15Task(session, value, 1000), (error) => error instanceof Error && !(error instanceof TaskWaitTimeout));
+  const timeout = buildT15Manifest(await loadProviderProtocolCatalog()).find((item) => item.case_id === "t1.5.qwen.qwen.dashscope.image_synthesis.v1.image.txt2img.async_poll_timeout")!;
+  assert.equal(timeout.expected_task_status, "running");
+  assert.equal(timeout.expected_error_class, null);
+  assert.ok(timeout.timeout_ms > 10_000);
+});
+
+test("reviewed official variants include Flash-Lite default-off and current GLM efforts", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const gemini = catalog.providers.find((provider) => provider.provider_driver === "google-gemini")!;
+  assert.ok(gemini.official_variant_rules!.some((rule) => rule.model_ids.includes("gemini-2.5-flash-lite") && "reasoning-none" in rule.variants));
+  const glm = catalog.providers.find((provider) => provider.provider_driver === "glm")!;
+  const efforts = glm.official_variant_rules!.filter((rule) => rule.model_ids.includes("glm-5.3")).flatMap((rule) => Object.keys(rule.variants));
+  assert.deepEqual(efforts.sort(), ["reasoning-high", "reasoning-low", "reasoning-max"]);
+  const openrouter = catalog.providers.find((provider) => provider.provider_driver === "openrouter")!;
+  assert.equal(openrouter.test_model_ids.llm, "openai/gpt-5.6-luna");
+  assert.ok(!JSON.stringify(openrouter).includes('"openai/gpt-5.6"'));
+});
+
+test("SN cross-provider resources use an enabled image source and keep Wan disabled", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const cases = buildT15Manifest(catalog);
+  const cross = cases.find((item) => item.case_id.startsWith("t1.5.resource.sn-ai-provider."))!;
+  assert.equal(cross.artifact_source_model_id, "gpt-image-2");
+  assert.equal(cross.artifact_source_api_type, "image.txt2img");
+  assert.equal(cross.provider_driver, "openai");
+  assert.equal(cross.api_type, "image.img2img");
+  assert.equal(channelDisablesCase(catalog, await baseline(), { ...cross, provider_driver: "sn-ai-provider", protocol_contract_id: cross.artifact_source_contract_id, api_type: "image.txt2img" }), false);
+  assert.equal(channelDisablesCase(catalog, await baseline(), { ...cross, provider_driver: "sn-ai-provider", protocol_contract_id: "sn.openai-video-edits.v1", api_type: "video.edit", model_selector: {kind: "exact", value: "wan-3.0"} }), true);
+});
+
+test("added OpenRouter presets are supported by the frozen official reasoning metadata", async () => {
+  const evidence = JSON.parse(await readFile(join(here, "../fixtures/openrouter-reasoning-20261112.json"), "utf8"));
+  const facts = new Map<string, {supported_efforts:string[];mandatory?:boolean}>(evidence.models.map((model: {id:string;reasoning:{supported_efforts:string[]}}) => [model.id,model.reasoning]));
+  const catalog = await loadProviderProtocolCatalog();
+  const provider = catalog.providers.find((provider) => provider.provider_driver === "openrouter")!;
+  for (const rule of provider.official_variant_rules!) {
+    for (const model of rule.model_ids) {
+      const metadata = facts.get(model);
+      if (!metadata) continue;
+      for (const [variant, options] of Object.entries(rule.variants)) {
+        const effort = variant.replace(/^reasoning-/, "");
+        assert.ok(metadata.supported_efforts.includes(effort), `${model}/${effort}`);
+        assert.deepEqual(options, {reasoning:{effort}});
+      }
+    }
   }
 });

@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 15,
+  "revision_seq": 16,
   "provider_profile_id": "sn",
   "model_driver_overrides": {
     "gpt-6-astra": "openai/gpt-6-astra",
@@ -24,8 +24,6 @@
     "gpt-4o-mini-transcribe": "openai/gpt-4o-mini-transcribe",
     "gpt-4o-transcribe-diarize": "openai/gpt-4o-transcribe-diarize",
     "gpt-4o-mini-tts": "openai/gpt-4o-mini-tts",
-    "sora-2": "openai/sora-2",
-    "sora-2-pro": "openai/sora-2-pro",
     "glm-5": "glm/glm-5",
     "glm-5.3": "glm/glm-5.3",
     "kimi-k3": "kimi/kimi-k3",
@@ -801,40 +799,6 @@
         "video.edit": "videos.create",
         "video.extend": "videos.create"
       },
-      "video_generation": {
-        "prompt_required": true,
-        "keyframes": {
-          "positions": [
-            "start"
-          ]
-        },
-        "output": {
-          "durations": {
-            "min": 2,
-            "integer": true,
-            "max": 30
-          },
-          "aspect_ratios": [
-            "16:9",
-            "9:16"
-          ],
-          "sizes": [
-            "854x480",
-            "480x854",
-            "480x480",
-            "1280x720",
-            "720x1280",
-            "720x720",
-            "1920x1080",
-            "1080x1920",
-            "1080x1080"
-          ],
-          "audio": "always",
-          "media_types": [
-            "video/mp4"
-          ]
-        }
-      },
       "exclude": true
     }
   ],
@@ -1170,19 +1134,6 @@
       }
     },
     {
-      "model_driver": "bytedance",
-      "variant": "reasoning-native",
-      "match": {
-        "origin_model_id": "ui-tars-1.5-7b",
-        "variant": "reasoning-native"
-      },
-      "provider_options": {
-        "reasoning": {
-          "effort": "native"
-        }
-      }
-    },
-    {
       "model_driver": "claude",
       "variant": "reasoning-low",
       "match": {
@@ -1738,19 +1689,6 @@
       "provider_options": {
         "reasoning": {
           "effort": "max"
-        }
-      }
-    },
-    {
-      "model_driver": "mistral",
-      "variant": "reasoning-native",
-      "match": {
-        "origin_model_id": "voxtral-small-24b-2507",
-        "variant": "reasoning-native"
-      },
-      "provider_options": {
-        "reasoning": {
-          "effort": "native"
         }
       }
     },

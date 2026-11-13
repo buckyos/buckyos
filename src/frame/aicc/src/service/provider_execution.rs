@@ -870,7 +870,14 @@ impl RuntimeProviderExecutionPort {
                 .await
                 .map_err(|error| {
                     log::error!("inline artifact ownership registration failed: obj_id={obj_id} error={error}");
-                    ProtocolError::invalid_configuration("inline artifact ownership write failed")
+                    ProtocolError::new(
+                        if error.is_retryable() {
+                            ProtocolErrorKind::Transport
+                        } else {
+                            ProtocolErrorKind::InvalidConfiguration
+                        },
+                        "inline artifact ownership write failed",
+                    )
                 })?;
             replace_resource_ref_value(&mut output.value, &old_resource, &artifact.resource)?;
             if artifact.mime.is_none() {
@@ -929,7 +936,14 @@ impl RuntimeProviderExecutionPort {
                 .await
                 .map_err(|error| {
                     log::error!("inline artifact ownership registration failed: obj_id={obj_id} error={error}");
-                    ProtocolError::invalid_configuration("inline artifact ownership write failed")
+                    ProtocolError::new(
+                        if error.is_retryable() {
+                            ProtocolErrorKind::Transport
+                        } else {
+                            ProtocolErrorKind::InvalidConfiguration
+                        },
+                        "inline artifact ownership write failed",
+                    )
                 })?;
             replace_resource_ref_value(&mut output.value, &resource, &artifact.resource)?;
             append_materialized_artifact_metadata(&mut output.value, &artifact);

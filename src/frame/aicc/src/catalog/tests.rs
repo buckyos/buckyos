@@ -805,7 +805,7 @@ fn output_price_ratios_allow_500_and_require_explanations_above_it() {
 }
 
 #[test]
-fn channel_capacity_ceilings_only_narrow_existing_model_facts() {
+fn channel_capacity_ceilings_narrow_existing_facts_and_bound_unspecified_limits() {
     let rule: ProviderExactRule = serde_json::from_value(json!({
         "id":"typesafe/jev-1.13", "capability_limits":{"max_context_tokens":32000,"decision.max_input_bytes":32000,"decision.max_options":300,"decision.max_levels":10}
     })).unwrap();
@@ -820,7 +820,7 @@ fn channel_capacity_ceilings_only_narrow_existing_model_facts() {
     assert_eq!(narrowed.capabilities["max_context_tokens"], 32000);
     assert_eq!(narrowed.capabilities["decision.max_input_bytes"], 32000);
     assert_eq!(narrowed.capabilities["decision.max_options"], 255);
-    assert!(!narrowed.capabilities.contains_key("decision.max_levels"));
+    assert_eq!(narrowed.capabilities["decision.max_levels"], 10);
     assert_eq!(narrowed.capabilities["decision.choice"], true);
 }
 

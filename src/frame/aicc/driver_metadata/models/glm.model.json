@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "glm",
-  "revision_seq": 9,
+  "revision_seq": 10,
   "required_features": [],
   "models": [
     {
@@ -789,7 +789,7 @@
         "thinking_required": true
       },
       "llm": {
-        "spec": "glm-flash",
+        "spec": "glm-flashx",
         "effort": "max",
         "default_effort": "max",
         "supported_efforts": [

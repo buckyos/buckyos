@@ -21,11 +21,13 @@ export function resumedRunStartedAt(runId:string): string {
 }
 
 const SECRET_KEY = /(?:api[_-]?key|authorization|password|private[_-]?key|session[_-]?token|refresh[_-]?token|access[_-]?token|cookie)/i;
-const SECRET_VALUE = /(?:bearer\s+[a-z0-9._~+/=-]+|(?<![a-z0-9_-])sk-[a-z0-9_-]{12,}|-----BEGIN [A-Z ]+PRIVATE KEY-----)/ig;
+const SECRET_VALUE = /(task-result-artifact)|(?:bearer\s+[a-z0-9._~+/=-]+|sk-[a-z0-9_-]{12,}|-----BEGIN [A-Z ]+PRIVATE KEY-----)/ig;
 
 export function redact(value: unknown, key = ""): unknown {
   if (SECRET_KEY.test(key)) return "[REDACTED]";
-  if (typeof value === "string") return value.replace(SECRET_VALUE, "[REDACTED]");
+  if (typeof value === "string") {
+    return value.replace(SECRET_VALUE, (match, caseMarker) => caseMarker ? match : "[REDACTED]");
+  }
   if (Array.isArray(value)) return value.map((item) => redact(item));
   if (value && typeof value === "object") {
     return Object.fromEntries(
@@ -41,11 +43,12 @@ export function redact(value: unknown, key = ""): unknown {
 export function assertNoSecrets(value: unknown): void {
   const serialized = JSON.stringify(value);
   const findings = [
-    /(?<![a-z0-9_-])sk-[a-z0-9_-]{12,}/i,
     /-----BEGIN [A-Z ]+PRIVATE KEY-----/,
     /"(?:password|session_token|api_key|authorization)"\s*:\s*"(?!\[REDACTED\])/i,
   ].filter((pattern) => pattern.test(serialized));
-  if (findings.length > 0) throw new Error("report contains sensitive data");
+  if (findings.length > 0 || [...serialized.matchAll(SECRET_VALUE)].some((match) => !match[1])) {
+    throw new Error("report contains sensitive data");
+  }
 }
 
 export function isProviderRestricted(error: unknown): boolean {

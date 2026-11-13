@@ -831,7 +831,7 @@ mod tests {
                 .provider_rules(SN_PROVIDER_PROFILE_ID)
                 .unwrap()
                 .revision_seq,
-            15
+            16
         );
         assert!(catalog.model_driver(SN_PROVIDER_PROFILE_ID).is_none());
         for driver in ["bytedance", "glm", "kimi", "mistral", "openai", "qwen"] {
