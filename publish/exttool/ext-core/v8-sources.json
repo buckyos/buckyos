@@ -1,0 +1,342 @@
+{
+  "crate": "v8 149.4.0",
+  "crate_sha256": "ebfd8d6919bfb4b627ca778a67f85ca45e5fb442d352947ba093798bdf9b07e0",
+  "cargo_vcs_info": {
+    "commit": "dd1b4e9c743b7a11dbeb99d4d0dc55979218b905",
+    "dirty": true
+  },
+  "comparison": {
+    "crate_files": 14351,
+    "matched_files": 14321,
+    "differing_files": [
+      {
+        "path": "Cargo.lock",
+        "crate_sha256": "c67cc838bce5df01f3e09a6967d9c0615463e625f9906c144b1f56171f56a5a1",
+        "source_sha256": "f9f519bc6e4859ed3a9b44df26e15fc51255f74da965817d70226b2a2388dfe7"
+      },
+      {
+        "path": "Cargo.toml",
+        "crate_sha256": "3f708423a2e9e798c9f5ab441f71a486f9c5b5ec31d2f4c7fe15726c8d89fa83",
+        "source_sha256": "fc52f1774ec7fb24d8c6a597b34b9162d7d71e95d2919a245fcf5a7d40079b22"
+      }
+    ],
+    "crate_only_files": [
+      ".cargo_vcs_info.json",
+      "Cargo.toml.orig",
+      "gen/src_binding_debug_aarch64-apple-darwin.rs",
+      "gen/src_binding_debug_aarch64-unknown-linux-gnu.rs",
+      "gen/src_binding_debug_x86_64-apple-darwin.rs",
+      "gen/src_binding_debug_x86_64-unknown-linux-gnu.rs",
+      "gen/src_binding_ptrcomp_debug_aarch64-apple-darwin.rs",
+      "gen/src_binding_ptrcomp_debug_x86_64-apple-darwin.rs",
+      "gen/src_binding_ptrcomp_debug_x86_64-unknown-linux-gnu.rs",
+      "gen/src_binding_ptrcomp_release_aarch64-apple-darwin.rs",
+      "gen/src_binding_ptrcomp_release_x86_64-apple-darwin.rs",
+      "gen/src_binding_ptrcomp_release_x86_64-unknown-linux-gnu.rs",
+      "gen/src_binding_release_aarch64-apple-darwin.rs",
+      "gen/src_binding_release_aarch64-pc-windows-msvc.rs",
+      "gen/src_binding_release_aarch64-unknown-linux-gnu.rs",
+      "gen/src_binding_release_x86_64-apple-darwin.rs",
+      "gen/src_binding_release_x86_64-pc-windows-msvc.rs",
+      "gen/src_binding_release_x86_64-unknown-linux-gnu.rs",
+      "gen/src_binding_simdutf_debug_aarch64-apple-darwin.rs",
+      "gen/src_binding_simdutf_debug_aarch64-unknown-linux-gnu.rs",
+      "gen/src_binding_simdutf_debug_x86_64-apple-darwin.rs",
+      "gen/src_binding_simdutf_debug_x86_64-unknown-linux-gnu.rs",
+      "gen/src_binding_simdutf_release_aarch64-apple-darwin.rs",
+      "gen/src_binding_simdutf_release_aarch64-pc-windows-msvc.rs",
+      "gen/src_binding_simdutf_release_aarch64-unknown-linux-gnu.rs",
+      "gen/src_binding_simdutf_release_x86_64-apple-darwin.rs",
+      "gen/src_binding_simdutf_release_x86_64-pc-windows-msvc.rs",
+      "gen/src_binding_simdutf_release_x86_64-unknown-linux-gnu.rs"
+    ],
+    "cargo_toml_orig_matches_git_Cargo_toml": true,
+    "Cargo_lock": {
+      "upstream_packages": 265,
+      "crate_packages": 122,
+      "crate_package_set_is_subset": true,
+      "preserved_checksums_identical": true
+    }
+  },
+  "supplemental_provenance": {
+    "chromium_LICENSE": {
+      "tools/clang": {
+        "submodule_commit": "61150a5f1ddf6460bad3d896c1502c6a56e15311",
+        "GitOrigin-RevId": "0f53c6014a68b1614bdbe1f99dab48f3ec9103e3"
+      },
+      "build": {
+        "submodule_commit": "fffa45f2e9df48c0230a4c799b7d12e7f83d8219",
+        "nearest_upstream_ancestor": "1a96aee6e4cadad50a9deaa57b7e4af31499ceba",
+        "GitOrigin-RevId": "e74489ee1796d05b553ed3f7d09f4c6f27490d0a"
+      },
+      "both_license_files_identical": true
+    }
+  },
+  "source_note": "The published v8 crate is preserved as authoritative packaging input including generated bindings, normalized manifest, and pruned lockfile. Its .cargo_vcs_info records a dirty checkout. The 20 pinned native submodule source archives match every shared crate file byte-for-byte; all shared Rust binding source files also match. This source-and-notice collection does not claim bit-for-bit reproduction of official Deno binaries.",
+  "schema": "buckyos.v8-source-provenance/v1",
+  "sources": [
+    {
+      "path": ".",
+      "repository": "https://github.com/denoland/rusty_v8.git",
+      "commit": "dd1b4e9c743b7a11dbeb99d4d0dc55979218b905",
+      "url": "https://codeload.github.com/denoland/rusty_v8/tar.gz/dd1b4e9c743b7a11dbeb99d4d0dc55979218b905",
+      "sha256": "0c03bfef876e048a743f8c4011f855bbba94e20bcab01a9a1fb3b7ac74bb7042",
+      "size": 342174,
+      "crate_comparison": {
+        "matching_files": 135,
+        "differing_files": [
+          {
+            "path": "Cargo.lock",
+            "crate_sha256": "c67cc838bce5df01f3e09a6967d9c0615463e625f9906c144b1f56171f56a5a1",
+            "source_sha256": "f9f519bc6e4859ed3a9b44df26e15fc51255f74da965817d70226b2a2388dfe7"
+          },
+          {
+            "path": "Cargo.toml",
+            "crate_sha256": "3f708423a2e9e798c9f5ab441f71a486f9c5b5ec31d2f4c7fe15726c8d89fa83",
+            "source_sha256": "fc52f1774ec7fb24d8c6a597b34b9162d7d71e95d2919a245fcf5a7d40079b22"
+          }
+        ]
+      }
+    },
+    {
+      "path": "v8",
+      "repository": "https://github.com/denoland/v8.git",
+      "commit": "73d19698991616a34a00ca691a6e697dbb69e2ef",
+      "url": "https://codeload.github.com/denoland/v8/tar.gz/73d19698991616a34a00ca691a6e697dbb69e2ef",
+      "sha256": "63a19755f87d8366c5112c341e0d4fcdb10bf9706d6acb55cf581b9afee9361a",
+      "size": 32678156,
+      "crate_comparison": {
+        "matching_files": 3753,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "build",
+      "repository": "https://github.com/denoland/chromium_build.git",
+      "commit": "fffa45f2e9df48c0230a4c799b7d12e7f83d8219",
+      "url": "https://codeload.github.com/denoland/chromium_build/tar.gz/fffa45f2e9df48c0230a4c799b7d12e7f83d8219",
+      "sha256": "50ab8b983a870cdf27f715e0ee1ee06f8aaceb2c4ab2dcb19d32e66e55bc4e0e",
+      "size": 1776285,
+      "crate_comparison": {
+        "matching_files": 836,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "tools/clang",
+      "repository": "https://chromium.googlesource.com/chromium/src/tools/clang.git",
+      "commit": "61150a5f1ddf6460bad3d896c1502c6a56e15311",
+      "url": "https://chromium.googlesource.com/chromium/src/tools/clang/+archive/61150a5f1ddf6460bad3d896c1502c6a56e15311.tar.gz",
+      "sha256": "200a7472327838307ce100ccbfb33659dbc65931da9ae8ae8a2ba9646455ef02",
+      "size": 638893,
+      "crate_comparison": {
+        "matching_files": 1,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/jinja2",
+      "repository": "https://chromium.googlesource.com/chromium/src/third_party/jinja2.git",
+      "commit": "c3027d884967773057bf74b957e3fea87e5df4d7",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/jinja2/+archive/c3027d884967773057bf74b957e3fea87e5df4d7.tar.gz",
+      "sha256": "b36481f9deb7c25851546a6a6e32773f4fff45b5fcab154f013c483373f30fed",
+      "size": 124223,
+      "crate_comparison": {
+        "matching_files": 29,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/markupsafe",
+      "repository": "https://chromium.googlesource.com/chromium/src/third_party/markupsafe.git",
+      "commit": "4256084ae14175d38a3ff7d739dca83ae49ccec6",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/markupsafe/+archive/4256084ae14175d38a3ff7d739dca83ae49ccec6.tar.gz",
+      "sha256": "9ab07e584e6d4f8aa3f52124d9fbb47994936c041da74c0cb18abccf9e07ee5f",
+      "size": 10301,
+      "crate_comparison": {
+        "matching_files": 10,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "buildtools",
+      "repository": "https://chromium.googlesource.com/chromium/src/buildtools.git",
+      "commit": "c9110ba7150d93134b1c85ea392033b4a82d28f7",
+      "url": "https://chromium.googlesource.com/chromium/src/buildtools/+archive/c9110ba7150d93134b1c85ea392033b4a82d28f7.tar.gz",
+      "sha256": "0b127b4b302835c6cda941f7e0f6b76297921d4522e89f8073ba136ac0c55688",
+      "size": 60341,
+      "crate_comparison": {
+        "matching_files": 23,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/icu",
+      "repository": "https://chromium.googlesource.com/chromium/deps/icu.git",
+      "commit": "ee5f27adc28bd3f15b2c293f726d14d2e336cbd5",
+      "url": "https://chromium.googlesource.com/chromium/deps/icu/+archive/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5.tar.gz",
+      "sha256": "d8244cdebec31d3764822ef80672a7854865c4bb052b6fe92f56a5e1984771f8",
+      "size": 55186978,
+      "crate_comparison": {
+        "matching_files": 1027,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/abseil-cpp",
+      "repository": "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp.git",
+      "commit": "5e42a36a85a252d8cdee6c39661d2bfd9883fd5c",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp/+archive/5e42a36a85a252d8cdee6c39661d2bfd9883fd5c.tar.gz",
+      "sha256": "f61ae02adf35da95db61f12877be14a10b9a0e23e50b81c12c83f6c86897cb0f",
+      "size": 3126001,
+      "crate_comparison": {
+        "matching_files": 984,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/fp16/src",
+      "repository": "https://github.com/Maratyszcza/FP16.git",
+      "commit": "3d2de1816307bac63c16a297e8c4dc501b4076df",
+      "url": "https://codeload.github.com/Maratyszcza/FP16/tar.gz/3d2de1816307bac63c16a297e8c4dc501b4076df",
+      "sha256": "65ace2f05fd9434b0acb7a7d3cc6cd96842ea6236b680594af932b359bedbfc1",
+      "size": 64715,
+      "crate_comparison": {
+        "matching_files": 17,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/libc++/src",
+      "repository": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx.git",
+      "commit": "99457fa555797f8c5ac3c076ca288d8481d3b23a",
+      "url": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+archive/99457fa555797f8c5ac3c076ca288d8481d3b23a.tar.gz",
+      "sha256": "483153f037ef0c75df0034a52b25aea099f033e30807cdeb4b552630b1ba758d",
+      "size": 8891995,
+      "crate_comparison": {
+        "matching_files": 1991,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/libc++abi/src",
+      "repository": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxxabi.git",
+      "commit": "8f11bb1d4438d0239d0dfc1bd9456a9f31629dda",
+      "url": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxxabi/+archive/8f11bb1d4438d0239d0dfc1bd9456a9f31629dda.tar.gz",
+      "sha256": "bd2bf34a27d7ee219303efbaede86124a4fd22c886d75e92dac9dd79bf8cb253",
+      "size": 806324,
+      "crate_comparison": {
+        "matching_files": 50,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/libunwind/src",
+      "repository": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libunwind.git",
+      "commit": "a2530baf3d11013afd0f1c1941ab6bef5ba71d0a",
+      "url": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libunwind/+archive/a2530baf3d11013afd0f1c1941ab6bef5ba71d0a.tar.gz",
+      "sha256": "90b78374e34b667fa425853a0ff01189678d1ff3427b4fa410fa6ce76db0a512",
+      "size": 181576,
+      "crate_comparison": {
+        "matching_files": 68,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/fast_float/src",
+      "repository": "https://chromium.googlesource.com/external/github.com/fastfloat/fast_float.git",
+      "commit": "05087a303dad9c98768b33c829d398223a649bc6",
+      "url": "https://chromium.googlesource.com/external/github.com/fastfloat/fast_float/+archive/05087a303dad9c98768b33c829d398223a649bc6.tar.gz",
+      "sha256": "c4f2ab104a6178eb3030ea06ea276a06f7835e1b594290ad38baa4547c5dd7dd",
+      "size": 126110,
+      "crate_comparison": {
+        "matching_files": 26,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/llvm-libc/src",
+      "repository": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libc.git",
+      "commit": "cb952785ccee13811f293f3c419958d1e3ddafbf",
+      "url": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libc/+archive/cb952785ccee13811f293f3c419958d1e3ddafbf.tar.gz",
+      "sha256": "3c6de8530d1006fd252b85352d45cb9439c079a7712f921a939a2204c8867fa2",
+      "size": 7657352,
+      "crate_comparison": {
+        "matching_files": 4568,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/simdutf",
+      "repository": "https://chromium.googlesource.com/chromium/src/third_party/simdutf",
+      "commit": "f7356eed293f8208c40b3c1b344a50bd70971983",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/simdutf/+archive/f7356eed293f8208c40b3c1b344a50bd70971983.tar.gz",
+      "sha256": "fa54a8101ba97f1b6862df08f60292632ff2bee4e76ca1875cbb54b8d2e51a01",
+      "size": 425708,
+      "crate_comparison": {
+        "matching_files": 3,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/highway/src",
+      "repository": "https://chromium.googlesource.com/external/github.com/google/highway.git",
+      "commit": "2607d3b5b0113992fe84d3848859eae13b3b52c1",
+      "url": "https://chromium.googlesource.com/external/github.com/google/highway/+archive/2607d3b5b0113992fe84d3848859eae13b3b52c1.tar.gz",
+      "sha256": "e5084e9db9aa4525c151fcc4728ba6567691203a3ce63cfedd6499066b44f7bf",
+      "size": 3704517,
+      "crate_comparison": {
+        "matching_files": 171,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/partition_alloc",
+      "repository": "https://chromium.googlesource.com/chromium/src/base/allocator/partition_allocator.git",
+      "commit": "fafdd4c9f559c6d0cfdf2ed3170ce370b59bfdbf",
+      "url": "https://chromium.googlesource.com/chromium/src/base/allocator/partition_allocator/+archive/fafdd4c9f559c6d0cfdf2ed3170ce370b59bfdbf.tar.gz",
+      "sha256": "8fe872115b35b2a508ec7e45303806b16662a2f81ddcb9a6ab308c264dc19682",
+      "size": 859967,
+      "crate_comparison": {
+        "matching_files": 385,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/dragonbox/src",
+      "repository": "https://chromium.googlesource.com/external/github.com/jk-jeon/dragonbox.git",
+      "commit": "beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44",
+      "url": "https://chromium.googlesource.com/external/github.com/jk-jeon/dragonbox/+archive/beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44.tar.gz",
+      "sha256": "3c2783bcf541ab6bd1e067fccca62ebcaecba96f5699575249b928fb72e90bf0",
+      "size": 4235160,
+      "crate_comparison": {
+        "matching_files": 3,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "third_party/rust",
+      "repository": "https://chromium.googlesource.com/chromium/src/third_party/rust",
+      "commit": "2b055f4ecac78bbf34a0d34217c699b7b09b44dd",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/rust/+archive/2b055f4ecac78bbf34a0d34217c699b7b09b44dd.tar.gz",
+      "sha256": "27b59d958ec7418cbbafbc2ff053003069915d2755f445aae0ce69034119d229",
+      "size": 32417830,
+      "crate_comparison": {
+        "matching_files": 235,
+        "differing_files": []
+      }
+    },
+    {
+      "path": "tools/win",
+      "repository": "https://chromium.googlesource.com/chromium/src/tools/win",
+      "commit": "d16e6b55b2bd699735919d8a13a55ff284086603",
+      "url": "https://chromium.googlesource.com/chromium/src/tools/win/+archive/d16e6b55b2bd699735919d8a13a55ff284086603.tar.gz",
+      "sha256": "a1d7fd8cfa186e92fbcb23d4ef57b1a00240c0f2ebb86961de62e2e114dbff01",
+      "size": 177223,
+      "crate_comparison": {
+        "matching_files": 6,
+        "differing_files": []
+      }
+    }
+  ]
+}

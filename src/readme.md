@@ -1,5 +1,12 @@
 # 源码的目录结构
 
+## 许可证材料
+
+本仓库自有代码采用 `AGPL-3.0-only`，第三方组件保留原许可。构建入口会将根目录
+`LICENSE`、`NOTICE`、源码版本记录及发行说明生成到 `rootfs/licenses/buckyos/`；
+安装器将其保留在运行时目录。扩展工具另带与二进制匹配的源码包。
+详见[许可证与发行材料](../doc/licensing.md)。
+
 ## 开发构建中的 SDK/CLI 更新
 
 在本目录执行 `uv run buckyos-build.py` 时，会先准备 SDK/CLI 分发包，再更新

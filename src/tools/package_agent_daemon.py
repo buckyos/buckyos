@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,9 @@ import zipfile
 
 
 SOURCE = Path(__file__).resolve().parents[1]
+_licensing_spec = importlib.util.spec_from_file_location("prepare_licenses", SOURCE / "tools/prepare_licenses.py")
+licensing = importlib.util.module_from_spec(_licensing_spec)
+_licensing_spec.loader.exec_module(licensing)
 PUBLISH = SOURCE / "rootfs" / "bin" / "buckyos-agent-daemon"
 TARGETS = {
     "x86_64-unknown-linux-musl": ("linux", "x86_64"),
@@ -114,6 +118,7 @@ def package(binary: Path, target: str, output: Path, *, static_crt: bool = False
         executable = payload / ("buckyos_agent_daemon.exe" if platform == "windows" else "buckyos_agent_daemon")
         shutil.copyfile(binary, executable)
         shutil.copyfile(SOURCE / "rootfs/bin/buckyos-agent-daemon/README.md", payload / "README.md")
+        licensing.prepare(payload)
         executables = [executable]
         if platform == "linux":
             service = payload / "service.sh"

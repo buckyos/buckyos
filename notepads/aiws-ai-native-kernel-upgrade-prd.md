@@ -4,7 +4,7 @@
 
 日期：2026-11-11
 
-前置任务（2026-11-12）：[AIWS 核心 API 调整 TODO](aiws-core-api-unification-todo.md)。它的首批交付统一发现、文本查询、SQL 查询、公共属性和写入 helper 的接口基线；本文只有依赖统一发现的部分（§8.1、§8.3）等待它，其余并行推进。依赖与交付边界见 §11.0。
+前置任务（2026-11-12）：[AIWS 核心 API 调整 TODO](aiws-core-api-unification-todo.md)。它的首批交付统一发现、文本查询、SQL 查询、公共属性和写入 helper 的接口基线；本文只有依赖统一发现的部分（§8.1、§8.3）等待它，其余并行推进。依赖与交付边界见 §11.0。**首批已交付（2026-11-12）**：接口映射、Agent 调用示例、验收证据、已知限制，以及本文哪些需求仍未实现，见 §11.0 的“首批交付”。
 
 本次升级围绕三个核心设计展开：**许愿格的逻辑、宏代码的能力边界、支持自定义 spider／同步程序的可扩展数据源。** 目标是让用户的自然语言需求能够沉淀为可理解、可运行、可持续更新的工作区能力，并让 AI 的分析、程序的计算、外部数据的获取各有清楚的职责。
 
@@ -61,7 +61,7 @@ AI Native 在内核层的含义，是对象可发现、能力可描述、任务�
 | 同步失败与重试 | 失败不改动实体，运行记录原因；内容没变不产生 Commit；刷新有幂等键 | 增量同步、删除表达、业务数据时间；“最近一次尝试”要到运行记录里查 |
 | 并发与人工修改 | 应用时的保护集合（输入读集、许愿格配置、现有输出、落点）；`DELEGATION_STALE`、`RUN_REVOKED`；人工修改有保留、替换、新建三种处理 | 基本具备；与高频数据源的相互作用见 §5.7 |
 | 复制与模板 | 程序随文档导出与 Fork；AI 判断的缓存不进文档 | 同步程序、授权和凭据的复制语义 |
-| 统一发现 | DID object 有根、工作区、实体、路径四类对象，提供属性、索引和事件 | 由核心 API 调整 TODO 承接（§11.0）：每个 Workspace 一个 index，用 URL 参数区分查询（R1）；写动作晚定（R15） |
+| 统一发现 | DID object 有根、工作区、实体、路径四类对象，提供属性、索引和事件；核心 API 首批（2026-11-12）补上了按名字的路径、公共属性 `meta`、纯文本 `body`、`ls` / `find` / 文本查询和 SQL，Workspace index 用 URL 参数区分查询（R1） | 对象入口的动作（xcall）没有声明（R15）；Jarvis 一侧的接入（§8.3）未做 |
 
 由此，新做的工作集中在四件：
 
@@ -338,7 +338,7 @@ AI 调用应有输出检查、调用预算、明确的失败状态和可追溯�
 
 §6.2 的收敛工作因此主要在四项：网络、宿主文件、AI 调用和运行身份的实时读取。其中托管位置差得最远，需要一个受限的运行方式和 AI 桥接。
 
-**运行身份的实时读取。** run token 的白名单除 `proc.*` 外还有 `ws.get_info`、`doc.read`、`doc.query`、`doc.resolve`、`doc.outline`、`doc.list_children`（[lib.rs](../src/frame/aiworkspace/server/src/lib.rs) 的 `RUN_TOKEN_METHODS`）。这些方法读工作区当前状态，按 run 身份的 ACL 判断，不限于声明的输入和本次快照。托管位置的程序与 Agent 同权，能拿到这个 token。核心 API 设计草案 §1 保留了 `doc.query`，换成 SQL 后它能对所有可读表做 JOIN，范围比现在更宽（草案 §12 第 7 条）。
+**运行身份的实时读取。** run token 的白名单除 `proc.*` 外还有 `ws.get_info`、`doc.read`、`doc.query`、`doc.resolve`、`doc.outline`、`doc.list`（核心 API 首批用它替换了 `doc.list_children`；[lib.rs](../src/frame/aiworkspace/server/src/lib.rs) 的 `RUN_TOKEN_METHODS`）。这些方法读工作区当前状态，按 run 身份的 ACL 判断，不限于声明的输入和本次快照。托管位置的程序与 Agent 同权，能拿到这个 token。核心 API 设计 §1 保留了 `doc.query`，首批交付后它已经能对所有可读表执行 SQL 和 JOIN，范围比原来的表格查询更宽（设计 §12 第 7 条）。
 
 建议 run token 只留 `proc.*` 和不涉及数据的 `ws.get_info`：运行中的读取一律走快照上的阶段工具（`proc.tool`、`proc.files`），范围限定在声明的输入。托管手册在运行内只用 `run-*` 命令（即 `proc.*`），运行外的读取用 Agent 自己的权限（[Wish 运行手册](../src/apps/jarvis_agent/agent/cmd_skills/aiworkspace_run/SKILL.md)），收掉之后流程不变。这条与设计草案 §1 不一致，在[权限优化 TODO](aiws-permission-optimization-todo.md) B-2 裁决。
 
@@ -388,7 +388,7 @@ AI 调用应有输出检查、调用预算、明确的失败状态和可追溯�
 
 受限语言换来的是“必然结束”和“成本可预估”。这两点的价值随无人值守程度上升：有人预览的手动运行，超时加清单已经够用；数据源更新后自动触发、链式传播的计算没有人在场，才需要语言层面的保证。
 
-**SQL 改变了这里的取舍（2026-11-12）。** [核心 API 调整 TODO](aiws-core-api-unification-todo.md) 正在做对表的 SQL 查询（R3、R12，[设计草案](aiws-core-api-design.md) §7）：每张表一个逻辑视图，只接受单条 SELECT，有函数白名单和执行预算，记下实际读到的表和列，并在阶段快照的同一条只读连接上执行；首批不支持递归 CTE。对集合计算这一部分，它已经有 B 想要的性质：一定结束、成本可以预估、读了什么可以检查。B 最大的顾虑是模型生成新语言的成功率，SQL 没有这个问题。
+**SQL 改变了这里的取舍（2026-11-12）。** [核心 API 调整 TODO](aiws-core-api-unification-todo.md) 正在做对表的 SQL 查询（R3、R12，[设计草案](aiws-core-api-design.md) §7）：每张表一个逻辑视图，只接受单条 SELECT，有函数白名单和执行预算，记下实际读到的表和列，并在阶段快照的同一条只读连接上执行；首批不支持递归 CTE。对集合计算这一部分，它已经有 B 想要的性质：一定结束、成本可以预估、读了什么可以检查。B 最大的顾虑是模型生成新语言的成功率，SQL 没有这个问题。（首批交付后更正：执行器只记下实际读到的**表**及其版本，不记列。逻辑表是对共用记录表的视图，authorizer 看到的是底层表的列，见核心 API 设计 §7.1、§13。清单要的“读取的字段”需要另外取得，例如在编码阶段解析 SQL，或给逻辑表加按 `field_id` 命名的列。）
 
 建议首版取 A，以 SQL 承担集合计算：
 
@@ -399,7 +399,7 @@ AI 调用应有输出检查、调用预算、明确的失败状态和可追溯�
 这样带来三点好处：
 
 - 手机不用整包下载快照。十万行聚合成十二行在 OOD 上完成，只把结果交给浏览器（§12）。
-- 读到的列由执行器记下，就是清单里的读取字段（§5.7、§6.6）。
+- 读到的表由执行器记下；读到的列现在还记不下（见上文更正），清单里的读取字段要另外取得（§5.7、§6.6）。
 - 以后做无人值守的自动运行时，“SQL + AI 节点 + 产物映射”、不含 JS 的宏就是 B 的形态，不需要另造数据流语言；到那时再与公式、函数对象一起设计。
 
 代价是宏的 SQL 原语依赖核心 API 的 SQL 执行器（T2-3）和阶段工具改造（T4-1），见 §11.0。这是对 §6.3 和 §10“宏的程序形式”一行的具体意见。
@@ -568,7 +568,7 @@ skills 按日常操作、扩展开发、许愿格分析与执行组织，引用�
 - 对象入口经服务自己的 kRPC 入口转调，带调用者的凭据（[obj_provider.rs](../src/frame/aiworkspace/server/src/obj_provider.rs)）。权限判断与 kRPC 完全一致，§8.1“可被发现不等于有权执行”已经成立。
 - 通用的对象提供者支持声明动作，AIWS 只是还没有声明。xcall 的主要工作是决定声明哪些动作，不是建设通道。
 
-核心 API 调整 TODO 已定（R8）：Commit 操作的能力描述从 `schemas/operations.json` 派生，调用者当前可用的能力用 `doc.resolve` 返回的 `capabilities`；阶段工具改用同一份路径、`body` 和查询实现（T4-1）。本节原先建议的“以 kRPC 方法表为唯一来源”以此为准，不再出现第四份清单。
+核心 API 调整 TODO 已定（R8）：Commit 操作的能力描述从 `schemas/operations.json` 派生，调用者当前可用的能力用 `doc.resolve` 返回的 `capabilities`；阶段工具改用同一份路径、`body` 和查询实现（T4-1）。本节原先建议的“以 kRPC 方法表为唯一来源”以此为准，不再出现第四份清单。首批已交付（2026-11-12）：`operations.json` 的 `types` 列给出每个操作适用的实体类型，`doc.read { as: "meta" }` 的 `ops` 由它按类型筛出；写入 helper 覆盖的 12 个操作另有 `params` 参数 Schema；两列都由 core 测试对照规划器。
 
 三项核心设计里，直接依赖 §8.1 的只有“xllm 与 Jarvis 交付同类产物”；宏和同步程序都不经过对象入口。首批动作可以很少，例如启动许愿格运行、触发数据源同步。
 
@@ -641,6 +641,70 @@ skills 按日常操作、扩展开发、许愿格分析与执行组织，引用�
 
 对象入口的动作声明不在前置任务首批内。启动许愿格运行、触发同步是写动作，声明之前要先定审批门（见 [权限优化 TODO](aiws-permission-optimization-todo.md) B-6），之后随第一期或第二期声明。
 
+**首批交付（2026-11-12）。** M0–M4 已实施并提交（buckyos `c12d8c9e3`、websdk `db9a221`）。同日在本机部署的真实 Zone 上做了 DV 和性能验收，发现的问题已修复；这些修复、内核文档与 Schema 的同步（TODO T5-2）以及本节，在那次提交之后，未提交。内容与依据：
+
+- 接口：[服务 README](../src/frame/aiworkspace/README.md)“Finding, reading and querying”。
+- 规则：[数据模型与引用](../doc/workspace/kernel/02-数据模型与引用.md)的“实体名字与路径”“公共属性、纯文本呈现与 SQL 逻辑表”，[数据源](../doc/workspace/kernel/04-数据源发布与同步.md)的“统一读取看到的数据源”，[接口治理与验收](../doc/workspace/kernel/12-接口治理与验收.md)的“查询预算与性能验收”。
+- 取值与理由：[核心 API 设计 v1](aiws-core-api-design.md)。
+
+本文的需要与交付的接口：
+
+| 本文的需要 | 交付 | 说明 |
+| --- | --- | --- |
+| §8.1 read：对象是什么、当前状态与版本、可用能力 | `doc.read { as: "meta" }`；对象入口实体的 `meta` 属性；CLI `stat` | `meta` 包括身份、路径、类型、各版本修订号和 `body` 的状态。`capabilities` 是调用者当前的能力（按 ACL）；`ops` 是该类型接受的 Commit 操作；数据实体的 `data.mode` / `data.write` 说明内容由谁写 |
+| §8.1 query：按需探索数据源树、canvas、Block 子树、控件和表数据 | `doc.list`、`doc.find`、`doc.query { text }`、`doc.query { sql }`、`doc.read { as: "body" }`；Workspace index 的 `op=ls\|find\|grep`；CLI `ls`、`find`、`grep`、`cat`、`sql` | 都分页，都有预算；超出预算时如实报告覆盖范围，不把没扫完说成“没有” |
+| §8.1 xcall | 未交付 | R15：对象入口首批不声明动作；写入用 `doc.commit`，常用操作有 websdk helper 和 CLI 动词 |
+| §5.2 区分所选视图与整个数据源 | 表视图 Block 的 `meta.shows`：所显示的表，以及 `view_sql`、`view_count_sql`、`view_group_sql` | 视图 SQL 与 core 求值器的结果逐行一致；阶段工具和许愿格的 `table_view` / `table_query` 输入经它物化 |
+| §5.5、§6.5 运行读快照 | 阶段工具 `ws_find`、`ws_read`、`ws_query` 在阶段快照上使用同一份路径、`body`、文本查询和 SQL 实现 | `ws_query` 读到的表记入读集 |
+| §6.7 SQL 原语的前置 | SQL 执行器（T2-3）和阶段快照上的 SQL（T4-1） | 程序里的 `aiws.sql` 未做，见下表 |
+| §7.2、§7.3、§7.8 数据来源与可用性 | `meta.data { mode: local \| synced \| url_query, write: edit \| refresh \| none, source? }` | 只表示现有的三种状态 |
+| §8.3 skills | `aiworkspace_run`、`aiworkspace_template_dev` 两份手册改为“发现 → 精读 → SQL → helper 写入 → 回读” | 手册引用命令说明和 operations.json，不复制定义 |
+| §8.4 能力目录 | `operations.json` 的 `types`（得出 `meta.ops`）和 `params`（12 个操作的参数 Schema） | 其余 23 个可调用的操作只有说明，另有 5 个只用于撤销的内部操作（参数 Schema 是后续 L-4） |
+
+**Agent 调用示例。** 真实 Zone DV（Desktop `tests/dv/aiworkspace.coreapi.spec.ts`）中 Agent 只用 CLI 走完的流程（每条命令都带 `--workspace <ws>`）：
+
+```bash
+buckyos aiws find 未完成                                  # 候选里有 /surfaces/项目工作区/未完成任务（表视图 Block）
+buckyos aiws stat /surfaces/项目工作区/未完成任务         # meta.shows：显示 /data/任务，带 view_sql
+buckyos aiws sql '<上一步的 view_sql>'                    # 行和顺序与 Desktop 画布上显示的相同
+buckyos aiws grep 进行中                                  # select 按标签命中，selector 是 table_cell
+buckyos aiws sql 'SELECT "状态", count(*), sum("预算") FROM "/data/任务" GROUP BY 1 ORDER BY 1'
+buckyos aiws table set /data/任务 task-43 --values '{"状态":"完成","预算":"50"}'   # 字段名、选项标签；helper 填 expect
+buckyos aiws sql "SELECT \"状态\", \"状态#raw\" FROM \"/data/任务\" WHERE _id = 'task-43'"   # 回读：完成 / option-done
+buckyos aiws text append /data/项目说明 --text '…'  &&  buckyos aiws cat /data/项目说明
+```
+
+对应的 kRPC：`doc.query { workspace_id, sql, params?, tables?, max_rows? }` 返回 `{ columns, rows, truncated, read: [{ table, entity_id, path, content_rev }], head_seq }`。两张大表 JOIN 时，把小的一侧写成 `WITH d AS MATERIALIZED (SELECT …)`。
+
+**验收证据。**
+
+- 本地：`aiworkspace-core`、`-store`、`aiworkspace` 三个包的测试全部通过。关键用例：`core/tests/paths.rs`（名字、路径与 ACL、`body` 分页、文本查询、`meta` 的数据状态）、`store/tests/sql.rs`（authorizer 拒绝项、时间预算、26 个视图定义与求值器逐行相同、阶段快照上的 SQL、URL 表）、`server/tests/objects.rs`（对象入口、固定版本不退化）、`core/tests/schemas.rs`（操作目录与参数 Schema）。
+- 真实 Zone（本机部署 `test.buckyos.io`）：`aiworkspace.coreapi.spec.ts` 2 条（上面的 Agent 流程；每个 Workspace 的全部实体都有名字）、`aiworkspace.perf.spec.ts`，以及 integrity、logic、controls、table、extensions 等既有 DV。
+- 性能：10 万条 × 20 字段的表，单表 SQL 13–190 ms（经网关 20–222 ms）；物化一侧的 JOIN 0.12 s；不持有副本的 Desktop 打开保存的视图 355 ms（Zone 512 ms）；`body` 分页与位置无关；文本查询单次约 0.6 s（Zone 约 1 s）。通过条件和基线见核心 API 设计 §12.2。
+- 没有覆盖：OOD 等较弱设备；浏览器里 WASM 求值器处理 10 万行的耗时；TODO §7 的验收场景没有逐条对账（T5-1 未勾选），已知没有专门证据的是 run token 直读的范围、Desktop 落后或有未确认修改时的整条流程（只测了服务端的 `expect_head`）、公共属性经通用入口被修改。
+
+**已知限制。**
+
+- 查询执行期间持有该 Workspace，同一 Workspace 的提交最多要等一个时间预算（SQL 2 s，文本查询 1 s）。
+- 直接写的大表 JOIN 会超出预算，只能靠物化 CTE 的写法；根治要等表达式索引（L-2）。文本查询没有索引（L-1），常见词每次调用都用满扫描预算。
+- 固定版本上的 `body`、发现和 SQL 没有做（L-5），返回 `UNSUPPORTED_VERSION`，不退化为当前版本。
+- SQL 结果的 `read` 只列表，不列列；列名是字段名，没有按 `field_id` 命名的列。
+- 持有离线副本的 Desktop 用 core 求值器渲染视图（R16），10 万行视图首页约 0.6–1.3 s（Rust 求值器的数字，浏览器只会更慢）。
+- 扩展控件不能声明自己的 `body` 文本模板，按 Block 的通用规则呈现。
+
+**本文需求中前置任务没有覆盖、仍未实现的部分：**
+
+| 本文需求 | 现状 | 落点 |
+| --- | --- | --- |
+| §8.1 xcall：启动许愿格运行、触发同步等对象动作 | 未声明 | 先定审批门（权限优化 TODO B-6），再做核心 API 的 L-3 |
+| §6.5 run token 只留 `proc.*` 和 `ws.get_info` | 未收紧：白名单仍有 `doc.read`、`doc.query`（含 SQL）、`doc.resolve`、`doc.outline`、`doc.list` | 权限优化 TODO B-2 |
+| §6.5 运行时不再提供程序 API 的 `resolve` / `find` / `outline` | 程序 API 里仍有，快照目录里仍有整棵树的标题和路径 | 第一期 |
+| §6.6 声明清单；按 `field_id` 取值、按编码时的名字交给程序；宏的 SQL 表用输入名 | 未做。阶段 SQL 的表名可以是路径、实体 ID 或句柄，`tables` 可以起别名；列只按字段名 | 第一期 |
+| §6.7 程序里的 `aiws.sql`，只能查声明的输入表 | 未做。`ws_query` 按运行身份在整个快照的可读范围内执行；读到的列不记录 | 第一期 |
+| §7.8 定义先于数据存在、“尚未取得有效数据”的状态 | `meta.data` 只有 `local`、`synced`、`url_query` 三种 | 第二期，随 Source 生命周期加入公共属性 |
+| §7 支持远端回写的数据源 | 不存在，`data.write` 没有对应取值 | 不在本期 |
+| §8.3 Jarvis 复用当前选择与位置 | 接口具备（路径、选择器、`meta`），Jarvis 一侧未接入 | §8.3 |
+
 ### 11.1 四件新工作
 
 | 工作 | 性质 | 主要依赖 | 规模 |
@@ -690,7 +754,7 @@ skills 按日常操作、扩展开发、许愿格分析与执行组织，引用�
 | 手机上的执行 | 目标用户以手机为主。标准宏在页面里运行：页面关闭或被系统回收会中断运行（同一浏览器可以续跑）；快照整包下载到浏览器；浏览器位置没有内存上限。§6.7 的 SQL 原语让集合计算留在 OOD，只把查询结果交给浏览器，可以避开大部分下载；仍需要明确的上限，以及转到托管执行的引导 |
 | 编码阶段变重 | 编码要完成试运行才算结束。只要试运行的候选直通首次运行（§5.7），用户看到结果之前的等待与今天“分析后执行”相当；分析经确认后才编码，避免在错误口径上花编程额度 |
 | 交互不直观 | 天使用户反馈许愿格用起来不够直观。分开的阶段和多个状态维度可能让它更复杂。本轮先把逻辑做对，实现后按使用情况调整呈现；界面上可以合并步骤，阶段和产物不合并 |
-| 核心 API 的进度 | 宏的 SQL 原语依赖核心 API 首批（§11.0）。它延后时，第一期的宏先只用 JS，其余边界照做 |
+| 核心 API 的进度 | 首批已交付（2026-11-12，§11.0）；宏的 SQL 原语还要做程序里的 `aiws.sql`、按输入名的表和读取字段的记录，这些在第一期 |
 | 抓取程序的维护 | 对方变化导致失效是常态。修复回路不通，数据源会长期停在旧版本。对方的使用条款和访问频率限制也需要体现在预算里 |
 | 凭据保管 | §7.4 要求凭据不进入宏输入、数据、聊天和模板。凭据放在哪里、怎样只交给被授权的执行环境，本文没有涉及 |
 | 高频数据源 | 与提交保护（§5.7）、Commit 历史（§7.7）、下游节流（§11.3）都有相互作用 |
@@ -724,7 +788,7 @@ skills 按日常操作、扩展开发、许愿格分析与执行组织，引用�
 - [内核架构改进](<../doc/workspace/BuckyOS AiWorkspace 内核架构改进.md>)
 - [许愿格详细设计](<../doc/workspace/BuckyOS AI  Workspace 许愿格详细设计.md>)
 - [许愿格浏览器优先规划](./aiworkspace-wish-browser-first-todo.md)、[xllm TypeScript 运行时 TODO](./xllm-ts-runtime-todo.md)
-- [AIWS 核心 API 调整 TODO](aiws-core-api-unification-todo.md)、[核心 API 设计草案 v0](aiws-core-api-design.md)、[AIWS 权限优化 TODO](aiws-permission-optimization-todo.md)
+- [AIWS 核心 API 调整 TODO](aiws-core-api-unification-todo.md)、[核心 API 设计 v1](aiws-core-api-design.md)、[AIWS 权限优化 TODO](aiws-permission-optimization-todo.md)
 - [HTML 控件宿主](../src/frame/desktop/src/app/aiworkspace/ui/extensions/htmlRuntime.ts)、[第二期规划](<../doc/workspace/BuckyOS AI Workspace 第二期规划.md>) D16
 
 本 PRD Review 通过后，再将影响已有设计的决策回写，并据此形成实施任务；本文不将相关 TODO 的计划状态改为已完成。

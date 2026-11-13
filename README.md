@@ -208,8 +208,8 @@ The goal of **0.8.0 / Beta3** is to deliver the complete distributed kernel, wit
 
 ## License
 
-BuckyOS is a free, open-source, decentralized system. We encourage vendors to build commercial products on top of BuckyOS and promote fair competition. Our licensing choices are designed to create a win-win ecosystem, preserve the decentralized core, protect contributors, and support a sustainable long-term ecosystem.
+BuckyOS first-party code is licensed under the GNU Affero General Public License, version 3 only (`AGPL-3.0-only`); see [LICENSE](LICENSE). Public related repositories, including buckyos-base, cyfs-ndn, cyfs-gateway, WebSDK and development/installer tools, license their own code under Apache-2.0. Third-party components retain their own licenses and notices; see [NOTICE](NOTICE).
 
-We use a dual-license model. One side is a traditional LGPL-based license that requires kernel modifications to follow GPL terms. Closed-source applications are allowed, but they cannot become core system components. The other side is a SourceDAO-based license. When an organization that issues DAO tokens uses BuckyOS, it must donate a portion of those tokens to the BuckyOS DAO under that license.
+When distributing binaries, provide the corresponding source and build materials required by the applicable licenses. Modified network-accessible BuckyOS versions must offer their corresponding source as required by AGPLv3 section 13. See [licensing and release materials](doc/licensing.md) for the release layout and extension-tool source bundles.
 
-There is still no existing license that fully matches our needs, so during the DEMO phase we are temporarily using the BSD license. I believe that once the PoC is complete, we will be ready with the formal license.
+SourceDAO describes community governance; token donations are not a condition of the AGPL license.

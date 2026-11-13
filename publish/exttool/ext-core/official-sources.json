@@ -1,0 +1,1398 @@
+{
+  "schema": "buckyos.official-source-inputs/v1",
+  "build_versions": {
+    "PANDOC_VERSION": "3.12.1",
+    "PYTHON_VERSION": "3.12.16",
+    "PYTHON_RELEASE": "20261026",
+    "UV_VERSION": "0.13.7",
+    "NODE_VERSION": "v24.21.0",
+    "DENO_VERSION": "v2.9.2",
+    "JQ_VERSION": "1.8.2",
+    "MINGIT_TAG": "v2.56.0.windows.4",
+    "MINGIT_VERSION": "2.56.0.4",
+    "BUSYBOX_VERSION": "FRP-6354-g5f09fb446",
+    "LIBREOFFICE_VERSION": "26.8.2",
+    "NOTO_SANS_CJK_TAG": "Sans2.004",
+    "NOTO_SERIF_CJK_TAG": "Serif2.003"
+  },
+  "components": [
+    {
+      "name": "pandoc",
+      "version": "3.12.1",
+      "license": "GPL-2.0-or-later",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "pandoc-3.12.1-linux-amd64.tar.gz",
+          "url": "https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-linux-amd64.tar.gz",
+          "sha256": "d0c90410e90204c9ca83b8539fac5c7aed01fd537207e4585849f8abc5df20b8",
+          "payload_file": "pandoc/bin/pandoc",
+          "archive_member": "*/bin/pandoc"
+        },
+        "linux-aarch64": {
+          "file": "pandoc-3.12.1-linux-arm64.tar.gz",
+          "url": "https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-linux-arm64.tar.gz",
+          "sha256": "445d96fd08801fe636cab1158b4f017ee320ac3b7446328b4fe2f902117b19b9",
+          "payload_file": "pandoc/bin/pandoc",
+          "archive_member": "*/bin/pandoc"
+        },
+        "darwin-arm64": {
+          "file": "pandoc-3.12.1-arm64-macOS.zip",
+          "url": "https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-arm64-macOS.zip",
+          "sha256": "c2146cf33a583f3ac93eccddf1bb662371d5cfcce1aad1c87ad860cca1435d46",
+          "payload_file": "pandoc/bin/pandoc",
+          "archive_member": "*/bin/pandoc"
+        },
+        "darwin-x86_64": {
+          "file": "pandoc-3.12.1-x86_64-macOS.zip",
+          "url": "https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-x86_64-macOS.zip",
+          "sha256": "81ed3e2cfecf096df15d407152f89a684fd65221082b919963f738e977fad3bc",
+          "payload_file": "pandoc/bin/pandoc",
+          "archive_member": "*/bin/pandoc"
+        },
+        "windows-x86_64": {
+          "file": "pandoc-3.12.1-windows-x86_64.zip",
+          "url": "https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-windows-x86_64.zip",
+          "sha256": "6ef431cb20b2c24a0371fc19200dc49d452be54b1b5c9239f3462841ef53e587",
+          "payload_file": "pandoc/bin/pandoc.exe",
+          "archive_member": "*/pandoc.exe"
+        }
+      },
+      "sources": [
+        {
+          "file": "pandoc-3.12.1-source.tar.gz",
+          "urls": [
+            "https://codeload.github.com/jgm/pandoc/tar.gz/refs/tags/3.12.1"
+          ],
+          "sha256": "cf9b3725b90e471aa70c99ac3b351adcb6e40cd904d36fcbb0f70d712e135686",
+          "kind": "upstream-source"
+        }
+      ],
+      "unresolved_source_requirements": [
+        "Obtain the exact linked Haskell package source closure and release build configuration for each upstream binary (the project source contains recipes but no frozen binary-specific Cabal plan)."
+      ]
+    },
+    {
+      "name": "python",
+      "version": "3.12.16+20261026",
+      "license": "PSF-2.0",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "cpython-3.12.16+20261026-x86_64-unknown-linux-gnu-install_only.tar.gz",
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16+20261026-x86_64-unknown-linux-gnu-install_only.tar.gz",
+          "sha256": "6a79e922e50006b601f29e688407659da1c2b86ebcd4e9c7254cf234be8b89de",
+          "payload_file": "python/bin/python3",
+          "archive_member": "python/bin/python3.12"
+        },
+        "linux-aarch64": {
+          "file": "cpython-3.12.16+20261026-aarch64-unknown-linux-gnu-install_only.tar.gz",
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16+20261026-aarch64-unknown-linux-gnu-install_only.tar.gz",
+          "sha256": "a945427411dc6851a1393533b74a4a1ac434321ae397f2ec69897a9b4fde032b",
+          "payload_file": "python/bin/python3",
+          "archive_member": "python/bin/python3.12"
+        },
+        "darwin-arm64": {
+          "file": "cpython-3.12.16+20261026-aarch64-apple-darwin-install_only.tar.gz",
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16+20261026-aarch64-apple-darwin-install_only.tar.gz",
+          "sha256": "fbf4afef53c2a6b72bb741bc06d5671a9dfaf87bd84e5aa73ac9b3d0d589f14e",
+          "payload_file": "python/bin/python3",
+          "archive_member": "python/bin/python3.12"
+        },
+        "darwin-x86_64": {
+          "file": "cpython-3.12.16+20261026-x86_64-apple-darwin-install_only.tar.gz",
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16+20261026-x86_64-apple-darwin-install_only.tar.gz",
+          "sha256": "a962e47df522889eaa7ff0d6a56203f1079f68aabb65ffdbe8455f362bc769f3",
+          "payload_file": "python/bin/python3",
+          "archive_member": "python/bin/python3.12"
+        },
+        "windows-x86_64": {
+          "file": "cpython-3.12.16+20261026-x86_64-pc-windows-msvc-install_only.tar.gz",
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16+20261026-x86_64-pc-windows-msvc-install_only.tar.gz",
+          "sha256": "590dfcbe3a34c07301e6332e13e2188b98655cd072b08afa45a7998dc4c22bc5",
+          "payload_file": "python/python.exe",
+          "archive_member": "python/python.exe"
+        }
+      },
+      "sources": [
+        {
+          "file": "Python-3.12.16.tar.xz",
+          "urls": [
+            "https://www.python.org/ftp/python/3.12.16/Python-3.12.16.tar.xz"
+          ],
+          "sha256": "b5796915dc45ff745cfb4e990a7e7c93d6f546328a102ce31448d69ebc37575c",
+          "kind": "upstream-source"
+        },
+        {
+          "file": "python-build-standalone-20261026.tar.gz",
+          "urls": [
+            "https://codeload.github.com/astral-sh/python-build-standalone/tar.gz/refs/tags/20261026"
+          ],
+          "sha256": "68de4af184e78f6338a91ddb48570da92cbdc24138ff44527d58a1e23a4e86e9",
+          "kind": "build-recipe"
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "dependency_manifest": {
+        "archive": "python-build-standalone-20261026.tar.gz",
+        "member": "python-build-standalone-20261026/pythonbuild/downloads.json",
+        "format": "python-build-standalone-json",
+        "mirrors": {
+          "uuid": [
+            "https://downloads.sourceforge.net/project/libuuid/libuuid-1.0.3.tar.gz",
+            "https://distfiles.macports.org/libuuid/libuuid-1.0.3.tar.gz",
+            "https://sources.buildroot.net/libuuid/libuuid-1.0.3.tar.gz"
+          ]
+        }
+      }
+    },
+    {
+      "name": "uv",
+      "version": "0.13.7",
+      "license": "MIT OR Apache-2.0",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "uv-x86_64-unknown-linux-gnu.tar.gz",
+          "url": "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83",
+          "payload_file": "uv/uv",
+          "archive_member": "*/uv"
+        },
+        "linux-aarch64": {
+          "file": "uv-aarch64-unknown-linux-gnu.tar.gz",
+          "url": "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "71279f8d3c67241e807b9d8db872d1bf541579fb9f08b7d1eb1682196d1e57dc",
+          "payload_file": "uv/uv",
+          "archive_member": "*/uv"
+        },
+        "darwin-arm64": {
+          "file": "uv-aarch64-apple-darwin.tar.gz",
+          "url": "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-aarch64-apple-darwin.tar.gz",
+          "sha256": "81b811b57e4624df7ed3aac148e0359100d9962f3d9dce00aec533dc2e086731",
+          "payload_file": "uv/uv",
+          "archive_member": "*/uv"
+        },
+        "darwin-x86_64": {
+          "file": "uv-x86_64-apple-darwin.tar.gz",
+          "url": "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-apple-darwin.tar.gz",
+          "sha256": "20c47e4c1f630b8abaff8c291fa9b9aa300fef92c4fbff95adf198b55287cda7",
+          "payload_file": "uv/uv",
+          "archive_member": "*/uv"
+        },
+        "windows-x86_64": {
+          "file": "uv-x86_64-pc-windows-msvc.zip",
+          "url": "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-pc-windows-msvc.zip",
+          "sha256": "0cdc5b38fe5a8168ed6a25814f5ba43c21d313dd3187314fccb37b7cec46e021",
+          "payload_file": "uv/uv.exe",
+          "archive_member": "uv.exe"
+        }
+      },
+      "sources": [
+        {
+          "file": "uv-0.13.7-source.tar.gz",
+          "urls": [
+            "https://codeload.github.com/astral-sh/uv/tar.gz/refs/tags/0.13.7"
+          ],
+          "sha256": "c742acebb931cae69d88c68274d00ba21ae5669ea9fdfaba00c33cf9f86f2727",
+          "kind": "upstream-source"
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "collect_cargo_dependencies": true
+    },
+    {
+      "name": "node",
+      "version": "24.21.0",
+      "license": "MIT",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "node-v24.21.0-linux-x64.tar.xz",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz",
+          "sha256": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6",
+          "payload_file": "node/bin/node",
+          "archive_member": "*/bin/node"
+        },
+        "linux-aarch64": {
+          "file": "node-v24.21.0-linux-arm64.tar.xz",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.xz",
+          "sha256": "6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2",
+          "payload_file": "node/bin/node",
+          "archive_member": "*/bin/node"
+        },
+        "darwin-arm64": {
+          "file": "node-v24.21.0-darwin-arm64.tar.xz",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.xz",
+          "sha256": "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe",
+          "payload_file": "node/bin/node",
+          "archive_member": "*/bin/node"
+        },
+        "darwin-x86_64": {
+          "file": "node-v24.21.0-darwin-x64.tar.xz",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-x64.tar.xz",
+          "sha256": "0ae5a24c24bb7d015cd816c5036b3f90f2945aa872fcf54e58da054753b3a299",
+          "payload_file": "node/bin/node",
+          "archive_member": "*/bin/node"
+        },
+        "windows-x86_64": {
+          "file": "node-v24.21.0-win-x64.zip",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
+          "sha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
+          "payload_file": "node/node.exe",
+          "archive_member": "*/node.exe"
+        }
+      },
+      "sources": [
+        {
+          "file": "node-v24.21.0-source.tar.xz",
+          "urls": [
+            "https://nodejs.org/dist/v24.21.0/node-v24.21.0.tar.xz"
+          ],
+          "sha256": "a6f54defb6fd7c84f41dba13d61e78e9b4e0961712cf61f29715c05f5ced94fc",
+          "kind": "upstream-source"
+        }
+      ],
+      "unresolved_source_requirements": []
+    },
+    {
+      "name": "deno",
+      "version": "2.9.2",
+      "license": "MIT",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "deno-x86_64-unknown-linux-gnu.zip",
+          "url": "https://github.com/denoland/deno/releases/download/v2.9.2/deno-x86_64-unknown-linux-gnu.zip",
+          "sha256": "934d1bd5cb09eaed7f2e4a4fc58208d04a3c5c0fcde9f319d93d735265c67a4a",
+          "payload_file": "deno/deno",
+          "archive_member": "deno"
+        },
+        "linux-aarch64": {
+          "file": "deno-aarch64-unknown-linux-gnu.zip",
+          "url": "https://github.com/denoland/deno/releases/download/v2.9.2/deno-aarch64-unknown-linux-gnu.zip",
+          "sha256": "310b8f48e59964ff18890d35e64f64fb90e8b1cc5d9ebff8c818327d5afb16d2",
+          "payload_file": "deno/deno",
+          "archive_member": "deno"
+        },
+        "darwin-arm64": {
+          "file": "deno-aarch64-apple-darwin.zip",
+          "url": "https://github.com/denoland/deno/releases/download/v2.9.2/deno-aarch64-apple-darwin.zip",
+          "sha256": "687ae485168ba73a4f1ee3a954eb4f077eca82f2fefd236a6a83a3889287876c",
+          "payload_file": "deno/deno",
+          "archive_member": "deno"
+        },
+        "darwin-x86_64": {
+          "file": "deno-x86_64-apple-darwin.zip",
+          "url": "https://github.com/denoland/deno/releases/download/v2.9.2/deno-x86_64-apple-darwin.zip",
+          "sha256": "c953379e5a85a0a30e99aa51b807633e380e809a1181f53e4904d5fa73785bff",
+          "payload_file": "deno/deno",
+          "archive_member": "deno"
+        },
+        "windows-x86_64": {
+          "file": "deno-x86_64-pc-windows-msvc.zip",
+          "url": "https://github.com/denoland/deno/releases/download/v2.9.2/deno-x86_64-pc-windows-msvc.zip",
+          "sha256": "5fe194d26ac5ef77fcc5288c2c438c7a0465f3b6180440ebf04092714bf2dcdf",
+          "payload_file": "deno/deno.exe",
+          "archive_member": "deno.exe"
+        }
+      },
+      "sources": [
+        {
+          "file": "deno-v2.9.2-source.tar.gz",
+          "urls": [
+            "https://codeload.github.com/denoland/deno/tar.gz/refs/tags/v2.9.2"
+          ],
+          "sha256": "da73fc598e580a70cbfceb1918acb37a0f36847b2f8444adafcdb9daa10d004c",
+          "kind": "upstream-source",
+          "collect_cargo_dependencies": true
+        },
+        {
+          "file": "rusty_v8-dd1b4e9c743b7a11dbeb99d4d0dc55979218b905.tar.gz",
+          "urls": [
+            "https://codeload.github.com/denoland/rusty_v8/tar.gz/dd1b4e9c743b7a11dbeb99d4d0dc55979218b905"
+          ],
+          "sha256": "0c03bfef876e048a743f8c4011f855bbba94e20bcab01a9a1fb3b7ac74bb7042",
+          "kind": "native-dependency-source",
+          "source_repository": "https://github.com/denoland/rusty_v8.git",
+          "source_revision": "dd1b4e9c743b7a11dbeb99d4d0dc55979218b905",
+          "source_submodule": "."
+        },
+        {
+          "file": "v8-73d19698991616a34a00ca691a6e697dbb69e2ef.tar.gz",
+          "urls": [
+            "https://codeload.github.com/denoland/v8/tar.gz/73d19698991616a34a00ca691a6e697dbb69e2ef"
+          ],
+          "sha256": "63a19755f87d8366c5112c341e0d4fcdb10bf9706d6acb55cf581b9afee9361a",
+          "kind": "native-dependency-source",
+          "source_repository": "https://github.com/denoland/v8.git",
+          "source_revision": "73d19698991616a34a00ca691a6e697dbb69e2ef",
+          "source_submodule": "v8"
+        },
+        {
+          "file": "build-fffa45f2e9df48c0230a4c799b7d12e7f83d8219.tar.gz",
+          "urls": [
+            "https://codeload.github.com/denoland/chromium_build/tar.gz/fffa45f2e9df48c0230a4c799b7d12e7f83d8219"
+          ],
+          "sha256": "50ab8b983a870cdf27f715e0ee1ee06f8aaceb2c4ab2dcb19d32e66e55bc4e0e",
+          "kind": "native-dependency-source",
+          "source_repository": "https://github.com/denoland/chromium_build.git",
+          "source_revision": "fffa45f2e9df48c0230a4c799b7d12e7f83d8219",
+          "source_submodule": "build"
+        },
+        {
+          "file": "tools_clang-61150a5f1ddf6460bad3d896c1502c6a56e15311.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/src/tools/clang/+archive/61150a5f1ddf6460bad3d896c1502c6a56e15311.tar.gz"
+          ],
+          "sha256": "200a7472327838307ce100ccbfb33659dbc65931da9ae8ae8a2ba9646455ef02",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/src/tools/clang.git",
+          "source_revision": "61150a5f1ddf6460bad3d896c1502c6a56e15311",
+          "source_submodule": "tools/clang"
+        },
+        {
+          "file": "third_party_jinja2-c3027d884967773057bf74b957e3fea87e5df4d7.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/src/third_party/jinja2/+archive/c3027d884967773057bf74b957e3fea87e5df4d7.tar.gz"
+          ],
+          "sha256": "b36481f9deb7c25851546a6a6e32773f4fff45b5fcab154f013c483373f30fed",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/src/third_party/jinja2.git",
+          "source_revision": "c3027d884967773057bf74b957e3fea87e5df4d7",
+          "source_submodule": "third_party/jinja2"
+        },
+        {
+          "file": "third_party_markupsafe-4256084ae14175d38a3ff7d739dca83ae49ccec6.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/src/third_party/markupsafe/+archive/4256084ae14175d38a3ff7d739dca83ae49ccec6.tar.gz"
+          ],
+          "sha256": "9ab07e584e6d4f8aa3f52124d9fbb47994936c041da74c0cb18abccf9e07ee5f",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/src/third_party/markupsafe.git",
+          "source_revision": "4256084ae14175d38a3ff7d739dca83ae49ccec6",
+          "source_submodule": "third_party/markupsafe"
+        },
+        {
+          "file": "buildtools-c9110ba7150d93134b1c85ea392033b4a82d28f7.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/src/buildtools/+archive/c9110ba7150d93134b1c85ea392033b4a82d28f7.tar.gz"
+          ],
+          "sha256": "0b127b4b302835c6cda941f7e0f6b76297921d4522e89f8073ba136ac0c55688",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/src/buildtools.git",
+          "source_revision": "c9110ba7150d93134b1c85ea392033b4a82d28f7",
+          "source_submodule": "buildtools"
+        },
+        {
+          "file": "third_party_icu-ee5f27adc28bd3f15b2c293f726d14d2e336cbd5.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/deps/icu/+archive/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5.tar.gz"
+          ],
+          "sha256": "d8244cdebec31d3764822ef80672a7854865c4bb052b6fe92f56a5e1984771f8",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/deps/icu.git",
+          "source_revision": "ee5f27adc28bd3f15b2c293f726d14d2e336cbd5",
+          "source_submodule": "third_party/icu"
+        },
+        {
+          "file": "third_party_abseil-cpp-5e42a36a85a252d8cdee6c39661d2bfd9883fd5c.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp/+archive/5e42a36a85a252d8cdee6c39661d2bfd9883fd5c.tar.gz"
+          ],
+          "sha256": "f61ae02adf35da95db61f12877be14a10b9a0e23e50b81c12c83f6c86897cb0f",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp.git",
+          "source_revision": "5e42a36a85a252d8cdee6c39661d2bfd9883fd5c",
+          "source_submodule": "third_party/abseil-cpp"
+        },
+        {
+          "file": "third_party_fp16_src-3d2de1816307bac63c16a297e8c4dc501b4076df.tar.gz",
+          "urls": [
+            "https://codeload.github.com/Maratyszcza/FP16/tar.gz/3d2de1816307bac63c16a297e8c4dc501b4076df"
+          ],
+          "sha256": "65ace2f05fd9434b0acb7a7d3cc6cd96842ea6236b680594af932b359bedbfc1",
+          "kind": "native-dependency-source",
+          "source_repository": "https://github.com/Maratyszcza/FP16.git",
+          "source_revision": "3d2de1816307bac63c16a297e8c4dc501b4076df",
+          "source_submodule": "third_party/fp16/src"
+        },
+        {
+          "file": "third_party_libcpp_src-99457fa555797f8c5ac3c076ca288d8481d3b23a.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+archive/99457fa555797f8c5ac3c076ca288d8481d3b23a.tar.gz"
+          ],
+          "sha256": "483153f037ef0c75df0034a52b25aea099f033e30807cdeb4b552630b1ba758d",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx.git",
+          "source_revision": "99457fa555797f8c5ac3c076ca288d8481d3b23a",
+          "source_submodule": "third_party/libc++/src"
+        },
+        {
+          "file": "third_party_libcppabi_src-8f11bb1d4438d0239d0dfc1bd9456a9f31629dda.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxxabi/+archive/8f11bb1d4438d0239d0dfc1bd9456a9f31629dda.tar.gz"
+          ],
+          "sha256": "bd2bf34a27d7ee219303efbaede86124a4fd22c886d75e92dac9dd79bf8cb253",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxxabi.git",
+          "source_revision": "8f11bb1d4438d0239d0dfc1bd9456a9f31629dda",
+          "source_submodule": "third_party/libc++abi/src"
+        },
+        {
+          "file": "third_party_libunwind_src-a2530baf3d11013afd0f1c1941ab6bef5ba71d0a.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libunwind/+archive/a2530baf3d11013afd0f1c1941ab6bef5ba71d0a.tar.gz"
+          ],
+          "sha256": "90b78374e34b667fa425853a0ff01189678d1ff3427b4fa410fa6ce76db0a512",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libunwind.git",
+          "source_revision": "a2530baf3d11013afd0f1c1941ab6bef5ba71d0a",
+          "source_submodule": "third_party/libunwind/src"
+        },
+        {
+          "file": "third_party_fast_float_src-05087a303dad9c98768b33c829d398223a649bc6.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/external/github.com/fastfloat/fast_float/+archive/05087a303dad9c98768b33c829d398223a649bc6.tar.gz"
+          ],
+          "sha256": "c4f2ab104a6178eb3030ea06ea276a06f7835e1b594290ad38baa4547c5dd7dd",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/external/github.com/fastfloat/fast_float.git",
+          "source_revision": "05087a303dad9c98768b33c829d398223a649bc6",
+          "source_submodule": "third_party/fast_float/src"
+        },
+        {
+          "file": "third_party_llvm-libc_src-cb952785ccee13811f293f3c419958d1e3ddafbf.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libc/+archive/cb952785ccee13811f293f3c419958d1e3ddafbf.tar.gz"
+          ],
+          "sha256": "3c6de8530d1006fd252b85352d45cb9439c079a7712f921a939a2204c8867fa2",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libc.git",
+          "source_revision": "cb952785ccee13811f293f3c419958d1e3ddafbf",
+          "source_submodule": "third_party/llvm-libc/src"
+        },
+        {
+          "file": "third_party_simdutf-f7356eed293f8208c40b3c1b344a50bd70971983.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/src/third_party/simdutf/+archive/f7356eed293f8208c40b3c1b344a50bd70971983.tar.gz"
+          ],
+          "sha256": "fa54a8101ba97f1b6862df08f60292632ff2bee4e76ca1875cbb54b8d2e51a01",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/src/third_party/simdutf",
+          "source_revision": "f7356eed293f8208c40b3c1b344a50bd70971983",
+          "source_submodule": "third_party/simdutf"
+        },
+        {
+          "file": "third_party_highway_src-2607d3b5b0113992fe84d3848859eae13b3b52c1.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/external/github.com/google/highway/+archive/2607d3b5b0113992fe84d3848859eae13b3b52c1.tar.gz"
+          ],
+          "sha256": "e5084e9db9aa4525c151fcc4728ba6567691203a3ce63cfedd6499066b44f7bf",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/external/github.com/google/highway.git",
+          "source_revision": "2607d3b5b0113992fe84d3848859eae13b3b52c1",
+          "source_submodule": "third_party/highway/src"
+        },
+        {
+          "file": "third_party_partition_alloc-fafdd4c9f559c6d0cfdf2ed3170ce370b59bfdbf.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/src/base/allocator/partition_allocator/+archive/fafdd4c9f559c6d0cfdf2ed3170ce370b59bfdbf.tar.gz"
+          ],
+          "sha256": "8fe872115b35b2a508ec7e45303806b16662a2f81ddcb9a6ab308c264dc19682",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/src/base/allocator/partition_allocator.git",
+          "source_revision": "fafdd4c9f559c6d0cfdf2ed3170ce370b59bfdbf",
+          "source_submodule": "third_party/partition_alloc"
+        },
+        {
+          "file": "third_party_dragonbox_src-beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/external/github.com/jk-jeon/dragonbox/+archive/beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44.tar.gz"
+          ],
+          "sha256": "3c2783bcf541ab6bd1e067fccca62ebcaecba96f5699575249b928fb72e90bf0",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/external/github.com/jk-jeon/dragonbox.git",
+          "source_revision": "beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44",
+          "source_submodule": "third_party/dragonbox/src"
+        },
+        {
+          "file": "third_party_rust-2b055f4ecac78bbf34a0d34217c699b7b09b44dd.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/src/third_party/rust/+archive/2b055f4ecac78bbf34a0d34217c699b7b09b44dd.tar.gz"
+          ],
+          "sha256": "27b59d958ec7418cbbafbc2ff053003069915d2755f445aae0ce69034119d229",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/src/third_party/rust",
+          "source_revision": "2b055f4ecac78bbf34a0d34217c699b7b09b44dd",
+          "source_submodule": "third_party/rust"
+        },
+        {
+          "file": "tools_win-d16e6b55b2bd699735919d8a13a55ff284086603.tar.gz",
+          "urls": [
+            "https://chromium.googlesource.com/chromium/src/tools/win/+archive/d16e6b55b2bd699735919d8a13a55ff284086603.tar.gz"
+          ],
+          "sha256": "a1d7fd8cfa186e92fbcb23d4ef57b1a00240c0f2ebb86961de62e2e114dbff01",
+          "kind": "native-dependency-source",
+          "source_repository": "https://chromium.googlesource.com/chromium/src/tools/win",
+          "source_revision": "d16e6b55b2bd699735919d8a13a55ff284086603",
+          "source_submodule": "tools/win"
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "notices": [
+        {
+          "file": "chromium-LICENSE-0f53c6014a68b1614bdbe1f99dab48f3ec9103e3.txt",
+          "urls": [
+            "https://raw.githubusercontent.com/chromium/chromium/0f53c6014a68b1614bdbe1f99dab48f3ec9103e3/LICENSE",
+            "https://raw.githubusercontent.com/chromium/chromium/e74489ee1796d05b553ed3f7d09f4c6f27490d0a/LICENSE"
+          ],
+          "sha256": "368cca1106be99d39ecd32a38d8305585d802a475effb66380b91ffc9bcf709b",
+          "kind": "license-text"
+        }
+      ],
+      "source_note": "The published v8 crate is preserved as authoritative packaging input including generated bindings, normalized manifest, and pruned lockfile. Its .cargo_vcs_info records a dirty checkout. The 20 pinned native submodule source archives match every shared crate file byte-for-byte; all shared Rust binding source files also match. This source-and-notice collection does not claim bit-for-bit reproduction of official Deno binaries.",
+      "provenance_files": [
+        {
+          "file": "v8-sources.json",
+          "sha256": "0f4abd9f2148bf342d54e038e679eaf47f57ba7236ccc47d7ea35ca043ea0379"
+        }
+      ]
+    },
+    {
+      "name": "jq",
+      "version": "1.8.2",
+      "license": "MIT",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "jq-linux-amd64",
+          "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64",
+          "sha256": "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+          "payload_file": "jq/jq",
+          "archive_member": null
+        },
+        "linux-aarch64": {
+          "file": "jq-linux-arm64",
+          "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-arm64",
+          "sha256": "8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309",
+          "payload_file": "jq/jq",
+          "archive_member": null
+        },
+        "darwin-arm64": {
+          "file": "jq-macos-arm64",
+          "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-macos-arm64",
+          "sha256": "2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e",
+          "payload_file": "jq/jq",
+          "archive_member": null
+        },
+        "darwin-x86_64": {
+          "file": "jq-macos-amd64",
+          "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-macos-amd64",
+          "sha256": "e94b266e3c26690550006abe63152b782280f4e14374accdf04cbde844f00bc0",
+          "payload_file": "jq/jq",
+          "archive_member": null
+        },
+        "windows-x86_64": {
+          "file": "jq-windows-amd64.exe",
+          "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-windows-amd64.exe",
+          "sha256": "a6fc67fedaf9128a3309a1e2ebb8b986aeccf70122ee46d2cb4849e423f0c627",
+          "payload_file": "jq/jq.exe",
+          "archive_member": null
+        }
+      },
+      "sources": [
+        {
+          "file": "jq-1.8.2-source.tar.gz",
+          "urls": [
+            "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-1.8.2.tar.gz"
+          ],
+          "sha256": "71b8d6e8f5fe81f6c6d0d110e3892251f6ce76ed095abd315e26e6e1193af3af",
+          "kind": "upstream-source"
+        }
+      ],
+      "unresolved_source_requirements": []
+    },
+    {
+      "name": "libreoffice",
+      "version": "26.8.2.2",
+      "license": "MPL-2.0",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "LibreOffice_26.8.2_Linux_x86-64_deb.tar.gz",
+          "url": "https://download.documentfoundation.org/libreoffice/stable/26.8.2/deb/x86_64/LibreOffice_26.8.2_Linux_x86-64_deb.tar.gz",
+          "sha256": "8290c8f46cb33d6df8f681cb796e0697461ea070f86ec55b63c94d7eb9d9a476",
+          "payload_file": "libreoffice/program/soffice.bin"
+        },
+        "linux-aarch64": {
+          "file": "LibreOffice_26.8.2_Linux_aarch64_deb.tar.gz",
+          "url": "https://download.documentfoundation.org/libreoffice/stable/26.8.2/deb/aarch64/LibreOffice_26.8.2_Linux_aarch64_deb.tar.gz",
+          "sha256": "54a780b666fcda7510c2eebe85265b71dd209db280fc16882fca5589015ca505",
+          "payload_file": "libreoffice/program/soffice.bin"
+        },
+        "darwin-arm64": {
+          "file": "LibreOffice_26.8.2_MacOS_aarch64.dmg",
+          "url": "https://download.documentfoundation.org/libreoffice/stable/26.8.2/mac/aarch64/LibreOffice_26.8.2_MacOS_aarch64.dmg",
+          "sha256": "9f24fe83ab1ed5c95eb3df580119f32932f713e577feeac02bf619fb00749b55",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/MacOS/soffice"
+        },
+        "darwin-x86_64": {
+          "file": "LibreOffice_26.8.2_MacOS_x86-64.dmg",
+          "url": "https://download.documentfoundation.org/libreoffice/stable/26.8.2/mac/x86_64/LibreOffice_26.8.2_MacOS_x86-64.dmg",
+          "sha256": "0af062779cc17f6f852918b2424c745f7dd2d20d51d7fb8a0925eb92ec0417a7",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/MacOS/soffice"
+        },
+        "windows-x86_64": {
+          "file": "LibreOffice_26.8.2_Win_x86-64.msi",
+          "url": "https://download.documentfoundation.org/libreoffice/stable/26.8.2/win/x86_64/LibreOffice_26.8.2_Win_x86-64.msi",
+          "sha256": "ff4b911403b67ee9e6249f820f9782c44bb32c94fdaa45b0da53a8e419e5307a",
+          "payload_file": "libreoffice/program/soffice.bin"
+        }
+      },
+      "sources": [
+        {
+          "file": "libreoffice-26.8.2.2.tar.xz",
+          "urls": [
+            "https://download.documentfoundation.org/libreoffice/src/26.8.2/libreoffice-26.8.2.2.tar.xz"
+          ],
+          "sha256": "f0012302d9cc70955bd55890d3aaccf6c55677c4a6a46e1003f996b1b0dae8e7",
+          "kind": "upstream-source"
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "dependency_manifest": {
+        "archive": "libreoffice-26.8.2.2.tar.xz",
+        "member": "libreoffice-26.8.2.2/download.lst",
+        "url_base": "https://dev-www.libreoffice.org/src/"
+      }
+    },
+    {
+      "name": "mingit",
+      "version": "2.56.0.4",
+      "license": "GPL-2.0-only",
+      "license_scope": "Git itself; the distribution also includes GPL-3.0-or-later, LGPL and other independently licensed components recorded in mingit-sources.json and the original binary notices.",
+      "binaries": {
+        "windows-x86_64": {
+          "file": "MinGit-2.56.0.4-64-bit.zip",
+          "url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-64-bit.zip",
+          "sha256": "e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877",
+          "payload_file": "mingit/cmd/git.exe",
+          "archive_member": "cmd/git.exe"
+        }
+      },
+      "sources": [
+        {
+          "file": "heimdal-7.8.0-5.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2025-02-17T19-44-32.968336700Z/heimdal-7.8.0-5.src.tar.gz"
+          ],
+          "sha256": "beb950ac5f0d11e18bbcb81a9e7e6ef9446cc2fa9ebb486ee2fb5670b06fd9e5",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "libcbor-0.11.0-1.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2024-02-05T16-30-39.000Z/libcbor-0.11.0-1.src.tar.gz"
+          ],
+          "sha256": "63bce3f2d476c3551c9fd08e0c80475711cfc2b4a192a07f8b9869b2127240a1",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "libfido2-1.15.0-1.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2024-06-14T09-31-36.000Z/libfido2-1.15.0-1.src.tar.gz"
+          ],
+          "sha256": "bf12ccd31a868bfb20a66cbfb7147b9d683bc31f30dca30ad70f38d6e935300e",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "openssl-3.5.9-1.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2026-09-30T08-56-50.408104900Z/openssl-3.5.9-1.src.tar.gz"
+          ],
+          "sha256": "017077b0addd68b9d8aee34bd013e55746f822e7bd67833c07bc399c9e56e336",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-curl-8.23.0-1.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2026-10-15T16-10-28.300057100Z/mingw-w64-curl-8.23.0-1.src.tar.gz"
+          ],
+          "sha256": "9ce76c7fd71c214d216cb546dfa5fda8fd6ff43a2e274bc0ee34f85ae2d4e309",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-git-2.56.0.4-1.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2026-10-26T07-04-21.974091400Z/mingw-w64-git-2.56.0.4-1.src.tar.gz"
+          ],
+          "sha256": "7e1daba594bf896805a090ed5693f95715c01f0ee2a9cf14defad3e3153f0759",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-git-credential-manager-2.9.1-1.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2026-07-14T20-22-11.997190100Z/mingw-w64-git-credential-manager-2.9.1-1.src.tar.gz"
+          ],
+          "sha256": "8d4a34639f6959ae56899da8b44526107c32a5490e21eec451e2e7df8e5b3c84",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-git-extra-1.1.715.85f886165-1.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2026-09-10T22-57-20.747747200Z/mingw-w64-git-extra-1.1.715.85f886165-1.src.tar.gz"
+          ],
+          "sha256": "a17b18ebe09ba357c798f8963497fd8086e4cc8a5f889e9a351a614d038cf331",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-openssl-3.5.9-1.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2026-09-30T09-24-18.347486000Z/mingw-w64-openssl-3.5.9-1.src.tar.gz"
+          ],
+          "sha256": "479e68e9cfaa11d5c0371c9bd92857bf29d2704bd4d57eac133f36466d9eba9b",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "msys2-runtime-3.6.10-4.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2026-09-28T10-53-27.205004700Z/msys2-runtime-3.6.10-4.src.tar.gz"
+          ],
+          "sha256": "3dae788aee6bf5244f124aa7e0a04328e6585d92ed1826bb510f23aefbc40a1e",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "openssh-10.6p1-1.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2026-10-06T21-47-39.107137000Z/openssh-10.6p1-1.src.tar.gz"
+          ],
+          "sha256": "891deb18da3bd620d2c8fdada6c5d1e9b637f2a6344b5b4a9dc39d50de2068ae",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "bash-5.3.015-2.src.tar.gz",
+          "urls": [
+            "https://github.com/git-for-windows/pacman-repo/releases/download/2026-08-20T13-55-07.365148200Z/bash-5.3.015-2.src.tar.gz"
+          ],
+          "sha256": "817a480aa08f0f112af9496a9335d3a48f4c479ef5e1b1740df6dcc76670d94a",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "gawk-5.4.1-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/gawk-5.4.1-1.src.tar.zst"
+          ],
+          "sha256": "d8b8cdd6cbf72431c02cb26cf92174aca5b6f1b7791aaf29fa3a11d205a66b39",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "coreutils-8.32-5.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/coreutils-8.32-5.src.tar.zst"
+          ],
+          "sha256": "2b8689413bc50367a9995adf50ea84cd3caaff0ec68a8f32d8328842c3f83835",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "diffutils-3.12-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/diffutils-3.12-1.src.tar.zst"
+          ],
+          "sha256": "474c4a3528a2afbb8d9608c65ad1bdbbd81ff42c143a438d7d56272a61b1bfac",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "findutils-4.11.0-2.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/findutils-4.11.0-2.src.tar.zst"
+          ],
+          "sha256": "92edf442f61f8873318811a688ba327a0d2878a63a9ed21992b5cce12b0ae146",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "gcc-16.2.0-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/gcc-16.2.0-1.src.tar.zst"
+          ],
+          "sha256": "19c927f27da78aad25a449a4e6e3bfe8650541cc09ac2e701a4ec4d7e61137b9",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "gmp-6.3.0-2.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/gmp-6.3.0-2.src.tar.zst"
+          ],
+          "sha256": "02356ca25ce362edb883ce7c060050de2cec5f2b1227a1c56ef7c0a0f99ff667",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "grep-1~3.0-7.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/grep-1~3.0-7.src.tar.zst"
+          ],
+          "sha256": "acba43b9b2c3eb393f9a75d02a1eca34fa23d959541150a7ac4ffbafce3cae4e",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "libiconv-1.19-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/libiconv-1.19-1.src.tar.zst"
+          ],
+          "sha256": "5a8bcd3242e2be94fffd9f03fadcda8d9fd64047430050c5cbd214cd3bf7f0a7",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "gettext-0.22.5-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/gettext-0.22.5-1.src.tar.zst"
+          ],
+          "sha256": "e07a0b3e6716aae86dc0edd2dcdc8864731d56051345592b53659a3840ccfbd8",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "pcre-8.45-5.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/pcre-8.45-5.src.tar.zst"
+          ],
+          "sha256": "f7104aa31f29655689b404ead9923332e2fa6aadfe97c060d0dfc02f4661d6b5",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "readline-8.3.006-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/readline-8.3.006-1.src.tar.zst"
+          ],
+          "sha256": "9ddb3eb989f6ad7d696ce5a2d92322b33a20056b293e3c4fc4f6cc568a320640",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "sqlite-3.54.0-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/sqlite-3.54.0-1.src.tar.zst"
+          ],
+          "sha256": "e696013ca93e134622b20caa26a4336f382dda932b6ed432f2fa7c67ce7829b0",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "libxcrypt-4.5.2-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/libxcrypt-4.5.2-1.src.tar.zst"
+          ],
+          "sha256": "dc3e44cea067417ff61c25c981d7d58bb0f343b824ba10fd2a0a3b8badc55746",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-brotli-1.2.1-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-brotli-1.2.1-1.src.tar.zst"
+          ],
+          "sha256": "3dfc69b88a111ef4809928e81d4cb650ea9c7ba5da4ebd1bf28d6effdeeb6bd6",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-ca-certificates-20260816-3.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-ca-certificates-20260816-3.src.tar.zst"
+          ],
+          "sha256": "fe6b17eea64afccd14e0f70f5e45742374934f646fc9f7a5a175595a1ef88d5a",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-gcc-16.2.0-6.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.2.0-6.src.tar.zst"
+          ],
+          "sha256": "a901d8afb78438abcff9ed020cd9aa9431db76de1992171c2454c3c07ad289e8",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-docx2txt-rs-0.2.0-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-docx2txt-rs-0.2.0-1.src.tar.zst"
+          ],
+          "sha256": "b65fbfd8b785f0e9df84a173cd257654f04b4aa6d83602d39f8097e19b35b31d",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-expat-2.9.0-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-expat-2.9.0-1.src.tar.zst"
+          ],
+          "sha256": "014a4b1949f65f053a9774712994db89fea290516f1c1849bbbbf7316ee1606b",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-gettext-1.0-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-gettext-1.0-1.src.tar.zst"
+          ],
+          "sha256": "cca0d0c8f60353faccc5ad40405240014e4a7ccc8b1c6ca9f4626aef3097d26e",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-libffi-3.8.0-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-libffi-3.8.0-1.src.tar.zst"
+          ],
+          "sha256": "641ea78ce0333839eab5262656f03fdcfd8496d7388bd7b27e4f0638aeed9adf",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-libiconv-1.19-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst"
+          ],
+          "sha256": "74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-libidn2-2.3.8-4.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-libidn2-2.3.8-4.src.tar.zst"
+          ],
+          "sha256": "cd83e8514fbeb6a4499299b88691b9b9ecc3114cca1e2be4f6c54aab6ae9ddd0",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-libpsl-0.21.5-3.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-libpsl-0.21.5-3.src.tar.zst"
+          ],
+          "sha256": "102b4ab4c60322162e808c5c81f545438c346c659e8fb63e0851066f07a0e76b",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-libtasn1-4.21.0-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-libtasn1-4.21.0-1.src.tar.zst"
+          ],
+          "sha256": "c626129c5131eef0a45c736274f0844747605a105161cc0f7d39f6e1c70ed0ff",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-libunistring-1.4.2-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-libunistring-1.4.2-1.src.tar.zst"
+          ],
+          "sha256": "a5bafb360d5c13c5c52ef071d5a8288ce2345346b902f20ed6e9322766ec60eb",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-winpthreads-14.0.0.r532.gdbbc8e99d-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r532.gdbbc8e99d-1.src.tar.zst"
+          ],
+          "sha256": "79202508d71447ae6cb3dbd434d8045408b8ec7105e4018eb8dddff34be6ff5c",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-nghttp2-1.70.0-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-nghttp2-1.70.0-1.src.tar.zst"
+          ],
+          "sha256": "a2159c7fc94daa3dd052919bcb927db5736bbaa99c3753345e0523fcb7c9f384",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-pcre2-10.49-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-pcre2-10.49-1.src.tar.zst"
+          ],
+          "sha256": "b02f0d5070b7d7f6db5c8ba9b009f28c1a07b9b52aaf7964dc0c8b098e4088d1",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-zlib-1.3.2-3.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-3.src.tar.zst"
+          ],
+          "sha256": "4b7839ab2826d3e3d27fe46150d2180a1f561f4d03c9e82aeb4b056180561f00",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-zstd-1.5.7-2.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-zstd-1.5.7-2.src.tar.zst"
+          ],
+          "sha256": "306797282df799e95d550e6d0bb4b0a7b848027b8e13893a24236e060837c217",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mpfr-4.2.2-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/mpfr-4.2.2-1.src.tar.zst"
+          ],
+          "sha256": "e0c56e3af3819471e74dd37e32660e4eb8f58761c4d214dabd2d62f57c548869",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "ncurses-6.6-2.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/ncurses-6.6-2.src.tar.zst"
+          ],
+          "sha256": "f5df12bd297e6b6930e2aa68e8014347b2193592645d93acce6774e05cbf15e6",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "sed-4.9-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/sed-4.9-1.src.tar.zst"
+          ],
+          "sha256": "a9686da7c1f3cb2ba7ae5f20f30d9ef38f7bba993f9c777b43bd13c7fbd7cc58",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "zlib-1.3.2-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/zlib-1.3.2-1.src.tar.zst"
+          ],
+          "sha256": "b3ec151674ce25015b16b28394d679ac0eedee03d02be33f93367c3a2b4d426d",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "filesystem-2026.10.17-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/filesystem-2026.10.17-1.src.tar.zst"
+          ],
+          "sha256": "969d2c0e10fa824ab0524c11cfe2c389891d44ef83b709ee86d9ec12dd75df81",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "dash-0.5.13.5-1.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/dash-0.5.13.5-1.src.tar.zst"
+          ],
+          "sha256": "fd6a1d82f3eb628b16d4405ce36812c2828063864cbd79c556b54a728c908fef",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "rebase-4.5.0-5.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/msys/sources/rebase-4.5.0-5.src.tar.zst"
+          ],
+          "sha256": "5e9c24c35a881888c045aa04b676f79d238e870a7391f595665e9bd9d26b09c9",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "mingw-w64-libssh2-1.11.1-2.src.tar.zst",
+          "urls": [
+            "https://repo.msys2.org/mingw/sources/mingw-w64-libssh2-1.11.1-2.src.tar.zst"
+          ],
+          "sha256": "bb78f8354441190221ece18a96c09f631fe02648f5dd7d1e247ae8d00a9fea5f",
+          "kind": "dependency-source"
+        },
+        {
+          "file": "build-extra-85f886165.tar.gz",
+          "urls": [
+            "https://codeload.github.com/git-for-windows/build-extra/tar.gz/85f886165bf9c422ffed7aebcded27c0b7a55630"
+          ],
+          "sha256": "e5528bf71149fc3250a9d7685a8fd44177617af238806f752e923f523baef0c5",
+          "kind": "build-recipe"
+        },
+        {
+          "file": "docx2txt-rs-0.2.0.tar.gz",
+          "urls": [
+            "https://github.com/dscho/docx2txt-rs/archive/v0.2.0/docx2txt-rs-0.2.0.tar.gz"
+          ],
+          "sha256": "25321fa9a937590017419eab8e285076b9530af588bb4c580bcee59285c3f41e",
+          "kind": "dependency-source",
+          "collect_cargo_dependencies": true
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "package_provenance": {
+        "file": "mingit-sources.json",
+        "sha256": "842ff15dc1f384ad8c4fd4f6a8a631df0dadb1f4a4730dd121f5db9cfe44066d"
+      },
+      "extract_binary_notices": true,
+      "source_note": "All 65 exact installed package versions map to 50 official source packages, including recipes, patches and embedded source; docx2txt-rs locked registry crates are collected separately. The git-extra revision supplies assembly scripts, but the binary does not identify the release assembly checkout. No bit-for-bit reproduction claim is made."
+    },
+    {
+      "name": "busybox-w32",
+      "version": "FRP-6354-g5f09fb446",
+      "license": "GPL-2.0-only",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "windows-x86_64": {
+          "file": "busybox-w64-FRP-6354-g5f09fb446.exe",
+          "url": "https://frippery.org/files/busybox/busybox-w64-FRP-6354-g5f09fb446.exe",
+          "sha256": "95343c871869cc0ab57ecec26b2f9af0370eb9c954f7e5ddd017163e4e0d09a0",
+          "payload_file": "busybox/busybox.exe",
+          "archive_member": null
+        }
+      },
+      "sources": [
+        {
+          "file": "busybox-w32-FRP-6354-g5f09fb446.tgz",
+          "urls": [
+            "https://frippery.org/files/busybox/busybox-w32-FRP-6354-g5f09fb446.tgz"
+          ],
+          "sha256": "950d2c73e979e54c65c7723668406d1d6e740fc474f41516a82ddae805fbf24b",
+          "kind": "upstream-source"
+        }
+      ],
+      "unresolved_source_requirements": []
+    },
+    {
+      "name": "noto-sans-cjk-regular",
+      "version": "Sans2.004",
+      "license": "OFL-1.1",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "NotoSansCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Regular.ttc",
+          "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSansCJK-Regular.ttc",
+          "archive_member": null
+        },
+        "linux-aarch64": {
+          "file": "NotoSansCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Regular.ttc",
+          "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSansCJK-Regular.ttc",
+          "archive_member": null
+        },
+        "darwin-arm64": {
+          "file": "NotoSansCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Regular.ttc",
+          "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/Resources/fonts/truetype/NotoSansCJK-Regular.ttc",
+          "archive_member": null
+        },
+        "darwin-x86_64": {
+          "file": "NotoSansCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Regular.ttc",
+          "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/Resources/fonts/truetype/NotoSansCJK-Regular.ttc",
+          "archive_member": null
+        },
+        "windows-x86_64": {
+          "file": "NotoSansCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Regular.ttc",
+          "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSansCJK-Regular.ttc",
+          "archive_member": null
+        }
+      },
+      "sources": [
+        {
+          "file": "NotoSansCJK-Regular.ttc",
+          "urls": [
+            "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Regular.ttc"
+          ],
+          "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+          "kind": "upstream-font"
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "notices": [
+        {
+          "file": "NotoSansCJK-Sans2.004-LICENSE",
+          "urls": [
+            "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE"
+          ],
+          "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+          "kind": "license-text"
+        }
+      ],
+      "source_note": "Original redistributed font files; no claim that these are editable font design sources."
+    },
+    {
+      "name": "noto-sans-cjk-bold",
+      "version": "Sans2.004",
+      "license": "OFL-1.1",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "NotoSansCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Bold.ttc",
+          "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSansCJK-Bold.ttc",
+          "archive_member": null
+        },
+        "linux-aarch64": {
+          "file": "NotoSansCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Bold.ttc",
+          "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSansCJK-Bold.ttc",
+          "archive_member": null
+        },
+        "darwin-arm64": {
+          "file": "NotoSansCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Bold.ttc",
+          "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/Resources/fonts/truetype/NotoSansCJK-Bold.ttc",
+          "archive_member": null
+        },
+        "darwin-x86_64": {
+          "file": "NotoSansCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Bold.ttc",
+          "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/Resources/fonts/truetype/NotoSansCJK-Bold.ttc",
+          "archive_member": null
+        },
+        "windows-x86_64": {
+          "file": "NotoSansCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Bold.ttc",
+          "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSansCJK-Bold.ttc",
+          "archive_member": null
+        }
+      },
+      "sources": [
+        {
+          "file": "NotoSansCJK-Bold.ttc",
+          "urls": [
+            "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Bold.ttc"
+          ],
+          "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+          "kind": "upstream-font"
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "notices": [
+        {
+          "file": "NotoSansCJK-Sans2.004-LICENSE",
+          "urls": [
+            "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE"
+          ],
+          "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+          "kind": "license-text"
+        }
+      ],
+      "source_note": "Original redistributed font files; no claim that these are editable font design sources."
+    },
+    {
+      "name": "noto-serif-cjk-regular",
+      "version": "Serif2.003",
+      "license": "OFL-1.1",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "NotoSerifCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Regular.ttc",
+          "sha256": "5d9c31a059600193c9d7968a998bde886ccdc77e934006ad243b41794c496a7d",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSerifCJK-Regular.ttc",
+          "archive_member": null
+        },
+        "linux-aarch64": {
+          "file": "NotoSerifCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Regular.ttc",
+          "sha256": "5d9c31a059600193c9d7968a998bde886ccdc77e934006ad243b41794c496a7d",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSerifCJK-Regular.ttc",
+          "archive_member": null
+        },
+        "darwin-arm64": {
+          "file": "NotoSerifCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Regular.ttc",
+          "sha256": "5d9c31a059600193c9d7968a998bde886ccdc77e934006ad243b41794c496a7d",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/Resources/fonts/truetype/NotoSerifCJK-Regular.ttc",
+          "archive_member": null
+        },
+        "darwin-x86_64": {
+          "file": "NotoSerifCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Regular.ttc",
+          "sha256": "5d9c31a059600193c9d7968a998bde886ccdc77e934006ad243b41794c496a7d",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/Resources/fonts/truetype/NotoSerifCJK-Regular.ttc",
+          "archive_member": null
+        },
+        "windows-x86_64": {
+          "file": "NotoSerifCJK-Regular.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Regular.ttc",
+          "sha256": "5d9c31a059600193c9d7968a998bde886ccdc77e934006ad243b41794c496a7d",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSerifCJK-Regular.ttc",
+          "archive_member": null
+        }
+      },
+      "sources": [
+        {
+          "file": "NotoSerifCJK-Regular.ttc",
+          "urls": [
+            "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Regular.ttc"
+          ],
+          "sha256": "5d9c31a059600193c9d7968a998bde886ccdc77e934006ad243b41794c496a7d",
+          "kind": "upstream-font"
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "notices": [
+        {
+          "file": "NotoSerifCJK-Serif2.003-LICENSE",
+          "urls": [
+            "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/LICENSE"
+          ],
+          "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+          "kind": "license-text"
+        }
+      ],
+      "source_note": "Original redistributed font files; no claim that these are editable font design sources."
+    },
+    {
+      "name": "noto-serif-cjk-bold",
+      "version": "Serif2.003",
+      "license": "OFL-1.1",
+      "license_scope": "project; bundled components retain their included notices",
+      "binaries": {
+        "linux-x86_64": {
+          "file": "NotoSerifCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Bold.ttc",
+          "sha256": "1505ee3b9c0890fae6302ee0e9c6fd74d690f4a55a6ace1d9944f3f6352d622d",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSerifCJK-Bold.ttc",
+          "archive_member": null
+        },
+        "linux-aarch64": {
+          "file": "NotoSerifCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Bold.ttc",
+          "sha256": "1505ee3b9c0890fae6302ee0e9c6fd74d690f4a55a6ace1d9944f3f6352d622d",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSerifCJK-Bold.ttc",
+          "archive_member": null
+        },
+        "darwin-arm64": {
+          "file": "NotoSerifCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Bold.ttc",
+          "sha256": "1505ee3b9c0890fae6302ee0e9c6fd74d690f4a55a6ace1d9944f3f6352d622d",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/Resources/fonts/truetype/NotoSerifCJK-Bold.ttc",
+          "archive_member": null
+        },
+        "darwin-x86_64": {
+          "file": "NotoSerifCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Bold.ttc",
+          "sha256": "1505ee3b9c0890fae6302ee0e9c6fd74d690f4a55a6ace1d9944f3f6352d622d",
+          "payload_file": "libreoffice/LibreOffice.app/Contents/Resources/fonts/truetype/NotoSerifCJK-Bold.ttc",
+          "archive_member": null
+        },
+        "windows-x86_64": {
+          "file": "NotoSerifCJK-Bold.ttc",
+          "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Bold.ttc",
+          "sha256": "1505ee3b9c0890fae6302ee0e9c6fd74d690f4a55a6ace1d9944f3f6352d622d",
+          "payload_file": "libreoffice/share/fonts/truetype/NotoSerifCJK-Bold.ttc",
+          "archive_member": null
+        }
+      },
+      "sources": [
+        {
+          "file": "NotoSerifCJK-Bold.ttc",
+          "urls": [
+            "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/OTC/NotoSerifCJK-Bold.ttc"
+          ],
+          "sha256": "1505ee3b9c0890fae6302ee0e9c6fd74d690f4a55a6ace1d9944f3f6352d622d",
+          "kind": "upstream-font"
+        }
+      ],
+      "unresolved_source_requirements": [],
+      "notices": [
+        {
+          "file": "NotoSerifCJK-Serif2.003-LICENSE",
+          "urls": [
+            "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/LICENSE"
+          ],
+          "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+          "kind": "license-text"
+        }
+      ],
+      "source_note": "Original redistributed font files; no claim that these are editable font design sources."
+    }
+  ]
+}

@@ -1,8 +1,8 @@
-# AIWS 核心 API 设计草案 v0
+# AIWS 核心 API 设计 v1
 
-状态：草案 v0，未实施、未验证。2026-11-12 按 owner “细节要看了效果才知道对不对，先拍个脑门设计”的要求写出，给 [核心 API 调整 TODO](aiws-core-api-unification-todo.md) 的 M0 事项各定一个取值。裁决 R1–R19 见 TODO §0.1，本文不重复理由。
+状态：v1，已实施（首批提交于 buckyos `c12d8c9e3`；其后的 DV / 性能修复、参数 Schema 和 `meta.data.write` 未提交），已在本地和本机真实 Zone 验证（§12.2，TODO §9）。2026-11-12 先按 owner “细节要看了效果才知道对不对，先拍个脑门设计”的要求写出草案 v0，给 [核心 API 调整 TODO](aiws-core-api-unification-todo.md) 的 M0 事项各定一个取值；实施中改过的取值记在 §13。裁决 R1–R19 见 TODO §0.1，本文不重复理由。规则性的内容已同步到内核文档 [02](../doc/workspace/kernel/02-数据模型与引用.md)、[04](../doc/workspace/kernel/04-数据源发布与同步.md)、[12](../doc/workspace/kernel/12-接口治理与验收.md)。
 
-读法：每一节是一个可以直接照着实现的取值。实现中发现不对就改，改动回写本文。§12 列了最没把握、最可能改的地方。
+读法：每一节是一个已经实现的取值。§12 是 v0 时最没把握的几处和实施后的结论，§13 是 v0 → v1 的改动。
 
 ## 1. 接口总览
 
@@ -90,7 +90,7 @@ run token 的方法白名单：`doc.list_children` 换成 `doc.list`；`doc.quer
   "parent": { "entity_id": "data", "path": "/data" },
   "version": { "epoch": "…", "head_seq": 120, "content_rev": 118, "meta_rev": 90, "life_rev": 5, "struct_rev": 12 },
   "body": { "state": "full", "format": "text/csv", "format_version": 1, "etag": "…", "records": null, "bytes": null },
-  "data": { "mode": "local" },
+  "data": { "mode": "local", "write": "edit" },
   "children": 0,
   "capabilities": ["read", "append", "update", "delete", "structure"],
   "ops": ["entity.delete", "entity.rename", "…", "table.insert_records", "table.set_values", "…"],
@@ -105,7 +105,7 @@ run token 的方法白名单：`doc.list_children` 换成 `doc.list`；`doc.quer
 | `body.state` | `full`（能读到全文）、`definition`（只有定义，URL 表）、`fallback`（未知类型、降级实体以及视口、演示路径、会话实体的原生 JSON）、`unavailable`（附 `reason`：`binary` / `too_large`） |
 | `body.etag` | 文本投影的版本标识：格式版本加所依赖实体的 `content_rev` / `meta_rev`（画布、文件夹含子项；表含字段的 `def_rev` / `type_rev` 和 `value` / `body` 引用的目标） |
 | `body.records` / `bytes` | 知道就给精确值，不知道给 `null`；不为了填它去扫描（资源引用给 `bytes`） |
-| `data` | 数据实体才有：`mode` 为 `local`、`url_query`、`synced`（payload 带 `source` 的本地副本），`source` 是来源摘要，`derived` 是生成记录摘要；只填现在真实存在的状态 |
+| `data` | 数据实体才有：`mode` 为 `local`、`url_query`、`synced`（payload 带 `source` 的本地副本）；`write` 说明内容由谁写：`edit`（按 `capabilities` 经 Commit）、`refresh`（只有 Source 的刷新，普通编辑 `SOURCE_READ_ONLY`）、`none`（URL 表，行在远端）；`source` 是来源摘要，`derived` 是生成记录摘要；只填现在真实存在的状态 |
 | `shows` | Block：它显示的数据 `{ entity_id, path, type }`（读不到时 `{ entity_id, available: false }`），表视图再加 `view_sql`、`view_count_sql`、`view_group_sql?`、`view_diagnostics?`，视图编译不过时 `view_error`（§7.4）；数据控件和组合控件：各绑定显示的数据 |
 | `definition` | 有 `def_ref` 的实例：定义 `{ entity_id, path, type }` |
 | `capabilities` | 调用者当前能做什么，沿用现有计算 |
@@ -131,7 +131,7 @@ doc.read { workspace_id, path | entity_id, as: "body", selector?, cursor?, max_b
 | 类型 | 格式 | 内容 |
 | --- | --- | --- |
 | 富文本 | `text/markdown` | 现有的富文本转 Markdown；一个块一个部分（`richtext_block`） |
-| 表（本地行） | `text/csv` | 第一个部分是表头行，列为 `_id` 加各活字段的字段名；之后一条记录一行（`table_record`），按 `record_id` 排序；值按 §4.3 的显示形式，RFC 4180 转义。记录带正文时，那一行末尾多一列 `_body`，值是正文实体的路径 |
+| 表（本地行） | `text/csv` | 第一个部分是表头行，列为 `_id` 加各活字段的字段名；之后一条记录一行（`table_record`），按 `record_id` 排序；值按 §4.3 的显示形式，RFC 4180 转义。表里有记录带正文时，表头和每一行末尾多一列 `_body`，值是正文实体的路径（没有正文或读不到的记录为空） |
 | URL 表 | `text/plain` | 表名、字段名和类型、来源说明，加一行“行在远端，未物化”；`state: definition` |
 | Record | `text/plain` | 每个属性一行 `键: 值`；有正文时空一行后接正文的 Markdown |
 | 批注 | `text/plain` | 第一行 `Note on <目标路径>`，引用原文（有的话），之后是批注文本 |
@@ -196,7 +196,7 @@ doc.query { workspace_id, text, case?, at?, depth?, type?, not_type?, limit?, cu
 - `snippet` 是命中处前后各 40 个字符，换行换成空格。
 - 每个实体在一页里最多给 5 个命中，其余数量放在最后一个命中的 `more` 里；要看全部就把 `at` 设成那个实体再查。
 - 默认 20 个命中，最多 100。一次调用最多扫描 8 MiB 文本或 1 秒，先到为止（core 没有时钟，时间由服务传入的判断函数决定）；没扫完时 `coverage.complete: false` 并给 `next_cursor`，停在一张表中间时 cursor 带记录 id，下一次从那条记录接着扫。空结果只有在 `coverage.complete: true` 时才表示“没有”。
-- `coverage.skipped` 列出没有被搜到正文的实体及原因：`definition`（URL 表）、`binary`、`too_large`。
+- `coverage.skipped` 列出没有被搜到正文的实体及原因：`definition`（URL 表：名字、标题和定义文本搜了，远端的行没搜）、`binary`、`too_large`。
 - 首批逐实体扫描，不建索引。
 
 ## 7. SQL 查询
@@ -238,6 +238,8 @@ GROUP BY "客户" ORDER BY total DESC LIMIT 10
 - authorizer 只在**调用者的语句**准备和执行期间生效：服务自己在同一连接上做的读（解析路径、建逻辑表、整理 `read`）不受它管——阶段快照的读和 SQL 共用一个连接，不这样就会把服务自己的读也拒掉。生效时只放行：`SELECT`；对这些临时视图的读取；经由这些视图（authorizer 回调里的 accessor）对 `table_records` 的读取；`json_each` / `json_tree`；函数（拒绝 `load_extension`、`readfile`、`writefile`、`edit`、`fts3_tokenizer` 等）。其余一律拒绝，包括对 `entities`、`grants`、`commits`、`sqlite_master` 和直接对 `table_records` 的读取，`ATTACH`、`PRAGMA`、写入、建对象和递归 CTE。被拒绝时返回 `INVALID_OPERATION`，`sub_code: SQL_NOT_ALLOWED`；引用不存在或不可读的表统一返回 `NOT_FOUND`。
 - 注册的函数：`aiws_dec_cmp(a, b)`（十进制串的精确比较，-1 / 0 / 1）、`aiws_label(key, map)`、`aiws_labels(array, map)`（选项标签、引用路径的映射，映射表写在视图定义里）、`aiws_pick(object, keys)`（`_record` 只留活字段），排序规则 `aiws_dec`（十进制精确排序）。
 - progress handler 每 1000 步检查一次时间，超时中断。
+- 逻辑表的列是对 JSON 的表达式，按它 JOIN 用不上索引：大表之间的 JOIN 要把小的一侧写成 `WITH d AS MATERIALIZED (SELECT …)`，SQLite 才会给它建自动索引；读了多张逻辑表的查询超时时，错误文字带这条提示。store 为 `table_records` 维护 `sqlite_stat1`（打开时没有就建，写入累计超过记录数的十分之一、至少 1000 条时重建），并删掉 STAT4 样本——内置的 SQLite 带 `SQLITE_ENABLE_STAT4`，有样本时规划器把物化的小表放在外层、对每一行扫一遍大表（§12.2）。
+- 查询在持有 Workspace 的情况下执行：同一 Workspace 的提交要等它结束，最长就是时间预算（SQL 2 秒，文本查询 1 秒）。
 - 语法错误返回 `INVALID_OPERATION`，`sub_code: SQL_ERROR`，带 SQLite 的报错文本。超时 `LIMIT_EXCEEDED`，`data.limit: "time"`；结果超过 4 MiB `LIMIT_EXCEEDED`，`data.limit: "bytes"`。
 - URL 表不建视图，引用它返回 `INVALID_OPERATION`，`sub_code: NOT_MATERIALIZED`。
 - 首批只对 HEAD 执行；阶段工具在阶段快照的连接上用同一套代码。
@@ -245,7 +247,7 @@ GROUP BY "客户" ORDER BY total DESC LIMIT 10
 
 ### 7.4 表视图转 SQL
 
-表视图 Block 保存的定义不变。core 的 `sqlview::compile_view(表名, 活字段, 视图定义, 投影)` 输出一条等价的 SELECT（不带 LIMIT）、一条计数语句和分组语句；投影是 `display`（`_id` 加显示列，Agent 读的）或 `records`（只有 `_record`，Desktop 渲染用的）。它出现在该 Block 的 `meta.shows.view_sql` 里，是服务端读“这个视图显示哪些行”的唯一途径（阶段工具、许愿格的 `table_view` / `table_query` 输入），也以 WASM 的 `view_sql` 给不持有副本的 Desktop 用。
+表视图 Block 保存的定义不变。core 的 `sqlview::compile_view(表名, 活字段, 视图定义, 投影)` 输出一条等价的 SELECT（不带 LIMIT）、一条计数语句和分组语句；投影是 `display`（`_id` 加显示列，Agent 读的）或 `records`（只有 `_record`，Desktop 渲染用的）；视图定义带 `fields` 时两种投影都只含这些字段（`_record` 的 `values` / `revs` / `meta` 用 `aiws_pick` 裁掉其余字段），和求值器带 `fields` 时给的行相同，已不存在的字段记进 `diagnostics`。它出现在该 Block 的 `meta.shows.view_sql` 里，是服务端读“这个视图显示哪些行”的唯一途径（阶段工具、许愿格的 `table_view` / `table_query` 输入），也以 WASM 的 `view_sql` 给不持有副本的 Desktop 用。
 
 | 视图定义 | SQL |
 | --- | --- |
@@ -328,7 +330,8 @@ buckyos aiws mv <路径> <新父路径> | rename <路径> <新名字> | --auto |
 
 - `schemas/operations.json` 每个操作加 `types`：适用的 `type_id` 数组，`["*"]` 表示所有实体。`core/tests/schemas.rs` 核对它与规划代码一致。
 - `meta.ops` 由它按实体类型筛出；调用者能不能做，看 `meta.capabilities` 与该操作的 `capability`。
-- helper 覆盖的操作在 `schemas/` 下各有一份参数 Schema，`buckyos aiws <动词> --help` 和 `buckyos command describe` 从命令定义输出，不另写文档。
+- helper 覆盖的 12 个操作有参数 Schema：`commit-request.schema.json` 的 `$defs`，`operations.json` 的 `params` 指向它（`entity.set_props` 用已有的 `set_props`）。`core/tests/schemas.rs` 对照规划器：helper 生成的形状符合 Schema 并被接受，Schema 列出的每个参数规划器都认，未列出的参数两边都拒绝。`buckyos aiws <动词> --help` 和 `buckyos command describe` 从命令定义输出，不另写文档。
+- `meta.capabilities` 和 `meta.ops` 只说明 ACL 和类型允许什么；数据实体的 `meta.data.write` 说明内容到底能不能编辑（§3）。
 - 对象入口首批不声明写动作。
 
 ## 11. 其他接口
@@ -349,7 +352,7 @@ v0 时按“最可能要改”排序列出的八处，实施后的结论：
 5. **decimal 在 SQL 显示列里是 REAL。** 保留；精确比较和排序用 `#raw` 与 `aiws_dec_cmp` / `aiws_dec`。
 6. **Block 的 body 内联它显示的富文本。** 改了：不内联，只写路径（§4.2）。读画布看结构，文本查询也不会在文档、Block、画布上重复命中同一段文字。
 7. **run token 保留 `doc.query`。** 照草案保留，`doc.list` 替换 `doc.list_children`，`doc.find` 不加；是否收紧留给权限优化 TODO。
-8. **预算数值。** 照草案。SQL 的 2 秒在测试里用五张表的笛卡尔积确认会如期中断；10 万行的基线还没在 Rust 里重测（TODO T0-6）。
+8. **预算数值。** 照草案。SQL 的 2 秒在测试里用五张表的笛卡尔积确认会如期中断；10 万行的基线和通过条件见 §12.2。
 
 ### 12.1 已经实测的假设
 
@@ -367,6 +370,42 @@ v0 时按“最可能要改”排序列出的八处，实施后的结论：
 
 10 万行上的耗时：`count(*)` 9 毫秒；两个条件的全表筛选 66 毫秒；按显示列分组求和并排序 124 毫秒；全表排序取前几行 73 毫秒。这只是 SQLite 本身的耗时，不含开连接、建视图、鉴权和序列化，服务端的 SQLite 版本和机器也不同，只能说明量级。
 
+### 12.2 性能验收（TODO T0-6）
+
+**数据。** 固定种子生成（`store/tests/perf_core_api.rs`，真实 Zone 用 `tests/dv/aiworkspace.perf.spec.ts` 经网关提交同一份）：10 万条记录 × 20 个字段的表（文本、数值、decimal、日期、单选五种类型轮换，约 21 MiB 的 CSV），1000 条的第二张表，两个保存的表视图（筛选 + 排序 + 4 个字段；排序 + 分组），以及一篇接近文档上限的长文档（4899 个块、约 48 万字符；一篇文档最多 5000 块、50 万 UTF-16 单元，`schemas/richtext.basic.v1.json`）。读取都走服务调用的那几个入口：`doc.query { sql | text }`、`doc.read { as: "body" }`、`doc.read`、`meta`、`doc.find`。
+
+**通过条件。** 在基线那台机器（i7-13700KF，release 构建）上取基线的约 2.5–3 倍，用来抓“少了统计信息的 JOIN”“每页重扫整表”这一类退化，不是对弱机器（OOD）的延迟承诺——那上面没有测。
+
+| 项 | 通过条件 | store 基线（p50 / max，ms） | 真实 Zone（经网关，ms） |
+| --- | --- | --- | --- |
+| SQL 单次调用：count、筛选排序取一页（含 offset 3 万）、分组求和、LIKE 全表、5000 行显示列、与千行表 JOIN（物化一侧） | ≤ 500（Zone ≤ 1000） | 13 / 84 / 107 / 190 / 85 / 49 / 122 | 20 / 104 / — / 222 / — / — / 142 |
+| 不持有副本的 Desktop 渲染保存的视图（读视图和表 + 一页 + 计数 + 分组） | ≤ 1000（Zone ≤ 2000） | 页 + 计数 355，分组视图 248；读表 12 | 512 |
+| `doc.read` 表本身（字段和记录数） | ≤ 50 | 12 | 21（视图和表一起） |
+| 超时间预算 | 在 2 s 后 0.5 s 内拒绝，`LIMIT_EXCEEDED`、`data.limit: time` | 2000.5 | — |
+| 超字节预算 / 超行数 | `LIMIT_EXCEEDED`、`bytes` / `truncated: true`，不静默截断 | 121 后拒绝 / 5000 行 | — |
+| 表的 body 一页 | p95 ≤ 20（32 KiB 页）、≤ 50（256 KiB 页）；最慢一页不超过中位数 3 倍 + 5，与位置无关 | 1.5、10.9；首页 1.7、末页 0.4 | 256 KiB 页 p95 73 |
+| 整表 CSV 逐页读完 | ≤ 5000；表头一次、每条记录一行、按 id 顺序 | 32 KiB 页 676 页 993；256 KiB 页 85 页 899 | 85 页 4010 |
+| 长文档每页 | ≤ 100；拼起来不丢不重字符 | 约 25（每页都重建全文求 etag，受文档上限约束） | — |
+| 文本查询单次调用 | ≤ 1500；带 `next_cursor` 的回答不说覆盖完整，接着读能读完 | 约 600（先碰到 8 MiB 扫描预算） | 990 |
+| 文本查询读到底：整表未命中、只在最后一条命中、整个 Workspace 未命中 | ≤ 5000，命中准确 | 3 次调用，约 1.35 s | 3 次调用 |
+| `meta`（表、视图 Block）、`doc.find` 按名字 | ≤ 10 | 0.1–0.3 | — |
+
+（真实 Zone 是本机部署，10 万行经网关提交用了约 35 s；“—”表示 Zone 用例没测这一项。）
+
+**验收中发现并改掉的。**
+
+- **JOIN 没有统计信息就退化成逐行扫描。** 两张逻辑表都是对同一张 `table_records` 的视图，JOIN 键是 `json_extract` 表达式，SQLite 不会给表达式建自动索引；没有 `sqlite_stat1` 时规划器还把 `source_id = ?` 估成约 10 行，连物化的一侧也不建索引。10 万 × 1000 的 JOIN 在 2 s 处被中断。改为：store 维护 `table_records` 的 `sqlite_stat1`（§7.3）；Agent 把小的一侧写成 `WITH d AS MATERIALIZED (…)`（约 0.12 s）；直接写的 JOIN 仍超预算，超时错误带写法提示，README 和两份手册写明。
+- **内置 SQLite 的 STAT4 样本让规划器选错顺序。** `ANALYZE` 后有了 `sqlite_stat4`，规划器把千行的物化表放在外层、对每一行扫一遍 10 万行（同一条 SQL 80 s，`CROSS JOIN` 也不行）；只留 `sqlite_stat1` 时走自动覆盖索引 + Bloom 过滤，0.12 s。所以每次统计后删掉 `table_records` 的 STAT4 样本。
+- **`doc.read` 表要解码全部记录才给出 `record_count`。** 10 万行 550 ms，不持有副本的 Desktop 每次渲染视图都要读表。`ReadCtx` 加了 `record_count`（store 用 SQL 计数，副本和规划中的叠加层仍逐条数），降到 12 ms；Zone 上视图渲染从 1438 ms 降到 512 ms。
+
+**已知限制（未改）。**
+
+- 查询在持有 Workspace 的情况下执行（服务的 `with_ws`），同一 Workspace 的提交要等：最长是时间预算（SQL 2 s，文本 1 s）。要放开需把 SQL 的执行挪到锁外（读事务已固定版本），属于后续优化。
+- 直接写的大表 JOIN 超预算（需要写成物化 CTE）；表达式索引（L-2）才能根治。
+- 文本查询里一张表只是一个实体：常见词在表里命中满 5 条后仍扫到预算用完才回答（约 0.8 s），为了给出 `more` 计数。
+- 长文档每页约 25 ms 是因为每页都重建全文求 etag；文档有上限，所以有界。
+- 持有副本的标签页用求值器，同一视图首页 0.64–1.33 s（store 里测的 Rust 求值器，浏览器的 WASM 只会更慢）；副本里 10 万行表的体验不在本单范围，没有测。
+
 ## 13. 实施记录（v0 → v1）
 
 2026-11-12 实施时改动的取值（都已改在上面各节里）：
@@ -379,6 +418,9 @@ v0 时按“最可能要改”排序列出的八处，实施后的结论：
 - **body 的分页**（§4.1）：表头只在第一页，表的 cursor 记记录 id；`ReadCtx` 加了 `scan_records_from`。
 - **文本查询**：容器只匹配名字和标题，表按单元格匹配，一段文字只给一个命中；时间预算由服务传入（core 没有时钟）（§6）。
 - **SQL**：逻辑表按需建；可以直接写 entity id；加了 `_record` 列和 `aiws_label` / `aiws_labels` / `aiws_pick` / `aiws_dec`；`read` 只给表不给列；authorizer 只在调用者的语句期间生效（阶段快照共用连接）；`json_each` / `json_tree` 放行；单语句检查自己做（§7）。实施中踩到的坑：authorizer 回调里拿锁，而整理 `read` 时持锁读同一连接，会在阶段快照上自锁。
-- **视图转 SQL**：`compile_view` 同时给计数和分组语句，有两种投影；`count_desc` / `group_limit` 由调用方做（§7.4）。
+- **视图转 SQL**：`compile_view` 同时给计数和分组语句，有两种投影；`count_desc` / `group_limit` 由调用方做（§7.4）。真实 Zone DV 发现首版 `records` 投影没按视图的 `fields` 裁剪（旧 `doc.query { view_id }` 只给视图显示的字段），已改在编译器里裁，store `tests/sql.rs` 加了与求值器的对照。
 - **对象入口**：多了 internal 方法 `doc.index`（§8）。
+- **性能验收**（§12.2）：store 维护 `table_records` 的 `sqlite_stat1`（不留 STAT4 样本）；`ReadCtx::record_count`（`doc.read` 表不再解码全部记录）；读多张表的 SQL 超时错误带物化 CTE 的写法提示。
 - **协议 1.2、存储 6**：`doc.query` 的旧参数被拒绝，Desktop 按协议版本提示不匹配。
+- **URL 表的定义也被文本查询搜到**（§6）：首版把 URL 表的 `body` 整个跳过，只匹配名字和标题，与 R7“搜索只覆盖名称和定义”不符；T5-2 补用例时发现，已改。
+- **TODO T5-2**（提交 `c12d8c9e3` 之后）：`meta.data` 加了 `write`（§3）：带 Source 的副本和 URL 表的 `capabilities` 照 ACL 给出，Agent 光看它会以为能编辑；这是 1.2 里只增不改的结果字段，协议版本不变，stable 形状夹具重录。helper 覆盖的操作补了参数 Schema（§10）；`operations.json` 的 `protocol_version` 从过时的 1.0 改为 1.2，并由测试核对。存储和 `body` 格式在这之后没有变化，版本不变。

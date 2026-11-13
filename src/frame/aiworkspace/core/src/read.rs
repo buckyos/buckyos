@@ -196,16 +196,9 @@ fn entity_content(ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<Value> {
         }
         TYPE_CELL => json!({ "payload": e.payload, "key_revs": revs, "diagnostics": cell_diagnostics(ctx, e)? }),
         TYPE_ANNOTATION => json!({ "payload": e.payload, "key_revs": revs, "anchor": anchor::resolve(ctx, &e.payload)?.to_json() }),
-        TYPE_TABLE => {
-            let mut count = 0u64;
-            ctx.scan_records(&e.entity_id, &mut |r| {
-                count += r.alive() as u64;
-                Ok(true)
-            })?;
-            json!({ "payload": e.payload, "key_revs": revs,
-                    "fields": live_fields(ctx, &e.entity_id)?.iter().map(field_json).collect::<Vec<_>>(),
-                    "record_count": count, "members_rev": e.key_rev(MEMBERS_KEY) })
-        }
+        TYPE_TABLE => json!({ "payload": e.payload, "key_revs": revs,
+                              "fields": live_fields(ctx, &e.entity_id)?.iter().map(field_json).collect::<Vec<_>>(),
+                              "record_count": ctx.record_count(&e.entity_id)?, "members_rev": e.key_rev(MEMBERS_KEY) }),
         TYPE_RICHTEXT => {
             let rt = ctx.richtext(&e.entity_id)?.ok_or_else(|| WsError::io("rich text state missing"))?;
             let blocks: BTreeMap<&String, Value> =

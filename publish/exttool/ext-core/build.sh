@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the payloads of ext-core (doc/pikg/format.md §5.1, ExtTools TODO §3.10) into payload/<platform>/ and, with
 # --archive, dist/ext-core-<version>-<platform>.tar.gz plus dist/manifest.json.
+# Every build also writes the matching corresponding-source archive to dist/.
 #
 #   ./build.sh --platform linux-x86_64 --archive
 #   buckyos pikg doctor dapp_meta --catalog ..
@@ -39,6 +40,7 @@ python_bin="${PYTHON:-python3}"
 cache="${EXT_CORE_CACHE:-$here/.cache}"
 out="$here/payload"
 dist="$here/dist"
+source_out="${EXT_CORE_SOURCE_OUT:-$here/corresponding-source}"
 platforms=()
 archive=0
 
@@ -310,26 +312,14 @@ if fonts.is_file():
 PY
 }
 
-licenses() {
-  local prefix="$1" store="$2"
-  mkdir -p "$store/LICENSES"
-  "$python_bin" - "$prefix/conda-meta" "$store/LICENSES/conda-forge.tsv" <<'PY'
-import json, sys
-from pathlib import Path
-rows = []
-for path in sorted(Path(sys.argv[1]).glob("*.json")):
-    meta = json.loads(path.read_text())
-    rows.append(f'{meta.get("name")}\t{meta.get("version")}\t{meta.get("license", "")}\t{meta.get("url", "")}')
-Path(sys.argv[2]).write_text("name\tversion\tlicense\tsource\n" + "\n".join(rows) + "\n")
-PY
-}
-
 install_conda() {
   local payload="$1" platform="$2" prefix="$payload/store/ext-core/conda" mm
   mm="$(find_micromamba)"
   MAMBA_ROOT_PREFIX="$cache/mamba" "$mm" create -y -q -p "$prefix" --platform "$(conda_platform "$platform")" -f "$here/conda-lock.yml"
   [ -d "$prefix/conda-meta" ] || { echo "[ext-core] micromamba made no prefix at $prefix" >&2; exit 1; }
-  licenses "$prefix" "$payload/store/ext-core"
+  "$python_bin" "$here/compliance.py" conda --prefix "$prefix" --payload "$payload" \
+    --platform "$platform" --source-dir "$source_out/$platform" \
+    --package-cache "$cache/mamba/pkgs" --download-cache "$cache/corresponding-source"
   prune_prefix "$prefix" "$platform"
   assert_loads "$prefix" "$platform"
 }
@@ -636,7 +626,7 @@ windows_launchers() {
 
 for platform in "${platforms[@]}"; do
   payload="$out/$platform"
-  rm -rf "$payload"
+  rm -rf "$payload" "$source_out/$platform"
   mkdir -p "$payload/bin" "$payload/smoke" "$payload/store/ext-core"
   cp "$manifest" "$payload/ext-manifest.json"
   case "$platform" in
@@ -647,10 +637,14 @@ for platform in "${platforms[@]}"; do
   install_conda "$payload" "$platform"
   install_official "$payload" "$platform"
   install_soffice "$payload" "$platform"
+  "$python_bin" "$here/official_sources.py" --payload "$payload" --source-root "$source_out/$platform" \
+    --platform "$platform" --cache "$cache/corresponding-source"
   case "$platform" in
     windows-*) windows_launchers "$payload" ;;
     *) unix_launchers "$payload" "$platform" ;;
   esac
+  "$python_bin" "$here/compliance.py" finalize --payload "$payload" --source-dir "$source_out/$platform" \
+    --platform "$platform" --version "$version" --dist "$dist"
   echo "[ext-core] $platform: $(du -sh "$payload" | cut -f1) in $payload"
   if [ "$archive" = 1 ]; then
     mkdir -p "$dist"

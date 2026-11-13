@@ -163,6 +163,33 @@ fn compiled_views_match_the_evaluator() {
     }
 }
 
+/// A view's `fields` keep only those fields in the records the compiled SQL returns, as the evaluator does.
+#[test]
+fn view_fields_project_records_as_the_evaluator_does() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "SQL", None).unwrap()["workspace_id"].as_str().unwrap().to_string();
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    table(&mut ws);
+    let v = json!({ "fields": ["customer", "amount", "gone"], "sorts": [{ "field_id": "amount", "direction": "desc" }] });
+    let def = ViewDef::of_params(&v);
+    let mut spec = QuerySpec { limit: 1000, best_effort: true, fields: def.fields.clone(), sorts: def.sorts.clone(), ..Default::default() };
+    spec.with_meta = true;
+    let want = ws.read_ctx(|ctx| run_query(ctx, &ctx.entity("orders")?.unwrap(), &spec)).unwrap();
+    let fields = ws.read_ctx(|ctx| aiworkspace_core::filter::live_fields(ctx, "orders")).unwrap();
+    let c = aiworkspace_core::sqlview::compile_view("\"/data/销售/订单\"", &fields, &def, aiworkspace_core::sqlview::Projection::Records).unwrap();
+    assert_eq!(c.diagnostics, vec![json!({ "key": "fields", "code": "FIELD_DELETED", "field_id": "gone" })]);
+    let got = sql(&ws, &alice(), &c.sql).unwrap();
+    let rows: Vec<Value> = got["rows"].as_array().unwrap().iter().map(|r| serde_json::from_str(r[0].as_str().unwrap()).unwrap()).collect();
+    let want = want["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), want.len());
+    for (g, w) in rows.iter().zip(want) {
+        assert_eq!((&g["record_id"], &g["values"], &g["revs"]), (&w["record_id"], &w["values"], &w["revs"]), "{}", c.sql);
+        let keys: Vec<&String> = g["values"].as_object().unwrap().keys().collect();
+        assert!(keys.iter().all(|k| *k == "customer" || *k == "amount"), "{g}");
+    }
+}
+
 /// A wish stage reads through its snapshot: SQL and views on the snapshot's connection see the snapshot.
 #[test]
 fn snapshot_reads_hold_while_the_workspace_moves_on() {
@@ -186,4 +213,30 @@ fn snapshot_reads_hold_while_the_workspace_moves_on() {
     let q = aiworkspace_store::sql::execute(snap.conn(), &snap.ctx(), &snap.access, &json!({ "sql": "SELECT count(*) FROM orders" }), snap.head_seq, None).unwrap();
     assert_eq!(q["rows"][0][0], 40);
     assert_eq!(sql(&ws, &alice(), "SELECT count(*) FROM orders").unwrap()["rows"][0][0], 39);
+}
+
+/// A URL table has no local rows (核心 API 调整 R7): its body is its definition, a text query covers its name and
+/// definition and says it skipped the rows, SQL refuses it by name; its rows are `doc.source_query`'s.
+#[test]
+fn a_url_table_is_definition_only() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "URL", None).unwrap()["workspace_id"].as_str().unwrap().to_string();
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "events", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "v", "name": "事件",
+        "payload": { "data_mode": "url_query", "title_field_id": "event_id",
+            "source_ref": { "kind": "url_query", "source_url": "fixture://events?rows=10", "query": {}, "version": { "mode": "live_head" }, "consistency": "best_effort" },
+            "fields": [{ "field_id": "event_id", "name": "事件编号", "type": "text" }] } }]));
+    let body = ws.read_as(&alice(), &json!({ "entity_id": "events", "as": "body" })).unwrap();
+    assert_eq!((body["state"].as_str(), body["complete"].as_bool()), (Some("definition"), Some(true)), "{body}");
+    assert!(body["text"].as_str().unwrap().contains("事件编号"), "{body}");
+    let m = meta(&ws, &alice(), "events");
+    assert_eq!((m["data"]["mode"].as_str(), m["data"]["write"].as_str()), (Some("url_query"), Some("none")));
+    // a text query finds the definition and reports the rows it could not search
+    let q = ws.query(&alice(), &json!({ "text": "事件编号" })).unwrap();
+    assert!(q["hits"].as_array().unwrap().iter().any(|h| h["entity_id"] == "events"), "{q}");
+    assert!(q["coverage"]["skipped"].as_array().unwrap().iter().any(|s| s["entity_id"] == "events" && s["reason"] == "definition"), "{q}");
+    // SQL has no rows to read
+    let e = sql(&ws, &alice(), r#"SELECT count(*) FROM "/data/事件""#).unwrap_err();
+    assert_eq!((e.code.as_str(), e.sub), ("INVALID_OPERATION", Some("NOT_MATERIALIZED")), "{e}");
 }

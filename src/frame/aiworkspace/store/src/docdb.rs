@@ -254,6 +254,10 @@ impl ReadCtx for SqlCtx<'_> {
     fn scan_records(&self, source: &str, visit: &mut dyn FnMut(&RecordRow) -> WsResult<bool>) -> WsResult<()> {
         self.scan_records_from(source, "", visit)
     }
+    fn record_count(&self, source: &str) -> WsResult<u64> {
+        let mut st = self.conn.prepare_cached("SELECT count(*) FROM table_records WHERE source_id = ?1 AND deleted_seq IS NULL").map_err(db_err)?;
+        st.query_row([source], |r| r.get::<_, i64>(0)).map(|n| n as u64).map_err(db_err)
+    }
     fn scan_records_from(&self, source: &str, from: &str, visit: &mut dyn FnMut(&RecordRow) -> WsResult<bool>) -> WsResult<()> {
         let mut st = self
             .conn

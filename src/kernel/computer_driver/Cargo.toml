@@ -1,4 +1,6 @@
 [package]
+license-file.workspace = true
+license.workspace = true
 name = "computer_driver"
 version.workspace = true
 edition = "2021"

@@ -1,4 +1,6 @@
 [package]
+license-file.workspace = true
+license.workspace = true
 name = "node_executor"
 version.workspace = true
 edition = "2021"

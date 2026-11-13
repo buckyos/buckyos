@@ -1,4 +1,5 @@
 {
+  "license": "AGPL-3.0-only",
   "name": "kevent-kmsg-restart-test",
   "private": true,
   "type": "module",

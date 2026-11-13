@@ -6273,7 +6273,7 @@
       "homepage": "https://github.com/buckyos/buckyos-websdk#readme",
       "repository": "https://github.com/buckyos/buckyos-websdk.git",
       "revision": "",
-      "license": "MIT",
+      "license": "Apache-2.0",
       "scopes": [
         "desktop",
         "opendan",
@@ -6282,7 +6282,7 @@
         "sys-test-web",
         "text-editor"
       ],
-      "licenseFileCount": 1
+      "licenseFileCount": 3
     },
     {
       "id": "d19d9c6a25fb13ac272e",
@@ -11596,7 +11596,7 @@
       "scopes": [
         "rust"
       ],
-      "licenseFileCount": 0
+      "licenseFileCount": 2
     },
     {
       "id": "4f881ecf99a19db2fcd5",

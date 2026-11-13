@@ -325,7 +325,8 @@
         ],
         "children": "number",
         "data": {
-          "mode": "string"
+          "mode": "string",
+          "write": "string"
         },
         "entity_id": "string",
         "head_seq": "number",

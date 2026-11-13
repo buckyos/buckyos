@@ -598,7 +598,7 @@ test('P3 templates: canvases saved as a template into the library, a new workspa
   const read = await api.read(ALICE, made!, String(cell.entity_id)) as J & { content: { payload: J } }
   const table = ((read.content.payload.bindings as J).data as J).entity_id as string
   expect(outline.find((e: J) => e.entity_id === table)?.type_id).toBe('buckyos.table-source')
-  expect((await api.table(ALICE, made, { source_id: table, limit: 10 })).rows).toHaveLength(0)
+  expect((await api.table(ALICE, made!, { source_id: table, limit: 10 })).rows).toHaveLength(0)
   // the source workspace still has its rows
   expect((await api.table(ALICE, ws.workspace_id, { source_id: 'tasks', limit: 10 })).rows).toHaveLength(2)
 })

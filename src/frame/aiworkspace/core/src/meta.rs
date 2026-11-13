@@ -77,7 +77,15 @@ pub fn meta(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, assets: Option<As
         } else {
             "local"
         };
-        let mut data = json!({ "mode": mode });
+        // who writes the content (核心 API 调整 §4): Commits under the caller's capabilities, only the Source's refresh
+        // (edits are SOURCE_READ_ONLY), or nobody here (a URL table's rows are remote). `capabilities` / `ops` stay the
+        // ACL's and the type's; this says whether they apply to the content at all.
+        let write = match mode {
+            "local" => "edit",
+            "synced" => "refresh",
+            _ => "none",
+        };
+        let mut data = json!({ "mode": mode, "write": write });
         if let Some(s) = e.payload.get("source").filter(|s| s.is_object()) {
             let mut src = serde_json::Map::new();
             for k in ["kind", "mode", "url", "workspace_id", "entity_id", "refresh", "revision", "fetched_at", "refreshed_at", "error"] {

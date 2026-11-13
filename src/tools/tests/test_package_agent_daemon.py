@@ -22,6 +22,26 @@ class AgentDaemonPackageTests(unittest.TestCase):
         version = patch.object(module, "version", return_value=VERSION)
         version.start()
         self.addCleanup(version.stop)
+        self.source_metadata = {
+            "schema_version": 1,
+            "scope": "packaging_checkout",
+            "binary_source_verified": False,
+            "license": "AGPL-3.0-only",
+            "repository": module.licensing.SOURCE_URL,
+            "commit": "1234567890abcdef1234567890abcdef12345678",
+            "working_tree_modified": False,
+            "source_tree": f"{module.licensing.SOURCE_URL}/tree/1234567890abcdef1234567890abcdef12345678",
+            "corresponding_source": "Source provenance fixture",
+        }
+        source_record = patch.object(module.licensing, "source_record", return_value=self.source_metadata)
+        source_record.start()
+        self.addCleanup(source_record.stop)
+
+    def assert_license_materials(self, read):
+        self.assertEqual(read("LICENSE"), (module.SOURCE.parent / "LICENSE").read_bytes())
+        self.assertEqual(read("NOTICE"), (module.SOURCE.parent / "NOTICE").read_bytes())
+        self.assertEqual(read("SOURCE.md"), (module.SOURCE.parent / "doc/licensing.md").read_bytes())
+        self.assertEqual(json.loads(read("source.json")), self.source_metadata)
 
     def test_windows_archive_contains_executable_and_matching_checksums(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -54,6 +74,9 @@ class AgentDaemonPackageTests(unittest.TestCase):
                         self.assertEqual(manifest["identity_mode"], "current_user")
                         self.assertEqual(manifest["sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
                         self.assertTrue(any(name.endswith("/README.md") for name in names))
+                        directory = executable.rsplit("/", 1)[0]
+                        self.assert_license_materials(lambda name: zipped.read(f"{directory}/{name}"))
+                        self.assertEqual(sorted(manifest["files"]), sorted(name.split("/", 1)[1] for name in names))
                         self.assertTrue(all(not Path(name).is_absolute() and ".." not in Path(name).parts for name in names))
 
     def test_macos_archive_contains_executable_and_matching_checksums(self):
@@ -76,6 +99,9 @@ class AgentDaemonPackageTests(unittest.TestCase):
                     self.assertEqual(manifest["target"], target)
                     self.assertEqual(manifest["requirements"]["macos_minimum"], "14.0")
                     self.assertEqual(manifest["sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
+                    directory = executable.name.rsplit("/", 1)[0]
+                    self.assert_license_materials(lambda name: tar.extractfile(f"{directory}/{name}").read())
+                    self.assertEqual(sorted(manifest["files"]), sorted(member.name.split("/", 1)[1] for member in members if member.isfile()))
                     self.assertTrue(all(not member.issym() and not Path(member.name).is_absolute() and ".." not in Path(member.name).parts for member in members))
 
     def test_linux_archive_carries_service_script_launcher_and_elf_facts(self):
@@ -100,7 +126,7 @@ class AgentDaemonPackageTests(unittest.TestCase):
                         self.assertTrue(launcher.stat().st_mode & 0o100)
                     with tarfile.open(archive) as tar:
                         members = {member.name.split("/", 1)[1]: member for member in tar.getmembers() if "/" in member.name}
-                        self.assertEqual(set(members), {"buckyos_agent_daemon", "service.sh", "README.md", "manifest.json"})
+                        self.assertEqual(set(members), {"buckyos_agent_daemon", "service.sh", "README.md", "manifest.json", "LICENSE", "NOTICE", "SOURCE.md", "source.json"})
                         self.assertEqual(members["buckyos_agent_daemon"].mode, 0o755)
                         self.assertEqual(members["service.sh"].mode, 0o755)
                         self.assertEqual(members["manifest.json"].mode, 0o644)
@@ -112,6 +138,7 @@ class AgentDaemonPackageTests(unittest.TestCase):
                         self.assertEqual(manifest["requirements"]["minimum_glibc"], facts["minimum_glibc"])
                         self.assertFalse(manifest["requirements"]["interactive_user_session"])
                         self.assertEqual(sorted(manifest["files"]), sorted(members))
+                        self.assert_license_materials(lambda name: tar.extractfile(members[name]).read())
 
     def test_linux_musl_binary_with_shared_libraries_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

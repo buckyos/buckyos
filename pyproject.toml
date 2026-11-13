@@ -1,4 +1,6 @@
 [project]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE"]
 name = "buckyos-workspace"
 version = "0.1.0"
 description = "Workspace runtime dependencies for BuckyOS development scripts."

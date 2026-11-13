@@ -1,4 +1,5 @@
 {
+  "license": "AGPL-3.0-only",
   "name": "test-nfs-server",
   "private": true,
   "type": "module",

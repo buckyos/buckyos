@@ -1,5 +1,7 @@
+import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { expect, test as base, type BrowserContext, type Page, type TestInfo } from '@playwright/test'
 import { ServiceFailure, unwrap } from '../../src/app/aiworkspace/api/client'
 import { queryBySql } from '../../src/app/aiworkspace/api/tableQuery'
@@ -269,3 +271,22 @@ export async function chooseFromHome(actor: Actor, open: () => Promise<unknown>,
 }
 
 export { chooseFromDevice, expect, expectAllCommitted, screenshot }
+
+/** The buckyos CLI of the websdk checkout next to this repository, as the signed-in owner. */
+export function cli(token: string, baseURL: string, cwd: string, ...args: string[]): Record<string, unknown> {
+  const launcher = resolve(process.env.BUCKYOS_WEBSDK_DIR ?? '../../../../buckyos-websdk', 'cli/launcher.mjs')
+  // the Zone comes from the environment: local commands (pikg) refuse an explicit --endpoint
+  let out: string
+  try {
+    out = execFileSync(process.execPath, [launcher, '--non-interactive', '--yes', '--output', 'json', '--timeout', '5m', ...args], {
+      cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, BUCKYOS_TOOL_ENDPOINT: baseURL, BUCKYOS_APPCLIENT_SESSION_TOKEN: token, NODE_TLS_REJECT_UNAUTHORIZED: '0', HOME: cwd },
+    })
+  } catch (error) {
+    const failed = error as { stdout?: string; stderr?: string }
+    throw new Error(`buckyos ${args.slice(0, 2).join(' ')} failed: ${failed.stdout ?? ''} ${failed.stderr?.slice(-2000) ?? ''}`)
+  }
+  const envelope = JSON.parse(out) as { ok: boolean; data: Record<string, unknown>; error?: unknown }
+  expect(envelope.ok, out).toBe(true)
+  return envelope.data
+}

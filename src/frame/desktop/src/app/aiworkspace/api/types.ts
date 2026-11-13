@@ -95,6 +95,7 @@ export type TypeId =
   | 'buckyos.table-source'
   | 'buckyos.cell'
   | 'buckyos.asset-ref'
+  | 'buckyos.dir'
   | 'buckyos.annotation'
   | 'buckyos.wish'
   | 'buckyos.block-def'

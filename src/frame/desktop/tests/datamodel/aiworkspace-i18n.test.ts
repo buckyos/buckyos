@@ -23,6 +23,7 @@ import * as common from '../../src/i18n/aiworkspace/common.ts'
 import * as core from '../../src/i18n/aiworkspace/core.ts'
 import * as data from '../../src/i18n/aiworkspace/data.ts'
 import * as demos from '../../src/i18n/aiworkspace/demos.ts'
+import * as directory from '../../src/i18n/aiworkspace/directory.ts'
 import * as ext from '../../src/i18n/aiworkspace/ext.ts'
 import * as imports from '../../src/i18n/aiworkspace/import.ts'
 import * as pdf from '../../src/i18n/aiworkspace/pdf.ts'
@@ -45,6 +46,7 @@ const PARTS: Part[] = [
   { name: 'blocks', prefixes: ['blocks', 'connector'], ...blocks },
   { name: 'wish', prefixes: ['wish', 'extension'], ...wish },
   { name: 'data', prefixes: ['data'], ...data },
+  { name: 'directory', prefixes: ['directory'], ...directory },
   { name: 'presentation', prefixes: ['presentation'], ...presentation },
   { name: 'richtext', prefixes: ['richtext'], ...richtext },
   { name: 'session', prefixes: ['session'], ...session },

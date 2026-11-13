@@ -1,4 +1,6 @@
 [package]
+license-file = "../../LICENSE"
+license = "AGPL-3.0-only"
 name = "test_jwt"
 version = "0.2.0"
 edition = "2021"

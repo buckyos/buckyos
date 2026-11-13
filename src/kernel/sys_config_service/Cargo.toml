@@ -1,4 +1,6 @@
 [package]
+license-file.workspace = true
+license.workspace = true
 name = "system_config"
 version.workspace = true
 edition = "2021"

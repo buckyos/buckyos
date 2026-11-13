@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { EntityEnvelope, Operation, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
-import { expect, screenshot, test, type Actor } from './aiworkspace.fixtures'
+import { cli, expect, screenshot, test, type Actor } from './aiworkspace.fixtures'
 
 type Workspace = Pick<WorkspaceSummary, 'workspace_id' | 'epoch'>
 type Json = Record<string, unknown>
@@ -87,7 +87,10 @@ test('[ext] a control from home in the Desktop, an instance, a rebuild, the libr
   await catalog.getByTestId('aiws-instance-binding-data').selectOption('tasks')
   await catalog.getByTestId('aiws-catalog-insert').click()
   await expect(catalog).toBeHidden()
-  const cell = (await outline(owner, ws)).find((e) => e.type_id === 'buckyos.cell' && e.def_id === defId)!
+  // the insert commits after the catalog closes
+  let cells: EntityEnvelope[] = []
+  await expect.poll(async () => (cells = (await outline(owner, ws)).filter((e) => e.type_id === 'buckyos.cell')).some((e) => e.def_id === defId), { message: () => `def ${defId}: ${JSON.stringify(cells)}` }).toBe(true)
+  const cell = cells.find((e) => e.def_id === defId)!
   const rows = (await owner.client.table({ workspace_id: ws.workspace_id, epoch: '' }, { source_id: 'tasks', limit: 500 })).rows.length
   await expect(page.getByTestId(`aiws-decl-${cell.entity_id}`).getByTestId('aiws-decl-metric')).toContainText(String(rows))
 
@@ -144,25 +147,6 @@ test('[ext] a control from home in the Desktop, an instance, a rebuild, the libr
   await peer.client.ok('ext.uninstall', { pkg_id: `dv-peer-${tag}` })
   await peer.client.ok('ws.delete', { workspace_id: peerWs.workspace_id })
 })
-
-/** The buckyos CLI of the websdk checkout next to this repository, as the signed-in owner. */
-function cli(token: string, baseURL: string, cwd: string, ...args: string[]): Json {
-  const launcher = resolve(process.env.BUCKYOS_WEBSDK_DIR ?? '../../../../buckyos-websdk', 'cli/launcher.mjs')
-  // the Zone comes from the environment: local commands (pikg) refuse an explicit --endpoint
-  let out: string
-  try {
-    out = execFileSync(process.execPath, [launcher, '--non-interactive', '--yes', '--output', 'json', '--timeout', '5m', ...args], {
-      cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, BUCKYOS_TOOL_ENDPOINT: baseURL, BUCKYOS_APPCLIENT_SESSION_TOKEN: token, NODE_TLS_REJECT_UNAUTHORIZED: '0', HOME: cwd },
-    })
-  } catch (error) {
-    const failed = error as { stdout?: string; stderr?: string }
-    throw new Error(`buckyos ${args.slice(0, 2).join(' ')} failed: ${failed.stdout ?? ''} ${failed.stderr?.slice(-2000) ?? ''}`)
-  }
-  const envelope = JSON.parse(out) as { ok: boolean; data: Json; error?: Json }
-  expect(envelope.ok, out).toBe(true)
-  return envelope.data
-}
 
 test('[ext] the CLI alone: a local control built, exported, packed, installed and imported; the Installer takes the package too', async ({ owner, baseURL }) => {
   test.setTimeout(480_000)

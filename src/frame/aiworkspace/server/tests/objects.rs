@@ -56,9 +56,9 @@ fn workspace_objects_read_through_krpc_with_the_callers_grants() {
         assert_eq!((meta2["path"].as_str(), meta3["path"].as_str()), (Some("/data/第二张"), Some("/data/table-1")));
         // a fixed version is read or refused, never read as the head (R2)
         let (status, fixed) = get(format!("{obj}/entities/orders/props/content?mode=fixed&version=%7B%22epoch%22%3A%22ep_x%22%2C%22seq%22%3A1%7D"), "tok-alice").await;
-        assert_ne!(status, 200, "{fixed}");
-        let (status, _) = get(format!("{obj}/entities/orders/props/body?mode=fixed&version=%7B%22epoch%22%3A%22ep_x%22%2C%22seq%22%3A1%7D"), "tok-alice").await;
-        assert_ne!(status, 200);
+        assert_eq!(status, 404, "{fixed}");
+        let (status, body) = get(format!("{obj}/entities/orders/props/body?mode=fixed&version=%7B%22epoch%22%3A%22ep_x%22%2C%22seq%22%3A1%7D"), "tok-alice").await;
+        assert_eq!(status, 400, "{body}");
 
         // the Workspace index: ls (default), find, grep — one index, the action in the query (R1)
         let query = |suffix: &'static str, params: Value| {

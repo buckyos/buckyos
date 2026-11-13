@@ -1,4 +1,6 @@
 [package]
+license-file.workspace = true
+license.workspace = true
 name = "aiworkspace"
 version.workspace = true
 edition = "2021"

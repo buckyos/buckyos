@@ -49,10 +49,12 @@ impl ProviderRpc for KrpcEntry {
         let result = reply.get("result").cloned().unwrap_or(Value::Null);
         if result.get("ok") == Some(&Value::Bool(false)) {
             let detail = result["error"].to_string();
+            // the HTTP status follows the code: a version that is not kept is not found (as the source routes answer),
+            // a request the service cannot serve yet (a fixed version of meta / body) is the caller's to change
             return Err(match result["error"]["code"].as_str() {
                 Some("PERMISSION_DENIED") => RPCErrors::NoPermission(detail),
-                Some("NOT_FOUND") | Some("TARGET_DELETED") => RPCErrors::KeyNotExist(detail),
-                Some("INVALID_OPERATION") | Some("INVALID_SCHEMA") => RPCErrors::ParseRequestError(detail),
+                Some("NOT_FOUND") | Some("TARGET_DELETED") | Some("VERSION_NOT_RETAINED") | Some("REFERENCE_BROKEN") => RPCErrors::KeyNotExist(detail),
+                Some("INVALID_OPERATION") | Some("INVALID_SCHEMA") | Some("UNSUPPORTED_VERSION") => RPCErrors::ParseRequestError(detail),
                 _ => RPCErrors::ReasonError(detail),
             });
         }

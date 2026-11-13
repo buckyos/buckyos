@@ -206,6 +206,8 @@ SourceDAO 是基于以上理念构建的开源 DAO 智能合约。更多详情�
 
 ## 许可证
 
-BuckyOS 是一个自由、开源、去中心化的系统，鼓励厂商基于 BuckyOS 构建商业产品，促进公平竞争。我们的许可选择旨在实现生态系统共赢、保持去中心化核心、保护贡献者利益，并构建一个可持续的生态系统。我们采用双许可证模式：一方面是基于 LGPL 的传统许可，要求内核修改需遵守 GPL（允许封闭源代码应用，但这些应用不能成为核心系统组件）；另一方面是基于 SourceDAO 的许可。当发行 DAO Token 的组织使用 BuckyOS 时，必须根据该许可证向 BuckyOS DAO 捐出一部分 Token。
+BuckyOS 自有代码采用 GNU Affero General Public License 第 3 版（仅此版本，`AGPL-3.0-only`），全文见 [LICENSE](LICENSE)。buckyos-base、cyfs-ndn、cyfs-gateway、WebSDK、开发与安装工具等公开关联仓库的自有代码采用 Apache-2.0。第三方组件保留各自的许可证与版权声明，见 [NOTICE](NOTICE)。
 
-目前还没有完全符合我们需求的许可证，因此在 DEMO 阶段我们暂时使用 BSD 许可证。我认为当 PoC 完成后，我们肯定会准备好正式的许可证。
+分发二进制时，应提供适用许可证要求的对应源码与构建材料。通过网络提供修改后的 BuckyOS 服务时，应依 AGPLv3 第 13 条向交互用户提供该版本的对应源码。发行目录与扩展工具源码包的说明见[许可证与发行材料](doc/licensing.md)。
+
+SourceDAO 描述社区治理方式；AGPL 授权不附加 Token 捐赠条件。

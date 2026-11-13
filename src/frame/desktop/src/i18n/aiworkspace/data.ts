@@ -211,6 +211,8 @@ export const en: Record<string, string> = {
 
   // types and new data (ui/sources/dataOps.ts)
   'aiworkspace.data.type.container': 'Folder',
+  'aiworkspace.data.type.dir': 'File directory',
+  'aiworkspace.data.tree.newDir': 'Create file directory',
   'aiworkspace.data.type.record': 'Record',
   'aiworkspace.data.type.richtext': 'Rich text',
   'aiworkspace.data.type.tableSource': 'Table',
@@ -470,6 +472,8 @@ export const en: Record<string, string> = {
   'aiworkspace.data.detail.defChars': '({{count}} characters)',
   'aiworkspace.data.detail.defChars_one': '({{count}} character)',
   'aiworkspace.data.detail.raw': 'Raw content ({{reason}}, read-only)',
+  'aiworkspace.data.detail.rawContent': 'Content (read-only)',
+  'aiworkspace.data.detail.noEditor': 'There is no dedicated editor here for {{type}}. Its stored content is shown below.',
 
   // freshness (ui/sources/freshnessText.ts, FreshnessBadge.tsx)
   'aiworkspace.data.freshness.current': 'Up to date',
@@ -705,6 +709,8 @@ export const zh: Record<string, string> = {
   'aiworkspace.data.filter.hint': '临时条件只在本窗口生效，不产生提交；“保存视图”才写入文档。',
 
   'aiworkspace.data.type.container': '文件夹',
+  'aiworkspace.data.type.dir': '文件目录',
+  'aiworkspace.data.tree.newDir': '新建文件目录',
   'aiworkspace.data.type.record': '记录',
   'aiworkspace.data.type.richtext': '富文本',
   'aiworkspace.data.type.tableSource': '表',
@@ -954,6 +960,8 @@ export const zh: Record<string, string> = {
   'aiworkspace.data.detail.defShow': '查看定义内容',
   'aiworkspace.data.detail.defChars': '({{count}} 字符)',
   'aiworkspace.data.detail.raw': '原始内容（{{reason}}，只读）',
+  'aiworkspace.data.detail.rawContent': '内容（只读）',
+  'aiworkspace.data.detail.noEditor': '此处尚无 {{type}} 的专用编辑器，以下展示其存储内容。',
 
   'aiworkspace.data.freshness.current': '当前有效',
   'aiworkspace.data.freshness.stale': '需要刷新',

@@ -1,0 +1,22 @@
+{
+  "c5944a082df0bba96b5756dddb1f75d0cd72ce27b5395c6c1dde85c2ff297a50": {
+    "urls": ["https://downloads.sourceforge.net/project/freeglut/freeglut/3.2.2/freeglut-3.2.2.tar.gz"],
+    "reason": "Upstream mirror; bytes match the exact source SHA256 from the Conda recipe."
+  },
+  "5c6e497a2f36552cb5ffb112c413a6af39c0f3c47653662b90b4fa6499822fd7": {
+    "urls": ["https://downloads.sourceforge.net/project/dejavu/dejavu/2.37/dejavu-sans-ttf-2.37.zip"],
+    "reason": "Upstream mirror; bytes match the exact source SHA256 from the Conda recipe."
+  },
+  "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16": {
+    "urls": ["https://zlib.net/fossils/zlib-1.3.2.tar.gz"],
+    "reason": "Upstream historical archive; bytes match the exact source SHA256 from the Conda recipe."
+  },
+  "436a2be54d8bc0cb05dd33ecbbcb7df9c3b57362714fcdaa3a5991189a33319b": {
+    "urls": ["https://codeload.github.com/mirror/x264/tar.gz/baee400fa9ced6f5481a728138fed6e867b0ff7f"],
+    "reason": "Upstream Git mirror at the original recipe commit; archive bytes match the original recipe SHA256."
+  },
+  "a1d5b63d2d38ec9bd03acf643caa51fa22edd1e89c5a109c4807717216bbec07": {
+    "urls": ["https://codeload.github.com/videolan/dav1d/tar.gz/refs/tags/1.5.4"],
+    "reason": "Official project mirror at the original recipe version; archive bytes match the original recipe SHA256."
+  }
+}

@@ -22,6 +22,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
         module = _load_build_script()
         with (
             patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_license_materials", return_value=0),
             patch.object(module, "_prepare_sdk_tool_distribution") as sdk,
             patch.object(module.subprocess, "run", return_value=module.subprocess.CompletedProcess([], 0)) as run,
         ):
@@ -40,6 +41,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
 
         with (
             patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_license_materials", return_value=0),
             patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
             patch.object(module, "_prepare_agent_tools", return_value=0) as agent_tools,
             patch.object(module, "_prepare_ext_tools", return_value=1),
@@ -60,6 +62,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
         module = _load_build_script()
         with (
             patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_license_materials", return_value=0),
             patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
             patch.object(module, "_prepare_agent_tools", return_value=0),
             patch.object(module, "_prepare_ext_tools", return_value=0),
@@ -206,6 +209,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
         module = _load_build_script()
         with (
             patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_license_materials", return_value=0),
             patch.object(module, "_prepare_sdk_tool_distribution", return_value=17),
             patch.object(module.subprocess, "run") as run,
         ):
@@ -276,6 +280,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
             with (
                 patch.object(module, "__file__", str(script)),
                 patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_license_materials", return_value=0),
                 patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
                 patch.object(module, "_prepare_agent_tools", return_value=0),
                 patch.object(module, "_prepare_ext_tools", return_value=0),
@@ -294,6 +299,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
             with (
                 self.subTest(args=args),
                 patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_license_materials", return_value=0),
                 patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
                 patch.object(module, "_prepare_agent_tools", return_value=0),
                 patch.object(module, "_prepare_ext_tools", return_value=0),
@@ -311,6 +317,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
         module = _load_build_script()
         with (
             patch.object(module, "_find_command", return_value="/runtime/buckyos-build"),
+            patch.object(module, "_prepare_license_materials", return_value=0),
             patch.object(module, "_prepare_sdk_tool_distribution", return_value=0),
             patch.object(module, "_prepare_agent_tools", return_value=0),
             patch.object(module, "_prepare_ext_tools", return_value=0),

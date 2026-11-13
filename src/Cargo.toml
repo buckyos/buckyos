@@ -48,6 +48,8 @@ exclude = [
 ]
 
 [workspace.package]
+license-file = "../LICENSE"
+license = "AGPL-3.0-only"
 version = "0.7.0"
 
 [workspace.dependencies]

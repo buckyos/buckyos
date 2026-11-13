@@ -5,7 +5,7 @@ import { useShell } from '../shell/shellContext'
 import { useCallback, useState } from 'react'
 import type { ReadOk } from '../../api/session'
 import type { BlockDefRead, EntityEnvelope, Reference } from '../../api/types'
-import { useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
+import { useDirectReadOnly, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { AssetCell, NoteEditor, RecordCell, RichTextCell, TableEditor } from '../blocks/editors'
 import { WishPanel } from '../wish/WishPanel'
@@ -13,14 +13,14 @@ import { RelationsPanel } from './RelationsPanel'
 import { PublicationSection, SourceSection } from './SourcePanel'
 import { TYPE_LABEL, entityLabel } from './dataOps'
 import { FreshnessBadge } from './FreshnessBadge'
+import { DirectoryDetail } from './DirectoryDetail'
 
 export function DataDetail({ entity }: { entity: EntityEnvelope }) {
   const { t, tNode } = useAiwsText()
   const store = useStore()
   const ui = useWorkspaceUi()
   const [tab, setTab] = useState<'content' | 'relations'>('content')
-  const readOnly = store.session.status().kind === 'offline' && store.session.mode().kind === 'direct' && store.session.mode().kind === 'direct' && (store.session.mode() as { reason?: string }).reason !== 'not_prepared'
-  const renderEmbed = useCallback((reference: Reference) => ui.renderCell(reference.entity_id, 1), [ui])
+  const readOnly = useDirectReadOnly()
   const blocks = store.outline.all().filter((e) => e.type_id === 'buckyos.cell' && e.source_id === entity.entity_id && !e.deleted)
   // data a canvas owns (内核架构改进 D05): pinning ends the ownership and moves it to the data tree
   const ownData = entity.type_id !== 'buckyos.container' && store.outline.ancestors(entity.entity_id).includes('canvas-content')
@@ -59,19 +59,30 @@ export function DataDetail({ entity }: { entity: EntityEnvelope }) {
               }),
             })}</div>
           )}
-          {entity.type_id === 'buckyos.table-source' && <TableEditor sourceId={entity.entity_id} source={entity} readOnly={readOnly || Boolean(entity.source)} />}
-          {entity.type_id === 'buckyos.richtext' && <RichTextCell key={entity.entity_id} entity={entity} entityId={entity.entity_id} renderEmbed={renderEmbed} />}
-          {entity.type_id === 'buckyos.record' && <RecordCell entityId={entity.entity_id} entity={entity} readOnly={readOnly} />}
-          {entity.type_id === 'buckyos.asset-ref' && <AssetCell entityId={entity.entity_id} fit="contain" readOnly={readOnly || Boolean(entity.source)} />}
-          {entity.type_id === 'buckyos.annotation' && <NoteEditor entityId={entity.entity_id} entity={entity} readOnly={readOnly} />}
-          {entity.type_id === 'buckyos.wish' && <WishPanel wishId={entity.entity_id} readOnly={readOnly} />}
-          {entity.type_id === 'buckyos.block-def' && <BlockDefDetail entity={entity} />}
-          {entity.type_id === 'buckyos.container' && <FolderDetail entity={entity} />}
-          {entity.degraded && <RawDetail entity={entity} />}
+          <DataContent entity={entity} />
         </div>
       )}
     </div>
   )
+}
+
+function DataContent({ entity }: { entity: EntityEnvelope }) {
+  const ui = useWorkspaceUi()
+  const readOnly = useDirectReadOnly()
+  const renderEmbed = useCallback((reference: Reference) => ui.renderCell(reference.entity_id, 1), [ui])
+  if (entity.degraded) return <RawDetail entity={entity} />
+  switch (entity.type_id) {
+    case 'buckyos.table-source': return <TableEditor sourceId={entity.entity_id} source={entity} readOnly={readOnly || Boolean(entity.source)} />
+    case 'buckyos.richtext': return <RichTextCell entity={entity} entityId={entity.entity_id} renderEmbed={renderEmbed} />
+    case 'buckyos.record': return <RecordCell entityId={entity.entity_id} entity={entity} readOnly={readOnly} />
+    case 'buckyos.asset-ref': return <AssetCell entityId={entity.entity_id} fit="contain" readOnly={readOnly || Boolean(entity.source)} />
+    case 'buckyos.annotation': return <NoteEditor entityId={entity.entity_id} entity={entity} readOnly={readOnly} />
+    case 'buckyos.wish': return <WishPanel wishId={entity.entity_id} readOnly={readOnly} />
+    case 'buckyos.block-def': return <BlockDefDetail entity={entity} />
+    case 'buckyos.container': return <FolderDetail entity={entity} />
+    case 'buckyos.dir': return <DirectoryDetail entity={entity} readOnly={readOnly} />
+    default: return <RawDetail entity={entity} />
+  }
 }
 
 function FolderDetail({ entity }: { entity: EntityEnvelope }) {
@@ -124,7 +135,14 @@ function RawDetail({ entity }: { entity: EntityEnvelope }) {
   const { t } = useAiwsText()
   const store = useStore()
   const version = useVersion(`e:${entity.entity_id}`)
-  const load = useCallback(() => store.session.read<{ payload: unknown }>(entity.entity_id), [store, entity.entity_id])
-  const read = useLoad<ReadOk<{ payload: unknown }>>(load, version)
-  return <details open><summary>{t('aiworkspace.data.detail.raw', { reason: entity.degraded ?? '' })}</summary><pre className="aiws-raw">{JSON.stringify(read.data?.content.payload ?? null, null, 2)}</pre></details>
+  const load = useCallback(() => store.session.read<unknown>(entity.entity_id), [store, entity.entity_id])
+  const read = useLoad<ReadOk<unknown>>(load, version)
+  return (
+    <details open data-testid="aiws-raw-detail">
+      <summary>{entity.degraded ? t('aiworkspace.data.detail.raw', { reason: entity.degraded }) : t('aiworkspace.data.detail.rawContent')}</summary>
+      {!entity.degraded && <p className="aiws-muted">{t('aiworkspace.data.detail.noEditor', { type: TYPE_LABEL[entity.type_id] ?? entity.type_id })}</p>}
+      {read.error && <div className="aiws-error" role="alert">{read.error}</div>}
+      {read.data ? <pre className="aiws-raw">{JSON.stringify(read.data.content, null, 2)}</pre> : !read.error && <div className="aiws-muted">{t('aiworkspace.blocks.loading')}</div>}
+    </details>
+  )
 }

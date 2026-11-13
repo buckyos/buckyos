@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import tempfile
 import unittest
@@ -62,6 +63,65 @@ class OpenSourceRuntimeTest(unittest.TestCase):
         self.assertEqual(node["version"], "24.21.0")
         self.assertEqual(node["files"], [{"name": "LICENSE", "text": "Bundled license text"}])
         self.assertNotIn(str(self.repo), json.dumps(packages))
+
+    def source_manifest(self, store):
+        directory = store / "LICENSES/official/pandoc"
+        directory.mkdir(parents=True, exist_ok=True)
+        text = b"The complete upstream license text\n"
+        (directory / "COPYING").write_bytes(text)
+        manifest = {
+            "schema": "buckyos.ext-tools-sources/v1", "platform": "windows-x86_64",
+            "components": [{"id": "official:pandoc", "name": "pandoc", "version": "3.12.1",
+                            "license": "GPL-2.0-or-later", "license_directory": "official/pandoc"}],
+            "files": [{"path": "LICENSES/official/pandoc/COPYING", "sha256": hashlib.sha256(text).hexdigest()}],
+        }
+        self.write_source_manifest(store, manifest)
+        return manifest
+
+    def write_source_manifest(self, store, manifest):
+        data = json.dumps(manifest).encode()
+        (store / "LICENSES/source-manifest.json").write_bytes(data)
+        (store / "LICENSES/corresponding-source.json").write_text(json.dumps({
+            "manifest_sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+            "path": "ext-tools/ext-core/1.2.0/windows-x86_64/source.tar.gz", "sha256": "sha256:" + "1" * 64,
+        }))
+
+    def test_verified_inventory_uses_actual_manifest_without_running_foreign_binaries(self):
+        store = self.store("windows-x86_64")
+        self.source_manifest(store)
+        with mock.patch.object(runtime, "probe_version") as probe:
+            packages, scopes, notices = runtime.collect_ext_core(self.repo)
+        probe.assert_not_called()
+        self.assertEqual(len(packages), 1)
+        self.assertEqual(packages[0]["version"], "3.12.1")
+        self.assertEqual(packages[0]["license"], "GPL-2.0-or-later")
+        self.assertEqual(packages[0]["files"], [{"name": "COPYING", "text": "The complete upstream license text\n"}])
+        self.assertEqual(scopes[-1]["status"], "complete")
+        self.assertTrue(any("https://buckyos-installer.tbudr.top/ext-tools/" in note for note in notices))
+
+    def test_changed_license_or_mismatched_source_archive_is_rejected(self):
+        store = self.store("windows-x86_64")
+        self.source_manifest(store)
+        (store / "LICENSES/official/pandoc/COPYING").write_text("Changed text")
+        with self.assertRaisesRegex(ValueError, "license text differs"):
+            runtime.collect_ext_core(self.repo)
+        self.source_manifest(store)
+        (store / "LICENSES/source-manifest.json").write_text((store / "LICENSES/source-manifest.json").read_text() + "\n")
+        with self.assertRaisesRegex(ValueError, "manifest checksum differs"):
+            runtime.collect_ext_core(self.repo)
+
+    def test_incomplete_sources_are_visible_and_unsafe_license_paths_are_rejected(self):
+        store = self.store("windows-x86_64")
+        manifest = self.source_manifest(store)
+        manifest["components"][0]["unresolved_source_requirements"] = ["Missing exact dependency sources"]
+        self.write_source_manifest(store, manifest)
+        _, scopes, notices = runtime.collect_ext_core(self.repo)
+        self.assertEqual(scopes[-1]["status"], "partial")
+        self.assertTrue(any("Missing exact dependency sources" in note for note in notices))
+        manifest["components"][0]["license_directory"] = "../../outside"
+        self.write_source_manifest(store, manifest)
+        with self.assertRaisesRegex(ValueError, "invalid component license directory"):
+            runtime.collect_ext_core(self.repo)
 
 
 if __name__ == "__main__":

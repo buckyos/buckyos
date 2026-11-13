@@ -51,7 +51,15 @@ class TableTest(unittest.TestCase):
 
 def release(version="1.1.0", platforms=ext_tools.PLATFORMS):
     return {"schema": ext_tools.SCHEMA, "packages": {"ext-core": {"version": version, "pikg_digest": "sha256:p", "platforms": {
-        p: {"file": f"{p}.tar.gz", "sha256": "sha256:0", "size": 10, "path": f"ext-tools/ext-core/{version}/{p}/0.tar.gz"} for p in platforms
+        p: {
+            "file": f"{p}.tar.gz", "sha256": "sha256:" + "0" * 64, "size": 10,
+            "path": f"ext-tools/ext-core/{version}/{p}/0.tar.gz",
+            "corresponding_source": {
+                "file": f"{p}-corresponding-source.tar.gz", "sha256": "sha256:" + "1" * 64,
+                "size": 20, "path": f"ext-tools/ext-core/{version}/{p}/1.source.tar.gz",
+                "manifest_sha256": "sha256:" + "2" * 64,
+            },
+        } for p in platforms
     }}}}
 
 
@@ -61,12 +69,13 @@ class ResolveTest(unittest.TestCase):
 
         def head(url):
             heads.append(url)
-            return 10
+            return 20 if url.endswith(".source.tar.gz") else 10
 
         resolved = ext_tools.resolve("1.1.0", "https://r2", fetch=lambda url: release(), head=head)
         entry = resolved["packages"]["ext-core"]["platforms"]["darwin-arm64"]
         self.assertEqual(entry["url"], "https://r2/ext-tools/ext-core/1.1.0/darwin-arm64/0.tar.gz")
-        self.assertEqual(len(heads), len(ext_tools.PLATFORMS))
+        self.assertEqual(entry["corresponding_source"]["url"], "https://r2/ext-tools/ext-core/1.1.0/darwin-arm64/1.source.tar.gz")
+        self.assertEqual(len(heads), len(ext_tools.PLATFORMS) * 2)
 
     def test_a_release_that_is_not_all_there_fails_the_build(self):
         with self.assertRaisesRegex(ValueError, "no payload for windows-x86_64"):
@@ -75,6 +84,26 @@ class ResolveTest(unittest.TestCase):
             ext_tools.resolve("1.1.0", "https://r2", fetch=lambda url: release(), head=lambda url: 9)
         with self.assertRaisesRegex(ValueError, "the release says 1.0.0"):
             ext_tools.resolve("1.1.0", "https://r2", fetch=lambda url: release(version="1.0.0"), head=lambda url: 10)
+
+    def test_sources_are_required_and_checked_before_accepting_a_release(self):
+        for field, value, message in (
+            ("corresponding_source", None, "no corresponding source archive"),
+            ("manifest_sha256", "sha256:bad", "no valid source manifest checksum"),
+            ("sha256", "", "invalid artifact checksum"),
+            ("path", "../source.tar.gz", "invalid artifact path"),
+            ("size", 0, "invalid artifact size"),
+        ):
+            with self.subTest(field=field):
+                data = release()
+                entry = data["packages"]["ext-core"]["platforms"][ext_tools.PLATFORMS[0]]
+                if field == "corresponding_source":
+                    entry[field] = value
+                else:
+                    entry["corresponding_source"][field] = value
+                with self.assertRaisesRegex(ValueError, message):
+                    ext_tools.resolve("1.1.0", "https://r2", fetch=lambda url: data, head=lambda url: 10)
+        with self.assertRaisesRegex(ValueError, "10 bytes, the release says 20"):
+            ext_tools.resolve("1.1.0", "https://r2", fetch=lambda url: release(), head=lambda url: 10)
 
 
 class RequestTest(unittest.TestCase):

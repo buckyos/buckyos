@@ -1,6 +1,6 @@
 {
- "protocol_version": "1.0",
- "description": "Operation catalogue of a Commit (`operations[].op`). class: create|append|merge = auto-merge, overwrite|structural = version check (`expect` required), internal = undo path only. Checked against the code by core/tests/schemas.rs. types: the entity types an operation acts on (its entity_id / source_id; for entity.create the parent), [\"*\"] = any entity, [] = internal; `meta.ops` of `doc.read { as: \"meta\" }` is this column filtered by the entity's type.",
+ "protocol_version": "1.2",
+ "description": "Operation catalogue of a Commit (`operations[].op`). class: create|append|merge = auto-merge, overwrite|structural = version check (`expect` required), internal = undo path only. Checked against the code by core/tests/schemas.rs. types: the entity types an operation acts on (its entity_id / source_id; for entity.create the parent), [\"*\"] = any entity, [] = internal; `meta.ops` of `doc.read { as: \"meta\" }` is this column filtered by the entity's type. params: the JSON Schema of the operation's parameters, given for the operations the websdk's write helpers build (核心 API 调整 §4); the others are described by their note and the README.",
  "operations": [
   {
    "op": "entity.create",
@@ -42,7 +42,8 @@
    "types": [
     "*"
    ],
-   "note": "Lookup name, unique among siblings. expect = meta_rev."
+   "note": "Lookup name, unique among siblings. expect = meta_rev.",
+   "params": "commit-request.schema.json#/$defs/entity_rename"
   },
   {
    "op": "entity.set_keys",
@@ -73,7 +74,8 @@
     "buckyos.cell",
     "buckyos.container"
    ],
-   "note": "Per-property writes of an object key (config | bindings | on, 扩展控件 P2 Q28): props { <name>: value | null }, expect { <name>: rev } per property (absent = merge). Each property is the cell p:<key>.<name>; a whole-key set_keys / unset_keys moves every p: cell of that key. Inverse: the old values with expect = seq."
+   "note": "Per-property writes of an object key (config | bindings | on, 扩展控件 P2 Q28): props { <name>: value | null }, expect { <name>: rev } per property (absent = merge). Each property is the cell p:<key>.<name>; a whole-key set_keys / unset_keys moves every p: cell of that key. Inverse: the old values with expect = seq.",
+   "params": "commit-request.schema.json#/$defs/set_props"
   },
   {
    "op": "entity.set_write_policy",
@@ -103,7 +105,8 @@
    "types": [
     "*"
    ],
-   "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional. A connector must keep a placement (see $defs.placement in commit-request.schema.json). A Block leaving a control cannot keep \"auto\" components, and a Cell holding Blocks cannot leave it (CHILD_NOT_ALLOWED). `slot?` (a name, or null) rewrites the Block's slot in the same step (into a composite a Block needs one, out of a control none, 扩展控件 P1)."
+   "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional. A connector must keep a placement (see $defs.placement in commit-request.schema.json). A Block leaving a control cannot keep \"auto\" components, and a Cell holding Blocks cannot leave it (CHILD_NOT_ALLOWED). `slot?` (a name, or null) rewrites the Block's slot in the same step (into a composite a Block needs one, out of a control none, 扩展控件 P1).",
+   "params": "commit-request.schema.json#/$defs/tree_move"
   },
   {
    "op": "tree.place",
@@ -198,7 +201,8 @@
    "types": [
     "buckyos.table-source"
    ],
-   "note": "Append records; `append` or `update` capability."
+   "note": "Append records; `append` or `update` capability.",
+   "params": "commit-request.schema.json#/$defs/table_insert_records"
   },
   {
    "op": "table.delete_records",
@@ -208,7 +212,8 @@
    "types": [
     "buckyos.table-source"
    ],
-   "note": "Tombstone records. expect = record.rev."
+   "note": "Tombstone records. expect = record.rev.",
+   "params": "commit-request.schema.json#/$defs/table_delete_records"
   },
   {
    "op": "table.set_values",
@@ -218,7 +223,8 @@
    "types": [
     "buckyos.table-source"
    ],
-   "note": "Batch cell writes; each item carries expect on its cell."
+   "note": "Batch cell writes; each item carries expect on its cell.",
+   "params": "commit-request.schema.json#/$defs/table_set_values"
   },
   {
    "op": "table.unset_values",
@@ -228,7 +234,8 @@
    "types": [
     "buckyos.table-source"
    ],
-   "note": "Make cells unset (not null)."
+   "note": "Make cells unset (not null).",
+   "params": "commit-request.schema.json#/$defs/table_unset_values"
   },
   {
    "op": "table.set_body",
@@ -248,7 +255,8 @@
    "types": [
     "buckyos.table-source"
    ],
-   "note": "A required field needs a backfill value."
+   "note": "A required field needs a backfill value.",
+   "params": "commit-request.schema.json#/$defs/table_add_field"
   },
   {
    "op": "table.update_field",
@@ -278,7 +286,8 @@
    "types": [
     "buckyos.table-source"
    ],
-   "note": "Bumps def_rev only. expect required (structural)."
+   "note": "Bumps def_rev only. expect required (structural).",
+   "params": "commit-request.schema.json#/$defs/table_add_option"
   },
   {
    "op": "table.update_option",
@@ -328,7 +337,8 @@
    "types": [
     "buckyos.richtext"
    ],
-   "note": "Block-level semantic insert."
+   "note": "Block-level semantic insert.",
+   "params": "commit-request.schema.json#/$defs/richtext_insert_blocks"
   },
   {
    "op": "richtext.replace_block",
@@ -338,7 +348,8 @@
    "types": [
     "buckyos.richtext"
    ],
-   "note": "expect.hash required."
+   "note": "expect.hash required.",
+   "params": "commit-request.schema.json#/$defs/richtext_replace_block"
   },
   {
    "op": "richtext.delete_blocks",
@@ -348,7 +359,8 @@
    "types": [
     "buckyos.richtext"
    ],
-   "note": "expect.hash and expect.struct_rev required."
+   "note": "expect.hash and expect.struct_rev required.",
+   "params": "commit-request.schema.json#/$defs/richtext_delete_blocks"
   },
   {
    "op": "richtext.move_block",

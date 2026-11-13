@@ -554,6 +554,12 @@ config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", 
 PY
 }
 
+prepare_license_materials() {
+  local context_dir="$1"
+  local python_bin="$2"
+  "$python_bin" "$SRC_DIR/tools/prepare_licenses.py" --output "$context_dir/licenses/buckyos"
+}
+
 render_dockerfile() {
   local output_path="$1"
   local -a apt_packages=("${RUNTIME_PACKAGES[@]}")
@@ -657,6 +663,7 @@ RUN mkdir -p \
 
 COPY --chmod=755 opendan /opt/buckyos/bin/opendan/
 COPY web /opt/buckyos/bin/opendan/web
+COPY licenses /opt/buckyos/licenses
 # One multi-call executable: agent_tool and xagent dispatch on argv[0].
 RUN printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c - && \
     ln -s opendan /opt/buckyos/bin/opendan/agent_tool && \
@@ -1453,6 +1460,7 @@ main() {
     platform="$(docker_platform_for_arch "$arch")"
     mkdir -p "$context_dir"
 
+    prepare_license_materials "$context_dir" "$python_bin"
     build_runtime_binaries "$arch" "$context_dir" "$cargo_target_dir" "$python_bin"
     cp -R "$buckyos_agent_package_dir" "$context_dir/buckyos-agent"
     cp -R "$buckyos_tool_check_dist_dir" "$context_dir/buckyos-tool-check-dist"

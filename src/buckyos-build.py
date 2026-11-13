@@ -243,6 +243,13 @@ def _prepare_ext_tools(env: dict[str, str]) -> int:
     ).returncode
 
 
+def _prepare_license_materials() -> int:
+    return subprocess.run([
+        sys.executable,
+        str(Path(__file__).resolve().parent / "tools" / "prepare_licenses.py"),
+    ]).returncode
+
+
 def _desktop_build_stamp() -> tuple[int, int] | None:
     index = Path(__file__).resolve().parent / "frame" / "desktop" / "dist" / "index.html"
     try:
@@ -302,6 +309,9 @@ def main(argv: list[str] | None = None) -> int:
         return 127
 
     env = os.environ.copy()
+    result = _prepare_license_materials()
+    if result != 0:
+        return result
     if not standalone_daemon:
         result = _prepare_sdk_tool_distribution(env)
         if result != 0:

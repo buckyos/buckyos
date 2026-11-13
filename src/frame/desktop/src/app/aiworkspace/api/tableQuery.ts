@@ -80,7 +80,9 @@ export async function queryBySql(deps: TableQueryDeps, params: QueryParams): Pro
     return { ...page, total: page.total ?? page.rows.length, source_id: sourceId }
   }
   // a manual order counts only without sorts (the compiler and the evaluator alike)
-  const view = { ...(filter ? { filter } : {}), sorts, ...(group ? { group } : {}), ...(saved.manual_order ? { manual_order: saved.manual_order } : {}) }
+  // the fields a row carries: the caller's, else the view's (values, revs and meta of the others are left out)
+  const shownFields = params.fields ?? (saved.fields as { field_id?: string }[] | undefined)?.map((f) => f.field_id).filter((f): f is string => typeof f === 'string')
+  const view = { ...(filter ? { filter } : {}), sorts, ...(shownFields ? { fields: shownFields } : {}), ...(group ? { group } : {}), ...(saved.manual_order ? { manual_order: saved.manual_order } : {}) }
   const fields = table.content.fields
   const c = compile(deps, () => deps.viewSql(ALIAS, JSON.stringify(fields), JSON.stringify(view), 'records'))
   const limit = Math.max(1, Math.min(params.limit ?? 100, 1000))

@@ -960,7 +960,7 @@ count on the owner's app pool (`storage_quota_mib`).
 (revoking there ends the audience's access here); any write right, a subtree's included, locks the Workspace
 for the show; a Workspace runs at most 4 clones at once and each counts on its quota (`clones`).
 
-`storage_schema_version` is 5 (FORMAT 1.0: `commit_deltas`, `usage`, `user_state.revision`, `refs.mode` / `integrity`, `entities.schema_id`, `grants.task_digest` / `outputs_json`; 5: `bucket_key` / `bucket_version` on `assets`, `snapshots`, `entity_versions` and `staged_assets`, no `retentions`); folders of an older version are refused, not migrated —
+`storage_schema_version` is 6 (FORMAT 1.0: `commit_deltas`, `usage`, `user_state.revision`, `refs.mode` / `integrity`, `entities.schema_id`, `grants.task_digest` / `outputs_json`; 5: `bucket_key` / `bucket_version` on `assets`, `snapshots`, `entity_versions` and `staged_assets`, no `retentions`; 6: every entity named — a version-5 folder is opened and its unnamed entities named in tree order, no Commit, see “Paths and names”); folders older than 5 are refused, not migrated —
 reinstall the data of a development Zone.
 
 One writer per Workspace (a mutex around its connections); a Commit is planned on an overlay,
@@ -1018,7 +1018,9 @@ precise reads and writes stay with each type (`doc.read` with a selector, `doc.c
 its text or its records: `entity_id`, `path`, `name`, `name_follows`, `title`, `type`, `type_id`, `kind` (container
 kind, Block view type, annotation kind), `schema_id`, `schema_version`, `scope`, `parent { entity_id, path }`,
 `version { content_rev, meta_rev, life_rev, struct_rev, epoch, head_seq }`, `body { state, format, format_version,
-etag, records, bytes, reason? }`, `data { mode: local | url_query | synced, source?, derived? }` (data entities),
+etag, records, bytes, reason? }`, `data { mode: local | url_query | synced, write: edit | refresh | none, source?, derived? }`
+(data entities; `write` says who writes the content: Commits under `capabilities`, only the Source's refresh — edits are
+`SOURCE_READ_ONLY` — or nobody here, the rows being remote; `capabilities` and `ops` stay the ACL's and the type's),
 `children`, `capabilities` (the caller's, as everywhere), `ops` (the Commit operations its type takes: the `types` column
 of `schemas/operations.json`), `shows` (a Block: what it shows `{ entity_id, path, type }`, a table view with
 `view_sql`, `view_count_sql`, `view_group_sql?`, `view_diagnostics?` or `view_error`; a control: its bindings),
@@ -1076,7 +1078,8 @@ to `head_seq` (a moved Workspace is `SNAPSHOT_EXPIRED`) and to the request.
   (their bodies are their children). The entity at `at` (unless the root) and its subtree in pre-order. One hit per
   matching text, at most 5 per entity (`more` counts the rest), 20 by default, at most 100; `snippet` is 40 characters
   on each side. No index: a call scans at most 8 MiB of text or 1 second; `coverage { complete, scanned, bytes,
-  skipped: [{ entity_id, reason: definition | binary | too_large }] }` says what was covered, and an empty answer means
+  skipped: [{ entity_id, reason: definition | binary | too_large }] }` says what was covered (`definition`: a URL
+  table, whose name, title and definition were searched but not its remote rows), and an empty answer means
   "not there" only when `complete` is true (otherwise `next_cursor`, resuming inside a table at its record).
 - **SQL** `{ sql, params?, tables?, max_rows?, expect_head? }`: one SELECT run by SQLite itself (R12) on a read-only
   connection, over **logical tables**: the temporary view of a local table, created the first time the statement names
@@ -1085,12 +1088,18 @@ to `head_seq` (a moved Workspace is `SNAPSHOT_EXPIRED`) and to the request.
   record as `doc.read` gives it, as JSON text: what the Desktop renders and edits), and per live field `"<name>"` (the
   display value) and `"<name>#raw"` (the stored value: option ids, the exact decimal, a reference or currency object as
   JSON text); a currency field also `"<name>#currency"`; a field named like a system column is `"<name>#field"`.
-  Joins, CTEs, sub-queries and window functions work; an authorizer allows only SELECT, reads through the logical
+  Joins, CTEs, sub-queries and window functions work. A logical table's column is an expression over JSON, so a join
+  on it cannot use an index: with large tables put the smaller side in `WITH d AS MATERIALIZED (SELECT … FROM "/data/部门")`
+  and join to `d` — SQLite then indexes it (100 000 × 1000 records: ~0.12 s instead of past the budget; the time-limit
+  error of a query over several tables says so). The store keeps `sqlite_stat1` of `table_records` for the planner
+  (refreshed at open when missing and after writes passing a tenth of the records; the STAT4 samples are dropped, they
+  make SQLite scan the large side once per row of the small one). An authorizer allows only SELECT, reads through the logical
   tables and functions (not `load_extension` and the like): kernel tables, `table_records` directly, writes, `ATTACH`,
   `PRAGMA` and recursive CTEs are `INVALID_OPERATION` / `SQL_NOT_ALLOWED`, a syntax error `SQL_ERROR`, a table the
   caller cannot read or that does not exist `NOT_FOUND`, a URL table `NOT_MATERIALIZED`. Budgets: 16 KiB of SQL, 2
   seconds (`LIMIT_EXCEEDED`, `data.limit: time`), `max_rows` (default 1000, at most 5000; more is `truncated: true`),
-  4 MiB of result (`LIMIT_EXCEEDED`, `bytes`). Answer: `columns`, `rows`, `truncated`, `read: [{ table, entity_id,
+  4 MiB of result (`LIMIT_EXCEEDED`, `bytes`). A query runs with the Workspace held: commits to it wait for it (at most
+  the 2 seconds; a text query at most its 1 second). Answer: `columns`, `rows`, `truncated`, `read: [{ table, entity_id,
   path, content_rev }]` (the tables actually read, with their versions), `head_seq`. Comparisons, ordering and NULLs
   are SQLite's; the functions `aiws_dec_cmp(a, b)`, `aiws_label`, `aiws_labels`, `aiws_pick` and the collation
   `aiws_dec` (exact decimal order) are there for the compiled views. `expect_head: { epoch, seq }` refuses a Workspace
@@ -1109,12 +1118,16 @@ to `head_seq` (a moved Workspace is `SNAPSHOT_EXPIRED`) and to the request.
 the action (`page_size`, `cursor` page it; method `doc.index`); rows link to entity objects (a body hit with its
 selector) and have the columns `type, kind, name, title, path, parent, on, selector, snippet`. An entity object's
 summary property is `meta`, then `body` (`?cursor=&max_bytes=&parts=true`, `?selector=`) and `content` (the native
-content; `?mode=fixed&version=<json>` reads that version or fails, R2).
+content; `?mode=fixed&version=<json>` reads that version or fails, R2). HTTP status by error code: `PERMISSION_DENIED`
+403; `NOT_FOUND`, `TARGET_DELETED`, `VERSION_NOT_RETAINED`, `REFERENCE_BROKEN` 404; `INVALID_OPERATION`, `INVALID_SCHEMA`,
+`UNSUPPORTED_VERSION` (a fixed version of `meta` / `body`) 400; others 500.
 
 ### Writing
 
 Precise writes are Commit operations by type through `doc.commit` (R8): `meta.ops` lists what a type takes and
-`schemas/operations.json` describes each (`types`, `capability`, `class`). The websdk builds the frequent ones
+`schemas/operations.json` describes each (`types`, `capability`, `class`); the twelve the helpers build have `params`, a
+JSON Schema in `commit-request.schema.json` `$defs` (`core/tests/schemas.rs` holds them against the planner: what a
+helper builds conforms and is accepted, an unknown parameter is refused by both). The websdk builds the frequent ones
 (`aiws_write.ts`: rows and cells by field name and option label, fields, options, rich text blocks from Markdown,
 rename, move, properties — with `expect` from what was read and an idempotency key) and `buckyos aiws` has the verbs.
 
@@ -1195,7 +1208,8 @@ A data entity (table, rich text, record, asset, directory) may carry a `source` 
 people and Blocks: every content write (`table.*` data operations, `richtext.*`, `dir.*`, `entity.set_keys` beyond `source` / `title` /
 `description`) is refused with `INVALID_OPERATION/SOURCE_READ_ONLY`; only a refresh writes it, as one Commit of origin `source` with the
 run id: `proc.start { program: "source.refresh@1", params: { entity_id } }` (`update` on the entity) — the service fetches (another Workspace of this service as `public`; otherwise one credential-less HTTP GET; `auth_mode: hosted` Sources wait for an Agent), diffs and commits; `proc.get` ends `succeeded` (`result`: the commit, `bytes`, `content_root` of a fixed Source) or `failed` (the last valid content stays). A `refresh.interval_s` Source is refreshed on the service's timer as the owner; fetched bytes count against `traffic_quota_bytes` (`ws.get_info.traffic`). The outline envelope shows `source` (kind, mode, origin,
-schedule). Publishing (`ws.publish`) is the other side: the `public` subject reads the entity, and its link
+schedule); `doc.read { as: "meta" }` gives `data { mode: synced, write: refresh, source }` (a URL table: `url_query`,
+`none`), the body and SQL of a sourced table are its last valid content. Publishing (`ws.publish`) is the other side: the `public` subject reads the entity, and its link
 `https://aiws-<workspace_id>.<zonehost>/<workspace_name>/<name>` (or `GET /kapi/aiworkspace/pub/<workspace_id>/<name>`) answers the
 publication — JSON (`format: buckyos.ai-workspace/pub/1.0`, `reference`, `content`; `?fixed=1` adds `content_root`; `?fixed=<root>` reads
 that pinned version) or, for a browser or crawler (`Accept: text/html`), a static HTML page with the title and the table or text.

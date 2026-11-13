@@ -330,6 +330,15 @@ pub trait ReadCtx {
     fn scan_records_from(&self, source: &str, from: &str, visit: &mut dyn FnMut(&RecordRow) -> WsResult<bool>) -> WsResult<()> {
         self.scan_records(source, &mut |r| if r.record_id.as_str() < from { Ok(true) } else { visit(r) })
     }
+    /// The live records of a table (a store counts them without decoding each: `doc.read` of a 100 000-record table).
+    fn record_count(&self, source: &str) -> WsResult<u64> {
+        let mut n = 0u64;
+        self.scan_records(source, &mut |r| {
+            n += r.alive() as u64;
+            Ok(true)
+        })?;
+        Ok(n)
+    }
     fn richtext(&self, id: &str) -> WsResult<Option<RichTextState>>;
     fn refs_to(&self, dst_entity: &str) -> WsResult<Vec<RefEdge>>;
     fn refs_from(&self, src_entity: &str) -> WsResult<Vec<RefEdge>>;

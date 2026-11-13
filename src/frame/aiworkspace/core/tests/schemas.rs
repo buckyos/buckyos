@@ -145,3 +145,191 @@ fn extension_schemas_match_the_validators() {
     // the reference kind the source snapshot uses is in the frozen catalogue
     assert!(aiworkspace_core::model::REF_KINDS.iter().any(|(k, _, i, _)| *k == "def_source" && *i == "strong"));
 }
+
+/// The JSON Schema keywords the parameter schemas use: `$ref` (to this file's `$defs`), `type`, `const`, `enum`,
+/// `required`, `properties`, `additionalProperties` (false or a schema), `items`, `minItems`, `maxItems`, `minimum`,
+/// `maximum`, `minLength`, `maxLength`, `oneOf`, `anyOf`. `pattern` and `propertyNames` are not checked here.
+fn conforms(root: &Value, schema: &Value, v: &Value, at: &str) -> Result<(), String> {
+    if let Some(r) = schema.get("$ref").and_then(Value::as_str) {
+        let name = r.strip_prefix("#/$defs/").unwrap_or_else(|| panic!("{at}: unsupported $ref {r}"));
+        return conforms(root, &root["$defs"][name], v, at);
+    }
+    let fail = |why: String| Err(format!("{at}: {why} ({v})"));
+    if let Some(t) = schema.get("type") {
+        let types: Vec<&str> = match t {
+            Value::String(s) => vec![s.as_str()],
+            Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+            _ => vec![],
+        };
+        let is = |t: &str| match t {
+            "object" => v.is_object(),
+            "array" => v.is_array(),
+            "string" => v.is_string(),
+            "integer" => v.is_u64() || v.is_i64(),
+            "number" => v.is_number(),
+            "boolean" => v.is_boolean(),
+            "null" => v.is_null(),
+            other => panic!("{at}: unsupported type {other}"),
+        };
+        if !types.iter().any(|t| is(t)) {
+            return fail(format!("not of type {t}"));
+        }
+    }
+    if let Some(c) = schema.get("const") {
+        if c != v {
+            return fail(format!("not {c}"));
+        }
+    }
+    if let Some(e) = schema.get("enum").and_then(Value::as_array) {
+        if !e.contains(v) {
+            return fail("not in the enum".into());
+        }
+    }
+    if let (Some(n), Some(x)) = (schema.get("minimum").and_then(Value::as_f64), v.as_f64()) {
+        if x < n {
+            return fail(format!("below {n}"));
+        }
+    }
+    if let (Some(n), Some(x)) = (schema.get("maximum").and_then(Value::as_f64), v.as_f64()) {
+        if x > n {
+            return fail(format!("above {n}"));
+        }
+    }
+    if let Some(s) = v.as_str() {
+        let len = s.chars().count() as u64;
+        if schema.get("minLength").and_then(Value::as_u64).is_some_and(|n| len < n) || schema.get("maxLength").and_then(Value::as_u64).is_some_and(|n| len > n) {
+            return fail("length out of range".into());
+        }
+    }
+    if let Some(o) = v.as_object() {
+        for k in schema.get("required").and_then(Value::as_array).into_iter().flatten() {
+            if !o.contains_key(k.as_str().unwrap()) {
+                return fail(format!("{k} missing"));
+            }
+        }
+        let props = schema.get("properties").and_then(Value::as_object);
+        for (k, x) in o {
+            match props.and_then(|p| p.get(k)) {
+                Some(s) => conforms(root, s, x, &format!("{at}/{k}"))?,
+                None => match schema.get("additionalProperties") {
+                    Some(Value::Bool(false)) => return fail(format!("{k} is not allowed")),
+                    Some(s) if s.is_object() => conforms(root, s, x, &format!("{at}/{k}"))?,
+                    _ => {}
+                },
+            }
+        }
+    }
+    if let Some(a) = v.as_array() {
+        if schema.get("minItems").and_then(Value::as_u64).is_some_and(|n| (a.len() as u64) < n) || schema.get("maxItems").and_then(Value::as_u64).is_some_and(|n| (a.len() as u64) > n) {
+            return fail("item count out of range".into());
+        }
+        if let Some(items) = schema.get("items") {
+            for (i, x) in a.iter().enumerate() {
+                conforms(root, items, x, &format!("{at}/{i}"))?;
+            }
+        }
+    }
+    if let Some(list) = schema.get("oneOf").and_then(Value::as_array) {
+        let n = list.iter().filter(|s| conforms(root, s, v, at).is_ok()).count();
+        if n != 1 {
+            return fail(format!("matches {n} of oneOf"));
+        }
+    }
+    if let Some(list) = schema.get("anyOf").and_then(Value::as_array) {
+        if !list.iter().any(|s| conforms(root, s, v, at).is_ok()) {
+            return fail("matches none of anyOf".into());
+        }
+    }
+    Ok(())
+}
+
+/// The operations the websdk's write helpers build have parameter schemas (核心 API 调整 §4, design §10), and the
+/// planner agrees with them: what a helper builds conforms and is accepted, every listed parameter is one the planner
+/// knows, and an unlisted one is refused by both.
+#[test]
+fn helper_operations_have_parameter_schemas_the_planner_agrees_with() {
+    use aiworkspace_core::model::{CANVAS_CONTENT_ID, SURFACES_ID, TYPE_CELL, TYPE_CONTAINER, TYPE_RICHTEXT, TYPE_TABLE};
+    let schema = load("commit-request.schema.json");
+    let catalogue = load("operations.json");
+    assert_eq!(catalogue["protocol_version"], aiworkspace_core::model::PROTOCOL_VERSION);
+    let params: Vec<(String, Value)> = catalogue["operations"].as_array().unwrap().iter()
+        .filter_map(|o| {
+            let r = o.get("params")?.as_str().unwrap();
+            let name = r.strip_prefix("commit-request.schema.json#/$defs/").unwrap_or_else(|| panic!("{r}"));
+            let def = schema["$defs"].get(name).unwrap_or_else(|| panic!("{r} does not exist")).clone();
+            assert_eq!(def["properties"]["op"]["const"], o["op"], "{r}");
+            Some((o["op"].as_str().unwrap().to_string(), def))
+        })
+        .collect();
+    let mut covered: Vec<&str> = params.iter().map(|(o, _)| o.as_str()).collect();
+    covered.sort();
+    assert_eq!(covered, ["entity.rename", "entity.set_props", "richtext.delete_blocks", "richtext.insert_blocks", "richtext.replace_block",
+        "table.add_field", "table.add_option", "table.delete_records", "table.insert_records", "table.set_values", "table.unset_values", "tree.move"]);
+
+    let para = |id: &str, text: &str| json!({ "type": "paragraph", "attrs": { "block_id": id }, "content": [{ "type": "text", "text": text }] });
+    let setup = || {
+        let mut ws = MemWorkspace::new();
+        ws.ok(json!([
+            { "op": "entity.create", "entity_id": "t", "type_id": TYPE_TABLE, "parent_id": "data", "order_key": "a",
+              "payload": { "fields": [{ "field_id": "title", "name": "标题", "type": "text" },
+                                      { "field_id": "s", "name": "状态", "type": "select", "options": [{ "option_id": "a", "label": "甲" }] }] } },
+            { "op": "table.insert_records", "source_id": "t", "records": [{ "record_id": "r1", "values": { "title": "一", "s": "a" } },
+                                                                        { "record_id": "r2", "values": { "title": "二" } }] },
+            { "op": "entity.create", "entity_id": "d", "type_id": TYPE_RICHTEXT, "parent_id": "data", "order_key": "b",
+              "payload": { "content": { "type": "doc", "content": [para("p1", "第一段"), para("p2", "第二段")] } } },
+            { "op": "entity.create", "entity_id": "f", "type_id": TYPE_CONTAINER, "parent_id": "data", "order_key": "c", "payload": { "kind": "folder" } },
+            { "op": "entity.create", "entity_id": "g", "type_id": TYPE_CONTAINER, "parent_id": "data", "order_key": "d", "payload": { "kind": "folder" } },
+            { "op": "entity.create", "entity_id": "s-content", "type_id": TYPE_CONTAINER, "parent_id": CANVAS_CONTENT_ID, "order_key": "a",
+              "payload": { "kind": "folder", "system": "surface_content", "surface_id": "s" } },
+            { "op": "entity.create", "entity_id": "s", "type_id": TYPE_CONTAINER, "parent_id": SURFACES_ID, "order_key": "a",
+              "payload": { "kind": "surface", "layout": { "mode": "free" }, "content_folder_id": "s-content" } },
+            { "op": "entity.create", "entity_id": "c", "type_id": TYPE_CELL, "parent_id": "s", "order_key": "m", "placement": { "x": 0, "y": 0, "w": 200, "h": 100 },
+              "payload": { "view": { "type": "text" }, "config": { "text": "a" } } }
+        ]));
+        ws
+    };
+    // what each helper builds (websdk aiws_write.ts), with the versions it read
+    let ws = setup();
+    let cell_rev = |r: &str, f: &str| ws.store.records[&("t".to_string(), r.to_string())].value_rev(f);
+    let record_rev = |r: &str| ws.store.records[&("t".to_string(), r.to_string())].rev;
+    let hash = |b: &str| ws.store.richtexts["d"].meta.block_index[b].hash.clone();
+    let built = vec![
+        json!({ "op": "table.insert_records", "source_id": "t", "records": [{ "record_id": "r3", "values": { "title": "三", "s": "a" } }] }),
+        json!({ "op": "table.set_values", "source_id": "t", "values": [{ "record_id": "r1", "field_id": "title", "value": "壹", "expect": { "rev": cell_rev("r1", "title") } }] }),
+        json!({ "op": "table.unset_values", "source_id": "t", "values": [{ "record_id": "r1", "field_id": "s", "expect": { "rev": cell_rev("r1", "s") } }] }),
+        json!({ "op": "table.delete_records", "source_id": "t", "records": [{ "record_id": "r2", "expect": { "rev": record_rev("r2") } }] }),
+        json!({ "op": "table.add_field", "source_id": "t", "field": { "field_id": "n", "name": "数量", "type": "number" }, "order_key": "x" }),
+        json!({ "op": "table.add_option", "source_id": "t", "field_id": "s", "option": { "option_id": "b", "label": "乙" },
+                "expect": { "rev": ws.store.fields[&("t".to_string(), "s".to_string())].def_rev } }),
+        json!({ "op": "richtext.insert_blocks", "entity_id": "d", "position": { "end": true }, "blocks": [para("p3", "第三段")] }),
+        json!({ "op": "richtext.replace_block", "entity_id": "d", "block_id": "p1", "expect": { "hash": hash("p1") }, "node": para("p1", "改过") }),
+        json!({ "op": "richtext.delete_blocks", "entity_id": "d", "blocks": [{ "block_id": "p2", "expect": { "hash": hash("p2"), "struct_rev": ws.store.richtexts["d"].meta.block_index["p2"].struct_rev } }] }),
+        json!({ "op": "entity.rename", "entity_id": "f", "name": "资料", "expect": { "rev": ws.store.entities["f"].meta_rev } }),
+        json!({ "op": "tree.move", "entity_id": "f", "new_parent_id": "g", "order_key": "m" }),
+        json!({ "op": "entity.set_props", "entity_id": "c", "key": "config", "props": { "text": "b" }, "expect": { "text": 0 } }),
+    ];
+    for op in &built {
+        let name = op["op"].as_str().unwrap();
+        let def = &params.iter().find(|(o, _)| o == name).unwrap_or_else(|| panic!("{name} has no schema")).1;
+        conforms(&schema, def, op, name).unwrap();
+        let mut ws = setup();
+        ws.ok(json!([op]));
+        // an unlisted parameter: refused by the schema and by the planner
+        let mut extra = op.clone();
+        extra["zz_extra"] = json!(1);
+        assert!(conforms(&schema, def, &extra, name).is_err(), "{name}");
+        let f = setup().fail(json!([extra]));
+        assert!(f.to_string().contains("unknown parameter zz_extra"), "{name}: {f}");
+        // every listed parameter is one the planner knows
+        for k in def["properties"].as_object().unwrap().keys().filter(|k| *k != "op") {
+            let mut probe = op.clone();
+            if probe.get(k).is_none() {
+                probe[k] = json!(null);
+            }
+            if let Err(f) = setup().commit(json!([probe])) {
+                let f = f.to_json().to_string();
+                assert!(!f.contains(&format!("unknown parameter {k}")), "{name}: the schema lists {k}, the planner does not know it: {f}");
+            }
+        }
+    }
+}

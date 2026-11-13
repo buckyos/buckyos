@@ -602,6 +602,708 @@
      "description": "<name>: the rev of p:<key>.<name> this write is based on (0 = never written); absent names merge"
     }
    }
+  },
+  "table_insert_records": {
+   "description": "Insert records (auto-merge; append is enough without update). Built by the websdk's tableInsert.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "source_id",
+    "records"
+   ],
+   "properties": {
+    "op": {
+     "const": "table.insert_records"
+    },
+    "source_id": {
+     "$ref": "#/$defs/id"
+    },
+    "records": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 10000,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "record_id"
+      ],
+      "properties": {
+       "record_id": {
+        "$ref": "#/$defs/id"
+       },
+       "values": {
+        "type": "object",
+        "description": "field_id → value of the field's type (README “Field types”: a select's option_id, a decimal string, `{ amount, currency }`, a reference object, `{ \"$formula\": … }`). Not the display form: the websdk's `tableInsert` / `tableSet` and `buckyos aiws table` turn field names and option labels into ids."
+       },
+       "body_ref": {
+        "description": "The record's body: a rich text entity of the same table's content (reference object or entity id); null for none."
+       },
+       "meta": {
+        "type": "object",
+        "description": "Import and undo only (internal callers)."
+       }
+      }
+     }
+    },
+    "field_type_revs": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "description": "field_id → the type_rev the values were written for; a changed type is a SCHEMA_CONFLICT. Optional."
+    },
+    "derived": {
+     "type": "object",
+     "description": "Provenance of values written by a program (`origin` program / agent with a run) or a materialized formula (`{ program: \"formula\", formula }`); stored per cell as `meta.derived`."
+    }
+   }
+  },
+  "table_set_values": {
+   "description": "Set cells (overwrite: each item needs the cell's rev as read). Built by the websdk's tableSet.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "source_id",
+    "values"
+   ],
+   "properties": {
+    "op": {
+     "const": "table.set_values"
+    },
+    "source_id": {
+     "$ref": "#/$defs/id"
+    },
+    "values": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 10000,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "record_id",
+       "field_id",
+       "value",
+       "expect"
+      ],
+      "properties": {
+       "record_id": {
+        "$ref": "#/$defs/id"
+       },
+       "field_id": {
+        "$ref": "#/$defs/id"
+       },
+       "value": {
+        "description": "A value of the field's type (see table_insert_records.values)."
+       },
+       "expect": {
+        "$ref": "#/$defs/expect"
+       },
+       "restore_meta": {
+        "description": "Undo only (internal callers)."
+       }
+      }
+     }
+    },
+    "field_type_revs": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "description": "field_id → the type_rev the values were written for; a changed type is a SCHEMA_CONFLICT. Optional."
+    },
+    "derived": {
+     "type": "object",
+     "description": "Provenance of values written by a program (`origin` program / agent with a run) or a materialized formula (`{ program: \"formula\", formula }`); stored per cell as `meta.derived`."
+    }
+   }
+  },
+  "table_unset_values": {
+   "description": "Clear cells (overwrite). Built by the websdk's tableSet for null values.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "source_id",
+    "values"
+   ],
+   "properties": {
+    "op": {
+     "const": "table.unset_values"
+    },
+    "source_id": {
+     "$ref": "#/$defs/id"
+    },
+    "values": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 10000,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "record_id",
+       "field_id",
+       "expect"
+      ],
+      "properties": {
+       "record_id": {
+        "$ref": "#/$defs/id"
+       },
+       "field_id": {
+        "$ref": "#/$defs/id"
+       },
+       "expect": {
+        "$ref": "#/$defs/expect"
+       }
+      }
+     }
+    },
+    "field_type_revs": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "description": "field_id → the type_rev the values were written for; a changed type is a SCHEMA_CONFLICT. Optional."
+    },
+    "derived": {
+     "type": "object",
+     "description": "Provenance of values written by a program (`origin` program / agent with a run) or a materialized formula (`{ program: \"formula\", formula }`); stored per cell as `meta.derived`."
+    }
+   }
+  },
+  "table_delete_records": {
+   "description": "Delete records (structural: each needs the record's rev as read). Built by the websdk's tableDelete.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "source_id",
+    "records"
+   ],
+   "properties": {
+    "op": {
+     "const": "table.delete_records"
+    },
+    "source_id": {
+     "$ref": "#/$defs/id"
+    },
+    "records": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "record_id",
+       "expect"
+      ],
+      "properties": {
+       "record_id": {
+        "$ref": "#/$defs/id"
+       },
+       "expect": {
+        "$ref": "#/$defs/expect"
+       }
+      }
+     }
+    },
+    "owned_bodies": {
+     "enum": [
+      "delete",
+      "detach"
+     ],
+     "description": "What happens to the records' bodies; default delete."
+    }
+   }
+  },
+  "table_add_field": {
+   "description": "Add a field (structure). Built by the websdk's fieldAdd.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "source_id",
+    "field"
+   ],
+   "properties": {
+    "op": {
+     "const": "table.add_field"
+    },
+    "source_id": {
+     "$ref": "#/$defs/id"
+    },
+    "field": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "field_id",
+      "name",
+      "type"
+     ],
+     "description": "The field definition (README “Field types” for each type's keys).",
+     "properties": {
+      "field_id": {
+       "$ref": "#/$defs/id"
+      },
+      "name": {
+       "type": "string",
+       "minLength": 1
+      },
+      "type": {
+       "enum": [
+        "text",
+        "boolean",
+        "number",
+        "decimal",
+        "date",
+        "datetime",
+        "select",
+        "multi_select",
+        "object_ref",
+        "currency",
+        "json"
+       ]
+      },
+      "required": {
+       "type": "boolean"
+      },
+      "nullable": {
+       "type": "boolean"
+      },
+      "unique": {
+       "type": "boolean"
+      },
+      "description": {
+       "type": "string"
+      },
+      "maintained_by": {
+       "enum": [
+        "human",
+        "program"
+       ]
+      },
+      "scale": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 18
+      },
+      "options": {
+       "type": "array",
+       "items": {
+        "$ref": "#/$defs/option"
+       }
+      },
+      "target_types": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "currency": {
+       "type": "string",
+       "pattern": "^[A-Z]{3}$"
+      },
+      "submitter": {
+       "type": "boolean"
+      },
+      "max_items": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 1000
+      }
+     }
+    },
+    "order_key": {
+     "type": "string",
+     "description": "Position among the fields; default after the last."
+    },
+    "backfill": {
+     "description": "A value for the existing records (needed for a required field of a non-empty table)."
+    }
+   }
+  },
+  "option": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "option_id",
+    "label"
+   ],
+   "properties": {
+    "option_id": {
+     "$ref": "#/$defs/id"
+    },
+    "label": {
+     "type": "string",
+     "minLength": 1
+    }
+   }
+  },
+  "table_add_option": {
+   "description": "Add an option to a select or multi_select field (overwrite: the field's def_rev). Built by the websdk's optionAdd.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "source_id",
+    "field_id",
+    "option",
+    "expect"
+   ],
+   "properties": {
+    "op": {
+     "const": "table.add_option"
+    },
+    "source_id": {
+     "$ref": "#/$defs/id"
+    },
+    "field_id": {
+     "$ref": "#/$defs/id"
+    },
+    "option": {
+     "$ref": "#/$defs/option"
+    },
+    "index": {
+     "type": "integer",
+     "minimum": 0,
+     "description": "Position among the options; default last."
+    },
+    "expect": {
+     "$ref": "#/$defs/expect"
+    }
+   }
+  },
+  "richtext_insert_blocks": {
+   "description": "Insert top-level blocks (auto-merge). Built by the websdk's textAppend / textReplaceBlock.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "entity_id",
+    "position",
+    "blocks"
+   ],
+   "properties": {
+    "op": {
+     "const": "richtext.insert_blocks"
+    },
+    "entity_id": {
+     "$ref": "#/$defs/id"
+    },
+    "position": {
+     "description": "Exactly one key.",
+     "oneOf": [
+      {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "start"
+       ],
+       "properties": {
+        "start": {
+         "const": true
+        }
+       }
+      },
+      {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "end"
+       ],
+       "properties": {
+        "end": {
+         "const": true
+        }
+       }
+      },
+      {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "after"
+       ],
+       "properties": {
+        "after": {
+         "$ref": "#/$defs/id"
+        }
+       }
+      },
+      {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "before"
+       ],
+       "properties": {
+        "before": {
+         "$ref": "#/$defs/id"
+        }
+       }
+      },
+      {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "first_child_of"
+       ],
+       "properties": {
+        "first_child_of": {
+         "$ref": "#/$defs/id"
+        }
+       }
+      }
+     ]
+    },
+    "blocks": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "object",
+      "required": [
+       "type",
+       "attrs"
+      ],
+      "properties": {
+       "type": {
+        "type": "string"
+       },
+       "attrs": {
+        "type": "object",
+        "required": [
+         "block_id"
+        ],
+        "properties": {
+         "block_id": {
+          "$ref": "#/$defs/id"
+         }
+        }
+       }
+      },
+      "description": "A top-level node of richtext.basic.v1 (richtext.basic.v1.json) with its block_id. The websdk's `markdownToBlocks` builds them from Markdown."
+     }
+    },
+    "server_update": {
+     "type": "string",
+     "description": "Written into the normalized operation by the service (collaboration update and lineage); a client leaves it out."
+    },
+    "lineage_id": {
+     "type": "string",
+     "description": "Written into the normalized operation by the service (collaboration update and lineage); a client leaves it out."
+    }
+   }
+  },
+  "richtext_replace_block": {
+   "description": "Replace one block (overwrite: the block's hash). Built by the websdk's textReplaceBlock.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "entity_id",
+    "block_id",
+    "expect",
+    "node"
+   ],
+   "properties": {
+    "op": {
+     "const": "richtext.replace_block"
+    },
+    "entity_id": {
+     "$ref": "#/$defs/id"
+    },
+    "block_id": {
+     "$ref": "#/$defs/id"
+    },
+    "expect": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "hash"
+     ],
+     "properties": {
+      "hash": {
+       "type": "string"
+      }
+     },
+     "description": "The block's `hash` as read (`content.blocks` of `doc.read`, or the `richtext_block` selector)."
+    },
+    "node": {
+     "type": "object",
+     "required": [
+      "type",
+      "attrs"
+     ],
+     "properties": {
+      "type": {
+       "type": "string"
+      },
+      "attrs": {
+       "type": "object",
+       "required": [
+        "block_id"
+       ],
+       "properties": {
+        "block_id": {
+         "$ref": "#/$defs/id"
+        }
+       }
+      }
+     },
+     "description": "A top-level node of richtext.basic.v1 (richtext.basic.v1.json) with its block_id. The websdk's `markdownToBlocks` builds them from Markdown."
+    },
+    "server_update": {
+     "type": "string",
+     "description": "Written into the normalized operation by the service (collaboration update and lineage); a client leaves it out."
+    },
+    "lineage_id": {
+     "type": "string",
+     "description": "Written into the normalized operation by the service (collaboration update and lineage); a client leaves it out."
+    }
+   }
+  },
+  "richtext_delete_blocks": {
+   "description": "Delete blocks (each checked against its hash). Built by the websdk's textDeleteBlocks.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "entity_id",
+    "blocks"
+   ],
+   "properties": {
+    "op": {
+     "const": "richtext.delete_blocks"
+    },
+    "entity_id": {
+     "$ref": "#/$defs/id"
+    },
+    "blocks": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "block_id",
+       "expect"
+      ],
+      "properties": {
+       "block_id": {
+        "$ref": "#/$defs/id"
+       },
+       "expect": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "hash",
+         "struct_rev"
+        ],
+        "properties": {
+         "hash": {
+          "type": "string"
+         },
+         "struct_rev": {
+          "type": "integer",
+          "minimum": 0
+         }
+        },
+        "description": "The block's `hash` and `struct_rev` (its position) as read: a block changed or moved since is a conflict."
+       }
+      }
+     }
+    },
+    "server_update": {
+     "type": "string",
+     "description": "Written into the normalized operation by the service (collaboration update and lineage); a client leaves it out."
+    },
+    "lineage_id": {
+     "type": "string",
+     "description": "Written into the normalized operation by the service (collaboration update and lineage); a client leaves it out."
+    }
+   }
+  },
+  "entity_rename": {
+   "description": "Rename an entity (overwrite: meta_rev). null gives the name back to the rule (it follows the title, or a counter). Built by the websdk's rename.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "entity_id",
+    "name",
+    "expect"
+   ],
+   "properties": {
+    "op": {
+     "const": "entity.rename"
+    },
+    "entity_id": {
+     "$ref": "#/$defs/id"
+    },
+    "name": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "minLength": 1,
+     "maxLength": 128,
+     "description": "No `/`, no control characters, not starting with `~`, not `.` / `..`; unique among its siblings (NAME_CONFLICT)."
+    },
+    "expect": {
+     "$ref": "#/$defs/expect"
+    }
+   }
+  },
+  "tree_move": {
+   "description": "Move an entity under another parent (structural). Built by the websdk's move.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "op",
+    "entity_id",
+    "new_parent_id",
+    "order_key"
+   ],
+   "properties": {
+    "op": {
+     "const": "tree.move"
+    },
+    "entity_id": {
+     "$ref": "#/$defs/id"
+    },
+    "new_parent_id": {
+     "$ref": "#/$defs/id"
+    },
+    "order_key": {
+     "type": "string"
+    },
+    "placement": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/placement"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "slot": {
+     "type": [
+      "string",
+      "null"
+     ],
+     "description": "A Block's slot inside a control."
+    },
+    "expect": {
+     "$ref": "#/$defs/expect"
+    }
+   }
   }
  }
 }

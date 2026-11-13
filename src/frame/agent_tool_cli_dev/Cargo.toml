@@ -1,4 +1,6 @@
 [package]
+license-file.workspace = true
+license.workspace = true
 name = "agent_tool_cli_dev"
 version.workspace = true
 edition = "2021"

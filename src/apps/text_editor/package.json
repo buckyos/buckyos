@@ -1,4 +1,5 @@
 {
+  "license": "AGPL-3.0-only",
   "name": "buckyos-text-editor", "private": true, "version": "0.1.0", "type": "module",
   "scripts": { "dev": "vite --host 127.0.0.1", "check": "tsc --noEmit", "build": "pnpm update --no-save buckyos && pnpm check && vite build", "test": "node --experimental-strip-types --test tests/unit/*.test.ts", "test:e2e": "playwright test", "test:nfsp": "playwright test --config playwright.nfsp.config.ts" },
   "dependencies": {

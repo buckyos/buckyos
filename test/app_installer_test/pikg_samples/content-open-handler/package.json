@@ -1,4 +1,5 @@
 {
+  "license": "AGPL-3.0-only",
   "name": "content-open-handler-fixture",
   "private": true,
   "type": "module",

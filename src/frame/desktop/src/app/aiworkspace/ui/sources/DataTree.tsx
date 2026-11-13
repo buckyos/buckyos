@@ -17,13 +17,14 @@ import { TABULAR_ACCEPT, tabularKind } from '@table/files'
 import { tableImports } from '../import/tableImportRequest'
 import { clipboardTable } from '../import/clipboardTable'
 
-type TypeFilter = 'all' | 'buckyos.table-source' | 'buckyos.richtext' | 'buckyos.record' | 'buckyos.asset-ref' | 'buckyos.annotation' | 'buckyos.wish' | 'buckyos.block-def'
+type TypeFilter = 'all' | 'buckyos.table-source' | 'buckyos.richtext' | 'buckyos.record' | 'buckyos.asset-ref' | 'buckyos.annotation' | 'buckyos.wish' | 'buckyos.block-def' | 'buckyos.dir'
 type OriginFilter = 'all' | 'original' | 'generated'
 
 /** The edit label of creating each kind of data. */
 const CREATE_LABEL: Record<NewDataKind, string> = {
   folder: 'aiworkspace.data.tree.newFolder', table: 'aiworkspace.data.tree.newTable', richtext: 'aiworkspace.data.tree.newRichtext',
   record: 'aiworkspace.data.tree.newRecord', wish: 'aiworkspace.data.tree.newWish', note: 'aiworkspace.data.tree.newNote', link: 'aiworkspace.data.tree.newLink',
+  dir: 'aiworkspace.data.tree.newDir',
 }
 
 export function DataTree({ selected, onSelect }: { selected: string | null; onSelect: (id: string | null) => void }) {
@@ -226,6 +227,7 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
             <option value="table">{t('aiworkspace.data.tree.kindTable')}</option><option value="richtext">{t('aiworkspace.data.tree.kindRichtext')}</option><option value="record">{t('aiworkspace.data.tree.kindRecord')}</option>
             <option value="wish">{t('aiworkspace.data.tree.kindWish')}</option><option value="note">{t('aiworkspace.data.stickyNote')}</option><option value="folder">{t('aiworkspace.data.tree.kindFolder')}</option>
             <option value="link">{t('aiworkspace.data.tree.kindLink')}</option>
+            <option value="dir">{t('aiworkspace.data.type.dir')}</option>
           </select>
           {kind === 'link' && <input aria-label={t('aiworkspace.data.tree.kindLink')} data-testid="aiws-new-link" placeholder={t('aiworkspace.data.tree.linkPlaceholder')} value={link} onChange={(event) => setLink(event.target.value)} />}
           <input aria-label={t('aiworkspace.data.tree.titleField')} placeholder={t('aiworkspace.data.tree.titlePlaceholder')} value={title} onChange={(event) => setTitle(event.target.value)} />

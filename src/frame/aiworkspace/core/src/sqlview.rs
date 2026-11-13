@@ -373,23 +373,28 @@ pub fn compile_view(table: &str, fields: &[FieldRow], view: &ViewDef, projection
         }
     }
     order.push("\"_id\"".into());
-    let select = match projection {
-        Projection::Records => "\"_record\"".to_string(),
-        Projection::Display => {
-            let mut s = vec!["\"_id\"".to_string()];
-            match &view.fields {
-                Some(list) => {
-                    for f in list {
-                        match by_id.get(f) {
-                            Some(c) => s.push(ident(&c.display)),
-                            None => diagnostics.push(json!({ "key": "fields", "code": "FIELD_DELETED", "field_id": f })),
-                        }
-                    }
+    // the view's fields that are still live (a dangling entry is reported, as `run_query` does)
+    let shown: Option<Vec<&FieldColumns>> = view.fields.as_ref().map(|list| {
+        list.iter()
+            .filter_map(|f| {
+                let c = by_id.get(f);
+                if c.is_none() {
+                    diagnostics.push(json!({ "key": "fields", "code": "FIELD_DELETED", "field_id": f }));
                 }
-                None => s.extend(cols.iter().map(|c| ident(&c.display))),
-            }
-            s.join(", ")
+                c
+            })
+            .collect()
+    });
+    let select = match (projection, &shown) {
+        (Projection::Records, None) => "\"_record\"".to_string(),
+        // values, revs and meta of the view's fields only (`run_query` with `fields`)
+        (Projection::Records, Some(list)) => {
+            let ids = lit(&Value::Array(list.iter().map(|c| json!(c.def.field_id)).collect()).to_string());
+            let part = |k: &str| format!("'$.{k}', json(aiws_pick(json_extract(\"_record\", '$.{k}'), {ids}))");
+            format!("json_set(\"_record\", {}, {}, {}) AS \"_record\"", part("values"), part("revs"), part("meta"))
         }
+        (Projection::Display, Some(list)) => std::iter::once("\"_id\"".to_string()).chain(list.iter().map(|c| ident(&c.display))).collect::<Vec<_>>().join(", "),
+        (Projection::Display, None) => std::iter::once("\"_id\"".to_string()).chain(cols.iter().map(|c| ident(&c.display))).collect::<Vec<_>>().join(", "),
     };
     let where_clause = filter.as_ref().map(|f| format!(" WHERE {}", where_sql(f, &by_id))).unwrap_or_default();
     let sql = format!("SELECT {select} FROM {table}{where_clause} ORDER BY {}", order.join(", "));

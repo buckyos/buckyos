@@ -92,6 +92,10 @@ ui/
   sources/                data-source mode: DataTree (canvas content collapsed, filters), DataDetail (editors without a
                           Block), RelationsPanel (doc.relations), PropertiesPanel (versions, restore), PermissionsPanel
                           (presets, canvas permissions, subjects)
+                          DirectoryDetail (`buckyos.dir` members: preview/download, upload/replace, rename/remove,
+                          directory references; member revisions and the shared write-lock/permission rules).
+                          DataDetail dispatches all eight core data types; degraded or unhandled types show their
+                          stored content read-only, including loading and read failures.
   canvas/                 CanvasView (sub-modes edit / view / path editing, selection, pointer tool,
                           one-shot placement, insert, clipboard, group, cross-Surface move, keyboard), ObjectToolbar,
                           InsertCatalog + catalog.ts (the one insert catalog), clipboard.ts, surfaceManage.tsx

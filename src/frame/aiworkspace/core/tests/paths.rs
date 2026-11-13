@@ -214,6 +214,37 @@ fn meta_says_what_an_entity_is_without_reading_it() {
     assert!(m["ops"].as_array().unwrap().contains(&json!("table.insert_records")) && !m["ops"].as_array().unwrap().contains(&json!("richtext.insert_blocks")));
     let d = meta::meta(ctx, &full(), &ctx.entity("doc").unwrap().unwrap(), None).unwrap();
     assert_eq!(d["name_follows"], true);
+    assert_eq!(m["data"]["write"], "edit");
+}
+
+/// The three data states an Agent must tell apart before writing (核心 API 调整 §4): local data it may edit, a local
+/// copy only the Source's refresh writes, and a URL table whose rows are remote. The ACL's capabilities are the same
+/// for all three; `data.write` says which one it is, and the planner agrees.
+#[test]
+fn meta_tells_editable_data_from_a_synced_copy_and_a_url_table() {
+    let mut ws = MemWorkspace::new();
+    let fields = json!([{ "field_id": "title", "name": "标题", "type": "text" }]);
+    ws.ok(json!([
+        { "op": "entity.create", "entity_id": "own", "type_id": TYPE_TABLE, "parent_id": DATA_ID, "order_key": "a", "payload": { "fields": fields } },
+        { "op": "entity.create", "entity_id": "copy", "type_id": TYPE_TABLE, "parent_id": DATA_ID, "order_key": "b",
+          "payload": { "fields": fields, "source": { "kind": "url", "url": "https://example.invalid/t.csv", "mode": "live" } } },
+        { "op": "entity.create", "entity_id": "remote", "type_id": TYPE_TABLE, "parent_id": DATA_ID, "order_key": "c",
+          "payload": { "data_mode": "url_query", "fields": fields,
+                       "source_ref": { "kind": "url_query", "source_url": "https://example.invalid/q", "query": {}, "version": { "mode": "live_head" }, "consistency": "best_effort" } } },
+    ]));
+    let meta_of = |id: &str| meta::meta(&ws.store, &full(), &ws.store.entity(id).unwrap().unwrap(), None).unwrap();
+    for (id, mode, write, body) in [("own", "local", "edit", "full"), ("copy", "synced", "refresh", "full"), ("remote", "url_query", "none", "definition")] {
+        let m = meta_of(id);
+        assert_eq!((m["data"]["mode"].as_str(), m["data"]["write"].as_str(), m["body"]["state"].as_str()), (Some(mode), Some(write), Some(body)), "{id}: {m}");
+        assert!(m["capabilities"].as_array().unwrap().contains(&json!("update")), "{id}: the ACL is the same");
+    }
+    assert_eq!(meta_of("copy")["data"]["source"]["kind"], "url");
+    let insert = |id: &str| json!([{ "op": "table.insert_records", "source_id": id, "records": [{ "record_id": "r1", "values": { "title": "x" } }] }]);
+    ws.ok(insert("own"));
+    for id in ["copy", "remote"] {
+        let f = ws.fail(insert(id));
+        assert_eq!(f["errors"][0]["sub_code"], "SOURCE_READ_ONLY", "{id}: {f}");
+    }
 }
 
 #[test]

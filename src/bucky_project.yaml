@@ -139,6 +139,7 @@ apps:
       jarvis_agent: data/cache/jarvis.buckyos.bns.did-0.7.0.pikg
       paios_images: bin/paios-images/
       ext_tools: bin/ext-tools/
+      licenses: licenses/
 
     # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标(覆盖安装逻辑)
     data_paths: 

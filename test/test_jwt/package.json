@@ -1,4 +1,5 @@
 {
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "jose": "^5.7.0"
   }

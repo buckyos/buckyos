@@ -1,6 +1,6 @@
 # AIWS 核心 API 调整 TODO：统一发现、读取、查询与公共属性
 
-状态：首批（M0–M4）已实施，未提交；真实 Zone 的 DV 和性能基线未做（§9）。2026-11-12 设计 review 的 owner 裁决已回写（§0.1）；M0 的取值见 [设计 v1](aiws-core-api-design.md)（实施中改过的取值记在它的 §13）。
+状态：首批（M0–M4）已实施并提交（buckyos `c12d8c9e3`）；2026-11-12 真实 Zone DV 与 T0-6 性能验收已做（§9），T5-2 文档与 Schema 同步、T5-3 向 PRD 交付已做（PRD §11.0“首批交付”），这些在那次提交之后，未提交；T5-1 的 §7 场景未逐条对账。2026-11-12 设计 review 的 owner 裁决已回写（§0.1）；M0 的取值见 [设计 v1](aiws-core-api-design.md)（实施中改过的取值记在它的 §13）。
 
 日期：2026-11-12
 
@@ -285,14 +285,14 @@ obj://aiworkspace/<ws_id>?op=<ls|find|grep>&at=<路径或 entity_id>&…
 
 ### M0：契约（首批）
 
-T0-2 到 T0-5 的取值见 [设计 v1](aiws-core-api-design.md)，已在实现里站住；T0-6 的基线只有草案 §12.1 的 Python 粗测和 `store/tests/perf.rs` 里的计时输出，没有定通过条件。
+T0-2 到 T0-5 的取值见 [设计 v1](aiws-core-api-design.md)，已在实现里站住；T0-6 的数据、基线和通过条件在设计 §12.2，验收用例是 `store/tests/perf_core_api.rs`（release、`--ignored`）和真实 Zone 的 `tests/dv/aiworkspace.perf.spec.ts`。
 
 - [x] **T0-1** 清点现有 `ws.*`、`doc.*`、`proc.*`、对象属性/索引、SDK/CLI 和阶段工具，形成“保留、调整、移除”的映射，记录方法级别（stable / internal / experimental）和协议影响。stable 方法的变更（`doc.resolve` 的重名行为、`doc.query` 的两种模式）同步 `fixtures/protocol` 的形状夹具和协议版本。
 - [x] **T0-2** 定路径与命名规则（各类型联动的属性、自增名字的格式、相撞时的后缀、手工改名后是否停止联动、个人或参与者范围的实体、存量回填、转义、不可读祖先、类型过滤器的默认集合）、公共 meta 字段、Workspace index 的查询参数表和列定义、读取结果的版本与完整性字段。
 - [x] **T0-3** 逐类型写出纯文本呈现（§2.3 表格的每一行，含扩展控件的声明方式和通用回退）、类型化值的显示规则，以及 `body` 版本覆盖的依赖。
 - [x] **T0-4** 定 SQL 查询的规则（§3.4）：表名列名、列值形式、允许的函数、预算数值、返回的范围与版本；定视图定义转 SQL 的规则和 §3.5 各使用方的迁移方式。
 - [x] **T0-5** 给 `operations.json` 补适用类型，定 helper 的范围和命令动词。
-- [ ] **T0-6** 固定性能验收数据和预算：至少十万行、二十列的本地表及长文档；记录现有基线，定 `body` 续读、文本查询和 SQL 查询的通过条件。
+- [x] **T0-6** 固定性能验收数据和预算：至少十万行、二十列的本地表及长文档；记录现有基线，定 `body` 续读、文本查询和 SQL 查询的通过条件。（11-12：设计 §12.2；验收中改了三处，见 §9。）
 
 ### M1：core 层（首批）
 
@@ -323,16 +323,16 @@ T0-2 到 T0-5 的取值见 [设计 v1](aiws-core-api-design.md)，已在实现�
 
 ### M5：验收与交付（首批）
 
-- [ ] **T5-1** 完成下节的契约、权限、正确性和性能验收；补齐真实 Zone 的 Agent 发现与精确操作流程，分别记录本地模拟与真实环境证据。
-- [ ] **T5-2** 同步服务 README、Schema、内核文档的 [数据模型](../doc/workspace/kernel/02-数据模型与引用.md)、[Source](../doc/workspace/kernel/04-数据源发布与同步.md)、[接口治理](../doc/workspace/kernel/12-接口治理与验收.md)。按实际变化调整协议/存储/文本表示版本，不能仅修改文档而宣称新接口稳定。
-- [ ] **T5-3** 向 PRD 交付公共属性与类型能力描述、接口映射、Agent 调用示例、验收证据及已知限制；更新前置任务状态，标明 PRD 哪些后续需求尚未实现。
+- [ ] **T5-1** 完成下节的契约、权限、正确性和性能验收；补齐真实 Zone 的 Agent 发现与精确操作流程，分别记录本地模拟与真实环境证据。（11-12：真实 Zone 的 Agent 流程、DV 和性能验收都已做，见 §9 与设计 §12.2。）
+- [x] **T5-2** 同步服务 README、Schema、内核文档的 [数据模型](../doc/workspace/kernel/02-数据模型与引用.md)、[Source](../doc/workspace/kernel/04-数据源发布与同步.md)、[接口治理](../doc/workspace/kernel/12-接口治理与验收.md)。按实际变化调整协议/存储/文本表示版本，不能仅修改文档而宣称新接口稳定。（11-12：见 §9；其间补了参数 Schema 和 `meta.data.write`，各有测试。）
+- [x] **T5-3** 向 PRD 交付公共属性与类型能力描述、接口映射、Agent 调用示例、验收证据及已知限制；更新前置任务状态，标明 PRD 哪些后续需求尚未实现。（11-12：PRD §11.0“首批交付”。）
 
 ### 后续（不阻塞 PRD）
 
 - [ ] **L-1** 文本查询的索引及其更新 / 重建路径，暴露覆盖和新鲜度。
 - [ ] **L-2** 表的表达式索引等 SQL 执行优化。
 - [ ] **L-3** 对象入口声明写动作（启动许愿格运行、触发同步等），依赖审批门裁决。
-- [ ] **L-4** 其余 Commit 操作的参数 Schema，以及由方法表生成或校验对象描述、CLI 和手册。
+- [ ] **L-4** 其余 Commit 操作的参数 Schema（helper 覆盖的 12 个已有，T5-2），以及由方法表生成或校验对象描述、CLI 和手册。
 - [ ] **L-5** 固定版本上的 `body`、发现和 SQL。
 - [ ] **L-6** 浏览器副本的工作视图换成能执行 SQL 的存储；之后删除 core 的求值器，只留一个执行引擎。
 
@@ -396,7 +396,25 @@ M0 需要给出具体决定的事项：
   - 文档：服务 README 新节“Finding, reading and querying”和方法表、协议说明；Desktop README；kernel 文档 02 / 07 / 12；控件例子 photo-vote（digest 已重算）；手册 `aiworkspace_run`、`aiworkspace_template_dev`；许愿格分析提示词。
 - **验证**：
   - `cargo test -p aiworkspace-core`、`-p aiworkspace-store`、`-p aiworkspace` 全部通过；新测试 `core/tests/paths.rs`（名字、路径与 ACL、body 分页、文本查询、meta）、`store/tests/sql.rs`（authorizer 拒绝项、时间预算、26 个视图定义的 SQL 与求值器逐行相同、阶段快照上的 SQL）、`server/tests/objects.rs`（index 的 ls / find / grep 与分页、meta / body、固定版本不退化）；`fixtures/protocol/stable-methods.json` 用 `AIWS_REGEN=1` 重录。
-  - Desktop `tsc --noEmit -p tsconfig.app.json` 通过。e2e（`playwright.aiworkspace.config.ts`，objects / sources / flow / table-import / features / extensions / wish / control-examples / calendar / session / mobile / offline 共 103 条）：99 过；失败的 4 条里，FP03（新表的标题行现在显示它的名字 `table-1`，不再是“无标题”）和 Q33（用 API 6 当“比宿主新”的版本，6 现在是真的）改了测试后重跑通过；UI-M01 在未改的 HEAD 上就失败（已知基线问题）；OX06/07 失败在“分组后按 Ctrl+Shift+G 解组”：trace 里分组提交成功、解组没有发出任何请求，规划器单测里同样的解组被接受，问题在画布快捷键这一层，本单没有改那里，但没能在 HEAD 上跑基线确认（worktree 需要单独 `pnpm install`，锁文件不入库）。DV 用例（`tests/dv/`）没跑。
+  - Desktop `tsc --noEmit -p tsconfig.app.json` 通过。e2e（`playwright.aiworkspace.config.ts`，objects / sources / flow / table-import / features / extensions / wish / control-examples / calendar / session / mobile / offline 共 103 条）：99 过；失败的 4 条里，FP03（新表的标题行现在显示它的名字 `table-1`，不再是“无标题”）和 Q33（用 API 6 当“比宿主新”的版本，6 现在是真的）改了测试后重跑通过；UI-M01 在未改的 HEAD 上就失败（已知基线问题）；OX06/07 失败在“分组后按 Ctrl+Shift+G 解组”：trace 里分组提交成功、解组没有发出任何请求，规划器单测里同样的解组被接受，问题在画布快捷键这一层，本单没有改那里，但没能在 HEAD 上跑基线确认（worktree 需要单独 `pnpm install`，锁文件不入库）。DV 见下。
   - websdk：`pnpm test` 的 aiws 各套件通过（另有与本单无关的 `file_meta` 真实样本失败）；`pnpm run test:cli` 有三个既有失败（期望 manifest_version 3，HEAD 已写 5）。
-- **未做 / 已知限制**：真实 Zone 的 Agent 发现与精确操作流程（T5-1）；十万行的性能通过条件（T0-6，只有 `store/tests/perf.rs` 的计时输出）；DV 用例（`tests/dv/*.spec.ts`）改了但没在 Zone 上跑；扩展控件自己声明 body 文本模板没做；固定版本上的 `body` / 发现 / SQL（L-5）；文本查询索引（L-1）。
-- 前置完成并交接 AI Native PRD：待 T5 完成。
+- **真实 Zone DV**（2026-11-12，提交 `c12d8c9e3` 之后部署到本机 Zone `test.buckyos.io`）：
+  - 跑法：`uv run buckyos-build.py -s aiworkspace desktop` → `uv run start.py`；`BUCKYOS_UI_DV_TLS_SPKI=<证书 SPKI> BUCKYOS_UI_DV_GATEWAY_IP=127.0.0.1 BUCKYOS_TEST_ADMIN_PASSWORD=… AIWS_DV_MEDIA_DIR=<媒体目录> pnpm exec playwright test -c playwright.aiworkspace.zone.config.ts`；`playwright.dv.config.ts` 的用例要加 `BUCKYOS_UI_DV_BASE_URL=https://test.buckyos.io`（默认的 `sys.` 子域现在登录被拒：`49ba79f7b` 起 control-panel 的系统 token 只发给 Zone 根域）。
+  - 新用例 `tests/dv/aiworkspace.coreapi.spec.ts`（T5-1 的 Agent 流程）：只用 `buckyos aiws` CLI，按“未完成”`find` 到视图 → `ls` → `stat` 取 `view_sql` → `sql` 得到的行与顺序和 Desktop 画布 Block 渲染的相同 → `grep 进行中` 命中 select 单元格 → 聚合 SQL → `table set`（字段名、选项标签）后 SQL 回读、Desktop 跟着变 → `text append` 后 `cat` 回读 → 表的 CSV；对象入口的 meta / body / index grep，未保留的固定版本 404；旧 `doc.query { source_id }` 被拒。第二条：owner 能看到的每个 Workspace（含先于名字存在的日程）的全部实体都有名字。两条都过。
+  - DV 发现并修掉的问题：① 无副本 Desktop 按视图读行时，`records` 投影没按视图的 `fields` 裁剪，隐藏字段的值也回来了（旧 `doc.query { view_id }` 不给）——改在 `compile_view` 里用 `aiws_pick` 裁 `_record`，Desktop `tableQuery.ts` 把视图的 `fields` 传给编译器，store `tests/sql.rs` 加了与求值器的对照；② 对象入口把 `VERSION_NOT_RETAINED` / `REFERENCE_BROKEN` 当 500，改为 404，`UNSUPPORTED_VERSION` 改为 400（`server/tests/objects.rs` 断言状态码）。另有两处是新用例自己写错（文档里也嵌了同一视图，要限定画布 Block；样例表有记录正文，CSV 表头带 `_body`，设计 §4 的措辞同步改准）。
+  - `playwright.aiworkspace.zone.config.ts` 全量 20 条：coreapi 2 条在修复后重跑通过；其余 18 条 13 过、5 失败，5 条都是 controls 那次（[控件机制 TODO](aiworkspace-control-mechanism-todo.md) §7.4）记下的既有失败：journeys 2 条与 `aiworkspace.spec` 2 条找中文标签而页面是英文（“展开”“作为新的工作区”“已授予…”，实际授权成功），mobile 1 条断言手机只读。integrity（SQL 分页钉住 head）、logic（视图完成 / 重开）、controls 全过。
+  - DV 修复之后跑了 Desktop e2e 全量（`playwright.aiworkspace.config.ts` 全部 293 条，不只上面的 103 条）：278 过、6 跳过、9 失败。UI-M01、OX06/07 同上；DR-05、DR-09（Playwright trace 文件 ENOENT）和 H03（笔输入时序）单独重跑通过；稳定失败的 4 条都不经过本单改的读取 / 名字 / SQL：CN17（某缩放下锚点显示 16 个而非 8 个）、i18n（存下的语言 reload 后列表页仍是英文）、OI-03（pptx 图表要 LibreOffice）、UI-P16（访客看不到批注工具，与 11-12 owner 定的“访客默认查看”一致）。没在改动前的提交上跑基线确认。
+  - `playwright.dv.config.ts` 的 `aiworkspace.table` 5 条、`aiworkspace.extensions` 4 条全过。extensions 第一条起初稳定失败在“插入实例后马上在 `doc.outline` 里找它”：实例在插入目录关闭后才提交，用例改成轮询；画面上实例和行数都正常。同日早些时候 controls 那次这条不轮询也能过，提交为什么晚了一点没有查。
+- **性能验收（T0-6）**（2026-11-12）：
+  - `cargo test -p aiworkspace-store --release --test perf_core_api -- --ignored --nocapture`（10 万 × 20 的表、千行表、两个视图、接近上限的长文档；约 35 s，全部通过条件满足）；真实 Zone `tests/dv/aiworkspace.perf.spec.ts`（同一份数据经网关提交，约 1 分钟，通过）。数据、通过条件、基线表和已知限制在设计 §12.2。
+  - 验收中发现并修掉的：① 逻辑表之间的 JOIN 没有统计信息时不建自动索引，10 万 × 1000 超 2 s 预算——store 维护 `table_records` 的 `sqlite_stat1`（打开时没有就建、写入累计超过十分之一时重建，`workspace.rs` `refresh_table_stats`），写法要把小表物化（`WITH d AS MATERIALIZED`，0.12 s），直接写的 JOIN 超时错误带提示，README 和 `aiworkspace_run` / `aiworkspace_template_dev` 手册写明；② 内置 SQLite 带 STAT4，有样本时规划器选错 JOIN 顺序（80 s），统计后删掉 STAT4 样本；③ `doc.read` 表为给 `record_count` 解码全部记录（10 万行 550 ms，无副本 Desktop 每次渲染视图都读）——`ReadCtx::record_count`，store 用 SQL 计数，12 ms，Zone 上视图渲染 1438 → 512 ms。
+  - 未改的已知限制：查询持有 Workspace，提交最多等一个预算（2 s / 1 s）；直接写的大表 JOIN 仍超预算（L-2 表达式索引才能根治）；常见词的文本查询每次用满预算；持有副本的标签页用求值器，10 万行视图首页约 0.6–1.3 s（Rust 求值器，浏览器更慢，未测）。
+- **未做 / 已知限制**：扩展控件自己声明 body 文本模板没做；固定版本上的 `body` / 发现 / SQL（L-5）；文本查询索引（L-1）。
+- **文档与 Schema 同步（T5-2）**（2026-11-12）：
+  - 内核文档：[02](../doc/workspace/kernel/02-数据模型与引用.md) 新增“实体名字与路径”和“公共属性、纯文本呈现与 SQL 逻辑表”；[04](../doc/workspace/kernel/04-数据源发布与同步.md) 新增“统一读取看到的数据源”；[12](../doc/workspace/kernel/12-接口治理与验收.md) 改正版本（协议 1.2、存储 6，另列 `body` 格式 1、HTML 宿主接口 6）和方法计数（127：stable 43、internal 15、experimental 69），补对象入口的 HTTP 状态、查询类错误、HTML 宿主接口 6 的 `query`、阶段工具 `ws_find` / `ws_read` / `ws_query` 的新含义、命令映射里的写入动词和 helper、五条数据验收场景，新增“查询预算与性能验收”，证据表和验证命令加上本单的用例。
+  - 服务 README：存储 6、Source 实体的 `meta.data`、对象入口的 HTTP 状态、参数 Schema。设计文档改为 v1 的状态。
+  - Schema：helper 覆盖的 12 个操作在 `commit-request.schema.json` 的 `$defs` 里有参数 Schema，`operations.json` 的 `params` 指向它，`protocol_version` 从过时的 1.0 改为 1.2。`core/tests/schemas.rs` 新测试对照规划器：helper 生成的操作符合 Schema 并被接受，Schema 列出的参数规划器都认，未列出的参数两边都拒绝。写的时候测试抓到一处 Schema 写错（删除块的 `expect` 必须带 `struct_rev`）。
+  - 同步时发现并补上：带 Source 的副本和 URL 表在 `meta` 里的 `capabilities` / `ops` 照 ACL 和类型给出，Agent 会以为能编辑（§4 要求区分三类）。`meta.data` 加了 `write: edit | refresh | none`（`core/tests/paths.rs` 新用例，三种状态与规划器的 `SOURCE_READ_ONLY` 一致）；websdk `AiwsMeta.data` 的类型同步。另补 URL 表的用例（`store/tests/sql.rs`：`body` 只有定义、文本查询搜到定义并报告跳过了行、SQL `NOT_MATERIALIZED`）；它抓到文本查询把 URL 表的定义整个跳过、只搜名字和标题，与 R7 不符，`core/src/search.rs` 已改。
+  - 版本：`data.write` 是 1.2 里只增不改的结果字段，协议不升，stable 形状夹具用 `AIWS_REGEN=1` 重录（只多这一个键）；存储和 `body` 格式在提交之后没有变化。core 改了 `meta.rs` 和 `search.rs`，WASM 已重建，产物与之前逐字节相同（Desktop 的 WASM 不含这两处代码）。
+- **向 PRD 交付（T5-3）**（2026-11-12）：[PRD](aiws-ai-native-kernel-upgrade-prd.md) §11.0“首批交付”：PRD 需要与交付接口的对照、Agent 调用示例（真实 Zone DV 的 CLI 流程）、验收证据、已知限制，以及 PRD 中前置任务没有覆盖的需求（xcall、run token 收紧、程序 API 的 `resolve` / `find` / `outline`、声明清单与按 `field_id` 取值、`aiws.sql`、“尚未取得数据”的状态、远端回写、Jarvis 接入）。PRD 里与实现不符的两处已更正：run token 白名单里 `doc.list_children` 已换成 `doc.list`；§6.7 说 SQL 执行器“记下实际读到的表和列”，实际只记表。
+- 前置任务已交接 AI Native PRD（PRD §11.0）。T5-1 未勾选：§7 的场景没有逐条对账，已知没有专门证据的是 run token 直读的范围、Desktop 落后或有未确认修改时的整条流程、公共属性经通用入口被修改。

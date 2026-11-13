@@ -81,10 +81,23 @@ def resolve(version, base_url, fetch=fetch_json, head=head_size):
     if missing:
         raise ValueError(f"{version}: no payload for {', '.join(missing)}")
     for name, entry in package["platforms"].items():
-        entry["url"] = f"{base_url}/{entry['path']}"
-        size = head(entry["url"])
-        if size != entry["size"]:
-            raise ValueError(f"{entry['url']}: {size} bytes, the release says {entry['size']}")
+        source = entry.get("corresponding_source")
+        if not isinstance(source, dict):
+            raise ValueError(f"{version}/{name}: no corresponding source archive")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", source.get("manifest_sha256", "")):
+            raise ValueError(f"{version}/{name}: no valid source manifest checksum")
+        for artifact in (entry, source):
+            path = artifact.get("path", "")
+            if not path.startswith(f"ext-tools/ext-core/{version}/{name}/") or ".." in path.split("/"):
+                raise ValueError(f"{version}/{name}: invalid artifact path: {path}")
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact.get("sha256", "")):
+                raise ValueError(f"{version}/{name}: invalid artifact checksum")
+            if not isinstance(artifact.get("size"), int) or artifact["size"] <= 0:
+                raise ValueError(f"{version}/{name}: invalid artifact size")
+            artifact["url"] = f"{base_url.rstrip('/')}/{path}"
+            size = head(artifact["url"])
+            if size != artifact["size"]:
+                raise ValueError(f"{artifact['url']}: {size} bytes, the release says {artifact['size']}")
     return release
 
 

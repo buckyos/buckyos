@@ -1,0 +1,26 @@
+BuckyOS
+Copyright BuckyOS contributors
+
+The first-party code in this repository is licensed under AGPL-3.0-only.
+The LICENSE file contains the license text. Existing third-party copyright,
+license and attribution notices remain applicable to their respective works.
+
+Bundled source exceptions:
+- src/patches/glass_pumpkin-1.10.0: Apache-2.0; see its LICENSE.
+- src/patches/grammers-session-0.8.0: MIT OR Apache-2.0; see its license
+  files and the upstream copyright notices in the source headers.
+- src/frame/desktop/public/aiworkspace/stencils: see the bundled LICENSE.txt
+  and attribution information for the draw.io stencil snapshot.
+
+Dependencies and separately packaged programs are not relicensed by this
+repository's LICENSE. In particular, the SDK/CLI from buckyos-websdk and
+the CYFS gateway retain the licenses of the versions actually distributed.
+The Desktop open-source catalog identifies resolved dependencies and carries
+available license texts; it is an inventory, not a substitute for supplying
+corresponding source where required.
+
+Extension tools, including Ghostscript, ImageMagick, FFmpeg, Poppler, Pandoc
+and their dependencies, retain their individual licenses. Each new ext-core
+release includes a separate corresponding-source archive paired with its
+platform payload, and license/source information inside store/ext-core/LICENSES.
+See doc/licensing.md for distribution requirements and source locations.

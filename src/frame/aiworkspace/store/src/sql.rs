@@ -94,6 +94,9 @@ pub fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Added to the time-limit error of a query that read more than one logical table (aiws-core-api-design.md §7.3).
+const JOIN_HINT: &str = "; to join large tables, put the smaller side in WITH x AS MATERIALIZED (SELECT …) so it can be indexed";
+
 #[derive(Default)]
 struct AuthState {
     /// The caller's statement is being prepared or run: only then the rules apply (the service's own reads on the
@@ -376,7 +379,9 @@ pub fn execute(conn: &Connection, ctx: &dyn ReadCtx, access: &Access, params: &V
                 Ok(None) => break,
                 Err(e) => {
                     if *timed_out.lock().unwrap() {
-                        return Err(WsError::limit(format!("the query ran longer than {MAX_MILLIS} ms")).with_data(json!({ "limit": "time", "max_ms": MAX_MILLIS })));
+                        // a join on a logical table's column compares JSON values row by row; a materialized side can be indexed
+                        let hint = if state.lock().unwrap().read.len() > 1 { JOIN_HINT } else { "" };
+                        return Err(WsError::limit(format!("the query ran longer than {MAX_MILLIS} ms{hint}")).with_data(json!({ "limit": "time", "max_ms": MAX_MILLIS })));
                     }
                     return Err(WsError::sub(Code::InvalidOperation, "SQL_ERROR", e.to_string()));
                 }

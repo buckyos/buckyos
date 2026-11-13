@@ -156,11 +156,9 @@ fn scan_entity(run: &mut Run, ctx: &dyn ReadCtx, access: &Access, e: &EntityRow,
     let container = e.type_id == TYPE_CONTAINER && e.degraded().is_none();
     if container {
         // matched by name and title only
-    } else if d.state == "definition" {
-        run.skipped.push(json!({ "entity_id": e.entity_id, "reason": "definition" }));
     } else if d.state == "unavailable" {
         run.skipped.push(json!({ "entity_id": e.entity_id, "reason": d.reason.unwrap_or("unavailable") }));
-    } else if e.type_id == TYPE_TABLE && e.degraded().is_none() {
+    } else if e.type_id == TYPE_TABLE && d.state != "definition" && e.degraded().is_none() {
         let mut b = Builder::new(ctx, access, assets);
         let (fields, _, _) = b.table_header(e)?;
         let mut refs = |v: &Value| -> String {
@@ -192,6 +190,10 @@ fn scan_entity(run: &mut Run, ctx: &dyn ReadCtx, access: &Access, e: &EntityRow,
             Ok(true)
         })?;
     } else {
+        if d.state == "definition" {
+            // a URL table (R7): its definition is searched below, its rows are remote and not
+            run.skipped.push(json!({ "entity_id": e.entity_id, "reason": "definition" }));
+        }
         let mut b = Builder::new(ctx, access, assets);
         let body = b.build(e)?;
         for p in &body.parts {

@@ -297,6 +297,8 @@ pub struct Workspace {
     pub failpoint: Option<FailPoint>,
     /// Row counts written by the last accepted commit.
     pub last_stats: WriteStats,
+    /// Records of `table_records` when its planner statistics were last taken, and written since (`refresh_table_stats`).
+    table_stats: (usize, usize),
     /// Called after a commit became durable and was published in memory.
     pub on_commit: Option<Box<dyn Fn(u64) + Send>>,
     pub on_lock_change: Option<Box<dyn Fn() + Send>>,
@@ -315,6 +317,27 @@ pub struct Workspace {
 
 /// Default retention of resources only the history references: 30 days (D06).
 pub const HISTORY_RETENTION_MS: i64 = 30 * 24 * 3_600_000;
+
+/// The records `sqlite_stat1` holds for `table_records`, if it has been analyzed.
+fn table_stats(doc: &Connection) -> Option<usize> {
+    doc.query_row("SELECT stat FROM sqlite_stat1 WHERE tbl = 'table_records' AND idx = 'table_records'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|n| n.parse().ok()))
+}
+
+/// Planner statistics of `table_records` (核心 API 调整 T0-6). SQL over the logical tables is planned from them:
+/// without them SQLite takes `source_id = ?` for about ten rows and never builds the automatic index a join needs
+/// (100 000 × 1000 records: past the 2 s budget instead of ~0.1 s). Only `sqlite_stat1` is kept: with the STAT4
+/// samples (the bundled SQLite is built with `SQLITE_ENABLE_STAT4`) the planner puts the smaller, materialized side
+/// of such a join outside and scans the large one for each of its rows (80 s). `ANALYZE` of 100 000 records takes ~25 ms.
+fn refresh_table_stats(doc: &Connection) -> WsResult<usize> {
+    doc.execute_batch("ANALYZE main.table_records").map_err(db_err)?;
+    let stat4: bool = doc.query_row("SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat4'", [], |_| Ok(true)).optional().map_err(db_err)?.unwrap_or(false);
+    if stat4 {
+        doc.execute("DELETE FROM sqlite_stat4 WHERE tbl = 'table_records'", []).map_err(db_err)?;
+    }
+    Ok(table_stats(doc).unwrap_or(0))
+}
 
 fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
     let conn = Connection::open(path).map_err(db_err)?;
@@ -527,6 +550,10 @@ impl Workspace {
             .optional()
             .map_err(db_err)?
             .unwrap_or(false);
+        let analyzed = match table_stats(&doc) {
+            Some(n) => n,
+            None => refresh_table_stats(&doc)?,
+        };
         let ws = Workspace {
             session_events,
             dir: dir.to_path_buf(),
@@ -543,6 +570,7 @@ impl Workspace {
             clock,
             failpoint: None,
             last_stats: WriteStats::default(),
+            table_stats: (analyzed, 0),
             on_commit: None,
             on_lock_change: None,
             show_locks: None,
@@ -1690,6 +1718,14 @@ impl Workspace {
                caller: &Caller, session: Option<&str>, now: &str) {
         self.head_seq = seq;
         self.head_commit_id = commit_id.to_string();
+        // the planner statistics follow the tables once a tenth of them (at least 1000 records) was written
+        self.table_stats.1 += stats.records;
+        if self.table_stats.1 >= (self.table_stats.0 / 10).max(1000) {
+            match refresh_table_stats(&self.doc) {
+                Ok(n) => self.table_stats = (n, 0),
+                Err(e) => log::warn!("planner statistics of {} not refreshed: {e}", self.workspace_id),
+            }
+        }
         self.last_stats = stats;
         let updated: Vec<String> = changes.richtexts.keys().cloned().collect();
         {

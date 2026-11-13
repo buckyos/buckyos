@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import os
 import platform
@@ -78,6 +79,50 @@ def libreoffice_version(store: Path) -> str | None:
     return None
 
 
+def collect_source_manifest(store: Path, scope: str, target: str) -> tuple[list[dict], list[str]]:
+    licenses = store / "LICENSES"
+    raw = (licenses / "source-manifest.json").read_bytes()
+    manifest = json.loads(raw)
+    if manifest.get("schema") != "buckyos.ext-tools-sources/v1" or manifest.get("platform") != target:
+        raise ValueError(f"{target}: invalid extension source manifest")
+    reference = json.loads((licenses / "corresponding-source.json").read_text())
+    if reference.get("manifest_sha256") != "sha256:" + hashlib.sha256(raw).hexdigest():
+        raise ValueError(f"{target}: corresponding source manifest checksum differs")
+    entries = {entry["path"]: entry for entry in manifest["files"]}
+    packages = []
+    notices = []
+    for component in manifest["components"]:
+        relative = Path(component["license_directory"])
+        directory = licenses / relative
+        if relative.is_absolute() or ".." in relative.parts or not directory.resolve().is_relative_to(licenses.resolve()):
+            raise ValueError(f"{target}: invalid component license directory")
+        files = []
+        for path in sorted(directory.rglob("*")):
+            if not path.is_file():
+                continue
+            if not path.resolve().is_relative_to(licenses.resolve()):
+                raise ValueError(f"{target}: license file escapes the license directory")
+            name = path.relative_to(licenses).as_posix()
+            entry = entries.get("LICENSES/" + name)
+            data = path.read_bytes()
+            if entry is None or entry.get("sha256") != hashlib.sha256(data).hexdigest():
+                raise ValueError(f"{target}: license text differs from the source manifest: {name}")
+            files.append({"name": path.relative_to(directory).as_posix(), "text": data.decode("utf-8", errors="replace")})
+        if not files and not component.get("metadata_only"):
+            notices.append(f"Extension component {component['name']} ({target}) has no bundled license text.")
+        unresolved = component.get("unresolved_source_requirements", [])
+        if unresolved or component.get("source_coverage") in {"partial", "incomplete", "unverified"}:
+            notices.append(f"Extension component {component['name']} ({target}) has incomplete corresponding source: {'; '.join(unresolved)}")
+        ecosystem = "conda" if component["id"].startswith("conda:") else "runtime"
+        item = package(component["name"], component["version"], ecosystem, scope,
+                       component.get("license"), files, component.get("homepage", ""), component.get("repository", ""))
+        item["revision"] = component.get("build", "")
+        packages.append(item)
+    if not packages:
+        notices.append(f"Extension source manifest for {target} has no components.")
+    return packages, notices
+
+
 def collect_ext_core(repo: Path) -> tuple[list[dict], list[dict], list[str]]:
     source = repo / "publish/exttool/ext-core"
     manifest_file = source / "ext-manifest.json"
@@ -95,6 +140,14 @@ def collect_ext_core(repo: Path) -> tuple[list[dict], list[dict], list[str]]:
         scopes.append({"id": scope, "label": f"Extension tools ({target})", "status": status})
         if not store.is_dir():
             notices.append(f"Extension tool payload for {target} is unavailable; its dependencies are not included.")
+            continue
+        if (store / "LICENSES/source-manifest.json").is_file():
+            collected, issues = collect_source_manifest(store, scope, target)
+            packages.extend(collected)
+            scopes[-1]["status"] = "partial" if issues else "complete"
+            notices.extend(issues)
+            reference = json.loads((store / "LICENSES/corresponding-source.json").read_text())
+            notices.append(f"Corresponding source for ext-core ({target}): https://buckyos-installer.tbudr.top/{reference['path']} ({reference['sha256']}).")
             continue
         if metadata.is_file():
             with metadata.open(encoding="utf-8", newline="") as stream:

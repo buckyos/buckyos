@@ -1503,3 +1503,14 @@
 /* an empty media slot of a composite (an empty TV screen): who may change it chooses the video */
 .aiws-broadcast-choose { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--aiws-border, rgba(127, 127, 127, 0.4)); background: var(--aiws-panel, #fff); color: var(--aiws-text, #222); font-size: 13px; cursor: pointer; pointer-events: auto; z-index: 2; }
 .aiws-broadcast-choose:hover { background: var(--aiws-hover, rgba(127, 127, 127, 0.12)); }
+
+.aiws-directory { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.aiws-directory > p { margin: 0; }
+.aiws-directory-empty { padding: 28px 12px; border: 1px dashed var(--cp-border); border-radius: 8px; text-align: center; }
+.aiws-directory-scroll { overflow-x: auto; }
+.aiws-directory-table { width: 100%; }
+.aiws-directory-table th { text-align: left; }
+.aiws-directory-table td { vertical-align: top; }
+.aiws-directory-name { overflow-wrap: anywhere; text-align: left; }
+.aiws-directory-preview { display: flex; flex-direction: column; gap: 8px; min-height: 320px; height: 480px; max-height: 70vh; }
+.aiws-directory-preview > :last-child { flex: 1; min-height: 0; }

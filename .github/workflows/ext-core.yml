@@ -5,7 +5,8 @@ name: ext-core Release
 #   ext-core-v<version>   immutable
 #   ext-core-latest       rolling, with latest.json
 # and mirrors them to R2, where installers, build-all and developers take them from.
-# The .pikg is on R2 only: at over 3 GiB it is past the 2 GiB a GitHub release asset may have.
+# All payloads and their corresponding source archives are on R2. Assets below
+# GitHub's 2 GiB limit are also attached to the GitHub release.
 # The gate is every platform unpacking its tar on a clean machine and running smoke/
 # with no network and no tool of the builder on the PATH. Any failure publishes nothing.
 # Pull requests and plain dispatches only build and upload workflow artifacts.
@@ -42,7 +43,9 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
       - run: python3 -m unittest discover -s .github/scripts -p 'test_ext_*.py'
+      - run: uv run python -m unittest discover -s publish/exttool/ext-core -p 'test_*.py'
       - run: python3 .github/scripts/ext_tools.py check-table
       - id: version
         run: echo "version=$(python3 -c 'import json; print(json.load(open("publish/exttool/ext-core/ext-manifest.json"))["version"])')" >> "$GITHUB_OUTPUT"
@@ -66,12 +69,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
       - name: msiextract, for LibreOffice's msi
         if: matrix.platform == 'windows-x86_64'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends msitools
       - name: Build the payload
         working-directory: publish/exttool/ext-core
-        run: ./build.sh --platform '${{ matrix.platform }}' --archive --out "$RUNNER_TEMP/payload" --dist "$RUNNER_TEMP/dist"
+        run: PYTHON="$(uv run --project "$GITHUB_WORKSPACE" python -c 'import sys; print(sys.executable)')" ./build.sh --platform '${{ matrix.platform }}' --archive --out "$RUNNER_TEMP/payload" --dist "$RUNNER_TEMP/dist"
       - uses: actions/upload-artifact@v6
         with:
           name: ext-core-${{ matrix.platform }}
@@ -99,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/unpacked"
-          tar -xzf "$RUNNER_TEMP"/dist/ext-core-*.tar.gz -C "$RUNNER_TEMP/unpacked"
+          tar -xzf "$RUNNER_TEMP"/dist/ext-core-*-${{ matrix.platform }}.tar.gz -C "$RUNNER_TEMP/unpacked"
           docker run --rm --network none -v "$RUNNER_TEMP/unpacked:/some/where/else:ro" \
             -e PATH=/some/where/else/bin:/usr/bin:/bin ubuntu:24.04 \
             sh -euc 'cd /tmp; for script in /some/where/else/smoke/*.sh; do echo "== $script"; sh "$script"; done'
@@ -127,7 +131,7 @@ jobs:
           set -euo pipefail
           target="$RUNNER_TEMP/some where/else"
           mkdir -p "$target"
-          tar -xzf "$RUNNER_TEMP"/dist/ext-core-*.tar.gz -C "$target"
+          tar -xzf "$RUNNER_TEMP"/dist/ext-core-*-${{ matrix.platform }}.tar.gz -C "$target"
           for script in "$target"/smoke/*.sh; do
             echo "== $script"
             PATH="$target/bin:/usr/bin:/bin" sh "$script"
@@ -161,7 +165,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $target = Join-Path $env:RUNNER_TEMP 'outils é tools'
           New-Item -ItemType Directory -Path $target | Out-Null
-          $tar = (Get-ChildItem "$env:RUNNER_TEMP\dist\ext-core-*.tar.gz").FullName
+          $tar = (Get-ChildItem "$env:RUNNER_TEMP\dist\ext-core-*-windows-x86_64.tar.gz").FullName
           tar -xzf $tar -C $target
           if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
           $env:PATH = "$target\bin;$env:SystemRoot\System32;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
@@ -186,6 +190,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+      - name: Make room for five source archives and payloads
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
       - uses: actions/download-artifact@v6
         with:
           pattern: ext-core-*
@@ -237,6 +243,8 @@ jobs:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v6
+      - name: Make room for the complete release and its sources
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
       - uses: actions/download-artifact@v6
         with:
           pattern: ext-core-*
@@ -260,10 +268,12 @@ jobs:
           version = os.environ["VERSION"]
           release = json.loads((dist / "manifest.json").read_text())
           package = release["packages"]["ext-core"]
-          for entry in list(package["platforms"].values()) + [package["pikg"]]:
+          entries = list(package["platforms"].values())
+          sources = [entry["corresponding_source"] for entry in entries]
+          for entry in sources + entries + [package["pikg"]]:
               target = r2 / entry["path"]
               target.parent.mkdir(parents=True, exist_ok=True)
-              shutil.copy2(dist / entry["file"], target)
+              os.link(dist / entry["file"], target)
           shutil.copy2(dist / "manifest.json", r2 / "ext-tools" / "ext-core" / version / "manifest.json")
           shutil.copy2(dist / "latest.json", r2 / "ext-tools" / "ext-core" / "latest.json")
           PY
@@ -279,23 +289,45 @@ jobs:
           multipart-concurrent: false
           keep-file-fresh: false
           output-file-url: false
+      - name: Verify the published binaries and corresponding sources are available
+        run: python3 .github/scripts/ext_tools.py resolve --version "$VERSION" --output "$RUNNER_TEMP/verified-ext-tools.json"
+      - name: Prepare GitHub assets and source download links
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          dist = Path(os.environ["RUNNER_TEMP"]) / "dist"
+          release = json.loads((dist / "manifest.json").read_text())
+          package = release["packages"]["ext-core"]
+          assets = [p.name for p in sorted(dist.glob("*.tar.gz")) if p.stat().st_size < 2 * 1024**3]
+          (dist / "github-assets.txt").write_text("\n".join(assets + ["manifest.json", "latest.json"]) + "\n")
+          lines = [f"ext-core {package['version']}", "", "The runtime archives include third-party license texts. Matching source archives include source, patches and build recipes. All artifacts are available on R2; artifacts below GitHub's 2 GiB limit are also attached here.", "", "Corresponding source downloads:", ""]
+          for platform, entry in package["platforms"].items():
+              source = entry["corresponding_source"]
+              lines.append(f"- [{platform}](https://buckyos-installer.tbudr.top/{source['path']}) — `{source['sha256']}`")
+          lines.extend(["", f"[Release manifest](https://buckyos-installer.tbudr.top/ext-tools/ext-core/{package['version']}/manifest.json) includes the runtime and .pikg locations and checksums."])
+          (dist / "release-notes.md").write_text("\n".join(lines) + "\n")
+          PY
       - name: Publish ext-core-v${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/dist"
+          mapfile -t assets < github-assets.txt
           if gh release view "ext-core-v$VERSION" >/dev/null 2>&1; then
-            gh release upload "ext-core-v$VERSION" ./*.tar.gz manifest.json latest.json
+            gh release upload "ext-core-v$VERSION" "${assets[@]}"
+            gh release edit "ext-core-v$VERSION" --notes-file release-notes.md
           else
-            gh release create "ext-core-v$VERSION" --target "$GITHUB_SHA" --title "ext-core $VERSION" --notes "ext-core $VERSION: see publish/exttool/ext-core. The .pikg is over GitHub's 2 GiB limit: it is on R2, at the path manifest.json gives." --latest=false ./*.tar.gz manifest.json latest.json
+            gh release create "ext-core-v$VERSION" --target "$GITHUB_SHA" --title "ext-core $VERSION" --notes-file release-notes.md --latest=false "${assets[@]}"
           fi
       - name: Refresh ext-core-latest
         run: |
           set -euo pipefail
           git push --force origin "$GITHUB_SHA:refs/tags/ext-core-latest"
           cd "$RUNNER_TEMP/dist"
+          mapfile -t assets < github-assets.txt
           if gh release view ext-core-latest >/dev/null 2>&1; then
-            gh release upload ext-core-latest --clobber ./*.tar.gz manifest.json latest.json
-            gh release edit ext-core-latest --title "ext-core (latest: $VERSION)" --prerelease --latest=false
+            gh release upload ext-core-latest --clobber "${assets[@]}"
+            gh release edit ext-core-latest --title "ext-core (latest: $VERSION)" --notes-file release-notes.md --prerelease --latest=false
           else
-            gh release create ext-core-latest --title "ext-core (latest: $VERSION)" --notes "The newest ext-core; pinned versions are the ext-core-v* releases." --prerelease --latest=false ./*.tar.gz manifest.json latest.json
+            gh release create ext-core-latest --title "ext-core (latest: $VERSION)" --notes-file release-notes.md --prerelease --latest=false "${assets[@]}"
           fi
