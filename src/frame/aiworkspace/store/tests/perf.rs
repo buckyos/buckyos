@@ -129,20 +129,20 @@ fn scale_probes() {
     assert_eq!(ws.undo(&alice(), &req)["status"], "accepted");
     println!("undo of the 1000-row batch             {:>9.1} ms", ms(t));
 
-    // paged query: baseline is scan + filter + sort in Rust
-    let q = json!({ "source_id": "big", "limit": 100, "filter": { "op": "cmp", "field_id": "f3", "operator": "eq", "value": "b" },
-                    "sorts": [{ "field_id": "f1", "direction": "desc" }] });
+    // SQL over the logical table: filter + sort, a page of 100
+    let q = r#"SELECT _id, "金额1" FROM big WHERE "状态3#raw" = 'b' ORDER BY ("金额1" IS NULL), "金额1" DESC, _id LIMIT 100"#;
     let t = Instant::now();
-    let p1 = ws.query(&alice(), &q, &env.svc.sources).unwrap();
+    let p1 = sql(&ws, &alice(), q).unwrap();
     let first = ms(t);
-    let mut q2 = q.clone();
-    q2["cursor"] = p1["next_cursor"].clone();
     let t = Instant::now();
-    ws.query(&alice(), &q2, &env.svc.sources).unwrap();
-    println!("query filter+sort, page of 100         first {:>6.1} ms  next {:>6.1} ms   ({} matches)", first, ms(t), p1["total"]);
+    sql(&ws, &alice(), &q.replace("LIMIT 100", "LIMIT 100 OFFSET 100")).unwrap();
+    println!("sql filter+sort, page of 100           first {:>6.1} ms  next {:>6.1} ms   ({} rows)", first, ms(t), p1["rows"].as_array().unwrap().len());
     let t = Instant::now();
-    ws.query(&alice(), &json!({ "source_id": "big", "limit": 100 }), &env.svc.sources).unwrap();
-    println!("query unfiltered, page of 100          {:>9.1} ms", ms(t));
+    sql(&ws, &alice(), "SELECT count(*) FROM big").unwrap();
+    println!("sql count(*)                           {:>9.1} ms", ms(t));
+    let t = Instant::now();
+    ws.query(&alice(), &json!({ "text": "zzz-not-there", "at": "big" })).unwrap();
+    println!("text query over the table               {:>9.1} ms", ms(t));
 
     let t = Instant::now();
     let cp = ws.checkpoint(&alice()).unwrap();

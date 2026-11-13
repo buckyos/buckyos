@@ -81,11 +81,10 @@ fn fixture_replays_and_reads_back() {
     assert_eq!(refs["ok"], true, "{refs}");
     assert!(refs["count"].as_u64().unwrap() >= 9);
     // same source, two views: shared records, independent configuration
-    let all = ws.query(&alice(), &json!({ "view_id": "cell-all-tasks" }), &env.svc.sources).unwrap();
-    let open = ws.query(&alice(), &json!({ "view_id": "cell-open-tasks" }), &env.svc.sources).unwrap();
-    assert_eq!(all["total"], 5);
-    let ids: Vec<&str> = open["rows"].as_array().unwrap().iter().map(|r| r["record_id"].as_str().unwrap()).collect();
-    assert_eq!(ids, vec!["task-41", "task-42", "task-44", "task-43"], "due asc, empty last");
+    let all = view_ids(&ws, &alice(), "cell-all-tasks").unwrap();
+    let open = view_ids(&ws, &alice(), "cell-open-tasks").unwrap();
+    assert_eq!(all.len(), 5);
+    assert_eq!(open, vec!["task-41", "task-42", "task-44", "task-43"], "due asc, empty last");
 }
 
 /// V02 + V08: renames, moves and reordering keep stable references and content ObjectIds.
@@ -340,7 +339,7 @@ fn v21_permissions() {
     assert_eq!(r["touched"].as_array().unwrap().len(), 1);
     assert_eq!(r["touched"][0]["selector"]["record_id"], "task-d1");
     assert_eq!(ws.read(&dave, "tasks", None).unwrap_err().code.as_str(), "NOT_FOUND");
-    assert!(ws.query(&dave, &json!({ "source_id": "tasks" }), &env.svc.sources).is_err());
+    assert_eq!(sql(&ws, &dave, "SELECT * FROM tasks").unwrap_err().code.as_str(), "NOT_FOUND");
     assert_eq!(code(&commit(&mut ws, &dave, set_cell("task-d1", "title", json!("改"), 0))), "PERMISSION_DENIED");
     let stream = ws.get_changes(&dave, &ws.epoch.clone(), 0, 100, true).unwrap();
     assert!(stream["changes"].as_array().unwrap().iter().all(|e| e.get("ops").is_none()), "no content events without read");
@@ -429,20 +428,21 @@ fn dangling_view_configuration() {
     assert!(diag.iter().any(|d| d["key"] == "filter" && d["code"] == "FIELD_DELETED" && d["field_id"] == "status"), "{diag:?}");
     assert!(diag.iter().any(|d| d["key"] == "fields" && d["field_id"] == "status"));
     // a broken filter refuses the query: ignoring it would show more rows than the view allows
-    let e = ws.query(&alice(), &json!({ "view_id": "cell-open-tasks" }), &env.svc.sources).unwrap_err();
-    assert_eq!((e.code.as_str(), e.sub), ("INVALID_OPERATION", Some("VIEW_BROKEN")));
+    let e = view_ids(&ws, &alice(), "cell-open-tasks").unwrap_err();
+    assert_eq!((e["code"].as_str(), e["sub_code"].as_str()), (Some("INVALID_OPERATION"), Some("VIEW_BROKEN")));
     // dangling columns do not change the row set: skipped and reported
-    let all = ws.query(&alice(), &json!({ "view_id": "cell-all-tasks" }), &env.svc.sources).unwrap();
-    assert_eq!(all["total"], 5);
-    assert!(all["diagnostics"].as_array().unwrap().iter().any(|d| d["key"] == "fields" && d["field_id"] == "status"));
-    assert!(all["rows"][0]["values"].get("status").is_none(), "residual values of a deleted field are unreadable");
+    assert_eq!(view_ids(&ws, &alice(), "cell-all-tasks").unwrap().len(), 5);
+    let shows = &meta(&ws, &alice(), "cell-all-tasks")["shows"];
+    assert!(shows["view_diagnostics"].as_array().unwrap().iter().any(|d| d["key"] == "fields" && d["field_id"] == "status"), "{shows}");
+    let q = sql(&ws, &alice(), "SELECT * FROM tasks").unwrap();
+    assert!(!q["columns"].as_array().unwrap().iter().any(|c| c.as_str().is_some_and(|c| c.starts_with("状态") || c.starts_with("status"))), "residual values of a deleted field are unreadable: {}", q["columns"]);
     // one click removes the dead condition: an ordinary set_keys
     // (not done here) — instead undo the deletion: the untouched configuration is valid again
     let undo_req = json!({ "epoch": ws.epoch, "commit_id": del["commit_id"], "idempotency_key": "undo-del-field" });
     let u = ws.undo(&alice(), &undo_req);
     assert_eq!(u["status"], "accepted", "{u}");
     assert_eq!(ws.read(&alice(), "cell-open-tasks", None).unwrap()["content"]["diagnostics"], json!([]));
-    assert_eq!(ws.query(&alice(), &json!({ "view_id": "cell-open-tasks" }), &env.svc.sources).unwrap()["total"], 4);
+    assert_eq!(view_ids(&ws, &alice(), "cell-open-tasks").unwrap().len(), 4);
 }
 
 /// V03: illegal structure and oversized batches are rejected as a whole.

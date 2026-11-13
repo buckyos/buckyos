@@ -122,7 +122,7 @@ and gets an addressable version in `entity_versions` at every application. Fresh
 A result the user keeps against a later run ("保留人工修改") is re-recorded with that run's read set and `kept_manual: true`, so the wish is current again without regenerating it.
 those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
 
-Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resource directory, the reference catalogue with `mode` / `integrity` and `owns`, the pure-application log, `$formula`, the `run` capability, delegation fields, the usage ledger, `user_state.revision`, `base_seq`; protocol `1.0`). Stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration). From 1.0 on, an incompatible change of the format needs an explicit conversion (D07); within 1.0 only additions an older implementation can ignore are allowed. Protocol 1.1 added Block-controls (container kind `mindmap`, `"auto"` placement components, Cells holding Cells inside a control, `slot`; see “Block-controls”); requests speaking 1.0 are still accepted. Extension controls P1 added, within the same versions, the container kind
+Format version is `1.0` (内核架构改进 FORMAT 1.0: `schema_id`, the resource directory, the reference catalogue with `mode` / `integrity` and `owns`, the pure-application log, `$formula`, the `run` capability, delegation fields, the usage ledger, `user_state.revision`, `base_seq`; protocol `1.0`). Stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration). From 1.0 on, an incompatible change of the format needs an explicit conversion (D07); within 1.0 only additions an older implementation can ignore are allowed. Protocol 1.1 added Block-controls (container kind `mindmap`, `"auto"` placement components, Cells holding Cells inside a control, `slot`; see “Block-controls”); requests speaking 1.0 are still accepted. Protocol 1.2 (storage schema 6) is “Finding, reading and querying”: `doc.list`, `doc.find`, `doc.read { as, path }`, `doc.query` with `text` or `sql` only, `doc.source_query`, every entity named; Commit requests of 1.0 / 1.1 are still accepted. Extension controls P1 added, within the same versions, the container kind
 `composite` (`def_ref`, `bindings`, `slot` on Block containers), the block-def keys `deps` / `composition`, the reference
 kind `def_dep` (live, strong), the error code `REFERENCE_CYCLE`, the operation `tree.clone`, `tree.move { slot }` and
 directory member names holding `/` (see “Extension controls”). 1.1 also added the value type `currency` (表格数据导入 TODO §6, Q2: format and protocol versions unchanged): a field `{ type: "currency", currency: "<ISO 4217>", scale?: 0–18 (default 2) }` stores `{ "amount": "<decimal of that scale>", "currency": "<code>" }` — the code always written out (a bare amount or number takes the field's default; changing the default, `table.update_field { changes: { currency } }`, never changes stored values); symbols and names (`$12`, `USD 12`) are refused. Values order by (code, amount); `lt / lte / gt / gte` only meet amounts of the operand's currency; `eq` / `ne` / `in` need the same code; no `unique`, no grouping. Migrations: `number | decimal → currency` (the target's default), `currency → decimal` (drops the code), `currency → text` (`"USD 12.00"`), `currency → currency` (another scale).
@@ -976,6 +976,148 @@ vector `fixtures/vectors/apply-log.json` (`core/tests/apply_log.rs`) proves a re
 its digest without any planner. Local, not-yet-accepted submissions are still planned on the replica for its
 provisional view.
 
+## Finding, reading and querying (核心 API 调整, `notepads/aiws-core-api-unification-todo.md`, design `notepads/aiws-core-api-design.md`)
+
+One interface for the vague reads — finding, plain-text reading, text and SQL queries — and the common properties;
+precise reads and writes stay with each type (`doc.read` with a selector, `doc.commit` with typed operations). Code:
+`core/src/naming.rs`, `path.rs`, `body.rs`, `search.rs`, `meta.rs`, `sqlview.rs`; `store/src/sql.rs`.
+
+### Paths and names
+
+- **Every entity but the root has a `name`** (R14, R19), unique among the live siblings that share its namespace (shared
+  names are seen by everyone; a personal or participant entity also meets its own scope). A name nobody chose
+  *follows* the entity: its title's name (`title`; a record's `p:title` / `p:name`; an asset's `title` or `file_name`) —
+  control characters dropped, `/` → `-`, no leading `~`, at most 64 characters — moved aside with `-2`, `-3`… when
+  taken; without a title a counter, `<prefix>-<n>` one above the largest `n` of that prefix among the siblings (deleted
+  ones too): a Block's view type (`text-3`, `table-1`), a container's kind (`group-2`), else a short type name
+  (`table`, `doc`, `record`, `file`, `note`, `wish`, `def`, `dir`, `viewport`, `path`, …). Tables and rich texts have
+  no title: their name is their label. Whether a name follows is not stored: it follows while it is still what the
+  rule gives. The planner names on `entity.create` (the normalized operation records the name, so replay and replicas
+  agree), renames with the title in the same Commit (`entity.set_keys`), moves a following name aside on `tree.move`
+  and `entity.restore`, and `entity.rename { name: null }` gives the name back to the rule. A name given on
+  `entity.create` that is just the title's name moves aside like a following one; any other name that is taken is
+  `NAME_CONFLICT`. Names: 1–128 characters, no `/`, no control characters, not starting with `~`, not `.` / `..`.
+  Storage schema 6: a version-5 store gets names for its unnamed entities when it is opened (`naming::backfill`, tree
+  order, no Commit); an imported package of an older build is named after its content root is verified.
+- **One path syntax** (R5) for `doc.resolve`, `doc.list` / `doc.find` / `doc.query`, `doc.read { path }`, the object
+  paths, the stage tools, the CLI and the HTML host's `aiws.resolve`: `/` is the root, each step a name
+  (`/data/销售`, `/surfaces/看板/text-3`); `~<entity_id>` starts at an entity (`~sales/…`). Every step must be readable
+  and live, otherwise `NOT_FOUND` (not readable and not existing look the same). A printed path starts at the highest
+  ancestor the caller reaches by names: an unreadable ancestor is never named, the path starts at `~<id>` below it.
+  When a caller sees several siblings of one name (a shared one and its own personal one; a reviewer and several
+  participants'), the name reaches the shared one, then the caller's own, then the first; the others are *shadowed*
+  (`shadowed: true` in a listing) and reached by `~<id>`.
+- **Type filters** (`type`, `not_type`: a comma list or an array): short types `table`, `richtext`, `record`,
+  `annotation`, `block`, `container`, `asset`, `dir`, `wish`, `def`, `viewport`, `path`, `task`, `response`, `result`,
+  full `type_id`s, or `container:<kind>`. `doc.find` and text queries leave out `annotation`, `viewport`, `path`,
+  `task`, `response` and `result` unless `type` names them.
+
+### Common meta and body
+
+`doc.read { as: "meta" }` (also the summary property `meta` of an entity object) is what an entity is, without reading
+its text or its records: `entity_id`, `path`, `name`, `name_follows`, `title`, `type`, `type_id`, `kind` (container
+kind, Block view type, annotation kind), `schema_id`, `schema_version`, `scope`, `parent { entity_id, path }`,
+`version { content_rev, meta_rev, life_rev, struct_rev, epoch, head_seq }`, `body { state, format, format_version,
+etag, records, bytes, reason? }`, `data { mode: local | url_query | synced, source?, derived? }` (data entities),
+`children`, `capabilities` (the caller's, as everywhere), `ops` (the Commit operations its type takes: the `types` column
+of `schemas/operations.json`), `shows` (a Block: what it shows `{ entity_id, path, type }`, a table view with
+`view_sql`, `view_count_sql`, `view_group_sql?`, `view_diagnostics?` or `view_error`; a control: its bindings),
+`definition`, `ref`, `degraded?`, `lock_holder?`, `availability?`.
+
+`doc.read { as: "body" }` (the property `body`) is the entity in plain text (R6) — what Agents read, text queries match
+and a screen reader will speak: a sequence of parts joined by newlines, paged by parts (`max_bytes` 64…262 144,
+default 32 768; a part longer than a page is cut on a character boundary and marked `partial`), `next_cursor` bound to
+the `etag` (a changed body is `SNAPSHOT_EXPIRED`); `selector` reads one part; `parts: true` adds each part's
+`{ selector?, entity_id?, start, end }` (UTF-8 byte offsets in `text`). `state`: `full`, `definition` (a URL table:
+its definition only, rows are remote), `fallback` (the native JSON of an unknown or degraded entity, and of viewports,
+paths and session entities) or `unavailable` (`reason: binary | too_large`). Per type (`BODY_FORMAT_VERSION` 1):
+
+| Type | Format | Text |
+| --- | --- | --- |
+| rich text | `text/markdown` | each top-level block's Markdown (`richtext_block` parts) |
+| table | `text/csv` | header `_id,<field names>[,_body]`, then one record per line (`table_record` parts) in `record_id` order; values as shown (§“Display values”) |
+| record | `text/plain` | `<property>: <value>` per property (`doc_key` parts) |
+| annotation | `text/plain` | `Note on <target path>`, the quote, the text |
+| folder, data, surfaces | `text/plain` | one line per readable child: `<name>[/] <type or kind> "<title>"` |
+| canvas, group | `text/markdown` | `# <title>`, then each Block in reading order (top to bottom, left to right) as `[<name>] <Block text>` |
+| Block | `text/markdown` | its title (a text view: the title itself), what it shows by path (a table view: the table's path, the view in words, its columns and its SQL; a note: the note's text), `config` text keys. It never inlines the content of the data it shows |
+| control | `text/markdown` | a mind map's Markdown outline of its Blocks; a data control names the tables it shows |
+| asset | `text/plain` | file name, media type, size; the content of a text asset up to 256 KiB |
+| directory | `text/plain` | one line per member (`folder_member` parts) |
+| wish | `text/markdown` | title, prompt, inputs by path, output, last run state |
+| definition | `text/markdown` | title, description, agent text, config properties, bindings |
+
+**Display values** (body, the display columns of SQL): select → label; multi_select → labels joined `; ` (SQL: a JSON
+array of labels); object_ref → `<title> (<path>)` (SQL: the path), `~<id>` when unreadable; currency → `<code>
+<amount>` (SQL: the amount as REAL, the code in `<name>#currency`); decimal → the stored string (SQL: REAL); boolean →
+`true` / `false` (SQL: 1 / 0); date, datetime, text → as stored; json → compact JSON; formulas and empties → empty. The
+`etag` covers the field definitions and the referenced entities' versions: renaming an option or a referenced entity
+changes the body, not the record.
+
+### Discovery
+
+`doc.list { at?, type?, not_type?, schema?, limit?, cursor? }` lists the readable direct children of a node (default
+100, at most 1000); `doc.find { at?, depth?, name?, type?, not_type?, schema?, limit?, cursor? }` walks under a node
+in pre-order (not into what the caller cannot read; depth ≤ 16; default 50, at most 200; at most 20 000 entities per
+call, `complete: false` and a cursor otherwise), keeping the entities whose name or title contains `name`
+(case-insensitive, literal; `match: name | title`). Items: `entity_id`, `name`, `path`, `type`, `type_id`, `kind?`,
+`title`, `children`, `content_rev`, `body: { state, format }`, `schema_id?`, `scope?`, `shadowed?`. Cursors are bound
+to `head_seq` (a moved Workspace is `SNAPSHOT_EXPIRED`) and to the request.
+
+### Text and SQL queries
+
+`doc.query` takes exactly one of `text` or `sql` (R3, R11); the old table query (`view_id`, `source_id`, `filter`,
+`sorts`, `fields`, `group`, …) is refused, and a URL table's rows are `doc.source_query`.
+
+- **Text** `{ text, case?, at?, depth?, type?, not_type?, limit?, cursor? }`: a literal (1–256 characters; `regex` and
+  the like are refused), case-insensitive by Unicode lower-casing unless `case: true`, in names, titles and bodies —
+  what `body` reads, so a select is found by its label and a hit's `selector` (`table_cell`, `richtext_block`,
+  `doc_key`, `folder_member`) points into the text the caller reads. Containers are matched by name and title only
+  (their bodies are their children). The entity at `at` (unless the root) and its subtree in pre-order. One hit per
+  matching text, at most 5 per entity (`more` counts the rest), 20 by default, at most 100; `snippet` is 40 characters
+  on each side. No index: a call scans at most 8 MiB of text or 1 second; `coverage { complete, scanned, bytes,
+  skipped: [{ entity_id, reason: definition | binary | too_large }] }` says what was covered, and an empty answer means
+  "not there" only when `complete` is true (otherwise `next_cursor`, resuming inside a table at its record).
+- **SQL** `{ sql, params?, tables?, max_rows?, expect_head? }`: one SELECT run by SQLite itself (R12) on a read-only
+  connection, over **logical tables**: the temporary view of a local table, created the first time the statement names
+  it — by its path (`FROM "/data/销售"`), `"~<entity_id>"`, its id, or an alias of `tables: { alias: path | id }` (with
+  `tables`, only those). Columns: `_id` (record id), `_rev`, `_body` (the path of the record's body), `_record` (the
+  record as `doc.read` gives it, as JSON text: what the Desktop renders and edits), and per live field `"<name>"` (the
+  display value) and `"<name>#raw"` (the stored value: option ids, the exact decimal, a reference or currency object as
+  JSON text); a currency field also `"<name>#currency"`; a field named like a system column is `"<name>#field"`.
+  Joins, CTEs, sub-queries and window functions work; an authorizer allows only SELECT, reads through the logical
+  tables and functions (not `load_extension` and the like): kernel tables, `table_records` directly, writes, `ATTACH`,
+  `PRAGMA` and recursive CTEs are `INVALID_OPERATION` / `SQL_NOT_ALLOWED`, a syntax error `SQL_ERROR`, a table the
+  caller cannot read or that does not exist `NOT_FOUND`, a URL table `NOT_MATERIALIZED`. Budgets: 16 KiB of SQL, 2
+  seconds (`LIMIT_EXCEEDED`, `data.limit: time`), `max_rows` (default 1000, at most 5000; more is `truncated: true`),
+  4 MiB of result (`LIMIT_EXCEEDED`, `bytes`). Answer: `columns`, `rows`, `truncated`, `read: [{ table, entity_id,
+  path, content_rev }]` (the tables actually read, with their versions), `head_seq`. Comparisons, ordering and NULLs
+  are SQLite's; the functions `aiws_dec_cmp(a, b)`, `aiws_label`, `aiws_labels`, `aiws_pick` and the collation
+  `aiws_dec` (exact decimal order) are there for the compiled views. `expect_head: { epoch, seq }` refuses a Workspace
+  at another head (`SNAPSHOT_EXPIRED` / `HEAD_MISMATCH`): the Desktop sends its confirmed head and runs no SQL while it
+  has unconfirmed changes (R16). SQL runs on the service and on a wish stage's snapshot, never on a browser replica.
+- **Table views as SQL.** A table view Block keeps its definition (`filter`, `sorts`, `group`, `manual_order`,
+  `fields`); `sqlview::compile_view` turns it into the SELECT that gives the rows, the order and the group counts of
+  the evaluator (`filter::run_query`, kept for the browser replica, R16) — `store/tests/sql.rs` holds them side by side.
+  It appears in the Block's `meta.shows.view_sql`, is what the stage tools and wish inputs (`table_view`,
+  `table_query`) read through, and what the Desktop runs when a tab holds no replica (WASM `view_sql`).
+
+### Objects
+
+`obj://aiworkspace/<ws>` is a directory: its index (one index, R1) runs `op=ls` (default), `op=find&name=…` or
+`op=grep&text=…` with `at`, `type`, `not_type`, `schema`, `depth`, `case` in the URL query or in the `query` object of
+the action (`page_size`, `cursor` page it; method `doc.index`); rows link to entity objects (a body hit with its
+selector) and have the columns `type, kind, name, title, path, parent, on, selector, snippet`. An entity object's
+summary property is `meta`, then `body` (`?cursor=&max_bytes=&parts=true`, `?selector=`) and `content` (the native
+content; `?mode=fixed&version=<json>` reads that version or fails, R2).
+
+### Writing
+
+Precise writes are Commit operations by type through `doc.commit` (R8): `meta.ops` lists what a type takes and
+`schemas/operations.json` describes each (`types`, `capability`, `class`). The websdk builds the frequent ones
+(`aiws_write.ts`: rows and cells by field name and option label, fields, options, rich text blocks from Markdown,
+rename, move, properties — with `expect` from what was read and an idempotency key) and `buckyos aiws` has the verbs.
+
 ## Protocol
 
 kRPC: `POST /kapi/aiworkspace` with `{ "method", "params", "sys": [seq, session_token] }`.
@@ -1205,11 +1347,14 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `ws.purge_deleted` | stable | maintenance (`manage`): `entity_ids?` (default: every deleted entity) — content and references are given up for good (`entity.purge`), resources are reclaimable at once, undo and version restore answer `RESOURCE_RECLAIMED`, Block state is cleared |
 | `ws.clear_staged` | stable | maintenance (`manage`): staged uploads nobody referenced go, expired or not |
 | `doc.outline` | internal | — all readable entity envelopes in tree order |
-| `doc.resolve` | stable | `reference` or `path` |
-| `doc.read` | stable | `entity_id`, `selector?` — or `targets: [{ entity_id, selector? }]` |
-| `doc.list_children` | experimental | `entity_id`, `include_deleted?` |
+| `doc.resolve` | stable | `reference` or `path` (the one path syntax, see “Paths and names”) → the reference, its `canonical` form, `path` |
+| `doc.read` | stable | `entity_id` or `path`; `as?: "content" \| "meta" \| "body"` (default `content`, the native content); `selector?`; `version?` (`{ epoch, seq }` / `{ object_id }`: a fixed version of the native content or `VERSION_NOT_RETAINED` / `REFERENCE_BROKEN`, never the head; `meta` / `body` of a fixed version are `UNSUPPORTED_VERSION`); `body` takes `cursor?`, `max_bytes?` (64…262 144, default 32 768), `parts?` — or `targets: [{ entity_id \| path, as?, selector?, … }]`. See “Common meta and body” |
+| `doc.list` | stable | `at?` (path or `entity_id`, default `/`), `type?`, `not_type?`, `schema?`, `limit?` (≤ 1000, default 100), `cursor?` → `at`, `items: [{ entity_id, name, path, type, type_id, kind?, title, children, content_rev, body: { state, format }, shadowed? }]`, `next_cursor?`, `head_seq` — the readable direct children |
+| `doc.find` | stable | `at?`, `depth?` (≤ 16), `name?` (a literal, case-insensitive, in the name or title), `type?`, `not_type?`, `schema?`, `limit?` (≤ 200, default 50), `cursor?` → `items` (with `match: name \| title`), `complete`, `visited`, `next_cursor?` — a pre-order walk of at most 20 000 entities per call |
 | `doc.list_annotations` | experimental | `target_ids?`, `parent_id?` — annotations anchored to those entities and/or placed under that parent, each with its resolved `anchor` |
-| `doc.query` | stable | `view_id` or `source_id`; `filter?`, `sorts?`, `fields?`, `group?`, `group_order?`, `group_limit?`, `limit`, `cursor?`, `consistency?`, `source_revision?`. `group` (a select, multi_select, boolean or date field) adds `groups: [{ key, count }]` over every matching row, by key; a `multi_select` row counts once under each of its options (an empty one under `""`). `group_order: "count_desc"` orders by count, most first, ties by key; `group_limit` (1–1000) keeps the first N after ordering (控件机制 TODO G21) |
+| `doc.query` | stable | exactly one of `text` (a text query: `text`, `case?`, `at?`, `depth?`, `type?`, `not_type?`, `limit?` (≤ 100), `cursor?` → `hits: [{ entity_id, path, type, on: name \| title \| body, selector?, snippet, more? }]`, `coverage: { complete, scanned, bytes, skipped }`, `next_cursor?`) or `sql` (one SELECT over the logical tables: `sql`, `params?`, `tables?`, `max_rows?` (≤ 5000), `expect_head?: { epoch, seq }` → `columns`, `rows`, `truncated`, `read: [{ table, entity_id, path, content_rev }]`). The old table query (`view_id`, `source_id`, `filter`, …) is refused. See “Text and SQL queries” |
+| `doc.index` | internal | `op: ls \| find \| grep` and the parameters of `doc.list` / `doc.find` / `doc.query { text }` — the index of the Workspace object (`obj://aiworkspace/<ws>?op=…`) |
+| `doc.source_query` | internal | `source_id` of a URL table (`data_mode: url_query`); `filter?`, `sorts?`, `fields?`, `limit`, `cursor?`, `consistency?`, `source_revision?` — its rows from the remote source (what `doc.query` did for URL tables) |
 | `doc.freshness` | experimental | `entity_ids[]` — dependency-based freshness of results and wishes (computed in core) |
 | `doc.relations` | experimental | `entity_id` — outgoing / incoming references, Blocks showing it, produced results; unreadable referrers only as `hidden_incoming` |
 | `doc.list_versions` | experimental | `entity_id` — addressable versions (generated results, checkpoints) with their commits |

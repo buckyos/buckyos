@@ -371,8 +371,7 @@ async fn call(state: &Arc<AppState>, s: SessionRow, actor: &Actor, method: &str,
             blocking(move || st.svc.with_run(&row, |ws| {
                 let mut notes = serde_json::Map::new();
                 if let Some(id) = row.baseline["notes_entity_id"].as_str() {
-                    let q = ws.query(&Caller::user(&row.owner), &json!({ "source_id": id, "limit": 1000 }), &st.svc.sources)?;
-                    for r in q["rows"].as_array().into_iter().flatten() {
+                    for r in &ws.table_rows(&Caller::user(&row.owner), id, 1000)? {
                         notes.insert(r["values"]["target_id"].as_str().unwrap_or("").to_string(), r["values"]["notes"].clone());
                     }
                 }

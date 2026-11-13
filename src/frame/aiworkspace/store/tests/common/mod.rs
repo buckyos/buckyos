@@ -125,3 +125,24 @@ pub fn fetched(objects: &ObjectStore, r: &Value) -> tempfile::TempPath {
     objects.read_to_file(r["download"]["obj_id"].as_str().unwrap(), &path).unwrap();
     path
 }
+
+/// `doc.query { sql }`.
+pub fn sql(ws: &Workspace, who: &Caller, sql: &str) -> Result<Value, aiworkspace_core::WsError> {
+    ws.query(who, &json!({ "sql": sql }))
+}
+
+/// The meta of an entity (`doc.read { as: "meta" }`).
+pub fn meta(ws: &Workspace, who: &Caller, id: &str) -> Value {
+    ws.read_as(who, &json!({ "entity_id": id, "as": "meta" })).unwrap()
+}
+
+/// The record ids a table view Block shows, in its order, through its compiled SQL (`meta.shows.view_sql`);
+/// a view that no longer compiles gives its `view_error`.
+pub fn view_ids(ws: &Workspace, who: &Caller, cell: &str) -> Result<Vec<String>, Value> {
+    let m = meta(ws, who, cell);
+    if let Some(e) = m["shows"].get("view_error") {
+        return Err(e.clone());
+    }
+    let q = ws.query(who, &json!({ "sql": m["shows"]["view_sql"] })).unwrap();
+    Ok(q["rows"].as_array().unwrap().iter().map(|r| r[0].as_str().unwrap().to_string()).collect())
+}

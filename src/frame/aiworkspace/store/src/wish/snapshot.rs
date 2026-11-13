@@ -30,6 +30,11 @@ pub struct WishSnapshot {
 }
 
 impl WishSnapshot {
+    /// The snapshot's own read connection (its read transaction fixes the version every read of the stage sees).
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     pub fn ctx(&self) -> SqlCtx<'_> {
         SqlCtx { conn: &self.conn, local: None, cache: &self.cache, now: &self.now }
     }

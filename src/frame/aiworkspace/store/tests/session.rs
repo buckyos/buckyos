@@ -227,8 +227,7 @@ fn tasks_claims_and_answers_go_through_the_session() {
     let h = env.svc.workspace(&s.workspace_id).unwrap();
     let ws = h.lock().unwrap();
     let rows = |who: &Caller, id: &str| -> Vec<Value> {
-        let q = ws.query(who, &json!({ "source_id": id, "limit": 100 }), &env.svc.sources).unwrap();
-        q["rows"].as_array().cloned().unwrap_or_default()
+        ws.table_rows(who, id, 100).unwrap()
     };
     let tasks = rows(&bob(), &feeds[0]);
     assert_eq!(tasks.len(), 3, "{tasks:?}");

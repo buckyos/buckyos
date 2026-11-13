@@ -178,9 +178,10 @@ pub const MAX_BLOCK_DEF_BYTES: usize = 512 * 1024;
 /// Version of the `window.aiws` Block host API (`aiws` v2) the wish planner writes into html results.
 pub const HTML_API_VERSION: u64 = 2;
 /// The newest Block host API a control may be written for (扩展控件 P2: `emit`, `createBlock.parent`, `interactive`;
-/// 5: `aiws.on('bind')` / `aiws.on('init_control')` run before placing, 控件 on_bind TODO §2.9); hosts run every version
-/// from 2 on.
-pub const HTML_API_LATEST: u64 = 5;
+/// 5: `aiws.on('bind')` / `aiws.on('init_control')` run before placing, 控件 on_bind TODO §2.9; 6: `aiws.query(sql,
+/// params?)` is one SQL SELECT over the logical tables, 核心 API 调整 R17 — 5 and older have no `aiws.query`); hosts run
+/// every version from 2 on.
+pub const HTML_API_LATEST: u64 = 6;
 /// The host API from which an HTML control may decide its bindings in its script (`on_bind: "script"`).
 pub const HTML_BIND_API: u64 = 5;
 /// Events one control declares, handlers one event of an instance binds, and the size of an instance's `on` (Q26).

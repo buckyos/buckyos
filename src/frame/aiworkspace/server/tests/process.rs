@@ -153,8 +153,9 @@ async fn v23_service_api_end_to_end() {
     let info = s.rpc("tok-alice", "ws.get_info", w.clone()).await;
     assert_eq!((info["head_seq"].as_u64(), info["title"].as_str()), (Some(6), Some("项目工作区")));
     assert_eq!(s.rpc("tok-alice", "doc.outline", w.clone()).await["entities"].as_array().unwrap().len(), 18);
-    let open = s.rpc("tok-alice", "doc.query", json!({ "workspace_id": id, "view_id": "cell-open-tasks" })).await;
-    assert_eq!(open["total"], 4);
+    let view = s.rpc("tok-alice", "doc.read", json!({ "workspace_id": id, "entity_id": "cell-open-tasks", "as": "meta" })).await;
+    let open = s.rpc("tok-alice", "doc.query", json!({ "workspace_id": id, "sql": view["shows"]["view_count_sql"] })).await;
+    assert_eq!(open["rows"][0][0], 4, "{view}");
     let batch = s.rpc("tok-alice", "doc.read", json!({ "workspace_id": id, "targets": [{ "entity_id": "notes" }, { "entity_id": "ghost" }] })).await;
     assert_eq!((batch["results"][0]["type_id"].as_str(), batch["results"][1]["error"]["code"].as_str()), (Some("buckyos.richtext"), Some("NOT_FOUND")));
     let bob_view = s.rpc("tok-bob", "ws.get_info", w.clone()).await;
@@ -203,7 +204,7 @@ async fn v23_service_api_end_to_end() {
         "source_ref": { "kind": "url_query", "source_url": "fixture://events?rows=100000&snapshot=1", "query": {} },
         "fields": [{ "field_id": "event_id", "name": "事件", "type": "text" }] } }]))).await;
     assert_eq!(r["status"], "accepted", "{r}");
-    let page = s.rpc("tok-alice", "doc.query", json!({ "workspace_id": id, "source_id": "events", "limit": 5 })).await;
+    let page = s.rpc("tok-alice", "doc.source_query", json!({ "workspace_id": id, "source_id": "events", "limit": 5 })).await;
     assert_eq!((page["rows"].as_array().unwrap().len(), page["data_mode"].as_str()), (5, Some("url_query")));
     // export → download → upload into a second, empty deployment → same content root
     let exp = s.rpc("tok-alice", "doc.export", json!({ "workspace_id": id, "mode": "share", "self_contained": true })).await;

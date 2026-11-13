@@ -200,12 +200,11 @@ export function OpenSourcePanel() {
   }, [projects, query])
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const activePage = Math.min(page, pageCount)
-  const incomplete = data?.scopes.filter((scope) => scope.status !== 'complete') ?? []
 
   return (
     <Section
       title={t('settings.openSource.title', 'Open-source software')}
-      description={t('settings.openSource.description', 'Open-source software grouped by name and project. Select a group to view component versions and licenses.')}
+      description={t('settings.openSource.description', 'BuckyOS relies on many open-source projects. Thank you to the developers and contributors who make it possible.')}
       testId="settings-open-source"
     >
       {error ? (
@@ -217,11 +216,6 @@ export function OpenSourcePanel() {
         <SectionNote>{t('settings.common.loading', 'Loading…')}</SectionNote>
       ) : (
         <div className="space-y-3">
-          {incomplete.length > 0 && (
-            <SectionNote tone="warning">
-              {t('settings.openSource.incomplete', 'Some components have incomplete version or license information. See catalog coverage for details.')}
-            </SectionNote>
-          )}
           <details className="text-xs text-[color:var(--cp-muted)]">
             <summary className="cursor-pointer py-1">{t('settings.openSource.coverage', 'Catalog coverage')}</summary>
             <ul className="space-y-2 py-2">

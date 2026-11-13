@@ -121,8 +121,14 @@ async fn every_stable_method_keeps_its_recorded_shape() {
         .status();
     assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
     s.rpc("doc.read", wsp(json!({ "entity_id": "t1" }))).await;
+    s.rpc("doc.read", wsp(json!({ "path": "/data/表", "as": "meta" }))).await;
+    s.rpc("doc.read", wsp(json!({ "entity_id": "t1", "as": "body", "parts": true }))).await;
     s.rpc("doc.resolve", wsp(json!({ "reference": { "entity_id": "t1", "mode": "live" } }))).await;
-    s.rpc("doc.query", wsp(json!({ "source_id": "t1", "limit": 10 }))).await;
+    s.rpc("doc.resolve", wsp(json!({ "path": "/data/表" }))).await;
+    s.rpc("doc.list", wsp(json!({ "at": "/data" }))).await;
+    s.rpc("doc.find", wsp(json!({ "name": "表" }))).await;
+    s.rpc("doc.query", wsp(json!({ "text": "a" }))).await;
+    s.rpc("doc.query", wsp(json!({ "sql": "SELECT \"标题\", \"数\" FROM \"/data/表\" ORDER BY _id LIMIT 10" }))).await;
     s.rpc("doc.get_changes", wsp(json!({ "epoch": epoch, "after_seq": 0 }))).await;
     s.rpc("doc.wait_changes", wsp(json!({ "epoch": epoch, "after_seq": head, "timeout_ms": 50 }))).await;
     s.rpc("ws.grant", wsp(json!({ "subject": "bob", "capabilities": ["read"] }))).await;

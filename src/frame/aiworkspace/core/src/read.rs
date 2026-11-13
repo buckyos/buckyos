@@ -444,21 +444,9 @@ pub fn list_children(ctx: &dyn ReadCtx, access: &Access, parent_id: &str, includ
     Ok(out)
 }
 
-/// `/data/entity name` → entity id (the system nodes are named `data` / `surfaces`). Paths are for
-/// lookup only; anything persistent stores the id.
+/// A path (`/data/销售`, `~<id>/…`) → entity id: the one path implementation (`path::resolve`). Paths are for lookup
+/// only; anything persistent stores the id.
 pub fn resolve_path(ctx: &dyn ReadCtx, access: &Access, path: &str) -> WsResult<String> {
-    let mut cur = ROOT_ID.to_string();
-    for seg in path.split('/').filter(|s| !s.is_empty()) {
-        let mut next = None;
-        for edge in ctx.children(&cur)? {
-            if let Some(e) = ctx.entity(&edge.child_id)? {
-                if e.alive() && e.name.as_deref() == Some(seg) && access.can_read(ctx, &e)? {
-                    next = Some(e.entity_id);
-                    break;
-                }
-            }
-        }
-        cur = next.ok_or_else(|| WsError::not_found(format!("path segment {seg:?} not found")))?;
-    }
-    Ok(cur)
+    let p = if path.starts_with('/') || path.starts_with('~') { path.to_string() } else { format!("/{path}") };
+    crate::path::resolve(ctx, access, &p)
 }

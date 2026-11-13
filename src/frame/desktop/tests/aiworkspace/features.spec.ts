@@ -22,7 +22,8 @@ test('named imports preserve folder structure and workspace asset bytes after re
     // the folder is chosen in the system file picker, from this device
     await page.getByTestId('aiws-pick-folder').click()
     await page.getByTestId('select-local-input').setInputFiles(root)
-    await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder').length).toBe(1)
+    // the data folders of the imports (a canvas group of the same title has that name too: names follow titles)
+    await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder' && e.kind === 'folder').length).toBe(1)
     const entities = await api.outline(ALICE, ws.workspace_id)
     const directory = entities.find(e => e.name === '资料 folder')
     const nested = entities.find(e => e.parent_id === directory.entity_id && e.name === 'nested')
@@ -41,12 +42,13 @@ test('named imports preserve folder structure and workspace asset bytes after re
     }
     expect(new Set(ids).size).toBe(2)
     await openWorkspace(page, ALICE, ws.workspace_id)
-    await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder').length).toBe(1)
+    // the data folders of the imports (a canvas group of the same title has that name too: names follow titles)
+    await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder' && e.kind === 'folder').length).toBe(1)
     await page.getByTestId('aiws-top-canvas').click()
     await page.getByTestId('aiws-tool-catalog').click()
     await page.getByTestId('aiws-catalog-pick-folder').click()
     await page.getByTestId('select-local-input').setInputFiles(root)
-    await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder').length).toBe(2)
+    await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder' && e.kind === 'folder').length).toBe(2)
     const canvasEntities = await api.outline(ALICE, ws.workspace_id)
     const importedGroup = canvasEntities.find(e => e.kind === 'group' && e.title === '资料 folder')
     expect(importedGroup).toBeTruthy()
@@ -383,7 +385,7 @@ test('session filter and sort stay local until "save view"; structure edits: cre
   expect((await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'tasks' })).content_rev).toBe(2)
 
   // ---- structure
-  const order = async () => (await api.rpc(ALICE, 'doc.list_children', { workspace_id: ws.workspace_id, entity_id: 'surface-main' })).children
+  const order = async () => (await api.children(ALICE, ws.workspace_id, 'surface-main'))
     .filter((child: { type_id: string; kind?: string }) => child.type_id === 'buckyos.cell' || child.kind === 'group').map((child: { entity_id: string }) => child.entity_id) as string[]
   const frames = () => page.locator('[data-testid="aiws-flow"] > [data-cell-id]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-cell-id')))
   expect(await order()).toEqual(['cell-notes', 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
@@ -677,7 +679,7 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
     await expect(frame.getByTestId('aiws-row').filter({ hasText: name })).toBeVisible()
   }
   await expect(frame.getByTestId('aiws-row')).toHaveCount(2)
-  const rows = async () => (await api.rpc(ALICE, 'doc.query', { workspace_id: workspaceId, source_id: sourceId })).rows as { record_id: string; values: Record<string, unknown> }[]
+  const rows = async () => (await api.table(ALICE, workspaceId, { source_id: sourceId })).rows as { record_id: string; values: Record<string, unknown> }[]
   const first = (await rows()).find((row) => row.values.title === '买菜')?.record_id as string
 
   // boolean: a tick box, one click writes

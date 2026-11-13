@@ -23,6 +23,40 @@ fn parse(text: &str) -> Result<Value, JsError> {
     canonical::parse_strict(text).map_err(fail)
 }
 
+/// A table view compiled to SQL over the logical table named `table` (a path or an alias, quoted here) — core
+/// `sqlview::compile_view`, the one compiler the service uses too (核心 API 调整 §3.5). For sessions without a replica,
+/// which read a view with `doc.query { sql }`. `fields_json`: the table's live fields as `doc.read` gives them;
+/// `view_json`: `{ filter?, sorts?, fields?, group?, manual_order? }`; `projection`: `records` (`_record`, the native
+/// rows) or `display` (`_id` and the display columns). → `{ sql, count_sql, group_sql?, diagnostics }`.
+#[wasm_bindgen]
+pub fn view_sql(table: &str, fields_json: &str, view_json: &str, projection: &str) -> Result<String, JsError> {
+    use aiworkspace_core::model::FieldRow;
+    use aiworkspace_core::sqlview::{compile_view, ident, Projection, ViewDef};
+    let fields = parse(fields_json)?;
+    let rows: Vec<FieldRow> = fields
+        .as_array()
+        .ok_or_else(|| fail(WsError::invalid_op("fields must be an array")))?
+        .iter()
+        .map(|f| {
+            let mut d = f.clone();
+            if let Some(o) = d.as_object_mut() {
+                for k in ["order_key", "def_rev", "type_rev", "values_rev"] {
+                    o.remove(k);
+                }
+            }
+            let def = FieldDef::from_value(&d).map_err(fail)?;
+            Ok(FieldRow { source_id: String::new(), field_id: def.field_id.clone(), def, order_key: String::new(), def_rev: 0, type_rev: 0, values_rev: 0, deleted_seq: None })
+        })
+        .collect::<Result<_, JsError>>()?;
+    let projection = match projection {
+        "records" => Projection::Records,
+        "display" => Projection::Display,
+        other => return Err(fail(WsError::invalid_op(format!("projection must be records or display, not {other}")))),
+    };
+    let v = compile_view(&ident(table), &rows, &ViewDef::of_params(&parse(view_json)?), projection).map_err(fail)?;
+    Ok(json!({ "sql": v.sql, "count_sql": v.count_sql, "group_sql": v.group_sql, "diagnostics": v.diagnostics }).to_string())
+}
+
 #[wasm_bindgen]
 pub fn core_version() -> String {
     format!("{} (loro {})", env!("CARGO_PKG_VERSION"), richtext::engine_version())

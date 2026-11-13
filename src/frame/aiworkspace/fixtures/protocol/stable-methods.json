@@ -305,6 +305,91 @@
       }
     },
     {
+      "method": "doc.read",
+      "params": {
+        "as": "string",
+        "path": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "body": {
+          "bytes": null,
+          "etag": "string",
+          "format": "string",
+          "format_version": "number",
+          "records": null,
+          "state": "string"
+        },
+        "capabilities": [
+          "string"
+        ],
+        "children": "number",
+        "data": {
+          "mode": "string"
+        },
+        "entity_id": "string",
+        "head_seq": "number",
+        "kind": null,
+        "name": "string",
+        "name_follows": "boolean",
+        "ok": "boolean",
+        "ops": [
+          "string"
+        ],
+        "parent": {
+          "entity_id": "string",
+          "path": "string"
+        },
+        "path": "string",
+        "ref": {
+          "entity_id": "string",
+          "mode": "string",
+          "workspace_id": "string"
+        },
+        "schema_id": null,
+        "schema_version": "number",
+        "scope": "string",
+        "title": null,
+        "type": "string",
+        "type_id": "string",
+        "version": {
+          "content_rev": "number",
+          "epoch": "string",
+          "head_seq": "number",
+          "life_rev": "number",
+          "meta_rev": "number",
+          "struct_rev": "number"
+        }
+      }
+    },
+    {
+      "method": "doc.read",
+      "params": {
+        "as": "string",
+        "entity_id": "string",
+        "parts": "boolean",
+        "workspace_id": "string"
+      },
+      "result": {
+        "complete": "boolean",
+        "entity_id": "string",
+        "etag": "string",
+        "format": "string",
+        "format_version": "number",
+        "head_seq": "number",
+        "ok": "boolean",
+        "parts": [
+          {
+            "end": "number",
+            "start": "number"
+          }
+        ],
+        "path": "string",
+        "state": "string",
+        "text": "string"
+      }
+    },
+    {
       "method": "doc.resolve",
       "params": {
         "reference": {
@@ -323,7 +408,9 @@
           "string"
         ],
         "content_rev": "number",
+        "name": "string",
         "ok": "boolean",
+        "path": "string",
         "reference": {
           "entity_id": "string",
           "version": {
@@ -335,32 +422,155 @@
       }
     },
     {
-      "method": "doc.query",
+      "method": "doc.resolve",
       "params": {
-        "limit": "number",
-        "source_id": "string",
+        "path": "string",
         "workspace_id": "string"
       },
       "result": {
-        "consistency": "string",
+        "canonical": {
+          "entity_id": "string",
+          "mode": "string",
+          "workspace_id": "string"
+        },
+        "capabilities": [
+          "string"
+        ],
         "content_rev": "number",
+        "name": "string",
         "ok": "boolean",
-        "rows": [
+        "path": "string",
+        "reference": {
+          "entity_id": "string",
+          "version": {
+            "mode": "string"
+          },
+          "workspace_id": "string"
+        },
+        "type_id": "string"
+      }
+    },
+    {
+      "method": "doc.list",
+      "params": {
+        "at": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "at": {
+          "entity_id": "string",
+          "path": "string"
+        },
+        "head_seq": "number",
+        "items": [
           {
-            "record_id": "string",
-            "rev": "number",
-            "revs": {
-              "n": "number",
-              "title": "number"
+            "body": {
+              "format": "string",
+              "state": "string"
             },
-            "values": {
-              "n": "number",
-              "title": "string"
-            }
+            "children": "number",
+            "content_rev": "number",
+            "entity_id": "string",
+            "name": "string",
+            "path": "string",
+            "title": null,
+            "type": "string",
+            "type_id": "string"
           }
         ],
-        "source_id": "string",
-        "total": "number"
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "doc.find",
+      "params": {
+        "name": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "at": {
+          "entity_id": "string",
+          "path": "string"
+        },
+        "complete": "boolean",
+        "head_seq": "number",
+        "items": [
+          {
+            "body": {
+              "format": "string",
+              "state": "string"
+            },
+            "children": "number",
+            "content_rev": "number",
+            "entity_id": "string",
+            "match": "string",
+            "name": "string",
+            "path": "string",
+            "title": null,
+            "type": "string",
+            "type_id": "string"
+          }
+        ],
+        "ok": "boolean",
+        "visited": "number"
+      }
+    },
+    {
+      "method": "doc.query",
+      "params": {
+        "text": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "at": {
+          "entity_id": "string",
+          "path": "string"
+        },
+        "coverage": {
+          "bytes": "number",
+          "complete": "boolean",
+          "scanned": "number",
+          "skipped": []
+        },
+        "head_seq": "number",
+        "hits": [
+          {
+            "entity_id": "string",
+            "on": "string",
+            "path": "string",
+            "snippet": "string",
+            "type": "string"
+          }
+        ],
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "doc.query",
+      "params": {
+        "sql": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "columns": [
+          "string"
+        ],
+        "head_seq": "number",
+        "ok": "boolean",
+        "read": [
+          {
+            "content_rev": "number",
+            "entity_id": "string",
+            "path": "string",
+            "table": "string"
+          }
+        ],
+        "rows": [
+          [
+            "string"
+          ]
+        ],
+        "truncated": "boolean"
       }
     },
     {

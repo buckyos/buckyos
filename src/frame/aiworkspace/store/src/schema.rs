@@ -2,9 +2,10 @@
 //! version 4 is FORMAT 1.0 (内核架构改进 §13.6): reference `mode` / `integrity`, the pure-application commit delta,
 //! the retention roots and the usage ledger, `user_state.revision`; version 5 keeps objects in the named
 //! store, retained by bucket bindings (`bucket_key` / `bucket_version`, doc/workspace `BuckyOS AiWorkspace
-//! Durable Data Schema.md`). Older stores are refused, not migrated.
+//! Durable Data Schema.md`); version 6 gives every entity but the root a name (核心 API 调整 R14, R19). Version 5
+//! stores are converted when opened (`naming::backfill`); older ones are refused, not migrated.
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 5;
+pub const STORAGE_SCHEMA_VERSION: u32 = 6;
 
 /// The document database: the working form of one portable Workspace.
 pub const DOC_DDL: &str = r#"

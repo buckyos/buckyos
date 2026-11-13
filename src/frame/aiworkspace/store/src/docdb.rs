@@ -252,11 +252,14 @@ impl ReadCtx for SqlCtx<'_> {
         st.query_row([source, record], record_row).optional().map_err(db_err)?.map(finish_record).transpose()
     }
     fn scan_records(&self, source: &str, visit: &mut dyn FnMut(&RecordRow) -> WsResult<bool>) -> WsResult<()> {
+        self.scan_records_from(source, "", visit)
+    }
+    fn scan_records_from(&self, source: &str, from: &str, visit: &mut dyn FnMut(&RecordRow) -> WsResult<bool>) -> WsResult<()> {
         let mut st = self
             .conn
-            .prepare_cached(&format!("SELECT {RECORD_COLS} FROM table_records WHERE source_id = ?1 ORDER BY record_id"))
+            .prepare_cached(&format!("SELECT {RECORD_COLS} FROM table_records WHERE source_id = ?1 AND record_id >= ?2 ORDER BY record_id"))
             .map_err(db_err)?;
-        let mut rows = st.query([source]).map_err(db_err)?;
+        let mut rows = st.query([source, from]).map_err(db_err)?;
         while let Some(r) = rows.next().map_err(db_err)? {
             let rec = finish_record(record_row(r).map_err(db_err)?)?;
             if !visit(&rec)? {

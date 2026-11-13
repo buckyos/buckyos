@@ -167,7 +167,7 @@ test('CE03 photo vote: the ballot prepared from the toolbar; one choice per pers
   await setCanvasMode(page, 'view')
   const pick = (p: Page, n: number) => p.locator(`[data-proj="vote.photos~img~Photo ${n}.png"]`).click()
   for (const n of [1, 2, 3]) await pick(page, n)
-  const rows = async (token = ALICE) => (await api.rpc(token, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'votes', limit: 50 })).rows as J[]
+  const rows = async (token = ALICE) => (await api.table(token, ws.workspace_id, { source_id: 'votes', limit: 50 })).rows as J[]
   await expect.poll(async () => (await rows())[0]?.values.picks?.length ?? 0, { timeout: 15_000 }).toBe(3)
   expect((await rows())[0].values.voter).toBe('alice')
   // a fourth is refused (the client says so; the kernel enforces max_items)

@@ -654,8 +654,9 @@ fn workspace_templates_from_snapshot_to_new_workspaces() {
         let cell = srv.rpc("doc.read", json!({ "entity_id": "kpi-1" })).await["content"]["payload"].clone();
         assert_eq!((cell["config"]["label"].as_str(), cell["title"].as_str()), (Some("Red tasks"), Some("Red board")), "{cell}");
         assert_eq!(srv.rpc("doc.read", json!({ "entity_id": def })).await["content"]["payload"]["ident"]["name"], "kpi", "the definition came with the snapshot");
-        assert_eq!(srv.rpc("doc.query", json!({ "source_id": "tasks" })).await["rows"], json!([]), "reset");
-        assert_eq!(srv.rpc("doc.query", json!({ "source_id": "notes" })).await["rows"][0]["values"]["text"], "Welcome, Red");
+        assert_eq!(srv.rpc("doc.query", json!({ "sql": "SELECT _id FROM tasks" })).await["rows"], json!([]), "reset");
+        let notes = srv.rpc("doc.query", json!({ "sql": "SELECT _record FROM notes" })).await;
+        assert_eq!(serde_json::from_str::<Value>(notes["rows"][0][0].as_str().unwrap_or_else(|| panic!("{notes}"))).unwrap()["values"]["text"], "Welcome, Red");
         assert_eq!(srv.rpc("doc.read", json!({ "entity_id": "other" })).await["error"]["code"], "NOT_FOUND", "only what the Surface needs");
         srv.commit(json!([{ "op": "entity.set_props", "entity_id": "kpi-1", "key": "config", "props": { "label": "changed" } }])).await;
         srv.ws = wb.clone();

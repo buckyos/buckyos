@@ -238,7 +238,7 @@ test('UI19 an HTML extension Block reads data, submits through the store (undoab
   const ws = await api.demo(ALICE, 'quarterly', `html ${Date.now()}`)
   const js = `
     aiws.on('run', async function (payload) {
-      var rows = await aiws.query({ source_id: aiws.context.source.entity_id, limit: 5 });
+      var rows = await aiws.query('SELECT _id FROM "' + aiws.context.source.entity_id + '" ORDER BY _id LIMIT 5');
       if (payload && payload.crash) { setTimeout(function () { throw new Error('boom from extension'); }, 0); return 'crashing'; }
       var up = await aiws.upload('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>', 'tiny.svg', 'image/svg+xml');
       var r = await aiws.submit([{ op: 'entity.create', entity_id: 'ext-note-' + Date.now().toString(36), type_id: 'buckyos.annotation', parent_id: 'sf-analysis-content', order_key: 'zz', payload: { kind: 'note', body: '扩展写入 ' + rows.rows.length + ' 行' } }], '扩展便签');
@@ -249,7 +249,7 @@ test('UI19 an HTML extension Block reads data, submits through the store (undoab
     aiws.ready();
   `
   const r = await api.commit(ALICE, ws, [
-    { op: 'entity.create', entity_id: 'def-ext', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'zx', payload: { def_id: 'test.ext', kind: 'html', title: '测试扩展', html: { html: '<div id="out">init</div>', js } } },
+    { op: 'entity.create', entity_id: 'def-ext', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'zx', payload: { def_id: 'test.ext', kind: 'html', title: '测试扩展', html: { html: '<div id="out">init</div>', js, api_version: 6 } } },
     { op: 'entity.create', entity_id: 'blk-ext', type_id: 'buckyos.cell', parent_id: 'sf-analysis', order_key: 'zzx', placement: { x: 40, y: 720, w: 400, h: 200 }, payload: { view: { type: 'html' }, source_ref: { entity_id: 'sales' }, def_ref: { entity_id: 'def-ext' }, title: '扩展' } },
   ])
   expect(r.status).toBe('accepted')
@@ -266,8 +266,8 @@ test('UI19 an HTML extension Block reads data, submits through the store (undoab
   const head = await api.headSeq(ALICE, ws.workspace_id)
   const result = await page.evaluate(async () => {
     const iframe = document.querySelector('.aiws-html-frame') as HTMLIFrameElement
-    const win = iframe.contentWindow as unknown as { aiws: { context: { source: { entity_id: string } }; query: (p: unknown) => Promise<{ rows: unknown[] }>; upload: (d: string, n: string, t: string) => Promise<{ object_id: string }>; submit: (ops: unknown[], label: string) => Promise<{ status: string }> } }
-    const rows = await win.aiws.query({ source_id: win.aiws.context.source.entity_id, limit: 5 })
+    const win = iframe.contentWindow as unknown as { aiws: { context: { source: { entity_id: string } }; query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>; upload: (d: string, n: string, t: string) => Promise<{ object_id: string }>; submit: (ops: unknown[], label: string) => Promise<{ status: string }> } }
+    const rows = await win.aiws.query('SELECT _id FROM "' + win.aiws.context.source.entity_id + '" ORDER BY _id LIMIT ?', [5])
     const up = await win.aiws.upload('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>', 'tiny.svg', 'image/svg+xml')
     const outcome = await win.aiws.submit([{ op: 'entity.create', entity_id: 'ext-note-1', type_id: 'buckyos.annotation', parent_id: 'sf-analysis-content', order_key: 'zz', payload: { kind: 'note', body: `扩展写入 ${rows.rows.length} 行` } }], '扩展便签')
     return { rows: rows.rows.length, upload: up.object_id, outcome: outcome.status }

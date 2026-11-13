@@ -38,6 +38,13 @@ fn operation_catalogue_matches_dispatch() {
     let actual: Vec<(String, String, String, String)> =
         OPERATIONS.iter().map(|(a, b, c, d)| (a.to_string(), b.to_string(), c.to_string(), d.to_string())).collect();
     assert_eq!(listed, actual);
+    // the applicable types (核心 API 调整 §4) are the same list in the same order
+    let listed_types: Vec<(String, Vec<String>)> = file["operations"].as_array().unwrap().iter()
+        .map(|o| (o["op"].as_str().unwrap().to_string(), o["types"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_string()).collect()))
+        .collect();
+    let actual_types: Vec<(String, Vec<String>)> = aiworkspace_core::plan::OPERATION_TYPES.iter().map(|(o, t)| (o.to_string(), t.iter().map(|x| x.to_string()).collect())).collect();
+    assert_eq!(listed_types, actual_types);
+    assert_eq!(OPERATIONS.len(), actual_types.len());
     // every catalogued name is known to the dispatcher; anything else is not
     let mut ws = MemWorkspace::new();
     for (name, class, ..) in OPERATIONS {

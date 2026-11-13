@@ -12,7 +12,8 @@ use super::handles::{Handles, Target};
 use super::profile::{count, entity_profile, field_lines, plain_value, profile_line};
 use super::readset::ReadSet;
 use super::snapshot::WishSnapshot;
-use aiworkspace_core::filter::{live_fields, run_query, QuerySpec};
+use aiworkspace_core::filter::live_fields;
+use aiworkspace_core::sqlview::ViewDef;
 use aiworkspace_core::id::is_valid_id;
 use aiworkspace_core::model::*;
 use aiworkspace_core::value::{reference_entity_id, FieldDef, FieldType};
@@ -259,28 +260,25 @@ pub fn translate_fields(s: &Value, fields: &[FieldRow], handles: &Handles, table
     Ok(out)
 }
 
-/// The rows a selector names, in its order: `(field ids returned, rows)`; rows are core query rows.
-fn selected_rows(ctx: &dyn ReadCtx, table: &EntityRow, selector: Option<&Value>, view: Option<&EntityRow>) -> WsResult<(Option<Vec<String>>, Vec<Value>)> {
-    let mut spec = QuerySpec { limit: 1000, with_meta: false, ..Default::default() };
-    if let Some(cell) = view {
-        spec.filter = cell.payload.get("filter").filter(|f| !f.is_null()).cloned();
-        spec.sorts = cell.payload.get("sorts").and_then(Value::as_array).cloned().unwrap_or_default();
-        spec.manual_order = cell.payload.get("manual_order").and_then(Value::as_object).cloned();
-    } else if let Some(s) = selector.filter(|s| s["kind"] == json!("table_query")) {
-        spec.filter = s.get("filter").filter(|f| !f.is_null()).cloned();
-        spec.sorts = s.get("sorts").and_then(Value::as_array).cloned().unwrap_or_default();
-        spec.fields = s.get("fields").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());
-    }
-    let mut rows = Vec::new();
-    loop {
-        let page = run_query(ctx, table, &spec)?;
-        rows.extend(page["rows"].as_array().cloned().unwrap_or_default());
-        match page.get("next_cursor").and_then(Value::as_str) {
-            Some(c) => spec.cursor = Some(c.to_string()),
-            None => break,
+/// The rows a selector names, in its order: `(field ids returned, rows)`; rows are records as `doc.read` gives them,
+/// selected by the compiled view SQL on the snapshot (核心 API 调整 §3.5: one meaning of a view, whoever reads it).
+fn selected_rows(snap: &WishSnapshot, table: &EntityRow, selector: Option<&Value>, view: Option<&EntityRow>) -> WsResult<(Option<Vec<String>>, Vec<Value>)> {
+    let def = match (view, selector.filter(|s| s["kind"] == json!("table_query"))) {
+        (Some(cell), _) => ViewDef { fields: None, ..ViewDef::of_cell(cell) },
+        (None, Some(s)) => ViewDef { group: None, manual_order: None, ..ViewDef::of_params(s) },
+        _ => ViewDef::default(),
+    };
+    let fields = def.fields.clone();
+    let ctx = snap.ctx();
+    let (mut rows, _, _) = crate::sql::view_records(snap.conn(), &ctx, &snap.access, table, &def, None, 0)?;
+    if let Some(keep) = &fields {
+        for r in &mut rows {
+            if let Some(values) = r.get_mut("values").and_then(Value::as_object_mut) {
+                values.retain(|k, _| keep.contains(k));
+            }
         }
     }
-    Ok((spec.fields.clone(), rows))
+    Ok((fields, rows))
 }
 
 impl Stage {
@@ -431,23 +429,9 @@ impl Stage {
         Ok(out)
     }
 
+    /// The one path of an entity (core `path::path_of`), as the caller of this stage may print it.
     pub fn path_of(&self, id: &str) -> WsResult<String> {
-        let ctx = self.ctx();
-        let mut parts = Vec::new();
-        let mut cur = id.to_string();
-        for _ in 0..32 {
-            let Some(e) = ctx.entity(&cur)? else { break };
-            if cur == ROOT_ID {
-                break;
-            }
-            parts.push(if cur == DATA_ID { "data".to_string() } else if cur == SURFACES_ID { "surfaces".to_string() } else { title_of(&e) });
-            match ctx.edge(&cur)? {
-                Some(edge) => cur = edge.parent_id,
-                None => break,
-            }
-        }
-        parts.reverse();
-        Ok(format!("/{}", parts.join("/")))
+        aiworkspace_core::path::path_of(&self.ctx(), &self.snap.access, id)
     }
 
     fn handle_of(&mut self, id: &str) -> String {
@@ -520,7 +504,7 @@ impl Stage {
                     }
                     None => None,
                 };
-                let (proj, rows) = selected_rows(&ctx, e, selector, view.as_ref())?;
+                let (proj, rows) = selected_rows(&self.snap, e, selector, view.as_ref())?;
                 let visible: Option<Vec<String>> = view.as_ref().and_then(|c| c.payload.get("fields")).and_then(Value::as_array).map(|a| {
                     a.iter().filter(|f| f["hidden"] != json!(true)).filter_map(|f| f["field_id"].as_str().map(str::to_string)).collect()
                 });
@@ -1257,81 +1241,48 @@ impl Stage {
         Ok(clip(lines.join("\n"), MAX_TOOL_CHARS))
     }
 
-    /// `ws_find(text, kinds?)`
+    /// `ws_find(text, kinds?, at?)`: the core text query (names, titles, bodies — a select by its label, a reference by
+    /// its target's title) on the snapshot.
     pub fn ws_find(&mut self, args: &Value) -> WsResult<String> {
-        let text = args.get("text").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("text required"))?.to_lowercase();
-        if text.trim().is_empty() {
-            return Err(WsError::invalid_op("text required"));
+        let text = args.get("text").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| WsError::invalid_op("text required"))?.to_string();
+        let mut params = json!({ "text": text, "limit": 30 });
+        if let Some(k) = args.get("kinds").and_then(Value::as_array) {
+            params["type"] = json!(k.iter().filter_map(Value::as_str).map(|x| if x == "cell" { "block" } else { x.trim_start_matches("buckyos.") }).collect::<Vec<_>>());
         }
-        let kinds: Option<Vec<String>> = args.get("kinds").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());
-        let mut hits = Vec::new();
-        let entities = self.data_entities()?;
-        for e in entities {
-            if let Some(k) = &kinds {
-                let short = e.type_id.trim_start_matches("buckyos.").to_string();
-                if !k.iter().any(|x| *x == short || *x == e.type_id) {
-                    continue;
-                }
-            }
-            let mut where_ = Vec::new();
-            if title_of(&e).to_lowercase().contains(&text) {
-                where_.push(format!("name: {}", title_of(&e)));
-            }
-            match e.type_id.as_str() {
-                TYPE_TABLE => {
-                    let fields = live_fields(&self.ctx(), &e.entity_id)?;
-                    let fh = self.handles.fields(&e, &fields);
-                    for (i, f) in fields.iter().enumerate() {
-                        if f.def.name.to_lowercase().contains(&text) {
-                            where_.push(format!("field {} {}", fh[i], f.def.name));
-                        }
-                    }
-                    let mut n = 0;
-                    let mut first: Option<String> = None;
-                    self.ctx().scan_records(&e.entity_id, &mut |r| {
-                        if r.alive() && r.values.values().any(|v| v.to_string().to_lowercase().contains(&text)) {
-                            n += 1;
-                            if first.is_none() {
-                                first = Some(r.record_id.clone());
-                            }
-                        }
-                        Ok(n < 1000)
-                    })?;
-                    if n > 0 {
-                        where_.push(format!("{} with values containing the text", count(n as u64, "row", "rows")));
-                    }
-                }
-                TYPE_RICHTEXT => {
-                    let ast = self.ctx().richtext(&e.entity_id)?.map(|r| r.meta.ast).unwrap_or(Value::Null);
-                    let md = aiworkspace_core::markdown::from_richtext(&ast);
-                    if let Some(pos) = md.to_lowercase().find(&text) {
-                        let start = md[..pos.min(md.len())].char_indices().rev().nth(30).map(|(i, _)| i).unwrap_or(0);
-                        let snippet: String = md[start..].chars().take(100).collect::<String>().replace('\n', " ");
-                        where_.push(format!("body: …{snippet}…"));
-                    }
-                }
-                TYPE_RECORD | TYPE_ANNOTATION => {
-                    let s = serde_json::to_string(&e.payload).unwrap_or_default().to_lowercase();
-                    if s.contains(&text) {
-                        where_.push("the content contains the text".into());
-                    }
-                }
-                _ => {}
-            }
-            if !where_.is_empty() {
-                hits.push(format!("- {} {} \"{}\" {}: {}", self.handle_of(&e.entity_id), type_label(&e.type_id), title_of(&e), self.path_of(&e.entity_id)?, where_.join("; ")));
-            }
-            if hits.len() >= 30 {
-                hits.push("- …too many matches: narrow the search text".into());
-                break;
-            }
+        if let Some(at) = args.get("at").and_then(Value::as_str) {
+            params["at"] = json!(match self.handles.resolve_entity(at) {
+                Ok(id) => id,
+                Err(_) => at.to_string(),
+            });
         }
-        for b in self.canvas.blocks.clone() {
-            if b.title.as_deref().is_some_and(|t| t.to_lowercase().contains(&text)) && kinds.as_ref().map_or(true, |k| k.iter().any(|x| x == "cell" || x == "block")) {
-                hits.push(format!("- {} Block \"{}\" renderer={}{}", self.handle_of(&b.entity_id), b.title.clone().unwrap_or_default(), b.renderer, b.source_id.as_ref().map(|s| format!(" → {}", self.handle_of(s))).unwrap_or_default()));
+        let started = std::time::Instant::now();
+        let stop = move || started.elapsed() > std::time::Duration::from_secs(1);
+        let snap = &self.snap;
+        let loader = |obj: &str| -> WsResult<Option<Vec<u8>>> { Ok(snap.asset_bytes(obj).ok()) };
+        let r = aiworkspace_core::search::text_query(&snap.ctx(), &snap.access, &params, snap.head_seq, Some(&loader), &stop)?;
+        let mut lines = Vec::new();
+        for h in r["hits"].as_array().cloned().unwrap_or_default() {
+            let id = h["entity_id"].as_str().unwrap_or("").to_string();
+            let Some(e) = self.snap.entity(&id)? else { continue };
+            if !self.snap.can_read(&e)? {
+                continue;
             }
+            let mut at = self.handle_of(&id);
+            if h["selector"]["kind"] == json!("table_cell") {
+                at = self.handles.record(&e, h["selector"]["record_id"].as_str().unwrap_or(""));
+                let fields = live_fields(&self.ctx(), &id)?;
+                let fh = self.handles.fields(&e, &fields);
+                if let Some(i) = fields.iter().position(|f| Some(f.field_id.as_str()) == h["selector"]["field_id"].as_str()) {
+                    at = format!("{at} field {} {}", fh[i], fields[i].def.name);
+                }
+            }
+            let more = h["more"].as_u64().map(|n| format!(" (+{n} more)")).unwrap_or_default();
+            lines.push(format!("- {at} {} \"{}\" {} {}: …{}…{more}", type_label(&e.type_id), title_of(&e), h["path"].as_str().unwrap_or(""), h["on"].as_str().unwrap_or(""), h["snippet"].as_str().unwrap_or("")));
         }
-        Ok(if hits.is_empty() { format!("No data or Block contains \"{text}\".") } else { clip(hits.join("\n"), MAX_TOOL_CHARS) })
+        if r["coverage"]["complete"] != json!(true) {
+            lines.push("- …the search stopped before covering everything: narrow it (a more specific text, kinds, or at)".into());
+        }
+        Ok(if lines.is_empty() { format!("No data or Block contains \"{text}\".") } else { clip(lines.join("\n"), MAX_TOOL_CHARS) })
     }
 
     /// `ws_profile(target)`
@@ -1387,7 +1338,46 @@ impl Stage {
         Ok(Some(format!("({} is not among the declared inputs: it was recorded in the read set as the input `{name}` appended during execution; use aiws.input('{name}') in the program)\n", self.handle_of(&e.entity_id))))
     }
 
-    /// `ws_read(target, selector?, limit?)`
+    /// Rows of a table (through a table view Block's definition when `view` is given) by the compiled view SQL on
+    /// the snapshot, with record handles: a page of `limit` from `offset`.
+    fn table_page(&mut self, e: &EntityRow, view: Option<&EntityRow>, limit: usize, offset: usize) -> WsResult<String> {
+        let note = self.note_read(e)?.unwrap_or_default();
+        let def = view.map(ViewDef::of_cell).unwrap_or_default();
+        let (rows, total, _) = {
+            let ctx = self.snap.ctx();
+            crate::sql::view_records(self.snap.conn(), &ctx, &self.snap.access, e, &def, Some(limit), offset)?
+        };
+        let fields = live_fields(&self.ctx(), &e.entity_id)?;
+        let fh = self.handles.fields(e, &fields);
+        let owned = self.owned.get(&e.entity_id).cloned().unwrap_or_default();
+        let shown: Vec<FieldRow> = fields.iter().filter(|f| !owned.contains(&f.field_id)).cloned().collect();
+        let out_rows = self.rows_out(e, &shown, &rows);
+        let cols: Vec<String> = fields.iter().zip(fh.iter()).filter(|(f, _)| !owned.contains(&f.field_id)).map(|(f, h)| format!("{h} {} {}", f.def.name, f.def.ty.as_str())).collect();
+        let mut out = format!(
+            "{note}{} table \"{}\" {}{}: {} in total, {} on this page\nFields: {}\n",
+            self.handle_of(&e.entity_id),
+            title_of(e),
+            self.path_of(&e.entity_id)?,
+            view.map(|c| format!(" (read through view {}: {})", self.handle_of(&c.entity_id), view_summary(c, &fields))).unwrap_or_default(),
+            count(total, "row", "rows"),
+            out_rows.len(),
+            cols.join(" · ")
+        );
+        out.push_str(&serde_json::to_string(&out_rows).unwrap_or_default().replace("},{", "},\n{"));
+        if (offset + out_rows.len()) < total as usize {
+            out.push_str(&format!("\nNext page cursor: \"{}\" (or query it with ws_query SQL; process many rows with a program)", offset + out_rows.len()));
+        }
+        if let Some(c) = view {
+            let ctx = self.snap.ctx();
+            if let Ok(Some(v)) = aiworkspace_core::sqlview::cell_view(&ctx, &self.snap.access, c, aiworkspace_core::sqlview::Projection::Display) {
+                out.push_str(&format!("\nThe view as SQL (ws_query): {}", v.sql));
+            }
+        }
+        Ok(clip(out, MAX_TOOL_CHARS))
+    }
+
+    /// `ws_read(target, limit?, cursor?)`: a control as its outline, a table (or a table view) as rows with handles,
+    /// a folder as its outline, anything else as its body (the plain-text form every reader shares).
     pub fn ws_read(&mut self, args: &Value) -> WsResult<String> {
         let t = args.get("target").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("target required"))?;
         let target = self.handles.resolve(t)?;
@@ -1400,6 +1390,8 @@ impl Stage {
             let what = if e.type_id == TYPE_CELL { format!("a node of a {kind}; its branch") } else { format!("a {kind}; its nodes") };
             return Ok(clip(format!("{note}{t} \"{}\" is {what} as a Markdown outline:\n{}", title_of(&e), super::outline::format_markdown_outline(&tree)), MAX_TOOL_CHARS));
         }
+        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).clamp(1, MAX_TOOL_ROWS as u64) as usize;
+        let offset = args.get("cursor").and_then(|c| c.as_str().and_then(|s| s.parse().ok()).or_else(|| c.as_u64().map(|n| n as usize))).unwrap_or(0);
         if e.type_id == TYPE_CELL {
             let cell = e.clone();
             let mut info = json!({ "handle": self.handle_of(&cell.entity_id), "renderer": cell.payload.get("view").and_then(|v| v.get("type")), "title": cell.payload.get("title") });
@@ -1413,123 +1405,82 @@ impl Stage {
                     e = self.snap.readable(s)?;
                     prefix = format!("Block {}: {}\nData {}:\n", t, info, self.handle_of(s));
                     if e.type_id == TYPE_TABLE && cell.payload.get("view").and_then(|v| v["type"].as_str()) == Some("table") {
-                        let q = json!({ "table_or_view": t, "limit": args.get("limit").cloned().unwrap_or(json!(20)) });
-                        return Ok(format!("{prefix}{}", self.ws_query(&q)?));
+                        return Ok(format!("{prefix}{}", self.table_page(&e, Some(&cell), limit, offset)?));
                     }
                 }
                 None => return Ok(format!("Block {t} is pure UI ({}) with no readable content.", info)),
             }
         }
-        let note = self.note_read(&e)?.unwrap_or_default();
-        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).clamp(1, MAX_TOOL_ROWS as u64) as usize;
-        let ctx = self.snap.ctx();
-        let body = match e.type_id.as_str() {
+        match e.type_id.as_str() {
             TYPE_TABLE => {
-                drop(ctx);
                 if let Target::Record(_, rid) = &target {
+                    let note = self.note_read(&e)?.unwrap_or_default();
                     let ctx = self.snap.ctx();
                     let fields = live_fields(&ctx, &e.entity_id)?;
                     let r = ctx.record(&e.entity_id, rid)?.filter(|r| r.alive()).ok_or_else(|| WsError::not_found(format!("record {t} not found")))?;
                     drop(ctx);
                     let row = json!({ "record_id": r.record_id, "values": r.values });
-                    serde_json::to_string_pretty(&self.rows_out(&e, &fields, &[row])).unwrap_or_default()
-                } else {
-                    let q = json!({ "table_or_view": t, "limit": limit, "cursor": args.get("cursor"), "fields": args.get("fields"), "filter": args.get("filter") });
-                    return Ok(format!("{note}{prefix}{}", self.ws_query(&q)?));
+                    return Ok(clip(format!("{note}{prefix}{}", serde_json::to_string_pretty(&self.rows_out(&e, &fields, &[row])).unwrap_or_default()), MAX_TOOL_CHARS));
                 }
+                return Ok(format!("{prefix}{}", self.table_page(&e, None, limit, offset)?));
             }
-            TYPE_RICHTEXT => {
-                let ast = ctx.richtext(&e.entity_id)?.map(|r| r.meta.ast).unwrap_or(Value::Null);
-                aiworkspace_core::markdown::from_richtext(&ast)
-            }
-            TYPE_RECORD => {
-                let schema = aiworkspace_core::types::record_schema(&e.payload).unwrap_or_default();
-                let nested = aiworkspace_core::types::record_nested(&e.payload);
-                let props: Map<String, Value> = schema.values().map(|d| (d.name.clone(), nested["props"].get(&d.field_id).map(|v| plain_value(d, v)).unwrap_or(Value::Null))).collect();
-                serde_json::to_string_pretty(&props).unwrap_or_default()
-            }
-            TYPE_ASSET => serde_json::to_string_pretty(&json!({ "media_type": e.payload.get("media_type"), "size": e.payload.get("size"), "file_name": e.payload.get("file_name"),
-                "image": e.payload.get("image"), "note": "the asset's content is under context/assets/ (execution stage); read it with read_file or a program" })).unwrap_or_default(),
             TYPE_CONTAINER => {
-                drop(ctx);
+                let note = self.note_read(&e)?.unwrap_or_default();
                 return Ok(format!("{note}{}", self.ws_outline(&json!({ "target": t, "depth": 2 }))?));
             }
-            TYPE_ANNOTATION => serde_json::to_string_pretty(&json!({ "body": e.payload.get("body"), "target": e.payload.get("target"), "context": e.payload.get("context") })).unwrap_or_default(),
-            TYPE_WISH => serde_json::to_string_pretty(&json!({ "prompt": e.payload.get("prompt"), "knowledge": e.payload.get("knowledge"),
-                "context_prompt": e.payload.get("analysis").and_then(|a| a.get("context_prompt")) })).unwrap_or_default(),
-            _ => serde_json::to_string_pretty(&e.payload).unwrap_or_default(),
-        };
-        Ok(clip(format!("{note}{prefix}{} {} \"{}\"\n{body}", self.handle_of(&e.entity_id), type_label(&e.type_id), title_of(&e)), MAX_TOOL_CHARS))
-    }
-
-    /// `ws_query(table_or_view, filter?, sorts?, fields?, limit?, cursor?)`
-    pub fn ws_query(&mut self, args: &Value) -> WsResult<String> {
-        let t = args.get("table_or_view").or_else(|| args.get("target")).and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("table_or_view required"))?;
-        let mut e = self.target_entity(t)?;
-        let mut view: Option<EntityRow> = None;
-        if e.type_id == TYPE_CELL {
-            let src = e.payload.get("source_ref").and_then(reference_entity_id).map(str::to_string);
-            if e.payload.get("view").and_then(|v| v["type"].as_str()) == Some("table") {
-                view = Some(e.clone());
-            }
-            e = self.snap.readable(&src.ok_or_else(|| WsError::invalid_op(format!("{t} shows no table")))?)?;
-        }
-        if e.type_id != TYPE_TABLE {
-            return Err(WsError::invalid_op(format!("{t} is not a table or a table view")));
+            _ => {}
         }
         let note = self.note_read(&e)?.unwrap_or_default();
-        let ctx = self.snap.ctx();
-        let fields = live_fields(&ctx, &e.entity_id)?;
-        drop(ctx);
-        let fh = self.handles.fields(&e, &fields);
-        let owned = self.owned.get(&e.entity_id).cloned().unwrap_or_default();
-        let fields: Vec<FieldRow> = fields.into_iter().filter(|f| !owned.contains(&f.field_id)).collect();
-        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).clamp(1, MAX_TOOL_ROWS as u64) as usize;
-        let mut spec = QuerySpec { limit, with_meta: false, cursor: args.get("cursor").and_then(Value::as_str).map(str::to_string), ..Default::default() };
-        if let Some(c) = &view {
-            spec.filter = c.payload.get("filter").filter(|f| !f.is_null()).cloned();
-            spec.sorts = c.payload.get("sorts").and_then(Value::as_array).cloned().unwrap_or_default();
-            spec.manual_order = c.payload.get("manual_order").and_then(Value::as_object).cloned();
-        }
-        if let Some(f) = args.get("filter").filter(|f| !f.is_null()) {
-            let extra = translate_filter(f, &fields, &self.handles, &e.entity_id)?;
-            spec.filter = Some(match spec.filter.take() {
-                Some(v) => json!({ "op": "and", "args": [v, extra] }),
-                None => extra,
-            });
-        }
-        if let Some(s) = args.get("sorts").filter(|s| !s.is_null()) {
-            spec.sorts = translate_sorts(s, &fields, &self.handles, &e.entity_id)?;
-        }
-        let proj = match args.get("fields").filter(|f| !f.is_null()) {
-            Some(f) => Some(translate_fields(f, &fields, &self.handles, &e.entity_id)?),
-            None => None,
+        let body = if e.type_id == TYPE_ASSET {
+            serde_json::to_string_pretty(&json!({ "media_type": e.payload.get("media_type"), "size": e.payload.get("size"), "file_name": e.payload.get("file_name"),
+                "image": e.payload.get("image"), "note": "the asset's content is under context/assets/ (execution stage); read it with read_file or a program" })).unwrap_or_default()
+        } else {
+            let snap = &self.snap;
+            let loader = |obj: &str| -> WsResult<Option<Vec<u8>>> { Ok(snap.asset_bytes(obj).ok()) };
+            let mut params = json!({ "max_bytes": (MAX_TOOL_CHARS - 400).min(aiworkspace_core::body::MAX_MAX_BYTES) });
+            if let Some(c) = args.get("cursor").and_then(Value::as_str) {
+                params["cursor"] = json!(c);
+            }
+            let b = aiworkspace_core::body::read_body(&snap.ctx(), &snap.access, &e, &params, Some(&loader))?;
+            let mut text = b["text"].as_str().unwrap_or("").to_string();
+            if let Some(c) = b["next_cursor"].as_str() {
+                text.push_str(&format!("\n… (more: ws_read with cursor \"{c}\")"));
+            }
+            text
         };
-        spec.fields = Some(proj.clone().unwrap_or_else(|| fields.iter().map(|f| f.field_id.clone()).collect()));
-        let ctx = self.snap.ctx();
-        let page = run_query(&ctx, &e, &spec)?;
-        drop(ctx);
-        let rows = self.rows_out(&e, &fields, page["rows"].as_array().map(Vec::as_slice).unwrap_or(&[]));
-        let cols: Vec<String> = fields
-            .iter()
-            .filter(|f| spec.fields.as_ref().map_or(true, |p| p.contains(&f.field_id)))
-            .map(|f| {
-                let i = fh.iter().zip(live_fields(&self.ctx(), &e.entity_id).unwrap_or_default()).find(|(_, x)| x.field_id == f.field_id).map(|(h, _)| h.clone()).unwrap_or_default();
-                format!("{} {} {}", i, f.def.name, f.def.ty.as_str())
-            })
-            .collect();
-        let mut out = format!(
-            "{note}{} table \"{}\"{}: {} in total, {} on this page\nFields: {}\n",
-            self.handle_of(&e.entity_id),
-            title_of(&e),
-            view.as_ref().map(|c| format!(" (read through view {}: {})", self.handle_of(&c.entity_id), view_summary(c, &fields))).unwrap_or_default(),
-            count(page["total"].as_u64().unwrap_or(0), "row", "rows"),
-            rows.len(),
-            cols.join(" · ")
-        );
-        out.push_str(&serde_json::to_string(&rows).unwrap_or_default().replace("},{", "},\n{"));
-        if let Some(c) = page.get("next_cursor") {
-            out.push_str(&format!("\nNext page cursor: {c} (process many rows with a program instead)"));
+        Ok(clip(format!("{note}{prefix}{} {} \"{}\" {}\n{body}", self.handle_of(&e.entity_id), type_label(&e.type_id), title_of(&e), self.path_of(&e.entity_id)?), MAX_TOOL_CHARS))
+    }
+
+    /// `ws_query(sql, tables?, max_rows?)`: one SELECT over the logical tables of the snapshot (核心 API 调整 §3.4) — a
+    /// table is named by its path (`"/data/销售"`), its handle (`"@T1"`) or its id; columns are field names (display
+    /// values: a select's label) and `"<field>#raw"` (stored values: option ids). The same SQL runs against the live
+    /// Workspace with `buckyos aiws sql`.
+    pub fn ws_query(&mut self, args: &Value) -> WsResult<String> {
+        let sql = args.get("sql").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("sql required: one SELECT, a table named by its path (\"/data/…\"), handle (\"@T1\") or id"))?;
+        let mut params = json!({ "sql": sql, "max_rows": args.get("max_rows").and_then(Value::as_u64).unwrap_or(MAX_TOOL_ROWS as u64).clamp(1, 200) });
+        if let Some(t) = args.get("tables").filter(|t| t.is_object()) {
+            params["tables"] = t.clone();
+        }
+        let r = {
+            let handles = &self.handles;
+            let names = |n: &str| -> Option<String> { n.starts_with('@').then(|| handles.resolve_entity(n).ok()).flatten() };
+            let ctx = self.snap.ctx();
+            crate::sql::execute(self.snap.conn(), &ctx, &self.snap.access, &params, self.snap.head_seq, Some(&names))?
+        };
+        let mut note = String::new();
+        let mut read_from = Vec::new();
+        for t in r["read"].as_array().cloned().unwrap_or_default() {
+            if let Some(e) = t["entity_id"].as_str().and_then(|id| self.snap.entity(id).ok().flatten()) {
+                note.push_str(&self.note_read(&e)?.unwrap_or_default());
+                read_from.push(format!("{} {}", self.handle_of(&e.entity_id), t["path"].as_str().unwrap_or("")));
+            }
+        }
+        let cols: Vec<&str> = r["columns"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let rows = r["rows"].as_array().cloned().unwrap_or_default();
+        let mut out = format!("{note}{} row(s) from {}\ncolumns: {}\n", rows.len(), read_from.join(", "), cols.join(" · "));
+        out.push_str(&rows.iter().map(|row| row.to_string()).collect::<Vec<_>>().join("\n"));
+        if r["truncated"] == json!(true) {
+            out.push_str("\n… (more rows: add LIMIT / OFFSET, aggregate in SQL, or process all of them with a program)");
         }
         Ok(clip(out, MAX_TOOL_CHARS))
     }
@@ -1591,69 +1542,7 @@ impl Stage {
 }
 
 /// `filter: 地区=华东; sort by 销售额 descending; 6/11 columns shown`
-pub fn view_summary(cell: &EntityRow, fields: &[FieldRow]) -> String {
-    let name = |fid: &str| fields.iter().find(|f| f.field_id == fid).map(|f| f.def.name.clone()).unwrap_or_else(|| fid.to_string());
-    let mut parts = Vec::new();
-    if let Some(f) = cell.payload.get("filter").filter(|f| !f.is_null()) {
-        parts.push(format!("filter: {}", filter_text(f, &name, fields)));
-    }
-    if let Some(s) = cell.payload.get("sorts").and_then(Value::as_array).filter(|s| !s.is_empty()) {
-        let t: Vec<String> = s.iter().map(|x| format!("{} {}", name(x["field_id"].as_str().unwrap_or("")), if x["direction"] == json!("desc") { "descending" } else { "ascending" })).collect();
-        parts.push(format!("sort by {}", t.join(", ")));
-    }
-    if let Some(g) = cell.payload.get("group").and_then(|g| g["field_id"].as_str()) {
-        parts.push(format!("group by {}", name(g)));
-    }
-    if let Some(fl) = cell.payload.get("fields").and_then(Value::as_array) {
-        let shown = fl.iter().filter(|f| f["hidden"] != json!(true)).count();
-        if shown < fields.len() {
-            parts.push(format!("{shown}/{} columns shown", fields.len()));
-        }
-    }
-    parts.join("; ")
-}
-
-fn filter_text(f: &Value, name: &dyn Fn(&str) -> String, fields: &[FieldRow]) -> String {
-    match f["op"].as_str().unwrap_or("") {
-        "and" | "or" => {
-            let sep = if f["op"] == json!("and") { " and " } else { " or " };
-            f["args"].as_array().into_iter().flatten().map(|a| filter_text(a, name, fields)).collect::<Vec<_>>().join(sep)
-        }
-        "not" => format!("not ({})", filter_text(&f["arg"], name, fields)),
-        "cmp" => {
-            let fid = f["field_id"].as_str().unwrap_or("");
-            let label = |v: &Value| -> String {
-                let def = fields.iter().find(|x| x.field_id == fid);
-                match (v.as_str(), def.and_then(|d| d.def.options.as_ref())) {
-                    (Some(s), Some(o)) => o.iter().find(|x| x.option_id == s).map(|x| x.label.clone()).unwrap_or_else(|| s.to_string()),
-                    (Some(s), None) => s.to_string(),
-                    _ => v.to_string(),
-                }
-            };
-            let op = match f["operator"].as_str().unwrap_or("") {
-                "eq" => "=",
-                "ne" => "≠",
-                "lt" => "<",
-                "lte" => "≤",
-                "gt" => ">",
-                "gte" => "≥",
-                "contains" => " contains ",
-                "starts_with" => " starts with ",
-                "in" => " in ",
-                "is_empty" => " is empty",
-                "is_not_empty" => " is not empty",
-                o => o,
-            };
-            let v = match &f["value"] {
-                Value::Null => String::new(),
-                Value::Array(a) => a.iter().map(|x| label(x)).collect::<Vec<_>>().join("/"),
-                v => label(v),
-            };
-            format!("{}{op}{v}", name(fid))
-        }
-        _ => f.to_string(),
-    }
-}
+pub use aiworkspace_core::body::view_summary;
 
 pub fn type_label(t: &str) -> &'static str {
     match t {

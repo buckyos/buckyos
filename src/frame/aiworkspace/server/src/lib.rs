@@ -477,6 +477,8 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("ws.clear_staged", "stable"),
     ("doc.resolve", "stable"),
     ("doc.read", "stable"),
+    ("doc.list", "stable"),
+    ("doc.find", "stable"),
     ("doc.query", "stable"),
     ("doc.prepare", "stable"),
     ("doc.commit", "stable"),
@@ -493,6 +495,8 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("lock.list", "stable"),
     ("doc.outline", "internal"),
     ("doc.source_capabilities", "internal"),
+    ("doc.source_query", "internal"),
+    ("doc.index", "internal"),
     ("doc.get_collab_state", "internal"),
     ("replica.bootstrap", "internal"),
     ("show.start", "internal"),
@@ -504,7 +508,6 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("show.end", "internal"),
     ("diag.list_unretained", "internal"),
     ("diag.verify_refs", "internal"),
-    ("doc.list_children", "experimental"),
     ("doc.list_annotations", "experimental"),
     ("doc.freshness", "experimental"),
     ("doc.relations", "experimental"),
@@ -636,15 +639,30 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         m if m.starts_with("ext.") => ext::dispatch(state, m, p, caller)?,
         "doc.resolve" => state.with_ws(ws_id()?, |ws| ws.resolve(caller, p.get("reference"), p.get("path").and_then(Value::as_str)))?,
         "doc.read" => state.with_ws(ws_id()?, |ws| match p.get("targets").and_then(Value::as_array) {
-            // batch form: each item succeeds or fails on its own
-            Some(targets) => Ok(json!({ "ok": true, "head_seq": ws.head_seq, "results": targets.iter().map(|t| {
-                match t.get("entity_id").and_then(Value::as_str) {
-                    Some(id) => ws.read(caller, id, t.get("selector")).map(okv).unwrap_or_else(|e| json!({ "ok": false, "error": e.to_json() })),
-                    None => json!({ "ok": false, "error": WsError::invalid_op("entity_id required").to_json() }),
+            // batch form: each item (`entity_id` | `path`, `as`, `selector`, …) succeeds or fails on its own
+            Some(targets) => {
+                if targets.len() > 1000 {
+                    return Err(WsError::limit("at most 1000 targets"));
                 }
-            }).collect::<Vec<_>>() })),
-            None => ws.read(caller, s(p, "entity_id")?, p.get("selector")),
+                Ok(json!({ "ok": true, "head_seq": ws.head_seq, "results": targets.iter().map(|t| {
+                    ws.read_as(caller, t).map(okv).unwrap_or_else(|e| json!({ "ok": false, "error": e.to_json() }))
+                }).collect::<Vec<_>>() }))
+            }
+            None => ws.read_as(caller, p),
         })?,
+        "doc.list" => state.with_ws(ws_id()?, |ws| ws.list(caller, p))?,
+        // the Workspace object's index (核心 API 调整 R1): one index, the action in `op`
+        "doc.index" => state.with_ws(ws_id()?, |ws| match p.get("op").and_then(Value::as_str).unwrap_or("ls") {
+            "ls" => ws.list(caller, p),
+            "find" => ws.find(caller, p),
+            "grep" => {
+                let mut q = p.clone();
+                q.as_object_mut().unwrap().remove("op");
+                ws.query(caller, &q)
+            }
+            other => Err(WsError::invalid_op(format!("op must be ls, find or grep, not {other}"))),
+        })?,
+        "doc.find" => state.with_ws(ws_id()?, |ws| ws.find(caller, p))?,
         "doc.list_annotations" => state.with_ws(ws_id()?, |ws| {
             let targets = match p.get("target_ids") {
                 None | Some(Value::Null) => Vec::new(),
@@ -658,10 +676,8 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "doc.restore_version" => state.with_ws(ws_id()?, |ws| {
             ws.restore_version_plan(caller, s(p, "entity_id")?, p.get("content_rev").and_then(Value::as_u64).ok_or_else(|| WsError::invalid_op("content_rev required"))?)
         })?,
-        "doc.list_children" => state.with_ws(ws_id()?, |ws| {
-            ws.list_children(caller, s(p, "entity_id")?, p.get("include_deleted").and_then(Value::as_bool).unwrap_or(false))
-        })?,
-        "doc.query" => state.with_ws(ws_id()?, |ws| ws.query(caller, p, &state.svc.sources))?,
+        "doc.query" => state.with_ws(ws_id()?, |ws| ws.query(caller, p))?,
+        "doc.source_query" => state.with_ws(ws_id()?, |ws| ws.source_query(caller, p, &state.svc.sources))?,
         "doc.source_capabilities" => state.with_ws(ws_id()?, |ws| ws.source_capabilities(caller, s(p, "source_id")?, &state.svc.sources))?,
         "doc.get_collab_state" => state.with_ws(ws_id()?, |ws| ws.get_collab_state(caller, s(p, "entity_id")?))?,
         "doc.prepare" => state.with_ws(ws_id()?, |ws| Ok(ws.prepare(p, caller)))?,
@@ -754,7 +770,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
 }
 
 /// Methods a run token may call: the run's own lifecycle and reads of the Workspace it runs in.
-const RUN_TOKEN_METHODS: &[&str] = &["proc.get", "proc.heartbeat", "proc.report", "proc.tool", "proc.program", "proc.files", "proc.list", "ws.get_info", "doc.read", "doc.query", "doc.resolve", "doc.outline", "doc.list_children"];
+const RUN_TOKEN_METHODS: &[&str] = &["proc.get", "proc.heartbeat", "proc.report", "proc.tool", "proc.program", "proc.files", "proc.list", "ws.get_info", "doc.read", "doc.query", "doc.resolve", "doc.outline", "doc.list"];
 
 fn run_token_caller(state: &Arc<AppState>, ws_id: Option<&str>, token: &str, method: &str) -> Result<Caller, String> {
     if !RUN_TOKEN_METHODS.contains(&method) {

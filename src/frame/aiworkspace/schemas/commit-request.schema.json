@@ -1,6 +1,6 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/commit-request/1.1",
+ "$id": "buckyos.ai-workspace/commit-request/1.2",
  "title": "Commit request (doc.commit / doc.prepare)",
  "type": "object",
  "additionalProperties": false,
@@ -15,9 +15,10 @@
   "protocol_version": {
    "enum": [
     "1.0",
-    "1.1"
+    "1.1",
+    "1.2"
    ],
-   "description": "1.1 added Block-controls (\"auto\" placement, Cells holding Cells in a control, slot); 1.0 requests are still accepted"
+   "description": "1.1 added Block-controls (\"auto\" placement, Cells holding Cells in a control, slot); 1.2 is the finding / reading / querying API (no change to Commit requests); 1.0 and 1.1 requests are still accepted"
   },
   "workspace_id": {
    "type": "string",

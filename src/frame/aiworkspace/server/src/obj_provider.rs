@@ -1,7 +1,7 @@
-//! DID Object Provider of AI Workspace (notepads/done/agent-object-url-todo.md §4.4, D7):
-//! `obj://aiworkspace/<ws_id>`, `.../entities/<entity_id>[?mode=&selector=&version=]`
+//! DID Object Provider of AI Workspace (notepads/done/agent-object-url-todo.md §4.4, D7; 核心 API 调整 R1):
+//! `obj://aiworkspace/<ws_id>[?op=ls|find|grep&at=&…]`, `.../entities/<entity_id>[?mode=&selector=&version=]`
 //! and `.../path/<...>`, served at `/kapi/aiworkspace/obj/...`. Reads are the kRPC
-//! methods (`ws.get_info`, `doc.outline`, `doc.read`, `doc.resolve`, ...) through the
+//! methods (`ws.get_info`, `doc.index`, `doc.read`, `doc.resolve`, ...) through the
 //! service's own kRPC entry with the caller's credentials, so sessions, run tokens,
 //! guest tokens and Workspace grants decide exactly as for kRPC.
 
@@ -64,33 +64,116 @@ fn cap(c: &Captures, name: &str) -> String {
     c.get(name).cloned().unwrap_or_default()
 }
 
-/// `selector` / `version` of the request query (canonical JSON), `mode` defaults to live.
+fn json_param(c: &Captures, key: &str) -> Result<Option<Value>, DIDObjectError> {
+    match c.get(&format!("?{key}")) {
+        Some(v) => serde_json::from_str(v).map(Some).map_err(|e| DIDObjectError::new("invalid_params", format!("{key}: {e}"))),
+        None => Ok(None),
+    }
+}
+
+/// `selector` / `version` of the request query (canonical JSON). A fixed version (`mode=fixed&version=`) is read or
+/// fails, never read as the head (核心 API 调整 R2).
 fn read_params(c: &Captures) -> Result<Value, DIDObjectError> {
     let mut params = json!({ "workspace_id": cap(c, "ws"), "entity_id": cap(c, "entity") });
-    if let Some(selector) = c.get("?selector") {
-        params["selector"] = serde_json::from_str(selector).map_err(|e| DIDObjectError::new("invalid_params", format!("selector: {e}")))?;
+    if let Some(selector) = json_param(c, "selector")? {
+        params["selector"] = selector;
+    }
+    match (c.get("?mode").map(String::as_str), json_param(c, "version")?) {
+        (Some("fixed"), Some(version)) => params["version"] = version,
+        (Some("fixed"), None) => return Err(DIDObjectError::new("invalid_params", "mode=fixed needs version")),
+        (_, Some(_)) => return Err(DIDObjectError::new("invalid_params", "version needs mode=fixed")),
+        _ => {}
     }
     Ok(params)
 }
 
-fn outline_rows(c: &Captures, outline: Value) -> Value {
+/// `meta` / `body` of an entity url: the head (a fixed version is refused by the service).
+fn as_params(c: &Captures, what: &str) -> Result<Value, DIDObjectError> {
+    let mut params = read_params(c)?;
+    params["as"] = json!(what);
+    if what == "body" {
+        if let Some(v) = c.get("?cursor") {
+            params["cursor"] = json!(v);
+        }
+        if let Some(v) = c.get("?max_bytes") {
+            params["max_bytes"] = json!(v.parse::<u64>().map_err(|e| DIDObjectError::new("invalid_params", format!("max_bytes: {e}")))?);
+        }
+        if c.get("?parts").is_some_and(|v| v == "true" || v == "1") {
+            params["parts"] = json!(true);
+        }
+    }
+    Ok(params)
+}
+
+/// The query of the Workspace index (核心 API 调整 R1; design draft §8): the url's query parameters, overridden by
+/// the `query` object of the action; `page_size` and `cursor` of the action page it.
+fn index_params(c: &Captures, input: &Value) -> Result<Value, DIDObjectError> {
+    let mut params = json!({ "workspace_id": cap(c, "ws") });
+    for key in ["op", "at", "type", "not_type", "schema", "depth", "name", "text", "case"] {
+        if let Some(v) = c.get(&format!("?{key}")) {
+            params[key] = match key {
+                "depth" => json!(v.parse::<u64>().map_err(|e| DIDObjectError::new("invalid_params", format!("depth: {e}")))?),
+                "case" => json!(v == "true" || v == "1"),
+                _ => json!(v),
+            };
+        }
+    }
+    if let Some(q) = input.get("query").and_then(Value::as_object) {
+        for (k, v) in q {
+            if !matches!(k.as_str(), "workspace_id" | "limit" | "cursor") {
+                params[k] = v.clone();
+            }
+        }
+    }
+    if let Some(n) = input.get("page_size").and_then(Value::as_u64) {
+        params["limit"] = json!(n);
+    }
+    if let Some(cursor) = input.get("cursor").and_then(Value::as_str) {
+        params["cursor"] = json!(cursor);
+    }
+    Ok(params)
+}
+
+/// `doc.index` answers (list / find items or text hits) as index rows.
+fn index_rows(c: &Captures, page: Value) -> Value {
     let ws = cap(c, "ws");
-    let rows: Vec<Value> = outline["entities"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
+    let list = page.get("items").or_else(|| page.get("hits")).and_then(Value::as_array).cloned().unwrap_or_default();
+    let rows: Vec<Value> = list
         .into_iter()
-        .filter_map(|env| {
-            let id = env.get("entity_id").or_else(|| env.get("id"))?.as_str()?.to_string();
-            let reference = json!({ "workspace_id": ws, "entity_id": id, "mode": "live" });
+        .filter_map(|item| {
+            let id = item.get("entity_id")?.as_str()?.to_string();
+            let mut reference = json!({ "workspace_id": ws, "entity_id": id, "mode": "live" });
+            if let Some(sel) = item.get("selector").filter(|s| !s.is_null()) {
+                reference["selector"] = sel.clone();
+            }
+            let row_id = match item.get("selector").filter(|s| !s.is_null()) {
+                Some(sel) => format!("{id}#{}", buckyos_api::canonical_json(sel)),
+                None => match item.get("on").and_then(Value::as_str) {
+                    Some(on) => format!("{id}#{on}"),
+                    None => id.clone(),
+                },
+            };
+            let parent = item.get("path").and_then(Value::as_str).and_then(|p| p.rsplit_once('/')).map(|(p, _)| if p.is_empty() { "/".to_string() } else { p.to_string() });
             Some(json!({
-                "row_id": id,
+                "row_id": row_id,
                 "object": buckyos_api::aiws_reference_url(&reference, None).ok()?,
-                "cells": { "kind": env["kind"], "title": env.get("title").or_else(|| env.get("name")).cloned().unwrap_or(Value::Null), "parent": env.get("parent_id").cloned().unwrap_or(Value::Null) },
+                "cells": {
+                    "type": item.get("type").cloned().unwrap_or(Value::Null), "kind": item.get("kind").cloned().unwrap_or(Value::Null),
+                    "name": item.get("name").cloned().unwrap_or(Value::Null), "title": item.get("title").cloned().unwrap_or(Value::Null),
+                    "path": item.get("path").cloned().unwrap_or(Value::Null), "parent": parent,
+                    "on": item.get("on").cloned().unwrap_or(Value::Null), "selector": item.get("selector").cloned().unwrap_or(Value::Null),
+                    "snippet": item.get("snippet").cloned().unwrap_or(Value::Null),
+                },
             }))
         })
         .collect();
-    json!({ "rows": rows })
+    let mut out = json!({ "rows": rows });
+    for k in ["next_cursor", "coverage", "complete", "at", "head_seq"] {
+        if let Some(v) = page.get(k) {
+            out[k] = v.clone();
+        }
+    }
+    out
 }
 
 /// `ws.list` as index rows: one per visible workspace, linking to its object.
@@ -118,19 +201,34 @@ pub fn object_kinds() -> Vec<ObjectKind> {
     let root = ObjectKind::new("", "aiworkspace.root", "AI Workspaces", "The AI Workspaces the caller can see. Rows link to the workspace objects.")
         .summary_property("workspaces", "The visible workspaces", object.clone(), list())
         .index("List the visible workspaces", json!({ "title": "string", "head_seq": "integer" }), list());
-    let workspace = ObjectKind::new("{ws}", "aiworkspace.workspace", "AI Workspace", "A workspace: its info and the readable entity tree. Rows link to the entity objects.")
-        .summary_property("info", "Workspace info (title, owner, head, publications)", object.clone(), RpcBinding::new("ws.get_info", |c, _| Ok(json!({ "workspace_id": cap(c, "ws") }))))
-        .index("The readable entity tree", json!({ "kind": "string", "title": "string", "parent": "string" }),
-            RpcBinding::new("doc.outline", |c, _| Ok(json!({ "workspace_id": cap(c, "ws") }))).map(outline_rows))
-        .event("head", "A new head was committed")
-        .event("locks", "The lock table changed");
+    let workspace = ObjectKind::new(
+        "{ws}",
+        "aiworkspace.workspace",
+        "AI Workspace",
+        "A workspace as a directory of entities. The index lists (`op=ls`, default), finds by name or title (`op=find&name=`) or \
+         looks for a literal in the bodies (`op=grep&text=`); `at` (a path or entity id), `type` / `not_type` (short types, comma \
+         separated), `schema`, `depth` narrow it. Rows link to the entity objects (a body hit with its selector).",
+    )
+    .summary_property("info", "Workspace info (title, owner, head, publications)", object.clone(), RpcBinding::new("ws.get_info", |c, _| Ok(json!({ "workspace_id": cap(c, "ws") }))))
+    .property("outline", "The whole readable entity tree in one answer (doc.outline)", object.clone(), RpcBinding::new("doc.outline", |c, _| Ok(json!({ "workspace_id": cap(c, "ws") }))))
+    .index(
+        "ls / find / grep under a node, paged",
+        json!({ "type": "string", "kind": "string", "name": "string", "title": "string", "path": "string", "parent": "string", "on": "string", "selector": "object", "snippet": "string" }),
+        RpcBinding::new("doc.index", index_params).map(index_rows),
+    )
+    .event("head", "A new head was committed")
+    .event("locks", "The lock table changed");
     let entity = ObjectKind::new(
         "{ws}/entities/{entity}",
         "aiworkspace.entity",
         "AI Workspace entity",
-        "One entity of a workspace. `?selector=<canonical json>&mode=fixed&version=<json>` select a view or version of the same object.",
+        "One entity of a workspace. `meta`: what it is (type, path, versions, body state, capabilities, operations); `body`: \
+         its plain-text form, paged (`?cursor=&max_bytes=&parts=true`, `?selector=` for one part); `content`: the native \
+         content (`?selector=<canonical json>`; `?mode=fixed&version=<json>` reads that version or fails).",
     )
-    .summary_property("content", "The entity as read (with the selector of the url, if any)", object.clone(), RpcBinding::new("doc.read", |c, _| read_params(c)))
+    .summary_property("meta", "What the entity is: type, path, versions, body state, capabilities, operations", object.clone(), RpcBinding::new("doc.read", |c, _| as_params(c, "meta")))
+    .property("body", "The plain-text form of the entity, paged", object.clone(), RpcBinding::new("doc.read", |c, _| as_params(c, "body")))
+    .property("content", "The native content (with the selector of the url, if any; a fixed version when the url names one)", object.clone(), RpcBinding::new("doc.read", |c, _| read_params(c)))
     .property("relations", "What the entity references, is referenced by, was generated from", object.clone(),
         RpcBinding::new("doc.relations", |c, _| Ok(json!({ "workspace_id": cap(c, "ws"), "entity_id": cap(c, "entity") }))))
     .property("freshness", "Dependency-based freshness", object.clone(),

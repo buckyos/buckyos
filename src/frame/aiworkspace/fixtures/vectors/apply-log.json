@@ -29,7 +29,7 @@
           "key_revs_json": "{\"kind\":1,\"layout\":1,\"surface_id\":1,\"system\":1,\"title\":1}",
           "life_rev": 1,
           "meta_rev": 1,
-          "name": null,
+          "name": "s1",
           "payload_json": "{\"kind\":\"folder\",\"layout\":{\"mode\":\"flow\"},\"surface_id\":\"s1\",\"system\":\"surface_content\",\"title\":\"s1\"}",
           "schema_id": null,
           "schema_version": 1,
@@ -141,7 +141,7 @@
           "key_revs_json": "{\"source_ref\":2,\"view\":2}",
           "life_rev": 2,
           "meta_rev": 2,
-          "name": null,
+          "name": "table-1",
           "payload_json": "{\"source_ref\":{\"entity_id\":\"own\",\"version\":{\"mode\":\"live_head\"}},\"view\":{\"type\":\"table\"}}",
           "schema_id": null,
           "schema_version": 1,
@@ -454,7 +454,7 @@
           "key_revs_json": "{\"source_ref\":2,\"view\":2}",
           "life_rev": 6,
           "meta_rev": 2,
-          "name": null,
+          "name": "table-1",
           "payload_json": "{\"source_ref\":{\"entity_id\":\"own\",\"version\":{\"mode\":\"live_head\"}},\"view\":{\"type\":\"table\"}}",
           "schema_id": null,
           "schema_version": 1,
@@ -483,7 +483,7 @@
           "key_revs_json": "{\"source_ref\":2,\"view\":2}",
           "life_rev": 7,
           "meta_rev": 2,
-          "name": null,
+          "name": "table-1",
           "payload_json": "{\"source_ref\":{\"entity_id\":\"own\",\"version\":{\"mode\":\"live_head\"}},\"view\":{\"type\":\"table\"}}",
           "schema_id": null,
           "schema_version": 1,
@@ -502,5 +502,5 @@
     }
   ],
   "description": "Row deltas of core/tests/apply_log.rs's scripted history and the digest of the state they produce (D20). Applied without a planner; regenerate with AIWS_REGEN=1.",
-  "digest": "e1ee6366330c97f2de1e1c2d694fada362c06d062fc42452626194bd7646b61a"
+  "digest": "7cafd00ceb482f4766e9a3597e35a303d1c17e4ae690852c176c36ec3863c01b"
 }

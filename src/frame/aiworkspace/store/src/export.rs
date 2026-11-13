@@ -654,6 +654,8 @@ pub fn load_workspace(
                          "order_key": p["order_key"], "payload": p["payload"], "scope": "personal" }))
         .collect();
     commit(&mut ws, "import-personal", personal)?;
+    // a package of an older build may hold entities without a name: they get the names the rule gives
+    crate::workspace::backfill_names(&ws.doc)?;
     if let Some(f) = &spec.forked_from {
         meta_set(&ws.doc, "forked_from", &f.to_string())?;
     }

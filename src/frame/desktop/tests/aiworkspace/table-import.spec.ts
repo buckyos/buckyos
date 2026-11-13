@@ -32,7 +32,7 @@ async function rows(api: Api, ws: Ws, sourceId: string, extra: Json = {}): Promi
   const out: Json[] = []
   let cursor: string | undefined
   for (;;) {
-    const page = await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: sourceId, limit: 1000, ...extra, ...(cursor ? { cursor } : {}) })
+    const page = await api.table(ALICE, ws.workspace_id, { source_id: sourceId, limit: 1000, ...extra, ...(cursor ? { cursor } : {}) })
     out.push(...page.rows)
     if (!page.next_cursor || page.rows.length === 0) return out
     cursor = page.next_cursor
@@ -319,9 +319,9 @@ test('TI-11 more than 20 000 rows: one Commit; one undo removes the table with e
   await expect(dialog).toHaveCount(0, { timeout: 120_000 })
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
   const [source] = await tablesIn(api, ws)
-  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: source.entity_id, limit: 1 })).total).toBe(20_001)
+  expect((await api.table(ALICE, ws.workspace_id, { source_id: source.entity_id, limit: 1 })).total).toBe(20_001)
   // rows keep the file's order (record ids sort in row order)
-  const first = await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: source.entity_id, limit: 3 })
+  const first = await api.table(ALICE, ws.workspace_id, { source_id: source.entity_id, limit: 3 })
   expect(first.rows.map((r: Json) => r.values.c1)).toEqual([0, 1, 2])
   const report = page.getByTestId('aiws-import-report')
   if (await report.isVisible()) await report.getByTestId('aiws-import-report-close').click()
@@ -329,7 +329,7 @@ test('TI-11 more than 20 000 rows: one Commit; one undo removes the table with e
   await expect.poll(async () => (await tablesIn(api, ws)).length, { timeout: 60_000 }).toBe(0)
   await page.getByTestId('aiws-redo').click()
   await expect.poll(async () => (await tablesIn(api, ws)).length, { timeout: 60_000 }).toBe(1)
-  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: source.entity_id, limit: 1 })).total).toBe(20_001)
+  expect((await api.table(ALICE, ws.workspace_id, { source_id: source.entity_id, limit: 1 })).total).toBe(20_001)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 3)
 })
 

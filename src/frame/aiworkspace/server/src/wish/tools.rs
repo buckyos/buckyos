@@ -54,8 +54,8 @@ impl Kind {
                 json!({ "type": "object", "properties": { "target": target, "depth": { "type": "integer", "minimum": 1, "maximum": 3 } } }),
             ),
             Kind::Find => (
-                "Find data and Blocks by name, field name or body text; returns handles and the matching snippets.",
-                json!({ "type": "object", "properties": { "text": { "type": "string" }, "kinds": { "type": "array", "items": { "type": "string" }, "description": "table / richtext / record / asset / annotation / cell" } }, "required": ["text"] }),
+                "Find a literal text in the names, titles and bodies of the data and Blocks (a select by its label, a reference by its target's title); returns handles, paths and the matching snippets (a table hit names the record and field).",
+                json!({ "type": "object", "properties": { "text": { "type": "string" }, "kinds": { "type": "array", "items": { "type": "string" }, "description": "table / richtext / record / asset / annotation / block / container / wish / def" }, "at": { "type": "string", "description": "Search under this node only (a handle, an id or a path)" } }, "required": ["text"] }),
             ),
             Kind::Profile => (
                 "Content profile: for a table, the row count, field types and value ranges, empty values, sample rows and suspected problems; for rich text, the headings and the opening; for a record, its properties. A Block handle returns the profile of the data the Block shows.",
@@ -66,15 +66,15 @@ impl Kind {
                 json!({ "type": "object", "properties": { "cell": target, "radius": { "type": "number" } }, "required": ["cell"] }),
             ),
             Kind::Read => (
-                "Read rich text (Markdown), record properties, asset information, folder members, a single record, or the first rows of a table (process large amounts of data with a program).",
+                "Read an object: rich text, records, notes, wishes and definitions as their plain text (body), a table or a table view Block as rows with handles (and the view's SQL), a single record, a folder's members, a control as its outline. Process large amounts of data with a program.",
                 json!({ "type": "object", "properties": { "target": target, "limit": { "type": "integer", "minimum": 1, "maximum": 50 }, "cursor": { "type": "string" } }, "required": ["target"] }),
             ),
             Kind::Query => (
-                "Query a table; given the handle of a table view Block, reads through the view's filter and sort. filter is {\"field name\": value} or {\"op\":\"cmp\",\"field\":\"field name\",\"operator\":\"gt\",\"value\":100} (combined with and/or/not); sorts is [\"-Sales\"] or [{\"field\":\"Month\",\"direction\":\"asc\"}]. At most 50 rows per page.",
+                "One SQL SELECT over the tables of the snapshot (SQLite). Name a table by its path (\"/data/销售\"), its handle (\"@T1\") or its id; columns are the field names with the displayed values (a select's label, a reference's path, a currency's amount), \"<field>#raw\" the stored values (option ids, exact decimals), and _id (record id). Joins, GROUP BY and window functions work; no writes. At most 200 rows per call. A table view Block's SQL is in ws_read of the Block.",
                 json!({ "type": "object", "properties": {
-                    "table_or_view": target, "filter": { "type": "object" }, "sorts": { "type": "array" },
-                    "fields": { "type": "array", "items": { "type": "string" } }, "limit": { "type": "integer", "minimum": 1, "maximum": 50 }, "cursor": { "type": "string" } },
-                    "required": ["table_or_view"] }),
+                    "sql": { "type": "string" }, "tables": { "type": "object", "description": "Optional aliases { alias: handle | path | id }" },
+                    "max_rows": { "type": "integer", "minimum": 1, "maximum": 200 } },
+                    "required": ["sql"] }),
             ),
             Kind::SubmitAnalysis => (
                 "Submit the analysis (wish.analysis.v2). The host validates it on the spot: whether the handles exist, whether the bindings are readable, whether every handle in the prompt is bound, whether the output contract and the Renderers are valid, and whether the production approaches follow the programs-first rule. When a list of problems comes back, correct them and submit again; once it is accepted, finish.",

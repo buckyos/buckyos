@@ -1,12 +1,17 @@
 {
  "protocol_version": "1.0",
- "description": "Operation catalogue of a Commit (`operations[].op`). class: create|append|merge = auto-merge, overwrite|structural = version check (`expect` required), internal = undo path only. Checked against the code by core/tests/schemas.rs.",
+ "description": "Operation catalogue of a Commit (`operations[].op`). class: create|append|merge = auto-merge, overwrite|structural = version check (`expect` required), internal = undo path only. Checked against the code by core/tests/schemas.rs. types: the entity types an operation acts on (its entity_id / source_id; for entity.create the parent), [\"*\"] = any entity, [] = internal; `meta.ops` of `doc.read { as: \"meta\" }` is this column filtered by the entity's type.",
  "operations": [
   {
    "op": "entity.create",
    "class": "create",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.container",
+    "buckyos.cell",
+    "buckyos.table-source"
+   ],
    "note": "Create an entity and attach it to the tree in one step. Annotations need `comment` instead. A connector Cell needs a placement and a free-layout Surface. Inside a control (a mindmap container) a Cell may hold Cells and containers (its child nodes); placement components may be \"auto\" there (see $defs.placement), and a Block's optional `slot` is unique among its siblings (SLOT_CONFLICT)."
   },
   {
@@ -14,6 +19,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "delete",
+   "types": [
+    "*"
+   ],
    "note": "Tombstone. Children must be listed explicitly; blocked by bind/embed/value/body/def references (input, derived, produced, anchor, connector_endpoint, show_target and show_surface references never block)."
   },
   {
@@ -21,6 +29,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "delete",
+   "types": [
+    "*"
+   ],
    "note": "Clear a tombstone; the parent must be alive."
   },
   {
@@ -28,6 +39,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "*"
+   ],
    "note": "Lookup name, unique among siblings. expect = meta_rev."
   },
   {
@@ -35,6 +49,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "*"
+   ],
    "note": "Set top-level keys of a keyed document; each key is its own version cell."
   },
   {
@@ -42,6 +59,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "*"
+   ],
    "note": "Remove top-level keys."
   },
   {
@@ -49,6 +69,10 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.cell",
+    "buckyos.container"
+   ],
    "note": "Per-property writes of an object key (config | bindings | on, 扩展控件 P2 Q28): props { <name>: value | null }, expect { <name>: rev } per property (absent = merge). Each property is the cell p:<key>.<name>; a whole-key set_keys / unset_keys moves every p: cell of that key. Inverse: the old values with expect = seq."
   },
   {
@@ -56,6 +80,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "manage",
+   "types": [
+    "*"
+   ],
    "note": "open | lock_required. expect = meta_rev."
   },
   {
@@ -63,6 +90,9 @@
    "class": "merge",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "*"
+   ],
    "note": "Record (or clear) the generation dependency of a result entity: wish, run, executor, read-set versions. Auto-merge; the application guards consistency with read-set preconditions."
   },
   {
@@ -70,6 +100,9 @@
    "class": "merge",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "*"
+   ],
    "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional. A connector must keep a placement (see $defs.placement in commit-request.schema.json). A Block leaving a control cannot keep \"auto\" components, and a Cell holding Blocks cannot leave it (CHILD_NOT_ALLOWED). `slot?` (a name, or null) rewrites the Block's slot in the same step (into a composite a Block needs one, out of a control none, 扩展控件 P1)."
   },
   {
@@ -77,6 +110,9 @@
    "class": "merge",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "*"
+   ],
    "note": "Order/placement within the same parent. expect optional. `placement: null` clears a Block's placement; it is refused for a connector. Writing \"auto\" back into a component resets it to the control's layout."
   },
   {
@@ -84,6 +120,10 @@
    "class": "create",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.cell",
+    "buckyos.container"
+   ],
    "note": "扩展控件 P1 (Q17): a deep copy of a Block subtree (a Cell, a group or a control and all under it) under `parent_id`: `source_id`, `parent_id`, `order_key?` (default: last), `placement?`, `slot?` (null drops it), `content?: \"private\"`, `id_seed?`. Each copy gets id `c` + 26 hex of sha256(`<id_seed>\\n<old id>`) (id_seed defaults to `<seq>.<op index>`; pass one to know the ids beforehand); def_ref is kept, own data (owns) is cloned into the target Surface's content folder and rebound, shared data stays shared, connectors are copied when both bound ends are inside and dropped when one crosses. Normalized with `id_seed` and `new_ids { old: new }`; the Commit result lists them under `cloned`. `read` on the source."
   },
   {
@@ -91,6 +131,16 @@
    "class": "create",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source",
+    "buckyos.richtext",
+    "buckyos.record",
+    "buckyos.asset-ref",
+    "buckyos.annotation",
+    "buckyos.wish",
+    "buckyos.block-def",
+    "buckyos.dir"
+   ],
    "note": "A deep copy of a data entity as a new entity (payload, table fields and live records, rich text content as a new lineage; no children, record bodies or generation record). The one place copy semantics live (D05): same-canvas copies clone own data through it, cross-canvas copies bind the same data. `entity_id`, `new_entity_id`, `parent_id`, `order_key`, `name?`, `placement?`."
   },
   {
@@ -98,6 +148,16 @@
    "class": "merge",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source",
+    "buckyos.richtext",
+    "buckyos.record",
+    "buckyos.asset-ref",
+    "buckyos.annotation",
+    "buckyos.wish",
+    "buckyos.block-def",
+    "buckyos.dir"
+   ],
    "note": "The data stops being any Block's own (its `owns` edges go) and never follows a Block's deletion again (D05). expect optional."
   },
   {
@@ -105,6 +165,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.dir"
+   ],
    "note": "Add or replace one member of a resource directory (`buckyos.dir`, D01/D25): `name`, `member: { kind: file, object_id } | { kind: dir, entity_id }`; `expect` is the member's own cell (`{ rev: 0 }` for a new name). A file member names an uploaded object (media type and size come from it); a child directory must be alive and must not contain this one."
   },
   {
@@ -112,6 +175,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.dir"
+   ],
    "note": "Remove one member; `expect` is the member's cell."
   },
   {
@@ -119,6 +185,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.dir"
+   ],
    "note": "Replace the whole member map (a switch to another DirObject); `expect` is the directory's content_rev."
   },
   {
@@ -126,6 +195,9 @@
    "class": "append",
    "undo": "compensable",
    "capability": "append",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Append records; `append` or `update` capability."
   },
   {
@@ -133,6 +205,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "delete",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Tombstone records. expect = record.rev."
   },
   {
@@ -140,6 +215,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Batch cell writes; each item carries expect on its cell."
   },
   {
@@ -147,6 +225,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Make cells unset (not null)."
   },
   {
@@ -154,6 +235,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Attach/detach a record's rich text body."
   },
   {
@@ -161,6 +245,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "A required field needs a backfill value."
   },
   {
@@ -168,6 +255,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Name, description, order, constraints. Tightening scans existing values."
   },
   {
@@ -175,6 +265,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Tombstone; residual values kept unreadable for lossless undo."
   },
   {
@@ -182,6 +275,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Bumps def_rev only. expect required (structural)."
   },
   {
@@ -189,6 +285,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Label/position; business values unchanged."
   },
   {
@@ -196,6 +295,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "on_values: reject_if_used | unset | { replace_with }."
   },
   {
@@ -203,6 +305,9 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Typed migration in one transaction; pre-check report through doc.prepare."
   },
   {
@@ -210,6 +315,9 @@
    "class": "merge",
    "undo": "session_local",
    "capability": "update",
+   "types": [
+    "buckyos.richtext"
+   ],
    "note": "A CRDT update of an editor session; validated on a fork before it becomes authoritative."
   },
   {
@@ -217,6 +325,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.richtext"
+   ],
    "note": "Block-level semantic insert."
   },
   {
@@ -224,6 +335,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.richtext"
+   ],
    "note": "expect.hash required."
   },
   {
@@ -231,6 +345,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.richtext"
+   ],
    "note": "expect.hash and expect.struct_rev required."
   },
   {
@@ -238,6 +355,9 @@
    "class": "overwrite",
    "undo": "compensable",
    "capability": "update",
+   "types": [
+    "buckyos.richtext"
+   ],
    "note": "expect.struct_rev required."
   },
   {
@@ -245,6 +365,9 @@
    "class": "internal",
    "undo": "compensable",
    "capability": "delete",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Undo of delete_records. Not accepted from callers."
   },
   {
@@ -252,6 +375,9 @@
    "class": "internal",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Undo of delete_field. Not accepted from callers."
   },
   {
@@ -259,6 +385,9 @@
    "class": "internal",
    "undo": "compensable",
    "capability": "structure",
+   "types": [
+    "buckyos.table-source"
+   ],
    "note": "Undo of migrate_field. Not accepted from callers."
   },
   {
@@ -266,6 +395,7 @@
    "class": "internal",
    "undo": "compensable",
    "capability": "structure",
+   "types": [],
    "note": "Undo path of data.pin."
   },
   {
@@ -273,6 +403,7 @@
    "class": "internal",
    "undo": "none",
    "capability": "manage",
+   "types": [],
    "note": "Maintenance channel (D19, ws.purge_deleted): a deleted entity gives up content and references for good; its resources are reclaimable at once and entity.restore answers RESOURCE_RECLAIMED."
   },
   {
@@ -280,6 +411,7 @@
    "class": "session",
    "undo": "none",
    "capability": "structure",
+   "types": [],
    "note": "{ id: \"session\" }: create the session system folder under data if it is missing (第四期规划 §5.3). Only the session service (origins session and source) and internal paths submit it; an existing folder makes it a no-op."
   }
  ]

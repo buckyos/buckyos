@@ -419,6 +419,32 @@ pub fn err_json(e: &WsError) -> Value {
     json!({ "ok": false, "error": e.to_json() })
 }
 
+/// Storage 5 → 6: every entity without a name gets the name the rule gives (in tree order), in one transaction
+/// with the version change. Not a Commit: no version moves, history is untouched.
+pub(crate) fn backfill_names(doc: &Connection) -> WsResult<()> {
+    let cache = RefCell::new(DocCache::default());
+    let names = {
+        let ctx = SqlCtx { conn: doc, local: None, cache: &cache, now: "" };
+        aiworkspace_core::naming::backfill(&ctx)?
+    };
+    doc.execute_batch("BEGIN IMMEDIATE").map_err(db_err)?;
+    let r = (|| -> WsResult<()> {
+        let mut st = doc.prepare("UPDATE entities SET name = ?2 WHERE entity_id = ?1 AND name IS NULL").map_err(db_err)?;
+        for (id, name) in &names {
+            st.execute(params![id, name]).map_err(db_err)?;
+        }
+        meta_set(doc, "storage_schema_version", &STORAGE_SCHEMA_VERSION.to_string())?;
+        Ok(())
+    })();
+    match r {
+        Ok(()) => doc.execute_batch("COMMIT").map_err(db_err),
+        Err(e) => {
+            let _ = doc.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
 impl Workspace {
     pub fn now(&self) -> String {
         format_utc_ms((self.clock)())
@@ -485,7 +511,11 @@ impl Workspace {
             meta_get(&doc, k)?.ok_or_else(|| WsError::io(format!("workspace_meta.{k} missing")))
         };
         // unknown storage or format versions are refused; the file is never modified or emptied
-        let storage: u32 = get("storage_schema_version")?.parse().unwrap_or(0);
+        let mut storage: u32 = get("storage_schema_version")?.parse().unwrap_or(0);
+        if storage == 5 {
+            backfill_names(&doc)?;
+            storage = STORAGE_SCHEMA_VERSION;
+        }
         if storage != STORAGE_SCHEMA_VERSION {
             return Err(WsError::new(Code::UnsupportedVersion, format!("storage_schema_version {storage} is not supported")));
         }

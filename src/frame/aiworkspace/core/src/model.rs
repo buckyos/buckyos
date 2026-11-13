@@ -58,8 +58,10 @@ pub const POLICY_LOCK: &str = "lock_required";
 pub const MEMBERS_KEY: &str = "#members";
 pub const FORMAT_VERSION: &str = "1.0";
 /// 1.1: Block-controls (`mindmap` containers, `"auto"` placement components, Blocks under Blocks inside a control,
-/// `slot`; 脑图方案 R12). A minor version only adds: requests of an older minor are still accepted.
-pub const PROTOCOL_VERSION: &str = "1.1";
+/// `slot`; 脑图方案 R12). 1.2: finding, reading and querying (核心 API 调整): `doc.list`, `doc.find`, `doc.read { as,
+/// path }`, `doc.query` takes `text` or `sql` only (the table query moved to SQL, URL tables to `doc.source_query`),
+/// every entity has a name. Commit requests of an older minor are still accepted.
+pub const PROTOCOL_VERSION: &str = "1.2";
 
 /// Requests speaking `version` are understood: the same major version, a minor not newer than ours.
 pub fn supports_protocol(version: &str) -> bool {
@@ -324,6 +326,10 @@ pub trait ReadCtx {
     fn record(&self, source: &str, record: &str) -> WsResult<Option<RecordRow>>;
     /// Visit every record row (including tombstones) in `record_id` order; return `false` to stop.
     fn scan_records(&self, source: &str, visit: &mut dyn FnMut(&RecordRow) -> WsResult<bool>) -> WsResult<()>;
+    /// Like `scan_records`, from the first record whose id is `>= from` (`""`: all of them).
+    fn scan_records_from(&self, source: &str, from: &str, visit: &mut dyn FnMut(&RecordRow) -> WsResult<bool>) -> WsResult<()> {
+        self.scan_records(source, &mut |r| if r.record_id.as_str() < from { Ok(true) } else { visit(r) })
+    }
     fn richtext(&self, id: &str) -> WsResult<Option<RichTextState>>;
     fn refs_to(&self, dst_entity: &str) -> WsResult<Vec<RefEdge>>;
     fn refs_from(&self, src_entity: &str) -> WsResult<Vec<RefEdge>>;
@@ -663,7 +669,10 @@ impl ReadCtx for MemStore {
         Ok(self.records.get(&(source.to_string(), record.to_string())).cloned())
     }
     fn scan_records(&self, source: &str, visit: &mut dyn FnMut(&RecordRow) -> WsResult<bool>) -> WsResult<()> {
-        let lo = (source.to_string(), String::new());
+        self.scan_records_from(source, "", visit)
+    }
+    fn scan_records_from(&self, source: &str, from: &str, visit: &mut dyn FnMut(&RecordRow) -> WsResult<bool>) -> WsResult<()> {
+        let lo = (source.to_string(), from.to_string());
         for (_, r) in self.records.range(lo..).take_while(|((s, _), _)| s == source) {
             if !visit(r)? {
                 break;

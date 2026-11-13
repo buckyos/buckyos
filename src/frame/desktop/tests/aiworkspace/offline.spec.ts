@@ -364,7 +364,7 @@ test('导入原子化 replica: an import saved locally is sent as one Commit in 
   // the replica saved one submission; the send loop delivers it through doc.stage + one doc.commit
   await expect.poll(async () => (await tables()).length, { timeout: 60_000 }).toBe(1)
   const [source] = await tables()
-  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: source.entity_id, limit: 1 })).total).toBe(3000)
+  expect((await api.table(ALICE, ws.workspace_id, { source_id: source.entity_id, limit: 1 })).total).toBe(3000)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
   expect(sent.filter((m) => m === 'doc.stage').length).toBeGreaterThan(1)
   expect(sent.filter((m) => m === 'doc.commit')).toHaveLength(1)

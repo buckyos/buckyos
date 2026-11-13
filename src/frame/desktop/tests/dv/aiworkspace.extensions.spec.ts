@@ -88,7 +88,7 @@ test('[ext] a control from home in the Desktop, an instance, a rebuild, the libr
   await catalog.getByTestId('aiws-catalog-insert').click()
   await expect(catalog).toBeHidden()
   const cell = (await outline(owner, ws)).find((e) => e.type_id === 'buckyos.cell' && e.def_id === defId)!
-  const rows = (await owner.client.ok<{ rows: unknown[] }>('doc.query', { workspace_id: ws.workspace_id, source_id: 'tasks', limit: 500 })).rows.length
+  const rows = (await owner.client.table({ workspace_id: ws.workspace_id, epoch: '' }, { source_id: 'tasks', limit: 500 })).rows.length
   await expect(page.getByTestId(`aiws-decl-${cell.entity_id}`).getByTestId('aiws-decl-metric')).toContainText(String(rows))
 
   // a rebuild through the source folder: pulled back, then built unchanged (same objects) — and the build record
@@ -374,7 +374,7 @@ test('[ext p2p3] events, per-property writes, an upgrade from the library and a 
   const fresh = { workspace_id: created[0] } as Workspace
   const entities = await outline(owner, fresh)
   expect(entities.find((e) => e.entity_id === 'board-1')?.def_id).toBe(boardB.entity_id)
-  const rows = await owner.client.ok<{ rows: unknown[] }>('doc.query', { workspace_id: created[0], source_id: 'tasks' })
+  const rows = await owner.client.table({ workspace_id: created[0], epoch: '' }, { source_id: 'tasks' })
   expect(rows.rows).toEqual([])
 
   for (const p of [pkg, tplId]) await owner.client.ok('ext.uninstall', { pkg_id: p })

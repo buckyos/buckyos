@@ -16,7 +16,7 @@ const notes = (page: Page) => page.getByTestId('aiws-richtext-notes')
 const frame = (page: Page, cellId: string) => page.getByTestId(`aiws-cell-frame-${cellId}`)
 
 async function order(api: Api, workspaceId: string, parent = 'surface-main'): Promise<string[]> {
-  const children = (await api.rpc(ALICE, 'doc.list_children', { workspace_id: workspaceId, entity_id: parent })).children as { entity_id: string; type_id: string; view_type?: string; kind?: string }[]
+  const children = (await api.children(ALICE, workspaceId, parent)) as { entity_id: string; type_id: string; view_type?: string; kind?: string }[]
   return children.filter((child) => child.type_id === 'buckyos.cell' || child.kind === 'group').map((child) => child.entity_id)
 }
 
@@ -153,7 +153,8 @@ test('FP03 the / menu: filters, turns the line into a heading, inserts a table r
   expect(now[0]).toBe('cell-notes')
   expect(now.slice(2)).toEqual(['cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
   await expect(frame(page, now[1])).toBeVisible()
-  await expect(page.getByTestId(`aiws-cell-title-${now[1]}`)).toHaveText('无标题')
+  // a new table has a name (a counter, 核心 API 调整 R19): the heading shows it until the Block gets a title
+  await expect(page.getByTestId(`aiws-cell-title-${now[1]}`)).toHaveText(/^table-\d+$/)
   await expectAllCommitted(page)
 })
 
@@ -297,7 +298,7 @@ test('FP08 the table as a database grid: new rows by typing, a field from the he
   const ws = await api.sample(ALICE, `fp08 ${Date.now()}`)
   await openWorkspace(page, ALICE, ws.workspace_id)
   const all = frame(page, 'cell-all-tasks')
-  const rows = async () => (await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'tasks' })).rows as { record_id: string; values: Record<string, unknown> }[]
+  const rows = async () => (await api.table(ALICE, ws.workspace_id, { source_id: 'tasks' })).rows as { record_id: string; values: Record<string, unknown> }[]
   // field types show as icons in the header; options as pills
   await expect(all.locator('.aiws-th').first().locator('svg')).toBeVisible()
   await expect(all.getByTestId('aiws-cell-task-40-status').locator('.aiws-pill')).toHaveText('完成')

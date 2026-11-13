@@ -14,6 +14,7 @@ pub mod service;
 pub mod session;
 pub mod show;
 pub mod source;
+pub mod sql;
 pub mod template;
 pub mod urlsource;
 pub mod wish;

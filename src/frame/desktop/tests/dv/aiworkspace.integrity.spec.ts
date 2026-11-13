@@ -1,10 +1,11 @@
-import type { ChangesPage, QueryPage, QueryParams, Result, WorkspaceInfo, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
+import { unwrap } from '../../src/app/aiworkspace/api/client'
+import type { ChangesPage, QueryPage, QueryParams, Result, SqlResult, WorkspaceInfo, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
 import { createSample, expect, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
 
 type Workspace = Pick<WorkspaceSummary, 'workspace_id' | 'epoch'>
 
 function query(actor: Actor, ws: Workspace, params: QueryParams) {
-  return actor.client.ok<QueryPage>('doc.query', { workspace_id: ws.workspace_id, ...params })
+  return actor.client.table(ws, params)
 }
 
 async function root(actor: Actor, ws: Workspace) {
@@ -86,50 +87,43 @@ test('[logic-fork] a fork preserves local references but starts independent cont
   })
 })
 
-test('[logic-pagination] consistent paging rejects a changed source and restarts without duplicates or missing records', async ({ owner }, info) => {
+test('[logic-pagination] SQL pages pinned to a head refuse a changed Workspace and restart without duplicates or missing records', async ({ owner }, info) => {
   const ws = await createSample(owner)
-  const params: QueryParams = { source_id: 'tasks', sorts: [{ field_id: 'budget', direction: 'asc' }], consistency: 'snapshot', limit: 2 }
+  const fields = (await owner.client.ok<{ content: { fields: { field_id: string; name: string }[] } }>('doc.read', { workspace_id: ws.workspace_id, entity_id: 'tasks' })).content.fields
+  const budget = fields.find((f) => f.field_id === 'budget')!.name
+  // the paging a client does over SQL (核心 API 调整 §3.4): LIMIT / OFFSET, every page pinned to one head
+  const sql = `SELECT _id, "${budget}#raw" FROM t ORDER BY ("${budget}" IS NULL), "${budget}#raw" COLLATE aiws_dec, _id LIMIT ? OFFSET ?`
+  const page = (offset: number, head: { epoch: string; seq: number }) => owner.client.call<Result<SqlResult>>('doc.query', { workspace_id: ws.workspace_id, sql, params: [2, offset], tables: { t: 'tasks' }, expect_head: head })
   const before = await owner.client.info(ws)
-  const first = await query(owner, ws, params)
-  expect(first.rows.map((row) => row.record_id)).toEqual(['task-44', 'task-40'])
-  expect(first.total).toBe(5)
-  expect(first.consistency).toBe('snapshot')
-  expect(typeof first.next_cursor).toBe('string')
-  if (!first.next_cursor) throw new Error('first page has no continuation cursor')
+  const pinned = { epoch: ws.epoch, seq: before.head_seq }
+  const first = unwrap(await page(0, pinned))
+  expect(first.rows.map((row) => row[0])).toEqual(['task-44', 'task-40'])
   expect((await owner.client.info(ws)).head_seq).toBe(before.head_seq)
-  const budget = await owner.client.cell(ws, 'task-42', 'budget')
+  const cell = await owner.client.cell(ws, 'task-42', 'budget')
   const changed = await owner.client.commit(ws, [{
     op: 'table.set_values', source_id: 'tasks',
-    values: [{ record_id: 'task-42', field_id: 'budget', value: '1', expect: { rev: budget.rev } }],
+    values: [{ record_id: 'task-42', field_id: 'budget', value: '1', expect: { rev: cell.rev } }],
   }])
   expect(changed).toMatchObject({ status: 'accepted', seq: before.head_seq + 1 })
   const changedRoot = await root(owner, ws)
-  const expired = await owner.client.call<Result<QueryPage>>('doc.query', { workspace_id: ws.workspace_id, ...params, cursor: first.next_cursor })
-  expect(expired).toMatchObject({ ok: false, error: { code: 'SNAPSHOT_EXPIRED', retryable: true } })
+  const expired = await page(2, pinned)
+  expect(expired).toMatchObject({ ok: false, error: { code: 'SNAPSHOT_EXPIRED', sub_code: 'HEAD_MISMATCH' } })
   expect(await root(owner, ws)).toBe(changedRoot)
 
-  const pages: QueryPage[] = []
-  const seenCursors = new Set<string>()
-  let cursor: string | undefined
-  for (let index = 0; index < 4; index += 1) {
-    const page = await query(owner, ws, { ...params, ...(cursor ? { cursor } : {}) })
-    pages.push(page)
-    expect(page.consistency).toBe('snapshot')
-    expect(page.total).toBe(5)
-    expect(page.content_rev).toBe(pages[0].content_rev)
-    if (!page.next_cursor) break
-    expect(seenCursors.has(page.next_cursor)).toBe(false)
-    seenCursors.add(page.next_cursor)
-    cursor = page.next_cursor
+  const now = { epoch: ws.epoch, seq: before.head_seq + 1 }
+  const pages: SqlResult[] = []
+  for (let offset = 0; offset < 8; offset += 2) {
+    const p = unwrap(await page(offset, now))
+    pages.push(p)
+    if (p.rows.length < 2) break
   }
-  expect(pages.map((page) => page.rows.length)).toEqual([2, 2, 1])
-  expect(pages.at(-1)?.next_cursor ?? null).toBeNull()
-  const records = pages.flatMap((page) => page.rows)
-  const ids = records.map((row) => row.record_id)
+  expect(pages.map((p) => p.rows.length)).toEqual([2, 2, 1])
+  const rows = pages.flatMap((p) => p.rows)
+  const ids = rows.map((row) => row[0])
   expect(ids).toEqual(['task-42', 'task-44', 'task-40', 'task-41', 'task-43'])
   expect(new Set(ids).size).toBe(5)
-  expect(records.slice(0, 4).map((row) => row.values.budget)).toEqual(['1.00', '9.50', '300.00', '800.00'])
-  expect(pages[0].content_rev).not.toBe(first.content_rev)
+  expect(rows.slice(0, 4).map((row) => row[1])).toEqual(['1.00', '9.50', '300.00', '800.00'])
+  expect(pages[0].read[0].content_rev).toBe(before.head_seq + 1)
   const events = await owner.client.ok<ChangesPage>('doc.get_changes', { workspace_id: ws.workspace_id, epoch: ws.epoch, after_seq: before.head_seq, limit: 100 })
   expect(events.changes).toHaveLength(1)
   expect(events.head_seq).toBe(before.head_seq + 1)
@@ -138,7 +132,7 @@ test('[logic-pagination] consistent paging rejects a changed source and restarts
   await expect(owner.page.getByTestId('aiws-table-cell-all-tasks').getByTestId('aiws-cell-task-42-budget')).toContainText('1.00')
   await screenshot(owner.page, info, 'pagination-source-persisted')
   await info.attach('logic-pagination-verdict', {
-    body: Buffer.from(JSON.stringify({ first_page: first.rows.map((row) => row.record_id), original_revision: first.content_rev, rejection: expired, restarted_revision: pages[0].content_rev, page_sizes: pages.map((page) => page.rows.length), records: ids, query_head_unchanged: events.head_seq, content_root: changedRoot })),
+    body: Buffer.from(JSON.stringify({ first_page: first.rows.map((row) => row[0]), pinned_head: pinned, rejection: expired, restarted_head: now, page_sizes: pages.map((p) => p.rows.length), records: ids, query_head_unchanged: events.head_seq, content_root: changedRoot })),
     contentType: 'application/json',
   })
 })

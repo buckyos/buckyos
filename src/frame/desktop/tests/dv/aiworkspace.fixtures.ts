@@ -1,7 +1,10 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { expect, test as base, type BrowserContext, type Page, type TestInfo } from '@playwright/test'
-import { unwrap } from '../../src/app/aiworkspace/api/client'
+import { ServiceFailure, unwrap } from '../../src/app/aiworkspace/api/client'
+import { queryBySql } from '../../src/app/aiworkspace/api/tableQuery'
+import type { QueryPage, QueryParams, SqlResult } from '../../src/app/aiworkspace/api/types'
+import { core } from '../aiworkspace/fixtures'
 import { PROTOCOL_VERSION, type CommitResult, type Operation, type Result, type RichTextContent, type WorkspaceInfo, type WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
 import { chooseFromDevice, expectAllCommitted, openedPicker, zoneGoto, type PickedFile } from '../aiworkspace/fixtures'
 import { selectRow } from '../e2e/fixtures/selectDialog'
@@ -39,6 +42,17 @@ export class ZoneClient {
 
   async ok<T>(method: string, params: Params): Promise<T> {
     return unwrap(await this.call<Result<T>>(method, params))
+  }
+
+  /** The rows of a table or table view as a session without a replica reads them (the view compiled to SQL). */
+  table(ws: Workspace, params: QueryParams): Promise<QueryPage> {
+    return queryBySql({
+      read: async (ids) => (await this.ok<{ results: Record<string, unknown>[] }>('doc.read', { workspace_id: ws.workspace_id, targets: ids.map((entity_id) => ({ entity_id })) })).results,
+      sql: (p) => this.ok<SqlResult>('doc.query', { workspace_id: ws.workspace_id, ...p }),
+      sourceQuery: (p) => this.ok<QueryPage>('doc.source_query', { workspace_id: ws.workspace_id, ...p }),
+      viewSql: (table, fields, view, projection) => core().view_sql(table, fields, view, projection),
+      fail: (e) => new ServiceFailure(e),
+    }, params)
   }
 
   info(ws: Workspace) { return this.ok<WorkspaceInfo>('ws.get_info', { workspace_id: ws.workspace_id }) }

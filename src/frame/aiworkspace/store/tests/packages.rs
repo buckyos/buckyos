@@ -60,7 +60,7 @@ fn v04_export_import_roundtrip() {
     assert_eq!(ws.read(&bob(), "diagram", None).unwrap()["content"]["availability"], "available");
     assert_eq!(ws.read(&bob(), "notes", None).unwrap()["content"]["content"]["content"][3]["attrs"]["ref"]["entity_id"], "cell-open-tasks");
     assert_eq!(ws.verify_refs().unwrap()["ok"], true);
-    assert_eq!(ws.query(&bob(), &json!({ "view_id": "cell-open-tasks" }), &other.svc.sources).unwrap()["total"], 4);
+    assert_eq!(view_ids(&ws, &bob(), "cell-open-tasks").unwrap().len(), 4);
     let epoch_imported = ws.epoch.clone();
     drop(ws);
     // the importer owns the copy; opening a package grants nothing on the original
@@ -472,26 +472,26 @@ fn v24_url_query_table() {
                      "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-42" } } }]));
     assert_eq!(src.rows_generated.load(Ordering::Relaxed), 0, "saving the definition and the view fetched nothing");
     // on-demand paging through the view; only the requested page is produced
-    let p1 = ws.query(&alice(), &json!({ "view_id": "cell-events", "limit": 20 }), &env.svc.sources).unwrap();
+    let p1 = ws.source_query(&alice(), &json!({ "source_id": "events", "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-42" }, "limit": 20 }), &env.svc.sources).unwrap();
     assert_eq!(p1["rows"].as_array().unwrap().len(), 20);
     assert_eq!(p1["rows"][0]["values"]["project_id"], "project-42");
     assert_eq!(p1["rows"][0]["record_id"], "ev-000000042");
     assert_eq!((p1["data_mode"].as_str(), p1["consistency"].as_str(), p1["source_revision"].as_str()), (Some("url_query"), Some("snapshot"), Some("snap-1000000")));
     assert_eq!(src.rows_generated.load(Ordering::Relaxed), 20);
-    let p2 = ws.query(&alice(), &json!({ "view_id": "cell-events", "limit": 20, "cursor": p1["next_cursor"], "source_revision": p1["source_revision"], "consistency": "snapshot" }), &env.svc.sources).unwrap();
+    let p2 = ws.source_query(&alice(), &json!({ "source_id": "events", "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-42" }, "limit": 20, "cursor": p1["next_cursor"], "source_revision": p1["source_revision"], "consistency": "snapshot" }), &env.svc.sources).unwrap();
     assert_eq!(p2["rows"][0]["record_id"], "ev-000001042");
     assert!(src.rows_generated.load(Ordering::Relaxed) < 100, "never a full fetch of the million rows");
     // cache isolation: same URL, different query / different principal
-    let again = ws.query(&alice(), &json!({ "view_id": "cell-events", "limit": 20, "cursor": p1["next_cursor"], "source_revision": p1["source_revision"] }), &env.svc.sources).unwrap();
+    let again = ws.source_query(&alice(), &json!({ "source_id": "events", "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-42" }, "limit": 20, "cursor": p1["next_cursor"], "source_revision": p1["source_revision"] }), &env.svc.sources).unwrap();
     assert_eq!(again["from_cache"], true);
-    let other_q = ws.query(&alice(), &json!({ "source_id": "events", "limit": 20, "cursor": p1["next_cursor"], "source_revision": p1["source_revision"],
+    let other_q = ws.source_query(&alice(), &json!({ "source_id": "events", "limit": 20, "cursor": p1["next_cursor"], "source_revision": p1["source_revision"],
         "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-7" } }), &env.svc.sources).unwrap();
     assert!(other_q.get("from_cache").is_none());
     assert_eq!(other_q["rows"][0]["values"]["project_id"], "project-7");
-    assert_eq!(ws.query(&bob(), &json!({ "view_id": "cell-events", "limit": 20, "cursor": p1["next_cursor"], "source_revision": p1["source_revision"] }), &env.svc.sources)
+    assert_eq!(ws.source_query(&bob(), &json!({ "source_id": "events", "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-42" }, "limit": 20, "cursor": p1["next_cursor"], "source_revision": p1["source_revision"] }), &env.svc.sources)
         .unwrap_err().code.as_str(), "PERMISSION_DENIED", "another principal never gets alice's cached page");
     // filters the source cannot push down are refused, not dropped
-    assert_eq!(ws.query(&alice(), &json!({ "source_id": "events", "filter": { "op": "cmp", "field_id": "amount", "operator": "gt", "value": "5" } }), &env.svc.sources)
+    assert_eq!(ws.source_query(&alice(), &json!({ "source_id": "events", "filter": { "op": "cmp", "field_id": "amount", "operator": "gt", "value": "5" } }), &env.svc.sources)
         .unwrap_err().code.as_str(), "INVALID_OPERATION");
     // read-only in this phase; the definition itself is ordinary versioned document state
     assert_eq!(commit(&mut ws, &alice(), json!([{ "op": "table.insert_records", "source_id": "events", "records": [{ "record_id": "x", "values": {} }] }]))["sub_code"], "SOURCE_READ_ONLY");
@@ -503,16 +503,16 @@ fn v24_url_query_table() {
     url_table(&mut ws, "events-live", "fixture://live?rows=500&row_key=0&snapshot=0", json!({}));
     let caps = ws.source_capabilities(&alice(), "events-live", &env.svc.sources).unwrap();
     assert_eq!((&caps["capabilities"]["consistent_paging"], &caps["capabilities"]["stable_row_key"]), (&json!(false), &json!(false)));
-    let live = ws.query(&alice(), &json!({ "source_id": "events-live", "limit": 5 }), &env.svc.sources).unwrap();
+    let live = ws.source_query(&alice(), &json!({ "source_id": "events-live", "limit": 5 }), &env.svc.sources).unwrap();
     assert_eq!(live["consistency"], "best_effort");
     assert!(live["rows"][0].get("record_id").is_none(), "page positions are never passed off as record ids");
     assert!(live.get("source_revision").is_none());
-    assert_eq!(ws.query(&alice(), &json!({ "source_id": "events-live", "limit": 5, "consistency": "snapshot" }), &env.svc.sources)
+    assert_eq!(ws.source_query(&alice(), &json!({ "source_id": "events-live", "limit": 5, "consistency": "snapshot" }), &env.svc.sources)
         .unwrap_err().code.as_str(), "DEPENDENCY_UNAVAILABLE");
     // unknown scheme: the definition is kept, the source is reported unavailable, nothing is fetched
     url_table(&mut ws, "events-http", "https://data.example.com/datasets/events", json!({}));
     assert_eq!(ws.source_capabilities(&alice(), "events-http", &env.svc.sources).unwrap()["available"], false);
-    assert_eq!(ws.query(&alice(), &json!({ "source_id": "events-http" }), &env.svc.sources).unwrap_err().code.as_str(), "DEPENDENCY_UNAVAILABLE");
+    assert_eq!(ws.source_query(&alice(), &json!({ "source_id": "events-http" }), &env.svc.sources).unwrap_err().code.as_str(), "DEPENDENCY_UNAVAILABLE");
     assert!(commit(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "bad-url", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "x",
         "payload": { "data_mode": "url_query", "source_ref": { "kind": "url_query", "source_url": "https://user:pw@host/x" } } }]))["status"] == "rejected", "credentials never go into a document");
 
@@ -533,13 +533,13 @@ fn v24_url_query_table() {
     let h2 = other.svc.workspace(r["workspace_id"].as_str().unwrap()).unwrap();
     let mut ws2 = h2.lock().unwrap();
     assert_eq!(ws2.read(&alice(), "events", None).unwrap()["content"]["payload"]["source_ref"]["source_url"], url);
-    assert_eq!(ws2.query(&alice(), &json!({ "view_id": "cell-events", "limit": 3 }), &other.svc.sources).unwrap()["rows"][0]["record_id"], "ev-000000042");
+    assert_eq!(ws2.source_query(&alice(), &json!({ "source_id": "events", "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-42" }, "limit": 3 }), &other.svc.sources).unwrap()["rows"][0]["record_id"], "ev-000000042");
     // offline: content that was never fetched is not presented as available
     src2.offline.store(true, Ordering::Relaxed);
-    assert_eq!(ws2.query(&alice(), &json!({ "view_id": "cell-events", "limit": 3, "cursor": "999" }), &other.svc.sources).unwrap_err().code.as_str(), "DEPENDENCY_UNAVAILABLE");
+    assert_eq!(ws2.source_query(&alice(), &json!({ "source_id": "events", "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-42" }, "limit": 3, "cursor": "999" }), &other.svc.sources).unwrap_err().code.as_str(), "DEPENDENCY_UNAVAILABLE");
     src2.offline.store(false, Ordering::Relaxed);
     // materialize just the chosen slice into an embedded table: that slice gets a content identity
-    let page = ws2.query(&alice(), &json!({ "view_id": "cell-events", "limit": 3 }), &other.svc.sources).unwrap();
+    let page = ws2.source_query(&alice(), &json!({ "source_id": "events", "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-42" }, "limit": 3 }), &other.svc.sources).unwrap();
     let records: Vec<Value> = page["rows"].as_array().unwrap().iter().map(|r| json!({ "record_id": r["record_id"], "values": r["values"] })).collect();
     ok(&mut ws2, &alice(), json!([
         { "op": "entity.create", "entity_id": "events-slice", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "y",

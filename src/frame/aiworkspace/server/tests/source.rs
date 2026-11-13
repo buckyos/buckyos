@@ -50,7 +50,8 @@ fn own_publication_link_reads_directly() {
         let run = srv.rpc("proc.start", json!({ "program": "source.refresh@1", "idempotency_key": key, "params": { "entity_id": entity } })).await;
         let done = srv.wait(run["run_id"].as_str().unwrap()).await;
         assert_eq!(done["state"], "succeeded", "{entity}: {done}");
-        assert_eq!(srv.rpc("doc.query", json!({ "source_id": entity, "limit": 10 })).await["rows"].as_array().unwrap().len(), 2, "{entity}");
+        let q = srv.rpc("doc.query", json!({ "sql": "SELECT _id FROM t", "tables": { "t": entity } })).await;
+        assert_eq!(q["rows"].as_array().unwrap_or_else(|| panic!("{q}")).len(), 2, "{entity}");
     }
     srv.ws = a.clone();
     let referrers = srv.rpc("ws.list_referrers", json!({ "entity_id": "orders" })).await;
@@ -113,8 +114,8 @@ fn publish_insert_refresh_and_unpublish() {
     assert_eq!(done["result"]["status"], "accepted", "{done}");
     let read = srv.rpc("doc.read", json!({ "entity_id": "imported" })).await;
     assert_eq!(read["content"]["fields"].as_array().unwrap().len(), 2, "{read}");
-    let rows = srv.rpc("doc.query", json!({ "source_id": "imported", "limit": 10 })).await;
-    assert_eq!(rows["rows"].as_array().unwrap().len(), 3, "{rows}");
+    let rows = srv.rpc("doc.query", json!({ "sql": "SELECT _id FROM imported" })).await;
+    assert_eq!(rows["rows"].as_array().unwrap_or_else(|| panic!("{rows}")).len(), 3, "{rows}");
     let epoch = srv.rpc("ws.get_info", json!({})).await["epoch"].clone();
     let commit = srv.rpc("doc.get_changes", json!({ "epoch": epoch, "after_seq": 0, "limit": 20, "filter": { "detail": "touched" } })).await;
     assert!(commit["changes"].as_array().unwrap().iter().any(|e| e["origin"] == "source"), "the refresh commit has origin source: {commit}");
@@ -141,12 +142,12 @@ fn publish_insert_refresh_and_unpublish() {
     srv.ws = b.clone();
     let run = srv.rpc("proc.start", json!({ "program": "source.refresh@1", "idempotency_key": "r4", "params": { "entity_id": "imported" } })).await;
     assert_eq!(srv.wait(run["run_id"].as_str().unwrap()).await["state"], "succeeded");
-    let rows = srv.rpc("doc.query", json!({ "source_id": "imported", "limit": 10 })).await;
+    let rows = json!({ "rows": srv.records("imported").await });
     assert_eq!(rows["rows"].as_array().unwrap().len(), 4);
     assert!(rows["rows"].as_array().unwrap().iter().any(|r| r["record_id"] == "r1" && r["values"]["amount"] == json!(11)), "{rows}");
     let run = srv.rpc("proc.start", json!({ "program": "source.refresh@1", "idempotency_key": "r5", "params": { "entity_id": "pinned" } })).await;
     assert_eq!(srv.wait(run["run_id"].as_str().unwrap()).await["state"], "succeeded");
-    assert_eq!(srv.rpc("doc.query", json!({ "source_id": "pinned", "limit": 10 })).await["rows"].as_array().unwrap().len(), 3, "a fixed Source does not follow");
+    assert_eq!(json!({ "rows": srv.records("pinned").await })["rows"].as_array().unwrap().len(), 3, "a fixed Source does not follow");
     // a public URL: CSV and JSON become tables, Markdown a rich text; a failed fetch keeps the last version
     let http = csv_server().await;
     srv.commit(json!([
@@ -162,10 +163,10 @@ fn publish_insert_refresh_and_unpublish() {
     let csv = srv.rpc("doc.read", json!({ "entity_id": "csv" })).await;
     let types: Vec<(String, String)> = csv["content"]["fields"].as_array().unwrap().iter().map(|f| (f["name"].as_str().unwrap().to_string(), f["type"].as_str().unwrap().to_string())).collect();
     assert_eq!(types, vec![("名称".into(), "text".into()), ("数量".into(), "number".into()), ("备注".into(), "text".into())], "{csv}");
-    let rows = srv.rpc("doc.query", json!({ "source_id": "csv", "limit": 10 })).await;
+    let rows = json!({ "rows": srv.records("csv").await });
     assert_eq!(rows["rows"].as_array().unwrap().len(), 2);
     assert!(rows["rows"].as_array().unwrap().iter().any(|r| r["values"].as_object().unwrap().values().any(|v| v == &json!("a, b"))), "quoted cells: {rows}");
-    let rows = srv.rpc("doc.query", json!({ "source_id": "rows", "limit": 10 })).await;
+    let rows = json!({ "rows": srv.records("rows").await });
     assert!(rows["rows"].as_array().unwrap().iter().any(|r| r["record_id"] == "x1"), "{rows}");
     assert!(srv.rpc("doc.read", json!({ "entity_id": "md" })).await["content"]["content"]["content"][0]["type"] == json!("heading"));
     let info = srv.rpc("ws.get_info", json!({})).await;
@@ -174,7 +175,7 @@ fn publish_insert_refresh_and_unpublish() {
     let run = srv.rpc("proc.start", json!({ "program": "source.refresh@1", "idempotency_key": "u4", "params": { "entity_id": "csv" } })).await;
     let done = srv.wait(run["run_id"].as_str().unwrap()).await;
     assert_eq!((done["state"].as_str(), done["result"]["error"]["code"].as_str()), (Some("failed"), Some("DEPENDENCY_UNAVAILABLE")), "{done}");
-    assert_eq!(srv.rpc("doc.query", json!({ "source_id": "csv", "limit": 10 })).await["rows"].as_array().unwrap().len(), 2, "the last valid version stays");
+    assert_eq!(json!({ "rows": srv.records("csv").await })["rows"].as_array().unwrap().len(), 2, "the last valid version stays");
     // unpublished: the link answers nothing and a live refresh fails without touching the copy
     srv.ws = a.clone();
     srv.rpc("ws.unpublish", json!({ "entity_id": "orders" })).await;
@@ -183,6 +184,6 @@ fn publish_insert_refresh_and_unpublish() {
     let run = srv.rpc("proc.start", json!({ "program": "source.refresh@1", "idempotency_key": "r6", "params": { "entity_id": "imported" } })).await;
     let done = srv.wait(run["run_id"].as_str().unwrap()).await;
     assert_eq!(done["state"], "failed", "{done}");
-    assert_eq!(srv.rpc("doc.query", json!({ "source_id": "imported", "limit": 10 })).await["rows"].as_array().unwrap().len(), 4);
+    assert_eq!(json!({ "rows": srv.records("imported").await })["rows"].as_array().unwrap().len(), 4);
     });
 }

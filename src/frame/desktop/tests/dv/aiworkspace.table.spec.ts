@@ -34,7 +34,7 @@ async function canvasWorkspace(actor: Actor): Promise<Workspace> {
 const outline = async (actor: Actor, ws: Workspace) => (await actor.client.ok<{ entities: EntityEnvelope[] }>('doc.outline', { workspace_id: ws.workspace_id })).entities
 const children = (all: EntityEnvelope[], parent: string) => all.filter((e) => e.parent_id === parent && !e.deleted).sort((a, b) => ((a.order_key ?? '') < (b.order_key ?? '') ? -1 : 1))
 const tables = async (actor: Actor, ws: Workspace) => children(await outline(actor, ws), 'sf-t-content').filter((e) => e.type_id === 'buckyos.table-source')
-const query = (actor: Actor, ws: Workspace, sourceId: string, extra: Json = {}) => actor.client.ok<{ rows: { values: Json }[]; total: number }>('doc.query', { workspace_id: ws.workspace_id, source_id: sourceId, limit: 1000, ...extra })
+const query = (actor: Actor, ws: Workspace, sourceId: string, extra: Json = {}) => actor.client.table({ workspace_id: ws.workspace_id, epoch: '' }, { source_id: sourceId, limit: 1000, ...extra })
 const fields = async (actor: Actor, ws: Workspace, sourceId: string) => (await actor.client.ok<{ content: { fields: Json[] } }>('doc.read', { workspace_id: ws.workspace_id, entity_id: sourceId })).content.fields
 
 async function openCanvas(actor: Actor, ws: Workspace) {

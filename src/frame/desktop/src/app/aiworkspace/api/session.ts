@@ -9,13 +9,15 @@ import type { AccessDenial, AdjustLocation, DenyReason } from 'buckyos'
 import { ndm } from 'buckyos'
 import { AiwsClient, ServiceFailure, unwrap } from './client'
 import { randomId } from './ids'
+import { queryBySql, type TableQueryDeps } from './tableQuery'
+import { loadCore } from './wasm'
 import { TransportError } from './transport'
 import { aiwsT, localizedLabels } from '../i18n'
 import type { LocalExport, PendingMeta, PendingRow, PendingState, RichTextDraftRow } from '../offline/protocol'
 import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
-  type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
+  type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type SqlResult, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
   type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishAiccMode, type WishClaim, type WishToolAnswer, type HostedExecConfig, type Publication, type Referrer,
   type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type ExtMigration, type ExtPackResult, type LibraryPackage, type TemplateSpec,
@@ -162,7 +164,12 @@ export interface WorkspaceSession {
   readMany(targets: { entity_id: string; selector?: Selector }[]): Promise<(ReadOk<unknown> | { error: { code: string; detail?: string } })[]>
   /** Annotations anchored to `target_ids` and/or placed under `parent_id`, each with its anchor. */
   listAnnotations(params: ListAnnotationsParams): Promise<AnnotationRead[]>
+  /** A table view's rows (`view_id` and/or `source_id`, with filter, sorts, group): evaluated on the replica when this tab
+   * holds it, compiled to SQL and run by the service otherwise — the same rows either way. */
   query(params: QueryParams): Promise<QueryPage>
+  /** `doc.query { sql }` (核心 API 调整 §3.4): runs on the service only. A replica session asks with its confirmed head
+   * (`expect_head`) and refuses while it has local changes not yet confirmed, or offline. */
+  sql(params: SqlParams): Promise<SqlResult>
   getCollabState(entityId: string): Promise<CollabState>
   /** Dependency-based freshness of results and wishes (computed by the core, phase two §7.5). */
   freshness(entityIds: string[]): Promise<FreshnessInfo[]>
@@ -518,8 +525,22 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     try { return unwrap(await this.client.listAnnotations(this.ws, params)).annotations } catch (error) { return this.fail(error) }
   }
 
+  /** A table view's rows: compiled to SQL by the core and run by the service (核心 API 调整 §3.5). */
   async query(params: QueryParams) {
-    try { return unwrap(await this.client.query(this.ws, params)) } catch (error) { return this.fail(error) }
+    try {
+      const core = await loadCore()
+      return await queryBySql({
+        read: async (ids) => unwrap(await this.client.readMany(this.ws, ids.map((entity_id) => ({ entity_id })))).results as unknown as Awaited<ReturnType<TableQueryDeps['read']>>,
+        sql: async (p) => unwrap(await this.client.sql(this.ws, p)),
+        sourceQuery: async (p) => unwrap(await this.client.sourceQuery(this.ws, p)),
+        viewSql: (table, fields, view, projection) => core.view_sql(table, fields, view, projection),
+        fail: (e) => new ServiceFailure(e),
+      }, params)
+    } catch (error) { return this.fail(error) }
+  }
+
+  async sql(params: SqlParams) {
+    try { return unwrap(await this.client.sql(this.ws, params)) } catch (error) { return this.fail(error) }
   }
 
   async getCollabState(entityId: string) {

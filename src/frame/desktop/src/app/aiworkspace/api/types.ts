@@ -5,7 +5,7 @@ import type { StoredPlacement } from '@controls/placement'
 import type { OnBindStep, OnInitStep } from 'buckyos'
 import type { Composition } from '@controls/composite'
 
-export const PROTOCOL_VERSION = '1.1'
+export const PROTOCOL_VERSION = '1.2'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 
@@ -816,6 +816,24 @@ export interface QueryPage {
   data_mode?: string
   /** With `group`: the counts per value. */
   groups?: { key: string; count: number }[]
+}
+
+/** `doc.query { sql }` (核心 API 调整 §3.4): one SELECT over the logical tables. */
+export interface SqlParams {
+  sql: string
+  params?: Json[]
+  /** `{ alias: path | entity_id }`: the query names these tables by these aliases (and only these). */
+  tables?: Record<string, string>
+  max_rows?: number
+  /** The head the caller's own state is at: a different head is `SNAPSHOT_EXPIRED` / `HEAD_MISMATCH`. */
+  expect_head?: { epoch: string; seq: number }
+}
+export interface SqlResult {
+  columns: string[]
+  rows: Json[][]
+  truncated: boolean
+  read: { table: string; entity_id: string; path: string; content_rev: number | null }[]
+  head_seq: number
 }
 
 export interface CollabState {

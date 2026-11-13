@@ -71,7 +71,10 @@ fn tree_rules_and_auto_merge() {
     let order: Vec<String> = ws.store.children("surface-main").unwrap().into_iter().map(|e| e.child_id).collect();
     assert_eq!(order, vec!["g-b", "g-c", "g-d"]);
     // names are unique among siblings, also when moving in
-    ws.ok(json!([{ "op": "entity.rename", "entity_id": "g-c", "name": "同名", "expect": { "rev": 2 } }]));
+    // a following name moved aside when the node moved in (two `group-1`s under one parent are not allowed)
+    assert_eq!(ws.store.entities["g-c"].name.as_deref(), Some("group-3"));
+    let rev = ws.store.entities["g-c"].meta_rev;
+    ws.ok(json!([{ "op": "entity.rename", "entity_id": "g-c", "name": "同名", "expect": { "rev": rev } }]));
     ws.ok(json!([grp("g-e", "g-b", "b")]));
     let rev = ws.store.entities["g-e"].meta_rev;
     ws.ok(json!([{ "op": "entity.rename", "entity_id": "g-e", "name": "同名", "expect": { "rev": rev } }]));

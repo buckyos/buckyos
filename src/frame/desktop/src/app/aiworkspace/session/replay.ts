@@ -199,6 +199,7 @@ export function replaySession(direct: WorkspaceSession, replay: ReplayEngine): W
       try { return replay.read(t.entity_id, t.selector) } catch (error) { return { error: { code: error instanceof ServiceFailure ? error.code : 'NOT_FOUND', detail: String(error) } } }
     }),
     query: async (params: unknown) => replay.query(params),
+    sql: async () => { throw new ServiceFailure({ code: 'UNSUPPORTED_VERSION', detail: 'a replay reads recorded states: SQL runs on the live Workspace only' }) },
     listAnnotations: async () => [],
     freshness: async () => [],
     relations: async (entityId: string) => ({ entity_id: entityId, outgoing: [], incoming: [], hidden_incoming: 0, shown_in: [], produced: [] }),

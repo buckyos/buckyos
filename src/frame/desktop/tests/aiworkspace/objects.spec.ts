@@ -125,7 +125,7 @@ test('OX04/OX12 the table: "+ row" on hover adds a record; filter, fields and ne
   const ws = await objectsWorkspace(api, `ox04 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
   await fitAll(page)
-  const before = (await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'sales', limit: 1 })).total
+  const before = (await api.table(ALICE, ws.workspace_id, { source_id: 'sales', limit: 1 })).total
   await hover(page, 'blk-sales')
   await page.getByTestId('aiws-afford-add-row').click()
   const frame = page.getByTestId('aiws-canvas-block-blk-sales')
@@ -133,7 +133,7 @@ test('OX04/OX12 the table: "+ row" on hover adds a record; filter, fields and ne
   await page.keyboard.type('东北')
   await frame.getByLabel('新记录 产品').fill('雪地靴')
   await frame.getByTestId('aiws-add-record-submit').click()
-  await expect.poll(async () => (await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'sales', limit: 1 })).total).toBe(before + 1)
+  await expect.poll(async () => (await api.table(ALICE, ws.workspace_id, { source_id: 'sales', limit: 1 })).total).toBe(before + 1)
   // editing: no bar inside the Block; the tools are in the near toolbar and show which panel is open
   await expect(frame.locator('.aiws-table-bar')).toHaveCount(0)
   await page.getByTestId('aiws-near-table-filter').click()

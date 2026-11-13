@@ -173,10 +173,9 @@ fn analyze_execute_apply_rerun_feedback() {
     assert_eq!(w["program"]["api_version"], 2);
     let monthly = w["last_run"]["result_bindings"]["results"]["monthly"]["entity_id"].as_str().unwrap().to_string();
     assert_eq!(w["last_run"]["checks"]["passed"], 1);
-    let t = srv.rpc("doc.query", json!({ "source_id": monthly, "limit": 10 })).await;
-    assert_eq!(t["total"], 3);
-    let line = srv.rpc("doc.list_children", json!({ "entity_id": w["last_run"]["result_bindings"]["group"] })).await;
-    assert_eq!(line["children"].as_array().unwrap().len(), 3, "table view + line chart + text");
+    assert_eq!(srv.records(&monthly).await.len(), 3);
+    let line = srv.rpc("doc.list", json!({ "at": w["last_run"]["result_bindings"]["group"] })).await;
+    assert_eq!(line["items"].as_array().unwrap().len(), 3, "table view + line chart + text");
     let f = srv.rpc("doc.freshness", json!({ "entity_ids": ["wish-q3"] })).await;
     assert_eq!(f["items"][0]["status"], "current", "{f}");
 

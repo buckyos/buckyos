@@ -6,7 +6,7 @@ import { createSample, expect, openWorkspace, screenshot, test, type Actor } fro
 type Workspace = Pick<WorkspaceSummary, 'workspace_id' | 'epoch'>
 
 function query(actor: Actor, ws: Workspace, params: QueryParams) {
-  return actor.client.ok<QueryPage>('doc.query', { workspace_id: ws.workspace_id, ...params })
+  return actor.client.table(ws, params)
 }
 
 function recordIds(page: QueryPage) { return page.rows.map((row) => row.record_id) }

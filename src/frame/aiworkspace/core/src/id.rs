@@ -99,8 +99,8 @@ pub fn is_prefixed_id(prefix: &str, s: &str) -> bool {
 /// Entity display/lookup name: 1–128 scalar values, no `/` or control characters.
 pub fn check_name(name: &str) -> WsResult<()> {
     let n = name.chars().count();
-    if n == 0 || n > 128 || name.chars().any(|c| c == '/' || c.is_control()) {
-        return Err(WsError::invalid_op("name must be 1-128 chars without '/' or control characters"));
+    if n == 0 || n > 128 || name.chars().any(|c| c == '/' || c.is_control()) || name.starts_with('~') || name == "." || name == ".." {
+        return Err(WsError::invalid_op("name must be 1-128 chars without '/' or control characters, not start with '~' and not be . or .."));
     }
     Ok(())
 }

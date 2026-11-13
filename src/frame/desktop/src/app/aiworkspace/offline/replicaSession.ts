@@ -26,7 +26,7 @@ import { aiwsT, localizedLabels } from '../i18n'
 import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
-  type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type Touched, type WorkspaceInfo, type WishChoices,
+  type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type Touched, type WorkspaceInfo, type WishChoices,
   type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type WishAiccMode, type HostedExecConfig, type BucketBinding, type ExtMigration, type ExtPackResult, type TemplateSpec,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
@@ -492,6 +492,14 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     return this.replica.call('freshness', entityIds)
   }
   relations(entityId: string) { return this.replica.call('relations', entityId) }
+  /** SQL runs on the service (R16): at this tab's confirmed head and with no local change pending, so it reads what
+   * this tab shows; otherwise refused (offline) or `SNAPSHOT_EXPIRED` (the caller synchronizes and asks again). */
+  async sql(params: SqlParams) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.sql'))
+    if (this.rows.length > 0) throw new ServiceFailure({ code: 'SNAPSHOT_EXPIRED', sub_code: 'LOCAL_CHANGES', detail: aiwsT('aiworkspace.core.replica.sqlLocalChanges'), retryable: true })
+    return this.direct.sql({ ...params, expect_head: { epoch: this.epoch, seq: this.confirmedSeq } })
+  }
+
   async listVersions(entityId: string) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.versions'))
     return this.direct.listVersions(entityId)

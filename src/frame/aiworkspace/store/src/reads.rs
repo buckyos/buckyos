@@ -3,8 +3,9 @@
 use crate::docdb::db_err;
 use crate::urlsource::{SourceQuery, SourceRegistry};
 use crate::workspace::{Caller, Workspace};
+use aiworkspace_core::model::ReadCtx;
 use aiworkspace_core::access::Cap;
-use aiworkspace_core::filter::{run_query, QuerySpec};
+use aiworkspace_core::filter::QuerySpec;
 use aiworkspace_core::model::*;
 use aiworkspace_core::read;
 use aiworkspace_core::value::{canonical_reference, normalize_reference, reference_entity_id, reference_from_canonical, reference_is_local};
@@ -29,7 +30,78 @@ impl Workspace {
         }
     }
 
-    /// `doc.read`
+    /// `doc.read`: the native content (`as` absent or `content`), the common `meta`, or the plain-text `body`. The
+    /// target is `entity_id` or `path`; `version` (`{ epoch, seq }`, `{ object_id }`) reads a fixed version of the
+    /// native content, or fails — never the head instead (R2).
+    pub fn read_as(&self, caller: &Caller, params: &Value) -> WsResult<Value> {
+        let access = self.require_ws_any(caller)?;
+        let now = self.now();
+        let ctx = self.ctx(&now);
+        let id = self.target(&ctx, &access, params)?;
+        let what = params.get("as").and_then(Value::as_str).unwrap_or("content");
+        if let Some(version) = params.get("version").filter(|v| !v.is_null()) {
+            if what != "content" {
+                return Err(WsError::new(Code::UnsupportedVersion, format!("{what} of a fixed version is not available yet; read the head or the native content")));
+            }
+            if params.get("selector").is_some_and(|s| !s.is_null()) {
+                return Err(WsError::new(Code::UnsupportedVersion, "a selector of a fixed version is not available yet"));
+            }
+            let reference = json!({ "workspace_id": self.workspace_id, "entity_id": id, "mode": "fixed", "version": version });
+            let mut v = self.resolve(caller, Some(&reference), None)?;
+            v["entity_id"] = json!(id);
+            v["head_seq"] = json!(self.head_seq);
+            return Ok(v);
+        }
+        match what {
+            "content" => self.read(caller, &id, params.get("selector").filter(|s| !s.is_null())),
+            "meta" | "body" => {
+                let e = read::readable_entity(&ctx, &access, &id)?;
+                if !e.alive() {
+                    return Err(WsError::deleted(format!("entity {id} is deleted")));
+                }
+                let objects = self.objects.clone();
+                let loader = move |obj: &str| -> WsResult<Option<Vec<u8>>> {
+                    use aiworkspace_core::materialize::ObjectSource;
+                    if !objects.has_object(obj) {
+                        return Ok(None);
+                    }
+                    objects.get_file(obj).map(Some)
+                };
+                let mut v = if what == "meta" {
+                    let mut m = aiworkspace_core::meta::meta(&ctx, &access, &e, Some(&loader))?;
+                    m["ref"] = json!({ "workspace_id": self.workspace_id, "entity_id": id, "mode": "live" });
+                    m["version"]["epoch"] = json!(self.epoch);
+                    m["version"]["head_seq"] = json!(self.head_seq);
+                    if e.write_policy == POLICY_LOCK {
+                        m["lock_holder"] = self.lock_holder(&id, &now).unwrap_or(Value::Null);
+                    }
+                    if e.type_id == TYPE_ASSET {
+                        if let Some(obj) = e.payload.get("object_id").and_then(Value::as_str) {
+                            m["availability"] = json!(self.objects.availability(obj).as_str());
+                        }
+                    }
+                    m
+                } else {
+                    aiworkspace_core::body::read_body(&ctx, &access, &e, params, Some(&loader))?
+                };
+                v["head_seq"] = json!(self.head_seq);
+                Ok(v)
+            }
+            other => Err(WsError::invalid_op(format!("as must be content, meta or body, not {other}"))),
+        }
+    }
+
+    /// The entity a request names: `entity_id`, or `path` (the one path syntax, every step readable).
+    pub fn target(&self, ctx: &dyn ReadCtx, access: &aiworkspace_core::access::Access, params: &Value) -> WsResult<String> {
+        match (params.get("entity_id").and_then(Value::as_str), params.get("path").and_then(Value::as_str)) {
+            (Some(id), None) => Ok(id.to_string()),
+            (None, Some(p)) => aiworkspace_core::path::resolve(ctx, access, p),
+            (Some(_), Some(_)) => Err(WsError::invalid_op("give entity_id or path, not both")),
+            (None, None) => Err(WsError::invalid_op("entity_id or path required")),
+        }
+    }
+
+    /// `doc.read` of the native content.
     pub fn read(&self, caller: &Caller, entity_id: &str, selector: Option<&Value>) -> WsResult<Value> {
         let access = self.require_ws_any(caller)?;
         let now = self.now();
@@ -39,15 +111,27 @@ impl Workspace {
         Ok(v)
     }
 
-    /// `doc.list_children`
-    pub fn list_children(&self, caller: &Caller, parent_id: &str, include_deleted: bool) -> WsResult<Value> {
+    fn no_version(params: &Value, method: &str) -> WsResult<()> {
+        if params.get("version").is_some_and(|v| !v.is_null()) {
+            return Err(WsError::new(Code::UnsupportedVersion, format!("{method} reads the head only; a fixed version is not available yet")));
+        }
+        Ok(())
+    }
+
+    /// `doc.list { at?, type?, not_type?, schema?, limit?, cursor? }`: the readable direct children of one node.
+    pub fn list(&self, caller: &Caller, params: &Value) -> WsResult<Value> {
+        Self::no_version(params, "doc.list")?;
         let access = self.require_ws_any(caller)?;
         let now = self.now();
-        let mut children = read::list_children(&self.ctx(&now), &access, parent_id, include_deleted)?;
-        for c in &mut children {
-            self.decorate(c, &now);
-        }
-        Ok(json!({ "ok": true, "parent_id": parent_id, "children": children, "head_seq": self.head_seq }))
+        aiworkspace_core::path::list(&self.ctx(&now), &access, params, self.head_seq)
+    }
+
+    /// `doc.find { at?, depth?, name?, type?, not_type?, schema?, limit?, cursor? }`.
+    pub fn find(&self, caller: &Caller, params: &Value) -> WsResult<Value> {
+        Self::no_version(params, "doc.find")?;
+        let access = self.require_ws_any(caller)?;
+        let now = self.now();
+        aiworkspace_core::path::find(&self.ctx(&now), &access, params, self.head_seq)
     }
 
     /// `doc.list_annotations`: annotations anchored to `target_ids` and/or placed under `parent_id`.
@@ -235,7 +319,8 @@ impl Workspace {
             return Err(WsError::deleted(format!("entity {id} is deleted")));
         }
         Ok(json!({ "ok": true, "reference": with_ws(&reference, &self.workspace_id), "canonical": canonical_reference(&with_ws(&reference, &self.workspace_id))?,
-                   "type_id": e.type_id, "content_rev": e.content_rev, "capabilities": access.entity_caps(&ctx, &e)?.names() }))
+                   "type_id": e.type_id, "content_rev": e.content_rev, "capabilities": access.entity_caps(&ctx, &e)?.names(),
+                   "path": aiworkspace_core::path::path_of(&ctx, &access, id)?, "name": e.name }))
     }
 
     /// A fixed version `{ epoch, seq }` of an entity (D03): readable only while a snapshot taken at that
@@ -309,86 +394,118 @@ impl Workspace {
                    "seq": self.head_seq, "content_rev": e.content_rev }))
     }
 
-    /// `doc.query`: by saved view (`view_id`, optionally narrowed by a session
-    /// filter) or directly by `source_id`.
-    pub fn query(&self, caller: &Caller, params: &Value, sources: &SourceRegistry) -> WsResult<Value> {
+    /// `doc.query`: a text query (`text`) over names, titles and bodies, or an SQL query (`sql`) over the logical
+    /// tables (核心 API 调整 R3, R11). Nothing else.
+    pub fn query(&self, caller: &Caller, params: &Value) -> WsResult<Value> {
+        for k in ["view_id", "source_id", "filter", "sorts", "fields", "group", "group_order", "group_limit", "consistency", "with_meta"] {
+            if params.get(k).is_some() {
+                return Err(WsError::invalid_op(format!("doc.query takes text or sql; {k} belongs to the old table query (write the SQL, or doc.source_query for a URL table)")));
+            }
+        }
+        Self::no_version(params, "doc.query")?;
         let access = self.require_ws_any(caller)?;
         let now = self.now();
         let ctx = self.ctx(&now);
-        let mut spec = QuerySpec {
-            limit: params.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize,
-            cursor: params.get("cursor").and_then(Value::as_str).map(str::to_string),
-            best_effort: params.get("consistency").and_then(Value::as_str) == Some("best_effort"),
-            with_meta: params.get("with_meta").and_then(Value::as_bool).unwrap_or(true),
-            ..Default::default()
-        };
-        if spec.limit == 0 || spec.limit > QUERY_LIMIT_MAX {
-            return Err(WsError::limit(format!("limit must be 1..{QUERY_LIMIT_MAX}")));
-        }
-        let mut source_id = params.get("source_id").and_then(Value::as_str).map(str::to_string);
-        if let Some(view_id) = params.get("view_id").and_then(Value::as_str) {
-            let cell = read::readable_entity(&ctx, &access, view_id)?;
-            if !cell.alive() || cell.type_id != TYPE_CELL || cell.payload.get("view").and_then(|v| v["type"].as_str()) != Some("table") {
-                return Err(WsError::invalid_op("view_id must name a live table view"));
+        match (params.get("text"), params.get("sql")) {
+            (Some(_), None) => {
+                let started = std::time::Instant::now();
+                let stop = move || started.elapsed() > std::time::Duration::from_secs(1);
+                let objects = self.objects.clone();
+                let loader = move |obj: &str| -> WsResult<Option<Vec<u8>>> {
+                    use aiworkspace_core::materialize::ObjectSource;
+                    if !objects.has_object(obj) {
+                        return Ok(None);
+                    }
+                    objects.get_file(obj).map(Some)
+                };
+                let mut v = aiworkspace_core::search::text_query(&ctx, &access, params, self.head_seq, Some(&loader), &stop)?;
+                v["ok"] = json!(true);
+                Ok(v)
             }
-            source_id = cell.payload.get("source_ref").and_then(reference_entity_id).map(str::to_string);
-            spec.filter = cell.payload.get("filter").filter(|f| !f.is_null()).cloned();
-            spec.sorts = cell.payload.get("sorts").and_then(Value::as_array).cloned().unwrap_or_default();
-            spec.group = cell.payload.get("group").and_then(|g| g["field_id"].as_str()).map(str::to_string);
-            spec.manual_order = cell.payload.get("manual_order").and_then(Value::as_object).cloned();
-            spec.fields = cell
-                .payload
-                .get("fields")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|f| f["field_id"].as_str()).map(str::to_string).collect());
+            (None, Some(_)) => {
+                if let Some(expect) = params.get("expect_head").filter(|v| !v.is_null()) {
+                    if expect["epoch"] != json!(self.epoch) || expect["seq"].as_u64() != Some(self.head_seq) {
+                        return Err(WsError::sub(Code::SnapshotExpired, "HEAD_MISMATCH", "the Workspace is not at the head the caller expects: synchronize, then query again")
+                            .with_data(json!({ "epoch": self.epoch, "head_seq": self.head_seq })));
+                    }
+                }
+                let conn = rusqlite::Connection::open_with_flags(self.dir.join("doc.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+                    .map_err(db_err)?;
+                conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(db_err)?;
+                conn.execute_batch("BEGIN DEFERRED").map_err(db_err)?;
+                let seen: u64 = crate::docdb::meta_get(&conn, "head_seq")?.and_then(|s| s.parse().ok()).unwrap_or(0);
+                if seen != self.head_seq {
+                    return Err(WsError::new(Code::WriterBusy, "the Workspace is being written; retry"));
+                }
+                let mut v = crate::sql::execute(&conn, &ctx, &access, params, self.head_seq, None)?;
+                v["ok"] = json!(true);
+                Ok(v)
+            }
+            _ => Err(WsError::invalid_op("doc.query takes either text (a text query) or sql (an SQL query)")),
         }
-        let source_id = source_id.ok_or_else(|| WsError::invalid_op("source_id or view_id required"))?;
-        let source = read::readable_entity(&ctx, &access, &source_id)?;
+    }
+
+    /// `f` over one consistent read view of the document (internal callers and tests; no access check).
+    pub fn read_ctx<T>(&self, f: impl FnOnce(&dyn ReadCtx) -> T) -> T {
+        let now = self.now();
+        f(&self.ctx(&now))
+    }
+
+    /// The live records of a local table in `record_id` order, as `doc.read` gives a record (internal callers, e.g.
+    /// the session notes; the evaluator of the core, not SQL).
+    pub fn table_rows(&self, caller: &Caller, source_id: &str, limit: usize) -> WsResult<Vec<Value>> {
+        let access = self.require_ws_any(caller)?;
+        let now = self.now();
+        let ctx = self.ctx(&now);
+        let source = read::readable_entity(&ctx, &access, source_id)?;
+        if !source.alive() || source.type_id != TYPE_TABLE || types::is_url_table(&source) {
+            return Err(WsError::invalid_op(format!("{source_id} is not a local table")));
+        }
+        let page = aiworkspace_core::filter::run_query(&ctx, &source, &QuerySpec { limit: limit.max(1), best_effort: true, ..Default::default() })?;
+        Ok(page["rows"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// `doc.source_query`: the rows of a URL table (`data_mode: url_query`), queried at its remote source with the
+    /// table query parameters (`filter`, `sorts`, `fields`, `limit`, `cursor`, `consistency`, `source_revision`).
+    pub fn source_query(&self, caller: &Caller, params: &Value, sources: &SourceRegistry) -> WsResult<Value> {
+        let access = self.require_ws_any(caller)?;
+        let now = self.now();
+        let ctx = self.ctx(&now);
+        let source_id = params.get("source_id").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("source_id required"))?;
+        let source = read::readable_entity(&ctx, &access, source_id)?;
         if !source.alive() {
             return Err(WsError::deleted(format!("table {source_id} is deleted")));
         }
-        if source.type_id != TYPE_TABLE {
-            return Err(WsError::invalid_op(format!("{source_id} is not a table source")));
+        if source.type_id != TYPE_TABLE || !types::is_url_table(&source) {
+            return Err(WsError::invalid_op(format!("{source_id} is not a URL table: query local tables with doc.query {{ sql }}")));
         }
-        // session-level additions on top of the saved view
-        if let Some(extra) = params.get("filter").filter(|f| !f.is_null()) {
-            spec.filter = Some(match spec.filter.take() {
-                Some(f) => json!({ "op": "and", "args": [f, extra] }),
-                None => extra.clone(),
-            });
+        let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
+        if limit == 0 || limit > QUERY_LIMIT_MAX {
+            return Err(WsError::limit(format!("limit must be 1..{QUERY_LIMIT_MAX}")));
         }
-        if let Some(s) = params.get("sorts").and_then(Value::as_array) {
-            spec.sorts = s.clone();
-        }
-        if let Some(f) = params.get("fields").and_then(Value::as_array) {
-            spec.fields = Some(f.iter().filter_map(Value::as_str).map(str::to_string).collect());
-        }
-        if let Some(g) = params.get("group").and_then(Value::as_str) {
-            spec.group = Some(g.to_string());
-        }
-        aiworkspace_core::filter::group_params(params, &mut spec)?;
-        let mut out = if types::is_url_table(&source) {
-            let reference = source.payload.get("source_ref").cloned().unwrap_or(Value::Null);
-            let q = SourceQuery {
-                filter: spec.filter.clone(),
-                sorts: spec.sorts.clone(),
-                fields: spec.fields.clone(),
-                limit: spec.limit,
-                cursor: spec.cursor.clone(),
-                require_snapshot: params.get("consistency").and_then(Value::as_str) == Some("snapshot"),
-                snapshot_token: params.get("source_revision").and_then(Value::as_str).map(str::to_string),
-            };
-            // the definition's content_rev tracks the definition only, never the remote rows
-            let mut page = sources.query(&reference, &q, &caller.principal)?;
-            page["definition_rev"] = json!(source.content_rev);
-            page["data_mode"] = json!("url_query");
-            page
-        } else {
-            run_query(&ctx, &source, &spec)?
+        let spec = QuerySpec {
+            filter: params.get("filter").filter(|f| !f.is_null()).cloned(),
+            sorts: params.get("sorts").and_then(Value::as_array).cloned().unwrap_or_default(),
+            fields: params.get("fields").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+            ..Default::default()
         };
-        out["ok"] = json!(true);
-        out["source_id"] = json!(source_id);
-        Ok(out)
+        let reference = source.payload.get("source_ref").cloned().unwrap_or(Value::Null);
+        let q = SourceQuery {
+            filter: spec.filter,
+            sorts: spec.sorts,
+            fields: spec.fields,
+            limit,
+            cursor: params.get("cursor").and_then(Value::as_str).map(str::to_string),
+            require_snapshot: params.get("consistency").and_then(Value::as_str) == Some("snapshot"),
+            snapshot_token: params.get("source_revision").and_then(Value::as_str).map(str::to_string),
+        };
+        // the definition's content_rev tracks the definition only, never the remote rows
+        let mut page = sources.query(&reference, &q, &caller.principal)?;
+        page["definition_rev"] = json!(source.content_rev);
+        page["data_mode"] = json!("url_query");
+        page["ok"] = json!(true);
+        page["source_id"] = json!(source_id);
+        Ok(page)
     }
 
     /// Capabilities of a URL table's source, for honest UI states.

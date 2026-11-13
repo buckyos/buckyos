@@ -2,6 +2,19 @@ import { expect, test as base, type FrameLocator, type Locator, type Page } from
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pickLocal, putZoneFile, selectDialog, selectEmbedFrame, selectRow } from '../e2e/fixtures/selectDialog'
+import { queryBySql } from '../../src/app/aiworkspace/api/tableQuery'
+import type { QueryPage, QueryParams } from '../../src/app/aiworkspace/api/types'
+import * as wasmCore from '../../src/app/aiworkspace/wasm/aiworkspace_wasm.js'
+
+let wasmReady = false
+/** The core compiled to WASM, as the Desktop loads it (the view compiler of `queryBySql`). */
+export function core(): typeof wasmCore {
+  if (!wasmReady) {
+    wasmCore.initSync({ module: readFileSync(resolve('src/app/aiworkspace/wasm/aiworkspace_wasm_bg.wasm')) })
+    wasmReady = true
+  }
+  return wasmCore
+}
 
 const BACKEND_FIXTURE = resolve('../aiworkspace/fixtures/project-workspace/commits.json')
 export const VECTORS_PATH = resolve('../aiworkspace/fixtures/vectors/object-ids.json')
@@ -63,6 +76,29 @@ export class Api {
     const body = await response.json() as Json
     if (body.error) throw new Error(`${method}: ${body.error}`)
     return body.result
+  }
+
+  /** The rows of a table or a table view (`source_id` / `view_id`, filter, sorts, …) as a session without a replica reads
+   * them: the view compiled to SQL by the core and run with `doc.query { sql }` (核心 API 调整 §3.5). */
+  async table(token: string, workspaceId: string, params: QueryParams): Promise<QueryPage> {
+    const fail = (e: { code: string; detail?: string }) => Object.assign(new Error(`${e.code}: ${e.detail ?? ''}`), e)
+    const ok = async (method: string, p: Json) => {
+      const r = await this.rpc(token, method, { workspace_id: workspaceId, ...p })
+      if (r?.ok === false) throw fail(r.error)
+      return r
+    }
+    return queryBySql({
+      read: async (ids) => (await ok('doc.read', { targets: ids.map((entity_id) => ({ entity_id })) })).results,
+      sql: (p) => ok('doc.query', p),
+      sourceQuery: (p) => ok('doc.source_query', p),
+      viewSql: (table, fields, view, projection) => core().view_sql(table, fields, view, projection),
+      fail,
+    }, params)
+  }
+
+  /** The readable children of a node (`doc.list`). */
+  async children(token: string, workspaceId: string, at: string): Promise<Json[]> {
+    return (await this.rpc(token, 'doc.list', { workspace_id: workspaceId, at, limit: 1000 })).items
   }
 
   async commit(token: string, ws: { workspace_id: string; epoch: string }, operations: Json[], key = `test/${Date.now()}/${Math.random().toString(36).slice(2)}`): Promise<Json> {

@@ -12,6 +12,7 @@ import { randomId } from '../../api/ids'
 import type {
   CellPayload, EntityEnvelope, FieldDef, Json, KeyedContent, Operation, QueryPage, QueryParams, QueryRow, RecordContent, RichTextContent, Selector, StoredPlacement, TableSourceContent,
 } from '../../api/types'
+import { pathOf, resolvePath } from '../../api/paths'
 import { aiwsT, aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { modePolicy, type CanvasMode } from '../blocks/registry'
@@ -356,7 +357,11 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
       const result = await store.session.read<Json>(entityId, (selector ?? undefined) as Selector | undefined)
       return result as unknown as Json
     },
-    query: async (params) => (await store.session.query(params as unknown as QueryParams)) as unknown as Json,
+    query: async (params) => {
+      const p = (params ?? {}) as { sql?: unknown; params?: Json[] | null }
+      if (typeof p.sql !== 'string') throw new Error('aiws.query(sql, params?) takes one SQL SELECT (host API 6)')
+      return (await store.session.sql({ sql: p.sql, ...(p.params ? { params: p.params } : {}) })) as unknown as Json
+    },
     submit: (operations, label) => submit(operations, label),
     upload: async (bytes, fileName, mediaType) => {
       const blob = new Blob([bytes as BlobPart], mediaType ? { type: mediaType } : undefined)
@@ -454,19 +459,20 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
         default: throw new Error(aiwsT('aiworkspace.extension.unknownRead', { what }))
       }
     },
+    // the one path syntax and the name / title matching of `doc.find` (核心 API 调整 R5): what a path printed anywhere names
     outline: async (what, args) => {
       const a = (args ?? {}) as { target?: string | null; depth?: number; text?: string }
-      const brief = (e: EntityEnvelope) => ({ entity_id: e.entity_id, type_id: e.type_id, title: e.title ?? e.name ?? null, parent_id: e.parent_id ?? null })
-      const all = store.outline.all().filter((e) => !e.deleted)
+      const brief = (e: EntityEnvelope) => ({ entity_id: e.entity_id, type_id: e.type_id, name: e.name, title: e.title ?? null, path: pathOf(store.outline, e.entity_id), parent_id: e.parent_id ?? null })
       if (what === 'find') {
         const t = String(a.text ?? '').toLowerCase()
-        return all.filter((e) => String(e.title ?? e.name ?? '').toLowerCase().includes(t)).slice(0, 50).map(brief) as unknown as Json
+        const all = store.outline.all().filter((e) => !e.deleted && e.entity_id !== 'root')
+        return all.filter((e) => [e.name, e.title].some((x) => typeof x === 'string' && x.toLowerCase().includes(t))).slice(0, 50).map(brief) as unknown as Json
       }
       if (what === 'resolve') {
-        const t = String(a.target ?? '')
-        return all.filter((e) => e.entity_id === t || e.title === t || e.name === t).map(brief) as unknown as Json
+        const e = resolvePath(store.outline, String(a.target ?? ''))
+        return (e ? [brief(e)] : []) as unknown as Json
       }
-      const root = a.target ?? 'data'
+      const root = a.target ? (resolvePath(store.outline, a.target)?.entity_id ?? a.target) : 'data'
       const out: ReturnType<typeof brief>[] = []
       const walk = (id: string, depth: number) => {
         for (const c of store.outline.childrenOf(id)) {

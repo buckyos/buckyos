@@ -29,7 +29,7 @@ buckyos aiws run-tool --workspace $WS --run $RUN --attempt 1 --name check_result
 buckyos aiws run-tool --workspace $WS --run $RUN --attempt 1 --name finish --args '{"summary":"…","assumptions":[],"warnings":[]}'
 buckyos aiws run-report --workspace $WS --run $RUN --attempt 1 --finished
 ```
-An `analyze` run has no program: read `stage.user`, inspect data with `run-tool --name ws_profile|ws_read|ws_query`, then `run-tool --name submit_analysis --args-file analysis.json` (the `wish.analysis.v2` object described in `stage.system`) until it is accepted, and `run-report --finished`. A `rerun_program` run comes with `stage.source` (the stored program): write it to `work/program/main.js`, run it, `run-program`, `run-report --finished`.
+An `analyze` run has no program: read `stage.user`, inspect data with `run-tool --name ws_profile|ws_read|ws_find|ws_query` (`ws_query` takes one SQL SELECT: `{ "sql": "SELECT \"月份\", sum(\"销售额\") FROM \"@T1\" GROUP BY 1" }` — a table by its handle, path or id, columns are field names, `"<field>#raw"` the stored values; `ws_read` of a table view Block gives its rows and its SQL), then `run-tool --name submit_analysis --args-file analysis.json` (the `wish.analysis.v2` object described in `stage.system`) until it is accepted, and `run-report --finished`. A `rerun_program` run comes with `stage.source` (the stored program): write it to `work/program/main.js`, run it, `run-program`, `run-report --finished`.
 
 #### Inputs and outputs
 - Outside a run, a workspace entity is the object `obj://aiworkspace/<ws>/entities/<entity_id>` (a Reference's `mode=fixed`, `selector` and `version` go into its query): `read` describes it and `read … property=<name>` reads one property, with your own access to the workspace.

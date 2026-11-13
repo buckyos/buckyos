@@ -1,5 +1,6 @@
-/* Rows of one table view, loaded by keyset pages through `doc.query` (best_effort consistency for
- * scrolling, design §2.5.4) and kept fresh from the change stream. Rows are loaded in order: page N
+/* Rows of one table view, loaded page by page through `session.query` (the replica's evaluator, or the view compiled to
+ * SQL and run by the service when this tab holds no replica; best_effort consistency for scrolling, design §2.5.4) and
+ * kept fresh from the change stream. Rows are loaded in order: page N
  * needs the cursor of page N-1. Only loading is done here; the DOM side is virtualised by the view. */
 
 import { ServiceFailure } from '../api/client'

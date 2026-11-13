@@ -25,7 +25,10 @@
     "SOURCE_READ_ONLY",
     "SLOT_CONFLICT",
     "EXT_IDENT_EXISTS",
-    "EXT_LOCAL_CHANGES"
+    "EXT_LOCAL_CHANGES",
+    "SQL_NOT_ALLOWED",
+    "SQL_ERROR",
+    "NOT_MATERIALIZED"
    ]
   },
   {
@@ -134,7 +137,10 @@
    "code": "SNAPSHOT_EXPIRED",
    "retryable": true,
    "status": "rejected",
-   "meaning": "The source changed during consistent paging."
+   "meaning": "What a cursor or a pinned read depended on changed: a page cursor (consistent paging, `doc.list` / `doc.find` / body cursors bound to the head or the body etag), or the head an SQL query expected (`HEAD_MISMATCH`). Read again from the start.",
+   "sub_codes": [
+    "HEAD_MISMATCH"
+   ]
   },
   {
    "code": "NOT_UNDOABLE",

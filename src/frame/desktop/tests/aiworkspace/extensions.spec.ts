@@ -27,7 +27,7 @@ async function save(dir: string, name: string, text: string) {
 
 test('a control from home: build, an instance with a binding, rebuild, a refused build, export and the library', async ({ page, api }) => {
   const ws = await api.sample(ALICE, '控件开发 E2E')
-  const rows = (await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'tasks', limit: 500 })).rows.length
+  const rows = (await api.table(ALICE, ws.workspace_id, { source_id: 'tasks', limit: 500 })).rows.length
   await openCanvas(page, ALICE, ws.workspace_id)
 
   // new control: a folder in alice's home with a working sample, built at once
@@ -598,9 +598,9 @@ test('P3 templates: canvases saved as a template into the library, a new workspa
   const read = await api.read(ALICE, made!, String(cell.entity_id)) as J & { content: { payload: J } }
   const table = ((read.content.payload.bindings as J).data as J).entity_id as string
   expect(outline.find((e: J) => e.entity_id === table)?.type_id).toBe('buckyos.table-source')
-  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: made, source_id: table, limit: 10 })).rows).toHaveLength(0)
+  expect((await api.table(ALICE, made, { source_id: table, limit: 10 })).rows).toHaveLength(0)
   // the source workspace still has its rows
-  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'tasks', limit: 10 })).rows).toHaveLength(2)
+  expect((await api.table(ALICE, ws.workspace_id, { source_id: 'tasks', limit: 10 })).rows).toHaveLength(2)
 })
 
 test('Q33 a host older than the definition: a layout it does not ship is a marked group, an HTML API above it shows the snapshot fallback', async ({ page, api }) => {
@@ -609,7 +609,7 @@ test('Q33 a host older than the definition: a layout it does not ship is a marke
     { op: 'entity.create', entity_id: 'd-radial', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'd1',
       payload: { def_id: 'radial-e2e', kind: 'composite', title: 'Radial', composition: { layout: { algorithm: 'radial' }, slots: { items: {} } } } },
     { op: 'entity.create', entity_id: 'd-future', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'd2',
-      payload: { def_id: 'future-e2e', kind: 'html', title: 'Future', allow_no_source: true, html: { html: '<div/>', js: 'aiws.ready()', api_version: 6 } } },
+      payload: { def_id: 'future-e2e', kind: 'html', title: 'Future', allow_no_source: true, html: { html: '<div/>', js: 'aiws.ready()', api_version: 7 } } },
     { op: 'entity.create', entity_id: 'ring', type_id: 'buckyos.container', parent_id: 'free', order_key: 'a', placement: { x: 40, y: 40, w: 'auto', h: 'auto' }, payload: { kind: 'composite', def_ref: { entity_id: 'd-radial' } } },
     { op: 'entity.create', entity_id: 'r1', type_id: 'buckyos.cell', parent_id: 'ring', order_key: 'a', placement: { x: 20, y: 30, w: 160, h: 80 }, payload: { view: { type: 'shape' }, slot: 'items', title: 'one', config: { shape: 'rect' } } },
     { op: 'entity.create', entity_id: 'future', type_id: 'buckyos.cell', parent_id: 'free', order_key: 'b', placement: { x: 500, y: 40, w: 240, h: 140 }, payload: { view: { type: 'html' }, def_ref: { entity_id: 'd-future' } } },
@@ -619,7 +619,7 @@ test('Q33 a host older than the definition: a layout it does not ship is a marke
   await expect(page.getByTestId('aiws-composite-unknown-ring')).toContainText('radial')
   await expect(page.getByTestId('aiws-canvas-block-r1')).toBeVisible()
   await expect(page.getByTestId('aiws-block-fallback-future')).toHaveAttribute('data-reason', 'unsupported_api')
-  await expect(page.getByTestId('aiws-block-fallback-future')).toContainText('需要宿主 API 6')
+  await expect(page.getByTestId('aiws-block-fallback-future')).toContainText('需要宿主 API 7')
   await runMode(page, true)
   await expect(page.locator('.aiws-html-frame')).toHaveCount(0)
 })

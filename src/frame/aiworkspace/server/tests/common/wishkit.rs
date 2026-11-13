@@ -140,6 +140,12 @@ impl Srv {
         Srv { base: format!("http://{addr}/kapi/aiworkspace"), http: reqwest::Client::new(), model, _dir: dir, ws: String::new(), nfs }
     }
 
+    /// The live records of a local table as `doc.read` gives a record, through SQL (`_record`).
+    pub async fn records(&self, table: &str) -> Vec<Value> {
+        let q = self.rpc("doc.query", json!({ "sql": "SELECT _record FROM t ORDER BY _id", "tables": { "t": table } })).await;
+        q["rows"].as_array().unwrap_or_else(|| panic!("{q}")).iter().map(|r| serde_json::from_str::<Value>(r[0].as_str().unwrap()).unwrap()).collect()
+    }
+
     pub async fn rpc(&self, method: &str, mut params: Value) -> Value {
         static SEQ: AtomicU64 = AtomicU64::new(1);
         if !self.ws.is_empty() && params.get("workspace_id").is_none() {

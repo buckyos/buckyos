@@ -122,10 +122,13 @@ fn map_tools_analysis_and_writeback() {
     // the snapshot holds while the Workspace moves on
     let rev = ws.read(&alice(), "orders", Some(&json!({ "kind": "table_cell", "record_id": "o1", "field_id": "amount" }))).unwrap()["content"]["rev"].as_u64().unwrap();
     ok(&mut ws, &alice(), json!([{ "op": "table.set_values", "source_id": "orders", "values": [{ "record_id": "o1", "field_id": "amount", "value": "999.00", "expect": { "rev": rev } }] }]));
-    let q = st.ws_query(&json!({ "table_or_view": b_orders, "limit": 50 })).unwrap();
+    let q = st.ws_read(&json!({ "target": b_orders, "limit": 50 })).unwrap();
     assert!(q.contains("read through view") && q.contains("22 rows in total") && !q.contains("999") && q.contains("110.5"), "{q}");
-    let q2 = st.ws_query(&json!({ "table_or_view": t_orders, "filter": { "状态": "未结算" } })).unwrap();
-    assert!(q2.contains("1 row in total") && q2.contains("客户1"), "{q2}");
+    assert!(q.contains("The view as SQL (ws_query): SELECT"), "{q}");
+    let q2 = st.ws_query(&json!({ "sql": format!("SELECT * FROM \"{t_orders}\" WHERE \"状态\" = '未结算'") })).unwrap();
+    assert!(q2.starts_with("1 row(s)") && q2.contains("客户1"), "{q2}");
+    let q3 = st.ws_query(&json!({ "sql": "SELECT count(*) FROM \"/data/销售/订单\"" })).unwrap();
+    assert!(q3.contains("[30]"), "the snapshot holds for SQL too: {q3}");
     assert!(st.ws_find(&json!({ "text": "含税" })).unwrap().contains("口径说明"));
     assert!(st.ws_neighbors(&json!({ "cell": handle_of(&st, "blk-wish") })).unwrap().contains("above, adjacent"));
     assert!(st.ws_profile(&json!({ "target": b_orders })).unwrap().contains("\"rows\": 30"));
@@ -264,10 +267,10 @@ fn execute_collect_plan_apply_and_refresh() {
     assert_eq!((group["placement"]["x"].as_f64(), group["placement"]["y"].as_f64()), (Some(20.0), Some(40.0)), "{group}");
     assert_eq!(wish["inputs"].as_array().unwrap().len(), 2, "the appended input joined the wish");
     assert_eq!(ws.freshness(&alice(), &["wish-q3".into()]).unwrap()["items"][0]["needs_analysis"], false, "the host re-stated the analysis");
-    let t = ws.query(&alice(), &json!({ "source_id": monthly, "limit": 10 }), &Default::default()).unwrap();
-    assert_eq!(t["total"], 3);
-    let chart = ws.list_children(&alice(), b["group"].as_str().unwrap(), false).unwrap();
-    let chart = chart["children"].as_array().unwrap().iter().find(|c| c["entity_id"].as_str().unwrap().ends_with("v1")).unwrap().clone();
+    let t = ws.query(&alice(), &json!({ "sql": "SELECT count(*) FROM t", "tables": { "t": monthly } })).unwrap();
+    assert_eq!(t["rows"][0][0], 3);
+    let chart = ws.list(&alice(), &json!({ "at": b["group"] })).unwrap();
+    let chart = chart["items"].as_array().unwrap().iter().find(|c| c["entity_id"].as_str().unwrap().ends_with("v1")).unwrap().clone();
     let chart = ws.read(&alice(), chart["entity_id"].as_str().unwrap(), None).unwrap();
     assert_eq!(chart["content"]["payload"]["config"], json!({ "value": "f2", "by": "f1" }), "chart config by field ids");
     let d = ws.read(&alice(), &commentary, None).unwrap()["derived"].clone();
@@ -422,12 +425,14 @@ fn bindings(ws: &Workspace) -> std::collections::BTreeMap<String, Value> {
 }
 /// 月份 (field f1) of the rows as a table Block shows them.
 fn view_months(ws: &Workspace, cell: &str) -> Vec<String> {
-    let q = ws.query(&alice(), &json!({ "view_id": cell, "limit": 100 }), &Default::default()).unwrap();
-    q["rows"].as_array().unwrap().iter().map(|r| r["values"]["f1"].as_str().unwrap().to_string()).collect()
+    let m = ws.read_as(&alice(), &json!({ "entity_id": cell, "as": "meta" })).unwrap();
+    let sql = m["shows"]["view_sql"].as_str().unwrap().replacen("SELECT \"_id\"", "SELECT \"_record\"", 1);
+    let q = ws.query(&alice(), &json!({ "sql": sql })).unwrap();
+    q["rows"].as_array().unwrap().iter().map(|r| serde_json::from_str::<Value>(r[0].as_str().unwrap()).unwrap()["values"]["f1"].as_str().unwrap().to_string()).collect()
 }
 fn ids(ws: &Workspace, table: &str) -> Vec<String> {
-    let q = ws.query(&alice(), &json!({ "source_id": table, "limit": 100 }), &Default::default()).unwrap();
-    q["rows"].as_array().unwrap().iter().map(|r| r["record_id"].as_str().unwrap().to_string()).collect()
+    let q = ws.query(&alice(), &json!({ "sql": "SELECT _id FROM t ORDER BY _id", "tables": { "t": table } })).unwrap();
+    q["rows"].as_array().unwrap().iter().map(|r| r[0].as_str().unwrap().to_string()).collect()
 }
 
 fn build_candidate(c: &Collector, st: &Stage, run: &str) -> Value {

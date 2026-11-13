@@ -436,7 +436,7 @@ test('[ctl] photo vote: eight photos; both vote three on a phone, one changes a 
   await page.getByTestId('aiws-near-ext-action-prepare').click()
   await expect.poll(async () => (await readEntity(owner, ws, 'votes')).content.fields.find((f: J) => f.field_id === 'picks').options.length, { timeout: 15_000 }).toBe(8)
 
-  const rows = async () => (await owner.client.ok<{ rows: J[] }>('doc.query', { workspace_id: ws.workspace_id, source_id: 'votes', limit: 50 })).rows
+  const rows = async () => (await owner.client.table({ workspace_id: ws.workspace_id, epoch: '' }, { source_id: 'votes', limit: 50 })).rows
   const ownerPhone = await onPhone(owner, browser, baseURL!, errors)
   const peerPhone = await onPhone(peer, browser, baseURL!, errors)
   try {

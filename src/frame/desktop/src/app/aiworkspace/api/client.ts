@@ -3,7 +3,7 @@
 
 import type {
   AnnotationRead, BucketBinding, BucketDownload, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult, StagedAsset,
-  QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json, WishAiccMode,
+  QueryPage, QueryParams, ReadResult, Result, RunView, SqlParams, SqlResult, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json, WishAiccMode,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, HostedExecConfig, Publication, Referrer,
   ExtBuildResult, ExtExportResult, ExtMigration, ExtPackResult, LibraryPackage, TemplateSpec,
@@ -99,8 +99,10 @@ export class AiwsClient {
     return this.call<Result<{ results: ReadResult[] }>>('doc.read', { ...ws, targets })
   }
   listAnnotations(ws: Ws, params: ListAnnotationsParams) { return this.call<Result<{ annotations: AnnotationRead[] }>>('doc.list_annotations', { ...ws, ...params }) }
-  listChildren(ws: Ws, entity_id: string) { return this.call<Result<{ children: EntityEnvelope[] }>>('doc.list_children', { ...ws, entity_id }) }
-  query(ws: Ws, params: QueryParams) { return this.call<Result<QueryPage>>('doc.query', { ...ws, ...params }) }
+  /** `doc.query { sql }`: one SELECT over the logical tables (核心 API 调整 §3.4). */
+  sql(ws: Ws, params: SqlParams) { return this.call<Result<SqlResult>>('doc.query', { ...ws, ...params }) }
+  /** `doc.source_query`: the rows of a URL table, queried at its source (filter, sorts, fields, paging). */
+  sourceQuery(ws: Ws, params: QueryParams) { return this.call<Result<QueryPage>>('doc.source_query', { ...ws, ...params }) }
   getCollabState(ws: Ws, entity_id: string) { return this.call<Result<CollabState>>('doc.get_collab_state', { ...ws, entity_id }) }
   freshness(ws: Ws, entity_ids: string[]) { return this.call<Result<{ items: FreshnessInfo[]; head_seq: number }>>('doc.freshness', { ...ws, entity_ids }) }
   relations(ws: Ws, entity_id: string) { return this.call<Result<RelationsInfo>>('doc.relations', { ...ws, entity_id }) }

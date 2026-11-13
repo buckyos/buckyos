@@ -52,7 +52,7 @@ async function values(api: Api, workspaceId: string, record: string): Promise<Js
 }
 
 async function rows(api: Api, workspaceId: string): Promise<{ record_id: string; values: Json }[]> {
-  return (await api.rpc(ALICE, 'doc.query', { workspace_id: workspaceId, source_id: 'events', limit: 100 }) as { rows: { record_id: string; values: Json }[] }).rows
+  return (await api.table(ALICE, workspaceId, { source_id: 'events', limit: 100 }) as { rows: { record_id: string; values: Json }[] }).rows
 }
 
 async function activate(page: Page) {
@@ -263,7 +263,7 @@ test('CA10 to-do lists on a calendar: an inserted calendar shows every to-do lis
   await dialog.getByTestId('aiws-bind-confirm').click()
   await expect.poll(async () => (await calOf(cal))?.bindings.todo).toEqual(['work'])
   await expect(due('home-1', 'home')).toHaveCount(0)
-  expect((await api.rpc(ALICE, 'doc.query', { workspace_id: ws.workspace_id, source_id: 'home', limit: 10 })).rows).toHaveLength(1)
+  expect((await api.table(ALICE, ws.workspace_id, { source_id: 'home', limit: 10 })).rows).toHaveLength(1)
 
   // a calendar inserted now takes every calendar table and every to-do list (lists: nothing to ask)
   await page.getByTestId('aiws-tool-catalog').click()

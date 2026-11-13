@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod anchor;
+pub mod body;
 pub mod canonical;
 pub mod error;
 pub mod filter;
@@ -12,14 +13,19 @@ pub mod freshness;
 pub mod id;
 pub mod markdown;
 pub mod materialize;
+pub mod meta;
 pub mod model;
+pub mod naming;
 pub mod order_key;
+pub mod path;
 pub mod plan;
 pub mod plan_richtext;
 pub mod plan_table;
 pub mod read;
 pub mod replica;
 pub mod richtext;
+pub mod search;
+pub mod sqlview;
 pub mod standard;
 pub mod testkit;
 pub mod types;

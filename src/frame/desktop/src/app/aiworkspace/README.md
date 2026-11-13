@@ -34,8 +34,11 @@ api/
                           OnlineWorkspaceSession (online direct mode): commit envelope, idempotency
                           keys, per-tab session_id, unknown-result resolution, change-stream
                           follower, EPOCH_MISMATCH / BASE_TOO_OLD stop
+  tableQuery.ts           a table view's rows without a replica: the view compiled by the core (WASM view_sql) and run
+                          with doc.query { sql } (URL tables: doc.source_query)
+  paths.ts                the one path syntax (/data/销售, ~<id>/…) over the tab's outline (the HTML host's resolve)
   sample.ts               "create sample": replays fixtures/project-workspace.commits.json
-  wasm.ts                 loader of the shared Rust core (order_key_between, rich text schema, canonical AST)
+  wasm.ts                 loader of the shared Rust core (order_key_between, rich text schema, canonical AST, view_sql)
   ids.ts, types.ts, testHooks.ts
 offline/                  the browser offline layer (design §6) — see "Offline" below
   protocol.ts             messages page ↔ Replica Worker, pending row / export shapes
@@ -136,7 +139,7 @@ ink/                      pen handwriting (notepads/aiworkspace-handwriting-todo
   TableViewCell.tsx       virtualised table view (database grid: type icons, pills, tick boxes, "+ 新建" line, "+"
                           field column, arrow keys between cells), inline editing, filter / sort, conflicts; also the
                           source mode; fieldOps.ts (adding a field, shared with FieldManager)
-  tablePager.ts           keyset paging through doc.query, refresh from the change stream
+  tablePager.ts           paged rows of a table view (session.query: the replica's evaluator, or SQL compiled by the core), refresh from the change stream
   FieldManager.tsx        fields, options, migration pre-check
   annotations.tsx         cards next to a rich text, aligned with their anchors
   annotationInfo.ts       anchor states in words, labels, jump to an annotation

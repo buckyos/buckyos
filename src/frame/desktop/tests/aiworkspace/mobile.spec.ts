@@ -389,7 +389,7 @@ test('UI-M07 a phone edits a flow page (§16.5): typing in place, ＋ inserts be
     { op: 'entity.create', entity_id: 'free-content', type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: 'z', payload: { kind: 'folder', system: 'surface_content', surface_id: 'free', title: 'Free' } },
     { op: 'entity.create', entity_id: 'free', type_id: 'buckyos.container', parent_id: 'surfaces', order_key: 'z', payload: { kind: 'surface', layout: { mode: 'free' }, title: 'Free', content_folder_id: 'free-content' } },
   ])).status).toBe('accepted')
-  const order = async () => ((await api.rpc(ALICE, 'doc.list_children', { workspace_id: ws.workspace_id, entity_id: 'surface-main' })).children as { entity_id: string; type_id: string }[])
+  const order = async () => ((await api.children(ALICE, ws.workspace_id, 'surface-main')) as { entity_id: string; type_id: string }[])
     .filter((child) => child.type_id === 'buckyos.cell').map((child) => child.entity_id)
   const frame = (id: string) => page.getByTestId(`aiws-cell-frame-${id}`)
   const viewport = page.viewportSize()!

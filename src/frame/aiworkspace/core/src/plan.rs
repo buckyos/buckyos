@@ -252,6 +252,8 @@ pub struct Planner<'a> {
     pub read_denied: BTreeSet<String>,
     /// Records of standard tables this Commit wrote, with the last operation that did (`standard::check_records`).
     pub standard_records: BTreeMap<(String, String), usize>,
+    /// Siblings by parent, for naming: kept across a run of `entity.create`s, dropped by any other operation.
+    pub sibling_cache: BTreeMap<String, Vec<crate::naming::Sibling>>,
 }
 
 pub type OpResult = WsResult<(Value, Option<Vec<Value>>)>;
@@ -295,6 +297,7 @@ impl<'a> Planner<'a> {
             warnings: vec![],
             read_denied: BTreeSet::new(),
             standard_records: BTreeMap::new(),
+            sibling_cache: BTreeMap::new(),
         }
     }
 
@@ -443,19 +446,25 @@ impl<'a> Planner<'a> {
         e.content_rev = self.env.seq;
     }
 
-    /// Alive siblings under `parent` whose name equals `name` (excluding `except`).
-    pub fn name_taken(&self, parent: &str, name: &str, except: &str) -> WsResult<bool> {
-        for edge in self.ov.children(parent)? {
-            if edge.child_id == except {
-                continue;
-            }
-            if let Some(e) = self.ov.entity(&edge.child_id)? {
-                if e.alive() && e.scope == SCOPE_SHARED && e.name.as_deref() == Some(name) {
-                    return Ok(true);
-                }
-            }
+    /// The siblings under `parent` as naming sees them (cached while operations only create).
+    pub fn siblings(&mut self, parent: &str) -> WsResult<Vec<crate::naming::Sibling>> {
+        if let Some(s) = self.sibling_cache.get(parent) {
+            return Ok(s.clone());
         }
-        Ok(false)
+        let s = crate::naming::siblings(&self.ov, parent)?;
+        self.sibling_cache.insert(parent.to_string(), s.clone());
+        Ok(s)
+    }
+
+    /// Is `name` used by a live sibling under `parent` that an entity of `scope` meets (excluding `except`)?
+    pub fn name_taken(&mut self, parent: &str, name: &str, except: &str, scope: &str) -> WsResult<bool> {
+        Ok(crate::naming::taken(&self.siblings(parent)?, name, scope, except))
+    }
+
+    /// A name for `e` under `parent` that follows it (`keep`: its current name, kept when still right and free).
+    pub fn follow_name(&mut self, parent: &str, e: &EntityRow, keep: Option<&str>) -> WsResult<String> {
+        let sibs = self.siblings(parent)?;
+        Ok(crate::naming::free_name(&sibs, &crate::naming::base_of(&e.type_id, &e.payload), &e.scope, &e.entity_id, keep))
     }
 
     /// A local reference target must exist, be alive, be readable by the caller
@@ -668,6 +677,56 @@ fn check_preconditions(p: &mut Planner, pre: &[Value]) -> WsResult<()> {
 /// Version of the planner's normalization (内核架构改进 D20): accepted Commits are applied from their
 /// recorded row delta, so a replica never needs this to match; `ws.get_info` reports it for diagnostics.
 pub const PLANNER_VERSION: u32 = 1;
+
+/// The entity types each operation acts on (its `entity_id` / `source_id`; the parent for `entity.create`): `"*"` any
+/// entity, empty for internal operations. `schemas/operations.json` mirrors it (`types`); `meta.ops` filters it.
+pub const OPERATION_TYPES: &[(&str, &[&str])] = &[
+    ("entity.create", &["buckyos.container", "buckyos.cell", "buckyos.table-source"]),
+    ("entity.delete", &["*"]),
+    ("entity.restore", &["*"]),
+    ("entity.rename", &["*"]),
+    ("entity.set_keys", &["*"]),
+    ("entity.unset_keys", &["*"]),
+    ("entity.set_props", &["buckyos.cell", "buckyos.container"]),
+    ("entity.set_write_policy", &["*"]),
+    ("entity.set_derived", &["*"]),
+    ("tree.move", &["*"]),
+    ("tree.place", &["*"]),
+    ("tree.clone", &["buckyos.cell", "buckyos.container"]),
+    ("entity.clone", &["buckyos.table-source", "buckyos.richtext", "buckyos.record", "buckyos.asset-ref", "buckyos.annotation", "buckyos.wish", "buckyos.block-def", "buckyos.dir"]),
+    ("data.pin", &["buckyos.table-source", "buckyos.richtext", "buckyos.record", "buckyos.asset-ref", "buckyos.annotation", "buckyos.wish", "buckyos.block-def", "buckyos.dir"]),
+    ("dir.set_member", &["buckyos.dir"]),
+    ("dir.remove_member", &["buckyos.dir"]),
+    ("dir.replace", &["buckyos.dir"]),
+    ("table.insert_records", &["buckyos.table-source"]),
+    ("table.delete_records", &["buckyos.table-source"]),
+    ("table.set_values", &["buckyos.table-source"]),
+    ("table.unset_values", &["buckyos.table-source"]),
+    ("table.set_body", &["buckyos.table-source"]),
+    ("table.add_field", &["buckyos.table-source"]),
+    ("table.update_field", &["buckyos.table-source"]),
+    ("table.delete_field", &["buckyos.table-source"]),
+    ("table.add_option", &["buckyos.table-source"]),
+    ("table.update_option", &["buckyos.table-source"]),
+    ("table.delete_option", &["buckyos.table-source"]),
+    ("table.migrate_field", &["buckyos.table-source"]),
+    ("richtext.apply_update", &["buckyos.richtext"]),
+    ("richtext.insert_blocks", &["buckyos.richtext"]),
+    ("richtext.replace_block", &["buckyos.richtext"]),
+    ("richtext.delete_blocks", &["buckyos.richtext"]),
+    ("richtext.move_block", &["buckyos.richtext"]),
+    ("table.restore_records", &["buckyos.table-source"]),
+    ("table.restore_field", &["buckyos.table-source"]),
+    ("table.restore_migration", &["buckyos.table-source"]),
+    ("data.restore_owns", &[]),
+    ("entity.purge", &[]),
+    ("system.ensure", &[]),
+];
+
+/// The operations an entity of `type_id` accepts (`meta.ops`).
+pub fn operations_for(type_id: &str) -> Vec<&'static str> {
+    OPERATION_TYPES.iter().filter(|(_, t)| t.iter().any(|x| *x == "*" || *x == type_id)).map(|(o, _)| *o).collect()
+}
 
 /// The operation catalogue: `(name, class, undo, capability)` — part of the
 /// protocol (design doc §2.5.3). `schemas/operations.json` mirrors it.
@@ -1182,8 +1241,10 @@ fn tree_clone(p: &mut Planner, op: &Value) -> OpResult {
                 }
                 None => {}
             }
-            if let Some(n) = r.name.as_deref().filter(|n| r.scope == SCOPE_SHARED && !p.name_taken(parent_id, n, "").unwrap_or(true)) {
-                create["name"] = json!(n);
+            if let Some(n) = r.name.as_deref() {
+                if !p.name_taken(parent_id, n, "", &r.scope)? && !crate::naming::entity_follows(r) {
+                    create["name"] = json!(n);
+                }
             }
         } else {
             create["parent_id"] = json!(ids.get(&edge.parent_id).ok_or_else(|| WsError::invalid_op("subtree parent missing"))?);
@@ -1231,6 +1292,9 @@ pub fn plan_commit<'a>(
         p.op_index = i;
         p.touched = vec![];
         let name = op.get("op").and_then(Value::as_str).unwrap_or("");
+        if name != "entity.create" {
+            p.sibling_cache.clear();
+        }
         let result = if is_internal_op(name) && !env.internal {
             Err(WsError::invalid_op(format!("{name} is an internal operation")))
         } else {
@@ -1582,9 +1646,6 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
         None | Some(Value::Null) => None,
         Some(Value::String(n)) => {
             check_name(n)?;
-            if scope == SCOPE_SHARED && p.name_taken(parent_id, n, id)? {
-                return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("name {n:?} already used under {parent_id}")));
-            }
             Some(n.clone())
         }
         Some(_) => return Err(WsError::invalid_op("name must be a string")),
@@ -1620,6 +1681,25 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
     }
     for k in row.payload.keys() {
         row.key_revs.insert(k.clone(), seq);
+    }
+    // a name nobody gave follows the entity (R19): its title's name, or a counter name; history records it. A given
+    // name that is just that (the title's name) moves aside like one (`-2`); another one taken is a conflict. An
+    // import keeps the package's entities as they are (its content root is verified); names are given after it.
+    if let Some(n) = row.name.clone() {
+        if p.name_taken(parent_id, &n, id, &row.scope)? {
+            if p.env.import || !crate::naming::entity_follows(&row) {
+                return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("name {n:?} already used under {parent_id}")));
+            }
+            row.name = None;
+        }
+    }
+    if row.name.is_none() && !p.env.import {
+        let n = p.follow_name(parent_id, &row, None)?;
+        norm["name"] = json!(n);
+        row.name = Some(n);
+    }
+    if let Some(sibs) = p.sibling_cache.get_mut(parent_id) {
+        sibs.push(crate::naming::Sibling { entity_id: id.to_string(), name: row.name.clone(), scope: row.scope.clone(), alive: true });
     }
     let refs = crate::types::entity_refs(&row)?;
     p.ov.set_refs(&BTreeSet::new(), &refs);
@@ -1780,12 +1860,20 @@ fn entity_restore(p: &mut Planner, op: &Value) -> OpResult {
     if !by_comment {
         p.need_lock(&parent);
     }
-    if let Some(n) = &e.name {
-        if e.scope == SCOPE_SHARED && p.name_taken(&edge.parent_id, n, id)? {
-            return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("name {n:?} is taken again")));
-        }
-    }
     let seq = p.seq();
+    // a following name moves aside (`-2`) when its place was taken meanwhile; a chosen one is a conflict
+    let taken = match e.name.clone() {
+        Some(n) => p.name_taken(&edge.parent_id, &n, id, &e.scope)?,
+        None => true,
+    };
+    if taken {
+        if e.name.is_some() && !crate::naming::entity_follows(&e) {
+            return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("name {:?} is taken again", e.name.as_deref().unwrap_or(""))));
+        }
+        e.name = Some(p.follow_name(&edge.parent_id, &e, None)?);
+        e.meta_rev = seq;
+        p.sibling_cache.remove(&edge.parent_id);
+    }
     e.deleted_seq = None;
     e.life_rev = seq;
     p.ov.put_entity(e);
@@ -1808,12 +1896,17 @@ fn entity_rename(p: &mut Planner, op: &Value) -> OpResult {
     if !p.check_rev(op.get("expect"), e.meta_rev, None, id, None, || Some(json!(old)))? {
         return Ok((op.clone(), None));
     }
+    let parent = p.ov.edge(id)?.map(|edge| edge.parent_id);
     let name = match op.get("name") {
-        Some(Value::Null) => None,
+        // `null` gives the name back to the rule (R19): it follows the title, or a counter
+        Some(Value::Null) => match &parent {
+            Some(parent) => Some(p.follow_name(parent, &e, None)?),
+            None => None,
+        },
         Some(Value::String(n)) => {
             check_name(n)?;
-            if let Some(edge) = p.ov.edge(id)? {
-                if e.scope == SCOPE_SHARED && p.name_taken(&edge.parent_id, n, id)? {
+            if let Some(parent) = &parent {
+                if p.name_taken(parent, n, id, &e.scope)? {
                     return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("name {n:?} already used")));
                 }
             }
@@ -1822,6 +1915,9 @@ fn entity_rename(p: &mut Planner, op: &Value) -> OpResult {
         _ => return Err(WsError::invalid_op("name must be a string or null").at("/name")),
     };
     let seq = p.seq();
+    if let Some(parent) = &parent {
+        p.sibling_cache.remove(parent);
+    }
     e.name = name;
     e.meta_rev = seq;
     p.ov.put_entity(e);
@@ -1935,6 +2031,19 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
     let class = crate::types::change_class(&e.type_id);
     for k in &changed {
         p.touch(id, sel(json!({ "kind": "doc_key", "key": k })), class);
+    }
+    // a name that follows the title follows it here, in the same Commit (R19); undoing the title brings it back
+    let (old_base, new_base) = (crate::naming::base_of(&before.type_id, &before.payload), crate::naming::base_of(&e.type_id, &e.payload));
+    if old_base != new_base && !is_system_id(id) && crate::naming::follows(before.name.as_deref(), &old_base) {
+        if let Some(parent) = p.ov.edge(id)?.map(|edge| edge.parent_id) {
+            let n = p.follow_name(&parent, &e, None)?;
+            p.sibling_cache.remove(&parent);
+            if e.name.as_deref() != Some(n.as_str()) {
+                e.name = Some(n);
+                e.meta_rev = seq;
+                p.touch(id, None, "renamed");
+            }
+        }
     }
     // the stored payload may have been normalized: history records what was stored
     let mut norm = op.clone();
@@ -2174,9 +2283,18 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     if !p.check_rev_opt(op.get("expect"), edge.struct_rev, None, id, None, || None)? {
         return Ok((op.clone(), None));
     }
-    if let Some(n) = &e.name {
-        if new_parent_id != edge.parent_id && e.scope == SCOPE_SHARED && p.name_taken(new_parent_id, n, id)? {
-            return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("name {n:?} already used under {new_parent_id}")));
+    // a following name moves aside in its new place (`text-3` → `text-7`); a chosen one that is taken there is a conflict
+    let mut renamed = None;
+    if new_parent_id != edge.parent_id {
+        let clash = match e.name.clone() {
+            Some(n) => p.name_taken(new_parent_id, &n, id, &e.scope)?,
+            None => true,
+        };
+        if clash {
+            if e.name.is_some() && !crate::naming::entity_follows(&e) {
+                return Err(WsError::sub(Code::InvalidOperation, "NAME_CONFLICT", format!("name {:?} already used under {new_parent_id}", e.name.as_deref().unwrap_or(""))));
+            }
+            renamed = Some(p.follow_name(new_parent_id, &e, None)?);
         }
     }
     if !from_by_comment {
@@ -2197,6 +2315,12 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     edge.struct_rev = seq;
     p.ov.put_edge(edge);
     let mut e = e;
+    if let Some(n) = renamed {
+        e.name = Some(n);
+        e.meta_rev = seq;
+        p.ov.put_entity(e.clone());
+        p.touch(id, None, "renamed");
+    }
     if let Some(slot) = op.get("slot") {
         if !slot.is_null() && !slot.as_str().is_some_and(crate::types::is_slot) {
             return Err(WsError::invalid_schema("slot must match ^[a-z0-9][a-z0-9_-]{0,31}$ or be null").at("/slot"));
