@@ -1,5 +1,5 @@
 import { useMediaQuery } from '@mui/material'
-import { ExternalLink, Hash, Link2, PanelRightOpen, PenSquare, Search, X } from 'lucide-react'
+import { ExternalLink, Hash, Link2, PanelRightOpen, PenSquare, Plus, Search, X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { WindowDialogProvider } from '../../desktop/windows/dialogs'
 import { useI18n } from '../../i18n/provider'
@@ -41,6 +41,7 @@ const selectHome = (store: HomeStationStore) => store.peekHome()
 
 function TopBar({ query, onQueryChange, showSearch, onToggleSearch, onAvatar, trailing, isMobile }: { query: ReadingQuery; onQueryChange: (patch: Partial<ReadingQuery>) => void; showSearch: boolean; onToggleSearch: () => void; onAvatar?: () => void; trailing?: React.ReactNode; isMobile: boolean }) {
   const { t } = useI18n()
+  const nav = useHsNav()
   const owner = useStoreSelector(selectOwner)
   const topics = useStoreSelector(selectTopics)
   return (
@@ -55,6 +56,17 @@ function TopBar({ query, onQueryChange, showSearch, onToggleSearch, onAvatar, tr
         </div>
         <button type="button" className="hs-icon-btn" aria-pressed={showSearch} aria-label={t('homestation.search.toggle', 'Search in this view')} onClick={onToggleSearch} data-testid="hs-search-toggle">
           <Search size={18} />
+        </button>
+        <button
+          type="button"
+          className="hs-btn is-primary shadow-sm"
+          style={{ width: 40, height: 40, padding: 0, borderRadius: '50%', flexShrink: 0 }}
+          title={t('homestation.publish.title', 'New post')}
+          aria-label={t('homestation.publish.title', 'New post')}
+          onClick={() => nav.navigate({ name: 'publish' })}
+          data-testid="hs-publish-open"
+        >
+          <Plus size={24} strokeWidth={2.5} />
         </button>
         {trailing}
       </div>
@@ -180,7 +192,7 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
   const [showSearch, setShowSearch] = useState(false)
   const [previewReader, setPreviewReader] = useState<PreviewReader>('owner')
   const [width, setWidth] = useState(1280)
-  const [infoPref, setInfoPref] = useState<'auto' | 'open' | 'closed'>('auto')
+  const [infoOpen, setInfoOpen] = useState(false)
   const [infoWidth, setInfoWidth] = useState(INFO_PANEL_DEFAULT_WIDTH)
   const [resizing, setResizing] = useState(false)
   const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
@@ -212,7 +224,6 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
   }), [isDesktop, page])
 
   const docked = width >= INFO_PANEL_HIDE_BELOW
-  const infoOpen = infoPref === 'open' || (infoPref === 'auto' && docked)
   const sidebarCollapsed = width < SIDEBAR_COLLAPSE_BELOW
 
   const selectTopic = (topicId: string | null) => {
@@ -276,7 +287,7 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
                         onAvatar={() => nav.navigate({ name: 'profile' }, { reset: true })}
                         isMobile={false}
                         trailing={!infoOpen ? (
-                          <button type="button" className="hs-icon-btn" aria-label={t('homestation.info.show', 'Show context panel')} onClick={() => setInfoPref('open')} data-testid="hs-info-open">
+                          <button type="button" className="hs-icon-btn" aria-label={t('homestation.info.show', 'Show context panel')} onClick={() => setInfoOpen(true)} data-testid="hs-info-open">
                             <PanelRightOpen size={17} />
                           </button>
                         ) : null}
@@ -303,7 +314,7 @@ export function HomeStationView({ compose }: { compose?: HomeStationCompose } = 
                       className={docked ? 'h-full flex-shrink-0' : 'absolute inset-y-0 right-0 z-40 shadow-xl'}
                       style={{ width: infoWidth, background: docked ? 'var(--cp-bg)' : 'var(--hs-panel-bg)', borderLeft: '1px solid var(--hs-divider)' }}
                     >
-                      <InfoPanel query={query} readingMode={readingMode} onQueryChange={onQueryChange} onClose={() => setInfoPref('closed')} />
+                      <InfoPanel query={query} readingMode={readingMode} onQueryChange={onQueryChange} onClose={() => setInfoOpen(false)} />
                     </div>
                   ) : null}
                 </div>

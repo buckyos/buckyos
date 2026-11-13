@@ -80,6 +80,7 @@ test.describe('iPhone media through HomeStation and the Preview Pipeline (real z
     await loginThroughUi(page)
     await page.goto('/homestation')
     await expect(page.getByTestId('homestation')).toBeVisible({ timeout: 30_000 })
+    await page.getByTestId('hs-info-open').click()
     const photos = `HEIC without converter ${Date.now().toString(36)}`
     await publish(page, photos, [{ name: 'IMG_0101.HEIC', file: 'portrait_grid.heic', mimeType: '' }])
     const hello = (await (await page.request.post('/nfs/v1/hello', { data: { args: {} } })).json()).result
@@ -111,6 +112,7 @@ test.describe('iPhone media through HomeStation and the Preview Pipeline (real z
 
     await page.goto('/homestation')
     await expect(page.getByTestId('homestation')).toBeVisible({ timeout: 30_000 })
+    await page.getByTestId('hs-info-open').click()
     const run = Date.now().toString(36)
     const photos = `iPhone HEIC DV ${run}`
     await publish(page, photos, [

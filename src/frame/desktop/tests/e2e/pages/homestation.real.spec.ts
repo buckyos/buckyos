@@ -127,6 +127,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
   test('a published text post is listed in My publications with its delivery state', async ({ page }) => {
     const errors = trackErrors(page)
     await openHomeStation(page)
+    await page.getByTestId('hs-info-open').click()
     const text = `Hello from the HomeStation e2e suite (${Date.now().toString(36)})`
     await page.getByTestId('hs-quick-text').fill(text)
     await page.getByTestId('hs-quick-submit').click()
@@ -146,6 +147,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
   test('an uploaded photo carries what its bytes say in the object itself', async ({ page }) => {
     const errors = trackErrors(page)
     await openHomeStation(page)
+    await page.getByTestId('hs-info-open').click()
     // A 6000x4000 JPEG header with EXIF and GPS: `jpeg_exif_little_endian` of the SDK's tests/media_meta_vectors.json.
     const photo = Buffer.from('/9j/4AAQSkZJRgABAgAAAQABAAD/4QAraHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLwA8eDp4bXBtZXRhLz7/4QHURXhpZgAASUkqAAgAAAAEAA8BAgAFAAAAPgAAABABAgAJAAAAQwAAAGmHBAABAAAATAAAACWIBAABAAAAHgEAAAAAAABTb255AElMQ0UtN00zAAoAmoIFAAEAAADKAAAAnYIFAAEAAADSAAAAJ4gDAAEAAACQAQAAA5ACABQAAADaAAAABJACABQAAADuAAAAEZACAAcAAAACAQAAkZICAAQAAAAxMjUACpIFAAEAAAAJAQAABaQDAAEAAABLAAAANKQCAA0AAAARAQAAAAAAAAoAAACwBAAAHAAAAAoAAAAyMDI0OjAyOjI5IDEzOjA1OjA5ADIwMjA6MDE6MDEgMDA6MDA6MDAAKzA4OjAwAIgTAABkAAAARkUgNTBtbSBGMS44AAgAAQACAAIAAABOAAAAAgAFAAMAAACEAQAAAwACAAIAAABFAAAABAAFAAMAAACcAQAABQABAAEAAAAAAAAABgAFAAEAAAC0AQAAEQAFAAEAAAC8AQAAHwAFAAEAAADEAQAAAAAAACIAAAABAAAAOwAAAAEAAABEEAAAZAAAAIcAAAABAAAALQAAAAEAAABsCQAAZAAAANIEAABkAAAAWiMAAGQAAABBAAAACgAAAP/AAAsID6AXcAEBEQD/2gAC/9k=', 'base64')
     await routeUploadsToNfsServer(page)
@@ -285,6 +287,7 @@ test.describe('HomeStation on the homestation service (devnet)', () => {
     await expect(page.getByTestId('hs-profile-list')).toContainText('Only for my own home feed')
 
     await page.goto(`/homestation?${DEV}`)
+    await page.getByTestId('hs-info-open').click()
     const text = `On the zone page too (${Date.now().toString(36)})`
     await page.getByTestId('hs-quick-text').fill(text)
     await page.getByTestId('hs-quick-zone-feed').locator('input').check()

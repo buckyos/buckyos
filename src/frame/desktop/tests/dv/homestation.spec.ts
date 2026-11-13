@@ -20,10 +20,12 @@ test.describe('HomeStation on the real zone', () => {
     await page.goto('/homestation')
     await expect(page.getByTestId('homestation')).toBeVisible({ timeout: 30_000 })
     await expect(page.getByTestId('hs-store-status')).toHaveCount(0)
+    await expect(page.getByTestId('hs-info-panel')).toHaveCount(0)
+    await page.getByTestId('hs-publish-open').click()
 
     const text = `HomeStation DV UI ${Date.now().toString(36)}`
-    await page.getByTestId('hs-quick-text').fill(text)
-    await page.getByTestId('hs-quick-submit').click()
+    await page.getByTestId('hs-publish-text').fill(text)
+    await page.getByTestId('hs-publish-submit').click()
     await expect(page.getByTestId('hs-toast').filter({ hasText: 'Published to your feed' })).toBeVisible()
     await page.getByTestId('hs-nav-published').click()
     const mine = page.getByTestId('hs-card').filter({ hasText: text })
@@ -35,6 +37,7 @@ test.describe('HomeStation on the real zone', () => {
     await loginThroughUi(page)
     await page.goto('/homestation')
     await expect(page.getByTestId('homestation')).toBeVisible({ timeout: 30_000 })
+    await page.getByTestId('hs-info-open').click()
     const text = `HomeStation DV zone page ${Date.now().toString(36)}`
     await page.getByTestId('hs-quick-text').fill(text)
     await page.getByTestId('hs-quick-zone-feed').locator('input').check()
