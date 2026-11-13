@@ -483,7 +483,7 @@ impl Service {
             ] {
                 meta_set(&doc, k, &v)?;
             }
-            for k in ["forked_from", "show_source", "show_id", "show_expires_at"] {
+            for k in ["cloned_from", "show_source", "show_id", "show_expires_at"] {
                 doc.execute("DELETE FROM workspace_meta WHERE key = ?1", [k]).map_err(db_err)?;
             }
             // the session starts from the content, not from how it was written (§3.1)

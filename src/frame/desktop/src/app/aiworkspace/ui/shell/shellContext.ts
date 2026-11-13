@@ -71,11 +71,11 @@ export function usePhone(): boolean {
 }
 
 export interface ShellApi {
-  /** Workspace-level calls outside the open session (create, fork, import, export). */
+  /** Workspace-level calls outside the open session (create, clone, import, export). */
   client: AiwsClient
   /** Leave the workspace (after the leave check) and show the list. */
   close: () => void
-  /** Leave this workspace and open another one (new workspace, template result, fork). */
+  /** Leave this workspace and open another one (new workspace, template result, clone). */
   openWorkspace: (workspaceId: string) => void
   offline: OfflineActions
   topMode: TopMode

@@ -2,7 +2,7 @@
 //!
 //! What gets hashed is content only: no entity id, name, tree position, `rev`,
 //! author or time. So renaming or moving an entity keeps its content ObjectId,
-//! equal content gives equal ids, and a Fork has the same ContentRoot as its source.
+//! equal content gives equal ids, and a Clone (`ws.clone`) has the same ContentRoot as its source.
 
 use crate::canonical::{canonical_json, named_object, parse_strict, ObjId, OBJ_TYPE_JSON};
 use crate::error::{WsError, WsResult};
@@ -309,11 +309,11 @@ pub fn materialize_with(
     Ok(Materialized { content_root: put_json(sink, &root)?, objects, excluded, unresolved })
 }
 
-pub fn snapshot_root(workspace_id: &str, seq: u64, commit_id: &str, content_root: &str, forked_from: Option<&Value>) -> Value {
+pub fn snapshot_root(workspace_id: &str, seq: u64, commit_id: &str, content_root: &str, cloned_from: Option<&Value>) -> Value {
     let mut v = json!({ "ws_type": "buckyos.workspace-snapshot", "format_version": FORMAT_VERSION,
                         "workspace_id": workspace_id, "seq": seq, "commit_id": commit_id, "content": content_root });
-    if let Some(f) = forked_from {
-        v["lineage"] = json!({ "forked_from": f });
+    if let Some(f) = cloned_from {
+        v["lineage"] = json!({ "cloned_from": f });
     }
     v
 }

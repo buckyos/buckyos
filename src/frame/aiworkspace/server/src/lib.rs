@@ -456,7 +456,7 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("ws.list", "stable"),
     ("ws.get_info", "stable"),
     ("ws.delete", "stable"),
-    ("ws.fork", "stable"),
+    ("ws.clone", "stable"),
     ("ws.grant", "stable"),
     ("ws.revoke", "stable"),
     ("ws.list_grants", "stable"),
@@ -611,7 +611,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             let subjects = tokio::runtime::Handle::current().block_on(state.auth.subjects());
             json!({ "ok": true, "subjects": subjects })
         }
-        "ws.fork" => svc.fork(caller, ws_id()?)?,
+        "ws.clone" => svc.clone_workspace(caller, ws_id()?)?,
         "ws.create_entry" => state.with_ws(ws_id()?, |ws| {
             let caps = strings(p, "capabilities")?;
             let methods = parse_entry_methods(p.get("methods").unwrap_or(&Value::Null))?;

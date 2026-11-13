@@ -78,7 +78,7 @@ fn a_public_grant_opens_the_workspace_to_guests_and_star_does_not() {
     // a guest owns and enumerates nothing
     assert_eq!(env.svc.list_workspaces(&guest).unwrap()["workspaces"], json!([]));
     assert_eq!(code(&env.svc.create_workspace(&guest, "x", None).unwrap_err().to_json()), "PERMISSION_DENIED");
-    assert_eq!(code(&env.svc.fork(&guest, &id).unwrap_err().to_json()), "PERMISSION_DENIED");
+    assert_eq!(code(&env.svc.clone_workspace(&guest, &id).unwrap_err().to_json()), "PERMISSION_DENIED");
 }
 
 fn caps_of(ws: &aiworkspace_store::workspace::Workspace, who: &Caller, id: &str) -> Vec<String> {

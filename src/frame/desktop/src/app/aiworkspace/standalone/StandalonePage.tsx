@@ -22,7 +22,7 @@ async function signOut() {
   window.location.assign(loginUrl())
 }
 
-/** Another workspace (a fork, a New dialog's pick): its own origin; the list when the service names no page. */
+/** Another workspace (a clone, a New dialog's pick): its own origin; the list when the service names no page. */
 async function goToWorkspace(workspaceId: string) {
   if (!(await openWorkspaceById(workspaceId))) window.location.assign(`${zoneOrigin()}${WORKSPACE_ROUTE}`)
 }

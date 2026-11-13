@@ -233,8 +233,8 @@ async fn v23_service_api_end_to_end() {
     assert_eq!(s2.rpc("tok-bob", "ws.list", json!({})).await["workspaces"].as_array().unwrap().len(), 1);
     assert_eq!(s2.rpc("tok-alice", "ws.list", json!({})).await["workspaces"].as_array().unwrap().len(), 1);
     drop(s2);
-    let forked = s.rpc("tok-alice", "ws.fork", w.clone()).await;
-    assert_eq!(forked["content_root"], s.rpc("tok-alice", "doc.checkpoint", w.clone()).await["content_root"]);
+    let cloned = s.rpc("tok-alice", "ws.clone", w.clone()).await;
+    assert_eq!(cloned["content_root"], s.rpc("tok-alice", "doc.checkpoint", w.clone()).await["content_root"]);
     // the replica database comes through a read token for its key
     let rep = s.rpc("tok-alice", "replica.bootstrap", w.clone()).await;
     assert!(rep.get("path").is_none());

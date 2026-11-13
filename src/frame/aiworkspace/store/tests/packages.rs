@@ -1,4 +1,4 @@
-//! Snapshots, packages, fork, privacy, assets, unknown content and URL tables
+//! Snapshots, packages, clone, privacy, assets, unknown content and URL tables
 //! (V04, V05, V14, V20, V22, V24).
 
 mod common;
@@ -106,9 +106,11 @@ fn v04_export_import_roundtrip() {
     assert_eq!(third.svc.list_workspaces(&bob()).unwrap()["workspaces"], json!([]));
 }
 
-/// V05: a Fork is independent, has the same content root at birth, and carries no session state.
+/// V05: a Clone is a materialized copy: independent, the same content root at birth, no session state, its
+/// `cloned_from` is provenance only (the source can go), and it counts its full content as its own usage.
 #[test]
-fn v05_fork() {
+fn v05_clone() {
+    use aiworkspace_core::materialize::ObjectSource;
     let env = env();
     let id = project(&env);
     {
@@ -119,36 +121,80 @@ fn v05_fork() {
             "order_key": "r", "scope": "personal", "payload": { "target": { "entity_id": "tasks" }, "kind": "note", "body": "私人" } }]));
     }
     let source_root = env.svc.workspace(&id).unwrap().lock().unwrap().checkpoint(&alice()).unwrap().content_root;
-    let f = env.svc.fork(&alice(), &id).unwrap();
-    let fid = f["workspace_id"].as_str().unwrap().to_string();
-    assert_ne!(fid, id);
+    let source_usage = env.svc.workspace(&id).unwrap().lock().unwrap().usage().unwrap();
+    let f = env.svc.clone_workspace(&alice(), &id).unwrap();
+    let cid = f["workspace_id"].as_str().unwrap().to_string();
+    assert_ne!(cid, id);
     assert_eq!(f["content_root"], json!(source_root), "internal references carry no workspace_id, so nothing is rewritten");
-    let (lineage_src, lineage_fork) = {
+    assert_eq!(f["cloned_from"]["workspace_id"], json!(id));
+    assert!(f.get("forked_from").is_none(), "{f}");
+    let source_snapshot = f["cloned_from"]["snapshot"].as_str().unwrap().to_string();
+    let (lineage_src, lineage_copy) = {
         let a = env.svc.workspace(&id).unwrap().lock().unwrap().get_collab_state(&alice(), "notes").unwrap()["lineage_id"].clone();
-        let b = env.svc.workspace(&fid).unwrap().lock().unwrap().get_collab_state(&alice(), "notes").unwrap()["lineage_id"].clone();
+        let b = env.svc.workspace(&cid).unwrap().lock().unwrap().get_collab_state(&alice(), "notes").unwrap()["lineage_id"].clone();
         (a, b)
     };
-    assert_ne!(lineage_src, lineage_fork, "a fork starts new collaboration lineages");
-    let h = env.svc.workspace(&fid).unwrap();
-    let mut fork = h.lock().unwrap();
-    assert_eq!(fork.info(&alice()).unwrap()["forked_from"]["workspace_id"], json!(id));
-    assert!(fork.read(&bob(), "tasks", None).is_err(), "grants are not copied");
-    assert!(fork.read(&alice(), "bob-private", None).is_err(), "personal entities are not copied");
-    assert_eq!(fork.list_grants(&alice()).unwrap()["grants"].as_array().unwrap().len(), 1);
-    assert_eq!(fork.read(&alice(), "note-budget", None).unwrap()["content"]["anchor"]["state"], "resolved");
+    assert_ne!(lineage_src, lineage_copy, "a clone starts new collaboration lineages");
+    let h = env.svc.workspace(&cid).unwrap();
+    let mut copy = h.lock().unwrap();
+    assert_eq!(copy.info(&alice()).unwrap()["cloned_from"], f["cloned_from"]);
+    assert!(copy.read(&bob(), "tasks", None).is_err(), "grants are not copied");
+    assert!(copy.read(&alice(), "bob-private", None).is_err(), "personal entities are not copied");
+    assert_eq!(copy.list_grants(&alice()).unwrap()["grants"].as_array().unwrap().len(), 1);
+    assert_eq!(copy.read(&alice(), "note-budget", None).unwrap()["content"]["anchor"]["state"], "resolved");
+    // C7: the objects are shared in the named store, the usage is not: the copy counts its whole content and every
+    // asset as its own (kernel doc 11), nothing stays staged, nothing counts on the source
+    let usage = copy.usage().unwrap();
+    assert!(usage["content"].as_i64().unwrap() > 0, "{usage}");
+    assert!(source_usage["assets"].as_i64().unwrap() > 0, "{source_usage}");
+    assert_eq!(usage["assets"], source_usage["assets"], "{usage} vs {source_usage}");
+    assert_eq!(usage["staged"].as_i64().unwrap_or(0), 0, "{usage}");
+    assert_eq!(usage["clones"].as_i64().unwrap_or(0), 0, "{usage}");
     // diverge
-    let rv = cell_rev(&fork, &alice(), "task-42", "owner");
-    ok(&mut fork, &alice(), set_cell("task-42", "owner", json!("fork 里改的"), rv));
-    assert_ne!(fork.checkpoint(&alice()).unwrap().content_root, source_root);
-    drop(fork);
+    let rv = cell_rev(&copy, &alice(), "task-42", "owner");
+    ok(&mut copy, &alice(), set_cell("task-42", "owner", json!("副本里改的"), rv));
+    assert_ne!(copy.checkpoint(&alice()).unwrap().content_root, source_root);
+    drop(copy);
     let h = env.svc.workspace(&id).unwrap();
     let mut src = h.lock().unwrap();
     assert_eq!(src.checkpoint(&alice()).unwrap().content_root, source_root, "the source is untouched");
     assert_eq!(src.read(&alice(), "tasks", Some(&json!({ "kind": "table_cell", "record_id": "task-42", "field_id": "owner" }))).unwrap()["content"]["value"], "林");
-    // bob (no manage, has export) may fork what he can read
+    assert_eq!(src.usage().unwrap()["clones"].as_i64().unwrap_or(0), 0, "a Workspace clone does not count on its source");
+    // bob (no manage, has export) may clone what he can read
     drop(src);
-    assert!(env.svc.fork(&bob(), &id).is_ok());
-    assert_eq!(env.svc.fork(&Caller::user("mallory"), &id).unwrap_err().code.as_str(), "NOT_FOUND");
+    assert!(env.svc.clone_workspace(&bob(), &id).is_ok());
+    assert_eq!(env.svc.clone_workspace(&Caller::user("mallory"), &id).unwrap_err().code.as_str(), "NOT_FOUND");
+    // C5: provenance only. Deleting the source leaves the copy whole: readable, writable, its snapshots still
+    // naming where it came from
+    env.svc.delete_workspace(&alice(), &id).unwrap();
+    let h = env.svc.workspace(&cid).unwrap();
+    let mut copy = h.lock().unwrap();
+    assert_eq!(copy.read(&alice(), "tasks", Some(&json!({ "kind": "table_cell", "record_id": "task-42", "field_id": "owner" }))).unwrap()["content"]["value"], "副本里改的");
+    let rv = cell_rev(&copy, &alice(), "task-42", "owner");
+    ok(&mut copy, &alice(), set_cell("task-42", "owner", json!("来源删除之后"), rv));
+    assert_eq!(copy.info(&alice()).unwrap()["cloned_from"]["workspace_id"], json!(id));
+    let cp = copy.checkpoint(&alice()).unwrap();
+    let snap: Value = serde_json::from_str(&copy.objects.get_object(&cp.snapshot_id).unwrap()).unwrap();
+    assert_eq!(snap["lineage"], json!({ "cloned_from": { "workspace_id": id, "snapshot": source_snapshot } }), "{snap}");
+    assert!(copy.objects.get_object(&source_snapshot).is_ok(), "the copy's snapshots retain the one it came from");
+}
+
+/// `ws.import new` records the package's snapshot the same way, and a restore of a clone's package keeps it.
+#[test]
+fn import_new_records_cloned_from() {
+    let env = env();
+    let id = project(&env);
+    let (pkg, manifest) = export(&env, &id, &alice(), "share", true);
+    let other = common::env();
+    let r = other.svc.import(&alice(), &pkg, "new", false).unwrap();
+    let nid = r["workspace_id"].as_str().unwrap().to_string();
+    let cloned = other.svc.workspace(&nid).unwrap().lock().unwrap().info(&alice()).unwrap()["cloned_from"].clone();
+    assert_eq!(cloned, json!({ "workspace_id": id, "snapshot": manifest["snapshot"] }));
+    // its package carries the lineage; restoring that package elsewhere keeps it
+    let (pkg2, _) = export(&other, &nid, &alice(), "share", true);
+    let third = common::env();
+    third.svc.import(&alice(), &pkg2, "restore", false).unwrap();
+    assert_eq!(third.svc.workspace(&nid).unwrap().lock().unwrap().info(&alice()).unwrap()["cloned_from"], cloned);
 }
 
 /// V14: share packages and replicas carry no private drafts, no deleted text, no other people's personal content.

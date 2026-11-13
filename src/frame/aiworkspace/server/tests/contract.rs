@@ -198,8 +198,8 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     assert_eq!((&named["created"], &again["created"], &again["workspace_id"]), (&json!(true), &json!(false), &named["workspace_id"]));
     s.rpc("ws.create", json!({ "title": "命名", "name": "contract-2" })).await;
     s.rpc("ws.time", json!({})).await;
-    let forked = s.rpc("ws.fork", wsp(json!({}))).await;
-    s.rpc("ws.delete", json!({ "workspace_id": forked["workspace_id"] })).await;
+    let cloned = s.rpc("ws.clone", wsp(json!({}))).await;
+    s.rpc("ws.delete", json!({ "workspace_id": cloned["workspace_id"] })).await;
     s.rpc("ws.delete", json!({ "workspace_id": imported["workspace_id"] })).await;
 
     // every stable method was exercised (or is listed as not coverable here)

@@ -12,7 +12,7 @@
 | [布局、模式与用户状态](06-布局模式与用户状态.md) | 定义自由与流式布局、模式的正交关系、工具栏和 App 模式，以及附加层、私有状态和草稿恢复。 |
 | [事件、宏与公式](07-事件宏与公式预留.md) | 定义事件和动作、JavaScript 宏的稳定对象 API，以及公式的值格式、前端显示求值与物化；服务端本版本不求值。 |
 | [任务执行与 AI](08-任务执行与AI.md) | 定义本地/托管执行、身份与输出授权、运行恢复和取消，以及许愿格结果管理与可选心流。 |
-| [扩展包、导入与模板](09-扩展包导入与模板.md) | 定义 PIKG 扩展的安装、引入、build 与升级，统一文件/剪贴板 Import 流水线，并说明模板与 Fork 的业务语义。 |
+| [扩展包、导入与模板](09-扩展包导入与模板.md) | 定义 PIKG 扩展的安装、引入、build 与升级，统一文件/剪贴板 Import 流水线，并说明模板与工作区 Clone 的业务语义。 |
 | [演示与打印](10-演示与打印.md) | 定义实时视角、固定演示、独立会话与回放边界，以及 Frame 手工排版、流式分页和 PDF/打印输出。 |
 | [权限、资源与保留](11-权限资源与保留.md) | 定义路径 ACL、Workspace 权限组、资源计量与准入、满额维护，以及对象保留和回收。 |
 | [接口治理与验收](12-接口治理与验收.md) | 定义 API 分级、错误语义、格式治理和跨模块验收要求，并列明后续扩展边界。 |
@@ -64,7 +64,7 @@
 ### 扩展、导入与模板（[09](09-扩展包导入与模板.md)）
 
 - **不能通过 PIKG 安装 import 扩展**：AIWS manifest 只有 `controls` 和 `workspace_templates` 两类贡献，没有 Importer 和 Source adapter。现有导入（draw.io、PDF、Office、表格、OPML / Markdown 大纲、SVG）写死在 Desktop 里，由 `classifyFile` 的结果逐个判断分派（[ui/canvas/CanvasView.tsx](../../../src/frame/desktop/src/app/aiworkspace/ui/canvas/CanvasView.tsx) `handleFiles`），每种格式有自己的对话框。没有“探测 → 候选 → 统一向导 → 损失报告”的公共流水线。需要专门开 TODO 梳理。
-- **剪贴板只在窗口内、同一 Workspace 内有效**：[ui/canvas/clipboard.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/canvas/clipboard.ts) 不使用系统剪贴板。跨 Workspace 粘贴（显式选择引用、物化导入或 Fork）和从系统剪贴板粘贴 AIWS 子图都不支持。
+- **剪贴板只在窗口内、同一 Workspace 内有效**：[ui/canvas/clipboard.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/canvas/clipboard.ts) 不使用系统剪贴板。跨 Workspace 粘贴（显式选择引用、物化导入或工作区 Clone）和从系统剪贴板粘贴 AIWS 子图都不支持。
 - **模板实例的业务管理未实现**：模板只能新建 Workspace，没有实例登记、审核确认版本，也没有跨实例汇总。
 
 ### 演示与打印（[10](10-演示与打印.md)）
@@ -127,7 +127,7 @@ flowchart TD
 | 用户私有状态 | 表单草稿、视图偏好、用户持久 UI State | 按 Workspace + User + 命名空间保存，不推进共享内容版本 |
 | Session/Presence | 选区、焦点、拖动过程、实时视角、在线状态 | 独立实时通道，不进入共享提交历史 |
 | 运行状态 | Run、执行尝试、输入快照、候选计划、同步进度、恢复信息 | 由运行协议管理，不默认进入内容分享包 |
-| 服务控制状态 | ACL、分享入口、委托、锁租约、配额预留、凭据绑定 | 按当前服务规则生效，不随普通导出或 Fork 传播 |
+| 服务控制状态 | ACL、分享入口、委托、锁租约、配额预留、凭据绑定 | 按当前服务规则生效，不随普通导出或工作区 Clone 传播 |
 | Presentation State | 固定基线、房间状态、演示事件、回放记录 | 独立授权、生命周期和保留策略 |
 
 分域不等于事务分裂。一次 Commit 必须能够原子完成“创建数据源、创建 Block、建立绑定”，以及“修改 Schema、调整依赖配置”。共享快照不得拼接不同时间的数据树与 Block Tree。

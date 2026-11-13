@@ -163,7 +163,7 @@
      }
     }
    },
-   "description": "the definitions this one builds on, resolved by ext.build from component.json deps; only build and import Commits write it. Each is a strong def_dep reference (the target cannot be deleted while used; exports and forks carry it); a cycle is REFERENCE_CYCLE."
+   "description": "the definitions this one builds on, resolved by ext.build from component.json deps; only build and import Commits write it. Each is a strong def_dep reference (the target cannot be deleted while used; exports and clones carry it); a cycle is REFERENCE_CYCLE."
   },
   "events": {
    "type": "object",

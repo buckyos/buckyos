@@ -63,10 +63,10 @@ fn delete_frees_the_name_and_copies_carry_none() {
     let env = env();
     let first = env.svc.ensure_workspace(&alice(), "schedule", None).unwrap();
     let id = first["workspace_id"].as_str().unwrap().to_string();
-    // a fork is a new Workspace without a name
-    let forked = env.svc.fork(&alice(), &id).unwrap();
-    let fork_info = env.svc.workspace(forked["workspace_id"].as_str().unwrap()).unwrap().lock().unwrap().info(&alice()).unwrap();
-    assert!(fork_info.get("name").is_none(), "{fork_info}");
+    // a clone is a new Workspace without a name
+    let cloned = env.svc.clone_workspace(&alice(), &id).unwrap();
+    let clone_info = env.svc.workspace(cloned["workspace_id"].as_str().unwrap()).unwrap().lock().unwrap().info(&alice()).unwrap();
+    assert!(clone_info.get("name").is_none(), "{clone_info}");
     env.svc.delete_workspace(&alice(), &id).unwrap();
     let second = env.svc.ensure_workspace(&alice(), "schedule", None).unwrap();
     assert_eq!(second["created"], true);

@@ -148,14 +148,14 @@ impl Workspace {
             }
         };
         let m = materialize_with(&ctx, &mut sink, &visible, &mut cached, !notes)?;
-        let forked: Option<Value> = crate::docdb::meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str(&s).ok());
-        let snap = snapshot_root(&self.workspace_id, self.head_seq, &self.head_commit_id, &m.content_root, forked.as_ref());
+        let cloned: Option<Value> = crate::docdb::meta_get(&self.doc, "cloned_from")?.and_then(|s| serde_json::from_str(&s).ok());
+        let snap = snapshot_root(&self.workspace_id, self.head_seq, &self.head_commit_id, &m.content_root, cloned.as_ref());
         let (snapshot_id, text) = named_object(OBJ_TYPE_JSON, &snap)?;
         self.objects.put_verified(&snapshot_id, &text)?;
         // every snapshot is retained (D06) by its retention set until `ws.release_retention` / `ws.delete_checkpoint`
         let mut members = BTreeMap::new();
         self.objects.add_member(&snapshot_id, &mut members)?;
-        if let Some(source) = forked.as_ref().and_then(|f| f["snapshot"].as_str()) {
+        if let Some(source) = cloned.as_ref().and_then(|f| f["snapshot"].as_str()) {
             self.objects.add_member(source, &mut members)?;
         }
         self.objects.content_members(&m.content_root, &mut members)?;
@@ -599,7 +599,7 @@ pub struct LoadSpec<'a> {
     /// Original CRDT snapshots (personal backup only): `entity_id → (lineage_id, bytes)`.
     pub collab: BTreeMap<String, (String, Vec<u8>)>,
     pub personal: Vec<Value>,
-    pub forked_from: Option<Value>,
+    pub cloned_from: Option<Value>,
 }
 
 /// Build a complete Workspace folder at `dir` from a content root: one
@@ -656,8 +656,8 @@ pub fn load_workspace(
     commit(&mut ws, "import-personal", personal)?;
     // a package of an older build may hold entities without a name: they get the names the rule gives
     crate::workspace::backfill_names(&ws.doc)?;
-    if let Some(f) = &spec.forked_from {
-        meta_set(&ws.doc, "forked_from", &f.to_string())?;
+    if let Some(f) = &spec.cloned_from {
+        meta_set(&ws.doc, "cloned_from", &f.to_string())?;
     }
     Ok(ws)
 }

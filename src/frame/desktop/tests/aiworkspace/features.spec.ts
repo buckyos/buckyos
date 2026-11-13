@@ -445,7 +445,7 @@ test('session filter and sort stay local until "save view"; structure edits: cre
   await expect(all.getByTestId('aiws-row')).toHaveCount(2)
 })
 
-test('packages: export, import as new, fork, and a restore that replaces history stops the open window (EPOCH_MISMATCH)', async ({ browser, api }) => {
+test('packages: export, import as new, clone, and a restore that replaces history stops the open window (EPOCH_MISMATCH)', async ({ browser, api }) => {
   test.setTimeout(150_000)
   const title = `包 ${Date.now()}`
   const ws = await api.sample(ALICE, title)
@@ -471,9 +471,9 @@ test('packages: export, import as new, fork, and a restore that replaces history
   expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: imported })).entities).toHaveLength(18)
   expect((await api.rpc(ALICE, 'doc.checkpoint', { workspace_id: imported })).content_root).toBe((await api.rpc(ALICE, 'doc.checkpoint', { workspace_id: ws.workspace_id })).content_root)
 
-  // fork
-  await card.getByTestId('aiws-fork').click()
-  await expect(list.getByTestId('aiws-list-message')).toContainText('已 Fork 为新的工作区')
+  // clone
+  await card.getByTestId('aiws-clone').click()
+  await expect(list.getByTestId('aiws-list-message')).toContainText('已复制为新工作区')
 
   // personal backup, then an edit in a second window, then restore + replace: the open window must stop
   await card.getByLabel('导出方式').selectOption('personal_backup')

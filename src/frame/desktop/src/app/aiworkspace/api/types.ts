@@ -32,11 +32,16 @@ export interface WorkspaceSummary {
   capabilities: Capability[]
 }
 
+export interface ClonedFrom {
+  workspace_id: string
+  snapshot: string
+}
+
 export interface WorkspaceInfo extends WorkspaceSummary {
   format_version: string
   protocol_version: string
   head_commit_id: string | null
-  forked_from: unknown
+  cloned_from: ClonedFrom | null
   /** The show presenting this Workspace (第三期规划 §8.1): document writes are closed until it ends. */
   show_lock?: ShowLockInfo | null
   /** `show` for the temporary clone of a show (§8.3). */

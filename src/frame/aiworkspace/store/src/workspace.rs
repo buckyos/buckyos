@@ -136,7 +136,7 @@ impl Caller {
             CallerClass::Service => false,
         }
     }
-    /// Creates, imports and forks Workspaces and lists the Zone's principals: unrestricted accounts and services.
+    /// Creates, imports and clones Workspaces and lists the Zone's principals: unrestricted accounts and services.
     pub fn may_own(&self) -> bool {
         matches!(self.class, CallerClass::Account { restricted: false, .. } | CallerClass::Service)
     }
@@ -1323,7 +1323,7 @@ impl Workspace {
                    "protocol_version": PROTOCOL_VERSION, "planner_version": aiworkspace_core::plan::PLANNER_VERSION,
                    "richtext_schema": aiworkspace_core::richtext::schema()["id"], "usage": self.usage()?,
                    "capabilities": access.ws_caps.names(), "principal": caller.principal,
-                   "forked_from": meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+                   "cloned_from": meta_get(&self.doc, "cloned_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                    "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose(),
                    "hosted_exec": self.hosted_exec()? });
         if let Some(name) = self.name()? {

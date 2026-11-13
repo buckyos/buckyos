@@ -197,9 +197,9 @@ fn q01_q04_q06_q07_reference_rules_numbers_views() {
         assert_eq!(chart["content"]["payload"]["view"]["type"], "sample.line-chart");
         assert_eq!(chart["content"]["payload"]["config"], json!({ "x": b["fields"]["月份"], "y": b["fields"]["销售额"] }));
         // W18: a wish bound to a table view travels: the package stages the view's Surface after the wish
-        let fork = srv.rpc("ws.fork", json!({ "title": "副本" })).await;
-        assert_eq!(fork["ok"], true, "{fork}");
-        let copy = srv.rpc("doc.read", json!({ "workspace_id": fork["workspace_id"], "entity_id": "w" })).await;
+        let cloned = srv.rpc("ws.clone", json!({})).await;
+        assert_eq!(cloned["ok"], true, "{cloned}");
+        let copy = srv.rpc("doc.read", json!({ "workspace_id": cloned["workspace_id"], "entity_id": "w" })).await;
         assert_eq!(copy["content"]["payload"]["inputs"][0]["selector"], json!({ "kind": "table_view", "cell_id": "v-east" }));
     });
 }
@@ -578,7 +578,7 @@ fn w05_w08_w12_guards() {
     });
 }
 
-/// W02 纯提示词任务 + W25 宏读取 Zone 资源 + W18 导出/导入/Fork.
+/// W02 纯提示词任务 + W25 宏读取 Zone 资源 + W18 导出/导入/Clone.
 #[test]
 fn w02_w18_w25_zero_inputs_zone_data_packages() {
     run_test(|| async move {

@@ -2,7 +2,7 @@
  * method, no behaviour of its own: retries, idempotency and the change stream live in session.ts. */
 
 import type {
-  AnnotationRead, BucketBinding, BucketDownload, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult, StagedAsset,
+  AnnotationRead, BucketBinding, BucketDownload, ChangesPage, ClonedFrom, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult, StagedAsset,
   QueryPage, QueryParams, ReadResult, Result, RunView, SqlParams, SqlResult, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, WishStageFiles, HostedExecConfig, Publication, Referrer,
@@ -29,7 +29,7 @@ export class AiwsClient {
   wsList() { return this.call<Result<{ workspaces: WorkspaceSummary[] }>>('ws.list', {}) }
   wsGetInfo(ws: Ws) { return this.call<Result<WorkspaceInfo>>('ws.get_info', ws) }
   wsDelete(ws: Ws) { return this.call<Result<object>>('ws.delete', ws) }
-  wsFork(ws: Ws) { return this.call<Result<{ workspace_id: string; epoch: string; content_root: string }>>('ws.fork', ws) }
+  wsClone(ws: Ws) { return this.call<Result<{ workspace_id: string; epoch: string; content_root: string; cloned_from: ClonedFrom; excluded_entities: number }>>('ws.clone', ws) }
   wsGrant(ws: Ws, subject: string, capabilities: Capability[], scope_entity_id?: string) {
     return this.call<Result<object>>('ws.grant', { ...ws, subject, capabilities, ...(scope_entity_id ? { scope_entity_id } : {}) })
   }

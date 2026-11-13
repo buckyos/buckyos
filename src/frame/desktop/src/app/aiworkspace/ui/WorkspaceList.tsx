@@ -1,5 +1,5 @@
 /* Workspace list: new (blank or from a template, through the same "New" dialog as inside a workspace),
- * open, import (explicit semantics), export, fork, delete; below the cards, my public classes. */
+ * open, import (explicit semantics), export, clone, delete; below the cards, my public classes. */
 
 import { useCallback, useState } from 'react'
 import { Plus, RefreshCw } from 'lucide-react'
@@ -13,12 +13,12 @@ import { MySessions } from '../session/MySessions'
 import { ExportForm, ImportForm, NewDialog, type NewTab } from './shell/dialogs'
 
 /** `restricted`: a Limited account or an External DID — it lists what was shared with it and creates, imports or
- * forks nothing (the service refuses those; hybrid SSO PRE-03). */
+ * clones nothing (the service refuses those; hybrid SSO PRE-03). */
 interface Props { client: AiwsClient; onOpen: (workspaceId: string) => void; opening: string | null; restricted?: boolean }
 
-type CardAction = 'fork' | 'delete'
-const ACTION_BUSY: Record<CardAction, string> = { fork: 'aiworkspace.core.list.forking', delete: 'aiworkspace.core.list.deleting' }
-const ACTION_FAILED: Record<CardAction, string> = { fork: 'aiworkspace.core.list.forkFailed', delete: 'aiworkspace.core.list.deleteFailed' }
+type CardAction = 'clone' | 'delete'
+const ACTION_BUSY: Record<CardAction, string> = { clone: 'aiworkspace.core.list.cloning', delete: 'aiworkspace.core.list.deleting' }
+const ACTION_FAILED: Record<CardAction, string> = { clone: 'aiworkspace.core.list.cloneFailed', delete: 'aiworkspace.core.list.deleteFailed' }
 
 export function WorkspaceList({ client, onOpen, opening, restricted = false }: Props) {
   const { t } = useAiwsText()
@@ -90,7 +90,7 @@ function WorkspaceCard({ client, workspace, busy, opening, onOpen, act, restrict
       <div className="aiws-muted">{t('aiworkspace.core.list.headSeq', { id: workspace.workspace_id, seq: workspace.head_seq })}</div>
       <div className="aiws-inline-form">
         <button type="button" className="is-primary" data-testid="aiws-open" disabled={opening} onClick={onOpen}>{opening ? t('aiworkspace.core.list.opening') : t('aiworkspace.core.list.open')}</button>
-        {can('manage') && !restricted && <button type="button" data-testid="aiws-fork" disabled={busy} onClick={() => { void act('fork', async () => { const forked = unwrap(await client.wsFork(ws)); return t('aiworkspace.core.list.forked', { id: forked.workspace_id }) }) }}>{t('aiworkspace.core.list.fork')}</button>}
+        {can('manage') && !restricted && <button type="button" data-testid="aiws-clone" disabled={busy} onClick={() => { void act('clone', async () => { const cloned = unwrap(await client.wsClone(ws)); return t('aiworkspace.core.list.cloned', { id: cloned.workspace_id }) }) }}>{t('aiworkspace.core.list.clone')}</button>}
         {can('manage') && (confirmDelete ? (
           <>
             <button type="button" className="is-danger" data-testid="aiws-delete-confirm" disabled={busy} onClick={() => { void act('delete', async () => { unwrap(await client.wsDelete(ws)); setConfirmDelete(false) }) }}>{t('aiworkspace.core.list.confirmDelete')}</button>

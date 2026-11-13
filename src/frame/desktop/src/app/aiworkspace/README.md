@@ -81,7 +81,7 @@ state/userState.ts        user work state (mode, sub-mode, active Surface, viewp
 state/recent.ts           the most recent workspace per service target and principal (app-level, localStorage)
 state/freshness.ts        subscribes to `doc.freshness`; the front end never derives freshness itself
 ui/
-  WorkspaceList.tsx       list / New (blank or template) / import / export / fork / delete
+  WorkspaceList.tsx       list / New (blank or template) / import / export / clone / delete
   WorkspaceView.tsx       store context + shell; registers the shipped Block definitions
   shell/                  WorkspaceShell (top-level views, active Surface, right panel, dialogs, layout preferences),
                           MainToolbar (icon, name, Surface switcher, data source, main menu, collaboration),
@@ -588,7 +588,7 @@ sent by reference (`assetUploader`, Q22).
 ## What is implemented
 
 - Registration as a built-in app; workspace list with create, sample, open, import (semantics must be
-  chosen), export (share / personal backup) with download, fork, delete.
+  chosen), export (share / personal backup) with download, clone (copy as a new workspace), delete.
 - Outline of all entities, flow page of cells and groups in `(order_key, entity_id)` order; create
   (group, rich text, table, record, image, extra table view), rename, delete with explicit subtree list,
   reorder and move without `expect` (auto-merge), order keys from the WASM `order_key_between`.

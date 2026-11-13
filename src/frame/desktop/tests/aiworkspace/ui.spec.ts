@@ -657,7 +657,7 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   await page.goForward()
   await page.goForward()
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', b.workspace_id, { timeout: 30_000 })
-  // switching from the main menu's New dialog / fork lands in the address too: here, the menu's "open workspace" + list
+  // switching from the main menu's New dialog / clone lands in the address too: here, the menu's "open workspace" + list
   await mainMenu(page, 'aiws-menu-open-workspace')
   await expect(page.getByTestId('aiws-list')).toBeVisible()
   await card(a.workspace_id).getByTestId('aiws-open').click()

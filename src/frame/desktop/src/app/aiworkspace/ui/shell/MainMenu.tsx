@@ -175,11 +175,11 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
       ],
     },
     {
-      id: 'fork', label: t('aiworkspace.shell.menu.fork'), disabled: !caps.includes('manage') || !live, reason: !caps.includes('manage') ? t('aiworkspace.shell.menu.needsManage') : t('aiworkspace.shell.needsOnline'),
+      id: 'clone', label: t('aiworkspace.shell.menu.clone'), disabled: !caps.includes('manage') || !live, reason: !caps.includes('manage') ? t('aiworkspace.shell.menu.needsManage') : t('aiworkspace.shell.needsOnline'),
       run: () => {
-        shell.client.wsFork({ workspace_id: store.session.workspaceId }).then((result) => unwrap(result)).then(
-          (forked) => store.notify('info', aiwsT('aiworkspace.shell.menu.forked', { id: forked.workspace_id }), { label: aiwsT('aiworkspace.shell.menu.openFork'), run: () => shell.openWorkspace(forked.workspace_id) }),
-          (error: unknown) => store.notify('error', aiwsT('aiworkspace.shell.menu.forkFailed', { error: describeError(error) })),
+        shell.client.wsClone({ workspace_id: store.session.workspaceId }).then((result) => unwrap(result)).then(
+          (cloned) => store.notify('info', aiwsT('aiworkspace.shell.menu.cloned', { id: cloned.workspace_id }), { label: aiwsT('aiworkspace.shell.menu.openClone'), run: () => shell.openWorkspace(cloned.workspace_id) }),
+          (error: unknown) => store.notify('error', aiwsT('aiworkspace.shell.menu.cloneFailed', { error: describeError(error) })),
         )
       },
     },

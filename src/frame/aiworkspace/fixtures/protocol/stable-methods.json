@@ -25,8 +25,8 @@
         "capabilities": [
           "string"
         ],
+        "cloned_from": null,
         "epoch": "string",
-        "forked_from": null,
         "format_version": "string",
         "head_commit_id": "string",
         "head_seq": "number",
@@ -1152,8 +1152,8 @@
         "capabilities": [
           "string"
         ],
+        "cloned_from": null,
         "epoch": "string",
-        "forked_from": null,
         "format_version": "string",
         "head_commit_id": "string",
         "head_seq": "number",
@@ -2235,18 +2235,18 @@
       }
     },
     {
-      "method": "ws.fork",
+      "method": "ws.clone",
       "params": {
         "workspace_id": "string"
       },
       "result": {
-        "content_root": "string",
-        "epoch": "string",
-        "excluded_entities": "number",
-        "forked_from": {
+        "cloned_from": {
           "snapshot": "string",
           "workspace_id": "string"
         },
+        "content_root": "string",
+        "epoch": "string",
+        "excluded_entities": "number",
         "head_seq": "number",
         "ok": "boolean",
         "workspace_id": "string"

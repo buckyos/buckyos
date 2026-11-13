@@ -144,11 +144,11 @@ fn only_unrestricted_accounts_and_services_own_workspaces() {
     let refused = |e: WsError| assert_eq!((e.code, e.denial), (Code::PermissionDenied, Some(Deny::SessionKindNotAllowed)), "{e}");
     for who in [limited("acme-c1"), Caller::external("did:bns:carol"), Caller::guest(GUEST_TOKEN).unwrap()] {
         refused(env.svc.create_workspace(&who, "x", None).unwrap_err());
-        refused(env.svc.fork(&who, &id).unwrap_err());
+        refused(env.svc.clone_workspace(&who, &id).unwrap_err());
         refused(aiworkspace_store::service::require_may_own(&who).unwrap_err());
     }
     assert!(env.svc.create_workspace(&Caller::service("did:bns:jarvis"), "agent's", None).is_ok());
-    assert!(env.svc.fork(&bob(), &id).is_ok());
+    assert!(env.svc.clone_workspace(&bob(), &id).is_ok());
 }
 
 #[test]

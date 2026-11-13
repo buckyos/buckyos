@@ -99,7 +99,7 @@ async fn restricted_classes_entries_and_denials() {
 
     // PRE-03: restricted classes own nothing; the refusal says why (a product boundary, not a missing grant)
     for tok in ["tok-lim", "tok-ext"] {
-        for (method, params) in [("ws.create", json!({ "title": "x" })), ("ws.list_subjects", json!({})), ("ws.import", json!({ "bucket_id": "user/aiworkspace/acme-c1/exports", "key": "import/x.bcanvas", "semantics": "new" })), ("ws.fork", wsp.clone())] {
+        for (method, params) in [("ws.create", json!({ "title": "x" })), ("ws.list_subjects", json!({})), ("ws.import", json!({ "bucket_id": "user/aiworkspace/acme-c1/exports", "key": "import/x.bcanvas", "semantics": "new" })), ("ws.clone", wsp.clone())] {
             let r = srv.rpc(tok, method, params).await;
             assert_eq!((code(&r), reason(&r)), ("PERMISSION_DENIED", "session_kind_not_allowed"), "{tok} {method}: {r}");
             assert_eq!(r["error"]["denial"]["adjust"]["party"], "product");

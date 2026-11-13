@@ -16,7 +16,7 @@ function collaboration(actor: Actor, ws: Workspace) {
   return actor.client.ok<{ lineage_id: string; snapshot: string }>('doc.get_collab_state', { workspace_id: ws.workspace_id, entity_id: 'notes' })
 }
 
-test('[logic-fork] a fork preserves local references but starts independent content, collaboration and permissions', async ({ owner, peer }, info) => {
+test('[logic-clone] a clone preserves local references but starts independent content, collaboration and permissions', async ({ owner, peer }, info) => {
   const source = await createSample(owner)
   await owner.client.ok('ws.grant', { workspace_id: source.workspace_id, subject: peer.userId, capabilities: ['read', 'export'] })
   expect((await peer.client.info(source)).workspace_id).toBe(source.workspace_id)
@@ -24,45 +24,45 @@ test('[logic-fork] a fork preserves local references but starts independent cont
   const originalRoot = await root(owner, source)
   const originalAst = await owner.client.ast(source)
   const originalCollab = await collaboration(owner, source)
-  const fork = await owner.client.ok<Workspace & { content_root: string; forked_from: { workspace_id: string } }>('ws.fork', { workspace_id: source.workspace_id })
-  owner.client.owned.add(fork.workspace_id)
-  expect(fork.workspace_id).not.toBe(source.workspace_id)
-  expect(fork.content_root).toBe(originalRoot)
-  expect(await root(owner, fork)).toBe(originalRoot)
-  expect(fork.forked_from.workspace_id).toBe(source.workspace_id)
-  const forkInfo = await owner.client.info(fork)
-  expect(forkInfo.title).toBe(owner.client.prefix)
-  expect(forkInfo.forked_from).toMatchObject({ workspace_id: source.workspace_id })
-  expect(await owner.client.ast(fork)).toEqual(originalAst)
-  const forkCollab = await collaboration(owner, fork)
-  expect(forkCollab.lineage_id).not.toBe(originalCollab.lineage_id)
-  expect(await peer.client.call<Result<WorkspaceInfo>>('ws.get_info', { workspace_id: fork.workspace_id })).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
-  expect((await peer.client.list()).workspaces.some((ws) => ws.workspace_id === fork.workspace_id)).toBe(false)
-  const view = await owner.client.ok<{ content: { payload: { source_ref: { entity_id: string } } } }>('doc.read', { workspace_id: fork.workspace_id, entity_id: 'cell-open-tasks' })
+  const copy = await owner.client.ok<Workspace & { content_root: string; cloned_from: { workspace_id: string; snapshot: string } }>('ws.clone', { workspace_id: source.workspace_id })
+  owner.client.owned.add(copy.workspace_id)
+  expect(copy.workspace_id).not.toBe(source.workspace_id)
+  expect(copy.content_root).toBe(originalRoot)
+  expect(await root(owner, copy)).toBe(originalRoot)
+  expect(copy.cloned_from.workspace_id).toBe(source.workspace_id)
+  const copyInfo = await owner.client.info(copy)
+  expect(copyInfo.title).toBe(owner.client.prefix)
+  expect(copyInfo.cloned_from).toEqual(copy.cloned_from)
+  expect(await owner.client.ast(copy)).toEqual(originalAst)
+  const copyCollab = await collaboration(owner, copy)
+  expect(copyCollab.lineage_id).not.toBe(originalCollab.lineage_id)
+  expect(await peer.client.call<Result<WorkspaceInfo>>('ws.get_info', { workspace_id: copy.workspace_id })).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
+  expect((await peer.client.list()).workspaces.some((ws) => ws.workspace_id === copy.workspace_id)).toBe(false)
+  const view = await owner.client.ok<{ content: { payload: { source_ref: { entity_id: string } } } }>('doc.read', { workspace_id: copy.workspace_id, entity_id: 'cell-open-tasks' })
   expect(view.content.payload.source_ref).toEqual({ entity_id: 'tasks', version: { mode: 'live_head' } })
   const resolved = await owner.client.ok<{ reference: { workspace_id: string; entity_id: string } }>('doc.resolve', {
-    workspace_id: fork.workspace_id, reference: view.content.payload.source_ref,
+    workspace_id: copy.workspace_id, reference: view.content.payload.source_ref,
   })
-  expect(resolved.reference).toMatchObject({ workspace_id: fork.workspace_id, entity_id: 'tasks' })
-  const note = await owner.client.ok<{ content: { anchor: { state: string } } }>('doc.read', { workspace_id: fork.workspace_id, entity_id: 'note-budget' })
+  expect(resolved.reference).toMatchObject({ workspace_id: copy.workspace_id, entity_id: 'tasks' })
+  const note = await owner.client.ok<{ content: { anchor: { state: string } } }>('doc.read', { workspace_id: copy.workspace_id, entity_id: 'note-budget' })
   expect(note.content.anchor.state).toBe('resolved')
 
   const copyTitle = '副本的独立任务'
-  const copyNote = 'Fork 后仅写入副本的内容。'
-  const forkCell = await owner.client.cell(fork, 'task-42', 'title')
-  const changed = await owner.client.commit(fork, [
-    { op: 'table.set_values', source_id: 'tasks', values: [{ record_id: 'task-42', field_id: 'title', value: copyTitle, expect: { rev: forkCell.rev } }] },
-    { op: 'richtext.insert_blocks', entity_id: 'notes', position: { after: 'n-title' }, blocks: [{ type: 'paragraph', attrs: { block_id: 'fork-only-note' }, content: [{ type: 'text', text: copyNote }] }] },
+  const copyNote = 'Clone 后仅写入副本的内容。'
+  const copyCell = await owner.client.cell(copy, 'task-42', 'title')
+  const changed = await owner.client.commit(copy, [
+    { op: 'table.set_values', source_id: 'tasks', values: [{ record_id: 'task-42', field_id: 'title', value: copyTitle, expect: { rev: copyCell.rev } }] },
+    { op: 'richtext.insert_blocks', entity_id: 'notes', position: { after: 'n-title' }, blocks: [{ type: 'paragraph', attrs: { block_id: 'copy-only-note' }, content: [{ type: 'text', text: copyNote }] }] },
   ])
-  expect(changed).toMatchObject({ status: 'accepted', seq: forkInfo.head_seq + 1 })
-  const forkRoot = await root(owner, fork)
-  expect(forkRoot).not.toBe(originalRoot)
+  expect(changed).toMatchObject({ status: 'accepted', seq: copyInfo.head_seq + 1 })
+  const copyRoot = await root(owner, copy)
+  expect(copyRoot).not.toBe(originalRoot)
   expect(await root(owner, source)).toBe(originalRoot)
   expect(await owner.client.ast(source)).toEqual(originalAst)
   expect(await collaboration(owner, source)).toEqual(originalCollab)
   expect((await owner.client.info(source)).head_seq).toBe(sourceInfo.head_seq)
-  const forkRows = await query(owner, fork, { view_id: 'cell-open-tasks' })
-  expect(forkRows.rows.find((row) => row.record_id === 'task-42')?.values.title).toBe(copyTitle)
+  const copyRows = await query(owner, copy, { view_id: 'cell-open-tasks' })
+  expect(copyRows.rows.find((row) => row.record_id === 'task-42')?.values.title).toBe(copyTitle)
 
   const originalCell = await owner.client.cell(source, 'task-42', 'title')
   const originalTitle = '原件的独立任务'
@@ -70,19 +70,19 @@ test('[logic-fork] a fork preserves local references but starts independent cont
     op: 'table.set_values', source_id: 'tasks',
     values: [{ record_id: 'task-42', field_id: 'title', value: originalTitle, expect: { rev: originalCell.rev } }],
   }])).toMatchObject({ status: 'accepted', seq: sourceInfo.head_seq + 1 })
-  expect((await owner.client.cell(fork, 'task-42', 'title')).value).toBe(copyTitle)
-  expect(await root(owner, fork)).toBe(forkRoot)
+  expect((await owner.client.cell(copy, 'task-42', 'title')).value).toBe(copyTitle)
+  expect(await root(owner, copy)).toBe(copyRoot)
   expect((await peer.client.cell(source, 'task-42', 'title')).value).toBe(originalTitle)
-  await openWorkspace(owner, fork)
+  await openWorkspace(owner, copy)
   await expect(owner.page.getByTestId('aiws-richtext-notes')).toContainText(copyNote)
   await expect(owner.page.getByTestId('aiws-table-cell-all-tasks').getByTestId('aiws-cell-task-42-title')).toContainText(copyTitle)
-  await screenshot(owner.page, info, 'fork-independent-copy')
+  await screenshot(owner.page, info, 'clone-independent-copy')
   await openWorkspace(owner, source)
   await expect(owner.page.getByTestId('aiws-richtext-notes')).not.toContainText(copyNote)
   await expect(owner.page.getByTestId('aiws-table-cell-all-tasks').getByTestId('aiws-cell-task-42-title')).toContainText(originalTitle)
-  await screenshot(owner.page, info, 'fork-independent-source')
-  await info.attach('logic-fork-verdict', {
-    body: Buffer.from(JSON.stringify({ source: source.workspace_id, fork: fork.workspace_id, initial_root: originalRoot, fork_root: forkRoot, source_lineage: originalCollab.lineage_id, fork_lineage: forkCollab.lineage_id, local_reference_workspace: resolved.reference.workspace_id, copied_grant: false, independent_titles: [originalTitle, copyTitle] })),
+  await screenshot(owner.page, info, 'clone-independent-source')
+  await info.attach('logic-clone-verdict', {
+    body: Buffer.from(JSON.stringify({ source: source.workspace_id, clone: copy.workspace_id, initial_root: originalRoot, clone_root: copyRoot, source_lineage: originalCollab.lineage_id, clone_lineage: copyCollab.lineage_id, local_reference_workspace: resolved.reference.workspace_id, copied_grant: false, independent_titles: [originalTitle, copyTitle] })),
     contentType: 'application/json',
   })
 })

@@ -393,7 +393,7 @@ HTML `parent`, composite wish results and Workspace templates (P2 / P3) are the 
 | Place | Content | Role |
 | --- | --- | --- |
 | home working copy | `/home/<owner>/AI Workspace/<workspace>/controls/<name>/` (a suggestion; the definition never stores a path, each person remembers theirs in `user_state` `aiws:src:<def_entity_id>`) | the editing entry: any editor, IDE or Agent |
-| Workspace snapshot | under a folder (default `data/extensions`, created by the first build): the definition entity (`name` = its identity) and its unnamed source directory (`buckyos.dir`, one member per file) | what a build accepted: instances, exports, forks and `pull` read it |
+| Workspace snapshot | under a folder (default `data/extensions`, created by the first build): the definition entity (`name` = its identity) and its unnamed source directory (`buckyos.dir`, one member per file) | what a build accepted: instances, exports, clones and `pull` read it |
 | library | the caller's bucket `user/aiworkspace/<owner>/library` (key `<pkg_id>/<version>/<path>`) and `library.sqlite` in the service data folder | the controls this user may bring into any Workspace |
 
 A source directory holds at most 64 files; sub-folders are allowed (Q23): a file's name is its relative path
@@ -443,11 +443,11 @@ Besides the keys it always had (`def_id`, `version`, `kind`, `title`, `descripti
 | --- | --- |
 | `ident` | `{ author_did, name }`, checked as above; `name` equals `def_id` |
 | `manifest_version` | the `component.json` version it was built from (positive integer ≤ the core's) |
-| `source_dir` | `{ entity_id }`: the live `buckyos.dir` holding the build's source snapshot; a strong `def_source` reference (the directory cannot be deleted while the definition uses it; exports and forks carry it). Not called `source`: that key is a Source (D12), which makes an entity read-only |
+| `source_dir` | `{ entity_id }`: the live `buckyos.dir` holding the build's source snapshot; a strong `def_source` reference (the directory cannot be deleted while the definition uses it; exports and clones carry it). Not called `source`: that key is a Source (D12), which makes an entity read-only |
 | `bindings`, `catalog` | as in `component.json` |
 | `agent` | the self-description text, ≤ 64 KiB |
 | `provenance` | `{ pkg_id?, version?, digest? }`: the package an import came from (absent for a local build) |
-| `deps` | `[{ ident, entity_id }]` (≤ 32): the definitions it builds on, written by `ext.build` / `ext.import` only — any other Commit that changes it is `INVALID_OPERATION` (as the build record). Each entry is a strong `def_dep` reference: the target cannot be deleted while used (`REFERENCE_BROKEN`), exports and forks carry it, and a dependency that would close a cycle is `REFERENCE_CYCLE` (`data { entity_id, cycle }`) |
+| `deps` | `[{ ident, entity_id }]` (≤ 32): the definitions it builds on, written by `ext.build` / `ext.import` only — any other Commit that changes it is `INVALID_OPERATION` (as the build record). Each entry is a strong `def_dep` reference: the target cannot be deleted while used (`REFERENCE_BROKEN`), exports and clones carry it, and a dependency that would close a cycle is `REFERENCE_CYCLE` (`data { entity_id, cycle }`) |
 | `composition` | a composite's checked `composition.json`, inline (≤ 64 KiB). The core keeps its shape only (an object, ≤ 16 slots named `[a-z][a-z0-9_]{0,31}`, `events` shaped as below); what it means is the build's and the clients' (Q15) |
 | `events` | (P2) `{ <name>: { title?, description?, params?, from? } }`, written by builds and imports only (as `deps`); ≤ 16 names, ≤ 16 KiB |
 
@@ -979,7 +979,7 @@ user/aiworkspace/<owner>/exports  (data, temp 7 d)  <ws>/export/<id>.bcanvas, <w
 named store reclaims what no binding holds. An asset is bound from its upload on: while staged (24 h unless a Commit
 references it), while an alive entity references it (`assets.ended_seq IS NULL`) and through its retention period as
 history (`history_retention_days`, 30 by default); `ws.purge_deleted` ends it at once. Every snapshot (checkpoints, exports,
-fork sources, import checks) and the versions a Commit generates are bound as one **retention set**: a DirObject naming every
+clone sources, import checks) and the versions a Commit generates are bound as one **retention set**: a DirObject naming every
 object of their closure, so the named store's cascade (which follows Dir / File / ChunkList, not `jobj`) keeps all of it.
 `ws.delete_checkpoint` / `ws.release_retention` unbind; the hourly sweep (`Service::sweep`) unbinds expired uploads and
 history and, after 30 days, what a trashed Workspace held. The `usage` ledger (`ws.get_info.usage`: `content`, `assets`,
@@ -1177,7 +1177,7 @@ an **account** (principal = user id; *restricted* when its session carries a cei
 token is checked with `verify_session_token_opened(token, aiworkspace)` — a restricted session without the
 `aiworkspace` scope is refused before anything else; the class comes from the claims (`principal_kind`, `external`,
 `restricted`, `auth_method`), never from the shape of the principal. Restricted accounts, Externals and guests own
-nothing: `ws.create`, `ws.import`, `ws.fork` and `ws.list_subjects` refuse them
+nothing: `ws.create`, `ws.import`, `ws.clone` and `ws.list_subjects` refuse them
 (`session_kind_not_allowed`); `ws.list` shows them only Workspaces granted to them (by name, group, contact or a joined
 entry — never through `public` or `*`).
 
@@ -1363,9 +1363,24 @@ content token (a hash) it stands for. New kinds are protocol changes.
 `ws.ensure` and never changed (no method changes it); the title stays independent and editable. It is unique among the
 Workspaces of one owner (`local_meta` `owner` and `name` of `local.sqlite`, never exported). `ws.ensure { name, title? }` returns
 the caller's Workspace of that name or creates it; concurrent calls create one (the service serializes the lookup and the
-creation over an `(owner, name)` index read from the folders on first use). `ws.delete` frees the name. Fork, `ws.import`
+creation over an `(owner, name)` index read from the folders on first use). `ws.delete` frees the name. `ws.clone`, `ws.import`
 `new` and a restore that creates a missing Workspace carry no name; a restore over an existing Workspace keeps its name; a show
 clone has none.
+
+**Workspace clone (`ws.clone`, `notepads/aiws-workspace-clone-todo.md`).** A materialized copy, not copy-on-write
+(`store/src/service.rs` `clone_workspace`): what the caller may read is materialized as a `clone_source` snapshot and loaded
+as a new Workspace (the path of `ws.import new`): a new id and epoch, the caller as owner, one import Commit, rich texts
+as new lineages. Immutable objects stay shared in the named store; the logical data (`doc.sqlite`) is a copy of its own
+and its full content and every asset count on the new Workspace's `usage` (kernel doc 11: what a Workspace is charged does
+not depend on deduplication below it). Entities the caller cannot read are left out and counted in `excluded_entities`.
+`cloned_from { workspace_id, snapshot }` (kept in `workspace_meta`, shown by `ws.get_info`, written into every snapshot
+root as `lineage.cloned_from`, so its checkpoints retain the source snapshot) is provenance only: no sync, no merge, and
+deleting the source does not touch the copy. Nothing of `local.sqlite` comes along — grants, entries, publications, runs,
+uploads, hosted execution, the name — and neither do personal entities. `ws.import new` records the package's snapshot
+the same way; a restore keeps what its package recorded. The caller must be able to own Workspaces (above) and have
+workspace-level `export` on the source. Not to be confused with `tree.clone` / `entity.clone` (a Commit copying a
+subtree inside one Workspace), a show clone (`clone_for_show`, the frozen baseline of a live show) or a session's run
+Workspace (`clone_for_session`).
 
 **Method levels (D11).** `stable` methods are the contract other Apps, Agents and SDKs may depend on: they change
 only with `protocol_version`, and each has a contract test against a recorded request / response shape
@@ -1378,7 +1393,8 @@ browser-first execution and the three wish stages). The list is `server/src/lib.
 | `ws.create` | stable | `title`, `workspace_id?`, `name?` (see “Workspace names”; a name the caller already uses is `INVALID_OPERATION` / `NAME_CONFLICT` with `data.workspace_id`) → `workspace_id`, `epoch`, `head_seq`, `title`, `name?` |
 | `ws.ensure` | stable | `name`, `title?` (default: the name), no `workspace_id` → `workspace_id`, `name`, `title`, `epoch`, `head_seq`, `created` — the caller's Workspace of that name, created when it has none (callers as for `ws.create`) |
 | `ws.time` | stable | none → `server_ms` (unix ms of the service clock); any session, guests included |
-| `ws.list`, `ws.get_info`, `ws.delete`, `ws.fork` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one) |
+| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.cloned_from` names the source of a clone or a `new` import) |
+| `ws.clone` | stable | none → `workspace_id`, `epoch`, `head_seq`, `content_root`, `cloned_from { workspace_id, snapshot }`, `excluded_entities` — a new Workspace the caller owns, copied from what the caller may read (workspace-level `export`; see “Workspace clone”) |
 | `ws.grant` / `ws.revoke` / `ws.list_grants` | stable | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row (with `via_entry`) and the `owner` to a manager, only the rows that apply to the caller otherwise (`complete: false`, no owner). Subjects: see the table above |
 | `ws.list_subjects` | stable | principals a grant can name (static identities / zone users and `group:` subjects) |
 | `ws.create_entry` | stable | `capabilities[]`, `methods`, `scope_entity_id?`, `expires_at?` → `entry` (`manage` on the scope) |

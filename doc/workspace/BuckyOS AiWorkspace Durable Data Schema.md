@@ -39,11 +39,11 @@
 
 | 根 | 闭包 |
 | --- | --- |
-| 快照 `<ws>/snapshot/<snapshot_id>` | 快照根 `jobj`、内容根、`entities` 文件、每个实体内容对象及其 `records` / `doc` 文件、`cydir`（目录实体）、实体引用且在库的资产、谱系里的来源快照（`lineage.forked_from.snapshot`，在库时） |
+| 快照 `<ws>/snapshot/<snapshot_id>` | 快照根 `jobj`、内容根、`entities` 文件、每个实体内容对象及其 `records` / `doc` 文件、`cydir`（目录实体）、实体引用且在库的资产、谱系里的来源快照（`lineage.cloned_from.snapshot`，在库时） |
 | 生成版本 `<ws>/version/<epoch>/<seq>` | 该 Commit 中每个 `entity.set_derived` 实体的内容对象及其文件、`cydir`、资产 |
 | 固定版本 `<ws>/fixed/<content_root>` | 该实体内容对象及其文件（发布方被读固定版本时写入，7 天） |
 
-每次物化（checkpoint、export、fork 源、导入校验）都写一个快照行并绑定其保留集，与原先“每个快照都是保留根”一致。
+每次物化（checkpoint、export、Clone 源、导入校验）都写一个快照行并绑定其保留集，与原先“每个快照都是保留根”一致。
 
 ### 3.3 写入路径（谁 pin）
 

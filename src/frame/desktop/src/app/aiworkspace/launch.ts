@@ -22,7 +22,7 @@ export async function workspaceLaunchUrl(url: string): Promise<string> {
   return launch?.status === 'ready' ? launch.callback_url : url
 }
 
-/** A workspace by id (picked from the list, a fork, a New dialog's choice): its page as the service names it. False
+/** A workspace by id (picked from the list, a clone, a New dialog's choice): its page as the service names it. False
  * when there is no page to go to (a deployment without a host). */
 export async function openWorkspaceById(workspaceId: string): Promise<boolean> {
   const availability = resolveTransport()

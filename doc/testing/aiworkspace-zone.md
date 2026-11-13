@@ -142,7 +142,7 @@ pnpm exec playwright test --config=playwright.aiworkspace.zone.config.ts \
 这里没有注入存储故障、杀进程或重启服务，因此不把验证范围扩展为崩溃恢复。
 两条均不调用模型。
 
-## Fork 与分页一致性
+## 工作区 Clone 与分页一致性
 
 本轮仅运行 `aiworkspace.integrity.spec.ts` 的两条逻辑用例：
 
@@ -153,10 +153,10 @@ pnpm exec playwright test --config=playwright.aiworkspace.zone.config.ts \
 
 | 选择器 | 逻辑路径 | 独立验收 |
 | --- | --- | --- |
-| `-g logic-fork` | 给第二个真实用户授予原件读取权限，Fork，随后分别修改副本和原件 | 初始 ContentRoot 和正文一致；协作 lineage 不同，原件授权不复制；本地引用在副本中解析为副本工作区，预算批注仍有正确锚点；副本改表格和正文不改变原件，原件随后改表格不影响副本 |
+| `-g logic-clone` | 给第二个真实用户授予原件读取权限，`ws.clone`，随后分别修改副本和原件 | 初始 ContentRoot 和正文一致，`cloned_from` 指向原件；协作 lineage 不同，原件授权不复制；本地引用在副本中解析为副本工作区，预算批注仍有正确锚点；副本改表格和正文不改变原件，原件随后改表格不影响副本 |
 | `-g logic-pagination` | 按数值预算每页读取两行，第一页后把另一行预算调低，使其排序位置跨过游标；用旧游标继续，再从第一页重读 | 旧游标返回可重试的 `SNAPSHOT_EXPIRED`；重读各页同一 source revision，页大小为 2、2、1，五条记录无重复或遗漏，按数值而非字符串排序；失败请求与查询不产生额外提交或改变内容根 |
 
-Fork 对应 V05，分页对应内置对象设计 §2.5.4 的一致性裁决。
+工作区 Clone 对应 V05，分页对应内置对象设计 §2.5.4 的一致性裁决。
 本轮验证内置 TableSource 的分页；URL 查询源使用自己的快照协议，需要单独验收。
 
 ## 证据与清理

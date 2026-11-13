@@ -193,7 +193,7 @@ impl Service {
         self.data_dir.join("workspaces").join(id)
     }
 
-    /// Drop a folder that never became a Workspace (a failed import or fork), its bindings with it.
+    /// Drop a folder that never became a Workspace (a failed import or clone), its bindings with it.
     pub(crate) fn discard(&self, dir: &Path) {
         if let Err(e) = self.release_folder(dir) {
             log::warn!("release bindings of {}: {e}", dir.display());
@@ -439,7 +439,7 @@ impl Service {
     }
 
     /// `ws.import`. The semantics must be chosen explicitly:
-    /// `new` (= Fork: fresh id, importer becomes owner) or `restore` (keeps the
+    /// `new` (as `ws.clone`: fresh id, importer becomes owner, `cloned_from` records the package's snapshot) or `restore` (keeps the
     /// package's id; replacing an existing Workspace needs `replace: true` *and*
     /// `manage` on the existing one — nothing inside the package grants anything).
     pub fn import(&self, caller: &Caller, package: &Path, semantics: &str, replace: bool) -> WsResult<Value> {
@@ -457,7 +457,7 @@ impl Service {
         let title = m["title"].as_str().unwrap_or("");
         let personal_backup = m["export_mode"] == json!("personal_backup");
         let mut lease = None;
-        let (id, forked_from, existing) = match semantics {
+        let (id, cloned_from, existing) = match semantics {
             "new" => {
                 let id = lease.insert(self.allocate_workspace_id()?).id.clone();
                 (id, Some(json!({ "workspace_id": source_id, "snapshot": snapshot })), false)
@@ -476,7 +476,7 @@ impl Service {
                         return Err(denied());
                     }
                 }
-                (source_id.clone(), snap.get("lineage").and_then(|l| l.get("forked_from")).cloned(), exists)
+                (source_id.clone(), snap.get("lineage").and_then(|l| l.get("cloned_from")).cloned(), exists)
             }
             _ => return Err(WsError::invalid_op("semantics must be \"restore\" or \"new\"")),
         };
@@ -496,7 +496,7 @@ impl Service {
             false => caller.principal.clone(),
         };
         let tmp = self.tmp_dir();
-        let spec = LoadSpec { workspace_id: &id, title, content_root, collab, personal, forked_from };
+        let spec = LoadSpec { workspace_id: &id, title, content_root, collab, personal, cloned_from };
         let ws = match load_workspace(&tmp, spec, caller, &owner, self.objects.clone(), self.clock.clone()) {
             Ok(ws) => ws,
             Err(e) => {
@@ -554,16 +554,16 @@ impl Service {
         Ok(info)
     }
 
-    /// `ws.fork`: materialize what the caller may read, then load it as a new
+    /// `ws.clone`: materialize what the caller may read, then load it as a new
     /// Workspace. No grants, runs, uploads or personal entities are copied;
-    /// rich texts start new lineages.
-    pub fn fork(&self, caller: &Caller, source_id: &str) -> WsResult<Value> {
+    /// rich texts start new lineages. `cloned_from` is provenance only.
+    pub fn clone_workspace(&self, caller: &Caller, source_id: &str) -> WsResult<Value> {
         require_may_own(caller)?;
         let (cp, title) = {
             let handle = self.workspace(source_id)?;
             let ws = handle.lock().unwrap();
             let access = ws.require_ws(caller, Cap::Export)?;
-            (ws.materialize_for(&access, "fork_source", &caller.principal)?, ws.title())
+            (ws.materialize_for(&access, "clone_source", &caller.principal)?, ws.title())
         };
         let lease = self.allocate_workspace_id()?;
         let id = lease.id.clone();
@@ -574,7 +574,7 @@ impl Service {
             content_root: &cp.content_root,
             collab: Default::default(),
             personal: vec![],
-            forked_from: Some(json!({ "workspace_id": source_id, "snapshot": cp.snapshot_id })),
+            cloned_from: Some(json!({ "workspace_id": source_id, "snapshot": cp.snapshot_id })),
         };
         let ws = match load_workspace(&tmp, spec, caller, &caller.principal, self.objects.clone(), self.clock.clone()) {
             Ok(ws) => ws,
@@ -584,7 +584,7 @@ impl Service {
             }
         };
         let info = json!({ "ok": true, "workspace_id": id, "epoch": ws.epoch, "head_seq": ws.head_seq, "content_root": cp.content_root,
-                           "forked_from": { "workspace_id": source_id, "snapshot": cp.snapshot_id }, "excluded_entities": cp.excluded });
+                           "cloned_from": { "workspace_id": source_id, "snapshot": cp.snapshot_id }, "excluded_entities": cp.excluded });
         drop(ws);
         std::fs::rename(&tmp, self.ws_dir(&id)).map_err(io)?;
         Ok(info)
@@ -603,7 +603,7 @@ impl Service {
         let id = lease.id.clone();
         let title = title.filter(|t| !t.trim().is_empty()).or_else(|| tf.item["title"].as_str()).unwrap_or("Workspace").to_string();
         let tmp = self.tmp_dir();
-        let spec = LoadSpec { workspace_id: &id, title: &title, content_root: &root, collab: Default::default(), personal: vec![], forked_from: None };
+        let spec = LoadSpec { workspace_id: &id, title: &title, content_root: &root, collab: Default::default(), personal: vec![], cloned_from: None };
         let mut ws = match load_workspace(&tmp, spec, caller, &caller.principal, self.objects.clone(), self.clock.clone()) {
             Ok(ws) => ws,
             Err(e) => {
@@ -623,7 +623,7 @@ impl Service {
     }
 }
 
-/// Workspaces are created, imported and forked — and the Zone's principals listed — by unrestricted accounts and
+/// Workspaces are created, imported and cloned — and the Zone's principals listed — by unrestricted accounts and
 /// services only: a guest, an External DID or a restricted (Limited) account owns nothing (PRE-03).
 /// Write-then-rename so a crash never leaves a half-written file under its name.
 fn write_atomic(path: &Path, bytes: &[u8]) -> WsResult<()> {
