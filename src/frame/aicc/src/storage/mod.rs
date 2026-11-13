@@ -1272,7 +1272,7 @@ impl AiccStorage {
             "finance_currency,COUNT(*) AS total_requests,\
              COALESCE(SUM(COALESCE(input_tokens,0)),0) AS input_tokens,\
              COALESCE(SUM(COALESCE(output_tokens,0)),0) AS output_tokens,\
-             COALESCE(SUM(COALESCE(total_tokens,0)),0) AS total_tokens,\
+             COALESCE(SUM(COALESCE(total_tokens,COALESCE(input_tokens,0)+COALESCE(output_tokens,0))),0) AS total_tokens,\
              COALESCE(SUM(CASE WHEN request_units IS NULL OR request_units<1 THEN 1 ELSE request_units END),0) AS request_units,\
              COALESCE(SUM(CASE WHEN finance_valid=1 THEN finance_amount ELSE 0 END),0.0) AS finance_amount,\
              COALESCE(SUM(finance_valid),0) AS valid_finance_count \
@@ -2004,7 +2004,9 @@ fn aggregate<'a>(events: impl IntoIterator<Item = &'a AiccUsageEvent>) -> UsageA
         a.total_requests += 1;
         a.input_tokens += e.input_tokens.unwrap_or(0);
         a.output_tokens += e.output_tokens.unwrap_or(0);
-        a.total_tokens += e.total_tokens.unwrap_or(0);
+        a.total_tokens += e
+            .total_tokens
+            .unwrap_or_else(|| e.input_tokens.unwrap_or(0) + e.output_tokens.unwrap_or(0));
         a.consumed_request_units += e.request_units.unwrap_or(1).max(1);
         match e.finance_snapshot_json.as_ref().and_then(valid_finance) {
             Some((amount, currency)) => {
@@ -3197,6 +3199,67 @@ mod tests {
         let mut next = request;
         next.cursor = first.next_cursor;
         assert_eq!(db.query_usage(&next, 20_000).await.unwrap().events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn five_minute_usage_buckets_preserve_boundaries_and_token_totals() {
+        let db = db().await;
+        for (id, at, tenant, input, output, total) in [
+            ("before", 300_000, "tenant-a", Some(100), Some(50), Some(150)),
+            ("start", 300_001, "tenant-a", Some(10), Some(5), Some(15)),
+            ("last", 599_999, "tenant-a", Some(20), Some(7), None),
+            ("next", 600_000, "tenant-a", Some(30), Some(9), None),
+            ("input-only", 600_001, "tenant-a", Some(40), None, None),
+            ("output-only", 600_002, "tenant-a", None, Some(11), None),
+            ("explicit-zero", 600_003, "tenant-a", Some(2), Some(3), Some(0)),
+            ("missing", 600_004, "tenant-a", None, None, None),
+            ("total-only", 600_005, "tenant-a", None, None, Some(12)),
+            ("other", 900_000, "tenant-b", Some(100), Some(50), None),
+            ("end", 1_200_000, "tenant-a", Some(100), Some(50), None),
+        ] {
+            let mut event = completion(id, id, id, at);
+            event.tenant_id = tenant.into();
+            event.usage = Some(AiUsage {
+                input_tokens: input,
+                output_tokens: output,
+                total_tokens: total,
+                ..AiUsage::default()
+            });
+            db.write_provider_completion(event).await.unwrap();
+        }
+        let request: QueryUsageRequest = serde_json::from_value(json!({
+            "time_range": {
+                "kind": "explicit",
+                "start_time_ms": 300_001,
+                "end_time_ms": 1_200_000
+            },
+            "filters": { "tenant_ids": ["tenant-a"] },
+            "group_by": ["provider_instance_name"],
+            "time_bucket": "five_minutes",
+            "output_mode": "summary_and_events"
+        }))
+        .unwrap();
+        let result = db.query_usage(&request, 1_200_000).await.unwrap();
+        assert_eq!(result.total.total_requests, 8);
+        assert_eq!(result.total.input_tokens, 102);
+        assert_eq!(result.total.output_tokens, 35);
+        assert_eq!(result.total.total_tokens, 144);
+        assert_eq!(result.grouped.len(), 1);
+        assert_eq!(result.grouped[0].aggregate, result.total);
+        assert_eq!(aggregate(&result.events), result.total);
+        assert_eq!(
+            result
+                .buckets
+                .iter()
+                .map(|bucket| (
+                    bucket.bucket_start_ms,
+                    bucket.aggregate.input_tokens,
+                    bucket.aggregate.output_tokens,
+                    bucket.aggregate.total_tokens,
+                ))
+                .collect::<Vec<_>>(),
+            vec![(300_000, 30, 12, 42), (600_000, 72, 23, 102)]
+        );
     }
 
     #[test]

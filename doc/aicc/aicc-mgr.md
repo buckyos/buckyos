@@ -449,11 +449,14 @@ Response 直接复用 `buckyos_api::QueryUsageResponse`：
 - UI 的 `UsageSummary` 应优先使用 `usage.query` 的 summary / grouped / bucketed 结果；时间范围由前端按浏览器时区换算成 `explicit` 的 `start_time_ms` / `end_time_ms` 传给后端，避免依赖服务端本地时区。
 - `Usage Detail` 原始事件必须使用 `output_mode=events` + `limit` + `cursor` 分页加载，不应为了前端分页或统计一次性加载全部事件。
 - `Usage Detail` 的 Provider / Model / App 筛选应通过 `provider_instance_names`、`provider_instance_query`、`provider_models`、`provider_model_query`、`caller_app_ids`、`caller_app_query` 下推到后端；数组字段表示多选精确匹配，`*_query` 表示前端输入框的模糊匹配文本。
+- `time_bucket` 支持 `five_minutes`、`hour`、`day`，按 Unix 时间对齐分桶；`explicit` 查询区间为 `[start_time_ms, end_time_ms)`，边缘桶只统计区间内事件。`buckets` 仅返回有事件的桶，前端按需补零。
+- 聚合的 `total_tokens` 逐事件优先使用已上报总量（包括显式的 `0`）；事件未上报总量时累加其输入与输出 Token，缺失的单项按 `0` 计算。该规则统一适用于 `total`、`grouped` 和 `buckets`，原始事件保留上报值。
 
 建议前端调用：
 
 - Summary：`time_range.kind=explicit`, `output_mode=summary`, `group_by=["provider_model"]`。
 - Trend：`time_range.kind=explicit`, `time_bucket=day`, `output_mode=summary`。
+- Desktop 系统状态：Token 柱状图使用 `time_bucket=five_minutes`，读取各桶的 `aggregate.input_tokens` / `aggregate.output_tokens`；最近 1、5、24 小时总量分别用对应 `explicit` 区间的 `total`。管理员可指定 `zone_wide=true` 查看整个 Zone，默认仅统计当前租户。
 
 ### 4.8 `driver_metadata_update.get` / `driver_metadata_update.set`
 

@@ -11,6 +11,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { fetchSystemMetrics, type SystemMetrics } from '../api/system_metrics'
+import { fetchSystemTokenUsage, type SystemTokenUsage } from '../api/system_token_usage'
+import { isPrivilegedUserType } from '../api/user_type'
+import type { CurrentUser } from '../presentation/currentUser'
 
 const longPressMs = 450
 const longPressTolerance = 12
@@ -234,14 +237,19 @@ export interface SystemStatusState {
   metrics: SystemMetrics | null
   /** The last fetch failed; `metrics` may still hold an older reading. */
   failed: boolean
+  tokenUsage: SystemTokenUsage | null
+  tokenUsageFailed: boolean
 }
 
 const metricsPollMs = 5_000
 const metricsRetryMs = 30_000
 
 /** Polls `system.metrics` while `active` and the page is visible. */
-export function useSystemStatus(active: boolean): SystemStatusState {
-  const [state, setState] = useState<SystemStatusState>({ metrics: null, failed: false })
+export function useSystemStatus(active: boolean, usageActive: boolean, user: CurrentUser | null): SystemStatusState {
+  const [state, setState] = useState<{ metrics: SystemMetrics | null; failed: boolean }>({ metrics: null, failed: false })
+  const [usage, setUsage] = useState<{ key: string; data: SystemTokenUsage | null; failed: boolean } | null>(null)
+  const zoneWide = isPrivilegedUserType(user?.userType)
+  const usageKey = user ? `${user.userId}:${zoneWide}` : null
   useEffect(() => {
     if (!active) return
     let cancelled = false
@@ -264,5 +272,27 @@ export function useSystemStatus(active: boolean): SystemStatusState {
       window.clearTimeout(timer)
     }
   }, [active])
-  return state
+  useEffect(() => {
+    if (!active || !usageActive || !usageKey) return
+    let cancelled = false
+    let timer: number | undefined
+    const tick = async () => {
+      if (document.visibilityState === 'visible') {
+        const { data } = await fetchSystemTokenUsage(zoneWide)
+        if (cancelled) return
+        setUsage({ key: usageKey, data, failed: !data })
+      }
+      timer = window.setTimeout(() => void tick(), 60_000)
+    }
+    void tick()
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [active, usageActive, usageKey, zoneWide])
+  return {
+    ...state,
+    tokenUsage: usage?.key === usageKey ? usage?.data ?? null : null,
+    tokenUsageFailed: usage?.key === usageKey && usage?.failed === true,
+  }
 }

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { useSyncExternalStore, type CSSProperties, type ReactNode, type Ref } from 'react'
 import type { SystemMetrics } from '../api/system_metrics'
+import type { SystemTokenUsage } from '../api/system_token_usage'
 import type { DesktopAppItem } from '../app/types'
 import { AppIcon } from '../components/DesktopVisuals'
 import { appIconSurfaceStyle } from '../components/DesktopVisualTokens'
@@ -379,6 +380,10 @@ function formatGb(value: number, locale: string) {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: value < 100 ? 1 : 0 }).format(value)
 }
 
+function formatTokens(value: number) {
+  return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(2)}M` : `${(value / 1_000).toFixed(2)}K`
+}
+
 function formatRate(bytesPerSec: number, locale: string) {
   const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
   let value = Math.max(0, bytesPerSec)
@@ -469,6 +474,68 @@ function UsageRow({
   )
 }
 
+function TokenUsageChart({ usage, failed }: { usage: SystemTokenUsage | null; failed: boolean }) {
+  const { locale, t } = useI18n()
+  const peak = Math.max(0, ...usage?.buckets.map((bucket) => bucket.inputTokens + bucket.outputTokens) ?? [])
+  const scaleMax = Math.max(200_000, peak)
+  const empty = usage?.buckets.every((bucket) => bucket.inputTokens + bucket.outputTokens === 0)
+  const formatTime = (value: number) => new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(value)
+  const inputLabel = t('shell.status.tokenInput', 'Input')
+  const outputLabel = t('shell.status.tokenOutput', 'Output')
+
+  return (
+    <div className="space-y-1 px-4 pb-2" data-testid="taskbar-token-chart">
+      <div className="flex items-center justify-between gap-2 text-[12px]">
+        <span className="whitespace-nowrap text-[10px] tabular-nums text-[color:var(--cp-muted)]">
+          {t('shell.status.tokenPeak', 'AI Token peak {{count}}', { count: usage ? formatTokens(peak) : '--' })}
+        </span>
+        <span className="flex gap-2.5 text-[10px] text-[color:var(--cp-muted)]">
+          <span className="inline-flex items-center gap-1"><span className="size-1.5 rounded-sm bg-[#60a5fa]" />{inputLabel}</span>
+          <span className="inline-flex items-center gap-1"><span className="size-1.5 rounded-sm bg-[#fb923c]" />{outputLabel}</span>
+        </span>
+      </div>
+      <div className="relative h-8">
+        {usage ? (
+          <div className="relative flex h-full items-end gap-0.5" role="group" aria-label={t('shell.status.tokenInterval', 'Last hour · 5 min / bar')}>
+            {usage.buckets.map((bucket) => {
+              const label = `${formatTime(Math.max(usage.startTimeMs, bucket.startTimeMs))}–${formatTime(Math.min(usage.endTimeMs, bucket.startTimeMs + 300_000))} · ${inputLabel}: ${bucket.inputTokens.toLocaleString(locale)} · ${outputLabel}: ${bucket.outputTokens.toLocaleString(locale)}`
+              return (
+                <div
+                  key={bucket.startTimeMs}
+                  data-testid="taskbar-token-bucket"
+                  role="img"
+                  aria-label={label}
+                  title={label}
+                  tabIndex={0}
+                  className="relative h-full w-px shrink-0 outline-offset-2 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[color:var(--cp-accent)]"
+                >
+                  <div
+                    aria-hidden
+                    className="absolute inset-0 flex flex-col justify-end"
+                    style={{ maskImage: 'repeating-linear-gradient(to top, #000 0 1px, transparent 1px 3px)' }}
+                  >
+                    <span className="w-full bg-[#fb923c]" style={{ height: `${bucket.outputTokens / scaleMax * 100}%` }} />
+                    <span className="w-full bg-[#60a5fa]" style={{ height: `${bucket.inputTokens / scaleMax * 100}%` }} />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ) : null}
+        {!usage || empty ? (
+          <p role="status" className="absolute inset-0 flex items-center justify-center text-[11px] text-[color:var(--cp-muted)]">
+            {failed
+              ? t('shell.status.tokensUnavailable', 'Token usage is unavailable.')
+              : usage
+                ? t('shell.status.tokensEmpty', 'No tokens used in the last hour')
+                : t('shell.status.tokensLoading', 'Reading token usage...')}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 export function SystemStatusCard({
   cardRef,
   connectionState,
@@ -485,7 +552,7 @@ export function SystemStatusCard({
   style: CSSProperties
 }) {
   const { locale, t } = useI18n()
-  const { metrics } = status
+  const { metrics, tokenUsage } = status
   const level = metrics ? worstLevel(metrics) : null
   const LevelIcon = level === 'critical' ? OctagonAlert : level === 'warning' ? TriangleAlert : CircleCheck
   const levelLabel =
@@ -528,11 +595,6 @@ export function SystemStatusCard({
             percent={metrics.memory.usagePercent}
             detail={`${formatGb(metrics.memory.usedGb, locale)} / ${formatGb(metrics.memory.totalGb, locale)} GB`}
           />
-          <UsageRow
-            label={t('shell.status.storage', 'Storage')}
-            percent={metrics.disk.usagePercent}
-            detail={`${formatGb(metrics.disk.usedGb, locale)} / ${formatGb(metrics.disk.totalGb, locale)} GB`}
-          />
         </div>
       ) : (
         <p className="px-4 pb-3 text-[12px] text-[color:var(--cp-muted)]">
@@ -541,7 +603,20 @@ export function SystemStatusCard({
             : t('shell.status.loading', 'Reading system status...')}
         </p>
       )}
+      <TokenUsageChart usage={tokenUsage} failed={status.tokenUsageFailed} />
       <div className="space-y-0.5 border-t border-[color:color-mix(in_srgb,var(--cp-border)_72%,transparent)] px-4 py-3">
+        <div className="mb-2 grid grid-cols-3 gap-2 text-[11px]" data-testid="taskbar-token-totals" aria-label={t('shell.status.tokenTotals', 'Total tokens')}>
+          {([
+            ['hour', t('shell.status.tokensHour', '1h')],
+            ['fiveHours', t('shell.status.tokensFiveHours', '5h')],
+            ['day', t('shell.status.tokensDay', '24h')],
+          ] as const).map(([period, label]) => (
+            <div key={period} className="flex items-baseline justify-between gap-1" title={`${label} · ${t('shell.status.tokenTotals', 'Total tokens')}: ${tokenUsage ? tokenUsage.totals[period].toLocaleString(locale) : '--'}`}>
+              <span className="whitespace-nowrap text-[color:var(--cp-muted)]">{label}</span>
+              <span className="font-medium tabular-nums">{tokenUsage ? formatTokens(tokenUsage.totals[period]) : '--'}</span>
+            </div>
+          ))}
+        </div>
         {metrics ? (
           <>
             <div className={rowClassName}>
@@ -551,16 +626,10 @@ export function SystemStatusCard({
               </span>
             </div>
             <div className={rowClassName}>
-              <span className="text-[color:var(--cp-muted)]">{t('shell.status.load', 'Load average')}</span>
+              <span className="text-[color:var(--cp-muted)]">{t('shell.status.storage', 'Storage')}</span>
               <span className="tabular-nums">
-                {[metrics.loadAverage.one, metrics.loadAverage.five, metrics.loadAverage.fifteen]
-                  .map((value) => value.toFixed(2))
-                  .join(' · ')}
+                {formatGb(metrics.disk.usedGb, locale)} / {formatGb(metrics.disk.totalGb, locale)} GB · {formatPercent(metrics.disk.usagePercent)}
               </span>
-            </div>
-            <div className={rowClassName}>
-              <span className="text-[color:var(--cp-muted)]">{t('shell.status.processes', 'Processes')}</span>
-              <span className="tabular-nums">{metrics.processCount}</span>
             </div>
             <div className={rowClassName}>
               <span className="text-[color:var(--cp-muted)]">{t('shell.status.uptime', 'Uptime')}</span>

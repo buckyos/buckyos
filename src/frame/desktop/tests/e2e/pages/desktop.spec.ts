@@ -746,7 +746,7 @@ test('taskbar show desktop hides every window and brings them back', async ({ pa
 
 test('taskbar profile and system status cards open on hover and hold on click', async ({
   page,
-}) => {
+}, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/?scenario=normal')
 
@@ -769,6 +769,29 @@ test('taskbar profile and system status cards open on hover and hold on click', 
   await expect(details).toBeVisible()
   await expect(details).toContainText('Memory')
   await expect(details).toContainText('Uptime')
+  await expect(details).not.toContainText('Load average')
+  await expect(details).not.toContainText('Processes')
+  const chart = details.getByTestId('taskbar-token-chart')
+  const totals = details.getByTestId('taskbar-token-totals')
+  await expect(chart).toBeVisible()
+  const buckets = chart.getByTestId('taskbar-token-bucket')
+  await expect.poll(() => buckets.count()).toBeGreaterThanOrEqual(12)
+  expect(await buckets.count()).toBeLessThanOrEqual(13)
+  await expect(buckets.first()).toHaveAccessibleName(/Input: [\d,]+ · Output: [\d,]+/)
+  await expect(buckets.first().locator('span').nth(0)).toHaveCSS('background-color', 'rgb(251, 146, 60)')
+  await expect(buckets.first().locator('span').nth(1)).toHaveCSS('background-color', 'rgb(96, 165, 250)')
+  await expect(totals).toContainText(/1\s*h/)
+  await expect(totals).toContainText(/5\s*h/)
+  await expect(totals).toContainText(/24\s*h/)
+  await expect(totals).not.toContainText('--')
+  const chartBox = await chart.boundingBox()
+  const totalsBox = await totals.boundingBox()
+  const networkBox = await details.getByText('Network', { exact: true }).boundingBox()
+  const storageBox = await details.getByText('Storage', { exact: true }).boundingBox()
+  expect(chartBox!.y + chartBox!.height).toBeLessThanOrEqual(totalsBox!.y)
+  expect(totalsBox!.y + totalsBox!.height).toBeLessThanOrEqual(networkBox!.y)
+  expect(networkBox!.y).toBeLessThan(storageBox!.y)
+  await details.screenshot({ path: testInfo.outputPath('system-status-desktop.png') })
 
   // A click holds the card after the pointer leaves; Escape lets it go.
   await status.click()
@@ -798,8 +821,8 @@ test('mobile All apps covers the screen and launches the chosen app', async ({ p
 
 test('mobile taskbar mirrors the desktop one: profile card, pinning, status and show desktop', async ({
   page,
-}) => {
-  await page.setViewportSize({ width: 390, height: 844 })
+}, testInfo) => {
+  await page.setViewportSize({ width: 375, height: 844 })
   await pinTaskbarApps(page, systemPins)
   await page.goto('/?scenario=normal')
 
@@ -823,7 +846,21 @@ test('mobile taskbar mirrors the desktop one: profile card, pinning, status and 
   await expect(profile.getByRole('button', { name: 'Log out' })).toBeVisible()
   await rail.getByTestId('taskbar-status').click()
   await expect(profile).toHaveCount(0)
-  await expect(page.getByTestId('taskbar-status-card')).toBeVisible()
+  const details = page.getByTestId('taskbar-status-card')
+  await expect(details).toBeVisible()
+  await expect(details.getByTestId('taskbar-token-chart')).toBeVisible()
+  const totals = details.getByTestId('taskbar-token-totals')
+  await expect(totals).toContainText(/1\s*h/)
+  await expect(totals).toContainText(/5\s*h/)
+  await expect(totals).toContainText(/24\s*h/)
+  await expect.poll(() => details.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await expect.poll(() => totals.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  const detailsBox = await details.boundingBox()
+  expect(detailsBox!.x).toBeGreaterThanOrEqual(0)
+  expect(detailsBox!.y).toBeGreaterThanOrEqual(0)
+  expect(detailsBox!.x + detailsBox!.width).toBeLessThanOrEqual(375)
+  expect(detailsBox!.y + detailsBox!.height).toBeLessThanOrEqual(844)
+  await details.screenshot({ path: testInfo.outputPath('system-status-mobile.png') })
   await expect(rail.getByTestId('taskbar-status')).toContainText(/CPU\s*\d+%/)
 
   // The running app is marked; a long press opens its menu.

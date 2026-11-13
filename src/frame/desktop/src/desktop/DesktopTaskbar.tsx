@@ -183,7 +183,7 @@ export function DesktopTaskbar({
   const statusCard = useHoverCard()
   const { close: closeProfileCard, held: profileHeld } = profileCard
   const { close: closeStatusCard, held: statusHeld } = statusCard
-  const systemStatus = useSystemStatus(visible)
+  const systemStatus = useSystemStatus(visible, statusCard.open, user)
 
   const pinnedAppIds = useMemo(
     () => new Set(taskbarApps.filter((app) => app.pinned).map((app) => app.appId)),

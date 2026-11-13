@@ -1,6 +1,6 @@
 # AIWS 权限优化 TODO
 
-状态：待立项。2026-11-12 从 [核心 API 调整 TODO](aiws-core-api-unification-todo.md) 的 review 裁决 R4 拆出；条目是汇总，尚未经 owner 逐项过目，未实施。
+状态：已由 [AIWS 权限系统整理需求](aiws-permission-system-prd.md) 代替（owner 2026-11-13，Q20），各条目的去向见该文 §10；本文不再更新。原状态：待立项。2026-11-12 从 [核心 API 调整 TODO](aiws-core-api-unification-todo.md) 的 review 裁决 R4 拆出；条目是汇总，尚未经 owner 逐项过目，未实施。
 
 日期：2026-11-12
 

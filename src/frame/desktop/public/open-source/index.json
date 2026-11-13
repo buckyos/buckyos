@@ -23,7 +23,7 @@
       "id": "ext-core-darwin-arm64",
       "label": "Extension tools (darwin-arm64)",
       "status": "unavailable",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -36,7 +36,7 @@
       "id": "ext-core-darwin-x86_64",
       "label": "Extension tools (darwin-x86_64)",
       "status": "unavailable",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -49,7 +49,7 @@
       "id": "ext-core-linux-aarch64",
       "label": "Extension tools (linux-aarch64)",
       "status": "partial",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -62,7 +62,7 @@
       "id": "ext-core-linux-x86_64",
       "label": "Extension tools (linux-x86_64)",
       "status": "partial",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -75,7 +75,7 @@
       "id": "ext-core-windows-x86_64",
       "label": "Extension tools (windows-x86_64)",
       "status": "partial",
-      "isSnapshot": true,
+      "isSnapshot": false,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -99,21 +99,21 @@
       "label": "Node activation",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "opendan",
       "label": "OpenDAN Web",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "rust",
       "label": "BuckyOS Rust services",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "sdk-tool",
@@ -123,21 +123,21 @@
         "SDK distribution: license metadata is unavailable for combine-errors@3.0.3.",
         "SDK and CLI runtime: license metadata is unavailable for combine-errors@3.0.3."
       ],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "sys-test",
       "label": "System test app",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "sys-test-web",
       "label": "System test Web",
       "status": "complete",
       "notices": [],
-      "isSnapshot": true
+      "isSnapshot": false
     },
     {
       "id": "text-editor",
@@ -146,7 +146,7 @@
       "notices": [
         "Text editor: license metadata is unavailable for combine-errors@3.0.3."
       ],
-      "isSnapshot": true
+      "isSnapshot": false
     }
   ],
   "packages": [
@@ -30530,17 +30530,17 @@
   "notices": [
     "Versions come from resolved Cargo metadata, installed production npm dependencies, the SDK distribution SBOM and available extension payload manifests. Build dependencies and dependencies for other target platforms may also be listed.",
     "This build inventory does not inspect the host operating system, separately installed apps, container base images or packages downloaded at runtime. Missing license metadata is shown explicitly; bundled license notices take precedence over a short license identifier.",
+    "Desktop: license metadata is unavailable for combine-errors@3.0.3.",
+    "Text editor: license metadata is unavailable for combine-errors@3.0.3.",
+    "CYFS Gateway is built separately. Its entries are a snapshot of the sibling checkout's locked dependencies, not a verification of the gateway installed with this BuckyOS build.",
+    "CYFS Gateway: license metadata is unavailable for buckyos-http-server@0.7.0, buckyos-io@0.7.0, buckyos-js-runtime@0.7.0, buckyos-kit@0.7.0, kRPC@0.7.0, name-client@0.7.0, name-lib@0.7.0, named_store@0.7.0, ndn-lib@0.7.0, ndn-toolkit@0.7.0, rbac@0.7.0.",
+    "SDK distribution: license metadata is unavailable for combine-errors@3.0.3.",
+    "SDK and CLI runtime: license metadata is unavailable for combine-errors@3.0.3.",
     "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
     "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
     "Extension tool versions could not be verified for linux-aarch64: pandoc, python, uv, node, deno, jq.",
     "Extension tool versions could not be verified for windows-x86_64: pandoc, python, uv, node, deno, jq.",
     "Extension tool entries describe the available build payloads. Tools installed or upgraded separately, bundled font versions, and pre-warmed container caches are not fully inventoried.",
-    "CYFS Gateway is built separately. Its entries are a snapshot of the sibling checkout's locked dependencies, not a verification of the gateway installed with this BuckyOS build.",
-    "CYFS Gateway: license metadata is unavailable for buckyos-http-server@0.7.0, buckyos-io@0.7.0, buckyos-js-runtime@0.7.0, buckyos-kit@0.7.0, kRPC@0.7.0, name-client@0.7.0, name-lib@0.7.0, named_store@0.7.0, ndn-lib@0.7.0, ndn-toolkit@0.7.0, rbac@0.7.0.",
-    "SDK distribution: license metadata is unavailable for combine-errors@3.0.3.",
-    "SDK and CLI runtime: license metadata is unavailable for combine-errors@3.0.3.",
-    "Text editor: license metadata is unavailable for combine-errors@3.0.3.",
-    "Desktop: license metadata is unavailable for combine-errors@3.0.3.",
     "The draw.io stencil snapshot is identified by its recorded date and content hash; its upstream release version was not recorded."
   ]
 }

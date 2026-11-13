@@ -264,6 +264,7 @@ impl UsageQueryGroup {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageQueryBucket {
+    FiveMinutes,
     Hour,
     Day,
 }
@@ -271,6 +272,7 @@ pub enum UsageQueryBucket {
 impl UsageQueryBucket {
     pub fn span_ms(self) -> i64 {
         match self {
+            Self::FiveMinutes => 5 * 60 * 1000,
             Self::Hour => 60 * 60 * 1000,
             Self::Day => 24 * 60 * 60 * 1000,
         }
