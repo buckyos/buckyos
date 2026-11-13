@@ -1,19 +1,23 @@
-/* The local executor (内核架构改进 §9, D14, T3-4): this browser executes a wish run it started. It claims the
- * run, keeps the lease alive, hosts the model loop — the stage's prompts and tools come from the service,
- * every tool call goes back to it — runs the program in a Worker on the snapshot, and reports when done. The
- * service validates, plans and waits for the user's confirmation exactly as for any other executor.
+/* The local executor (内核架构改进 §9, D14, T3-4; 浏览器优先; AI Native 第一期 §2): this browser executes a wish run
+ * it started — analyze, code or run. It claims the run, keeps the lease alive, hosts the model loop of a model stage
+ * (the stage's prompts and tools come from the service, every tool call goes back to it), runs the macro in a Worker on
+ * the snapshot and answers its bridge with host.js (SQL through the service, AI with the user's own session, Zone
+ * resources with the page's), and reports when done. The service validates, plans and waits for the user's confirmation
+ * exactly as for any other executor; it calls no model.
  *
  * The claim token of a run is kept in this browser (localStorage) so a reload can claim it again: a run
  * whose lease lapsed is `interrupted` and resumes as a new attempt. */
 
-import type { Json, WishClaim, WishStageBrief, WishToolAnswer } from '../api/types'
+import { createBridgeHost } from '../../../../../aiworkspace/aiws/host.js'
+import type { Json, WishBudget, WishClaim, WishStageBrief, WishStageFiles, WishToolAnswer } from '../api/types'
 import { aiwsT } from '../i18n'
 import { type ChatClient, type ChatMessage, type ChatTool } from './chat'
+import { classified, type Infer } from './infer'
 import { runProgram } from './programHost'
 
 const CLAIMS_KEY = 'aiworkspace.claims'
-const PROGRAM_TIMEOUT_MS = 120_000
-const MAX_ITERATIONS = 60
+const DEFAULT_ITERATIONS = 60
+const DEFAULT_TIMEOUT_SECS = 120
 
 /** Claim tokens of the runs this browser started, by run id. */
 export const claims = {
@@ -41,7 +45,25 @@ export interface ExecutorSession {
   procReport(runId: string, attempt: number, body: Record<string, Json>): Promise<unknown>
   procTool(runId: string, attempt: number, name: string, args: Json): Promise<WishToolAnswer>
   procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }): Promise<WishToolAnswer>
-  procFiles(runId: string, attempt: number): Promise<Record<string, { text?: string; base64?: string; skipped?: string }>>
+  procFiles(runId: string, attempt: number): Promise<WishStageFiles>
+}
+
+/** The Zone a macro may reach from this page (第一期 §2.6): this page's host and the hosts under it. */
+function zoneHosts(): string[] {
+  return [window.location.hostname]
+}
+
+async function zoneFetch(url: string, init: { method: string; headers: Record<string, string>; body: string | null }) {
+  const res = await fetch(url, { method: init.method, headers: init.headers, body: init.body ?? undefined, credentials: 'include' })
+  const bytes = new Uint8Array(await res.arrayBuffer())
+  const headers: Record<string, string> = {}
+  res.headers.forEach((v, k) => { headers[k] = v })
+  let text: string | null = null
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { text = null }
+  if (text !== null) return { status: res.status, headers, text }
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return { status: res.status, headers, base64: btoa(bin) }
 }
 
 function codeOf(error: unknown): string | undefined {
@@ -51,16 +73,20 @@ function codeOf(error: unknown): string | undefined {
 export class LocalExecutor {
   private readonly abort = new AbortController()
   private attempt = 0
-  private files: Record<string, { text?: string; base64?: string; skipped?: string }> | null = null
+  private files: WishStageFiles | null = null
   private phase = 'claimed'
+  private budget: Partial<WishBudget> = {}
+  private manifest: Json = null
   private readonly session: ExecutorSession
   private readonly chat: ChatClient
+  private readonly infer: Infer
   readonly runId: string
   private readonly claimToken: string
 
-  constructor(session: ExecutorSession, chat: ChatClient, runId: string, claimToken: string) {
+  constructor(session: ExecutorSession, chat: ChatClient, infer: Infer, runId: string, claimToken: string) {
     this.session = session
     this.chat = chat
+    this.infer = infer
     this.runId = runId
     this.claimToken = claimToken
   }
@@ -80,7 +106,10 @@ export class LocalExecutor {
     try {
       const stage = claim.stage
       if (!stage) throw new Error(aiwsT('aiworkspace.wish.error.noStage'))
-      if (stage.kind === 'program') await this.rerun(stage)
+      this.budget = stage.budget ?? {}
+      this.manifest = stage.manifest ?? null
+      // running the stored macro: the service judges the run (a failure ends it with its own code), then plans it
+      if (stage.kind === 'program') await this.program(stage.source ?? '')
       else await this.loop(stage)
       await this.session.procReport(this.runId, this.attempt, { finished: true })
       return 'finished'
@@ -88,7 +117,8 @@ export class LocalExecutor {
       // stopped on purpose (cancel, the page going away) or revoked by the service: nothing to report
       if (this.abort.signal.aborted || codeOf(error) === 'RUN_REVOKED' || (error instanceof DOMException && error.name === 'AbortError')) return 'stopped'
       const detail = error instanceof Error ? error.message : String(error)
-      await this.session.procReport(this.runId, this.attempt, { error: { code: 'EXECUTOR_FAILED', detail } }).catch(() => undefined)
+      const code = codeOf(error)?.startsWith('AI_') || codeOf(error) === 'SNAPSHOT_TOO_LARGE' ? codeOf(error)! : 'EXECUTOR_FAILED'
+      await this.session.procReport(this.runId, this.attempt, { error: { code, detail } }).catch(() => undefined)
       throw error
     } finally {
       window.clearInterval(heartbeat)
@@ -106,30 +136,35 @@ export class LocalExecutor {
     return this.files
   }
 
+  /** Run `source` on the snapshot in the sandbox, answering its bridge, and hand the run in. */
   private async program(source: string): Promise<WishToolAnswer> {
     this.phase = 'running_program'
-    const files = await this.snapshot()
-    const llmMap = async (req: Json) => {
-      const answer = await this.session.procTool(this.runId, this.attempt, 'llm_map', req)
-      return answer.status === 'ok' ? answer.map ?? null : { error: answer.text ?? 'llm.map failed' }
-    }
-    const out = await runProgram(source, files, llmMap, { timeoutMs: PROGRAM_TIMEOUT_MS, signal: this.abort.signal })
+    const snapshot = await this.snapshot()
+    const budget = { ...this.budget, ...(snapshot.stage?.budget ?? {}) }
+    const manifest = (this.manifest ?? snapshot.stage?.manifest ?? null) as { resources?: { timeout_secs?: number } } | null
+    const host = createBridgeHost({
+      tool: (name, args) => this.session.procTool(this.runId, this.attempt, name, args as Json) as Promise<{ status?: string; text?: string; code?: string }>,
+      infer: this.infer,
+      zoneFetch,
+      zoneHosts: zoneHosts(),
+      zoneOrigin: window.location.origin,
+      budget: budget as Record<string, unknown>,
+      manifest: manifest && typeof manifest === 'object' ? manifest : null,
+    })
+    const cap = Number(budget.program_timeout_secs) || DEFAULT_TIMEOUT_SECS
+    const declared = Number(manifest?.resources?.timeout_secs) || cap
+    const out = await runProgram(source, snapshot.files, (op, req) => host.handle(op, req) as Promise<Json>, { timeoutMs: Math.min(cap, declared) * 1000, signal: this.abort.signal })
     return this.session.procProgram(this.runId, this.attempt, { source, results: out.results, log: out.log, files: out.files })
-  }
-
-  private async rerun(stage: WishStageBrief) {
-    const answer = await this.program(stage.source ?? '')
-    if (answer.status !== 'ok') throw new Error(answer.text ?? aiwsT('aiworkspace.wish.error.mockFailed'))
   }
 
   private async loop(stage: WishStageBrief) {
     const tools: ChatTool[] = stage.tools ?? []
     const messages: ChatMessage[] = [{ role: 'system', text: stage.system ?? '' }, { role: 'user', text: stage.user ?? '' }]
-    const iterations = Math.min(stage.iterations ?? MAX_ITERATIONS, MAX_ITERATIONS)
+    const iterations = stage.budget?.iterations ?? stage.iterations ?? DEFAULT_ITERATIONS
     for (let i = 0; i < iterations; i++) {
       this.checkAborted()
       this.phase = 'waiting_model'
-      const turn = await this.chat.complete(stage.model ?? '', messages, tools, this.abort.signal)
+      const turn = await this.chat.complete(stage.model ?? '', messages, tools, this.abort.signal).catch((error: unknown) => { throw classified(error) })
       messages.push({ role: 'assistant', text: turn.text, toolCalls: turn.toolCalls, raw: turn.raw })
       if (turn.toolCalls.length === 0) return
       for (const call of turn.toolCalls) {
@@ -141,7 +176,7 @@ export class LocalExecutor {
         } else {
           answer = await this.session.procTool(this.runId, this.attempt, call.name, call.args)
         }
-        messages.push({ role: 'tool', callId: call.id, text: answer.text ?? JSON.stringify(answer.map ?? null), isError: answer.status === 'error' })
+        messages.push({ role: 'tool', callId: call.id, text: answer.text ?? '', isError: answer.status === 'error' })
       }
     }
     throw new Error(aiwsT('aiworkspace.wish.error.iterations', { count: iterations }))

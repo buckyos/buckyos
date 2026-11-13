@@ -3,9 +3,10 @@
 //! the read-only tools answered from the same snapshot (`ws_outline`, `ws_find`, `ws_profile`,
 //! `ws_neighbors`, `ws_read`, `ws_query`).
 //!
-//! In the execution stage every input handed to the model or the program is recorded in the read set;
-//! reading data that was not declared appends it as an input of this run (§5.5), materialized so the
-//! program can use it by name.
+//! In the coding and running stages every input handed to the model or the macro is recorded in the read
+//! set; reading data that was not declared (coding) appends it as an input of this run (§5.5), materialized
+//! so the macro can use it by name. Running a stored macro materializes only what its manifest declares —
+//! the inputs and the fields, under the names they had when it was coded (AI Native 第一期 §2.2).
 
 use super::canvas::{reading_order, relation, Block, Canvas, Rect};
 use super::handles::{Handles, Target};
@@ -37,17 +38,18 @@ const MAX_OUTLINE_READS: usize = 100;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageKind {
     Analyze,
-    Execute,
-    /// Re-running the stored program: no model, inputs materialized only.
-    Program,
+    /// Writing and test-running the macro: the model sees the inputs whole.
+    Code,
+    /// Running the stored macro: no model, only what its manifest declares.
+    Run,
 }
 
 impl StageKind {
     pub fn as_str(self) -> &'static str {
         match self {
             StageKind::Analyze => "analyze",
-            StageKind::Execute => "execute",
-            StageKind::Program => "program",
+            StageKind::Code => "code",
+            StageKind::Run => "run",
         }
     }
 }
@@ -64,8 +66,10 @@ pub struct StageOptions {
     /// Block-control catalog (`aiws/controls.json`: `{ description, controls: [{ kind, title, summary, when, formats, agent }] }`).
     pub controls: Value,
     pub map_budget_chars: usize,
-    /// Materialize the bound inputs (execution / program stages).
+    /// Materialize the bound inputs (coding / running stages).
     pub materialize: bool,
+    /// Running a stored macro: its manifest (only these inputs and fields, under their coding names).
+    pub manifest: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +82,8 @@ pub struct BoundInput {
     pub appended: bool,
     /// Fields this wish owns on the table (derived columns): never handed to the program.
     pub owned_fields: Vec<String>,
+    /// Running a stored macro: the fields its manifest declares on this table input, `(field_id, coding name)`.
+    pub declared_fields: Option<Vec<(String, String)>>,
 }
 
 pub struct Stage {
@@ -346,8 +352,17 @@ impl Stage {
         // bound inputs
         let mut taken = BTreeSet::new();
         let declared: Vec<Value> = stage.wish.payload.get("inputs").and_then(Value::as_array).cloned().unwrap_or_default();
+        let manifest_inputs = opts.manifest.as_ref().map(|m| m.get("inputs").cloned().unwrap_or(json!({})));
         for i in &declared {
             let id = i["entity_id"].as_str().unwrap_or("").to_string();
+            // a stored macro reads the inputs it declared, nothing else (§2.2)
+            let decl = match &manifest_inputs {
+                Some(m) => match i.get("name").and_then(Value::as_str).and_then(|n| m.get(n)) {
+                    Some(d) if d.get("entity_id").and_then(Value::as_str) == Some(id.as_str()) => Some(d.clone()),
+                    _ => continue,
+                },
+                None => None,
+            };
             let e = match stage.snap.entity(&id)? {
                 Some(e) => e,
                 None => continue,
@@ -366,6 +381,9 @@ impl Stage {
                 label,
                 appended: i.get("appended_by").is_some(),
                 owned_fields: stage.owned.get(&id).cloned().unwrap_or_default(),
+                declared_fields: decl.as_ref().and_then(|d| d.get("fields")).and_then(Value::as_array).map(|a| {
+                    a.iter().filter_map(|f| Some((f.get("field_id")?.as_str()?.to_string(), f.get("name")?.as_str()?.to_string()))).collect()
+                }),
             });
         }
         std::fs::create_dir_all(workdir.join("output")).map_err(|e| WsError::io(e.to_string()))?;
@@ -465,7 +483,7 @@ impl Stage {
 
     /// Write one entity (and, for a folder, its members) under `context/entities/<id>/`, recording the
     /// read set when the stage executes. Returns the meta written.
-    fn materialize_entity(&mut self, e: &EntityRow, selector: Option<&Value>, owned: &[String], depth: usize, budget: &mut usize) -> WsResult<Value> {
+    fn materialize_entity(&mut self, e: &EntityRow, selector: Option<&Value>, owned: &[String], declared: Option<&[(String, String)]>, depth: usize, budget: &mut usize) -> WsResult<Value> {
         let record = self.kind != StageKind::Analyze;
         let dir = self.entity_dir(&e.entity_id);
         let handle = self.handles.of(e);
@@ -495,7 +513,16 @@ impl Stage {
                 if aiworkspace_core::types::is_url_table(e) {
                     return Err(WsError::new(Code::DependencyUnavailable, format!("{} is a URL query table: its rows have no verifiable version, so it cannot be a wish input yet", title_of(e))));
                 }
-                let fields: Vec<FieldRow> = live_fields(&ctx, &e.entity_id)?.into_iter().filter(|f| !owned.contains(&f.field_id)).collect();
+                let mut fields: Vec<FieldRow> = live_fields(&ctx, &e.entity_id)?.into_iter().filter(|f| !owned.contains(&f.field_id)).collect();
+                let all_ids: Vec<String> = fields.iter().map(|f| f.field_id.clone()).collect();
+                if let Some(keep) = declared {
+                    // a stored macro sees its declared fields under the names they had when it was coded
+                    fields = keep.iter().filter_map(|(fid, name)| fields.iter().find(|f| &f.field_id == fid).map(|f| {
+                        let mut f = f.clone();
+                        f.def.name = name.clone();
+                        f
+                    })).collect();
+                }
                 let fh = self.handles.fields(e, &fields);
                 let view = match selector.filter(|s| s["kind"] == json!("table_view")).and_then(|s| s["cell_id"].as_str()) {
                     Some(cid) => {
@@ -538,8 +565,8 @@ impl Stage {
                 if record {
                     let f_ids: Vec<String> = used.iter().map(|f| f.field_id.clone()).collect();
                     let mut needed = f_ids.clone();
-                    // the fields deciding membership and order are read too
-                    for fid in fields.iter().map(|f| f.field_id.clone()) {
+                    // the fields deciding membership and order are read too, declared or not
+                    for fid in all_ids.iter().cloned() {
                         let mentioned = |v: Option<&Value>| v.map(|v| v.to_string().contains(&format!("\"{fid}\""))).unwrap_or(false);
                         let deciding = match &view {
                             Some(c) => mentioned(c.payload.get("filter")) || mentioned(c.payload.get("sorts")),
@@ -623,7 +650,7 @@ impl Stage {
                         return Err(WsError::limit(format!("folder {} has more than {MAX_FOLDER_MEMBERS} members: narrow the input", title_of(e))));
                     }
                     *budget -= 1;
-                    let m = self.materialize_entity(&c, None, &[], depth + 1, budget)?;
+                    let m = self.materialize_entity(&c, None, &[], None, depth + 1, budget)?;
                     members.push(json!({ "entity_id": c.entity_id, "handle": m["handle"], "type_id": c.type_id, "title": m["title"] }));
                 }
                 meta["members"] = json!(members);
@@ -659,7 +686,7 @@ impl Stage {
         }
         self.reads.label(&e.entity_id, &i.label);
         let mut budget = MAX_FOLDER_MEMBERS;
-        self.materialize_entity(&e, i.selector.as_ref(), &i.owned_fields, 0, &mut budget)?;
+        self.materialize_entity(&e, i.selector.as_ref(), &i.owned_fields, i.declared_fields.as_deref(), 0, &mut budget)?;
         Ok(())
     }
 
@@ -683,6 +710,7 @@ impl Stage {
             label: label.clone(),
             appended: true,
             owned_fields: self.owned.get(entity_id).cloned().unwrap_or_default(),
+            declared_fields: None,
         };
         self.materialize_input(&input)?;
         self.inputs.push(input);
@@ -745,27 +773,6 @@ impl Stage {
 
     fn write_files(&mut self, opts: &StageOptions) -> WsResult<()> {
         let w = self.workdir.clone();
-        // the data tree and the BlockTree as indexes
-        let mut data = Vec::new();
-        for e in self.data_entities()? {
-            let parent = self.ctx().edge(&e.entity_id)?.map(|x| x.parent_id).unwrap_or_default();
-            data.push(json!({ "handle": self.handle_of(&e.entity_id), "entity_id": e.entity_id, "type_id": e.type_id, "title": title_of(&e),
-                              "path": self.path_of(&e.entity_id)?, "parent": self.handle_of(&parent), "generated_by": e.derived.as_ref().and_then(|d| d.get("wish_id")) }));
-        }
-        write_json(&w.join("context").join("data-tree.json"), &json!(data))?;
-        let blocks: Vec<Value> = self
-            .canvas
-            .blocks
-            .clone()
-            .iter()
-            .map(|b| {
-                json!({ "handle": self.handle_of(&b.entity_id), "entity_id": b.entity_id, "surface": self.handle_of(&b.surface_id),
-                        "group": b.group_id.as_ref().map(|g| self.handle_of(g)), "frame": b.frame_id.as_ref().map(|g| self.handle_of(g)),
-                        "renderer": b.renderer, "title": b.title, "source": b.source_id.as_ref().map(|s| self.handle_of(s)),
-                        "rect": { "x": b.rect.x, "y": b.rect.y, "w": b.rect.w, "h": b.rect.h }, "pure_ui": b.pure_ui })
-            })
-            .collect();
-        write_json(&w.join("context").join("block-tree.json"), &json!(blocks))?;
         // profiles of every visible data entity (analysis) / of the inputs (execution)
         if self.kind == StageKind::Analyze {
             for e in self.data_entities()? {
@@ -784,9 +791,12 @@ impl Stage {
         let catalog = self.catalog_json()?;
         write_json(&w.join("catalog").join("renderers.json"), &catalog)?;
         write_json(&w.join("catalog").join("controls.json"), &self.controls)?;
-        let map = self.render_map(opts.map_budget_chars)?;
-        write_text(&w.join("WORKSPACE.md"), &map)?;
-        write_json(&w.join("handles.json"), &self.handles.to_json())?;
+        // a stored macro reads its inputs, not the map of the Workspace (§2.6)
+        if self.kind != StageKind::Run {
+            let map = self.render_map(opts.map_budget_chars)?;
+            write_text(&w.join("WORKSPACE.md"), &map)?;
+            write_json(&w.join("handles.json"), &self.handles.to_json())?;
+        }
         write_json(
             &w.join("context").join("manifest.json"),
             &json!({ "workspace_id": self.snap.workspace_id, "epoch": self.snap.epoch, "head_seq": self.snap.head_seq, "wish_id": self.wish.entity_id,
@@ -1485,6 +1495,49 @@ impl Stage {
         Ok(clip(out, MAX_TOOL_CHARS))
     }
 
+    /// `aiws.sql` of a macro (AI Native 第一期 §2.3): one SELECT over the declared table inputs only, each a logical
+    /// table named by its input name whose columns are the declared fields under their coding names (`inputs`: input
+    /// name → `[(field_id, name)]`); a view input is the rows its view shows. Those inputs are in the read set already.
+    pub fn macro_sql(&mut self, query: &str, params: Option<&Value>, inputs: &BTreeMap<String, Vec<(String, String)>>) -> WsResult<Value> {
+        let mut views = Vec::new();
+        for (name, cols) in inputs {
+            let i = self.inputs.iter().find(|i| &i.name == name).cloned().ok_or_else(|| WsError::invalid_op(format!("aiws.sql: {name} is not an input of this run")))?;
+            if i.type_id != TYPE_TABLE {
+                continue;
+            }
+            let ctx = self.snap.ctx();
+            let table = ctx.entity(&i.entity_id)?.filter(|e| e.alive()).ok_or_else(|| WsError::new(Code::DependencyUnavailable, format!("input {name} no longer exists")))?;
+            let view = match i.selector.as_ref() {
+                Some(s) if s["kind"] == json!("table_view") => {
+                    let cid = s["cell_id"].as_str().unwrap_or("");
+                    let cell = ctx.entity(cid)?.filter(|c| c.alive()).ok_or_else(|| WsError::new(Code::DependencyUnavailable, format!("table view {cid} no longer exists")))?;
+                    Some(ViewDef { fields: None, ..ViewDef::of_cell(&cell) })
+                }
+                Some(s) if s["kind"] == json!("table_query") => Some(ViewDef { group: None, manual_order: None, ..ViewDef::of_params(s) }),
+                _ => None,
+            };
+            let ddl = aiworkspace_core::sqlview::manifest_table_ddl(&ctx, &self.snap.access, &table, name, cols, view.as_ref())?;
+            views.push((name.clone(), i.entity_id.clone(), ddl));
+        }
+        let mut p = json!({ "sql": query });
+        if let Some(x) = params.filter(|x| !x.is_null()) {
+            p["params"] = x.clone();
+        }
+        let ctx = self.snap.ctx();
+        crate::sql::execute_views(self.snap.conn(), &ctx, &self.snap.access, &p, self.snap.head_seq, views)
+    }
+
+    /// The table input `name`'s fields by their names now (coding: what a macro's `declare` names), `(field_id, name, type)`.
+    pub fn input_fields(&self, name: &str) -> WsResult<Option<(BoundInput, Vec<(String, String, String)>)>> {
+        let Some(i) = self.inputs.iter().find(|i| i.name == name).cloned() else { return Ok(None) };
+        if i.type_id != TYPE_TABLE {
+            return Ok(Some((i, Vec::new())));
+        }
+        let ctx = self.snap.ctx();
+        let fields = live_fields(&ctx, &i.entity_id)?.into_iter().filter(|f| !i.owned_fields.contains(&f.field_id)).map(|f| (f.field_id.clone(), f.def.name.clone(), f.def.ty.as_str().to_string())).collect();
+        Ok(Some((i, fields)))
+    }
+
     /// Read set of this stage as wish / derived inputs.
     pub fn read_set(&self) -> WsResult<Vec<Value>> {
         self.reads.to_inputs(&self.ctx())
@@ -1535,7 +1588,13 @@ impl Stage {
             } else {
                 None
             };
-            out.insert(i.name.clone(), super::results::InputInfo { entity_id: i.entity_id.clone(), type_id: i.type_id.clone(), records, control: self.input_control(&i.entity_id)? });
+            let fields = if i.type_id == TYPE_TABLE {
+                let schema: Value = std::fs::read_to_string(self.workdir.join("context").join("entities").join(&i.entity_id).join("schema.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
+                schema["fields"].as_array().into_iter().flatten().filter_map(|f| Some((f["field_id"].as_str()?.to_string(), f["name"].as_str()?.to_string(), f["type"].as_str()?.to_string()))).collect()
+            } else {
+                Vec::new()
+            };
+            out.insert(i.name.clone(), super::results::InputInfo { entity_id: i.entity_id.clone(), type_id: i.type_id.clone(), records, control: self.input_control(&i.entity_id)?, fields });
         }
         Ok(out)
     }

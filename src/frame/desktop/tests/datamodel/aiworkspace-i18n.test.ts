@@ -241,7 +241,7 @@ Deno.test('aiworkspace i18n: the backend speaks English', () => {
     for (const l of rustLiterals(file)) if (!l.exempt && CJK.test(l.text)) problems.push(`${file}:${l.line}: ${l.text.trim().slice(0, 70)}`)
   }
   // the program host's assets the server compiles in: prompts and API text are read whole, scripts by literal
-  for (const file of ['aiws/prompts/analyze.md', 'aiws/prompts/execute.md', 'aiws/README.md', 'aiws/renderers.json']) {
+  for (const file of ['aiws/prompts/analyze.md', 'aiws/prompts/code.md', 'aiws/README.md', 'aiws/renderers.json']) {
     Deno.readTextFileSync(`${ROOT}${BACKEND}/${file}`).split('\n').forEach((line, i) => { if (CJK.test(line)) problems.push(`${BACKEND}/${file}:${i + 1}: ${line.trim().slice(0, 70)}`) })
   }
   for (const file of ['aiws/aiws.js', 'aiws/run.js']) {

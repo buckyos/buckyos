@@ -457,6 +457,8 @@ context 提示词通常描述如何读取和处理数据，不复制分析时看
 
 ### 8.2 编程优先规则
 
+> **2026-11-12 修订（AI Native 第一期，`notepads/aiws-ai-native-phase1-todo.md`）**：不再区分 program 与 direct。所有结果都由宏产出（编码阶段写成并试运行，`put_result` 已删除，输出契约没有 `approach`，分析结构为 `wish.analysis.v3`）；文字类结果由宏调用 AICC（`aiws.ai.complete`）按宏算出的 facts 生成，`uncited_numbers` 改为检查宏产出的文字。集合计算优先写成 `aiws.sql`。下文“直接书写”的规则只作历史记录。
+
 以下规则写入执行阶段的 system，也由宿主部分强制：
 
 - **必须用程序完成**：计数、求和、平均、排序、筛选、分组、关联、去重、逐行或逐列变换、日期与金额计算、为图表准备数据，以及任何超过 20 行的结构化结果（阈值在 W0 冻结）。
@@ -560,6 +562,8 @@ export default async function main(aiws) {
 
 ### 9.2 两种重跑与修程序
 
+> **2026-11-12 修订（AI Native 第一期）**：阶段改为分析 `analyze`、编码 `code`、运行 `run`。“只重跑程序”即运行，只执行已保存的宏、没有模型循环；“修程序”是带 `parent_run_id`（失败的运行）的编码；反馈轮是带 `parent_run_id` 和 `feedback` 的编码。编码候选应用时宏与结果同一次提交（试运行直通首次运行）。运行前由 core `macro_check` 按声明清单判定：声明的字段被删除或改类型、输入不存在 → `NEEDS_CODING`；字段或表改名不影响。“文字部分需要重新生成”（`direct_stale`）已不存在：运行时文字一并更新。
+
 | 方式 | 何时用 | 过程 |
 | --- | --- | --- |
 | 只重跑程序 | 输入数据变化，需求未变 | 宿主固定新快照，用规范方式运行程序，收集程序结果与检查，生成候选；不调用模型（`llm.map` 只对变化项调用，§9.5）。`direct` 结果保持原样，并因输入变化显示过期，界面提示“文字部分需要重新生成” |
@@ -569,6 +573,8 @@ export default async function main(aiws) {
 只重跑程序产生的候选同样经过预览与应用，规则与生成结果一致（§11），`last_run.mode` 记为 `program`。它不消耗模型、结果确定，是以后“输入变化后自动刷新”的首选对象（§17）。
 
 ### 9.3 运行位置与运行时
+
+> **2026-11-12 修订（浏览器优先 M1–M2 与 AI Native 第一期）**：服务内执行已下线，服务不运行程序也不调用模型。规范运行器在执行器侧：浏览器的 sandbox iframe + Worker，或托管 Agent 用 `buckyos aiws run-exec / run-program` 起的受限 Deno（只读 stage 目录、只写 `output/`、只联网到 Zone、清空环境变量）。宏经同一份桥（`aiws/host.js`）调用 `sql`（服务在快照上只查声明的输入）、`ai.complete` / `llm.map`（执行者自己的 AICC，`llm_cache` 按内容缓存）和 `zone.fetch`（只到本 Zone）。运行阶段只物化清单声明的输入和字段，快照不再带 `data-tree.json` / `block-tree.json`，程序 API 去掉 `resolve` / `find` / `outline`。
 
 - 规范运行器在服务侧：aiworkspace 服务用 Deno 运行 `main.js`，提供基于快照目录的 `aiws`。模型在 xllm shell 中调试时使用同一个 `lib/aiws.js`，`run_program` 与“只重跑程序”使用同一运行器，保证模型调通的程序就是之后重跑的程序。
 - rootfs 已随 buckyos-tool 携带 Deno 2.9.4；aiworkspace 服务如何定位、调用和升级它，在 W0 确认。
@@ -964,6 +970,8 @@ pnpm exec playwright test --config=playwright.aiworkspace.config.ts tests/aiwork
 - **真实媒体工具、自动采用对比组**：分别补充模型/工具或引用调整规则，不以 Mock 演示代替实现。
 
 ## 18. 待确认与已知风险
+
+> **2026-11-12 修订（AI Native 第一期）**：新增的已知风险——以 Zone 为界时，Zone 内能代为访问外部的服务可被借道，宏经 `zone.fetch` 读到的内容不进快照和读集（PRD §6.6）；run token 白名单暂不收紧（PRD §6.5，权限优化 TODO B-2）；宏的 AI 预算由执行器侧的 `host.js` 执行，服务只下发上限。
 
 待确认：
 

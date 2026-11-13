@@ -111,7 +111,7 @@ test('i18n: in English, the list, a demo created from a template, its chrome, pa
   await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible()
-  await page.getByTestId('aiws-wish-execute').click()
+  await page.getByTestId('aiws-wish-run').click()
   await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-ready', 'true', { timeout: 30_000 })
   await expectEnglish(page, 'wish candidate')
   await page.getByTestId('aiws-wish-apply').click()

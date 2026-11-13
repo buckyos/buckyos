@@ -12,9 +12,11 @@
 import { describeError, runErrorText } from '../../api/session'
 import type {
   AssetContent, CellPayload, DerivedInput, EntityEnvelope, Json, KeyedContent, QueryPage, RecordContent, RichTextContent, TableSourceContent,
-  WishChoices, WishExecutionMode, WishPayload, WishPayloadRead, WishRunView, WishStage,
+  FreshnessInfo, WishChoices, WishExecutionMode, WishMainStatus, WishPayload, WishPayloadRead, WishRunView, WishStage,
 } from '../../api/types'
+import { loadCore } from '../../api/wasm'
 import { resolveChatClient } from '../../executor/chat'
+import { createInfer } from '../../executor/infer'
 import { claims, LocalExecutor } from '../../executor/localExecutor'
 import { aiwsT, aiwsText } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
@@ -43,6 +45,11 @@ const EXECUTION_KEY = 'aiworkspace.execution'
 
 export function isActive(run: WishRunView | undefined | null): boolean { return Boolean(run && ACTIVE.has(run.state)) }
 export function isWaiting(run: WishRunView | undefined | null): boolean { return Boolean(run && WAITING.has(run.state) && run.candidate) }
+const CODING_CODES = new Set(['PROGRAM_FAILED', 'MACRO_CODE_CHANGED', 'NEEDS_CODING'])
+/** The failed run the next coding repairs (第一期 §2.1): its macro failed, its HTML code changed, or it no longer fits its inputs. */
+export function repairOf(run: WishRunView | undefined | null): WishRunView | null {
+  return run && run.state === 'failed' && run.stage !== 'analyze' && CODING_CODES.has(run.error?.sub_code ?? run.error?.code ?? '') ? run : null
+}
 
 /** What an accepted application did, in one sentence. */
 export function applyMessage(run: WishRunView): string {
@@ -119,7 +126,7 @@ class HtmlExecutor {
   dispose() { this.disposed = true; this.runtime?.dispose(); this.runtime = null; this.mountPromise = null }
 }
 
-export type WishBusy = 'analyzing' | 'executing' | 'rerunning' | 'repairing' | 'previewing' | 'applying' | 'cancelling'
+export type WishBusy = 'analyzing' | 'coding' | 'running' | 'previewing' | 'applying' | 'cancelling'
 
 export class WishService {
   private readonly store: WorkspaceStore
@@ -234,17 +241,12 @@ export class WishService {
 
   // ---- where a run executes (内核架构改进 §9, D14, D22)
 
-  /** The modes this service and workspace offer: the transitional in-service executor when allowed, this
-   * browser, and the owner's Agent when hosted execution is configured. Empty on a service without the
-   * execution model. */
+  /** The modes this workspace offers: this browser, and the owner's Agent when hosted execution is configured.
+   * Empty on a service without the execution model. */
   executionModes(): WishExecutionMode[] {
     const info = this.store.session.info()
     if (!info.wish_execution) return []
-    const modes: WishExecutionMode[] = []
-    if (info.wish_execution.service) modes.push('service')
-    modes.push('local')
-    if (info.hosted_exec?.enabled) modes.push('hosted')
-    return modes
+    return info.hosted_exec?.enabled ? ['local', 'hosted'] : ['local']
   }
 
   /** A collaborator with only `run` on the wish runs it hosted (the owner's Agent writes the results). */
@@ -261,7 +263,7 @@ export class WishService {
     if (saved && modes.includes(saved as WishExecutionMode)) return saved as WishExecutionMode
     const preset = this.store.session.info().wish_execution?.default
     if (preset && modes.includes(preset)) return preset
-    return modes.includes('local') ? 'local' : modes[0] ?? 'service'
+    return 'local'
   }
 
   setExecutionMode(mode: WishExecutionMode) {
@@ -276,7 +278,7 @@ export class WishService {
 
   private runLocally(runId: string, claimToken: string, wishId: string) {
     claims.set(runId, claimToken)
-    const executor = new LocalExecutor(this.store.session, resolveChatClient(), runId, claimToken)
+    const executor = new LocalExecutor(this.store.session, resolveChatClient(), createInfer(), runId, claimToken)
     this.locals.set(runId, executor)
     executor.run()
       .then((outcome) => { if (outcome === 'finished') claims.forget(runId) })
@@ -285,7 +287,7 @@ export class WishService {
   }
 
   async resume(run: WishRunView): Promise<WishRunView> {
-    return this.guard(run.wish_id, run.stage === 'analyze' ? 'analyzing' : 'executing', async () => {
+    return this.guard(run.wish_id, run.stage === 'analyze' ? 'analyzing' : run.stage === 'code' ? 'coding' : 'running', async () => {
       const token = claims.get(run.run_id)
       if (!token) throw new Error(aiwsT('aiworkspace.wish.resumeHint'))
       this.runLocally(run.run_id, token, run.wish_id)
@@ -369,7 +371,7 @@ export class WishService {
     }).map((input) => ({ entity_id: input.entity_id, ...(input.label ? { label: input.label } : {}), version: { mode: 'follow' as const } }))
     // the Mock decides its results while executing: a dynamic contract (§8.5)
     const analysis = {
-      schema_version: 'wish.analysis.v2', status: 'ready', prompt: payload.prompt, context_prompt: result.context_prompt,
+      schema_version: 'wish.analysis.v3', status: 'ready', prompt: payload.prompt, context_prompt: result.context_prompt,
       output_contract: { results: [], dynamic: true }, checks: [], blockers: [], warnings: [...result.warnings, ...problems], executor: 'mock', at: new Date().toISOString(),
     }
     const outcome = await this.store.submit({
@@ -382,37 +384,73 @@ export class WishService {
     if (outcome.status === 'conflict' || outcome.status === 'rejected') throw new Error(aiwsT('aiworkspace.wish.error.analysisNotSaved', { code: outcome.code }))
   }
 
-  // ---- execution
+  // ---- coding and running (AI Native 第一期 §2.1)
 
-  /** `event` / `idempotencyKey`: the run an event handler starts (扩展控件 P2): `request.event` names it, and it is keyed
-   * like the event's writes. */
-  async execute(wishId: string, options: { cellId?: string; feedback?: string; parentRunId?: string; event?: Json; idempotencyKey?: string } = {}): Promise<WishRunView> {
-    return this.guard(wishId, 'executing', async () => {
-      const read = await this.payload(wishId)
-      if (read.payload.executor === 'mock') return this.executeMock(wishId, read.payload, options.cellId)
+  /** Write (or change) the wish's macro and trial-run it; the candidate is its first run. `parentRunId`: a failed run
+   * to repair, or the previous round of a feedback. */
+  async code(wishId: string, options: { cellId?: string; feedback?: string; parentRunId?: string } = {}): Promise<WishRunView> {
+    return this.guard(wishId, 'coding', async () => {
       const extra: Record<string, Json> = {}
       if (options.parentRunId) extra.parent_run_id = options.parentRunId
       if (options.feedback) extra.feedback = options.feedback
-      const run = await this.start(wishId, 'wish.xllm@1', 'execute', extra, options.cellId, options.event && options.idempotencyKey ? { event: options.event, key: options.idempotencyKey } : undefined)
-      if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.executeFailed'))
+      const run = await this.start(wishId, 'wish.xllm@1', 'code', extra, options.cellId)
+      if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.codeFailed'))
       return run
     })
   }
 
-  async rerunProgram(wishId: string, cellId?: string): Promise<WishRunView> {
-    return this.guard(wishId, 'rerunning', async () => {
-      const run = await this.start(wishId, 'wish.xllm@1', 'rerun_program', {}, cellId)
-      if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.rerunFailed'))
+  /** Run the stored macro (no model loop). `event` / `idempotencyKey`: the run an event handler starts (扩展控件 P2):
+   * `request.event` names it, and it is keyed like the event's writes. */
+  async runMacro(wishId: string, options: { cellId?: string; event?: Json; idempotencyKey?: string } = {}): Promise<WishRunView> {
+    return this.guard(wishId, 'running', async () => {
+      const read = await this.payload(wishId)
+      if (read.payload.executor === 'mock') return this.executeMock(wishId, read.payload, options.cellId)
+      const run = await this.start(wishId, 'wish.xllm@1', 'run', {}, options.cellId, options.event && options.idempotencyKey ? { event: options.event, key: options.idempotencyKey } : undefined)
+      if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.runFailed'))
       return run
     })
   }
 
-  async repairProgram(wishId: string, failedRunId: string, cellId?: string): Promise<WishRunView> {
-    return this.guard(wishId, 'repairing', async () => {
-      const run = await this.start(wishId, 'wish.xllm@1', 'repair_program', { parent_run_id: failedRunId }, cellId)
-      if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.repairFailed'))
-      return run
-    })
+  /** What the page knows of a wish's runs, in the shape `wish_main_status` reads. */
+  runSummary(wishId: string): Json {
+    const run = this.runs.get(wishId)
+    if (!run) return {}
+    if (['queued', 'snapshotting', 'running', 'validating', 'applying'].includes(run.state)) return { active: { stage: run.stage, state: run.state } }
+    if (run.state === 'waiting_confirmation') return { waiting: { stage: run.stage, run_id: run.run_id } }
+    if (run.state === 'failed' && run.stage !== 'analyze') return { last_failed: { stage: run.stage, error: (run.error ?? null) as unknown as Json } }
+    return {}
+  }
+
+  /** The main state and the next action of a wish (PRD §5.8): computed by the core from its freshness and its runs. */
+  async mainStatus(wishId: string, freshness: FreshnessInfo | undefined | null): Promise<WishMainStatus | null> {
+    if (!freshness) return null
+    const core = await loadCore()
+    return JSON.parse(core.wish_main_status(JSON.stringify(freshness), JSON.stringify(this.runSummary(wishId)))) as WishMainStatus
+  }
+
+  /** The canvas's 运行: the wish's next action — analyze, code, run, or apply the waiting candidate. */
+  async next(wishId: string, options: { cellId?: string; event?: Json; idempotencyKey?: string } = {}): Promise<WishRunView | null> {
+    const read = await this.payload(wishId)
+    const fresh = (await this.store.session.freshness([wishId]))[0]
+    if (read.payload.executor === 'mock') {
+      if (read.payload.analysis?.status !== 'ready' || fresh?.needs_analysis) return this.analyze(wishId, options.cellId)
+      return this.runMacro(wishId, options)
+    }
+    const status = await this.mainStatus(wishId, fresh)
+    switch (status?.next_action) {
+      case 'analyze':
+      case 'answer': return this.analyze(wishId, options.cellId)
+      case 'code': return this.code(wishId, { cellId: options.cellId, parentRunId: repairOf(this.runs.get(wishId))?.run_id })
+      case 'apply': {
+        const run = this.runs.get(wishId)
+        const wish = this.store.outline.get(wishId)
+        if (!run?.preview?.ready || (run.candidate?.checks ?? []).some((c) => c.status === 'failed')) return run ?? null
+        return this.applyRun(run, run.preview.plan_digest, aiwsT('aiworkspace.wish.edit.apply', { name: wish?.title ?? wish?.name ?? wishId }))
+      }
+      case 'cancel':
+      case 'none': return this.runs.get(wishId) ?? null
+      default: return this.runMacro(wishId, options)
+    }
   }
 
   /** A complete input snapshot for the Mock and the versions it read (the run's read set). */
@@ -488,7 +526,7 @@ export class WishService {
     for (const input of payload.inputs ?? []) snapshots.push(await this.snapshotInput(this.store.outline.get(input.entity_id)!, readSet, 0))
     const result = await this.executorFor(wish).execute({ prompt: payload.prompt, context_prompt: payload.analysis.context_prompt, run_id: `mock-${Date.now().toString(36)}`, inputs: snapshots, executor_config: payload.executor_config ?? {} })
     const provided = { results: result.results, read_set: readSet, summary: result.summary, warnings: result.warnings, assumptions: result.assumptions }
-    const run = await this.start(wishId, 'wish.mock@1', 'execute', { provided: provided as unknown as Json }, cellId)
+    const run = await this.start(wishId, 'wish.mock@1', 'run', { provided: provided as unknown as Json }, cellId)
     if (run.state === 'failed') throw new Error(runErrorText(run.error) ?? aiwsT('aiworkspace.wish.error.mockFailed'))
     return run
   }
@@ -556,13 +594,15 @@ export class WishService {
     return (await this.store.session.fetchAsset(source)).text()
   }
 
-  /** Save an edited program: a new source asset; results then show as generated under another configuration. */
+  /** Save a hand-edited macro: a new source asset with the manifest it had (a trial run in coding resolves a new one);
+   * results then show as generated under another configuration. */
   async saveProgram(wishId: string, source: string): Promise<void> {
     const read = await this.payload(wishId)
     const bytes = new TextEncoder().encode(source)
-    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))).map((b) => b.toString(16).padStart(2, '0')).join('')
+    const manifest = read.payload.program?.manifest ?? { inputs: {}, results: {} }
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source + '\n' + JSON.stringify(manifest))))).map((b) => b.toString(16).padStart(2, '0')).join('')
     const uploaded = await this.store.session.uploadAsset(new Blob([bytes], { type: 'text/plain' }), 'main.js')
-    const program = { language: 'js', api_version: 2, source: uploaded.object_id, digest, produces: read.payload.program?.produces ?? [], edited_by: this.store.session.principal ?? 'user' }
+    const program = { language: 'js', api_version: 3, source: uploaded.object_id, digest, manifest, produces: read.payload.program?.produces ?? [], edited_by: this.store.session.principal ?? 'user' }
     const outcome = await this.store.submit({
       editId: `wish:${wishId}:program`, label: aiwsT('aiworkspace.wish.edit.program'),
       operations: [{ op: 'entity.set_keys', entity_id: wishId, keys: [{ key: 'program', value: program as unknown as Json, expect: { rev: read.key_revs.program ?? 0 } }] }],

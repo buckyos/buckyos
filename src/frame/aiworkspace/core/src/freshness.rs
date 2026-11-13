@@ -337,10 +337,7 @@ fn wish_freshness(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult
     if config_changed && status != Status::None {
         status = worse(status, Status::Stale);
     }
-    // only re-running the program refreshes program results; written text then needs regenerating (§9.2)
-    let direct_stale = results.iter().any(|r| r["approach"] == json!("direct") && r["status"] == json!("stale"))
-        && results.iter().filter(|r| r["approach"] == json!("program")).all(|r| r["status"] == json!("current"))
-        && results.iter().any(|r| r["approach"] == json!("program"));
+    let coding = crate::wish::macro_check(ctx, &e.payload)?;
     let changed: Vec<Value> = lines.iter().filter(|l| l["changed"] == json!(true)).cloned().collect();
     Ok(json!({
         "entity_id": e.entity_id,
@@ -356,11 +353,79 @@ fn wish_freshness(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult
         "input_problems": input_problems,
         "last_run": last_run,
         "results": results,
-        "direct_stale": direct_stale,
+        "needs_coding": if coding.is_empty() { Value::Null } else { json!({ "reasons": coding }) },
         "checks": last_run.and_then(|r| r.get("checks")).cloned().unwrap_or(Value::Null),
         "produced": produced,
         "wish": true,
     }))
+}
+
+/// Run codes that send a wish back to coding: the macro failed, its code changed, or it no longer fits its inputs.
+const CODING_CODES: &[&str] = &["PROGRAM_FAILED", "MACRO_CODE_CHANGED", "NEEDS_CODING"];
+/// Run codes that say the wish cannot run here now (permissions, AI quota, execution environment).
+const CANNOT_RUN_CODES: &[&str] = &[
+    "AI_QUOTA_EXHAUSTED", "AI_QUOTA_BUDGET_EXCEEDED", "AI_RESOURCE_NOT_PERMITTED", "AI_ATTRIBUTION_UNAVAILABLE", "AI_UNAVAILABLE",
+    "EXECUTION_CONTEXT_MISSING", "SNAPSHOT_TOO_LARGE", "PERMISSION_DENIED", "ACCESS_DENIED",
+];
+
+fn run_code(run: &Value) -> Option<&str> {
+    let e = run.get("error")?;
+    e.get("sub_code").and_then(Value::as_str).or_else(|| e.get("code").and_then(Value::as_str))
+}
+
+/// The one main state of a wish and its next action (PRD §5.8, 第一期 §2.7): the first that holds of
+/// needs_input, needs_analysis, needs_coding, waiting_data, cannot_run, in_progress, pending_confirmation, stale,
+/// current. `freshness` is `wish_freshness`; `runs` what the caller knows of the wish's runs: `{ active?: { stage,
+/// state }, waiting?: { stage, run_id }, last_failed?: { stage, error: { code, sub_code } } }`. `stale` stays true
+/// when an earlier state wins, so a running or failed run never hides that the applied results are out of date.
+pub fn main_status(freshness: &Value, runs: &Value) -> Value {
+    let f = freshness;
+    let analysis = f.get("analysis_status").and_then(Value::as_str);
+    let status = f.get("status").and_then(Value::as_str).unwrap_or("none");
+    let stale = matches!(status, "stale" | "upstream_stale" | "unavailable") || f.get("config_changed") == Some(&json!(true));
+    let failed_code = runs.get("last_failed").and_then(run_code);
+    let stage_of = |k: &str| runs.get(k).filter(|r| !r.is_null()).and_then(|r| r.get("stage")).and_then(Value::as_str);
+    let (active, waiting) = (stage_of("active"), stage_of("waiting"));
+    // a run of the stage that resolves a state (analysis for needs_analysis, coding for needs_coding) is that state's progress
+    let resolving = |stage: &str| active == Some(stage) || waiting == Some(stage);
+    let mut reasons: Vec<Value> = Vec::new();
+    let needs_analysis = analysis.is_none() || f.get("needs_analysis") == Some(&json!(true));
+    let needs_coding = f.get("needs_coding").and_then(|n| n.get("reasons")).and_then(Value::as_array).is_some_and(|r| !r.is_empty());
+    let (main, next) = if (needs_analysis && resolving(crate::wish::STAGE_ANALYZE)) || (!needs_analysis && needs_coding && resolving(crate::wish::STAGE_CODE)) {
+        if active.is_some() {
+            ("in_progress", "cancel")
+        } else {
+            ("pending_confirmation", "apply")
+        }
+    } else if analysis == Some("needs_input") {
+        ("needs_input", "answer")
+    } else if needs_analysis {
+        if let Some(s) = f.get("analysis_sources_changed").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+            reasons.push(json!({ "code": "analysis_sources_changed", "sources": s }));
+        }
+        ("needs_analysis", "analyze")
+    } else if let Some(r) = f.get("needs_coding").and_then(|n| n.get("reasons")).and_then(Value::as_array).filter(|r| !r.is_empty()) {
+        reasons.extend(r.iter().cloned());
+        ("needs_coding", "code")
+    } else if let Some(code) = failed_code.filter(|c| CODING_CODES.contains(c)) {
+        reasons.push(json!({ "code": "program_failed", "run_code": code }));
+        ("needs_coding", "code")
+    } else if let Some(p) = f.get("input_problems").and_then(Value::as_array).filter(|p| !p.is_empty()) {
+        reasons.extend(p.iter().cloned());
+        ("waiting_data", "view_inputs")
+    } else if let Some(code) = failed_code.filter(|c| CANNOT_RUN_CODES.contains(c)) {
+        reasons.push(json!({ "code": code }));
+        ("cannot_run", "fix")
+    } else if runs.get("active").is_some_and(|a| !a.is_null()) {
+        ("in_progress", "cancel")
+    } else if runs.get("waiting").is_some_and(|w| !w.is_null()) {
+        ("pending_confirmation", "apply")
+    } else if stale || status == "none" {
+        ("stale", "run")
+    } else {
+        ("current", "none")
+    };
+    json!({ "main": main, "next_action": next, "reasons": reasons, "stale": stale })
 }
 
 /// Freshness of many entities in one call (unknown / unreadable ids are reported per entry).
@@ -455,4 +520,182 @@ pub fn relations(ctx: &dyn ReadCtx, access: &Access, id: &str) -> WsResult<Value
         v["freshness"] = entity_freshness(ctx, access, id)?;
     }
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testkit::MemWorkspace;
+
+    /// A wish's freshness with nothing to do: analysed, coded, run and current.
+    fn current() -> Value {
+        json!({ "status": "current", "analysis_status": "ready", "needs_analysis": false, "analysis_sources_changed": [],
+                "needs_coding": null, "input_problems": [], "config_changed": false })
+    }
+
+    fn main_of(f: &Value, runs: &Value) -> (String, String, bool) {
+        let m = main_status(f, runs);
+        (m["main"].as_str().unwrap().into(), m["next_action"].as_str().unwrap().into(), m["stale"].as_bool().unwrap())
+    }
+
+    fn s(main: &str, next: &str, stale: bool) -> (String, String, bool) {
+        (main.into(), next.into(), stale)
+    }
+
+    #[test]
+    fn main_status_takes_the_first_state_that_holds() {
+        let none = json!({});
+        let active = json!({ "active": { "stage": "run", "state": "running" } });
+        let waiting = json!({ "waiting": { "stage": "run", "run_id": "r2" } });
+        // as `WsError::to_json` writes a run's error: `sub_code` only when there is one
+        let failed = |code: &str, sub: Option<&str>| {
+            let mut e = json!({ "code": code });
+            if let Some(s) = sub {
+                e["sub_code"] = json!(s);
+            }
+            json!({ "last_failed": { "stage": "run", "error": e } })
+        };
+        assert_eq!(main_of(&current(), &none), s("current", "none", false));
+
+        // 9 → 1, each state added on top of the ones after it
+        let mut f = current();
+        f["status"] = json!("stale");
+        assert_eq!(main_of(&f, &none), s("stale", "run", true), "8 stale");
+        assert_eq!(main_of(&f, &waiting), s("pending_confirmation", "apply", true), "7 pending confirmation over stale");
+        let mut both = waiting.clone();
+        both["active"] = active["active"].clone();
+        assert_eq!(main_of(&f, &both), s("in_progress", "cancel", true), "6 in progress over pending confirmation");
+        let mut runs = both.clone();
+        runs["last_failed"] = failed("DEPENDENCY_UNAVAILABLE", Some("AI_QUOTA_EXHAUSTED"))["last_failed"].clone();
+        assert_eq!(main_of(&f, &runs), s("cannot_run", "fix", true), "5 cannot run over in progress");
+        assert_eq!(main_status(&f, &runs)["reasons"], json!([{ "code": "AI_QUOTA_EXHAUSTED" }]));
+        f["input_problems"] = json!([{ "entity_id": "orders", "reason": "view_missing", "cell_id": "blk" }]);
+        assert_eq!(main_of(&f, &runs), s("waiting_data", "view_inputs", true), "4 waiting data over cannot run");
+        assert_eq!(main_status(&f, &runs)["reasons"][0]["reason"], "view_missing");
+        f["needs_coding"] = json!({ "reasons": [{ "code": "field_deleted", "input": "sales", "field_id": "month", "name": "月份" }] }); // i18n-exempt: test data (user-written names and text)
+        assert_eq!(main_of(&f, &runs), s("needs_coding", "code", true), "3 needs coding over waiting data");
+        assert_eq!(main_status(&f, &runs)["reasons"][0]["code"], "field_deleted");
+        f["needs_analysis"] = json!(true);
+        f["analysis_sources_changed"] = json!([{ "entity_id": "rules" }]);
+        assert_eq!(main_of(&f, &runs), s("needs_analysis", "analyze", true), "2 needs analysis over needs coding");
+        assert_eq!(main_status(&f, &runs)["reasons"], json!([{ "code": "analysis_sources_changed", "sources": [{ "entity_id": "rules" }] }]));
+        f["analysis_status"] = json!("needs_input");
+        assert_eq!(main_of(&f, &runs), s("needs_input", "answer", true), "1 needs input over everything");
+
+        // a run of the stage that resolves the state is its progress: the first macro is stored only when its candidate is applied
+        let mut f = current();
+        f["needs_coding"] = json!({ "reasons": [{ "code": "no_macro" }] });
+        assert_eq!(main_of(&f, &json!({ "active": { "stage": "code", "state": "running" } })).0, "in_progress");
+        assert_eq!(main_of(&f, &json!({ "waiting": { "stage": "code", "run_id": "r" } })).0, "pending_confirmation");
+        assert_eq!(main_of(&f, &json!({ "waiting": { "stage": "run", "run_id": "r" } })).0, "needs_coding");
+        f["needs_analysis"] = json!(true);
+        assert_eq!(main_of(&f, &json!({ "waiting": { "stage": "analyze", "run_id": "r" } })).0, "pending_confirmation");
+        assert_eq!(main_of(&f, &json!({ "waiting": { "stage": "code", "run_id": "r" } })).0, "needs_analysis", "a coding candidate on a stale analysis does not hide it");
+
+        // needs analysis: no analysis at all, or one that no longer matches its basis
+        let mut f = current();
+        f["analysis_status"] = Value::Null;
+        f["status"] = json!("none");
+        assert_eq!(main_of(&f, &none), s("needs_analysis", "analyze", false));
+        assert_eq!(main_status(&f, &none)["reasons"], json!([]), "no sources changed: no reason listed");
+        let mut f = current();
+        f["needs_analysis"] = json!(true);
+        assert_eq!(main_of(&f, &none).0, "needs_analysis");
+
+        // a failed run of the macro sends it back to coding (sub code first, then code); an empty reason list does not
+        let mut f = current();
+        f["needs_coding"] = json!({ "reasons": [] });
+        assert_eq!(main_of(&f, &none), s("current", "none", false));
+        for (code, sub) in [("INVALID_OPERATION", Some("PROGRAM_FAILED")), ("INVALID_OPERATION", Some("MACRO_CODE_CHANGED")), ("INVALID_OPERATION", Some("NEEDS_CODING")), ("PROGRAM_FAILED", None)] {
+            let m = main_status(&f, &failed(code, sub));
+            assert_eq!((m["main"].as_str(), m["next_action"].as_str()), (Some("needs_coding"), Some("code")), "{code} {sub:?}");
+            assert_eq!(m["reasons"], json!([{ "code": "program_failed", "run_code": sub.unwrap_or(code) }]));
+        }
+        // a coding failure goes before waiting data, as the stored reasons do
+        let mut g = f.clone();
+        g["input_problems"] = json!([{ "entity_id": "orders", "reason": "missing" }]);
+        assert_eq!(main_of(&g, &failed("INVALID_OPERATION", Some("PROGRAM_FAILED"))).0, "needs_coding");
+        // cannot run: permissions, AI quota, execution environment — by code when there is no sub code
+        for code in ["PERMISSION_DENIED", "EXECUTION_CONTEXT_MISSING", "SNAPSHOT_TOO_LARGE"] {
+            assert_eq!(main_of(&f, &failed(code, None)), s("cannot_run", "fix", false), "{code}");
+        }
+        // any other failure leaves the state to what the wish is: here current
+        assert_eq!(main_of(&f, &failed("INTERNAL", Some("TIMEOUT"))), s("current", "none", false));
+        let mut runs = failed("INTERNAL", None);
+        runs["active"] = Value::Null;
+        runs["waiting"] = Value::Null;
+        assert_eq!(main_of(&f, &runs), s("current", "none", false), "null runs are no runs");
+
+        // stale: the results' state, their configuration, a gone input; a wish never run is to be run
+        for st in ["stale", "upstream_stale", "unavailable"] {
+            let mut f = current();
+            f["status"] = json!(st);
+            assert_eq!(main_of(&f, &none), s("stale", "run", true), "{st}");
+            assert_eq!(main_of(&f, &active), s("in_progress", "cancel", true), "{st}: a running run keeps the results stale");
+        }
+        let mut f = current();
+        f["config_changed"] = json!(true);
+        assert_eq!(main_of(&f, &none), s("stale", "run", true), "another configuration");
+        f["needs_coding"] = json!({ "reasons": [{ "code": "api_version" }] });
+        assert_eq!(main_of(&f, &none), s("needs_coding", "code", true));
+        let mut f = current();
+        f["status"] = json!("none");
+        assert_eq!(main_of(&f, &none), s("stale", "run", false), "never run: run it");
+        f["status"] = json!("unknown");
+        assert_eq!(main_of(&f, &none), s("current", "none", false), "unknown is not stale");
+    }
+
+    fn def_rev(ws: &MemWorkspace, field: &str) -> u64 {
+        ws.store.fields[&("t1".to_string(), field.to_string())].def_rev
+    }
+
+    /// The wish's own freshness says whether its macro fits its inputs (`needs_coding`), and there is no
+    /// `direct_stale` any more: every result comes from the macro.
+    #[test]
+    fn wish_freshness_needs_coding() {
+        let mut ws = MemWorkspace::new();
+        ws.ok(json!([
+            { "op": "entity.create", "entity_id": "s1-content", "type_id": TYPE_CONTAINER, "parent_id": CANVAS_CONTENT_ID, "order_key": "a",
+              "payload": { "kind": "folder", "system": "surface_content", "surface_id": "s1", "title": "s1" } },
+            { "op": "entity.create", "entity_id": "s1", "type_id": TYPE_CONTAINER, "parent_id": SURFACES_ID, "order_key": "a", "name": "s1",
+              "payload": { "kind": "surface", "layout": { "mode": "free" }, "title": "s1", "content_folder_id": "s1-content" } },
+            { "op": "entity.create", "entity_id": "t1", "type_id": TYPE_TABLE, "parent_id": DATA_ID, "order_key": "b", "name": "t1",
+              "payload": { "fields": [{ "field_id": "title", "name": "标题", "type": "text" }, { "field_id": "n", "name": "数", "type": "number" }] } }, // i18n-exempt: test data (user-written names and text)
+        ]));
+        ws.ok(json!([{ "op": "entity.create", "entity_id": "w1", "type_id": TYPE_WISH, "parent_id": "s1-content", "order_key": "w", "name": "w1",
+            "payload": { "title": "许愿格", "prompt": "汇总", "executor": "xllm", "inputs": [{ "entity_id": "t1", "name": "rows" }], // i18n-exempt: test data (user-written names and text)
+                         "output": { "container_id": "s1-content", "name": "汇总" }, "output_mode": "overwrite" } }])); // i18n-exempt: test data (user-written names and text)
+        let alice = Access::full("alice");
+        let fresh = |ws: &MemWorkspace| entity_freshness(&ws.store, &alice, "w1").unwrap();
+        let f = fresh(&ws);
+        assert!(f.get("direct_stale").is_none(), "{f}");
+        assert_eq!(main_status(&f, &json!({}))["main"], "needs_analysis");
+        // analysed, not coded yet
+        let analysis = json!({ "schema_version": crate::wish::ANALYSIS_SCHEMA, "status": "ready", "prompt": "汇总", "context_prompt": "按数汇总 rows", // i18n-exempt: test data (user-written names and text)
+                               "output_contract": { "results": [{ "name": "sum", "type": "table", "key": ["标题"] }] }, "checks": [], "blockers": [], "warnings": [] }); // i18n-exempt: test data (user-written names and text)
+        ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "analysis", "value": analysis, "expect": { "rev": 0 } }] }]));
+        let f = fresh(&ws);
+        assert_eq!((f["needs_analysis"].as_bool(), &f["needs_coding"]), (Some(false), &json!({ "reasons": [{ "code": "no_macro" }] })), "{f}");
+        assert_eq!(main_status(&f, &json!({}))["next_action"], "code");
+        // coded: the macro declares 数 of rows
+        let object_id = format!("mix256:{}", "c".repeat(64));
+        ws.store.assets.insert(object_id.clone(), AssetInfo { object_id: object_id.clone(), media_type: "text/plain".into(), size: 10 });
+        let manifest = json!({ "inputs": { "rows": { "entity_id": "t1", "type_id": TYPE_TABLE, "fields": [{ "field_id": "n", "name": "数", "type": "number" }] } }, // i18n-exempt: test data (user-written names and text)
+                               "results": { "sum": { "type": "table" } } });
+        let program = json!({ "language": "js", "api_version": crate::wish::PROGRAM_API_VERSION, "source": object_id,
+                              "digest": crate::wish::macro_digest("main()", &manifest), "manifest": manifest, "produces": ["sum"] });
+        ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "program", "value": program, "expect": { "rev": 0 } }] }]));
+        let f = fresh(&ws);
+        assert_eq!(f["needs_coding"], Value::Null, "{f}");
+        assert_eq!(main_status(&f, &json!({}))["main"], "stale", "coded but never run: run it");
+        // renaming the declared field changes nothing; deleting it asks for coding, naming the field
+        ws.ok(json!([{ "op": "table.update_field", "source_id": "t1", "field_id": "n", "changes": { "name": "数量" }, "expect": { "rev": def_rev(&ws, "n") } }])); // i18n-exempt: test data (user-written names and text)
+        assert_eq!(fresh(&ws)["needs_coding"], Value::Null);
+        ws.ok(json!([{ "op": "table.delete_field", "source_id": "t1", "field_id": "n", "expect": { "rev": def_rev(&ws, "n") } }]));
+        let f = fresh(&ws);
+        assert_eq!(f["needs_coding"], json!({ "reasons": [{ "code": "field_deleted", "input": "rows", "field_id": "n", "name": "数" }] }), "{f}"); // i18n-exempt: test data (user-written names and text)
+        assert_eq!(f["needs_analysis"], false, "the analysis still stands");
+        let m = main_status(&f, &json!({ "active": { "stage": "run" } }));
+        assert_eq!((m["main"].as_str(), m["next_action"].as_str()), (Some("needs_coding"), Some("code")), "{m}");
+    }
 }

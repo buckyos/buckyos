@@ -1,9 +1,9 @@
-/* Phase two §13.1 UI11–UI13, UI16, UI19, UI20 and 许愿格 v0.2: the wish's two passes (the Mock in the
- * browser, the real executor on the service with a scripted model), application of the previewed
- * plan guarded by the read set, freshness that only input changes move, failure keeping old results,
- * manual-modification choices, versions and rollback, the new-result mode, concurrent application,
- * export/import, feedback rounds, re-running only the program, and the HTML extension API (v1 calls
- * and `aiws` v2 bindings, typed writes, batch, watch). */
+/* Phase two §13.1 UI11–UI13, UI16, UI19, UI20, 许愿格 v0.2 and AI Native 第一期: the wish's stages (the Mock
+ * in the browser; the real executor in the browser with a scripted model: analyze, code, run), the main state
+ * and its next action, application of the previewed plan guarded by the read set, freshness that only input
+ * changes move, failure keeping old results, manual-modification choices, versions and rollback, the
+ * new-result mode, concurrent application, export/import, feedback rounds, running the stored macro without
+ * a model, and the HTML extension API (v1 calls and `aiws` v2 bindings, typed writes, batch, watch). */
 
 import { expect, openCanvas, openWorkspace, test, closeWorkspace, fitAll } from './fixtures'
 
@@ -14,18 +14,20 @@ async function runWish(page: import('@playwright/test').Page, blockId: string) {
   await page.getByTestId(`aiws-canvas-block-${blockId}`).dblclick()
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible({ timeout: 20_000 })
-  await page.getByTestId('aiws-wish-execute').click()
+  await page.getByTestId('aiws-wish-run').click()
   await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 30_000 })
   await page.getByTestId('aiws-wish-apply').click()
   await expect(page.getByTestId('aiws-wish-message')).toContainText('已应用', { timeout: 30_000 })
 }
 
-test('UI11/UI20 analyze → execute → apply writes results, Blocks and dependency records in one undoable commit; only input changes make them stale', async ({ page, api }) => {
+test('UI11/UI20 analyze → run → apply writes results, Blocks and dependency records in one undoable commit; only input changes make them stale', async ({ page, api }) => {
   const ws = await api.demo(ALICE, 'quarterly', `wish ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
   const head = await api.headSeq(ALICE, ws.workspace_id)
   await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
-  await expect(page.getByTestId('aiws-wish-execute')).toBeDisabled() // no analysis yet
+  await expect(page.getByTestId('aiws-wish-run')).toBeDisabled() // no analysis yet
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_analysis')
+  await expect(page.getByTestId('aiws-wish-code')).toHaveCount(0) // the Mock writes no macro
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-analysis')).toContainText('模拟执行器')
   await expect(page.getByTestId('aiws-wish-input')).toHaveCount(1)
@@ -33,15 +35,18 @@ test('UI11/UI20 analyze → execute → apply writes results, Blocks and depende
   const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
   expect(wish.content.payload.analysis.prompt).toBe(wish.content.payload.prompt)
   expect(wish.content.payload.inputs.map((i: { entity_id: string }) => i.entity_id)).toEqual(['sales'])
-  // execution does not write; application is one commit with the read set as preconditions
-  await page.getByTestId('aiws-wish-execute').click()
+  // running does not write; application is one commit with the read set as preconditions
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'run')
+  await page.getByTestId('aiws-wish-next').click()
   await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible()
   await expect(page.getByTestId('aiws-wish-result')).toHaveCount(4)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
   await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-ready', 'true')
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'pending_confirmation')
   await page.getByTestId('aiws-wish-apply').click()
   await expect(page.getByTestId('aiws-wish-message')).toContainText('新建 4 项')
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 2)
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current')
   const outline = await api.outline(ALICE, ws.workspace_id)
   const results = outline.filter((e: { derived?: { wish_id: string } }) => e.derived?.wish_id === 'wish-analysis')
   expect(results).toHaveLength(4)
@@ -71,6 +76,7 @@ test('UI11/UI20 analyze → execute → apply writes results, Blocks and depende
   await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 200000, expect: { rev } }] }])
   await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
   await expect(page.getByTestId('aiws-wish-stale')).toContainText('已改变')
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'stale')
   await page.getByTestId('aiws-top-sources').click()
   await page.locator('[data-testid="aiws-tree-item"][data-entity-id="canvas-content"] .aiws-tree-toggle').first().click()
   await page.locator('[data-testid="aiws-tree-item"][data-entity-id="sf-analysis-content"] .aiws-tree-toggle').first().click()
@@ -102,7 +108,7 @@ test('UI12/UI13 failure keeps old results; manual edits are protected; versions 
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
   const head = await api.headSeq(ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-wish-execute').click()
+  await page.getByTestId('aiws-wish-run').click()
   await expect(page.getByTestId('aiws-wish-message')).toContainText('模拟失败')
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
   expect((await api.read(ALICE, ws.workspace_id, summary.entity_id)).content_rev).toBe(v1)
@@ -111,7 +117,7 @@ test('UI12/UI13 failure keeps old results; manual edits are protected; versions 
   await prompt.blur()
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
-  await page.getByTestId('aiws-wish-execute').click()
+  await page.getByTestId('aiws-wish-run').click()
   await expect(page.getByTestId('aiws-wish-message')).toContainText('The simulated results are invalid')
   await expect(page.getByTestId('aiws-wish-candidate')).toHaveCount(0)
   expect((await api.read(ALICE, ws.workspace_id, summary.entity_id)).content_rev).toBe(v1)
@@ -131,7 +137,7 @@ test('UI12/UI13 failure keeps old results; manual edits are protected; versions 
   const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-2', 'revenue')).rev
   await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-2', field_id: 'revenue', value: 99000, expect: { rev } }] }])
   await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
-  await page.getByTestId('aiws-wish-execute').click()
+  await page.getByTestId('aiws-wish-run').click()
   await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible()
   await expect(page.getByTestId('aiws-wish-manual')).toBeVisible()
   await expect(page.getByTestId('aiws-wish-apply')).toBeDisabled()
@@ -163,7 +169,7 @@ test('UI12/UI13 failure keeps old results; manual edits are protected; versions 
   // new-result mode: a second group, old results untouched
   await page.getByTestId('aiws-tree-wish-analysis').click()
   await page.getByTestId('aiws-wish-mode').selectOption('new')
-  await page.getByTestId('aiws-wish-execute').click()
+  await page.getByTestId('aiws-wish-run').click()
   await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible()
   await page.getByTestId('aiws-wish-apply').click()
   await expect(page.getByTestId('aiws-wish-message')).toContainText('新建 4 项')
@@ -177,7 +183,7 @@ test('UI12/UI13 failure keeps old results; manual edits are protected; versions 
   await expect(page.getByTestId('aiws-wish-needs-analysis')).toBeVisible()
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
-  await page.getByTestId('aiws-wish-execute').click()
+  await page.getByTestId('aiws-wish-run').click()
   await expect(page.getByTestId('aiws-wish-message')).toContainText('成环')
 })
 
@@ -194,8 +200,8 @@ test('UI20 two clients apply the same wish: only one application is accepted', a
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible()
   await expect(page2.getByTestId('aiws-wish-analysis')).toBeVisible()
-  await page.getByTestId('aiws-wish-execute').click()
-  await page2.getByTestId('aiws-wish-execute').click()
+  await page.getByTestId('aiws-wish-run').click()
+  await page2.getByTestId('aiws-wish-run').click()
   await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible()
   await expect(page2.getByTestId('aiws-wish-candidate')).toBeVisible()
   await page.getByTestId('aiws-wish-apply').click()
@@ -290,7 +296,10 @@ test('UI19 an HTML extension Block reads data, submits through the store (undoab
   await expect(page.getByTestId('aiws-near-toolbar')).toBeVisible()
 })
 
-test('许愿格 v0.2: the real executor (scripted model) analyses, programs, previews, applies; feedback becomes a refinement; re-running only the program needs no model', async ({ page, api }) => {
+test('第一期: the real executor (scripted model, in this browser) analyses, codes the macro with a trial run, previews, applies macro and results in one commit; feedback is another coding round; running the stored macro needs no model', async ({ page, api }) => {
+  test.slow()
+  const llm = `http://127.0.0.1:${process.env.AIWS_E2E_LLM_PORT}/v1`
+  await page.addInitScript((baseUrl) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ llm: { baseUrl } })), llm)
   const ws = await api.demo(ALICE, 'quarterly', `xllm ${Date.now()}`)
   const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
   await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [
@@ -299,8 +308,11 @@ test('许愿格 v0.2: the real executor (scripted model) analyses, programs, pre
   await openCanvas(page, ALICE, ws.workspace_id)
   await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
   await expect(page.getByTestId('aiws-wish-executor')).toHaveValue('xllm')
+  // without hosted execution there is nowhere else to run: no choice is offered
+  await expect(page.getByTestId('aiws-wish-exec-mode')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_analysis')
   const head = await api.headSeq(ALICE, ws.workspace_id)
-  // analysis on the service: bound by handle, written back by the click
+  // analysis: bound by handle, written back by the click
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-contract')).toContainText('summary', { timeout: 30_000 })
   await expect(page.getByTestId('aiws-wish-checkdefs')).toContainText('汇总合计等于输入合计')
@@ -308,20 +320,33 @@ test('许愿格 v0.2: the real executor (scripted model) analyses, programs, pre
   const analysed = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
   expect(analysed.content.payload.inputs).toEqual([{ entity_id: 'sales', name: 'data', label: '原始销售数据', version: { mode: 'follow' } }])
   expect(analysed.content.payload.analysis.context_prompt).not.toContain('@')
-  // execution: progress, then a candidate with previews and checks; nothing written yet
-  await page.getByTestId('aiws-wish-execute').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 60_000 })
+  // no macro yet: the wish needs coding, and running is not offered
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_coding')
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'code')
+  await expect(page.getByTestId('aiws-wish-reasons')).toContainText('还没有宏')
+  await expect(page.getByTestId('aiws-wish-run')).toBeDisabled()
+  // coding: the macro's trial run is the candidate, with previews and checks; nothing written yet
+  await page.getByTestId('aiws-wish-next').click()
+  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'code', { timeout: 60_000 })
+  await expect(page.getByTestId('aiws-wish-candidate')).toContainText('编码候选')
   await expect(page.getByTestId('aiws-wish-result')).toHaveCount(2)
   await expect(page.getByTestId('aiws-wish-preview-table')).toContainText('华东')
   await expect(page.getByTestId('aiws-wish-preview-text')).toContainText('合计')
   await expect(page.locator('[data-testid="aiws-wish-check"][data-check="total"]')).toHaveAttribute('data-status', 'passed')
   await expect(page.locator('[data-testid="aiws-wish-check"][data-check="cited"]')).toHaveAttribute('data-status', 'review')
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'pending_confirmation')
+  await expect(page.getByTestId('aiws-wish-program-change')).toBeVisible()
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
+  const runs = await api.runs(ALICE, ws.workspace_id, 'wish-analysis')
+  expect((runs[0].execution as { mode: string }).mode).toBe('local')
+  // applying writes the macro and the results in one commit
   await page.getByTestId('aiws-wish-apply').click()
   await expect(page.getByTestId('aiws-wish-message')).toContainText('新建 2 项')
+  expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 2)
   const applied = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
   const lastRun = applied.content.payload.last_run
-  expect(applied.content.payload.program.api_version).toBe(2)
+  expect(applied.content.payload.program.api_version).toBe(3)
+  expect(Object.keys(applied.content.payload.program.manifest.inputs)).toEqual(['data'])
   expect(Object.keys(lastRun.result_bindings.results).sort()).toEqual(['commentary', 'summary'])
   expect(lastRun.checks.passed).toBe(1)
   const summary = lastRun.result_bindings.results.summary
@@ -330,11 +355,12 @@ test('许愿格 v0.2: the real executor (scripted model) analyses, programs, pre
   expect(outline.find((e: { entity_id: string }) => e.entity_id === summary.cells[1]).view_type).toBe('sample.bar-chart')
   // on the canvas next to the wish (mounted once the camera reaches it)
   await expect(page.getByTestId(`aiws-canvas-block-${summary.cells[1]}`)).toBeAttached()
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current')
   // undo takes the whole application back in one step
   await expect(page.getByTestId('aiws-undo')).toBeEnabled()
-  // feedback: a new round on the existing program; applying it keeps the request as a refinement
-  await page.getByTestId('aiws-wish-execute').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 60_000 })
+  // feedback: another coding round on the stored macro; applying it keeps the request as a refinement
+  await page.getByTestId('aiws-wish-code').click()
+  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'code', { timeout: 60_000 })
   await page.getByTestId('aiws-wish-feedback').fill('表格按合计从高到低排')
   await page.getByTestId('aiws-wish-feedback-send').click()
   await expect(page.getByTestId('aiws-wish-candidate')).toContainText('按反馈修改', { timeout: 60_000 })
@@ -342,17 +368,27 @@ test('许愿格 v0.2: the real executor (scripted model) analyses, programs, pre
   await expect(page.getByTestId('aiws-wish-refinement')).toHaveCount(1)
   await expect(page.getByTestId('aiws-wish-refinement').locator('input')).toHaveValue('汇总表按合计降序排列')
   await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0)
-  // the data changes: stale; re-running only the program refreshes the table, the text then needs regenerating
+  // the data changes: stale; running the stored macro refreshes the table and the text together, and calls no model
   const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-1', 'revenue')).rev
   await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 500000, expect: { rev } }] }])
   await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
-  await page.getByTestId('aiws-wish-rerun').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toContainText('程序（未调用模型）', { timeout: 60_000 })
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'stale')
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'run')
+  let modelCalls = 0
+  await page.route(`${llm}/chat/completions`, (route) => { modelCalls += 1; return route.abort() })
+  await page.getByTestId('aiws-wish-run').click()
+  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'run', { timeout: 60_000 })
+  await expect(page.getByTestId('aiws-wish-candidate')).toContainText('运行结果')
+  await expect(page.getByTestId('aiws-wish-preview-text')).toContainText('合计')
   await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-direct-stale')).toBeVisible()
-  // the stored program can be read
+  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'current')
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current')
+  expect(modelCalls).toBe(0)
+  await page.unroute(`${llm}/chat/completions`)
+  // the stored macro can be read
   await page.getByTestId('aiws-wish-program').click()
   await expect(page.getByTestId('aiws-wish-program-view')).toContainText("aiws.result.table('summary'")
+  await expect(page.getByTestId('aiws-wish-program-view')).toContainText('aiws.declare(')
 })
 
 test('aiws v2: an HTML Block reads by binding name, writes typed values in one batch (one undo step), and watches its data', async ({ page, api }) => {
@@ -397,7 +433,7 @@ test('aiws v2: an HTML Block reads by binding name, writes typed values in one b
   await expect.poll(() => frameDoc?.evaluate(() => (window as unknown as { __seen?: number }).__seen ?? 0)).toBeGreaterThan(0)
 })
 
-test('内核架构改进 T3-4: the local executor — this browser hosts the model loop and runs the program in a Worker; the service plans; a reload leaves the run interrupted and the browser resumes it', async ({ page, api }) => {
+test('内核架构改进 T3-4: the local executor — this browser hosts the model loop and runs the macro in a Worker; the service plans; a reload leaves the run interrupted and the browser resumes it', async ({ page, api }) => {
   test.slow()
   const llm = `http://127.0.0.1:${process.env.AIWS_E2E_LLM_PORT}/v1`
   await page.addInitScript((baseUrl) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ llm: { baseUrl } })), llm)
@@ -408,7 +444,6 @@ test('内核架构改进 T3-4: the local executor — this browser hosts the mod
     { key: 'prompt', value: '按区域汇总「原始销售数据」的销售额，并写一段解读', expect: { rev: wish.content.key_revs.prompt } }] }])
   await openCanvas(page, ALICE, ws.workspace_id)
   await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
-  await page.getByTestId('aiws-wish-exec-mode').selectOption('local')
   const head = await api.headSeq(ALICE, ws.workspace_id)
   // analysis in the browser: the stage tools are answered by the service, the analysis is written back by the click
   await page.getByTestId('aiws-wish-analyze').click()
@@ -416,8 +451,8 @@ test('内核架构改进 T3-4: the local executor — this browser hosts the mod
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
   const analysed = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
   expect(analysed.content.payload.inputs).toEqual([{ entity_id: 'sales', name: 'data', label: '原始销售数据', version: { mode: 'follow' } }])
-  // execution: the program runs in the Worker on the fetched snapshot; the candidate is the same as the service's
-  await page.getByTestId('aiws-wish-execute').click()
+  // coding: the macro's trial run is in the Worker on the fetched snapshot
+  await page.getByTestId('aiws-wish-code').click()
   await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 60_000 })
   await expect(page.getByTestId('aiws-wish-result')).toHaveCount(2)
   await expect(page.getByTestId('aiws-wish-preview-table')).toContainText('华东')
@@ -428,19 +463,19 @@ test('内核架构改进 T3-4: the local executor — this browser hosts the mod
   await page.getByTestId('aiws-wish-apply').click()
   await expect(page.getByTestId('aiws-wish-message')).toContainText('新建 2 项')
   const applied = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
-  expect(applied.content.payload.program.api_version).toBe(2)
-  // re-running only the program: the Worker again, no model
+  expect(applied.content.payload.program.api_version).toBe(3)
+  // running the stored macro: the Worker again, no model; the text is refreshed with the table
   const rev = (await api.cell(ALICE, ws.workspace_id, 'sales', 's-1', 'revenue')).rev
   await api.commit(ALICE, ws, [{ op: 'table.set_values', source_id: 'sales', values: [{ record_id: 's-1', field_id: 'revenue', value: 500000, expect: { rev } }] }])
   await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
-  await page.getByTestId('aiws-wish-rerun').click()
-  await expect(page.getByTestId('aiws-wish-candidate')).toContainText('程序（未调用模型）', { timeout: 60_000 })
+  await page.getByTestId('aiws-wish-run').click()
+  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'run', { timeout: 60_000 })
   await page.getByTestId('aiws-wish-apply').click()
-  await expect(page.getByTestId('aiws-wish-direct-stale')).toBeVisible()
+  await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'current')
   // the executor dies with the page while the model is slow: the run's lease lapses (interrupted, AIWS_RUN_LEASE_MS);
   // this browser still holds the claim and resumes the run as a new attempt
   await page.route(`${llm}/chat/completions`, () => { /* the model never answers */ })
-  await page.getByTestId('aiws-wish-execute').click()
+  await page.getByTestId('aiws-wish-code').click()
   await expect(page.getByTestId('aiws-wish-progress')).toBeVisible({ timeout: 30_000 })
   await expect.poll(async () => (await api.runs(ALICE, ws.workspace_id, 'wish-analysis'))[0].state).toBe('running')
   await page.unroute(`${llm}/chat/completions`)

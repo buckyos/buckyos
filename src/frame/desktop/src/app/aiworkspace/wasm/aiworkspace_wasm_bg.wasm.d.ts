@@ -42,6 +42,7 @@ export const richtext_to_markdown: (a: number, b: number, c: number) => void;
 export const verify_object: (a: number, b: number, c: number, d: number, e: number) => void;
 export const view_sql: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
 export const wish_config_digest: (a: number, b: number, c: number) => void;
+export const wish_main_status: (a: number, b: number, c: number, d: number, e: number) => void;
 export const wish_needs_analysis: (a: number, b: number, c: number) => void;
 export const __wbindgen_export: (a: number) => void;
 export const __wbindgen_export2: () => number;

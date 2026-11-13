@@ -1,8 +1,7 @@
-//! The execution model of a wish run (内核架构改进 §9, D14–D16, D22, D23, M3): every run binds an
+//! The execution model of a wish run (内核架构改进 §9, D14–D16, D22, D23, M3; 浏览器优先): every run binds an
 //! explicit execution context; an executor outside the service — the browser (local) or an Agent Work
-//! Session the Owner configured (hosted) — claims the run, keeps a lease alive, and reports candidate
-//! results that the service plans and the user confirms. The transitional in-service executor stays
-//! selectable until hosted execution passed DV (T3-9).
+//! Session the Owner configured (hosted) — claims the run, keeps a lease alive, works on the service's
+//! stage and reports when done; the service plans what the stage collected and the user confirms it.
 
 use super::{run_view, stages};
 use crate::AppState;
@@ -16,7 +15,6 @@ use std::sync::Arc;
 /// Where a run executes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    Service,
     Local,
     Hosted,
 }
@@ -24,7 +22,6 @@ pub enum Mode {
 impl Mode {
     pub fn parse(s: &str) -> Option<Mode> {
         match s {
-            "service" => Some(Mode::Service),
             "local" => Some(Mode::Local),
             "hosted" => Some(Mode::Hosted),
             _ => None,
@@ -32,7 +29,6 @@ impl Mode {
     }
     pub fn as_str(self) -> &'static str {
         match self {
-            Mode::Service => "service",
             Mode::Local => "local",
             Mode::Hosted => "hosted",
         }
@@ -55,7 +51,6 @@ pub fn execution_context(ws: &Workspace, caller: &Caller, wish_id: &str, payload
     }
     let owner = ws.owner()?.ok_or_else(|| missing("the workspace has no owner"))?;
     let (executor, compute) = match mode {
-        Mode::Service => (json!({ "kind": "service", "principal": "system:aiworkspace" }), json!({ "principal": owner, "kind": "service" })),
         Mode::Local => (json!({ "kind": "browser", "principal": caller.principal }), json!({ "principal": caller.principal, "kind": "browser" })),
         Mode::Hosted => {
             let cfg = hosted.ok_or_else(|| missing("hosted execution is not configured"))?;
@@ -86,17 +81,12 @@ fn now_ms(ws: &Workspace) -> i64 {
 /// The executor record a new run starts with; the claim token leaves the service once, in the
 /// `proc.start` answer (local) or the Agent's goal (hosted).
 pub fn new_exec_record(mode: Mode) -> (Value, Option<String>) {
-    match mode {
-        Mode::Service => (json!({ "mode": "service", "attempt": 0 }), None),
-        _ => {
-            let token = random_id("ct_");
-            (json!({ "mode": mode.as_str(), "attempt": 0, "claim_hash": sha256_hex(token.as_bytes()) }), Some(token))
-        }
-    }
+    let token = random_id("ct_");
+    (json!({ "mode": mode.as_str(), "attempt": 0, "claim_hash": sha256_hex(token.as_bytes()) }), Some(token))
 }
 
-/// `proc.claim { run_id, claim_token, executor? }`: the attempt, its run token and lease, and — for a
-/// model run — the stage the executor works on (`stage`: prompts, tools, model; or the program to re-run).
+/// `proc.claim { run_id, claim_token, executor? }`: the attempt, its run token and lease, and the stage the executor
+/// works on (`stage`: a model stage's prompts, tools, model and budget; or the stored macro to run).
 pub fn claim(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> WsResult<Value> {
     let run_id = p.get("run_id").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("run_id required"))?;
     let token = p.get("claim_token").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("claim_token required"))?;
@@ -151,10 +141,18 @@ pub fn program(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -
     stages::host_program(&stage, source, p.get("results").filter(|r| r.is_object()), p.get("log").and_then(Value::as_str).unwrap_or(""), p.get("files").unwrap_or(&Value::Null))
 }
 
-/// `proc.files { run_id, attempt }`.
+/// `proc.files { run_id, attempt }`: the stage directory; over the snapshot budget the run fails (`SNAPSHOT_TOO_LARGE`).
 pub fn files(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> WsResult<Value> {
-    let (stage, _, _) = hosted_stage(state, caller, ws_id, p)?;
-    stages::host_files(&stage)
+    let (stage, run_id, attempt) = hosted_stage(state, caller, ws_id, p)?;
+    match stages::host_files(&stage) {
+        Err(e) if e.sub == Some("SNAPSHOT_TOO_LARGE") => {
+            let _ = state.with_ws(ws_id, |ws| ws.wish_run_set(&run_id, Some("failed"), None, None, None, Some(&json!({ "error": e.to_json(), "progress": { "phase": "failed", "attempt": attempt } }))));
+            state.wish.drop_hosted(&run_id);
+            state.wish.unregister(&run_id);
+            Err(e)
+        }
+        other => other,
+    }
 }
 
 /// `proc.heartbeat { run_id, attempt, progress? }`.
@@ -180,13 +178,16 @@ fn note_progress(state: &Arc<AppState>, run_id: &str, progress: Option<&Value>) 
     }
 }
 
-/// `proc.report { run_id, attempt, progress? | error? | results… | analysis }`: the executor's word. A
-/// report with results (`results`, `read_set?`, `summary?`, `warnings?`, `assumptions?`) or with an
-/// `analysis` becomes the run's candidate: the service validates and plans it, the user confirms it.
+/// `proc.report { run_id, attempt, progress? | error? | finished | analysis }`: the executor's word. `finished`: what
+/// the stage collected (the macro's trial or real run) becomes the candidate; an `analysis` (an analyze run whose
+/// analysis was made elsewhere, 第一期 §2.9) is validated like `submit_analysis`. The service plans it, the user
+/// confirms it. Results are never reported directly: they come from the macro (`proc.program`).
 pub fn report(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> WsResult<Value> {
     let run_id = p.get("run_id").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("run_id required"))?.to_string();
     let attempt = p.get("attempt").and_then(Value::as_u64).ok_or_else(|| WsError::invalid_op("attempt required"))?;
-    let has_results = p.get("results").is_some_and(Value::is_array);
+    if p.get("results").is_some() {
+        return Err(WsError::invalid_op("results come from the macro: hand in its run with proc.program, then report finished"));
+    }
     let has_analysis = p.get("analysis").is_some_and(Value::is_object);
     let (c, rid, body) = (caller.clone(), run_id.clone(), p.clone());
     let provided = state.with_ws(ws_id, move |ws| {
@@ -205,27 +206,16 @@ pub fn report(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) ->
             ws.wish_run_set(&rid, Some("validating"), None, None, None, Some(&json!({ "exec": merge_exec_field(&run["detail"]["exec"], json!({ "provided": { "attempt": attempt, "stage_host": true } })), "progress": { "phase": "validating", "attempt": attempt } })))?;
             return Ok(Some(json!({ "stage_host": true })));
         }
-        if !has_results && !has_analysis {
+        if !has_analysis {
             let mut progress = body.get("progress").cloned().unwrap_or_else(|| json!({ "phase": "running" }));
             progress["attempt"] = json!(attempt);
             ws.wish_run_heartbeat(&rid, attempt, Some(&progress))?;
             return Ok(Some(json!({ "progress": progress })));
         }
-        let stage = run["params"]["stage"].as_str().unwrap_or("execute");
-        if has_analysis && stage != "analyze" {
+        if run["params"]["stage"] != json!(aiworkspace_core::wish::STAGE_ANALYZE) {
             return Err(WsError::invalid_op("an analysis is reported by an analyze run"));
         }
-        if has_results && stage == "analyze" {
-            return Err(WsError::invalid_op("an analyze run reports an analysis, not results"));
-        }
-        let mut provided = json!({ "attempt": attempt, "read_set": body.get("read_set").cloned().unwrap_or(json!([])), "summary": body.get("summary").cloned().unwrap_or(json!("")),
-                                   "warnings": body.get("warnings").cloned().unwrap_or(json!([])), "assumptions": body.get("assumptions").cloned().unwrap_or(json!([])) });
-        if has_results {
-            provided["results"] = body["results"].clone();
-        }
-        if has_analysis {
-            provided["analysis"] = body["analysis"].clone();
-        }
+        let provided = json!({ "attempt": attempt, "analysis": body["analysis"] });
         ws.wish_run_set(&rid, Some("validating"), None, None, None, Some(&json!({ "exec": merge_exec_field(&run["detail"]["exec"], json!({ "provided": provided.clone() })), "progress": { "phase": "validating", "attempt": attempt } })))?;
         Ok(Some(provided))
     })?;
@@ -235,12 +225,11 @@ pub fn report(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) ->
         let (st, ws, rid) = (state.clone(), ws_id.to_string(), run_id.clone());
         if provided["stage_host"] == json!(true) {
             let stage = state.wish.hosted(&run_id).ok_or_else(|| WsError::invalid_op("the run has no open stage: claim it first"))?;
-            let repair = state.with_ws(ws_id, |ws| Ok(ws.wish_run(caller, &run_id)?["params"]["stage"] == json!("repair_program")))?;
             tokio::runtime::Handle::current().spawn(async move {
-                stages::drive_host(st, as_run, ws, rid, stage, repair).await;
+                stages::drive_host(st, as_run, ws, rid, stage).await;
             });
         } else {
-            // the service plans what was reported, exactly like a Mock executor's results (§3)
+            // an analysis made elsewhere: validated and planned like the model's own
             state.wish.drop_hosted(&run_id);
             let active = state.wish.register(&run_id);
             tokio::runtime::Handle::current().spawn(async move {
@@ -297,8 +286,9 @@ pub async fn dispatch_hosted(state: &Arc<AppState>, ws_id: &str, run_id: &str, c
     let owner = context["compute"]["principal"].as_str().unwrap_or("").to_string();
     let objective = format!(
         "Execute AI Workspace run {run_id} of workspace {ws_id} (wish {}). Follow the `aiworkspace_run` command manual: claim the run with \
-         `buckyos aiws run-claim --workspace {ws_id} --run {run_id} --claim-token {claim_token}`, read its brief and inputs, produce the results, \
-         report them with `buckyos aiws run-report`, and keep the lease alive with `buckyos aiws run-heartbeat` while you work. Resources: the workspace owner's ({owner}).",
+         `buckyos aiws run-claim --workspace {ws_id} --run {run_id} --claim-token {claim_token}`, read its stage (analyze, code: write and trial-run the macro, \
+         run: run the stored macro) and inputs, hand macro runs in with `buckyos aiws run-program`, end with `buckyos aiws run-report --finished`, \
+         and keep the lease alive with `buckyos aiws run-heartbeat` while you work. Resources: the workspace owner's ({owner}).",
         context["task"]["wish_id"].as_str().unwrap_or("")
     );
     let _ = state;

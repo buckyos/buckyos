@@ -276,6 +276,16 @@ fn drop_views(conn: &Connection) -> WsResult<()> {
 /// Run `params.sql` on `conn` (inside a read transaction the caller opened). `head_seq` is the version the connection
 /// sees.
 pub fn execute(conn: &Connection, ctx: &dyn ReadCtx, access: &Access, params: &Value, head_seq: u64, names: Names) -> WsResult<Value> {
+    run(conn, ctx, access, params, head_seq, names, None)
+}
+
+/// Run `params.sql` over exactly the logical tables in `views` (`(name, entity_id, CREATE TEMP VIEW …)`, made by the
+/// caller — a macro's declared inputs, AI Native 第一期 §2.3); any other table name is unknown.
+pub fn execute_views(conn: &Connection, ctx: &dyn ReadCtx, access: &Access, params: &Value, head_seq: u64, views: Vec<(String, String, String)>) -> WsResult<Value> {
+    run(conn, ctx, access, params, head_seq, None, Some(views))
+}
+
+fn run(conn: &Connection, ctx: &dyn ReadCtx, access: &Access, params: &Value, head_seq: u64, names: Names, prepared: Option<Vec<(String, String, String)>>) -> WsResult<Value> {
     let sql = params.get("sql").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("sql must be a string"))?;
     if sql.len() > MAX_SQL_BYTES {
         return Err(WsError::limit(format!("sql is longer than {MAX_SQL_BYTES} bytes")));
@@ -294,9 +304,17 @@ pub fn execute(conn: &Connection, ctx: &dyn ReadCtx, access: &Access, params: &V
     };
     register_functions(conn).map_err(db_err)?;
     drop_views(conn)?;
+    // a double-quoted name is a column or an error, never a string: a renamed or undeclared field must not read as text
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DML, false).map_err(db_err)?;
     let state = Arc::new(Mutex::new(AuthState::default()));
-    // aliases first: only these tables then, under these names
-    if let Some(tables) = params.get("tables").filter(|t| !t.is_null()) {
+    let restricted = prepared.is_some() || params.get("tables").is_some_and(|t| !t.is_null());
+    if let Some(views) = prepared {
+        for (name, entity_id, ddl) in views {
+            conn.execute_batch(&ddl).map_err(db_err)?;
+            state.lock().unwrap().views.insert(name, entity_id);
+        }
+    } else if let Some(tables) = params.get("tables").filter(|t| !t.is_null()) {
+        // aliases first: only these tables then, under these names
         let tables = tables.as_object().ok_or_else(|| WsError::invalid_op("tables must be { alias: path or entity_id }"))?;
         if tables.len() > MAX_TABLES {
             return Err(WsError::limit(format!("at most {MAX_TABLES} tables")));
@@ -327,7 +345,6 @@ pub fn execute(conn: &Connection, ctx: &dyn ReadCtx, access: &Access, params: &V
             }),
         );
     }
-    let restricted = params.get("tables").is_some_and(|t| !t.is_null());
     let result = (|| -> WsResult<Value> {
         let mut created = 0usize;
         let enforce = |on: bool| state.lock().unwrap().enforcing = on;
@@ -427,6 +444,7 @@ pub fn execute(conn: &Connection, ctx: &dyn ReadCtx, access: &Access, params: &V
     })();
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
     conn.progress_handler(0, None::<fn() -> bool>);
+    let _ = conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DML, true);
     let _ = drop_views(conn);
     result
 }

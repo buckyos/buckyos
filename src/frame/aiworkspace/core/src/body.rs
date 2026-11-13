@@ -496,6 +496,9 @@ impl<'a> Builder<'a> {
         if let Some(o) = e.payload.get("output").filter(|o| !o.is_null()) {
             out.push(Part::sel(json!({ "kind": "doc_key", "key": "output" }), format!("output: {o}")));
         }
+        if let Some(m) = e.payload.get("program").and_then(|p| p.get("manifest")).filter(|m| m.is_object()) {
+            out.push(Part::sel(json!({ "kind": "doc_key", "key": "program" }), manifest_text(m)));
+        }
         if let Some(state) = e.payload.get("last_run").and_then(|r| r.get("state")).and_then(Value::as_str) {
             out.push(Part::text(format!("last run: {state}")));
         }
@@ -901,4 +904,33 @@ pub fn read_body(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, params: &Val
         out["parts"] = Value::Array(page.parts);
     }
     Ok(out)
+}
+
+/// A macro's manifest as plain text (AI Native 第一期 §2.2): what running it again reads, which AI it may call,
+/// what it writes — the same lines for an Agent and a screen reader.
+pub fn manifest_text(m: &Value) -> String {
+    let mut lines = vec!["macro:".to_string()];
+    for (name, i) in m.get("inputs").and_then(Value::as_object).into_iter().flatten() {
+        let fields: Vec<&str> = i.get("fields").and_then(Value::as_array).into_iter().flatten().filter_map(|f| f.get("name").and_then(Value::as_str)).collect();
+        lines.push(if fields.is_empty() { format!("- reads {name}") } else { format!("- reads {name}: {}", fields.join(", ")) });
+    }
+    let results: Vec<String> = m.get("results").and_then(Value::as_object).into_iter().flatten().map(|(n, r)| format!("{n} ({})", r.get("type").and_then(Value::as_str).unwrap_or(""))).collect();
+    if !results.is_empty() {
+        lines.push(format!("- writes {}", results.join(", ")));
+    }
+    let ai = m.get("ai").cloned().unwrap_or(Value::Null);
+    if let Some(c) = ai.get("complete").filter(|c| c.is_object()) {
+        let n = |k: &str| c.get(k).and_then(Value::as_u64).map(|n| n.to_string()).unwrap_or_else(|| "default".into());
+        lines.push(format!("- AI: single inferences, at most {} calls and {} tokens", n("max_calls"), n("max_tokens")));
+    }
+    if let Some(mp) = ai.get("map").filter(|c| c.is_object()) {
+        lines.push(format!("- AI: per-item judgements, at most {} items", mp.get("max_items").and_then(Value::as_u64).map(|n| n.to_string()).unwrap_or_else(|| "default".into())));
+    }
+    if let Some(z) = m.get("zone").and_then(Value::as_array).filter(|z| !z.is_empty()) {
+        lines.push(format!("- Zone resources: {}", z.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
+    }
+    if let Some(p) = m.get("params").and_then(Value::as_array).filter(|p| !p.is_empty()) {
+        lines.push(format!("- parameters: {}", p.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
+    }
+    lines.join("\n")
 }

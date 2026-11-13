@@ -880,52 +880,85 @@ outline projects `ink_stroke` (the `stroke` id) on an ink Cell's envelope. The f
 `fixtures/ink/strokes.json` (a mouse line, a pen tap, a pressure stroke with tilt, a three-segment stroke) is
 written by `desktop/tests/datamodel/aiworkspace-ink.test.ts` and committed and read back by `core/tests/ink.rs`.
 
-## Wish runs (许愿格 v0.2)
+## Wish runs (许愿格; AI Native 第一期: analyze → code → run)
 
-Two `proc` programs (design §13). Runs live in `local.sqlite` `runs` (never exported); working files in
-`<ws>/runs/<run_id>/{work,xllm}`, the `llm.map` cache in `<ws>/cache/llm_map/`.
+Two `proc` programs (design §13; `notepads/aiws-ai-native-phase1-todo.md` §2). Runs live in `local.sqlite` `runs` (never
+exported); stage folders in `<ws>/runs/<run_id>/work`, the AI answer cache in `<ws>/cache/llm_map/`. The service runs no
+model and no program: every stage of `wish.xllm@1` executes on an executor — the starter's browser (`local`) or the Owner's
+Agent (`hosted`). The service takes the stage snapshot, answers the stage's tools, judges what the executor hands in, plans the
+candidate and commits exactly the previewed plan.
 
 | Program | `params` |
 | --- | --- |
-| `wish.xllm@1` | `wish_id`, `stage: analyze \| execute \| rerun_program \| repair_program`, `parent_run_id?` + `feedback?` (a feedback round), `location?` (`{ surface_id, cell_id, selection, viewport }`, the task location of the map), `request?` (`aiws.request`) |
-| `wish.mock@1` | `wish_id`, `stage: execute`, `provided` — the browser Mock executor's results, planned and applied like a real run |
+| `wish.xllm@1` | `wish_id`, `stage: analyze \| code \| run`, `parent_run_id?` (code: a failed run to repair, or the previous round) + `feedback?` (a feedback round), `location?` (`{ surface_id, cell_id, selection, viewport }`, the task location of the map), `request?` (`aiws.request`), `execution?: { mode: local \| hosted }` |
+| `wish.mock@1` | `wish_id`, `stage: run`, `provided` — the browser Mock executor's results, planned and applied like a real run |
 
 States: `queued → snapshotting → running → validating → waiting_confirmation → applying → succeeded`, or
-`failed | cancelled | interrupted | conflict | rejected`. A service restart marks running runs `interrupted`
-(no automatic re-run); an `applying` run is reconciled through the Commit idempotency record
-`run/<run_id>/<plan_digest>`. `proc.get { run_id, choices? }` returns progress, the candidate and — while
-waiting — the preview of the plan for `choices` (`{ results: { <name>: keep | replace | new }, confirm_structure? }`);
-`proc.apply { run_id, plan_digest }` applies exactly that previewed plan in one Commit (origin `program`).
+`failed | cancelled | interrupted | conflict | rejected`. An executor's lapsed lease makes its run `interrupted` (resumed as a new
+attempt); an `applying` run is reconciled through the Commit idempotency record `run/<run_id>/<plan_digest>`. `proc.get { run_id,
+choices? }` returns progress, the candidate and — while waiting — the preview of the plan for `choices` (`{ results: { <name>: keep |
+replace | new }, confirm_structure? }`); `proc.apply { run_id, plan_digest }` applies exactly that previewed plan in one Commit
+(origin `program`).
 
-- **Analyze** (`llm.plan`): the model reads `WORKSPACE.md` (the context map) and the read-only tools
-  `ws_outline / ws_find / ws_profile / ws_neighbors / ws_read / ws_query`, and delivers through
-  `submit_analysis` (checked on the spot). Applying writes `analysis` (`wish.analysis.v2`; `basis.digest`
-  is computed by core) and the named `inputs`.
-- **Execute** (`llm.code`): bash tool group plus the read tools and `run_program / put_result / check_results /
-  finish`. The program (`program/main.js`, `export default async function main(aiws)`) runs under Deno:
-  `--allow-read=<work> --allow-write=<work>/output --allow-net`, time and memory limits from the config.
-  Reads of undeclared data are appended to the inputs. Feedback rounds start from the parent's program
-  and direct results on a new snapshot; `repair_program` changes only the program.
-- **Rerun program**: no model; `llm.map` calls only for items not in the cache.
+- **analyze** (`analyze_model`): the model reads `WORKSPACE.md` (the context map) and the read-only tools
+  `ws_outline / ws_find / ws_profile / ws_neighbors / ws_read / ws_query`, and delivers through `submit_analysis` (checked on the
+  spot). Applying writes `analysis` (`wish.analysis.v3`, no `approach`: every result comes from the macro; `basis.digest` is
+  computed by core) and the named `inputs`. An analysis made elsewhere (Jarvis in a conversation) is handed in with
+  `proc.report { analysis }` on an analyze run the Agent started itself (`buckyos aiws run-start`).
+- **code** (`execute_model`): needs a current, ready analysis (`NEEDS_ANALYSIS`, `NEEDS_INPUT` otherwise). The read tools plus
+  `run_program { source }` (the executor runs the macro and hands it in with `proc.program`), `check_results`, `finish`; there is
+  no direct writing. `finish` needs a successful trial run with a manifest. The candidate is the trial run's: applying writes the
+  macro (`program`: `{ language: js, api_version: 3, source, digest, manifest, produces }`) and its results in one Commit. A repair
+  or a feedback round starts from the parent run's macro, else from the stored one.
+- **run**: needs that and a stored macro that still fits its inputs — `macro_check` (core) on the manifest: a declared field
+  deleted or of another type, an input gone or rebound, another program API → `NEEDS_CODING` with `data.reasons`; a renamed field
+  or table is no reason. The brief is `{ kind: program, source, manifest, budget }`; no model loop. Only the declared inputs and
+  fields are materialized, under the names they had when coded. A failed macro ends the run (`PROGRAM_FAILED`; an HTML result whose
+  code differs from the coded `code_digest`: `MACRO_CODE_CHANGED`; a refused AI call: its `AI_*` sub-code); running never
+  rewrites an HTML definition, only its bindings move.
 
-**Execution modes (内核架构改进 M3).** `proc.start { params: { …, execution: { mode: service | local | hosted } } }`
-(`wish.default_execution` when absent). Every run records its execution context (`detail.context`: trigger, executor,
-location, AI and compute attribution, the bound task digest, the declared outputs, expiry) or is refused with
-`EXECUTION_CONTEXT_MISSING`. `local`: the starter's browser is the executor — the `proc.start` answer carries a one-time
-`claim_token`; it claims, heartbeats and reports. `hosted`: the Owner's Agent (`ws.set_hosted_exec`) is given a Goal with the run
-reference and claim token (`goals.create` + `goals.activate` on its OpenDAN service) and does the same through
-`buckyos aiws run …`; without a Zone runtime the dispatch is recorded `unavailable` and the run waits to be claimed.
-`service`: the transitional in-service executor (xllm + Deno), selectable while `wish.allow_service_execution` is true (T3-9).
-Applying checks the delegation: a changed wish configuration is `DELEGATION_STALE`, a candidate of a superseded attempt
-or a cancelled run is `RUN_REVOKED`, and results may only land where the task declared (`OUTPUT_NOT_DECLARED`).
+**The macro and its bridge.** The program host is `aiws/aiws.js` (API v3; guide: `aiws/README.md`). A macro starts with
+`aiws.declare({ inputs: { <name>: [fields] }, ai?, zone?, params?, resources? })`; reading anything undeclared throws. The
+service resolves the declaration into the **manifest** (`{ inputs: { <name>: { entity_id, type_id, fields: [{ field_id, name,
+type }] } }, results: { <name>: { type, code_digest? } }, ai?, zone?, params?, resources? }`, `core::wish::check_manifest`), shown in
+the wish's `body`. Every executor runs `lib/run.js` exactly the same way; what leaves the snapshot goes through its bridge
+(`globalThis.__aiwsBridge(op, req)`; the hosted runner speaks it over stdio, `lib/run.js --bridge`), answered by `aiws/host.js`:
+`sql` → `proc.tool sql`, `ai.complete` / `llm.map` → the executor's own AI session with `proc.tool llm_cache`, `zone.fetch` → the
+executor's session, the Zone's hosts only (`ZONE_ONLY` otherwise). Limits: the smaller of what the macro declares and the stage's
+`budget`; an undeclared AI capability is `AI_NOT_DECLARED`, a spent one `AI_BUDGET_EXCEEDED`.
 
-Configuration: in service mode `AiWorkspaceSettings.wish` (models `llm.plan / llm.code / llm.chat` through
-AICC, iterations, `max_output_tokens` (every stage sends it; Claude requires one), timeouts, program memory,
-`llm.map` item limit, `deno`). The service exchanges its startup assertion at verify-hub before it listens:
-AICC accepts only verify-hub sessions. Standalone:
-`--wish-config <json>` with `{ provider: { type: "openai", base_url, api_key_env }, analyze_model, … }`.
-Deno: `deno` setting → `AIWS_DENO` → `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno` → `PATH`
-(`deno.exe` on Windows). The Windows program subprocess retains `SystemRoot` after clearing its environment.
+**Stage tools of an executor** (`proc.tool { run_id, attempt, name, args }`, answers `{ status: ok | error, text?, code? }`): the
+stage's model tools, and
+
+| Tool | Args → answer |
+| --- | --- |
+| `sql` | `{ query, params?, declare? }` → `{ sql: { columns, rows, truncated } }`: one SELECT over the declared table inputs only (table = input name; columns `_id`, the declared fields under their declared names, `"<f>#raw"`); a view input is its view's rows; coding resolves `declare` by field name, running uses the stored manifest. Per run at most `budget.sql_max_calls`. |
+| `llm_cache` | `{ get: [key…] }` → `{ hits: { key: value } }`; `{ put: [{ key, value }] }` → `{ ok }`. Keys `^[0-9a-f]{64}$` (at most 2000 a call), values up to 64 KiB. The service only keeps the answers. |
+
+`proc.claim` answers the stage brief with `budget { iterations, program_timeout_secs, max_output_tokens, map_model, complete_model,
+llm_map_max_items, ai_max_calls, ai_max_tokens, sql_max_calls }`; `proc.files` answers `{ files, stage: { budget, manifest } }` —
+`context/` (only the inputs; no data or Block tree), `request.json`, `catalog/`, `lib/` (`aiws.js`, `run.js`, `host.js`),
+`program/main.js` when there is one — and over `snapshot_download_max_bytes` fails the run with `SNAPSHOT_TOO_LARGE`
+(`data { bytes, limit }`). `proc.program { source, results, log, files }` judges a macro run: coding answers what the model reads
+(previews, checks, manifest, problems); running, a failure ends the run. `proc.report { finished | analysis | error | progress }`;
+results are never reported directly.
+
+**Execution modes (内核架构改进 M3; 浏览器优先).** `proc.start { params: { …, execution: { mode: local | hosted } } }`
+(`wish.default_execution` when absent; any other configured value counts as `local`). Every run records its execution context
+(`detail.context`: trigger, executor, location, AI and compute attribution, the bound task digest, the declared outputs, expiry) or is
+refused with `EXECUTION_CONTEXT_MISSING`. `local`: the starter is the executor — the `proc.start` answer carries a one-time
+`claim_token`; it claims, heartbeats and reports; its model calls are its own (`aicc: { mode: current_user, user_id: <starter> }`;
+an Account, or an Agent that started the run itself; anybody else is `AI_ATTRIBUTION_UNAVAILABLE`). `hosted`: the Owner's Agent
+(`ws.set_hosted_exec`) is given a Goal with the run reference and claim token (`goals.create` + `goals.activate` on its OpenDAN
+service), uses the owner's AI resources and works through `buckyos aiws run-*`; without a Zone runtime the dispatch is recorded
+`unavailable` and the run waits to be claimed. Applying checks the delegation: a changed wish configuration is `DELEGATION_STALE`, a
+candidate of a superseded attempt or a cancelled run is `RUN_REVOKED`, and results may only land where the task declared
+(`OUTPUT_NOT_DECLARED`).
+
+Configuration: `AiWorkspaceSettings.wish` — `analyze_model`, `execute_model`, `map_model`, `complete_model` (AICC selectors),
+`analyze_tool_iterations`, `execute_tool_iterations`, `max_output_tokens`, `program_timeout_secs`, `llm_map_max_items`,
+`ai_max_calls`, `ai_max_tokens`, `sql_max_calls`, `snapshot_download_max_bytes`, `default_execution`: what every stage hands its
+executor. Standalone: `--wish-config <json>` with the same keys.
 
 ## Storage
 
@@ -1337,8 +1370,8 @@ clone has none.
 **Method levels (D11).** `stable` methods are the contract other Apps, Agents and SDKs may depend on: they change
 only with `protocol_version`, and each has a contract test against a recorded request / response shape
 (`server/tests/contract.rs`, `fixtures/protocol/stable-methods.json`; `AIWS_REGEN=1` re-records). `internal` methods serve the
-Desktop and diagnostics and change with it. `experimental` methods are not frozen yet: `proc.*` become stable when M3
-lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
+Desktop and diagnostics and change with it. `experimental` methods are not frozen yet (`proc.*` became stable with the
+browser-first execution and the three wish stages). The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 
 | Method | Level | Params (besides `workspace_id`) |
 | --- | --- | --- |
@@ -1354,7 +1387,6 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `ws.join_entry` | stable | `entry_id` only → `workspace_id`, `entry_id`, `scope_entity_id`, `capabilities`, `joined`, `granted`, `path` |
 | `entry.describe` | stable | `entry_id` only, no session → `EntryDescription` |
 | `ws.get_user_state` / `ws.set_user_state` | stable | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
-| `ws.set_wish_aicc` | stable | `mode: workspace_owner \| current_user` — whose AI resources wish runs started here use (`manage`; AI Center Quota PRD §3.3) |
 | `ws.import` | stable | `bucket_id` + `key` (the package the caller bound into its own `user/aiworkspace/<user>/exports`; a successful import consumes it) or `obj_id` (an unbound FileObject the caller may read, judged at the NDM gateway), `semantics: "restore" \| "new"`, `replace?` |
 | `ws.release_retention` | stable | maintenance (`manage`, D19): `kind`, `ref` — unbind what holds a `snapshot`, an `export` package or an unreferenced `staged` upload → `released` |
 | `ws.delete_checkpoint` | stable | maintenance (`manage`): `snapshot_id` — the snapshot row goes and its retention set is unbound; the named store reclaims what no binding holds |
@@ -1384,14 +1416,14 @@ lands. The list is `server/src/lib.rs` `METHOD_LEVELS`; this table mirrors it.
 | `doc.checkpoint`, `doc.export` | experimental | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?`; `doc.export` → `export_id`, `manifest`, `download: { bucket_id, key, version, obj_id, token }` (the package in the owner's `exports` bucket, 7 days; `GET /bucket/v1/<bucket_id>/<key>?token=`) |
 | `asset.import_object` | stable | `workspace_id` and either `bucket_id` + `key` (the uploader's own binding in `user/aiworkspace/<user>/assets`) or `obj_id` (an unbound, ready NDM FileObject the caller may read) → `object_id`, `media_type`, `size`, `expires_at`, `bucket_id`, `key`, `version` (staged under `<workspace_id>/<object_id>` in the owner's `assets` bucket) |
 | `replica.bootstrap` | internal | → `replica_id`, `epoch`, `head_seq`, `principal`, `prepared_at`, `download` (as `doc.export`) |
-| `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | experimental | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` — wish programs below |
-| `proc.list` | experimental | `wish_id?`, `limit?` — wish runs, newest first |
-| `proc.claim` | experimental | `run_id`, `claim_token`, `executor?` — an executor takes the run (M3): the next attempt, a `run_token` (bearer for `proc.heartbeat` / `proc.report` / reads of this Workspace) and a lease (90 s) |
-| `proc.heartbeat` | experimental | `run_id`, `attempt`, `progress?` — renews the lease; a lapsed lease makes the run `interrupted` (D15) |
-| `proc.report` | experimental | `run_id`, `attempt`, then `progress?`, or `error`, or `finished: true` (the stage host collected the candidate: T3-4), or the candidate itself: `results[]` + `read_set?` + `summary?` + `warnings?` + `assumptions?` (execute runs; the Mock executor's shape), or `analysis` (analyze runs). The service validates and plans it; a superseded attempt or a cancelled run gets `RUN_REVOKED` |
-| `proc.tool` | experimental | `run_id`, `attempt`, `name`, `args` — one stage tool call of the run's executor (the claim of a `wish.xllm@1` run opens the stage and answers `stage: { kind: model, system, user, tools, model, iterations }` or `{ kind: program, source }`): `ws_*`, `submit_analysis`, `put_result`, `check_results`, `finish`, and `llm_map` for a program's `aiws.llm.map`. Answers `{ status: ok \| error, text }` — `error` is for the model to correct |
-| `proc.program` | experimental | `run_id`, `attempt`, `source`, `results?` (what the program host wrote to `output/.aiws/results.json`), `log?`, `files?` (`{ "output/<path>": text \| { base64 } }`) — the executor ran the program; judged like the service's own `run_program` |
-| `proc.files` | experimental | `run_id`, `attempt` — the stage directory (`context/`, `request.json`, `catalog/`, `lib/`) as `{ path: { text } \| { base64 } }` for the executor's program host |
+| `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | stable | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` — wish programs below |
+| `proc.list` | stable | `wish_id?`, `limit?` — wish runs, newest first |
+| `proc.claim` | stable | `run_id`, `claim_token`, `executor?` — an executor takes the run (M3): the next attempt, a `run_token` (bearer for `proc.heartbeat` / `proc.report` / reads of this Workspace), a lease (90 s), and the stage it works on: `{ kind: model, stage, system, user, tools, model, iterations, source?, budget }` (analyze, code) or `{ kind: program, stage: run, source, manifest, budget }` |
+| `proc.heartbeat` | stable | `run_id`, `attempt`, `progress?` — renews the lease; a lapsed lease makes the run `interrupted` (D15) |
+| `proc.report` | stable | `run_id`, `attempt`, then `progress?`, or `error` (`{ code, detail }`: `EXECUTOR_FAILED`, an `AI_*` refusal, …), or `finished: true` (what the stage collected becomes the candidate), or `analysis` (an analyze run whose analysis was made elsewhere). Results are never reported directly (they come from the macro). The service validates and plans; a superseded attempt or a cancelled run gets `RUN_REVOKED` |
+| `proc.tool` | stable | `run_id`, `attempt`, `name`, `args` — one call of the run's executor: a stage tool (`ws_*`, `submit_analysis`, `check_results`, `finish`), `sql` (a macro's `aiws.sql`) or `llm_cache` (the AI answer cache) — see “Wish runs”. Answers `{ status: ok \| error, text?, code? }` — `error` is for the model to correct |
+| `proc.program` | stable | `run_id`, `attempt`, `source`, `results?` (what the program host wrote to `output/.aiws/results.json`), `log?`, `files?` (`{ "output/<path>": text \| { base64 } }`) — the executor ran the macro: a trial run while coding (the model reads the answer), the run itself when running (a failure ends it: `PROGRAM_FAILED`, `MACRO_CODE_CHANGED`) |
+| `proc.files` | stable | `run_id`, `attempt` — the stage directory (`context/`, `request.json`, `catalog/`, `lib/`, `program/main.js`) as `{ path: { text } \| { base64 } }` plus `stage: { budget, manifest }`; over `snapshot_download_max_bytes` the run fails with `SNAPSHOT_TOO_LARGE` |
 | `ws.set_hosted_exec` | experimental | `config: { enabled, agent_id, allowed_wishes?, triggerers?, limits? }` (`manage`, D22) — the Owner's hosted execution; `ws.get_info.hosted_exec` returns it with its `digest` |
 | `ws.publish` | experimental | `entity_id`, `name?` (`manage`, D26) — the `public` subject may read the entity; the name (default: the entity's, slugified; a new name keeps the old as an alias) is the last segment of the link. Returns `name`, `path` (`/<workspace_name>/<name>`), `url` (on `https://aiws-<workspace_id>.<zonehost>` when the deployment knows its host) and the reference object |
 | `ws.unpublish` | experimental | `entity_id` (`manage`) — every name and the public grant go; referrers keep their records and read `unavailable` |
@@ -1423,7 +1455,6 @@ HTTP routes (same port, `Authorization: Bearer <session token>`):
 Uploads go through NDM (above); export packages and replica databases are read from nfs-server's data plane,
 `GET /bucket/v1/<bucket_id>/<key>?token=<token>` with the `download` of `doc.export` / `replica.bootstrap`.
 | `GET /kapi/aiworkspace/schemas/richtext.basic.v1.json` | rich text schema definition (no auth) |
-| `POST /kapi/aiworkspace/wish-host/<token>/llm_map` | `aiws.llm.map` of a running wish program; the token is the run's (no session) |
 
 Operations (`operations[]` of a Commit): `entity.create|delete|restore|rename|set_keys|unset_keys|set_write_policy|set_derived|clone`,
 `data.pin`, `tree.move|place`, `dir.set_member|remove_member|replace`, `table.insert_records|delete_records|set_values|unset_values|set_body|add_field|update_field|delete_field|add_option|update_option|delete_option|migrate_field`,

@@ -1,25 +1,37 @@
-/* The wish as the user works with it (许愿格详细设计 §14.1): the need, long-lived knowledge and
- * refinements; inputs (what is read and in which range); the analysis — context prompt, output
- * contract, acceptance checks, blockers; 分析 / 执行 / 只重跑程序 / 让 AI 修程序 / 取消; progress while
- * the service works; the candidate with its preview; and the state of the applied results. Shown by
- * the data-source detail and by the wish Block after activation. */
+/* The wish as the user works with it (许愿格详细设计 §14.1, AI Native 第一期 §2.7): the need, long-lived
+ * knowledge and refinements; inputs (what is read and in which range); the analysis — context prompt, output
+ * contract, acceptance checks, blockers; the main state and its next action; 分析 / 编码 / 运行 / 取消; progress
+ * while a run works; the candidate with its preview; and the state of the applied results. Shown by the
+ * data-source detail and by the wish Block after activation. */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { describeError, runErrorText, type ReadOk } from '../../api/session'
-import { SHOWS_ID, SYSTEM_IDS, type Json, type WishExecutionMode, type WishInput, type WishPayloadRead, type WishRunView } from '../../api/types'
+import { describeError, needsCodingReasonText, runErrorText, type ReadOk } from '../../api/session'
+import { SHOWS_ID, SYSTEM_IDS, type FreshnessInfo, type Json, type NeedsCodingReason, type WishExecutionMode, type WishInput, type WishMainStatus, type WishPayloadRead, type WishRunView } from '../../api/types'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { useEdit, useEntity, useFreshness, useLoad, useOutlineVersion, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { consumeIntent, useIntent } from '../blocks/editorToolbar'
 import { FreshnessBadge } from '../sources/FreshnessBadge'
 import { WishCandidate } from './WishCandidate'
-import { isActive, isWaiting, type WishBusy } from './WishService'
+import { isActive, isWaiting, repairOf, type WishBusy } from './WishService'
 
 const BUSY_LABEL: Record<WishBusy, string> = {
-  analyzing: 'aiworkspace.wish.busy.analyzing', executing: 'aiworkspace.wish.busy.executing', rerunning: 'aiworkspace.wish.busy.rerunning', repairing: 'aiworkspace.wish.busy.repairing',
+  analyzing: 'aiworkspace.wish.busy.analyzing', coding: 'aiworkspace.wish.busy.coding', running: 'aiworkspace.wish.busy.running',
   previewing: 'aiworkspace.wish.busy.previewing', applying: 'aiworkspace.wish.busy.applying', cancelling: 'aiworkspace.wish.busy.cancelling',
 }
-const EXECUTION_LABEL: Record<WishExecutionMode, string> = { service: 'aiworkspace.wish.execution.service', local: 'aiworkspace.wish.execution.local', hosted: 'aiworkspace.wish.execution.hosted' }
+const EXECUTION_LABEL: Record<WishExecutionMode, string> = { local: 'aiworkspace.wish.execution.local', hosted: 'aiworkspace.wish.execution.hosted' }
+const MAIN_LABEL: Record<WishMainStatus['main'], string> = {
+  needs_input: 'aiworkspace.wish.main.needsInput', needs_analysis: 'aiworkspace.wish.main.needsAnalysis', needs_coding: 'aiworkspace.wish.main.needsCoding',
+  waiting_data: 'aiworkspace.wish.main.waitingData', cannot_run: 'aiworkspace.wish.main.cannotRun', in_progress: 'aiworkspace.wish.main.inProgress',
+  pending_confirmation: 'aiworkspace.wish.main.pendingConfirmation', stale: 'aiworkspace.wish.main.stale', current: 'aiworkspace.wish.main.current',
+}
+const NEXT_LABEL: Record<Exclude<WishMainStatus['next_action'], 'none'>, string> = {
+  answer: 'aiworkspace.wish.next.answer', analyze: 'aiworkspace.wish.next.analyze', code: 'aiworkspace.wish.next.code', view_inputs: 'aiworkspace.wish.next.viewInputs',
+  fix: 'aiworkspace.wish.next.fix', cancel: 'aiworkspace.wish.next.cancel', apply: 'aiworkspace.wish.next.apply', run: 'aiworkspace.wish.next.run',
+}
+const PROBLEM_LABEL: Record<string, string> = {
+  missing: 'aiworkspace.wish.inputProblem.missing', view_missing: 'aiworkspace.wish.inputProblem.viewMissing', unreadable: 'aiworkspace.wish.inputProblem.unreadable',
+}
 const PHASE_LABEL: Record<string, string> = {
   queued: 'aiworkspace.wish.phase.queued', snapshotting: 'aiworkspace.wish.phase.snapshotting', running: 'aiworkspace.wish.phase.running',
   validating: 'aiworkspace.wish.phase.validating', waiting_confirmation: 'aiworkspace.wish.phase.waitingConfirmation', applying: 'aiworkspace.wish.phase.applying',
@@ -51,15 +63,42 @@ function staleInputs(t: (key: string, vars?: Record<string, string | number>) =>
   return joined ? t('aiworkspace.wish.staleInputs', { inputs: joined }) : t('aiworkspace.wish.staleInputsUnnamed')
 }
 
-/** Whose AI resources the current run uses, or — before one — whose the next run will use (AI Center Quota PRD §9.5). */
+/** Whose AI resources the run uses (AI Center Quota PRD §9.5): it follows where the run executes. */
 function AiccLine({ run }: { run: WishRunView | null | undefined }) {
   const { t } = useAiwsText()
-  const store = useStore()
   const aicc = run?.aicc
-  const text = aicc
-    ? t(aicc.mode === 'current_user' ? 'aiworkspace.wish.aicc.runStarter' : 'aiworkspace.wish.aicc.runOwner', { user: aicc.user_id })
-    : t(store.session.info().wish_aicc_mode === 'current_user' ? 'aiworkspace.wish.aicc.modeStarter' : 'aiworkspace.wish.aicc.modeOwner')
-  return <div className="aiws-muted" data-testid="aiws-wish-aicc" data-mode={aicc?.mode ?? store.session.info().wish_aicc_mode ?? 'workspace_owner'}>{text}</div>
+  if (!aicc) return null
+  return <div className="aiws-muted" data-testid="aiws-wish-aicc" data-user={aicc.user_id}>{t(aicc.mode === 'current_user' ? 'aiworkspace.wish.aicc.runStarter' : 'aiworkspace.wish.aicc.runOwner', { user: aicc.user_id })}</div>
+}
+
+/** One reason of the main state as a short line: why coding, an input problem, or the analysis's sources changing. */
+function reasonText(reason: Json, t: (key: string, vars?: Record<string, string | number>) => string, title: (id: string) => string): string | null {
+  const r = (reason ?? {}) as { code?: string; entity_id?: string; reason?: string }
+  if (r.reason && r.entity_id) return t('aiworkspace.wish.reason.inputProblem', { input: title(r.entity_id), problem: PROBLEM_LABEL[r.reason] ? t(PROBLEM_LABEL[r.reason]) : r.reason })
+  if (r.code === 'analysis_sources_changed') return t('aiworkspace.wish.reason.analysisSources')
+  if (r.code && /^[a-z_]+$/.test(r.code)) return needsCodingReasonText(reason as unknown as NeedsCodingReason)
+  return null
+}
+
+/** The main state, a note when the applied results are out of date behind another state, why, and the next action. */
+function MainStatus({ status, onNext, canAct, title }: { status: WishMainStatus; onNext: (() => void) | null; canAct: boolean; title: (id: string) => string }) {
+  const { t } = useAiwsText()
+  const label = status.main === 'stale' && !status.stale ? 'aiworkspace.wish.main.notRun' : MAIN_LABEL[status.main]
+  const warn = !['current', 'in_progress', 'pending_confirmation'].includes(status.main)
+  const reasons = status.main === 'cannot_run' ? [] : status.reasons.map((r) => reasonText(r, t, title)).filter((r): r is string => Boolean(r))
+  const next = status.next_action === 'none' ? null : t('aiworkspace.wish.nextLine', { action: t(NEXT_LABEL[status.next_action]) })
+  return (
+    <div className="aiws-wish-section" data-testid="aiws-wish-main" data-main={status.main} data-next={status.next_action} data-stale={status.stale ? 'true' : 'false'}>
+      <div className="aiws-inline-form">
+        <span className={`aiws-chip${warn ? ' aiws-chip-warn' : ''}`}>{t(label)}</span>
+        {status.stale && status.main !== 'stale' && <span className="aiws-chip aiws-chip-warn" data-testid="aiws-wish-results-stale">{t('aiworkspace.wish.main.resultsStale')}</span>}
+        {next && (onNext
+          ? <button type="button" data-testid="aiws-wish-next" disabled={!canAct} onClick={onNext}>{next}</button>
+          : <span className="aiws-muted">{next}</span>)}
+      </div>
+      {reasons.length > 0 && <ul className="aiws-wish-checklist" data-testid="aiws-wish-reasons">{reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>}
+    </div>
+  )
 }
 
 function Progress({ run, onCancel }: { run: WishRunView; onCancel: () => void }) {
@@ -124,9 +163,13 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
   const version = useVersion(`e:${wishId}`)
   const load = useCallback(() => store.session.read<WishPayloadRead>(wishId), [store, wishId])
   const read = useLoad<ReadOk<WishPayloadRead>>(load, version)
-  useSyncExternalStore(store.wish.subscribe, store.wish.snapshot)
   useOutlineVersion()
   const freshness = useFreshness(wishId)
+  const wishVersion = useSyncExternalStore(store.wish.subscribe, store.wish.snapshot)
+  const mock = read.data?.content.payload.executor === 'mock'
+  // the Mock writes no macro: its state never asks for coding
+  const loadMain = useCallback(() => store.wish.mainStatus(wishId, mock && freshness ? { ...freshness, needs_coding: null } as FreshnessInfo : freshness), [store, wishId, freshness, mock])
+  const main = useLoad(loadMain, wishVersion).data
   const [prompt, setPrompt] = useState<string | null>(null)
   const [knowledge, setKnowledge] = useState<string | null>(null)
   const [message, setMessage] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
@@ -135,19 +178,17 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
   const startIntent = useIntent(cellId ?? '')
   const startsDone = useRef(0)
   useEffect(() => { void store.wish.restore(wishId) }, [store, wishId])
-  // "run" from the canvas: the next step of the two passes — analyse first, execute once the analysis is ready
+  // "run" from the canvas: the wish's next action (analyze, code, run, or apply the waiting candidate)
   useEffect(() => {
-    const payload = read.data?.content.payload
-    if (!cellId || startIntent?.value !== 'start' || startIntent.seq <= startsDone.current || !payload || !entity || freshness === undefined) return
+    if (!cellId || startIntent?.value !== 'start' || startIntent.seq <= startsDone.current || !read.data || !entity) return
     startsDone.current = startIntent.seq
     consumeIntent(cellId, startIntent)
-    if (readOnly || !entity.capabilities.includes('update') || isActive(store.wish.run(wishId)) || store.wish.busy.get(wishId)) return
-    const analysis = payload.analysis
-    const work = (freshness.needs_analysis ?? !analysis) || analysis?.status !== 'ready'
-      ? store.wish.analyze(wishId, cellId).then(() => setMessage({ kind: 'info', text: t('aiworkspace.wish.analysisWritten') }))
-      : store.wish.execute(wishId, { cellId })
-    work.catch((error: unknown) => setMessage({ kind: 'error', text: describeError(error) }))
-  }, [startIntent, read.data, entity, freshness, readOnly, store, wishId, cellId, t])
+    if (readOnly || !(entity.capabilities.includes('update') || store.wish.runOnly(wishId)) || isActive(store.wish.run(wishId)) || store.wish.busy.get(wishId)) return
+    const before = store.wish.run(wishId)?.run_id
+    store.wish.next(wishId, { cellId })
+      .then((run) => { if (!run || (run.run_id !== before && run.stage === 'analyze')) setMessage({ kind: 'info', text: t('aiworkspace.wish.analysisWritten') }) })
+      .catch((error: unknown) => setMessage({ kind: 'error', text: describeError(error) }))
+  }, [startIntent, read.data, entity, readOnly, store, wishId, cellId, t])
   const run = store.wish.run(wishId)
   const busy = store.wish.busy.get(wishId)
   const flowError = store.wish.errors.get(wishId)
@@ -163,9 +204,11 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
   const analysis = payload.analysis
   const needsAnalysis = freshness?.needs_analysis ?? !analysis
   const ready = analysis?.status === 'ready' && !needsAnalysis
+  const hasMacro = mock || Boolean(payload.program)
+  const repair = repairOf(run)
   const inputs = payload.inputs ?? []
   const title = (id: string) => { const e = store.outline.get(id); return e?.title ?? e?.name ?? id }
-  const running = isActive(run) || busy === 'analyzing' || busy === 'executing' || busy === 'rerunning' || busy === 'repairing'
+  const running = isActive(run) || busy === 'analyzing' || busy === 'coding' || busy === 'running'
   const act = async (work: () => Promise<unknown>) => {
     setMessage(null)
     try { await work() } catch (error) { setMessage({ kind: 'error', text: describeError(error) }) }
@@ -199,16 +242,18 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
     void setKey('refinements', next as unknown as Json, t('aiworkspace.wish.edit.refinement'))
   }
   const analyze = () => act(async () => { await store.wish.analyze(wishId, cellId); setMessage({ kind: 'info', text: t('aiworkspace.wish.analysisWritten') }) })
-  const execute = () => act(() => store.wish.execute(wishId, { cellId }))
+  const code = () => act(() => store.wish.code(wishId, { cellId, parentRunId: repair?.run_id }))
+  const runMacro = () => act(() => store.wish.runMacro(wishId, { cellId }))
   const resume = () => act(async () => { if (run) { await store.wish.resume(run); if (run.stage === 'analyze') setMessage({ kind: 'info', text: t('aiworkspace.wish.analysisWritten') }) } })
   const selectedInputs = canEdit ? [...new Set((canvasSelection ?? []).map((id) => { const e = store.outline.get(id); return e?.type_id === 'buckyos.cell' ? e.source_id ?? null : e && e.type_id !== 'buckyos.container' ? e.entity_id : null })
     .filter((id): id is string => Boolean(id) && id !== wishId && !inputs.some((input) => input.entity_id === id)))] : []
-  const rerun = () => act(() => store.wish.rerunProgram(wishId, cellId))
-  const repair = () => act(async () => { if (run) await store.wish.repairProgram(wishId, run.run_id, cellId) })
   const cancel = () => act(async () => { if (run) await store.wish.cancel(run) })
+  const nextAction = main?.next_action
+  // cancelling and applying have their own buttons (the progress line, the candidate)
+  const onNext = nextAction === 'analyze' || nextAction === 'answer' ? analyze : nextAction === 'code' && !mock ? code : nextAction === 'run' ? runMacro : null
   const candidates = store.outline.all().filter((e) => !e.deleted && e.entity_id !== wishId && e.type_id !== 'buckyos.cell' && e.type_id !== 'buckyos.wish' && e.type_id !== 'buckyos.block-def' && (e.type_id !== 'buckyos.container' || e.kind === 'folder') && store.outline.ancestors(e.entity_id).includes('data') && !SYSTEM_IDS.has(e.entity_id) && !store.outline.ancestors(e.entity_id).includes(SHOWS_ID))
   const lastRun = payload.last_run
-  const programFailed = run?.stage === 'rerun_program' && run.state === 'failed' && run.error?.sub_code === 'PROGRAM_FAILED'
+  const stageHint = !analysis ? 'aiworkspace.wish.stageHint.analyzeFirst' : needsAnalysis ? 'aiworkspace.wish.stageHint.changed' : analysis.status !== 'ready' ? 'aiworkspace.wish.stageHint.missingInputs' : null
   const contract = analysis?.output_contract.results ?? []
   return (
     <div className={`aiws-wish${compact ? ' is-compact' : ''}`} data-testid={`aiws-wish-${wishId}`} data-busy={busy ?? (running ? 'running' : '')} data-needs-analysis={needsAnalysis ? 'true' : 'false'}>
@@ -217,7 +262,7 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
           <option value="xllm">{t('aiworkspace.wish.executor.xllm')}</option>
           <option value="mock">{t('aiworkspace.wish.executor.mock')}</option>
         </select>
-        {executionModes.length > 0 && !runOnly && (
+        {executionModes.length > 1 && !runOnly && (
           <select data-testid="aiws-wish-exec-mode" aria-label={t('aiworkspace.wish.execution')} value={store.wish.executionMode(wishId)} disabled={running} onChange={(e) => store.wish.setExecutionMode(e.target.value as WishExecutionMode)}>
             {executionModes.map((mode) => <option key={mode} value={mode}>{t(EXECUTION_LABEL[mode])}</option>)}
           </select>
@@ -297,9 +342,9 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
           </details>
           {contract.length > 0 && (
             <table className="aiws-rt-table aiws-wish-contract" data-testid="aiws-wish-contract">
-              <thead><tr><th>{t('aiworkspace.wish.contract.result')}</th><th>{t('aiworkspace.wish.contract.type')}</th><th>{t('aiworkspace.wish.contract.approach')}</th><th>{t('aiworkspace.wish.contract.views')}</th></tr></thead>
+              <thead><tr><th>{t('aiworkspace.wish.contract.result')}</th><th>{t('aiworkspace.wish.contract.type')}</th><th>{t('aiworkspace.wish.contract.views')}</th></tr></thead>
               <tbody>{contract.map((r) => (
-                <tr key={r.name}><td><code>{r.name}</code> {r.title}</td><td>{r.type}{r.key ? t('aiworkspace.wish.contract.key', { key: r.key.join('+') }) : ''}{r.target ? `→ ${r.target}` : ''}</td><td>{t(r.approach === 'program' ? 'aiworkspace.wish.approach.program' : 'aiworkspace.wish.approach.direct')}</td><td>{list((r.views ?? []).map((v) => v.renderer)) || t('aiworkspace.wish.contract.defaultView')}</td></tr>
+                <tr key={r.name}><td><code>{r.name}</code> {r.title}</td><td>{r.type}{r.key ? t('aiworkspace.wish.contract.key', { key: r.key.join('+') }) : ''}{r.target ? `→ ${r.target}` : ''}</td><td>{list((r.views ?? []).map((v) => v.renderer)) || t('aiworkspace.wish.contract.defaultView')}</td></tr>
               ))}</tbody>
             </table>
           )}
@@ -309,6 +354,7 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
           {analysis.warnings.length > 0 && <div className="aiws-warning">{clauses(analysis.warnings)}</div>}
         </div>
       )}
+      {main && <MainStatus status={main} onNext={canRun && onNext ? () => { void onNext() } : null} canAct={!running && !busy} title={title} />}
       <div className="aiws-inline-form">
         <label>{t('aiworkspace.wish.outputMode')}
           <select data-testid="aiws-wish-mode" value={payload.output_mode ?? 'overwrite'} disabled={!canEdit} onChange={(event) => { void setKey('output_mode', event.target.value === 'new' ? 'new' : 'overwrite', t(event.target.value === 'new' ? 'aiworkspace.wish.edit.outputNew' : 'aiworkspace.wish.edit.outputOverwrite')) }}>
@@ -317,9 +363,8 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
           </select>
         </label>
         <button type="button" data-testid="aiws-wish-analyze" disabled={!canRun || running || Boolean(busy)} onClick={() => { void analyze() }}>{t('aiworkspace.wish.analyze')}</button>
-        <button type="button" data-testid="aiws-wish-execute" disabled={!canRun || running || Boolean(busy) || !ready} title={t(!analysis ? 'aiworkspace.wish.executeHint.analyzeFirst' : needsAnalysis ? 'aiworkspace.wish.executeHint.changed' : analysis.status !== 'ready' ? 'aiworkspace.wish.executeHint.missingInputs' : 'aiworkspace.wish.executeHint.ready')} onClick={() => { void execute() }}>{t('aiworkspace.wish.execute')}</button>
-        {payload.program && payload.executor === 'xllm' && <button type="button" data-testid="aiws-wish-rerun" disabled={!canEdit || running || Boolean(busy)} title={t('aiworkspace.wish.rerunHint')} onClick={() => { void rerun() }}>{t('aiworkspace.wish.rerun')}</button>}
-        {programFailed && <button type="button" data-testid="aiws-wish-repair" disabled={!canEdit || running || Boolean(busy)} onClick={() => { void repair() }}>{t('aiworkspace.wish.repair')}</button>}
+        {!mock && <button type="button" data-testid="aiws-wish-code" data-repair={repair ? 'true' : 'false'} disabled={!canRun || running || Boolean(busy) || !ready} title={t(stageHint ?? (repair ? 'aiworkspace.wish.codeHint.repair' : 'aiworkspace.wish.codeHint.ready'))} onClick={() => { void code() }}>{t('aiworkspace.wish.code')}</button>}
+        <button type="button" data-testid="aiws-wish-run" disabled={!canRun || running || Boolean(busy) || !ready || !hasMacro} title={t(stageHint ?? (hasMacro ? 'aiworkspace.wish.runHint.ready' : 'aiworkspace.wish.runHint.noMacro'))} onClick={() => { void runMacro() }}>{t('aiworkspace.wish.run')}</button>
       </div>
       <AiccLine run={run} />
       {run && isActive(run) && <Progress run={run} onCancel={() => { void cancel() }} />}
@@ -339,19 +384,18 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
       {run && isWaiting(run) && <WishCandidate run={run} canApply={canEdit} onMessage={(kind, text) => setMessage({ kind, text })} />}
       {lastRun && (
         <div className="aiws-wish-section" data-testid="aiws-wish-last-run">
-          <div className="aiws-muted">{t('aiworkspace.wish.lastApplied')} {lastRun.mode === 'program' ? t('aiworkspace.wish.lastAppliedProgram') : ''}{lastRun.at ? ` · ${dateTime(lastRun.at)}` : ''}{lastRun.simulated ? ` · ${t('aiworkspace.wish.simulated')}` : ''}{lastRun.checks ? ` · ${t(lastRun.checks.failed ? 'aiworkspace.wish.lastChecksFailed' : 'aiworkspace.wish.lastChecks', { passed: lastRun.checks.passed, failed: lastRun.checks.failed ?? 0 })}` : ''}</div>
+          <div className="aiws-muted">{t('aiworkspace.wish.lastApplied')}{lastRun.at ? ` · ${dateTime(lastRun.at)}` : ''}{lastRun.simulated ? ` · ${t('aiworkspace.wish.simulated')}` : ''}{lastRun.checks ? ` · ${t(lastRun.checks.failed ? 'aiworkspace.wish.lastChecksFailed' : 'aiworkspace.wish.lastChecks', { passed: lastRun.checks.passed, failed: lastRun.checks.failed ?? 0 })}` : ''}</div>
           <div>
-            {(freshness?.results?.length ? freshness.results : Object.entries(lastRun.result_bindings?.results ?? {}).map(([name, b]) => ({ name, entity_id: b.entity_id, status: 'unknown' as const, approach: b.approach }))).map((r) => (
+            {(freshness?.results?.length ? freshness.results : Object.entries(lastRun.result_bindings?.results ?? {}).map(([name, b]) => ({ name, entity_id: b.entity_id, status: 'unknown' as const }))).map((r) => (
               <button key={r.name} type="button" className="aiws-link" data-testid="aiws-wish-produced" data-status={r.status} onClick={() => { if (r.entity_id) ui.openEntity(r.entity_id) }}>
-                {lastRun.result_bindings?.results[r.name]?.title ?? r.name}<span className="aiws-muted">{t(r.approach === 'direct' ? 'aiworkspace.wish.producedStatusDirect' : 'aiworkspace.wish.producedStatus', { status: STATUS_LABEL[r.status] ? t(STATUS_LABEL[r.status]) : r.status })}</span>
+                {lastRun.result_bindings?.results[r.name]?.title ?? r.name}<span className="aiws-muted">{t('aiworkspace.wish.producedStatus', { status: STATUS_LABEL[r.status] ? t(STATUS_LABEL[r.status]) : r.status })}</span>
               </button>
             ))}
           </div>
-          {freshness?.direct_stale && <div className="aiws-warning" data-testid="aiws-wish-direct-stale">{t('aiworkspace.wish.directStale')}</div>}
           {(lastRun.missing ?? []).length > 0 && (
             <div className="aiws-warning" data-testid="aiws-wish-missing">{t('aiworkspace.wish.lastMissing', { names: list((lastRun.missing ?? []).map((id) => title(id))) })}</div>
           )}
-          {freshness && freshness.status !== 'none' && freshness.status !== 'current' && !freshness.direct_stale && (
+          {freshness && freshness.status !== 'none' && freshness.status !== 'current' && (
             <div className="aiws-warning" data-testid="aiws-wish-stale">{freshness.config_changed ? t('aiworkspace.wish.staleConfig') : freshness.status === 'stale' ? staleInputs(t, (freshness.changed_inputs ?? []).map((l) => l.name ?? l.label ?? l.entity_id)) : t(freshness.status === 'upstream_stale' ? 'aiworkspace.wish.status.upstreamStale' : freshness.status === 'unavailable' ? 'aiworkspace.wish.status.unavailable' : 'aiworkspace.wish.status.unknown')}</div>
           )}
           {payload.program && <ProgramView wishId={wishId} canEdit={canEdit && payload.executor === 'xllm'} />}

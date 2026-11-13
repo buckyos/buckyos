@@ -1,7 +1,7 @@
-//! Host validation of an analysis (许愿格 §7.3): the model's `wish.analysis.v2` speaks in handles;
+//! Host validation of an analysis (许愿格 §7.3): the model's `wish.analysis.v3` speaks in handles;
 //! the host binds them to real data and ranges, rejects what cannot be bound, rewrites the context
 //! prompt so it no longer depends on run-local handles, and checks the output contract against the
-//! Renderer catalog and the production rules. Every problem is returned to the model in the same
+//! Renderer catalog. Every problem is returned to the model in the same
 //! run, so it can fix its answer.
 
 use super::context::{translate_fields, translate_filter, translate_sorts, Stage};
@@ -333,7 +333,7 @@ impl Stage {
             let at = format!("output_contract.results[{i}]");
             let mut r = r.clone();
             if let Some(m) = r.as_object_mut() {
-                m.retain(|k, _| matches!(k.as_str(), "name" | "type" | "title" | "approach" | "key" | "target" | "views" | "description" | "fields" | "kind" | "def"));
+                m.retain(|k, _| matches!(k.as_str(), "name" | "type" | "title" | "key" | "target" | "views" | "description" | "fields" | "kind" | "def"));
             }
             if let Err(e) = check_contract_result(&r) {
                 problems.push(format!("{at}: {}", e.detail));

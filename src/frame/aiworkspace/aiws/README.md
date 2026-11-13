@@ -1,78 +1,145 @@
-# aiws v2 — the program host API
+# Writing a wish macro (aiws v3)
 
-A wish program is an ES module, `program/main.js`, whose default export is `async function main(aiws)`. It reads this run's snapshot and writes **candidate results**; it does not modify the workspace directly. Use only Deno's built-in APIs and `aiws`; do not bring in third-party dependencies.
+A wish's **macro** is the program that produces its results. It is written once, in the coding stage — by the model, an Agent or a person — and every later run of the wish runs it again on the current data, with no model loop: only the AI calls the macro itself makes. This guide is the one reference for all three; the coding prompt embeds it, the hosted run manual (`aiworkspace_run`) points to it.
 
-Debugging: `deno run -A lib/run.js` (prints a summary of the results; the full output is in `output/.aiws/results.json`). The host's `run_program` and a later "re-run only the program" run the same program with the same `lib/run.js` (with stricter permissions: it can only read the run directory and only write `output/`).
+A macro is an ES module, `program/main.js`, whose default export is `async function main(aiws)`. It reads the run's snapshot and writes **candidate results**; it never writes the workspace. Use only JavaScript built-ins and `aiws`: no imports, no clock, no network outside the Zone.
 
-## Reading
+## 1. Declare first
 
 ```js
-const sales = aiws.input('sales')        // get an input by input name (input names: see context/inputs.json and the output contract)
+export default async function main(aiws) {
+  aiws.declare({
+    inputs: { sales: ['Month', 'Customer', 'Sales', 'Status'], rules: [] },   // table inputs: the fields read; other inputs: []
+    ai: { complete: { max_calls: 4, max_tokens: 4000 }, map: { max_items: 500 } },   // only what is called
+    params: ['today', 'timezone'],                                             // fixed parameters the macro relies on
+  })
+  // …
+}
+```
+
+- Call it once, before anything else. Reading an input or a field that is not declared throws (`field X is not declared`), so a trial run shows it at once instead of a later run silently reading an empty value.
+- The host resolves the declaration into the **manifest**: each field by its id and the name it has now. Every later run materializes only these inputs and fields, under these names — a field or a table renamed later changes nothing; a declared field deleted or changed to another type stops the wish before it runs ("needs coding").
+- `ai`: a macro that does not declare `ai.complete` / `ai.map` cannot call them. The limits are per run; the workspace's own limits cap them. `ai.complete.models: ['llm.code']` allows models other than the default.
+- `zone: ['/kapi/…']` lists the Zone resources the macro reads (`aiws.zone.fetch`); `resources: { timeout_secs }` a shorter time limit.
+
+## 2. Reading inputs
+
+```js
+const sales = aiws.input('sales')        // a declared input by its input name (context/inputs.json lists them)
 sales.kind                               // 'table' | 'richtext' | 'record' | 'asset' | 'folder' | 'annotation' | 'control'
-sales.fields()                           // [{ name, type, options?, id, visible }], in the table's field order
-sales.rows()                             // [{ field name: value, _id }]; a view input follows the view's filter and sort
+sales.fields()                           // the declared fields: [{ name, type, options?, id, visible }]
+sales.rows()                             // [{ field name: value, _id }] of the declared fields; a view input follows the view
 sales.rows({ fields: ['Month', 'Sales'], filter: { Status: 'Settled' }, sort: '-Sales', limit: 10 })
-sales.rows({ filter: (r) => r['Sales'] > 0 })
 aiws.input('rules').markdown()           // rich text → Markdown
 aiws.input('profile').props()            // record → { property name: value }
 aiws.input('logo').bytes()               // asset → Uint8Array (.text() for the text)
 aiws.input('folder').members()           // folder members (each member also has rows/markdown/…)
-aiws.input('branch').outline()           // a control (a mind map) or one of its nodes → its tree as a Markdown outline (a node: the node is the root item); .control is its kind
-aiws.inputs()                            // all input names
+aiws.input('branch').outline()           // a control (a mind map) or one of its nodes → its tree as a Markdown outline
 aiws.request                             // fixed parameters: { today, timezone, currency, … }; dates follow it
-aiws.resolve('Orders') / aiws.find('Sales') / aiws.outline()   // return metadata only; to read content it must be an input
 ```
 
-Value forms: a number is a number, a single select is the option name (a string), a multi-select is an array of names, a date is a `YYYY-MM-DD` string, and empty values do not appear in the row object (`r['x'] === undefined`).
+Value forms: a number is a number, a single select is the option name (a string), a multi-select is an array of names, a date is a `YYYY-MM-DD` string, and empty values do not appear in the row object.
 
-## Writing results (candidates only)
+## 3. Set computations: `aiws.sql`
 
 ```js
-// table: key is the logical key (one or more columns) that keeps record identity across re-runs; fields can declare types and column order
+const { rows } = await aiws.sql(`
+  SELECT substr("Month", 1, 7) AS month, round(sum("Sales"), 2) AS sales, count(*) AS orders
+  FROM sales WHERE "Status" <> 'Unsettled' GROUP BY 1 ORDER BY 1`)
+// rows: [{ month: '2026-07', sales: 3301.5, orders: 12 }, …]; also { columns, truncated }
+```
+
+- One SQLite `SELECT` over the declared table inputs. A table is named by its **input name**; its columns are the declared fields under their declared names (display values: a select's label, a reference's path, a currency's amount), `"<field>#raw"` the stored values (option ids, exact decimals), and `_id` (the record id). A view input is the rows its view shows.
+- Filtering, grouping, aggregating, joining, window functions, de-duplicating: SQL. JavaScript arranges the results and does what SQL cannot (parsing free text).
+- Bounds: one statement, no writes, no recursive CTEs, 2 seconds and 5000 rows per query, and a number of queries per run. To join large tables, put the smaller side in `WITH d AS MATERIALIZED (SELECT …)` and join to `d`.
+- Parameters: `aiws.sql('SELECT … WHERE "Region" = ?', ['East'])`.
+
+## 4. AI in a macro
+
+```js
+const facts = { total: 3301.5, growth: 0.091, months: 3 }
+aiws.facts(facts)                                                   // the numbers text may cite
+const { text } = await aiws.ai.complete({
+  system: 'You write short business commentary. Use only the numbers given in the facts; do not compute or invent other numbers.',
+  prompt: `Facts (JSON):\n${JSON.stringify(facts)}\n\nWrite a three-sentence commentary on the quarter.`,
+  max_tokens: 800,
+})
+aiws.result.text('commentary', text)
+
+const { value } = await aiws.ai.complete({ prompt: `…`, schema: { type: 'object', properties: { risk: { enum: ['low', 'high'] } }, required: ['risk'] } })
+const tags = await aiws.llm.map(texts, 'Judge the sentiment of this customer feedback', { type: 'string', enum: ['positive', 'neutral', 'negative'] })
+```
+
+- `aiws.ai.complete({ system?, prompt | messages, schema?, model?, max_tokens? })` is one inference: no tools, no loop. Without `schema` it returns `{ text }`; with one, `{ value }` checked against it (type, enum, properties, required, items).
+- `aiws.llm.map(items, instruction, schema, { allowErrors? })` judges each item on its own (sentiment tags, extracting an amount from a note); failed items make it throw unless `allowErrors`.
+- **Numbers in text come from facts.** Give the model the facts the macro computed and ask it not to compute or invent numbers; numbers in a text result that are neither in the facts nor in a table result are flagged to the user.
+- **Keep data apart from instructions.** Put input text in its own clearly marked block (JSON), never mixed into the instruction.
+- **Constrain the output** with `schema` whenever the macro uses the answer as data.
+- **Cache and budget**: answers are cached by content — the same request gives the same answer on the next run, and costs nothing. New calls count against the declared limits (calls, tokens, items); over them the call throws `AI_BUDGET_EXCEEDED`. A refusal of the AI service (`AI_QUOTA_EXHAUSTED`, `AI_QUOTA_BUDGET_EXCEEDED`, `AI_RESOURCE_NOT_PERMITTED`) ends the run with that reason; do not catch it.
+
+## 5. Writing results (candidates only)
+
+```js
 aiws.result.table('monthly', rows, { key: ['Month'], fields: { Month: 'date', Sales: 'decimal', Orders: 'number' } })
-// derived columns: written onto a table input, values by the _id of that input's rows; only columns this wish owns are written
 aiws.result.columns('Diff', 'salary', Object.fromEntries(rows.map((r) => [r._id, { Diff: r['Salary'] - avg }])), { fields: { Diff: 'decimal' } })
 aiws.result.record('kpi', { 'Total sales': 123.4, Orders: 12 })
-aiws.result.text('commentary', markdown)            // text the program generates from a template (also updated when only the program is re-run)
+aiws.result.text('commentary', markdown)
 aiws.result.file('chart', 'output/chart.svg', 'image/svg+xml')
 aiws.result.html('dashboard', { html, css, js, bindings: { orders: 'input:sales', summary: 'result:monthly' } })
-// a Block-control of catalog/controls.json (a mind map…): the tree as a Markdown outline or [{ text, children }]
 aiws.result.control('plan', { kind: 'mindmap', children: '- Launch\n  - Market\n  - Product', config: { direction: 'right' }, title: 'Launch' })
-aiws.result.control('more', { kind: 'mindmap', children: [{ text: 'Pricing', children: [] }], under: 'branch' })   // below the node of input `branch`
-aiws.result.control('board', { def: 'did:bns:alice#hello-board', config: { title: 'Week 44' },          // a composite control of the Workspace (WORKSPACE.md lists them)
-  slots: { cards: ['result:summary', 'input:task_card'], header: [{ view: 'richtext', markdown: '# Week 44' }] } })   // other results' Blocks, copies of input Blocks, new texts
+aiws.result.control('more', { kind: 'mindmap', children: [{ text: 'Pricing', children: [] }], under: 'branch' })
+aiws.result.control('board', { def: 'did:bns:alice#hello-board', config: { title: 'Week 44' },
+  slots: { cards: ['result:summary', 'input:task_card'], header: [{ view: 'richtext', markdown: '# Week 44' }] } })
 ```
 
-A control result never carries coordinates or sizes: the control lays its nodes out. Each item becomes a text node (its inline Markdown is kept, at most 256 characters); at most 2000 nodes and 32 levels. Without `under` it is a new control in the result group (a re-run in overwrite mode replaces it in place); with `under` the items are appended below that node (a re-run replaces what the last run appended), and `config` / `title` do not apply.
+- Result names, types and keys follow the output contract; a name is written once. A table's `key` (one or more columns) keeps record identity across runs.
+- Field types: `text | number | decimal | currency | boolean | date | datetime | select | multi_select`, inferred from the values when not declared. A `currency` value is `{ amount, currency: 'CNY' }` or a bare amount with `fields: [{ name: 'Price', type: 'currency', currency: 'CNY', scale: 2 }]`. `decimal` keeps up to 6 places; `fields: [{ name, type: 'decimal', scale: 4 }]` fixes them (round in the macro). A table shows in the order of `rows` (up to 1000 rows), so sort in the macro.
+- **HTML results**: their html, css and js belong to the macro version — fixed when it is coded, confirmed when the candidate is applied. A later run may only change the data the page is bound to: pass data through `bindings` (`input:<name>`, `result:<name>`; the page reads them with `aiws.input('<name>')`), never by writing values into the code. A run whose HTML code differs from the coded code fails (`MACRO_CODE_CHANGED`) and the wish needs coding again.
+- A control result never carries coordinates or sizes: the control lays its nodes out. Each item becomes a text node (at most 256 characters); at most 2000 nodes and 32 levels. With `under` the items go below that node of a control input.
 
-Field types: `text | number | decimal | currency | boolean | date | datetime | select | multi_select`; inferred from the values when not declared (`{ amount, currency }` objects make a `currency` column). A `currency` value is `{ amount, currency: 'CNY' }` or a bare amount in the field's default currency, declared with the array form `fields: [{ name: 'Price', type: 'currency', currency: 'CNY', scale: 2 }]` (default currency: the most common code of the values, else USD). `decimal` keeps as many decimal places as the values need (at most 6; it never rounds to fewer); to fix the number of decimal places, use the array form `fields: [{ name: 'Gross margin', type: 'decimal', scale: 4 }]`, and the program then does its own rounding. A table is shown in the order of `rows` (up to 1000 rows; once the user sorts it on the Block, the user's order wins), so sort in the program when needed. A result name can be written only once; result names must be names in the output contract.
-
-## Numbers, checks and per-item judgments
+## 6. Checks
 
 ```js
-aiws.facts({ total: 3301.5, growth: 0.091 })        // numbers cited in text must come from facts or result tables
-aiws.check('total', Math.abs(a - b) < 0.01, { a, b }) // report a program check agreed in the analysis: id, passed or not, detail
-const tags = await aiws.llm.map(texts, 'Judge the sentiment of this customer feedback', { type: 'string', enum: ['positive', 'neutral', 'negative'] })
-const amounts = await aiws.llm.map(notes, 'Extract the amount (in yuan) from the note; null if there is none', { type: ['number', 'null'] })
+aiws.check('total', Math.abs(sumOfMonths - total) < 0.01, { sumOfMonths, total })   // a program check agreed in the analysis
 ```
 
-`llm.map` calls the model item by item and validates each answer against the schema; results are cached by (model, instruction, input item), so re-running only the program calls the model only for new or changed items; failed items make the call throw (with `{ allowErrors: true }` they come back as `{ error }`). Use it for per-item semantic judgments; do not let the model read through the whole table.
+Report each program check of the contract truthfully: when the data does not satisfy it, report a failure with the violating rows; do not narrow it to make it pass.
+
+## 7. Zone resources
+
+```js
+const res = await aiws.zone.fetch('/kapi/some-service/…')      // a path of this Zone, or a URL on its hosts
+const data = await res.json()
+```
+
+The request goes with the session of whoever runs the wish (the user's browser, or the Agent), and only to this Zone's hosts; anything else is refused (`ZONE_ONLY`). What a macro reads this way is not part of its snapshot: the results' freshness cannot follow it, so data the macro uses every time should be a declared input instead. List what you read in `declare({ zone: [...] })`.
+
+## 8. What a macro does not do
+
+- Reach anything outside the Zone (`fetch` of external URLs, WebSocket, importing modules).
+- Read the clock: use `aiws.request.today` / `aiws.request.timezone`.
+- Write the workspace, or files outside `output/`.
+- Read inputs or fields it did not declare, or the rest of the workspace.
+
+## Running it by hand
+
+`deno run --allow-read=. --allow-write=output lib/run.js` in the stage directory runs the macro on the snapshot and writes `output/.aiws/results.json`; `aiws.sql`, `aiws.ai.*` and `aiws.zone.fetch` need an executor's bridge (`--bridge`, the hosted runner: `buckyos aiws run-program`).
 
 ## Example
 
 ```js
 export default async function main(aiws) {
-  const rows = aiws.input('sales').rows({ fields: ['Month', 'Customer', 'Sales', 'Status'] })
-  const settled = rows.filter((r) => r['Status'] !== 'Unsettled')
-  const sum = (xs) => Math.round(xs.reduce((s, x) => s + (x ?? 0), 0) * 100) / 100
-  const byMonth = new Map()
-  for (const r of settled) byMonth.set(r['Month'], [...(byMonth.get(r['Month']) ?? []), r])
-  const monthly = [...byMonth].sort(([a], [b]) => a.localeCompare(b))
-    .map(([Month, items]) => ({ Month, Sales: sum(items.map((r) => r['Sales'])), Orders: items.length }))
-  aiws.result.table('monthly', monthly, { key: ['Month'], fields: { Month: 'date', Sales: 'decimal', Orders: 'number' } })
-  const total = sum(settled.map((r) => r['Sales']))
-  aiws.facts({ total, months: monthly.length })
-  aiws.check('total', Math.abs(sum(monthly.map((m) => m['Sales'])) - total) < 0.01)
-  aiws.check('months', ['2026-07', '2026-08', '2026-09'].every((m) => monthly.some((r) => r['Month'].startsWith(m))))
+  aiws.declare({ inputs: { sales: ['Month', 'Sales', 'Status'] }, ai: { complete: { max_calls: 2, max_tokens: 2000 } } })
+  const { rows } = await aiws.sql(`SELECT "Month", round(sum("Sales"), 2) AS "Sales", count(*) AS "Orders"
+    FROM sales WHERE "Status" <> 'Unsettled' GROUP BY 1 ORDER BY 1`)
+  aiws.result.table('monthly', rows, { key: ['Month'], fields: { Month: 'date', Sales: 'decimal', Orders: 'number' } })
+  const total = Math.round(rows.reduce((s, r) => s + r.Sales, 0) * 100) / 100
+  aiws.facts({ total, months: rows.length })
+  aiws.check('total', rows.every((r) => r.Sales >= 0), { total })
+  const { text } = await aiws.ai.complete({
+    system: 'Write two sentences of commentary. Use only the numbers in the facts.',
+    prompt: `Facts: ${JSON.stringify({ total, months: rows.length })}`,
+  })
+  aiws.result.text('commentary', text)
 }
 ```

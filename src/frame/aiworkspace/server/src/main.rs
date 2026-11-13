@@ -48,12 +48,12 @@ fn main() {
         .arg(Arg::new("nfs-server").long("nfs-server").requires("named-store-config").requires("data-dir").help("Standalone: the nfs-server origin holding the buckets and the NDM gateway"))
         .arg(Arg::new("named-store-config").long("named-store-config").requires("nfs-server").help("Standalone: NamedDataMgr configuration of that nfs-server's named store"))
         .arg(Arg::new("fixture-sources").long("fixture-sources").action(ArgAction::SetTrue).help("Register the generated fixture:// data source (dev/test)"))
-        .arg(Arg::new("wish-config").long("wish-config").help("Wish runs (standalone): JSON { provider: { type, base_url, api_key_env }, analyze_model, execute_model, map_model, deno, … }"))
+        .arg(Arg::new("wish-config").long("wish-config").help("Wish runs (standalone): JSON { analyze_model, execute_model, map_model, complete_model, program_timeout_secs, default_execution, … } (the stage budget executors get)"))
         .arg(Arg::new("public-base").long("public-base").help("Standalone: the origin publications are linked at, with {workspace_id} substituted, e.g. http://aiws-{workspace_id}.localhost:4120"))
         .arg(Arg::new("web").long("web").help("Standalone: the Desktop build directory (holds aiws.html) the AI Workspace page is served from on a Workspace's own host"))
         .arg(Arg::new("log-level").long("log-level").default_value("info"))
         .get_matches();
-    // wish runs drive the xllm loop on worker threads: deep futures need more than the default stack
+    // deep futures need more than the default stack
     let rt = tokio::runtime::Builder::new_multi_thread().thread_stack_size(8 * 1024 * 1024).enable_all().build().expect("tokio runtime");
     if let Some(data_dir) = matches.get_one::<String>("data-dir") {
         let level = matches.get_one::<String>("log-level").unwrap().clone();
@@ -179,7 +179,7 @@ async fn buckyos_service_main(fixtures: bool) {
     let listen = format!("127.0.0.1:{}", AIWORKSPACE_SERVICE_PORT);
     log::info!("aiworkspace buckyos mode: data in {}", data_dir.display());
     // models are reached through AICC with this service's session, on behalf of the user each run is charged to
-    let wish = WishConfig::from_settings(&settings.wish, serde_json::json!({ "type": "buckyos" }));
+    let wish = WishConfig::from_settings(&settings.wish);
     run(data_dir, listen, Arc::new(RuntimeAuth), limits, fixtures, Some(tx), wish, Objects::Zone).await;
 }
 

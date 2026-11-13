@@ -3,6 +3,7 @@
  * development against the standalone backend — an OpenAI-format endpoint named in the dev override. */
 
 import { buckyos, getActiveSessionToken } from 'buckyos'
+import { providerErrorFromRpc } from 'buckyos/xllm'
 import { toAiccRpcCallOptions } from '../../../api/aicc_rpc_options'
 import { devModelEndpoint } from '../api/transport'
 import type { Json } from '../api/types'
@@ -43,7 +44,9 @@ class AiccChat implements ChatClient {
     const params = exact
       ? { exact_model: model, messages: encoded, tools: specs }
       : { logical_model: model, messages: encoded, tools: specs, requirements: { tool_call: tools.length > 0 } }
-    const result = record(await buckyos.getServiceRpcClient('aicc').call(exact ? 'chat.completions.create' : 'helper.llm_chat', params, toAiccRpcCallOptions(token)))
+    const method = exact ? 'chat.completions.create' : 'helper.llm_chat'
+    // a refusal (quota, resource, attribution) stays classified for the run's report
+    const result = record(await buckyos.getServiceRpcClient('aicc').call(method, params, toAiccRpcCallOptions(token)).catch((error: unknown) => { throw providerErrorFromRpc(`aicc ${method} failed`, error) }))
     const message = record(result.message)
     const content = Array.isArray(message.content) ? message.content.map(record) : []
     const text = content.filter((c) => c.type === 'text').map((c) => String(c.text ?? '')).join('\n')

@@ -117,8 +117,8 @@ fn target_labels(ctx: &dyn ReadCtx, access: &Access, table: &str, kind: &str) ->
     Ok(Value::Object(m).to_string())
 }
 
-/// `CREATE TEMP VIEW "<view_name>"` of the logical table of `table` (a live local table the caller may read).
-pub fn logical_table_ddl(ctx: &dyn ReadCtx, access: &Access, table: &EntityRow, view_name: &str) -> WsResult<String> {
+/// The SELECT of the logical table of `table`: every live field under its current name.
+fn logical_select(ctx: &dyn ReadCtx, access: &Access, table: &EntityRow) -> WsResult<String> {
     let fields = live_fields(ctx, &table.entity_id)?;
     let cols = field_columns(&fields);
     let refs = if cols.iter().any(|c| c.def.ty == FieldType::ObjectRef) { target_labels(ctx, access, &table.entity_id, "value")? } else { "{}".into() };
@@ -142,12 +142,37 @@ pub fn logical_table_ddl(ctx: &dyn ReadCtx, access: &Access, table: &EntityRow, 
         "json_object('record_id', record_id, 'rev', rev, 'values', json(aiws_pick(values_json, {ids})), 'revs', json(aiws_pick(revs_json, {ids})), \
          'meta', json(aiws_pick(meta_json, {ids})), 'body_ref', CASE WHEN body_entity_id IS NOT NULL THEN json_object('entity_id', body_entity_id, 'version', json_object('mode', 'live_head')) END) AS \"_record\""
     ));
-    Ok(format!(
-        "CREATE TEMP VIEW {} AS SELECT {} FROM main.table_records WHERE source_id = {} AND deleted_seq IS NULL",
-        ident(view_name),
-        select.join(", "),
-        lit(&table.entity_id)
-    ))
+    Ok(format!("SELECT {} FROM main.table_records WHERE source_id = {} AND deleted_seq IS NULL", select.join(", "), lit(&table.entity_id)))
+}
+
+/// `CREATE TEMP VIEW "<view_name>"` of the logical table of `table` (a live local table the caller may read).
+pub fn logical_table_ddl(ctx: &dyn ReadCtx, access: &Access, table: &EntityRow, view_name: &str) -> WsResult<String> {
+    Ok(format!("CREATE TEMP VIEW {} AS {}", ident(view_name), logical_select(ctx, access, table)?))
+}
+
+/// The logical table a macro's `aiws.sql` sees (AI Native 第一期 §2.3, PRD §6.6): `_id` and only the fields of its
+/// manifest, each under the name it had when the macro was coded (`columns`: `(field_id, name)`), the values read by
+/// field id; with `view` (a table view or table query input), only the rows that view shows. A declared field that is
+/// gone has no column (the structure check stops such a macro before it runs).
+pub fn manifest_table_ddl(ctx: &dyn ReadCtx, access: &Access, table: &EntityRow, view_name: &str, columns: &[(String, String)], view: Option<&ViewDef>) -> WsResult<String> {
+    let fields = live_fields(ctx, &table.entity_id)?;
+    let cols = field_columns(&fields);
+    let by_id: BTreeMap<&str, &FieldColumns> = cols.iter().map(|c| (c.def.field_id.as_str(), c)).collect();
+    let mut select = vec!["b.\"_id\" AS \"_id\"".to_string()];
+    for (fid, name) in columns {
+        let Some(c) = by_id.get(fid.as_str()) else { continue };
+        let display = if SYSTEM_COLUMNS.contains(&name.as_str()) { format!("{name}#field") } else { name.clone() };
+        select.push(format!("b.{} AS {}", ident(&c.display), ident(&display)));
+        select.push(format!("b.{} AS {}", ident(&c.raw), ident(&format!("{display}#raw"))));
+        if let Some(cur) = &c.currency {
+            select.push(format!("b.{} AS {}", ident(cur), ident(&format!("{display}#currency"))));
+        }
+    }
+    let where_clause = match view {
+        Some(v) => filter_where(&cols, v)?,
+        None => String::new(),
+    };
+    Ok(format!("CREATE TEMP VIEW {} AS SELECT {} FROM ({}) AS b{where_clause}", ident(view_name), select.join(", "), logical_select(ctx, access, table)?))
 }
 
 /// A saved table view: what a table Block keeps besides its binding.
@@ -331,6 +356,16 @@ fn sort_terms(c: &FieldColumns, desc: bool) -> Vec<String> {
         ],
         _ => vec![empty, format!("{d}{dir}")],
     }
+}
+
+/// ` WHERE …` of a view's filter over the columns of a logical table (empty without a filter).
+fn filter_where(cols: &[FieldColumns], view: &ViewDef) -> WsResult<String> {
+    let by_id: BTreeMap<String, FieldColumns> = cols.iter().map(|c| (c.def.field_id.clone(), c.clone())).collect();
+    let live: BTreeMap<String, FieldDef> = cols.iter().map(|c| (c.def.field_id.clone(), c.def.clone())).collect();
+    Ok(match &view.filter {
+        Some(f) => format!(" WHERE {}", where_sql(&compile(f, &live)?, &by_id)),
+        None => String::new(),
+    })
 }
 
 /// Compile `view` over the logical table named `table` (an SQL identifier, quoted) whose live fields are `fields`.

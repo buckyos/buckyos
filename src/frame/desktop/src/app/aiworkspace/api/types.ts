@@ -43,10 +43,8 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   purpose?: string | null
   /** Who the service takes the caller for (a guest of a public link only learns its principal here). */
   principal?: string
-  /** Whose AICC the wish blocks use (AI Center Quota PRD §3.3). */
-  wish_aicc_mode?: WishAiccMode
-  /** Where wish runs execute by default and whether the transitional in-service executor may be chosen (内核架构改进 D14). */
-  wish_execution?: { default: WishExecutionMode; service: boolean }
+  /** Where wish runs execute by default (内核架构改进 D14; 浏览器优先): this browser or the owner's Agent. */
+  wish_execution?: { default: WishExecutionMode }
   /** The owner's hosted execution configuration (D22): an Agent runs tasks for collaborators with `run`. */
   hosted_exec?: HostedExecConfig
   /** The Workspace's own origin for publication links (D21), `null` when the deployment has no host. */
@@ -79,9 +77,10 @@ export interface Referrer { referrer: { zone?: string | null; workspace_id?: str
 /** The owner's hosted execution configuration (`ws.set_hosted_exec`, D22). */
 export interface HostedExecConfig { enabled: boolean; agent_id?: string; allowed_wishes?: string[]; triggerers?: string[]; limits?: Record<string, Json>; digest?: string }
 
-/** Where a wish run executes (内核架构改进 §9, D14): the service (transitional), this browser, or the owner's Agent. */
-export type WishExecutionMode = 'service' | 'local' | 'hosted'
+/** Where a wish run executes (内核架构改进 §9, D14; 浏览器优先): this browser, or the owner's Agent. */
+export type WishExecutionMode = 'local' | 'hosted'
 
+/** Whose AICC a run uses (local: the starter's own; hosted: the owner's). */
 export type WishAiccMode = 'workspace_owner' | 'current_user'
 /** Whose AICC a run uses, fixed when it was accepted: `user_id` pays, `operator_id` started it. */
 export interface WishRunAicc { mode: WishAiccMode; user_id: string; operator_id?: string }
@@ -148,7 +147,7 @@ export interface DerivedRecord {
   program_digest?: string
   model_judgment?: boolean
   external_data?: boolean
-  mode?: 'generate' | 'program'
+  mode?: 'code' | 'run'
 }
 
 export interface LockHolder {
@@ -392,7 +391,7 @@ export interface WishAnalysis {
   summary?: string
 }
 export interface WishRefinement { text: string; at?: string; run_id?: string }
-export interface WishProgram { language: 'js'; api_version: number; source: string; digest: string; produces: string[]; run_id?: string; edited_by?: string }
+export interface WishProgram { language: 'js'; api_version: number; source: string; digest: string; manifest?: Json; produces: string[]; run_id?: string; edited_by?: string }
 export interface WishResultBinding { type: WishResultType; entity_id: string; approach?: 'program' | 'direct'; title?: string; cells?: string[]; key?: string[]; fields?: Record<string, string>; def_id?: string; target?: string }
 export interface WishCheckSummary { passed: number; failed: number; not_run: number; review: number; items: { id: string; kind: string; status: string; text: string }[] }
 export interface WishLastRun {
@@ -400,7 +399,7 @@ export interface WishLastRun {
   state: 'succeeded' | 'failed' | 'cancelled'
   at?: string
   seq?: number
-  mode?: 'generate' | 'program'
+  mode?: 'code' | 'run'
   executor?: string
   read_set?: DerivedInput[]
   produced?: string[]
@@ -431,7 +430,8 @@ export interface WishPayload {
 
 // ---- wish runs on the service (proc.* with wish.xllm@1 / wish.mock@1)
 
-export type WishStage = 'analyze' | 'execute' | 'rerun_program' | 'repair_program'
+/** The three stages of a wish (AI Native 第一期 §2.1): the task contract, the macro (coding and its trial run), running the macro. */
+export type WishStage = 'analyze' | 'code' | 'run'
 export type WishRunState = 'queued' | 'snapshotting' | 'running' | 'validating' | 'waiting_confirmation' | 'applying' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'conflict' | 'rejected'
 export interface WishRunProgress {
   phase?: string
@@ -475,7 +475,7 @@ export interface WishCandidate {
   refinements?: WishRefinement[]
   program?: { digest: string; object_id?: string; produces?: string[] } | null
   appended_inputs?: WishInput[]
-  mode?: 'generate' | 'program'
+  mode?: 'code' | 'run'
   simulated?: boolean
   /** Analysis stage. */
   analysis?: WishAnalysis
@@ -533,6 +533,18 @@ export interface WishRunView {
 }
 
 /** What `proc.claim` opens for an executor outside the service (T3-4): a model stage, or the program to re-run. */
+/** The limits a stage's executor works under (浏览器优先 T1-4, 第一期 §2.3–§2.4); a macro declares less. */
+export interface WishBudget {
+  iterations: number
+  program_timeout_secs: number
+  max_output_tokens: number
+  map_model: string
+  complete_model: string
+  llm_map_max_items: number
+  ai_max_calls: number
+  ai_max_tokens: number
+  sql_max_calls: number
+}
 export interface WishStageBrief {
   kind: 'model' | 'program'
   stage: WishStage
@@ -541,10 +553,26 @@ export interface WishStageBrief {
   tools?: { name: string; description: string; parameters: Json }[]
   model?: string
   iterations?: number
+  /** The macro to start from (coding) or to run (running). */
   source?: string | null
+  /** Running: the stored macro's manifest. */
+  manifest?: Json
+  budget?: WishBudget
 }
 export interface WishClaim { run_id: string; attempt: number; run_token: string; lease_until: string; lease_ms: number; stage?: WishStageBrief }
-export interface WishToolAnswer { status: 'ok' | 'error'; text?: string; map?: Json }
+export interface WishToolAnswer { status: 'ok' | 'error'; text?: string; code?: string; [key: string]: Json | undefined }
+/** `proc.files`: the stage directory, and the stage's budget and stored manifest. */
+export interface WishStageFiles { files: Record<string, { text?: string; base64?: string; skipped?: string }>; stage?: { budget?: WishBudget; manifest?: Json } }
+/** Why a wish's macro cannot run on its inputs as they are now (第一期 §2.7). */
+export interface NeedsCodingReason { code: 'no_macro' | 'api_version' | 'input_unbound' | 'input_changed' | 'input_missing' | 'field_deleted' | 'field_type_changed' | 'program_failed'; input?: string; field_id?: string; name?: string; from?: string; to?: string; run_code?: string }
+/** The one main state of a wish and its next action (PRD §5.8; core `main_status`). */
+export interface WishMainStatus {
+  main: 'needs_input' | 'needs_analysis' | 'needs_coding' | 'waiting_data' | 'cannot_run' | 'in_progress' | 'pending_confirmation' | 'stale' | 'current'
+  next_action: 'answer' | 'analyze' | 'code' | 'view_inputs' | 'fix' | 'cancel' | 'apply' | 'run' | 'none'
+  reasons: Json[]
+  /** The applied results are out of date, whatever the main state says. */
+  stale: boolean
+}
 export interface WishChoices { results?: Record<string, 'keep' | 'replace' | 'new'>; confirm_structure?: boolean }
 
 export interface BlockDefPayload {
@@ -700,8 +728,8 @@ export interface FreshnessInfo {
   produced?: string[]
   /** The current result group, per logical result. */
   results?: { name: string; type: string; entity_id?: string; approach?: string | null; status: FreshnessStatus; manual_modified?: boolean; external_data?: boolean; model_judgment?: boolean }[]
-  /** Program results are current but written ones are not: the text needs regenerating. */
-  direct_stale?: boolean
+  /** The stored macro does not fit its inputs as they are now: code the wish again (第一期 §2.7). */
+  needs_coding?: { reasons: NeedsCodingReason[] } | null
   checks?: WishCheckSummary | null
   error?: ServiceError
 }

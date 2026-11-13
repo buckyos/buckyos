@@ -182,7 +182,7 @@ impl Workspace {
     /// A run an executor owns whose lease ran out: interrupted (D15), never restarted by the service.
     pub fn wish_run_expire_lease(&mut self, run: &Value) -> WsResult<bool> {
         let exec = &run["detail"]["exec"];
-        if exec["mode"].as_str().map_or(true, |m| m == "service") || !matches!(run["state"].as_str(), Some("running")) {
+        if exec["mode"].as_str().is_none() || !matches!(run["state"].as_str(), Some("running")) {
             return Ok(false);
         }
         let Some(lease) = exec["lease_until"].as_str() else { return Ok(false) };

@@ -4,13 +4,14 @@
  * page's cookie) starts the runner (program.worker.ts, `virtual:aiws-program-runner`) as a classic Worker from a
  * blob; the Worker inherits the CSP. Both are needed. The program lives in the Worker, not in the iframe's
  * script, which could navigate itself away. What goes
- * in is the snapshot files, the program source and `llm_map` answers — never a token, since the sandbox's origin
- * is `null` and messages to it are posted to `*`. What comes out is checked: only the iframe's window, only
- * `llm_map` and `done`, by shape. A timeout or a cancel removes the iframe, which ends the Worker. */
+ * in is the snapshot files, the program source and the answers to its bridge calls — never a token, since the
+ * sandbox's origin is `null` and messages to it are posted to `*`. What comes out is checked: only the iframe's
+ * window, only a bridge call of a known kind and `done`, by shape. A timeout or a cancel removes the iframe, which
+ * ends the Worker. */
 
 import runner from 'virtual:aiws-program-runner'
 import type { Json } from '../api/types'
-import type { MapReply, RunMessage } from './program.worker'
+import type { BridgeReply, RunMessage } from './program.worker'
 
 export interface ProgramOutcome { results: Json | null; log: string; files: Record<string, Json> }
 
@@ -38,15 +39,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype
 }
 
+/** What a macro may ask its executor (aiws.js `bridge`). */
+const BRIDGE_OPS = ['sql', 'ai.complete', 'llm.map', 'zone.fetch']
+
 type Out =
-  | { type: 'llm_map'; id: number; req: Json }
+  | { type: 'bridge'; id: number; op: string; req: Json }
   | { type: 'done'; results: Json | null; log: string; files: Record<string, Json> }
 
 /** A message of the sandbox, if it is one of the two it may send. */
 function parseOut(data: unknown): Out | null {
   if (!isRecord(data)) return null
-  if (data.type === 'llm_map') {
-    return Number.isSafeInteger(data.id) && isRecord(data.req) ? { type: 'llm_map', id: data.id as number, req: data.req as Json } : null
+  if (data.type === 'bridge') {
+    return Number.isSafeInteger(data.id) && typeof data.op === 'string' && BRIDGE_OPS.includes(data.op) && isRecord(data.req) ? { type: 'bridge', id: data.id as number, op: data.op, req: data.req as Json } : null
   }
   if (data.type === 'done') {
     const { results, log, files } = data
@@ -60,7 +64,7 @@ function parseOut(data: unknown): Out | null {
 export function runProgram(
   source: string,
   files: Record<string, { text?: string; base64?: string; skipped?: string }>,
-  llmMap: (req: Json) => Promise<Json>,
+  bridge: (op: string, req: Json) => Promise<Json>,
   options: { timeoutMs: number; signal?: AbortSignal },
 ): Promise<ProgramOutcome> {
   return new Promise((resolve, reject) => {
@@ -87,9 +91,9 @@ export function runProgram(
       if (!msg) return
       if (msg.type === 'done') finish(() => resolve({ results: msg.results, log: msg.log, files: msg.files }))
       else {
-        llmMap(msg.req)
-          .then((body) => post({ type: 'llm_map', id: msg.id, body } satisfies MapReply))
-          .catch((error: unknown) => post({ type: 'llm_map', id: msg.id, body: { error: error instanceof Error ? error.message : String(error) } } satisfies MapReply))
+        bridge(msg.op, msg.req)
+          .then((body) => post({ type: 'bridge', id: msg.id, body } satisfies BridgeReply))
+          .catch((error: unknown) => post({ type: 'bridge', id: msg.id, body: { error: error instanceof Error ? error.message : String(error) } } satisfies BridgeReply))
       }
     }
     const timer = window.setTimeout(() => finish(() => resolve({ results: { error: `The program timed out (${Math.round(options.timeoutMs / 1000)} s)` }, log: '', files: {} })), options.timeoutMs)

@@ -137,7 +137,6 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     s.rpc("ws.revoke", wsp(json!({ "subject": "bob" }))).await;
     s.rpc("ws.set_user_state", wsp(json!({ "entries": { "panel": { "open": true } } }))).await;
     s.rpc("ws.get_user_state", wsp(json!({}))).await;
-    s.rpc("ws.set_wish_aicc", wsp(json!({ "mode": "workspace_owner" }))).await;
     let entry = s.rpc("ws.create_entry", wsp(json!({ "capabilities": ["read"], "methods": { "guest": true } }))).await;
     let entry_id = entry["entry"]["entry_id"].as_str().unwrap().to_string();
     s.call(None, "entry.describe", json!({ "entry_id": entry_id })).await;
@@ -167,6 +166,32 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     s.rpc("ws.delete_checkpoint", wsp(json!({ "snapshot_id": cp["result"]["snapshot"] }))).await;
     s.rpc("ws.purge_deleted", wsp(json!({}))).await;
     s.rpc("ws.clear_staged", wsp(json!({}))).await;
+    // wish runs (浏览器优先, AI Native 第一期): a local run, worked through the executor protocol
+    let info = s.rpc("ws.get_info", wsp(json!({}))).await;
+    s.rpc("doc.commit", commit(&ws, info["epoch"].as_str().unwrap(), "wish-1", json!([{ "op": "entity.create", "entity_id": "w1", "type_id": "buckyos.wish", "parent_id": "data", "order_key": "w",
+        "payload": { "prompt": "写一句欢迎词", "executor": "xllm", "output_mode": "overwrite" } }]))).await;
+    let start = s.rpc("proc.start", wsp(json!({ "program": "wish.xllm@1", "idempotency_key": "w-a", "params": { "wish_id": "w1", "stage": "analyze", "execution": { "mode": "local" } } }))).await;
+    let run_id = start["run_id"].as_str().unwrap().to_string();
+    s.rpc("proc.list", wsp(json!({ "wish_id": "w1" }))).await;
+    let claimed = s.rpc("proc.claim", wsp(json!({ "run_id": run_id, "claim_token": start["claim_token"] }))).await;
+    let rt = claimed["run_token"].as_str().unwrap().to_string();
+    let at = |extra: Value| { let mut p = wsp(json!({ "run_id": run_id, "attempt": 1 })); for (k, v) in extra.as_object().unwrap() { p[k] = v.clone(); } p };
+    s.call(Some(&rt), "proc.heartbeat", at(json!({ "progress": { "phase": "reading" } }))).await;
+    s.call(Some(&rt), "proc.files", at(json!({}))).await;
+    s.call(Some(&rt), "proc.tool", at(json!({ "name": "ws_find", "args": { "text": "表" } }))).await;
+    s.call(Some(&rt), "proc.program", at(json!({ "source": "export default async function main() {}", "results": null, "log": "", "files": {} }))).await;
+    s.call(Some(&rt), "proc.tool", at(json!({ "name": "submit_analysis", "args": { "analysis": { "schema_version": "wish.analysis.v3", "status": "ready", "context_prompt": "写一句欢迎词。", "inputs": [],
+        "output_contract": { "results": [{ "name": "hello", "type": "richtext", "title": "欢迎" }] }, "checks": [], "blockers": [], "warnings": [] } } }))).await;
+    s.call(Some(&rt), "proc.report", at(json!({ "finished": true }))).await;
+    let mut waiting = s.rpc("proc.get", wsp(json!({ "run_id": run_id }))).await;
+    for _ in 0..200 {
+        if waiting["state"] == json!("waiting_confirmation") { break; }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        waiting = s.rpc("proc.get", wsp(json!({ "run_id": run_id, "choices": {} }))).await;
+    }
+    s.rpc("proc.apply", wsp(json!({ "run_id": run_id, "plan_digest": waiting["preview"]["plan_digest"], "session_id": "s1" }))).await;
+    let other = s.rpc("proc.start", wsp(json!({ "program": "wish.xllm@1", "idempotency_key": "w-c", "params": { "wish_id": "w1", "stage": "analyze", "execution": { "mode": "local" } } }))).await;
+    s.rpc("proc.cancel", wsp(json!({ "run_id": other["run_id"] }))).await;
     // named Workspaces (控件机制 TODO G9) and the service clock (G16)
     let named = s.rpc("ws.ensure", json!({ "name": "contract", "title": "契约" })).await;
     let again = s.rpc("ws.ensure", json!({ "name": "contract" })).await;

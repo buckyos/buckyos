@@ -188,7 +188,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(&format!("{HTTP_PATH}/stream/{{token}}"), get(stream::serve))
         .route(&format!("{HTTP_PATH}/schemas/richtext.basic.v1.json"), get(schema))
         .route(&format!("{HTTP_PATH}/healthz"), get(|| async { "ok" }))
-        .route(&format!("{HTTP_PATH}/wish-host/{{token}}/llm_map"), post(wish_llm_map))
         // publications (D26): by path on the service, and on the Workspace's own host (D21)
         .route(&format!("{HTTP_PATH}/pub/{{workspace_id}}/{{name}}"), get(source::pub_get))
         .route(&format!("{HTTP_PATH}/pub/{{workspace_id}}/{{name}}/referrers"), post(source::pub_referrer))
@@ -469,7 +468,6 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("entry.describe", "stable"),
     ("ws.get_user_state", "stable"),
     ("ws.set_user_state", "stable"),
-    ("ws.set_wish_aicc", "stable"),
     ("ws.import", "stable"),
     ("ws.release_retention", "stable"),
     ("ws.delete_checkpoint", "stable"),
@@ -515,17 +513,17 @@ pub const METHOD_LEVELS: &[(&str, &str)] = &[
     ("doc.restore_version", "experimental"),
     ("doc.checkpoint", "experimental"),
     ("doc.export", "experimental"),
-    ("proc.start", "experimental"),
-    ("proc.get", "experimental"),
-    ("proc.apply", "experimental"),
-    ("proc.cancel", "experimental"),
-    ("proc.list", "experimental"),
-    ("proc.claim", "experimental"),
-    ("proc.heartbeat", "experimental"),
-    ("proc.report", "experimental"),
-    ("proc.tool", "experimental"),
-    ("proc.program", "experimental"),
-    ("proc.files", "experimental"),
+    ("proc.start", "stable"),
+    ("proc.get", "stable"),
+    ("proc.apply", "stable"),
+    ("proc.cancel", "stable"),
+    ("proc.list", "stable"),
+    ("proc.claim", "stable"),
+    ("proc.heartbeat", "stable"),
+    ("proc.report", "stable"),
+    ("proc.tool", "stable"),
+    ("proc.program", "stable"),
+    ("proc.files", "stable"),
     ("ws.set_hosted_exec", "experimental"),
     ("ws.publish", "experimental"),
     ("ws.unpublish", "experimental"),
@@ -593,7 +591,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "ws.list" => svc.list_workspaces(caller)?,
         "ws.get_info" => {
             let mut v = state.with_ws(ws_id()?, |ws| ws.info(caller))?;
-            v["wish_execution"] = json!({ "default": state.wish.config.default_execution, "service": state.wish.config.allow_service_execution });
+            v["wish_execution"] = json!({ "default": state.wish.config.default_execution });
             v["public_base"] = json!(source::public_base(state, ws_id()?));
             v["traffic"] = json!(state.with_ws(ws_id()?, |ws| ws.traffic())?);
             v
@@ -607,7 +605,6 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "ws.list_grants" => state.with_ws(ws_id()?, |ws| ws.list_grants(caller))?,
         "ws.get_user_state" => state.with_ws(ws_id()?, |ws| ws.get_user_state(caller))?,
         "ws.set_user_state" => state.with_ws(ws_id()?, |ws| ws.set_user_state(caller, p.get("entries").unwrap_or(&Value::Null), p.get("expect")))?,
-        "ws.set_wish_aicc" => state.with_ws(ws_id()?, |ws| ws.set_wish_aicc_mode(caller, s(p, "mode")?))?,
         "ws.list_subjects" => {
             // zone-level: any account that may own Workspaces may ask (the list itself is as public as the zone makes it)
             require_may_own(caller)?;
@@ -873,20 +870,6 @@ fn is_wish_run(state: &Arc<AppState>, ws_id: &str, run_id: &str) -> bool {
     state.with_ws(ws_id, |ws| Ok(ws.run_program(run_id))).ok().flatten().is_some_and(|p| wish::is_wish(&p))
 }
 
-/// `POST /kapi/aiworkspace/wish-host/<token>/llm_map`: a running wish program asks for per-item model
-/// judgements. The token names the stage (and proves it); nothing else is reachable through it.
-async fn wish_llm_map(State(state): State<Arc<AppState>>, Path(token): Path<String>, headers: HeaderMap, body: bytes::Bytes) -> Response {
-    let Some(stage) = state.wish.stage_by_token(&token) else { return (StatusCode::NOT_FOUND, Json(json!({ "error": "no running stage" }))).into_response() };
-    if headers.get("x-aiws-token").and_then(|v| v.to_str().ok()) != Some(token.as_str()) {
-        return (StatusCode::FORBIDDEN, Json(json!({ "error": "token mismatch" }))).into_response();
-    }
-    let req: Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("invalid body: {e}") }))).into_response(),
-    };
-    Json(wish::llm::llm_map(&stage, &req).await).into_response()
-}
-
 /// `doc.wait_changes`: long poll; returns as soon as `head_seq > after_seq` or on timeout.
 /// It only ever says "there is something new" — content comes from `get_changes`.
 async fn wait_changes(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsResult<Value> {
@@ -1096,9 +1079,6 @@ pub async fn serve(state: Arc<AppState>, listen: &str) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let addr = listener.local_addr()?;
     log::info!("aiworkspace listening on http://{}{}", addr, HTTP_PATH);
-    // wish programs call back over loopback for `llm.map`
-    let host = if addr.ip().is_unspecified() { format!("127.0.0.1:{}", addr.port()) } else { addr.to_string() };
-    *state.wish.host_base.lock().unwrap() = Some(format!("http://{host}{HTTP_PATH}"));
     show::spawn_sweeper(state.clone());
     session::spawn_timers(state.clone());
     media::start(&state);

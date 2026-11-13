@@ -28,14 +28,22 @@
     "EXT_LOCAL_CHANGES",
     "SQL_NOT_ALLOWED",
     "SQL_ERROR",
-    "NOT_MATERIALIZED"
+    "NOT_MATERIALIZED",
+    "NEEDS_ANALYSIS",
+    "NEEDS_INPUT",
+    "NEEDS_CODING",
+    "PROGRAM_FAILED",
+    "MACRO_CODE_CHANGED"
    ]
   },
   {
    "code": "LIMIT_EXCEEDED",
    "retryable": false,
    "status": "rejected",
-   "meaning": "A size, count or depth limit was exceeded."
+   "meaning": "A size, count or depth limit was exceeded.",
+   "sub_codes": [
+    "SNAPSHOT_TOO_LARGE"
+   ]
   },
   {
    "code": "NOT_FOUND",
@@ -95,7 +103,14 @@
    "code": "DEPENDENCY_UNAVAILABLE",
    "retryable": false,
    "status": "rejected",
-   "meaning": "An asset, object or data source is not available."
+   "meaning": "An asset, object or data source is not available.",
+   "sub_codes": [
+    "AI_QUOTA_EXHAUSTED",
+    "AI_QUOTA_BUDGET_EXCEEDED",
+    "AI_RESOURCE_NOT_PERMITTED",
+    "AI_ATTRIBUTION_UNAVAILABLE",
+    "AI_UNAVAILABLE"
+   ]
   },
   {
    "code": "STORAGE_FULL",

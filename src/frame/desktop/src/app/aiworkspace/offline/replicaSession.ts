@@ -27,7 +27,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
   type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type Touched, type WorkspaceInfo, type WishChoices,
-  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type WishAiccMode, type HostedExecConfig, type BucketBinding, type ExtMigration, type ExtPackResult, type TemplateSpec,
+  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type HostedExecConfig, type BucketBinding, type ExtMigration, type ExtPackResult, type TemplateSpec,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
@@ -532,32 +532,26 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.subjects'))
     return this.direct.listSubjects()
   }
-  async setWishAiccMode(mode: WishAiccMode) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
-    const applied = await this.direct.setWishAiccMode(mode)
-    this.wsInfo = { ...this.wsInfo, wish_aicc_mode: applied }
-    return applied
-  }
   async setHostedExec(config: HostedExecConfig) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.onlineSetting'))
     const applied = await this.direct.setHostedExec(config)
     this.wsInfo = { ...this.wsInfo, hosted_exec: applied }
     return applied
   }
   async publish(entityId: string, name?: string) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.onlineSetting'))
     return this.direct.publish(entityId, name)
   }
   async unpublish(entityId: string) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.onlineSetting'))
     return this.direct.unpublish(entityId)
   }
   async listPublications() {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.onlineSetting'))
     return this.direct.listPublications()
   }
   async listReferrers(entityId: string) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeWishAicc'))
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.onlineSetting'))
     return this.direct.listReferrers(entityId)
   }
   // extension controls need the service (builds read objects at the NDM gateway; the library is the service's)

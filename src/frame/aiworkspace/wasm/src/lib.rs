@@ -187,6 +187,15 @@ pub fn wish_config_digest(payload_json: &str) -> Result<String, JsError> {
 }
 
 /// Whether a wish payload must be analysed before it can execute (§4.1).
+/// The main state and next action of a wish (PRD §5.8): `freshness_json` is its freshness, `runs_json` what the
+/// page knows of its runs (`{ active?, waiting?, last_failed? }`).
+#[wasm_bindgen]
+pub fn wish_main_status(freshness_json: &str, runs_json: &str) -> Result<String, JsError> {
+    let f: serde_json::Value = serde_json::from_str(freshness_json).map_err(|e| JsError::new(&e.to_string()))?;
+    let r: serde_json::Value = serde_json::from_str(runs_json).map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(aiworkspace_core::freshness::main_status(&f, &r).to_string())
+}
+
 #[wasm_bindgen]
 pub fn wish_needs_analysis(payload_json: &str) -> Result<bool, JsError> {
     let p = parse(payload_json)?;

@@ -157,7 +157,7 @@ async function runHandlers(args: RaiseArgs, entityId: string, payload: InstanceP
         break
       }
       case 'wish':
-        void store.wish.execute(h.wish_id, { event: { name: event, instance_id: entityId, params, inputs: h.inputs ?? null }, idempotencyKey: key })
+        void store.wish.next(h.wish_id, { event: { name: event, instance_id: entityId, params, inputs: h.inputs ?? null }, idempotencyKey: key })
           .catch((error: unknown) => store.notify('error', aiwsT('aiworkspace.ext.event.failed', { label, error: error instanceof Error ? error.message : String(error) })))
         break
       case 'open': {

@@ -1,13 +1,16 @@
-// aiws v2 — the program host (许愿格详细设计 §9.4).
+// aiws v3 — the program host of a wish macro (许愿格详细设计 §9.4; AI Native 第一期 §2).
 //
-// A wish program reads the run's snapshot directory and writes candidate results; it never writes
-// the Workspace. The same file serves the canonical run (`run_program`, "re-run the program") and
-// the model's own debugging in the shell (`deno run -A lib/run.js`).
+// A macro reads the run's snapshot directory and writes candidate results; it never writes the Workspace. It starts
+// with `aiws.declare` (the inputs and fields it reads, the AI it calls): only declared inputs and fields can be read,
+// and every later run materializes exactly those. What reaches beyond the snapshot — SQL over the declared inputs, a
+// model call, a resource of the Zone — goes through the executor's bridge (`globalThis.__aiwsBridge(op, request)`):
+// the browser's Worker posts to the page, the hosted runner (`lib/run.js --bridge`) speaks over stdio. Every executor
+// runs the same file.
 //
 //   context/inputs.json            name → { entity_id, type_id, dir, selector, … }
 //   context/entities/<id>/…        schema.json + rows.jsonl | content.md / content.json | meta.json
 //   context/assets/<object id>     asset bytes
-//   context/data-tree.json, block-tree.json, request.json
+//   request.json                   the run's fixed parameters
 //   output/.aiws/results.json      what the host collects
 
 const dec = new TextDecoder()
@@ -54,11 +57,27 @@ function compareValues(a, b) {
   return String(a).localeCompare(String(b), 'zh-CN')
 }
 
+/** What the executor's bridge answered, or the error it gave (its `code` kept: AI_QUOTA_*, SQL_ERROR, ZONE_ONLY…). */
+async function bridge(op, req) {
+  const call = globalThis.__aiwsBridge
+  if (typeof call !== 'function') throw new Error(`aiws.${op} is only available inside a wish run`)
+  const body = await call(op, req)
+  if (!body || typeof body !== 'object') throw new Error(`aiws.${op}: no answer`)
+  if (body.error) {
+    const e = new Error(`aiws.${op}: ${body.error}`)
+    if (body.code) e.code = body.code
+    throw e
+  }
+  return body
+}
+
 class Input {
   #host
   #rows = null
-  constructor(host, name, info) {
+  #declared
+  constructor(host, name, info, declared = null) {
     this.#host = host
+    this.#declared = declared
     this.name = name
     this.entity_id = info.entity_id
     this.type_id = info.type_id
@@ -78,12 +97,31 @@ class Input {
     return readJson(join(this.dir, 'profile.json'), {})
   }
 
-  /** Field definitions in table order: `{ name, type, options?, id, visible }`. */
+  #schema() {
+    return readJson(join(this.dir, 'schema.json'), { fields: [] }).fields ?? []
+  }
+
+  /** The declared fields in table order: `{ name, type, options?, id, visible }`. */
   fields() {
     this.#expect('table')
-    return (readJson(join(this.dir, 'schema.json'), { fields: [] }).fields ?? []).map((f) => ({
+    return this.#schema().filter((f) => this.#declared === null || this.#declared.has(f.name)).map((f) => ({
       name: f.name, type: f.type, options: f.options ?? undefined, id: f.field_id, visible: f.visible !== false,
     }))
+  }
+
+  /** A field of the table this macro did not declare: reading it is an error, never an empty value. */
+  #undeclared(key) {
+    return typeof key === 'string' && key !== '_id' && this.#declared !== null && !this.#declared.has(key) && this.#schema().some((f) => f.name === key)
+  }
+
+  #guard(row) {
+    const input = this
+    return new Proxy(row, {
+      get(target, key, receiver) {
+        if (!(key in target) && input.#undeclared(key)) throw new Error(`input ${input.name}: field ${key} is not declared — add it to aiws.declare({ inputs: { ${input.name}: [...] } })`)
+        return Reflect.get(target, key, receiver)
+      },
+    })
   }
 
   #expect(kind) {
@@ -109,7 +147,7 @@ class Input {
         const name = byId.get(fid)
         if (name !== undefined) o[name] = v
       }
-      rows.push(o)
+      rows.push(this.#guard(o))
     }
     this.#rows = rows
     return rows
@@ -123,11 +161,11 @@ class Input {
   rows(opts = {}) {
     let rows = this.#allRows()
     const known = new Set(this.fields().map((f) => f.name))
-    for (const f of opts.fields ?? []) if (!known.has(f)) throw new Error(`input ${this.name} has no field ${f} (fields: ${[...known].join(', ')})`)
+    for (const f of opts.fields ?? []) if (!known.has(f)) throw new Error(`input ${this.name} has no declared field ${f} (declared: ${[...known].join(', ')})`)
     if (typeof opts.filter === 'function') rows = rows.filter(opts.filter)
     else if (opts.filter && typeof opts.filter === 'object') {
       const conds = Object.entries(opts.filter)
-      for (const [k] of conds) if (!known.has(k)) throw new Error(`input ${this.name} has no field ${k}`)
+      for (const [k] of conds) if (!known.has(k)) throw new Error(`input ${this.name} has no declared field ${k}`)
       rows = rows.filter((r) => conds.every(([k, v]) => (Array.isArray(v) ? v.includes(r[k]) : r[k] === v)))
     }
     if (opts.sort) {
@@ -150,7 +188,7 @@ class Input {
       })
     }
     if (typeof opts.limit === 'number') rows = rows.slice(0, opts.limit)
-    return rows.map((r) => ({ ...r }))
+    return rows.map((r) => this.#guard({ ...r }))
   }
 
   /** Rich text as Markdown. */
@@ -200,31 +238,58 @@ export class ProgramHost {
     this.root = root.replace(/\/$/, '')
     this.inputs = readJson(join(this.root, 'context/inputs.json'), {})
     this.request = readJson(join(this.root, 'request.json'), {})
-    this.dataTree = readJson(join(this.root, 'context/data-tree.json'), [])
-    this.blockTree = readJson(join(this.root, 'context/block-tree.json'), [])
     this.results = []
     this.factsObj = {}
     this.checks = []
     this.external = new Set()
-    this.llmStats = { calls: 0, items: 0, cached: 0 }
-    this.hostUrl = Deno.env.get('AIWS_HOST') ?? null
-    this.token = Deno.env.get('AIWS_TOKEN') ?? null
+    /** What `aiws.declare` said, as given (the service resolves it into the manifest). */
+    this.declared = null
+    this.aiStats = { complete: { calls: 0, cached: 0, tokens: 0 }, map: { calls: 0, items: 0, cached: 0 } }
     this.#trackFetch()
     this.aiws = this.#api()
   }
 
+  /** A fetch the program made itself (the hosted runner allows the Zone's host): recorded once it got an answer. */
   #trackFetch() {
     const original = globalThis.fetch
     if (!original || original.__aiws) return
-    const host = this.hostUrl
     const external = this.external
-    const wrapped = (input, init) => {
+    const wrapped = async (input, init) => {
       const url = typeof input === 'string' ? input : input?.url ?? String(input)
-      if (!host || !url.startsWith(host)) external.add(url.split('?')[0])
-      return original(input, init)
+      const res = await original(input, init)
+      external.add(url.split('?')[0])
+      return res
     }
     wrapped.__aiws = true
     globalThis.fetch = wrapped
+  }
+
+  #declare(spec) {
+    if (this.declared) throw new Error('aiws.declare is called once, at the start of the macro')
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new Error('aiws.declare({ inputs: { name: [fields…] }, ai?, zone?, params?, resources? })')
+    for (const k of Object.keys(spec)) if (!['inputs', 'ai', 'zone', 'params', 'resources'].includes(k)) throw new Error(`aiws.declare: unknown key ${k}`)
+    const inputs = {}
+    for (const [name, want] of Object.entries(spec.inputs ?? {})) {
+      const info = this.inputs[name]
+      if (!info) throw new Error(`aiws.declare: no input named ${JSON.stringify(name)} (inputs: ${Object.keys(this.inputs).join(', ') || 'none'})`)
+      const fields = Array.isArray(want) ? want : want && typeof want === 'object' && Array.isArray(want.fields) ? want.fields : []
+      const input = new Input(this, name, info)
+      if (input.kind === 'table') {
+        const known = input.fields().map((f) => f.name)
+        for (const f of fields) if (!known.includes(f)) throw new Error(`aiws.declare: input ${name} has no field ${JSON.stringify(f)} (fields: ${known.join(', ')})`)
+      }
+      inputs[name] = [...new Set(fields.map(String))]
+    }
+    this.declared = { ...spec, inputs }
+  }
+
+  #declaredInput(name) {
+    if (!this.declared) throw new Error(`declare the inputs first: aiws.declare({ inputs: { ${name}: [fields…] } }) at the start of the macro`)
+    const info = this.inputs[name]
+    if (!info) throw new Error(`no input named ${JSON.stringify(name)} (inputs: ${Object.keys(this.inputs).join(', ') || 'none'})`)
+    const fields = this.declared.inputs[name]
+    if (!fields) throw new Error(`input ${name} is not declared: add it to aiws.declare({ inputs: { ${name}: [fields…] } })`)
+    return new Input(this, name, info, new Set(fields))
   }
 
   #push(result) {
@@ -235,41 +300,55 @@ export class ProgramHost {
 
   #api() {
     const host = this
-    const input = (name) => {
-      const info = host.inputs[name]
-      if (!info) throw new Error(`no input named ${JSON.stringify(name)} (inputs: ${Object.keys(host.inputs).join(', ') || 'none'})`)
-      return new Input(host, name, info)
-    }
-    const find = (text) => {
-      const t = String(text).toLowerCase()
-      return [...host.dataTree, ...host.blockTree].filter((e) => String(e.title ?? '').toLowerCase().includes(t) || String(e.path ?? '').toLowerCase().includes(t))
+    const input = (name) => host.#declaredInput(name)
+    const declared = () => {
+      if (!host.declared) throw new Error('declare first: aiws.declare({ inputs: { … }, ai: { … } }) at the start of the macro')
+      return host.declared
     }
     return {
-      version: 2,
+      version: 3,
       host: 'program',
       request: host.request,
+      /** What this macro reads and may call; once, at its start. Every later run materializes exactly this. */
+      declare: (spec) => host.#declare(spec),
       input,
       inputs: () => Object.keys(host.inputs),
-      resolve: (pathOrName) => {
-        const hits = host.dataTree.filter((e) => e.path === pathOrName || e.title === pathOrName || e.entity_id === pathOrName || e.handle === pathOrName)
-        const names = Object.entries(host.inputs).filter(([, i]) => hits.some((h) => h.entity_id === i.entity_id)).map(([n]) => n)
-        return hits.map((h) => ({ ...h, input: names.find((n) => host.inputs[n].entity_id === h.entity_id) ?? null }))
+      /**
+       * One SELECT over the declared table inputs: a table is its input name, its columns the declared fields (display
+       * values; `"<field>#raw"` the stored values) and `_id`. Returns `{ columns, rows: [{ column: value }], truncated }`.
+       */
+      async sql(query, params) {
+        if (typeof query !== 'string') throw new Error('aiws.sql(query, params?): query must be a string')
+        const body = await bridge('sql', { query, params: params ?? null, declare: declared() })
+        const columns = body.columns ?? []
+        const rows = (body.rows ?? []).map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]])))
+        return { columns, rows, truncated: Boolean(body.truncated) }
       },
-      outline: (target, depth = 1) => {
-        const root = target ? host.dataTree.find((e) => e.handle === target || e.entity_id === target || e.path === target) : null
-        const parent = root ? root.handle : '@F0'
-        const out = []
-        const walk = (p, d) => {
-          for (const e of host.dataTree.filter((x) => x.parent === p)) {
-            out.push({ ...e, depth: d })
-            if (d + 1 < depth) walk(e.handle, d + 1)
-          }
-        }
-        if (root) walk(parent, 0)
-        else out.push(...host.dataTree.filter((e) => !host.dataTree.some((x) => x.handle === e.parent)))
-        return out
+      ai: {
+        /**
+         * One model inference (no tools, no loop): `{ system?, prompt | messages, schema?, model?, max_tokens? }` →
+         * `{ text }`, or `{ value }` checked against `schema`. Cached by content: the same request gives the same answer.
+         */
+        async complete(req) {
+          if (!req || typeof req !== 'object') throw new Error('aiws.ai.complete({ system?, prompt | messages, schema?, model?, max_tokens? })')
+          if (typeof req.prompt !== 'string' && !Array.isArray(req.messages)) throw new Error('aiws.ai.complete: prompt (a string) or messages ([{ role, text }]) required')
+          const body = await bridge('ai.complete', { system: req.system ?? null, prompt: req.prompt ?? null, messages: req.messages ?? null, schema: req.schema ?? null,
+            model: req.model ?? null, max_tokens: req.max_tokens ?? null, declare: declared() })
+          if (body.cached) host.aiStats.complete.cached += 1
+          else host.aiStats.complete.calls += 1
+          host.aiStats.complete.tokens += body.tokens ?? 0
+          return req.schema ? { value: body.value } : { text: body.text ?? '' }
+        },
       },
-      find,
+      zone: {
+        /** A resource of this Zone (a path such as `/kapi/…`, or a URL of the Zone's hosts), with the executor's session. */
+        async fetch(url, init = {}) {
+          const body = await bridge('zone.fetch', { url: String(url), method: init.method ?? 'GET', headers: init.headers ?? {}, body: init.body ?? null, declare: declared() })
+          if (body.url) host.external.add(String(body.url).split('?')[0])
+          const bytes = () => (typeof body.base64 === 'string' ? Uint8Array.from(atob(body.base64), (c) => c.charCodeAt(0)) : new TextEncoder().encode(body.text ?? ''))
+          return { ok: body.status >= 200 && body.status < 300, status: body.status, headers: body.headers ?? {}, text: async () => body.text ?? dec.decode(bytes()), json: async () => JSON.parse(body.text ?? dec.decode(bytes())), bytes: async () => bytes() }
+        },
+      },
       result: {
         /** A table: rows of `{ 字段: 值 }`, `key` (logical key columns), optional `fields` types. */
         table(name, rows, opts = {}) {
@@ -332,28 +411,15 @@ export class ProgramHost {
       },
       llm: {
         /**
-         * One model judgement per item, validated against `schema` (a JSON-schema subset: type,
-         * properties, required, enum). Cached by (model, instruction, item): a re-run only asks for
-         * new or changed items.
+         * One model judgement per item, validated against `schema` (a JSON-schema subset: type, properties, required,
+         * enum). Cached by (model, instruction, item): a re-run only asks for new or changed items.
          */
         async map(items, instruction, schema = { type: 'string' }, opts = {}) {
           if (!Array.isArray(items)) throw new Error('llm.map(items, instruction, schema): items must be an array')
-          const req = { items, instruction, schema, batch: opts.batch ?? 20 }
-          // an executor outside the service (the browser's Worker) answers through its own channel
-          const bridge = globalThis.__aiwsLlmMap
-          if (!bridge && !host.hostUrl) throw new Error('llm.map is only available inside a wish run (AIWS_HOST is not set)')
-          const body = bridge ? await bridge(req) : await (async () => {
-            const res = await fetch(`${host.hostUrl}/llm_map`, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', 'x-aiws-token': host.token ?? '' },
-              body: JSON.stringify(req),
-            })
-            return res.json().catch(() => ({ error: `llm.map: HTTP ${res.status}` }))
-          })()
-          if (body.error) throw new Error(body.error)
-          host.llmStats.calls += body.calls ?? 0
-          host.llmStats.items += items.length
-          host.llmStats.cached += body.cached ?? 0
+          const body = await bridge('llm.map', { items, instruction, schema, batch: opts.batch ?? 20, declare: declared() })
+          host.aiStats.map.calls += body.calls ?? 0
+          host.aiStats.map.items += items.length
+          host.aiStats.map.cached += body.cached ?? 0
           const failed = (body.results ?? []).filter((r) => r && r.error)
           if (failed.length && !opts.allowErrors) throw new Error(`llm.map: ${failed.length} of ${items.length} items failed (${failed[0].error}); pass { allowErrors: true } to receive them as { error }`)
           return (body.results ?? []).map((r) => (r && r.error ? r : r.value))
@@ -371,8 +437,10 @@ export class ProgramHost {
       facts: this.factsObj,
       checks: this.checks,
       external: [...this.external],
-      llm_map: this.llmStats,
+      ai: this.aiStats,
+      declare: this.declared,
       error: error ? errorText(error) : null,
+      error_code: error && typeof error.code === 'string' ? error.code : null,
     }
     Deno.writeTextFileSync(join(dir, 'results.json'), JSON.stringify(out))
     return out
@@ -393,7 +461,11 @@ export class ProgramHost {
     }
     if (Object.keys(this.factsObj).length) lines.push('facts ' + JSON.stringify(this.factsObj))
     for (const c of this.checks) lines.push(`check ${c.id}: ${c.passed ? 'passed' : 'FAILED'}${c.detail !== null ? ' — ' + JSON.stringify(c.detail) : ''}`)
-    if (this.external.size) lines.push('external data: ' + [...this.external].join(', '))
+    if (this.declared) lines.push('declare ' + JSON.stringify(this.declared))
+    else lines.push('declare: none (the macro must start with aiws.declare)')
+    const { complete, map } = this.aiStats
+    if (complete.calls + complete.cached + map.items) lines.push(`ai: complete ${complete.calls} calls (${complete.cached} cached, ${complete.tokens} tokens), map ${map.items} items (${map.calls} calls, ${map.cached} cached)`)
+    if (this.external.size) lines.push('zone / external data: ' + [...this.external].join(', '))
     return lines.join('\n')
   }
 }

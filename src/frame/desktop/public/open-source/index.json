@@ -23,7 +23,7 @@
       "id": "ext-core-darwin-arm64",
       "label": "Extension tools (darwin-arm64)",
       "status": "unavailable",
-      "isSnapshot": false,
+      "isSnapshot": true,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -36,7 +36,7 @@
       "id": "ext-core-darwin-x86_64",
       "label": "Extension tools (darwin-x86_64)",
       "status": "unavailable",
-      "isSnapshot": false,
+      "isSnapshot": true,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -49,7 +49,7 @@
       "id": "ext-core-linux-aarch64",
       "label": "Extension tools (linux-aarch64)",
       "status": "partial",
-      "isSnapshot": false,
+      "isSnapshot": true,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -62,7 +62,7 @@
       "id": "ext-core-linux-x86_64",
       "label": "Extension tools (linux-x86_64)",
       "status": "partial",
-      "isSnapshot": false,
+      "isSnapshot": true,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -75,7 +75,7 @@
       "id": "ext-core-windows-x86_64",
       "label": "Extension tools (windows-x86_64)",
       "status": "partial",
-      "isSnapshot": false,
+      "isSnapshot": true,
       "notices": [
         "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
         "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
@@ -99,23 +99,21 @@
       "label": "Node activation",
       "status": "complete",
       "notices": [],
-      "isSnapshot": false
+      "isSnapshot": true
     },
     {
       "id": "opendan",
       "label": "OpenDAN Web",
       "status": "complete",
       "notices": [],
-      "isSnapshot": false
+      "isSnapshot": true
     },
     {
       "id": "rust",
       "label": "BuckyOS Rust services",
-      "status": "partial",
-      "notices": [
-        "BuckyOS Rust services: license metadata is unavailable for bns-client@0.7.0, bns-evm@0.7.0, bucket_store@0.7.0, buckyos-http-server@0.7.0, buckyos-kit@0.7.0, cyfs-gateway-api@0.7.0, kRPC@0.7.0, name-client@0.7.0, name-lib@0.7.0, named_store@0.7.0, ndn-lib@0.7.0, ndn-toolkit@0.7.0, package-lib@0.7.0, rbac@0.7.0, s3_gateway@0.7.0."
-      ],
-      "isSnapshot": false
+      "status": "complete",
+      "notices": [],
+      "isSnapshot": true
     },
     {
       "id": "sdk-tool",
@@ -125,21 +123,21 @@
         "SDK distribution: license metadata is unavailable for combine-errors@3.0.3.",
         "SDK and CLI runtime: license metadata is unavailable for combine-errors@3.0.3."
       ],
-      "isSnapshot": false
+      "isSnapshot": true
     },
     {
       "id": "sys-test",
       "label": "System test app",
       "status": "complete",
       "notices": [],
-      "isSnapshot": false
+      "isSnapshot": true
     },
     {
       "id": "sys-test-web",
       "label": "System test Web",
       "status": "complete",
       "notices": [],
-      "isSnapshot": false
+      "isSnapshot": true
     },
     {
       "id": "text-editor",
@@ -148,7 +146,7 @@
       "notices": [
         "Text editor: license metadata is unavailable for combine-errors@3.0.3."
       ],
-      "isSnapshot": false
+      "isSnapshot": true
     }
   ],
   "packages": [
@@ -5929,34 +5927,34 @@
       "licenseFileCount": 0
     },
     {
-      "id": "59a269b9c7c8f9edd1ab",
+      "id": "fcdefe742cc46a7076d3",
       "name": "bns-client",
       "version": "0.7.0",
       "ecosystem": "cargo",
       "description": "",
       "homepage": "",
       "repository": "",
-      "revision": "79e95304de7dd0e019866dcdd7d339adb99434b6",
-      "license": null,
+      "revision": "9ca7653455d67e26df3d18fc661e4c6780bb0b41",
+      "license": "Apache-2.0",
       "scopes": [
         "rust"
       ],
-      "licenseFileCount": 0
+      "licenseFileCount": 1
     },
     {
-      "id": "64e90a11b4965bf78e02",
+      "id": "a9c024ecf835d2e9d86a",
       "name": "bns-evm",
       "version": "0.7.0",
       "ecosystem": "cargo",
       "description": "",
       "homepage": "",
       "repository": "",
-      "revision": "79e95304de7dd0e019866dcdd7d339adb99434b6",
-      "license": null,
+      "revision": "9ca7653455d67e26df3d18fc661e4c6780bb0b41",
+      "license": "Apache-2.0",
       "scopes": [
         "rust"
       ],
-      "licenseFileCount": 0
+      "licenseFileCount": 1
     },
     {
       "id": "1847dbe7388a1b57a9a5",
@@ -6235,19 +6233,19 @@
       "licenseFileCount": 3
     },
     {
-      "id": "6082c6403a8c7c2e933a",
+      "id": "1831a8b8e2664789b3d6",
       "name": "bucket_store",
       "version": "0.7.0",
       "ecosystem": "cargo",
       "description": "",
       "homepage": "",
       "repository": "",
-      "revision": "911523451b401c65a2c35cd66b81d799a350f249",
-      "license": null,
+      "revision": "e36948ce347a7325ba4d550c5dbef9db537da5e2",
+      "license": "Apache-2.0",
       "scopes": [
         "rust"
       ],
-      "licenseFileCount": 0
+      "licenseFileCount": 1
     },
     {
       "id": "89aa3aee6371f1773ffc",
@@ -6282,7 +6280,22 @@
         "sys-test-web",
         "text-editor"
       ],
-      "licenseFileCount": 3
+      "licenseFileCount": 2
+    },
+    {
+      "id": "ade185eea3be737fee82",
+      "name": "buckyos-http-server",
+      "version": "0.7.0",
+      "ecosystem": "cargo",
+      "description": "",
+      "homepage": "",
+      "repository": "",
+      "revision": "d03d5a9f348410910f2bceb3931c3cb84976bb70",
+      "license": "Apache-2.0",
+      "scopes": [
+        "rust"
+      ],
+      "licenseFileCount": 1
     },
     {
       "id": "d19d9c6a25fb13ac272e",
@@ -6295,8 +6308,7 @@
       "revision": "02a8a1fa6615661509c43290271455fea11a7e7c",
       "license": null,
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 0
     },
@@ -6341,10 +6353,24 @@
       "revision": "02a8a1fa6615661509c43290271455fea11a7e7c",
       "license": null,
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 0
+    },
+    {
+      "id": "84124c84722e0d1e7f66",
+      "name": "buckyos-kit",
+      "version": "0.7.0",
+      "ecosystem": "cargo",
+      "description": "",
+      "homepage": "",
+      "repository": "",
+      "revision": "d03d5a9f348410910f2bceb3931c3cb84976bb70",
+      "license": "Apache-2.0",
+      "scopes": [
+        "rust"
+      ],
+      "licenseFileCount": 1
     },
     {
       "id": "03f26be33710982b824c",
@@ -8144,19 +8170,19 @@
       "licenseFileCount": 0
     },
     {
-      "id": "47901b7ad93f435cf7bc",
+      "id": "7d5b751ecb4e01be66f2",
       "name": "cyfs-gateway-api",
       "version": "0.7.0",
       "ecosystem": "cargo",
       "description": "",
       "homepage": "",
       "repository": "",
-      "revision": "79e95304de7dd0e019866dcdd7d339adb99434b6",
-      "license": null,
+      "revision": "9ca7653455d67e26df3d18fc661e4c6780bb0b41",
+      "license": "Apache-2.0",
       "scopes": [
         "rust"
       ],
-      "licenseFileCount": 0
+      "licenseFileCount": 1
     },
     {
       "id": "9841a9bb0811758ec480",
@@ -9290,8 +9316,7 @@
       "revision": "",
       "license": "GPL-3.0",
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 1
     },
@@ -9665,7 +9690,21 @@
       "revision": "",
       "license": "MIT OR Apache-2.0",
       "scopes": [
-        "gateway",
+        "gateway"
+      ],
+      "licenseFileCount": 2
+    },
+    {
+      "id": "ad3103e8058315102062",
+      "name": "errno",
+      "version": "0.3.15",
+      "ecosystem": "cargo",
+      "description": "Cross-platform interface to the `errno` variable.",
+      "homepage": "",
+      "repository": "https://github.com/lambda-fairy/rust-errno",
+      "revision": "",
+      "license": "MIT OR Apache-2.0",
+      "scopes": [
         "rust"
       ],
       "licenseFileCount": 2
@@ -14499,10 +14538,24 @@
       "revision": "02a8a1fa6615661509c43290271455fea11a7e7c",
       "license": null,
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 0
+    },
+    {
+      "id": "c57da65f780f2fc014fd",
+      "name": "kRPC",
+      "version": "0.7.0",
+      "ecosystem": "cargo",
+      "description": "",
+      "homepage": "",
+      "repository": "",
+      "revision": "d03d5a9f348410910f2bceb3931c3cb84976bb70",
+      "license": "Apache-2.0",
+      "scopes": [
+        "rust"
+      ],
+      "licenseFileCount": 1
     },
     {
       "id": "9e5a0f104942acb8afdd",
@@ -17969,6 +18022,21 @@
       "licenseFileCount": 1
     },
     {
+      "id": "aebee75bf4dec77290ab",
+      "name": "name-client",
+      "version": "0.7.0",
+      "ecosystem": "cargo",
+      "description": "",
+      "homepage": "",
+      "repository": "",
+      "revision": "d03d5a9f348410910f2bceb3931c3cb84976bb70",
+      "license": "Apache-2.0",
+      "scopes": [
+        "rust"
+      ],
+      "licenseFileCount": 1
+    },
+    {
       "id": "f15dfef4ed35ef57f893",
       "name": "name-client",
       "version": "0.7.0",
@@ -17979,8 +18047,7 @@
       "revision": "02a8a1fa6615661509c43290271455fea11a7e7c",
       "license": null,
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 0
     },
@@ -17995,10 +18062,24 @@
       "revision": "02a8a1fa6615661509c43290271455fea11a7e7c",
       "license": null,
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 0
+    },
+    {
+      "id": "6a6ed71faf3c46a8d50e",
+      "name": "name-lib",
+      "version": "0.7.0",
+      "ecosystem": "cargo",
+      "description": "",
+      "homepage": "",
+      "repository": "",
+      "revision": "d03d5a9f348410910f2bceb3931c3cb84976bb70",
+      "license": "Apache-2.0",
+      "scopes": [
+        "rust"
+      ],
+      "licenseFileCount": 1
     },
     {
       "id": "0a15fcc7c1b00bc7210e",
@@ -18011,10 +18092,24 @@
       "revision": "911523451b401c65a2c35cd66b81d799a350f249",
       "license": null,
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 0
+    },
+    {
+      "id": "fd0be760131a60209015",
+      "name": "named_store",
+      "version": "0.7.0",
+      "ecosystem": "cargo",
+      "description": "",
+      "homepage": "",
+      "repository": "",
+      "revision": "e36948ce347a7325ba4d550c5dbef9db537da5e2",
+      "license": "Apache-2.0",
+      "scopes": [
+        "rust"
+      ],
+      "licenseFileCount": 1
     },
     {
       "id": "ae7d0f7e96fb54e7ba2b",
@@ -18075,10 +18170,24 @@
       "revision": "911523451b401c65a2c35cd66b81d799a350f249",
       "license": null,
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 0
+    },
+    {
+      "id": "d2ab99ec0f0230b30e39",
+      "name": "ndn-lib",
+      "version": "0.7.0",
+      "ecosystem": "cargo",
+      "description": "",
+      "homepage": "",
+      "repository": "",
+      "revision": "e36948ce347a7325ba4d550c5dbef9db537da5e2",
+      "license": "Apache-2.0",
+      "scopes": [
+        "rust"
+      ],
+      "licenseFileCount": 1
     },
     {
       "id": "d21a6242612e93f7b1c7",
@@ -18091,10 +18200,24 @@
       "revision": "911523451b401c65a2c35cd66b81d799a350f249",
       "license": null,
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 0
+    },
+    {
+      "id": "d9683ef050cc1ad352b2",
+      "name": "ndn-toolkit",
+      "version": "0.7.0",
+      "ecosystem": "cargo",
+      "description": "",
+      "homepage": "",
+      "repository": "",
+      "revision": "e36948ce347a7325ba4d550c5dbef9db537da5e2",
+      "license": "Apache-2.0",
+      "scopes": [
+        "rust"
+      ],
+      "licenseFileCount": 1
     },
     {
       "id": "4487401fe219b6df04c1",
@@ -19410,19 +19533,19 @@
       "licenseFileCount": 2
     },
     {
-      "id": "7ac38e08a1372fa1bf64",
+      "id": "c3c5d7e3ce5df6615c2d",
       "name": "package-lib",
       "version": "0.7.0",
       "ecosystem": "cargo",
       "description": "",
       "homepage": "",
       "repository": "",
-      "revision": "911523451b401c65a2c35cd66b81d799a350f249",
-      "license": null,
+      "revision": "e36948ce347a7325ba4d550c5dbef9db537da5e2",
+      "license": "Apache-2.0",
       "scopes": [
         "rust"
       ],
-      "licenseFileCount": 0
+      "licenseFileCount": 1
     },
     {
       "id": "9e03cd7bdb80e1cbf3a3",
@@ -21779,10 +21902,24 @@
       "revision": "02a8a1fa6615661509c43290271455fea11a7e7c",
       "license": null,
       "scopes": [
-        "gateway",
-        "rust"
+        "gateway"
       ],
       "licenseFileCount": 0
+    },
+    {
+      "id": "cc78fc935a9f2a6f56c5",
+      "name": "rbac",
+      "version": "0.7.0",
+      "ecosystem": "cargo",
+      "description": "",
+      "homepage": "",
+      "repository": "",
+      "revision": "d03d5a9f348410910f2bceb3931c3cb84976bb70",
+      "license": "Apache-2.0",
+      "scopes": [
+        "rust"
+      ],
+      "licenseFileCount": 1
     },
     {
       "id": "092e4d2c3f1899c1ad14",
@@ -22892,7 +23029,21 @@
       "revision": "",
       "license": "ISC",
       "scopes": [
-        "gateway",
+        "gateway"
+      ],
+      "licenseFileCount": 1
+    },
+    {
+      "id": "4449bc24f24ef655c2e4",
+      "name": "rustls-webpki",
+      "version": "0.103.17",
+      "ecosystem": "cargo",
+      "description": "Web PKI X.509 Certificate Verification.",
+      "homepage": "",
+      "repository": "https://github.com/rustls/webpki",
+      "revision": "",
+      "license": "ISC",
+      "scopes": [
         "rust"
       ],
       "licenseFileCount": 1
@@ -22976,19 +23127,19 @@
       "licenseFileCount": 2
     },
     {
-      "id": "4c11688716b6795aedbf",
+      "id": "9d5a84e3b65ee27f4a50",
       "name": "s3_gateway",
       "version": "0.7.0",
       "ecosystem": "cargo",
       "description": "",
       "homepage": "",
       "repository": "",
-      "revision": "911523451b401c65a2c35cd66b81d799a350f249",
-      "license": null,
+      "revision": "e36948ce347a7325ba4d550c5dbef9db537da5e2",
+      "license": "Apache-2.0",
       "scopes": [
         "rust"
       ],
-      "licenseFileCount": 0
+      "licenseFileCount": 1
     },
     {
       "id": "1908173ab95d264db544",
@@ -30269,9 +30420,9 @@
       "licenseFileCount": 1
     },
     {
-      "id": "fb3d629370477202d01a",
+      "id": "afe812964173b1ad0fa4",
       "name": "zstd",
-      "version": "0.13.4",
+      "version": "0.13.5",
       "ecosystem": "cargo",
       "description": "Binding for the zstd compression library.",
       "homepage": "",
@@ -30301,9 +30452,9 @@
       "licenseFileCount": 0
     },
     {
-      "id": "4a926db49470b212d530",
+      "id": "cfcb799e38b818f5d603",
       "name": "zstd-safe",
-      "version": "7.4.0",
+      "version": "7.4.1",
       "ecosystem": "cargo",
       "description": "Safe low-level bindings for the zstd compression library.",
       "homepage": "",
@@ -30316,19 +30467,19 @@
       "licenseFileCount": 1
     },
     {
-      "id": "200ed54d364854c8f3ef",
+      "id": "53d08e4100d8c5c81ac1",
       "name": "zstd-sys",
-      "version": "2.1.2+zstd.1.5.7",
+      "version": "2.1.3+zstd.1.5.7",
       "ecosystem": "cargo",
       "description": "Low-level bindings for the zstd compression library.",
       "homepage": "",
       "repository": "https://github.com/gyscos/zstd-rs",
       "revision": "",
-      "license": "BSD-3-Clause",
+      "license": "BSD-3-Clause AND BSD-2-Clause",
       "scopes": [
         "rust"
       ],
-      "licenseFileCount": 4
+      "licenseFileCount": 5
     },
     {
       "id": "af0841ee0fbf99d004b9",
@@ -30379,18 +30530,17 @@
   "notices": [
     "Versions come from resolved Cargo metadata, installed production npm dependencies, the SDK distribution SBOM and available extension payload manifests. Build dependencies and dependencies for other target platforms may also be listed.",
     "This build inventory does not inspect the host operating system, separately installed apps, container base images or packages downloaded at runtime. Missing license metadata is shown explicitly; bundled license notices take precedence over a short license identifier.",
-    "Desktop: license metadata is unavailable for combine-errors@3.0.3.",
-    "Text editor: license metadata is unavailable for combine-errors@3.0.3.",
-    "BuckyOS Rust services: license metadata is unavailable for bns-client@0.7.0, bns-evm@0.7.0, bucket_store@0.7.0, buckyos-http-server@0.7.0, buckyos-kit@0.7.0, cyfs-gateway-api@0.7.0, kRPC@0.7.0, name-client@0.7.0, name-lib@0.7.0, named_store@0.7.0, ndn-lib@0.7.0, ndn-toolkit@0.7.0, package-lib@0.7.0, rbac@0.7.0, s3_gateway@0.7.0.",
-    "CYFS Gateway is built separately. Its entries are a snapshot of the sibling checkout's locked dependencies, not a verification of the gateway installed with this BuckyOS build.",
-    "CYFS Gateway: license metadata is unavailable for buckyos-http-server@0.7.0, buckyos-io@0.7.0, buckyos-js-runtime@0.7.0, buckyos-kit@0.7.0, kRPC@0.7.0, name-client@0.7.0, name-lib@0.7.0, named_store@0.7.0, ndn-lib@0.7.0, ndn-toolkit@0.7.0, rbac@0.7.0.",
-    "SDK distribution: license metadata is unavailable for combine-errors@3.0.3.",
-    "SDK and CLI runtime: license metadata is unavailable for combine-errors@3.0.3.",
     "Extension tool payload for darwin-arm64 is unavailable; its dependencies are not included.",
     "Extension tool payload for darwin-x86_64 is unavailable; its dependencies are not included.",
     "Extension tool versions could not be verified for linux-aarch64: pandoc, python, uv, node, deno, jq.",
     "Extension tool versions could not be verified for windows-x86_64: pandoc, python, uv, node, deno, jq.",
     "Extension tool entries describe the available build payloads. Tools installed or upgraded separately, bundled font versions, and pre-warmed container caches are not fully inventoried.",
+    "CYFS Gateway is built separately. Its entries are a snapshot of the sibling checkout's locked dependencies, not a verification of the gateway installed with this BuckyOS build.",
+    "CYFS Gateway: license metadata is unavailable for buckyos-http-server@0.7.0, buckyos-io@0.7.0, buckyos-js-runtime@0.7.0, buckyos-kit@0.7.0, kRPC@0.7.0, name-client@0.7.0, name-lib@0.7.0, named_store@0.7.0, ndn-lib@0.7.0, ndn-toolkit@0.7.0, rbac@0.7.0.",
+    "SDK distribution: license metadata is unavailable for combine-errors@3.0.3.",
+    "SDK and CLI runtime: license metadata is unavailable for combine-errors@3.0.3.",
+    "Text editor: license metadata is unavailable for combine-errors@3.0.3.",
+    "Desktop: license metadata is unavailable for combine-errors@3.0.3.",
     "The draw.io stencil snapshot is identified by its recorded date and content hash; its upstream release version was not recorded."
   ]
 }

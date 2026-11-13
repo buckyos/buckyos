@@ -12,14 +12,14 @@ import { randomId } from './ids'
 import { queryBySql, type TableQueryDeps } from './tableQuery'
 import { loadCore } from './wasm'
 import { TransportError } from './transport'
-import { aiwsT, localizedLabels } from '../i18n'
+import { aiwsT, aiwsText, localizedLabels } from '../i18n'
 import type { LocalExport, PendingMeta, PendingRow, PendingState, RichTextDraftRow } from '../offline/protocol'
 import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type SqlResult, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
-  type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishAiccMode, type WishClaim, type WishToolAnswer, type HostedExecConfig, type Publication, type Referrer,
+  type Subject, type VersionInfo, type NeedsCodingReason, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishClaim, type WishToolAnswer, type WishStageFiles, type HostedExecConfig, type Publication, type Referrer,
   type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type ExtMigration, type ExtPackResult, type LibraryPackage, type TemplateSpec,
 } from './types'
 
@@ -189,8 +189,6 @@ export interface WorkspaceSession {
   grant(subject: string, capabilities: Capability[], scopeEntityId?: string): Promise<void>
   revoke(subject: string, scopeEntityId?: string): Promise<void>
   listSubjects(): Promise<Subject[]>
-  /** Whose AICC the wish blocks use (AI Center Quota PRD §3.3); a manager's setting, online only. */
-  setWishAiccMode(mode: WishAiccMode): Promise<WishAiccMode>
   /** The owner's hosted execution configuration (D22, T3-7); `manage`, online only. */
   setHostedExec(config: HostedExecConfig): Promise<HostedExecConfig>
   /** Publication by path (D26): `manage`; the link is in `url` when the deployment has a host. */
@@ -260,7 +258,7 @@ export interface WorkspaceSession {
   procReport(runId: string, attempt: number, body: Record<string, Json>): Promise<WishRunView>
   procTool(runId: string, attempt: number, name: string, args: Json): Promise<WishToolAnswer>
   procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }): Promise<WishToolAnswer>
-  procFiles(runId: string, attempt: number): Promise<Record<string, { text?: string; base64?: string; skipped?: string }>>
+  procFiles(runId: string, attempt: number): Promise<WishStageFiles>
 
   close(): void
   /** Resolves once a closed session released what it held exclusively (replica database, holder lock). */
@@ -584,13 +582,6 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   async listSubjects() {
     try { return unwrap(await this.client.wsListSubjects(this.ws)).subjects } catch (error) { return this.fail(error) }
   }
-  async setWishAiccMode(mode: WishAiccMode) {
-    try {
-      const applied = unwrap(await this.client.wsSetWishAicc(this.ws, mode)).wish_aicc_mode
-      this.wsInfo = { ...this.wsInfo, wish_aicc_mode: applied }
-      return applied
-    } catch (error) { return this.fail(error) }
-  }
   async setHostedExec(config: HostedExecConfig) {
     try {
       const applied = unwrap(await this.client.wsSetHostedExec(this.ws, config)).hosted_exec
@@ -817,7 +808,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   async procReport(runId: string, attempt: number, body: Record<string, Json>) { return unwrap(await this.client.procReport(this.ws, runId, attempt, body)) }
   async procTool(runId: string, attempt: number, name: string, args: Json) { return unwrap(await this.client.procTool(this.ws, runId, attempt, name, args)) }
   async procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }) { return unwrap(await this.client.procProgram(this.ws, runId, attempt, body)) }
-  async procFiles(runId: string, attempt: number) { return unwrap(await this.client.procFiles(this.ws, runId, attempt)).files }
+  async procFiles(runId: string, attempt: number) { return unwrap(await this.client.procFiles(this.ws, runId, attempt)) }
 
   close() {
     this.closed = true
@@ -878,6 +869,36 @@ export function aiRefusalText(subCode: string | undefined, data: Record<string, 
     case 'AI_QUOTA_BUDGET_EXCEEDED': return aiwsT(own ? 'aiworkspace.wish.aicc.budgetOwn' : 'aiworkspace.wish.aicc.quotaOther')
     case 'AI_RESOURCE_NOT_PERMITTED': return aiwsT(own ? 'aiworkspace.wish.aicc.notPermittedOwn' : 'aiworkspace.wish.aicc.notPermittedOther')
     case 'AI_ATTRIBUTION_UNAVAILABLE': return aiwsT(aicc.mode === 'current_user' ? 'aiworkspace.wish.aicc.noOwnResources' : 'aiworkspace.wish.aicc.noAttribution')
+    case 'AI_UNAVAILABLE': return aiwsT('aiworkspace.wish.error.aiUnavailable')
+    default: return undefined
+  }
+}
+
+/** Why a wish's macro does not fit its inputs (AI Native 第一期 §2.7), one reason as a short line. */
+export function needsCodingReasonText(reason: NeedsCodingReason): string {
+  const vars = { input: reason.input ?? '', field: reason.name ?? reason.field_id ?? '', from: reason.from ?? '', to: reason.to ?? '', code: reason.run_code ?? '' }
+  switch (reason.code) {
+    case 'no_macro': return aiwsT('aiworkspace.wish.reason.noMacro')
+    case 'api_version': return aiwsT('aiworkspace.wish.reason.apiVersion')
+    case 'input_unbound': return aiwsT('aiworkspace.wish.reason.inputUnbound', vars)
+    case 'input_changed': return aiwsT('aiworkspace.wish.reason.inputChanged', vars)
+    case 'input_missing': return aiwsT('aiworkspace.wish.reason.inputMissing', vars)
+    case 'field_deleted': return aiwsT('aiworkspace.wish.reason.fieldDeleted', vars)
+    case 'field_type_changed': return aiwsT('aiworkspace.wish.reason.fieldTypeChanged', vars)
+    case 'program_failed': return aiwsT('aiworkspace.wish.reason.programFailed', vars)
+    default: return String(reason.code)
+  }
+}
+
+/** Wish runs refused or failed because of the macro or the place it runs (第一期 §2.1, §2.5; 浏览器优先 Q6), by sub-code. */
+export function wishRunCodeText(subCode: string | undefined, data: Record<string, unknown> | undefined): string | undefined {
+  switch (subCode) {
+    case 'NEEDS_CODING': {
+      const reasons = Array.isArray(data?.reasons) ? (data.reasons as NeedsCodingReason[]) : []
+      return reasons.length ? aiwsT('aiworkspace.wish.error.needsCoding', { reasons: aiwsText().clauses(reasons.map(needsCodingReasonText)) }) : aiwsT('aiworkspace.wish.error.needsCodingNoMacro')
+    }
+    case 'MACRO_CODE_CHANGED': return aiwsT('aiworkspace.wish.error.macroCodeChanged')
+    case 'SNAPSHOT_TOO_LARGE': return aiwsT('aiworkspace.wish.error.snapshotTooLarge', { size: formatBytes(Number(data?.bytes ?? 0)), limit: formatBytes(Number(data?.limit ?? 0)) })
     default: return undefined
   }
 }
@@ -910,11 +931,11 @@ function formatBytes(n: number): string {
 export function runErrorText(error: (ServiceError & { data?: unknown }) | null | undefined): string | undefined {
   if (!error) return undefined
   const data = error.data as Record<string, unknown> | undefined
-  return aiRefusalText(error.sub_code, data) ?? errorCodeText(error.code, data) ?? error.detail
+  return aiRefusalText(error.sub_code, data) ?? wishRunCodeText(error.sub_code, data) ?? errorCodeText(error.code, data) ?? error.detail
 }
 
 export function describeError(error: unknown): string {
-  if (error instanceof ServiceFailure) return aiRefusalText(error.subCode, error.data) ?? errorCodeText(error.code, error.data) ?? error.message
+  if (error instanceof ServiceFailure) return aiRefusalText(error.subCode, error.data) ?? wishRunCodeText(error.subCode, error.data) ?? errorCodeText(error.code, error.data) ?? error.message
   if (error instanceof TransportError) return aiwsT(browserOffline() ? 'aiworkspace.core.session.cannotConnectOffline' : 'aiworkspace.core.session.cannotConnect', { error: error.message })
   return error instanceof Error ? error.message : String(error)
 }

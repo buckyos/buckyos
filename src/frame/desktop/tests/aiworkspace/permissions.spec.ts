@@ -63,27 +63,21 @@ test('UI14 presets, canvas permissions and what a restricted principal can see',
   expect(JSON.stringify(fresh)).not.toContain('原始销售数据')
 })
 
-test('AI Center Quota §3.3: a manager chooses whose AI resources wish blocks use; a reader only sees it', async ({ page, browser, api }) => {
-  const ws = await api.demo(ALICE, 'quarterly', `aicc ${Date.now()}`)
+test('内核架构改进 D22: the owner configures hosted execution; a reader only sees it; whose AI a run uses is no setting', async ({ page, browser, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `hosted ${Date.now()}`)
   await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', capabilities: ['read'] })
   await openWorkspace(page, ALICE, ws.workspace_id)
   await page.getByTestId('aiws-top-sources').click()
   await page.getByTestId('aiws-left-permissions').click()
-  const mode = page.getByTestId('aiws-wish-aicc-mode')
-  await expect(mode).toHaveValue('workspace_owner')
-  await mode.selectOption('current_user')
-  await expect.poll(async () => (await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).wish_aicc_mode).toBe('current_user')
+  // a run uses the AI of where it runs (local: the starter's own, hosted: the owner's): nothing to choose
+  await expect(page.getByTestId('aiws-hosted-enabled')).toBeVisible()
+  await expect(page.getByTestId('aiws-wish-aicc-mode')).toHaveCount(0)
 
   const bobPage = await (await browser.newContext()).newPage()
   await openWorkspace(bobPage, BOB, ws.workspace_id)
   await bobPage.getByTestId('aiws-top-sources').click()
   await bobPage.getByTestId('aiws-left-permissions').click()
-  await expect(bobPage.getByTestId('aiws-wish-aicc-mode')).toHaveValue('current_user')
-  await expect(bobPage.getByTestId('aiws-wish-aicc-mode')).toBeDisabled()
-  const refused = await api.rpc(BOB, 'ws.set_wish_aicc', { workspace_id: ws.workspace_id, mode: 'workspace_owner' })
-  expect(refused.ok).toBe(false)
-  expect(refused.error.code).toBe('PERMISSION_DENIED')
-  // hosted execution (内核架构改进 D22, T3-7): the owner names the Agent and the wishes; a reader cannot change it
+  // the owner names the Agent and the wishes (T3-7); a reader cannot change it
   await page.getByTestId('aiws-hosted-enabled').check()
   await page.getByTestId('aiws-hosted-agent').fill('jarvis.test.buckyos.io')
   await page.getByTestId('aiws-hosted-wish-wish-analysis').check()

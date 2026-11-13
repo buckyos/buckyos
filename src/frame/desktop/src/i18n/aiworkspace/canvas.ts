@@ -64,7 +64,6 @@ export const en: Record<string, string> = {
   'aiworkspace.drawio.nothingToImport': 'The file has no page or shape to import',
   'aiworkspace.drawio.unreadable': 'Could not read this draw.io file: {{reason}}',
   'aiworkspace.drawio.importLabel': 'Import draw.io “{{name}}”',
-  'aiworkspace.drawio.importNewCanvasLabel': 'Import draw.io “{{name}}”: new canvas “{{canvas}}”',
   // ImportReportDialog
   'aiworkspace.drawio.count.pages': '{{count}} pages',
   'aiworkspace.drawio.count.pages_one': '{{count}} page',
@@ -249,8 +248,6 @@ export const en: Record<string, string> = {
   'aiworkspace.canvas.catalog.objects': 'Objects',
   'aiworkspace.canvas.catalog.noExtensions': 'This workspace has no controls yet. Create one or add one from your library; wish blocks can generate HTML ones.',
   'aiworkspace.canvas.catalog.noMatch': 'No matching objects.',
-  'aiworkspace.canvas.catalog.sample': 'Sample',
-  'aiworkspace.canvas.catalog.extension': 'Extension',
   'aiworkspace.canvas.catalog.chooseEntry': 'Choose an object to see its description.',
   'aiworkspace.canvas.catalog.missingData': 'Choose the data to show first',
   'aiworkspace.canvas.catalog.missingFile': 'Choose a file first',
@@ -521,7 +518,6 @@ export const zh: Record<string, string> = {
   'aiworkspace.drawio.nothingToImport': '文件里没有可导入的页面或图形',
   'aiworkspace.drawio.unreadable': '读不出这个 draw.io 文件：{{reason}}',
   'aiworkspace.drawio.importLabel': '导入 draw.io「{{name}}」',
-  'aiworkspace.drawio.importNewCanvasLabel': '导入 draw.io「{{name}}」：新建画布「{{canvas}}」',
   // ImportReportDialog
   'aiworkspace.drawio.count.pages': '{{count}} 页',
   'aiworkspace.drawio.count.objects': '{{count}} 个对象',
@@ -700,8 +696,6 @@ export const zh: Record<string, string> = {
   'aiworkspace.canvas.catalog.objects': '对象',
   'aiworkspace.canvas.catalog.noExtensions': '这个工作区还没有控件。可以新建、从本机库添加，或由许愿格生成 HTML 控件。',
   'aiworkspace.canvas.catalog.noMatch': '没有匹配的对象。',
-  'aiworkspace.canvas.catalog.sample': '样本',
-  'aiworkspace.canvas.catalog.extension': '扩展',
   'aiworkspace.canvas.catalog.chooseEntry': '选择一个对象查看说明。',
   'aiworkspace.canvas.catalog.missingData': '先选择要显示的数据',
   'aiworkspace.canvas.catalog.missingFile': '先选择文件',

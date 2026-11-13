@@ -110,7 +110,7 @@ export async function runAction(store: WorkspaceStore, host: ActionHost, action:
         break
       }
       case 'wish':
-        void store.wish.execute(h.wish_id, { event: { name: `action:${action.id}`, instance_id: instanceId, params: {}, inputs: h.inputs ?? null } })
+        void store.wish.next(h.wish_id, { event: { name: `action:${action.id}`, instance_id: instanceId, params: {}, inputs: h.inputs ?? null } })
         break
       case 'open': {
         const b = h.target ? bindingsOf(payload as never)[h.target]?.entity_id ?? h.target : undefined

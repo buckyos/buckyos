@@ -830,13 +830,17 @@ fn shallow(node: &Value) -> Value {
 pub fn diff_blocks(entity_id: &str, base: &Value, target: &Value, base_index: &BlockIndex) -> WsResult<Vec<Value>> {
     let b = index_blocks(base);
     let t = index_blocks(target);
-    // survivors: present on both sides, not a re-typed container, with all ancestors surviving on both sides
+    // survivors: present on both sides, not a re-typed container (a re-typed leaf is replaced in place), with all
+    // ancestors surviving on both sides
     let mut alive: BTreeSet<String> = b
         .iter()
         .filter(|(id, bl)| {
             t.get(*id).is_some_and(|tl| {
-                let ty = bl.node["type"].as_str().unwrap_or("");
-                bl.node["type"] == tl.node["type"] && (!is_container_block(ty) || shallow(&bl.node) == shallow(&tl.node))
+                let (bt, tt) = (bl.node["type"].as_str().unwrap_or(""), tl.node["type"].as_str().unwrap_or(""));
+                if !is_container_block(bt) && !is_container_block(tt) {
+                    return true;
+                }
+                bt == tt && shallow(&bl.node) == shallow(&tl.node)
             })
         })
         .map(|(id, _)| id.clone())
@@ -888,8 +892,11 @@ pub fn diff_blocks(entity_id: &str, base: &Value, target: &Value, base_index: &B
             dels.push(json!({ "block_id": id, "expect": expect(id, true, true) }));
         }
     }
-    if !dels.is_empty() {
-        ops.push(json!({ "op": "richtext.delete_blocks", "entity_id": entity_id, "blocks": dels }));
+    // nothing survives: the new blocks go in first, so the document is never empty in between
+    let delete = (!dels.is_empty()).then(|| json!({ "op": "richtext.delete_blocks", "entity_id": entity_id, "blocks": dels }));
+    let delete_last = alive.is_empty();
+    if let Some(d) = delete.clone().filter(|_| !delete_last) {
+        ops.push(d);
     }
     // 2. which survivors keep their place
     let mut keep = BTreeSet::new();
@@ -930,6 +937,9 @@ pub fn diff_blocks(entity_id: &str, base: &Value, target: &Value, base_index: &B
             ops.push(json!({ "op": "richtext.replace_block", "entity_id": entity_id, "block_id": id,
                              "expect": expect(id, true, false), "node": tl.node }));
         }
+    }
+    if let Some(d) = delete.filter(|_| delete_last) {
+        ops.push(d);
     }
     Ok(ops)
 }

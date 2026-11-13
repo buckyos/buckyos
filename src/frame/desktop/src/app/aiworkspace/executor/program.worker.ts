@@ -1,18 +1,18 @@
-/* The program runner of the local executor (内核架构改进 T3-4, D21): a wish program runs in this Worker on
- * the stage snapshot the main thread fetched, through the same program host the service uses (aiws.js). The
- * Worker is a classic one inside programHost.ts's sandbox (an opaque origin without network): it sees files,
- * not the Workspace — no session, no cookie, none of the page's storage, no network. `aiws.llm.map` goes to
- * the main thread, which asks the service under the run's attribution. Everything the program writes under
- * output/ and what the host collected go back as the run's output. Built into one script text by
- * vite.config.ts (`virtual:aiws-program-runner`). */
+/* The program runner of the local executor (内核架构改进 T3-4, D21; AI Native 第一期 §2.6): a wish macro runs in this
+ * Worker on the stage snapshot the main thread fetched, through the program host every executor uses (aiws.js). The
+ * Worker is a classic one inside programHost.ts's sandbox (an opaque origin without network): it sees files, not the
+ * Workspace — no session, no cookie, none of the page's storage, no network. The macro's bridge calls (`aiws.sql`,
+ * `aiws.ai.complete`, `aiws.llm.map`, `aiws.zone.fetch`) go to the main thread, which answers them with host.js.
+ * Everything the macro writes under output/ and what the host collected go back as the run's output. Built into one
+ * script text by vite.config.ts (`virtual:aiws-program-runner`). */
 
 import { createHost } from '../../../../../aiworkspace/aiws/aiws.js'
 
 type FileIn = { text?: string; base64?: string; skipped?: string }
 export type RunMessage = { type: 'run'; source: string; files: Record<string, FileIn> }
-export type MapReply = { type: 'llm_map'; id: number; body: unknown }
+export type BridgeReply = { type: 'bridge'; id: number; body: unknown }
 export type WorkerOut =
-  | { type: 'llm_map'; id: number; req: unknown }
+  | { type: 'bridge'; id: number; op: string; req: unknown }
   | { type: 'done'; results: unknown | null; log: string; files: Record<string, string | { base64: string }> }
 
 const enc = new TextEncoder()
@@ -59,15 +59,15 @@ const deno = {
 // the sandbox refuses every request: a failing fetch says so, in words the model can act on
 const sandboxFetch = globalThis.fetch
 globalThis.fetch = (input, init) => sandboxFetch(input, init).catch((error: unknown) => {
-  throw new TypeError(`fetch(${input instanceof Request ? input.url : String(input)}) failed (${String(error)}): a wish program has no network access here; work with the run's inputs (aiws.input)`)
+  throw new TypeError(`fetch(${input instanceof Request ? input.url : String(input)}) failed (${String(error)}): a wish macro reaches nothing directly; read its declared inputs (aiws.input, aiws.sql) or a resource of the Zone (aiws.zone.fetch)`)
 })
 
-let mapSeq = 0
-const mapWaiters = new Map<number, (body: unknown) => void>()
-;(globalThis as unknown as { __aiwsLlmMap: (req: unknown) => Promise<unknown> }).__aiwsLlmMap = (req) => new Promise((resolve) => {
-  const id = ++mapSeq
-  mapWaiters.set(id, resolve)
-  postMessage({ type: 'llm_map', id, req } satisfies WorkerOut)
+let bridgeSeq = 0
+const bridgeWaiters = new Map<number, (body: unknown) => void>()
+;(globalThis as unknown as { __aiwsBridge: (op: string, req: unknown) => Promise<unknown> }).__aiwsBridge = (op, req) => new Promise((resolve) => {
+  const id = ++bridgeSeq
+  bridgeWaiters.set(id, resolve)
+  postMessage({ type: 'bridge', id, op, req } satisfies WorkerOut)
 })
 
 for (const level of ['log', 'info', 'warn', 'error', 'debug'] as const) {
@@ -110,8 +110,8 @@ async function run(msg: RunMessage) {
   postMessage({ type: 'done', results, log: log.join('\n'), files: outputs } satisfies WorkerOut)
 }
 
-onmessage = (event: MessageEvent<RunMessage | MapReply>) => {
+onmessage = (event: MessageEvent<RunMessage | BridgeReply>) => {
   const msg = event.data
   if (msg.type === 'run') void run(msg)
-  else if (msg.type === 'llm_map') { mapWaiters.get(msg.id)?.(msg.body); mapWaiters.delete(msg.id) }
+  else if (msg.type === 'bridge') { bridgeWaiters.get(msg.id)?.(msg.body); bridgeWaiters.delete(msg.id) }
 }

@@ -937,23 +937,6 @@ impl Workspace {
         self.local.query_row("SELECT value FROM local_meta WHERE key = 'name'", [], |r| r.get(0)).optional().map_err(db_err)
     }
 
-    /// Whose AICC the wish blocks use (AI Center Quota PRD §3.3): `workspace_owner` (default) or
-    /// `current_user`.
-    pub fn wish_aicc_mode(&self) -> WsResult<String> {
-        let mode: Option<String> = self.local.query_row("SELECT value FROM local_meta WHERE key = 'wish_aicc_mode'", [], |r| r.get(0)).optional().map_err(db_err)?;
-        Ok(mode.unwrap_or_else(|| WISH_AICC_WORKSPACE_OWNER.to_string()))
-    }
-
-    /// `ws.set_wish_aicc`: the owner or a manager chooses; only runs accepted afterwards follow it.
-    pub fn set_wish_aicc_mode(&mut self, caller: &Caller, mode: &str) -> WsResult<Value> {
-        self.require_ws(caller, Cap::Manage)?;
-        if mode != WISH_AICC_WORKSPACE_OWNER && mode != WISH_AICC_CURRENT_USER {
-            return Err(WsError::invalid_op("mode must be workspace_owner or current_user"));
-        }
-        self.local.execute("INSERT OR REPLACE INTO local_meta (key, value) VALUES ('wish_aicc_mode', ?1)", [mode]).map_err(db_err)?;
-        Ok(json!({ "ok": true, "wish_aicc_mode": mode }))
-    }
-
     /// The Owner's hosted execution configuration (D22, T3-7): `{ enabled, agent_id, allowed_wishes?: [ids],
     /// triggerers?: [subjects], limits?: { max_runs_per_day?, max_tool_iterations? } }`; `digest` is what a run
     /// binds to (D16: a changed configuration makes older delegations `DELEGATION_STALE`).
@@ -1342,7 +1325,7 @@ impl Workspace {
                    "capabilities": access.ws_caps.names(), "principal": caller.principal,
                    "forked_from": meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                    "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose(),
-                   "wish_aicc_mode": self.wish_aicc_mode()?, "hosted_exec": self.hosted_exec()? });
+                   "hosted_exec": self.hosted_exec()? });
         if let Some(name) = self.name()? {
             info["name"] = json!(name);
         }

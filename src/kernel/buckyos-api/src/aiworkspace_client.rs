@@ -133,31 +133,36 @@ pub struct AiWorkspaceSettings {
 }
 
 /// Wish execution settings (doc/workspace 许愿格详细设计 §13.3). Models are AICC selectors (logical
-/// names such as `llm.code`, or exact `model@provider`).
+/// names such as `llm.code`, or exact `model@provider`). The service runs no model and no program: every
+/// stage executes on an executor (the browser, or an Agent), which gets these as the stage's budget.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiWorkspaceWishSettings {
     pub analyze_model: String,
+    /// Model of the coding stage (writing and test-running the macro).
     pub execute_model: String,
-    /// Model of `aiws.llm.map` (per-item judgements inside programs).
+    /// Model of `aiws.llm.map` (per-item judgements inside macros).
     pub map_model: String,
-    /// Deno used to run wish programs; empty = `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno`, then `PATH`.
-    pub deno: String,
+    /// Default model of `aiws.ai.complete` (a macro's single inference).
+    pub complete_model: String,
     pub analyze_tool_iterations: u32,
     pub execute_tool_iterations: u32,
     /// Output limit of one model turn (thinking included). Some providers (Claude) require one; AICC
     /// routes only to models whose output limit reaches it.
     pub max_output_tokens: u32,
-    /// Wall clock of one stage, seconds.
-    pub stage_timeout_secs: u64,
     pub program_timeout_secs: u64,
-    pub program_memory_mb: u32,
     pub llm_map_max_items: u32,
-    /// Where a wish runs when the request names no mode (内核架构改进 D14): `service` (the transitional
-    /// in-service executor, until T3-9), `local` (the browser) or `hosted` (an Agent Work Session).
+    /// Model calls of `aiws.ai.complete` one run may make (a macro declares less).
+    pub ai_max_calls: u32,
+    /// Output tokens the `aiws.ai.complete` calls of one run may spend.
+    pub ai_max_tokens: u32,
+    /// `aiws.sql` calls one run may make.
+    pub sql_max_calls: u32,
+    /// Bytes `proc.files` hands one executor (the stage snapshot); more is `SNAPSHOT_TOO_LARGE`.
+    pub snapshot_download_max_bytes: u64,
+    /// Where a wish runs when the request names no mode (内核架构改进 D14): `local` (the browser) or
+    /// `hosted` (an Agent Work Session).
     pub default_execution: String,
-    /// The transitional in-service executor may still be chosen (`false` once hosted execution passed DV, T3-9).
-    pub allow_service_execution: bool,
 }
 
 impl Default for AiWorkspaceWishSettings {
@@ -166,16 +171,17 @@ impl Default for AiWorkspaceWishSettings {
             analyze_model: "llm.plan".into(),
             execute_model: "llm.code".into(),
             map_model: "llm.chat".into(),
-            deno: String::new(),
+            complete_model: "llm.chat".into(),
             analyze_tool_iterations: 30,
             execute_tool_iterations: 60,
             max_output_tokens: 32_000,
-            stage_timeout_secs: 1800,
             program_timeout_secs: 120,
-            program_memory_mb: 1024,
             llm_map_max_items: 2000,
-            default_execution: "service".into(),
-            allow_service_execution: true,
+            ai_max_calls: 50,
+            ai_max_tokens: 100_000,
+            sql_max_calls: 200,
+            snapshot_download_max_bytes: 64 * 1024 * 1024,
+            default_execution: "local".into(),
         }
     }
 }

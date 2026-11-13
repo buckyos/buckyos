@@ -1,20 +1,29 @@
-//! Stage workers (许愿格 §7, §8, §9.2): each takes its own snapshot, builds the stage directory,
-//! runs the model (or only the program) outside the Workspace lock, and leaves a validated candidate
-//! with a previewed plan. Failures, cancellation and budget exhaustion never touch the Workspace.
+//! The stage host (内核架构改进 §9; 浏览器优先; AI Native 第一期 §2): every stage of a wish run executes on an executor
+//! outside the service. At `proc.claim` the service takes the stage snapshot, builds the stage directory and answers
+//! the stage's brief — a model stage's prompts, tools and budget (analyze, code), or the stored macro with its manifest
+//! (run). It answers the stage tools (`ws_*`, `submit_analysis`, `check_results`, `finish`, the macro's `sql`, the
+//! `llm_cache`), judges each macro run the executor hands in (`proc.program`), and when the executor reports it is
+//! done, plans what the stage collected and leaves it waiting for confirmation. Failures and cancellation never touch
+//! the Workspace. The Mock executor's simulated results are planned here directly.
 
-use super::tools::{tools, Kind};
-use super::{llm, runner, ActiveRun, StageState, WishRuntime, AIWS_API, AIWS_JS, ANALYZE_SYSTEM, EXECUTE_SYSTEM, RUN_JS};
+use super::tools::Kind;
+use super::{ActiveRun, StageState, WishConfig, AIWS_JS, ANALYZE_SYSTEM, CODE_SYSTEM, GUIDE, HOST_JS, RUN_JS};
 use crate::AppState;
-use agent_tool::xllm::{RunEvent, RunObserver, TaskInput, TaskOverrides, XllmDeps, XllmRun, XllmTask};
 use aiworkspace_core::value::format_utc_ms;
+use aiworkspace_core::wish::{STAGE_ANALYZE, STAGE_CODE, STAGE_RUN};
 use aiworkspace_core::{Code, WsError, WsResult};
 use aiworkspace_store::wish::context::{Stage, StageKind, StageOptions};
-use aiworkspace_store::wish::results::{program_output, Collector};
+use aiworkspace_store::wish::results::{code_changed, program_output, Collector};
 use aiworkspace_store::Caller;
 use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+
+/// Keys `llm_cache` takes per call, and the size of one cached value.
+const CACHE_MAX_KEYS: usize = 2000;
+const CACHE_MAX_VALUE_BYTES: usize = 64 * 1024;
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> WsResult<T> + Send + 'static) -> WsResult<T> {
     tokio::task::spawn_blocking(f).await.map_err(|e| WsError::io(e.to_string()))?
@@ -34,7 +43,8 @@ fn set_progress(active: &ActiveRun, phase: &str) {
     p["phase"] = json!(phase);
 }
 
-/// The worker of one run: never panics into the service, always leaves a final state.
+/// The worker of a run the service plans by itself (a Mock's simulated results, an analysis an executor reported):
+/// never panics into the service, always leaves a final state.
 pub async fn drive(state: Arc<AppState>, caller: Caller, ws_id: String, run_id: String, active: Arc<ActiveRun>) {
     let res = drive_inner(&state, &caller, &ws_id, &run_id, &active).await;
     settle(&state, caller, &ws_id, &run_id, &active, res).await;
@@ -62,6 +72,9 @@ async fn settle(state: &Arc<AppState>, caller: Caller, ws_id: &str, run_id: &str
                 if matches!(run["state"].as_str(), Some("succeeded" | "applying")) {
                     return ws.wish_run_set(&rid, None, None, None, None, Some(&detail));
                 }
+                if let Some(log) = err.get("data").and_then(|d| d.get("program_log")).cloned() {
+                    detail["program_log"] = log;
+                }
                 detail["error"] = err;
                 detail["progress"]["phase"] = json!(final_state);
                 ws.wish_run_set(&rid, Some(final_state), None, None, None, Some(&detail))
@@ -75,19 +88,44 @@ fn wish_payload(stage: &Stage) -> Value {
     Value::Object(stage.wish.payload.clone())
 }
 
+/// The stored macro of a wish this host runs (program API v3): its source and manifest.
+fn stored_macro(stage: &Stage) -> Option<(String, Value)> {
+    let prog = stage.wish.payload.get("program")?;
+    if prog.get("api_version").and_then(Value::as_u64) != Some(aiworkspace_core::wish::PROGRAM_API_VERSION) {
+        return None;
+    }
+    let src = String::from_utf8(stage.snap.asset_bytes(prog.get("source")?.as_str()?).ok()?).ok()?;
+    Some((src, prog.get("manifest").cloned().unwrap_or(Value::Null)))
+}
+
+/// What every stage hands its executor to stay within (浏览器优先 T1-4, 第一期 §2.3–§2.4): the deployment's limits.
+/// The executor takes the smaller of these and what the macro declares (an undeclared AI capability is refused).
+pub fn budget(cfg: &WishConfig, stage: &str) -> Value {
+    json!({
+        "iterations": if stage == STAGE_ANALYZE { cfg.analyze_tool_iterations } else { cfg.execute_tool_iterations },
+        "program_timeout_secs": cfg.program_timeout_secs,
+        "max_output_tokens": cfg.max_output_tokens,
+        "map_model": cfg.map_model,
+        "complete_model": cfg.complete_model,
+        "llm_map_max_items": cfg.llm_map_max_items,
+        "ai_max_calls": cfg.ai_max_calls,
+        "ai_max_tokens": cfg.ai_max_tokens,
+        "sql_max_calls": cfg.sql_max_calls,
+    })
+}
+
 /// A stage opened for a run: its state and what the run record said.
 pub struct Opened {
     pub st: Arc<StageState>,
     pub run: Value,
     pub params: Value,
-    pub run_dir: PathBuf,
     pub stage_name: String,
     pub program: String,
 }
 
-/// Take the stage snapshot, build the stage directory and the shared state of a run's tools. With
-/// `transition` the run record moves queued → snapshotting → running (the in-service worker); an
-/// executor outside the service already holds the run in `running` under its lease.
+/// Take the stage snapshot, build the stage directory and the shared state of a run's tools. With `transition` the run
+/// record moves queued → snapshotting → running (a run the service plans itself); an executor already holds the run in
+/// `running` under its lease.
 pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, active: &Arc<ActiveRun>, transition: bool) -> WsResult<Opened> {
     let (run, ws_dir) = state.with_ws(ws_id, |ws| {
         let r = ws.wish_run(caller, run_id)?;
@@ -101,14 +139,20 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
     let stage_name = params["stage"].as_str().unwrap_or("").to_string();
     let program = run["program"].as_str().unwrap_or("").to_string();
     let wish_id = params["wish_id"].as_str().unwrap_or("").to_string();
-    let run_dir = ws_dir.join("runs").join(run_id);
-    let workdir = run_dir.join("work");
+    let workdir = ws_dir.join("runs").join(run_id).join("work");
     std::fs::create_dir_all(&workdir).map_err(|e| WsError::io(e.to_string()))?;
-    let kind = match (program.as_str(), stage_name.as_str()) {
-        (super::PROGRAM_MOCK, _) => StageKind::Program,
-        (_, "analyze") => StageKind::Analyze,
-        (_, "rerun_program") => StageKind::Program,
-        _ => StageKind::Execute,
+    let mock = program == super::PROGRAM_MOCK;
+    let kind = match stage_name.as_str() {
+        STAGE_ANALYZE => StageKind::Analyze,
+        STAGE_CODE => StageKind::Code,
+        _ => StageKind::Run,
+    };
+    let snap = state.with_ws(ws_id, |ws| ws.wish_snapshot(caller))?;
+    // running the stored macro: only what its manifest declares is materialized
+    let manifest = if kind == StageKind::Run && !mock {
+        snap.readable(&wish_id)?.payload.get("program").and_then(|p| p.get("manifest")).cloned().filter(|m| m.is_object())
+    } else {
+        None
     };
     let request = request_params(&params);
     let opts = StageOptions {
@@ -118,9 +162,9 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         catalog: super::builtin_catalog(),
         controls: super::controls_catalog(),
         map_budget_chars: state.wish.config.map_budget_chars,
-        materialize: kind != StageKind::Analyze && program != super::PROGRAM_MOCK,
+        materialize: kind != StageKind::Analyze && !mock,
+        manifest,
     };
-    let snap = state.with_ws(ws_id, |ws| ws.wish_snapshot(caller))?;
     let stage = Stage::open(snap, &wish_id, run_id, &workdir, &opts)?;
     // the snapshot is fixed: the stage runs from here on (a cancel that came first stays)
     if transition {
@@ -131,20 +175,22 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
             Ok(())
         })?;
     }
-    // the program host the model debugs with is the one the service runs
+    // the program host every executor runs the macro with
     write(&workdir.join("lib/aiws.js"), AIWS_JS)?;
     write(&workdir.join("lib/run.js"), RUN_JS)?;
+    write(&workdir.join("lib/host.js"), HOST_JS)?;
     let payload = wish_payload(&stage);
     let mut req = request.clone();
-    for k in ["prompt", "knowledge", "refinements"] {
-        if let Some(v) = payload.get(k) {
-            req[k] = v.clone();
+    if kind != StageKind::Run {
+        for k in ["prompt", "knowledge", "refinements"] {
+            if let Some(v) = payload.get(k) {
+                req[k] = v.clone();
+            }
         }
+        req["context_prompt"] = payload["analysis"]["context_prompt"].clone();
     }
     req["stage"] = json!(stage_name);
-    req["context_prompt"] = payload["analysis"]["context_prompt"].clone();
     write(&workdir.join("request.json"), &serde_json::to_string_pretty(&req).unwrap_or_default())?;
-    let token = aiworkspace_store::workspace::random_id("tok_");
     let feedback = params.get("feedback").and_then(Value::as_str).filter(|f| !f.trim().is_empty()).map(str::to_string);
     let prompts = vec![
         payload["prompt"].as_str().unwrap_or("").to_string(),
@@ -152,6 +198,7 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         payload["analysis"]["context_prompt"].as_str().unwrap_or("").to_string(),
         feedback.clone().unwrap_or_default(),
     ];
+    let stored = if kind == StageKind::Run && !mock { stored_macro(&stage) } else { None };
     let st = Arc::new(StageState {
         runtime: state.wish.clone(),
         active: active.clone(),
@@ -163,35 +210,29 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         collector: Mutex::new(Collector::default()),
         analysis: Mutex::new(None),
         feedback,
-        token: token.clone(),
-        aicc: super::on_behalf_of(&run, ws_id),
+        stored,
+        failure: Mutex::new(None),
+        budget: budget(&state.wish.config, &stage_name),
         prompts,
         tool_calls: Default::default(),
         program_runs: Default::default(),
-        map_items: Default::default(),
-        map_calls: Default::default(),
-        map_cached: Default::default(),
+        sql_calls: Default::default(),
     });
-    state.wish.stages.lock().unwrap().insert(token, st.clone());
-    Ok(Opened { st, run, params, run_dir, stage_name, program })
+    Ok(Opened { st, run, params, stage_name, program })
 }
 
 async fn drive_inner(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, active: &Arc<ActiveRun>) -> WsResult<()> {
     let (st, c, w, r, a) = (state.clone(), caller.clone(), ws_id.to_string(), run_id.to_string(), active.clone());
-    let Opened { st, run, params, run_dir, stage_name, program } = blocking(move || open_stage(&st, &c, &w, &r, &a, true)).await?;
+    let Opened { st, run, params, program, .. } = blocking(move || open_stage(&st, &c, &w, &r, &a, true)).await?;
     let provided = run["detail"]["exec"]["provided"].clone();
-    let executor_label = run["detail"]["exec"]["mode"].as_str().unwrap_or("service").to_string();
-    let res = match (program.as_str(), stage_name.as_str(), provided.is_object()) {
-        // an executor outside the service reported its candidate (M3): plan it like a Mock's results
-        (_, "analyze", true) => provided_analysis(state, caller, ws_id, &st, &provided).await,
-        (_, _, true) => mock(state, caller, ws_id, &st, &provided, &executor_label).await,
-        (super::PROGRAM_MOCK, _, _) => mock(state, caller, ws_id, &st, &params["provided"], "mock").await,
-        (_, "analyze", _) => analyze(state, caller, ws_id, &st, &run_dir).await,
-        (_, "rerun_program", _) => rerun(state, caller, ws_id, &st).await,
-        _ => execute(state, caller, ws_id, &st, &run_dir, &params).await,
-    };
-    state.wish.stages.lock().unwrap().remove(&st.token);
-    res
+    if provided.get("analysis").is_some_and(Value::is_object) {
+        // an executor reported an analysis made elsewhere (第一期 §2.9): validated like the model's own
+        return provided_analysis(state, caller, ws_id, &st, &provided).await;
+    }
+    if program == super::PROGRAM_MOCK {
+        return mock(state, caller, ws_id, &st, &params["provided"], "mock").await;
+    }
+    Err(WsError::invalid_op("nothing to plan: the run's executor did not report"))
 }
 
 fn write(path: &Path, text: &str) -> WsResult<()> {
@@ -211,100 +252,6 @@ fn request_params(params: &Value) -> Value {
         r["timezone"] = json!("UTC");
     }
     r
-}
-
-// ---- xllm
-
-struct Observer {
-    active: Arc<ActiveRun>,
-}
-
-impl RunObserver for Observer {
-    fn on_event(&self, _run_id: &str, event: RunEvent) {
-        let mut p = self.active.progress.lock().unwrap();
-        match event {
-            // the loop as a whole starts / ends (llm_context has no per-request event): between
-            // tool calls the model is working
-            RunEvent::LlmStarted { model } => {
-                p["phase"] = json!("running");
-                p["waiting_model"] = json!(true);
-                p["model"] = json!(model);
-            }
-            RunEvent::LlmFinished { .. } => p["waiting_model"] = json!(false),
-            RunEvent::ToolFinished { .. } => p["waiting_model"] = json!(true),
-            RunEvent::ToolStarted { name, command, .. } => {
-                p["waiting_model"] = json!(false);
-                if name == "shell" {
-                    p["activity"] = json!("shell");
-                    p["last_command"] = json!(command.map(|c| c.chars().take(200).collect::<String>()));
-                } else if matches!(name.as_str(), "write_file" | "edit_file") {
-                    p["activity"] = json!("writing_program");
-                } else if name == "read_file" {
-                    p["activity"] = json!("reading");
-                }
-            }
-            RunEvent::Warning(w) => p["warning"] = json!(w.chars().take(300).collect::<String>()),
-            _ => {}
-        }
-    }
-}
-
-/// Run one xllm stage in `st.workdir` with exactly `kinds` as host tools (plus the bash group).
-async fn run_xllm(st: &Arc<StageState>, run_dir: &Path, system: String, user: String, model: &str, iterations: u32, kinds: &[Kind], shell: bool) -> WsResult<Value> {
-    let rt: &Arc<WishRuntime> = &st.runtime;
-    let cfg = &rt.config;
-    let names: Vec<&str> = kinds.iter().map(|k| k.name()).collect();
-    let ctx_file = st.workdir.join(".llm_context");
-    let llm_ctx = llm::llm_context(cfg, model, iterations, &run_dir.join("xllm"), &names, shell, llm::attribution(cfg, st.aicc.as_ref())?);
-    write(&ctx_file, &serde_json::to_string_pretty(&llm_ctx).unwrap_or_default())?;
-    let mut deps = XllmDeps::default().with_observer(Arc::new(Observer { active: st.active.clone() })).with_lock_dir(run_dir.join("locks"));
-    for t in tools(st, kinds) {
-        deps = deps.with_host_tool(t);
-    }
-    if let Some(l) = &cfg.llm_override {
-        deps.llm_factory = l.clone();
-    }
-    deps.skip_workdir_lock = true;
-    for (k, v) in st.program_env() {
-        deps.runtime_env.insert(k, v);
-    }
-    deps.runtime_env.insert("NO_COLOR".into(), "1".into());
-    deps.runtime_env.insert("DENO_NO_UPDATE_CHECK".into(), "1".into());
-    if let Some(d) = runner::find_deno(&cfg.deno).and_then(|p| p.parent().map(Path::to_path_buf)) {
-        deps.runtime_path_prefix.push(d);
-    }
-    let overrides = TaskOverrides { system: Some(system), tools: Some(true), ..Default::default() };
-    let prepared = XllmTask::prepare(&st.workdir, TaskInput::question(user), overrides, &deps)
-        .await
-        .map_err(|e| WsError::new(Code::DependencyUnavailable, format!("Preparing the model run failed: {e}")))?;
-    // nothing but this stage's configuration may shape the run (§13.3)
-    let own = ctx_file.canonicalize().map(|p| p.display().to_string()).unwrap_or_default();
-    if prepared.merged.files.iter().any(|f| *f != own && std::path::Path::new(f).canonicalize().map(|p| p.display().to_string()).unwrap_or_default() != own) {
-        return Err(WsError::invalid_op(format!("unexpected .llm_context files above the run directory: {:?}", prepared.merged.files)));
-    }
-    let mut run = XllmRun::start(prepared, deps).await.map_err(|e| WsError::new(Code::DependencyUnavailable, format!("Starting the model run failed: {e}")))?;
-    *st.active.interrupter.lock().unwrap() = Some(run.interrupter());
-    if st.cancelled() {
-        run.interrupter().interrupt("cancelled by the user");
-    }
-    set_progress(&st.active, "running");
-    let outcome = run.execute().await.map_err(|e| WsError::new(Code::DependencyUnavailable, format!("The model run failed: {e}")))?;
-    *st.active.interrupter.lock().unwrap() = None;
-    let rec = outcome.record();
-    let usage = json!({ "main": rec.usage.main, "llm_requests": rec.usage.llm_requests });
-    let x = json!({
-        "xllm_run_id": rec.run_id, "status": rec.status.as_str(), "model": rec.config.model,
-        "error": rec.last_error.as_ref().map(|e| json!({ "phase": format!("{:?}", e.phase), "kind": e.kind, "message": e.message })),
-        "limit_reason": rec.limit_reason, "answer": rec.result.as_ref().map(|r| r.raw.chars().take(2000).collect::<String>()),
-        "usage": usage,
-    });
-    if let Some(sub) = rec.last_error.as_ref().and_then(|e| super::refusal_sub_code(&e.kind)) {
-        let aicc = st.aicc.as_ref().map(|a| json!({ "mode": a.mode, "user_id": a.user_id, "operator_id": a.operator_id })).unwrap_or(Value::Null);
-        let mut x = x;
-        x["error"]["message"] = Value::Null;
-        return Err(super::refusal_error(sub, &aicc).with_data(json!({ "aicc": aicc, "xllm": x })));
-    }
-    Ok(x)
 }
 
 fn section(title: &str, body: &str) -> String {
@@ -362,13 +309,9 @@ fn analyze_user(st: &Arc<StageState>) -> WsResult<(String, Value)> {
     Ok((u, stage.evidence()?))
 }
 
-const ANALYZE_KINDS: [Kind; 7] = [Kind::Outline, Kind::Find, Kind::Profile, Kind::Neighbors, Kind::Read, Kind::Query, Kind::SubmitAnalysis];
 
-async fn analyze(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, run_dir: &Path) -> WsResult<()> {
-    let (user, evidence) = analyze_user(st)?;
-    let x = run_xllm(st, run_dir, ANALYZE_SYSTEM.to_string(), user, &st.runtime.config.analyze_model, st.runtime.config.analyze_tool_iterations, &ANALYZE_KINDS, false).await?;
-    analyze_tail(state, caller, ws_id, st, evidence, x).await
-}
+
+const ANALYZE_KINDS: [Kind; 7] = [Kind::Outline, Kind::Find, Kind::Profile, Kind::Neighbors, Kind::Read, Kind::Query, Kind::SubmitAnalysis];
 
 /// The accepted analysis becomes the candidate (`x`: the model run's record, or what an outside executor said).
 async fn analyze_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, evidence: Value, x: Value) -> WsResult<()> {
@@ -385,7 +328,8 @@ async fn analyze_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &
     finish_stage(state, caller, ws_id, st, candidate, evidence, json!({ "xllm": x, "usage": x["usage"] })).await
 }
 
-// ---- execution (§8): generation, feedback rounds and repairing a program
+
+// ---- coding (第一期 §2.1): writing and trial-running the macro; repairing it; a feedback round
 
 fn input_lines(stage: &Stage) -> String {
     let mut out = Vec::new();
@@ -405,7 +349,7 @@ fn input_lines(stage: &Stage) -> String {
             l.push_str(&format!(", range {s}"));
         }
         if i.appended {
-            l.push_str(" (input appended during the last execution)");
+            l.push_str(" (input appended while coding)");
         }
         l.push_str(&format!("; files in context/entities/{}/", i.entity_id));
         out.push(l);
@@ -417,18 +361,8 @@ fn input_lines(stage: &Stage) -> String {
     }
 }
 
-/// The stored program when this host runs its `aiws` version; one written for another version is
-/// regenerated by an execution instead.
-fn program_source(stage: &Stage) -> Option<String> {
-    let prog = stage.wish.payload.get("program")?;
-    if prog.get("api_version").and_then(Value::as_u64) != Some(aiworkspace_core::wish::PROGRAM_API_VERSION) {
-        return None;
-    }
-    let src = prog.get("source")?.as_str()?;
-    String::from_utf8(stage.snap.asset_bytes(src).ok()?).ok()
-}
 
-fn collector_for(stage: &Stage, program_only: bool) -> WsResult<Collector> {
+fn collector_for(stage: &Stage, stored_manifest: Option<Value>) -> WsResult<Collector> {
     let a = stage.wish.payload.get("analysis").cloned().unwrap_or(json!({}));
     Ok(Collector {
         contract: a.get("output_contract").cloned().unwrap_or(json!({ "results": [] })),
@@ -437,33 +371,14 @@ fn collector_for(stage: &Stage, program_only: bool) -> WsResult<Collector> {
         inputs: stage.input_infos()?,
         composites: stage.composite_defs()?,
         workdir: stage.workdir.clone(),
-        program_only,
+        stored_manifest,
         ..Default::default()
     })
 }
 
-/// The analysis must be current and ready before anything executes (§7.3).
-fn ready_to_execute(stage: &Stage) -> WsResult<()> {
-    let p = &stage.wish.payload;
-    let Some(a) = p.get("analysis") else { return Err(WsError::invalid_op("This wish has not been analyzed yet: click \"Analyze\" first")) };
-    if aiworkspace_core::wish::needs_analysis(p) {
-        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "The request, knowledge, refinements, inputs or execution configuration changed after the analysis: analyze again first"));
-    }
-    if !aiworkspace_core::freshness::analysis_sources_changed(&stage.ctx(), p)?.is_empty() {
-        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_ANALYSIS", "Documents the task description relies on (definitions, rules) changed after the analysis: analyze again first"));
-    }
-    if a["status"] != json!("ready") {
-        let blockers: Vec<String> = a["blockers"].as_array().into_iter().flatten().filter_map(|b| b["message"].as_str().map(str::to_string)).collect();
-        return Err(WsError::sub(Code::InvalidOperation, "NEEDS_INPUT", format!("The analysis concluded that inputs are missing: {}", blockers.join("; "))));
-    }
-    Ok(())
-}
-
-/// What the execution stage starts from: the user message, whether this repairs a program, and the
-/// program already present (`program/main.js`) when there is one.
-fn execute_prepare(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, params: &Value) -> WsResult<(String, bool, Option<String>)> {
-    let repair = params["stage"] == json!("repair_program");
-    // the previous round of a feedback / repair chain: its program is the starting point
+/// What the coding stage starts from: the user message and the macro already there (`program/main.js`) — the parent
+/// round's (a repair, a feedback round) or the stored one.
+fn code_prepare(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, params: &Value) -> WsResult<(String, Option<String>)> {
     let parent = match params.get("parent_run_id").and_then(Value::as_str) {
         Some(pid) => {
             let run = state.with_ws(ws_id, |ws| ws.wish_run(caller, pid))?;
@@ -472,113 +387,96 @@ fn execute_prepare(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc
         }
         None => None,
     };
-    let (user, existing) = {
-        let stage = st.stage.lock().unwrap();
-        ready_to_execute(&stage)?;
-        // repairing makes the stored program work again: written results stay as they are (§9.2)
-        *st.collector.lock().unwrap() = collector_for(&stage, repair)?;
-        let p = wish_payload(&stage);
-        let a = &p["analysis"];
-        let existing = parent.as_ref().and_then(|(_, s)| s.clone()).or_else(|| program_source(&stage));
-        if let Some(src) = &existing {
-            write(&stage.workdir.join("program/main.js"), src)?;
-        }
-        let map = std::fs::read_to_string(stage.workdir.join("WORKSPACE.md")).unwrap_or_default();
-        let mut u = String::from(if repair { "# Wish (execution stage: repairing the program)\n\n" } else { "# Wish (execution stage)\n\n" });
-        u.push_str(&section("Original request", p["prompt"].as_str().unwrap_or("")));
-        u.push_str(&section("Wish knowledge (definitions, background, preferences)", p["knowledge"].as_str().unwrap_or("")));
-        u.push_str(&section("Refinements (must be followed)", &refinement_lines(&p)));
-        u.push_str(&section("Task description (context prompt)", a["context_prompt"].as_str().unwrap_or("")));
-        u.push_str(&section("Inputs (read them in the program with aiws.input(input name))", &input_lines(&stage)));
-        u.push_str(&section("Output contract", &format!("```json\n{}\n```", serde_json::to_string_pretty(&a["output_contract"]).unwrap_or_default())));
-        u.push_str(&section("Acceptance checks (the program reports program checks with aiws.check; review checks are self-assessed in finish)", &format!("```json\n{}\n```", serde_json::to_string_pretty(&a["checks"]).unwrap_or_default())));
-        u.push_str(&section("Fixed parameters (aiws.request)", &serde_json::to_string(&stage.request).unwrap_or_default()));
-        u.push_str(&section(
-            "Program",
-            if existing.is_some() { "program/main.js already has a program (the last applied one or the previous round's): make the smallest change to it, keeping result names, fields and keys stable." } else { "No program yet: write it in program/main.js." },
-        ));
-        if let Some((prun, _)) = &parent {
-            let prev = &prun["candidate"];
-            if repair {
-                let err = prun["detail"]["error"].clone();
-                u.push_str(&section("Program run failed (when re-running only the program)", &format!("{}\n\n{}", err["detail"].as_str().unwrap_or(""), prun["detail"]["program_log"].as_str().unwrap_or(""))));
-                u.push_str("Read the inputs' latest schema and profile, make the smallest change that makes the program run correctly on the new data, then run_program and finish. Direct results (text) stay as they are and need not be submitted again.\n\n");
-            } else {
-                let results: Vec<Value> = prev["results"].as_array().into_iter().flatten().map(|r| json!({ "name": r["name"], "type": r["type"], "approach": r["approach"],
+    let stage = st.stage.lock().unwrap();
+    super::ready(&stage.ctx(), &stage.wish.payload, STAGE_CODE)?;
+    *st.collector.lock().unwrap() = collector_for(&stage, None)?;
+    let p = wish_payload(&stage);
+    let a = &p["analysis"];
+    let existing = parent.as_ref().and_then(|(_, s)| s.clone()).or_else(|| stored_macro(&stage).map(|(s, _)| s));
+    if let Some(src) = &existing {
+        write(&stage.workdir.join("program/main.js"), src)?;
+    }
+    let map = std::fs::read_to_string(stage.workdir.join("WORKSPACE.md")).unwrap_or_default();
+    let mut u = String::from("# Wish (coding stage)\n\n");
+    u.push_str(&section("Original request", p["prompt"].as_str().unwrap_or("")));
+    u.push_str(&section("Wish knowledge (definitions, background, preferences)", p["knowledge"].as_str().unwrap_or("")));
+    u.push_str(&section("Refinements (must be followed)", &refinement_lines(&p)));
+    u.push_str(&section("Task description (context prompt)", a["context_prompt"].as_str().unwrap_or("")));
+    u.push_str(&section("Inputs (declare them with aiws.declare, then read them with aiws.input(name) or aiws.sql)", &input_lines(&stage)));
+    u.push_str(&section("Output contract (every result comes from the macro)", &format!("```json\n{}\n```", serde_json::to_string_pretty(&a["output_contract"]).unwrap_or_default())));
+    u.push_str(&section("Acceptance checks (the macro reports program checks with aiws.check; review checks are self-assessed in finish)", &format!("```json\n{}\n```", serde_json::to_string_pretty(&a["checks"]).unwrap_or_default())));
+    u.push_str(&section("Fixed parameters (aiws.request)", &serde_json::to_string(&stage.request).unwrap_or_default()));
+    u.push_str(&section(
+        "Macro",
+        if existing.is_some() { "program/main.js already has a macro (the stored one or the previous round's): make the smallest change to it, keeping result names, fields and keys stable." } else { "No macro yet: write it in program/main.js." },
+    ));
+    if let Some((prun, _)) = &parent {
+        match &st.feedback {
+            Some(feedback) => {
+                let prev = &prun["candidate"];
+                let results: Vec<Value> = prev["results"].as_array().into_iter().flatten().map(|r| json!({ "name": r["name"], "type": r["type"],
                     "rows": r["table"]["rows"].as_array().map(Vec::len), "fields": r["table"]["fields"], "excerpt": r["markdown"].as_str().map(|m| m.chars().take(300).collect::<String>()) })).collect();
                 u.push_str(&section("Previous round's candidate", &format!("Results: {}\nChecks: {}\nfacts: {}\nSummary: {}", json!(results), prev["checks"], prev["facts"], prev["summary"].as_str().unwrap_or(""))));
-                // direct results of the previous round are carried over unless the model resubmits them
-                u.push_str(&section("User feedback (to be satisfied in this round)", st.feedback.as_deref().unwrap_or("")));
-                u.push_str("Change the existing program to satisfy the feedback; results the feedback does not affect stay unchanged (put_result direct results again when needed). In finish, write the distilled requirements in refinements.\n\n");
+                u.push_str(&section("User feedback (to be satisfied in this round)", feedback));
+                u.push_str("Change the existing macro to satisfy the feedback; results the feedback does not affect stay unchanged. In finish, write the distilled requirements in refinements.\n\n");
             }
-        }
-        u.push_str("---\n\n");
-        u.push_str(&map);
-        (u, existing)
-    };
-    // a feedback round starts from the previous round's written results
-    if let Some((prun, _)) = &parent {
-        if !repair {
-            let mut c = st.collector.lock().unwrap();
-            for r in prun["candidate"]["results"].as_array().into_iter().flatten() {
-                if r["approach"] == json!("direct") {
-                    if let Some(n) = r["name"].as_str() {
-                        c.direct.insert(n.to_string(), r.clone());
-                    }
-                }
+            None if prun["state"] == json!("failed") => {
+                let err = &prun["detail"]["error"];
+                u.push_str(&section("The macro failed when it ran", &format!("{}\n\n{}", err["detail"].as_str().unwrap_or(""), prun["detail"]["program_log"].as_str().unwrap_or(""))));
+                u.push_str("Read the inputs' current schema and profile, make the smallest change that makes the macro run correctly on the data as it is now, then run_program and finish.\n\n");
             }
+            None => {}
         }
     }
-    Ok((user, repair, existing))
+    u.push_str("---\n\n");
+    u.push_str(&map);
+    Ok((u, existing))
 }
 
-fn execute_system() -> String {
-    EXECUTE_SYSTEM.replace("{AIWS_API}", AIWS_API)
+fn code_system() -> String {
+    CODE_SYSTEM.replace("{AIWS_GUIDE}", GUIDE)
 }
 
-fn execute_kinds() -> Vec<Kind> {
+fn code_kinds() -> Vec<Kind> {
     let mut kinds = Kind::READ.to_vec();
     kinds.extend(Kind::DELIVERY);
     kinds
 }
 
-async fn execute(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, run_dir: &Path, params: &Value) -> WsResult<()> {
-    let (user, repair, _) = execute_prepare(state, caller, ws_id, st, params)?;
-    let x = run_xllm(st, run_dir, execute_system(), user, &st.runtime.config.execute_model, st.runtime.config.execute_tool_iterations, &execute_kinds(), true).await?;
-    execute_tail(state, caller, ws_id, st, x, repair).await
+fn candidate_from(st: &Arc<StageState>, stage: &Stage, c: &Collector) -> WsResult<(Value, Value)> {
+    let mut cand = c.candidate();
+    let texts = st.prompt_texts();
+    cand["uncited_numbers"] = json!(c.uncited_numbers(&texts.iter().map(String::as_str).collect::<Vec<_>>()));
+    Ok((cand, stage.evidence()?))
 }
 
-/// The collector's results become the candidate once `finish` was accepted.
-async fn execute_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, x: Value, repair: bool) -> WsResult<()> {
+/// The coding stage ended with `finish`: the last trial run is the candidate, with the macro version it ran (第一期
+/// §2.1: applying it writes the macro and the results in one Commit).
+async fn code_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>) -> WsResult<()> {
     if st.cancelled() {
         return Ok(());
     }
     if st.collector.lock().unwrap().finished.is_none() {
         let tail = st.collector.lock().unwrap().program.as_ref().map(|p| p.logs.clone()).unwrap_or_default();
-        return Err(WsError::new(Code::DependencyUnavailable, format!("The execution did not end with finish (run status {}){}", x["status"].as_str().unwrap_or("?"),
-            x["error"]["message"].as_str().map(|m| format!(": {m}")).or_else(|| x["limit_reason"].as_str().map(|m| format!(": {m}"))).unwrap_or_default()))
-            .with_data(json!({ "xllm": x, "program_log": tail })));
+        return Err(WsError::new(Code::DependencyUnavailable, "The coding did not end with finish").with_data(json!({ "program_log": tail })));
     }
     let (mut candidate, evidence) = {
         let stage = st.stage.lock().unwrap();
         let c = st.collector.lock().unwrap();
-        let mut cand = c.candidate();
-        let texts = st.prompt_texts();
-        cand["uncited_numbers"] = json!(c.uncited_numbers(&texts.iter().map(String::as_str).collect::<Vec<_>>()));
-        let ev = stage.evidence()?;
+        let (mut cand, ev) = candidate_from(st, &stage, &c)?;
         let refinements: Vec<Value> = c.finished.as_ref().and_then(|f| f["refinements"].as_array().cloned()).unwrap_or_default()
             .iter().filter_map(Value::as_str).filter(|t| !t.trim().is_empty())
             .map(|t| json!({ "text": t.chars().take(aiworkspace_core::wish::MAX_REFINEMENT_CHARS).collect::<String>(), "at": now(), "run_id": st.run_id })).collect();
         cand["refinements"] = json!(refinements);
         if let Some(p) = &c.program {
-            cand["program"] = json!({ "digest": p.digest, "path": st.workdir.join("program/main.js").display().to_string(),
+            cand["program"] = json!({ "digest": p.digest, "path": st.workdir.join("program/main.js").display().to_string(), "manifest": p.manifest,
                                       "produces": p.results.iter().map(|r| r["name"].clone()).collect::<Vec<_>>() });
         }
         (cand, ev)
     };
     stage_files(state, caller, ws_id, &mut candidate).await?;
-    fill_candidate(&mut candidate, &evidence, "xllm", st, if repair { "program" } else { "generate" });
-    finish_stage(state, caller, ws_id, st, candidate, evidence, json!({ "xllm": x, "usage": x["usage"] })).await
+    fill_candidate(&mut candidate, &evidence, "xllm", st, STAGE_CODE);
+    finish_stage(state, caller, ws_id, st, candidate, evidence, json!({})).await
 }
 
 fn fill_candidate(c: &mut Value, ev: &Value, executor: &str, st: &Arc<StageState>, mode: &str) {
@@ -635,63 +533,79 @@ async fn stage_files(state: &Arc<AppState>, caller: &Caller, ws_id: &str, cand: 
     Ok(())
 }
 
-// ---- re-running the stored program (§9.2): no model
 
-/// The stored program, written into the stage for a run without a model.
-fn rerun_prepare(st: &Arc<StageState>) -> WsResult<String> {
+// ---- running the stored macro (第一期 §2.1): no model loop
+
+/// The stored macro, written into the stage for its run; refused (`NEEDS_CODING`) when it no longer fits its inputs.
+fn run_prepare(st: &Arc<StageState>) -> WsResult<(String, Value)> {
     let stage = st.stage.lock().unwrap();
-    let p = &stage.wish.payload;
-    if p.get("analysis").is_none() {
-        return Err(WsError::invalid_op("This wish has not been analyzed yet"));
-    }
-    let src = program_source(&stage).ok_or_else(|| WsError::invalid_op("This wish has no program this service can run yet: execute it once first (generate)"))?;
+    super::ready(&stage.ctx(), &stage.wish.payload, STAGE_RUN)?;
+    let (src, manifest) = st.stored.clone().ok_or_else(|| WsError::sub(Code::InvalidOperation, "NEEDS_CODING", "This wish has no macro this service can run: code it first"))?;
     write(&stage.workdir.join("program/main.js"), &src)?;
-    *st.collector.lock().unwrap() = collector_for(&stage, true)?;
-    Ok(src)
+    *st.collector.lock().unwrap() = collector_for(&stage, Some(manifest.clone()))?;
+    Ok((src, manifest))
 }
 
-async fn rerun(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>) -> WsResult<()> {
-    rerun_prepare(st)?;
-    set_progress(&st.active, "running");
-    st.note_tool("run_program");
-    let out = runner::run(st).await.map_err(|e| WsError::new(Code::DependencyUnavailable, e))?;
-    let log = out.tail();
-    let fail = |msg: String| WsError::sub(Code::InvalidOperation, "PROGRAM_FAILED", msg).with_data(json!({ "program_log": log }));
-    if out.timed_out {
-        return Err(fail(format!("The program timed out ({} s)", st.runtime.config.program_timeout_secs)));
-    }
-    let raw = out.results.clone().ok_or_else(|| fail(format!("The program wrote no results (exit code {:?})", out.code)))?;
+/// A run of the stored macro, judged: it must produce the contract with the code it fixed. A failure ends the run
+/// (`PROGRAM_FAILED`, `MACRO_CODE_CHANGED`: code it again), it is never repaired here.
+fn judge_run(st: &Arc<StageState>, results: Option<&Value>, log: &str) -> WsResult<String> {
+    let fail = |code: &'static str, msg: String| WsError::sub(Code::InvalidOperation, code, msg).with_data(json!({ "program_log": log }));
+    let raw = results.cloned().ok_or_else(|| fail("PROGRAM_FAILED", "The macro wrote no results".into()))?;
     if let Some(e) = raw.get("error").and_then(Value::as_str) {
-        return Err(fail(format!("The program threw an error: {}", e.lines().next().unwrap_or(""))));
+        // a refusal of the AI the macro called is the run's reason, as for any model call (§7.4)
+        let code = match raw.get("error_code").and_then(Value::as_str) {
+            Some(c @ ("AI_QUOTA_EXHAUSTED" | "AI_QUOTA_BUDGET_EXCEEDED" | "AI_RESOURCE_NOT_PERMITTED" | "AI_ATTRIBUTION_UNAVAILABLE" | "AI_UNAVAILABLE")) => {
+                return Err(WsError::sub(Code::DependencyUnavailable, ai_code(c), format!("The macro's AI call was refused: {}", e.lines().next().unwrap_or(""))).with_data(json!({ "program_log": log })));
+            }
+            _ => "PROGRAM_FAILED",
+        };
+        return Err(fail(code, format!("The macro threw an error: {}", e.lines().next().unwrap_or(""))));
     }
     let source = std::fs::read_to_string(st.workdir.join("program/main.js")).unwrap_or_default();
-    {
-        let mut c = st.collector.lock().unwrap();
-        let run = program_output(&c, &raw, &source, &log).map_err(|errs| fail(format!("The program's results failed validation: {}", errs.join("; "))))?;
-        c.program = Some(run);
+    let mut c = st.collector.lock().unwrap();
+    let run = program_output(&c, &raw, &source, log).map_err(|errs| fail("PROGRAM_FAILED", format!("The macro's results failed validation: {}", errs.join("; "))))?;
+    let changed = code_changed(run.manifest.as_ref().unwrap_or(&Value::Null), &run.results);
+    if !changed.is_empty() {
+        return Err(fail("MACRO_CODE_CHANGED", format!("The macro produced HTML code other than the code it was coded with ({}): code the wish again", changed.join(", "))));
     }
-    st.note_program_run();
-    rerun_tail(state, caller, ws_id, st, log).await
+    let ai = run.ai.clone();
+    c.program = Some(run);
+    let blocking = c.blocking();
+    if !blocking.is_empty() {
+        c.program = None;
+        return Err(fail("PROGRAM_FAILED", format!("The macro's results are incomplete: {}", blocking.join("; "))));
+    }
+    st.note_program_run(&ai);
+    Ok("The macro ran; its results are collected.".into())
 }
 
-/// The program's validated output becomes the candidate of a run without a model.
-async fn rerun_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, log: String) -> WsResult<()> {
-    let fail = |msg: String| WsError::sub(Code::InvalidOperation, "PROGRAM_FAILED", msg).with_data(json!({ "program_log": log }));
-    let (mut candidate, evidence) = {
+fn ai_code(c: &str) -> &'static str {
+    match c {
+        "AI_QUOTA_BUDGET_EXCEEDED" => "AI_QUOTA_BUDGET_EXCEEDED",
+        "AI_RESOURCE_NOT_PERMITTED" => "AI_RESOURCE_NOT_PERMITTED",
+        "AI_ATTRIBUTION_UNAVAILABLE" => "AI_ATTRIBUTION_UNAVAILABLE",
+        "AI_UNAVAILABLE" => "AI_UNAVAILABLE",
+        _ => "AI_QUOTA_EXHAUSTED",
+    }
+}
+
+/// The run of the stored macro becomes the candidate.
+async fn run_tail(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>) -> WsResult<()> {
+    if let Some(e) = st.failure.lock().unwrap().take() {
+        return Err(e);
+    }
+    let (mut candidate, evidence, log) = {
         let stage = st.stage.lock().unwrap();
         let mut c = st.collector.lock().unwrap();
-        if c.program.is_none() {
-            return Err(fail("The program did not run".into()));
-        }
-        let blocking = c.blocking();
-        if !blocking.is_empty() {
-            return Err(fail(format!("The program's results are incomplete: {}", blocking.join("; "))));
-        }
-        c.finished = Some(json!({ "summary": "Re-ran only the program (no model call)" }));
-        (c.candidate(), stage.evidence()?)
+        let Some(log) = c.program.as_ref().map(|p| p.logs.clone()) else {
+            return Err(WsError::sub(Code::InvalidOperation, "PROGRAM_FAILED", "The macro did not run"));
+        };
+        c.finished = Some(json!({ "summary": "Ran the macro (no model loop)" }));
+        let (cand, ev) = candidate_from(st, &stage, &c)?;
+        (cand, ev, log)
     };
     stage_files(state, caller, ws_id, &mut candidate).await?;
-    fill_candidate(&mut candidate, &evidence, "xllm", st, "program");
+    fill_candidate(&mut candidate, &evidence, "xllm", st, STAGE_RUN);
     finish_stage(state, caller, ws_id, st, candidate, evidence, json!({ "program_log": log })).await
 }
 
@@ -834,7 +748,7 @@ fn check_mock(results: &[Value]) -> WsResult<()> {
     }
 }
 
-/// An executor's reported analysis (M3): validated exactly like the model's `submit_analysis`.
+/// An executor's reported analysis (第一期 §2.9): validated exactly like the model's `submit_analysis`.
 async fn provided_analysis(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, provided: &Value) -> WsResult<()> {
     let (validated, evidence) = {
         let mut stage = st.stage.lock().unwrap();
@@ -901,44 +815,48 @@ async fn mock(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<Stag
         "warnings": provided.get("warnings").cloned().unwrap_or(json!([])), "external_data": [], "model_judgment": [], "refinements": [],
     });
     stage_files(state, caller, ws_id, &mut candidate).await?;
-    fill_candidate(&mut candidate, &evidence, executor, st, "generate");
+    fill_candidate(&mut candidate, &evidence, executor, st, "run");
     finish_stage(state, caller, ws_id, st, candidate, evidence, json!({})).await
 }
 
-// ---- the stage host (内核架构改进 §9, T3-4): an executor outside the service drives the model loop and
-// runs the program; the service keeps the snapshot, answers the stage tools, validates and plans
+// ---- the stage host
 
-/// What an outside executor starts a run from, opened at `proc.claim`: the stage's prompts and tool
-/// catalogue (a model stage), or the stored program (re-running only the program). The stage stays
-/// open under the run id until the executor reports, the run is cancelled, or its lease lapses.
+/// What an executor starts a run from, opened at `proc.claim`: a model stage's prompts, tools and budget (analyze,
+/// code), or the stored macro and its manifest (run). The stage stays open under the run id until the executor
+/// reports, the run is cancelled, or its lease lapses.
 pub fn host_open(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str) -> WsResult<Value> {
     state.wish.drop_hosted(run_id);
     let active = state.wish.register(run_id);
     *active.progress.lock().unwrap() = json!({ "phase": "claimed" });
-    let Opened { st, params, stage_name, .. } = match open_stage(state, caller, ws_id, run_id, &active, false) {
+    let opened = open_stage(state, caller, ws_id, run_id, &active, false).and_then(|Opened { st, params, stage_name, .. }| {
+        let cfg = &state.wish.config;
+        let brief = match stage_name.as_str() {
+            STAGE_ANALYZE => {
+                let (user, _) = analyze_user(&st)?;
+                json!({ "kind": "model", "stage": stage_name, "system": ANALYZE_SYSTEM, "user": user, "tools": tool_specs(&ANALYZE_KINDS), "model": cfg.analyze_model,
+                        "iterations": cfg.analyze_tool_iterations, "budget": st.budget })
+            }
+            STAGE_RUN => {
+                let (source, manifest) = run_prepare(&st)?;
+                json!({ "kind": "program", "stage": stage_name, "source": source, "manifest": manifest, "budget": st.budget })
+            }
+            _ => {
+                let (mut user, existing) = code_prepare(state, caller, ws_id, &st, &params)?;
+                if let Some(src) = &existing {
+                    user.push_str(&format!("\n\n## Current macro (program/main.js)\n\n```js\n{src}\n```\n"));
+                }
+                user.push_str("\n\nThere is no shell and no file tool here: give run_program the complete macro as its `source`; the executor runs it exactly as every later run will, and it is kept as program/main.js.");
+                json!({ "kind": "model", "stage": stage_name, "system": code_system(), "user": user, "tools": tool_specs(&code_kinds()), "model": cfg.execute_model,
+                        "iterations": cfg.execute_tool_iterations, "source": existing, "budget": st.budget })
+            }
+        };
+        Ok((st, brief))
+    });
+    let (st, brief) = match opened {
         Ok(o) => o,
         Err(e) => {
             state.wish.unregister(run_id);
             return Err(e);
-        }
-    };
-    let cfg = &state.wish.config;
-    let brief = match stage_name.as_str() {
-        "analyze" => {
-            let (user, _) = analyze_user(&st)?;
-            json!({ "kind": "model", "stage": stage_name, "system": ANALYZE_SYSTEM, "user": user, "tools": tool_specs(&ANALYZE_KINDS), "model": cfg.analyze_model, "iterations": cfg.analyze_tool_iterations })
-        }
-        "rerun_program" => {
-            let source = rerun_prepare(&st)?;
-            json!({ "kind": "program", "stage": stage_name, "source": source })
-        }
-        _ => {
-            let (mut user, _, existing) = execute_prepare(state, caller, ws_id, &st, &params)?;
-            if let Some(src) = &existing {
-                user.push_str(&format!("\n\n## Current program (program/main.js)\n\n```js\n{src}\n```\n"));
-            }
-            user.push_str("\n\nThere is no shell and no file tool here: give run_program the complete program as its `source`; the host runs it and keeps it as program/main.js.");
-            json!({ "kind": "model", "stage": stage_name, "system": execute_system(), "user": user, "tools": tool_specs(&execute_kinds()), "model": cfg.execute_model, "iterations": cfg.execute_tool_iterations, "source": existing })
         }
     };
     set_progress(&active, "running");
@@ -946,51 +864,158 @@ pub fn host_open(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &s
     Ok(brief)
 }
 
-/// The tools of a stage as a model sees them; `run_program` takes the program text here.
+/// The tools of a stage as a model sees them.
 fn tool_specs(kinds: &[Kind]) -> Vec<Value> {
     kinds
         .iter()
         .map(|k| {
-            let (description, mut parameters) = k.spec();
-            if *k == Kind::RunProgram {
-                parameters = json!({ "type": "object", "properties": { "source": { "type": "string", "description": "The complete program/main.js (an ES module exporting `default async function main(aiws)`)" } }, "required": ["source"] });
-            }
+            let (description, parameters) = k.spec();
             json!({ "name": k.name(), "description": description, "parameters": parameters })
         })
         .collect()
 }
 
-/// `proc.tool`: one stage tool call of an outside executor. `llm_map` serves a program's `aiws.llm.map`
-/// (the service calls the model under the run's attribution and keeps the cache); `run_program` is
-/// `proc.program`.
+fn tool_error(text: impl Into<String>, code: Option<&str>) -> Value {
+    let mut v = json!({ "ok": true, "status": "error", "text": text.into() });
+    if let Some(c) = code {
+        v["code"] = json!(c);
+    }
+    v
+}
+
+/// `proc.tool`: one call of an executor. The stage tools answer text; `sql` serves a macro's `aiws.sql` and
+/// `llm_cache` the cache of its AI calls (the executor calls the model, the service only keeps the answers);
+/// `run_program` is `proc.program`.
 pub async fn host_tool(st: &Arc<StageState>, name: &str, args: &Value) -> Value {
     if st.cancelled() {
-        return json!({ "ok": true, "status": "error", "text": "the run was cancelled" });
+        return tool_error("the run was cancelled", Some("RUN_CANCELLED"));
     }
-    if name == "llm_map" {
-        return json!({ "ok": true, "status": "ok", "map": llm::llm_map(st, args).await });
+    if name == "sql" || name == "llm_cache" {
+        let (s, a, n) = (st.clone(), args.clone(), name.to_string());
+        return tokio::task::spawn_blocking(move || if n == "sql" { macro_sql(&s, &a) } else { llm_cache(&s, &a) }).await.unwrap_or_else(|e| tool_error(e.to_string(), None));
     }
     let Some(kind) = super::tools::kind_of(name) else {
-        return json!({ "ok": true, "status": "error", "text": format!("unknown tool {name}") });
+        return tool_error(format!("unknown tool {name}"), None);
     };
     if kind == Kind::RunProgram {
-        return json!({ "ok": true, "status": "error", "text": "run the program on the executor and report it with proc.program" });
+        return tool_error("run the macro on the executor and hand it in with proc.program", None);
     }
     st.note_tool(name);
     let (s, a) = (st.clone(), args.clone());
     let answer = tokio::task::spawn_blocking(move || super::tools::blocking_call(&s, kind, &a)).await.unwrap_or_else(|e| Err(e.to_string()));
     match answer {
         Ok(text) => json!({ "ok": true, "status": "ok", "text": text }),
-        Err(text) => json!({ "ok": true, "status": "error", "text": text }),
+        Err(text) => tool_error(text, None),
     }
 }
 
-/// `proc.program`: the executor ran `source` on the stage's snapshot and hands in what the program host
-/// collected (`output/.aiws/results.json`), the files it wrote under `output/` and its log; the service
-/// judges it exactly like its own `run_program`.
+/// `sql { query, params?, declare? }` (第一期 §2.3): the declared table inputs only, with their declared fields under
+/// the names the macro uses — the stored manifest when running, the macro's own `declare` while coding.
+fn macro_sql(st: &Arc<StageState>, args: &Value) -> Value {
+    let mut stage = st.stage.lock().unwrap();
+    if stage.kind == StageKind::Analyze {
+        return tool_error("aiws.sql runs inside a macro (coding or running)", None);
+    }
+    let Some(query) = args.get("query").and_then(Value::as_str) else { return tool_error("aiws.sql(query, params?): query required", None) };
+    if !st.take_sql_call() {
+        return tool_error(format!("aiws.sql budget exceeded: at most {} queries per run", st.budget["sql_max_calls"]), Some("SQL_BUDGET_EXCEEDED"));
+    }
+    let mut inputs: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    match &st.stored {
+        Some((_, manifest)) => {
+            for (name, d) in manifest["inputs"].as_object().into_iter().flatten() {
+                let cols = d["fields"].as_array().into_iter().flatten().filter_map(|f| Some((f["field_id"].as_str()?.to_string(), f["name"].as_str()?.to_string()))).collect();
+                inputs.insert(name.clone(), cols);
+            }
+        }
+        None => {
+            let Some(declared) = args.get("declare").and_then(|d| d.get("inputs")).and_then(Value::as_object) else {
+                return tool_error("aiws.sql: declare the inputs first (aiws.declare({ inputs: { name: [fields] } }))", Some("NOT_DECLARED"));
+            };
+            for (name, spec) in declared {
+                let wanted: Vec<String> = match spec {
+                    Value::Array(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+                    Value::Object(o) => o.get("fields").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
+                    _ => Vec::new(),
+                };
+                let fields = match stage.input_fields(name) {
+                    Ok(Some((_, f))) => f,
+                    Ok(None) => return tool_error(format!("aiws.declare: there is no input named {name}"), Some("NOT_DECLARED")),
+                    Err(e) => return tool_error(e.detail, None),
+                };
+                let mut cols = Vec::new();
+                for w in wanted {
+                    match fields.iter().find(|(_, n, _)| *n == w) {
+                        Some((id, n, _)) => cols.push((id.clone(), n.clone())),
+                        None => return tool_error(format!("aiws.declare: input {name} has no field {w}"), Some("NOT_DECLARED")),
+                    }
+                }
+                inputs.insert(name.clone(), cols);
+            }
+        }
+    }
+    match stage.macro_sql(query, args.get("params"), &inputs) {
+        Ok(r) => json!({ "ok": true, "status": "ok", "sql": { "columns": r["columns"], "rows": r["rows"], "truncated": r["truncated"] } }),
+        Err(e) => tool_error(e.detail.clone(), Some(e.sub.unwrap_or(e.code.as_str()))),
+    }
+}
+
+fn cache_key_ok(k: &str) -> bool {
+    k.len() == 64 && k.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
+/// `llm_cache { get: [key…] }` → `{ hits: { key: value } }`; `{ put: [{ key, value }] }` → `{ ok }` (浏览器优先 T1-5).
+/// The workspace's cache of AI answers, by content: the executor computes the keys and calls the model.
+fn llm_cache(st: &Arc<StageState>, args: &Value) -> Value {
+    let dir = st.ws_dir.join("cache").join("llm_map");
+    if let Some(keys) = args.get("get").and_then(Value::as_array) {
+        if keys.len() > CACHE_MAX_KEYS {
+            return tool_error(format!("llm_cache: at most {CACHE_MAX_KEYS} keys per call"), None);
+        }
+        let mut hits = Map::new();
+        for k in keys.iter().filter_map(Value::as_str) {
+            if !cache_key_ok(k) {
+                return tool_error(format!("llm_cache: {k} is not a sha256 hex key"), None);
+            }
+            if let Some(v) = std::fs::read_to_string(dir.join(format!("{k}.json"))).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+                hits.insert(k.to_string(), v);
+            }
+        }
+        return json!({ "ok": true, "status": "ok", "hits": hits });
+    }
+    if let Some(items) = args.get("put").and_then(Value::as_array) {
+        if items.len() > CACHE_MAX_KEYS {
+            return tool_error(format!("llm_cache: at most {CACHE_MAX_KEYS} values per call"), None);
+        }
+        let _ = std::fs::create_dir_all(&dir);
+        for it in items {
+            let (Some(k), Some(v)) = (it["key"].as_str(), it.get("value")) else { return tool_error("llm_cache put: [{ key, value }]", None) };
+            let text = v.to_string();
+            if !cache_key_ok(k) || text.len() > CACHE_MAX_VALUE_BYTES {
+                return tool_error(format!("llm_cache: {k} is not a sha256 hex key, or its value is over {} KiB", CACHE_MAX_VALUE_BYTES / 1024), None);
+            }
+            let _ = std::fs::write(dir.join(format!("{k}.json")), text);
+        }
+        return json!({ "ok": true, "status": "ok" });
+    }
+    tool_error("llm_cache: { get: [keys] } or { put: [{ key, value }] }", None)
+}
+
+/// `proc.program`: the executor ran `source` on the stage's snapshot and hands in what the program host collected
+/// (`output/.aiws/results.json`), the files it wrote under `output/` and its log. While coding it is a trial run the
+/// model reads about; running, it is the stored macro's run, and a failure ends the run.
 pub fn host_program(st: &Arc<StageState>, source: &str, results: Option<&Value>, log: &str, files: &Value) -> WsResult<Value> {
     if st.cancelled() {
-        return Ok(json!({ "ok": true, "status": "error", "text": "the run was cancelled" }));
+        return Ok(tool_error("the run was cancelled", Some("RUN_CANCELLED")));
+    }
+    let kind = st.stage.lock().unwrap().kind;
+    if kind == StageKind::Analyze {
+        return Ok(tool_error("an analysis has no macro to run", None));
+    }
+    if let Some((stored, _)) = &st.stored {
+        if stored != source {
+            return Ok(tool_error("running a wish runs its stored macro, unchanged: code it to change the macro", Some("MACRO_CODE_CHANGED")));
+        }
     }
     st.note_tool("run_program");
     write(&st.workdir.join("program/main.js"), source)?;
@@ -1017,21 +1042,32 @@ pub fn host_program(st: &Arc<StageState>, source: &str, results: Option<&Value>,
     if let Some(r) = results {
         write(&out.join(".aiws/results.json"), &r.to_string())?;
     }
+    if kind == StageKind::Run {
+        return Ok(match judge_run(st, results, log) {
+            Ok(text) => json!({ "ok": true, "status": "ok", "text": text }),
+            Err(e) => {
+                let v = tool_error(e.detail.clone(), e.sub);
+                *st.failure.lock().unwrap() = Some(e);
+                v
+            }
+        });
+    }
     let answer = super::tools::judge_program(st, results, "the executor reported no results", log, "");
     Ok(match answer {
         Ok(text) => json!({ "ok": true, "status": "ok", "text": text }),
-        Err(text) => json!({ "ok": true, "status": "error", "text": text }),
+        Err(text) => tool_error(text, None),
     })
 }
 
-/// `proc.files`: the stage directory an executor's program host reads (`context/`, `request.json`,
-/// `catalog/`, and `lib/` so a Deno executor runs `lib/run.js` as the service would), text as is, bytes base64.
+/// `proc.files`: the stage directory an executor's program host reads (`context/`, `request.json`, `catalog/`,
+/// `lib/` — the program host, `program/main.js` when there is one), text as is, bytes base64, and the stage's
+/// `budget` and stored `manifest`. More than the snapshot budget is `SNAPSHOT_TOO_LARGE` (浏览器优先 Q6).
 pub fn host_files(st: &Arc<StageState>) -> WsResult<Value> {
     use base64::Engine;
     let mut files = serde_json::Map::new();
     let root = st.workdir.clone();
     let mut stack = vec![root.join("context"), root.join("catalog"), root.join("lib")];
-    let mut paths = vec![root.join("request.json"), root.join("WORKSPACE.md")];
+    let mut paths = vec![root.join("request.json"), root.join("WORKSPACE.md"), root.join("program/main.js")];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let p = entry.path();
@@ -1042,42 +1078,59 @@ pub fn host_files(st: &Arc<StageState>) -> WsResult<Value> {
             }
         }
     }
+    let limit = st.runtime.config.snapshot_download_max_bytes;
+    let mut total: u64 = 0;
     for p in paths {
         let Ok(bytes) = std::fs::read(&p) else { continue };
-        let rel = p.strip_prefix(&root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-        if bytes.len() > 16 * 1024 * 1024 {
-            files.insert(rel, json!({ "skipped": "larger than 16 MiB" }));
-            continue;
+        total += bytes.len() as u64;
+        if total > limit {
+            let all: u64 = walk_size(&root);
+            return Err(WsError::sub(Code::LimitExceeded, "SNAPSHOT_TOO_LARGE", format!("The inputs of this run are about {} MiB, over the {} MiB a browser may download: narrow the inputs (a table view), or run it hosted", all / (1024 * 1024), limit / (1024 * 1024)))
+                .with_data(json!({ "bytes": all, "limit": limit })));
         }
+        let rel = p.strip_prefix(&root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
         match String::from_utf8(bytes) {
             Ok(text) => files.insert(rel, json!({ "text": text })),
             Err(e) => files.insert(rel, json!({ "base64": base64::engine::general_purpose::STANDARD.encode(e.into_bytes()) })),
         };
     }
-    Ok(json!({ "ok": true, "files": files }))
+    let manifest = st.stored.as_ref().map(|(_, m)| m.clone()).unwrap_or(Value::Null);
+    Ok(json!({ "ok": true, "files": files, "stage": { "budget": st.budget, "manifest": manifest } }))
 }
 
-/// The executor reported it is done (`proc.report { finished: true }`): what the stage collected
-/// becomes the candidate, planned and left waiting for confirmation; failures end the run.
-pub async fn drive_host(state: Arc<AppState>, caller: Caller, ws_id: String, run_id: String, st: Arc<StageState>, repair: bool) {
-    let res = host_finish(&state, &caller, &ws_id, &st, repair).await;
+fn walk_size(dir: &Path) -> u64 {
+    let mut total = 0;
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if p.file_name().is_some_and(|n| n == "output") {
+                continue;
+            }
+            total += walk_size(&p);
+        } else {
+            total += std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    total
+}
+
+/// The executor reported it is done (`proc.report { finished: true }`): what the stage collected becomes the
+/// candidate, planned and left waiting for confirmation; failures end the run.
+pub async fn drive_host(state: Arc<AppState>, caller: Caller, ws_id: String, run_id: String, st: Arc<StageState>) {
+    let res = host_finish(&state, &caller, &ws_id, &st).await;
     settle(&state, caller, &ws_id, &run_id, &st.active, res).await;
     state.wish.drop_hosted(&run_id);
     state.wish.unregister(&run_id);
 }
 
-async fn host_finish(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>, repair: bool) -> WsResult<()> {
+async fn host_finish(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &Arc<StageState>) -> WsResult<()> {
     let kind = st.stage.lock().unwrap().kind;
-    let external = json!({ "status": "external" });
     match kind {
         StageKind::Analyze => {
             let evidence = st.stage.lock().unwrap().evidence()?;
-            analyze_tail(state, caller, ws_id, st, evidence, external).await
+            analyze_tail(state, caller, ws_id, st, evidence, json!({ "status": "external" })).await
         }
-        StageKind::Program => {
-            let log = st.collector.lock().unwrap().program.as_ref().map(|p| p.logs.clone()).unwrap_or_default();
-            rerun_tail(state, caller, ws_id, st, log).await
-        }
-        StageKind::Execute => execute_tail(state, caller, ws_id, st, external, repair).await,
+        StageKind::Code => code_tail(state, caller, ws_id, st).await,
+        StageKind::Run => run_tail(state, caller, ws_id, st).await,
     }
 }

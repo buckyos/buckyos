@@ -459,8 +459,8 @@ fn cells_without_source_and_block_definitions() {
 }
 
 fn analysis(prompt: &str, context: &str) -> Value {
-    json!({ "schema_version": "wish.analysis.v2", "status": "ready", "prompt": prompt, "context_prompt": context,
-            "output_contract": { "results": [{ "name": "摘要", "type": "richtext", "approach": "direct" }] }, "checks": [], "blockers": [], "warnings": [] })
+    json!({ "schema_version": "wish.analysis.v3", "status": "ready", "prompt": prompt, "context_prompt": context,
+            "output_contract": { "results": [{ "name": "摘要", "type": "richtext" }] }, "checks": [], "blockers": [], "warnings": [] })
 }
 
 fn wish(id: &str, parent: &str, inputs: Value) -> Value {

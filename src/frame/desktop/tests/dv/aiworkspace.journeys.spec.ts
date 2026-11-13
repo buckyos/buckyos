@@ -76,7 +76,7 @@ test('[journey-sales] quarterly analysis previews, applies and refreshes after a
   const analysed = (await owner.client.info(ws)).head_seq
   expect(analysed).toBe(initial + 1)
 
-  await panel.getByTestId('aiws-wish-execute').click()
+  await panel.getByTestId('aiws-wish-run').click()
   await expect(panel.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-ready', 'true')
   await expect(panel.getByTestId('aiws-wish-candidate')).toContainText('模拟')
   await expect(panel.getByTestId('aiws-wish-result')).toHaveCount(4)
@@ -110,7 +110,7 @@ test('[journey-sales] quarterly analysis previews, applies and refreshes after a
   await expect.soft(panel.getByTestId('aiws-freshness-wish-analysis'), 'the wish must show the source correction without reloading').toHaveAttribute('data-status', 'stale')
   await screenshot(page, info, 'sales-source-corrected')
   const beforeRefresh = (await owner.client.info(ws)).head_seq
-  await panel.getByTestId('aiws-wish-execute').click()
+  await panel.getByTestId('aiws-wish-run').click()
   await expect(panel.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-ready', 'true')
   expect((await owner.client.info(ws)).head_seq).toBe(beforeRefresh)
   expect((await content<{ props: { revenue: string } }>(owner, ws, first.kpi.entity_id)).props.revenue).toBe('770000.00')

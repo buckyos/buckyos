@@ -165,7 +165,11 @@ export function wish_config_digest(payload_json: string): string;
 
 /**
  * Whether a wish payload must be analysed before it can execute (§4.1).
+ * The main state and next action of a wish (PRD §5.8): `freshness_json` is its freshness, `runs_json` what the
+ * page knows of its runs (`{ active?, waiting?, last_failed? }`).
  */
+export function wish_main_status(freshness_json: string, runs_json: string): string;
+
 export function wish_needs_analysis(payload_json: string): boolean;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -213,6 +217,7 @@ export interface InitOutput {
     readonly verify_object: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly view_sql: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly wish_config_digest: (a: number, b: number, c: number) => void;
+    readonly wish_main_status: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly wish_needs_analysis: (a: number, b: number, c: number) => void;
     readonly __wbindgen_export: (a: number) => void;
     readonly __wbindgen_export2: () => number;

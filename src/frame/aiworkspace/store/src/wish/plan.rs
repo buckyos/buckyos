@@ -477,6 +477,7 @@ impl Workspace {
             let before = payload.get("program").and_then(|p| p.get("digest")).cloned();
             if before.as_ref() != prog.get("digest") {
                 let stored = json!({ "language": "js", "api_version": aiworkspace_core::wish::PROGRAM_API_VERSION, "source": prog["object_id"], "digest": prog["digest"],
+                                     "manifest": prog.get("manifest").cloned().unwrap_or(json!({ "inputs": {}, "results": {} })),
                                      "produces": prog.get("produces").cloned().unwrap_or(json!([])), "run_id": req.run_id });
                 if let Some(source) = prog.get("object_id").and_then(Value::as_str) {
                     p.assets.push(source.to_string());
@@ -566,7 +567,7 @@ impl Workspace {
                 "table" => plan_table(&mut p, it, &parent, &mut binding, &mut row_order)?,
                 "table_columns" => plan_columns(&mut p, it, &wish_id, req.run_id, it.choice.as_deref(), &mut binding)?,
                 "image" | "asset" => plan_asset(&mut p, it, &parent)?,
-                "html" => plan_html(&mut p, it, &parent, &wish_id, &mut binding)?,
+                "html" => plan_html(&mut p, it, &parent, &wish_id, &mut binding, cand.get("mode") == Some(&json!("run")))?,
                 t => {
                     p.problems.push(format!("Result \"{}\" has unsupported type {t}", it.name));
                     false
@@ -677,11 +678,6 @@ impl Workspace {
         if mode == "overwrite" {
             for (name, b) in &prev_bindings {
                 if bindings_out.contains_key(name) {
-                    continue;
-                }
-                let keep_direct = cand.get("mode") == Some(&json!("program")) && b["approach"] == json!("direct");
-                if keep_direct {
-                    bindings_out.insert(name.clone(), b.clone());
                     continue;
                 }
                 if p.alive(b["entity_id"].as_str().unwrap_or(""))?.is_some() {
@@ -1463,8 +1459,10 @@ fn plan_asset(p: &mut Planner, it: &Item, parent: &str) -> WsResult<bool> {
     }
 }
 
-/// An HTML result: a Block definition (kind html, `aiws` v2) plus Blocks bound by name (§8.5, §9.4).
-fn plan_html(p: &mut Planner, it: &Item, parent: &str, wish_id: &str, binding: &mut Value) -> WsResult<bool> {
+/// An HTML result: a Block definition (kind html, `aiws` v2) plus Blocks bound by name (§8.5, §9.4). Its code belongs
+/// to the macro version (AI Native 第一期 §2.5): coding writes it; running the stored macro only moves the data its
+/// Blocks are bound to, never the definition.
+fn plan_html(p: &mut Planner, it: &Item, parent: &str, wish_id: &str, binding: &mut Value, running: bool) -> WsResult<bool> {
     let h = &it.r()["html"];
     let def_id = format!("wish.{}", short_hash(&format!("{wish_id}/{}", it.name()), 12));
     let mut bindings = Map::new();
@@ -1487,7 +1485,7 @@ fn plan_html(p: &mut Planner, it: &Item, parent: &str, wish_id: &str, binding: &
     let body = json!({ "html": h["html"], "css": h.get("css").cloned().unwrap_or(json!("")), "js": h.get("js").cloned().unwrap_or(json!("")), "api_version": aiworkspace_core::types::HTML_API_VERSION });
     match it.existing() {
         Some(e) => {
-            if e.payload.get("html") == Some(&body) {
+            if e.payload.get("html") == Some(&body) || running {
                 return Ok(false);
             }
             let version = e.payload.get("version").and_then(Value::as_u64).unwrap_or(1) + 1;

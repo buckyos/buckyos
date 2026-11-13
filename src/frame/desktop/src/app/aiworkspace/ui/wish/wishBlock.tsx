@@ -64,7 +64,7 @@ function WishEditorView(context: RenderContext) {
   return <WishPanel wishId={context.source.entity_id} cellId={context.cell.entity_id} readOnly={context.readOnlyReason !== null} compact />
 }
 
-/** Open the wish (the right panel on a free canvas) and start its next step: analysis, or execution once analysed. */
+/** Open the wish (the right panel on a free canvas) and perform its next action there (`WishService.next`): analyze, code, run, or apply. */
 function runWish(context: RenderContext) {
   requestIntent(context.cell.entity_id, 'start')
   context.activateEditor()

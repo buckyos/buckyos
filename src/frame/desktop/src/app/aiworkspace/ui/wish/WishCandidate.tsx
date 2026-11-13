@@ -1,7 +1,8 @@
-/* The candidate of a run (许愿格 §8.7, §8.8, §11): results as they will look, the checks and what
- * needs the user's confirmation, structure changes, manual-edit choices, results that will be
- * missing, inputs appended during execution — and feedback for another round. Nothing is written
- * until 应用; the plan applied is exactly the one previewed. */
+/* The candidate of a run (许愿格 §8.7, §8.8, §11; AI Native 第一期 §2.1): the analysis to write back, the coded
+ * macro with its trial-run results, or the results of running the macro — results as they will look, the checks
+ * and what needs the user's confirmation, structure changes, manual-edit choices, results that will be missing,
+ * inputs appended while coding — and feedback for another coding round. Nothing is written until 应用; the plan
+ * applied is exactly the one previewed. */
 
 import { useState } from 'react'
 import { describeError } from '../../api/session'
@@ -59,7 +60,7 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
   const sendFeedback = async () => {
     if (!feedback.trim()) return
     try {
-      await store.wish.execute(run.wish_id, { feedback: feedback.trim(), parentRunId: run.run_id, cellId: (run.params.location as { cell_id?: string } | undefined)?.cell_id })
+      await store.wish.code(run.wish_id, { feedback: feedback.trim(), parentRunId: run.run_id, cellId: (run.params.location as { cell_id?: string } | undefined)?.cell_id })
       setFeedback('')
     } catch (error) { onMessage('error', describeError(error)) }
   }
@@ -72,12 +73,12 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
   const destructive = Boolean(summary?.destructive)
   // matches the service's problem text for structure changes (store/src/wish/plan.rs)
   const blocking = (summary?.problems ?? []).filter((p) => !(destructive && p.includes('Structure changes will delete')))
-  const title = t(run.stage === 'analyze' ? 'aiworkspace.wish.candidate.analysis' : run.stage === 'rerun_program' ? 'aiworkspace.wish.candidate.rerun' : run.stage === 'repair_program' ? 'aiworkspace.wish.candidate.repair' : 'aiworkspace.wish.candidate.results')
+  const title = t(run.stage === 'analyze' ? 'aiworkspace.wish.candidate.analysis' : run.stage === 'code' ? 'aiworkspace.wish.candidate.code' : 'aiworkspace.wish.candidate.run')
   return (
-    <div className="aiws-wish-candidate" data-testid="aiws-wish-candidate" data-run-id={run.run_id} data-state={run.state} data-ready={preview?.ready ? 'true' : 'false'}>
+    <div className="aiws-wish-candidate" data-testid="aiws-wish-candidate" data-run-id={run.run_id} data-stage={run.stage} data-state={run.state} data-ready={preview?.ready ? 'true' : 'false'}>
       <div className="aiws-wish-head">
         <b>{title}</b>
-        <span className="aiws-chip aiws-chip-derived">{t(run.simulated ? 'aiworkspace.wish.simulated' : cand.mode === 'program' ? 'aiworkspace.wish.candidate.programMode' : 'aiworkspace.wish.candidate.generated')}</span>
+        {run.simulated && <span className="aiws-chip aiws-chip-derived">{t('aiworkspace.wish.simulated')}</span>}
         {run.feedback && <span className="aiws-chip" title={run.feedback}>{t('aiworkspace.wish.reviseWithFeedback')}</span>}
         {cand.summary && <span className="aiws-muted">{cand.summary}</span>}
       </div>
@@ -94,10 +95,9 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
                 <div className="aiws-wish-result-head">
                   <button type="button" className="aiws-link" onClick={() => setOpen((o) => ({ ...o, [r.name]: !isOpen }))}>{isOpen ? '▾' : '▸'} {r.title ?? r.name}</button>
                   <span className="aiws-muted">{label(TYPE_LABEL, r.type)}</span>
-                  <span className="aiws-chip" title={t(r.approach === 'program' ? 'aiworkspace.wish.approach.programHint' : 'aiworkspace.wish.approach.directHint')}>{t(r.approach === 'program' ? 'aiworkspace.wish.approach.program' : 'aiworkspace.wish.approach.direct')}</span>
                   {p && <span className="aiws-chip aiws-chip-derived">{label(ACTION_LABEL, p.action)}{p.reordered ? ` · ${t('aiworkspace.wish.rowOrderUpdated')}` : ''}</span>}
                   {cand.model_judgment?.includes(r.name) && <span className="aiws-chip aiws-chip-warn" title={t('aiworkspace.wish.modelJudgmentHint')}>{t('aiworkspace.wish.modelJudgment')}</span>}
-                  {r.approach === 'program' && (cand.external_data?.length ?? 0) > 0 && <span className="aiws-chip aiws-chip-warn" title={cand.external_data?.join('\n')}>{t('aiworkspace.wish.externalData')}</span>}
+                  {(cand.external_data?.length ?? 0) > 0 && <span className="aiws-chip aiws-chip-warn" title={cand.external_data?.join('\n')}>{t('aiworkspace.wish.externalData')}</span>}
                 </div>
                 {isOpen && <ResultPreview result={r} />}
               </li>

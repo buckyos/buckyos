@@ -47,10 +47,8 @@
         "usage": {
           "total": "number"
         },
-        "wish_aicc_mode": "string",
         "wish_execution": {
-          "default": "string",
-          "service": "boolean"
+          "default": "string"
         },
         "workspace_id": "string"
       }
@@ -803,17 +801,6 @@
       }
     },
     {
-      "method": "ws.set_wish_aicc",
-      "params": {
-        "mode": "string",
-        "workspace_id": "string"
-      },
-      "result": {
-        "ok": "boolean",
-        "wish_aicc_mode": "string"
-      }
-    },
-    {
       "method": "ws.create_entry",
       "params": {
         "capabilities": [
@@ -1153,6 +1140,1044 @@
         "commit_parts": "number",
         "ok": "boolean",
         "removed": "number"
+      }
+    },
+    {
+      "method": "ws.get_info",
+      "params": {
+        "workspace_id": "string"
+      },
+      "result": {
+        "base_seq": "number",
+        "capabilities": [
+          "string"
+        ],
+        "epoch": "string",
+        "forked_from": null,
+        "format_version": "string",
+        "head_commit_id": "string",
+        "head_seq": "number",
+        "hosted_exec": {
+          "digest": "string",
+          "enabled": "boolean"
+        },
+        "ok": "boolean",
+        "planner_version": "number",
+        "principal": "string",
+        "protocol_version": "string",
+        "public_base": null,
+        "purpose": null,
+        "richtext_schema": "string",
+        "show_lock": null,
+        "title": "string",
+        "traffic": "number",
+        "usage": {
+          "content": "number",
+          "staged": "number",
+          "total": "number"
+        },
+        "wish_execution": {
+          "default": "string"
+        },
+        "workspace_id": "string"
+      }
+    },
+    {
+      "method": "doc.commit",
+      "params": {
+        "epoch": "string",
+        "idempotency_key": "string",
+        "operations": [
+          {
+            "entity_id": "string",
+            "op": "string",
+            "order_key": "string",
+            "parent_id": "string",
+            "payload": {
+              "executor": "string",
+              "output_mode": "string",
+              "prompt": "string"
+            },
+            "type_id": "string"
+          }
+        ],
+        "protocol_version": "string",
+        "session_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "commit_id": "string",
+        "replayed": "boolean",
+        "seq": "number",
+        "server_ops": [],
+        "status": "string",
+        "touched": [
+          {
+            "change": "string",
+            "entity_id": "string",
+            "rev": "number"
+          }
+        ]
+      }
+    },
+    {
+      "method": "proc.start",
+      "params": {
+        "idempotency_key": "string",
+        "params": {
+          "execution": {
+            "mode": "string"
+          },
+          "stage": "string",
+          "wish_id": "string"
+        },
+        "program": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "aicc": {
+          "mode": "string",
+          "operator_id": "string",
+          "user_id": "string"
+        },
+        "brief": {
+          "analysis": null,
+          "inputs": null,
+          "knowledge": null,
+          "output": null,
+          "prompt": "string",
+          "refinements": null,
+          "request": null,
+          "stage": "string"
+        },
+        "candidate": null,
+        "claim_token": "string",
+        "context": {
+          "ai": {
+            "mode": "string",
+            "operator_id": "string",
+            "user_id": "string"
+          },
+          "compute": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "executor": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "expires_at": "string",
+          "location": "string",
+          "outputs": {
+            "container_id": null,
+            "name": null,
+            "results": [],
+            "surface_id": null
+          },
+          "task": {
+            "digest": "string",
+            "wish_id": "string"
+          },
+          "trigger": "string"
+        },
+        "created_at": "string",
+        "dispatch": null,
+        "error": null,
+        "evidence": {
+          "appended_inputs": null,
+          "inputs": null,
+          "read_set": null
+        },
+        "execution": {
+          "attempt": "number",
+          "executor": null,
+          "lease_until": null,
+          "mode": "string"
+        },
+        "feedback": null,
+        "ok": "boolean",
+        "params": {
+          "execution": {
+            "mode": "string"
+          },
+          "stage": "string",
+          "wish_id": "string"
+        },
+        "parent_run_id": null,
+        "program": "string",
+        "program_log": null,
+        "progress": {
+          "phase": "string"
+        },
+        "run_id": "string",
+        "simulated": "boolean",
+        "stage": "string",
+        "state": "string",
+        "updated_at": "string",
+        "usage": null,
+        "warnings": [],
+        "wish_id": "string"
+      }
+    },
+    {
+      "method": "proc.list",
+      "params": {
+        "wish_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "runs": [
+          {
+            "aicc": {
+              "mode": "string",
+              "operator_id": "string",
+              "user_id": "string"
+            },
+            "brief": {
+              "analysis": null,
+              "inputs": null,
+              "knowledge": null,
+              "output": null,
+              "prompt": "string",
+              "refinements": null,
+              "request": null,
+              "stage": "string"
+            },
+            "context": {
+              "ai": {
+                "mode": "string",
+                "operator_id": "string",
+                "user_id": "string"
+              },
+              "compute": {
+                "kind": "string",
+                "principal": "string"
+              },
+              "executor": {
+                "kind": "string",
+                "principal": "string"
+              },
+              "expires_at": "string",
+              "location": "string",
+              "outputs": {
+                "container_id": null,
+                "name": null,
+                "results": [],
+                "surface_id": null
+              },
+              "task": {
+                "digest": "string",
+                "wish_id": "string"
+              },
+              "trigger": "string"
+            },
+            "created_at": "string",
+            "dispatch": null,
+            "error": null,
+            "execution": {
+              "attempt": "number",
+              "executor": null,
+              "lease_until": null,
+              "mode": "string"
+            },
+            "feedback": null,
+            "ok": "boolean",
+            "params": {
+              "execution": {
+                "mode": "string"
+              },
+              "stage": "string",
+              "wish_id": "string"
+            },
+            "parent_run_id": null,
+            "program": "string",
+            "progress": {
+              "phase": "string"
+            },
+            "run_id": "string",
+            "simulated": "boolean",
+            "stage": "string",
+            "state": "string",
+            "updated_at": "string",
+            "usage": null,
+            "warnings": [],
+            "wish_id": "string"
+          }
+        ]
+      }
+    },
+    {
+      "method": "proc.claim",
+      "params": {
+        "claim_token": "string",
+        "run_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "attempt": "number",
+        "lease_ms": "number",
+        "lease_until": "string",
+        "ok": "boolean",
+        "run_id": "string",
+        "run_token": "string",
+        "stage": {
+          "budget": {
+            "ai_max_calls": "number",
+            "ai_max_tokens": "number",
+            "complete_model": "string",
+            "iterations": "number",
+            "llm_map_max_items": "number",
+            "map_model": "string",
+            "max_output_tokens": "number",
+            "program_timeout_secs": "number",
+            "sql_max_calls": "number"
+          },
+          "iterations": "number",
+          "kind": "string",
+          "model": "string",
+          "stage": "string",
+          "system": "string",
+          "tools": [
+            {
+              "description": "string",
+              "name": "string",
+              "parameters": {
+                "properties": {
+                  "depth": {
+                    "maximum": "number",
+                    "minimum": "number",
+                    "type": "string"
+                  },
+                  "target": {
+                    "description": "string",
+                    "type": "string"
+                  }
+                },
+                "type": "string"
+              }
+            }
+          ],
+          "user": "string"
+        }
+      }
+    },
+    {
+      "method": "proc.heartbeat",
+      "params": {
+        "attempt": "number",
+        "progress": {
+          "phase": "string"
+        },
+        "run_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "lease_ms": "number",
+        "lease_until": "string",
+        "ok": "boolean"
+      }
+    },
+    {
+      "method": "proc.files",
+      "params": {
+        "attempt": "number",
+        "run_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "files": {
+          "WORKSPACE.md": {
+            "text": "string"
+          },
+          "catalog/controls.json": {
+            "text": "string"
+          },
+          "catalog/renderers.json": {
+            "text": "string"
+          },
+          "context/entities/canvas-content/meta.json": {
+            "text": "string"
+          },
+          "context/entities/canvas-content/profile.json": {
+            "text": "string"
+          },
+          "context/inputs.json": {
+            "text": "string"
+          },
+          "context/manifest.json": {
+            "text": "string"
+          },
+          "lib/aiws.js": {
+            "text": "string"
+          },
+          "lib/host.js": {
+            "text": "string"
+          },
+          "lib/run.js": {
+            "text": "string"
+          },
+          "request.json": {
+            "text": "string"
+          }
+        },
+        "ok": "boolean",
+        "stage": {
+          "budget": {
+            "ai_max_calls": "number",
+            "ai_max_tokens": "number",
+            "complete_model": "string",
+            "iterations": "number",
+            "llm_map_max_items": "number",
+            "map_model": "string",
+            "max_output_tokens": "number",
+            "program_timeout_secs": "number",
+            "sql_max_calls": "number"
+          },
+          "manifest": null
+        }
+      }
+    },
+    {
+      "method": "proc.tool",
+      "params": {
+        "args": {
+          "text": "string"
+        },
+        "attempt": "number",
+        "name": "string",
+        "run_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "status": "string",
+        "text": "string"
+      }
+    },
+    {
+      "method": "proc.program",
+      "params": {
+        "attempt": "number",
+        "files": {},
+        "log": "string",
+        "results": null,
+        "run_id": "string",
+        "source": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "status": "string",
+        "text": "string"
+      }
+    },
+    {
+      "method": "proc.tool",
+      "params": {
+        "args": {
+          "analysis": {
+            "blockers": [],
+            "checks": [],
+            "context_prompt": "string",
+            "inputs": [],
+            "output_contract": {
+              "results": [
+                {
+                  "name": "string",
+                  "title": "string",
+                  "type": "string"
+                }
+              ]
+            },
+            "schema_version": "string",
+            "status": "string",
+            "warnings": []
+          }
+        },
+        "attempt": "number",
+        "name": "string",
+        "run_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "ok": "boolean",
+        "status": "string",
+        "text": "string"
+      }
+    },
+    {
+      "method": "proc.report",
+      "params": {
+        "attempt": "number",
+        "finished": "boolean",
+        "run_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "aicc": {
+          "mode": "string",
+          "operator_id": "string",
+          "user_id": "string"
+        },
+        "brief": {
+          "analysis": null,
+          "inputs": null,
+          "knowledge": null,
+          "output": null,
+          "prompt": "string",
+          "refinements": null,
+          "request": null,
+          "stage": "string"
+        },
+        "context": {
+          "ai": {
+            "mode": "string",
+            "operator_id": "string",
+            "user_id": "string"
+          },
+          "compute": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "executor": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "expires_at": "string",
+          "location": "string",
+          "outputs": {
+            "container_id": null,
+            "name": null,
+            "results": [],
+            "surface_id": null
+          },
+          "task": {
+            "digest": "string",
+            "wish_id": "string"
+          },
+          "trigger": "string"
+        },
+        "created_at": "string",
+        "dispatch": null,
+        "error": null,
+        "execution": {
+          "attempt": "number",
+          "executor": {
+            "detail": null,
+            "kind": "string",
+            "principal": "string"
+          },
+          "lease_until": "string",
+          "mode": "string"
+        },
+        "feedback": null,
+        "ok": "boolean",
+        "params": {
+          "execution": {
+            "mode": "string"
+          },
+          "stage": "string",
+          "wish_id": "string"
+        },
+        "parent_run_id": null,
+        "program": "string",
+        "progress": {
+          "activity": "string",
+          "last_tool": "string",
+          "phase": "string",
+          "tool_calls": "number"
+        },
+        "run_id": "string",
+        "simulated": "boolean",
+        "stage": "string",
+        "state": "string",
+        "updated_at": "string",
+        "usage": null,
+        "warnings": [],
+        "wish_id": "string"
+      }
+    },
+    {
+      "method": "proc.get",
+      "params": {
+        "run_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "aicc": {
+          "mode": "string",
+          "operator_id": "string",
+          "user_id": "string"
+        },
+        "brief": {
+          "analysis": null,
+          "inputs": null,
+          "knowledge": null,
+          "output": null,
+          "prompt": "string",
+          "refinements": null,
+          "request": null,
+          "stage": "string"
+        },
+        "candidate": {
+          "analysis": {
+            "basis": {
+              "reads": []
+            },
+            "blockers": [],
+            "checks": [],
+            "context_prompt": "string",
+            "executor": "string",
+            "output_contract": {
+              "results": [
+                {
+                  "name": "string",
+                  "title": "string",
+                  "type": "string"
+                }
+              ]
+            },
+            "prompt": "string",
+            "run_id": "string",
+            "schema_version": "string",
+            "status": "string",
+            "warnings": []
+          },
+          "basis": {
+            "config_digest": "string",
+            "key_revs": {
+              "analysis": "number",
+              "executor": "number",
+              "executor_config": "number",
+              "inputs": "number",
+              "knowledge": "number",
+              "last_run": "number",
+              "output": "number",
+              "output_mode": "number",
+              "program": "number",
+              "prompt": "number",
+              "refinements": "number"
+            }
+          },
+          "executed_at": "string",
+          "inputs": [],
+          "wish_id": "string"
+        },
+        "context": {
+          "ai": {
+            "mode": "string",
+            "operator_id": "string",
+            "user_id": "string"
+          },
+          "compute": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "executor": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "expires_at": "string",
+          "location": "string",
+          "outputs": {
+            "container_id": null,
+            "name": null,
+            "results": [],
+            "surface_id": null
+          },
+          "task": {
+            "digest": "string",
+            "wish_id": "string"
+          },
+          "trigger": "string"
+        },
+        "created_at": "string",
+        "dispatch": null,
+        "error": null,
+        "evidence": {
+          "appended_inputs": [],
+          "inputs": [],
+          "read_set": []
+        },
+        "execution": {
+          "attempt": "number",
+          "executor": {
+            "detail": null,
+            "kind": "string",
+            "principal": "string"
+          },
+          "lease_until": "string",
+          "mode": "string"
+        },
+        "feedback": null,
+        "ok": "boolean",
+        "params": {
+          "execution": {
+            "mode": "string"
+          },
+          "stage": "string",
+          "wish_id": "string"
+        },
+        "parent_run_id": null,
+        "preview": {
+          "plan_digest": "string",
+          "ready": "boolean",
+          "summary": {
+            "inputs": [],
+            "kind": "string",
+            "problems": [],
+            "status": "string"
+          }
+        },
+        "program": "string",
+        "program_log": null,
+        "progress": {
+          "activity": "string",
+          "last_tool": "string",
+          "phase": "string",
+          "tool_calls": "number"
+        },
+        "run_id": "string",
+        "simulated": "boolean",
+        "stage": "string",
+        "state": "string",
+        "updated_at": "string",
+        "usage": null,
+        "warnings": [],
+        "wish_id": "string"
+      }
+    },
+    {
+      "method": "proc.apply",
+      "params": {
+        "plan_digest": "string",
+        "run_id": "string",
+        "session_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "aicc": {
+          "mode": "string",
+          "operator_id": "string",
+          "user_id": "string"
+        },
+        "applied": {
+          "commit": {
+            "commit_id": "string",
+            "replayed": "boolean",
+            "seq": "number",
+            "server_ops": [],
+            "status": "string",
+            "touched": [
+              {
+                "change": "string",
+                "entity_id": "string",
+                "rev": "number",
+                "selector": {
+                  "key": "string",
+                  "kind": "string"
+                }
+              }
+            ]
+          },
+          "plan_digest": "string",
+          "status": "string"
+        },
+        "brief": {
+          "analysis": null,
+          "inputs": null,
+          "knowledge": null,
+          "output": null,
+          "prompt": "string",
+          "refinements": null,
+          "request": null,
+          "stage": "string"
+        },
+        "candidate": {
+          "analysis": {
+            "basis": {
+              "reads": []
+            },
+            "blockers": [],
+            "checks": [],
+            "context_prompt": "string",
+            "executor": "string",
+            "output_contract": {
+              "results": [
+                {
+                  "name": "string",
+                  "title": "string",
+                  "type": "string"
+                }
+              ]
+            },
+            "prompt": "string",
+            "run_id": "string",
+            "schema_version": "string",
+            "status": "string",
+            "warnings": []
+          },
+          "basis": {
+            "config_digest": "string",
+            "key_revs": {
+              "analysis": "number",
+              "executor": "number",
+              "executor_config": "number",
+              "inputs": "number",
+              "knowledge": "number",
+              "last_run": "number",
+              "output": "number",
+              "output_mode": "number",
+              "program": "number",
+              "prompt": "number",
+              "refinements": "number"
+            }
+          },
+          "executed_at": "string",
+          "inputs": [],
+          "wish_id": "string"
+        },
+        "context": {
+          "ai": {
+            "mode": "string",
+            "operator_id": "string",
+            "user_id": "string"
+          },
+          "compute": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "executor": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "expires_at": "string",
+          "location": "string",
+          "outputs": {
+            "container_id": null,
+            "name": null,
+            "results": [],
+            "surface_id": null
+          },
+          "task": {
+            "digest": "string",
+            "wish_id": "string"
+          },
+          "trigger": "string"
+        },
+        "created_at": "string",
+        "dispatch": null,
+        "error": null,
+        "evidence": {
+          "appended_inputs": [],
+          "inputs": [],
+          "read_set": []
+        },
+        "execution": {
+          "attempt": "number",
+          "executor": {
+            "detail": null,
+            "kind": "string",
+            "principal": "string"
+          },
+          "lease_until": "string",
+          "mode": "string"
+        },
+        "feedback": null,
+        "ok": "boolean",
+        "params": {
+          "execution": {
+            "mode": "string"
+          },
+          "stage": "string",
+          "wish_id": "string"
+        },
+        "parent_run_id": null,
+        "preview": {
+          "plan_digest": "string",
+          "ready": "boolean",
+          "summary": {
+            "inputs": [],
+            "kind": "string",
+            "problems": [],
+            "status": "string"
+          }
+        },
+        "program": "string",
+        "program_log": null,
+        "progress": {
+          "activity": "string",
+          "last_tool": "string",
+          "phase": "string",
+          "tool_calls": "number"
+        },
+        "result": {
+          "commit_id": "string",
+          "replayed": "boolean",
+          "seq": "number",
+          "server_ops": [],
+          "status": "string",
+          "touched": [
+            {
+              "change": "string",
+              "entity_id": "string",
+              "rev": "number",
+              "selector": {
+                "key": "string",
+                "kind": "string"
+              }
+            }
+          ]
+        },
+        "run_id": "string",
+        "simulated": "boolean",
+        "stage": "string",
+        "state": "string",
+        "updated_at": "string",
+        "usage": null,
+        "warnings": [],
+        "wish_id": "string"
+      }
+    },
+    {
+      "method": "proc.start",
+      "params": {
+        "idempotency_key": "string",
+        "params": {
+          "execution": {
+            "mode": "string"
+          },
+          "stage": "string",
+          "wish_id": "string"
+        },
+        "program": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "aicc": {
+          "mode": "string",
+          "operator_id": "string",
+          "user_id": "string"
+        },
+        "brief": {
+          "analysis": {
+            "at": "string",
+            "basis": {
+              "digest": "string",
+              "reads": []
+            },
+            "blockers": [],
+            "checks": [],
+            "context_prompt": "string",
+            "executor": "string",
+            "output_contract": {
+              "results": [
+                {
+                  "name": "string",
+                  "title": "string",
+                  "type": "string"
+                }
+              ]
+            },
+            "prompt": "string",
+            "run_id": "string",
+            "schema_version": "string",
+            "status": "string",
+            "warnings": []
+          },
+          "inputs": [],
+          "knowledge": null,
+          "output": null,
+          "prompt": "string",
+          "refinements": null,
+          "request": null,
+          "stage": "string"
+        },
+        "candidate": null,
+        "claim_token": "string",
+        "context": {
+          "ai": {
+            "mode": "string",
+            "operator_id": "string",
+            "user_id": "string"
+          },
+          "compute": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "executor": {
+            "kind": "string",
+            "principal": "string"
+          },
+          "expires_at": "string",
+          "location": "string",
+          "outputs": {
+            "container_id": null,
+            "name": null,
+            "results": [
+              {
+                "name": "string",
+                "type": "string"
+              }
+            ],
+            "surface_id": null
+          },
+          "task": {
+            "digest": "string",
+            "wish_id": "string"
+          },
+          "trigger": "string"
+        },
+        "created_at": "string",
+        "dispatch": null,
+        "error": null,
+        "evidence": {
+          "appended_inputs": null,
+          "inputs": null,
+          "read_set": null
+        },
+        "execution": {
+          "attempt": "number",
+          "executor": null,
+          "lease_until": null,
+          "mode": "string"
+        },
+        "feedback": null,
+        "ok": "boolean",
+        "params": {
+          "execution": {
+            "mode": "string"
+          },
+          "stage": "string",
+          "wish_id": "string"
+        },
+        "parent_run_id": null,
+        "program": "string",
+        "program_log": null,
+        "progress": {
+          "phase": "string"
+        },
+        "run_id": "string",
+        "simulated": "boolean",
+        "stage": "string",
+        "state": "string",
+        "updated_at": "string",
+        "usage": null,
+        "warnings": [],
+        "wish_id": "string"
+      }
+    },
+    {
+      "method": "proc.cancel",
+      "params": {
+        "run_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "already_applied": "boolean",
+        "ok": "boolean",
+        "state": "string"
       }
     },
     {

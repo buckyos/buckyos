@@ -3,9 +3,9 @@
 
 import type {
   AnnotationRead, BucketBinding, BucketDownload, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult, StagedAsset,
-  QueryPage, QueryParams, ReadResult, Result, RunView, SqlParams, SqlResult, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json, WishAiccMode,
+  QueryPage, QueryParams, ReadResult, Result, RunView, SqlParams, SqlResult, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
-  ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, HostedExecConfig, Publication, Referrer,
+  ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, WishStageFiles, HostedExecConfig, Publication, Referrer,
   ExtBuildResult, ExtExportResult, ExtMigration, ExtPackResult, LibraryPackage, TemplateSpec,
 } from './types'
 import { commitWithParts, parseAccessDenial, type AccessDenial } from 'buckyos'
@@ -37,7 +37,6 @@ export class AiwsClient {
     return this.call<Result<object>>('ws.revoke', { ...ws, subject, ...(scope_entity_id ? { scope_entity_id } : {}) })
   }
   wsListGrants(ws: Ws) { return this.call<Result<GrantList>>('ws.list_grants', ws) }
-  wsSetWishAicc(ws: Ws, mode: WishAiccMode) { return this.call<Result<{ wish_aicc_mode: WishAiccMode }>>('ws.set_wish_aicc', { ...ws, mode }) }
   wsSetHostedExec(ws: Ws, config: HostedExecConfig) { return this.call<Result<{ hosted_exec: HostedExecConfig }>>('ws.set_hosted_exec', { ...ws, config: config as unknown as Json }) }
   wsListSubjects(ws: Ws) { return this.call<Result<{ subjects: Subject[] }>>('ws.list_subjects', ws) }
   // ---- publication by path (内核架构改进 D26)
@@ -189,7 +188,7 @@ export class AiwsClient {
   procReport(ws: Ws, run_id: string, attempt: number, body: Record<string, Json>) { return this.call<Result<WishRunView>>('proc.report', { ...ws, run_id, attempt, ...body }) }
   procTool(ws: Ws, run_id: string, attempt: number, name: string, args: Json) { return this.call<Result<WishToolAnswer>>('proc.tool', { ...ws, run_id, attempt, name, args }) }
   procProgram(ws: Ws, run_id: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }) { return this.call<Result<WishToolAnswer>>('proc.program', { ...ws, run_id, attempt, ...body }) }
-  procFiles(ws: Ws, run_id: string, attempt: number) { return this.call<Result<{ files: Record<string, { text?: string; base64?: string; skipped?: string }> }>>('proc.files', { ...ws, run_id, attempt }) }
+  procFiles(ws: Ws, run_id: string, attempt: number) { return this.call<Result<WishStageFiles>>('proc.files', { ...ws, run_id, attempt }) }
 
   // ---- write locks
   lockAcquire(ws: Ws, entity_ids: string[], session_id: string) {

@@ -1,18 +1,19 @@
-//! Result collection and validation (许愿格 §8.4–§8.7): what a program run writes and what the model
-//! submits with `put_result` become `wish.results.v2` results, checked on the spot against the output
-//! contract and the production rules, with a preview the model reads in the same run. The collector
-//! also holds the checks, the facts, and the final summary, and assembles the candidate.
+//! Result collection and validation (许愿格 §8.4–§8.7, AI Native 第一期 §2.2–§2.5): what a macro run writes
+//! becomes `wish.results.v2` results, checked on the spot against the output contract, with a preview the model
+//! reads in the same run. Every result comes from the macro; nothing is written directly. The collector resolves
+//! the macro's `declare` into its manifest (field names → field ids while coding), checks that a stored macro's HTML
+//! code did not change (running), holds the checks, the facts and the final summary, and assembles the candidate.
 
-use aiworkspace_core::wish::{is_check_id, is_input_name, is_result_name, PROGRAM_ONLY_TYPES, RESULTS_SCHEMA};
+use aiworkspace_core::canonical::{canonical_json, sha256_hex};
+use aiworkspace_core::wish::{check_manifest, is_check_id, is_input_name, is_result_name, RESULTS_SCHEMA};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub const MAX_TABLE_ROWS: usize = 50_000;
 pub const MAX_TABLE_FIELDS: usize = 100;
+/// Longest text a result may hold inline (a slot's text, a simulated result).
 pub const MAX_DIRECT_CHARS: usize = 20_000;
-/// A written (direct) table-like answer above this many rows must come from a program (§8.2).
-pub const DIRECT_ROWS_LIMIT: usize = 20;
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_HTML_BYTES: usize = 256 * 1024;
 const PREVIEW_ROWS: usize = 5;
@@ -23,10 +24,22 @@ pub struct ProgramRun {
     pub facts: Value,
     pub checks: Vec<Value>,
     pub external: Vec<String>,
-    pub llm_map: Value,
+    /// AI calls of the run: `{ complete: { calls, cached, tokens }, map: { calls, items, cached } }`.
+    pub ai: Value,
+    /// The manifest of this macro version (resolved from `declare` while coding; the stored one when running).
+    pub manifest: Option<Value>,
     pub source: String,
+    /// The macro version: source and manifest (`aiworkspace_core::wish::macro_digest`).
     pub digest: String,
     pub logs: String,
+}
+
+impl ProgramRun {
+    /// Whether the macro called the model (results then carry model judgement).
+    pub fn used_ai(&self) -> bool {
+        let n = |a: &str, k: &str| self.ai.get(a).and_then(|x| x.get(k)).and_then(Value::as_u64).unwrap_or(0);
+        n("complete", "calls") + n("complete", "cached") + n("map", "items") > 0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +50,8 @@ pub struct InputInfo {
     pub records: Option<BTreeSet<String>>,
     /// a control or a Block laid out by one (a mind map node): the control's kind
     pub control: Option<String>,
+    /// table inputs: the fields in the snapshot, `(field_id, name, type)` (the names a macro declares)
+    pub fields: Vec<(String, String, String)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -44,13 +59,12 @@ pub struct Collector {
     pub contract: Value,
     pub checks_def: Vec<Value>,
     pub program: Option<ProgramRun>,
-    pub direct: BTreeMap<String, Value>,
     pub prev_bindings: BTreeMap<String, Value>,
     pub inputs: BTreeMap<String, InputInfo>,
     pub workdir: PathBuf,
     pub finished: Option<Value>,
-    /// Program results stay; written results are kept as they are (program re-run).
-    pub program_only: bool,
+    /// Running a stored macro: its manifest (the HTML code it fixed, what it reads).
+    pub stored_manifest: Option<Value>,
     /// The composite control definitions of the Workspace by identity: `(entity id, composition)` (扩展控件 P3).
     pub composites: BTreeMap<String, (String, Value)>,
 }
@@ -260,7 +274,7 @@ impl Collector {
         Ok(real)
     }
 
-    /// Normalize one raw result (program or `put_result`) into `wish.results.v2`.
+    /// Normalize one raw result (the macro's, or a simulated one) into `wish.results.v2`.
     pub fn normalize(&self, raw: &Value, approach: &str) -> Result<Value, Vec<String>> {
         let mut errs = Vec::new();
         let name = raw["name"].as_str().unwrap_or("").to_string();
@@ -285,15 +299,6 @@ impl Collector {
             other => return Err(vec![format!("Result \"{name}\" has unsupported type {other}")]),
         };
         let contract_ty = contract.as_ref().and_then(|c| c["type"].as_str()).unwrap_or("").to_string();
-        let contract_approach = contract.as_ref().and_then(|c| c["approach"].as_str()).unwrap_or("").to_string();
-        if approach == "direct" {
-            if PROGRAM_ONLY_TYPES.contains(&ty) {
-                return Err(vec![format!("Result \"{name}\" is of type {ty}: tables and derived columns can only be produced by a program (output them in program/main.js with aiws.result.table / aiws.result.columns, then call run_program)")]);
-            }
-            if contract_approach == "program" {
-                return Err(vec![format!("Result \"{name}\" is contracted to be produced by the program: output it in the program and call run_program instead of writing it directly with put_result")]);
-            }
-        }
         let mut out = json!({ "name": name, "approach": approach });
         if let Some(c) = &contract {
             out["title"] = c.get("title").cloned().unwrap_or(json!(name));
@@ -460,14 +465,7 @@ impl Collector {
                     errs.push(format!("Text result \"{name}\" is empty"));
                 }
                 if approach == "direct" && md.chars().count() > MAX_DIRECT_CHARS {
-                    errs.push(format!("Text result \"{name}\" exceeds {MAX_DIRECT_CHARS} characters: generate long content with a program"));
-                }
-                if approach == "direct" {
-                    // a written table of many rows is data, not text
-                    let table_lines = md.lines().filter(|l| l.trim_start().starts_with('|')).count();
-                    if table_lines > DIRECT_ROWS_LIMIT + 2 {
-                        errs.push(format!("Text result \"{name}\" contains {table_lines} table lines: structured results of more than {DIRECT_ROWS_LIMIT} rows must be produced by a program (aiws.result.table)"));
-                    }
+                    errs.push(format!("Text result \"{name}\" exceeds {MAX_DIRECT_CHARS} characters"));
                 }
                 out["markdown"] = json!(md);
                 "richtext"
@@ -668,15 +666,9 @@ impl Collector {
         out["control"] = c;
     }
 
-    /// The results now held (program first), by name.
+    /// The results the macro produced.
     pub fn all(&self) -> Vec<Value> {
-        let mut v: Vec<Value> = self.program.as_ref().map(|p| p.results.clone()).unwrap_or_default();
-        for (n, r) in &self.direct {
-            if !v.iter().any(|x| x["name"] == json!(n)) {
-                v.push(r.clone());
-            }
-        }
-        v
+        self.program.as_ref().map(|p| p.results.clone()).unwrap_or_default()
     }
 
     /// One result as the model and the UI see it before application.
@@ -788,15 +780,17 @@ impl Collector {
         out
     }
 
-    /// Numbers in written results that cannot be found in the facts or in program results (§8.7).
+    /// Numbers in the macro's text results (rich text, a record's text values) that cannot be found in its facts or
+    /// its table results (§8.7, 第一期 §2.4): text the macro had the model write must cite what the macro computed.
     pub fn uncited_numbers(&self, prompt_texts: &[&str]) -> Vec<Value> {
+        let Some(p) = &self.program else { return Vec::new() };
         let mut known = Vec::new();
-        if let Some(p) = &self.program {
-            collect_numbers(&p.facts, &mut known);
-            for r in &p.results {
-                collect_numbers(&r["table"]["rows"], &mut known);
-                collect_numbers(&r["columns"]["values"], &mut known);
-                collect_numbers(&r["record"]["props"], &mut known);
+        collect_numbers(&p.facts, &mut known);
+        for r in &p.results {
+            collect_numbers(&r["table"]["rows"], &mut known);
+            collect_numbers(&r["columns"]["values"], &mut known);
+            for v in r["record"]["props"].as_object().into_iter().flatten().map(|(_, v)| v).filter(|v| v.is_number()) {
+                collect_numbers(v, &mut known);
             }
         }
         let mut given = Vec::new();
@@ -804,10 +798,11 @@ impl Collector {
             given.extend(numbers_in(t).into_iter().map(|(_, n)| n));
         }
         let mut out = Vec::new();
-        for (name, r) in &self.direct {
+        for r in &p.results {
+            let name = r["name"].as_str().unwrap_or("");
             let text = match r["type"].as_str() {
                 Some("richtext") => r["markdown"].as_str().unwrap_or("").to_string(),
-                Some("record") => r["record"]["props"].to_string(),
+                Some("record") => r["record"]["props"].as_object().into_iter().flatten().filter_map(|(_, v)| v.as_str()).collect::<Vec<_>>().join("\n"),
                 _ => continue,
             };
             let mut missing: Vec<String> = Vec::new();
@@ -827,28 +822,24 @@ impl Collector {
         out
     }
 
-    /// Host-level problems that block `finish` (§8.4).
+    /// Host-level problems that block `finish` (§8.4): a contracted result missing, a program check not run, no
+    /// successful trial run, no manifest.
     pub fn blocking(&self) -> Vec<String> {
         let mut out = Vec::new();
+        let Some(p) = &self.program else { return vec!["The macro has not run successfully yet: call run_program first".into()] };
+        if p.manifest.is_none() {
+            out.push("The macro declares nothing: call aiws.declare({ inputs: { … } }) at its start".into());
+        }
         let have: BTreeSet<String> = self.all().iter().filter_map(|r| r["name"].as_str().map(str::to_string)).collect();
         for c in contract_results(&self.contract) {
             let n = c["name"].as_str().unwrap_or("");
-            if self.program_only && c["approach"] == json!("direct") {
-                continue;
-            }
             if !have.contains(n) {
-                out.push(format!("Contracted result \"{n}\" has not been produced yet ({})", if c["approach"] == json!("program") { "output it from the program, then call run_program" } else { "submit it with put_result" }));
+                out.push(format!("Contracted result \"{n}\" has not been produced yet: output it from the macro, then call run_program"));
             }
         }
-        if !self.program_only {
-            for c in self.checks() {
-                if c["kind"] == json!("program") && c["status"] == json!("not_run") && c.get("extra").is_none() {
-                    out.push(format!("Program check \"{}\" was not run: call aiws.check('{}', passed, detail) in the program", c["id"].as_str().unwrap_or(""), c["id"].as_str().unwrap_or("")));
-                }
-            }
-            let needs_program = contract_results(&self.contract).iter().any(|c| c["approach"] == json!("program")) || self.checks_def.iter().any(|c| c["kind"] == json!("program"));
-            if needs_program && self.program.is_none() {
-                out.push("The program has not run successfully yet: call run_program first".into());
+        for c in self.checks() {
+            if c["kind"] == json!("program") && c["status"] == json!("not_run") && c.get("extra").is_none() {
+                out.push(format!("Program check \"{}\" was not run: call aiws.check('{}', passed, detail) in the macro", c["id"].as_str().unwrap_or(""), c["id"].as_str().unwrap_or("")));
             }
         }
         out
@@ -858,7 +849,7 @@ impl Collector {
     pub fn candidate(&self) -> Value {
         let results: Vec<Value> = self.all();
         let model_judgment: Vec<Value> = match &self.program {
-            Some(p) if p.llm_map.get("items").and_then(Value::as_u64).unwrap_or(0) > 0 => results.iter().filter(|r| r["approach"] == json!("program")).map(|r| r["name"].clone()).collect(),
+            Some(p) if p.used_ai() => results.iter().map(|r| r["name"].clone()).collect(),
             _ => Vec::new(),
         };
         let fin = self.finished.clone().unwrap_or(json!({}));
@@ -869,7 +860,7 @@ impl Collector {
             "checks": self.checks(),
             "external_data": self.program.as_ref().map(|p| p.external.clone()).unwrap_or_default(),
             "model_judgment": model_judgment,
-            "llm_map": self.program.as_ref().map(|p| p.llm_map.clone()).unwrap_or(Value::Null),
+            "ai": self.program.as_ref().map(|p| p.ai.clone()).unwrap_or(Value::Null),
             "summary": fin.get("summary").cloned().unwrap_or(json!("")),
             "assumptions": fin.get("assumptions").cloned().unwrap_or(json!([])),
             "warnings": fin.get("warnings").cloned().unwrap_or(json!([])),
@@ -879,7 +870,73 @@ impl Collector {
     }
 }
 
-/// Validate a program's `output/.aiws/results.json` into a `ProgramRun` (results normalized).
+/// The digest of an HTML result's code (第一期 §2.5): what a macro version fixes.
+pub fn html_code_digest(html: &Value) -> String {
+    sha256_hex(canonical_json(&json!({ "html": html["html"], "css": html["css"], "js": html["js"] })).unwrap_or_default().as_bytes())
+}
+
+/// What `aiws.declare` said, resolved against the inputs of this stage (coding): field names → field ids, plus what
+/// the macro produced (`results`, with each HTML result's code digest).
+fn resolve_manifest(c: &Collector, declare: &Value, results: &[Value], errs: &mut Vec<String>) -> Option<Value> {
+    let d = declare.as_object()?;
+    let mut inputs = Map::new();
+    for (name, spec) in d.get("inputs").and_then(Value::as_object).into_iter().flatten() {
+        let Some(info) = c.inputs.get(name) else {
+            errs.push(format!("aiws.declare: there is no input named {name} (inputs: {})", c.inputs.keys().cloned().collect::<Vec<_>>().join(", ")));
+            continue;
+        };
+        let wanted: Vec<String> = match spec {
+            Value::Array(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+            Value::Object(o) => o.get("fields").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
+            _ => Vec::new(),
+        };
+        let mut v = json!({ "entity_id": info.entity_id, "type_id": info.type_id });
+        if info.records.is_some() {
+            let mut fields = Vec::new();
+            for f in &wanted {
+                match info.fields.iter().find(|(_, n, _)| n == f) {
+                    Some((id, n, t)) => fields.push(json!({ "field_id": id, "name": n, "type": t })),
+                    None => errs.push(format!("aiws.declare: input {name} has no field {f} (fields: {})", info.fields.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(", "))),
+                }
+            }
+            v["fields"] = json!(fields);
+        }
+        inputs.insert(name.clone(), v);
+    }
+    let mut produced = Map::new();
+    for r in results {
+        let mut x = json!({ "type": r["type"] });
+        if r["type"] == json!("html") {
+            x["code_digest"] = json!(html_code_digest(&r["html"]));
+        }
+        produced.insert(r["name"].as_str().unwrap_or("").to_string(), x);
+    }
+    let mut m = json!({ "inputs": inputs, "results": produced });
+    for k in ["ai", "zone", "params", "resources"] {
+        if let Some(x) = d.get(k).filter(|x| !x.is_null()) {
+            m[k] = x.clone();
+        }
+    }
+    if let Err(e) = check_manifest(&m) {
+        errs.push(format!("aiws.declare: {}", e.detail));
+    }
+    Some(m)
+}
+
+/// HTML results whose code is not the code the stored macro fixed (第一期 §2.5): running cannot change code.
+pub fn code_changed(manifest: &Value, results: &[Value]) -> Vec<String> {
+    let mut out = Vec::new();
+    for r in results.iter().filter(|r| r["type"] == json!("html")) {
+        let name = r["name"].as_str().unwrap_or("");
+        if manifest["results"][name]["code_digest"].as_str() != Some(html_code_digest(&r["html"]).as_str()) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// Validate a macro's `output/.aiws/results.json` into a `ProgramRun` (results normalized, manifest resolved). The
+/// caller checks `code_changed` when running a stored macro.
 pub fn program_output(c: &Collector, raw: &Value, source: &str, logs: &str) -> Result<ProgramRun, Vec<String>> {
     let mut errs = Vec::new();
     let mut results = Vec::new();
@@ -887,11 +944,7 @@ pub fn program_output(c: &Collector, raw: &Value, source: &str, logs: &str) -> R
     for r in raw["results"].as_array().into_iter().flatten() {
         let n = r["name"].as_str().unwrap_or("").to_string();
         if !names.insert(n.clone()) {
-            errs.push(format!("The program output result \"{n}\" twice"));
-            continue;
-        }
-        if c.direct.contains_key(&n) {
-            errs.push(format!("Result \"{n}\" was already submitted with put_result: name conflict"));
+            errs.push(format!("The macro output result \"{n}\" twice"));
             continue;
         }
         match c.normalize(r, "program") {
@@ -908,17 +961,23 @@ pub fn program_output(c: &Collector, raw: &Value, source: &str, logs: &str) -> R
         }
         checks.push(json!({ "id": id, "passed": ch["passed"] == json!(true), "detail": ch.get("detail").cloned().unwrap_or(Value::Null) }));
     }
+    let manifest = match &c.stored_manifest {
+        Some(m) => Some(m.clone()),
+        None => raw.get("declare").filter(|d| d.is_object()).and_then(|d| resolve_manifest(c, d, &results, &mut errs)),
+    };
     if !errs.is_empty() {
         return Err(errs);
     }
+    let digest = aiworkspace_core::wish::macro_digest(source, manifest.as_ref().unwrap_or(&Value::Null));
     Ok(ProgramRun {
         results,
         facts: raw.get("facts").cloned().unwrap_or(json!({})),
         checks,
         external: raw["external"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
-        llm_map: raw.get("llm_map").cloned().unwrap_or(Value::Null),
+        ai: raw.get("ai").cloned().unwrap_or(Value::Null),
+        manifest,
         source: source.to_string(),
-        digest: aiworkspace_core::canonical::sha256_hex(source.as_bytes()),
+        digest,
         logs: logs.to_string(),
     })
 }

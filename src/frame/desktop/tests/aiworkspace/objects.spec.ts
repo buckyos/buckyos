@@ -93,7 +93,7 @@ test('OX01 dark theme: resting, hovered and selected objects read on the dark ca
   await shot(page, 'ox06-selected-note-dark')
 })
 
-test('OX03/OX13 a wish opens in the right panel; "run" there or on hover starts its next step; the card stays a card', async ({ page, api }) => {
+test('OX03/OX13 a wish opens in the right panel; "run" there or on hover performs its next action; the card stays a card', async ({ page, api }) => {
   const ws = await objectsWorkspace(api, `ox03 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
   await fitAll(page)
@@ -102,6 +102,8 @@ test('OX03/OX13 a wish opens in the right panel; "run" there or on hover starts 
   await page.getByTestId('aiws-afford-wish-run').click()
   await expect(page.locator('[data-testid="aiws-side-panel"][data-tab="wish"]')).toBeVisible()
   await expect(page.getByTestId('aiws-wish-analysis')).toContainText('模拟执行器', { timeout: 20_000 })
+  // the Mock has no macro to code: its next action is running it
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'run')
   await expect(page.getByTestId('aiws-wish-card-state')).toContainText('正在右侧面板中编辑')
   await expect(page.getByTestId('aiws-canvas-block-blk-wish').locator('[data-role="editor"]')).toHaveCount(0)
   await shot(page, 'ox13-wish-panel')
@@ -110,12 +112,14 @@ test('OX03/OX13 a wish opens in the right panel; "run" there or on hover starts 
   await expect(page.getByTestId('aiws-wish-add-selection')).toContainText('1 项')
   await page.getByTestId('aiws-wish-add-selection').click()
   await expect(page.getByTestId('aiws-wish-input')).toHaveCount(2)
-  // the toolbar's run executes once the analysis is current again
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_analysis')
+  // the toolbar's run analyses first, then runs once the analysis is current again
   await page.getByTestId('aiws-canvas-block-blk-wish').click()
   await page.getByTestId('aiws-near-wish-run').click()
   await expect(page.getByTestId('aiws-wish-needs-analysis')).toHaveCount(0, { timeout: 20_000 })
   await page.getByTestId('aiws-near-wish-run').click()
   await expect(page.getByTestId('aiws-wish-candidate')).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'pending_confirmation')
   // closing the panel: the card is a plain card again
   await page.getByTestId('aiws-side-close').click()
   await expect(page.getByTestId('aiws-wish-card-state')).toHaveCount(0)
