@@ -204,7 +204,7 @@ pub fn check_manifest(v: &Value) -> WsResult<()> {
     }
     if let Some(ai) = o.get("ai") {
         let ao = ai.as_object().ok_or_else(|| bad("manifest.ai must be an object"))?;
-        only(ao, &["complete", "map"], "manifest.ai")?;
+        only(ao, &["complete", "map", "image", "video"], "manifest.ai")?;
         if let Some(c) = ao.get("complete") {
             let co = c.as_object().ok_or_else(|| bad("manifest.ai.complete must be an object"))?;
             only(co, &["max_calls", "max_tokens", "models"], "manifest.ai.complete")?;
@@ -217,6 +217,15 @@ pub fn check_manifest(v: &Value) -> WsResult<()> {
             only(mo, &["max_items"], "manifest.ai.map")?;
             if !positive(mo.get("max_items")) {
                 return Err(bad("manifest.ai.map.max_items must be positive"));
+            }
+        }
+        for kind in ["image", "video"] {
+            if let Some(m) = ao.get(kind) {
+                let mo = m.as_object().ok_or_else(|| bad(format!("manifest.ai.{kind} must be an object")))?;
+                only(mo, &["max_calls", "models"], &format!("manifest.ai.{kind}"))?;
+                if !positive(mo.get("max_calls")) || !str_list(mo.get("models"), 8, 128) {
+                    return Err(bad(format!("manifest.ai.{kind}: max_calls is positive, models a list of model names")));
+                }
             }
         }
     }
@@ -632,7 +641,8 @@ mod tests {
                 "rules": { "entity_id": "rules", "type_id": crate::model::TYPE_RICHTEXT }
             },
             "results": { "chart": { "type": "html", "code_digest": "a".repeat(64) }, "monthly": { "type": "table" } },
-            "ai": { "complete": { "max_calls": 20, "max_tokens": 20000, "models": ["llm.chat"] }, "map": { "max_items": 500 } },
+            "ai": { "complete": { "max_calls": 20, "max_tokens": 20000, "models": ["llm.chat"] }, "map": { "max_items": 500 },
+                    "image": { "max_calls": 6, "models": ["image.txt2img.gemini"] }, "video": { "max_calls": 1 } },
             "zone": ["/kapi/x"], "params": ["today", "timezone"], "resources": { "timeout_secs": 120 }
         })
     }
@@ -674,6 +684,9 @@ mod tests {
         bad(&|m| m["ai"]["complete"]["models"] = json!("llm.chat"), "models is a list");
         bad(&|m| m["ai"]["map"]["max_items"] = json!(0), "max_items positive");
         bad(&|m| m["ai"]["agent"] = json!({}), "no agent loop in a macro");
+        bad(&|m| m["ai"]["image"]["max_calls"] = json!(0), "image max_calls positive");
+        bad(&|m| m["ai"]["video"]["models"] = json!("video.generate"), "video models is a list");
+        bad(&|m| m["ai"]["image"]["max_tokens"] = json!(10), "unknown image key");
         bad(&|m| m["zone"] = json!("/kapi/x"), "zone is a list");
         bad(&|m| m["params"] = json!([1]), "params are strings");
         bad(&|m| m["resources"]["timeout_secs"] = json!(0), "timeout positive");
@@ -725,6 +738,8 @@ mod tests {
                 "- writes chart (html), monthly (table)",
                 "- AI: single inferences, at most 20 calls and 20000 tokens",
                 "- AI: per-item judgements, at most 500 items",
+                "- AI: generated images, at most 6",
+                "- AI: generated videos, at most 1",
                 "- Zone resources: /kapi/x",
                 "- parameters: today, timezone",
             ]
@@ -733,6 +748,8 @@ mod tests {
         // limits left to the Workspace are "default"; nothing declared, nothing listed
         let t = crate::body::manifest_text(&json!({ "inputs": {}, "results": {}, "ai": { "complete": { "max_calls": 3 }, "map": {} } }));
         assert_eq!(t, "macro:\n- AI: single inferences, at most 3 calls and default tokens\n- AI: per-item judgements, at most default items");
+        let t = crate::body::manifest_text(&json!({ "inputs": {}, "results": {}, "ai": { "image": { "max_calls": 6 }, "video": {} } }));
+        assert_eq!(t, "macro:\n- AI: generated images, at most 6\n- AI: generated videos, at most default");
         assert_eq!(crate::body::manifest_text(&json!({ "inputs": {}, "results": {}, "zone": [], "params": [] })), "macro:");
     }
 

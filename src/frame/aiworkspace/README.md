@@ -925,8 +925,15 @@ the wish's `body`. Every executor runs `lib/run.js` exactly the same way; what l
 (`globalThis.__aiwsBridge(op, req)`; the hosted runner speaks it over stdio, `lib/run.js --bridge`), answered by `aiws/host.js`:
 `sql` → `proc.tool sql`, `ai.complete` / `llm.map` → the executor's own AI session with `proc.tool llm_cache` (kept per AI-paying user:
 one person's executor never answers another's runs), `zone.fetch` → the executor's session, the Zone's hosts only (`ZONE_ONLY`), GET / HEAD
-only (`ZONE_READ_ONLY`), under a prefix of `declare.zone` only (`ZONE_NOT_DECLARED`; 权限需求 R34). Limits: the smaller of what the macro declares and the stage's
-`budget`; an undeclared AI capability is `AI_NOT_DECLARED`, a spent one `AI_BUDGET_EXCEEDED`.
+only (`ZONE_READ_ONLY`), under a prefix of `declare.zone` only (`ZONE_NOT_DECLARED`; 权限需求 R34), `ai.image` / `ai.video` → one AICC
+generation with the executor's session (`helper.text_to_image`, `image.img2img` after `route.resolve` when the macro gives reference
+pictures, `helper.video_generate`; a running AICC task is followed in the task manager up to `budget.media_timeout_secs`), whose
+output (a named object) the executor imports with `asset.import_object { obj_id }`: the macro gets a media reference `{ kind,
+object_id, media_type, size, … }`, never the bytes, and writes it with `aiws.result.file(name, media)` — a file result
+`{ object_id }` that staging accepts only for an asset this Workspace has or staged (else the run fails: `… is not a file of this
+Workspace`), re-staged with its sniffed image size and a file name. Generations are cached in `llm_cache` by the request (the hit is
+imported again for the run). Waits for generated media do not count against the macro's time limit. Limits: the smaller of what the
+macro declares and the stage's `budget`; an undeclared AI capability is `AI_NOT_DECLARED`, a spent one `AI_BUDGET_EXCEEDED`.
 
 **Stage tools of an executor** (`proc.tool { run_id, attempt, name, args }`, answers `{ status: ok | error, text?, code? }`): the
 stage's model tools, and
@@ -937,7 +944,8 @@ stage's model tools, and
 | `llm_cache` | `{ get: [key…] }` → `{ hits: { key: value } }`; `{ put: [{ key, value }] }` → `{ ok }`. Keys `^[0-9a-f]{64}$` (at most 2000 a call), values up to 64 KiB. The service only keeps the answers. |
 
 `proc.claim` answers the stage brief with `budget { iterations, program_timeout_secs, max_output_tokens, map_model, complete_model,
-llm_map_max_items, ai_max_calls, ai_max_tokens, sql_max_calls }`; `proc.files` answers `{ files, stage: { budget, manifest } }` —
+llm_map_max_items, ai_max_calls, ai_max_tokens, sql_max_calls, image_model, video_model, image_max_calls, video_max_calls,
+media_timeout_secs }`; `proc.files` answers `{ files, stage: { budget, manifest } }` —
 `context/` (only the inputs; no data or Block tree), `request.json`, `catalog/`, `lib/` (`aiws.js`, `run.js`, `host.js`),
 `program/main.js` when there is one — and over `snapshot_download_max_bytes` fails the run with `SNAPSHOT_TOO_LARGE`
 (`data { bytes, limit }`). `proc.program { source, results, log, files }` judges a macro run: coding answers what the model reads
@@ -972,10 +980,10 @@ runner's session: a macro written by someone with `update` reads, when a manager
 Q33). A wish's freshness shows each viewer what it may read: an input it cannot read is `input_problems: [{ reason: unreadable }]`
 and never a `needs_coding` reason about its fields; core `main_status` calls that `no_access` (next action `none`).
 
-Configuration: `AiWorkspaceSettings.wish` — `analyze_model`, `execute_model`, `map_model`, `complete_model` (AICC selectors),
-`analyze_tool_iterations`, `execute_tool_iterations`, `max_output_tokens`, `program_timeout_secs`, `llm_map_max_items`,
-`ai_max_calls`, `ai_max_tokens`, `sql_max_calls`, `snapshot_download_max_bytes`, `default_execution`: what every stage hands its
-executor. Standalone: `--wish-config <json>` with the same keys.
+Configuration: `AiWorkspaceSettings.wish` — `analyze_model`, `execute_model`, `map_model`, `complete_model`, `image_model`,
+`video_model` (AICC selectors), `analyze_tool_iterations`, `execute_tool_iterations`, `max_output_tokens`, `program_timeout_secs`,
+`llm_map_max_items`, `ai_max_calls`, `ai_max_tokens`, `sql_max_calls`, `image_max_calls`, `video_max_calls`, `media_timeout_secs`,
+`snapshot_download_max_bytes`, `default_execution`: what every stage hands its executor. Standalone: `--wish-config <json>` with the same keys.
 
 ## Storage
 

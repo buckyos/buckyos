@@ -1,10 +1,10 @@
 /* The two phase-two demos (phase two §11), migrated from the ai-canvas prototype as commit
- * sequences through the public interface: data in the data tree, Blocks on free Surfaces, the Mock
- * wish executor as a definition entity, and a hand-written declarative definition (extension
- * sample 2). Nothing is pre-executed: the wishes run explicitly from the UI. */
+ * sequences through the public interface: data in the data tree, Blocks on free Surfaces, wishes
+ * the Zone's models work out (analyze → code → run; the short film's pictures and clip with its
+ * image and video models), and a hand-written declarative definition (extension sample 2). Nothing
+ * is pre-executed: the wishes run explicitly from the UI. */
 
 import { aiwsT, aiwsText, type AiwsText } from '../i18n'
-import { mockWishDefOp } from '../ui/wish/mockWishDef'
 import { unwrap, type AiwsClient } from './client'
 import { PROTOCOL_VERSION, type Json, type Operation, type Placement, type WorkspaceSummary } from './types'
 
@@ -42,7 +42,7 @@ function cell(id: string, surfaceId: string, key: string, view: string, sourceId
 
 function wish(id: string, parentId: string, key: string, title: string, prompt: string, inputs: string[], surfaceId: string, outputName: string): Operation {
   return { op: 'entity.create', entity_id: id, type_id: 'buckyos.wish', parent_id: parentId, order_key: key, name: title, payload: {
-    title, prompt, executor: 'mock', output_mode: 'overwrite', inputs: inputs.map((entity_id) => ({ entity_id, version: { mode: 'follow' } })),
+    title, prompt, executor: 'xllm', output_mode: 'overwrite', inputs: inputs.map((entity_id) => ({ entity_id, version: { mode: 'follow' } })),
     output: { container_id: parentId, surface_id: surfaceId, name: outputName },
   } }
 }
@@ -98,7 +98,7 @@ export function quarterlyDemoCommits(): DemoCommit[] {
   const wishOp = wish('wish-analysis', 'sf-analysis-content', k[0], t('aiworkspace.demo.quarterly.wish.title'), t('aiworkspace.demo.quarterly.wish.prompt', { sales: salesName }), ['sales'], 'sf-analysis', t('aiworkspace.demo.quarterly.wish.output'))
   return [
     { message: t('aiworkspace.demo.quarterly.commit.data'), operations: [sales, rows, intro] },
-    { message: t('aiworkspace.demo.quarterly.commit.definitions'), operations: [mockWishDefOp(k[3]) as Operation, kpi] },
+    { message: t('aiworkspace.demo.quarterly.commit.definitions'), operations: [kpi] },
     { message: t('aiworkspace.demo.quarterly.commit.surfaces'), operations: [...main, ...detail] },
     { message: t('aiworkspace.demo.quarterly.commit.analysis'), operations: [
       wishOp,
@@ -164,7 +164,6 @@ export function filmDemoCommits(): DemoCommit[] {
   const stripInputs = (op: Operation) => ({ ...op, payload: { ...(op.payload as Record<string, Json>), inputs: ((op.payload as { inputs: { entity_id: string }[] }).inputs).filter((i) => !i.entity_id.startsWith('wish-')) } })
   return [
     { message: t('aiworkspace.demo.film.commit.data'), operations: [script, characters, rows, style, howto] },
-    { message: t('aiworkspace.demo.film.commit.definition'), operations: [mockWishDefOp(k[4]) as Operation] },
     { message: t('aiworkspace.demo.film.commit.canvas'), operations: [
       ...sf, w1, stripInputs(w2), stripInputs(w3),
       cell('blk-howto', 'sf-film', k[0], 'richtext', 'howto', { x: 60, y: 40, w: 1280, h: 130 }, { title: howtoName }),

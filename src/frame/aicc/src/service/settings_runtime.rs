@@ -828,11 +828,16 @@ mod startup_tests {
     }
 
     #[tokio::test]
-    async fn openrouter_validation_preserves_discovery_price_error_details() {
+    async fn openrouter_validation_accepts_high_output_ratios_and_reports_invalid_cache_prices() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            for (prompt, completion) in [("0.0000000341", "0.000007"), ("1", "501")] {
+            for pricing in [
+                json!({"prompt": "0.0000000341", "completion": "0.000007"}),
+                json!({"prompt": "0.000000035", "completion": "0.000034"}),
+                json!({"prompt": "1", "completion": "10000"}),
+                json!({"prompt": "1", "completion": "501", "input_cache_read": "2"}),
+            ] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = vec![0_u8; 4096];
                 let read = stream.read(&mut request).await.unwrap();
@@ -843,7 +848,7 @@ mod startup_tests {
                         "id": "z-ai/glm-5.2",
                         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
                         "supported_parameters": ["tools", "response_format"],
-                        "pricing": {"prompt": prompt, "completion": completion}
+                        "pricing": pricing
                     }]
                 })
                 .to_string();
@@ -889,10 +894,12 @@ mod startup_tests {
             .unwrap(),
         );
 
-        let valid = validator.validate(request.clone()).await.unwrap();
-        assert!(valid.errors.is_empty(), "{:?}", valid.errors);
-        assert!(valid.error_details.is_empty());
-        assert_eq!(valid.models_discovered, ["z-ai/glm-5.2"]);
+        for _ in 0..3 {
+            let valid = validator.validate(request.clone()).await.unwrap();
+            assert!(valid.errors.is_empty(), "{:?}", valid.errors);
+            assert!(valid.error_details.is_empty());
+            assert_eq!(valid.models_discovered, ["z-ai/glm-5.2"]);
+        }
 
         let invalid = validator.validate(request).await.unwrap();
         assert!(invalid.models_discovered.is_empty());
@@ -906,7 +913,8 @@ mod startup_tests {
         assert!(invalid.errors[0].contains("provider validation failed at Discovery"));
         assert!(invalid.errors[0].contains("z-ai/glm-5.2"));
         assert!(invalid.errors[0].contains("pricing.ratio_exception"));
-        assert!(invalid.errors[0].contains("501.00 exceeds 500"));
+        assert!(invalid.errors[0]
+            .contains("unusual token price ratios require an explicit explanation"));
         assert!(!serde_json::to_string(&invalid)
             .unwrap()
             .contains("sk-test-validation-secret"));

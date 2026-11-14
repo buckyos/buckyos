@@ -549,6 +549,11 @@ export interface WishBudget {
   ai_max_calls: number
   ai_max_tokens: number
   sql_max_calls: number
+  image_model: string
+  video_model: string
+  image_max_calls: number
+  video_max_calls: number
+  media_timeout_secs: number
 }
 export interface WishStageBrief {
   kind: 'model' | 'program'
@@ -973,7 +978,7 @@ export interface RunView {
 export interface BucketDownload { bucket_id: string; key: string; version: number; obj_id: string; token: string }
 /** Where an upload is bound (`ndm` finalize `auto_bind`): the caller's own bucket of this service. */
 export interface BucketBinding { bucket_id: string; key: string }
-export interface StagedAsset { object_id: string; media_type: string; size: number; bucket_id: string; key: string; version: number }
+export interface StagedAsset { object_id: string; media_type: string; size: number; bucket_id: string; key: string; version: number; image?: { width: number; height: number } }
 
 export interface ExportResult { export_id: string; download: BucketDownload; manifest: { export_mode: string; content_root: string; self_contained: boolean; missing: unknown[]; excluded_entities: number; [key: string]: unknown } }
 

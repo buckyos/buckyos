@@ -40,7 +40,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** What a macro may ask its executor (aiws.js `bridge`). */
-const BRIDGE_OPS = ['sql', 'ai.complete', 'llm.map', 'zone.fetch']
+const BRIDGE_OPS = ['sql', 'ai.complete', 'llm.map', 'zone.fetch', 'ai.image', 'ai.video']
+/** Bridge calls whose wait the program's time limit does not count: a generated picture or clip has its own. */
+const MEDIA_OPS = new Set(['ai.image', 'ai.video'])
 
 type Out =
   | { type: 'bridge'; id: number; op: string; req: Json }
@@ -75,10 +77,16 @@ export function runProgram(
     iframe.srcdoc = SANDBOX_DOC
     const post = (msg: unknown) => iframe.contentWindow?.postMessage(msg, '*')
     let settled = false
+    // the time the program itself took: waits for generated media are not counted
+    const started = Date.now()
+    let media = 0
+    let mediaSince = 0
+    let mediaMs = 0
+    const used = () => Date.now() - started - mediaMs - (media ? Date.now() - mediaSince : 0)
     const finish = (fn: () => void) => {
       if (settled) return
       settled = true
-      window.clearTimeout(timer)
+      window.clearInterval(timer)
       options.signal?.removeEventListener('abort', onAbort)
       window.removeEventListener('message', onMessage)
       iframe.remove()
@@ -91,12 +99,17 @@ export function runProgram(
       if (!msg) return
       if (msg.type === 'done') finish(() => resolve({ results: msg.results, log: msg.log, files: msg.files }))
       else {
+        const waiting = MEDIA_OPS.has(msg.op)
+        if (waiting && media++ === 0) mediaSince = Date.now()
         bridge(msg.op, msg.req)
           .then((body) => post({ type: 'bridge', id: msg.id, body } satisfies BridgeReply))
           .catch((error: unknown) => post({ type: 'bridge', id: msg.id, body: { error: error instanceof Error ? error.message : String(error) } } satisfies BridgeReply))
+          .finally(() => { if (waiting && --media === 0) mediaMs += Date.now() - mediaSince })
       }
     }
-    const timer = window.setTimeout(() => finish(() => resolve({ results: { error: `The program timed out (${Math.round(options.timeoutMs / 1000)} s)` }, log: '', files: {} })), options.timeoutMs)
+    const timer = window.setInterval(() => {
+      if (used() > options.timeoutMs) finish(() => resolve({ results: { error: `The program timed out (${Math.round(options.timeoutMs / 1000)} s)` }, log: '', files: {} }))
+    }, 1000)
     options.signal?.addEventListener('abort', onAbort)
     window.addEventListener('message', onMessage)
     iframe.addEventListener('load', () => post({ runner, run: { type: 'run', source, files } satisfies RunMessage }), { once: true })

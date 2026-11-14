@@ -41,6 +41,8 @@ pub struct WishConfig {
     pub execute_model: String,
     pub map_model: String,
     pub complete_model: String,
+    pub image_model: String,
+    pub video_model: String,
     pub analyze_tool_iterations: u32,
     pub execute_tool_iterations: u32,
     pub max_output_tokens: u32,
@@ -49,6 +51,9 @@ pub struct WishConfig {
     pub ai_max_calls: u32,
     pub ai_max_tokens: u32,
     pub sql_max_calls: u32,
+    pub image_max_calls: u32,
+    pub video_max_calls: u32,
+    pub media_timeout_secs: u64,
     pub snapshot_download_max_bytes: u64,
     pub map_budget_chars: usize,
     /// Execution mode of a run that names none (D14): `local` | `hosted`.
@@ -68,6 +73,8 @@ impl WishConfig {
             execute_model: s.execute_model.clone(),
             map_model: s.map_model.clone(),
             complete_model: s.complete_model.clone(),
+            image_model: s.image_model.clone(),
+            video_model: s.video_model.clone(),
             analyze_tool_iterations: s.analyze_tool_iterations,
             execute_tool_iterations: s.execute_tool_iterations,
             max_output_tokens: s.max_output_tokens,
@@ -76,6 +83,9 @@ impl WishConfig {
             ai_max_calls: s.ai_max_calls,
             ai_max_tokens: s.ai_max_tokens,
             sql_max_calls: s.sql_max_calls,
+            image_max_calls: s.image_max_calls,
+            video_max_calls: s.video_max_calls,
+            media_timeout_secs: s.media_timeout_secs,
             snapshot_download_max_bytes: s.snapshot_download_max_bytes,
             map_budget_chars: 16_000,
             default_execution: String::new(),
@@ -99,7 +109,8 @@ impl WishConfig {
     pub fn apply_json(&mut self, v: &Value) {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
         let n = |k: &str| v.get(k).and_then(Value::as_u64);
-        for (k, slot) in [("analyze_model", &mut self.analyze_model), ("execute_model", &mut self.execute_model), ("map_model", &mut self.map_model), ("complete_model", &mut self.complete_model)] {
+        for (k, slot) in [("analyze_model", &mut self.analyze_model), ("execute_model", &mut self.execute_model), ("map_model", &mut self.map_model), ("complete_model", &mut self.complete_model),
+                          ("image_model", &mut self.image_model), ("video_model", &mut self.video_model)] {
             if let Some(x) = s(k) {
                 *slot = x;
             }
@@ -108,13 +119,17 @@ impl WishConfig {
             self.set_default_execution(&x);
         }
         for (k, slot) in [("analyze_tool_iterations", &mut self.analyze_tool_iterations), ("execute_tool_iterations", &mut self.execute_tool_iterations), ("max_output_tokens", &mut self.max_output_tokens),
-                          ("ai_max_calls", &mut self.ai_max_calls), ("ai_max_tokens", &mut self.ai_max_tokens), ("sql_max_calls", &mut self.sql_max_calls)] {
+                          ("ai_max_calls", &mut self.ai_max_calls), ("ai_max_tokens", &mut self.ai_max_tokens), ("sql_max_calls", &mut self.sql_max_calls),
+                          ("image_max_calls", &mut self.image_max_calls), ("video_max_calls", &mut self.video_max_calls)] {
             if let Some(x) = n(k) {
                 *slot = x as u32;
             }
         }
         if let Some(x) = n("program_timeout_secs") {
             self.program_timeout_secs = x;
+        }
+        if let Some(x) = n("media_timeout_secs") {
+            self.media_timeout_secs = x;
         }
         if let Some(x) = n("llm_map_max_items") {
             self.llm_map_max_items = x as usize;

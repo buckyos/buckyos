@@ -57,6 +57,15 @@ function compareValues(a, b) {
   return String(a).localeCompare(String(b), 'zh-CN')
 }
 
+/** A generated or input file of the Workspace, as the macro holds it: never its bytes. */
+function media(v) {
+  const type = typeof v.media_type === 'string' ? v.media_type : null
+  const kind = type?.startsWith('image/') ? 'image' : type?.startsWith('video/') ? 'video' : type?.startsWith('audio/') ? 'audio' : 'file'
+  const out = { kind, object_id: v.object_id, media_type: type }
+  for (const k of ['size', 'width', 'height', 'duration']) if (typeof v[k] === 'number') out[k] = v[k]
+  return Object.freeze(out)
+}
+
 /** What the executor's bridge answered, or the error it gave (its `code` kept: AI_QUOTA_*, SQL_ERROR, ZONE_ONLY…). */
 async function bridge(op, req) {
   const call = globalThis.__aiwsBridge
@@ -220,6 +229,15 @@ class Input {
     return dec.decode(this.bytes())
   }
 
+  /** The asset as a media reference: what `aiws.ai.image({ images })`, `aiws.ai.video` and `result.file` take. */
+  media() {
+    this.#expect('asset')
+    const m = this.meta()
+    if (typeof m.object_id !== 'string') throw new Error(`asset ${this.name} has no object id in the snapshot`)
+    const type = typeof m.media_type === 'string' ? m.media_type : null
+    return media({ object_id: m.object_id, media_type: type, ...(m.image?.width ? { width: m.image.width, height: m.image.height } : {}) })
+  }
+
   /** A control as a Markdown outline (a node: its branch, the node as the one root item). */
   outline() {
     this.#expect('control')
@@ -244,7 +262,7 @@ export class ProgramHost {
     this.external = new Set()
     /** What `aiws.declare` said, as given (the service resolves it into the manifest). */
     this.declared = null
-    this.aiStats = { complete: { calls: 0, cached: 0, tokens: 0 }, map: { calls: 0, items: 0, cached: 0 } }
+    this.aiStats = { complete: { calls: 0, cached: 0, tokens: 0 }, map: { calls: 0, items: 0, cached: 0 }, image: { calls: 0, cached: 0 }, video: { calls: 0, cached: 0 } }
     this.#trackFetch()
     this.aiws = this.#api()
   }
@@ -339,6 +357,29 @@ export class ProgramHost {
           host.aiStats.complete.tokens += body.tokens ?? 0
           return req.schema ? { value: body.value } : { text: body.text ?? '' }
         },
+        /**
+         * One generated picture: `{ prompt, aspect?, size?, quality?, format?, negative?, seed?, images?, model? }` →
+         * a media reference `{ kind: 'image', object_id, media_type, size }` (the picture is kept in the Workspace;
+         * write it with `result.file`). `images`: reference pictures (earlier answers, `input(...).media()`) to edit
+         * or follow. Cached by the request: the same request gives the same picture.
+         */
+        async image(req) {
+          if (!req || typeof req !== 'object') throw new Error('aiws.ai.image({ prompt, aspect?, size?, quality?, format?, images?, model? })')
+          const body = await bridge('ai.image', { ...req, declare: declared() })
+          host.aiStats.image[body.cached ? 'cached' : 'calls'] += 1
+          return media(body)
+        },
+        /**
+         * One generated video clip: `{ prompt, duration?, aspect?, resolution?, first_frame?, last_frame?, references?,
+         * negative?, seed?, model? }` → `{ kind: 'video', object_id, media_type, size, duration? }`. `first_frame` /
+         * `last_frame` / `references: { name: picture }` take media references; name a reference `@{name}` in the prompt.
+         */
+        async video(req) {
+          if (!req || typeof req !== 'object') throw new Error('aiws.ai.video({ prompt, duration?, aspect?, resolution?, first_frame?, references?, model? })')
+          const body = await bridge('ai.video', { ...req, declare: declared() })
+          host.aiStats.video[body.cached ? 'cached' : 'calls'] += 1
+          return media(body)
+        },
       },
       zone: {
         /** A resource of this Zone (a path such as `/kapi/…`, or a URL of the Zone's hosts), with the executor's session. */
@@ -374,7 +415,14 @@ export class ProgramHost {
           if (typeof markdown !== 'string') throw new Error(`result.text(${name}): markdown must be a string`)
           host.#push({ name, type: 'text', markdown, title: opts.title, views: opts.views })
         },
+        /** A file the macro wrote under output/ (`path`, `mediaType`), or a media reference (`aiws.ai.image` / `ai.video`, `input(...).media()`). */
         file(name, path, mediaType, opts = {}) {
+          if (path && typeof path === 'object' && typeof path.object_id === 'string') {
+            const o = mediaType && typeof mediaType === 'object' ? mediaType : opts
+            host.#push({ name, type: 'file', object_id: path.object_id, media_type: path.media_type ?? null, size: path.size ?? null, title: o.title, views: o.views })
+            return
+          }
+          if (typeof path !== 'string') throw new Error(`result.file(${name}): a path under output/ or a media reference`)
           host.#push({ name, type: 'file', path, media_type: mediaType, title: opts.title, views: opts.views })
         },
         html(name, spec) {
@@ -457,14 +505,16 @@ export class ProgramHost {
       else if (r.type === 'text') lines.push(`text ${r.name}: ${r.markdown.length} chars`)
       else if (r.type === 'control' && r.def) lines.push(`control ${r.name}: ${r.def} (${Object.keys(r.slots || {}).join(', ')})`)
       else if (r.type === 'control') lines.push(`control ${r.name}: ${r.kind}${r.under ? ` under ${r.under}` : ''}`)
+      else if (r.type === 'file' && r.object_id) lines.push(`file ${r.name}: ${r.media_type ?? 'file'} ${r.object_id}`)
       else lines.push(`${r.type} ${r.name}`)
     }
     if (Object.keys(this.factsObj).length) lines.push('facts ' + JSON.stringify(this.factsObj))
     for (const c of this.checks) lines.push(`check ${c.id}: ${c.passed ? 'passed' : 'FAILED'}${c.detail !== null ? ' — ' + JSON.stringify(c.detail) : ''}`)
     if (this.declared) lines.push('declare ' + JSON.stringify(this.declared))
     else lines.push('declare: none (the macro must start with aiws.declare)')
-    const { complete, map } = this.aiStats
+    const { complete, map, image, video } = this.aiStats
     if (complete.calls + complete.cached + map.items) lines.push(`ai: complete ${complete.calls} calls (${complete.cached} cached, ${complete.tokens} tokens), map ${map.items} items (${map.calls} calls, ${map.cached} cached)`)
+    if (image.calls + image.cached + video.calls + video.cached) lines.push(`ai: image ${image.calls} generated (${image.cached} cached), video ${video.calls} generated (${video.cached} cached)`)
     if (this.external.size) lines.push('zone / external data: ' + [...this.external].join(', '))
     return lines.join('\n')
   }

@@ -7,10 +7,16 @@
 //   llm.map      → per-item judgements: batches, schema checks, single retries, a per-item cache
 //   zone.fetch   → GET / HEAD of a resource of this Zone its `declare.zone` lists, with the executor's session
 //                  (`zoneFetch`); anything else is refused (权限需求 R34)
+//   ai.image     → one AICC image generation (`helper.text_to_image`, or `image.img2img` with reference images), and
+//   ai.video       one video generation (`helper.video_generate`), with the executor's session; the output goes into
+//                  the Workspace as a staged asset (`importAsset`), so the macro holds an object id, never the bytes.
+//                  Cached in `proc.tool llm_cache` by the request: the same request gives the same picture.
 //
 // The executor gives: `tool(name, args)` (its `proc.tool`), `infer({ model, messages, schema, max_tokens })` →
 // `{ text, tokens? }` (throws with `code` AI_QUOTA_EXHAUSTED / AI_QUOTA_BUDGET_EXCEEDED / AI_RESOURCE_NOT_PERMITTED /
 // AI_UNAVAILABLE on a refusal), `zoneFetch(url, { method, headers, body })` → `{ status, headers, text? | base64? }`,
+// `aicc(method, params)` (one AICC call; a refusal as for `infer`), `task(id)` (the task manager's record of an AICC
+// task), `importAsset(obj_id)` → `{ object_id, media_type, size }` (`asset.import_object` of this Workspace),
 // `zoneHosts` (the Zone's host names), `budget` (the stage's), and `manifest` (the stored macro's, when running it).
 // What the macro declares is the request's `declare` while coding, the manifest when running; this takes the smaller
 // of each declared limit and the budget, and refuses what the macro did not declare.
@@ -18,6 +24,11 @@
 export const MAP_SYSTEM = 'You are an item-by-item judge. Judge each input item independently according to the instruction. Output only JSON, with no explanation.'
 const DEFAULT_COMPLETE_TOKENS = 4096
 const MAP_TOKENS = 4096
+const MEDIA_DEFAULTS = { image: { model: 'image.txt2img', max_calls: 20 }, video: { model: 'video.generate', max_calls: 2 } }
+const DEFAULT_MEDIA_TIMEOUT_SECS = 900
+const MEDIA_POLICY = { profile: 'balanced', allow_fallback: true, runtime_failover: true }
+const FORMATS = { png: 'image/png', jpeg: 'image/jpeg', jpg: 'image/jpeg', webp: 'image/webp' }
+const OBJECT_ID = /^cyfile:[0-9a-f]{16,}$/
 
 /** JSON with sorted keys and no spaces: the text a cache key is the digest of. */
 export function canonical(v) {
@@ -125,8 +136,96 @@ export function declaredZone(declared, url) {
   })
 }
 
-export function createBridgeHost({ tool, infer, zoneFetch, zoneHosts = [], zoneOrigin = null, budget = {}, manifest = null }) {
-  const spent = { calls: 0, tokens: 0, items: 0 }
+/** A media reference of the macro (an `aiws.ai.image` / `ai.video` answer, an asset input's `media()`) → AICC's form. */
+function mediaRef(v, what) {
+  const id = typeof v === 'string' ? v : v && typeof v === 'object' ? v.object_id : null
+  if (typeof id !== 'string' || !OBJECT_ID.test(id)) throw new Error(`${what}: an image of the workspace (an aiws.ai.image answer, or input(...).media())`)
+  return { kind: 'named_object', obj_id: id }
+}
+
+/** The AICC request of `aiws.ai.image` / `ai.video` (without the route): what the cache key is made of. */
+function mediaRequest(kind, req) {
+  const prompt = typeof req.prompt === 'string' ? req.prompt.trim() : ''
+  if (!prompt) throw new Error(`aiws.ai.${kind}: prompt (a string) required`)
+  const out = { prompt }
+  if (typeof req.negative === 'string' && req.negative) out.negative_prompt = req.negative
+  if (Number.isInteger(req.seed)) out.seed = req.seed
+  if (kind === 'image') {
+    if (req.aspect) out.aspect_ratio = String(req.aspect)
+    if (req.size) {
+      if (!/^\d+x\d+$/.test(String(req.size))) throw new Error('aiws.ai.image: size is WxH, such as 1024x1536')
+      out.size = String(req.size)
+    }
+    if (req.quality) out.quality = String(req.quality)
+    if (req.format) {
+      const media = FORMATS[String(req.format).toLowerCase()]
+      if (!media) throw new Error(`aiws.ai.image: format is one of ${Object.keys(FORMATS).join(', ')}`)
+      out.output = { media_type: media }
+    }
+    const images = req.images === undefined || req.images === null ? [] : Array.isArray(req.images) ? req.images : [req.images]
+    if (images.length > 8) throw new Error('aiws.ai.image: at most 8 reference images')
+    if (images.length) out.images = images.map((x) => mediaRef(x, 'aiws.ai.image images'))
+    return out
+  }
+  const output = {}
+  if (req.duration !== undefined && req.duration !== null) {
+    const d = Number(req.duration)
+    if (!(d > 0 && d <= 60)) throw new Error('aiws.ai.video: duration is in seconds (0–60)')
+    output.duration_seconds = d
+  }
+  if (req.aspect) output.aspect_ratio = String(req.aspect)
+  if (req.resolution) {
+    const edge = Number(String(req.resolution).replace(/p$/i, ''))
+    if (!(edge >= 240 && edge <= 4320)) throw new Error('aiws.ai.video: resolution such as 720p or 1080p')
+    output.size = { short_edge: edge }
+  }
+  if (Object.keys(output).length) out.output = output
+  const conditions = []
+  if (req.first_frame) conditions.push({ type: 'keyframe', id: 'first', position: 'start', resource: mediaRef(req.first_frame, 'aiws.ai.video first_frame') })
+  if (req.last_frame) conditions.push({ type: 'keyframe', id: 'last', position: 'end', resource: mediaRef(req.last_frame, 'aiws.ai.video last_frame') })
+  for (const [id, v] of Object.entries(req.references ?? {})) {
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(id)) throw new Error(`aiws.ai.video references: ${JSON.stringify(id)} is not a name (letters, digits, _)`)
+    conditions.push({ type: 'reference_image', id, resource: mediaRef(v, `aiws.ai.video references.${id}`) })
+  }
+  if (conditions.length) out.conditions = conditions
+  return out
+}
+
+/** The width and height the Workspace found in a staged picture. */
+function dims(staged) {
+  const i = staged?.image
+  return i && Number(i.width) > 0 && Number(i.height) > 0 ? { width: Number(i.width), height: Number(i.height) } : {}
+}
+
+/** The output of a terminal AICC task record. */
+function taskOutput(task) {
+  const r = task?.result
+  if (!r || typeof r !== 'object') return null
+  if (r.result && typeof r.result === 'object' && r.result.output && typeof r.result.output === 'object') return r.result.output
+  return r.output && typeof r.output === 'object' ? r.output : null
+}
+
+/** The one picture or video of an AICC answer: `{ obj_id, media_type?, metadata? }`, or a text saying why not. */
+function mediaOf(kind, response) {
+  const r = response ?? {}
+  let resource = null
+  let media = null
+  let metadata = null
+  if (kind === 'image') {
+    resource = Array.isArray(r.images) ? r.images[0] : r.image
+  } else {
+    const v = Array.isArray(r.videos) ? r.videos[0] : null
+    resource = v?.resource ?? null
+    media = typeof v?.media_type === 'string' ? v.media_type : null
+    metadata = v?.measured_metadata ?? null
+  }
+  if (!resource || typeof resource !== 'object') return { missing: `the AI service returned no ${kind}` }
+  if (resource.kind !== 'named_object' || typeof resource.obj_id !== 'string') return { missing: `the AI service returned the ${kind} as ${resource.kind}, which a macro cannot keep` }
+  return { obj_id: resource.obj_id, media_type: media, metadata }
+}
+
+export function createBridgeHost({ tool, infer, zoneFetch, aicc = null, task = null, importAsset = null, zoneHosts = [], zoneOrigin = null, budget = {}, manifest = null }) {
+  const spent = { calls: 0, tokens: 0, items: 0, image: 0, video: 0 }
   const declaredOf = (req) => (manifest && typeof manifest === 'object' ? manifest : req?.declare ?? null)
 
   async function cacheGet(keys) {
@@ -256,6 +355,87 @@ export function createBridgeHost({ tool, infer, zoneFetch, zoneHosts = [], zoneO
     return { results, calls, cached }
   }
 
+  /** One AICC call and, while its task runs, the task manager until it ends (at most the stage's media timeout). */
+  async function generate(kind, model, request) {
+    let response
+    if (kind === 'video') {
+      response = await aicc('helper.video_generate', { ...request, logical_model: model, requirements: {}, disable: {}, policy: MEDIA_POLICY })
+    } else if (request.images) {
+      const logical = model.replace(/^image\.txt2img/, 'image.img2img')
+      const exact = logical.includes('@') ? logical
+        : (await aicc('route.resolve', { api_type: 'image.img2img', logical_model: logical, requirements: {}, disable: {}, policy: MEDIA_POLICY }))?.selected_exact_model
+      if (!exact) throw new Error(`no model serves image.img2img for ${logical}`)
+      response = await aicc('image.img2img', { ...request, exact_model: exact })
+    } else {
+      response = await aicc('helper.text_to_image', { ...request, logical_model: model, requirements: {}, disable: {}, policy: MEDIA_POLICY })
+    }
+    if (response?.status === 'succeeded') return response
+    if (response?.status === 'failed') throw new Error(`the AI service failed: ${JSON.stringify(response.error ?? response.message ?? response)}`)
+    const id = response?.task_id
+    if (typeof id !== 'string' || typeof task !== 'function') throw new Error(`the AI service answered without a result: ${JSON.stringify(response).slice(0, 500)}`)
+    const secs = Number(budget.media_timeout_secs) || DEFAULT_MEDIA_TIMEOUT_SECS
+    const deadline = Date.now() + secs * 1000
+    for (;;) {
+      const t = await task(id)
+      const rec = t && typeof t === 'object' && 'task' in t ? t.task : t
+      if (rec?.phase === 'Terminal') {
+        if (rec.outcome !== 'Succeeded') throw new Error(`AICC task ${id} ${String(rec.outcome ?? 'failed').toLowerCase()}: ${rec.message ?? JSON.stringify(rec.error ?? null)}`)
+        return taskOutput(rec) ?? {}
+      }
+      if (Date.now() > deadline) throw new Error(`AICC task ${id} is still running after ${secs} s`)
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
+  }
+
+  async function media(kind, req) {
+    const decl = declaredOf(req)?.ai?.[kind]
+    if (!decl || typeof decl !== 'object') return { error: `declare it first: aiws.declare({ ai: { ${kind}: { max_calls } } })`, code: 'AI_NOT_DECLARED' }
+    if (typeof aicc !== 'function' || typeof importAsset !== 'function') return { error: `this executor cannot generate ${kind === 'image' ? 'images' : 'videos'}`, code: 'AI_UNAVAILABLE' }
+    const maxCalls = capped(decl.max_calls, budget[`${kind}_max_calls`] ?? MEDIA_DEFAULTS[kind].max_calls)
+    const preset = typeof budget[`${kind}_model`] === 'string' && budget[`${kind}_model`] ? budget[`${kind}_model`] : MEDIA_DEFAULTS[kind].model
+    const model = req.model ?? preset
+    const models = [preset, ...(Array.isArray(decl.models) ? decl.models : [])]
+    if (!models.includes(model)) return { error: `model ${model} is not declared (aiws.declare({ ai: { ${kind}: { models: [...] } } }))`, code: 'AI_NOT_DECLARED' }
+    let request
+    try {
+      request = mediaRequest(kind, req)
+    } catch (error) {
+      return { error: error.message }
+    }
+    const key = await sha256Hex(canonical({ kind, model, request }))
+    const hit = (await cacheGet([key]))[key]
+    if (hit && typeof hit === 'object' && typeof hit.object_id === 'string') {
+      // the same request made this before: stage it again for this run (it may have been applied, or have expired)
+      const staged = await importAsset(hit.object_id).catch(() => null)
+      if (staged) return { ...hit, media_type: staged.media_type ?? hit.media_type, size: staged.size ?? hit.size, ...dims(staged), cached: true }
+    }
+    if (spent[kind] >= maxCalls) return { error: `the ${kind} budget of this run is spent: at most ${maxCalls} calls`, code: 'AI_BUDGET_EXCEEDED' }
+    spent[kind] += 1
+    let out
+    try {
+      const got = mediaOf(kind, await generate(kind, model, request))
+      if (got.missing) return { error: got.missing, code: 'AI_INVALID_ANSWER' }
+      const staged = await importAsset(got.obj_id)
+      out = { kind, object_id: staged.object_id ?? got.obj_id, media_type: staged.media_type ?? got.media_type, size: staged.size ?? null, ...dims(staged) }
+      const m = got.metadata
+      if (m && typeof m === 'object') {
+        if (Number(m.duration_seconds) > 0) out.duration = Number(m.duration_seconds)
+        if (Number(m.width) > 0 && Number(m.height) > 0) Object.assign(out, { width: Number(m.width), height: Number(m.height) })
+      }
+    } catch (error) {
+      const r = refusal(error)
+      // AICC refuses a request no model of this Zone can honour before any cost: say what to change
+      if (/no_candidate_model/.test(r.error)) {
+        r.error += kind === 'video'
+          ? ' — no video model of this Zone takes this request; try references instead of first_frame / last_frame (or the other way round), another duration, aspect or resolution'
+          : ' — no image model of this Zone takes this request; try fewer reference images, another size or aspect'
+      }
+      return r
+    }
+    await cachePut([{ key, value: out }])
+    return { ...out, cached: false }
+  }
+
   async function fetchZone(req) {
     let url
     try {
@@ -285,6 +465,8 @@ export function createBridgeHost({ tool, infer, zoneFetch, zoneHosts = [], zoneO
           case 'ai.complete': return await complete(req ?? {})
           case 'llm.map': return await map(req ?? {})
           case 'zone.fetch': return await fetchZone(req ?? {})
+          case 'ai.image': return await media('image', req ?? {})
+          case 'ai.video': return await media('video', req ?? {})
           default: return { error: `unknown bridge call ${op}` }
         }
       } catch (error) {

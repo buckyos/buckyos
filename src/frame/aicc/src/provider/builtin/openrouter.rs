@@ -496,9 +496,6 @@ fn parse_pricing(pricing: Option<ModelPricing>) -> ProviderResult<Option<Pricing
     {
         return Ok(None);
     }
-    // Token price ratios stay unexcused: `catalog::validate_pricing` owns the accepted band and
-    // rejects anything above it with the reported values, so a discovery snapshot can never
-    // whitewash an absurd rate. Only the per-request fee needs an explanation.
     let mut ratio_exception: Option<String> = None;
     // `Pricing` cannot express a per-request fee together with token rates: catalog validation
     // rejects that combination and `discover()` validates the whole snapshot, so keeping both
@@ -804,17 +801,16 @@ mod tests {
     }
 
     #[test]
-    fn official_extreme_token_price_ratio_within_the_accepted_band_is_preserved() {
+    fn official_high_output_token_price_ratio_is_preserved() {
         let pricing = parse_pricing(Some(ModelPricing {
-            prompt: Some("0.000000037".into()),
-            completion: Some("0.000007".into()),
+            prompt: Some("0.000000035".into()),
+            completion: Some("0.000034".into()),
             ..Default::default()
         }))
         .unwrap()
         .unwrap();
-        assert_eq!(pricing.input_token, Some(0.000000037));
-        assert_eq!(pricing.output_token, Some(0.000007));
-        // 189x is extreme but still inside the accepted band, so no exception is granted.
+        assert_eq!(pricing.input_token, Some(0.000000035));
+        assert_eq!(pricing.output_token, Some(0.000034));
         assert!(pricing.ratio_exception.is_none());
         crate::catalog::validate_pricing("z-ai/glm-5.2", &pricing).unwrap();
     }

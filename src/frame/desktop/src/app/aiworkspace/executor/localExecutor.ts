@@ -9,10 +9,10 @@
  * whose lease lapsed is `interrupted` and resumes as a new attempt. */
 
 import { createBridgeHost } from '../../../../../aiworkspace/aiws/host.js'
-import type { Json, WishBudget, WishClaim, WishStageBrief, WishStageFiles, WishToolAnswer } from '../api/types'
+import type { Json, StagedAsset, WishBudget, WishClaim, WishStageBrief, WishStageFiles, WishToolAnswer } from '../api/types'
 import { aiwsT } from '../i18n'
 import { type ChatClient, type ChatMessage, type ChatTool } from './chat'
-import { classified, type Infer } from './infer'
+import { aiccCall, aiccTask, classified, type Infer } from './infer'
 import { runProgram } from './programHost'
 
 const CLAIMS_KEY = 'aiworkspace.claims'
@@ -46,6 +46,7 @@ export interface ExecutorSession {
   procTool(runId: string, attempt: number, name: string, args: Json): Promise<WishToolAnswer>
   procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }): Promise<WishToolAnswer>
   procFiles(runId: string, attempt: number): Promise<WishStageFiles>
+  importObject(objId: string): Promise<StagedAsset>
 }
 
 /** The Zone a macro may reach from this page (第一期 §2.6): this page's host and the hosts under it. */
@@ -146,6 +147,9 @@ export class LocalExecutor {
       tool: (name, args) => this.session.procTool(this.runId, this.attempt, name, args as Json) as Promise<{ status?: string; text?: string; code?: string }>,
       infer: this.infer,
       zoneFetch,
+      aicc: aiccCall,
+      task: aiccTask,
+      importAsset: (objId) => this.session.importObject(objId),
       zoneHosts: zoneHosts(),
       zoneOrigin: window.location.origin,
       budget: budget as Record<string, unknown>,

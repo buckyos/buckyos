@@ -575,7 +575,7 @@ Provider Rules 的静态价格不能覆盖更新鲜且适用于本次调用的�
 结算时 Provider 响应中的实际费用优先；没有实际费用且缺少完整适用的价格与用量时，费用仍为
 unknown，不得标记为财务完整。估值与实际费用必须区分。
 
-2026-09-25 已实现：统一 cache/模态 usage，缺失费率与超档返回 unknown，自报费用必须声明币种。价格含 source_url/verified_at，异常比例需要 ratio_exception；动态价格和 catalog 使用相同校验。详见 [Provider 升级记录](provider_upgrade_implementation.md)。
+2026-09-25 已实现：统一 cache/模态 usage，缺失费率与超档返回 unknown，自报费用必须声明币种。价格含 source_url/verified_at，缓存读取/写入的异常价格比例需要 ratio_exception；输出/输入 token 单价比例不设上限，动态价格和 catalog 使用相同校验。详见 [Provider 升级记录](provider_upgrade_implementation.md)。
 
 ## 8. OpenAI 官方 Provider 示例
 

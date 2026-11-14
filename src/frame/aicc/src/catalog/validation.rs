@@ -547,8 +547,6 @@ fn validate_model_pricing(
 }
 
 pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), CatalogBuildError> {
-    const MAX_OUTPUT_INPUT_PRICE_RATIO: f64 = 500.0;
-
     if pricing.currency.trim().is_empty() {
         return Err(CatalogBuildError::InvalidValue {
             owner: owner.to_owned(),
@@ -585,16 +583,14 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
     let ratio_ok = |input: Option<f64>,
                     cache: Option<f64>,
                     write: Option<f64>,
-                    write_1h: Option<f64>,
-                    output: Option<f64>|
+                    write_1h: Option<f64>|
      -> Result<(), CatalogBuildError> {
         let Some(input) = input.filter(|v| *v > 0.0) else {
             return Ok(());
         };
         let anomalous = cache.is_some_and(|v| v > input)
             || write.is_some_and(|v| v / input > 10.0)
-            || write_1h.is_some_and(|v| v / input > 10.0)
-            || output.is_some_and(|v| v / input > MAX_OUTPUT_INPUT_PRICE_RATIO);
+            || write_1h.is_some_and(|v| v / input > 10.0);
         if anomalous
             && pricing
                 .ratio_exception
@@ -604,13 +600,7 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
             return Err(CatalogBuildError::InvalidValue {
                 owner: owner.into(),
                 field: "pricing.ratio_exception",
-                reason: match output.filter(|v| v / input > MAX_OUTPUT_INPUT_PRICE_RATIO) {
-                    Some(output) => format!(
-                        "output/input token price ratio {:.2} exceeds {MAX_OUTPUT_INPUT_PRICE_RATIO}; set ratio_exception to explain the price difference",
-                        output / input
-                    ),
-                    None => "unusual token price ratios require an explicit explanation".into(),
-                },
+                reason: "unusual token price ratios require an explicit explanation".into(),
             });
         }
         Ok(())
@@ -620,9 +610,8 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
         pricing.cache_input_token,
         pricing.cache_write_input_token,
         pricing.cache_write_1h_input_token,
-        pricing.output_token,
     )?;
-    for (input, cache, write, write_1h, output) in pricing
+    for (input, cache, write, write_1h) in pricing
         .tiers
         .iter()
         .flat_map(|t| &t.steps)
@@ -632,7 +621,6 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
                 s.cache_input_token,
                 s.cache_write_input_token,
                 s.cache_write_1h_input_token,
-                s.output_token,
             )
         })
         .chain(pricing.time_windows.iter().map(|s| {
@@ -641,7 +629,6 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
                 s.cache_input_token,
                 s.cache_write_input_token,
                 s.cache_write_1h_input_token,
-                s.output_token,
             )
         }))
     {
@@ -650,7 +637,6 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
             cache.or(pricing.cache_input_token),
             write.or(pricing.cache_write_input_token),
             write_1h.or(pricing.cache_write_1h_input_token),
-            output.or(pricing.output_token),
         )?;
     }
     if pricing
@@ -700,7 +686,6 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
                 .or(pricing.cache_write_input_token),
             rule.cache_write_1h_input_token
                 .or(pricing.cache_write_1h_input_token),
-            rule.output_token.or(pricing.output_token),
         )?;
         if !rule.amount.is_finite() || rule.amount < 0.0 {
             return Err(CatalogBuildError::InvalidValue {

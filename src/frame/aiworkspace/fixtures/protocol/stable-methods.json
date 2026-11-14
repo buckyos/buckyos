@@ -1875,12 +1875,17 @@
             "ai_max_calls": "number",
             "ai_max_tokens": "number",
             "complete_model": "string",
+            "image_max_calls": "number",
+            "image_model": "string",
             "iterations": "number",
             "llm_map_max_items": "number",
             "map_model": "string",
             "max_output_tokens": "number",
+            "media_timeout_secs": "number",
             "program_timeout_secs": "number",
-            "sql_max_calls": "number"
+            "sql_max_calls": "number",
+            "video_max_calls": "number",
+            "video_model": "string"
           },
           "iterations": "number",
           "kind": "string",
@@ -1976,12 +1981,17 @@
             "ai_max_calls": "number",
             "ai_max_tokens": "number",
             "complete_model": "string",
+            "image_max_calls": "number",
+            "image_model": "string",
             "iterations": "number",
             "llm_map_max_items": "number",
             "map_model": "string",
             "max_output_tokens": "number",
+            "media_timeout_secs": "number",
             "program_timeout_secs": "number",
-            "sql_max_calls": "number"
+            "sql_max_calls": "number",
+            "video_max_calls": "number",
+            "video_model": "string"
           },
           "manifest": null
         }

@@ -176,6 +176,7 @@ pub fn sniff_file(bytes: &[u8]) -> (String, Option<(u64, u64)>) {
     let media = crate::objects::sniff_media_type(bytes).to_string();
     let dims = match media.as_str() {
         "image/png" if bytes.len() >= 24 => Some((u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as u64, u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as u64)),
+        "image/jpeg" => jpeg_dims(bytes),
         "image/svg+xml" => {
             let head = String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]).to_string();
             let attr = |n: &str| -> Option<u64> {
@@ -197,6 +198,27 @@ pub fn sniff_file(bytes: &[u8]) -> (String, Option<(u64, u64)>) {
         _ => None,
     };
     (media, dims.filter(|(w, h)| *w > 0 && *h > 0 && *w <= 1 << 20 && *h <= 1 << 20))
+}
+
+/// The size in a JPEG's frame header (SOF0–SOF15 but DHT, JPG and DAC), when the bytes reach it.
+fn jpeg_dims(b: &[u8]) -> Option<(u64, u64)> {
+    let mut i = 2;
+    while i + 9 < b.len() {
+        if b[i] != 0xFF {
+            return None;
+        }
+        let marker = b[i + 1];
+        if marker == 0xFF {
+            i += 1;
+            continue;
+        }
+        let len = u16::from_be_bytes([b[i + 2], b[i + 3]]) as usize;
+        if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            return Some((u16::from_be_bytes([b[i + 7], b[i + 8]]) as u64, u16::from_be_bytes([b[i + 5], b[i + 6]]) as u64));
+        }
+        i += 2 + len;
+    }
+    None
 }
 
 /// All numbers written in a text (with separators, decimals, percent).
@@ -470,6 +492,21 @@ impl Collector {
                 out["markdown"] = json!(md);
                 "richtext"
             }
+            "file" if raw.get("object_id").is_some() => {
+                // a generated picture or video (aiws.ai.image / ai.video) or an asset input: already a staged asset of
+                // this Workspace, which staging checks (`stage_files`); the macro never held its bytes
+                let id = raw["object_id"].as_str().unwrap_or("");
+                if !id.starts_with("cyfile:") || id.len() > 128 {
+                    errs.push(format!("File result \"{name}\" names no file of this Workspace ({id})"));
+                }
+                let media = raw["media_type"].as_str().filter(|m| m.contains('/') && m.len() <= 128).unwrap_or("application/octet-stream");
+                out["file"] = json!({ "object_id": id, "media_type": media, "size": raw.get("size").and_then(Value::as_u64) });
+                if media.starts_with("image/") {
+                    "image"
+                } else {
+                    "asset"
+                }
+            }
             "file" => {
                 let p = raw["path"].as_str().unwrap_or("");
                 match self.output_path(p) {
@@ -529,7 +566,7 @@ impl Collector {
                 "control"
             }
             _ => {
-                errs.push("video results need a real media tool and are not supported in the first version".into());
+                errs.push(format!("Result \"{name}\" has an unknown type (a picture or a clip is a file: aiws.result.file)"));
                 "video"
             }
         };

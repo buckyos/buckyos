@@ -21,9 +21,23 @@ export class ZoneClient {
   readonly prefix = `dv-aiws-${randomUUID()}`
   private seq = 0
 
-  constructor(readonly page: Page, readonly token: string) {}
+  private renewed: string | null = null
 
-  async service<T>(service: string, method: string, params: Params, token: string | null = this.token): Promise<T> {
+  /** `renew`: a fresh session of the same user (a password login), for a test that outlives its login token. */
+  constructor(readonly page: Page, readonly token: string, private readonly renew: (() => Promise<string>) | null = null) {}
+
+  /** The session this user has now: the newest of the login token, the browser's (refreshed) session cookies and a
+   * renewed login. */
+  async session(): Promise<string> {
+    const exp = (jwt: string) => { try { return (JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString('utf8')) as { exp?: number }).exp ?? 0 } catch { return 0 } }
+    const cookies = (await this.page.context().cookies()).filter((c) => c.name === 'buckyos_session_token').map((c) => c.value)
+    const best = [this.token, ...cookies, ...(this.renewed ? [this.renewed] : [])].reduce((a, t) => (exp(t) > exp(a) ? t : a))
+    if (this.renew && exp(best) * 1000 < Date.now() + 60_000) this.renewed = await this.renew()
+    return this.renewed && exp(this.renewed) >= exp(best) ? this.renewed : best
+  }
+
+  async service<T>(service: string, method: string, params: Params, explicit?: string | null): Promise<T> {
+    const token = explicit === undefined ? await this.session() : explicit
     const reply = await this.page.evaluate(async (input) => {
       const response = await fetch(`/kapi/${input.service}`, {
         method: 'POST',
@@ -102,7 +116,13 @@ async function login(page: Page, userId: string, value: string): Promise<Actor> 
   const claims = JSON.parse(Buffer.from(cookie.value.split('.')[1], 'base64url').toString('utf8')) as { sub: string }
   expect(claims.sub).toBe(userId)
   expect(await page.evaluate(() => localStorage.getItem('aiworkspace.dev'))).toBeNull()
-  const client = new ZoneClient(page, cookie.value)
+  const client = new ZoneClient(page, cookie.value, async () => {
+    const nonce = Date.now()
+    const renewed = await client.service<{ session_token: string }>('verify-hub', 'login_by_password', {
+      type: 'password', username: userId, password: hashPassword(userId, value, nonce), target: { kind: 'system', service_id: 'control-panel' }, login_nonce: nonce,
+    }, null)
+    return renewed.session_token
+  })
   await client.list()
   return { page, client, userId }
 }

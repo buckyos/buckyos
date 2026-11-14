@@ -43,7 +43,7 @@ Pricing、tier、time-window 支持上述独立费率。非零维度缺费率、
 
 Fable 5.1 的缓存读取价 0.25 USD/百万 token 与 Fable 5 的 1 USD/百万不同，官方当前表证实该差异，未强行拉齐。GLM-4.7、GLM-4.5-Air 的输入/输出双维分档当前单维 tiers 无法准确表达，撤下旧的不准确报价；当前官方表没有确认的其它旧价格也撤下。
 
-FAL 的单位报价可能按尺寸/长度成比例调整，当前 queue codec 没有精确账单单位。因此动态结果只存参考 estimated_cost；不根据图片数或秒数猜总费用。未知单位也不强行换算。静态价格、动态价格共享包含 tiers/time_windows 和比例 lint 的校验；异常比例必须填写 ratio_exception。
+FAL 的单位报价可能按尺寸/长度成比例调整，当前 queue codec 没有精确账单单位。因此动态结果只存参考 estimated_cost；不根据图片数或秒数猜总费用。未知单位也不强行换算。静态价格、动态价格共享包含 tiers/time_windows 的校验；输出/输入 token 单价比例不设上限。缓存读取价格高于输入价格、缓存写入价格超过输入价格 10 倍时，必须填写 ratio_exception。
 
 ## 明确保留的接入缺口
 

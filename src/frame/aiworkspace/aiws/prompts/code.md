@@ -19,7 +19,7 @@ Tools: `ws_profile` / `ws_read` / `ws_query` / `ws_find` / `ws_outline` / `ws_ne
 
 1. Read the task description, the output contract and the checks (in the user message), and `WORKSPACE.md`.
 2. Look at the inputs' profiles and samples (`ws_profile`, `ws_read`, `ws_query`): what the fields mean, units, empty values, outliers.
-3. Write the macro: `aiws.declare(...)` first (the inputs and fields it reads, the AI it calls), then SQL for the set computations, JavaScript for the flow and the layout, `aiws.ai.complete` for text the model writes from the facts, `aiws.llm.map` for per-item judgements, `aiws.facts` for the numbers the text cites, `aiws.check` for each program check, `aiws.result.*` for every contracted result.
+3. Write the macro: `aiws.declare(...)` first (the inputs and fields it reads, the AI it calls), then SQL for the set computations, JavaScript for the flow and the layout, `aiws.ai.complete` for text the model writes from the facts, `aiws.llm.map` for per-item judgements, `aiws.ai.image` / `aiws.ai.video` for pictures and clips (written with `aiws.result.file`), `aiws.facts` for the numbers the text cites, `aiws.check` for each program check, `aiws.result.*` for every contracted result.
 4. `run_program` with the complete source: the host validates the results against the contract and returns each result's preview, the checks, the manifest and the problems. Fix and run again until it is right.
 5. `check_results`: is the contract complete, do the checks pass, can every number in the text be traced to the facts or the tables.
 6. `finish(summary, assumptions, warnings, review_notes)`. Once it is accepted, finish with one sentence.

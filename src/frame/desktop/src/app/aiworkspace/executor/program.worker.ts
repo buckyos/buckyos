@@ -2,7 +2,7 @@
  * Worker on the stage snapshot the main thread fetched, through the program host every executor uses (aiws.js). The
  * Worker is a classic one inside programHost.ts's sandbox (an opaque origin without network): it sees files, not the
  * Workspace — no session, no cookie, none of the page's storage, no network. The macro's bridge calls (`aiws.sql`,
- * `aiws.ai.complete`, `aiws.llm.map`, `aiws.zone.fetch`) go to the main thread, which answers them with host.js.
+ * `aiws.ai.complete`, `aiws.llm.map`, `aiws.zone.fetch`, `aiws.ai.image`, `aiws.ai.video`) go to the main thread, which answers them with host.js.
  * Everything the macro writes under output/ and what the host collected go back as the run's output. Built into one
  * script text by vite.config.ts (`virtual:aiws-program-runner`). */
 

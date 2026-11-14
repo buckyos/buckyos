@@ -111,6 +111,11 @@ pub fn budget(cfg: &WishConfig, stage: &str) -> Value {
         "ai_max_calls": cfg.ai_max_calls,
         "ai_max_tokens": cfg.ai_max_tokens,
         "sql_max_calls": cfg.sql_max_calls,
+        "image_model": cfg.image_model,
+        "video_model": cfg.video_model,
+        "image_max_calls": cfg.image_max_calls,
+        "video_max_calls": cfg.video_max_calls,
+        "media_timeout_secs": cfg.media_timeout_secs,
     })
 }
 
@@ -500,27 +505,63 @@ fn fill_candidate(c: &mut Value, ev: &Value, executor: &str, st: &Arc<StageState
 /// again at application). The run keeps their object ids and bindings, not the paths in its work folder.
 async fn stage_files(state: &Arc<AppState>, caller: &Caller, ws_id: &str, cand: &mut Value) -> WsResult<()> {
     let mut paths: Vec<(String, PathBuf)> = Vec::new();
+    let mut objects: Vec<(usize, String, String)> = Vec::new();
     for (i, r) in cand["results"].as_array().into_iter().flatten().enumerate() {
         if let Some(p) = r["file"]["path"].as_str() {
             paths.push((format!("r{i}"), PathBuf::from(p)));
+        } else if let Some(id) = r["file"]["object_id"].as_str() {
+            objects.push((i, id.to_string(), r["name"].as_str().unwrap_or("file").to_string()));
         }
     }
     if let Some(p) = cand["program"]["path"].as_str() {
         paths.push(("program".into(), PathBuf::from(p)));
     }
-    if paths.is_empty() {
+    if paths.is_empty() && objects.is_empty() {
         return Ok(());
     }
     let c = caller.clone();
-    let staged = with_ws(state, ws_id, move |ws| {
+    let (max, media) = (state.limits.max_asset_bytes, state.limits.max_media_bytes);
+    let (staged, referenced) = with_ws(state, ws_id, move |ws| {
         let mut out = Vec::new();
         for (k, p) in paths {
             let bytes = std::fs::read(&p).map_err(|e| WsError::io(format!("{}: {e}", p.display())))?;
             out.push((k, ws.stage_asset(&c, &bytes)?));
         }
-        Ok(out)
+        // a file the macro holds by its object id (a generated picture or video, an asset input) is one this
+        // Workspace already has or staged: staged again for the plan, never an object of the store at large
+        let mut refs = Vec::new();
+        for (i, id, name) in objects {
+            if ws.asset_info(&id)?.is_none() {
+                return Err(WsError::invalid_op(format!("result {name}: {id} is not a file of this Workspace (a macro writes files it generated or read)")));
+            }
+            let mut staged = ws.stage_upload(&c, &id, max, media)?;
+            let media_type = staged["media_type"].as_str().unwrap_or("").to_string();
+            let ext = match media_type.as_str() {
+                "image/png" => ".png",
+                "image/jpeg" => ".jpg",
+                "image/webp" => ".webp",
+                "image/gif" => ".gif",
+                "video/mp4" => ".mp4",
+                "video/webm" => ".webm",
+                "video/quicktime" => ".mov",
+                "audio/mpeg" => ".mp3",
+                "audio/wav" | "audio/x-wav" => ".wav",
+                _ => "",
+            };
+            staged["file_name"] = json!(format!("{name}{ext}"));
+            refs.push((i, staged));
+        }
+        Ok((out, refs))
     })
     .await?;
+    for (i, staged) in referenced {
+        let f = &mut cand["results"][i]["file"];
+        for field in ["object_id", "key", "version", "media_type", "size", "image", "file_name"] {
+            if !staged[field].is_null() {
+                f[field] = staged[field].clone();
+            }
+        }
+    }
     for (k, staged) in staged {
         let target = if k == "program" {
             &mut cand["program"]

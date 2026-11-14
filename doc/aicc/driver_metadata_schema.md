@@ -316,10 +316,10 @@ Old inventory caches and removed Provider fields are rejected.
 Pricing belongs to Provider Rules/discovery and supports `source_url`,
 `verified_at`, `ratio_exception`, cache reads/writes (including one-hour writes),
 audio/image token rates, tiers and time windows. Discovery and catalog share
-validation. Output/input token price ratios above 500 require a non-empty
-`ratio_exception`; a ratio of exactly 500 is accepted. Cache read prices above
-input prices and cache write prices above 10 times input prices also require an
-explanation. Missing active rates or uncovered tiers return unknown. `AiUsage`
+validation. Output/input token price ratios have no upper limit and do not
+require `ratio_exception`. Cache read prices above input prices and cache write
+prices above 10 times input prices require a non-empty `ratio_exception`.
+Missing active rates or uncovered tiers return unknown. `AiUsage`
 input/output totals include cache/reasoning tokens; modality/cache counts are
 subsets. Undeclared provider `reported_cost` is never assumed USD.
 

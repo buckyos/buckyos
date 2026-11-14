@@ -44,6 +44,8 @@ pub struct ScriptedModel {
     pub map_calls: AtomicUsize,
     /// Inferences `ai.complete` asked the model (not the cached ones).
     pub complete_calls: AtomicUsize,
+    /// Pictures `ai.image` generated (not the cached ones).
+    pub image_calls: AtomicUsize,
     pub delay_ms: AtomicU64,
     /// Every model call is refused by the AI service with this sub-code (AI_QUOTA_EXHAUSTED…).
     pub refuse: Mutex<Option<&'static str>>,
@@ -255,6 +257,7 @@ pub fn model() -> Arc<ScriptedModel> {
         calls: AtomicUsize::new(0),
         map_calls: AtomicUsize::new(0),
         complete_calls: AtomicUsize::new(0),
+        image_calls: AtomicUsize::new(0),
         delay_ms: AtomicU64::new(0),
         refuse: Mutex::new(None),
         complete: Mutex::new(Box::new(|_, prompt| format!("解读：{prompt}"))),
@@ -485,6 +488,34 @@ impl Exec<'_> {
                     self.tool("llm_cache", json!({ "put": put })).await;
                 }
                 json!({ "results": results, "calls": if missed { 1 } else { 0 }, "cached": cached })
+            }
+            // a picture the "AI service" made: a 64×48 PNG head carrying the prompt, uploaded by the starter and imported
+            // into the Workspace like host.js does with AICC's output (`asset.import_object`)
+            "ai.image" => {
+                if !declared["ai"]["image"].is_object() {
+                    return json!({ "error": "declare ai.image", "code": "AI_NOT_DECLARED" });
+                }
+                let key = key_of(&json!({ "kind": "image", "prompt": req["prompt"], "images": req["images"] }));
+                if let Some(hit) = self.tool("llm_cache", json!({ "get": [key] })).await.and_then(|r| r["hits"].get(&key).cloned()) {
+                    let mut v = hit;
+                    v["cached"] = json!(true);
+                    return v;
+                }
+                if let Some(code) = refused {
+                    return json!({ "error": "refused by the AI service", "code": code });
+                }
+                m.image_calls.fetch_add(1, Ordering::SeqCst);
+                let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, b'I', b'H', b'D', b'R', 0, 0, 0, 64, 0, 0, 0, 48, 8, 6, 0, 0, 0];
+                png.extend_from_slice(req["prompt"].as_str().unwrap_or("").as_bytes());
+                static N: AtomicU64 = AtomicU64::new(1);
+                let put = self.srv.nfs.put("alice", "assets", &format!("aicc/{}", N.fetch_add(1, Ordering::SeqCst)), png).await;
+                let staged = self.srv.rpc("asset.import_object", json!({ "workspace_id": self.srv.ws, "bucket_id": put["bucket_id"], "key": put["key"] })).await;
+                let out = json!({ "kind": "image", "object_id": staged["object_id"], "media_type": staged["media_type"], "size": staged["size"],
+                                  "width": staged["image"]["width"], "height": staged["image"]["height"] });
+                self.tool("llm_cache", json!({ "put": [{ "key": key, "value": out }] })).await;
+                let mut v = out;
+                v["cached"] = json!(false);
+                v
             }
             "zone.fetch" => {
                 let url = req["url"].as_str().unwrap_or("");

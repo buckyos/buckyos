@@ -812,6 +812,10 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
     return this.direct.procFiles(runId, attempt)
   }
+  async importObject(objId: string) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
+    return this.direct.importObject(objId)
+  }
 
   close() {
     if (this.disposed) return

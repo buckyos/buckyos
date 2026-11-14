@@ -61,7 +61,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript((key) => window.localStorage.setItem(key, 'en'), LOCALE_STORAGE_KEY)
 })
 
-test('i18n: in English, the list, a demo created from a template, its chrome, panels and wish output show no Chinese', async ({ page }) => {
+test('i18n: in English, the list, a demo created from a template, its chrome, panels and wish output show no Chinese', async ({ page, api }) => {
   test.setTimeout(240_000)
   await openApp(page, ALICE)
   await expectEnglish(page, 'workspace list')
@@ -107,7 +107,14 @@ test('i18n: in English, the list, a demo created from a template, its chrome, pa
   }
   await page.keyboard.press('Escape')
 
-  // the Mock wish: analysis, candidate and applied results are English too
+  // the Mock wish (the test service has no model: the template's wish is put on the Mock executor): analysis, candidate
+  // and applied results are English too
+  const workspaceId = (await page.getByTestId('aiws-workspace').getAttribute('data-workspace-id'))!
+  const { mockWishDefOp } = await import('../../src/app/aiworkspace/ui/wish/mockWishDef')
+  const info = await api.rpc(ALICE, 'ws.get_info', { workspace_id: workspaceId })
+  const wish = await api.read(ALICE, workspaceId, 'wish-analysis')
+  expect((await api.commit(ALICE, { workspace_id: workspaceId, epoch: info.epoch }, [mockWishDefOp('zzz'),
+    { op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [{ key: 'executor', value: 'mock', expect: { rev: wish.content.key_revs.executor ?? 0 } }] }])).status).toBe('accepted')
   await page.getByTestId('aiws-canvas-block-blk-wish').dblclick()
   await page.getByTestId('aiws-wish-analyze').click()
   await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible()

@@ -334,7 +334,7 @@ test('OX10 rich text: double-click, Enter or typing opens it in place; the forma
   await page.keyboard.type('X')
   const prose = page.getByTestId('aiws-richtext-intro')
   await expect(prose).toBeFocused()
-  await expect(prose).toContainText('模拟"。X')
+  await expect(prose).toContainText('更新结果。X')
   // no toolbar, lock bar or form inside the Block; the format tools are in the near toolbar
   await expect(intro.locator('.aiws-inline-tools, .aiws-toolbar, .aiws-lock-bar, select')).toHaveCount(0)
   await expect(page.getByTestId('aiws-near-bold')).toBeVisible()

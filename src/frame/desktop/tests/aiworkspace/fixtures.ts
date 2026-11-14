@@ -122,12 +122,16 @@ export class Api {
     return { workspace_id: ws.workspace_id, epoch: ws.epoch }
   }
 
-  /** One of the phase-two demos (§11), replayed through the public interface like the app does. */
+  /** One of the phase-two demos (§11), replayed through the public interface like the app does — with its wishes on
+   * the Mock executor (its definition added after the data): the test service has no model. */
   async demo(token: string, kind: 'quarterly' | 'film', title: string): Promise<{ workspace_id: string; epoch: string }> {
     const { quarterlyDemoCommits, filmDemoCommits } = await import('../../src/app/aiworkspace/api/demos')
+    const { mockWishDefOp } = await import('../../src/app/aiworkspace/ui/wish/mockWishDef')
     const { setAiwsLocale } = await import('../../src/app/aiworkspace/i18n')
     setAiwsLocale(SPEC_LOCALE)
-    const commits = kind === 'quarterly' ? quarterlyDemoCommits() : filmDemoCommits()
+    const shipped = kind === 'quarterly' ? quarterlyDemoCommits() : filmDemoCommits()
+    const mocked = shipped.map((c) => ({ ...c, operations: c.operations.map((op) => (op.op === 'entity.create' && op.type_id === 'buckyos.wish' ? { ...op, payload: { ...(op.payload as Record<string, Json>), executor: 'mock' } } : op)) }))
+    const commits = [mocked[0], { message: 'Mock wish executor', operations: [mockWishDefOp('zzz') as Json] }, ...mocked.slice(1)]
     const ws = await this.rpc(token, 'ws.create', { title })
     for (const [index, commit] of commits.entries()) {
       const result = await this.commit(token, ws, commit.operations as Json[], `demo/${index + 1}`)

@@ -926,6 +926,11 @@ pub fn manifest_text(m: &Value) -> String {
     if let Some(mp) = ai.get("map").filter(|c| c.is_object()) {
         lines.push(format!("- AI: per-item judgements, at most {} items", mp.get("max_items").and_then(Value::as_u64).map(|n| n.to_string()).unwrap_or_else(|| "default".into())));
     }
+    for (kind, what) in [("image", "images"), ("video", "videos")] {
+        if let Some(x) = ai.get(kind).filter(|c| c.is_object()) {
+            lines.push(format!("- AI: generated {what}, at most {}", x.get("max_calls").and_then(Value::as_u64).map(|n| n.to_string()).unwrap_or_else(|| "default".into())));
+        }
+    }
     if let Some(z) = m.get("zone").and_then(Value::as_array).filter(|z| !z.is_empty()) {
         lines.push(format!("- Zone resources: {}", z.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
     }

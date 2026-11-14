@@ -615,6 +615,7 @@ impl Stage {
                         meta["missing"] = json!("asset bytes are not available here");
                     }
                 }
+                meta["object_id"] = json!(obj);
                 meta["media_type"] = e.payload.get("media_type").cloned().unwrap_or(Value::Null);
                 meta["file_name"] = e.payload.get("file_name").cloned().unwrap_or(Value::Null);
                 meta["image"] = e.payload.get("image").cloned().unwrap_or(Value::Null);

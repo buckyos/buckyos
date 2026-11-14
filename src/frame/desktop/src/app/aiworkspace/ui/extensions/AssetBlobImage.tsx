@@ -1,4 +1,4 @@
-/* An image served from the asset route: fetched with the session token and shown through a blob
+/* An image (or a video clip) served from the asset route: fetched with the session token and shown through a blob
  * URL (the route serves unlisted types as octet-stream, so the real media type is reapplied). */
 
 import { useEffect, useState } from 'react'
@@ -25,5 +25,6 @@ export function AssetBlobImage({ objectId, mediaType, alt, fit = 'contain' }: { 
   }, [store, objectId, mediaType])
   if (state.error) return <div className="aiws-error">{state.error}</div>
   if (!state.url) return <div className="aiws-muted">{t('aiworkspace.extension.loadingImage')}</div>
+  if (mediaType.startsWith('video/')) return <video className="aiws-blob-image" src={state.url} aria-label={alt} controls preload="metadata" style={{ objectFit: fit }} data-object-id={objectId} />
   return <img className="aiws-blob-image" src={state.url} alt={alt} style={{ objectFit: fit }} data-object-id={objectId} />
 }

@@ -145,6 +145,10 @@ pub struct AiWorkspaceWishSettings {
     pub map_model: String,
     /// Default model of `aiws.ai.complete` (a macro's single inference).
     pub complete_model: String,
+    /// Default model of `aiws.ai.image` (a macro's generated picture; with reference pictures its `image.img2img` twin).
+    pub image_model: String,
+    /// Default model of `aiws.ai.video` (a macro's generated clip).
+    pub video_model: String,
     pub analyze_tool_iterations: u32,
     pub execute_tool_iterations: u32,
     /// Output limit of one model turn (thinking included). Some providers (Claude) require one; AICC
@@ -158,6 +162,12 @@ pub struct AiWorkspaceWishSettings {
     pub ai_max_tokens: u32,
     /// `aiws.sql` calls one run may make.
     pub sql_max_calls: u32,
+    /// Pictures the `aiws.ai.image` calls of one run may generate (cached answers are free).
+    pub image_max_calls: u32,
+    /// Clips the `aiws.ai.video` calls of one run may generate.
+    pub video_max_calls: u32,
+    /// How long one generated picture or clip may take; the macro's own time limit does not count this wait.
+    pub media_timeout_secs: u64,
     /// Bytes `proc.files` hands one executor (the stage snapshot); more is `SNAPSHOT_TOO_LARGE`.
     pub snapshot_download_max_bytes: u64,
     /// Where a wish runs when the request names no mode (内核架构改进 D14): `local` (the browser) or
@@ -172,6 +182,8 @@ impl Default for AiWorkspaceWishSettings {
             execute_model: "llm.code".into(),
             map_model: "llm.chat".into(),
             complete_model: "llm.chat".into(),
+            image_model: "image.txt2img".into(),
+            video_model: "video.generate".into(),
             analyze_tool_iterations: 30,
             execute_tool_iterations: 60,
             max_output_tokens: 32_000,
@@ -180,6 +192,9 @@ impl Default for AiWorkspaceWishSettings {
             ai_max_calls: 50,
             ai_max_tokens: 100_000,
             sql_max_calls: 200,
+            image_max_calls: 20,
+            video_max_calls: 2,
+            media_timeout_secs: 900,
             snapshot_download_max_bytes: 64 * 1024 * 1024,
             default_execution: "local".into(),
         }

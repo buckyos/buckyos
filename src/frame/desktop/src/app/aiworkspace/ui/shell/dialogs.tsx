@@ -38,9 +38,9 @@ export type NewTab = 'canvas' | 'workspace' | 'template'
 
 /** Text keys: the title, description and preview are read in the current language when shown. */
 const TEMPLATES = [
-  { id: 'sample' as const, title: 'aiworkspace.shell.template.sample.title', description: 'aiworkspace.shell.template.sample.description', preview: 'aiworkspace.shell.template.sample.preview', mock: false },
-  { id: 'quarterly' as const, title: 'aiworkspace.shell.template.quarterly.title', description: 'aiworkspace.shell.template.quarterly.description', preview: 'aiworkspace.shell.template.quarterly.preview', mock: true },
-  { id: 'film' as const, title: 'aiworkspace.shell.template.film.title', description: 'aiworkspace.shell.template.film.description', preview: 'aiworkspace.shell.template.film.preview', mock: true },
+  { id: 'sample' as const, title: 'aiworkspace.shell.template.sample.title', description: 'aiworkspace.shell.template.sample.description', preview: 'aiworkspace.shell.template.sample.preview' },
+  { id: 'quarterly' as const, title: 'aiworkspace.shell.template.quarterly.title', description: 'aiworkspace.shell.template.quarterly.description', preview: 'aiworkspace.shell.template.quarterly.preview' },
+  { id: 'film' as const, title: 'aiworkspace.shell.template.film.title', description: 'aiworkspace.shell.template.film.description', preview: 'aiworkspace.shell.template.film.preview' },
 ]
 
 export function NewDialog({ client, store, initialTab, onClose, onCreatedSurface, onOpenWorkspace }: {
@@ -186,7 +186,7 @@ function NewFromTemplate({ client, onOpen }: { client: AiwsClient; onOpen: (work
           <label key={item.id} className={`aiws-template${chosen === item.id ? ' is-active' : ''}`} data-testid={`aiws-template-${item.id}`}>
             <input type="radio" name="aiws-template" checked={chosen === item.id} onChange={() => setChosen(item.id)} />
             <span className="aiws-template-text">
-              <span className="aiws-template-title"><b>{t(item.title)}</b>{item.mock && <span className="aiws-chip aiws-chip-derived" title={t('aiworkspace.shell.new.template.mockHint')}>{t('aiworkspace.shell.new.template.mock')}</span>}</span>
+              <span className="aiws-template-title"><b>{t(item.title)}</b></span>
               <span>{t(item.description)}</span>
               <span className="aiws-muted">{t(item.preview)}</span>
             </span>

@@ -347,7 +347,7 @@ impl Stage {
                 problems.push(format!("{at}: the target of table_columns must be the input name of a table input"));
             }
             if ty == "video" {
-                problems.push(format!("{at}: there is no real video generation tool yet, so a video result cannot be contracted"));
+                problems.push(format!("{at}: a video clip is an `asset` result (generated with aiws.ai.video, written with aiws.result.file)"));
             }
             for (vi, v) in r.get("views").and_then(Value::as_array).into_iter().flatten().enumerate() {
                 let renderer = v["renderer"].as_str().unwrap_or("");

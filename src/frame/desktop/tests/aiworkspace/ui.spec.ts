@@ -178,11 +178,10 @@ test('UI-P04 New: a canvas with its content folder in one commit; a template cre
   expect(created.layout.mode).toBe('flow')
   expect(created.icon).toBe('kanban')
   expect(outline.find((e: { entity_id: string }) => e.entity_id === created.content_folder_id)?.parent_id).toBe('canvas-content')
-  // a template: always a new workspace, opened at once; the simulated content is labelled
+  // a template: always a new workspace, opened at once
   await mainMenu(page, 'aiws-menu-new')
   await page.getByTestId('aiws-new-tab-template').click()
   await page.getByTestId('aiws-template-film').click()
-  await expect(page.getByTestId('aiws-template-film')).toContainText('含模拟内容')
   await page.getByLabel('工作区标题', { exact: true }).fill(`p04 模板 ${Date.now()}`)
   await page.getByTestId('aiws-create-template').click()
   await expect(page.getByTestId('aiws-workspace')).not.toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 60_000 })

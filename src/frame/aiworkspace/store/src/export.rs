@@ -339,7 +339,14 @@ impl Workspace {
             return Err(WsError::limit(format!("workspace assets are limited to {max_bytes} bytes")));
         }
         self.check_quota(size, false)?;
-        self.stage_bound(caller, object_id, media_type, size)
+        let mut staged = self.stage_bound(caller, object_id, media_type, size)?;
+        // a picture's size, so a generated one can be checked and laid out without reading it
+        if media_type.starts_with("image/") {
+            if let (_, Some((w, h))) = crate::wish::results::sniff_file(&self.objects.file_head(object_id, 64 * 1024)?) {
+                staged["image"] = json!({ "width": w, "height": h });
+            }
+        }
+        Ok(staged)
     }
 
     /// Bind a stored FileObject under `<ws>/<object_id>` in the owner's `assets` bucket and list it as staged.

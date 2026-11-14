@@ -1,45 +1,10 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Page, TestInfo } from '@playwright/test'
-import type { EntityEnvelope, FreshnessInfo, Result, RichTextContent, WorkspaceInfo, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
-import { chooseFromDevice, createSample, createTemplate, expect, expectAllCommitted, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
+import type { Result, WorkspaceInfo, WorkspaceSummary } from '../../src/app/aiworkspace/api/types'
+import { chooseFromDevice, createSample, expect, expectAllCommitted, openWorkspace, screenshot, test, type Actor } from './aiworkspace.fixtures'
 
 type Workspace = Pick<WorkspaceSummary, 'workspace_id' | 'epoch'>
-
-async function content<T>(actor: Actor, ws: Workspace, entity_id: string) {
-  return (await actor.client.ok<{ content: T }>('doc.read', { workspace_id: ws.workspace_id, entity_id })).content
-}
-
-async function dataView(page: Page, entityId: string, parents: string[] = []) {
-  const sources = page.getByTestId('aiws-top-sources')
-  if (await sources.isVisible()) await sources.click()
-  for (const parent of parents) {
-    const item = page.locator(`[data-testid="aiws-tree-item"][data-entity-id="${parent}"]`)
-    if (await item.getAttribute('aria-expanded') === 'false') await item.getByRole('button', { name: '展开', exact: true }).first().click()
-  }
-  const detail = page.getByTestId(`aiws-detail-${entityId}`)
-  if (!await detail.isVisible()) await page.getByTestId(`aiws-tree-${entityId}`).click()
-  await expect(detail).toBeVisible()
-  return detail
-}
-
-async function wishPanel(page: Page) {
-  await dataView(page, 'wish-analysis', ['canvas-content', 'sf-analysis-content'])
-  const panel = page.getByTestId('aiws-wish-wish-analysis')
-  await expect(panel.getByTestId('aiws-wish-executor')).toHaveValue('mock')
-  return panel
-}
-
-async function generated(actor: Actor, ws: Workspace) {
-  const { entities } = await actor.client.ok<{ entities: EntityEnvelope[] }>('doc.outline', { workspace_id: ws.workspace_id })
-  const results = entities.filter((entity) => entity.derived?.wish_id === 'wish-analysis')
-  expect(results).toHaveLength(4)
-  expect(results.every((entity) => entity.derived?.simulated === true && entity.derived?.executor === 'mock')).toBe(true)
-  const kpi = results.find((entity) => entity.type_id === 'buckyos.record')
-  const summary = results.find((entity) => entity.type_id === 'buckyos.richtext')
-  if (!kpi || !summary) throw new Error('applied analysis is missing its KPI or summary')
-  return { kpi, summary, results }
-}
 
 async function imageHash(page: Page) {
   const image = page.getByTestId('aiws-asset-image')
@@ -63,73 +28,6 @@ async function exportShare(actor: Actor, ws: Workspace, info: TestInfo, name: st
   expect(readFileSync(path).length).toBeGreaterThan(0)
   return path
 }
-
-test('[journey-sales] quarterly analysis previews, applies and refreshes after a source correction', async ({ owner }, info) => {
-  const ws = await createTemplate(owner, 'quarterly')
-  const page = owner.page
-  const panel = await wishPanel(page)
-  const initial = (await owner.client.info(ws)).head_seq
-  await panel.getByTestId('aiws-wish-analyze').click()
-  await expect(panel.getByTestId('aiws-wish-analysis')).toContainText('模拟执行器')
-  await expect(panel.getByTestId('aiws-wish-input')).toHaveCount(1)
-  await expect(panel.getByTestId('aiws-wish-input')).toContainText('原始销售数据')
-  const analysed = (await owner.client.info(ws)).head_seq
-  expect(analysed).toBe(initial + 1)
-
-  await panel.getByTestId('aiws-wish-run').click()
-  await expect(panel.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-ready', 'true')
-  await expect(panel.getByTestId('aiws-wish-candidate')).toContainText('模拟')
-  await expect(panel.getByTestId('aiws-wish-result')).toHaveCount(4)
-  expect((await owner.client.info(ws)).head_seq).toBe(analysed)
-  await screenshot(page, info, 'sales-candidate')
-  await panel.getByTestId('aiws-wish-apply').click()
-  await expect(panel.getByTestId('aiws-wish-message')).toContainText('已应用')
-  await expectAllCommitted(page)
-  expect((await owner.client.info(ws)).head_seq).toBe(analysed + 1)
-  const first = await generated(owner, ws)
-  expect((await content<{ props: { revenue: string } }>(owner, ws, first.kpi.entity_id)).props.revenue).toBe('770000.00')
-  expect(JSON.stringify(await content<RichTextContent>(owner, ws, first.summary.entity_id))).toMatch(/770,?000/)
-  await expect(panel.getByTestId('aiws-freshness-wish-analysis')).toHaveAttribute('data-status', 'current')
-
-  const sales = await dataView(page, 'sales')
-  await sales.getByTestId('aiws-cell-s-1-revenue').getByRole('button').first().click()
-  const input = page.getByLabel('销售额 s-1', { exact: true })
-  await input.fill('138000')
-  await input.press('Enter')
-  await expectAllCommitted(page)
-  const corrected = await owner.client.ok<{ content: { value: number } }>('doc.read', {
-    workspace_id: ws.workspace_id, entity_id: 'sales',
-    selector: { kind: 'table_cell', record_id: 's-1', field_id: 'revenue' },
-  })
-  expect(corrected.content.value).toBe(138000)
-  const freshness = await owner.client.ok<{ items: FreshnessInfo[] }>('doc.freshness', { workspace_id: ws.workspace_id, entity_ids: ['wish-analysis'] })
-  expect(freshness.items).toHaveLength(1)
-  expect(freshness.items[0].status).toBe('stale')
-  await info.attach('sales-source-freshness', { body: Buffer.from(JSON.stringify(freshness.items[0])), contentType: 'application/json' })
-  await wishPanel(page)
-  await expect.soft(panel.getByTestId('aiws-freshness-wish-analysis'), 'the wish must show the source correction without reloading').toHaveAttribute('data-status', 'stale')
-  await screenshot(page, info, 'sales-source-corrected')
-  const beforeRefresh = (await owner.client.info(ws)).head_seq
-  await panel.getByTestId('aiws-wish-run').click()
-  await expect(panel.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-ready', 'true')
-  expect((await owner.client.info(ws)).head_seq).toBe(beforeRefresh)
-  expect((await content<{ props: { revenue: string } }>(owner, ws, first.kpi.entity_id)).props.revenue).toBe('770000.00')
-  await panel.getByTestId('aiws-wish-apply').click()
-  await expect(panel.getByTestId('aiws-wish-message')).toContainText('已应用')
-  await expectAllCommitted(page)
-  const refreshed = await generated(owner, ws)
-  expect(refreshed.results.map((entity) => entity.entity_id).sort()).toEqual(first.results.map((entity) => entity.entity_id).sort())
-  expect((await content<{ props: { revenue: string } }>(owner, ws, refreshed.kpi.entity_id)).props.revenue).toBe('780000.00')
-  expect(JSON.stringify(await content<RichTextContent>(owner, ws, refreshed.summary.entity_id))).toMatch(/780,?000/)
-  await page.reload()
-  await wishPanel(page)
-  await expect(panel.getByTestId('aiws-freshness-wish-analysis')).toHaveAttribute('data-status', 'current')
-  await screenshot(page, info, 'sales-refreshed')
-  await info.attach('sales-verdict', {
-    body: Buffer.from(JSON.stringify({ executor: 'mock', simulated: true, original_total: 770000, corrected_total: 780000, source_record: 's-1', source_before: 128000, source_after: 138000 })),
-    contentType: 'application/json',
-  })
-})
 
 test('[journey-handoff] an author exports a short report and an isolated user imports, edits and re-exports it', async ({ owner, peer }, info) => {
   const ws = await createSample(owner)

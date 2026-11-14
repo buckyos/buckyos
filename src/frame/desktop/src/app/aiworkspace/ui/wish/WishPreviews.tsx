@@ -138,7 +138,7 @@ export function ResultPreview({ result }: { result: WishResult }) {
     case 'image': case 'asset': {
       const f = result.file
       if (!f) return null
-      if (f.object_id && f.media_type.startsWith('image/')) return <div className="aiws-wish-image-preview"><AssetBlobImage objectId={f.object_id} mediaType={f.media_type} alt={result.title ?? result.name} /></div>
+      if (f.object_id && (f.media_type.startsWith('image/') || f.media_type.startsWith('video/'))) return <div className="aiws-wish-image-preview"><AssetBlobImage objectId={f.object_id} mediaType={f.media_type} alt={result.title ?? result.name} /></div>
       return <div className="aiws-muted">{f.media_type} · {t('aiworkspace.wish.preview.bytes', { size: text.num(f.size), count: f.size })}</div>
     }
     case 'html': {

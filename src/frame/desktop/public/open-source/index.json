@@ -3568,7 +3568,21 @@
       "revision": "",
       "license": "MIT OR Apache-2.0",
       "scopes": [
-        "gateway",
+        "gateway"
+      ],
+      "licenseFileCount": 0
+    },
+    {
+      "id": "6f55d52cd5334211cbc1",
+      "name": "alloy-eip7928",
+      "version": "0.4.13",
+      "ecosystem": "cargo",
+      "description": "Implementation of EIP-7928 type definitions",
+      "homepage": "",
+      "repository": "https://github.com/alloy-rs/eips",
+      "revision": "",
+      "license": "MIT OR Apache-2.0",
+      "scopes": [
         "rust"
       ],
       "licenseFileCount": 0
@@ -5927,14 +5941,14 @@
       "licenseFileCount": 0
     },
     {
-      "id": "fcdefe742cc46a7076d3",
+      "id": "543cdf168aec7c37e137",
       "name": "bns-client",
       "version": "0.7.0",
       "ecosystem": "cargo",
       "description": "",
       "homepage": "",
       "repository": "",
-      "revision": "9ca7653455d67e26df3d18fc661e4c6780bb0b41",
+      "revision": "f0ef92f271eb91e16c590eae32cde66ae59e60bd",
       "license": "Apache-2.0",
       "scopes": [
         "rust"
@@ -5942,14 +5956,14 @@
       "licenseFileCount": 1
     },
     {
-      "id": "a9c024ecf835d2e9d86a",
+      "id": "3ab3f58cec56bf42338a",
       "name": "bns-evm",
       "version": "0.7.0",
       "ecosystem": "cargo",
       "description": "",
       "homepage": "",
       "repository": "",
-      "revision": "9ca7653455d67e26df3d18fc661e4c6780bb0b41",
+      "revision": "f0ef92f271eb91e16c590eae32cde66ae59e60bd",
       "license": "Apache-2.0",
       "scopes": [
         "rust"
@@ -6404,7 +6418,21 @@
       "revision": "",
       "license": "MIT OR Apache-2.0",
       "scopes": [
-        "gateway",
+        "gateway"
+      ],
+      "licenseFileCount": 2
+    },
+    {
+      "id": "c99a413682c6999be1e6",
+      "name": "bumpalo",
+      "version": "3.20.4",
+      "ecosystem": "cargo",
+      "description": "A fast bump allocation arena for Rust.",
+      "homepage": "",
+      "repository": "https://github.com/fitzgen/bumpalo",
+      "revision": "",
+      "license": "MIT OR Apache-2.0",
+      "scopes": [
         "rust"
       ],
       "licenseFileCount": 2
@@ -6853,7 +6881,21 @@
       "revision": "",
       "license": "MIT OR Apache-2.0",
       "scopes": [
-        "gateway",
+        "gateway"
+      ],
+      "licenseFileCount": 2
+    },
+    {
+      "id": "2ef5ebd9567390d14a05",
+      "name": "cc",
+      "version": "1.11.2",
+      "ecosystem": "cargo",
+      "description": "A build-time dependency for Cargo build scripts to assist in invoking the native\nC compiler to compile native C code into a static archive to be linked into Rust\ncode.\n",
+      "homepage": "https://github.com/rust-lang/cc-rs",
+      "repository": "https://github.com/rust-lang/cc-rs",
+      "revision": "",
+      "license": "MIT OR Apache-2.0",
+      "scopes": [
         "rust"
       ],
       "licenseFileCount": 2
@@ -8170,14 +8212,14 @@
       "licenseFileCount": 0
     },
     {
-      "id": "7d5b751ecb4e01be66f2",
+      "id": "8e5f0db041e84767d737",
       "name": "cyfs-gateway-api",
       "version": "0.7.0",
       "ecosystem": "cargo",
       "description": "",
       "homepage": "",
       "repository": "",
-      "revision": "9ca7653455d67e26df3d18fc661e4c6780bb0b41",
+      "revision": "f0ef92f271eb91e16c590eae32cde66ae59e60bd",
       "license": "Apache-2.0",
       "scopes": [
         "rust"
@@ -17920,7 +17962,21 @@
       "revision": "",
       "license": "MIT",
       "scopes": [
-        "gateway",
+        "gateway"
+      ],
+      "licenseFileCount": 1
+    },
+    {
+      "id": "01f8681d3d398ca7e47c",
+      "name": "mio",
+      "version": "1.2.5",
+      "ecosystem": "cargo",
+      "description": "Lightweight non-blocking I/O.",
+      "homepage": "https://github.com/tokio-rs/mio",
+      "repository": "https://github.com/tokio-rs/mio",
+      "revision": "",
+      "license": "MIT",
+      "scopes": [
         "rust"
       ],
       "licenseFileCount": 1
@@ -23934,9 +23990,9 @@
       "licenseFileCount": 1
     },
     {
-      "id": "3ec7e6c06d992c4883ae",
+      "id": "f62daec07cc970bfe83b",
       "name": "sfo-io",
-      "version": "0.1.19",
+      "version": "0.1.20",
       "ecosystem": "cargo",
       "description": "A Rust library for handling IO operations, providing asynchronous read/write and stream processing capabilities.",
       "homepage": "",
@@ -27902,7 +27958,21 @@
       "revision": "",
       "license": "MIT",
       "scopes": [
-        "gateway",
+        "gateway"
+      ],
+      "licenseFileCount": 1
+    },
+    {
+      "id": "e38f9e3c6a5d6c4a30bf",
+      "name": "warp",
+      "version": "0.4.4",
+      "ecosystem": "cargo",
+      "description": "serve the web at warp speeds",
+      "homepage": "",
+      "repository": "https://github.com/seanmonstar/warp",
+      "revision": "",
+      "license": "MIT",
+      "scopes": [
         "rust"
       ],
       "licenseFileCount": 1

@@ -260,6 +260,8 @@ export interface WorkspaceSession {
   procTool(runId: string, attempt: number, name: string, args: Json): Promise<WishToolAnswer>
   procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }): Promise<WishToolAnswer>
   procFiles(runId: string, attempt: number): Promise<WishStageFiles>
+  /** A file object already in the Zone (a picture a wish macro generated) becomes a staged asset of this Workspace. */
+  importObject(objId: string): Promise<StagedAsset>
 
   close(): void
   /** Resolves once a closed session released what it held exclusively (replica database, holder lock). */
@@ -810,6 +812,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   async procTool(runId: string, attempt: number, name: string, args: Json) { return unwrap(await this.client.procTool(this.ws, runId, attempt, name, args)) }
   async procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }) { return unwrap(await this.client.procProgram(this.ws, runId, attempt, body)) }
   async procFiles(runId: string, attempt: number) { return unwrap(await this.client.procFiles(this.ws, runId, attempt)) }
+  async importObject(objId: string) { return unwrap(await this.client.assetImportObject(this.ws, { obj_id: objId })) }
 
   close() {
     this.closed = true

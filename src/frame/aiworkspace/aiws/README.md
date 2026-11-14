@@ -19,7 +19,7 @@ export default async function main(aiws) {
 
 - Call it once, before anything else. Reading an input or a field that is not declared throws (`field X is not declared`), so a trial run shows it at once instead of a later run silently reading an empty value.
 - The host resolves the declaration into the **manifest**: each field by its id and the name it has now. Every later run materializes only these inputs and fields, under these names — a field or a table renamed later changes nothing; a declared field deleted or changed to another type stops the wish before it runs ("needs coding").
-- `ai`: a macro that does not declare `ai.complete` / `ai.map` cannot call them. The limits are per run; the workspace's own limits cap them. `ai.complete.models: ['llm.code']` allows models other than the default.
+- `ai`: a macro that does not declare `ai.complete` / `ai.map` / `ai.image` / `ai.video` cannot call them. The limits are per run; the workspace's own limits cap them. `ai.complete.models: ['llm.code']` (likewise `ai.image.models`) allows models other than the default.
 - `zone: ['/kapi/…']` lists the Zone resources the macro reads (`aiws.zone.fetch`, GET / HEAD only; nothing unlisted is reached); `resources: { timeout_secs }` a shorter time limit.
 
 ## 2. Reading inputs
@@ -33,6 +33,7 @@ sales.rows({ fields: ['Month', 'Sales'], filter: { Status: 'Settled' }, sort: '-
 aiws.input('rules').markdown()           // rich text → Markdown
 aiws.input('profile').props()            // record → { property name: value }
 aiws.input('logo').bytes()               // asset → Uint8Array (.text() for the text)
+aiws.input('logo').media()               // asset → a media reference (a picture to follow, a file to write as a result)
 aiws.input('folder').members()           // folder members (each member also has rows/markdown/…)
 aiws.input('branch').outline()           // a control (a mind map) or one of its nodes → its tree as a Markdown outline
 aiws.request                             // fixed parameters: { today, timezone, currency, … }; dates follow it
@@ -77,6 +78,25 @@ const tags = await aiws.llm.map(texts, 'Judge the sentiment of this customer fee
 - **Constrain the output** with `schema` whenever the macro uses the answer as data.
 - **Cache and budget**: answers are cached by content — the same request gives the same answer on the next run, and costs nothing. New calls count against the declared limits (calls, tokens, items); over them the call throws `AI_BUDGET_EXCEEDED`. A refusal of the AI service (`AI_QUOTA_EXHAUSTED`, `AI_QUOTA_BUDGET_EXCEEDED`, `AI_RESOURCE_NOT_PERMITTED`) ends the run with that reason; do not catch it.
 
+## 4b. Generated pictures and video clips
+
+```js
+aiws.declare({ inputs: { cast: ['Name', 'Look', 'Color'] }, ai: { image: { max_calls: 6 }, video: { max_calls: 1 } } })
+const cast = aiws.input('cast').rows()
+const sheets = await Promise.all(cast.map((c) => aiws.ai.image({
+  prompt: `Character sheet, full body, plain background, watercolor. ${c.Name}: ${c.Look}; main color ${c.Color}.`, aspect: '3:4' })))
+sheets.forEach((img, i) => aiws.result.file(`sheet_${i + 1}`, img, { title: cast[i].Name }))
+const clip = await aiws.ai.video({ prompt: 'The courier from @{hero} rides through neon rain at night, tracking shot.',
+  duration: 6, aspect: '16:9', references: { hero: sheets[0] } })
+aiws.result.file('teaser', clip, { title: 'Teaser' })
+```
+
+- `aiws.ai.image({ prompt, aspect?, size?, quality?, format?, negative?, seed?, images?, model? })` generates one picture (`aspect` `1:1 | 3:4 | 4:3 | 9:16 | 16:9`, `size` `WxH`, `quality` `low | medium | high`, `format` `png | jpeg | webp`). `images`: reference pictures to edit or to follow — earlier answers, or `aiws.input('photo').media()` (a folder input: its members' `.media()`).
+- `aiws.ai.video({ prompt, duration?, aspect?, resolution?, first_frame?, last_frame?, references?, model? })` generates one clip (`duration` in seconds, `aspect` `16:9 | 9:16`, `resolution` `720p | 1080p`). `first_frame` / `last_frame` are pictures the clip starts or ends on; `references: { name: picture }` are pictures it follows — name them in the prompt as `@{name}`. Video models take few reference pictures (often one) and do not mix keyframes with references; what a model cannot honour fails with the reason. One clip is one continuous shot of seconds, not an edited film.
+- Both answer a media reference `{ kind: 'image' | 'video', object_id, media_type, size, width?, height?, duration? }` (a picture's size as the Workspace read it, a clip's as the AI service measured it): the file is kept in the Workspace and the macro never holds its bytes — check sizes and durations on the reference. Write it with `aiws.result.file(name, media, { title })` — an `image` result for a picture, an `asset` result for a clip — or pass it to the next generation.
+- Cached like text: the same request gives the same file without paying again, so a later run on unchanged inputs makes nothing new. Build prompts only from the inputs (never from the clock or random numbers). Start independent generations together with `Promise.all`; waiting for them does not count against the macro's time limit.
+- `ai.image.max_calls` / `ai.video.max_calls` count new generations per run; the stage caps them (`AI_BUDGET_EXCEEDED`). Video is the expensive medium: one clip per wish unless the user asks for more.
+
 ## 5. Writing results (candidates only)
 
 ```js
@@ -85,6 +105,7 @@ aiws.result.columns('Diff', 'salary', Object.fromEntries(rows.map((r) => [r._id,
 aiws.result.record('kpi', { 'Total sales': 123.4, Orders: 12 })
 aiws.result.text('commentary', markdown)
 aiws.result.file('chart', 'output/chart.svg', 'image/svg+xml')
+aiws.result.file('poster', await aiws.ai.image({ prompt: '…' }), { title: 'Poster' })
 aiws.result.html('dashboard', { html, css, js, bindings: { orders: 'input:sales', summary: 'result:monthly' } })
 aiws.result.control('plan', { kind: 'mindmap', children: '- Launch\n  - Market\n  - Product', config: { direction: 'right' }, title: 'Launch' })
 aiws.result.control('more', { kind: 'mindmap', children: [{ text: 'Pricing', children: [] }], under: 'branch' })

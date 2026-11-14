@@ -1,7 +1,8 @@
 /* Direct inference for a wish macro run in this browser (浏览器优先 Q1, AI Native 第一期 §2.4): `aiws.ai.complete` and
  * `aiws.llm.map` call the model with the user's own AICC session — the service calls no model. The client is xllm's
  * `AiccLlmClient` over the page's kRPC client (or, in development, the OpenAI-format endpoint of the dev override),
- * so a refusal arrives classified (`refused { code }`), never as text to match. */
+ * so a refusal arrives classified (`refused { code }`), never as text to match. `aiws.ai.image` / `ai.video` call
+ * AICC the same way (`aiccCall`) and follow its tasks in the task manager (`aiccTask`). */
 
 import { buckyos, getActiveSessionToken } from 'buckyos'
 import { AiccLlmClient, LLMComputeException, providerErrorFromRpc, type AiMessage, type LlmClient } from 'buckyos/xllm'
@@ -52,6 +53,20 @@ function aiccClient() {
     }
   }
   return { chatCompletionsCreate: (r: unknown) => call('chat.completions.create', r), helperLlmChat: (r: unknown) => call('helper.llm_chat', r) }
+}
+
+/** One AICC call of a macro's generated picture or clip, paid by the user's session; a refusal carries its sub-code. */
+export async function aiccCall(method: string, params: Record<string, unknown>): Promise<unknown> {
+  try {
+    return await buckyos.getServiceRpcClient('aicc').call(method, params as never, toAiccRpcCallOptions(await sessionToken()))
+  } catch (error) {
+    throw classified(providerErrorFromRpc(`aicc ${method} failed`, error))
+  }
+}
+
+/** The task manager's record of an AICC task the user started. */
+export async function aiccTask(id: string): Promise<unknown> {
+  return buckyos.getServiceRpcClient('task-manager').call('get_task', { task_id: id } as never, toAiccRpcCallOptions(await sessionToken()))
 }
 
 function llmClient(): LlmClient {
