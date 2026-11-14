@@ -330,7 +330,7 @@ test.describe('on a phone', () => {
     await page.screenshot({ path: 'test-results/aiworkspace-table/t20-field.png' })
     await sheet.getByTestId('aiws-migration-run').tap()
     await expect.poll(async () => ((await api.read(ALICE, ws.workspace_id, 'tasks')).content.fields as { field_id: string; type: string }[]).find((f) => f.field_id === 'budget')?.type).toBe('currency')
-    await sheet.locator('.aiws-ctl-popover-close').tap()
+    await sheet.getByTestId('aiws-sheet-close').tap()
     await expect(sheet).toHaveCount(0)
 
     // 3 a filter: a sheet from the bottom; the condition shows as a chip under the title row and goes with a tap

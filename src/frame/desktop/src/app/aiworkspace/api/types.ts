@@ -236,6 +236,10 @@ export interface EntityEnvelope {
   ink_stroke?: string | null
   parent_id?: string
   order_key?: string
+  /** A path node of the outline: the caller cannot read it and sees it only because something below it is readable
+   * (UI 框架 PRD §4.1.1). It has only its id, type, a container's kind, parent and order; `OutlineModel` keeps it out of
+   * `get`, `all` and `childrenOf` — the trees reach it through `node` and `treeChildrenOf`. */
+  path_only?: boolean
   placement?: StoredPlacement
   scope: string
   deleted: boolean

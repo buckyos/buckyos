@@ -53,6 +53,8 @@
    above it while it is focused or selected */
 .aiws-blockui-titleline { display: flex; align-items: center; gap: 6px; min-width: 0; margin-right: 120px; }
 .aiws-blockui-titleline > .aiws-fblock-title { margin-right: 0; flex: 0 1 auto; min-width: 0; }
+/* the room on the right is for a table's own bar (laid over the row); every other row uses its whole width */
+.aiws-fblock:not([data-view='table']) > .aiws-blockui-titleline { margin-right: 0; }
 .aiws-blockui-typeicon { color: var(--cp-muted); flex: none; display: inline-flex; }
 .aiws-near.aiws-tool-row { position: static; box-shadow: none; border: none; background: none; padding: 0; gap: 0; flex: 0 1 auto; min-width: 0; }
 .aiws-root .aiws-tool-row button.aiws-near-btn { min-width: 28px; height: 28px; }

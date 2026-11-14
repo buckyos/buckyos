@@ -37,6 +37,7 @@ import * as framework from '../../src/i18n/aiworkspace/framework.ts'
 import * as home from '../../src/i18n/aiworkspace/home.ts'
 import * as table from '../../src/i18n/aiworkspace/table.ts'
 import * as phone from '../../src/i18n/aiworkspace/phone.ts'
+import * as pathnode from '../../src/i18n/aiworkspace/pathnode.ts'
 import * as session from '../../src/i18n/aiworkspace/session.ts'
 import * as shell from '../../src/i18n/aiworkspace/shell.ts'
 import * as wish from '../../src/i18n/aiworkspace/wish.ts'
@@ -69,6 +70,7 @@ const PARTS: Part[] = [
   { name: 'home', prefixes: ['home'], ...home },
   { name: 'table', prefixes: ['table'], ...table },
   { name: 'phone', prefixes: ['phone'], ...phone },
+  { name: 'pathnode', prefixes: ['pathnode'], ...pathnode },
 ]
 
 const ROOT = new URL('../../', import.meta.url).pathname

@@ -1161,6 +1161,16 @@ precise reads and writes stay with each type (`doc.read` with a selector, `doc.c
   When a caller sees several siblings of one name (a shared one and its own personal one; a reviewer and several
   participants'), the name reaches the shared one, then the caller's own, then the first; the others are *shadowed*
   (`shadowed: true` in a listing) and reached by `~<id>`.
+- **The outline** (`doc.outline`, the Desktop's two trees; UI 框架 PRD §4.1.1): every readable, alive entity in tree
+  order, each with its envelope and outline projections. A caller granted only part of the Workspace (one canvas
+  folder, one canvas, `/data/销售`), or refused an ancestor with an allowance below it, still gets what it reads in its
+  place: each unreadable ancestor of a readable entity comes before it as a **path node** —
+  `{ entity_id, type_id, kind? (a container's), parent_id, order_key, path_only: true }` and nothing else: no name or
+  title (a printed path does not name it either), no content, no capabilities. A path node stays unreadable: `doc.read`,
+  `doc.list`, paths through it are `NOT_FOUND` as before, and the readable entity's path starts at `~<id>` below it. An
+  entity outside the caller's scope (another's personal one) hides its subtree; an unreadable entity with nothing
+  readable below is not listed. Code: `core/src/read.rs` `outline` (the descent below an unreadable entity happens only
+  above a layer that allows `read`, `Access::read_layers`).
 - **Type filters** (`type`, `not_type`: a comma list or an array): short types `table`, `richtext`, `record`,
   `annotation`, `block`, `container`, `asset`, `dir`, `wish`, `def`, `viewport`, `path`, `task`, `response`, `result`,
   full `type_id`s, or `container:<kind>`. `doc.find` and text queries leave out `annotation`, `viewport`, `path`,
@@ -1569,7 +1579,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `ws.delete_checkpoint` | stable | maintenance (`manage`): `snapshot_id` — the snapshot row goes and its retention set is unbound; the named store reclaims what no binding holds |
 | `ws.purge_deleted` | stable | maintenance (`manage`): `entity_ids?` (default: every deleted entity) — content and references are given up for good (`entity.purge`), resources are reclaimable at once, undo and version restore answer `RESOURCE_RECLAIMED`, Block state is cleared |
 | `ws.clear_staged` | stable | maintenance (`manage`): staged uploads nobody referenced go, expired or not |
-| `doc.outline` | internal | — all readable entity envelopes in tree order |
+| `doc.outline` | internal | — all readable entity envelopes in tree order, each unreadable ancestor of one as a path node (see “Paths and names”) |
 | `doc.resolve` | stable | `reference` or `path` (the one path syntax, see “Paths and names”) → the reference, its `canonical` form, `path` |
 | `doc.read` | stable | `entity_id` or `path`; `as?: "content" \| "meta" \| "body"` (default `content`, the native content); `selector?`; `version?` (`{ epoch, seq }` / `{ object_id }`: a fixed version of the native content or `VERSION_NOT_RETAINED` / `REFERENCE_BROKEN`, never the head; `meta` / `body` of a fixed version are `UNSUPPORTED_VERSION`); `body` takes `cursor?`, `max_bytes?` (64…262 144, default 32 768), `parts?` — or `targets: [{ entity_id \| path, as?, selector?, … }]`. See “Common meta and body” |
 | `doc.list` | stable | `at?` (path or `entity_id`, default `/`), `type?`, `not_type?`, `schema?`, `limit?` (≤ 1000, default 100), `cursor?` → `at`, `items: [{ entity_id, name, path, type, type_id, kind?, title, children, content_rev, body: { state, format }, shadowed? }]`, `next_cursor?`, `head_seq` — the readable direct children |
@@ -1674,7 +1684,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `lock.release` | stable | may enter |
 | `lock.break` | stable | `manage` on `entity_id` |
 | `lock.list` | stable | may enter; `read` on each entity |
-| `doc.outline` | internal | may enter; `read` on each entity |
+| `doc.outline` | internal | may enter; `read` on each entity (an unreadable ancestor of a readable one: a path node only) |
 | `doc.source_capabilities` | internal | may enter; `read` on each entity |
 | `doc.source_query` | internal | may enter; `read` on each entity |
 | `doc.index` | internal | may enter; `read` on each entity |

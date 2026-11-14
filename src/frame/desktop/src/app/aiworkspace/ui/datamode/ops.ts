@@ -101,11 +101,12 @@ export function canMoveInto(store: WorkspaceStore, id: string, parentId: string)
   return acceptsData(store.outline.get(parentId)) && parentId !== id && !store.outline.ancestors(parentId).includes(id)
 }
 
-/** The folders an object can move into (the data root first), its own folder included (to reorder it there). */
+/** The folders an object can move into (the data root first), its own folder included (to reorder it there); also those
+ * below a folder the caller cannot read (a path node, never a target itself). */
 export function moveTargets(store: WorkspaceStore, id: string): EntityEnvelope[] {
   const out: EntityEnvelope[] = []
   const walk = (parentId: string) => {
-    for (const child of store.outline.childrenOf(parentId)) {
+    for (const child of store.outline.treeChildrenOf(parentId)) {
       if (child.type_id !== 'buckyos.container') continue
       if (canMoveInto(store, id, child.entity_id)) out.push(child)
       walk(child.entity_id)

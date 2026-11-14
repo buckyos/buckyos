@@ -235,16 +235,32 @@ export function NearToolbar({ bbox, items, more = [], viewport, insets = { top: 
   )
 }
 
-/** A row of tools in the flow page's title row (§6.2): what does not fit is left out (the Block's menu and its properties
- * panel have all of it); the row ends with ⋯, the Block's whole menu. */
+/** What a title row keeps of its title (`data-row-title`) before it leaves tools out: the start of a name. */
+const ROW_TITLE_MIN = 64
+
+/** A row of tools in the flow page's title row (§6.2): what does not fit beside the row's other parts (the type's icon, the
+ * title down to its first few characters) is left out — the Block's menu and its properties panel have all of it; the
+ * row ends with ⋯, the Block's whole menu. */
 export function ToolRow({ items, label, onMore, moreTestId, className = '' }: { items: ToolbarItem[]; label: string; onMore: (anchor: HTMLElement) => void; moreTestId: string; className?: string }) {
   const { t } = useAiwsText()
   const ref = useRef<HTMLDivElement>(null)
   const [room, setRoom] = useState(10_000)
   useLayoutEffect(() => {
-    const el = ref.current?.parentElement
-    if (!el || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(() => setRoom(el.clientWidth))
+    const row = ref.current
+    const el = row?.parentElement
+    if (!row || !el || typeof ResizeObserver === 'undefined') return
+    const measure = () => {
+      // a row not shown (an untitled type's thin row until hover or focus) leaves everything in
+      if (el.clientWidth === 0) { setRoom(10_000); return }
+      const gap = parseFloat(getComputedStyle(el).columnGap) || 0
+      let others = 0
+      for (const child of el.children) {
+        if (child === row || !(child instanceof HTMLElement)) continue
+        others += (child.dataset.rowTitle !== undefined ? Math.min(child.scrollWidth, ROW_TITLE_MIN) : child.offsetWidth) + gap
+      }
+      setRoom(el.clientWidth - others)
+    }
+    const observer = new ResizeObserver(measure)
     observer.observe(el)
     return () => observer.disconnect()
   }, [])

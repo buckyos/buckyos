@@ -146,10 +146,18 @@ export class OutlineModel {
   snapshot = (): number => this.version
   isLoaded(): boolean { return this.loaded }
 
-  get(id: string): EntityEnvelope | undefined { return this.entities.get(id) }
-  all(): EntityEnvelope[] { return [...this.entities.values()] }
-  /** Alive children of `parentId` in sibling order. */
+  /** A readable entity (path nodes are not: see `node`). */
+  get(id: string): EntityEnvelope | undefined { const e = this.entities.get(id); return e?.path_only ? undefined : e }
+  /** Any entry of the outline, a path node too (the trees). */
+  node(id: string): EntityEnvelope | undefined { return this.entities.get(id) }
+  all(): EntityEnvelope[] { return [...this.entities.values()].filter((e) => !e.path_only) }
+  /** Alive readable children of `parentId` in sibling order. */
   childrenOf(parentId: string): EntityEnvelope[] {
+    return this.treeChildrenOf(parentId).filter((e) => !e.path_only)
+  }
+  /** Alive children of `parentId` in sibling order, path nodes included: what the trees draw (canvas picker, object
+   * tree), a path node as a row that only folds. */
+  treeChildrenOf(parentId: string): EntityEnvelope[] {
     const ids = this.children.get(parentId)
     if (!ids) return []
     const out: EntityEnvelope[] = []
@@ -200,9 +208,12 @@ export class OutlineModel {
     this.children.get(entity.parent_id)?.delete(entity.entity_id)
   }
 
-  /** Replace everything with a fresh read (initial load and the fallback). */
+  /** Replace everything with a fresh read (initial load and the fallback). A path node comes with its place only: it is
+   * given the shape of an envelope that offers nothing. */
   async reload(): Promise<void> {
-    const list = await this.load()
+    const list = (await this.load()).map((entity) => (entity.path_only
+      ? { ...entity, name: null, title: null, schema_version: 1, scope: 'shared', deleted: false, content_rev: 0, meta_rev: 0, life_rev: 0, write_policy: 'open' as const, capabilities: [] }
+      : entity))
     const next = new Map<string, EntityEnvelope>()
     for (const entity of list) next.set(entity.entity_id, entity)
     const touched = new Set<string>([...this.entities.keys(), ...next.keys()])
@@ -288,13 +299,20 @@ export class OutlineModel {
     let reload = false
     for (const item of touched) {
       const id = item.entity_id
+      // a path node this reader now hears of: what it may read has changed, read the outline again
+      if (this.entities.get(id)?.path_only) { reload = true; continue }
       switch (item.change) {
         case 'moved':
         case 'placed': {
           const op = opsFor(id).find((candidate) => candidate.op === 'tree.move' || candidate.op === 'tree.place')
           if (!op) { if (event.local) reload = true; else reload = true; break }
           const update: Partial<EntityEnvelope> = { struct_rev: item.rev }
-          if (op.op === 'tree.move') { update.parent_id = op.new_parent_id as string; update.order_key = op.order_key as string; update.placement = (op.placement as StoredPlacement | null | undefined) ?? undefined }
+          if (op.op === 'tree.move') {
+            update.parent_id = op.new_parent_id as string; update.order_key = op.order_key as string; update.placement = (op.placement as StoredPlacement | null | undefined) ?? undefined
+            // into a folder this outline does not hold (nor as a path node, nor made by this event): only a read places it
+            const into = update.parent_id
+            if (!this.entities.has(into) && !ops.some((candidate) => candidate.op === 'entity.create' && candidate.entity_id === into)) { reload = true; break }
+          }
           else {
             if (typeof op.order_key === 'string') update.order_key = op.order_key
             if ('placement' in op) update.placement = (op.placement as StoredPlacement | null) ?? undefined

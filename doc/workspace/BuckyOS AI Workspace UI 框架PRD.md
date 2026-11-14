@@ -1299,9 +1299,8 @@ owner 2026-11-14 答复了 16.3.1 的全部各项（Q19–Q33），下表已按�
 ### 18.3 没做或只做了一部分
 
 - 封面（K6）：只做了过渡做法（服务端取画布上第一个图片 Block 的图片或海报，§9.5、§18.5）。真正的画布缩略图要在客户端把各种 Block 栅格化再上传，还要处理过期，没做。
-- 流式页上控件 Block 的标题行只有 ⋯，控件声明的主要动作和快速属性不在那里；表格、目录编辑器的弹层仍是 `ControlPopover` 自己的底部面板，没有换成框架的（§18.5）。
 - 个人层增删、排序工具项的界面（Q8，先不做）。
-- 只授权了某个目录、没有工作区级读权限的账号，在界面上看不到其中的画布：`doc.outline` 从根往下遍历，遇到读不到的节点就停（原有行为，只授权一张画布时也一样）。
+- 只授权了某个目录或某张画布的账号：大纲和界面已补上（§18.6）；Agent 运行里的阶段工具 `ws_outline` 仍不进入读不到的节点。
 - 没有在真机（iOS Safari、Android Chrome）和真实 Zone 上验证。保存到 Zone、从 Zone 导入只在 mock Zone 上验过，工作区自身 origin 上的系统文件选择器没验；软键盘上方的格式条位置只在仿真里验过（仿真没有软键盘）。
 
 ### 18.4 2026-11-14 按 Q19、Q27、Q33 的裁决修改
@@ -1369,6 +1368,27 @@ owner 2026-11-14 答复了 16.3.1 的全部各项（Q19–Q33），下表已按�
 - 没做：流式页上控件 Block 的标题行（`canvas/FlowSurface.tsx` 的 `FlowControl`）仍只有 ⋯，控件声明的主要动作和快速属性不在那里；表格、目录编辑器的弹层没换成 `ControlPanel`；画布不订阅许愿格运行状态和新鲜度，工具栏上“运行 / 取消”和查看模式下“运行”能否用要等画布下次重绘才更新（原来的工具栏也是这样）；`BlockAction` 没有“候选”（一个直接执行、多个下拉），脑图的导出因此成了三个菜单项。没在真机和真实 Zone 上验证。
 
 **第二轮的整体验证。** 四个包合并后统一重建 WASM，`cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace` 363 条全部通过；`tsc`（app、node）、`eslint` 干净，文案检查只有 HEAD 上就失败的 “backend speaks English”。全量 e2e 384 条：375 通过、3 失败、6 跳过，用时 36 分钟。失败的三条：presentation P3-12（HEAD 上同样失败）；handwriting H03 和 wish T3-4 单独各跑两遍都通过，是全量负载下的时序波动。
+
+### 18.6 2026-11-14 第三轮
+
+**只对某个目录或某张画布有权限的人看得到它们（§4.1.1 Q5、§15 第 4 条，原 §18.3 的一项）。**
+
+- 服务端：`doc.outline`（`core/src/read.rs` 的 `outline`）不再在读不到的节点处停下。读者能读的每个实体照旧给出信封；它的每个读不到的祖先放在它前面，作为**路径节点**：`{ entity_id, type_id, kind（容器才有）, parent_id, order_key, path_only: true }`，别的都不给——没有名字和标题、没有内容、没有能力和版本号。依据是现有的路径规则：`path_of` 打印路径时读不到的祖先不出现（权限需求 §4.1、服务 README “Paths and names”），所以路径节点也不带名字。路径节点仍然读不到：`doc.read`、`doc.list`、经过它的路径照旧是 `NOT_FOUND`，读者能读的实体的路径从它下面的 `~<id>` 开始。读不到、下面也没有能读的实体，不列出；别人个人范围的实体连同子树不列出。只有在某个允许 `read` 的权限层之上才往读不到的节点下面找（`core/src/access.rs` 的 `Access::read_layers`；有 `@creator` 条目时全部遍历），只有工作区级读权限的人和 owner 的大纲与原来相同。离线副本的大纲用同一个函数，副本本身要求工作区级读权限，所以不会出现路径节点。`control.export`（`server/src/control.rs`）和 `controls/outline.ts` 的 `readerOf` 跳过路径节点，与原来一样。
+- 前端：`state/outline.ts` 的 `OutlineModel` 把路径节点补成什么都不能做的信封（`capabilities: []`），`get`、`all`、`childrenOf` 不返回它，只有树用的 `node`、`treeChildrenOf` 返回；`ancestors` 包含它的 ID。所以其余代码看到的仍是读者能读的那些实体（画布上的 Block、宏、绑定、HTML 控件的 API 都不变）。事件涉及路径节点，或把实体移进大纲里没有的文件夹时，重新读大纲。`api/paths.ts` 的 `pathOf` 遇到路径节点就从 `~<id>` 开始，`resolvePath` 从根出发时根可以是路径节点（与服务端一致）。
+  - 画布选择器（`ui/surfaces/tree.ts`、`SurfacePicker.tsx`）：路径节点的文件夹是一行“无权访问的目录”（锁形文件夹图标、灰色斜体、悬停说明），只能折叠：没有 ⋯ 菜单、右键和长按不出菜单、不能拖动、不能放入；里面没有能读的东西时不显示。搜索不命中它，但结果的所在路径经过它（“无权访问的目录 / 项目A”）。读不到的画布不出现。“移动到…”和新建画布对话框的目标不列路径节点，列它下面能读的文件夹。“复制路径”改用 `api/paths.ts` 的 `pathOf`，从读者能读的最高一级 `~<id>/…` 开始。`ui/canvas/surfaceOps.ts` 的 `surfacesOf` 穿过路径节点的文件夹找画布，所以只能读一个目录或一张画布的人打开工作区就落在它上面。
+  - 数据模式的对象树（`ui/datamode/model.ts`、`ObjectTree.tsx`）：路径节点是“无权访问的文件夹”（系统节点“画布”“画布自带的数据”照旧用固定名字），只在下面有显示的行时出现，不算搜索和筛选的命中；单击、Enter、空格只折叠，不打开标签页，没有菜单，不能拖放。`ops.ts` 的 `moveTargets` 也穿过路径节点。
+  - CLI：`buckyos aiws place` 把路径节点的画布当作不存在（websdk `cli/modules/aiws_place.ts`）。服务 README 的 “Paths and names” 加了 “The outline” 一段，方法表两行同步；`aiworkspace_template_dev` 手册的 `outline` 说明了 `path_only`。`aiworkspace_run` 手册不涉及 `doc.outline`，不用改。
+- 验证：新增 `core/tests/outline.rs` 5 条（只授权一个画布目录、只授权一张画布、只授权组里的一个 Block、只授权数据文件夹和记录正文、祖先上有拒绝而下面有允许、拒绝下面没有允许、`@creator` 条目、owner）和 `store/tests/outline.rs` 3 条（经 `acl.set` 按路径授权；路径节点的键只有那 6 个；路径节点 `doc.read`、`doc.list`、路径解析仍是 `NOT_FOUND`；`~<id>` 路径；画布移进、移出被授权的目录后大纲随之变化；只授权 `/data/销售`；祖先拒绝）。e2e：`surfaces.spec.ts` 新增 §15-4 Q5 一条（bob 只对 `/surfaces/部门/项目A` 有读权限：选择器里“部门”是无权访问的目录、只能折叠，“项目A”和其中的画布能打开，别的画布都不出现，搜索不命中路径节点，alice 把一张画布移进“项目A”后 bob 那边立刻出现；改成只授权一张画布后两级目录都是路径节点），`datamode.spec.ts` 新增 §5.2 一条（只授权 `/data/销售`：对象树里有它和里面的表，没有别的数据；改成只授权 `/data/销售/华东` 后“销售”是无权访问的文件夹，只能折叠、不打开、没有菜单，搜索不命中它）。
+- 仍没做：Agent 运行里的阶段工具 `ws_outline`（`store/src/wish/context.rs`）是另一套实现，仍不进入读不到的节点；数据模式里文件夹的详情页只列能读的直接子项，不列路径节点下面的东西；路径节点的位置随事件更新只在读者能读的实体移动时发生，读不到的文件夹本身被移动，要等下次重新读大纲才反映。
+
+**流式页上控件的标题行（§6.2、§10.4），表格和目录编辑器的弹层改用框架的面板（§6.1、§7.3、§7.4）。原 §18.3 的一项。**
+
+- 标题行：流式页上的控件（`ui/canvas/FlowSurface.tsx` 的 `FlowControl`；扩展的组合控件在流式页上画成 `FlowGroup`）和 Block 用同一个 `ui/blockui/FlowTools.tsx` 的 `FlowRowTools`，从左到右是拖动把手、类型图标和标题、主要动作（最多两个）、快速属性、⋯（这个 Block 的完整菜单，选中它并由画布打开，与右键和 ⋮⋮ 是同一份）。控件的容器就是 Block：内置控件的动作和属性来自 `controlBlockDefinition`（脑图：主要动作“转成大纲插入文档”，快速属性方向、连线、间距）；扩展控件的来自清单（HTML 控件读它的定义，组合控件读容器所指定义的 `def_actions`），数据控件正文发布的、标了主要的动作也算——与自由画布上的 Block 工具栏读的是同一份。只放得下两个时，扩展声明的动作排在宿主类型自己的主要动作前面：HTML 控件的“运行扩展”“打开定义”这时只在 ⋯ 里（标题下方原有的“运行扩展”链接不变）。电脑上悬停或聚焦时出现，触屏上常显；锁定的控件只有 ⋯。控件还没有自己的标题时显示类型名。组合控件的标题行保持组标题的样式，右键它的标题处打开它的 Block 菜单；普通的组不变。
+- 待办、日历（接 Q39）：在流式页上，正文标题行里的标题和 ⋯ 不再画出（`TodoBody.tsx`、`CalendarBody.tsx` 只在 `host === 'canvas'` 时画 ⋯），由 Block 的标题行承担，一个 Block 只有一个 ⋯；计数、列表 / 看板、日期导航、新建日程留在正文里。自由画布上照旧。待办、日历没有声明主要动作和快速属性，所以它们的标题行只有图标、标题和 ⋯，正文发布的视图菜单项在 ⋯ 里。
+- 放得下多少：`ui/canvas/tools.tsx` 的 `ToolRow` 计算可用宽度时扣掉同一行的类型图标，并给标题（标了 `data-row-title` 的元素）至少留 64px，放不下的工具不出现（都在 ⋯ 和属性面板里）；行没显示出来时（无标题类型的细工具行在悬停或聚焦前）不裁剪。标题行右侧原来为表格自带工具条留的 120px 现在只留给表格（`blockui.css`），其他类型的标题行用满整行。
+- 弹层：表格编辑器（`ui/table/TablePop.tsx` 的 `TablePop`、`TableMenu`、`ConfirmPop`：表格 ⋯、多选删除的确认、表头“+”快速加列、记录表单的 ⋯ 和删除确认、手机上的筛选和字段面板）和目录编辑器（`ui/directory/parts.tsx` 的 `DirMenu`：添加、更多、行菜单）都改用 `ControlPanel`（`ui/controls/data/ControlPopover.tsx`）：电脑上浮在触发按钮下方，标题栏是菜单名或要确认的问题（最多两行）加 ✕，Esc 和点外面关闭；手机上是窗口的标准底部面板（`shell/popover.tsx` 的 `Sheet`），标题加 ✕（`aiws-sheet-close`），点遮罩关闭。内容里原来单独的一行标题去掉了。菜单打开后第一项拿到焦点、方向键移动——要等面板定位、可见以后再聚焦，原来聚焦时面板还是隐藏的所以没有生效，待办、日历的条目菜单（`ControlMenu`）一并修好。触屏上面板的 ✕ 是 44px。电脑上表格的筛选面板仍在表格标题行下方展开，不是弹层。`ControlPopover` 已无人使用，连同 `aiworkspace.css` 里 `.aiws-ctl-popover*`、`.aiws-ctl-sheet-*` 的样式删除，`ControlPopover.tsx` 只剩 `ControlPanel`、`ControlMenu` 和 `anchorOf`。
+- 验证：VERIFY_PLACEHOLDER
+- 仍没做：待办、日历的主要动作（例如“新建待办”“新建日程”）没有声明；`BlockAction` 仍没有“候选”。没在真机和真实 Zone 上验证。已知的原有问题（没改）：手机底部面板在遮罩上按下即关闭，抬手时的点击会落到遮罩下面的元素上（例如点在标题区的位置会打开画布选择器），所有底部面板都是这样。
 
 ## 附录 A：owner 的框架思路（2026-11-13 原文）
 

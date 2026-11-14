@@ -1,10 +1,11 @@
 /* What the data mode shows of the outline (UI 框架 PRD §5.2): the object tree's default (the five data source types and
  * the folders holding them; the canvas content folded; macros and the Workspace's permissions pinned below), the
  * filters (types, origin, everything), the search that keeps the levels, each row's type icon and state marks, and the
- * read-only reason of an object. Non-visual helpers only. */
+ * read-only reason of an object. A folder the person cannot read, above something it can (the outline's path node), is
+ * shown only as the way there. Non-visual helpers only. */
 
 import {
-  Box, CalendarClock, Clapperboard, File, FileText, Folder, FolderOpen, Image, LayoutDashboard, ListChecks, MessageSquare, MessagesSquare,
+  Box, CalendarClock, Clapperboard, File, FileText, Folder, FolderLock, FolderOpen, Image, LayoutDashboard, ListChecks, Lock, MessageSquare, MessagesSquare,
   Puzzle, ScanEye, ShieldCheck, Sparkles, Square, Table2, Vote, type LucideIcon,
 } from 'lucide-react'
 import { pathOf } from '../../api/paths'
@@ -60,6 +61,7 @@ const ICONS: Record<string, LucideIcon> = {
 export function iconOf(entity: EntityEnvelope | undefined, id?: string): LucideIcon {
   if (id === PERMISSIONS_TAB) return ShieldCheck
   if (!entity) return File
+  if (entity.path_only && entity.kind !== 'surface') return entity.type_id === 'buckyos.container' ? FolderLock : Lock
   if (entity.kind === 'surface') return LayoutDashboard
   if (entity.type_id === 'buckyos.container') return entity.kind === 'folder' || entity.system ? Folder : Box
   return ICONS[entity.type_id] ?? File
@@ -82,6 +84,7 @@ export function nameOf(store: WorkspaceStore, entity: EntityEnvelope | undefined
   if (entity.entity_id === SHOWS_ID) return aiwsT('aiworkspace.data.tree.showPaths')
   if (entity.entity_id === SESSION_FOLDER) return aiwsT('aiworkspace.datamode.sessionData')
   if (entity.entity_id === SURFACES_ID) return aiwsT('aiworkspace.datamode.surfaces')
+  if (entity.path_only) return aiwsT(entity.kind === 'surface' ? 'aiworkspace.pathnode.canvas' : isFolder(entity) ? 'aiworkspace.pathnode.dataFolder' : 'aiworkspace.pathnode.object')
   if (entity.system === 'surface_content' && entity.surface_id) {
     const surface = store.outline.get(entity.surface_id)
     if (surface) return entityLabel(surface)
@@ -102,7 +105,7 @@ export function isFolder(entity: EntityEnvelope | undefined): boolean {
 /** A folder new data may go into: the data root, a user folder, a canvas's own content folder (not the presentation
  * folder, the canvas-content area itself or a session's folder). */
 export function acceptsData(entity: EntityEnvelope | undefined): boolean {
-  if (!entity) return false
+  if (!entity || entity.path_only) return false
   if (entity.entity_id === DATA_ID) return true
   return entity.type_id === 'buckyos.container' && (entity.kind === 'folder' || entity.system === 'surface_content') && entity.entity_id !== SHOWS_ID && entity.entity_id !== CANVAS_CONTENT_ID && entity.entity_id !== SESSION_FOLDER
 }
@@ -139,14 +142,14 @@ export function treeView(store: WorkspaceStore, filter: TreeFilter, query: strin
   const narrowed = typed || filter.origin !== 'all' || q !== ''
   const walk = (parentId: string): boolean => {
     let any = false
-    for (const child of store.outline.childrenOf(parentId)) {
+    for (const child of store.outline.treeChildrenOf(parentId)) {
       if (child.type_id === 'buckyos.cell' && !filter.all) continue
       const below = walk(child.entity_id)
       const folder = isFolder(child)
       // a user folder (and the canvas content area) stands on its own unless the filters narrow the tree; a system folder
-      // that is hidden by default (presentations, a session) only with "everything"
-      const stands = folder && !narrowed && (filter.all || !hiddenByDefault(child))
-      const hit = own(child)
+      // that is hidden by default (presentations, a session) only with "everything"; a path node only above a row
+      const stands = !child.path_only && folder && !narrowed && (filter.all || !hiddenByDefault(child))
+      const hit = !child.path_only && own(child)
       if (hit) hits.add(child.entity_id)
       if (hit || below || stands) { shown.add(child.entity_id); any = true }
     }

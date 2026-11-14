@@ -154,11 +154,12 @@ export function controlOutline(tree: TreeReader, containerId: string): OutlineNo
   return read(containerId)
 }
 
-/** An outline from an array of envelopes (the `doc.outline` result, a package…). */
-export function readerOf(entities: { entity_id: string; parent_id?: string | null; order_key?: string | null; deleted?: boolean }[]): TreeReader {
+/** An outline from an array of envelopes (the `doc.outline` result, a package…); a path node (an entity the caller
+ * cannot read, listed above one it can) is not part of the control as the caller reads it. */
+export function readerOf(entities: { entity_id: string; parent_id?: string | null; order_key?: string | null; deleted?: boolean; path_only?: boolean }[]): TreeReader {
   const by = new Map<string, typeof entities>()
   for (const e of entities) {
-    if (e.deleted || !e.parent_id) continue
+    if (e.deleted || e.path_only || !e.parent_id) continue
     const list = by.get(e.parent_id) ?? []
     list.push(e)
     by.set(e.parent_id, list)

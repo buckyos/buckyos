@@ -4,7 +4,9 @@
  * it (collapsed folders, the order by name, the recent canvases) is their own work state. */
 
 import { randomId } from '../../api/ids'
+import { pathOf } from '../../api/paths'
 import type { EntityEnvelope, Operation } from '../../api/types'
+import { aiwsT } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 
 export const SURFACES_ROOT = 'surfaces'
@@ -15,9 +17,20 @@ export const COLLAPSED_KEY = 'ui:surface-collapsed'
 export const SORT_KEY = 'ui:surface-sort'
 export type SortMode = 'manual' | 'name'
 
-/** A canvas or a canvas folder (what the `surfaces` tree holds). */
+/** A canvas or a canvas folder (what the `surfaces` tree holds). A canvas the caller cannot read is not one; a folder it
+ * cannot read is, as the way to what it can (a path node of the outline). */
 export function isCanvasEntry(e: EntityEnvelope): boolean {
-  return e.type_id === 'buckyos.container' && (e.kind === 'surface' || e.kind === 'folder')
+  return e.type_id === 'buckyos.container' && ((e.kind === 'surface' && !e.path_only) || e.kind === 'folder')
+}
+
+/** A folder the caller cannot read (a path node): a row that only folds. */
+export function isPathFolder(e: EntityEnvelope): boolean {
+  return e.path_only === true && e.kind === 'folder'
+}
+
+/** Something the caller reads is in it, or it is readable itself. */
+function reachable(store: WorkspaceStore, e: EntityEnvelope): boolean {
+  return !e.path_only || store.outline.treeChildrenOf(e.entity_id).some((c) => isCanvasEntry(c) && reachable(store, c))
 }
 
 export function isCanvasFolder(store: WorkspaceStore, e: EntityEnvelope | undefined): boolean {
@@ -25,14 +38,16 @@ export function isCanvasFolder(store: WorkspaceStore, e: EntityEnvelope | undefi
 }
 
 export function entryLabel(e: EntityEnvelope): string {
+  if (e.path_only) return aiwsT('aiworkspace.pathnode.folder')
   return e.title ?? e.name ?? e.entity_id
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
-/** The canvases and folders directly under `parentId`: in the shared order, or by name with folders first. */
+/** The canvases and folders directly under `parentId`: in the shared order, or by name with folders first. A folder the
+ * caller cannot read is there when something it reads is inside. */
 export function entriesOf(store: WorkspaceStore, parentId: string, byName = false): EntityEnvelope[] {
-  const list = store.outline.childrenOf(parentId).filter(isCanvasEntry)
+  const list = store.outline.treeChildrenOf(parentId).filter((e) => isCanvasEntry(e) && reachable(store, e))
   if (!byName) return list
   return list.sort((a, b) => (a.kind === b.kind ? collator.compare(entryLabel(a), entryLabel(b)) : a.kind === 'folder' ? -1 : 1))
 }
@@ -55,11 +70,11 @@ export function treeRows(store: WorkspaceStore, collapsed: ReadonlySet<string>, 
   return out
 }
 
-/** Every canvas folder in tree order with its depth (move targets, the new canvas dialog). */
+/** Every canvas folder the caller reads, in tree order with its depth (move targets, the new canvas dialog). */
 export function allFolders(store: WorkspaceStore): { entity: EntityEnvelope; depth: number }[] {
   const out: { entity: EntityEnvelope; depth: number }[] = []
   const walk = (parentId: string, depth: number) => {
-    for (const e of entriesOf(store, parentId)) if (e.kind === 'folder') { out.push({ entity: e, depth }); walk(e.entity_id, depth + 1) }
+    for (const e of entriesOf(store, parentId)) if (e.kind === 'folder') { if (!e.path_only) out.push({ entity: e, depth }); walk(e.entity_id, depth + 1) }
   }
   walk(SURFACES_ROOT, 0)
   return out
@@ -70,15 +85,13 @@ export function folderTrail(store: WorkspaceStore, id: string): EntityEnvelope[]
   const ids = store.outline.ancestors(id).slice(1)
   const cut = ids.indexOf(SURFACES_ROOT)
   if (cut < 0) return []
-  return ids.slice(0, cut).reverse().map((x) => store.outline.get(x)).filter((e): e is EntityEnvelope => Boolean(e))
+  return ids.slice(0, cut).reverse().map((x) => store.outline.node(x)).filter((e): e is EntityEnvelope => Boolean(e))
 }
 
-/** `/surfaces/<name>/…/<name>`: the path the core API, Agents and permission rules use (`~<id>` for an unnamed step). */
+/** `/surfaces/<name>/…/<name>`: the path the core API, Agents and permission rules use — from the highest folder the
+ * caller reads as `~<id>/…` when it cannot read the ones above. */
 export function entityPath(store: WorkspaceStore, id: string): string {
-  const ids = store.outline.ancestors(id)
-  const cut = ids.indexOf(SURFACES_ROOT)
-  const steps = (cut < 0 ? ids : ids.slice(0, cut)).reverse().map((x) => store.outline.get(x)?.name ?? `~${x}`)
-  return `/${SURFACES_ROOT}/${steps.join('/')}`
+  return pathOf(store.outline, id)
 }
 
 export interface SearchHit { entity: EntityEnvelope; trail: string }
@@ -92,7 +105,7 @@ export function searchEntries(store: WorkspaceStore, query: string, byName: bool
   const folders: SearchHit[] = []
   const walk = (parentId: string, trail: string[]) => {
     for (const e of entriesOf(store, parentId, byName)) {
-      const hit = entryLabel(e).toLowerCase().includes(q) || (e.name ?? '').toLowerCase().includes(q)
+      const hit = !e.path_only && (entryLabel(e).toLowerCase().includes(q) || (e.name ?? '').toLowerCase().includes(q))
       if (hit) (e.kind === 'folder' ? folders : surfaces).push({ entity: e, trail: trail.join(' / ') })
       if (e.kind === 'folder') walk(e.entity_id, [...trail, entryLabel(e)])
     }

@@ -306,7 +306,7 @@ function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: En
   // an extension's composite is a control (§6.2): its title row has the actions it declares and ⋯, as a titled Block's
   const composite = group.kind === 'composite'
   const name = group.title ?? group.name ?? (composite ? store.outline.get(group.def_id ?? '')?.title : null) ?? t('aiworkspace.canvas.group')
-  const title = <div className="aiws-fgroup-title" data-testid={composite ? `aiws-flow-composite-title-${group.entity_id}` : undefined}>{name}</div>
+  const title = <div className="aiws-fgroup-title" data-row-title="" data-testid={composite ? `aiws-flow-composite-title-${group.entity_id}` : undefined}>{name}</div>
   return (
     <section className={`aiws-group aiws-fgroup${isSelected ? ' is-selected' : ''}${props.dragging === group.entity_id ? ' is-dragged' : ''}`} data-testid={`aiws-group-${group.entity_id}`}
       data-cell-id={group.entity_id} data-parent-id={group.parent_id ?? undefined} data-flow-item="group" data-kind={group.kind ?? undefined} tabIndex={-1}
@@ -336,7 +336,7 @@ function FlowControl({ control, siblings, index, ...props }: ItemProps & { contr
   const Flow = def?.Flow
   const isSelected = props.selected.has(control.entity_id)
   // a control is a titled type: its row shows even before it has a title of its own
-  const title = <div className="aiws-fblock-title" data-testid={`aiws-flow-control-title-${control.entity_id}`}>{control.title || def?.title || control.kind}</div>
+  const title = <div className="aiws-fblock-title" data-row-title="" data-testid={`aiws-flow-control-title-${control.entity_id}`}>{control.title || def?.title || control.kind}</div>
   return (
     <section className={`aiws-cell aiws-fblock aiws-fcontrol${isSelected ? ' is-selected' : ''}${props.dragging === control.entity_id ? ' is-dragged' : ''}`} tabIndex={-1}
       data-testid={`aiws-flow-control-${control.entity_id}`} data-cell-id={control.entity_id} data-parent-id={control.parent_id ?? undefined} data-flow-item="block" data-kind={control.kind}
@@ -435,13 +435,13 @@ function BlockTitle({ cell, title, canRename }: { cell: EntityEnvelope; title: s
   }
   if (text !== null) {
     return (
-      <input className="aiws-fblock-title aiws-fblock-title-input" aria-label={t('aiworkspace.canvas.blockTitle')} data-testid={`aiws-cell-title-input-${cell.entity_id}`} autoFocus value={text} placeholder={t('aiworkspace.canvas.noTitle')}
+      <input className="aiws-fblock-title aiws-fblock-title-input" aria-label={t('aiworkspace.canvas.blockTitle')} data-row-title="" data-testid={`aiws-cell-title-input-${cell.entity_id}`} autoFocus value={text} placeholder={t('aiworkspace.canvas.noTitle')}
         onChange={(event) => setText(event.target.value)} onBlur={() => { void save(text.trim()) }}
         onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void save(text.trim()) } else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setText(null) } }} />
     )
   }
   return (
-    <div className={`aiws-fblock-title${canRename ? ' is-editable' : ''}${title ? '' : ' is-empty'}`} data-testid={`aiws-cell-title-${cell.entity_id}`}
+    <div className={`aiws-fblock-title${canRename ? ' is-editable' : ''}${title ? '' : ' is-empty'}`} data-row-title="" data-testid={`aiws-cell-title-${cell.entity_id}`}
       title={canRename ? t('aiworkspace.canvas.clickToRename') : undefined} onClick={() => { if (canRename) setText(title) }}>
       {title || t('aiworkspace.canvas.noTitle')}
     </div>

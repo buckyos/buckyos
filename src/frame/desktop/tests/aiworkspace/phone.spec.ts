@@ -324,7 +324,7 @@ test('UI-PH20 §15 #20 through "expand": the table — a new record, a field\'s 
   await expect(fields.getByTestId('aiws-migration-status')).toContainText('预检通过')
   await fields.getByTestId('aiws-migration-run').tap()
   await expect.poll(async () => ((await api.read(ALICE, ws.workspace_id, 'tasks')).content.fields as { field_id: string; type: string }[]).find((f) => f.field_id === 'budget')?.type).toBe('currency')
-  await fields.locator('.aiws-ctl-popover-close').tap()
+  await fields.getByTestId('aiws-sheet-close').tap()
   await page.getByTestId('aiws-filter-open-source:tasks').tap()
   const filter = page.getByTestId('aiws-table-sheet-filter')
   await filter.getByLabel('筛选字段').selectOption('owner')

@@ -11,3 +11,7 @@
 @media (pointer: coarse) {
   .aiws-root button.aiws-dm-pick-item { min-height: 44px; }
 }
+
+/* a folder the person cannot read, above something it can: it only folds */
+.aiws-dm-row.is-path-only .aiws-tree-label { color: var(--cp-muted); }
+.aiws-dm-row.is-path-only .aiws-outline-name { font-style: italic; }

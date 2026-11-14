@@ -98,9 +98,10 @@ function FloatingPanel({ anchor, onClose, label, children, width = 340, testId, 
   useOverlayMounted(true)
   const pos = useBeside(ref, anchor, side)
   useDismiss(ref, onClose)
+  // placed before the first paint (a layout effect) and never hidden, so what it opens with can take the focus (autoFocus)
   return createPortal(
     <div ref={ref} className="aiws-panel aiws-ctl-panel" role="dialog" aria-label={label} data-testid={testId}
-      style={{ width, left: pos?.left ?? anchor.left, top: pos?.top ?? anchor.top + anchor.height, visibility: pos ? 'visible' : 'hidden' }}
+      style={{ width, left: pos?.left ?? anchor.left, top: pos?.top ?? anchor.top + anchor.height }}
       onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
       <div className="aiws-ctl-panel-head">
         <b>{label}</b>
@@ -133,7 +134,11 @@ export interface MenuItem { id: string; label: string; icon?: ReactNode; danger?
 /** A small action menu in a pop-over (a card's "Move to…", a day's actions). */
 export function ControlMenu({ items, onClose, label }: { items: (MenuItem | 'separator')[]; onClose: () => void; label: string }) {
   const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => { (ref.current?.querySelector('button:not(:disabled)') as HTMLButtonElement | null)?.focus() }, [])
+  // the first entry takes the keyboard once the panel is in place (a phone's sheet draws its content a render later)
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => ref.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true }))
+    return () => cancelAnimationFrame(frame)
+  }, [])
   return (
     <div ref={ref} className="aiws-ctl-menu" role="menu" aria-label={label}
       onKeyDown={(event) => {

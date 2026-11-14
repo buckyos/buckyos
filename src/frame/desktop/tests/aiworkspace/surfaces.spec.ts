@@ -62,6 +62,12 @@ async function openPicker(page: Page) {
   return list
 }
 
+/** The picker, opened unless it still is (Escape on a row's menu may close both). */
+async function pickerShown(page: Page) {
+  const list = page.getByTestId('aiws-surface-list')
+  return (await list.isVisible()) ? list : openPicker(page)
+}
+
 test('§15-4 300 canvases three folders deep: the picker opens, searches and switches; a canvas moved to another folder keeps its link, takes the new path and the new folder\'s grant', async ({ page, api, browser }) => {
   const ws = await bigTree(api, `tree ${Date.now()}`)
   // bob reads the workspace and may edit what is in 归档 / Q4 only
@@ -140,6 +146,90 @@ test('§15-4 300 canvases three folders deep: the picker opens, searches and swi
     await expect(shown(other)).toHaveAttribute('data-surface-id', moved)
     await other.context().close()
   }
+})
+
+/** `/surfaces/部门/项目A` (canvases 看板 `c-board`, 周报 `c-week`), `/surfaces/部门/其他` (秘密 `c-secret`), `/surfaces/外面` (`c-out`). */
+async function scopedTree(api: Api, title: string): Promise<{ workspace_id: string; epoch: string }> {
+  const ws = await api.rpc(ALICE, 'ws.create', { title }) as { workspace_id: string; epoch: string }
+  const folder = (id: string, parent: string, key: string, t: string) => ({ op: 'entity.create', entity_id: id, type_id: 'buckyos.container', parent_id: parent, order_key: key, payload: { kind: 'folder', title: t } })
+  let n = 0
+  const canvas = (id: string, parent: string, key: string, t: string) => [
+    { op: 'entity.create', entity_id: `${id}-content`, type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: `m${(n += 1)}`, payload: { kind: 'folder', system: 'surface_content', surface_id: id, title: t } },
+    { op: 'entity.create', entity_id: id, type_id: 'buckyos.container', parent_id: parent, order_key: key, payload: { kind: 'surface', layout: { mode: 'flow' }, title: t, content_folder_id: `${id}-content` } },
+  ]
+  const made = await api.commit(ALICE, ws, [
+    folder('dept', 'surfaces', 'a', '部门'), folder('proj', 'dept', 'a', '项目A'), folder('other', 'dept', 'b', '其他'),
+    ...canvas('c-board', 'proj', 'a', '看板'), ...canvas('c-week', 'proj', 'b', '周报'), ...canvas('c-secret', 'other', 'a', '秘密'), ...canvas('c-out', 'surfaces', 'b', '外面'),
+  ])
+  expect(made.status, JSON.stringify(made).slice(0, 400)).toBe('accepted')
+  return ws
+}
+
+test('§15-4 Q5 a grant on one canvas folder only: the picker shows the folder and its canvases under the folders above it (fold only, no name, no menu), opens them, nothing else; a canvas moved in follows; a grant on one canvas the same', async ({ page, api }) => {
+  const ws = await scopedTree(api, `scoped ${Date.now()}`)
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: '/surfaces/部门/项目A', allow: ['read'] }] })
+  // the outline: 部门 as a path node — its place only
+  const outline = await api.outline(BOB, ws.workspace_id)
+  expect(outline.find((e: Json) => e.entity_id === 'dept')).toEqual({ entity_id: 'dept', type_id: 'buckyos.container', kind: 'folder', parent_id: 'surfaces', order_key: 'a', path_only: true })
+  expect(outline.map((e: Json) => e.entity_id)).toEqual(['root', 'surfaces', 'dept', 'proj', 'c-board', 'c-week'])
+
+  await openWorkspacePage(page, BOB, ws.workspace_id)
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+  const canvas = shown(page)
+  await expect(canvas).toHaveAttribute('data-surface-id', 'c-board')
+  let list = await openPicker(page)
+  const dept = list.getByTestId('aiws-surface-folder-dept')
+  await expect(dept).toHaveAttribute('data-path-only', 'true')
+  await expect(dept).toContainText('无权访问的目录')
+  await expect(list.getByTestId('aiws-surface-more-dept')).toHaveCount(0)
+  await expect(list.getByTestId('aiws-surface-folder-proj')).toContainText('项目A')
+  await expect(list.getByTestId('aiws-surface-folder-proj')).toHaveAttribute('data-depth', '1')
+  await expect(list.getByTestId('aiws-surface-item-c-week')).toHaveAttribute('data-depth', '2')
+  for (const id of ['aiws-surface-item-c-secret', 'aiws-surface-folder-other', 'aiws-surface-item-c-out', 'aiws-surface-new', 'aiws-surface-new-folder']) await expect(list.getByTestId(id)).toHaveCount(0)
+  await expect(list).not.toContainText('部门')
+  // the path node folds, by its toggle and by its row
+  await dept.getByRole('menuitem').click()
+  await expect(list.getByTestId('aiws-surface-item-c-board')).toHaveCount(0)
+  await list.getByTestId('aiws-surface-folder-toggle-dept').click()
+  await expect(list.getByTestId('aiws-surface-item-c-board')).toBeVisible()
+  // a right click on it opens no menu
+  await dept.click({ button: 'right' })
+  await expect(page.getByTestId('aiws-surface-rename-dept')).toHaveCount(0)
+  // the folder bob reads has its menu: nothing to create there without `structure`
+  await list.getByTestId('aiws-surface-more-proj').click()
+  await expect(page.getByTestId('aiws-surface-new-here-proj')).toBeDisabled()
+  await page.keyboard.press('Escape')
+  // opening a canvas
+  list = await pickerShown(page)
+  await list.getByTestId('aiws-surface-item-c-week').getByRole('menuitem').click()
+  await expect(canvas).toHaveAttribute('data-surface-id', 'c-week')
+  // the search finds bob's canvases (the trail runs through the path node), never the path node itself
+  list = await pickerShown(page)
+  await list.getByTestId('aiws-surface-search').fill('周报')
+  await expect(list.getByTestId('aiws-surface-item-c-week').getByTestId('aiws-surface-trail')).toHaveText('无权访问的目录 / 项目A')
+  await list.getByTestId('aiws-surface-search').fill('无权')
+  await expect(list.locator('[data-testid^="aiws-surface-item-"], [data-testid^="aiws-surface-folder-"]')).toHaveCount(0)
+  await list.getByTestId('aiws-surface-search').fill('')
+
+  // a canvas alice moves into 项目A takes the folder's grant: it shows up for bob (§15 #4)
+  const out = (await api.outline(ALICE, ws.workspace_id)).find((e: Json) => e.entity_id === 'c-out')
+  expect((await api.commit(ALICE, ws, [{ op: 'tree.move', entity_id: 'c-out', new_parent_id: 'proj', order_key: 'c', expect: { rev: out.struct_rev } }])).status).toBe('accepted')
+  await expect(list.getByTestId('aiws-surface-item-c-out')).toBeVisible()
+  await expect(list.getByTestId('aiws-surface-item-c-out')).toHaveAttribute('data-depth', '2')
+
+  // a grant on one canvas instead (Q19: someone who reads only the canvas a show plays): both folders above are path nodes
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: '/surfaces/部门/项目A' }, { subject: 'bob', resource: '/surfaces/部门/项目A/周报', allow: ['read'] }] })
+  await page.reload()
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+  await expect(canvas).toHaveAttribute('data-surface-id', 'c-week')
+  list = await openPicker(page)
+  for (const id of ['dept', 'proj']) {
+    await expect(list.getByTestId(`aiws-surface-folder-${id}`)).toHaveAttribute('data-path-only', 'true')
+    await expect(list.getByTestId(`aiws-surface-more-${id}`)).toHaveCount(0)
+  }
+  await expect(list).not.toContainText('项目A')
+  await expect(list.locator('[data-testid^="aiws-surface-item-"]')).toHaveCount(1)
+  await expect(list.getByTestId('aiws-surface-item-c-week')).toBeVisible()
 })
 
 test('PRD §4.1.1 canvas folders from the picker: new folder, new canvas here, rename, drag into a folder, copy path, only an empty folder deleted, undo', async ({ page, api, context }) => {

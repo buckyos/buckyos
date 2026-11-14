@@ -23,6 +23,7 @@ import * as members from './members'
 import * as mindmap from './mindmap'
 import * as objecttree from './objecttree'
 import * as office from './office'
+import * as pathnode from './pathnode'
 import * as pdf from './pdf'
 import * as permissions from './permissions'
 import * as phone from './phone'
@@ -38,7 +39,7 @@ import * as tablecurrent from './tablecurrent'
 import * as wish from './wish'
 import * as worklog from './worklog'
 
-const parts = [common, shell, canvas, blocks, wish, data, directory, presentation, richtext, core, demos, mindmap, pdf, ext, imports, session, office, schedule, framework, home, surfaces, settings, activity, table, permissions, blockui, blockprops, customize, members, worklog, datamode, phone, objecttree, fielddefault, tablecurrent]
+const parts = [common, shell, canvas, blocks, wish, data, directory, presentation, richtext, core, demos, mindmap, pdf, ext, imports, session, office, schedule, framework, home, surfaces, settings, activity, table, permissions, blockui, blockprops, customize, members, worklog, datamode, phone, objecttree, fielddefault, tablecurrent, pathnode]
 
 export const aiWorkspaceEn: Record<string, string> = Object.assign({}, ...parts.map((part) => part.en))
 export const aiWorkspaceZh: Record<string, string> = Object.assign({}, ...parts.map((part) => part.zh))

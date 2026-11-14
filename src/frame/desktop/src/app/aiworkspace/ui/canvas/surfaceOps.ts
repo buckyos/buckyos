@@ -7,14 +7,14 @@ import { aiwsT } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
 import { orderKeyAfter, SURFACES_ROOT } from '../surfaces/tree'
 
-/** Every canvas, through the canvas folders (UI 框架 PRD §4.1.1, Q5), in tree order. */
+/** Every canvas the caller may read, through the canvas folders (UI 框架 PRD §4.1.1, Q5) — also the folders it may
+ * not read, the outline's path nodes, to the canvases it may — in tree order. */
 export function surfacesOf(store: WorkspaceStore): EntityEnvelope[] {
   const out: EntityEnvelope[] = []
   const walk = (parentId: string) => {
-    for (const e of store.outline.childrenOf(parentId)) {
+    for (const e of store.outline.treeChildrenOf(parentId)) {
       if (e.type_id !== 'buckyos.container') continue
-      if (e.kind === 'surface') out.push(e)
-      else if (e.kind === 'folder') walk(e.entity_id)
+      if (e.kind === 'surface') { if (!e.path_only) out.push(e) } else if (e.kind === 'folder') walk(e.entity_id)
     }
   }
   walk(SURFACES_ROOT)

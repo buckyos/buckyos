@@ -6,11 +6,12 @@
  * or a long press: rename, copy, move to…, permissions…, delete, copy path; a folder also “new canvas here”. On a
  * computer rows drag to reorder or into a folder; touch moves with “move to…”. Folders are the shared tree (ordinary
  * undoable Commits); what is collapsed, the order by name and the recent list are this person's work state. The list
- * renders only what is on screen, so hundreds of canvases stay quick. */
+ * renders only what is on screen, so hundreds of canvases stay quick. A folder the person cannot read, above one it can
+ * (the outline's path node), is a row that only folds: no name, no menu, no dragging. */
 
 import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDownAZ, ChevronDown, ChevronLeft, ChevronRight, Ellipsis, Folder, FolderOpen, FolderPlus, House, LayoutDashboard, Plus, Search, X } from 'lucide-react'
+import { ArrowDownAZ, ChevronDown, ChevronLeft, ChevronRight, Ellipsis, Folder, FolderLock, FolderOpen, FolderPlus, House, LayoutDashboard, Plus, Search, X } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { EntityEnvelope } from '../../api/types'
 import { useOutlineVersion, useReadOnlyReason, useStore, useUserState } from '../../state/hooks'
@@ -21,7 +22,7 @@ import { duplicateSurfaceOps } from '../canvas/surfaceOps'
 import { MenuButton, PopoverPanel, usePopover, type MenuItem } from '../shell/popover'
 import { useShell } from '../shell/shellContext'
 import {
-  allFolders, canMoveInto, COLLAPSED_KEY, createFolderOps, entityPath, entriesOf, entryLabel, folderTrail, moveEntryOps, RECENT_KEY, requestEntityPermissions,
+  allFolders, canMoveInto, COLLAPSED_KEY, createFolderOps, entityPath, entriesOf, entryLabel, folderTrail, isPathFolder, moveEntryOps, RECENT_KEY, requestEntityPermissions,
   searchEntries, SORT_KEY, SURFACES_ROOT, treeRows, type SortMode,
 } from './tree'
 import './surfaces.css'
@@ -152,7 +153,7 @@ function PickerBody({ phone, onClose }: { phone: boolean; onClose: () => void })
   }, [rows, reveal, activeId, virtualizer])
 
   const fail = (outcome: Awaited<ReturnType<typeof store.submit>>) => { if (!accepted(outcome)) store.notify('error', t('aiworkspace.surfaces.failed', { code: 'code' in outcome ? outcome.code : outcome.status })) }
-  const setCollapsed = (next: Set<string>) => store.userState.set(COLLAPSED_KEY, next.size > 0 ? [...next].filter((id) => store.outline.get(id)) : null)
+  const setCollapsed = (next: Set<string>) => store.userState.set(COLLAPSED_KEY, next.size > 0 ? [...next].filter((id) => store.outline.node(id)) : null)
   const toggleFolder = (id: string) => { const next = new Set(collapsed); if (next.has(id)) next.delete(id); else next.add(id); setCollapsed(next) }
   const pick = (id: string) => { shell.selectSurface(id); shell.setTopMode('canvas'); onClose() }
   const showFolder = (id: string) => {
@@ -319,6 +320,7 @@ function PickerBody({ phone, onClose }: { phone: boolean; onClose: () => void })
             if (row.type === 'empty') return <div key={row.key} className="aiws-sp-empty aiws-muted" style={style} role="presentation">{row.label}</div>
             const e = row.entity
             const folder = e.kind === 'folder'
+            if (isPathFolder(e)) return <PathFolderRow key={row.key} row={row} style={style} onToggle={() => toggleFolder(e.entity_id)} />
             const isActive = !folder && e.entity_id === activeId
             const over = drag?.over?.id === e.entity_id ? drag.over.at : null
             const draggable = !coarse && !phone && !results && !renaming && readOnly === null && canStructure(e)
@@ -403,6 +405,27 @@ function PickerBody({ phone, onClose }: { phone: boolean; onClose: () => void })
         )}
       </div>
     </>
+  )
+}
+
+/** A folder the person cannot read (a path node): it folds, nothing else — the canvases and folders it may read inside
+ * are its rows below. */
+function PathFolderRow({ row, style, onToggle }: { row: Extract<Row, { type: 'entry' }>; style: { top: number; height: number }; onToggle: () => void }) {
+  const { t } = useAiwsText()
+  const label = entryLabel(row.entity)
+  return (
+    <div className="aiws-surface-item aiws-sp-row is-folder is-path-only" style={style} data-testid={row.testId} data-entity-id={row.entity.entity_id} data-depth={row.depth} data-path-only="true"
+      title={t('aiworkspace.pathnode.hint')} onContextMenu={(event) => event.preventDefault()}>
+      <span className="aiws-sp-indent" style={{ width: row.depth * 16 }} aria-hidden="true" />
+      <button type="button" className="aiws-sp-toggle" aria-expanded={!row.collapsed} aria-label={t(row.collapsed ? 'aiworkspace.surfaces.expand' : 'aiworkspace.surfaces.collapse', { name: label })}
+        data-testid={`aiws-surface-folder-toggle-${row.entity.entity_id}`} onClick={onToggle}>
+        {row.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+      </button>
+      <button type="button" role="menuitem" className="aiws-surface-pick" aria-expanded={!row.collapsed} aria-description={t('aiworkspace.pathnode.hint')} onClick={onToggle}>
+        <FolderLock size={16} aria-hidden="true" />
+        <span className="aiws-surface-item-name"><span className="aiws-sp-name">{label}</span></span>
+      </button>
+    </div>
   )
 }
 

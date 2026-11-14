@@ -45,10 +45,10 @@ function useRowTools(entityId: string, mode: CanvasMode, editorActive: boolean, 
   const icon = definition?.icon ?? ENTRY_ICONS[entity?.view_type ?? ''] ?? control?.icon ?? Square
   const typeTitle = definition?.title ?? control?.title ?? ''
   if (!context || !cell || cell.locked || !entity) return { items: [], icon, typeTitle }
+  // an extension's declared actions come first (manifest 4, 控件机制 TODO H2): they are what this control is for, ahead of
+  // its host type's own (an HTML control's "run" and "open definition", which stay in ⋯); an HTML control's from its
+  // definition, a composite's from the definition its container names; primary unless they say otherwise
   const primary: ToolbarItem[] = []
-  if (definition) for (const entry of typeEntries(definition, context, store)) if (entry.primary) primary.push(toolOf(entry))
-  // an extension's declared actions (manifest 4, 控件机制 TODO H2): an HTML control's from its definition, a composite's
-  // from the definition its container names; primary unless they say otherwise
   const composite = entity.kind === 'composite'
   const def = composite ? store.outline.get(entity.def_id ?? '') : undefined
   const declared = declaredActions(composite ? def?.def_actions : context.documentDefinition?.actions)
@@ -62,8 +62,9 @@ function useRowTools(entityId: string, mode: CanvasMode, editorActive: boolean, 
         run: () => { void runAction(store, host, a).catch((error: unknown) => store.notify('error', aiwsT('aiworkspace.canvas.extensionActionFailed', { reason: describeError(error) }))) } })
     }
   }
-  // what a data control's body offers as primary (the Block toolbar shows the same)
+  // what a data control's body offers as primary (the Block toolbar shows the same), then the type's declared ones
   for (const a of published) if (a.primary) primary.push({ kind: 'button', id: `control-${a.id}`, icon: a.icon, label: a.label, active: a.checked, disabled: a.disabled ?? false, run: a.run })
+  if (definition) for (const entry of typeEntries(definition, context, store)) if (entry.primary) primary.push(toolOf(entry))
   return { items: [...primary.slice(0, ROW_PRIMARY), ...quickItems(definition, context, store)], icon, typeTitle }
 }
 

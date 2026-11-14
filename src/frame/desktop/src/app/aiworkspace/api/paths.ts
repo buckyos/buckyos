@@ -1,7 +1,8 @@
 /* The one path syntax (核心 API 调整 R5, R14; core `path.rs`) over the outline this tab holds: `/` is the root, each
  * step an entity's `name` (`/data/销售`, `/surfaces/看板/text-3`), and a path may start at an entity with `~<entity_id>`.
- * The outline holds only what the caller may read, so this resolves exactly as the service does for this caller: of
- * siblings sharing a name the shared one wins, then sibling order; the others are reached by `~<id>`. */
+ * The outline's readable entries (`get`, `childrenOf`: not its path nodes) are what the caller may read, so this resolves
+ * exactly as the service does for this caller: of siblings sharing a name the shared one wins, then sibling order; the
+ * others are reached by `~<id>`. */
 
 import type { EntityEnvelope } from './types'
 
@@ -26,19 +27,22 @@ export function resolvePath(outline: OutlineLike, path: string): EntityEnvelope 
   }
   const segs = path.split('/').filter((s) => s.length > 0)
   let cur: EntityEnvelope | undefined
+  let at = ROOT
   if (segs[0]?.startsWith('~')) {
     cur = outline.get(segs.shift()!.slice(1))
     if (!cur || cur.deleted) return null
+    at = cur.entity_id
   } else {
+    // a walk from the root needs only its steps readable (the root itself may be a path node of the outline)
     cur = outline.get(ROOT)
-    if (!cur) return null
   }
   for (const s of segs) {
     if (s === '.') continue
-    cur = step(outline, cur.entity_id, s)
+    cur = step(outline, at, s)
     if (!cur) return null
+    at = cur.entity_id
   }
-  return cur
+  return cur ?? null
 }
 
 /** The path of an entity as this caller prints it: from the root, or from the highest ancestor it can reach by names

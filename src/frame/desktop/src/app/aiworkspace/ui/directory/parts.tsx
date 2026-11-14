@@ -30,8 +30,7 @@ export interface DirMenuItem { id: string; label: string; icon?: LucideIcon; dan
 /** A menu in the framework's panel (UI 框架 PRD §6.1): floating below its trigger with the menu's name and ✕ on a computer,
  * the window's bottom sheet on a phone. The first enabled entry takes the focus; the arrows move it. */
 export function DirMenu({ anchor, label, items, onClose, testId }: { anchor: AnchorRect; label: string; items: DirMenuItem[]; onClose: () => void; testId: string }) {
-  // once drawn where it goes (the floating panel is placed after its first render, a phone's sheet draws its content a
-  // render later)
+  // once drawn where it goes (a phone's sheet draws its content a render later)
   const focusFirst = useCallback((el: HTMLDivElement | null) => {
     if (el) requestAnimationFrame(() => el.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true }))
   }, [])

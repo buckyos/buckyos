@@ -10,6 +10,9 @@ import { devices, type Page } from '@playwright/test'
 import { expect, openWorkspace, openWorkspacePage, test, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
+// The backend's JSON results are inspected ad hoc.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Json = any
 
 async function dataMode(page: Page) {
   if (await page.getByTestId('aiws-top-sources').isVisible()) await page.getByTestId('aiws-top-sources').click()
@@ -412,6 +415,52 @@ test('§5.2 the object tree by keyboard (WAI-ARIA tree): one tab stop; arrows mo
   await page.getByTestId('aiws-tree-x').click()
   await expect(item('x')).toHaveAttribute('tabindex', '0')
   await expect(page.locator('[role="treeitem"][tabindex="0"]')).toHaveCount(1)
+})
+
+test('§5.2 §15-24 Q5 a grant on /data/销售 only: the object tree has the folder and what is in it, nothing else of the data; a grant on a folder inside shows 销售 as a row that only folds', async ({ page, api }) => {
+  const BOB = 'tok-bob'
+  const ws = await api.freeCanvas(ALICE, `scoped data ${Date.now()}`)
+  const folder = (id: string, parent: string, key: string, title: string) => ({ op: 'entity.create', entity_id: id, type_id: 'buckyos.container', parent_id: parent, order_key: key, payload: { kind: 'folder', title } })
+  const table = (id: string, parent: string, name: string) => ({ op: 'entity.create', entity_id: id, type_id: 'buckyos.table-source', parent_id: parent, order_key: 'a', name, payload: { fields: [{ field_id: 'c', name: '客户', type: 'text' }] } })
+  const made = await api.commit(ALICE, ws, [folder('f-sales', 'data', 'a', '销售'), table('t-orders', 'f-sales', '订单'), folder('f-east', 'f-sales', 'b', '华东'), table('t-east', 'f-east', '华东订单'), folder('f-hr', 'data', 'b', '人事'), table('t-pay', 'f-hr', '工资')])
+  expect(made.status, JSON.stringify(made)).toBe('accepted')
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: '/data/销售', allow: ['read'] }] })
+  expect((await api.outline(BOB, ws.workspace_id)).map((e: Json) => [e.entity_id, e.path_only === true])).toEqual([['root', true], ['data', true], ['f-sales', false], ['t-orders', false], ['f-east', false], ['t-east', false]])
+
+  await openWorkspacePage(page, BOB, ws.workspace_id)
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+  await dataMode(page)
+  const item = (id: string) => page.locator(`[data-testid="aiws-tree-item"][data-entity-id="${id}"]`)
+  for (const id of ['f-sales', 't-orders', 'f-east', 't-east']) await expect(item(id)).toBeVisible()
+  for (const id of ['f-hr', 't-pay', 'canvas-content', 'free-content']) await expect(item(id)).toHaveCount(0)
+  await expect(page.locator('[data-testid="aiws-tree-item"][data-path-only="true"]')).toHaveCount(0)
+  await page.getByTestId('aiws-tree-t-orders').dblclick()
+  await expect(tab(page, 't-orders')).toBeVisible()
+
+  // only 华东 inside it: 销售 stays as the way there, unnamed, no menu, not opened — it folds
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: '/data/销售' }, { subject: 'bob', resource: '/data/销售/华东', allow: ['read'] }] })
+  await page.reload()
+  await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+  await dataMode(page)
+  await expect(item('f-sales')).toHaveAttribute('data-path-only', 'true')
+  await expect(page.getByTestId('aiws-tree-f-sales')).toHaveText('无权访问的文件夹')
+  await expect(page.getByTestId('aiws-tree-more-f-sales')).toHaveCount(0)
+  await expect(item('t-orders')).toHaveCount(0)
+  await expect(item('t-east')).toBeVisible()
+  await page.getByTestId('aiws-tree-f-sales').click()
+  await expect(item('f-sales')).toHaveAttribute('aria-expanded', 'false')
+  await expect(item('f-east')).toHaveCount(0)
+  await expect(tab(page, 'f-sales')).toHaveCount(0)
+  await page.getByTestId('aiws-tree-f-sales').click({ button: 'right' })
+  await expect(page.getByTestId('aiws-dm-menu')).toHaveCount(0)
+  await page.getByTestId('aiws-tree-f-sales').click()
+  await page.getByTestId('aiws-tree-t-east').dblclick()
+  await expect(tab(page, 't-east')).toBeVisible()
+  // the search finds what bob reads, never the path node
+  await page.getByTestId('aiws-dm-search').fill('无权')
+  await expect(page.getByTestId('aiws-tree-item')).toHaveCount(0)
+  await page.getByTestId('aiws-dm-search').fill('华东订单')
+  await expect(page.locator('[data-testid="aiws-tree-item"][data-hit="true"]')).toHaveAttribute('data-entity-id', 't-east')
 })
 
 test.describe('on a phone', () => {
