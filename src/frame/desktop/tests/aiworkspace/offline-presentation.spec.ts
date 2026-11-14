@@ -5,7 +5,7 @@
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { blockCenter } from './fixtures'
+import { blockCenter, mainMenu } from './fixtures'
 import { expect, prepareOffline, saveSummary, test, type Api } from './offline-fixtures'
 
 const ALICE = 'tok-alice'
@@ -28,15 +28,15 @@ test('P3-18 offline: the guide and a local read-only show work; the prompter lin
   await context.setOffline(true)
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'offline', { timeout: 40_000 })
   // the guide runs from the replica
-  await page.getByTestId('aiws-guide-start').click()
+  await page.getByTestId('aiws-collab-play').click()
+  await page.getByTestId('aiws-play-guide-path-guide').click()
   await expect(page.getByTestId('aiws-guide')).toHaveAttribute('data-step', 'g1')
   await page.keyboard.press('ArrowRight')
   await expect(page.getByTestId('aiws-guide')).toHaveAttribute('data-step', 'g2')
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('aiws-guide')).toHaveCount(0)
   // a show: local, read-only, without a lock, a prompter or a clone — and it says so
-  await page.getByTestId('aiws-main-menu').click()
-  await page.getByTestId('aiws-top-play').click()
+  await mainMenu(page, 'aiws-menu-collab', 'aiws-top-play')
   await expect(page.getByTestId('aiws-start-show')).toContainText('后台当前不可达')
   await page.getByTestId('aiws-start-show-go').click()
   await expect(page.getByTestId('aiws-show')).toBeVisible({ timeout: 30_000 })

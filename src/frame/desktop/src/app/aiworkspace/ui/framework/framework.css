@@ -1,0 +1,73 @@
+/* The UI framework (UI 框架 PRD §3–§4): the context zone, the avatar stack of the collaboration zone and the status
+ * panel. Colours and shapes come from aiworkspace.css (--cp-*, .aiws-panel, .aiws-tool). */
+
+/* ---- the context zone (§4.4): bottom centre, one bar, never wrapping */
+.aiws-context-zone { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 26; display: flex; justify-content: center; max-width: calc(100% - 24px); pointer-events: none; }
+.aiws-context-zone > * { pointer-events: auto; }
+.aiws-canvas-main.has-left-tools > .aiws-context-zone { max-width: calc(100% - 2 * 68px); }
+.aiws-context-zone > .aiws-context-bar { position: static; left: auto; bottom: auto; transform: none; max-width: 100%; display: flex; align-items: center; flex-wrap: nowrap; gap: 2px; padding: 4px; overflow-x: auto; box-sizing: border-box; }
+.aiws-context-zone > .aiws-context-bar > * { flex: none; }
+/* on a stage the controls stay under the stage's own panels and overlays */
+.aiws-show > .aiws-context-zone, .aiws-session-room > .aiws-context-zone { z-index: 20; }
+.aiws-workspace[data-phone='true'] .aiws-context-zone { bottom: calc(12px + env(safe-area-inset-bottom)); }
+
+/* ---- the avatar stack (§4.2): me first, the others overlapping to the right */
+.aiws-avatar-stack { display: inline-flex; align-items: center; }
+.aiws-avatar-stack > .aiws-avatar + .aiws-avatar { margin-left: -10px; }
+.aiws-root button.aiws-avatar-more { min-width: 32px; height: 32px; border-radius: 16px; padding: 0 6px; font-size: 12px; background: var(--cp-surface-2); color: var(--cp-text); }
+.aiws-root button.aiws-avatar.is-other, .aiws-avatar.is-static.is-other { background: color-mix(in srgb, hsl(var(--aiws-avatar-hue, 210) 60% 50%) 24%, var(--cp-surface)); color: hsl(var(--aiws-avatar-hue, 210) 55% 38%); }
+.aiws-members-panel { width: 320px; max-width: calc(100vw - 24px); }
+.aiws-members { display: flex; flex-direction: column; gap: 2px; }
+.aiws-member-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.aiws-member-row.is-self + .aiws-muted { margin-top: -2px; }
+.aiws-member-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.aiws-member-main > b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-member-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
+.aiws-member-meta .aiws-chip { margin-left: 0; }
+.aiws-root button.aiws-member-surface { padding: 0; min-height: 0; font-size: 12px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+/* a panel opened from the status bar goes up */
+.aiws-popover.aiws-popover-up { top: auto; bottom: calc(100% + 6px); }
+/* the phone's members panel comes up from the bottom */
+.aiws-modal-backdrop:has(> .aiws-members-sheet) { align-items: flex-end; padding: 0; }
+.aiws-modal-backdrop > .aiws-dialog.aiws-members-sheet { width: 100%; max-height: 80%; border-radius: 16px 16px 0 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+@media (pointer: coarse) {
+  .aiws-member-row { min-height: 44px; }
+  .aiws-root button.aiws-member-surface { min-height: 32px; }
+}
+
+/* ---- the status panel (§4.5): opens above the status bar, at most half the work area, scrolls */
+.aiws-status-panel { pointer-events: auto; width: 100%; box-sizing: border-box; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; flex: none; }
+.aiws-status-panel > section + section, .aiws-status-panel > section + details, .aiws-status-panel > details + details { border-top: 1px solid var(--cp-border); padding-top: 8px; }
+.aiws-status-panel summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.aiws-status-panel .aiws-edits { margin: 0; }
+
+/* ---- the status bar's row (§4.5): the online count, then the commit state */
+.aiws-status-dock > .aiws-status-row { pointer-events: auto; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 6px; max-width: 100%; }
+.aiws-status-row > .aiws-status { min-width: 0; }
+.aiws-root button.aiws-status-online { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; min-height: 26px; border-radius: 999px; font-size: 12px; flex: none; }
+.aiws-status .aiws-status-progress { color: var(--cp-accent); }
+
+/* ---- the work log of the status panel (§4.5) */
+.aiws-worklog { display: flex; flex-direction: column; gap: 4px; }
+.aiws-worklog-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.aiws-worklog-head .aiws-panel-title { margin: 0; }
+.aiws-worklog-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.aiws-root button.aiws-worklog-entry, .aiws-worklog-entry.is-running { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 4px 6px; border: none; border-radius: 6px; background: none; text-align: left; min-height: 32px; font-size: 12px; }
+.aiws-root button.aiws-worklog-entry:hover:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-root button.aiws-worklog-entry:disabled { cursor: default; opacity: 1; }
+.aiws-worklog-time { flex: none; width: 64px; color: var(--cp-muted); font-variant-numeric: tabular-nums; }
+.aiws-worklog-body { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; gap: 0 6px; }
+.aiws-worklog-actor { font-weight: 600; }
+.aiws-worklog-actor[data-actor-kind='agent'], .aiws-worklog-actor[data-actor-kind='macro'] { color: var(--cp-accent); }
+.aiws-worklog-target { color: var(--cp-muted); }
+.aiws-worklog-body > progress { flex-basis: 100%; height: 6px; }
+.aiws-root button.aiws-worklog-more { align-self: flex-start; font-size: 12px; }
+@media (pointer: coarse) {
+  .aiws-root button.aiws-worklog-entry, .aiws-worklog-entry.is-running { min-height: 44px; }
+}
+
+/* ---- App mode's way back (§4.6): a collapsed ⋯ top left */
+.aiws-root button.aiws-app-mode-button { background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 999px; box-shadow: 0 1px 4px rgb(0 0 0 / 0.08); opacity: 0.55; transition: opacity 0.15s; }
+.aiws-root button.aiws-app-mode-button:hover, .aiws-root button.aiws-app-mode-button:focus-visible, .aiws-root button.aiws-app-mode-button[aria-expanded='true'] { opacity: 1; }
+/* without the title zone the collaboration zone stays on the right */
+.aiws-chrome-top > .aiws-view-toolbar:first-child, .aiws-chrome-top > .aiws-app-mode-entry + .aiws-view-toolbar { margin-left: auto; }

@@ -1,47 +1,46 @@
-/* 我的公开课 on the Workspace list: the sessions this account created, presents or joined, across Workspaces, newest
- * first — live ones to go back into, ended and saved ones to replay. A room opens on its courseware's own origin. */
+/* Public class cards of the home (UI framework PRD §9.2): a presentation session the caller may open without a link,
+ * across Workspaces (`session.list_open`, K7) — their own, the ones they present or joined, the open rooms of courseware
+ * they may read. "我主讲" marks the ones they present (Q7). A click goes in (live, not started) or replays (ended,
+ * saved), in a tab of its own on the courseware's origin; an expired one says why it cannot be opened. */
 
-import { useCallback } from 'react'
-import type { Transport } from '../api/transport'
-import { openWorkspacePage } from '../launch'
-import { useLoad } from '../state/hooks'
+import { Presentation, Radio } from 'lucide-react'
 import { useAiwsText } from '../useAiwsText'
-import { listMySessions } from './api'
+import { sessionAction } from '../ui/home/model'
 import { MY_ROLE_KEY, STATE_KEY } from './labels'
-import type { MySession } from './types'
+import type { OpenSession } from './types'
 import './session.css'
 
-/** `version`: bumped by the list's refresh. */
-export function MySessions({ transport, version }: { transport: Transport; version: number }) {
-  const { t, dateTime } = useAiwsText()
-  const load = useCallback(() => listMySessions(transport), [transport])
-  const sessions = useLoad<MySession[]>(load, version)
+/** `onOpen`: the card was clicked and the session can be opened (the home notes it in "Recent", then opens it). */
+export function SessionCard({ session, onOpen }: { session: OpenSession; onOpen: (session: OpenSession) => void }) {
+  const { t, tNode, dateTime } = useAiwsText()
+  const action = sessionAction(session)
+  const from = session.baseline?.source.title
+  const closed = action === 'expired' || !session.url
+  const live = session.state === 'live'
+  const Icon = live ? Radio : Presentation
   return (
-    <section className="aiws-my-sessions" data-testid="aiws-my-sessions">
-      <b>{t('aiworkspace.session.mine.title')}</b>
-      {sessions.error && <div className="aiws-error" role="alert">{t('aiworkspace.session.mine.loadFailed', { error: sessions.error })}</div>}
-      {sessions.data?.length === 0 && <div className="aiws-muted">{t('aiworkspace.session.mine.empty')}</div>}
-      {sessions.data && sessions.data.length > 0 && (
-        <ul className="aiws-session-list">
-          {sessions.data.map((s) => {
-            const from = s.baseline?.source.title
-            const url = s.state === 'expired' ? undefined : s.url
-            return (
-              <li key={s.session_id} data-testid={`aiws-my-session-${s.session_id}`} data-state={s.state} data-role={s.my_role}>
-                <span className={`aiws-session-dot${s.state === 'live' ? ' is-on' : ''}`} />
-                <span className="aiws-grow">{s.title}{from && <span className="aiws-muted"> · {t('aiworkspace.session.mine.from', { workspace: from })}</span>}</span>
-                <span className="aiws-chip">{t(MY_ROLE_KEY[s.my_role])}</span>
-                <span className="aiws-muted">{t(STATE_KEY[s.state])} · {dateTime(s.started_at ?? s.created_at)}</span>
-                {url && (
-                  <button type="button" data-testid="aiws-my-session-open" onClick={() => { void openWorkspacePage(url, { newTab: true }) }}>
-                    {s.state === 'ended' || s.state === 'archived' ? t('aiworkspace.session.create.replay') : t('aiworkspace.session.create.open')}
-                  </button>
-                )}
-              </li>
-            )
-          })}
-        </ul>
-      )}
-    </section>
+    <div className="aiws-home-card aiws-home-session" data-testid={`aiws-my-session-${session.session_id}`} data-session-id={session.session_id} data-state={session.state} data-role={session.my_role} data-action={action}>
+      <button type="button" className="aiws-home-card-main" data-testid="aiws-my-session-open" disabled={closed}
+        title={action === 'expired' ? t('aiworkspace.home.session.expired') : undefined}
+        onClick={() => onOpen(session)}>
+        <span className={`aiws-home-cover is-session${live ? ' is-live' : ''}`} aria-hidden="true"><Icon size={22} /></span>
+        <span className="aiws-home-card-body">
+          <span className="aiws-home-card-title aiws-user-text">{session.title}</span>
+          <span className="aiws-home-card-info">
+            <span className={`aiws-chip${live ? ' aiws-chip-ok' : ''}`} data-testid="aiws-home-session-state">{t(STATE_KEY[session.state])}</span>
+            <span>{tNode('aiworkspace.home.session.presenter', { name: <span className="aiws-user-text">{session.presenter}</span> })}</span>
+            <span>{dateTime(session.started_at ?? session.created_at)}</span>
+          </span>
+          {from && <span className="aiws-home-card-info aiws-muted">{tNode('aiworkspace.session.mine.from', { workspace: <span className="aiws-user-text">{from}</span> })}</span>}
+          <span className="aiws-home-card-marks">
+            {session.presenting
+              ? <span className="aiws-chip aiws-chip-derived" data-testid="aiws-home-presenting">{t(MY_ROLE_KEY.presenter)}</span>
+              : session.my_role === 'owner' || session.my_role === 'audience' ? <span className="aiws-chip">{t(MY_ROLE_KEY[session.my_role])}</span> : null}
+            {action === 'expired' && <span className="aiws-muted" data-testid="aiws-home-session-expired">{t('aiworkspace.home.session.expired')}</span>}
+          </span>
+        </span>
+        {!closed && <span className="aiws-home-card-go">{action === 'replay' ? t('aiworkspace.session.create.replay') : t('aiworkspace.session.create.open')}</span>}
+      </button>
+    </div>
   )
 }

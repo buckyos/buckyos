@@ -1,0 +1,155 @@
+/* The permission views (ui/permissions): editor, rules, groups, by-entity view, drawer and sheets. Colours from the
+   Desktop theme variables; a refused capability is in the danger colour, an allowed one in the accent's. */
+
+.aiws-root .aiws-perm-editor { container: aiws-perm / inline-size; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.aiws-root .aiws-perm-editor-head { display: flex; align-items: center; gap: 6px; }
+.aiws-root .aiws-perm-editor-head h2 { font-size: 16px; margin: 0; }
+.aiws-root .aiws-perm-section { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.aiws-root .aiws-perm-section-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.aiws-root .aiws-perm-section-head h3 { font-size: 14px; margin: 0; }
+.aiws-root .aiws-perm-subhead { display: flex; align-items: center; gap: 6px; font-weight: 600; margin-top: 8px; }
+.aiws-root .aiws-perm-name { overflow-wrap: anywhere; }
+.aiws-root .aiws-perm-invalid { color: var(--cp-danger); }
+.aiws-root .aiws-perm-type-icon { flex: none; color: var(--cp-muted); vertical-align: -3px; }
+.aiws-root .aiws-perm-resource { display: inline-flex; align-items: center; gap: 4px; min-width: 0; overflow-wrap: anywhere; text-align: start; }
+.aiws-root button.aiws-link.aiws-perm-resource { text-decoration: none; }
+.aiws-root button.aiws-link.aiws-perm-resource span { text-decoration: underline; }
+
+/* capability tags */
+.aiws-root .aiws-perm-tags { display: inline-flex; flex-wrap: wrap; gap: 3px; vertical-align: middle; }
+.aiws-root .aiws-perm-tag { display: inline-flex; align-items: center; font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--cp-border); white-space: nowrap; }
+.aiws-root .aiws-perm-tag.is-allow { border-color: color-mix(in srgb, var(--cp-accent) 45%, var(--cp-border)); color: var(--cp-accent); background: color-mix(in srgb, var(--cp-accent) 8%, transparent); }
+.aiws-root .aiws-perm-tag.is-deny { border-color: color-mix(in srgb, var(--cp-danger) 55%, var(--cp-border)); color: var(--cp-danger); background: color-mix(in srgb, var(--cp-danger) 8%, transparent); text-decoration: line-through; text-decoration-thickness: 1px; }
+
+/* the capability editor */
+.aiws-root .aiws-perm-caps { display: flex; flex-direction: column; gap: 6px; }
+.aiws-root .aiws-perm-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.aiws-root .aiws-perm-cap-grid { display: flex; flex-direction: column; gap: 2px; }
+.aiws-root .aiws-perm-cap-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 50%, transparent); }
+.aiws-root .aiws-perm-cap-name { flex: 1 1 auto; min-width: 0; }
+.aiws-root .aiws-perm-seg { display: inline-flex; flex: none; border: 1px solid var(--cp-border); border-radius: 8px; overflow: hidden; }
+.aiws-root .aiws-perm-seg > button { border: none; border-radius: 0; border-inline-start: 1px solid var(--cp-border); padding: 2px 10px; min-height: 28px; }
+.aiws-root .aiws-perm-seg > button:first-child { border-inline-start: none; }
+.aiws-root .aiws-perm-seg > button.is-allow[aria-checked='true'] { background: var(--cp-accent); color: #fff; }
+.aiws-root .aiws-perm-seg > button.is-deny[aria-checked='true'] { background: var(--cp-danger); color: #fff; }
+.aiws-root .aiws-perm-seg > button.is-unset[aria-checked='true'] { background: var(--cp-surface-2); font-weight: 600; }
+
+/* forms and the path help */
+.aiws-root .aiws-perm-form { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.aiws-root .aiws-perm-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.aiws-root .aiws-perm-field > span:first-child { font-weight: 600; }
+.aiws-root .aiws-perm-subject-picker { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.aiws-root .aiws-perm-subject-picker select, .aiws-root .aiws-perm-subject-picker input { min-height: 30px; }
+.aiws-root .aiws-perm-path { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.aiws-root .aiws-perm-path-row { display: flex; gap: 4px; }
+.aiws-root .aiws-perm-path-row input { flex: 1 1 auto; min-height: 30px; font-family: var(--cp-font-mono, ui-monospace, monospace); }
+.aiws-root .aiws-perm-path-suggest { display: flex; flex-direction: column; border: 1px solid var(--cp-border); border-radius: 8px; overflow: hidden; max-height: 220px; overflow-y: auto; }
+.aiws-root .aiws-perm-path-suggest > button { display: flex; gap: 6px; align-items: center; border: none; border-radius: 0; text-align: start; min-height: 32px; }
+.aiws-root .aiws-perm-path-check { display: flex; align-items: center; gap: 6px; min-height: 20px; }
+.aiws-root .aiws-perm-path-examples code { font-size: 12px; }
+
+/* the object picker */
+.aiws-root .aiws-perm-picker-tree { display: flex; flex-direction: column; max-height: min(60vh, 480px); overflow: auto; border: 1px solid var(--cp-border); border-radius: 8px; padding: 4px; }
+.aiws-root .aiws-perm-picker-row { display: flex; align-items: center; gap: 2px; }
+.aiws-root .aiws-perm-picker-spacer { display: inline-block; width: 36px; flex: none; }
+.aiws-root button.aiws-perm-picker-item { flex: 1 1 auto; display: flex; gap: 6px; align-items: center; border: none; background: none; text-align: start; min-height: 32px; min-width: 0; }
+.aiws-root button.aiws-perm-picker-item > span:nth-child(2) { overflow-wrap: anywhere; }
+.aiws-root button.aiws-perm-picker-item > .aiws-muted { margin-inline-start: auto; font-size: 12px; }
+
+/* rules: a table on a wide panel, cards on a narrow one */
+.aiws-root .aiws-perm-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.aiws-root .aiws-perm-filters input { min-width: 160px; }
+.aiws-root .aiws-perm-check { display: inline-flex; align-items: center; gap: 4px; }
+.aiws-root .aiws-perm-rules { display: flex; flex-direction: column; container: aiws-perm-rules / inline-size; }
+.aiws-root .aiws-perm-rule { display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(140px, 1.6fr) minmax(100px, 1.4fr) minmax(80px, 1fr) 44px; gap: 8px; align-items: center; padding: 4px 2px; border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 60%, transparent); }
+.aiws-root .aiws-perm-rules.is-one-subject .aiws-perm-rule { grid-template-columns: minmax(140px, 1.6fr) minmax(100px, 1.4fr) minmax(80px, 1fr) 44px; }
+.aiws-root .aiws-perm-rule.is-head { font-weight: 600; color: var(--cp-muted); font-size: 12px; }
+.aiws-root .aiws-perm-rule.has-deny { background: color-mix(in srgb, var(--cp-danger) 4%, transparent); }
+.aiws-root .aiws-perm-rule-subject { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
+.aiws-root .aiws-perm-cell-label { display: none; }
+.aiws-root .aiws-perm-rule-actions { display: flex; justify-content: flex-end; }
+@container aiws-perm-rules (max-width: 560px) {
+  .aiws-root .aiws-perm-rule, .aiws-root .aiws-perm-rules.is-one-subject .aiws-perm-rule { grid-template-columns: 1fr 44px; gap: 4px 8px; padding: 8px; margin: 4px 0; border: 1px solid var(--cp-border); border-radius: 10px; }
+  .aiws-root .aiws-perm-rule.is-head { display: none; }
+  .aiws-root .aiws-perm-rule > [role='cell'] { grid-column: 1; }
+  .aiws-root .aiws-perm-rule > .aiws-perm-rule-actions { grid-column: 2; grid-row: 1 / span 4; align-self: center; }
+  .aiws-root .aiws-perm-cell-label { display: inline; color: var(--cp-muted); margin-inline-end: 6px; font-size: 12px; }
+}
+
+/* groups */
+.aiws-root .aiws-perm-groups-layout { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.aiws-root .aiws-perm-groups-detail { min-width: 0; border-inline-start: 1px solid var(--cp-border); padding-inline-start: 16px; }
+.aiws-root .aiws-perm-group-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.aiws-root .aiws-perm-group-row { border-radius: 8px; }
+.aiws-root .aiws-perm-group-row.is-selected { background: var(--aiws-selected-bg); outline: 1px solid var(--aiws-selected-border); }
+.aiws-root button.aiws-perm-group-main { display: flex; align-items: flex-start; gap: 8px; width: 100%; border: none; background: none; text-align: start; padding: 6px; min-height: 44px; }
+.aiws-root .aiws-perm-group-text { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; }
+.aiws-root .aiws-perm-group-desc { flex-basis: 100%; font-size: 12px; }
+.aiws-root .aiws-perm-group-counts { font-size: 12px; white-space: nowrap; }
+.aiws-root .aiws-perm-chevron { flex: none; color: var(--cp-muted); align-self: center; }
+.aiws-root .aiws-perm-group-note { display: flex; align-items: center; gap: 6px; padding: 0 6px 6px 30px; flex-wrap: wrap; }
+.aiws-root .aiws-perm-group-form { border: 1px solid var(--cp-border); border-radius: 8px; padding: 8px; }
+.aiws-root .aiws-perm-group-detail { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.aiws-root .aiws-perm-members { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.aiws-root .aiws-perm-member { display: flex; align-items: center; gap: 6px; padding: 4px 0; min-height: 36px; border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 50%, transparent); flex-wrap: wrap; }
+.aiws-root .aiws-perm-member-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.aiws-root .aiws-perm-member-add select, .aiws-root .aiws-perm-member-add input { min-height: 30px; }
+
+/* check permissions, my permissions */
+.aiws-root .aiws-perm-order { border-inline-start: 3px solid var(--cp-border); padding-inline-start: 8px; margin: 4px 0; }
+.aiws-root .aiws-perm-explain { display: flex; flex-direction: column; }
+.aiws-root .aiws-perm-explain-row { display: grid; grid-template-columns: minmax(80px, 140px) 64px minmax(0, 1fr); gap: 8px; align-items: center; padding: 3px 0; border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 50%, transparent); }
+.aiws-root .aiws-perm-judgment { display: flex; flex-direction: column; gap: 2px; margin: 4px 0; }
+.aiws-root .aiws-perm-check-result { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--cp-border); border-radius: 8px; padding: 8px; }
+.aiws-root .aiws-perm-mine { display: flex; flex-direction: column; gap: 6px; }
+
+/* by entity */
+.aiws-root .aiws-perm-entity { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.aiws-root .aiws-perm-entity-subject { border: 1px solid var(--cp-border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+.aiws-root .aiws-perm-entity-subject-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.aiws-root .aiws-perm-entity-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-inline-start: 8px; border-inline-start: 2px solid var(--cp-border); }
+.aiws-root .aiws-perm-override, .aiws-root .aiws-perm-overridden { flex-basis: 100%; color: var(--cp-danger); font-size: 12px; }
+.aiws-root .aiws-perm-macros { display: flex; flex-direction: column; gap: 6px; }
+.aiws-root .aiws-perm-macro { border: 1px dashed var(--cp-border); border-radius: 8px; padding: 6px 8px; }
+.aiws-root .aiws-perm-radios { display: flex; flex-direction: column; gap: 4px; border: none; padding: 0; margin: 0; }
+.aiws-root .aiws-perm-radios legend { font-weight: 600; padding: 0; }
+
+/* the record */
+.aiws-root .aiws-perm-audit { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.aiws-root .aiws-perm-audit-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.aiws-root .aiws-perm-audit-item { padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 60%, transparent); display: flex; flex-direction: column; gap: 2px; }
+.aiws-root .aiws-perm-audit-line { display: flex; gap: 6px; align-items: baseline; }
+.aiws-root .aiws-perm-audit-changes { margin: 0; padding-inline-start: 16px; }
+
+/* editor chrome: access state, tabs, the narrow navigation */
+.aiws-root .aiws-perm-access { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 6px 8px; border: 1px solid var(--cp-border); border-radius: 8px; }
+.aiws-root .aiws-perm-access-item { display: inline-flex; align-items: center; gap: 4px; }
+.aiws-root .aiws-perm-access-item.is-on { color: var(--cp-accent); }
+.aiws-root .aiws-perm-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--cp-border); overflow-x: auto; }
+.aiws-root .aiws-perm-tabs > button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 12px; white-space: nowrap; }
+.aiws-root .aiws-perm-tabs > button[aria-selected='true'] { border-bottom-color: var(--cp-accent); color: var(--cp-accent); font-weight: 600; }
+.aiws-root .aiws-perm-nav { display: flex; flex-direction: column; border: 1px solid var(--cp-border); border-radius: 10px; overflow: hidden; }
+.aiws-root button.aiws-perm-nav-item { display: flex; align-items: center; gap: 8px; border: none; border-radius: 0; border-bottom: 1px solid var(--cp-border); background: none; min-height: 48px; padding: 0 12px; text-align: start; }
+.aiws-root button.aiws-perm-nav-item:last-child { border-bottom: none; }
+.aiws-root button.aiws-perm-nav-item > span:first-child { flex: 1 1 auto; font-weight: 600; }
+.aiws-root .aiws-perm-editor.is-narrow .aiws-perm-groups-detail { border: none; padding: 0; }
+
+/* dialogs, sheets and the drawer */
+.aiws-root .aiws-dialog.aiws-perm-dialog { width: min(560px, 100%); }
+.aiws-root .aiws-dialog.aiws-perm-dialog.is-wide { width: min(720px, 100%); }
+.aiws-root .aiws-perm-sheet-backdrop { position: fixed; inset: 0; z-index: 80; background: rgb(0 0 0 / 28%); display: flex; align-items: flex-end; }
+.aiws-root .aiws-perm-sheet { position: relative; width: 100%; max-height: 92vh; display: flex; flex-direction: column; background: var(--cp-surface-opaque, var(--cp-surface)); border-radius: 16px 16px 0 0; border: 1px solid var(--cp-border); border-bottom: none; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); box-sizing: border-box; box-shadow: var(--cp-shadow); }
+.aiws-root .aiws-perm-sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--cp-border); margin: -4px auto 8px; flex: none; }
+.aiws-root .aiws-perm-sheet-body { overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.aiws-root .aiws-perm-drawer { position: absolute; z-index: 60; top: 0; right: 0; bottom: 0; width: min(420px, 100%); display: flex; flex-direction: column; background: var(--cp-surface-opaque, var(--cp-surface)); border-inline-start: 1px solid var(--cp-border); box-shadow: var(--cp-shadow); box-sizing: border-box; }
+.aiws-root .aiws-perm-drawer.is-phone { position: fixed; inset: 0; width: 100%; z-index: 80; border: none; }
+.aiws-root .aiws-perm-drawer-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--cp-border); }
+.aiws-root .aiws-perm-drawer-body { flex: 1 1 auto; overflow: auto; padding: 8px 12px 24px; display: flex; flex-direction: column; gap: 12px; }
+
+@media (pointer: coarse) {
+  .aiws-root .aiws-perm-seg > button { min-height: 44px; min-width: 52px; }
+  .aiws-root .aiws-perm-presets > button, .aiws-root .aiws-perm-path button, .aiws-root .aiws-perm-member-add button, .aiws-root .aiws-perm-filters > * { min-height: 44px; }
+  .aiws-root button.aiws-perm-picker-item, .aiws-root .aiws-perm-path-suggest > button { min-height: 48px; }
+  .aiws-root .aiws-perm-subject-picker select, .aiws-root .aiws-perm-subject-picker input, .aiws-root .aiws-perm-path-row input, .aiws-root .aiws-perm-member-add select, .aiws-root .aiws-perm-member-add input { min-height: 44px; }
+  .aiws-root button.aiws-perm-group-main { min-height: 48px; }
+}

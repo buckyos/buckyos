@@ -33,7 +33,8 @@
  *
  * Writing (手写笔 TODO D1, D2): with the pen or the eraser as the tool the canvas is a writing area. It takes every
  * press before Blocks, editors and handles do; a pen or the mouse writes or erases (ink/input.ts), touches follow the
- * writing rules of touch.ts, the camera stays put while a stroke runs, and the stroke is drawn on two screen-space
+ * writing rules of touch.ts — except on a phone that has seen no pen, where one finger writes and a second one turns the
+ * stroke into a pan and zoom (UI 框架 PRD §6.3, Q17) —, the camera stays put while a stroke runs, and the stroke is drawn on two screen-space
  * canvases above the content until its Block has drawn it (ink/paint.ts). Ink Blocks are drawn wherever they cross
  * the view (no mount budget, no placeholder) and hit where their line is, not anywhere in their box.
  *
@@ -80,6 +81,7 @@ import { SpatialIndex } from './spatialIndex'
 import { TouchGestures, type OneFingerDrag, type Point, type TouchActions } from './touch'
 import { inkBook } from '../../../ink/book'
 import { ERASER_PX, InkInput, type InkControl, type InkHost } from '../../../ink/input'
+import { penSeen } from '../../../ink/device'
 import { INK_VIEW, touches, widePoints, type InkStyle } from '../../../ink/model'
 import { InkCanvas } from '../../../ink/paint'
 
@@ -150,8 +152,9 @@ export interface RenderHostProps {
   /** The pointer tool (UI improvement §7.2): `hand` pans with the primary button and never selects; `connector` draws a line;
    * `pen` writes and `eraser` erases whole strokes (手写笔 TODO). */
   tool?: 'select' | 'hand' | 'connector' | 'pen' | 'eraser'
-  /** The pen's style and the touch lock while writing; `control` lets the view ask whether a stroke runs, and drop it. */
-  ink?: { style: InkStyle; touchLock: boolean; control: InkControl } | null
+  /** The pen's style and the touch lock while writing; `control` lets the view ask whether a stroke runs, and drop it;
+   * `fingers`: one finger writes (a phone until it has seen a pen). */
+  ink?: { style: InkStyle; touchLock: boolean; control: InkControl; fingers?: boolean } | null
   /** A one-shot placement: the pointer carries a preview of this size; a primary click places it. */
   placing?: { w: number; h: number; label: string } | null
   onPlace?: (world: { x: number; y: number }) => void
@@ -334,6 +337,8 @@ export function RenderHost(props: RenderHostProps) {
     begin: () => undefined, draw: () => undefined, stroke: () => undefined, dropped: () => undefined, erase: () => undefined, eraseEnd: () => undefined,
   }))
   const [input] = useState(() => new InkInput(inkHost))
+  /** A finger writes (a phone that has seen no pen; the host object follows the props after every render). */
+  const fingerInk = () => Boolean(inkHost.fingers?.())
   const inkBaseRef = useRef<HTMLCanvasElement>(null)
   const inkTailRef = useRef<HTMLCanvasElement>(null)
   /** Strokes hidden by the eraser: until their deletion is back, or put back when it is refused or cancelled. */
@@ -850,7 +855,14 @@ export function RenderHost(props: RenderHostProps) {
     if (!inkOn) return
     event.stopPropagation()
     pointerTypeRef.current = event.pointerType
-    if (event.pointerType === 'touch') { event.preventDefault(); touch.down(event.nativeEvent); return }
+    if (event.pointerType === 'touch') {
+      event.preventDefault()
+      const first = touch.fingers() === 0
+      touch.down(event.nativeEvent)
+      // a phone without a pen: the first finger writes (a second one comes as navigation, `moving` drops the stroke)
+      if (first && fingerInk() && !props.gesturesPaused) input.down(event.nativeEvent)
+      return
+    }
     if (props.gesturesPaused) return
     // the middle button, or Space with the primary one, still pans
     if (event.pointerType === 'mouse' && (event.button === 1 || (event.button === 0 && spaceHeld.current))) { if (!dragRef.current && !input.busy()) beginPointer(event); return }
@@ -1340,7 +1352,11 @@ export function RenderHost(props: RenderHostProps) {
       begin: beginTouch,
       delegateMove: (event) => trackPointer(event.clientX, event.clientY),
       delegateEnd: finishDrag,
-      moving: (on) => { setDragging(on); worldRef.current?.classList.toggle('is-moving', on) },
+      moving: (on) => {
+        // a second finger on a phone's writing: the stroke of the first is dropped, the two pan and zoom
+        if (on && input.busy() && input.byTouch()) input.cancel()
+        setDragging(on); worldRef.current?.classList.toggle('is-moving', on)
+      },
       tap: tapAt,
       doubleTap: doubleTapAt,
       twoFingerTap: (p) => camera.animateTo(camera.zoomedAt(p.x, p.y, 0.5)),
@@ -1401,7 +1417,8 @@ export function RenderHost(props: RenderHostProps) {
       capture: (pointerId: number) => { try { rootRef.current?.setPointerCapture(pointerId) } catch { /* the pointer is gone already */ } },
       release: (pointerId: number) => { try { if (rootRef.current?.hasPointerCapture(pointerId)) rootRef.current.releasePointerCapture(pointerId) } catch { /* released */ } },
       interrupt: () => {
-        touch.penDown()
+        // a finger's stroke leaves the touches to the gestures (a second finger navigates)
+        if (pointerTypeRef.current !== 'touch') touch.penDown()
         if (dragRef.current) finishDrag(true)
         stopEdgePan()
         camera.stopAnimation()
@@ -1424,9 +1441,10 @@ export function RenderHost(props: RenderHostProps) {
       dropped: () => inkCanvas.end(),
       erase: eraseAlong,
       eraseEnd: endErase,
+      fingers: () => Boolean(props.ink?.fingers) && !penSeen(),
     } satisfies InkHost)
     props.ink?.control.attach(input)
-    touch.setInk({ on: inkOn, locked: Boolean(props.ink?.touchLock), busy: () => input.busy() })
+    touch.setInk({ on: inkOn, locked: Boolean(props.ink?.touchLock) && !fingerInk(), busy: () => input.busy() && !input.byTouch() })
   })
   // another tool, another canvas or unmounting drops the stroke under way (saved strokes stay)
   useEffect(() => () => input.cancel(), [input, props.tool, props.surfaceId])

@@ -80,6 +80,11 @@ state/userState.ts        user work state (mode, sub-mode, active Surface, viewp
                           IndexedDB + server
 state/recent.ts           the most recent workspace per service target and principal (app-level, localStorage)
 state/freshness.ts        subscribes to `doc.freshness`; the front end never derives freshness itself
+state/presence.ts         who is online (UI 框架 PRD K2): `usePresence()` registers this window (`presence.heartbeat`
+                          every 10 s, at once on a canvas switch, `presence.leave` when unused), self first; offline
+                          or refused, only this window's person; `presenceName`, `presenceGroupLabel` (所有者 / groups / 访客)
+state/worklog.ts          the work log (K3): `useWorkLog({ filter })` over `ws.work_log` (50 a page, `loadMore`), refreshed
+                          on Commits, this window's runs and every 15 s; `describeWorkLogEntry`, `workLogActor`, `workLogLocation`
 ui/
   WorkspaceList.tsx       list / New (blank or template) / import / export / clone / delete
   WorkspaceView.tsx       store context + shell; registers the shipped Block definitions
@@ -89,13 +94,14 @@ ui/
                           identity, share link), StatusSummary (the bottom-right status area: save / sync /
                           connection, persistent alerts and notices; the 修改状态 panel), SidePanel, dialogs (New, export, import, help, Mock, leave check),
                           popover.tsx (popovers and keyboard menus), shellContext.ts, panels, annotations panel
-  sources/                data-source mode: DataTree (canvas content collapsed, filters), DataDetail (editors without a
-                          Block), RelationsPanel (doc.relations), PropertiesPanel (versions, restore), PermissionsPanel
-                          (presets, canvas permissions, subjects)
-                          DirectoryDetail (`buckyos.dir` members: preview/download, upload/replace, rename/remove,
-                          directory references; member revisions and the shared write-lock/permission rules).
-                          DataDetail dispatches all eight core data types; degraded or unhandled types show their
-                          stored content read-only, including loading and read failures.
+  datamode/               the data mode (UI 框架 PRD §5): ObjectTree (data sources by default, filters, search, the 宏 group
+                          and the 工作区权限 node, the row menu of `data.*` actions, drag to move), tabs.ts (preview and
+                          fixed tabs in `ui:data-tabs`; `openDataEditor` opens an object's editor from anywhere),
+                          TabStrip / EditorHost (one mounted editor, scroll kept per tab), editors (each type's standard
+                          editor, a macro's task / code / runs pages), SideBar (属性 / 权限 / 修改记录), StatusInfo (the
+                          bar's object half), PhoneDataMode (one column: tree, editor, bottom panel), dialogs, ops
+  sources/                data-source helpers shared with the canvas: dataOps (type labels, new data), RelationsPanel
+                          (doc.relations), SourcePanel (publication, sources), FreshnessBadge, sourceLinks, presets
   canvas/                 CanvasView (sub-modes edit / view / path editing, selection, pointer tool,
                           one-shot placement, insert, clipboard, group, cross-Surface move, keyboard), ObjectToolbar,
                           InsertCatalog + catalog.ts (the one insert catalog), clipboard.ts, surfaceManage.tsx
@@ -342,8 +348,10 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   select, table and shape carry a corner mark and open a second column beside the toolbar (select / pan; table,
   calendar, to-do and the standard tables; the basic shapes merged with the shape library). Pinned extensions follow
   "insert…". There is no bottom-right navigation area:
-  the bottom-right corner of the work area is the status area (`StatusDock`: the save / sync summary, alerts and
-  notices stacked above it; expandable work logs are meant to live there too).
+  the bottom-right corner of the work area is the status area (`StatusDock`: the online count (K2) and the save / sync
+  summary, alerts and notices stacked above it; expanded, what needs attention, the connection and the recent work
+  log (K3, `ui/framework/WorkLog.tsx`)). Who is online is the collaboration zone's avatar stack and its members panel
+  (`ui/framework/members.tsx`); `FrameworkHost` registers every open window (on a phone too).
   The right panel shows one tab at a time (属性 / 引用与依赖 / 批注 / 协作 / 修改状态): layout width when the
   application container is ≥ 1100 px, a drawer below. Size classes: wide ≥ 1100, medium ≥ 760, narrow.
 - **One action per function.** Menus, toolbar buttons, the context menu and shortcuts call the same functions in
@@ -356,8 +364,14 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   be lost is asked about (返回处理 / 导出后离开 / 仍然离开). Closing or reloading a tab with such edits makes the
   browser ask (`beforeunload`). In a Desktop window the identity menu logs out through the Desktop
   (`buckyos:request-logout`); in a tab it signs out itself (`src/auth/signOut.ts`, the same `/sso_logout` flow).
-- **Layout preferences** live in the user work state under `ui:` (`ui:object-toolbar`, `ui:presenter-toolbar`,
-  `ui:grid`, `ui:side`, `ui:pinned-defs`); "恢复默认布局" clears them, never the document.
+- **Layout preferences.** The tool zones' switches and whether the status bar is expanded are the person's across
+  Workspaces (`user.get_prefs` keys `zones`, `status.expanded`; `ui/framework/personal.ts`); the grid, the side drawer
+  and the pinned extensions stay in this Workspace's user state (`ui:grid`, `ui:side`, `ui:pinned-defs`). "恢复默认布局"
+  clears both, never the document.
+- **Toolbar configuration** (UI 框架 PRD §4.6, `ui/framework/config.ts`): built-in, the Workspace's settings
+  (`config.toolbar` on the root, `manage`), the canvas's `config.toolbar` (`structure`), the person's `zones`, merged by
+  the items' keys; "视图 ▸ 自定义工具栏…" (`ui/customize/`) edits a shared layer. App mode: every zone hidden and locked —
+  `structure` / `manage` keep a collapsed ⋯ top left (`ui/framework/AppModeEntry.tsx`), alerts stay.
 
 ## Standard object interaction (doc/workspace/标准对象的交互改进.md, S1–S3)
 

@@ -27,7 +27,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
   type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type Touched, type WorkspaceInfo, type WishChoices,
-  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo, type HostedExecConfig, type BucketBinding, type ExtMigration, type ExtPackResult, type TemplateSpec,
+  type AnnotationContent, type ListAnnotationsParams, type ShowLockInfo, type HostedExecConfig, type BucketBinding, type ExtMigration, type ExtPackResult, type TemplateSpec,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
@@ -113,6 +113,8 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   private lockHolders = new Map<string, LockInfo>()
   private wakeAbort = new AbortController()
   private waitAbort: AbortController | null = null
+  /** The service has recorded this window's open (`ws.get_info { record_open }`, K6). */
+  private openRecorded = false
   private serial: Promise<unknown> = Promise.resolve()
   private readonly statusListeners = new Set<() => void>()
   private readonly changeListeners = new Set<(event: CommitEvent) => void>()
@@ -330,9 +332,10 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   }
 
   private async reconnect() {
-    // 2. still allowed, same history?
-    const info = await this.client.wsGetInfo(this.ws)
+    // 2. still allowed, same history? (the first answer also records that this window opened it, UI 框架 PRD K6)
+    const info = await this.client.wsGetInfo(this.ws, { recordOpen: !this.openRecorded })
     if (!info.ok) { this.streamError(info.error.code, info.error.detail); return }
+    this.openRecorded = true
     if (versionMismatch(info)) { this.stop('VERSION_MISMATCH'); return }
     if (info.epoch !== this.epoch) { this.stop('EPOCH_MISMATCH'); return }
     if (info.title !== this.wsInfo.title || info.capabilities.join() !== this.wsInfo.capabilities.join()) {
@@ -515,18 +518,6 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   async setUserState(entries: Record<string, Json | null>) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.writeUserState'))
     return this.direct.setUserState(entries)
-  }
-  async listGrants() {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.readGrants'))
-    return this.direct.listGrants()
-  }
-  async grant(subject: string, capabilities: Capability[], scopeEntityId?: string) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeGrants'))
-    return this.direct.grant(subject, capabilities, scopeEntityId)
-  }
-  async revoke(subject: string, scopeEntityId?: string) {
-    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.changeGrants'))
-    return this.direct.revoke(subject, scopeEntityId)
   }
   async listSubjects() {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.subjects'))
@@ -815,6 +806,23 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   async importObject(objId: string) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
     return this.direct.importObject(objId)
+  }
+  // presence and the work log (UI 框架 PRD K2, K3): the service's, never queued
+  async presenceHeartbeat(surfaceId: string | null, name?: string) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.activity.offline.presence'))
+    return this.direct.presenceHeartbeat(surfaceId, name)
+  }
+  async presenceLeave() {
+    if (!this.isLive()) return
+    return this.direct.presenceLeave()
+  }
+  async presenceList() {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.activity.offline.presence'))
+    return this.direct.presenceList()
+  }
+  async workLog(params?: Parameters<WorkspaceSession['workLog']>[0]) {
+    if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.activity.offline.workLog'))
+    return this.direct.workLog(params)
   }
 
   close() {

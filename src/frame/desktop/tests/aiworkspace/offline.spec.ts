@@ -254,7 +254,8 @@ test('offline: undo removes an unsent submission without the network; Mock run a
   await lock.getByTestId('aiws-lock-acquire').click()
   await expect(page.getByTestId('aiws-notice').filter({ hasText: '需要写锁的对象在后台不可达时只读' })).toBeVisible()
   await expect(lock).toHaveAttribute('data-held', 'false')
-  await expect(page.getByTestId('aiws-record-project-info').getByRole('button').first()).toBeDisabled()
+  // the record form (UI 框架 PRD §7.3) offers no enabled input while it is read-only
+  await expect(page.getByTestId('aiws-record-project-info').locator('input:not([disabled]), textarea:not([disabled]), select:not([disabled])')).toHaveCount(0)
 
   // the Mock run happens on the backend: offline it says so and produces nothing
   await openMock(page)
@@ -357,7 +358,7 @@ test('导入原子化 replica: an import saved locally is sent as one Commit in 
   const tables = async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: { type_id?: string; name?: string; deleted?: boolean }) => e.type_id === 'buckyos.table-source' && e.name === 'big' && !e.deleted)
   const head = await api.headSeq(ALICE, ws.workspace_id)
   // (a table: an import with pictures needs the backend's asset store, which the replica does not plan against)
-  await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-table'), { name: 'big.csv', mimeType: 'text/csv', buffer: Buffer.from(['n,label', ...Array.from({ length: 3000 }, (_, i) => `${i},row ${i}`)].join('\n')) })
+  await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-file', 'aiws-menu-import-table'), { name: 'big.csv', mimeType: 'text/csv', buffer: Buffer.from(['n,label', ...Array.from({ length: 3000 }, (_, i) => `${i},row ${i}`)].join('\n')) })
   const dialog = page.getByTestId('aiws-table-dialog')
   await dialog.getByTestId('aiws-table-start').click()
   await expect(dialog).toHaveCount(0, { timeout: 60_000 })

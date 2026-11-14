@@ -15,17 +15,18 @@ import type { OfflineActions } from '../WorkspaceView'
 /** `show` is a show's stage: never stored, it takes over the window until the show ends (第三期规划 §7.2). */
 export type TopMode = 'sources' | 'canvas' | 'show'
 
-/** The right panel shows one kind of content at a time (§3.2). */
-export type SideTab = 'inspector' | 'relations' | 'annotations' | 'collab' | 'edits' | 'wish'
+/** The side drawer shows one kind of content at a time (UI 框架 PRD §3.2): the collaboration content went to the
+ * members and permissions entry, the change status to the status panel (§4.5). */
+export type SideTab = 'inspector' | 'relations' | 'annotations' | 'wish'
 export const SIDE_TAB_LABEL: Readonly<Record<SideTab, string>> = localizedLabels({
   inspector: 'aiworkspace.shell.side.inspector', relations: 'aiworkspace.shell.side.relations', annotations: 'aiworkspace.shell.side.annotations',
-  collab: 'aiworkspace.shell.side.collab', edits: 'aiworkspace.shell.side.edits', wish: 'aiworkspace.shell.side.wish',
+  wish: 'aiworkspace.shell.side.wish',
 })
-export const CANVAS_SIDE_TABS: SideTab[] = ['inspector', 'relations', 'annotations', 'collab', 'edits']
-export const SOURCES_SIDE_TABS: SideTab[] = ['collab', 'edits']
+/** Properties are the floating properties panel, not a tab (UI 框架 PRD §10.2). */
+export const CANVAS_SIDE_TABS: SideTab[] = ['relations', 'annotations']
 
 export type DialogRequest =
-  | { kind: 'new'; tab: 'canvas' | 'workspace' | 'template' }
+  | { kind: 'new'; tab: 'canvas' | 'workspace' | 'template'; /** The canvas folder a new canvas goes into (画布选择器“在此新建画布”). */ folderId?: string }
   | { kind: 'share' }
   | { kind: 'export' }
   | { kind: 'import' }
@@ -37,10 +38,12 @@ export type DialogRequest =
   | { kind: 'save-template' }
   | { kind: 'delete-surface'; surface: EntityEnvelope }
 
-/** Personal layout preferences (user work state, `ui:*`); "restore default layout" clears them. */
+/** Personal layout preferences; "restore default layout" clears them. The tool zones' switches (and whether the status
+ * bar is expanded) are the person's across Workspaces (UI 框架 PRD §4.6, §12; ui/framework/personal.ts); the grid, the
+ * side drawer and the pinned extension controls are this Workspace's user state (`ui:*`). */
 export interface LayoutPrefs { objectToolbar: boolean; viewToolbar: boolean; grid: boolean }
-export const PREF_KEYS = { objectToolbar: 'ui:object-toolbar', viewToolbar: 'ui:view-toolbar', grid: 'ui:grid' } as const
-export const LAYOUT_KEYS = ['ui:object-toolbar', 'ui:view-toolbar', 'ui:grid', 'ui:side', 'ui:pinned-defs'] as const
+export const PREF_KEYS = { grid: 'ui:grid' } as const
+export const LAYOUT_KEYS = ['ui:grid', 'ui:side', 'ui:pinned-defs', 'ui:data-layout'] as const
 
 /** A running guide (第三期规划 §7.3): which path, which of its steps. */
 export interface GuideState { pathId: string; index: number }
@@ -86,6 +89,8 @@ export interface ShellApi {
   side: SideTab | null
   setSide: (tab: SideTab | null) => void
   openDialog: (request: DialogRequest) => void
+  /** "成员与权限…" (UI 框架 PRD §4.2, §8.1): the data mode with the Workspace's permission editor as its tab. */
+  openPermissions: () => void
   prefs: LayoutPrefs
   setPref: (key: keyof LayoutPrefs, value: boolean) => void
   resetLayout: () => void

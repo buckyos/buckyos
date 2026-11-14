@@ -1,0 +1,79 @@
+/* The phone (UI 框架 PRD §6): the title zone and the status bar are all that stays; the rest comes when it is needed —
+   the context window of a Block, the full-screen editor of its data, the text format bar, the writing bar. Menus and
+   panels are sheets (sheets.css), dialogs fill the screen, the side drawer comes up from the bottom. */
+
+/* ---- title zone (§6.1): the picker's trigger (icon, name ▾) takes the room, then undo / redo, then ⋯ */
+.aiws-workspace[data-phone='true'] .aiws-chrome-top > .aiws-phone-title-area { flex: 1 1 auto; min-width: 0; align-items: stretch; }
+.aiws-phone-title { display: flex; align-items: center; gap: 2px; padding: 2px 4px; min-height: 48px; box-sizing: border-box; width: 100%; }
+.aiws-phone-title > .aiws-surface-anchor { flex: 1 1 auto; min-width: 0; }
+.aiws-phone-title > .aiws-anchor:has(> button[hidden]:only-of-type) { display: none; }
+
+/* ---- status bar (§4.5): a bar along the bottom; its panel opens above it, from the bottom */
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-dock { left: 0; right: 0; bottom: 0; width: auto; max-height: calc(100% - 72px); align-items: stretch; gap: 0; }
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-dock > .aiws-alerts { padding: 0 8px 6px; box-sizing: border-box; }
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-dock > .aiws-status-row {
+  justify-content: flex-start; gap: 8px; padding: 4px 12px calc(4px + env(safe-area-inset-bottom)); box-sizing: border-box;
+  background: var(--cp-surface-opaque, var(--cp-surface)); border-top: 1px solid var(--cp-border);
+}
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-row > button.aiws-status { flex: 1 1 auto; justify-content: flex-start; min-height: 40px; border: none; background: none; box-shadow: none; border-radius: 8px; }
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-row button.aiws-status-online { min-height: 40px; }
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-status-dock > .aiws-status-panel { border-radius: 16px 16px 0 0; border-bottom: none; box-shadow: var(--cp-shadow); padding-bottom: 12px; }
+
+/* ---- the side drawer (comments, references) and the dialogs */
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-side.is-drawer {
+  top: auto; left: 0; right: 0; bottom: 0; width: auto; height: min(75%, 640px); z-index: 72;
+  border-left: none; border-top: 1px solid var(--cp-border); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom);
+}
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-modal-backdrop:not(.is-sheet):not(.aiws-dm-backdrop):not(:has(> .aiws-members-sheet, > .aiws-bind-dialog)) { padding: 0; align-items: stretch; }
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-modal-backdrop:not(.is-sheet):not(.aiws-dm-backdrop) > .aiws-dialog:not(.aiws-members-sheet):not(.aiws-bind-dialog) {
+  width: 100%; max-width: none; height: 100%; max-height: none; border: none; border-radius: 0;
+  padding: calc(12px + env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom));
+}
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-dialog .aiws-table-preview { overflow-x: auto; }
+
+/* ---- the context window (§6.4) */
+.aiws-ctxwin { position: absolute; z-index: 21; display: flex; flex-direction: column; gap: 2px; max-width: calc(100% - 16px); box-sizing: border-box; padding: 6px 6px 4px; border-radius: 14px; box-shadow: var(--cp-shadow); }
+.aiws-ctxwin-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 2px 6px; }
+.aiws-ctxwin-head > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.aiws-ctxwin-head > .aiws-muted { font-size: 12px; white-space: nowrap; }
+.aiws-ctxwin-actions { display: flex; align-items: stretch; gap: 2px; overflow-x: auto; }
+.aiws-root button.aiws-ctxwin-action {
+  flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 56px; min-height: 52px; padding: 4px 6px;
+  border: none; border-radius: 10px; background: none; color: var(--cp-text); font-size: 12px;
+}
+.aiws-root button.aiws-ctxwin-action:active:not(:disabled), .aiws-root button.aiws-ctxwin-action[aria-pressed='true'] { background: var(--cp-surface-2); }
+.aiws-root button.aiws-ctxwin-action.is-ai { color: var(--cp-accent); }
+
+/* ---- the full-screen editor of a Block's data (§6.4): the top bar, then the editor with the rest of the height */
+.aiws-phone-expand { position: absolute; inset: 0; z-index: 49; display: flex; flex-direction: column; background: var(--cp-bg, var(--cp-surface-opaque, var(--cp-surface))); }
+.aiws-phone-expand-bar { flex: none; display: flex; align-items: center; gap: 4px; min-height: 52px; padding: calc(4px + env(safe-area-inset-top)) 4px 4px; box-sizing: border-box; border-bottom: 1px solid var(--cp-border); background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-phone-expand-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
+/* the status bar (z 50) stays over the bottom: the editor ends above it */
+.aiws-phone-expand-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding-bottom: calc(48px + env(safe-area-inset-bottom)); box-sizing: border-box; }
+.aiws-phone-expand-body > * { flex: 1 1 auto; min-height: 0; }
+.aiws-phone-expand-body .aiws-dir-topbar { display: none; }
+.aiws-phone-expand-text { overflow: auto; padding: 12px 16px 24px; box-sizing: border-box; }
+.aiws-phone-expand-none { padding: 24px 16px; }
+.aiws-phone-expand > .aiws-context-zone { bottom: calc(56px + env(safe-area-inset-bottom)); }
+
+/* ---- the writing bar on a phone (§6.3): wider than the screen, it scrolls; "done" stays in reach at its end */
+.aiws-workspace[data-phone='true'] .aiws-ink-bar > button[data-testid='aiws-ink-done'] {
+  position: sticky; right: 0; z-index: 1; background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: -10px 0 8px -4px var(--cp-surface-opaque, var(--cp-surface));
+}
+
+/* ---- the text format bar (§4.4): an editor's scope adds no box of its own */
+.aiws-format-scope { display: contents; }
+.aiws-format-bar { max-width: 100%; }
+.aiws-format-bar .aiws-near-btn { flex: none; }
+
+/* ---- touch targets (§3.4): what is pressed with a finger is at least 44 × 44 */
+@media (pointer: coarse) {
+  .aiws-root button.aiws-link, .aiws-root label.aiws-link { min-height: 44px; }
+  .aiws-root button.aiws-near-btn { min-width: 44px; height: 44px; }
+  .aiws-root .aiws-inline-form button, .aiws-root .aiws-dialog-actions button, .aiws-root .aiws-dialog-head button, .aiws-root .aiws-detail-head button { min-height: 44px; }
+  .aiws-tree-row { min-height: 44px; }
+  .aiws-root .aiws-tree-row button { min-height: 44px; }
+  .aiws-root .aiws-props-field input:not([type='checkbox']), .aiws-root .aiws-props-field select { min-height: 44px; }
+  .aiws-root .aiws-props-field input[type='checkbox'] { width: 24px; height: 24px; }
+  .aiws-root .aiws-ink-bar button.aiws-ink-swatch { width: 40px; height: 40px; min-width: 40px; margin: 0 2px; }
+}

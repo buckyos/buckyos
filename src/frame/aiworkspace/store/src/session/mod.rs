@@ -633,8 +633,9 @@ impl Service {
         Ok(json!({ "ok": true, "session": session_json(&row, Some(Role::Presenter)) }))
     }
 
-    /// Who `caller` is in `s`: the presenter, the owner, a joined participant, or — through a link — a display or a
-    /// prompter. `None`: nobody (a link is needed to join).
+    /// Who `caller` is in `s`: the presenter, the owner, a joined participant, a reader of the courseware while the room
+    /// is open (as audience, [`Service::source_reader_may_open`]), or — through a link — a display or a prompter.
+    /// `None`: nobody (a link is needed to join).
     pub fn session_actor(&self, s: &SessionRow, caller: &Caller, via: Option<&InviteRow>) -> WsResult<Option<Actor>> {
         let class = |c: &Caller| match c.class {
             crate::CallerClass::Account { .. } => "account",
@@ -658,6 +659,10 @@ impl Service {
         if let Some(p) = self.sessions.participant(&s.session_id, &caller.principal)? {
             let level = if p.level == "guest" { "guest" } else { "verified" };
             return Ok(Some(Actor { principal: caller.principal.clone(), role: Role::Participant, class: p.class, level, name: p.name }));
+        }
+        // a reader of the courseware comes in as audience without a link (UI 框架 PRD §9.1, K7)
+        if self.source_reader_may_open(s, caller)? {
+            return Ok(Some(Actor { principal: caller.principal.clone(), role: Role::Participant, class: class(caller).into(), level: "verified", name: caller.principal.clone() }));
         }
         Ok(None)
     }
@@ -1023,6 +1028,10 @@ impl Service {
                 return Ok((actor, json!({}), false));
             }
             let name = name.map(clean_name).filter(|n| !n.is_empty()).unwrap_or(actor.name.clone());
+            // a courseware reader coming in for the first time reads the run Workspace through the readers' group
+            if actor.role == Role::Participant && self.sessions.participant(&s.session_id, &actor.principal)?.is_none() {
+                self.with_run(s, |ws| invite_member(ws, &s.owner, crate::home::SOURCE_READERS_GROUP, &actor.principal))?;
+            }
             let row = ParticipantRow { principal: actor.principal.clone(), class: actor.class.clone(), level: actor.level.into(), name: name.clone(),
                                        role: actor.role.as_str().into(), via_invite: None, joined_ms: now, last_seen_ms: now, online: true };
             let first = self.sessions.upsert_participant(&s.session_id, &row)?;

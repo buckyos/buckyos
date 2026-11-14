@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useId, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useId, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import FocusTrap from '@mui/material/Unstable_TrapFocus'
 import { Check, Copy, Globe, Link2, LockKeyhole, Users, X } from 'lucide-react'
 import { describeError } from '../../api/session'
-import { useLoad, useStore } from '../../state/hooks'
+import type { Capability } from '../../api/types'
+import { useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { Modal } from './dialogs'
-import { PUBLIC_LINK_CAPABILITIES, PUBLIC_SUBJECT, shareLink, useShell } from './shellContext'
+import { useAcl, useAclRead } from '../permissions/aclData'
+import { PUBLIC_LINK_CAPABILITIES, shareLink, useShell } from './shellContext'
 import { ShareEntries } from './ShareEntries'
 
 export function ShareDialog({ onClose }: { onClose: () => void }) {
@@ -15,7 +17,6 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   const id = useId()
   const [tab, setTab] = useState('link')
   const [copied, setCopied] = useState<'copied' | 'manual' | null>(null)
-  const [tick, setTick] = useState(0)
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
   useEffect(() => {
@@ -31,9 +32,19 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   const link = shareLink(store.session.info(), shell.topMode === 'canvas' ? shell.activeSurface : null)
   const where = shell.topMode === 'canvas' && shell.activeSurface ? t('aiworkspace.shell.share.whereCanvas', { name: shell.activeSurface.title ?? shell.activeSurface.name ?? '' }) : t('aiworkspace.shell.share.whereWorkspace')
   const canManage = store.session.info().capabilities.includes('manage')
-  const loadGrants = useCallback(() => store.session.listGrants(), [store])
-  const grants = useLoad(loadGrants, tick)
-  const isPublic = (grants.data?.grants ?? []).some((g) => g.subject === PUBLIC_SUBJECT && !g.scope_entity_id)
+  // the one-click public link (§8.3, 权限需求 §4.2): anonymous access on and `@guest` allowed to read and comment on `/`
+  const { api } = useAcl()
+  const grants = useAclRead('all', api.all)
+  const guestRoot = grants.data?.entries.find((e) => e.subject === '@guest' && e.resource.entity_id === null)
+  const isPublic = Boolean(grants.data?.anonymous && (guestRoot ? guestRoot.allow.length > 0 : !grants.data.complete))
+  const publicCaps: readonly Capability[] = PUBLIC_LINK_CAPABILITIES
+  // a refusal written for `@guest` elsewhere stays; only what the link needs is no longer refused on `/`
+  const publish = async () => {
+    await api.set([{ subject: '@guest', resource: '/', allow: [...new Set([...(guestRoot?.allow ?? []), ...publicCaps])], deny: (guestRoot?.deny ?? []).filter((c) => !publicCaps.includes(c)) }])
+    await api.setAnonymous(true)
+  }
+  // withdrawn: `@guest` stops existing; its entries stay part of the permission design
+  const unpublish = async () => { await api.setAnonymous(false) }
   const copy = async () => {
     try { await navigator.clipboard.writeText(link); setCopied('copied') } catch { setCopied('manual') }
   }
@@ -42,7 +53,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     setBusy(true)
     setFailure(null)
     setCopied(null)
-    work().then(copy).catch((error: unknown) => setFailure(t(failedKey, { error: describeError(error) }))).finally(() => { setBusy(false); setTick((n) => n + 1) })
+    work().then(copy).catch((error: unknown) => setFailure(t(failedKey, { error: describeError(error) }))).finally(() => setBusy(false))
   }
   const tabs = [
     { key: 'link', label: t('aiworkspace.shell.share.link'), icon: Link2 },
@@ -96,14 +107,14 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                     </div>
                     <p className="aiws-muted">{t(isPublic ? 'aiworkspace.shell.share.publicOn' : 'aiworkspace.shell.share.privateNote', { where })}</p>
                     {canManage && (isPublic
-                      ? <button type="button" data-testid="aiws-share-unpublish" disabled={busy || grants.loading} onClick={() => change('aiworkspace.shell.share.unpublishFailed', () => store.session.revoke(PUBLIC_SUBJECT))}>{t('aiworkspace.shell.share.unpublish')}</button>
-                      : <button type="button" data-testid="aiws-share-publish" disabled={busy || grants.loading} title={t('aiworkspace.shell.share.publishHint')} onClick={() => change('aiworkspace.shell.share.publishFailed', () => store.session.grant(PUBLIC_SUBJECT, [...PUBLIC_LINK_CAPABILITIES]))}><Globe size={16} aria-hidden="true" />{t('aiworkspace.shell.share.publish')}</button>)}
+                      ? <button type="button" data-testid="aiws-share-unpublish" disabled={busy || grants.loading} onClick={() => change('aiworkspace.shell.share.unpublishFailed', unpublish)}>{t('aiworkspace.shell.share.unpublish')}</button>
+                      : <button type="button" data-testid="aiws-share-publish" disabled={busy || grants.loading} title={t('aiworkspace.shell.share.publishHint')} onClick={() => change('aiworkspace.shell.share.publishFailed', publish)}><Globe size={16} aria-hidden="true" />{t('aiworkspace.shell.share.publish')}</button>)}
                   </section>
                 )}
                 {grants.loading && !grants.data && <div className="aiws-muted" role="status">{t('aiworkspace.shell.share.loading')}</div>}
                 {grants.error && <div className="aiws-error" role="alert">{grants.error}</div>}
                 {failure && <div className="aiws-error" role="alert" data-testid="aiws-share-error">{failure}</div>}
-                {canManage && <button type="button" className="aiws-share-collab" data-testid="aiws-share-collab" onClick={() => { onClose(); shell.setSide('collab') }}><Users size={16} aria-hidden="true" />{t('aiworkspace.shell.share.grantInCollab')}</button>}
+                {canManage && <button type="button" className="aiws-share-collab" data-testid="aiws-share-collab" onClick={() => { onClose(); shell.openPermissions() }}><Users size={16} aria-hidden="true" />{t('aiworkspace.shell.share.grantInCollab')}</button>}
               </div>
             </div>
             {canManage && <div id={`${id}-entries-panel`} role="tabpanel" aria-labelledby={`${id}-entries-tab`} hidden={tab !== 'entries'}><ShareEntries client={shell.client} workspaceId={store.session.workspaceId} /></div>}

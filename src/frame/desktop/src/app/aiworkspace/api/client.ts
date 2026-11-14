@@ -4,9 +4,12 @@
 import type {
   AnnotationRead, BucketBinding, BucketDownload, ChangesPage, ClonedFrom, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, AclChange, AclEntryList, AclGroup, ListAnnotationsParams, LockInfo, PrepareResult, StagedAsset,
   QueryPage, QueryParams, ReadResult, Result, RunView, SqlParams, SqlResult, Selector, WorkspaceInfo, WorkspaceSummary, Json,
+  UserPrefsRead, WorkspaceListItem,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
   ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch, ShareEntry, EntryJoin, WishClaim, WishToolAnswer, WishStageFiles, HostedExecConfig, Publication, Referrer,
   ExtBuildResult, ExtExportResult, ExtMigration, ExtPackResult, LibraryPackage, TemplateSpec,
+  AclAuditItem, AclEntityView, AclExplain, AclSubjectView,
+  PresenceList, WorkLogFilter, WorkLogPage,
 } from './types'
 import { commitWithParts, parseAccessDenial, type AccessDenial } from 'buckyos'
 import { testHooks } from './testHooks'
@@ -26,17 +29,40 @@ export class AiwsClient {
 
   // ---- workspaces
   wsCreate(title: string) { return this.call<Result<WorkspaceSummary>>('ws.create', { title }) }
-  wsList() { return this.call<Result<{ workspaces: WorkspaceSummary[] }>>('ws.list', {}) }
-  wsGetInfo(ws: Ws) { return this.call<Result<WorkspaceInfo>>('ws.get_info', ws) }
+  /** The caller's Workspaces with what the home page's cards show (UI 框架 PRD §9.2, K6). */
+  wsList() { return this.call<Result<{ workspaces: WorkspaceListItem[] }>>('ws.list', {}) }
+  /** `recordOpen`: a Workspace session opening — the service records when the caller opened it (`opened_at`, K6). */
+  wsGetInfo(ws: Ws, opts?: { recordOpen?: boolean }) { return this.call<Result<WorkspaceInfo>>('ws.get_info', { ...ws, ...(opts?.recordOpen ? { record_open: true } : {}) }) }
+  // ---- the caller's own preferences across Workspaces (UI 框架 PRD §4.6, K4): never part of a Workspace
+  userGetPrefs() { return this.call<Result<UserPrefsRead>>('user.get_prefs', {}) }
+  /** `merge`: top-level keys (null removes one); `prefs`: the whole object. `expect`: the revision read (REVISION_CONFLICT when it moved). */
+  userSetPrefs(change: { merge: Record<string, Json | null> } | { prefs: Record<string, Json> }, expect?: number) {
+    return this.call<Result<UserPrefsRead>>('user.set_prefs', { ...change, ...(expect !== undefined ? { expect } : {}) })
+  }
   wsDelete(ws: Ws) { return this.call<Result<object>>('ws.delete', ws) }
   wsClone(ws: Ws) { return this.call<Result<{ workspace_id: string; epoch: string; content_root: string; cloned_from: ClonedFrom; excluded_entities: number }>>('ws.clone', ws) }
   // permissions (README “Permissions”, 权限需求 §4): entries by path, logical groups, anonymous access
   aclSet(ws: Ws, changes: AclChange[]) { return this.call<Result<{ acl_rev: number }>>('acl.set', { ...ws, changes }) }
   aclQueryAll(ws: Ws) { return this.call<Result<AclEntryList>>('acl.query', { ...ws, by: 'all' }) }
+  /** §4.4 by entity (`manage` on the resource): each subject with entries along its chain, refusals and what they override. */
+  aclQueryEntity(ws: Ws, resource: string, expand = false) { return this.call<Result<AclEntityView>>('acl.query', { ...ws, by: 'entity', resource, ...(expand ? { expand } : {}) }) }
+  /** §4.4 by subject: its entries; a group's members, a single caller's judgment (anyone about itself, `manage` about others). */
+  aclQuerySubject(ws: Ws, subject?: string) { return this.call<Result<AclSubjectView>>('acl.query', { ...ws, by: 'subject', ...(subject ? { subject } : {}) }) }
+  /** §4.4 explain: each capability of `principal` (default: the caller) on the resource and the entry deciding it. */
+  aclExplain(ws: Ws, resource: string, principal?: string) { return this.call<Result<AclExplain>>('acl.query', { ...ws, by: 'explain', resource, ...(principal ? { principal } : {}) }) }
   aclGroups(ws: Ws) { return this.call<Result<{ groups: AclGroup[]; complete: boolean; anonymous: boolean }>>('acl.groups', ws) }
-  aclSetGroup(ws: Ws, group_id: string, title?: string) { return this.call<Result<object>>('acl.set_group', { ...ws, group_id, ...(title ? { title } : {}) }) }
-  aclMembers(ws: Ws, group_id: string, add: string[], remove: string[] = []) { return this.call<Result<object>>('acl.members', { ...ws, group_id, add, remove }) }
-  aclSetAnonymous(ws: Ws, enabled: boolean) { return this.call<Result<object>>('acl.set_anonymous', { ...ws, enabled }) }
+  aclSetGroup(ws: Ws, group_id: string, title?: string, description?: string) {
+    return this.call<Result<{ group: { group_id: string; title: string; description: string }; created: boolean; acl_rev: number }>>('acl.set_group', { ...ws, group_id, ...(title !== undefined ? { title } : {}), ...(description !== undefined ? { description } : {}) })
+  }
+  aclDeleteGroup(ws: Ws, group_id: string) { return this.call<Result<{ group_id: string; acl_rev: number }>>('acl.delete_group', { ...ws, group_id }) }
+  aclMembers(ws: Ws, group_id: string, add: string[], remove: string[] = []) { return this.call<Result<{ added: number; removed: number; acl_rev: number }>>('acl.members', { ...ws, group_id, add, remove }) }
+  aclSetAnonymous(ws: Ws, enabled: boolean) { return this.call<Result<{ anonymous: boolean; acl_rev: number }>>('acl.set_anonymous', { ...ws, enabled }) }
+  /** §4.5: the macro of a wish runs with its triggerer's permissions ∪ / ∩ the group's (`group_id: null` unbinds). */
+  aclBindMacro(ws: Ws, wish: string, group_id: string | null, mode: 'union' | 'intersection' = 'union') {
+    return this.call<Result<{ wish_id: string; binding: { group_id: string; mode: 'union' | 'intersection' } | null; acl_rev: number; warning?: string }>>('acl.bind_macro', { ...ws, wish, group_id, mode })
+  }
+  /** R19: the operation record, oldest first, after `after` (a `seq`). */
+  aclAudit(ws: Ws, after = 0, limit = 200) { return this.call<Result<{ items: AclAuditItem[] }>>('acl.audit', { ...ws, after, limit }) }
   wsSetHostedExec(ws: Ws, config: HostedExecConfig) { return this.call<Result<{ hosted_exec: HostedExecConfig }>>('ws.set_hosted_exec', { ...ws, config: config as unknown as Json }) }
   wsListSubjects(ws: Ws) { return this.call<Result<{ subjects: Subject[] }>>('ws.list_subjects', ws) }
   // ---- publication by path (内核架构改进 D26)
@@ -131,8 +157,9 @@ export class AiwsClient {
   assetStreamUrl(ws: Ws, object_id: string) { return this.call<Result<{ url: string }>>('asset.stream_url', { ...ws, object_id }) }
   /** The service's clock (控件机制 TODO G16): unix ms when it answered. */
   wsTime() { return this.call<Result<{ server_ms: number }>>('ws.time', {}) }
-  waitChanges(ws: Ws, epoch: string, after_seq: number, timeout_ms: number, signal?: AbortSignal) {
-    return this.call<Result<{ epoch: string; head_seq: number; timed_out: boolean; show_lock?: ShowLockInfo | null; server_ms?: number }>>('doc.wait_changes', { ...ws, epoch, after_seq, timeout_ms }, signal)
+  /** `after_acl_rev`: wake also once the permissions moved past it (权限需求 R4); the answer carries `acl_rev`. */
+  waitChanges(ws: Ws, epoch: string, after_seq: number, timeout_ms: number, signal?: AbortSignal, after_acl_rev?: number) {
+    return this.call<Result<{ epoch: string; head_seq: number; timed_out: boolean; show_lock?: ShowLockInfo | null; server_ms?: number; acl_rev?: number }>>('doc.wait_changes', { ...ws, epoch, after_seq, timeout_ms, ...(after_acl_rev !== undefined ? { after_acl_rev } : {}) }, signal)
   }
 
   // ---- packages
@@ -151,6 +178,18 @@ export class AiwsClient {
   }
   showNotes(ws: Ws, show_id: string) { return this.call<Result<ShowNotes>>('show.notes', { ...ws, show_id }) }
   showEnd(ws: Ws, show_id: string) { return this.call<Result<object>>('show.end', { ...ws, show_id }) }
+
+  // ---- presence and the work log (UI 框架 PRD K2, K3): presence is in memory on the service, never a Commit
+  /** Register or renew this window (`conn_id`), on `surface_id`; a guest gives the name it chose. Answers the members. */
+  presenceHeartbeat(ws: Ws, conn_id: string, surface_id: string | null, name?: string) {
+    return this.call<Result<PresenceList>>('presence.heartbeat', { ...ws, conn_id, ...(surface_id ? { surface_id } : {}), ...(name ? { name } : {}) })
+  }
+  presenceLeave(ws: Ws, conn_id: string) { return this.call<Result<{ removed: boolean }>>('presence.leave', { ...ws, conn_id }) }
+  presenceList(ws: Ws) { return this.call<Result<PresenceList>>('presence.list', ws) }
+  /** The timeline, newest first: entries older than `before` (the previous page's `next_before`). */
+  workLog(ws: Ws, params: { before?: string | null; limit?: number; filter?: WorkLogFilter } = {}) {
+    return this.call<Result<WorkLogPage>>('ws.work_log', { ...ws, ...(params.before ? { before: params.before } : {}), ...(params.limit ? { limit: params.limit } : {}), ...(params.filter ? { filter: params.filter } : {}) })
+  }
 
   // ---- offline replica (design §6.2)
   replicaBootstrap(ws: Ws) {

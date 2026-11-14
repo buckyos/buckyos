@@ -1,5 +1,6 @@
-/* Shell panels shared by both top-level modes: the save-state list and the phase-one
- * controlled-processing panel kept as a kernel regression tool (a developer tool, UI improvement §6.1). */
+/* Shell panels shared by both top-level modes: the save-state list (the status panel's "需要处理", UI 框架 PRD §4.5)
+ * and the phase-one controlled-processing panel kept as a kernel regression tool (a developer tool, UI improvement
+ * §6.1). */
 
 import { useState } from 'react'
 import { describeError } from '../../api/session'
@@ -8,6 +9,7 @@ import { EDIT_STATE_LABEL } from '../../state/edits'
 import { useEdits, useStore } from '../../state/hooks'
 import type { AiwsText } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
+import { surfacesOf } from '../canvas/surfaceOps'
 
 /** Save states (design §6.5): entries that need attention, unsaved inputs, local-only saves. */
 export function EditsPanel() {
@@ -22,7 +24,6 @@ export function EditsPanel() {
   const replica = store.session.offline
   return (
     <div className="aiws-edits" data-testid="aiws-edits">
-      <div className="aiws-panel-title">{t('aiworkspace.shell.side.edits')}</div>
       {[...attention, ...unsaved, ...local].map((entry) => (
         <div key={entry.id} className={`aiws-edit aiws-edit-${entry.state}`} data-testid="aiws-edit-entry" data-state={entry.state} data-code={entry.code} data-edit-id={entry.id}>
           <span className={`aiws-state aiws-state-${entry.state}`}>{EDIT_STATE_LABEL[entry.state]}</span>
@@ -64,7 +65,7 @@ export function MockRunPanel() {
   const [run, setRun] = useState<RunView | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-  const surfaces = store.outline.childrenOf('surfaces')
+  const surfaces = surfacesOf(store)
   const act = async (work: () => Promise<void>) => {
     setBusy(true)
     setMessage(null)

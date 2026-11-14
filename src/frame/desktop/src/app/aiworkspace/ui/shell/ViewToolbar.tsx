@@ -1,81 +1,76 @@
-/* The view toolbar, top right (UI improvement §8.1, §9.1; renamed from the "presenter toolbar" in 第三期规划 §2, which
- * keeps "提示器" for the show's prompter): add annotation | guide | show | zoom ▾ | identity and online members | share
- * link. Zoom and view navigation live only here (and in the main menu): there is no bottom-right navigation area.
- * Interactions are not shown — there is no global interaction system yet — and online members only appear once
- * presence exists. The guide (§7.3) appears when the workspace has a guide path, the show button (§7.2) when it has a
- * presentation path. On a phone (§16) it is the only toolbar and starts with the canvas switcher (icon, name, the
- * workspace's canvases); on a flow page, which a phone edits (§16.5), undo and redo follow it. */
+/* The collaboration zone, top right (UI 框架 PRD §4.2): play | macro | comment | zoom | avatars | share link. Play,
+ * macro and comment are single icons with their names in the tooltip; zoom (free canvases only) and the share link
+ * stay as they were (Q1, Q2). What the zone holds comes from the registered actions and the toolbar configuration
+ * (ui/framework), so an action declared for this zone appears here without a change to this file. In a narrow window
+ * the avatar stack shows fewer faces and zoom moves into "more". The avatar stack is who is online (K2,
+ * ui/framework/members.tsx). A phone has no collaboration zone (§6.1): its title area is ui/shell/MainToolbar's
+ * PhoneTitle. */
 
 import { useEffect, useState } from 'react'
-import { Link2, LogIn, LogOut, MessageSquarePlus, Minus, Play, Plus, Signpost } from 'lucide-react'
-import type { Json } from '../../api/types'
-import { pathsOf } from '../../presentation/model'
-import { guestLabel, readGuestName, writeGuestName } from '../../state/guest'
-import { useOutlineVersion, useStore } from '../../state/hooks'
+import { Ellipsis, Link2, Minus, Plus } from 'lucide-react'
 import { useAiwsText } from '../../useAiwsText'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
-import type { RunMode } from '../../state/runMode'
-import { HistoryButtons } from '../canvas/ObjectToolbar'
-import { RunModeToggle } from '../canvas/tools'
-import { SurfaceSwitcher } from './MainToolbar'
-import { MenuList, PopoverPanel, usePopover, type MenuItem } from './popover'
-import { useCanvasMode, useShell, ZOOM_PRESETS } from './shellContext'
-import { ObjectImage } from '../../../../presentation/ObjectIcon'
-import { useCurrentUser } from '../../../../presentation/currentUser'
+import { actionRegistry, candidateItem, toolItemOf, type ActionDef } from '../framework/actions'
+import { itemApplies, type ResolvedItem, type ResolvedZone } from '../framework/config'
+import { useActionContext, useToolbarLayout } from '../framework/hooks'
+import { useMacroWatch } from '../framework/macros'
+import { AvatarStack } from '../framework/members'
+import { ToolItem } from '../framework/ToolItem'
+import '../framework/framework.css'
+import type { CanvasCommands } from './MainMenu'
+import { MenuButton, PopoverPanel, usePopover, type MenuItem } from './popover'
+import { useShell, ZOOM_PRESETS } from './shellContext'
 
-export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, annotate, runMode }: {
-  /** Free Surfaces only: flow pages have no camera, so no zoom. */
-  camera: Camera | null
-  hasSelection: boolean
-  onFitAll: () => void
-  onFitSelection: () => void
-  /** Absent where there is nothing to annotate (a workspace without canvases). `note`: a free canvas also takes notes
-   * from here (a note is an annotation), so the button opens a choice. */
-  annotate: { reason: string | null; active: boolean; run: () => void; note?: { reason: string | null; run: () => void } | null } | null
-  /** The canvas's design / run switch (扩展控件 P2, Q27). */
-  runMode?: RunMode
+export function ViewToolbar({ canvas, zone }: {
+  /** The open canvas's commands (none without a canvas). */
+  canvas: CanvasCommands | null
+  /** The zone as the toolbar configuration resolves it; the built-in one when absent. */
+  zone?: ResolvedZone
 }) {
   const shell = useShell()
-  const mode = useCanvasMode()
   const { t } = useAiwsText()
-  const compact = shell.size === 'narrow' || shell.phone
+  const actions = useActionContext(canvas)
+  useMacroWatch()
+  const fallback = useToolbarLayout(undefined).collab
+  const items = (zone ?? fallback).items.filter((item) => itemApplies(item, actions))
+    .flatMap((item) => { const def = actionRegistry.get(item.action); return def ? [{ item, def }] : [] })
+  const narrow = shell.size === 'narrow'
+  const inMore = (def: ActionDef) => narrow && def.zone?.overflow === 'narrow'
+  const more: MenuItem[] = items.filter(({ def }) => inMore(def)).flatMap(({ item, def }) => {
+    if (def.visible && !def.visible(actions)) return []
+    const candidates = def.candidates?.(actions, item.args)
+    return [candidates ? { id: item.key, testId: `aiws-more-${item.key}`, label: item.title ?? def.label(actions), items: candidates.map(candidateItem) }
+      : { id: item.key, testId: `aiws-more-${item.key}`, label: item.title ?? def.label(actions), run: () => def.run?.(actions, item.args) }]
+  })
+  const render = ({ item, def }: { item: ResolvedItem; def: ActionDef }) => {
+    switch (def.zone?.control) {
+      case 'zoom': {
+        const view = canvas?.view
+        return view ? <ZoomControl key={item.key} camera={view.camera} hasSelection={view.hasSelection} onFitAll={view.fitAll} onFitSelection={view.fitSelection} /> : null
+      }
+      case 'avatars': return <AvatarStack key={item.key} />
+      case 'share': return <ShareButton key={item.key} />
+    }
+    const model = toolItemOf(def, actions, item.args, { title: item.title, icon: item.icon })
+    if (!model) return null
+    return <ToolItem key={item.key} item={model} testId={item.key === def.id ? def.zone?.testId : `aiws-collab-item-${item.key}`} />
+  }
+  const shown = items.filter(({ def }) => !inMore(def))
+  const firstControl = shown.findIndex(({ def }) => def.zone?.control)
+  const before = firstControl < 0 ? shown : shown.slice(0, firstControl)
+  const after = firstControl < 0 ? [] : shown.slice(firstControl)
   return (
-    <div className="aiws-panel aiws-view-toolbar" role="toolbar" aria-label={shell.phone ? t('aiworkspace.shell.view.canvasTools') : t('aiworkspace.shell.view.tools')} data-testid="aiws-view-toolbar">
-      {shell.phone && <SurfaceSwitcher phone />}
-      {shell.phone && mode === 'edit' && <HistoryButtons size={18} />}
-      <GuideButton compact={compact} />
-      {!shell.phone && <ShowButton />}
-      {annotate && <AnnotateButton annotate={annotate} compact={compact} />}
-      {runMode && <RunModeToggle runMode={runMode} />}
-      {camera && <ZoomControl camera={camera} hasSelection={hasSelection} onFitAll={onFitAll} onFitSelection={onFitSelection} />}
-      <IdentityButton />
-      <ShareButton />
+    <div className="aiws-panel aiws-view-toolbar" role="toolbar" aria-label={t('aiworkspace.framework.zone.collab')} data-testid="aiws-view-toolbar">
+      {before.map(render)}
+      {after.filter(({ def }) => def.zone?.control !== 'share').map(render)}
+      {more.length > 0 && (
+        <MenuButton label={t('aiworkspace.framework.more')} testId="aiws-collab-more" menuTestId="aiws-collab-more-list" align="end" items={more}>
+          <Ellipsis size={18} />
+        </MenuButton>
+      )}
+      {after.filter(({ def }) => def.zone?.control === 'share').map(render)}
     </div>
-  )
-}
-
-/** Add an annotation; on a free canvas a menu first offers the other kind of annotation, a note. While a target is
- * being picked the button cancels the pick. */
-function AnnotateButton({ annotate, compact }: { annotate: NonNullable<Parameters<typeof ViewToolbar>[0]['annotate']>; compact: boolean }) {
-  const { t } = useAiwsText()
-  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
-  const note = annotate.note
-  const menu = Boolean(note) && !annotate.active
-  const items: MenuItem[] = note ? [
-    { id: 'annotate-object', testId: 'aiws-annotate-object', label: t('aiworkspace.shell.view.annotateObject'), disabled: annotate.reason !== null, reason: annotate.reason, run: annotate.run },
-    { id: 'annotate-note', testId: 'aiws-annotate-note', label: t('aiworkspace.shell.view.addNote'), disabled: note.reason !== null, reason: note.reason, explain: true, run: note.run },
-  ] : []
-  return (
-    <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className={`aiws-tool${compact ? '' : ' aiws-tool-text'}`} aria-pressed={annotate.active} disabled={annotate.reason !== null && note?.reason !== null}
-        data-testid="aiws-annotate-start" aria-haspopup={menu ? 'menu' : undefined} aria-expanded={menu ? open : undefined}
-        title={annotate.active ? t('aiworkspace.shell.view.annotatePick') : menu ? t('aiworkspace.shell.view.annotateOrNote') : annotate.reason ?? t('aiworkspace.shell.view.annotateHint')} aria-label={t('aiworkspace.shell.view.annotate')}
-        onClick={menu ? toggle : annotate.run}>
-        <MessageSquarePlus size={18} />{!compact && <span>{t('aiworkspace.shell.side.annotations')}</span>}
-      </button>
-      {open && menu && <MenuList items={items} label={t('aiworkspace.shell.view.annotate')} className="aiws-popover aiws-popover-end" onDone={close} />}
-    </span>
   )
 }
 
@@ -123,111 +118,12 @@ export function ZoomControl({ camera, hasSelection, onFitAll, onFitSelection }: 
   )
 }
 
-/** "使用引导" (§7.3): one guide starts at once (where the user left it), several are offered in a list. */
-function GuideButton({ compact }: { compact: boolean }) {
-  const store = useStore()
-  const shell = useShell()
-  const { t } = useAiwsText()
-  useOutlineVersion()
-  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
-  const guides = pathsOf(store.outline, 'guide')
-  if (guides.length === 0) return null
-  const begin = (pathId: string) => {
-    const saved = store.userState.get<Json>(`guide:${pathId}`) as { index?: number; done?: boolean } | undefined
-    shell.setGuide({ pathId, index: saved && !saved.done ? saved.index ?? 0 : 0 })
-  }
-  return (
-    <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className={`aiws-tool${compact ? '' : ' aiws-tool-text'}`} aria-label={t('aiworkspace.shell.guide')} title={t('aiworkspace.shell.view.guideHint')} data-testid="aiws-guide-start"
-        aria-pressed={shell.guide !== null} onClick={() => (guides.length === 1 ? begin(guides[0].entity_id) : toggle())}>
-        <Signpost size={18} />{!compact && <span>{t('aiworkspace.shell.view.guideShort')}</span>}
-      </button>
-      {open && (
-        <PopoverPanel align="end" label={t('aiworkspace.shell.guide')} testId="aiws-guide-list">
-          {guides.map((g) => <button key={g.entity_id} type="button" className="aiws-popover-item" onClick={() => { close(); begin(g.entity_id) }}>{g.title ?? g.name ?? g.entity_id}</button>)}
-        </PopoverPanel>
-      )}
-    </span>
-  )
-}
-
-/** "开始放映" (§7.2): shown when the workspace has a presentation path. */
-function ShowButton() {
-  const store = useStore()
-  const shell = useShell()
-  const { t } = useAiwsText()
-  useOutlineVersion()
-  if (pathsOf(store.outline, 'presentation').length === 0) return null
-  return (
-    <button type="button" className="aiws-tool" aria-label={t('aiworkspace.shell.startShow')} title={t('aiworkspace.shell.startShowMore')} data-testid="aiws-show-start" onClick={() => shell.startShow()}>
-      <Play size={18} />
-    </button>
-  )
-}
-
-function initial(name: string | null): string {
-  if (!name) return '?'
-  const trimmed = name.replace(/^did:[^:]+:/, '')
-  return (trimmed[0] ?? '?').toUpperCase()
-}
-
-function IdentityButton() {
-  const store = useStore()
-  const shell = useShell()
-  const { t } = useAiwsText()
-  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
-  const principal = store.session.principal
-  const guest = shell.identity.guest
-  const me = useCurrentUser()
-  const [guestName, setGuestName] = useState(readGuestName)
-  // A Zone account's own picture; a development token identity has none.
-  const picture = !shell.identity.dev && !guest && me && me.userId === principal ? me.avatarUrl : undefined
-  const shown = guest ? guestName || guestLabel(principal ?? '') : me && me.userId === principal ? me.displayName : principal ?? t('aiworkspace.shell.identity.unknown')
-  return (
-    <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className="aiws-avatar" aria-haspopup="dialog" aria-expanded={open} aria-label={t('aiworkspace.shell.identity.label', { name: guest ? t('aiworkspace.shell.identity.guest') : principal ?? t('aiworkspace.common.unknown') })} title={guest ? t('aiworkspace.shell.identity.guestTitle') : principal ?? t('aiworkspace.shell.identity.current')}
-        data-testid="aiws-principal" data-principal={principal ?? ''} data-guest={guest ? 'true' : undefined} onClick={toggle}>
-        <ObjectImage icons={[picture]} className="aiws-avatar-img" fallback={guest ? t('aiworkspace.shell.identity.guestInitial') : initial(principal)} />
-      </button>
-      {open && (
-        <PopoverPanel align="end" label={t('aiworkspace.shell.identity.panel')} testId="aiws-identity-panel" className="aiws-identity-panel">
-          <div className="aiws-panel-title">{t('aiworkspace.shell.identity.mine')}</div>
-          <div className="aiws-identity-row"><span className="aiws-avatar is-static" aria-hidden="true"><ObjectImage icons={[picture]} className="aiws-avatar-img" fallback={guest ? t('aiworkspace.shell.identity.guestInitial') : initial(principal)} /></span><b data-testid="aiws-identity-name">{shown}</b></div>
-          {guest ? (
-            <>
-              <div className="aiws-muted">{t('aiworkspace.shell.identity.guestNote')}</div>
-              <label className="aiws-guest-name">{t('aiworkspace.shell.identity.guestName')}
-                <input value={guestName} maxLength={32} placeholder={guestLabel(principal ?? '')} aria-label={t('aiworkspace.shell.identity.guestName')} data-testid="aiws-guest-name"
-                  onChange={(event) => { setGuestName(event.target.value); writeGuestName(event.target.value) }} />
-              </label>
-              <button type="button" className="aiws-popover-item" data-testid="aiws-login" onClick={() => { close(); shell.login() }}>
-                <LogIn size={16} /> {t('aiworkspace.shell.loginBuckyos')}
-              </button>
-            </>
-          ) : (
-            <>
-              <div className="aiws-muted">{shell.identity.dev ? t('aiworkspace.shell.identity.devNote') : t('aiworkspace.shell.identity.zoneAccount')}</div>
-              <div className="aiws-panel-title">{t('aiworkspace.shell.identity.online')}</div>
-              <div className="aiws-muted" data-testid="aiws-presence-unavailable">{t('aiworkspace.shell.identity.presenceUnavailable')}</div>
-              <button type="button" className="aiws-popover-item" data-testid="aiws-logout" disabled={shell.identity.dev} title={shell.identity.dev ? t('aiworkspace.shell.identity.devNoSession') : undefined}
-                onClick={() => { close(); shell.logout() }}>
-                <LogOut size={16} /> {t('aiworkspace.shell.identity.logout')}
-              </button>
-            </>
-          )}
-        </PopoverPanel>
-      )}
-    </span>
-  )
-}
-
-
 function ShareButton() {
   const shell = useShell()
   const { t } = useAiwsText()
   return (
-    <button type="button" className={`aiws-tool${shell.size === 'narrow' || shell.phone ? '' : ' aiws-tool-text'} is-primary`} aria-label={t('aiworkspace.shell.share.label')} title={t('aiworkspace.shell.share.label')} aria-haspopup="dialog" data-testid="aiws-share" onClick={() => shell.openDialog({ kind: 'share' })}>
-      <Link2 size={18} />{shell.size !== 'narrow' && !shell.phone && <span>{t('aiworkspace.shell.share.button')}</span>}
+    <button type="button" className={`aiws-tool${shell.size === 'narrow' ? '' : ' aiws-tool-text'} is-primary`} aria-label={t('aiworkspace.shell.share.label')} title={t('aiworkspace.shell.share.label')} aria-haspopup="dialog" data-testid="aiws-share" onClick={() => shell.openDialog({ kind: 'share' })}>
+      <Link2 size={18} />{shell.size !== 'narrow' && <span>{t('aiworkspace.shell.share.button')}</span>}
     </button>
   )
 }

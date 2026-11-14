@@ -162,8 +162,14 @@ test('(d) two users: rich text converges, different fields both succeed, same fi
   expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-41', 'title')).value).toBe('乙的标题')
   await expect(aliceAll.getByTestId('aiws-cell-task-41-title')).toContainText('乙的标题')
 
-  // bob has no `structure` capability: the UI does not offer field management, and the API refuses it
-  await expect(bob.getByTestId('aiws-fields-cell-all-tasks')).toHaveCount(0)
+  // bob has no `structure` capability: the table's fields are not his to change — no new field, the details locked (the
+  // API refuses it too); the columns this Block shows are, as he may change the Block (UI 框架 PRD §7.3)
+  await bob.getByTestId('aiws-fields-cell-all-tasks').click()
+  const bobFields = bob.getByTestId('aiws-field-manager')
+  await expect(bobFields.getByTestId('aiws-add-field')).toHaveCount(0)
+  await bobFields.getByTestId('aiws-field-open-owner').click()
+  await expect(bobFields.getByLabel('字段名 owner')).toBeDisabled()
+  await expect(bobFields.getByTestId('aiws-field-delete')).toHaveCount(0)
   await expect(alice.getByTestId('aiws-fields-cell-all-tasks')).toBeVisible()
   await aliceContext.close()
   await bobContext.close()

@@ -23,7 +23,7 @@ import { useStore } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
 import { consumeIntent, useIntent } from './editorToolbar'
 import { cellOp, setCellConfig } from './ops'
-import type { BlockDefinition, RenderContext, ToolbarItem } from './registry'
+import type { BlockDefinition, ConfigField, RenderContext } from './registry'
 
 type T = AiwsText['t']
 
@@ -228,7 +228,7 @@ export function ShapePicker({ value, onPick, extra }: { value?: ShapeKind; onPic
   )
 }
 
-// ---- tools (标准对象的交互改进 §5.2): kind, fill, stroke, line, text
+// ---- choices of the properties (标准对象的交互改进 §5.2): kind, fill, stroke, line, text
 
 const FONT_SIZES = [10, 12, 14, 16, 20, 24, 32, 48]
 const widths = (t: T) => [
@@ -267,133 +267,71 @@ const canChange = (context: RenderContext): string | false => (context.capabilit
 const roundCorners = (kind: ShapeKind) => !['ellipse', 'cloud', 'cylinder', 'line', 'svg', 'document'].includes(kind)
 const turnable = (kind: ShapeKind) => !['rect', 'ellipse', 'cloud', 'cross', 'text', 'svg'].includes(kind)
 
-function LinePanel({ context, store, look, close }: { context: RenderContext; store: WorkspaceStore; look: ShapeLook; close: () => void }) {
-  const { t } = useAiwsText()
-  const set = (patch: Record<string, Json | null>, label: string) => setCellConfig(context, store, patch, label)
+// ---- the properties (属性, 标准对象的交互改进 §5.2): declared once — the properties panel shows every one of them, the Block
+// toolbar the quick ones (kind, fill, stroke, the line tools behind one button, the text's size, colour, style and
+// alignment). Each reads and writes the look as the shared module defines it.
+
+const look = (context: RenderContext) => readLook(context.payload.config, context.payload.title)
+const lineGroup = () => ({ id: 'shape-line', label: aiwsT('aiworkspace.blocks.shape.lineTools'), icon: PenLine })
+
+function shapeFields(): ConfigField[] {
+  const t = aiwsT
+  const write = (patch: Record<string, Json | null>, label: string) => (context: RenderContext, store: WorkspaceStore) => setCellConfig(context, store, patch, label)
+  const kinds = SHAPE_KINDS.map((k) => ({ value: k.kind, label: t(KIND_LABEL[k.kind]) }))
+  const widthList = widths(t)
   const dashList = dashes(t)
   const directionList = directions(t)
-  const row = (label: string, options: { value: string; label: string }[], value: string, pick: (v: string) => void, id: string) => (
-    <div className="aiws-shape-panel-row">
-      <span>{label}</span>
-      <div className="aiws-segmented" role="group" aria-label={label}>
-        {options.map((o) => <button key={o.value} type="button" aria-pressed={o.value === value} data-testid={`aiws-shape-${id}-${o.value}`} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(o.value)}>{o.label}</button>)}
-      </div>
-    </div>
-  )
-  return (
-    <div className="aiws-shape-panel" data-testid="aiws-shape-line-panel">
-      {row(t('aiworkspace.blocks.shape.lineWidth'), widths(t), String(look.stroke === 'none' ? 0 : look.strokeWidth), (v) => set(v === '0' ? { stroke: 'none' } : { stroke_width: Number(v), ...(look.stroke === 'none' ? { stroke: null } : {}) }, changed(t, t('aiworkspace.blocks.shape.lineWidth'), v)), 'width')}
-      {row(t('aiworkspace.blocks.lineStyle'), dashList, look.dash, (v) => set({ dash: v === 'solid' ? null : v }, changed(t, t('aiworkspace.blocks.lineStyle'), dashList.find((d) => d.value === v)?.label ?? v)), 'dash')}
-      {row(t('aiworkspace.blocks.shape.opacity'), OPACITIES, String(look.opacity), (v) => set({ opacity: v === '1' ? null : Number(v) }, changed(t, t('aiworkspace.blocks.shape.opacity'), `${Math.round(Number(v) * 100)}%`)), 'opacity')}
-      {roundCorners(look.kind) && row(t('aiworkspace.blocks.shape.cornerRadius'), radii(t), String(look.radius), (v) => set({ radius: v === '0' ? null : Number(v) }, changed(t, t('aiworkspace.blocks.shape.cornerRadius'), v)), 'radius')}
-      {turnable(look.kind) && row(t('aiworkspace.blocks.direction'), directionList, look.direction, (v) => set({ direction: v === 'e' ? null : v }, changed(t, t('aiworkspace.blocks.direction'), directionList.find((d) => d.value === v)?.label ?? v)), 'direction')}
-      <div className="aiws-shape-panel-row">
-        <span>{t('aiworkspace.blocks.shape.flip')}</span>
-        <div className="aiws-segmented" role="group" aria-label={t('aiworkspace.blocks.shape.flip')}>
-          <button type="button" aria-pressed={look.flipH} data-testid="aiws-shape-flip-h" onMouseDown={(e) => e.preventDefault()} onClick={() => set({ flip_h: look.flipH ? null : true }, t('aiworkspace.blocks.shape.flipH'))}>{t('aiworkspace.blocks.shape.horizontal')}</button>
-          <button type="button" aria-pressed={look.flipV} data-testid="aiws-shape-flip-v" onMouseDown={(e) => e.preventDefault()} onClick={() => set({ flip_v: look.flipV ? null : true }, t('aiworkspace.blocks.shape.flipV'))}>{t('aiworkspace.blocks.shape.vertical')}</button>
-        </div>
-      </div>
-      <div className="aiws-dialog-actions"><button type="button" onClick={close}>{t('aiworkspace.blocks.shape.done')}</button></div>
-    </div>
-  )
-}
-
-function shapeToolbar(context: RenderContext, store: WorkspaceStore): ToolbarItem[] {
-  const look = readLook(context.payload.config, context.payload.title)
-  const reason = canChange(context)
-  const set = (patch: Record<string, Json | null>, label: string) => setCellConfig(context, store, patch, label)
-  const t = aiwsT
-  const alignItems = aligns(t)
-  const valignItems = valigns(t)
+  const alignList = aligns(t)
+  const valignList = valigns(t)
   return [
-    { kind: 'panel', id: 'shape-kind', icon: Shapes, label: t('aiworkspace.blocks.shape.kindLabel', { kind: t(KIND_LABEL[look.kind]) }), disabled: reason,
-      render: (close) => <ShapePicker value={look.kind} onPick={(kind) => { close(); if (kind !== look.kind) set({ shape: kind, ...(kind === 'svg' ? {} : { svg: null }) }, changed(t, t('aiworkspace.blocks.shape.shape'), SHAPE_KINDS.some((k) => k.kind === kind) ? t(KIND_LABEL[kind]) : kind)) }} /> },
-    ...(look.kind === 'line' ? [] : [{ kind: 'color' as const, id: 'shape-fill', label: t('aiworkspace.blocks.shape.fill'), palette: 'fill' as const, extras: fillExtras(t), value: look.fill, disabled: reason, onPick: (value: string) => set({ fill: value || null }, t('aiworkspace.blocks.shape.fillEdit')) }]),
-    { kind: 'color', id: 'shape-stroke', label: t(look.kind === 'line' ? 'aiworkspace.blocks.shape.lineColor' : 'aiworkspace.blocks.shape.stroke'), palette: 'ink', extras: strokeExtras(t), value: look.stroke, disabled: reason, onPick: (value) => set({ stroke: value || null }, t('aiworkspace.blocks.shape.strokeEdit')) },
-    { kind: 'panel', id: 'shape-line', icon: PenLine, label: t('aiworkspace.blocks.shape.lineTools'), disabled: reason, render: (close) => <LinePanel context={context} store={store} look={look} close={close} /> },
-    { kind: 'separator', id: 'shape-sep-text' },
-    { kind: 'menu', id: 'shape-font-size', icon: ALargeSmall, label: t('aiworkspace.blocks.fontSize'), value: String(look.fontSize), disabled: reason, items: FONT_SIZES.map((s) => ({ value: String(s), label: `${s}` })), onPick: (value) => set({ font_size: Number(value) }, changed(t, t('aiworkspace.blocks.fontSize'), value)) },
-    { kind: 'color', id: 'shape-font-color', label: t('aiworkspace.blocks.textColor'), palette: 'ink', extras: inkExtras(t), value: look.fontColor || 'auto', disabled: reason, onPick: (value) => set({ font_color: value && value !== 'auto' ? value : null }, t('aiworkspace.blocks.textColor')) },
-    { kind: 'button', id: 'shape-bold', icon: Bold, label: t('aiworkspace.blocks.shape.bold'), active: look.bold, disabled: reason, run: () => set({ bold: look.bold ? null : true }, t(look.bold ? 'aiworkspace.blocks.shape.unbold' : 'aiworkspace.blocks.shape.bold')) },
-    { kind: 'button', id: 'shape-italic', icon: Italic, label: t('aiworkspace.blocks.shape.italic'), active: look.italic, disabled: reason, run: () => set({ italic: look.italic ? null : true }, t(look.italic ? 'aiworkspace.blocks.shape.unitalic' : 'aiworkspace.blocks.shape.italic')) },
-    { kind: 'button', id: 'shape-underline', icon: Underline, label: t('aiworkspace.blocks.shape.underline'), active: look.underline, disabled: reason, run: () => set({ underline: look.underline ? null : true }, t(look.underline ? 'aiworkspace.blocks.shape.ununderline' : 'aiworkspace.blocks.shape.underline')) },
-    { kind: 'menu', id: 'shape-align', icon: alignItems.find((a) => a.value === look.align)?.icon ?? AlignCenter, label: t('aiworkspace.blocks.shape.hAlign'), value: look.align, disabled: reason, items: alignItems,
-      onPick: (value) => set({ align: value }, changed(t, t('aiworkspace.blocks.shape.alignEdit'), alignItems.find((a) => a.value === value)?.label ?? value)) },
-    { kind: 'menu', id: 'shape-valign', icon: valignItems.find((a) => a.value === look.valign)?.icon ?? AlignVerticalJustifyCenter, label: t('aiworkspace.blocks.shape.vAlign'), value: look.valign, disabled: reason, items: valignItems,
-      onPick: (value) => set({ valign: value === 'middle' ? null : value }, changed(t, t('aiworkspace.blocks.shape.vAlign'), valignItems.find((a) => a.value === value)?.label ?? value)) },
-    ...(context.editorActive ? [] : [{ kind: 'button' as const, id: 'shape-text', icon: Baseline, label: t('aiworkspace.blocks.shape.editText'), key: 'Enter', disabled: reason, run: () => context.activateEditor() }]),
+    // look
+    { key: 'shape', id: 'shape-kind', section: 'look', label: t('aiworkspace.blocks.shape.shape'), kind: 'select', quick: true, icon: Shapes,
+      options: [...kinds, { value: 'svg', label: t(KIND_LABEL.svg) }], get: (c) => look(c).kind,
+      picker: ({ value, pick }) => <ShapePicker value={value as ShapeKind} onPick={pick} />,
+      set: (c, store, value) => { const kind = String(value ?? 'rect') as ShapeKind; write({ shape: kind, ...(kind === 'svg' ? {} : { svg: null }) }, changed(t, t('aiworkspace.blocks.shape.shape'), SHAPE_KINDS.some((k) => k.kind === kind) ? t(KIND_LABEL[kind]) : kind))(c, store) } },
+    { key: 'fill', id: 'shape-fill', section: 'look', label: t('aiworkspace.blocks.shape.fill'), kind: 'color', quick: true, palette: 'fill', extras: fillExtras(t), when: (c) => look(c).kind !== 'line', get: (c) => look(c).fill,
+      set: (c, store, value) => write({ fill: (value as string) || null }, t('aiworkspace.blocks.shape.fillEdit'))(c, store) },
+    { key: 'stroke', id: 'shape-stroke', section: 'look', label: t('aiworkspace.blocks.shape.stroke'), kind: 'color', quick: true, palette: 'ink', extras: strokeExtras(t), get: (c) => look(c).stroke,
+      set: (c, store, value) => write({ stroke: (value as string) || null }, t('aiworkspace.blocks.shape.strokeEdit'))(c, store) },
+    { key: 'stroke_width', id: 'shape-width', section: 'look', label: t('aiworkspace.blocks.shape.lineWidth'), kind: 'number', quickGroup: lineGroup(), options: widthList, min: 0,
+      get: (c) => (look(c).stroke === 'none' ? 0 : look(c).strokeWidth),
+      set: (c, store, value) => { const n = Number(value ?? 2); write(n === 0 ? { stroke: 'none' } : { stroke_width: n === 2 ? null : n, ...(look(c).stroke === 'none' ? { stroke: null } : {}) }, changed(t, t('aiworkspace.blocks.shape.lineWidth'), String(n)))(c, store) } },
+    { key: 'dash', id: 'shape-dash', section: 'look', label: t('aiworkspace.blocks.lineStyle'), kind: 'select', quickGroup: lineGroup(), options: dashList, default: 'solid', get: (c) => look(c).dash },
+    { key: 'opacity', id: 'shape-opacity', section: 'look', label: t('aiworkspace.blocks.shape.opacity'), kind: 'number', quickGroup: lineGroup(), options: OPACITIES, default: 1, min: 0, max: 1, get: (c) => look(c).opacity },
+    { key: 'radius', id: 'shape-radius', section: 'look', label: t('aiworkspace.blocks.shape.cornerRadius'), kind: 'number', quickGroup: lineGroup(), options: radii(t), default: 0, min: 0, when: (c) => roundCorners(look(c).kind), get: (c) => look(c).radius },
+    { key: 'direction', id: 'shape-direction', section: 'look', label: t('aiworkspace.blocks.direction'), kind: 'select', quickGroup: lineGroup(), options: directionList, default: 'e', when: (c) => turnable(look(c).kind), get: (c) => look(c).direction },
+    { key: 'flip_h', id: 'shape-flip-h', section: 'look', label: t('aiworkspace.blocks.shape.flipH'), kind: 'boolean', quickGroup: lineGroup(), get: (c) => look(c).flipH },
+    { key: 'flip_v', id: 'shape-flip-v', section: 'look', label: t('aiworkspace.blocks.shape.flipV'), kind: 'boolean', quickGroup: lineGroup(), get: (c) => look(c).flipV },
+    { key: 'shape_size', section: 'look', label: t('aiworkspace.blocks.shape.sizeParam'), kind: 'number', get: (c) => look(c).size ?? undefined },
+    // text
+    { key: 'text', section: 'text', label: t('aiworkspace.blocks.shape.text'), kind: 'textarea', get: (c) => look(c).text, set: (c, store, value) => saveText(c, store, String(value ?? '')) },
+    { key: 'font_size', id: 'shape-font-size', section: 'text', label: t('aiworkspace.blocks.fontSize'), kind: 'number', quick: true, icon: ALargeSmall, presets: FONT_SIZES, default: 14, min: 1, get: (c) => look(c).fontSize },
+    { key: 'font_color', id: 'shape-font-color', section: 'text', label: t('aiworkspace.blocks.textColor'), kind: 'color', quick: true, palette: 'ink', extras: inkExtras(t), default: 'auto', get: (c) => look(c).fontColor || 'auto',
+      set: (c, store, value) => write({ font_color: value && value !== 'auto' ? (value as string) : null }, t('aiworkspace.blocks.textColor'))(c, store) },
+    { key: 'bold', id: 'shape-bold', section: 'text', label: t('aiworkspace.blocks.shape.bold'), kind: 'boolean', quick: true, icon: Bold, get: (c) => look(c).bold },
+    { key: 'italic', id: 'shape-italic', section: 'text', label: t('aiworkspace.blocks.shape.italic'), kind: 'boolean', quick: true, icon: Italic, get: (c) => look(c).italic },
+    { key: 'underline', id: 'shape-underline', section: 'text', label: t('aiworkspace.blocks.shape.underline'), kind: 'boolean', quick: true, icon: Underline, get: (c) => look(c).underline },
+    { key: 'align', id: 'shape-align', section: 'text', label: t('aiworkspace.blocks.shape.hAlign'), kind: 'select', quick: true, icon: AlignCenter, options: alignList, get: (c) => look(c).align,
+      set: (c, store, value) => write({ align: String(value ?? 'center') }, changed(t, t('aiworkspace.blocks.shape.alignEdit'), alignList.find((a) => a.value === value)?.label ?? String(value)))(c, store) },
+    { key: 'valign', id: 'shape-valign', section: 'text', label: t('aiworkspace.blocks.shape.vAlign'), kind: 'select', quick: true, icon: AlignVerticalJustifyCenter, options: valignList, default: 'middle', get: (c) => look(c).valign },
+    { key: 'font_family', section: 'text', label: t('aiworkspace.blocks.shape.fontFamily'), kind: 'select', default: '', get: (c) => look(c).fontFamily ?? '',
+      options: [{ value: '', label: t('aiworkspace.blocks.shape.fontFamilyTheme') }, ...FONT_FAMILIES.map((f) => ({ value: f, label: t(FONT_FAMILY_LABEL[f]) }))] },
+    { key: 'line_height', section: 'text', label: t('aiworkspace.blocks.shape.lineHeight'), kind: 'number', min: 0.5, get: (c) => look(c).lineHeight ?? undefined },
+    { key: 'label_position', section: 'text', label: t('aiworkspace.blocks.shape.labelPosition'), kind: 'select', options: labelPositions(t), default: 'inside', get: (c) => look(c).labelPosition },
+    { key: 'wrap', section: 'text', label: t('aiworkspace.blocks.shape.wrap'), kind: 'boolean', default: true, get: (c) => look(c).wrap },
+    { key: 'label_fill', section: 'text', label: t('aiworkspace.blocks.shape.labelFill'), kind: 'color', palette: 'fill', extras: fillExtras(t), default: 'none', get: (c) => look(c).labelFill ?? 'none' },
   ]
 }
 
-// ---- inspector (属性面板): every key
-
+/** The shape's own drawn section: its connection points. */
 function ShapeInspector(context: RenderContext) {
   const { t } = useAiwsText()
   const store = useStore()
-  const look = readLook(context.payload.config, context.payload.title)
-  const config = context.payload.config ?? {}
   const readOnly = canChange(context) !== false
-  const set = (patch: Record<string, Json | null>, label: string) => { if (!readOnly) setCellConfig(context, store, patch, label) }
-  const select = (key: string, label: string, options: { value: string; label: string }[], value: string, fallback: string) => (
-    <label className="aiws-inline-form">{label}
-      <select value={value} disabled={readOnly} data-testid={`aiws-shape-field-${key}`} onChange={(e) => set({ [key]: e.target.value === fallback ? null : e.target.value }, changed(t, label, e.target.value))}>
-        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-    </label>
-  )
-  const number = (key: string, label: string, value: number | null, fallback?: number) => (
-    <label className="aiws-inline-form">{label}
-      <input type="number" step="any" defaultValue={value ?? ''} key={`${key}:${value}`} disabled={readOnly} data-testid={`aiws-shape-field-${key}`}
-        onBlur={(e) => { const v = e.target.value.trim(); const n = Number(v); if (v === '' || n === fallback) set({ [key]: null }, t('aiworkspace.blocks.edit.default', { label })); else if (Number.isFinite(n) && n !== value) set({ [key]: n }, changed(t, label, String(n))) }} />
-    </label>
-  )
-  const color = (key: string, label: string, value: string, extras: string[]) => (
-    <label className="aiws-inline-form">{label}
-      <span className="aiws-color-field">
-        <input type="color" value={value.startsWith('#') ? value : '#ffffff'} disabled={readOnly} data-testid={`aiws-shape-field-${key}`} onChange={(e) => set({ [key]: e.target.value }, label)} />
-        {extras.map((x) => (
-          <button key={x} type="button" aria-pressed={value === x} disabled={readOnly} onClick={() => set({ [key]: x }, changed(t, label, t(x === 'none' ? 'aiworkspace.common.none' : 'aiworkspace.blocks.followTheme')))}>
-            {t(x === 'none' ? 'aiworkspace.common.none' : 'aiworkspace.blocks.shape.theme')}
-          </button>
-        ))}
-      </span>
-    </label>
-  )
-  /** A flag whose default is `on` (stored only when it differs). */
-  const flag = (key: string, label: string, value: boolean, on = false) => (
-    <label className="aiws-inline-form"><input type="checkbox" checked={value} disabled={readOnly} data-testid={`aiws-shape-field-${key}`} onChange={(e) => set({ [key]: e.target.checked === on ? null : e.target.checked }, label)} />{label}</label>
-  )
-  const anchors = cleanAnchors(config.anchors) ?? []
+  const anchors = cleanAnchors(context.payload.config?.anchors) ?? []
   return (
     <div className="aiws-shape-inspector" data-testid="aiws-shape-inspector">
-      {select('shape', t('aiworkspace.blocks.shape.shape'), [...SHAPE_KINDS.map((k) => ({ value: k.kind, label: t(KIND_LABEL[k.kind]) })), ...(look.kind === 'svg' ? [{ value: 'svg', label: t(KIND_LABEL.svg) }] : [])], look.kind, '')}
-      {color('fill', t('aiworkspace.blocks.shape.fill'), look.fill, ['none', 'auto'])}
-      {color('stroke', t('aiworkspace.blocks.shape.stroke'), look.stroke, ['none', 'auto'])}
-      {number('stroke_width', t('aiworkspace.blocks.shape.lineWidth'), look.strokeWidth, 2)}
-      {select('dash', t('aiworkspace.blocks.lineStyle'), dashes(t), look.dash, 'solid')}
-      {number('opacity', t('aiworkspace.blocks.shape.opacityField'), look.opacity, 1)}
-      {roundCorners(look.kind) && number('radius', t('aiworkspace.blocks.shape.cornerRadius'), look.radius, 0)}
-      {turnable(look.kind) && select('direction', t('aiworkspace.blocks.direction'), directions(t), look.direction, 'e')}
-      {flag('flip_h', t('aiworkspace.blocks.shape.flipH'), look.flipH)}
-      {flag('flip_v', t('aiworkspace.blocks.shape.flipV'), look.flipV)}
-      {number('shape_size', t('aiworkspace.blocks.shape.sizeParam'), look.size)}
-      <label className="aiws-field">{t('aiworkspace.blocks.shape.text')}
-        <textarea rows={3} defaultValue={look.text} key={`text:${look.text}`} disabled={readOnly} data-testid="aiws-shape-field-text" onBlur={(e) => { if (!readOnly) saveText(context, store, e.target.value) }} />
-      </label>
-      {number('font_size', t('aiworkspace.blocks.fontSize'), look.fontSize, 14)}
-      {select('font_family', t('aiworkspace.blocks.shape.fontFamily'), [{ value: '', label: t('aiworkspace.blocks.shape.fontFamilyTheme') }, ...FONT_FAMILIES.map((f) => ({ value: f, label: t(FONT_FAMILY_LABEL[f]) }))], look.fontFamily ?? '', '')}
-      {number('line_height', t('aiworkspace.blocks.shape.lineHeight'), look.lineHeight)}
-      {color('font_color', t('aiworkspace.blocks.textColor'), look.fontColor || 'auto', ['auto'])}
-      {flag('bold', t('aiworkspace.blocks.shape.bold'), look.bold)}
-      {flag('italic', t('aiworkspace.blocks.shape.italic'), look.italic)}
-      {flag('underline', t('aiworkspace.blocks.shape.underline'), look.underline)}
-      {select('align', t('aiworkspace.blocks.shape.hAlign'), aligns(t), look.align, '')}
-      {select('valign', t('aiworkspace.blocks.shape.vAlign'), valigns(t), look.valign, 'middle')}
-      {select('label_position', t('aiworkspace.blocks.shape.labelPosition'), labelPositions(t), look.labelPosition, 'inside')}
-      {flag('wrap', t('aiworkspace.blocks.shape.wrap'), look.wrap, true)}
-      {color('label_fill', t('aiworkspace.blocks.shape.labelFill'), look.labelFill ?? 'none', ['none', 'auto'])}
-      <AnchorsForm anchors={anchors} readOnly={readOnly} onChange={(next) => set({ anchors: next.length ? (next as unknown as Json) : null }, t('aiworkspace.blocks.shape.anchors'))} />
+      <AnchorsForm anchors={anchors} readOnly={readOnly} onChange={(next) => { if (!readOnly) setCellConfig(context, store, { anchors: next.length ? (next as unknown as Json) : null }, t('aiworkspace.blocks.shape.anchors')) }} />
     </div>
   )
 }
@@ -436,20 +374,23 @@ const outlineOf = (payload: CellPayload) => shapeOutline(readLook(payload.config
 
 export const shapeDefinition: BlockDefinition = {
   type: 'shape', version: 1, get title() { return aiwsT('aiworkspace.blocks.shape.shape') }, accepts: [], allowNoSource: true, pureUi: true,
-  defaultSize: { w: 160, h: 120 }, cost: { editor: false, html: false },
+  defaultSize: { w: 160, h: 120 }, cost: { editor: false, html: false }, icon: Shapes,
+  traits: { typeToEdit: true, flowUntitled: true, flowInsertable: false },
   Static: ShapeStatic, Editor: ShapeEditor, Inspector: ShapeInspector, chrome: 'none',
+  get inspectorTitle() { return aiwsT('aiworkspace.blockui.shape.anchors') },
+  get sections() { return [{ id: 'look', label: aiwsT('aiworkspace.blockui.section.look') }, { id: 'text', label: aiwsT('aiworkspace.blocks.shape.text') }] },
+  get configFields() { return shapeFields() },
   shape: outlineOf,
   anchors: (payload) => shapeAnchors(payload.config, outlineOf(payload)),
   catalog: {
-    group: 'layout', get description() { return aiwsT('aiworkspace.blocks.shape.description') }, needs: 'none', standard: true,
+    group: 'layout', get description() { return aiwsT('aiworkspace.blocks.shape.description') }, needs: 'none', standard: true, toolPicker: 6,
     variants: [
       { id: 'text', get title() { return aiwsT('aiworkspace.blocks.shape.kind.text') }, group: 'text', get description() { return aiwsT('aiworkspace.blocks.shape.textDescription') },
-        config: { shape: 'text', text: '', font_size: 16 }, size: { w: 240, h: 48 }, editAfterInsert: true, standard: true },
+        config: { shape: 'text', text: '', font_size: 16 }, size: { w: 240, h: 48 }, editAfterInsert: true, standard: true, toolPicker: 1 },
       { id: 'svg', get title() { return aiwsT('aiworkspace.blocks.shape.kind.svg') }, group: 'layout', get description() { return aiwsT('aiworkspace.blocks.shape.svgDescription') }, config: { shape: 'svg' } },
     ],
   },
-  actions: [{ id: 'label', get label() { return aiwsT('aiworkspace.blocks.shape.editText') }, modes: ['edit'], needs: ['update'], run: (context) => context.activateEditor(), key: 'Enter' }],
-  toolbar: shapeToolbar,
+  actions: [{ id: 'shape-text', icon: Baseline, primary: true, get label() { return aiwsT('aiworkspace.blocks.shape.editText') }, modes: ['edit'], needs: ['update'], when: (context) => !context.editorActive, run: (context) => context.activateEditor(), key: 'Enter' }],
   create: (args) => {
     const preset = args.config ?? {}
     const kind = typeof preset.shape === 'string' ? preset.shape : 'rect'

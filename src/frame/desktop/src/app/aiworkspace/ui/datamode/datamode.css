@@ -1,0 +1,180 @@
+/* The data mode (UI 框架 PRD §5): tree | editing area with tabs | sidebar, the status bar across the bottom; the phone's
+ * single column; the menus, sheets and dialogs of the object tree. Colours and controls come from aiworkspace.css. */
+
+.aiws-dm { position: relative; }
+.aiws-dm-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.aiws-dm-bar .aiws-view-toolbar { flex: none; }
+.aiws-dm-mode-chip { display: inline-flex; align-items: center; gap: 4px; }
+.aiws-dm-work { flex-direction: column; }
+.aiws-dm-body { position: relative; display: flex; flex: 1 1 auto; min-height: 0; min-width: 0; }
+
+/* the two side columns, their splitters and drawers */
+.aiws-dm-left { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--cp-border); background: var(--cp-bg); }
+.aiws-dm-left.is-drawer { position: absolute; top: 0; bottom: 0; left: 0; z-index: 46; width: min(320px, calc(100% - 40px)); box-shadow: var(--cp-shadow); background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-dm-left.is-phone { width: 100%; border-right: none; }
+.aiws-root .aiws-dm-left-hide { position: absolute; top: 6px; right: 4px; z-index: 2; display: none; }
+.aiws-dm-left:hover .aiws-dm-left-hide, .aiws-dm-left:focus-within .aiws-dm-left-hide, .aiws-dm-left.is-drawer .aiws-dm-left-hide { display: inline-flex; }
+.aiws-dm-left .aiws-dm-tree-head { padding-right: 34px; }
+.aiws-dm-splitter { flex: none; width: 6px; margin: 0 -3px; z-index: 3; cursor: col-resize; touch-action: none; }
+.aiws-dm-splitter:hover, .aiws-dm-splitter:active { background: color-mix(in srgb, var(--cp-accent) 30%, transparent); }
+.aiws-dm-side { flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--cp-border); background: var(--cp-bg); }
+.aiws-dm-side.is-drawer { position: absolute; top: 0; bottom: 0; right: 0; z-index: 46; width: min(360px, calc(100% - 40px)); box-shadow: var(--cp-shadow); background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-dm-side-tabs { display: flex; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--cp-border); }
+.aiws-root .aiws-dm-side-tabs button[role='tab'] { border: none; background: none; padding: 4px 10px; border-radius: 6px; }
+.aiws-root .aiws-dm-side-tabs button[role='tab'][aria-selected='true'] { background: var(--aiws-selected-bg); box-shadow: inset 0 0 0 1px var(--aiws-selected-border); font-weight: 600; }
+.aiws-dm-side-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 6px 10px 16px; }
+.aiws-dm-side-empty { padding: 12px 4px; }
+
+/* the object tree */
+.aiws-dm-tree { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.aiws-dm-tree-head { display: flex; align-items: center; gap: 2px; padding: 6px 6px 2px 10px; }
+.aiws-dm-search { display: flex; align-items: center; gap: 6px; margin: 4px 8px; padding: 0 8px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); color: var(--cp-muted); }
+.aiws-dm-search input { flex: 1 1 auto; min-width: 0; border: none; background: none; padding: 6px 0; outline: none; color: var(--cp-text); }
+.aiws-dm-filter { margin: 2px 8px 6px; padding: 8px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); display: flex; flex-direction: column; gap: 6px; }
+.aiws-dm-filter-types { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 2px 8px; }
+.aiws-dm-check { display: inline-flex; align-items: center; gap: 6px; }
+.aiws-dm-filter-line { display: flex; align-items: center; gap: 6px; }
+.aiws-dm-tree-scroll { flex: 1 1 auto; min-height: 60px; overflow: auto; padding: 0 4px 8px; }
+.aiws-dm-tree-empty { padding: 12px 10px; }
+.aiws-dm-tree-pinned { flex: none; border-top: 1px solid var(--cp-border); padding: 4px 4px 6px; max-height: 40%; overflow: auto; }
+.aiws-dm-row { position: relative; min-height: 28px; border-radius: 6px; }
+.aiws-dm-row:hover { background: var(--cp-surface-2); }
+.aiws-dm-row.is-selected:hover { background: var(--aiws-selected-bg); }
+.aiws-dm-row.is-drop-into { box-shadow: inset 0 0 0 2px var(--cp-accent); }
+.aiws-dm-row.is-drop-before { box-shadow: inset 0 2px 0 var(--cp-accent); }
+.aiws-dm-row.is-drop-after { box-shadow: inset 0 -2px 0 var(--cp-accent); }
+.aiws-dm-type { display: inline-flex; flex: none; color: var(--cp-muted); }
+.aiws-dm-row.is-selected .aiws-dm-type { color: var(--cp-accent); }
+.aiws-dm-mark { display: inline-flex; color: var(--cp-muted); }
+.aiws-root button.aiws-dm-row-more { flex: none; border: none; background: none; width: 26px; height: 24px; padding: 0; border-radius: 6px; justify-content: center; color: var(--cp-muted); visibility: hidden; }
+.aiws-dm-row:hover button.aiws-dm-row-more, .aiws-dm-row:focus-within button.aiws-dm-row-more, .aiws-root button.aiws-dm-row-more.is-shown { visibility: visible; }
+.aiws-root button.aiws-dm-row-more:hover { background: var(--cp-surface); color: var(--cp-text); }
+.aiws-dm-group { margin-top: 2px; }
+.aiws-dm-group-label { font-weight: 600; font-size: 12px; padding: 2px 4px; }
+.aiws-dm-macros-empty { padding: 2px 28px 4px; font-size: 12px; }
+.aiws-dm-special { margin-top: 2px; }
+.aiws-dm-tree .aiws-tree-label .aiws-chip { flex: none; }
+
+/* the editing area */
+.aiws-dm-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.aiws-dm-mainbar { display: flex; align-items: stretch; gap: 2px; border-bottom: 1px solid var(--cp-border); min-height: 36px; padding: 0 4px; }
+.aiws-dm-mainbar > .aiws-tool { align-self: center; }
+.aiws-dm-tabbar { flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch; }
+.aiws-dm-tabs { flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: thin; }
+.aiws-dm-tab { flex: none; display: inline-flex; align-items: center; gap: 5px; max-width: 220px; padding: 0 4px 0 10px; border-right: 1px solid var(--cp-border); cursor: pointer; color: var(--cp-muted); user-select: none; }
+.aiws-dm-tab:hover { background: var(--cp-surface-2); }
+.aiws-dm-tab.is-active { color: var(--cp-text); background: var(--cp-surface); box-shadow: inset 0 -2px 0 var(--cp-accent); }
+.aiws-dm-tab.is-preview .aiws-dm-tab-name { font-style: italic; }
+.aiws-dm-tab.is-gone .aiws-dm-tab-name { text-decoration: line-through; }
+.aiws-dm-tab.is-over { box-shadow: inset 2px 0 0 var(--cp-accent); }
+.aiws-dm-tab-icon { display: inline-flex; flex: none; }
+.aiws-dm-tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-dm-tab-ro { display: inline-flex; color: var(--cp-muted); }
+.aiws-dm-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cp-accent); flex: none; }
+.aiws-root button.aiws-dm-tab-close { border: none; background: none; width: 22px; height: 22px; padding: 0; justify-content: center; border-radius: 5px; color: var(--cp-muted); opacity: 0; }
+.aiws-dm-tab:hover .aiws-dm-tab-close, .aiws-dm-tab.is-active .aiws-dm-tab-close, .aiws-dm-tab:focus-within .aiws-dm-tab-close { opacity: 1; }
+.aiws-root button.aiws-dm-tab-close:hover { background: var(--cp-surface-2); color: var(--cp-text); }
+.aiws-root .aiws-dm-tab-list { align-self: center; }
+.aiws-dm-editor { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.aiws-dm-detail { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 8px 16px 48px; box-sizing: border-box; }
+.aiws-dm-detail.is-bare { padding: 0; }
+.aiws-dm-detail .aiws-detail-head { flex: none; }
+.aiws-dm-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.aiws-dm-content.is-table-source, .aiws-dm-content.is-dir { min-height: 320px; }
+.aiws-dm-content.is-table-source > *, .aiws-dm-content.is-dir > * { flex: 1 1 auto; min-height: 0; }
+.aiws-dm-own { flex: none; margin-bottom: 6px; }
+.aiws-dm-perm-editor { padding: 8px 16px 48px; }
+.aiws-dm-gone { margin: auto; }
+.aiws-dm-pages { display: flex; gap: 2px; border-bottom: 1px solid var(--cp-border); margin-bottom: 8px; }
+.aiws-root .aiws-dm-pages button[role='tab'] { border: none; background: none; padding: 6px 12px; border-radius: 6px 6px 0 0; color: var(--cp-muted); }
+.aiws-root .aiws-dm-pages button[role='tab'][aria-selected='true'] { color: var(--cp-text); box-shadow: inset 0 -2px 0 var(--cp-accent); font-weight: 600; }
+.aiws-dm-page { min-height: 0; }
+.aiws-dm-runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.aiws-dm-run { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--cp-border); border-radius: 8px; }
+.aiws-dm-run-error { flex-basis: 100%; }
+.aiws-dm-folder-list { list-style: none; margin: 6px 0; padding: 0; }
+.aiws-root button.aiws-dm-folder-item { display: flex; width: 100%; gap: 8px; align-items: center; border: none; background: none; padding: 6px 8px; border-radius: 6px; text-align: left; min-height: 32px; }
+.aiws-root button.aiws-dm-folder-item:hover { background: var(--cp-surface-2); }
+.aiws-dm-path { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+
+/* the macro's code (WishPanel's ProgramView as a page) */
+.aiws-wish-program.is-page { display: flex; flex-direction: column; gap: 8px; }
+.aiws-wish-code { margin: 0; padding: 8px 0; overflow: auto; max-height: none; background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 8px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2; }
+.aiws-wish-code code { display: block; font: inherit; }
+.aiws-wish-code-line { display: block; white-space: pre; padding-right: 12px; }
+.aiws-wish-code-no { display: inline-block; width: 3.5em; padding-right: 10px; margin-right: 10px; text-align: right; color: var(--cp-muted); border-right: 1px solid var(--cp-border); user-select: none; }
+.aiws-root textarea.aiws-wish-code-edit { font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2; width: 100%; box-sizing: border-box; }
+.aiws-wish-program-reason { padding: 4px 8px; border-left: 3px solid var(--cp-border); }
+
+/* the properties, the versions */
+.aiws-dm-props { display: flex; flex-direction: column; gap: 2px; }
+.aiws-dm-section { border-bottom: 1px solid var(--cp-border); padding-bottom: 4px; }
+.aiws-root button.aiws-dm-section-head { display: flex; width: 100%; gap: 4px; align-items: center; border: none; background: none; padding: 6px 2px; font-weight: 600; text-align: left; }
+.aiws-dm-section-body { padding: 0 2px 6px; display: flex; flex-direction: column; gap: 6px; }
+.aiws-dm-field { display: flex; flex-direction: column; align-items: stretch; gap: 2px; font-size: 12px; color: var(--cp-muted); flex: 1 1 auto; text-align: start; }
+.aiws-dm-props .aiws-inline-form { align-items: flex-end; }
+.aiws-dm-props .aiws-props td { vertical-align: middle; }
+.aiws-dm-field input { color: var(--cp-text); }
+.aiws-dm-history { display: flex; flex-direction: column; gap: 4px; }
+.aiws-dm-version { flex-direction: column; align-items: stretch; padding: 6px 0; }
+.aiws-dm-version-line { display: flex; align-items: center; gap: 6px; }
+.aiws-dm-version-message { white-space: pre-wrap; }
+
+/* the status bar across the bottom (§5.5): the object on the left, the status on the right, panel and alerts above */
+.aiws-status-dock.is-bar { position: relative; right: auto; bottom: auto; flex: none; width: 100%; max-height: none; z-index: 50; border-top: 1px solid var(--cp-border); background: var(--cp-bg); pointer-events: auto; }
+.aiws-status-dock.is-bar > .aiws-status-stack { position: absolute; right: 12px; bottom: calc(100% + 8px); width: min(440px, calc(100% - 24px)); max-height: 60vh; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; }
+.aiws-status-dock.is-bar > .aiws-status-stack > * { pointer-events: auto; }
+.aiws-status-row.is-bar { display: flex; align-items: center; gap: 8px; padding: 3px 8px; min-height: 32px; box-sizing: border-box; }
+.aiws-status-info { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+.aiws-dm-info { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; font-size: 12px; color: var(--cp-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.aiws-root button.aiws-dm-info { border: none; background: none; padding: 4px 6px; border-radius: 6px; min-height: 36px; }
+.aiws-dm-info-name { color: var(--cp-text); overflow: hidden; text-overflow: ellipsis; }
+
+/* menus, sheets, dialogs */
+.aiws-dm-floating { position: fixed; width: 0; height: 0; z-index: 80; }
+.aiws-dm-sheet-backdrop { position: fixed; inset: 0; z-index: 80; display: flex; align-items: flex-end; background: rgb(0 0 0 / 0.25); }
+.aiws-dm-sheet { width: 100%; max-height: 80vh; display: flex; flex-direction: column; background: var(--cp-surface-opaque, var(--cp-surface)); border-radius: 16px 16px 0 0; box-shadow: var(--cp-shadow); padding-bottom: max(8px, env(safe-area-inset-bottom)); box-sizing: border-box; }
+.aiws-dm-sheet.is-tall { height: 80vh; }
+.aiws-dm-sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--cp-border); margin: 8px auto 2px; flex: none; }
+.aiws-dm-sheet-head { display: flex; align-items: center; gap: 4px; padding: 2px 8px 6px 12px; flex: none; }
+.aiws-dm-sheet-head .aiws-dm-side-tabs { border-bottom: none; padding: 0; }
+.aiws-dm-sheet-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 8px 8px; }
+.aiws-dm-sheet-body hr { border: none; border-top: 1px solid var(--cp-border); margin: 4px 0; }
+.aiws-root button.aiws-dm-sheet-item { display: flex; width: 100%; align-items: center; gap: 10px; min-height: 48px; padding: 4px 12px; border: none; background: none; border-radius: 10px; text-align: left; }
+.aiws-root button.aiws-dm-sheet-item:active:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-root button.aiws-dm-sheet-item:disabled { opacity: 0.55; }
+.aiws-root button.aiws-dm-sheet-item.is-danger { color: var(--cp-danger); }
+.aiws-dm-switch { display: flex; align-items: center; border-radius: 10px; }
+.aiws-dm-switch.is-active { background: var(--aiws-selected-bg); }
+.aiws-dm-backdrop.is-phone { padding: 0; align-items: stretch; }
+.aiws-dm-backdrop.is-phone > .aiws-dialog { width: 100%; max-height: none; height: 100%; border-radius: 0; }
+.aiws-dm-dialog-body { display: flex; flex-direction: column; gap: 8px; }
+.aiws-dm-form { display: flex; flex-direction: column; gap: 8px; }
+.aiws-dm-form input { padding: 6px 8px; }
+.aiws-dm-pick { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; }
+.aiws-root button.aiws-dm-pick-item { display: flex; width: 100%; gap: 8px; align-items: center; border: none; background: none; padding: 6px 8px; border-radius: 6px; text-align: left; min-height: 36px; }
+.aiws-root button.aiws-dm-pick-item:hover { background: var(--cp-surface-2); }
+
+/* the phone (§5.6): one column, rows of 48 px with their ⋯, the editor full screen */
+.aiws-dm.is-phone { height: 100%; }
+.aiws-dm-phone-bar { flex: none; display: flex; align-items: center; gap: 4px; padding: max(4px, env(safe-area-inset-top)) 6px 4px; border-bottom: 1px solid var(--cp-border); background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-dm-phone-title { flex: 1 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 6px; }
+.aiws-dm-phone-title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-root .aiws-dm-phone-count span { display: inline-flex; min-width: 22px; height: 22px; align-items: center; justify-content: center; border: 2px solid currentColor; border-radius: 6px; font-size: 12px; font-weight: 600; }
+.aiws-dm.is-phone .aiws-dm-row { min-height: 48px; }
+.aiws-dm.is-phone .aiws-tree-label { min-height: 44px; }
+.aiws-dm.is-phone .aiws-tree-toggle { min-width: 32px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+.aiws-dm.is-phone button.aiws-dm-row-more { width: 44px; height: 44px; visibility: visible; }
+.aiws-dm.is-phone .aiws-dm-search input { padding: 10px 0; font-size: 16px; }
+.aiws-dm.is-phone .aiws-dm-tree-head .aiws-tool { min-width: 44px; height: 44px; }
+.aiws-dm.is-phone .aiws-dm-tree-pinned { max-height: none; }
+.aiws-dm.is-phone .aiws-dm-detail { padding: 8px 12px 24px; }
+.aiws-dm.is-phone .aiws-dm-detail.is-bare { padding: 0; }
+.aiws-dm.is-phone .aiws-status-row.is-bar { padding-bottom: max(3px, env(safe-area-inset-bottom)); }
+@media (pointer: coarse) {
+  .aiws-root button.aiws-dm-row-more { visibility: visible; width: 40px; height: 40px; }
+  .aiws-dm-row { min-height: 44px; }
+  .aiws-root button.aiws-dm-tab-close { opacity: 1; width: 32px; height: 32px; }
+  .aiws-root .aiws-dm-side-tabs button[role='tab'], .aiws-root .aiws-dm-pages button[role='tab'] { min-height: 44px; }
+  .aiws-root button.aiws-dm-section-head { min-height: 44px; }
+}

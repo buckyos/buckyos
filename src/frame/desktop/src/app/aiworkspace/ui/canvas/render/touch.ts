@@ -8,10 +8,11 @@
  *   two-finger tap  zooms out ×2
  *   long press      the context menu of the Block or of the blank spot
  *
- * While a writing tool is on (手写笔 TODO D1) a finger never writes: one finger does nothing (no tap, drag, scroll or
- * menu), two pan and zoom unless touch is locked, and once one of them lifts the other is left alone until it lifts
- * too. A pen coming down stops everything and leaves every finger then on the glass alone until it lifts; so are
- * fingers that come down while it writes — also after the pen lifted.
+ * While a writing tool is on (手写笔 TODO D1) one finger does nothing here (no tap, drag, scroll or menu) — on a phone
+ * without a pen it writes, which the RenderHost does (UI 框架 PRD §6.3, Q17) —, two pan and zoom unless touch is locked,
+ * and once one of them lifts the other is left alone until it lifts too. A pen coming down stops everything and leaves
+ * every finger then on the glass alone until it lifts; so are fingers that come down while it writes — also after the
+ * pen lifted.
  *
  * The browser does none of this itself: the canvas and everything in it is `touch-action: none`. This
  * class only recognises gestures and moves the camera; what a tap or a press means is the RenderHost's.
@@ -115,6 +116,9 @@ export class TouchGestures {
 
   /** Is this touch being left alone? */
   isIgnored(pointerId: number): boolean { return this.ignored.has(pointerId) }
+
+  /** How many fingers the gesture follows now. */
+  fingers(): number { return this.points.size }
 
   /** Forget every touch (the page was hidden: lifts may never arrive). */
   forget() {

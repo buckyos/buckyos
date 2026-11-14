@@ -37,6 +37,33 @@ export interface ClonedFrom {
   snapshot: string
 }
 
+/** One card of the home page (`ws.list`, UI 框架 PRD §9.2, K6). The caller's role follows from `capabilities`
+ * (`roleOf` in state/settings.ts). */
+export interface WorkspaceListItem extends WorkspaceSummary {
+  name?: string
+  /** Who owns it (a principal). */
+  owner_principal?: string | null
+  /** The last accepted Commit (else the creation), UTC `YYYY-MM-DDTHH:MM:SS.mmmZ`. */
+  updated_at?: string | null
+  /** When the caller last opened it (a Workspace session started, `ws.get_info { record_open }`), or null. */
+  opened_at?: string | null
+  /** Reachable without being named: `anonymous` (anonymous access with something granted to `@guest`) or `published` by path. */
+  public?: boolean
+  anonymous?: boolean
+  published?: boolean
+  /** Live presentation sessions of it as courseware. */
+  live_sessions?: number
+  /** A picture of a canvas — not generated yet: always null; the card draws its placeholder. */
+  cover?: string | null
+}
+
+/** The Workspace's shared settings (UI 框架 PRD §4.6, K4): the root's `config`, read in `ws.get_info`, written by
+ * `manage`. The keys are the client's; `toolbar` is the shared toolbar layer of the Workspace. */
+export interface WorkspaceSettings { toolbar?: Json; [key: string]: Json | undefined }
+
+/** The caller's own preferences across Workspaces (`user.get_prefs` / `user.set_prefs`, K4): top-level keys merge. */
+export interface UserPrefsRead { prefs: Record<string, Json>; revision: number; updated_at: string | null }
+
 export interface WorkspaceInfo extends WorkspaceSummary {
   format_version: string
   protocol_version: string
@@ -56,6 +83,17 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   public_base?: string | null
   /** Bytes this Workspace's Sources fetched (D24). */
   traffic?: number
+  /** The permissions' revision (权限需求 R4): it moves with every entry, group, member, anonymous or binding change. */
+  acl_rev?: number
+  /** Anonymous access is on: `@guest` exists here (§4.2). */
+  anonymous?: boolean
+  /** Who the caller is judged as (an Agent nobody configured here: its owner, R16). */
+  judged_as?: string
+  /** The caller is the Workspace's owner. */
+  owner?: boolean
+  /** The Workspace's shared settings (the root's `config`, K4) and the version a conditional write expects. */
+  settings?: WorkspaceSettings
+  settings_rev?: number
 }
 
 /** Where a sourced entity's content comes from (内核架构改进 D12); such an entity is read-only for people and Blocks. */
@@ -775,7 +813,8 @@ export interface VersionInfo {
   accepted_at?: string | null
 }
 
-export interface Subject { subject: string; kind: 'user' | 'agent' | string }
+/** A principal or member spec `ws.list_subjects` offers: a Zone user, an Agent, an External DID, a system user group (`group:<id>`, with its `name`). */
+export interface Subject { subject: string; kind: 'user' | 'agent' | 'external' | 'group' | string; name?: string }
 
 export interface KeyedContent<P> { payload: P; key_revs: Record<string, number>; diagnostics?: Diagnostic[] }
 
@@ -982,11 +1021,6 @@ export interface StagedAsset { object_id: string; media_type: string; size: numb
 
 export interface ExportResult { export_id: string; download: BucketDownload; manifest: { export_mode: string; content_root: string; self_contained: boolean; missing: unknown[]; excluded_entities: number; [key: string]: unknown } }
 
-/** The permission panel's view of an allowance (`api/legacyGrants.ts` maps it onto entries and groups until the
- * permission UI of 权限需求 §6 replaces it). Subjects: a principal (user id, External DID), `public` (`@guest` with
- * anonymous access on), `*`, `group:<id>`, `contact:<owner_did>#<tag>` (each a one-member logical group). */
-export interface Grant { subject: string; scope_entity_id: string | null; capabilities: Capability[]; via_entry?: string | null }
-
 /** A share entry (hybrid SSO contract §8.3, 权限需求 R8): its id names the workspace (`<workspace_id>~se_…`); a visitor
  * joins `group_id`; times are unix seconds. `joined`: how many came in through it (`ws.list_entries`). */
 export interface ShareEntry {
@@ -1007,12 +1041,58 @@ export interface EntryJoin { workspace_id: string; entry_id: string; group_id: s
 
 /** One change of `acl.set`: the subject's entry on the resource (a path or an entity id; both lists empty removes it). */
 export interface AclChange { subject: string; resource?: string; allow?: Capability[]; deny?: Capability[] }
-/** An entry as `acl.query { by: all }` lists it. */
-export interface AclEntry { subject: string; kind: 'single' | 'group' | 'fixed' | 'publication'; resource: { entity_id: string | null; path: string }; allow: Capability[]; deny: Capability[]; updated_by: string; updated_at: string }
+/** How the service names a subject (权限需求 §4.2): a single caller, a logical group, a fixed group, a publication. */
+export type AclSubjectKind = 'single' | 'group' | 'fixed' | 'publication'
+/** A resource as the ACL interfaces return it: the entity (`null`: the Workspace, `/`) and its path for the caller. */
+export interface AclResource { entity_id: string | null; path: string }
+/** An entry as `acl.query { by: all }` lists it (`updated_*` for managers only). */
+export interface AclEntry { subject: string; kind: AclSubjectKind; resource: AclResource; allow: Capability[]; deny: Capability[]; updated_by?: string; updated_at?: string }
+/** `complete`: the caller is a manager and saw every entry; otherwise only those that apply to it. */
 export interface AclEntryList { entries: AclEntry[]; complete: boolean; owner: string | null; principal: string; anonymous: boolean }
-export interface AclGroup { group_id: string; subject: string; title: string; description: string; member: boolean; members?: { member: string; via_entry: string | null }[] }
-/** `complete`: the caller is a manager and saw every row; otherwise only the rows that apply to them. */
-export interface GrantList { grants: Grant[]; complete: boolean; owner: string | null; principal: string }
+/** A member spec of a logical group: a principal, `group:<id>`, `contact:<did>#<tag>`, `*`; `via_entry` names the share entry it came through. */
+export interface AclMember { member: string; via_entry: string | null; added_by?: string; added_at?: string }
+export interface AclGroup { group_id: string; subject: string; title: string; description: string; member: boolean; created_by?: string; created_at?: string; members?: AclMember[] }
+/** Who a caller is judged as on one Workspace (§4.6 step 3). */
+export interface AclJudgment {
+  judged_as: string
+  owner: boolean
+  agent_as_owner: boolean
+  groups: { group_id: string; title: string | null; via: { member: string; via_entry: string | null }[] }[]
+  direct: boolean
+  guest: boolean
+  member: boolean
+}
+/** One entry of a subject along a resource's chain (`acl.query { by: entity }`); a refusal lists the allowances it overrides. */
+export interface AclEntityEntry {
+  resource: AclResource
+  source: 'direct' | 'inherited' | 'workspace'
+  allow: Capability[]
+  deny: Capability[]
+  overrides?: { subject: string; resource: AclResource; capabilities: Capability[] }[]
+}
+export interface AclEntitySubject { subject: string; kind: AclSubjectKind; principal?: string | null; title?: string; effective: Capability[]; entries: AclEntityEntry[]; members?: AclMember[] }
+/** A macro bound to a group with entries on the chain: whoever may change the macro (`editors`) holds the group's capabilities through it (Q10). */
+export interface AclMacroSource { wish: AclResource; group_id: string; mode: 'union' | 'intersection'; capabilities: Capability[]; editors: string[] }
+export interface AclEntityView { by: 'entity'; resource: AclResource; subjects: AclEntitySubject[]; macros: AclMacroSource[]; anonymous: boolean }
+export interface AclSubjectView {
+  by: 'subject'
+  subject: string
+  kind: AclSubjectKind
+  entries: { resource: AclResource; allow: Capability[]; deny: Capability[]; updated_by?: string; updated_at?: string }[]
+  group?: { group_id: string; title: string; description: string }
+  members?: AclMember[]
+  judgment?: AclJudgment
+}
+/** One capability of `acl.query { by: explain }`: the deciding entry, or none (the owner, or nothing mentions it). */
+export interface AclDecision {
+  capability: Capability
+  allowed: boolean
+  owner: boolean
+  decided_by: { subject: string; tier: 'single' | 'group' | 'everyone'; kind: 'allow' | 'deny'; resource: AclResource } | null
+}
+export interface AclExplain { by: 'explain'; principal: string; resource: AclResource; capabilities: AclDecision[]; effective: Capability[]; judgment: AclJudgment }
+/** One record of `acl.audit` (R19): who, judged as whom, when, what, before and after. */
+export interface AclAuditItem { seq: number; at: string; actor: string; judged_as: string | null; action: string; target: Json; before: Json; after: Json }
 
 export type WishPayloadRead = KeyedContent<WishPayload>
 export type BlockDefRead = KeyedContent<BlockDefPayload>
@@ -1055,3 +1135,62 @@ export interface ShowNotes {
   stage?: StageSize | null
   steps: { id: string; kind: 'frame' | 'viewport'; target_id: string; title: string | null; enabled: boolean; missing: boolean; notes: string | null; caption: string | null }[]
 }
+
+// ---- presence and the work log (UI 框架 PRD §4.2, §4.5, K2, K3; service README “Presence and the work log”)
+
+/** One person who has the Workspace open (all its windows and devices together). `owner` / `groups` are present
+ * only about oneself, or to a reader who manages the Workspace (Q6). */
+export interface PresenceMember {
+  principal: string
+  self: boolean
+  guest: boolean
+  /** A guest's chosen name; null for an account (shown by its principal) or a guest that chose none. */
+  name: string | null
+  /** The canvas its most recently moved window shows, when the reader may read it. */
+  surface_id: string | null
+  devices: number
+  since: string
+  last_seen: string
+  owner?: boolean
+  groups?: { group_id: string; title: string }[]
+}
+export interface PresenceList { members: PresenceMember[]; interval_ms: number; ttl_ms: number; server_ms: number }
+
+export type WorkLogFilter = 'all' | 'mine' | 'automation'
+export type WorkLogKind = 'commit' | 'import' | 'run' | 'acl' | 'session' | 'show'
+export type WorkLogActorKind = 'person' | 'agent' | 'macro' | 'system'
+/** What “locate” needs: the entity, and the canvas it is on (itself, the one above a Block, the one whose content folder holds it). */
+export interface WorkLogTarget { entity_id: string; type_id?: string; name?: string | null; title?: string | null; kind?: string | null; deleted?: boolean; surface_id?: string | null }
+export interface WorkLogEntry {
+  /** Unique in the log: `c:<seq>`, `r:<run>:0|1`, `a:<seq>`, `s:<session>:0|1`, `h:<show>:0|1`. */
+  id: string
+  at: string
+  kind: WorkLogKind
+  /** run, session, show */
+  phase?: 'start' | 'end'
+  actor: string
+  actor_kind: WorkLogActorKind
+  mine: boolean
+  target: WorkLogTarget | null
+  // commits
+  /** The author's own text (in the author's language). */
+  message?: string | null
+  origin?: string
+  seq?: number
+  commit_id?: string
+  run_id?: string | null
+  undoes?: string | null
+  /** How many readable entities the Commit touched. */
+  targets?: number
+  // runs
+  stage?: WishStage
+  state?: WishRunState
+  error_code?: string | null
+  // permission changes
+  action?: string
+  detail?: Json
+  // sessions
+  title?: string | null
+  session_id?: string | null
+}
+export interface WorkLogPage { entries: WorkLogEntry[]; next_before: string | null; more: boolean }

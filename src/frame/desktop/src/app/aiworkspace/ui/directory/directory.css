@@ -1,0 +1,155 @@
+/* The directory editor and Block (框架 PRD §7.4). Three sizes: in a Block (`is-embedded`), a data mode tab (`is-tab`),
+   a phone's full screen (`is-full`). Every control a finger uses is at least 44 × 44 px on a touch screen. */
+
+.aiws-dir { position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; container-type: inline-size; }
+.aiws-dir.is-tab { flex: 1 1 auto; }
+.aiws-dir.is-full { height: 100%; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); box-sizing: border-box; }
+.aiws-dir.is-dropping { outline: 2px dashed var(--cp-accent); outline-offset: 2px; border-radius: 8px; }
+.aiws-dir-dropping { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; pointer-events: none;
+  background: color-mix(in srgb, var(--cp-accent) 8%, transparent); color: var(--cp-accent); font-weight: 600; border-radius: 8px; }
+
+/* in a Block: a free canvas gives it its box (the list scrolls); a flow page lets it grow, up to a screenful */
+.aiws-block-directory { min-height: 0; }
+.aiws-frame-block .aiws-block-directory { flex: 1 1 auto; display: flex; flex-direction: column; padding: 8px; box-sizing: border-box; overflow: hidden;
+  background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 10px; }
+.aiws-frame-block .aiws-dir.is-embedded { flex: 1 1 auto; }
+.aiws-frame-block .aiws-dir.is-embedded .aiws-dir-body { flex: 1 1 auto; min-height: 0; }
+.aiws-frame-block .aiws-dir.is-embedded .aiws-dir-list { overflow: auto; min-height: 0; }
+.aiws-frame-block .aiws-dir.is-static .aiws-dir-list { overflow: hidden; }
+.aiws-flow .aiws-dir.is-embedded .aiws-dir-list { max-height: 60vh; overflow: auto; }
+
+/* head: breadcrumb, add, view, more */
+.aiws-dir-topbar { display: flex; align-items: center; gap: 6px; min-height: 48px; }
+.aiws-dir-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
+.aiws-dir-head { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.aiws-dir-head-icon { color: var(--cp-accent); flex: none; }
+.aiws-dir-crumbs { display: flex; align-items: center; gap: 2px; flex: 1 1 160px; min-width: 0; overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
+.aiws-dir-crumbs::-webkit-scrollbar { display: none; }
+.aiws-dir-crumbs > svg, .aiws-dir-crumb-step > svg { color: var(--cp-muted); flex: none; }
+.aiws-dir-crumb-step { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
+.aiws-root .aiws-dir-crumb { border: none; background: none; padding: 4px 6px; border-radius: 6px; min-height: 32px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cp-muted); }
+span.aiws-dir-crumb { display: inline-block; }
+.aiws-root .aiws-dir-crumb[aria-current='location'] { color: var(--cp-text); font-weight: 600; }
+.aiws-root .aiws-dir-crumb:hover:not(:disabled) { background: var(--cp-surface-2); color: var(--cp-text); }
+.aiws-root .aiws-dir-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; padding: 0; border: none; background: none; border-radius: 8px; color: var(--cp-muted); }
+.aiws-root .aiws-dir-icon:hover:not(:disabled) { background: var(--cp-surface-2); color: var(--cp-text); }
+.aiws-root .aiws-dir-add { display: inline-flex; align-items: center; gap: 4px; flex: none; min-height: 32px; padding: 0 12px 0 8px; border-radius: 16px; font-weight: 600; }
+.aiws-dir-note { font-size: 12px; }
+.aiws-dir > .aiws-error { display: flex; align-items: center; gap: 6px; }
+
+/* rows */
+.aiws-dir-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.aiws-dir-list { display: flex; flex-direction: column; min-height: 0; }
+.aiws-dir-row { position: relative; display: flex; align-items: center; gap: 2px; min-width: 0; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+.aiws-dir-row + .aiws-dir-row { border-top: 1px solid color-mix(in srgb, var(--cp-border) 60%, transparent); }
+.aiws-dir-row.is-selected { background: var(--aiws-selected-bg); }
+.aiws-dir-row.is-shown { background: var(--aiws-pressed-bg); }
+.aiws-dir-row[draggable='true'] { cursor: grab; }
+.aiws-root .aiws-dir-main, span.aiws-dir-main { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 6px; border: none; background: none; border-radius: 8px; text-align: left; color: inherit; }
+.aiws-root .aiws-dir-main:hover:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-dir-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-dir-meta { flex: none; color: var(--cp-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.aiws-dir-thumb { flex: none; width: 36px; height: 36px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; background: var(--cp-surface-2); color: var(--cp-muted); }
+.aiws-dir-thumb > img { width: 100%; height: 100%; object-fit: cover; }
+.aiws-dir-thumb.is-folder { color: var(--cp-accent); background: color-mix(in srgb, var(--cp-accent) 12%, transparent); }
+.aiws-dir-tick { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--cp-border); box-sizing: border-box; }
+.aiws-dir-tick.is-on { border-color: var(--cp-accent); background: var(--cp-accent); box-shadow: inset 0 0 0 3px var(--cp-surface-opaque, var(--cp-surface)); }
+
+/* thumbnails */
+.aiws-dir-list.is-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; align-content: start; }
+.aiws-dir-list.is-grid > .aiws-dir-row { border: 1px solid var(--cp-border); border-radius: 8px; flex-direction: column; align-items: stretch; }
+.aiws-dir-list.is-grid > .aiws-dir-row + .aiws-dir-row { border-top: 1px solid var(--cp-border); }
+.aiws-root .aiws-dir-list.is-grid .aiws-dir-main, .aiws-dir-list.is-grid span.aiws-dir-main { flex-direction: column; align-items: stretch; gap: 4px; padding: 6px; }
+.aiws-dir-list.is-grid .aiws-dir-thumb { width: 100%; height: auto; aspect-ratio: 1; border-radius: 6px; }
+.aiws-dir-list.is-grid .aiws-dir-thumb > svg { width: 36px; height: 36px; }
+.aiws-dir-list.is-grid .aiws-dir-name { font-size: 12px; text-align: center; }
+.aiws-dir-list.is-grid .aiws-dir-meta { text-align: center; font-size: 11px; }
+.aiws-dir-list.is-grid .aiws-dir-tick { position: absolute; left: 10px; top: 10px; z-index: 1; background: var(--cp-surface-opaque, var(--cp-surface)); }
+.aiws-root .aiws-dir-list.is-grid .aiws-dir-row-more { position: absolute; right: 4px; top: 4px; background: color-mix(in srgb, var(--cp-surface-opaque, var(--cp-surface)) 85%, transparent); }
+
+/* empty, loading, foot, selection bar */
+.aiws-dir-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px 12px; border: 1px dashed var(--cp-border); border-radius: 10px; text-align: center; color: var(--cp-text); }
+.aiws-dir-empty > svg { color: var(--cp-accent); }
+.aiws-dir-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.aiws-root .aiws-dir-empty-actions > button { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-radius: 18px; }
+.aiws-dir-limits { font-size: 12px; }
+.aiws-dir-loading { padding: 12px 4px; }
+.aiws-dir-foot { display: flex; align-items: center; gap: 8px; justify-content: space-between; font-size: 12px; color: var(--cp-muted); }
+.aiws-dir-bar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 6px; border: 1px solid var(--cp-border); border-radius: 12px;
+  background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: var(--cp-panel-shadow); }
+.aiws-dir-bar-count { font-weight: 600; padding: 0 4px; }
+.aiws-root .aiws-dir-bar > button:not(.aiws-dir-icon) { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 32px; min-width: 32px; padding: 0 10px; border-radius: 8px; }
+/* a narrow editor: the actions are their icons (named for assistive technology and in their tooltip) */
+@container (max-width: 520px) {
+  .aiws-root .aiws-dir-bar > button:not(.aiws-dir-icon) > span { display: none; }
+  .aiws-root .aiws-dir-bar > button:not(.aiws-dir-icon):has(> svg) { padding: 0; }
+}
+
+/* uploads */
+.aiws-dir-uploads { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.aiws-dir-upload { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); }
+.aiws-dir-upload.is-failed { border-color: color-mix(in srgb, var(--cp-danger) 50%, var(--cp-border)); }
+.aiws-dir-upload-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.aiws-dir-upload-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.aiws-dir-upload-text > span:not(.aiws-dir-upload-name) { font-size: 12px; }
+.aiws-dir-upload-error { color: var(--cp-danger); }
+.aiws-dir-upload progress { width: 100%; height: 4px; accent-color: var(--cp-accent); }
+
+/* preview: under the list, beside it when there is room; the whole screen on a phone */
+.aiws-dir-preview { display: flex; flex-direction: column; min-height: 0; height: 360px; border: 1px solid var(--cp-border); border-radius: 10px; overflow: hidden; box-sizing: border-box; background: var(--cp-surface); }
+.aiws-dir-preview-body { flex: 1 1 auto; min-height: 0; }
+@container (min-width: 760px) {
+  .aiws-dir-body.has-preview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 42%); align-items: stretch; }
+  .aiws-dir-body.has-preview > .aiws-dir-preview { height: auto; min-height: 360px; max-height: 70vh; position: sticky; top: 0; }
+}
+.aiws-dir-preview.is-full { position: fixed; inset: 0; z-index: 90; height: auto; border: none; border-radius: 0; background: var(--cp-bg);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+
+/* menus and dialogs (drawn over the workspace) */
+.aiws-dir-menu { display: flex; flex-direction: column; gap: 1px; margin: 0 -6px -4px; }
+.aiws-dir-menu-title { padding: 0 34px 6px 10px; color: var(--cp-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-root .aiws-dir-menu-item { display: flex; align-items: center; gap: 10px; border: none; background: none; text-align: left; padding: 8px 10px; border-radius: 8px; font-size: 14px; color: var(--cp-text); min-height: 40px; }
+.aiws-root .aiws-dir-menu-item:hover:not(:disabled), .aiws-root .aiws-dir-menu-item:focus-visible { background: var(--cp-surface-2); outline: none; }
+.aiws-root .aiws-dir-menu-item:disabled { color: var(--cp-muted); }
+.aiws-root .aiws-dir-menu-item.is-danger { color: var(--cp-danger); }
+.aiws-dir-menu-icon { width: 20px; display: inline-flex; justify-content: center; color: var(--cp-muted); flex: none; }
+.aiws-dir-menu-item.is-danger .aiws-dir-menu-icon { color: inherit; }
+.aiws-dir-menu-label { display: flex; flex-direction: column; min-width: 0; }
+.aiws-dir-menu-label > small { color: var(--cp-muted); font-size: 11px; }
+.aiws-modal-backdrop.aiws-dir-backdrop { z-index: 85; align-items: center; }
+.aiws-modal-backdrop > .aiws-dialog.aiws-dir-dialog { width: min(480px, 100%); gap: 10px; padding: 14px 16px; }
+.aiws-dir-dialog-head { display: flex; align-items: center; gap: 8px; }
+.aiws-dir-dialog-head > h3 { flex: 1 1 auto; margin: 0; font-size: 15px; min-width: 0; overflow-wrap: anywhere; }
+.aiws-dir-dialog-body { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.aiws-dir-dialog-body > p { margin: 0; }
+.aiws-dir-dialog-actions { justify-content: flex-end; }
+.aiws-root .aiws-dir-dialog-actions > button { min-height: 34px; padding: 0 14px; border-radius: 8px; }
+.aiws-dir-form { display: flex; flex-direction: column; gap: 6px; }
+.aiws-dir-form .aiws-field, .aiws-dir-dialog .aiws-field { display: flex; flex-direction: column; gap: 4px; }
+.aiws-root .aiws-dir-dialog input:not([type='checkbox']) { min-height: 34px; font-size: 15px; padding: 4px 8px; }
+.aiws-dir-check { display: flex; align-items: center; gap: 8px; min-height: 36px; }
+.aiws-dir-crumbs.is-dialog { flex: none; flex-wrap: nowrap; }
+.aiws-dir-picklist { display: flex; flex-direction: column; max-height: min(50vh, 360px); overflow: auto; border: 1px solid var(--cp-border); border-radius: 8px; }
+.aiws-root .aiws-dir-pick { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 10px; border: none; border-radius: 0; background: none; text-align: left; }
+.aiws-root .aiws-dir-pick + .aiws-dir-pick { border-top: 1px solid color-mix(in srgb, var(--cp-border) 60%, transparent); }
+.aiws-root .aiws-dir-pick:hover:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-root .aiws-dir-pick[aria-selected='true'] { background: var(--aiws-selected-bg); }
+.aiws-dir-pick > span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-dir-pick > svg:first-child { color: var(--cp-accent); flex: none; }
+.aiws-dir-pick-empty { padding: 12px; }
+/* a phone: dialogs are sheets from the bottom */
+.aiws-modal-backdrop.aiws-dir-backdrop.is-sheet { align-items: flex-end; padding: 0; }
+.aiws-modal-backdrop.is-sheet > .aiws-dialog.aiws-dir-dialog { width: 100%; max-height: 86%; border-radius: 16px 16px 0 0; padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+
+/* touch: every control a finger uses is at least 44 × 44 */
+@media (pointer: coarse) {
+  .aiws-root .aiws-ctl-popover:has(> .aiws-dir-menu) > .aiws-ctl-popover-close { width: 44px; height: 44px; right: 4px; top: 4px; }
+  .aiws-root .aiws-dir-bar > button:not(.aiws-dir-icon) { min-width: 44px; }
+  .aiws-root .aiws-dir-icon { width: 44px; height: 44px; }
+  .aiws-root .aiws-dir-add, .aiws-root .aiws-dir-crumb, .aiws-root .aiws-dir-bar > button:not(.aiws-dir-icon), .aiws-root .aiws-dir-empty-actions > button,
+  .aiws-root .aiws-dir-dialog-actions > button, .aiws-root .aiws-dir-menu-item, .aiws-dir-check { min-height: 44px; }
+  .aiws-root .aiws-dir-main, span.aiws-dir-main { min-height: 52px; }
+  .aiws-root .aiws-dir-dialog input:not([type='checkbox']) { min-height: 44px; font-size: 16px; }
+  .aiws-root .aiws-dir-pick { min-height: 48px; }
+  .aiws-dir-check > input { width: 22px; height: 22px; }
+}

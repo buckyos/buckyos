@@ -154,6 +154,8 @@ test('S-01 a public session: presenter, audience, guest and display in one room;
   await desk.addInitScript((token) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ token })), BOB)
   const home = await desk.newPage()
   await openApp(home, BOB)
+  // the home's "All public classes" (UI framework PRD §9.1): a card, opened by a click on it
+  await home.getByTestId('aiws-home-tab-sessions').click()
   const mine = home.getByTestId(`aiws-my-session-${sid}`)
   await expect(mine).toHaveAttribute('data-role', 'audience', { timeout: 15_000 })
   await expect(mine).toHaveAttribute('data-state', 'archived')

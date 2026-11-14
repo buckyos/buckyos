@@ -231,7 +231,30 @@ export async function backToList(page: Page): Promise<string | null> {
     await closeWorkspace(page)
   }
   await expect(page.getByTestId('aiws-list')).toBeVisible({ timeout: 30_000 })
+  await showAllWorkspaces(page)
   return restored
+}
+
+/** The home starts on "Recent" when it has any (UI framework PRD §9.1): the specs find their workspaces under "All
+ * workspaces", which the window then keeps while it lives. Nothing to pick when the list cannot be read (offline). */
+export async function showAllWorkspaces(page: Page) {
+  const list = page.getByTestId('aiws-list')
+  await expect(list).not.toHaveAttribute('data-state', 'loading', { timeout: 30_000 })
+  if (await list.getAttribute('data-state') === 'ready') await list.getByTestId('aiws-home-tab-all').click()
+}
+
+/** A home card's ⋯ menu → an item. The menu floats over the list and a scroll closes it: it is opened once the card
+ * has been brought into view. */
+export async function cardMenu(page: Page, workspaceId: string, item: string) {
+  const card = page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${workspaceId}"]`)
+  const more = card.getByTestId('aiws-home-card-more')
+  const entry = card.getByTestId(item)
+  await more.scrollIntoViewIfNeeded()
+  await expect(async () => {
+    if (!await entry.isVisible()) await more.click()
+    await expect(entry).toBeVisible({ timeout: 2000 })
+  }).toPass({ timeout: 20_000 })
+  await entry.click()
 }
 
 /** Open the main menu and click through items by test id (an item with a submenu opens it on click). */
@@ -244,9 +267,9 @@ export async function mainMenu(page: Page, ...testIds: string[]) {
   }
 }
 
-/** Main menu → 关闭工作区 (the leave check passes when nothing is unsaved). */
+/** Main menu → 工作区 → 关闭工作区 (the leave check passes when nothing is unsaved). */
 export async function closeWorkspace(page: Page) {
-  await mainMenu(page, 'aiws-back')
+  await mainMenu(page, 'aiws-menu-workspace', 'aiws-back')
 }
 
 /** The zoom control of the presenter toolbar → 适应全部. */
@@ -261,28 +284,73 @@ export async function zoomIn(page: Page) {
   await page.keyboard.press('Escape')
 }
 
-/** Main menu → 画布模式 → edit / view / presentation_edit. */
+/** Main menu → 画布 → 画布模式 → edit / view / presentation_edit. */
 export async function setCanvasMode(page: Page, mode: 'edit' | 'view' | 'presentation_edit') {
-  await mainMenu(page, 'aiws-menu-canvas-mode', `aiws-mode-${mode}`)
+  await mainMenu(page, 'aiws-menu-surface', 'aiws-menu-canvas-mode', `aiws-mode-${mode}`)
 }
 
-/** Show one tab of the right panel (main menu → 视图 → tab), unless it is already shown. */
-export async function openSide(page: Page, tab: 'inspector' | 'relations' | 'annotations' | 'collab' | 'edits') {
+/** Show one tab of the side drawer (main menu → 视图 → 面板 → tab), unless it is already shown. */
+export async function openSide(page: Page, tab: 'inspector' | 'relations' | 'annotations') {
+  // properties are the floating properties panel (UI 框架 PRD §10.2), not a tab of the side drawer
+  if (tab === 'inspector') return openProperties(page)
   if (await page.locator(`[data-testid="aiws-side-panel"][data-tab="${tab}"]`).isVisible()) return
-  await mainMenu(page, 'aiws-menu-view', `aiws-menu-side-${tab}`)
+  await mainMenu(page, 'aiws-menu-view', 'aiws-menu-panels', `aiws-menu-side-${tab}`)
   await expect(page.locator(`[data-testid="aiws-side-panel"][data-tab="${tab}"]`)).toBeVisible()
 }
 
-/** The save-state panel: connection, offline actions and the edits that are not committed. */
-export async function openStatus(page: Page) {
-  if (await page.getByTestId('aiws-status-detail').isVisible()) return
-  await page.getByTestId('aiws-status').click()
-  await expect(page.getByTestId('aiws-status-detail')).toBeVisible()
+/** The properties panel of the selection (F2; the page's when nothing is selected), UI 框架 PRD §10.2. */
+export async function openProperties(page: Page) {
+  if (await page.getByTestId('aiws-props-panel').isVisible()) return
+  await page.keyboard.press('F2')
+  await expect(page.getByTestId('aiws-props-panel')).toBeVisible()
 }
 
-/** Main menu → 开发工具 → 受控加工（Mock）. */
+/** The status panel (UI framework PRD §4.5), opened from the status bar, with its "connection and offline" part
+ * unfolded: the edits that are not committed, connection details and the offline actions. */
+export async function openStatus(page: Page) {
+  if (!await page.getByTestId('aiws-status-detail').isVisible()) await page.getByTestId('aiws-status').click()
+  await expect(page.getByTestId('aiws-status-detail')).toBeVisible()
+  const connection = page.getByTestId('aiws-status-connection')
+  if (!await connection.evaluate((el) => (el as HTMLDetailsElement).open)) await page.getByTestId('aiws-status-connection-toggle').click()
+}
+
+/** Main menu → 协作 → 成员与权限… (UI 框架 PRD §8.1): the data mode with the Workspace's permission editor as its tab. */
+export async function openPermissions(page: Page) {
+  await mainMenu(page, 'aiws-menu-collab', 'aiws-menu-members')
+  await expect(page.getByTestId('aiws-detail-permissions')).toBeVisible()
+}
+
+/** Back from the data mode (the permission editor's tab included) to the canvas. */
+export async function closePermissions(page: Page) {
+  await page.getByTestId('aiws-top-canvas').click()
+  await expect(page.getByTestId('aiws-canvas')).toBeVisible()
+}
+
+/** Unfold rows of the data mode's object tree, outermost first (a row already unfolded stays so). */
+export async function expandTree(page: Page, ...entityIds: string[]) {
+  for (const id of entityIds) {
+    const item = page.locator(`[data-testid="aiws-tree-item"][data-entity-id="${id}"]`)
+    if (await item.getAttribute('aria-expanded') === 'false') await item.locator('.aiws-tree-toggle').first().click()
+    await expect(item).toHaveAttribute('aria-expanded', 'true')
+  }
+}
+
+/** The data mode's object tree: the context menu of a row (a right click), then entries by test id (a submenu opens on
+ * hover). `entityId` null: the tree's ＋ (where the current object is). */
+export async function treeMenu(page: Page, entityId: string | null, ...testIds: string[]) {
+  if (entityId) await page.getByTestId(`aiws-tree-${entityId}`).click({ button: 'right' })
+  else await page.getByTestId('aiws-dm-tree-add').click()
+  await expect(page.getByTestId('aiws-dm-menu')).toBeVisible()
+  for (const id of testIds) {
+    const item = page.getByTestId(id)
+    if (await item.getAttribute('aria-haspopup') === 'menu') await item.hover()
+    else await item.click()
+  }
+}
+
+/** Main menu → 帮助 → 开发工具 → 受控加工（Mock）. */
 export async function openMock(page: Page) {
-  await mainMenu(page, 'aiws-menu-dev', 'aiws-side-mock')
+  await mainMenu(page, 'aiws-menu-help', 'aiws-menu-dev', 'aiws-side-mock')
 }
 
 export async function openWorkspace(page: Page, token: string, workspaceId: string) {
@@ -329,8 +397,18 @@ export async function asUser(page: Page, who: string | { guest: true }) {
   }, { who, localeKey: LOCALE_STORAGE_KEY, locale: SPEC_LOCALE })
 }
 
-export const test = base.extend<{ api: Api }>({
+/** The test accounts' preferences across Workspaces (UI 框架 PRD §4.6, §12: the tool zones' switches, the status bar,
+ * the home's category and filters) follow a person from test to test on the shared backend: every test starts without. */
+async function resetPrefs(api: Api) {
+  for (const token of ['tok-alice', 'tok-bob']) await api.rpc(token, 'user.set_prefs', { prefs: {} }).catch(() => undefined)
+}
+
+export const test = base.extend<{ api: Api; freshPrefs: void }>({
   api: async ({}, use) => { await use(new Api()) },
+  freshPrefs: [async ({}, use) => {
+    try { await resetPrefs(new Api()) } catch { /* no backend in this run */ }
+    await use()
+  }, { auto: true }],
   // the specs' language on every origin, the workspace origins `aiws-<label>.localhost` included
   context: async ({ context }, use) => {
     await context.addInitScript(({ localeKey, locale }) => { if (!window.localStorage.getItem(localeKey)) window.localStorage.setItem(localeKey, locale) }, { localeKey: LOCALE_STORAGE_KEY, locale: SPEC_LOCALE })

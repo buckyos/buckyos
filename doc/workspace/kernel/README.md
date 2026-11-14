@@ -42,18 +42,18 @@
 
 ### Block、控件与标准库（[05](05-Block控件与标准库.md)）
 
-- **扩展控件不能定义 context menu 等入口**（已部分解决）：内置 Block 的 TS 定义有 `actions`、近身工具栏 `toolbar`、`anchors`、`shape`、`resize`、`Simplified` / `Inspector` 入口（[ui/blocks/registry.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/registry.ts) `BlockDefinition`）。扩展的 `component.json` 自 manifest 4 起可以声明 `actions`（H2，[store/src/ext.rs](../../../src/frame/aiworkspace/store/src/ext.rs) `check_actions`），宿主按 `modes`、`needs` 放到近身工具栏，见 [05 扩展声明的动作](05-Block控件与标准库.md#扩展声明的动作)。仍无法声明右键菜单、快捷键、连接锚点、最小尺寸/缩放方式、简化/属性面板入口或打印能力；声明的动作也不进右键菜单。扩展控件因此只拿到了内置 Block 宿主契约的一部分。
+- **扩展控件不能定义 context menu 等入口**（已部分解决）：内置 Block 的 TS 定义有 `actions`、近身工具栏 `toolbar`、`anchors`、`shape`、`resize`、`Simplified` / `Inspector` 入口（[ui/blocks/registry.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/registry.ts) `BlockDefinition`）。扩展的 `component.json` 自 manifest 4 起可以声明 `actions`（H2，[store/src/ext.rs](../../../src/frame/aiworkspace/store/src/ext.rs) `check_actions`），宿主按 `modes`、`needs` 放到近身工具栏，见 [05 扩展声明的动作](05-Block控件与标准库.md#扩展声明的动作)。2026-11-14 起（[UI 框架 PRD](<../BuckyOS AI Workspace UI 框架PRD.md>) §10.1），声明的动作和内置 Block 的动作用同一套语义：进 Block 工具栏、通用右键菜单和手机情境窗口。manifest 仍不接受 `primary`（扩展动作因此都算主要动作）和 `config_schema` 的“快速”标记；仍无法声明快捷键、连接锚点、最小尺寸/缩放方式、简化入口或打印能力。
 - **需要梳理系统自带的标准 Block**（已部分解决）：现在注册的有 table、richtext、record、asset（媒体）、label、note、shape、frame、connector、ink、wish，扩展宿主 html / declarative，课堂互动 Block（`ui/classroom`），以及 `sample.*` 示例（bar-chart、line-chart、metric、video）；控件有 mindmap、composite（含 grid 布局）和数据控件 todo、calendar。label 已实现（G1，[ui/blocks/labelBlock.tsx](../../../src/frame/desktop/src/app/aiworkspace/ui/blocks/labelBlock.tsx)）。只有 todo、calendar 两个官方控件有带版本的公开契约（G13，`aiws/contracts/<kind>.json`，`control.describe` 返回）；其余内置 Block 和 mindmap 的契约仍只写在 TS 代码里，扩展开发者无法拿它作参照；`sample.*` 是否进入标准库也还没定。
 
 ### 布局、模式与工具栏（[06](06-布局模式与用户状态.md)）
 
-- **不支持 Workspace / 画布自定义 toolbar**：Surface `config` 只有 `background`、`page_size`。没有 Workspace / Surface 级工具栏配置，也没有继承、追加、覆盖、隐藏的合成规则；工具栏和菜单都写死在 Desktop 代码里（`MainToolbar`、`MainMenu`、`ObjectToolbar`）。
-- **App 模式只有最小版本**（已部分解决）：单控件页（G14，`page=control`，[ui/controls/data/ControlPage.tsx](../../../src/frame/desktop/src/app/aiworkspace/ui/controls/data/ControlPage.tsx)）让一个数据控件占满窗口。没有“隐藏全部系统工具区”的通用呈现配置，也没有受控的退出、管理入口。
+- **Workspace / 画布自定义 toolbar**（2026-11-14 已解决，[UI 框架 PRD](<../BuckyOS AI Workspace UI 框架PRD.md>) §4.6）：工作区层存在根节点的 `config.toolbar`（写入需要 `manage`），画布层存在画布的 `config.toolbar`（需要 `structure`），个人层是跨工作区的个人偏好（`user.get_prefs` / `user.set_prefs`）；按工具项标识合并，支持继承、追加、覆盖、隐藏和锁定（Desktop `ui/framework/config.ts`）。工具栏和主菜单从动作注册表（`ui/framework/`）生成。个人层的增删排序界面还没有（Q8）。
+- **App 模式**（2026-11-14 已解决，[UI 框架 PRD](<../BuckyOS AI Workspace UI 框架PRD.md>) §4.6）：工作区或画布把全部工具区隐藏并锁定即为 App 模式；有 `structure` 或 `manage` 的人在左上角有收起的退出入口，告警照常显示。单控件页（G14，`page=control`）是它的最小版本，行为不变。
 
 ### 事件、宏与公式（[07](07-事件宏与公式预留.md)）
 
 - **宏代码及其运行环境没有正式定义**：没有宏定义实体（代码版本、入口、参数、Workspace / Canvas 作用域），没有受限运行器，也没有稳定对象 API。最接近的是 HTML host API（`window.aiws`，现为 v6）和许愿格程序用的 `aiws` 包，都不是宏 API；后台宏也没有托管执行入口。
-- **统一动作模型不完整**：实例事件只能绑定 write / wish / open / notify 四种 handler（服务 README 的 Events and actions 一节）；扩展清单的 `actions` 另有 config / forward，并声明所需能力，但没有参数和结果。没有统一的动作目录；内置工具栏、菜单、快捷键不走这套模型；由数据变化触发的自动化也没有提供。
+- **统一动作模型不完整**：实例事件只能绑定 write / wish / open / notify 四种 handler（服务 README 的 Events and actions 一节）；扩展清单的 `actions` 另有 config / forward，并声明所需能力，但没有参数和结果。界面侧已有动作注册表（2026-11-14，[UI 框架 PRD](<../BuckyOS AI Workspace UI 框架PRD.md>) §3.3，Desktop `ui/framework/actions.ts`）：内置的工作区、画布、视图、协作动作和 Block 动作有稳定标识，工具栏、主菜单、右键菜单、手机菜单共用；宏按钮从大纲列出带程序的许愿格。它还不是内核里的统一动作目录：实例事件的 handler、扩展清单的动作和宏仍各有形状，没有参数和结果；由数据变化触发的自动化也没有提供。
 - **公式只有显示求值，缺输入和过期判断**：值格式、服务端行为、前端显示求值和物化已实现，规则见 [公式值与显示求值](07-事件宏与公式预留.md#公式值与显示求值)。缺的部分：编辑器不能用 `=` 前缀输入公式，公式值目前只能经 API 写入；只有表格视图显示求值结果，Record 属性中的公式不求值；表格复制到系统剪贴板时公式格输出为空（[ui/import/copyTable.ts](../../../src/frame/desktop/src/app/aiworkspace/ui/import/copyTable.ts)）；物化只记录公式文本和物化者，没有输入版本和求值语义版本，`doc.freshness` 无法判断物化结果是否过期。
 
 ### 任务执行与 AI（[08](08-任务执行与AI.md)）
@@ -73,7 +73,7 @@
 
 ### 权限（[11](11-权限资源与保留.md)）
 
-- **内核已具备，界面未跟上**：权限内核按[权限系统整理需求](../../../notepads/aiws-permission-system-prd.md)实施（[实施记录](../../../notepads/aiws-permission-system-todo.md)）——按路径的允许 / 拒绝条目、逻辑组（BuckyOS 用户组、联系人组、`*` 作成员）、固定组 `@owner` `@all` `@guest` `@creator`、查询与解释、操作记录、宏的组绑定，接口 `acl.*`，CLI `buckyos aiws acl` / `acl-edit`。权限面板仍是旧的“主体 × 工作区或画布”界面，经 Desktop 的映射层（`api/legacyGrants.ts`）写到新模型；按用户 / 组编辑资源、按实体查看与设置、组成员编辑等界面是后续 UI（需求 §6）。
+- **内核与界面都已具备**：权限内核按[权限系统整理需求](../../../notepads/aiws-permission-system-prd.md)实施（[实施记录](../../../notepads/aiws-permission-system-todo.md)）——按路径的允许 / 拒绝条目、逻辑组（BuckyOS 用户组、联系人组、`*` 作成员）、固定组 `@owner` `@all` `@guest` `@creator`、查询与解释、操作记录、宏的组绑定，接口 `acl.*`，CLI `buckyos aiws acl` / `acl-edit`。界面 2026-11-14 已跟上（[UI 框架 PRD](<../BuckyOS AI Workspace UI 框架PRD.md>) §8）：数据模式里的工作区权限编辑面板（逻辑组与成员、规则列表、路径帮助、检查权限、操作记录）和按实体的权限视图，Desktop `ui/permissions/`；旧面板与映射层 `api/legacyGrants.ts` 已删除。
 - **不可变发布与 MyContent 登记未做**：需要 ShareContentMgr 先接受对象作为分享来源、登记服务的 inner-path 发布并接收访问统计（需求 R26、§8 第 5 步的前提）。
 
 ## 定位与三层冻结边界

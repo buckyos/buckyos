@@ -22,12 +22,20 @@ export async function renameBase(store: WorkspaceStore, surface: EntityEnvelope)
   return { titleRev: read.content.key_revs.title ?? 0, metaRev: read.meta_rev }
 }
 
+/** A new title for a canvas or a canvas folder; its name goes back to following the title (the core's naming rule:
+ * `-2`, `-3` … beside a sibling of the same name, PRD Q5), so its path changes with it — links use the id. */
 export function renameSurface(store: WorkspaceStore, surface: EntityEnvelope, title: string, base: RenameBase): Promise<CommitOutcome> {
   const ops: Operation[] = [
     { op: 'entity.set_keys', entity_id: surface.entity_id, keys: [{ key: 'title', value: title, expect: { rev: base.titleRev } }] },
-    { op: 'entity.rename', entity_id: surface.entity_id, name: title, expect: { rev: base.metaRev } },
+    { op: 'entity.rename', entity_id: surface.entity_id, name: null, expect: { rev: base.metaRev } },
   ]
-  return store.submit({ editId: `surface:${surface.entity_id}:title`, label: aiwsT('aiworkspace.canvas.surface.renameLabel', { title }), mine: title, hasMine: true, operations: ops })
+  return store.submit({ editId: `surface:${surface.entity_id}:title`, label: aiwsT(surface.kind === 'folder' ? 'aiworkspace.surfaces.renameFolderLabel' : 'aiworkspace.canvas.surface.renameLabel', { title }), mine: title, hasMine: true, operations: ops })
+}
+
+/** Delete an empty canvas folder (one Commit, undoable); the core refuses one that still holds something. */
+export function deleteSurfaceFolder(store: WorkspaceStore, folder: EntityEnvelope): Promise<CommitOutcome> {
+  return store.submit({ editId: `surface:${folder.entity_id}:delete`, label: aiwsT('aiworkspace.surfaces.deleteFolderLabel', { name: folder.title ?? folder.name ?? '' }),
+    operations: [{ op: 'entity.delete', entity_id: folder.entity_id, expect: { rev: folder.life_rev } }] })
 }
 
 export async function setSurfaceIcon(store: WorkspaceStore, surface: EntityEnvelope, icon: string | null): Promise<CommitOutcome> {

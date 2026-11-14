@@ -1,5 +1,6 @@
-/* Declared actions of a control (控件机制 TODO H2; manifest 4 `component.json` `actions`): what the host offers on the near
- * toolbar of an instance in the modes it names, to whoever has the capabilities it needs — also before an HTML control
+/* Declared actions of a control (控件机制 TODO H2; manifest 4 `component.json` `actions`): what the host offers on the Block
+ * toolbar of an instance (as primary actions) and in its menu — the context menu, the toolbar's "more", a flow page's title
+ * row (UI 框架 PRD §10.1) — in the modes it names, to whoever has the capabilities it needs — also before an HTML control
  * runs. The host runs them: handlers as an event's (`write`, `wish`, `open`, `notify`), plus `config` (the instance's
  * own properties, one undoable `entity.set_props`) and `forward` (handed to the running HTML as the request
  * `action:<id>`; a control that is not running is started first). Strings may hold `{{now}}` — the service's clock — and
@@ -15,7 +16,9 @@ import { bindingsOf, typedWriter, writeAllowed } from './bridge'
 export interface DeclaredAction {
   id: string
   title: string
+  /** One of the icon names the host knows (`blockui/icons.ts`); others show the title. */
   icon?: string
+  primary?: boolean
   modes?: ('edit' | 'view')[]
   needs?: string[]
   run: ActionHandler | ActionHandler[]
@@ -27,6 +30,12 @@ type ActionHandler = EventHandler | { kind: 'config'; props: Record<string, Json
 export function declaredActions(list: unknown): DeclaredAction[] {
   // the declarative interpreter's own actions (`command`) are not these
   return Array.isArray(list) ? (list as unknown as DeclaredAction[]).filter((a) => a && typeof a.id === 'string' && typeof a.title === 'string' && a.run !== undefined) : []
+}
+
+/** A declared action is a primary action of its control (a toolbar button, UI 框架 PRD §10.1) unless it says `primary:
+ * false`; every declared action is in the Block's menu. (`primary` is read once `component.json` may carry it.) */
+export function declaredPrimary(a: DeclaredAction): boolean {
+  return a.primary !== false
 }
 
 /** Is the action offered to this person here (mode and capabilities)? */

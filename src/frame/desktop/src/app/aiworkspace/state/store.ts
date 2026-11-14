@@ -10,6 +10,7 @@ import type { PendingMeta, PendingRow } from '../offline/protocol'
 import { richTextSchemaDef, type AiwsCore } from '../api/wasm'
 import { aiwsT } from '../i18n'
 import { buildRichTextSchema, type RichTextSchemaDef } from '../richtext/schema'
+import { activityTestHooks } from './activityTestHooks'
 import { EditStore } from './edits'
 import { Emitter, VersionMap } from './emitter'
 import { FreshnessService } from './freshness'
@@ -134,6 +135,7 @@ export class WorkspaceStore {
       hooks.replica = offline?.test ?? undefined
       hooks.outline = () => this.outline.all()
       hooks.commits = 0
+      hooks.activity = activityTestHooks(this)
     }
     if (offline) {
       // pending submissions of earlier runs of this replica: they are saved on this device, show them again

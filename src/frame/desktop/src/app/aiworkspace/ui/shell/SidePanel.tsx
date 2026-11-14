@@ -1,7 +1,8 @@
-/* The right panel (UI improvement §3.2): one kind of content at a time — properties, references and
- * dependencies, annotations, collaboration, save state — switched by tabs, never several narrow
- * columns. In a wide window it takes real layout width (the canvas and its camera get the rest); in a
- * narrow one it is a drawer over the canvas, so closing it restores the original viewport. */
+/* The side drawer (UI 框架 PRD §3.2; UI improvement §3.2): one kind of list-like content at a time — references and
+ * dependencies, comments, a wish's task (and properties) — switched by tabs, never several narrow columns. Members
+ * and permissions open from "成员与权限…", the change status from the status bar (§4.5). In a wide window it takes
+ * real layout width (the canvas and its camera get the rest); in a narrow one it is a drawer over the canvas, so
+ * closing it restores the original viewport. */
 
 import type { ReactNode } from 'react'
 import { X } from 'lucide-react'

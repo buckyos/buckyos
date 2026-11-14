@@ -77,6 +77,24 @@ export interface MySession extends SessionInfo {
   url?: string
 }
 
+/** `session.list_open` (所有公开课, UI 框架 PRD §9.1, K7): a session the caller may open without a link, across Workspaces.
+ * `my_role`: `presenter` / `owner`, `audience` (joined before) or `member` (a reader of the courseware who has not
+ * joined; the room is open). Expired ones appear only for those who owned, presented or joined them. The courseware's
+ * name (`baseline.source.title`) only reaches presenters and owners. */
+export interface OpenSession extends Omit<SessionInfo, 'online'> {
+  my_role: 'presenter' | 'owner' | 'audience' | 'member'
+  /** The caller presents it (“我主讲”). */
+  presenting: boolean
+  /** The caller's last time in it (as a participant), or null. */
+  opened_at: string | null
+  /** Connections in the room now, while the service has a room for it in memory; else null. */
+  online: number | null
+  /** A picture of the stage — not generated yet: always null. */
+  cover: string | null
+  /** The room on its courseware's origin (absent without a public base). */
+  url?: string
+}
+
 export interface SessionParticipant { principal: string; name: string; class: string; level: 'verified' | 'guest'; role: string; online: boolean; joined_at: string; last_seen: string }
 
 export interface SessionEvent {

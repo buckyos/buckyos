@@ -5,7 +5,7 @@ import { ServiceFailure } from '../api/client'
 import { randomId } from '../api/ids'
 import type { Transport } from '../api/transport'
 import type { Json, Result } from '../api/types'
-import type { Invite, MySession, ReplayBundle, SessionEvent, SessionInfo, SessionPost, SessionStage, SessionStep } from './types'
+import type { Invite, MySession, OpenSession, ReplayBundle, SessionEvent, SessionInfo, SessionPost, SessionStage, SessionStep } from './types'
 
 export function unwrapResult<T>(r: Result<T> | undefined): T {
   if (r && r.ok) return r as T
@@ -70,6 +70,11 @@ export async function listSessions(transport: Transport, workspace_id: string): 
 
 export async function listMySessions(transport: Transport): Promise<MySession[]> {
   return unwrapResult(await transport.call<Result<{ sessions: MySession[] }>>('session.list_mine', {})).sessions
+}
+
+/** Every session the caller may open without a link (所有公开课, K7): live first, then by start time, newest first. */
+export async function listOpenSessions(transport: Transport, limit?: number): Promise<OpenSession[]> {
+  return unwrapResult(await transport.call<Result<{ sessions: OpenSession[] }>>('session.list_open', limit ? { limit } : {})).sessions
 }
 
 export async function feedSample(transport: Transport, workspace_id: string, feed: string): Promise<string> {

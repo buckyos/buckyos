@@ -337,6 +337,8 @@ export class OutlineModel {
           const update: Partial<EntityEnvelope> = { meta_rev: item.rev }
           if (op.op === 'entity.rename') update.name = (op.name as string | null) ?? null
           else update.write_policy = op.policy as 'open' | 'lock_required'
+          // `null` gives the name back to the rule: the service chose it, read it back (canvas folders, PRD Q5)
+          if (op.op === 'entity.rename' && op.name === null) refresh.push(id)
           if (!this.patch(id, update)) { reload = true; break }
           changed.add(id)
           break

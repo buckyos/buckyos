@@ -62,6 +62,17 @@ fn the_workspace_host_serves_the_page_its_files_and_canonical_surface_links() {
     assert_eq!(r.headers()["location"], "/sales-2026/overview?id=sf%2Doverview");
     let r = get("/sales-2026/sf-overview?block=b1", html).await;
     assert_eq!(r.headers()["location"], "/sales-2026/sf-overview?id=sf%2Doverview&block=b1");
+    // a canvas in a canvas folder (UI 框架 PRD Q5) is named the same way; the folder's grant covers it
+    srv.commit(json!([
+        { "op": "entity.create", "entity_id": "sf-archive", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "b", "payload": { "kind": "folder", "title": "Archive" } },
+        { "op": "entity.create", "entity_id": "sf-old-content", "type_id": "buckyos.container", "parent_id": "canvas-content", "order_key": "b", "payload": { "kind": "folder", "system": "surface_content", "surface_id": "sf-old", "title": "Old plan" } },
+        { "op": "entity.create", "entity_id": "sf-old", "type_id": "buckyos.container", "parent_id": "sf-archive", "order_key": "a", "payload": { "kind": "surface", "layout": { "mode": "flow" }, "title": "Old plan", "content_folder_id": "sf-old-content" } },
+    ])).await;
+    assert_eq!(get("/sales-2026/old-plan", html).await.status(), 200, "not readable anonymously yet");
+    srv.rpc("acl.set", json!({ "changes": [{ "subject": "@guest", "resource": "/surfaces/Archive", "allow": ["read"] }] })).await;
+    let r = get("/sales-2026/old-plan", html).await;
+    assert_eq!(r.status(), 307);
+    assert_eq!(r.headers()["location"], "/sales-2026/old-plan?id=sf%2Dold");
     // a publication by name answers the publication, as JSON or as a page for a browser; with `id` it is the page
     let r = get("/sales-2026/orders", "application/json").await;
     assert_eq!(r.status(), 200);

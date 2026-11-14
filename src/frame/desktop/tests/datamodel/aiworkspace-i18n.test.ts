@@ -18,6 +18,7 @@
 
 import ts from 'typescript'
 import * as blocks from '../../src/i18n/aiworkspace/blocks.ts'
+import * as blockui from '../../src/i18n/aiworkspace/blockui.ts'
 import * as canvas from '../../src/i18n/aiworkspace/canvas.ts'
 import * as common from '../../src/i18n/aiworkspace/common.ts'
 import * as core from '../../src/i18n/aiworkspace/core.ts'
@@ -31,6 +32,10 @@ import * as presentation from '../../src/i18n/aiworkspace/presentation.ts'
 import * as office from '../../src/i18n/aiworkspace/office.ts'
 import * as richtext from '../../src/i18n/aiworkspace/richtext.ts'
 import * as schedule from '../../src/i18n/aiworkspace/schedule.ts'
+import * as framework from '../../src/i18n/aiworkspace/framework.ts'
+import * as home from '../../src/i18n/aiworkspace/home.ts'
+import * as table from '../../src/i18n/aiworkspace/table.ts'
+import * as phone from '../../src/i18n/aiworkspace/phone.ts'
 import * as session from '../../src/i18n/aiworkspace/session.ts'
 import * as shell from '../../src/i18n/aiworkspace/shell.ts'
 import * as wish from '../../src/i18n/aiworkspace/wish.ts'
@@ -44,6 +49,7 @@ const PARTS: Part[] = [
   { name: 'shell', prefixes: ['shell'], ...shell },
   { name: 'canvas', prefixes: ['canvas', 'drawio'], ...canvas },
   { name: 'blocks', prefixes: ['blocks', 'connector'], ...blocks },
+  { name: 'blockui', prefixes: ['blockui'], ...blockui },
   { name: 'wish', prefixes: ['wish', 'extension'], ...wish },
   { name: 'data', prefixes: ['data'], ...data },
   { name: 'directory', prefixes: ['directory'], ...directory },
@@ -57,6 +63,10 @@ const PARTS: Part[] = [
   { name: 'import', prefixes: ['import'], ...imports },
   { name: 'office', prefixes: ['office'], ...office },
   { name: 'schedule', prefixes: ['label', 'datactl', 'todo', 'calendar', 'broadcast'], ...schedule },
+  { name: 'framework', prefixes: ['framework'], ...framework },
+  { name: 'home', prefixes: ['home'], ...home },
+  { name: 'table', prefixes: ['table'], ...table },
+  { name: 'phone', prefixes: ['phone'], ...phone },
 ]
 
 const ROOT = new URL('../../', import.meta.url).pathname

@@ -38,6 +38,8 @@ pub struct Service {
     pub sessions: crate::session::registry::Sessions,
     /// How long an ended, unsaved session is kept (Q10).
     pub session_retention_ms: i64,
+    /// What the service keeps per person across Workspaces (UI 框架 PRD K4, K6): `users.sqlite` in the data folder.
+    pub users: crate::users::UserStore,
     open: Mutex<HashMap<String, WsHandle>>,
     /// Workspace ids handed out by [`Service::allocate_workspace_id`] whose folder is not in place yet.
     reserved: Mutex<HashSet<String>>,
@@ -105,6 +107,7 @@ impl Service {
             history_retention_ms: crate::workspace::HISTORY_RETENTION_MS,
             sessions: crate::session::registry::Sessions::open(&data_dir.join("sessions.sqlite"))?,
             session_retention_ms: crate::session::DEFAULT_RETENTION_MS,
+            users: crate::users::UserStore::open(&data_dir.join("users.sqlite"))?,
             open: Mutex::new(HashMap::new()),
             reserved: Mutex::new(HashSet::new()),
             names: Mutex::new(None),
@@ -394,6 +397,12 @@ impl Service {
         if caller.is_guest() {
             return Ok(json!({ "ok": true, "workspaces": out }));
         }
+        // the home page's card (UI 框架 PRD §9.2, K6): when the caller last opened each, the live sessions of each
+        let opened = self.users.opened(&caller.principal)?;
+        let mut live: HashMap<String, usize> = HashMap::new();
+        for s in self.sessions.in_states(&[crate::session::registry::LIVE])? {
+            *live.entry(s.source_workspace_id).or_default() += 1;
+        }
         for name in self.workspace_ids()? {
             let Ok(handle) = self.workspace(&name) else { continue };
             let ws = handle.lock().unwrap();
@@ -409,6 +418,17 @@ impl Service {
                 if let Ok(Some(n)) = ws.name() {
                     item["name"] = json!(n);
                 }
+                // one Workspace that cannot say leaves its fields empty, never the list
+                let (anonymous, published) = ws.public_state().unwrap_or_default();
+                item["owner_principal"] = json!(ws.owner().ok().flatten());
+                item["updated_at"] = json!(ws.changed_at().ok().flatten());
+                item["opened_at"] = json!(opened.get(&name).copied().map(format_utc_ms));
+                item["public"] = json!(anonymous || published);
+                item["anonymous"] = json!(anonymous);
+                item["published"] = json!(published);
+                item["live_sessions"] = json!(live.get(&name).copied().unwrap_or(0));
+                // a picture of a canvas is not generated yet (K6): the card draws its own placeholder
+                item["cover"] = Value::Null;
                 out.push(item);
             }
         }

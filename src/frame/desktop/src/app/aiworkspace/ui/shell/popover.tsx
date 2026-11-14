@@ -2,10 +2,17 @@
 /* Popovers and menus of the workspace chrome (UI improvement §3.2, §11): screen-space panels next to
  * their trigger; outside pointer and Esc close them and return focus to the trigger; menus support
  * arrow keys, Enter, Esc and nested submenus. While any of them is open the canvas refuses gestures,
- * so the click that closes a menu does not also act on the canvas. */
+ * so the click that closes a menu does not also act on the canvas.
+ *
+ * On a phone (UI 框架 PRD §6.1) every one of them rises from the bottom instead: a panel is a sheet over the window, a
+ * menu is a sheet entered one level at a time with "back" (no hover), and the reason of a disabled entry is printed. */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
-import { Check, ChevronRight } from 'lucide-react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { Check, ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { useAiwsText } from '../../useAiwsText'
+import { ShellContext } from './shellContext'
+import '../phone/sheets.css'
 
 // ---- open overlays (the canvas pauses its gestures while one is open)
 
@@ -48,9 +55,17 @@ export function usePopover(): PopoverState {
   const [trigger, bindTrigger] = useState<HTMLButtonElement | null>(null)
   useOverlayMounted(open)
   const close = useCallback(() => { setOpen(false); trigger?.focus() }, [trigger])
+  // a phone's panel is a sheet away from its anchor: it asks its anchor to close (its backdrop, ✕), so a press in it is no
+  // "outside"
+  useEffect(() => {
+    if (!anchor) return
+    const onClose = (event: Event) => { event.stopPropagation(); setOpen(false) }
+    anchor.addEventListener(SHEET_CLOSE, onClose)
+    return () => anchor.removeEventListener(SHEET_CLOSE, onClose)
+  }, [anchor])
   useEffect(() => {
     if (!open) return
-    const onDown = (event: PointerEvent) => { if (!anchor?.contains(event.target as Node)) setOpen(false) }
+    const onDown = (event: PointerEvent) => { if (!anchor?.contains(event.target as Node) && !insideSheet(event.target)) setOpen(false) }
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); close() } }
     window.addEventListener('pointerdown', onDown, true)
     window.addEventListener('keydown', onKey, true)
@@ -70,8 +85,13 @@ function containShift(el: HTMLElement): number {
 }
 
 /** A panel below its anchor, kept inside the application container horizontally (by a margin, not a transform,
- * so a floating menu inside it is not confined to it). */
-export function PopoverPanel({ children, align = 'start', label, testId, className = '' }: { children: ReactNode; align?: 'start' | 'end'; label: string; testId?: string; className?: string }) {
+ * so a floating menu inside it is not confined to it). On a phone: a sheet from the bottom. */
+export function PopoverPanel(props: { children: ReactNode; align?: 'start' | 'end'; label: string; testId?: string; className?: string }) {
+  const phone = usePhoneSheets()
+  return phone ? <PanelSheet {...props} /> : <AnchoredPanel {...props} />
+}
+
+function AnchoredPanel({ children, align = 'start', label, testId, className = '' }: { children: ReactNode; align?: 'start' | 'end'; label: string; testId?: string; className?: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const [shift, setShift] = useState(0)
   useLayoutEffect(() => { if (ref.current) setShift(containShift(ref.current)) }, [])
@@ -102,7 +122,26 @@ export interface MenuItem {
   testId?: string
 }
 
-export function MenuList({ items, onDone, onBack, label, autoFocus = true, className = '', testId }: { items: MenuItem[]; onDone: () => void; onBack?: () => void; label: string; autoFocus?: boolean; className?: string; testId?: string }) {
+export interface MenuListProps {
+  items: MenuItem[]
+  onDone: () => void
+  onBack?: () => void
+  label: string
+  autoFocus?: boolean
+  className?: string
+  testId?: string
+  /** A phone: the menu is a sheet of its own (by default, a pop-over menu is; one drawn inside a sheet already is not). */
+  sheet?: boolean
+}
+
+export function MenuList(props: MenuListProps) {
+  const phone = usePhoneSheets()
+  if (!phone) return <AnchoredMenuList {...props} />
+  const className = props.className ?? ''
+  return <SheetMenuList {...props} sheet={props.sheet ?? (/\baiws-popover\b/.test(className) && !/\bis-floating\b/.test(className))} />
+}
+
+function AnchoredMenuList({ items, onDone, onBack, label, autoFocus = true, className = '', testId }: MenuListProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [openSub, setOpenSub] = useState<string | null>(null)
   const [subByKey, setSubByKey] = useState(false)
@@ -123,7 +162,14 @@ export function MenuList({ items, onDone, onBack, label, autoFocus = true, class
       return
     }
     if (!className.includes('aiws-submenu')) { setPlacement({ shift: containShift(el), lift: 0, flip: false }); return }
-    setPlacement({ shift: 0, lift: Math.max(Math.min(0, bounds.bottom - 8 - rect.bottom), bounds.top + 8 - rect.top), flip: rect.right > bounds.right - 8 })
+    const lift = Math.max(Math.min(0, bounds.bottom - 8 - rect.bottom), bounds.top + 8 - rect.top)
+    if (rect.right <= bounds.right - 8) { setPlacement({ shift: 0, lift, flip: false }); return }
+    // opened to the left it is kept inside the application; when that would cover most of its own menu (a narrow
+    // window, a third level) it stays on the right, moved in over the menus further up
+    const parent = el.parentElement?.closest('.aiws-menu')?.getBoundingClientRect()
+    const past = parent ? bounds.left + 8 - (parent.left - rect.width + 4) : 0
+    if (past <= rect.width / 2) { setPlacement({ shift: Math.max(0, past), lift, flip: true }); return }
+    setPlacement({ shift: Math.max(bounds.left + 8 - rect.left, bounds.right - 8 - rect.right), lift, flip: false })
   }, [className])
   const enabled = () => [...(ref.current?.querySelectorAll<HTMLButtonElement>(':scope > .aiws-menu-entry > button[role="menuitem"]:not(:disabled)') ?? [])]
   useEffect(() => { if (autoFocus) enabled()[0]?.focus() }, [autoFocus])
@@ -161,7 +207,7 @@ export function MenuList({ items, onDone, onBack, label, autoFocus = true, class
             {item.items && <ChevronRight size={14} aria-hidden="true" />}
           </button>
           {item.items && openSub === item.id && (
-            <MenuList items={item.items} label={item.label ?? ''} className="aiws-submenu" onDone={onDone} autoFocus={subByKey}
+            <AnchoredMenuList items={item.items} label={item.label ?? ''} className="aiws-submenu" onDone={onDone} autoFocus={subByKey}
               onBack={() => { setOpenSub(null); ref.current?.querySelector<HTMLButtonElement>(`[data-menu-id="${item.id}"]`)?.focus() }} />
           )}
         </div>
@@ -178,18 +224,132 @@ export function MenuButton({ items, label, title, children, className = 'aiws-to
   floating?: boolean
 }) {
   const { open, setOpen, toggle, close, bindAnchor, bindTrigger } = usePopover()
+  const phone = usePhoneSheets()
   useEffect(() => {
-    if (!open || !floating) return
+    if (!open || !floating || phone) return
     const onScroll = () => setOpen(false)
     window.addEventListener('scroll', onScroll, true)
     return () => window.removeEventListener('scroll', onScroll, true)
-  }, [open, floating, setOpen])
+  }, [open, floating, setOpen, phone])
   return (
     <span ref={bindAnchor} className="aiws-anchor">
       <button ref={bindTrigger} type="button" className={className} aria-label={label} title={title ?? label} aria-haspopup="menu" aria-expanded={open} data-testid={testId} disabled={disabled} onClick={toggle}>
         {children}
       </button>
-      {open && <MenuList items={typeof items === 'function' ? items() : items} label={label} className={`aiws-popover aiws-popover-${align}${floating ? ' is-floating' : ''}`} onDone={close} testId={menuTestId} />}
+      {open && <MenuList items={typeof items === 'function' ? items() : items} label={label} className={`aiws-popover aiws-popover-${align}${floating ? ' is-floating' : ''}`} onDone={close} testId={menuTestId} sheet={phone} />}
     </span>
   )
+}
+
+// ---- the phone's sheets (UI 框架 PRD §6.1)
+
+/** Inside a workspace window on a phone: pop-overs rise from the bottom. */
+export function usePhoneSheets(): boolean {
+  return useContext(ShellContext)?.phone ?? false
+}
+
+/** What a sheet without its own close sends from its place under the anchor: the pop-over there closes. */
+const SHEET_CLOSE = 'aiws-sheet-close'
+
+/** Is the target inside a sheet (its panel or its backdrop)? A sheet handles its own presses. */
+export function insideSheet(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('.aiws-sheet-layer') !== null
+}
+
+/** The sheet's layer over the workspace window: the backdrop (a press on it closes), the panel at the bottom. A touch that
+ * opened the sheet (a long press) is followed by its click on whatever lies under the finger: only a click pressed on the
+ * sheet counts. */
+export function Sheet({ label, testId, className = '', onClose, title, children, role = 'dialog' }: {
+  label: string
+  testId?: string
+  className?: string
+  /** Absent: the pop-over whose anchor holds the sheet's place closes. */
+  onClose?: () => void
+  /** The heading row: what the caller draws (a menu's, with "back"), or given the sheet's close (a panel's ✕). */
+  title?: ReactNode | ((close: () => void) => ReactNode)
+  children: ReactNode
+  role?: 'dialog' | 'none'
+}) {
+  const [place, setPlace] = useState<HTMLElement | null>(null)
+  const pressed = useRef(false)
+  // over the workspace window the sheet's place is in (its phone styles apply)
+  const host = place ? place.closest<HTMLElement>('.aiws-workspace') ?? place.closest<HTMLElement>('.aiws-root') ?? document.body : null
+  const close = () => { if (onClose) onClose(); else place?.dispatchEvent(new Event(SHEET_CLOSE, { bubbles: true })) }
+  return (
+    <>
+      <span ref={setPlace} hidden />
+      {host && createPortal(
+        <div className="aiws-sheet-layer" onPointerDown={(event) => { event.stopPropagation(); if (event.target === event.currentTarget) close() }}
+          onClickCapture={(event) => { if (!pressed.current && event.detail > 0) { event.preventDefault(); event.stopPropagation() } }}>
+          <div className={`aiws-sheet ${className}`} role={role === 'none' ? undefined : role} aria-label={role === 'none' ? undefined : label} data-testid={testId}
+            onPointerDown={() => { pressed.current = true }}>
+            <div className="aiws-sheet-grip" aria-hidden="true" />
+            {typeof title === 'function' ? title(close) : title}
+            {children}
+          </div>
+        </div>,
+        host,
+      )}
+    </>
+  )
+}
+
+/** A panel as a sheet: its title and ✕, then the content, which scrolls. */
+function PanelSheet({ children, label, testId, className = '' }: { children: ReactNode; label: string; testId?: string; className?: string }) {
+  const { t } = useAiwsText()
+  return (
+    <Sheet label={label} testId={testId} className={`aiws-sheet-panel ${className}`}
+      title={(close) => <div className="aiws-sheet-head"><b>{label}</b><span className="aiws-grow" /><button type="button" className="aiws-tool" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} data-testid="aiws-sheet-close" onClick={close}><X size={20} /></button></div>}>
+      <div className="aiws-sheet-body">{children}</div>
+    </Sheet>
+  )
+}
+
+/** A shortcut hint means nothing on a phone (a file type does). */
+const KEY_HINT = /\b(Ctrl|Shift|Alt|Delete|Enter|Esc|F\d{1,2})\b|⌘/
+
+/** A menu on a phone: one level at a time, an entry with a submenu goes into it, "back" comes out; a disabled entry prints
+ * why. As a sheet of its own, or drawn where it is (inside a sheet already: the context menu's). */
+function SheetMenuList({ items, onDone, label, autoFocus = true, className = '', testId, sheet }: MenuListProps) {
+  const { t } = useAiwsText()
+  const ref = useRef<HTMLDivElement>(null)
+  const [path, setPath] = useState<MenuItem[]>([])
+  const level = path.at(-1)
+  const shown = level?.items ?? items
+  useEffect(() => {
+    if (!autoFocus) return
+    ref.current?.querySelector<HTMLButtonElement>(':scope > .aiws-menu-entry > button[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true })
+  }, [autoFocus, path.length])
+  const head = (sheet || level) && (
+    <div className="aiws-sheet-head aiws-menu-phone-head">
+      {level && <button type="button" className="aiws-tool" aria-label={t('aiworkspace.phone.back')} title={t('aiworkspace.phone.back')} data-testid="aiws-menu-back" onClick={() => setPath(path.slice(0, -1))}><ChevronLeft size={20} /></button>}
+      <b>{level?.label ?? label}</b>
+      <span className="aiws-grow" />
+      {sheet && <button type="button" className="aiws-tool" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} data-testid="aiws-menu-close" onClick={onDone}><X size={20} /></button>}
+    </div>
+  )
+  const list = (
+    <div ref={ref} className={`aiws-menu aiws-menu-phone${sheet ? '' : ` ${className}`}`} role="menu" aria-label={level?.label ?? label} data-testid={sheet ? undefined : testId} data-level={path.length}
+      onKeyDown={(event) => { if (event.key === 'Escape' && level) { event.preventDefault(); event.stopPropagation(); setPath(path.slice(0, -1)) } }}>
+      {!sheet && head}
+      {shown.map((item) => item.separator ? <hr key={item.id} /> : (
+        <div key={item.id} className="aiws-menu-entry" role="none">
+          <button type="button" role="menuitem" data-menu-id={item.id} data-testid={item.testId ?? `aiws-menu-${item.id}`} disabled={item.disabled}
+            aria-haspopup={item.items ? 'menu' : undefined} aria-checked={item.checked} className={item.danger ? 'is-danger' : undefined}
+            onClick={() => {
+              if (item.items) { setPath([...path, item]); return }
+              onDone()
+              item.run?.()
+            }}>
+            <span className="aiws-menu-check" aria-hidden="true">{item.checked ? <Check size={16} /> : null}</span>
+            <span className="aiws-menu-label">{item.label}{item.disabled && item.reason && <small className="aiws-menu-reason">{item.reason}</small>}</span>
+            {item.hint && !KEY_HINT.test(item.hint) && <span className="aiws-menu-hint">{item.hint}</span>}
+            {item.items && <ChevronRight size={18} aria-hidden="true" />}
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+  if (!sheet) return list
+  return <Sheet label={level?.label ?? label} testId={testId} className={`aiws-sheet-menu ${className.replace(/\baiws-popover(-start|-end)?\b|\bis-floating\b/g, '').trim()}`} onClose={onDone} title={head} role="none">{list}</Sheet>
 }

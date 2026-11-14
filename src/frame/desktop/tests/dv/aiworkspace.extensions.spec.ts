@@ -48,6 +48,7 @@ async function openInDesktop(actor: Actor, ws: Workspace) {
   await page.getByTestId('window-aiworkspace').getByRole('button', { name: /^(Maximize|最大化)$/ }).click()
   const back = page.getByTestId('aiws-workspace')
   if (await back.isVisible().catch(() => false)) { await page.getByTestId('aiws-main-menu').click(); await page.getByTestId('aiws-back').click() }
+  await page.getByTestId('aiws-home-tab-all').click()
   await page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws.workspace_id}"]`).getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 30_000 })
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')

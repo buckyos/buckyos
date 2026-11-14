@@ -234,6 +234,10 @@ impl Workspace {
                 }
             }
         }
+        // when the state last changed: where the work log (UI 框架 PRD K3) puts a run's end
+        if state.is_some_and(|s| row["state"] != json!(s)) {
+            d["state_at"] = json!(self.now());
+        }
         self.local
             .execute(
                 "UPDATE runs SET state = COALESCE(?2, state), candidate_json = COALESCE(?3, candidate_json), inputs_json = COALESCE(?4, inputs_json), \

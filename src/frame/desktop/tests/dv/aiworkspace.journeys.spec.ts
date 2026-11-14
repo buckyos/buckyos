@@ -16,15 +16,20 @@ async function imageHash(page: Page) {
 
 async function exportShare(actor: Actor, ws: Workspace, info: TestInfo, name: string) {
   await actor.page.goto('/workspace')
+  await actor.page.getByTestId('aiws-home-tab-all').click()
   const card = actor.page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws.workspace_id}"]`)
   await expect(card).toBeVisible()
-  await card.getByLabel('导出方式', { exact: true }).selectOption('share')
-  await card.getByLabel('自包含', { exact: true }).check()
-  const [download] = await Promise.all([actor.page.waitForEvent('download'), card.getByTestId('aiws-export').click()])
+  // the card's ⋯ → 导出… (UI framework PRD §9.2); downloaded to this device
+  await card.getByTestId('aiws-home-card-more').click()
+  await card.getByTestId('aiws-home-export').click()
+  const dialog = actor.page.getByTestId('aiws-export-dialog')
+  await dialog.getByLabel('导出方式', { exact: true }).selectOption('share')
+  await dialog.getByLabel('自包含', { exact: true }).check()
+  const [download] = await Promise.all([actor.page.waitForEvent('download'), dialog.getByTestId('aiws-export').click()])
   const path = info.outputPath(name)
   await download.saveAs(path)
-  await expect(card.getByTestId('aiws-export-manifest')).toContainText('分享包')
-  await expect(card.getByTestId('aiws-export-manifest')).not.toContainText('缺失')
+  await expect(dialog.getByTestId('aiws-export-manifest')).toContainText('分享包')
+  await expect(dialog.getByTestId('aiws-export-manifest')).not.toContainText('缺失')
   expect(readFileSync(path).length).toBeGreaterThan(0)
   return path
 }
@@ -51,8 +56,9 @@ test('[journey-handoff] an author exports a short report and an isolated user im
 
   try {
     await peer.page.goto('/workspace')
-    const form = peer.page.getByTestId('aiws-import')
-    await chooseFromDevice(peer.page, () => form.getByTestId('aiws-import-file').click(), sharePath)
+    // the home's Import: the system file picker first, then what the package becomes (§9.3)
+    await chooseFromDevice(peer.page, () => peer.page.getByTestId('aiws-home-import').click(), sharePath)
+    const form = peer.page.getByTestId('aiws-import-dialog').getByTestId('aiws-import')
     await expect(form.getByTestId('aiws-import-submit')).toBeDisabled()
     await form.getByLabel('作为新的工作区', { exact: false }).check()
     const [response] = await Promise.all([peer.page.waitForResponse((reply) => {

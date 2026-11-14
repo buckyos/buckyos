@@ -1,13 +1,16 @@
-/* The vertical object toolbar (UI improvement §7; 工具栏双排, 2026-11-12): fifteen buttons from top to bottom —
- * select (with pan), pen | text, rich text, media, table, mind map, shape, connector, frame, wish, sticky note,
- * insert… | undo, redo. A button with a corner mark opens its second column beside it: select / pan; table,
- * calendar, to-do and the standard tables; the basic shapes merged with the shape library. The others act at once:
- * picking an object on a free Surface starts a one-shot placement, on a flow page it appends. The workspace's
- * extensions are reached through "insert…"; the ones the user pinned follow it. The eraser is in the pen's bar. */
+/* The tool selection zone (UI 框架 PRD §4.3; UI improvement §7; 工具栏双排, 2026-11-12), from top to bottom: the
+ * pointer group — select (with pan), design / run (Q3), pen | the object group — text, rich text, media, table, mind
+ * map, shape, connector, frame, wish, sticky note, insert… | undo, redo. A flow page's pointer group is design / run
+ * alone. A button with a corner mark opens its second column beside it: select / pan; table, calendar, to-do and the
+ * standard tables; the basic shapes merged with the shape library. The others act at once: picking an object on a
+ * free Surface starts a one-shot placement, on a flow page it appends. Which objects the group holds comes from the
+ * toolbar configuration (built-in list, the canvas's `config.toolbar`). The workspace's extensions are reached through
+ * "insert…"; the ones the user pinned follow it. The eraser is in the pen's bar. */
 
 import { useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { ChevronsDown, ChevronsUp, Hand, MousePointer2, PenLine, Plus, Redo2, Shapes, Table, Undo2, type LucideIcon } from 'lucide-react'
 import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
+import type { RunMode } from '../../state/runMode'
 import { useAiwsText } from '../../useAiwsText'
 import { blockRegistry } from '../blocks/registry'
 import { ShapePicker } from '../blocks/shapeBlock'
@@ -16,9 +19,8 @@ import { useFilePicker } from '../shell/filePicker'
 import { ENTRY_ICONS, entryId, extensionEntries, registryEntries, type CatalogEntry } from './catalog'
 import { ShapeLibraryPanel } from './ShapeLibraryPanel'
 import { libraryShapeConfig } from './stencilLibrary'
-
-/** The objects between pen and "insert…", by `entryId`; `table` and `shape` open their second column. */
-const OBJECTS = ['shape-text', 'richtext', 'asset', 'table', 'mindmap', 'shape', 'connector', 'frame', 'wish', 'note']
+import { RunModeToggle } from './tools'
+import { TOOL_OBJECTS } from '../framework/config'
 /** The table group's second column: the views, then the standard tables (系统已知 schema_id). */
 const TABLE_GROUP = ['table', 'calendar', 'todo']
 const STANDARD_TABLES = ['table-todo', 'table-calendar']
@@ -111,8 +113,12 @@ export function HistoryButtons({ size = 20 }: { size?: number }) {
  * whole strokes until another tool is picked (手写笔 TODO). */
 export type PointerTool = 'select' | 'hand' | 'connector' | 'pen' | 'eraser'
 
-export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, noteReason, onPick, onPickFile, onOpenCatalog, collapsed, onCollapsed }: {
+export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, noteReason, onPick, onPickFile, onOpenCatalog, collapsed, onCollapsed, runMode, objects: objectIds = TOOL_OBJECTS }: {
   isFree: boolean
+  /** The canvas's design / run switch (扩展控件 P2, Q27), in the pointer group (Q3). */
+  runMode?: RunMode
+  /** The object group, by `entryId` (`table` and `shape` open their second column). */
+  objects?: string[]
   tool: PointerTool
   onTool: (tool: PointerTool) => void
   /** The entry being placed (highlighted), if any. */
@@ -133,6 +139,9 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
   useSyncExternalStore(blockRegistry.subscribe, blockRegistry.snapshot)
   const pinned = useUserState<string[]>('ui:pinned-defs') ?? []
   const pickFile = useFilePicker((message) => store.notify('error', message))
+  const barRef = useRef<HTMLDivElement>(null)
+  /** How many of the object group's last buttons give way to a low window. */
+  const [hidden, setHidden] = useState(0)
   const [pointer, setPointer] = useState<'select' | 'hand'>('select')
   if ((tool === 'select' || tool === 'hand') && tool !== pointer) setPointer(tool)
   const canInsert = insertReason === null
@@ -194,12 +203,40 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
       </button>
     )
   }
-  const objects = OBJECTS.map(objectTool).filter((node) => node !== null)
+  const objects = objectIds.map(objectTool).filter((node) => node !== null)
+  const pinnedTools = pinnedEntries.map((entry) => (
+    <button key={entry.key} type="button" className="aiws-tool" aria-label={entry.title} title={t('aiworkspace.canvas.tool.extensionTip', { name: entry.title })} data-testid={`aiws-tool-def-${entry.defEntity?.entity_id}`} onClick={() => onOpenCatalog('extension', entry.key)}>
+      <span className="aiws-tool-letter">{entry.title.slice(0, 1)}</span>
+    </button>
+  ))
+  // too low a window (UI 框架 PRD §4.3): the object group gives way from the bottom up — what goes is in "insert…" —
+  // while the pointer and history groups stay
+  const movable = objects.length + pinnedTools.length
+  const shown = Math.max(0, movable - hidden)
+  useLayoutEffect(() => {
+    const bar = barRef.current
+    const area = bar?.parentElement
+    if (!bar || !area || collapsed) return
+    const fit = () => {
+      const step = (bar.querySelector<HTMLElement>('.aiws-tool-group > .aiws-tool, .aiws-tool-group > .aiws-anchor')?.offsetHeight ?? 36) + 2
+      const room = area.clientHeight - (bar.offsetHeight - bar.clientHeight)
+      const next = Math.max(0, Math.min(movable, Math.ceil((bar.scrollHeight + hidden * step - room) / step)))
+      if (next !== hidden) setHidden(next)
+    }
+    fit()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(fit)
+    observer.observe(area)
+    return () => observer.disconnect()
+  }, [hidden, movable, collapsed])
+  const runToggle = runMode && !runMode.locked ? <RunModeToggle runMode={runMode} /> : null
   const PointerIcon = pointer === 'hand' ? Hand : MousePointer2
   return (
-    <div className={`aiws-panel aiws-object-toolbar${collapsed ? ' is-collapsed' : ''}`} role="toolbar" aria-orientation="vertical" aria-label={t('aiworkspace.canvas.tool.objectTools')} data-testid="aiws-object-toolbar">
+    <div ref={barRef} className={`aiws-panel aiws-object-toolbar${collapsed ? ' is-collapsed' : ''}`} role="toolbar" aria-orientation="vertical" aria-label={t('aiworkspace.canvas.tool.objectTools')} data-testid="aiws-object-toolbar"
+      data-hidden={hidden > 0 ? hidden : undefined}>
       {!collapsed && (
         <>
+          {!isFree && runToggle && <div className="aiws-tool-group">{runToggle}</div>}
           {isFree && (
             <div className="aiws-tool-group">
               <ColumnTool icon={PointerIcon} label={t('aiworkspace.canvas.tool.pointer')} title={t('aiworkspace.canvas.tool.pointerTip')} testId="aiws-tool-pointer" columnTestId="aiws-tool-pointer-column"
@@ -209,6 +246,7 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
                   <ColumnItem icon={Hand} label={t('aiworkspace.canvas.tool.hand')} title={t('aiworkspace.canvas.tool.handTip')} hint="H" pressed={tool === 'hand' && !placingKey} testId="aiws-tool-hand" onClick={() => { close(); onTool('hand') }} />
                 </>}
               </ColumnTool>
+              {runToggle}
               {canInsert && (
                 <button type="button" className="aiws-tool" aria-pressed={tool === 'pen' || tool === 'eraser'} aria-label={t('aiworkspace.canvas.ink.pen')} title={t('aiworkspace.canvas.tool.penTip')} data-testid="aiws-tool-pen"
                   onClick={() => onTool(tool === 'pen' || tool === 'eraser' ? 'select' : 'pen')}><PenLine size={20} /></button>
@@ -217,13 +255,9 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
           )}
           {(objects.length > 0 || canInsert) && (
             <div className="aiws-tool-group">
-              {objects}
+              {objects.slice(0, shown)}
               {canInsert && <button type="button" className="aiws-tool" aria-label={t('aiworkspace.canvas.tool.insert')} title={t('aiworkspace.canvas.tool.insertTip')} data-testid="aiws-tool-catalog" onClick={() => onOpenCatalog('all')}><Plus size={20} /></button>}
-              {pinnedEntries.map((entry) => (
-                <button key={entry.key} type="button" className="aiws-tool" aria-label={entry.title} title={t('aiworkspace.canvas.tool.extensionTip', { name: entry.title })} data-testid={`aiws-tool-def-${entry.defEntity?.entity_id}`} onClick={() => onOpenCatalog('extension', entry.key)}>
-                  <span className="aiws-tool-letter">{entry.title.slice(0, 1)}</span>
-                </button>
-              ))}
+              {pinnedTools.slice(0, Math.max(0, shown - objects.length))}
             </div>
           )}
           <div className="aiws-tool-group aiws-tool-group-history">

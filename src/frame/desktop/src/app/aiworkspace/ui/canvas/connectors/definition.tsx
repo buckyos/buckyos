@@ -69,7 +69,9 @@ export const connectorDefinition: BlockDefinition = {
   type: CONNECTOR_VIEW, version: 1, get title() { return aiwsT('aiworkspace.connector.title') }, accepts: [], allowNoSource: true, pureUi: true,
   defaultSize: { w: 200, h: 0 }, cost: { editor: false, html: false },
   Static: ConnectorStatic, chrome: 'none',
-  catalog: { group: 'layout', get description() { return aiwsT('aiworkspace.connector.description') }, needs: 'none', standard: true },
+  catalog: { group: 'layout', get description() { return aiwsT('aiworkspace.connector.description') }, needs: 'none', standard: true, toolPicker: 7 },
+  // a flow page shows no lines (连接线实现方案 §8.3): its ＋ does not offer one (UI 框架 PRD §10.1)
+  traits: { flowInsertable: false },
   actions: [{ id: 'label', get label() { return aiwsT('aiworkspace.connector.editLabel') }, modes: ['edit'], needs: ['update'], run: (context) => context.activateEditor(), key: 'Enter' }],
   toolbar: connectorToolbar,
   configFields: [

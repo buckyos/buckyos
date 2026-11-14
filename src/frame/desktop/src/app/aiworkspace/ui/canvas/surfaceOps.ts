@@ -5,10 +5,20 @@ import { randomId } from '../../api/ids'
 import type { EntityEnvelope, Json, KeyedContent, Operation } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import type { WorkspaceStore } from '../../state/store'
-import { uniqueName } from '@table/operations'
+import { orderKeyAfter, SURFACES_ROOT } from '../surfaces/tree'
 
+/** Every canvas, through the canvas folders (UI 框架 PRD §4.1.1, Q5), in tree order. */
 export function surfacesOf(store: WorkspaceStore): EntityEnvelope[] {
-  return store.outline.childrenOf('surfaces').filter((e) => e.kind === 'surface')
+  const out: EntityEnvelope[] = []
+  const walk = (parentId: string) => {
+    for (const e of store.outline.childrenOf(parentId)) {
+      if (e.type_id !== 'buckyos.container') continue
+      if (e.kind === 'surface') out.push(e)
+      else if (e.kind === 'folder') walk(e.entity_id)
+    }
+  }
+  walk(SURFACES_ROOT)
+  return out
 }
 
 /** Duplicate a canvas with same-canvas semantics (内核架构改进 D05, T5-4): the Blocks are created again on a new
@@ -19,7 +29,7 @@ export async function duplicateSurfaceOps(store: WorkspaceStore, surfaceId: stri
   const surface = store.outline.get(surfaceId)
   if (!surface) throw new Error(surfaceId)
   const title = aiwsT('aiworkspace.shell.switcher.duplicateTitle', { title: surface.title ?? surface.name ?? surfaceId })
-  const created = createSurfaceOps(store, title, surface.layout?.mode === 'flow' ? 'flow' : 'free', surface.icon ?? null)
+  const created = createSurfaceOps(store, title, surface.layout?.mode === 'flow' ? 'flow' : 'free', surface.icon ?? null, surface.parent_id ?? SURFACES_ROOT, surfaceId)
   const folderId = `${created.surfaceId}-content`
   const sourceFolder = surface.content_folder_id ?? null
   const ops: Operation[] = [...created.ops]
@@ -73,22 +83,19 @@ export async function duplicateSurfaceOps(store: WorkspaceStore, surfaceId: stri
   return { ops, surfaceId: created.surfaceId }
 }
 
-/** Create a Surface with its canvas content folder in one commit (§4.1), optionally with a preset icon. Entity names
- * are unique among siblings: a title already used (the same file imported twice) gets ` (2)`, ` (3)` … in its name. */
-export function createSurfaceOps(store: WorkspaceStore, title: string, mode: 'free' | 'flow', icon?: string | null): { ops: Operation[]; surfaceId: string } {
+/** Create a Surface with its canvas content folder in one commit (§4.1), optionally with a preset icon, at the end of a
+ * canvas folder (`parentId`, the top level by default) or right after `afterId` there. Both names follow the title
+ * (the core gives `-2`, `-3` … to one already used among the siblings, PRD Q5). */
+export function createSurfaceOps(store: WorkspaceStore, title: string, mode: 'free' | 'flow', icon?: string | null, parentId: string = SURFACES_ROOT, afterId: string | null = null): { ops: Operation[]; surfaceId: string } {
   const core = store.core
   const surfaceId = randomId('sf')
   const folderId = `${surfaceId}-content`
-  const surfaces = store.outline.childrenOf('surfaces')
-  const folders = store.outline.childrenOf('canvas-content')
-  const lastSurface = surfaces.at(-1)?.order_key
-  const lastFolder = folders.at(-1)?.order_key
-  const name = uniqueName(title, new Set([...surfaces, ...folders].map((e) => e.name).filter((n): n is string => Boolean(n))))
+  const lastFolder = store.outline.childrenOf('canvas-content').at(-1)?.order_key
   return {
     surfaceId,
     ops: [
-      { op: 'entity.create', entity_id: folderId, type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: core.order_key_between(lastFolder, undefined), name, payload: { kind: 'folder', title, system: 'surface_content', surface_id: surfaceId } },
-      { op: 'entity.create', entity_id: surfaceId, type_id: 'buckyos.container', parent_id: 'surfaces', order_key: core.order_key_between(lastSurface, undefined), name, payload: { kind: 'surface', layout: { mode }, title, content_folder_id: folderId, ...(icon ? { icon } : {}) } },
+      { op: 'entity.create', entity_id: folderId, type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: core.order_key_between(lastFolder, undefined), payload: { kind: 'folder', title, system: 'surface_content', surface_id: surfaceId } },
+      { op: 'entity.create', entity_id: surfaceId, type_id: 'buckyos.container', parent_id: parentId, order_key: orderKeyAfter(store, parentId, afterId), payload: { kind: 'surface', layout: { mode }, title, content_folder_id: folderId, ...(icon ? { icon } : {}) } },
     ],
   }
 }

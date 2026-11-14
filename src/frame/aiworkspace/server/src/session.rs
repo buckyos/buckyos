@@ -238,6 +238,25 @@ pub async fn handle(state: &Arc<AppState>, method: &str, p: &Value, caller: Call
             }
             return Ok(v);
         }
+        "session.list_open" => {
+            let (st, c) = (state.clone(), caller.clone());
+            let limit = p.get("limit").and_then(Value::as_u64).unwrap_or(100).clamp(1, 500) as usize;
+            let mut v = blocking(move || st.svc.session_list_open(&c, limit)).await?;
+            for item in v["sessions"].as_array_mut().into_iter().flatten() {
+                let str_of = |k: &str| item[k].as_str().unwrap_or("").to_string();
+                let (ws, sid, title) = (str_of("source_workspace_id"), str_of("session_id"), str_of("title"));
+                let slug = aiworkspace_store::source::pub_name(&title);
+                if let Some(page) = crate::pages::page_url(state, &ws, if slug.is_empty() { "session" } else { &slug }, None) {
+                    item["url"] = json!(format!("{page}?session={}", url::form_urlencoded::byte_serialize(sid.as_bytes()).collect::<String>()));
+                }
+                // who is in the room now, while it has one (a room exists from the first connection)
+                item["online"] = match state.rooms.get(&sid) {
+                    Some(room) => json!(room.conns.lock().unwrap().values().filter(|n| **n > 0).count()),
+                    None => Value::Null,
+                };
+            }
+            return Ok(v);
+        }
         "session.feed_sample" => {
             let (st, c, w, f) = (state.clone(), caller.clone(), s(p, "workspace_id")?.to_string(), s(p, "feed")?.to_string());
             let public = p.get("public").and_then(Value::as_bool).unwrap_or(false);
@@ -648,7 +667,7 @@ async fn connection(state: Arc<AppState>, socket: WebSocket) -> Result<(), Strin
                         params["session_id"] = json!(sid);
                         params["_conn"] = json!(conn_id);
                         let row = match state.svc.sessions.require(&sid) { Ok(r) => r, Err(e) => break Err(e.to_string()) };
-                        let out = if method.starts_with("session.") && !matches!(method.as_str(), "session.create" | "session.list" | "session.list_mine" | "session.join" | "session.feed_sample") {
+                        let out = if method.starts_with("session.") && !matches!(method.as_str(), "session.create" | "session.list" | "session.list_mine" | "session.list_open" | "session.join" | "session.feed_sample") {
                             call(&state, row, &actor, &method, &params, Some(terminal.as_str()).filter(|t| !t.is_empty())).await
                         } else {
                             Err(WsError::invalid_op(format!("{method} is not a session call")))

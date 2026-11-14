@@ -11,6 +11,7 @@ import { registerControls } from '../controls/registerControls'
 import { blockRegistry } from './registry'
 import { testHooks } from '../../api/testHooks'
 import { registerClassroomBlocks } from '../classroom/register'
+import { registerDirectoryBlock } from '../directory/directoryBlock'
 
 let registered = false
 export function registerDefaultBlocks() {
@@ -26,6 +27,7 @@ export function registerDefaultBlocks() {
   registerSampleBlocks()
   registerVideoBlock()
   registerClassroomBlocks()
+  registerDirectoryBlock()
   const hooks = testHooks()
   if (hooks) hooks.blocks = blockRegistry
 }

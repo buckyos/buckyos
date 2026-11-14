@@ -5,7 +5,7 @@
  * new-result mode, concurrent application, export/import, feedback rounds, running the stored macro without
  * a model, and the HTML extension API (v1 calls and `aiws` v2 bindings, typed writes, batch, watch). */
 
-import { expect, openCanvas, openWorkspace, test, closeWorkspace, fitAll } from './fixtures'
+import { expandTree, expect, openCanvas, openWorkspace, test, closeWorkspace, fitAll } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -78,13 +78,10 @@ test('UI11/UI20 analyze → run → apply writes results, Blocks and dependency 
   await expect(page.getByTestId('aiws-wish-stale')).toContainText('已改变')
   await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'stale')
   await page.getByTestId('aiws-top-sources').click()
-  await page.locator('[data-testid="aiws-tree-item"][data-entity-id="canvas-content"] .aiws-tree-toggle').first().click()
-  await page.locator('[data-testid="aiws-tree-item"][data-entity-id="sf-analysis-content"] .aiws-tree-toggle').first().click()
-  await page.locator('[data-testid="aiws-tree-item"][data-entity-id="wish-analysis-out-data"] .aiws-tree-toggle').first().click()
+  await expandTree(page, 'canvas-content', 'sf-analysis-content', 'wish-analysis-out-data')
   await page.getByTestId(`aiws-tree-${summary}`).click()
   await expect(page.getByTestId(`aiws-detail-${summary}`).getByTestId(`aiws-freshness-${summary}`)).toHaveAttribute('data-status', 'stale')
-  await page.getByTestId('aiws-detail-tab-relations').click()
-  await expect(page.getByTestId('aiws-relations-freshness')).toContainText('原始销售数据')
+  await expect(page.getByTestId('aiws-dm-side').getByTestId('aiws-relations-freshness')).toContainText('原始销售数据')
   // reopened: the state is rebuilt from the persisted record
   await page.reload()
   await openWorkspace(page, ALICE, ws.workspace_id)
@@ -157,16 +154,17 @@ test('UI12/UI13 failure keeps old results; manual edits are protected; versions 
   expect(versions.versions[0].kind).toBe('generated')
   const oldest = versions.versions[versions.versions.length - 1]
   await page.getByTestId('aiws-top-sources').click()
-  await page.locator('[data-testid="aiws-tree-item"][data-entity-id="canvas-content"] .aiws-tree-toggle').first().click()
-  await page.locator('[data-testid="aiws-tree-item"][data-entity-id="sf-analysis-content"] .aiws-tree-toggle').first().click()
-  await page.locator('[data-testid="aiws-tree-item"][data-entity-id="wish-analysis-out-data"] .aiws-tree-toggle').first().click()
+  await expandTree(page, 'canvas-content', 'sf-analysis-content', 'wish-analysis-out-data')
   await page.getByTestId(`aiws-tree-${kpi.entity_id}`).click()
-  await page.getByTestId('aiws-versions-toggle').click()
+  await page.getByTestId('aiws-dm-side-tab-history').click()
   await expect(page.getByTestId('aiws-version')).toHaveCount(versions.versions.length)
   await page.getByTestId(`aiws-restore-${oldest.content_rev}`).click()
   await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, kpi.entity_id)).content.props.revenue).toBe(oldest.derived ? '770000.00' : '770000.00')
   expect((await api.read(ALICE, ws.workspace_id, kpi.entity_id)).derived.run_id).toBe(oldest.derived.run_id)
   // new-result mode: a second group, old results untouched
+  // a wish without a macro is not a data source: the type filter shows it (UI 框架 PRD §5.2)
+  await page.getByTestId('aiws-dm-filter').click()
+  await page.getByTestId('aiws-dm-filter-type-wish').check()
   await page.getByTestId('aiws-tree-wish-analysis').click()
   await page.getByTestId('aiws-wish-mode').selectOption('new')
   await page.getByTestId('aiws-wish-run').click()

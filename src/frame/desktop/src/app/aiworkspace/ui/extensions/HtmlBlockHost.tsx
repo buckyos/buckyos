@@ -6,6 +6,7 @@
  * `window.aiws`. Crashes and silence fall back to the snapshot; other Blocks are unaffected. */
 
 import { useEffect, useRef, useState } from 'react'
+import { FileCode2, Play } from 'lucide-react'
 import type { Json } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import { useStore } from '../../state/hooks'
@@ -138,8 +139,9 @@ export const htmlBlock: BlockDefinition = {
   Static: HtmlStatic, View: HtmlView, Editor: HtmlActive,
   catalog: { group: 'extension', get description() { return aiwsT('aiworkspace.extension.html.description') }, needs: 'definition' },
   actions: [
-    { id: 'run', get label() { return aiwsT('aiworkspace.extension.html.run') }, modes: ['edit'], run: (context) => context.activateEditor(), key: 'Enter' },
-    { id: 'open-def', get label() { return aiwsT('aiworkspace.extension.html.openDefinition') }, modes: ['edit', 'view'], when: (context) => Boolean(context.payload.def_ref), run: (context) => { if (context.payload.def_ref) context.openEntity(context.payload.def_ref.entity_id) } },
+    // primary (UI 框架 PRD §10.1): buttons of its toolbar, and in its menu
+    { id: 'run', icon: Play, primary: true, get label() { return aiwsT('aiworkspace.extension.html.run') }, modes: ['edit'], run: (context) => context.activateEditor(), key: 'Enter' },
+    { id: 'open-def', icon: FileCode2, primary: true, get label() { return aiwsT('aiworkspace.extension.html.openDefinition') }, modes: ['edit', 'view'], when: (context) => Boolean(context.payload.def_ref), run: (context) => { if (context.payload.def_ref) context.openEntity(context.payload.def_ref.entity_id) } },
   ],
   create: (args) => {
     // the definition reference is the Cell's `def_ref`, never part of its configuration

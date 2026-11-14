@@ -4,13 +4,13 @@
  * tests/datamodel/aiworkspace-i18n.test.ts. */
 
 import type { Page } from '@playwright/test'
-import { backToList, expect, LOCALE_STORAGE_KEY, openApp, openSide, openStatus, setCanvasMode, test } from './fixtures'
+import { backToList, closePermissions, expect, LOCALE_STORAGE_KEY, openApp, openPermissions, openSide, openStatus, setCanvasMode, test } from './fixtures'
 
 const ALICE = 'tok-alice'
 const CJK = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef]/
 
 /** Content shown as is: workspace titles on the list (other specs name theirs in Chinese). */
-const USER_CONTENT = 'script, style, .aiws-card-title'
+const USER_CONTENT = 'script, style, .aiws-user-text'
 
 /** Chinese text anywhere on the page: text nodes, accessible names, titles, placeholders, same-origin frames. */
 async function chineseOnPage(page: Page): Promise<string[]> {
@@ -80,19 +80,22 @@ test('i18n: in English, the list, a demo created from a template, its chrome, pa
   // the main menu and its submenus
   await page.getByTestId('aiws-main-menu').click()
   await expectEnglish(page, 'main menu')
-  for (const submenu of ['aiws-menu-view', 'aiws-menu-canvas-mode', 'aiws-menu-dev']) {
-    await page.getByTestId(submenu).click()
-    await expectEnglish(page, `main menu → ${submenu}`)
+  for (const path of [['aiws-menu-workspace', 'aiws-menu-offline'], ['aiws-menu-surface', 'aiws-menu-canvas-mode'], ['aiws-menu-insert', 'aiws-menu-import-file'], ['aiws-menu-edit'], ['aiws-menu-view', 'aiws-menu-panels'], ['aiws-menu-collab'], ['aiws-menu-help', 'aiws-menu-dev']]) {
+    for (const submenu of path) await page.getByTestId(submenu).click()
+    await expectEnglish(page, `main menu → ${path.join(' → ')}`)
   }
   await page.keyboard.press('Escape')
   await page.keyboard.press('Escape')
 
-  // the side panel tabs and the status area
-  for (const tab of ['inspector', 'relations', 'annotations', 'collab', 'edits'] as const) {
+  // the side drawer's tabs, members and permissions, and the status panel
+  for (const tab of ['inspector', 'relations', 'annotations'] as const) {
     await openSide(page, tab)
     await expectEnglish(page, `side panel: ${tab}`)
   }
   await page.getByTestId('aiws-side-close').click()
+  await openPermissions(page)
+  await expectEnglish(page, 'members and permissions')
+  await closePermissions(page)
   await openStatus(page)
   await expectEnglish(page, 'status area')
   await page.getByTestId('aiws-status').click()

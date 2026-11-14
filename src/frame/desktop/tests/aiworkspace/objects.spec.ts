@@ -133,10 +133,14 @@ test('OX04/OX12 the table: "+ row" on hover adds a record; filter, fields and ne
   await hover(page, 'blk-sales')
   await page.getByTestId('aiws-afford-add-row').click()
   const frame = page.getByTestId('aiws-canvas-block-blk-sales')
-  await expect(frame.getByLabel('新记录 区域')).toBeFocused()
+  // the new record's form (UI 框架 PRD §7.3): a side panel, every field, added in one Commit
+  const form = page.getByTestId('aiws-table-record-panel')
+  await expect(form).toHaveAttribute('data-mode', 'new')
+  await expect(form.getByLabel('新记录 区域')).toBeFocused()
   await page.keyboard.type('东北')
-  await frame.getByLabel('新记录 产品').fill('雪地靴')
-  await frame.getByTestId('aiws-add-record-submit').click()
+  await form.getByLabel('新记录 产品').fill('雪地靴')
+  await form.getByTestId('aiws-table-record-add').click()
+  await expect(form).toHaveCount(0)
   await expect.poll(async () => (await api.table(ALICE, ws.workspace_id, { source_id: 'sales', limit: 1 })).total).toBe(before + 1)
   // editing: no bar inside the Block; the tools are in the near toolbar and show which panel is open
   await expect(frame.locator('.aiws-table-bar')).toHaveCount(0)
@@ -178,7 +182,7 @@ test('OX05/OX11 notes: typing starts editing, the colour and size come from the 
   // reply: an annotation whose target is the note; the note counts it and opens the filtered panel
   await page.getByTestId('aiws-near-note-reply').click()
   await expect(page.getByTestId('aiws-annotation-draft-target')).toContainText('回复便签')
-  await page.getByLabel('批注内容').fill('已核对，没问题')
+  await page.getByLabel('评论内容').fill('已核对，没问题')
   await page.getByTestId('aiws-annotation-save').click()
   await expect(page.getByTestId('aiws-note-replies-note-1')).toHaveText('1 条回复')
   const reply = (await api.outline(ALICE, ws.workspace_id)).find((e: { type_id: string; target_id?: string }) => e.type_id === 'buckyos.annotation' && e.target_id === 'note-1')
@@ -394,6 +398,8 @@ test('OX14 the near toolbar avoids the floating toolbars and moves what does not
   await page.mouse.click(600, 860)
   await page.getByTestId('aiws-canvas-block-blk-shape').click({ button: 'right' })
   await expect(page.getByTestId('aiws-menu-delete')).toBeVisible()
+  // more than twelve items: "arrange" (lock, order, move to canvas) is a submenu (UI 框架 PRD §10.3)
+  await page.getByTestId('aiws-menu-group-arrange').click()
   await expect(page.getByTestId('aiws-menu-lock')).toBeVisible()
 })
 

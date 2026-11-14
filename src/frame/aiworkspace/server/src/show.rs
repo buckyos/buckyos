@@ -13,6 +13,7 @@ use aiworkspace_core::value::format_utc_ms;
 use aiworkspace_core::{Code, WsError, WsResult};
 use aiworkspace_store::show::ShowLock;
 use aiworkspace_store::workspace::random_id;
+use aiworkspace_store::worklog::ShowEvent;
 use aiworkspace_store::Caller;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -60,9 +61,29 @@ pub struct Shows {
     map: Mutex<HashMap<String, Show>>,
     /// Bumped on every change of any show: watchers re-check their own.
     tick: Mutex<Option<watch::Sender<u64>>>,
+    /// Starts and ends of the shows of each Workspace since the service started, newest last: what the work log
+    /// (UI 框架 PRD K3) shows of them — a show leaves no other record.
+    log: Mutex<HashMap<String, VecDeque<ShowEvent>>>,
 }
 
+/// Show starts and ends a Workspace keeps in memory for the work log.
+const LOG_KEPT: usize = 200;
+
 impl Shows {
+    fn record(&self, show: &Show, show_id: &str, at_ms: i64, end: bool) {
+        let mut log = self.log.lock().unwrap();
+        let list = log.entry(show.workspace_id.clone()).or_default();
+        list.push_back(ShowEvent { show_id: show_id.to_string(), presenter: show.presenter.principal.clone(), path_id: show.path_id.clone(), at_ms, end });
+        while list.len() > LOG_KEPT {
+            list.pop_front();
+        }
+    }
+
+    /// The shows of `workspace_id` that started or ended since the service started.
+    pub fn events(&self, workspace_id: &str) -> Vec<ShowEvent> {
+        self.log.lock().unwrap().get(workspace_id).map(|l| l.iter().cloned().collect()).unwrap_or_default()
+    }
+
     fn notify(&self) {
         let mut tick = self.tick.lock().unwrap();
         let tx = tick.get_or_insert_with(|| watch::channel(0).0);
@@ -221,24 +242,23 @@ async fn start(state: &Arc<AppState>, p: &Value, caller: Caller) -> WsResult<Val
     log::info!("show {show_id} started on {ws_id} by {} (locked: {writer}, clone: {clone_id:?})", caller.principal);
     let out = json!({ "ok": true, "show_id": show_id, "prompter_token": token, "clone_workspace_id": clone_id, "locked": writer,
                       "live": clone_id.is_some(), "started_at": started_at, "expires_at": format_utc_ms(expires_ms), "lease_ms": lease_ms() });
-    state.shows.map.lock().unwrap().insert(
-        show_id,
-        Show {
-            workspace_id: ws_id,
-            presenter: caller,
-            path_id,
-            clone_id,
-            locked: writer,
-            token,
-            started_at,
-            expires_ms,
-            state: json!({}),
-            seq: 0,
-            commands: VecDeque::new(),
-            cursor: 0,
-            command_ids: VecDeque::new(),
-        },
-    );
+    let show = Show {
+        workspace_id: ws_id,
+        presenter: caller,
+        path_id,
+        clone_id,
+        locked: writer,
+        token,
+        started_at,
+        expires_ms,
+        state: json!({}),
+        seq: 0,
+        commands: VecDeque::new(),
+        cursor: 0,
+        command_ids: VecDeque::new(),
+    };
+    state.shows.record(&show, &show_id, now, false);
+    state.shows.map.lock().unwrap().insert(show_id, show);
     state.shows.notify();
     Ok(out)
 }
@@ -340,6 +360,7 @@ async fn end(state: &Arc<AppState>, p: &Value, auth: Auth) -> WsResult<Value> {
 /// Release the lock, delete the clone, forget the show (its token with it) and wake its watchers.
 pub async fn end_show(state: &Arc<AppState>, show_id: &str) {
     let Some(show) = state.shows.map.lock().unwrap().remove(show_id) else { return };
+    state.shows.record(&show, show_id, (state.svc.clock)(), true);
     // the clone goes before the lock: once others may write again, the show has left nothing behind
     if let Some(clone) = show.clone_id {
         let st = state.clone();

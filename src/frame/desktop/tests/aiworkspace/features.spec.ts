@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { chooseFolderFromZone, chooseFromDevice, chooseFromZone, expect, expectAllCommitted, openApp, openWorkspace, openWorkspacePage, test, closeWorkspace, openSide } from './fixtures'
+import { cardMenu, chooseFolderFromZone, chooseFromDevice, chooseFromZone, expect, expectAllCommitted, openApp, openWorkspace, openWorkspacePage, test, closeWorkspace, openSide, treeMenu } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -20,7 +20,7 @@ test('named imports preserve folder structure and workspace asset bytes after re
   writeFileSync(join(root, 'empty.txt'), '')
   try {
     // the folder is chosen in the system file picker, from this device
-    await page.getByTestId('aiws-pick-folder').click()
+    await treeMenu(page, null, 'aiws-dm-menu-import', 'aiws-pick-folder')
     await page.getByTestId('select-local-input').setInputFiles(root)
     // the data folders of the imports (a canvas group of the same title has that name too: names follow titles)
     await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '资料 folder' && e.kind === 'folder').length).toBe(1)
@@ -64,7 +64,7 @@ test('imports from the Zone: a folder and files chosen in the system file picker
   await page.getByTestId('aiws-top-sources').click()
   const contents = Buffer.alloc(48 * 1024, 73)
   // a folder of the Zone (sysdlg path A: the picker over the Desktop window)
-  await chooseFolderFromZone(page, () => page.getByTestId('aiws-pick-folder').click(), '/home/Documents/云端 资料', [
+  await chooseFolderFromZone(page, () => treeMenu(page, null, 'aiws-dm-menu-import', 'aiws-pick-folder'), '/home/Documents/云端 资料', [
     { path: 'same.txt', buffer: contents }, { path: 'nested/same.txt', buffer: contents }, { path: 'note.md', buffer: Buffer.from('# 云端') },
   ])
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '云端 资料').length).toBe(1)
@@ -82,8 +82,8 @@ test('imports from the Zone: a folder and files chosen in the system file picker
   // files of the Zone on the Workspace's own origin (path C: the system page framed over the Workspace's page)
   await openWorkspacePage(page, ALICE, ws.workspace_id)
   // (the page opens where the window left off: the data view)
-  if (!await page.getByTestId('aiws-pick-files').isVisible()) await page.getByTestId('aiws-top-sources').click()
-  await chooseFromZone(page, () => page.getByTestId('aiws-pick-files').click(), [{ name: '报告.txt', mimeType: 'text/plain', buffer: Buffer.from('来自 Zone') }])
+  if (await page.getByTestId('aiws-top-sources').isVisible()) await page.getByTestId('aiws-top-sources').click()
+  await chooseFromZone(page, () => treeMenu(page, null, 'aiws-dm-menu-import', 'aiws-pick-files'), [{ name: '报告.txt', mimeType: 'text/plain', buffer: Buffer.from('来自 Zone') }])
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter(e => e.name === '报告.txt').length).toBe(1)
   const report = (await api.outline(ALICE, ws.workspace_id)).find(e => e.name === '报告.txt')
   const reportId = (await api.read(ALICE, ws.workspace_id, report.entity_id)).content.payload.object_id
@@ -201,7 +201,8 @@ test('a refused rich text update is kept as a recoverable draft and the editor r
   // the refused text is recoverable
   const drafts = bob.getByTestId('aiws-drafts')
   await drafts.getByRole('button').first().click()
-  await expect(drafts).toContainText('不会被接受的一句。')
+  // the withdrawn permission reaches the editor while bob types (acl_rev): the keys after it no longer enter the text
+  await expect(drafts).toContainText('不会被接受的一句')
   await expect(drafts).toContainText('PERMISSION_DENIED')
   expect(JSON.stringify(await api.ast(ALICE, ws.workspace_id, 'notes'))).not.toContain('不会被接受的一句')
   await context.close()
@@ -265,29 +266,32 @@ test('annotations, field and option management, migration pre-check, broken view
 
   // annotation on a table cell
   await all.getByTestId('aiws-cell-task-41-owner').hover()
-  await all.getByLabel('批注 负责人 task-41', { exact: true }).click()
-  await page.getByLabel('批注内容').fill('请确认负责人')
+  await all.getByLabel('评论 负责人 task-41', { exact: true }).click()
+  await page.getByLabel('评论内容').fill('请确认负责人')
   await page.getByTestId('aiws-annotation-save').click()
   await expect(page.getByTestId('aiws-annotation').filter({ hasText: '请确认负责人' })).toContainText('锚点有效')
   await expect(all.getByTestId('aiws-cell-task-41-owner').getByTestId('aiws-cell-annotation')).toBeVisible()
   // annotation on a rich text block: nothing selected, the block around the caret
   await notesBlock(page, 'n-intro').click()
   await page.keyboard.press('Control+Alt+m')
-  await page.getByLabel('批注内容').fill('这一段需要更新')
+  await page.getByLabel('评论内容').fill('这一段需要更新')
   await page.getByTestId('aiws-annotation-save').click()
   await expect(page.getByTestId('aiws-annotation').filter({ hasText: '这一段需要更新' })).toContainText('块「第一期围绕文档格式')
   await expect(page.getByTestId('aiws-richtext-notes').locator('[data-block-id="n-intro"].aiws-anno-block')).toBeVisible()
   await expect(page.getByTestId('aiws-annotation')).toHaveCount(3)
 
-  // rename a field: same field_id, both views and the annotation keep pointing at it (V08)
+  // rename a field in its details (UI 框架 PRD §7.3): same field_id, both views and the annotation keep pointing at it (V08)
   await page.getByTestId('aiws-fields-cell-all-tasks').click()
   const manager = all.getByTestId('aiws-field-manager')
-  await manager.getByTestId('aiws-field-row-owner').getByRole('button', { name: '改名' }).click()
+  const detail = async (fieldId: string) => { await manager.getByTestId(`aiws-field-open-${fieldId}`).click(); await expect(manager.getByTestId('aiws-field-detail')).toHaveAttribute('data-field-id', fieldId) }
+  const back = () => manager.getByTestId('aiws-field-back').click()
+  await detail('owner')
   await page.getByLabel('字段名 owner').fill('责任人')
   await page.getByLabel('字段名 owner').press('Enter')
   await expect(all.locator('.aiws-th').filter({ hasText: '责任人' })).toBeVisible()
   await expect(all.getByTestId('aiws-cell-task-41-owner').getByTestId('aiws-cell-annotation')).toBeVisible()
   await expect(page.getByTestId('aiws-annotation').filter({ hasText: '请确认负责人' })).toContainText('锚点有效')
+  await back()
 
   // add a field (also added to this view's explicit column list), then an option
   await page.getByLabel('新字段名').fill('标签')
@@ -297,25 +301,31 @@ test('annotations, field and option management, migration pre-check, broken view
   const source = async () => (await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'tasks' })).content.fields as { field_id: string; name: string; type: string; options?: { option_id: string; label: string }[] }[]
   const tag = (await source()).find((field) => field.name === '标签')
   expect(tag?.type).toBe('select')
+  await detail(tag?.field_id as string)
   await page.getByLabel(`新选项 ${tag?.field_id}`).fill('紧急')
   await page.getByLabel(`新选项 ${tag?.field_id}`).press('Enter')
   await expect.poll(async () => (await source()).find((field) => field.name === '标签')?.options?.map((option) => option.label)).toEqual(['紧急'])
+  await back()
   // rename an option of an existing field: values keep their option_id, the label changes everywhere
+  await detail('status')
   await page.getByLabel('选项新名 option-open').fill('处理中')
-  await manager.getByTestId('aiws-field-row-status').locator('.aiws-chip', { hasText: '进行中' }).getByRole('button', { name: '改', exact: true }).click()
+  await page.getByLabel('选项新名 option-open').press('Enter')
   await expect(open.getByTestId('aiws-cell-task-41-status')).toContainText('处理中')
   // deleting an option that is in use is refused and reported
-  await manager.getByTestId('aiws-field-row-status').locator('.aiws-chip', { hasText: '完成' }).getByRole('button', { name: '删', exact: true }).click()
+  await manager.getByTestId('aiws-option-delete-option-done').click()
   await expect(page.getByTestId('aiws-edit-entry').filter({ hasText: '删除选项' })).toContainText('未被接受')
   expect((await source()).find((field) => field.field_id === 'status')?.options).toHaveLength(2)
+  await back()
 
   // migration pre-check: text → date on "owner" cannot convert, nothing changes
+  await detail('owner')
   await manager.getByTestId('aiws-migrate-owner').click()
   await page.getByLabel('目标类型').selectOption('date')
   await page.getByTestId('aiws-migration-precheck').click()
   await expect(page.getByTestId('aiws-migration-status')).toContainText('预检未通过')
   await expect(page.getByTestId('aiws-migration-report')).toContainText('无法转换 4')
   expect((await source()).find((field) => field.field_id === 'owner')?.type).toBe('text')
+  await back()
   // number → decimal on a new field converts
   await page.getByLabel('新字段名').fill('工时')
   await page.getByLabel('新字段类型').selectOption('number')
@@ -326,6 +336,7 @@ test('annotations, field and option management, migration pre-check, broken view
   await page.getByLabel('工时 task-40', { exact: true }).fill('7.5')
   await page.getByLabel('工时 task-40', { exact: true }).press('Enter')
   await expect.poll(async () => (await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-40', hours)).value).toBe(7.5)
+  await detail(hours)
   await manager.getByTestId(`aiws-migrate-${hours}`).click()
   await page.getByTestId('aiws-migration-precheck').click()
   await expect(page.getByTestId('aiws-migration-status')).toContainText('预检通过')
@@ -333,9 +344,12 @@ test('annotations, field and option management, migration pre-check, broken view
   await page.getByTestId('aiws-migration-run').click()
   await expect.poll(async () => (await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-40', hours)).value).toBe('7.50')
   await expect(all.getByTestId(`aiws-cell-task-40-${hours}`)).toContainText('7.50')
+  await back()
 
-  // deleting a field a saved filter uses breaks that view visibly (never silently shows more rows)
-  await manager.getByTestId('aiws-field-row-status').getByRole('button', { name: '删除', exact: true }).click()
+  // deleting a field a saved filter uses breaks that view visibly (never silently shows more rows); it is asked first
+  await detail('status')
+  await manager.getByTestId('aiws-field-delete').click()
+  await page.getByTestId('aiws-table-confirm-ok').click()
   await expect(open.getByTestId('aiws-table-error-cell-open-tasks')).toContainText('VIEW_BROKEN')
   await expect(open.getByTestId('aiws-diagnostics-cell-open-tasks')).toContainText('已删除的字段')
   await expect(open.getByTestId('aiws-row')).toHaveCount(0)
@@ -344,8 +358,10 @@ test('annotations, field and option management, migration pre-check, broken view
   await expect(open.getByTestId('aiws-row')).toHaveCount(4)
   await expect(open.getByTestId('aiws-table-error-cell-open-tasks')).toHaveCount(0)
 
-  // deleting an annotated record: the annotation stays, falls back to its table and keeps what it was about
-  await all.getByTestId('aiws-row').filter({ has: page.getByTestId('aiws-cell-task-41-title') }).getByRole('button', { name: '删除' }).click()
+  // deleting an annotated record (ticked, deleted from the selection bar, asked first): the annotation stays, falls back to its table and keeps what it was about
+  await all.getByTestId('aiws-row-check-task-41').check()
+  await all.getByTestId('aiws-table-selection-delete').click()
+  await page.getByTestId('aiws-table-confirm-ok').click()
   await expect(all.getByTestId('aiws-row')).toHaveCount(4)
   // the refused option delete opened 修改状态 (one panel at a time): back to the annotations
   await openSide(page, 'annotations')
@@ -389,8 +405,15 @@ test('session filter and sort stay local until "save view"; structure edits: cre
     .filter((child: { type_id: string; kind?: string }) => child.type_id === 'buckyos.cell' || child.kind === 'group').map((child: { entity_id: string }) => child.entity_id) as string[]
   const frames = () => page.locator('[data-testid="aiws-flow"] > [data-cell-id]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-cell-id')))
   expect(await order()).toEqual(['cell-notes', 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
-  // reorder from the Block menu of the ⋮⋮ handle (tree.place, order key from the WASM core)
-  const blockMenu = async (id: string) => { await page.getByTestId(`aiws-cell-frame-${id}`).hover(); await page.getByTestId(`aiws-flow-handle-${id}`).click() }
+  // reorder from the Block menu of the ⋮⋮ handle (tree.place, order key from the WASM core); the menu is the Block's whole
+  // menu, where moving is under "arrange" (a submenu when there are more than twelve items, UI 框架 PRD §10.3)
+  const blockMenu = async (id: string) => {
+    await page.getByTestId(`aiws-cell-frame-${id}`).hover()
+    await page.getByTestId(`aiws-flow-handle-${id}`).click()
+    await expect(page.getByTestId('aiws-flow-block-menu').getByTestId(`aiws-inspect-${id}`)).toBeVisible()
+    const arrange = page.getByTestId('aiws-flow-block-menu').getByTestId('aiws-menu-group-arrange')
+    if (await arrange.count()) await arrange.click()
+  }
   await blockMenu('cell-notes')
   await page.getByTestId('aiws-down-cell-notes').click()
   await expect.poll(order).toEqual(['cell-all-tasks', 'cell-notes', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
@@ -438,9 +461,9 @@ test('session filter and sort stay local until "save view"; structure edits: cre
   await expect(page.locator(`[data-cell-id="${newCellId}"]`)).toHaveCount(0)
   // a source that a Block still shows cannot be deleted: the pre-check names the Block, nothing is lost
   await page.getByTestId('aiws-top-sources').click()
-  await page.getByTestId('aiws-tree-tasks').click()
-  await page.getByTestId('aiws-delete-entity').click()
+  await treeMenu(page, 'tasks', 'aiws-delete-entity')
   await expect(page.getByTestId('aiws-delete-blocked')).toContainText('仍被引用')
+  await page.keyboard.press('Escape')
   await page.getByTestId('aiws-top-canvas').click()
   await expect(all.getByTestId('aiws-row')).toHaveCount(2)
 })
@@ -452,14 +475,18 @@ test('packages: export, import as new, clone, and a restore that replaces histor
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, acceptDownloads: true })
   const list = await context.newPage()
   await openApp(list, ALICE)
-  const card = list.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws.workspace_id}"]`)
+  // the card's ⋯ menu (UI framework PRD §9.2): export, Clone and the rest are there
+  const exportDialog = list.getByTestId('aiws-export-dialog')
+  const importForm = list.getByTestId('aiws-import-dialog').getByTestId('aiws-import')
 
-  // share export → import as a new workspace
-  const [share] = await Promise.all([list.waitForEvent('download'), card.getByTestId('aiws-export').click()])
+  // share export (downloaded to this device) → import as a new workspace
+  await cardMenu(list, ws.workspace_id, 'aiws-home-export')
+  const [share] = await Promise.all([list.waitForEvent('download'), exportDialog.getByTestId('aiws-export').click()])
   const sharePath = await share.path()
-  await expect(card.getByTestId('aiws-export-manifest')).toContainText('分享')
-  const importForm = list.getByTestId('aiws-import')
-  await chooseFromZone(list, () => importForm.getByTestId('aiws-import-file').click(), { name: 'share.zip', mimeType: 'application/zip', buffer: (await import('node:fs')).readFileSync(sharePath) })
+  await expect(exportDialog.getByTestId('aiws-export-manifest')).toContainText('分享')
+  await exportDialog.getByRole('button', { name: '关闭', exact: true }).click()
+  // the home's Import: the system file picker first, then what the package becomes (§9.3)
+  await chooseFromZone(list, () => list.getByTestId('aiws-home-import').click(), { name: 'share.zip', mimeType: 'application/zip', buffer: (await import('node:fs')).readFileSync(sharePath) })
   await expect(importForm.getByTestId('aiws-import-file-name')).toHaveText('share.zip')
   // the semantics have no default: nothing can be imported before choosing
   await expect(importForm.getByTestId('aiws-import-submit')).toBeDisabled()
@@ -467,18 +494,21 @@ test('packages: export, import as new, clone, and a restore that replaces histor
   await importForm.getByTestId('aiws-import-submit').click()
   await expect(list.getByTestId('aiws-list-message')).toContainText('已导入为新的工作区')
   const imported = (await list.getByTestId('aiws-list-message').innerText()).match(/ws_[a-z0-9]+/)?.[0] as string
+  await list.getByTestId('aiws-import-stay').click()
   expect(imported).not.toBe(ws.workspace_id)
   expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: imported })).entities).toHaveLength(18)
   expect((await api.rpc(ALICE, 'doc.checkpoint', { workspace_id: imported })).content_root).toBe((await api.rpc(ALICE, 'doc.checkpoint', { workspace_id: ws.workspace_id })).content_root)
 
   // clone
-  await card.getByTestId('aiws-clone').click()
+  await cardMenu(list, ws.workspace_id, 'aiws-clone')
   await expect(list.getByTestId('aiws-list-message')).toContainText('已复制为新工作区')
 
   // personal backup, then an edit in a second window, then restore + replace: the open window must stop
-  await card.getByLabel('导出方式').selectOption('personal_backup')
-  const [backup] = await Promise.all([list.waitForEvent('download'), card.getByTestId('aiws-export').click()])
+  await cardMenu(list, ws.workspace_id, 'aiws-home-export')
+  await exportDialog.getByLabel('导出方式').selectOption('personal_backup')
+  const [backup] = await Promise.all([list.waitForEvent('download'), exportDialog.getByTestId('aiws-export').click()])
   const backupBytes = (await import('node:fs')).readFileSync(await backup.path())
+  await exportDialog.getByRole('button', { name: '关闭', exact: true }).click()
   const editor = await context.newPage()
   await openWorkspace(editor, ALICE, ws.workspace_id)
   const all = editor.getByTestId('aiws-table-cell-all-tasks')
@@ -487,7 +517,7 @@ test('packages: export, import as new, clone, and a restore that replaces histor
   await editor.getByLabel('负责人 task-40', { exact: true }).press('Enter')
   await expectAllCommitted(editor)
 
-  await chooseFromDevice(list, () => importForm.getByTestId('aiws-import-file').click(), { name: 'backup.zip', mimeType: 'application/zip', buffer: backupBytes })
+  await chooseFromDevice(list, () => list.getByTestId('aiws-home-import').click(), { name: 'backup.zip', mimeType: 'application/zip', buffer: backupBytes })
   await importForm.getByLabel('恢复为包内的同一工作区').check()
   await importForm.getByLabel('若该工作区已存在则替换').check()
   await importForm.getByTestId('aiws-import-submit').click()
@@ -559,18 +589,17 @@ test('record properties, asset upload, object embed and object link', async ({ p
   await openWorkspace(page, ALICE, ws.workspace_id)
 
   // record: each property is its own version cell
+  // the record form (UI 框架 PRD §7.5): every property in the control of its type, written when it is left
   const record = page.getByTestId('aiws-cell-frame-cell-info').getByTestId('aiws-record-project-info')
-  await record.getByTestId('aiws-prop-owner').getByRole('button').first().click()
   await page.getByLabel('负责人', { exact: true }).fill('王')
   await page.getByLabel('负责人', { exact: true }).press('Enter')
-  await record.getByTestId('aiws-prop-deadline').getByRole('button').first().click()
+  await expect(record.getByLabel('截止', { exact: true })).toHaveAttribute('type', 'date')
   await page.getByLabel('截止', { exact: true }).fill('2026-11-01')
   await page.getByLabel('截止', { exact: true }).press('Enter')
   await expectAllCommitted(page)
   const info = (await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'project-info' })).content
   expect(info.props).toEqual({ owner: '王', deadline: '2026-11-01', budget: '1200.00' })
   // a stale write to a property conflicts and shows both values
-  await record.getByTestId('aiws-prop-budget').getByRole('button').first().click()
   await page.getByLabel('预算', { exact: true }).fill('999')
   expect((await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'project-info', keys: [{ key: 'p:budget', value: '1500.00', expect: { rev: info.key_revs['p:budget'] } }] }])).status).toBe('accepted')
   await expect(page.getByTestId('aiws-cell-frame-cell-info')).toBeVisible()
@@ -580,12 +609,12 @@ test('record properties, asset upload, object embed and object link', async ({ p
   await expect(budget.getByTestId('aiws-conflict-theirs')).toHaveText('1500.00')
   await expect(budget.getByTestId('aiws-conflict-mine')).toHaveText('999')
   await budget.getByTestId('aiws-conflict-discard').click()
-  await expect(budget).toContainText('1500.00')
+  await expect(budget.getByLabel('预算', { exact: true })).toHaveValue('1500.00')
 
   // asset: upload → verified object → asset-ref + cell in one commit; shown through the authenticated route
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAJCAIAAAC0SDtlAAAAFElEQVR42mPQiDpBEmIY1TAoNAAAk1q5oVLxFXwAAAAASUVORK5CYII=', 'base64')
   await page.getByTestId('aiws-top-sources').click()
-  await chooseFromZone(page, () => page.getByTestId('aiws-new-image').click(), { name: '新图.png', mimeType: 'image/png', buffer: png })
+  await chooseFromZone(page, () => treeMenu(page, null, 'aiws-dm-menu-import', 'aiws-pick-files'), { name: '新图.png', mimeType: 'image/png', buffer: png })
   await expect(page.locator('[data-testid^="aiws-detail-"]').getByTestId('aiws-asset-image')).toHaveCount(1)
   await page.getByTestId('aiws-top-canvas').click()
   const outline = (await api.rpc(ALICE, 'doc.outline', { workspace_id: ws.workspace_id })).entities as { entity_id: string; type_id: string }[]
@@ -617,8 +646,7 @@ test('record properties, asset upload, object embed and object link', async ({ p
   expect(ast.content.filter((node: { type: string }) => node.type === 'object_embed').map((node: { attrs: { ref: { entity_id: string } } }) => node.attrs.ref.entity_id).sort()).toEqual(['cell-info', 'cell-open-tasks'])
   expect(text).toContain('"entity_id":"project-info"')
   // the embedded record is live: a change of the source shows up inside the document
-  await record.getByTestId('aiws-prop-owner').getByRole('button').first().click()
-  await page.getByLabel('负责人', { exact: true }).fill('赵')
+  await record.getByLabel('负责人', { exact: true }).fill('赵')
   await page.getByLabel('负责人', { exact: true }).press('Enter')
   await expect(page.getByTestId('aiws-embed-cell-info')).toContainText('赵')
   // while editing, an object link opens with Ctrl+click (a plain click only places the caret)
@@ -695,10 +723,11 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
   }
   const fields = (await api.rpc(ALICE, 'doc.read', { workspace_id: workspaceId, entity_id: sourceId })).content.fields as { field_id: string; name: string }[]
   const id = (name: string) => fields.find((field) => field.name === name)?.field_id as string
+  await frame.getByTestId(`aiws-field-open-${id('标签')}`).click()
   for (const label of ['家', '工作']) {
     await page.getByLabel(`新选项 ${id('标签')}`).fill(label)
     await page.getByLabel(`新选项 ${id('标签')}`).press('Enter')
-    await expect(frame.getByTestId('aiws-field-manager').locator('.aiws-chip', { hasText: label })).toBeVisible()
+    await expect(frame.getByTestId('aiws-field-detail').locator('.aiws-option-item input').last()).toHaveValue(label)
   }
   await page.getByTestId(`aiws-fields-${cellId}`).click()
   // multi_select
@@ -729,8 +758,8 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
   // delete the workspace from the list (explicit confirmation)
   await closeWorkspace(page)
   const again = page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${workspaceId}"]`)
-  await again.getByTestId('aiws-delete').click()
-  await again.getByTestId('aiws-delete-confirm').click()
+  await cardMenu(page, workspaceId, 'aiws-delete')
+  await page.getByTestId('aiws-home-delete-dialog').getByTestId('aiws-delete-confirm').click()
   await expect(again).toHaveCount(0)
   expect((await api.rpc(ALICE, 'ws.list', {})).workspaces.some((item: { workspace_id: string }) => item.workspace_id === workspaceId)).toBe(false)
 })

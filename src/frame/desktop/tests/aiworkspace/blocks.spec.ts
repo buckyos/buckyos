@@ -172,12 +172,18 @@ test('actions use the current payload and key revisions and respect view mode', 
       },
     }] })
   })
+  // not marked primary: in the Block's menu (the toolbar's "more"), not on the toolbar (UI 框架 PRD §10.1)
   await page.getByTestId('aiws-canvas-block-blk-kpi').click()
+  await expect(page.getByTestId('aiws-near-toolbar').locator('[data-near-index] [data-testid="aiws-near-write-config"]')).toHaveCount(0)
+  await page.getByTestId('aiws-near-more').click()
   await page.getByTestId('aiws-near-write-config').click()
   await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, 'blk-kpi')).content.payload.config).toEqual({ accent: '#123456', note: 'from action' })
   await setCanvasMode(page, 'view')
+  await page.getByTestId('aiws-near-more').click()
   await expect(page.getByTestId('aiws-near-write-config')).toHaveCount(0)
+  await page.keyboard.press('Escape')
   await setCanvasMode(page, 'edit')
+  await page.getByTestId('aiws-near-more').click()
   await expect(page.getByTestId('aiws-near-write-config')).toBeVisible()
 })
 

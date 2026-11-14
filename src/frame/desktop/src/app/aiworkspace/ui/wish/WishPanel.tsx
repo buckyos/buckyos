@@ -124,30 +124,54 @@ function Progress({ run, onCancel }: { run: WishRunView; onCancel: () => void })
   )
 }
 
-function ProgramView({ wishId, canEdit }: { wishId: string; canEdit: boolean }) {
+/** A macro's code with its line numbers, in a monospace font (UI 框架 PRD §5.3). */
+function CodeLines({ text }: { text: string }) {
+  const lines = text.split('\n')
+  return (
+    <pre className="aiws-wish-code" data-testid="aiws-wish-code" data-lines={lines.length}>
+      <code>{lines.map((line, i) => <span key={i} className="aiws-wish-code-line"><span className="aiws-wish-code-no" aria-hidden="true">{i + 1}</span>{line}{'\n'}</span>)}</code>
+    </pre>
+  )
+}
+
+/** The macro (the wish's saved program). In the wish panel it is unfolded on demand; `page`: the "代码" page of the macro's
+ * editor in the data mode (§5.3) — read at once, line numbers, and why it cannot be edited (`reason`) when it cannot. */
+export function ProgramView({ wishId, canEdit, reason = null, page = false }: { wishId: string; canEdit: boolean; reason?: string | null; page?: boolean }) {
   const store = useStore()
   const { t } = useAiwsText()
-  const [source, setSource] = useState<string | null>(null)
+  const [unfolded, setUnfolded] = useState<string | null>(null)
   const [draft, setDraft] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const load = async () => {
+  // the page reads the program at once and follows it (a new coding run, another window's edit)
+  const version = useVersion(`e:${wishId}`)
+  const loadPage = useCallback(() => (page ? store.wish.programSource(wishId).then((text) => text ?? '') : Promise.resolve(null)), [store, wishId, page])
+  const pageRead = useLoad<string | null>(loadPage, version)
+  const source = page ? pageRead.data ?? null : unfolded
+  const shownError = error ?? (page ? pageRead.error : null)
+  const unfold = async () => {
     setError(null)
-    try { setSource(await store.wish.programSource(wishId) ?? '') } catch (e) { setError(describeError(e)) }
+    try { setUnfolded(await store.wish.programSource(wishId) ?? '') } catch (e) { setError(describeError(e)) }
   }
   const save = async () => {
     if (draft === null) return
-    try { await store.wish.saveProgram(wishId, draft); setSource(draft); setDraft(null) } catch (e) { setError(describeError(e)) }
+    try { await store.wish.saveProgram(wishId, draft); setUnfolded(draft); setDraft(null); pageRead.reload() } catch (e) { setError(describeError(e)) }
   }
-  if (source === null) return <button type="button" className="aiws-link" data-testid="aiws-wish-program" onClick={() => { void load() }}>{t('aiworkspace.wish.program.view')}</button>
+  if (source === null) {
+    if (page) return shownError ? <div className="aiws-error" role="alert">{shownError}</div> : <div className="aiws-muted">{t('aiworkspace.wish.loading')}</div>
+    return <button type="button" className="aiws-link" data-testid="aiws-wish-program" onClick={() => { void unfold() }}>{t('aiworkspace.wish.program.view')}</button>
+  }
   return (
-    <div className="aiws-wish-program" data-testid="aiws-wish-program-view">
-      {draft === null ? <pre className="aiws-wish-context">{source || t('aiworkspace.wish.program.none')}</pre> : <textarea data-testid="aiws-wish-program-edit" rows={14} value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />}
-      {error && <div className="aiws-error">{error}</div>}
+    <div className={`aiws-wish-program${page ? ' is-page' : ''}`} data-testid="aiws-wish-program-view" data-editable={canEdit ? 'true' : 'false'}>
+      {page && !canEdit && reason && <div className="aiws-muted aiws-wish-program-reason" data-testid="aiws-wish-program-reason">{reason}</div>}
+      {draft === null
+        ? (page ? (source ? <CodeLines text={source} /> : <div className="aiws-muted">{t('aiworkspace.wish.program.none')}</div>) : <pre className="aiws-wish-context">{source || t('aiworkspace.wish.program.none')}</pre>)
+        : <textarea className={page ? 'aiws-wish-code-edit' : undefined} data-testid="aiws-wish-program-edit" rows={page ? 24 : 14} value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />}
+      {shownError && <div className="aiws-error">{shownError}</div>}
       <div className="aiws-inline-form">
-        {canEdit && draft === null && <button type="button" onClick={() => setDraft(source)}>{t('aiworkspace.common.edit')}</button>}
+        {canEdit && draft === null && <button type="button" data-testid="aiws-wish-program-start-edit" onClick={() => setDraft(source)}>{t('aiworkspace.common.edit')}</button>}
         {draft !== null && <button type="button" data-testid="aiws-wish-program-save" onClick={() => { void save() }}>{t('aiworkspace.wish.program.save')}</button>}
         {draft !== null && <button type="button" onClick={() => setDraft(null)}>{t('aiworkspace.wish.program.discard')}</button>}
-        <button type="button" onClick={() => { setSource(null); setDraft(null) }}>{t('aiworkspace.wish.program.collapse')}</button>
+        {!page && <button type="button" onClick={() => { setUnfolded(null); setDraft(null) }}>{t('aiworkspace.wish.program.collapse')}</button>}
       </div>
     </div>
   )

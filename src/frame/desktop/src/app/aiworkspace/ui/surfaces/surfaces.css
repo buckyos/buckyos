@@ -1,0 +1,61 @@
+/* The canvas picker (UI 框架 PRD §4.1.1): a panel under the canvas name; on a phone the whole screen. */
+
+.aiws-root .aiws-surface-list.aiws-sp { width: 360px; max-height: none; overflow: visible; display: flex; flex-direction: column; gap: 2px; }
+.aiws-sp-head { display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 2px 4px 6px; border-bottom: 1px solid var(--cp-border); margin-bottom: 2px; }
+.aiws-sp-title { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.aiws-sp-title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-root button.aiws-sp-home { flex: none; gap: 4px; }
+.aiws-sp-note { font-size: 12px; padding: 0 4px 4px; }
+.aiws-sp-searchbar { display: flex; align-items: center; gap: 4px; }
+.aiws-sp-searchbar .aiws-search { flex: 1 1 auto; min-width: 0; }
+.aiws-sp-searchbar .aiws-search input { min-width: 0; }
+.aiws-sp-searchbar .aiws-tool[aria-pressed='true'] { background: var(--aiws-selected-bg); box-shadow: inset 0 0 0 1px var(--aiws-selected-border); }
+
+.aiws-surface-list .aiws-surface-items.aiws-sp-list { display: block; position: relative; max-height: min(56vh, 460px); overflow: auto; overscroll-behavior: contain; }
+.aiws-sp-rows { position: relative; width: 100%; }
+.aiws-sp-rows > * { position: absolute; left: 0; right: 0; box-sizing: border-box; }
+.aiws-sp-heading { display: flex; align-items: flex-end; padding: 0 6px 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+.aiws-sp-empty { display: flex; align-items: center; padding: 0 8px; }
+.aiws-surface-item.aiws-sp-row { display: flex; align-items: center; gap: 0; padding-right: 2px; }
+.aiws-sp-indent { flex: none; }
+.aiws-root button.aiws-sp-toggle, .aiws-sp-toggle { flex: none; width: 22px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: none; background: none; border-radius: 4px; color: var(--cp-muted); }
+.aiws-root button.aiws-sp-toggle:hover { background: var(--cp-surface-2); }
+.aiws-sp-row .aiws-surface-pick { display: flex; align-items: center; gap: 6px; height: 100%; min-height: 0; padding: 0 6px; }
+.aiws-sp-row .aiws-surface-item-name { display: flex; flex-direction: column; justify-content: center; line-height: 1.2; }
+.aiws-sp-name, .aiws-sp-trail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-sp-trail { font-size: 11px; }
+.aiws-sp-row .aiws-chip { margin-left: 0; }
+.aiws-root .aiws-sp-row .aiws-sp-more { flex: none; }
+.aiws-sp-rename { flex: 1 1 auto; min-width: 0; height: 28px; margin: 0 4px; }
+.aiws-sp-row.is-dragging { opacity: 0.5; }
+.aiws-sp-row.is-drop-into { background: var(--aiws-selected-bg); box-shadow: inset 0 0 0 2px var(--aiws-selected-border); }
+.aiws-sp-row.is-drop-before { box-shadow: inset 0 2px 0 0 var(--cp-accent); }
+.aiws-sp-row.is-drop-after { box-shadow: inset 0 -2px 0 0 var(--cp-accent); }
+
+.aiws-sp-foot { display: flex; flex-wrap: wrap; gap: 2px; border-top: 1px solid var(--cp-border); padding-top: 4px; }
+.aiws-root .aiws-sp-foot > .aiws-popover-item { width: auto; flex: 1 1 0; display: inline-flex; align-items: center; gap: 6px; }
+.aiws-sp-folder-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; padding: 2px 4px; }
+.aiws-sp-folder-form > span { width: 100%; font-size: 12px; }
+.aiws-sp-folder-form input { flex: 1 1 140px; min-width: 0; height: 30px; }
+
+.aiws-sp-move { display: flex; flex-direction: column; gap: 2px; min-height: 0; }
+.aiws-sp-move-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-sp-move-list { max-height: min(56vh, 460px); overflow: auto; display: flex; flex-direction: column; gap: 1px; }
+.aiws-root .aiws-sp-move-target { display: flex; align-items: center; gap: 6px; }
+
+/* touch: rows and targets of at least 44 px */
+@media (pointer: coarse) {
+  .aiws-root button.aiws-sp-toggle, .aiws-sp-toggle { width: 36px; height: 44px; }
+  .aiws-root .aiws-sp-row .aiws-sp-more { min-width: 44px; height: 44px; }
+  .aiws-root .aiws-sp-move-target, .aiws-root .aiws-sp-foot > .aiws-popover-item { min-height: 44px; }
+}
+
+/* a phone: the picker fills the screen (PRD §4.1.1, §6.1) */
+.aiws-root .aiws-workspace[data-phone='true'] .aiws-surface-list.aiws-sp-phone, .aiws-root .aiws-surface-list.aiws-sp-phone {
+  position: fixed; inset: 0; top: 0; left: 0; right: 0; bottom: 0; width: auto; max-width: none; height: auto; max-height: none; margin: 0; border-radius: 0; border: none; z-index: 80;
+  padding: calc(8px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
+  display: flex; flex-direction: column; gap: 4px; overflow: hidden;
+}
+.aiws-surface-list.aiws-sp-phone .aiws-surface-items.aiws-sp-list, .aiws-surface-list.aiws-sp-phone .aiws-sp-move-list { flex: 1 1 auto; max-height: none; min-height: 0; }
+.aiws-surface-list.aiws-sp-phone .aiws-sp-move { flex: 1 1 auto; }
+.aiws-surface-list.aiws-sp-phone .aiws-sp-foot { padding-bottom: 2px; }

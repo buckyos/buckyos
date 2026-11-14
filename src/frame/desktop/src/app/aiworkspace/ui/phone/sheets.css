@@ -1,0 +1,30 @@
+/* The phone's sheets (UI 框架 PRD §6.1): every menu, drop-down, palette and picker rises from the bottom of the window,
+   over a dimmed backdrop, clear of the home indicator; a menu goes one level at a time. Every target is at least 44 px. */
+
+.aiws-sheet-layer { position: fixed; inset: 0; z-index: 95; display: flex; flex-direction: column; justify-content: flex-end; background: rgb(0 0 0 / 28%); touch-action: none; }
+.aiws-root .aiws-sheet-layer > .aiws-sheet {
+  position: relative; inset: auto; width: auto; min-width: 0; max-width: none; max-height: min(80vh, calc(100% - 48px)); margin: 0; box-sizing: border-box;
+  display: flex; flex-direction: column; overflow: hidden; padding: 6px 0 env(safe-area-inset-bottom); touch-action: auto;
+  background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-bottom: none; border-radius: 16px 16px 0 0; box-shadow: var(--cp-shadow);
+}
+.aiws-sheet-grip { flex: none; width: 36px; height: 4px; border-radius: 2px; background: var(--cp-border); margin: 2px auto 4px; }
+.aiws-sheet-head { flex: none; display: flex; align-items: center; gap: 4px; min-height: 48px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--cp-border); }
+.aiws-sheet-head > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.aiws-sheet-head > button.aiws-tool:first-child { margin-left: -8px; }
+.aiws-sheet-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 8px 16px 12px; }
+/* what a pop-over's own class sets for its anchored place does not apply in a sheet */
+.aiws-root .aiws-sheet-body > * { max-width: 100%; }
+.aiws-root .aiws-sheet .aiws-palette-grid { grid-template-columns: repeat(auto-fill, 44px); gap: 8px; }
+.aiws-root .aiws-sheet button.aiws-palette-swatch { width: 44px; height: 44px; }
+.aiws-root .aiws-sheet .aiws-icon-grid { grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); }
+.aiws-root .aiws-sheet .aiws-icon-grid > button { min-height: 48px; }
+
+/* a menu: the entries scroll under the heading; a disabled entry says why */
+.aiws-root .aiws-menu.aiws-menu-phone { position: static; inset: auto; min-width: 0; overflow: auto; overscroll-behavior: contain; padding: 4px 8px 8px; }
+.aiws-root .aiws-sheet-menu > .aiws-menu.aiws-menu-phone { flex: 1 1 auto; min-height: 0; max-height: none; border: none; border-radius: 0; background: none; box-shadow: none; }
+.aiws-root .aiws-menu-phone .aiws-menu-entry > button { min-height: 48px; padding: 6px 10px; white-space: normal; font-size: 15px; }
+.aiws-root .aiws-menu-phone .aiws-menu-reason { max-width: none; font-size: 12px; }
+.aiws-root .aiws-menu-phone .aiws-menu-check { width: 20px; }
+.aiws-root .aiws-menu-phone > hr { margin: 4px 8px; }
+.aiws-menu-phone-head { margin: -4px -8px 4px; }
+.aiws-sheet > .aiws-menu-phone-head { margin: 0; }

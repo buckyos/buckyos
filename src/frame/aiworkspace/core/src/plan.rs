@@ -1416,12 +1416,13 @@ fn container_kind(e: &EntityRow) -> &str {
 /// * `data` / `folder`: folders and data entities (annotations of any scope); the data tree.
 /// * the `shows` system folder: presentation paths and Viewports, nothing else (third phase §6.2);
 ///   they are never placed anywhere else.
-/// * `surfaces`: Surfaces only.
+/// * `surfaces` and the folders under it (canvas folders, UI 框架 PRD §4.1.1, Q5): Surfaces and canvas folders only;
+///   `in_surfaces` says a `folder` parent is one of them.
 /// * `surface` / `group`: Cells, UI groups and controls only; the BlockTree holds no data.
 /// * a control (`mindmap`, 脑图方案 R2/R3/R24): Cells, groups and other controls; inside a control a Cell may hold
 ///   Cells and containers too (a node's children). `in_control` says the parent is a Cell laid out by a control.
 /// * a TableSource holds the rich text bodies of its records.
-pub fn child_allowed(parent: &EntityRow, in_control: bool, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> bool {
+pub fn child_allowed(parent: &EntityRow, in_control: bool, in_surfaces: bool, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> bool {
     if parent.entity_id == SHOWS_ID {
         return is_show_type(child_type) && child_scope == SCOPE_SHARED;
     }
@@ -1439,14 +1440,16 @@ pub fn child_allowed(parent: &EntityRow, in_control: bool, child_type: &str, chi
         TYPE_CELL => child_scope == SCOPE_SHARED,
         _ => false,
     };
+    let canvas_entry = child_type == TYPE_CONTAINER && matches!(child_kind, Some("surface" | "folder")) && child_scope == SCOPE_SHARED;
     match parent.type_id.as_str() {
         TYPE_CONTAINER => match container_kind(parent) {
+            "folder" if in_surfaces => canvas_entry,
             "data" | "folder" => match child_type {
                 TYPE_CONTAINER => child_kind == Some("folder"),
                 TYPE_ANNOTATION => true,
                 t => is_data_type(t) && child_scope == SCOPE_SHARED,
             },
-            "surfaces" => child_type == TYPE_CONTAINER && child_kind == Some("surface"),
+            "surfaces" => canvas_entry,
             "surface" | "group" => block(child_type),
             // a data control's content is projected from its tables, never stored (控件机制 TODO Q19)
             k if crate::types::is_data_control(k) => false,
@@ -1459,10 +1462,52 @@ pub fn child_allowed(parent: &EntityRow, in_control: bool, child_type: &str, chi
     }
 }
 
-/// `child_allowed` for a parent in the current state: whether a Cell parent sits inside a control is read from the tree.
+/// `child_allowed` for a parent in the current state: whether a Cell parent sits inside a control, and whether a folder
+/// parent is a canvas folder, are read from the tree.
 fn child_allowed_here(p: &Planner, parent: &EntityRow, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> WsResult<bool> {
     let in_control = parent.type_id == TYPE_CELL && crate::types::in_tree_control(&p.ov, &parent.entity_id)?;
-    Ok(child_allowed(parent, in_control, child_type, child_kind, child_scope))
+    let in_surfaces = parent.type_id == TYPE_CONTAINER && container_kind(parent) == "folder" && in_surfaces_tree(&p.ov, &parent.entity_id)?;
+    Ok(child_allowed(parent, in_control, in_surfaces, child_type, child_kind, child_scope))
+}
+
+/// Is `id` under `surfaces` (a canvas folder, a Surface or anything drawn on one)? `surfaces` itself is not.
+pub fn in_surfaces_tree(ctx: &dyn ReadCtx, id: &str) -> WsResult<bool> {
+    let mut cur = id.to_string();
+    for _ in 0..4096 {
+        match ctx.edge(&cur)? {
+            Some(e) if e.parent_id == SURFACES_ID => return Ok(true),
+            Some(e) => cur = e.parent_id,
+            None => return Ok(false),
+        }
+    }
+    Ok(false)
+}
+
+/// Every live Surface under `surfaces`, through the canvas folders, in tree order (depth first). Folders are walked
+/// whoever may read them: what a caller may see is judged on each Surface.
+pub fn canvas_surfaces(ctx: &dyn ReadCtx) -> WsResult<Vec<EntityRow>> {
+    fn walk(ctx: &dyn ReadCtx, parent: &str, depth: usize, out: &mut Vec<EntityRow>) -> WsResult<()> {
+        if depth > 64 {
+            return Ok(());
+        }
+        for edge in ctx.children(parent)? {
+            let Some(e) = ctx.entity(&edge.child_id)?.filter(|e| e.alive() && e.type_id == TYPE_CONTAINER) else { continue };
+            match container_kind(&e) {
+                "surface" => out.push(e),
+                "folder" => walk(ctx, &e.entity_id, depth + 1, out)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(ctx, SURFACES_ID, 0, &mut out)?;
+    Ok(out)
+}
+
+/// A canvas folder: a `folder` under `surfaces` (UI 框架 PRD §4.1.1, Q5).
+pub fn is_canvas_folder(ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<bool> {
+    Ok(e.type_id == TYPE_CONTAINER && container_kind(e) == "folder" && in_surfaces_tree(ctx, &e.entity_id)?)
 }
 
 /// What a placement is judged against besides its own shape (脑图方案 §5.1–§5.2): where it sits and what it is.
@@ -1778,6 +1823,11 @@ fn entity_delete(p: &mut Planner, op: &Value) -> OpResult {
     }
     let mut descendants = Vec::new();
     alive_descendants(p, id, &mut descendants)?;
+    // a canvas folder goes only when empty: its canvases are moved or deleted (with their content folders) first
+    if !descendants.is_empty() && !p.env.internal && is_canvas_folder(&p.ov, &e)? {
+        let ids: Vec<&str> = descendants.iter().map(|d| d.entity_id.as_str()).collect();
+        return Err(WsError::sub(Code::InvalidOperation, "FOLDER_NOT_EMPTY", "only an empty canvas folder can be deleted").with_data(json!({ "children": ids })));
+    }
     let listed: BTreeSet<String> = match op.get("subtree") {
         None => BTreeSet::new(),
         Some(Value::String(s)) if s == "reject_if_children" => BTreeSet::new(),
@@ -2289,6 +2339,14 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     let kind = e.payload.get("kind").and_then(Value::as_str);
     if !child_allowed_here(p, &new_parent, &e.type_id, kind, &e.scope)? {
         return Err(WsError::sub(Code::InvalidOperation, "CHILD_NOT_ALLOWED", format!("{} cannot be a child of {new_parent_id}", e.type_id)));
+    }
+    // a folder keeps to its tree: a canvas folder holds canvases, a data folder data (UI 框架 PRD §4.1.1, Q5)
+    if e.type_id == TYPE_CONTAINER && kind == Some("folder") {
+        let canvas = |pid: &str| -> WsResult<bool> { Ok(pid == SURFACES_ID || in_surfaces_tree(&p.ov, pid)?) };
+        let from = p.ov.edge(id)?.map(|edge| edge.parent_id).unwrap_or_default();
+        if canvas(&from)? != canvas(new_parent_id)? {
+            return Err(WsError::sub(Code::InvalidOperation, "CHILD_NOT_ALLOWED", format!("folder {id} cannot move between the data tree and the canvases")));
+        }
     }
     // a node keeps its children only where a tree control lays Blocks out (R3): elsewhere a Cell is a leaf again
     if e.type_id == TYPE_CELL && !crate::types::in_tree_control(&p.ov, new_parent_id)? {

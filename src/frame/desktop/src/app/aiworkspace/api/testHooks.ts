@@ -25,6 +25,13 @@ interface TestHooks {
   commitPartBytes?: number
   /** A show's stage (第三期规划 §9): the camera of the Surface on stage, and the transitions it ran with their timings. */
   stage?: { view: () => { x: number; y: number; zoom: number; surfaceId: string | null }; transitions: { kind: string; step: string; startedAt: number; arrivedAt: number | null; frames: number[] }[] }
+  /** Presence and the work log of the open workspace (UI 框架 PRD K2, K3), as the hooks use them. */
+  activity?: {
+    /** `usePresence` without a component: `retain` registers this window, `release` leaves; `snapshot` is what the hook returns. */
+    presence: { retain(): void; release(): void; beat(): Promise<void>; snapshot(): unknown; surface(): string | null; select(surfaceId: string): void; labels(): { name: string; group: string | null }[] }
+    /** `useWorkLog` without a component: a feed per filter, kept on the hooks (`refresh`, `loadMore`, `snapshot`). */
+    workLog(filter: 'all' | 'mine' | 'automation', limit?: number): { refresh(): Promise<void>; loadMore(): Promise<void>; snapshot(): unknown; describe(): string[] }
+  }
 }
 
 declare global {

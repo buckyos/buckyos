@@ -598,3 +598,34 @@ fn v24_url_query_table() {
     assert_eq!(cp.unresolved.len(), 3, "the URL dependencies are still reported as not fixed");
     let _ = Service::open; // keep the import used on all cfgs
 }
+
+/// Canvas folders (UI 框架 PRD §4.1.1, Q5, K1) travel in a package and a Clone: the folders, the canvas in them, its
+/// path; the folder's grant decides over the canvas.
+#[test]
+fn canvas_folders_travel_in_packages_and_clones() {
+    let env = env();
+    let id = project(&env);
+    {
+        let h = env.svc.workspace(&id).unwrap();
+        let mut ws = h.lock().unwrap();
+        ok(&mut ws, &alice(), json!([
+            { "op": "entity.create", "entity_id": "cf-a", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "y", "payload": { "kind": "folder", "title": "归档" } },
+            { "op": "entity.create", "entity_id": "cf-b", "type_id": "buckyos.container", "parent_id": "cf-a", "order_key": "a", "payload": { "kind": "folder", "title": "2026" } },
+            { "op": "entity.create", "entity_id": "sf-deep-content", "type_id": "buckyos.container", "parent_id": "canvas-content", "order_key": "y", "payload": { "kind": "folder", "system": "surface_content", "surface_id": "sf-deep", "title": "深处" } },
+            { "op": "entity.create", "entity_id": "sf-deep", "type_id": "buckyos.container", "parent_id": "cf-b", "order_key": "a", "payload": { "kind": "surface", "layout": { "mode": "flow" }, "title": "深处", "content_folder_id": "sf-deep-content" } },
+        ]));
+        ws.acl_set(&alice(), &json!([{ "subject": "bob", "resource": "/surfaces/归档", "allow": ["read"] }])).unwrap();
+        let r = ws.resolve(&bob(), Some(&json!({ "entity_id": "sf-deep" })), None).unwrap();
+        assert_eq!(r["path"], "~cf-a/2026/深处", "bob reads from the folder down");
+        assert!(ws.read(&bob(), "sf-deep", None).is_ok());
+    }
+    let path_in = |ws: &aiworkspace_store::Workspace| ws.resolve(&alice(), None, Some("/surfaces/归档/2026/深处")).unwrap()["path"].clone();
+    let (pkg, _) = export(&env, &id, &alice(), "share", true);
+    let other = common::env();
+    let r = other.svc.import(&alice(), &pkg, "new", false).unwrap();
+    let imported = r["workspace_id"].as_str().unwrap().to_string();
+    assert_eq!(path_in(&other.svc.workspace(&imported).unwrap().lock().unwrap()), "/surfaces/归档/2026/深处");
+    let f = env.svc.clone_workspace(&alice(), &id).unwrap();
+    let cid = f["workspace_id"].as_str().unwrap().to_string();
+    assert_eq!(path_in(&env.svc.workspace(&cid).unwrap().lock().unwrap()), "/surfaces/归档/2026/深处");
+}

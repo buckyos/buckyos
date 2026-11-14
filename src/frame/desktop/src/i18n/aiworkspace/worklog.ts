@@ -1,0 +1,43 @@
+/* AI Workspace text: the work log of the status panel (UI 框架 PRD §4.5; ui/framework/WorkLog.tsx). What an entry says
+ * is in activity.ts. English first; the Chinese table has the same keys. */
+export const en: Record<string, string> = {
+  'aiworkspace.worklog.title': 'Recent work log',
+  'aiworkspace.worklog.filter': 'Show',
+  'aiworkspace.worklog.filter.all': 'All',
+  'aiworkspace.worklog.filter.mine': 'Mine',
+  'aiworkspace.worklog.filter.automation': 'Agents and macros',
+  'aiworkspace.worklog.loading': 'Reading…',
+  'aiworkspace.worklog.failed': 'The work log could not be read: {{error}}',
+  'aiworkspace.worklog.empty': 'Nothing yet',
+  'aiworkspace.worklog.locate': 'Go there',
+  'aiworkspace.worklog.more': 'Load earlier entries',
+  'aiworkspace.worklog.upload.waiting': 'Waiting',
+  'aiworkspace.worklog.upload.sending': 'Uploading',
+  'aiworkspace.worklog.upload.saving': 'Saving',
+  'aiworkspace.worklog.upload.name': 'Uploading “{{name}}”',
+  'aiworkspace.worklog.upload.progress': '“{{name}}” {{percent}}%',
+  'aiworkspace.worklog.upload.cancel': 'Cancel uploading “{{name}}”',
+  'aiworkspace.worklog.status.uploads': 'Uploading {{count}}',
+  'aiworkspace.worklog.status.running': 'Running {{count}}',
+}
+
+export const zh: Record<string, string> = {
+  'aiworkspace.worklog.title': '最近工作日志',
+  'aiworkspace.worklog.filter': '显示',
+  'aiworkspace.worklog.filter.all': '全部',
+  'aiworkspace.worklog.filter.mine': '我的',
+  'aiworkspace.worklog.filter.automation': 'Agent 与宏',
+  'aiworkspace.worklog.loading': '正在读取…',
+  'aiworkspace.worklog.failed': '工作日志读取失败：{{error}}',
+  'aiworkspace.worklog.empty': '还没有记录',
+  'aiworkspace.worklog.locate': '定位到这里',
+  'aiworkspace.worklog.more': '加载更早的',
+  'aiworkspace.worklog.upload.waiting': '等待中',
+  'aiworkspace.worklog.upload.sending': '上传中',
+  'aiworkspace.worklog.upload.saving': '保存中',
+  'aiworkspace.worklog.upload.name': '上传「{{name}}」',
+  'aiworkspace.worklog.upload.progress': '「{{name}}」{{percent}}%',
+  'aiworkspace.worklog.upload.cancel': '取消上传「{{name}}」',
+  'aiworkspace.worklog.status.uploads': '上传中 {{count}}',
+  'aiworkspace.worklog.status.running': '运行中 {{count}}',
+}

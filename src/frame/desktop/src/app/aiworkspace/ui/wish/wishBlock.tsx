@@ -83,7 +83,7 @@ export const wishBlock: BlockDefinition = {
   type: 'wish', version: 1, get title() { return aiwsT('aiworkspace.wish.blockTitle') }, accepts: ['buckyos.wish'], allowNoSource: false,
   defaultSize: { w: 420, h: 300 }, cost: { editor: true, html: false },
   Static: WishStatic, Editor: WishEditorView,
-  catalog: { group: 'ai', get description() { return aiwsT('aiworkspace.wish.blockDescription') }, needs: 'none', editAfterInsert: true, standard: true },
+  catalog: { group: 'ai', get description() { return aiwsT('aiworkspace.wish.blockDescription') }, needs: 'none', editAfterInsert: true, standard: true, toolPicker: 9 },
   actions: [
     { id: 'open', get label() { return aiwsT('aiworkspace.wish.open') }, modes: ['edit'], run: (context) => context.activateEditor(), key: 'Enter' },
     { id: 'detail', get label() { return aiwsT('aiworkspace.wish.viewInSources') }, modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } },

@@ -83,7 +83,7 @@ test('FP-02 an SVG shape read from a Zone file; a .pikg import only offers packa
     hook.put(`${dir}/controls.pikg`, btoa('pikg'))
     hook.put(`${dir}/readme.txt`, btoa('text'))
   }, ['/home/Documents/aiws-pikg'])
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-extension', 'aiws-menu-extensions')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-extensions')
   await page.getByTestId('aiws-ext-import-pikg').click()
   const dialog = selectDialog(page)
   await dialog.getByTestId('select-locations').getByRole('button', { name: '我的文件', exact: true }).click()

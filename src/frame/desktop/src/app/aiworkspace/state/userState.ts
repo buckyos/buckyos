@@ -80,6 +80,10 @@ export class UserWorkState {
   /** Keys the server is known to hold (seen in a pull or accepted by a flush). */
   private readonly onServer = new Set<string>()
   private flushTimer: number | null = null
+  /** When each key was last written here (a counter): a pull sent before that write never overwrites it, even after
+   * the write's flush took it out of `dirty` while the server had not stored it yet. */
+  private readonly written = new Map<string, number>()
+  private writes = 0
   private readonly session: WorkspaceSession
   private readonly offStatus: () => void
   private disposed = false
@@ -126,15 +130,16 @@ export class UserWorkState {
   private async pull() {
     if (this.disposed) return
     let server: Record<string, Json>
+    const asked = this.writes
     try { server = await this.session.getUserState() } catch { this.syncState = this.dirty.size > 0 ? 'offline' : this.syncState; return }
     const changed: string[] = []
     for (const [key, value] of Object.entries(server)) {
       this.onServer.add(key)
-      if (this.dirty.has(key)) continue
+      if (this.dirty.has(key) || (this.written.get(key) ?? 0) > asked) continue
       if (JSON.stringify(this.entries.get(key)) !== JSON.stringify(value)) { this.entries.set(key, value); changed.push(key) }
     }
     for (const key of [...this.entries.keys()]) {
-      if (key in server || this.dirty.has(key)) continue
+      if (key in server || this.dirty.has(key) || (this.written.get(key) ?? 0) > asked) continue
       // removed by another device: dropped here too; never seen by the server: sent to it
       if (this.onServer.has(key)) { this.onServer.delete(key); this.entries.delete(key); changed.push(key) } else this.dirty.set(key, this.entries.get(key) ?? null)
     }
@@ -147,6 +152,7 @@ export class UserWorkState {
 
   /** Write one entry: locally at once, to the server soon (throttled). `null` removes it. */
   set(key: string, value: Json | null) {
+    this.written.set(key, ++this.writes)
     if (value === null) this.entries.delete(key)
     else this.entries.set(key, value)
     this.dirty.set(key, value)

@@ -10,7 +10,8 @@
  *            page, unmounting: the stroke is dropped (an erase put back); saved strokes stay
  *
  * A second pen, another pointer's events and touches never touch the stroke. A stroke that reaches its budget is
- * saved and goes on as a new stroke from the same point (the host says so). Pure: tests drive it with plain events. */
+ * saved and goes on as a new stroke from the same point (the host says so). A finger writes only where the host says so
+ * (the stage's board; a phone without a pen, UI 框架 PRD §6.3, Q17). Pure: tests drive it with plain events. */
 
 import { pointOf, predictionsOf, rawBytes, RAW_BUDGET, sameSample, samplesOf, type InkPoint, type InkStyle, type PointerSample } from './model'
 import type { Point } from '../ui/canvas/geometry'
@@ -42,6 +43,8 @@ export interface InkHost {
   /** The eraser moved from `a` to `b` (world), `radius` in world units. */
   erase: (a: Point, b: Point, radius: number) => void
   eraseEnd: (cancel: boolean) => void
+  /** Does a finger write now (a phone that has seen no pen)? */
+  fingers?: () => boolean
 }
 
 /** The eraser's reach on screen (px). */
@@ -65,7 +68,7 @@ const eraserEnd = (event: InkPointerEvent) => event.button === 5 || (event.butto
 export class InkInput {
   private active: Active | null = null
   private readonly host: InkHost
-  /** A finger writes too (the stage's board, which has no touch navigation); never on the canvas. */
+  /** A finger writes too: the stage's board (no touch navigation); a phone's canvas asks its host. */
   private readonly fingers: boolean
 
   constructor(host: InkHost, options: { fingers?: boolean } = {}) {
@@ -76,13 +79,16 @@ export class InkInput {
   /** Is a stroke or an erase under way? */
   busy(): boolean { return this.active !== null }
 
+  /** Is the stroke under way a finger's (a second finger turns it into navigation, the host decides)? */
+  byTouch(): boolean { return this.active?.pointerType === 'touch' }
+
   /** Does this pointer own the stroke under way? */
   owns(pointerId: number): boolean { return this.active?.pointerId === pointerId }
 
   /** A pointer came down on the writing area; true when it started a stroke or an erase. */
   down(event: InkPointerEvent): boolean {
     if (this.active) return false
-    const finger = event.pointerType === 'touch' && this.fingers
+    const finger = event.pointerType === 'touch' && (this.fingers || Boolean(this.host.fingers?.()))
     if (event.pointerType === 'mouse' || finger ? event.button !== 0 : event.pointerType !== 'pen' || (event.button !== 0 && !eraserEnd(event))) return false
     const tool: InkTool = event.pointerType === 'pen' && eraserEnd(event) ? 'eraser' : this.host.tool()
     this.host.interrupt()

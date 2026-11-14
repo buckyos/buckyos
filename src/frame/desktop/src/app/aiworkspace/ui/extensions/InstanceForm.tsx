@@ -22,7 +22,7 @@ function DraftInput({ value, onCommit, ...rest }: Omit<InputHTMLAttributes<HTMLI
   )
 }
 
-export function InstanceForm({ def, config, bindings, onConfig, onBindings, commitOnBlur = false }: {
+export function InstanceForm({ def, config, bindings, onConfig, onBindings, commitOnBlur = false, part = 'all' }: {
   def: BlockDefPayload
   config: Record<string, Json>
   bindings: Record<string, string>
@@ -30,6 +30,8 @@ export function InstanceForm({ def, config, bindings, onConfig, onBindings, comm
   onBindings: (bindings: Record<string, string>) => void
   /** Text and number fields write when left (an existing instance), not on every key (insertion). */
   commitOnBlur?: boolean
+  /** The properties panel shows the properties in the type's section and the bindings in "data" (PRD §10.2). */
+  part?: 'all' | 'config' | 'bindings'
 }) {
   const store = useStore()
   const { t } = useAiwsText()
@@ -41,11 +43,12 @@ export function InstanceForm({ def, config, bindings, onConfig, onBindings, comm
     onConfig(next)
   }
   // a list binding (`many`) is settled by on_bind and its re-bind, not by one choice here
-  const named = Object.entries(def.bindings ?? {}).filter(([, b]) => !b.many)
-  if (props.length === 0 && named.length === 0) return null
+  const named = part === 'config' ? [] : Object.entries(def.bindings ?? {}).filter(([, b]) => !b.many)
+  const fields = part === 'bindings' ? [] : props
+  if (fields.length === 0 && named.length === 0) return null
   return (
     <div className="aiws-instance-form" data-testid="aiws-instance-form">
-      {props.map(({ key, schema, required }) => {
+      {fields.map(({ key, schema, required }) => {
         const label = `${schema.title ?? key}${required ? ' *' : ''}`
         const value = config[key]
         const placeholder = schema.default !== undefined ? String(schema.default) : undefined

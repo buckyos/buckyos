@@ -11,11 +11,13 @@ pub mod media;
 pub mod methods;
 pub mod obj_provider;
 pub mod pages;
+pub mod presence;
 pub mod session;
 pub mod show;
 pub mod source;
 pub mod stream;
 pub mod wish;
+pub mod worklog;
 
 use aiworkspace_core::{Code, Deny, WsError, WsResult};
 use aiworkspace_store::entries::{parse_entry_methods, split_entry_id, EntryState, ENTRY_DID_LOGIN, ENTRY_GUEST, ENTRY_PASSWORD, ENTRY_SELF_REGISTER};
@@ -96,6 +98,8 @@ pub struct AppState {
     pub media: media::Media,
     /// Short-lived media addresses (§7.3.2).
     pub streams: stream::Streams,
+    /// Who has each Workspace open (UI 框架 PRD K2), in memory.
+    pub presence: presence::Presence,
 }
 
 impl AppState {
@@ -144,7 +148,8 @@ impl AppState {
         }));
         let library = aiworkspace_store::library::Library::open(&svc.data_dir.join("library.sqlite"), svc.objects.clone()).expect("the control library database opens");
         Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, acls, ndm_gateway: std::sync::OnceLock::new(), library,
-                            rooms: session::Rooms::default(), media: media::Media::default(), streams: stream::Streams::default() })
+                            rooms: session::Rooms::default(), media: media::Media::default(), streams: stream::Streams::default(),
+                            presence: presence::Presence::default() })
     }
 
     pub fn with_ws<T>(&self, id: &str, f: impl FnOnce(&mut Workspace) -> WsResult<T>) -> WsResult<T> {
@@ -307,7 +312,7 @@ pub(crate) async fn prepare_caller(state: &Arc<AppState>, caller: &mut Caller, m
     }
     let st = state.clone();
     let id = workspace_id.map(str::to_string);
-    let list = method == "ws.list";
+    let list = method == "ws.list" || method == "session.list_open";
     let subjects = blocking(move || match (list, id) {
         (true, _) => st.svc.dynamic_subjects(),
         (false, Some(id)) => st.with_ws(&id, |ws| ws.dynamic_subjects()),
@@ -407,11 +412,18 @@ pub(crate) async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes)
         },
     };
     if let Some(c) = caller.as_mut() {
-        // the Workspace the request is about: named, or the one an entry id names
+        // the Workspace the request is about: named, or the one an entry id names, or a session's courseware (whose
+        // readers may open it, K7)
+        let courseware = if method.starts_with("session.") && params.get("workspace_id").is_none() {
+            params.get("session_id").and_then(Value::as_str).and_then(|sid| state.svc.sessions.get(sid).ok().flatten()).map(|s| s.source_workspace_id)
+        } else {
+            None
+        };
         let workspace_id = params
             .get("workspace_id")
             .and_then(Value::as_str)
-            .or_else(|| params.get("entry_id").and_then(Value::as_str).and_then(split_entry_id).map(|(ws, _)| ws));
+            .or_else(|| params.get("entry_id").and_then(Value::as_str).and_then(split_entry_id).map(|(ws, _)| ws))
+            .or(courseware.as_deref());
         prepare_caller(&state, c, &method, workspace_id).await;
     }
     // naming a contact group as a member is for its owner: the store compares the group's owner with the caller's DID
@@ -560,8 +572,19 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             v["wish_execution"] = json!({ "default": state.wish.config.default_execution });
             v["public_base"] = json!(source::public_base(state, ws_id()?));
             v["traffic"] = json!(state.with_ws(ws_id()?, |ws| ws.traffic())?);
+            // the Workspace's shared settings (UI 框架 PRD K4): every member reads them, `manage` writes the root's config
+            let (settings, rev) = state.with_ws(ws_id()?, |ws| ws.settings())?;
+            v["settings"] = settings;
+            v["settings_rev"] = json!(rev);
+            // a Workspace session opening (K6): the caller's “recently opened”
+            if p.get("record_open").and_then(Value::as_bool) == Some(true) {
+                svc.users.record_open(caller, ws_id()?, (svc.clock)())?;
+            }
             v
         }
+        // the caller's own preferences across Workspaces (UI 框架 PRD §4.6, K4): never part of a Workspace
+        "user.get_prefs" => svc.users.get_prefs(caller)?,
+        "user.set_prefs" => svc.users.set_prefs(caller, p, (svc.clock)())?,
         "ws.delete" => svc.delete_workspace(caller, ws_id()?)?,
         // permissions (权限需求 §4): entries, groups and members, the anonymous switch, macro bindings, the record
         "acl.set" => state.with_ws(ws_id()?, |ws| ws.acl_set(caller, p.get("changes").unwrap_or(&Value::Null)))?,
@@ -581,6 +604,8 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             ws.acl_bind_macro(caller, s(p, "wish")?, p.get("group_id").and_then(Value::as_str), p.get("mode").and_then(Value::as_str).unwrap_or("union"))
         })?,
         "acl.audit" => state.with_ws(ws_id()?, |ws| ws.acl_audit(caller, p.get("after").and_then(Value::as_i64).unwrap_or(0), p.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize))?,
+        "ws.work_log" => worklog::handle(state, p, caller)?,
+        "presence.heartbeat" | "presence.leave" | "presence.list" => presence::handle(state, method, p, caller)?,
         "ws.get_user_state" => state.with_ws(ws_id()?, |ws| ws.get_user_state(caller))?,
         "ws.set_user_state" => state.with_ws(ws_id()?, |ws| ws.set_user_state(caller, p.get("entries").unwrap_or(&Value::Null), p.get("expect")))?,
         "ws.list_subjects" => {

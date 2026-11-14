@@ -93,12 +93,18 @@ collection); `canvas-content` is a system folder under `data` holding one folder
 holding the presentation paths and Viewports (below). They exist from
 `seq` 0 and cannot be created, deleted, moved or renamed by operations. Structure rules (`core/src/plan.rs`
 `child_allowed`): `data` / `folder` take folders and data entities (TableSource, RichText, Record, AssetRef,
-Annotation, `buckyos.wish`, `buckyos.block-def`); `surfaces` takes `surface` containers; `surface` / `group`
-take Cells, groups and controls only (a control's Cells may hold Cells, see “Block-controls”). A Surface names its content folder (`content_folder_id`); the folder may point back
+Annotation, `buckyos.wish`, `buckyos.block-def`); `surfaces` takes `surface` containers and canvas folders; `surface` / `group`
+take Cells, groups and controls only (a control's Cells may hold Cells, see “Block-controls”). A **canvas folder** (UI 框架 PRD
+§4.1.1, Q5) is a `folder` under `surfaces`, at any depth: it holds Surfaces and canvas folders only, never carries `system`,
+cannot move into the data tree (nor a data folder into `surfaces`) and is deleted only when empty (`FOLDER_NOT_EMPTY`).
+A Surface's path runs through its folders (`/surfaces/日记/2026-11/11-13`); grants on a folder cover the Surfaces in it
+(structural inheritance); links name the Surface by id, so moving it keeps them working. Its content folder stays flat
+under `canvas-content`. A Surface names its content folder (`content_folder_id`); the folder may point back
 (`surface_id`). A Surface may carry `icon`: the id of a client-side preset icon (`[a-z][a-z0-9-]{0,31}`, Surfaces
 only; the client owns the preset list), a shared, undoable key projected into the outline like `title`. A Surface may also
-carry `config`, its page settings (`background`, `page_size`; an object of at most 64 KiB the client checks, read with
-`doc.read`, not projected; draw.io 导入 TODO §2.5). `placement` is `{ x, y, w, h, rotation? }` relative to the parent (`rotation`: degrees clockwise about the centre,
+carry `config`, its page settings (`background`, `page_size`, `toolbar`; an object of at most 64 KiB the client checks, read with
+`doc.read`, not projected; draw.io 导入 TODO §2.5; changing `config.toolbar` needs `structure` on the Surface, see
+“Workspace settings”). `placement` is `{ x, y, w, h, rotation? }` relative to the parent (`rotation`: degrees clockwise about the centre,
 `[0, 360)`, absent = 0); stacking order is `order_key`. A Cell or a group may carry `locked: true`: a shared flag
 the client honours (no moves, resizing or deletion from the canvas) and the core only checks for being boolean.
 (These two keys raised the format to 0.3 at the time; named connector anchors raised the protocol to 0.4; both are
@@ -270,7 +276,56 @@ presenter and their author), `session.delete_post`.
 (all of them for its managers). `session.list_mine { limit? }` (我的公开课, 100 by default, at most 500): the sessions the
 caller owns, presents or joined across Workspaces, newest first, each with `my_role` (`presenter`, else `owner`, else
 `audience`) and, when the deployment knows its public base, `url` — the room on its courseware's origin
-(`<public_base>/<slug>?session=<id>`). Neither is a channel call.
+(`<public_base>/<slug>?session=<id>`). `session.list_open { limit? }` (所有公开课, UI 框架 PRD §9.1, K7; same limits): every
+session the caller may open without a link, across Workspaces — those it owns, presents or joined (expired ones too) and,
+while their room is open (`access: open`) and not expired, those of courseware it reads — live ones first, the rest by
+start (else creation) time, newest first. Each carries `my_role` (`presenter`, `owner`, `audience`: joined before,
+`member`: a courseware reader who has not), `presenting` (the caller presents it), `opened_at` (the caller's last time in
+it, or null), `online` (connections now, while it has a room in memory; else null), `cover` (null: not generated yet) and
+`url`. None of the three is a channel call.
+
+**Courseware readers (K7).** A person (not a guest or a link) whom the source Workspace names in its own right — what
+`ws.list` lists — with `read` on its `/` may open its sessions without a link while the room is `open` and not expired:
+`session.get` answers them as `audience`, `session.join` makes them participants and puts them in the run Workspace's
+`source-readers` group (`read`, like a link's group). Their memberships (`group:` / `contact:`) are settled against the
+courseware's entries.
+
+## Presence and the work log (UI 框架 PRD §4.2, §4.5, §12, K2, K3)
+
+**Presence** is in memory, like the shows: nothing of it reaches the document, its history or a package, and a restart
+forgets it. Every window of a Workspace calls `presence.heartbeat { workspace_id, conn_id, surface_id?, name? }` when it
+opens and then every `interval_ms` (10 s); a connection without a heartbeat for `ttl_ms` (30 s, `AIWS_PRESENCE_TTL_MS` in
+tests) is gone, and `presence.leave { conn_id }` removes it at once (a connection id is its principal's own). `surface_id`
+is kept only when it names a live Surface the caller may read; `name` only from a guest (`≤ 32` characters, the name it
+chose); an account is shown by its principal. The answer — and `presence.list` — is `{ members, interval_ms, ttl_ms,
+server_ms }`: one member per principal (`devices` counts its windows; its `surface_id` is that of the window that changed
+Surface last), the caller first, then by arrival. Each member: `principal`, `self`, `guest`, `name`, `surface_id` (only a
+Surface the reader may read, else `null`), `devices`, `since`, `last_seen`, and — when the reader manages the Workspace,
+or about the reader itself (Q6) — `owner` and `groups: [{ group_id, title }]` (the logical groups it belongs to now; the
+client shows `owner` as “所有者” and no group as “访客”).
+
+**The work log** `ws.work_log { workspace_id, before?, limit?, filter? }` is one timeline, newest first, read from what is
+recorded anyway — never a copy of its own (`store/src/worklog.rs`):
+
+| `kind` | From | Who sees it |
+| --- | --- | --- |
+| `commit` (`import` for origin `import`) | `commits` (with `message`, `origin`, `seq`, `commit_id`, `run_id`, `undoes`) | when it touched something the reader may read now (as `doc.get_changes`) |
+| `run` (`phase: start \| end`, `stage`, `state`, `error_code`) | wish runs in `runs`: the start at `created_at`, the end when the state last left `queued … validating` (`detail.state_at`) | as `proc.get`: one's own, or any with `update` / `manage` on a readable wish |
+| `acl` (`action`, `detail`) | `acl_audit` | managers |
+| `session` (`phase`, `title`, `session_id`) | the session registry (`started_ms`, `ended_ms`) | as `session.list`: owner, presenter, participants, managers |
+| `show` (`phase`) | the non-public shows since the service started (in memory, 200 per Workspace) | readers of the presentation path |
+
+Every entry has `id`, `at`, `actor`, `actor_kind` (`agent` for origin `agent`, `macro` for origin `program` and for runs,
+`system` for origins `source` / `session`, else `person` — an undo, a purge or an import is that person's), `mine` and
+`target` (`{ entity_id, type_id, name, title, kind, deleted, surface_id }`: the first readable non-system entity a Commit
+touched, a run's wish, a show's path; `surface_id` is the Surface it is on — itself, the Surface above a Block, or the one
+whose content folder holds it — when readable) or `null`; a Commit also has `targets` (how many readable entities it
+touched). `filter: mine` keeps the caller's own entries; `automation` keeps Commits of origin `agent` / `program` and the
+runs. Pages: entries strictly older than `before` (the `next_before` of the previous page, `"<at>|<id>"`); each source
+looks at no more than 1 000 rows per call, so a page after a long stretch of unreadable rows may come back short (even
+empty) with `more: true` and a `next_before` to go on from. Commit messages are the author's text in the author's
+language (the Desktop writes the label of the edit); the client says the service's own messages and every other kind
+of entry in the reader's language.
 
 ## Connector (连接线方案 C1)
 
@@ -985,6 +1040,22 @@ Configuration: `AiWorkspaceSettings.wish` — `analyze_model`, `execute_model`, 
 `llm_map_max_items`, `ai_max_calls`, `ai_max_tokens`, `sql_max_calls`, `image_max_calls`, `video_max_calls`, `media_timeout_secs`,
 `snapshot_download_max_bytes`, `default_execution`: what every stage hands its executor. Standalone: `--wish-config <json>` with the same keys.
 
+## Workspace settings and personal preferences (UI 框架 PRD §4.6, §12, K4)
+
+Shared configuration is content. The **Workspace's settings** are the root's `config` (an object of at most 64 KiB; the
+client owns the keys, `toolbar` first): written with `entity.set_keys` / `entity.unset_keys` / `entity.set_props { key:
+config }` on `root`, which needs `manage` on `/` besides the usual `update`; committed, undoable, carried by clones,
+packages and templates like the root's title. Every member reads them in `ws.get_info` (`settings`, `settings_rev`: the
+`config` key's version for `expect`), whatever it may read of the tree. A **Surface's** toolbar is `config.toolbar` on the
+Surface; changing it needs `structure` on that Surface. A load (package, clone, template) and a replay take both as they
+are.
+
+**Personal preferences** are not: `user.get_prefs` / `user.set_prefs` keep one JSON object per principal in the service's
+`users.sqlite` (each Workspace has its own origin, so browser storage cannot carry a preference from one to another, nor
+to another device). They follow the person into every Workspace and are never exported, cloned or carried by a template.
+`ws.get_info { record_open: true }` (a Workspace session opening) records when the caller opened it there too; `ws.list`
+returns it as `opened_at`.
+
 ## Storage
 
 Durable data schema: [BuckyOS AiWorkspace Durable Data Schema](<../../../doc/workspace/BuckyOS AiWorkspace Durable Data Schema.md>).
@@ -1449,7 +1520,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `ws.create` | stable | `title`, `workspace_id?`, `name?` (see “Workspace names”; a name the caller already uses is `INVALID_OPERATION` / `NAME_CONFLICT` with `data.workspace_id`) → `workspace_id`, `epoch`, `head_seq`, `title`, `name?` |
 | `ws.ensure` | stable | `name`, `title?` (default: the name), no `workspace_id` → `workspace_id`, `name`, `title`, `epoch`, `head_seq`, `created` — the caller's Workspace of that name, created when it has none (callers as for `ws.create`) |
 | `ws.time` | stable | none → `server_ms` (unix ms of the service clock); any session, guests included |
-| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.cloned_from` names the source of a clone or a `new` import) |
+| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.cloned_from` names the source of a clone or a `new` import. `ws.list` items also carry what the home page's cards show (UI 框架 PRD §9.2, K6): `owner_principal`, `updated_at` (the last accepted Commit, else the creation), `opened_at` (when the caller last opened it, or null), `public` (`anonymous` — anonymous access on and something granted to `@guest` — or `published` by path), `live_sessions` (live sessions of it as courseware) and `cover` (null: not generated yet). `ws.get_info` carries `settings` (the Workspace's shared settings, the root's `config`, see “Workspace settings”) and `settings_rev`; `record_open: true` records that the caller opened it now, for `opened_at`) |
 | `ws.clone` | stable | none → `workspace_id`, `epoch`, `head_seq`, `content_root`, `cloned_from { workspace_id, snapshot }`, `excluded_entities` — a new Workspace the caller owns, copied from what the caller may read (workspace-level `export`; see “Workspace clone”) |
 | `acl.set` | stable | `changes: [{ subject, resource?, allow?, deny? }]` (≤ 500): each replaces the subject's entry on the resource (path or id, default `/`; both empty removes it), all or none, one record; `manage` on each resource, the owner's when `manage` is touched |
 | `acl.query` | stable | `by: entity` (`resource`, `expand?`: every subject with entries on its chain, their effective capabilities, each entry's source — direct, inherited, workspace — and what a denial overrides; macros bound to those groups and who may change them; managers), `by: subject` (`subject?`: its entries; for a group, its members; for a single caller, its judgment — groups and how, `@guest`, judged as), `by: explain` (`resource`, `principal?`: each capability allowed or refused and by which entry), `by: all` (every entry with who wrote it, `complete: true`, for a manager; otherwise the entries that apply to the caller — its own, its groups', `@all`, `@guest` while it is a guest — without who wrote them). Anyone may ask about itself; the rest is the managers' |
@@ -1466,6 +1537,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `ws.join_entry` | stable | `entry_id` only (a session or a guest token) → `workspace_id`, `entry_id`, `group_id`, `joined`, `path` |
 | `entry.describe` | stable | `entry_id` only, no session → `EntryDescription` |
 | `ws.get_user_state` / `ws.set_user_state` | stable | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
+| `user.get_prefs` / `user.set_prefs` | experimental | no `workspace_id`. The caller's own preferences across Workspaces (UI 框架 PRD §4.6, K4), one JSON object kept by the service (`users.sqlite`), never part of a Workspace, never exported, cloned or carried by a template: `get` → `prefs`, `revision`, `updated_at`; `set` takes `prefs` (the whole object) or `merge: { key: value \| null }` (top-level keys; null removes), and `expect?` (the revision read: `REVISION_CONFLICT` with `data.current` when it moved) → `prefs`, `revision`, `updated_at`. ≤ 500 keys of ≤ 128 bytes, ≤ 256 KiB. A guest or a link's visitor keeps none (`PERMISSION_DENIED`) |
 | `ws.import` | stable | `bucket_id` + `key` (the package the caller bound into its own `user/aiworkspace/<user>/exports`; a successful import consumes it) or `obj_id` (an unbound FileObject the caller may read, judged at the NDM gateway), `semantics: "restore" \| "new"`, `replace?` |
 | `ws.release_retention` | stable | maintenance (`manage`, D19): `kind`, `ref` — unbind what holds a `snapshot`, an `export` package or an unreferenced `staged` upload → `released` |
 | `ws.delete_checkpoint` | stable | maintenance (`manage`): `snapshot_id` — the snapshot row goes and its retention set is unbound; the named store reclaims what no binding holds |
@@ -1482,7 +1554,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `doc.source_query` | internal | `source_id` of a URL table (`data_mode: url_query`); `filter?`, `sorts?`, `fields?`, `limit`, `cursor?`, `consistency?`, `source_revision?` — its rows from the remote source (what `doc.query` did for URL tables) |
 | `doc.freshness` | experimental | `entity_ids[]` — dependency-based freshness of results and wishes (computed in core) |
 | `doc.relations` | experimental | `entity_id` — outgoing / incoming references, Blocks showing it, produced results; unreadable referrers only as `hidden_incoming` |
-| `doc.list_versions` | experimental | `entity_id` — addressable versions (generated results, checkpoints) with their commits |
+| `doc.list_versions` | stable | `entity_id` → `entity_id`, `content_rev`, `head_seq`, `versions: [{ content_rev, object_id, kind: generated \| checkpoint, created_at, derived, commit_id, author, origin, run_id, message, accepted_at }]` newest first — addressable versions (generated results, checkpoints) with their commits; versions whose content was reclaimed are left out |
 | `doc.restore_version` | experimental | `entity_id`, `content_rev` — the operations restoring that version (submitted as an ordinary Commit) |
 | `doc.source_capabilities` | internal | `source_id` (URL query tables) |
 | `doc.get_collab_state` | internal | `entity_id` |
@@ -1514,7 +1586,9 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `ext.build`, `ext.export`, `ext.install`, `ext.list_library`, `ext.uninstall`, `ext.library_bundle`, `ext.import`, `ext.pack`, `ext.upgrade`, `ext.export_template`, `ext.create_from_template` | experimental | see “Extension controls” and “Extension controls P2 / P3” |
 | `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | stable | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
 | `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | internal | see “Non-public shows” |
-| `session.create`, `session.list`, `session.list_mine`, `session.get`, `session.join`, `session.start`, `session.end`, `session.save`, `session.delete`, `session.set_access` | experimental | see “Presentation sessions” |
+| `presence.heartbeat` / `presence.leave` / `presence.list` | internal | `conn_id` (heartbeat, leave), `surface_id?`, `name?` (a guest's) — see “Presence and the work log” |
+| `ws.work_log` | experimental | `before?`, `limit?` (≤ 200, default 50), `filter?: all \| mine \| automation` → `entries`, `next_before`, `more` — see “Presence and the work log” |
+| `session.create`, `session.list`, `session.list_mine`, `session.list_open`, `session.get`, `session.join`, `session.start`, `session.end`, `session.save`, `session.delete`, `session.set_access` | experimental | see “Presentation sessions” |
 | `session.invite`, `session.list_invites`, `session.revoke_invite`, `session.takeover`, `session.command`, `session.sample`, `session.notes`, `session.rtc` | experimental | see “Presentation sessions” |
 | `session.task`, `session.claim`, `session.respond`, `session.review`, `session.publish`, `session.react`, `session.feed_sample` | experimental | see “Presentation sessions” |
 | `session.events`, `session.watch`, `session.replay`, `session.post`, `session.list_posts`, `session.delete_post` | experimental | see “Presentation sessions” |
@@ -1587,12 +1661,16 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `show.watch` | internal | the presenter's read; a prompter token |
 | `show.notes` | internal | the presenter's read; a prompter token |
 | `show.end` | internal | the presenter, or `manage` |
+| `presence.heartbeat` | internal | may enter |
+| `presence.leave` | internal | a session |
+| `presence.list` | internal | may enter |
+| `ws.work_log` | experimental | may enter; `read` on each entity; runs as `proc.get` shows them, sessions as `session.list`, the permission record to managers |
 | `diag.list_unretained` | internal | `manage` on `/` |
 | `diag.verify_refs` | internal | `manage` on `/` |
 | `doc.list_annotations` | experimental | may enter; `read` on each entity |
 | `doc.freshness` | experimental | may enter; `read` on each entity |
 | `doc.relations` | experimental | `read` on `entity_id` |
-| `doc.list_versions` | experimental | `read` on `entity_id` |
+| `doc.list_versions` | stable | `read` on `entity_id` |
 | `doc.restore_version` | experimental | `read` on `entity_id` |
 | `doc.checkpoint` | experimental | `export` on `/` |
 | `doc.export` | experimental | `export` on `/` |
@@ -1607,6 +1685,8 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `proc.tool` | stable | the run's token, while its attempt is current and running |
 | `proc.program` | stable | the run's token, while its attempt is current and running |
 | `proc.files` | stable | the run's token, while its attempt is current and running |
+| `user.get_prefs` | experimental | a person's session (not a guest or a link): its own preferences only |
+| `user.set_prefs` | experimental | a person's session (not a guest or a link): its own preferences only |
 | `ws.set_hosted_exec` | experimental | the owner |
 | `ws.publish` | experimental | `manage` on `entity_id` |
 | `ws.unpublish` | experimental | `manage` on the entity (on `/` once it is deleted) |
@@ -1631,6 +1711,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `session.create` | experimental | the session's roles and links |
 | `session.list` | experimental | the session's roles and links |
 | `session.list_mine` | experimental | the session's roles and links |
+| `session.list_open` | experimental | a session; each listed session is one the caller may open without a link |
 | `session.get` | experimental | the session's roles and links |
 | `session.join` | experimental | the session's roles and links |
 | `session.start` | experimental | the session's roles and links |

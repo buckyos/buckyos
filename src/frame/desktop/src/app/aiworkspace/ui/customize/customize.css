@@ -1,0 +1,29 @@
+/* 自定义工具栏… (UI 框架 PRD §4.6). Colours and shapes come from aiworkspace.css (--cp-*, .aiws-dialog, .aiws-tool). */
+
+.aiws-modal-backdrop > .aiws-dialog.aiws-customize { width: min(720px, 100%); gap: 10px; }
+.aiws-customize-scope { display: flex; flex-wrap: wrap; gap: 6px 16px; border: 1px solid var(--cp-border); border-radius: 8px; padding: 6px 10px; margin: 0; }
+.aiws-customize-scope legend { padding: 0 4px; font-size: 12px; color: var(--cp-muted); }
+.aiws-customize-scope-option { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 32px; }
+.aiws-customize-scope-option small { flex-basis: 100%; margin-left: 22px; }
+.aiws-customize-note { margin: 0; font-size: 12px; }
+.aiws-customize-zones { display: flex; flex-direction: column; gap: 8px; }
+.aiws-customize-zone { border: 1px solid var(--cp-border); border-radius: 8px; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
+.aiws-customize-zone[data-hidden='true'] .aiws-customize-items { opacity: 0.55; }
+.aiws-customize-zone-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 32px; }
+.aiws-customize-check { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
+.aiws-customize-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.aiws-customize-item { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 6px; min-height: 32px; }
+.aiws-customize-item[draggable='true'] { cursor: grab; }
+.aiws-customize-item:hover { background: var(--cp-surface-2); }
+.aiws-customize-item.is-dragging { opacity: 0.4; }
+.aiws-customize-item[data-hidden='true'] .aiws-customize-item-label > span { color: var(--cp-muted); text-decoration: line-through; }
+.aiws-customize-grip { color: var(--cp-muted); flex: none; }
+.aiws-customize-item-label { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.aiws-customize-item-label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-customize-noicon { display: inline-block; width: 16px; }
+.aiws-customize-item-tools { display: inline-flex; gap: 2px; flex: none; }
+.aiws-customize-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-top: 4px; }
+.aiws-customize-add > select, .aiws-customize-add > input { min-width: 0; flex: 1 1 140px; }
+@media (pointer: coarse) {
+  .aiws-customize-item, .aiws-customize-scope-option, .aiws-customize-check { min-height: 44px; }
+}

@@ -369,8 +369,9 @@ function insertDivider(schema: Schema): Command {
   }
 }
 
-/** Block types offered in a flow page's `/` menu besides text (data, media, AI); the canvas-only ones are left out. */
-const FLOW_SLASH_SKIP = new Set(['richtext', 'note', 'shape', 'frame', 'connector'])
+/** Block types offered in a flow page's `/` menu besides text (data, media, AI); a canvas-only type says so itself
+ * (`traits.flowInsertable`, UI 框架 PRD §10.1). */
+const slashOffers = (definition: { type: string; traits?: { flowInsertable?: false } }) => definition.type !== 'richtext' && definition.traits?.flowInsertable !== false
 const SLASH_ICONS: Record<string, typeof Table> = { table: Table, asset: ImageIcon, record: ListTree, wish: Sparkles }
 
 function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) {
@@ -611,7 +612,7 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
     { id: 'code', label: t('aiworkspace.richtext.block.code'), icon: CodeXml, keywords: 'code pre dm daima ```', hint: '```', group: basic, run: () => slashRun(setBlock(schema.nodes.code_block, { language: '' })) },
     { id: 'divider', label: t('aiworkspace.richtext.block.divider'), icon: Minus, keywords: 'divider hr line fgx fengexian ---', hint: '---', group: basic, run: () => slashRun(insertDivider(schema)) },
     { id: 'link', label: t('aiworkspace.richtext.slash.link'), icon: Link2, keywords: 'link embed object lj lianjie qr qianru', group: basic, run: () => slashRun(null, () => setLinkAt(true)) },
-    ...(flow ? registryEntries().filter((entry) => entry.catalog.standard && !FLOW_SLASH_SKIP.has(entry.definition.type)).map((entry): SlashItem => ({
+    ...(flow ? registryEntries().filter((entry) => entry.catalog.standard && slashOffers(entry.definition)).map((entry): SlashItem => ({
       id: `block-${entry.definition.type}`, label: entry.title, icon: SLASH_ICONS[entry.definition.type] ?? Table,
       keywords: `${entry.definition.type} block ${entry.definition.type === 'table' ? 'bg biaoge database' : entry.definition.type === 'asset' ? 'tp tupian image picture file' : entry.definition.type === 'wish' ? 'xyg xuyuan ai wish' : ''}`,
       group: t('aiworkspace.richtext.slash.groupInsertBelow'), run: () => slashRun(null, () => flow.insertAfter(entry)),

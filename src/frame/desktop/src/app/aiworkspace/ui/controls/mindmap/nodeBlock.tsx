@@ -160,6 +160,8 @@ function nodeToolbar(context: RenderContext, store: ReturnType<typeof useStore>)
 export const mindnodeDefinition: BlockDefinition = {
   type: NODE_VIEW, version: 1, get title() { return aiwsT('aiworkspace.mindmap.node') }, accepts: [], allowNoSource: true, pureUi: true,
   defaultSize: { w: 120, h: 40 }, cost: { editor: false, html: false }, chrome: 'none',
+  // a selected node takes typing at once (UI 框架 PRD §10.1: the type declares it)
+  traits: { typeToEdit: true },
   Static: NodeStatic, Editor: NodeEditor,
   shape: 'rect',
   // a node's look is its depth and branch: no hover label, the text is already there

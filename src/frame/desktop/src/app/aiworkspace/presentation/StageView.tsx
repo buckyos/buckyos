@@ -16,6 +16,7 @@ import type { WorkspaceStore } from '../state/store'
 import { BlockHost } from '../ui/blocks/BlockHost'
 import type { Camera } from '../ui/canvas/render/camera'
 import { WishPanel } from '../ui/wish/WishPanel'
+import { ContextZone } from '../ui/framework/ContextZone'
 import { useAiwsText } from '../useAiwsText'
 import { command, ShowController } from './controller'
 import { fitStage, playable, resolveSteps, type ResolvedStep } from './model'
@@ -277,7 +278,8 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
       )}
       {editing && <div className="aiws-show-hint aiws-stage-ui" role="status">{t('aiworkspace.presentation.show.operatingBlock')}</div>}
 
-      <div className="aiws-show-bar aiws-panel aiws-stage-ui" role="toolbar" aria-label={t('aiworkspace.presentation.show.controls')} data-testid="aiws-show-bar">
+      <ContextZone>
+      <div className="aiws-show-bar aiws-panel aiws-stage-ui aiws-context-bar" role="toolbar" aria-label={t('aiworkspace.presentation.show.controls')} data-testid="aiws-show-bar">
         <button type="button" className="aiws-tool" aria-label={t('aiworkspace.presentation.show.prev')} title={t('aiworkspace.presentation.show.prevTitle')} data-testid="aiws-show-prev" disabled={state.index === 0 && !state.free} onClick={() => controller.apply(command('prev'))}><ChevronLeft size={18} /></button>
         <button type="button" className="aiws-tool aiws-show-counter" aria-label={t('aiworkspace.presentation.show.stepList')} title={t('aiworkspace.presentation.show.stepList')} aria-pressed={panel === 'steps'} data-testid="aiws-show-counter" onClick={() => setPanel(panel === 'steps' ? 'none' : 'steps')}>
           <ListOrdered size={16} aria-hidden="true" /><span>{state.index + 1} / {steps.length}</span>
@@ -305,6 +307,7 @@ function StageRunning({ session, client, onExit, controller, path }: { session: 
         <span className="aiws-show-status" data-testid="aiws-show-status" title={statusText}>{live ? t('aiworkspace.presentation.show.modeClone') : session.start?.locked ? t('aiworkspace.presentation.show.modeLocked') : session.start ? t('aiworkspace.presentation.show.modeReadOnly') : t('aiworkspace.presentation.show.modeLocal')}</span>
         <button type="button" className="aiws-tool aiws-tool-text" data-testid="aiws-show-exit" title={t('aiworkspace.presentation.show.exitTitle')} onClick={exit}><LogOut size={16} /><span>{t('aiworkspace.presentation.show.exit')}</span></button>
       </div>
+      </ContextZone>
       {panel === 'none' && <div className="aiws-show-note aiws-stage-ui" role="note" data-testid="aiws-show-note">{statusText}{problem ? ` · ${t('aiworkspace.presentation.show.prompterTrouble', { detail: problem })}` : ''}</div>}
 
       {panel === 'steps' && (

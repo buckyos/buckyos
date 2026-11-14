@@ -175,7 +175,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.office.report.docx_alt_chunk': '嵌入的外部内容（HTML、RTF 片段）已略去',
   'aiworkspace.office.report.docx_heading_level': '三级以下的标题按三级标题导入',
   'aiworkspace.office.report.docx_revisions': '已接受修订（保留插入，去掉删除）',
-  'aiworkspace.office.report.docx_comments': '批注已略去',
+  'aiworkspace.office.report.docx_comments': '评论已略去',
   'aiworkspace.office.report.docx_floating_text': '文本框按段落导入到所在正文之后',
   'aiworkspace.office.report.docx_rasterized': '图表、SmartArt、公式和其他格式的图片已作为图片导入',
   'aiworkspace.office.report.docx_external_image': '链接（未嵌入）的图片已略去',

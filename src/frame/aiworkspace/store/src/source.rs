@@ -588,8 +588,7 @@ impl Workspace {
         let now = self.now();
         let ctx = self.ctx(&now);
         let wanted = pub_name(name);
-        for edge in ctx.children(SURFACES_ID)? {
-            let Some(e) = ctx.entity(&edge.child_id)?.filter(|e| e.alive()) else { continue };
+        for e in aiworkspace_core::plan::canvas_surfaces(&ctx)? {
             if !anyone.can_read(&ctx, &e)? {
                 continue;
             }

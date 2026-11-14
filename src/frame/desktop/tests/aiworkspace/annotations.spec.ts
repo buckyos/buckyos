@@ -47,7 +47,7 @@ test('a text range: shown next to the selection, follows edits, found again by i
   // a page has no near toolbar: the format bubble over the selection carries "annotate"
   await page.getByTestId('aiws-format-bubble').getByTestId('aiws-near-annotate-text').click()
   await expect(page.getByTestId('aiws-annotation-draft-target')).toContainText('「文档格式」')
-  await page.getByLabel('批注内容').fill('术语要统一')
+  await page.getByLabel('评论内容').fill('术语要统一')
   await page.getByTestId('aiws-annotation-save').click()
   await expect(item).toContainText('锚点有效')
 
@@ -140,8 +140,8 @@ test('an application range kind: captured and located by the application, kept v
   await engine.click({ position: { x: (size?.width ?? 10) - 6, y: (size?.height ?? 10) / 2 } })
   // a caret, no selection: no format bubble on a page — the shortcut annotates where the caret is
   await page.keyboard.press('Control+Alt+m')
-  await expect(page.getByTestId('aiws-annotation-draft-target')).toHaveText('批注对象：第 2 个英文词')
-  await page.getByLabel('批注内容').fill('应用自己定位')
+  await expect(page.getByTestId('aiws-annotation-draft-target')).toHaveText('评论对象：第 2 个英文词')
+  await page.getByLabel('评论内容').fill('应用自己定位')
   await page.getByTestId('aiws-annotation-save').click()
   const item = page.getByTestId('aiws-annotation').filter({ hasText: '应用自己定位' })
   await expect(item.getByTestId('aiws-anchor-state')).toHaveText('锚点有效（由应用定位）')

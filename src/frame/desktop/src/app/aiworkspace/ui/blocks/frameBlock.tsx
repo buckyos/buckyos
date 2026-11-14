@@ -8,7 +8,7 @@
  * children include lanes. "Add / delete lane" grow or shrink the pool and shift the lanes after it. */
 
 import { useState, type CSSProperties } from 'react'
-import { Pencil, Rows3, Trash2 } from 'lucide-react'
+import { Frame as FrameIcon, Pencil, Rows3, Trash2 } from 'lucide-react'
 import { inkOn } from '@drawio/shapes'
 import { keysAfter, randomId } from '@drawio/keys'
 import { fixed, num } from '@controls/placement'
@@ -17,8 +17,8 @@ import { aiwsT } from '../../i18n'
 import { useAiwsText } from '../../useAiwsText'
 import { useStore } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
-import { cellOp, setCellConfig, setCellKey } from './ops'
-import type { BlockDefinition, CreateArgs, RenderContext, ToolbarItem } from './registry'
+import { cellOp, setCellKey } from './ops'
+import type { BlockDefinition, CreateArgs, RenderContext } from './registry'
 
 /** A one-line title typed where it is shown; Enter or leaving saves, Esc keeps the old one. */
 export function InPlaceTitle({ context, className, placeholder }: { context: RenderContext; className: string; placeholder: string }) {
@@ -222,27 +222,21 @@ function swimlaneOps(args: CreateArgs, rows: boolean, n: number): Operation[] {
   return ops
 }
 
-function frameToolbar(context: RenderContext, store: WorkspaceStore): ToolbarItem[] {
-  const reason = canChange(context)
-  const look = frameLook(context.payload.config)
+/** Why lanes cannot be added or removed: the pool (or this frame) needs `structure`. */
+function laneReason(context: RenderContext, store: WorkspaceStore): string | false {
   const lanes = laneContext(store, context.cell.entity_id)
-  const structureReason: string | false = context.capabilities.includes('structure') || (lanes && store.outline.get(lanes.pool.entity_id)?.capabilities.includes('structure')) ? false : aiwsT('aiworkspace.blocks.frame.noStructure')
-  const set = (patch: Record<string, Json | null>, label: string) => setCellConfig(context, store, patch, label)
-  return [
-    { kind: 'color', id: 'frame-color', label: aiwsT('aiworkspace.blocks.color'), palette: 'ink', value: typeof context.payload.config?.color === 'string' ? context.payload.config.color : undefined, disabled: reason, onPick: (value) => set({ color: value || null }, aiwsT('aiworkspace.blocks.frame.color')) },
-    ...(look.header !== null ? [{ kind: 'color' as const, id: 'frame-header-fill', label: aiwsT('aiworkspace.blocks.frame.headerColor'), palette: 'fill' as const, extras: [{ value: 'none', label: aiwsT('aiworkspace.common.none') }], value: look.headerFill, disabled: reason, onPick: (value: string) => set({ header_fill: value || null }, aiwsT('aiworkspace.blocks.frame.headerColor')) }] : []),
-    { kind: 'button', id: 'frame-rename', icon: Pencil, label: aiwsT('aiworkspace.common.rename'), disabled: reason, run: () => context.activateEditor() },
-    ...(lanes ? [{ kind: 'button' as const, id: 'lane-add', icon: Rows3, label: aiwsT(lanes.lane ? (lanes.rows ? 'aiworkspace.blocks.frame.addLaneBelow' : 'aiworkspace.blocks.frame.addLaneRight') : 'aiworkspace.blocks.frame.addLane'), disabled: reason || structureReason, run: () => { void addLane(store, context.cell.entity_id) } }] : []),
-    ...(lanes?.lane ? [{ kind: 'button' as const, id: 'lane-delete', icon: Trash2, label: aiwsT('aiworkspace.blocks.frame.deleteLane'), disabled: reason || structureReason, run: () => deleteLane(store, context.cell.entity_id) }] : []),
-  ]
+  const reason = canChange(context)
+  if (reason) return reason
+  return context.capabilities.includes('structure') || (lanes && store.outline.get(lanes.pool.entity_id)?.capabilities.includes('structure')) ? false : aiwsT('aiworkspace.blocks.frame.noStructure')
 }
 
 export const frameDefinition: BlockDefinition = {
   type: 'frame', version: 1, get title() { return aiwsT('aiworkspace.blocks.frame.title') }, accepts: [], allowNoSource: true, pureUi: true,
-  defaultSize: { w: 600, h: 400 }, cost: { editor: false, html: false },
+  defaultSize: { w: 600, h: 400 }, cost: { editor: false, html: false }, icon: FrameIcon,
+  traits: { flowUntitled: true, flowInsertable: false },
   Static: FrameStatic, Editor: FrameEditor, chrome: 'none',
   catalog: {
-    group: 'layout', get description() { return aiwsT('aiworkspace.blocks.frame.description') }, needs: 'none', standard: true,
+    group: 'layout', get description() { return aiwsT('aiworkspace.blocks.frame.description') }, needs: 'none', standard: true, toolPicker: 8,
     variants: [{
       id: 'swimlane', get title() { return aiwsT('aiworkspace.blocks.frame.swimlane') }, group: 'layout', get description() { return aiwsT('aiworkspace.blocks.frame.swimlaneDescription') },
       config: { swimlane: 'rows', lanes: 2 }, size: { w: 760, h: 360 },
@@ -255,12 +249,20 @@ export const frameDefinition: BlockDefinition = {
       ],
     }],
   },
-  actions: [{ id: 'rename', get label() { return aiwsT('aiworkspace.common.rename') }, modes: ['edit'], needs: ['update'], run: (context) => context.activateEditor(), key: 'Enter' }],
-  toolbar: frameToolbar,
+  actions: [
+    { id: 'frame-rename', icon: Pencil, primary: true, get label() { return aiwsT('aiworkspace.common.rename') }, modes: ['edit'], needs: ['update'], run: (context) => context.activateEditor(), key: 'Enter' },
+    { id: 'lane-add', icon: Rows3, primary: true, modes: ['edit'], when: (context, store) => Boolean(laneContext(store, context.cell.entity_id)),
+      get label() { return aiwsT('aiworkspace.blocks.frame.addLane') }, disabled: laneReason, run: (context, store) => { void addLane(store, context.cell.entity_id) } },
+    { id: 'lane-delete', icon: Trash2, primary: true, modes: ['edit'], when: (context, store) => Boolean(laneContext(store, context.cell.entity_id)?.lane),
+      get label() { return aiwsT('aiworkspace.blocks.frame.deleteLane') }, disabled: laneReason, run: (context, store) => deleteLane(store, context.cell.entity_id) },
+  ],
   configFields: [
-    { key: 'color', get label() { return aiwsT('aiworkspace.blocks.color') }, kind: 'color' },
-    { key: 'header', get label() { return aiwsT('aiworkspace.blocks.frame.header') }, kind: 'number' },
-    { key: 'orientation', get label() { return aiwsT('aiworkspace.blocks.frame.titlePosition') }, kind: 'select', options: [
+    { key: 'color', id: 'frame-color', get label() { return aiwsT('aiworkspace.blocks.color') }, kind: 'color', quick: true, palette: 'ink' },
+    { key: 'header_fill', id: 'frame-header-fill', get label() { return aiwsT('aiworkspace.blocks.frame.headerColor') }, kind: 'color', quick: true, palette: 'fill',
+      get extras() { return [{ value: 'none', label: aiwsT('aiworkspace.common.none') }] }, when: (context) => frameLook(context.payload.config).header !== null,
+      get: (context) => frameLook(context.payload.config).headerFill },
+    { key: 'header', get label() { return aiwsT('aiworkspace.blocks.frame.header') }, kind: 'number', min: 0, max: 400 },
+    { key: 'orientation', get label() { return aiwsT('aiworkspace.blocks.frame.titlePosition') }, kind: 'select', default: 'horizontal', options: [
       { value: 'horizontal', get label() { return aiwsT('aiworkspace.blocks.frame.titleTop') } },
       { value: 'vertical', get label() { return aiwsT('aiworkspace.blocks.frame.titleLeft') } },
     ] },

@@ -31,7 +31,7 @@ test('a control from home: build, an instance with a binding, rebuild, a refused
   await openCanvas(page, ALICE, ws.workspace_id)
 
   // new control: a folder in alice's home with a working sample, built at once
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-extension', 'aiws-menu-extensions')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-extensions')
   const dialog = page.getByTestId('aiws-ext-dialog')
   await expect(dialog).toBeVisible()
   await dialog.getByTestId('aiws-ext-new').click()
@@ -68,7 +68,7 @@ test('a control from home: build, an instance with a binding, rebuild, a refused
 
   // a saved change builds into the instance
   await save(dir, 'declarative.json', JSON.stringify({ layout: 'stack', items: [{ kind: 'metric', label: '全部任务', bind: 'data.count', format: 'number' }] }))
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-extension', 'aiws-menu-extensions')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-extensions')
   await dialog.getByTestId(`aiws-ext-row-${defId}`).click()
   await dialog.getByTestId('aiws-ext-build').click()
   await expect(dialog.getByTestId('aiws-ext-build-ok')).toBeVisible({ timeout: 30_000 })
@@ -102,11 +102,10 @@ test('a control from home: build, an instance with a binding, rebuild, a refused
 
   // a second workspace adds it from the library
   const ws2 = await api.sample(ALICE, '控件使用 E2E')
-  await page.getByTestId('aiws-main-menu').click()
-  await page.getByTestId('aiws-back').click()
+  await mainMenu(page, 'aiws-menu-workspace', 'aiws-back')
   await page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws2.workspace_id}"]`).getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws2.workspace_id)
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-extension', 'aiws-menu-extensions')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-extensions')
   await dialog.getByTestId('aiws-ext-library').click()
   await dialog.getByTestId(`aiws-ext-library-pick-${NAME}`).check()
   await dialog.getByTestId('aiws-ext-library-add').click()
@@ -163,7 +162,7 @@ test('composite controls: inserted from the catalogue, laid out from the composi
   const { ws, card, board, boardId } = await compositeWorkspace(api, `composite-e2e ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
   // an instance: the container from the extension catalogue, no data asked for
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-extension', 'aiws-menu-extensions')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-extensions')
   const dialog = page.getByTestId('aiws-ext-dialog')
   await dialog.getByTestId(`aiws-ext-row-${boardId}`).click()
   await expect(dialog.getByTestId('aiws-ext-deps')).toHaveText('did:bns:alice#card-e2e')
@@ -226,7 +225,7 @@ test('composite controls: inserted from the catalogue, laid out from the composi
   expect(all.filter((e: J) => e.parent_id === copy.entity_id).map((e: J) => e.slot)).toEqual(['cards', 'cards'])
 
   // a .pikg made by the service, then put into the library
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-extension', 'aiws-menu-extensions')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-extensions')
   await dialog.getByTestId(`aiws-ext-check-${boardId}`).check()
   await dialog.getByTestId('aiws-ext-export').click()
   await dialog.getByTestId('aiws-ext-export-name').fill('boards-e2e')
@@ -278,7 +277,7 @@ test('Q24: on a workspace\'s own host the home folder is reached too: a new cont
   ]) as J
   expect(surface.status, JSON.stringify(surface)).toBe('accepted')
   await openWorkspacePage(page, ALICE, ws.workspace_id, 'free')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-extension', 'aiws-menu-extensions')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-extensions')
   const dialog = page.getByTestId('aiws-ext-dialog')
   await dialog.getByTestId('aiws-ext-new').click()
   await dialog.getByTestId('aiws-ext-new-name').fill('own-host-kpi')
@@ -393,8 +392,8 @@ test('P2 design mode: a click on a declarative button selects the Block and note
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
   expect(await status(api, ws.workspace_id)).toBe('open')
   // the events page of the instance shows what it binds
+  // the properties panel's "interaction" section (UI 框架 PRD §10.2)
   await openSide(page, 'inspector')
-  await page.getByTestId('aiws-instance-page-events').click()
   await expect(page.getByTestId('aiws-events-kind-completed-0')).toHaveValue('write')
   await expect(page.getByTestId('aiws-events-target-completed-0')).toHaveValue('task')
   await runMode(page, true)
@@ -534,7 +533,7 @@ test('P2 upgrade: a control imported at 0.1.0 is upgraded to 0.2.0 from the libr
   const before = await api.read(ALICE, ws.workspace_id, 'inst') as J & { content: { payload: J } }
   await openCanvas(page, ALICE, ws.workspace_id)
   await expect(page.getByTestId('aiws-decl-inst')).toContainText('version one')
-  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-insert-group-extension', 'aiws-menu-extensions')
+  await mainMenu(page, 'aiws-menu-insert', 'aiws-menu-extensions')
   const dialog = page.getByTestId('aiws-ext-dialog')
   await dialog.getByTestId(`aiws-ext-row-${defId}`).click()
   await expect(dialog.getByTestId('aiws-ext-new-version')).toHaveAttribute('data-version', '0.2.0')
@@ -569,7 +568,7 @@ test('P3 templates: canvases saved as a template into the library, a new workspa
       payload: { view: { type: 'declarative' }, def_ref: { entity_id: kpi.def_entity_id }, bindings: { data: { entity_id: 'tasks' } }, title: '{{params.team_name}} KPI' } },
   ])).status).toBe('accepted')
   await openCanvas(page, ALICE, ws.workspace_id)
-  await mainMenu(page, 'aiws-menu-export-menu', 'aiws-menu-save-template')
+  await mainMenu(page, 'aiws-menu-surface', 'aiws-menu-save-template')
   const save = page.getByTestId('aiws-save-template')
   await expect(save.getByTestId('aiws-template-surface-free')).toBeChecked()
   await save.getByTestId('aiws-template-title').fill('Team E2E')
@@ -585,7 +584,7 @@ test('P3 templates: canvases saved as a template into the library, a new workspa
   await save.getByTestId('aiws-save-template-close').click()
   // installing created no workspace; the New dialog lists the template beside the built-in ones
   const listed = (await api.rpc(ALICE, 'ws.list', {})).workspaces.length
-  await mainMenu(page, 'aiws-menu-new')
+  await mainMenu(page, 'aiws-menu-workspace', 'aiws-menu-new')
   await page.getByTestId('aiws-new-tab-template').click()
   await page.getByTestId(`aiws-template-lib-${pkg}-team-e2e`).click()
   await page.getByTestId('aiws-template-param-team_name').fill('Alpha')

@@ -45,6 +45,8 @@
         "public_base": null,
         "purpose": null,
         "richtext_schema": "string",
+        "settings": {},
+        "settings_rev": "number",
         "show_lock": null,
         "title": "string",
         "traffic": "number",
@@ -64,12 +66,20 @@
         "ok": "boolean",
         "workspaces": [
           {
+            "anonymous": "boolean",
             "capabilities": [
               "string"
             ],
+            "cover": null,
             "epoch": "string",
             "head_seq": "number",
+            "live_sessions": "number",
+            "opened_at": null,
+            "owner_principal": "string",
+            "public": "boolean",
+            "published": "boolean",
             "title": "string",
+            "updated_at": "string",
             "workspace_id": "string"
           }
         ]
@@ -1442,6 +1452,34 @@
       }
     },
     {
+      "method": "doc.list_versions",
+      "params": {
+        "entity_id": "string",
+        "workspace_id": "string"
+      },
+      "result": {
+        "content_rev": "number",
+        "entity_id": "string",
+        "head_seq": "number",
+        "ok": "boolean",
+        "versions": [
+          {
+            "accepted_at": "string",
+            "author": "string",
+            "commit_id": "string",
+            "content_rev": "number",
+            "created_at": "string",
+            "derived": null,
+            "kind": "string",
+            "message": null,
+            "object_id": "string",
+            "origin": "string",
+            "run_id": null
+          }
+        ]
+      }
+    },
+    {
       "method": "ws.release_retention",
       "params": {
         "kind": "string",
@@ -1521,6 +1559,8 @@
         "public_base": null,
         "purpose": null,
         "richtext_schema": "string",
+        "settings": {},
+        "settings_rev": "number",
         "show_lock": null,
         "title": "string",
         "traffic": "number",

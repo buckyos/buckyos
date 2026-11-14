@@ -165,6 +165,8 @@ export async function createTemplate(actor: Actor, template: 'sample' | 'quarter
     await page.getByTestId('window-aiworkspace').getByRole('button', { name: 'Maximize', exact: true }).click()
   } else await page.goto('/workspace')
   await expect(page.getByTestId('aiws-transport')).toHaveText('Zone 服务', { timeout: 30_000 })
+  // the home starts on "Recent" when there is any; "New from template" is on the first card of "All workspaces"
+  await page.getByTestId('aiws-home-tab-all').click()
   await page.getByTestId('aiws-new-template').click()
   await page.getByTestId(`aiws-template-${template}`).click()
   await page.getByLabel('工作区标题', { exact: true }).fill(actor.client.prefix)

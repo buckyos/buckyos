@@ -1,0 +1,113 @@
+/* The home (UI framework PRD §9): a fixed top bar and categories over a scrolling grid of cards; on a phone one
+   column of compact horizontal cards, a segmented category control and floating New / Import buttons (§9.4). */
+
+.aiws-root .aiws-list.aiws-home { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.aiws-home-top { flex: none; }
+.aiws-root .aiws-home-search { width: min(280px, 40vw); min-height: 30px; }
+.aiws-home-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 16px 24px; display: flex; flex-direction: column; gap: 8px; }
+.aiws-home-empty, .aiws-home-note { padding: 8px 2px; }
+.aiws-home-note { font-size: 12px; }
+
+/* icon buttons of the top bar and the sheet */
+.aiws-root .aiws-home .aiws-home-icon, .aiws-root .aiws-home-sheet .aiws-home-icon { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 6px; position: relative; }
+.aiws-root .aiws-home-icon[data-active]::after { content: ''; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--cp-accent); }
+.aiws-root .aiws-home-top > button { display: inline-flex; align-items: center; gap: 4px; }
+
+/* categories: tabs on a computer, a segmented control on a phone */
+.aiws-home-tabs { flex: none; display: flex; gap: 4px; padding: 0 16px; border-bottom: 1px solid var(--cp-border); background: var(--cp-surface); overflow-x: auto; scrollbar-width: none; }
+.aiws-root .aiws-home-tabs > button { flex: none; border: none; border-radius: 0; background: none; padding: 8px 12px 6px; border-bottom: 2px solid transparent; color: var(--cp-muted); white-space: nowrap; }
+.aiws-root .aiws-home-tabs > button:hover:not(:disabled) { background: none; color: var(--cp-text); }
+.aiws-root .aiws-home-tabs > button[aria-selected='true'] { color: var(--cp-text); font-weight: 600; border-bottom-color: var(--cp-accent); }
+.aiws-home-tabs.is-phone { margin: 8px 12px; padding: 3px; gap: 2px; border: none; border-radius: 10px; background: var(--cp-surface-2); overflow: visible; }
+.aiws-root .aiws-home-tabs.is-phone > button { flex: 1 1 0; min-width: 0; min-height: 40px; padding: 4px 6px; border: none; border-radius: 8px; font-size: 13px; text-align: center; overflow: hidden; text-overflow: ellipsis; }
+.aiws-root .aiws-home-tabs.is-phone > button[aria-selected='true'] { background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: 0 1px 3px color-mix(in srgb, var(--cp-shadow) 18%, transparent); }
+
+/* the grid of cards: as many columns as fit, never wider than the container (no horizontal scroll) */
+.aiws-home-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); align-items: stretch; }
+.aiws-home-prepared { display: flex; flex-direction: column; gap: 8px; }
+
+.aiws-home-card { position: relative; display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--cp-border); border-radius: 12px; background: var(--cp-surface-opaque, var(--cp-surface)); transition: border-color 0.12s, box-shadow 0.12s; }
+/* many cards (§9.3): every card is in the list, the browser lays out and paints only the faces near the screen (on
+   the face, not the card: the containment would also hold the ⋯ menu, which is fixed to the window) */
+.aiws-home-grid > .aiws-home-card > .aiws-home-card-main { content-visibility: auto; contain-intrinsic-block-size: auto 170px; }
+.aiws-home.is-phone .aiws-home-grid > .aiws-home-card > .aiws-home-card-main { contain-intrinsic-block-size: auto 48px; }
+.aiws-home-card:hover { border-color: var(--aiws-selected-border); box-shadow: 0 4px 14px color-mix(in srgb, var(--cp-shadow) 12%, transparent); }
+.aiws-home-card.is-new { border-style: dashed; background: transparent; }
+.aiws-home-card[data-opening] { opacity: 0.7; }
+.aiws-root .aiws-home .aiws-home-card-main { display: flex; flex-direction: column; align-items: stretch; flex: 1 1 auto; width: 100%; min-width: 0; padding: 0; border: none; border-radius: inherit; background: none; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.aiws-root .aiws-home .aiws-home-card-main:hover:not(:disabled) { background: none; }
+.aiws-root .aiws-home .aiws-home-card-main:disabled { cursor: default; opacity: 1; }
+.aiws-home-session[data-action='expired'] { opacity: 0.72; }
+
+/* the cover: an icon on a colour of the workspace's own (no thumbnails yet, K6) */
+.aiws-home-cover { --aiws-home-hue: 220; flex: none; display: flex; align-items: center; justify-content: center; height: 84px; border-radius: 11px 11px 0 0;
+  background: color-mix(in srgb, hsl(var(--aiws-home-hue) 70% 55%) 22%, var(--cp-surface)); color: color-mix(in srgb, hsl(var(--aiws-home-hue) 65% 38%) 75%, var(--cp-text)); }
+.aiws-home-cover.is-new { background: var(--cp-surface-2); color: var(--cp-accent); }
+.aiws-home-cover.is-session { background: color-mix(in srgb, var(--cp-accent) 14%, var(--cp-surface)); color: var(--cp-accent); }
+.aiws-home-cover.is-live { background: color-mix(in srgb, var(--cp-success) 20%, var(--cp-surface)); color: var(--cp-success); }
+
+.aiws-home-card-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 12px 10px; }
+.aiws-home-card-title { font-weight: 600; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.aiws-home-card-info { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0; font-size: 12px; color: var(--cp-muted); }
+.aiws-home-card-info > span { min-width: 0; overflow-wrap: anywhere; }
+.aiws-home-card-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; }
+.aiws-home-card-marks .aiws-chip, .aiws-home-card-info .aiws-chip { margin-left: 0; }
+.aiws-home-card-go { align-self: flex-end; margin: -4px 12px 10px; font-size: 12px; color: var(--cp-accent); }
+.aiws-root .aiws-home .aiws-home-new-template { align-self: flex-start; margin: -4px 12px 10px; }
+
+/* ⋯ over the cover's corner */
+.aiws-home-card > .aiws-anchor { position: absolute; top: 6px; right: 6px; }
+.aiws-root .aiws-home .aiws-home-card-more { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border-radius: 50%;
+  border-color: transparent; background: color-mix(in srgb, var(--cp-surface) 82%, transparent); }
+.aiws-root .aiws-home .aiws-home-card-more:hover:not(:disabled) { background: var(--cp-surface); border-color: var(--cp-border); }
+
+/* the filter settings */
+.aiws-home-filter-popover { width: min(320px, calc(100vw - 32px)); }
+.aiws-home-filters { display: flex; flex-direction: column; gap: 10px; padding: 4px; }
+.aiws-home-filters fieldset { gap: 6px; }
+.aiws-home-filters legend { font-weight: 600; }
+.aiws-home-filter-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.aiws-home-filter-row > select { min-width: 0; max-width: 60%; }
+.aiws-home-check { display: flex; align-items: center; gap: 6px; }
+.aiws-home-filters small { font-size: 11px; line-height: 1.35; }
+.aiws-home-details { display: grid; gap: 6px; margin: 4px 0; }
+.aiws-home-details > div { display: grid; grid-template-columns: minmax(80px, 30%) 1fr; gap: 8px; }
+.aiws-home-details dt { color: var(--cp-muted); }
+.aiws-home-details dd { margin: 0; overflow-wrap: anywhere; }
+
+/* the bottom panel (a phone's filter settings) */
+.aiws-home-sheet-backdrop { position: absolute; inset: 0; z-index: 75; display: flex; align-items: flex-end; background: rgb(0 0 0 / 28%); }
+.aiws-home-sheet { width: 100%; max-height: 86%; overflow: auto; box-sizing: border-box; padding: 12px 16px max(16px, env(safe-area-inset-bottom)); border-radius: 16px 16px 0 0;
+  background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: var(--cp-panel-shadow); display: flex; flex-direction: column; gap: 8px; }
+.aiws-home-sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--cp-border); margin: -4px auto 4px; }
+
+/* floating New / Import (a phone) */
+.aiws-home-fabs { position: absolute; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 20; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.aiws-root .aiws-home .aiws-home-fab { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; padding: 0; border-radius: 50%; box-shadow: var(--cp-panel-shadow); }
+.aiws-root .aiws-home .aiws-home-fab.is-primary { width: 56px; height: 56px; }
+
+/* a phone: one column of compact horizontal cards — a small cover left, title and facts right, ⋯ at the end */
+.aiws-home.is-phone .aiws-home-top { flex-wrap: nowrap; padding: 6px 6px 6px 12px; }
+.aiws-home.is-phone .aiws-home-top.is-searching { padding: 6px 6px 6px 8px; }
+.aiws-root .aiws-home.is-phone .aiws-home-search { flex: 1 1 auto; width: auto; min-height: 40px; font-size: 16px; }
+.aiws-home.is-phone .aiws-home-scroll { padding: 4px 12px 136px; }
+.aiws-home.is-phone .aiws-home-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.aiws-home.is-phone .aiws-home-card { flex-direction: row; align-items: stretch; }
+.aiws-root .aiws-home.is-phone .aiws-home-card-main { flex-direction: row; align-items: center; gap: 12px; padding: 8px 48px 8px 8px; }
+.aiws-home.is-phone .aiws-home-cover { width: 48px; height: 48px; border-radius: 10px; }
+.aiws-home.is-phone .aiws-home-card-body { flex: 1 1 auto; padding: 0; gap: 2px; }
+.aiws-home.is-phone .aiws-home-card-go { align-self: center; margin: 0; flex: none; }
+.aiws-home.is-phone .aiws-home-card.is-new { flex-direction: column; }
+.aiws-root .aiws-home.is-phone .aiws-home-new-template { margin: -8px 0 4px 68px; }
+.aiws-root .aiws-home.is-phone .aiws-home-top .aiws-home-icon { border-color: transparent; background: none; }
+/* (centred without a transform: the ⋯ menu is fixed, and a transformed ancestor would contain it) */
+.aiws-home.is-phone .aiws-home-card > .aiws-anchor { top: 0; bottom: 0; right: 2px; align-items: center; }
+.aiws-root .aiws-home.is-phone .aiws-home-card-more { width: 44px; height: 44px; background: none; }
+
+@media (pointer: coarse) {
+  .aiws-root .aiws-home .aiws-home-icon { min-width: 44px; height: 44px; }
+  .aiws-root .aiws-home .aiws-home-card-more { width: 44px; height: 44px; }
+  .aiws-root .aiws-home-tabs > button { min-height: 44px; }
+  .aiws-root .aiws-home .aiws-home-new-template, .aiws-root .aiws-home-filters select, .aiws-root .aiws-home-filters button { min-height: 44px; }
+  .aiws-home-check { min-height: 44px; }
+}

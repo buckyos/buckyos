@@ -20,6 +20,7 @@ import type { Json, Operation } from '../../../api/types'
 import { useEntity, useReadOnlyReason, useStore, useWorkspaceUi } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
 import { ControlMenu, ControlPopover, anchorOf, type AnchorRect, type MenuItem } from '../data/ControlPopover'
+import { PublishActions } from '../../blockui/PublishActions'
 import { edgeScroll, localPoint, trackPress, type Point } from '../data/gestures'
 import { ProjectedView, projectedAt } from '../data/ProjectedView'
 import { useRecords } from '../data/records'
@@ -388,6 +389,17 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
     return () => el.removeEventListener('scroll', update)
   }, [view.mode, size.w, size.h])
 
+  // the view menu (UI 框架 PRD §10.1): this ⋯ and the Block's menu offer the same actions ("open as a page" is the Block
+  // menu's "expand" there, so it is not published)
+  const viewItems: (MenuItem | 'separator')[] = [
+    { id: 'hide-done', label: t('aiworkspace.todo.hideDone'), checked: view.hide_done, icon: view.hide_done ? <Check size={14} /> : null, run: () => ctl.set({ hide_done: !view.hide_done }) },
+    ...(view.mode === 'board' ? [{ id: 'expand', label: t('aiworkspace.todo.expandColumns'), icon: <PanelLeftOpen size={14} />, disabled: view.collapsed.length ? false : t('aiworkspace.todo.noneFolded'), run: () => ctl.set({ collapsed: [] }) } as MenuItem] : []),
+    ...(host !== 'page' ? [{ id: 'page', label: t('aiworkspace.datactl.openAsPage'), icon: <Expand size={14} />, run: () => openControlPage(containerId) } as MenuItem] : []),
+    'separator',
+    { id: 'set-default', label: t('aiworkspace.datactl.setDefault'), icon: <PanelLeftClose size={14} />, disabled: ctl.setDefault ? false : ctl.canChange ? t('aiworkspace.datactl.alreadyDefault') : t('aiworkspace.datactl.noUpdate'), run: () => ctl.setDefault?.() },
+    { id: 'reset', label: t('aiworkspace.datactl.resetView'), icon: <Undo2 size={14} />, disabled: Object.keys(ctl.personal).length ? false : t('aiworkspace.datactl.alreadyDefault'), run: () => ctl.reset() },
+  ]
+
   if (!container) return null
   if (!sourceId) return <UnboundSource containerId={containerId} />
   if (snapshot.error) return <div className="aiws-dc-empty aiws-error" role="alert">{t('aiworkspace.datactl.readFailed', { error: snapshot.error })}</div>
@@ -562,16 +574,10 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
       )}
       {popover?.kind === 'view' && (
         <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.datactl.viewMenu')} width={260} side="below">
-          <ControlMenu label={t('aiworkspace.datactl.viewMenu')} onClose={() => setPopover(null)} items={[
-            { id: 'hide-done', label: t('aiworkspace.todo.hideDone'), checked: view.hide_done, icon: view.hide_done ? <Check size={14} /> : null, run: () => ctl.set({ hide_done: !view.hide_done }) },
-            ...(view.mode === 'board' ? [{ id: 'expand', label: t('aiworkspace.todo.expandColumns'), icon: <PanelLeftOpen size={14} />, disabled: view.collapsed.length ? false : t('aiworkspace.todo.noneFolded'), run: () => ctl.set({ collapsed: [] }) } as MenuItem] : []),
-            ...(host !== 'page' ? [{ id: 'page', label: t('aiworkspace.datactl.openAsPage'), icon: <Expand size={14} />, run: () => openControlPage(containerId) } as MenuItem] : []),
-            'separator',
-            { id: 'set-default', label: t('aiworkspace.datactl.setDefault'), icon: <PanelLeftClose size={14} />, disabled: ctl.setDefault ? false : ctl.canChange ? t('aiworkspace.datactl.alreadyDefault') : t('aiworkspace.datactl.noUpdate'), run: () => ctl.setDefault?.() },
-            { id: 'reset', label: t('aiworkspace.datactl.resetView'), icon: <Undo2 size={14} />, disabled: Object.keys(ctl.personal).length ? false : t('aiworkspace.datactl.alreadyDefault'), run: () => ctl.reset() },
-          ]} />
+          <ControlMenu label={t('aiworkspace.datactl.viewMenu')} onClose={() => setPopover(null)} items={viewItems} />
         </ControlPopover>
       )}
+      <PublishActions containerId={containerId} items={viewItems} />
     </div>
   )
 }

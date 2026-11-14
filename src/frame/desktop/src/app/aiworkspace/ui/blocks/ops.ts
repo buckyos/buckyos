@@ -29,6 +29,7 @@ export function defaultRendererFor(typeId: string): string | null {
     case 'buckyos.asset-ref': return 'asset'
     case 'buckyos.annotation': return 'note'
     case 'buckyos.wish': return 'wish'
+    case 'buckyos.dir': return 'directory'
     default: return null
   }
 }

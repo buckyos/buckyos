@@ -334,10 +334,11 @@ test('FP08 the table as a database grid: new rows by typing, a field from the he
   await expect(page.getByLabel('负责人 task-41', { exact: true })).toHaveValue('Z')
   await page.keyboard.press('Tab')
   await expect.poll(async () => (await rows()).find((row) => row.record_id === 'task-41')?.values.owner).toBe('Z')
-  // a row is deleted from its hover button
-  await all.getByTestId('aiws-row').filter({ hasText: '第一条新任务' }).hover()
+  // a row is deleted by ticking its head and deleting from the selection bar, asked first (UI 框架 PRD §7.3)
   const added = (await rows()).find((row) => row.values.title === '第一条新任务')?.record_id as string
-  await page.getByTestId(`aiws-delete-record-${added}`).click()
+  await all.getByTestId(`aiws-row-check-${added}`).check()
+  await all.getByTestId('aiws-table-selection-delete').click()
+  await page.getByTestId('aiws-table-confirm-ok').click()
   await expect.poll(async () => (await rows()).length).toBe(6)
   await expectAllCommitted(page)
 })

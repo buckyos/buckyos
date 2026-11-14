@@ -905,6 +905,18 @@ fn container_primitive(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
         (k, Some(b)) if b.payload.get("kind").and_then(Value::as_str) == Some(k) => {}
         _ => return Err(WsError::invalid_op("container kind cannot be changed")),
     }
+    // who writes the shared configuration (UI 框架 PRD §4.6, Q15): the Workspace's settings (the root's `config`) need
+    // `manage` on `/`, a Surface's toolbar `structure` on that Surface; a load (package, clone, template) and a replay
+    // carry them as they are
+    if let Some(b) = before.filter(|_| !p.env.import && !p.env.replay) {
+        let toolbar = |m: &JsonMap| m.get("config").and_then(|c| c.get("toolbar")).cloned();
+        if kind == "root" && b.payload.get("config") != e.payload.get("config") {
+            p.require(ROOT_ID, Cap::Manage)?;
+        }
+        if kind == "surface" && toolbar(&b.payload) != toolbar(&e.payload) {
+            p.require(&e.entity_id, Cap::Structure)?;
+        }
+    }
     let mode = match e.payload.get("layout") {
         // a control's layout is its algorithm, implied by the kind (R2); a composite's comes from its definition
         None if control => control_layout(&kind).to_string(),
@@ -927,7 +939,11 @@ fn container_primitive(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
     e.payload.insert("layout".into(), json!({ "mode": mode }));
     match e.payload.get("system") {
         None => {}
-        Some(Value::String(s)) if kind == "folder" && matches!(s.as_str(), "canvas_content" | "surface_content" | "shows") => {}
+        Some(Value::String(s)) if kind == "folder" && matches!(s.as_str(), "canvas_content" | "surface_content" | "shows") => {
+            if crate::plan::in_surfaces_tree(&p.ov, &e.entity_id)? {
+                return Err(bad("a canvas folder has no system role"));
+            }
+        }
         Some(_) => return Err(bad("system must be canvas_content, surface_content or shows on a folder")),
     }
     if let Some(sid) = e.payload.get("surface_id") {
@@ -1007,8 +1023,9 @@ fn composite_refs(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) ->
 
 /// Validator class: schema (title, icon, page / control config, `locked`).
 /// A Surface may carry `icon`, the stable id of a preset icon chosen by the client (the client owns the preset list;
-/// an unknown id shows its default), and `config`, its page settings (background, page size; ≤ 64 KiB, checked by
-/// the client like a Cell's). A control's `config` is its attributes: a mind map's are checked here, a composite's
+/// an unknown id shows its default), and `config`, its page settings (background, page size, toolbar; ≤ 64 KiB, checked
+/// by the client like a Cell's). The root's `config` is the Workspace's shared settings (toolbar; ≤ 64 KiB, the client
+/// checks the keys). A control's `config` is its attributes: a mind map's are checked here, a composite's
 /// by its definition's `config_schema` in the clients (Q15).
 fn container_schema(e: &EntityRow) -> WsResult<()> {
     let kind = e.payload.get("kind").and_then(Value::as_str).unwrap_or("");
@@ -1025,7 +1042,7 @@ fn container_schema(e: &EntityRow) -> WsResult<()> {
         }
     }
     if let Some(c) = e.payload.get("config") {
-        let c = c.as_object().filter(|_| kind == "surface" || control).ok_or_else(|| bad("config must be an object on a surface or a control"))?;
+        let c = c.as_object().filter(|_| kind == "surface" || kind == "root" || control).ok_or_else(|| bad("config must be an object on a surface, the root (the Workspace's settings) or a control"))?;
         if canonical_len(&Value::Object(c.clone())) > MAX_CONFIG_BYTES {
             return Err(WsError::limit(format!("config is limited to {MAX_CONFIG_BYTES} bytes")));
         }

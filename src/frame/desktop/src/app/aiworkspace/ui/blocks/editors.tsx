@@ -9,15 +9,15 @@ import { Lock, LockKeyhole, LockOpen } from 'lucide-react'
 import { ServiceFailure } from '../../api/client'
 import { describeError, type ReadOk } from '../../api/session'
 import { useAiwsText } from '../../useAiwsText'
-import type { AnnotationContent, AssetContent, EntityEnvelope, Json, RecordContent, RecordPropDef, Reference } from '../../api/types'
+import type { AnnotationContent, AssetContent, EntityEnvelope, RecordContent, Reference } from '../../api/types'
 import type { RichTextCollab } from '../../richtext/collab'
 import { RichTextEditor } from '../../richtext/RichTextEditor'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { authorLabel } from '../../state/guest'
 import { useDirectReadOnly, useEdit, useLoad, useLocksVersion, useStore, useVersion, useWorkspaceUi, useWriteAccess } from '../../state/hooks'
-import { ConflictBox, TableViewCell } from '../TableViewCell'
-import { ValueEditor } from '../ValueEditor'
-import { UNSET, formatValue, type Input } from '../values'
+import { TableViewCell } from '../TableViewCell'
+import { RecordForm, type FormField } from '../table/RecordForm'
+import { UNSET, type Input } from '../values'
 import { consumeIntent, useEditorToolbar, useIntent } from './editorToolbar'
 import { replaceAccept, replaceAsset } from './ops'
 import { useFilePicker } from '../shell/filePicker'
@@ -164,7 +164,7 @@ export function RichTextCell({ entity, entityId, renderEmbed, intentKey }: { ent
   )
 }
 
-// ---- record (design §3.2)
+// ---- record (design §3.2): the table's record form (UI 框架 PRD §7.5), each property its own version cell
 
 export function RecordCell({ entityId, entity, readOnly }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean }) {
   const { t } = useAiwsText()
@@ -176,56 +176,18 @@ export function RecordCell({ entityId, entity, readOnly }: { entityId: string; e
   if (record.error && !record.data) return <div className="aiws-error" role="alert">{t('aiworkspace.blocks.record.readFailed', { error: record.error })}</div>
   if (!record.data) return <div className="aiws-muted">{t('aiworkspace.blocks.loading')}</div>
   const content = record.data.content
-  return (
-    <table className="aiws-record" data-testid={`aiws-record-${entityId}`}>
-      <tbody>
-        {content.schema.properties.map((prop) => (
-          <RecordProp key={prop.key} entityId={entityId} prop={prop} value={content.props[prop.key]} rev={content.key_revs[`p:${prop.key}`] ?? 0} editable={!readOnly && access.editable} />
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-function RecordProp({ entityId, prop, value, rev, editable }: { entityId: string; prop: RecordPropDef; value: Json | undefined; rev: number; editable: boolean }) {
-  const { t } = useAiwsText()
-  const store = useStore()
-  const editId = `key:${entityId}:p:${prop.key}`
-  const entry = useEdit(editId)
-  const [editing, setEditing] = useState<{ baseRev: number; text?: string } | null>(null)
-  const pending = entry && entry.state !== 'committed' && entry.hasMine
-  const write = (input: Input, baseRev: number) => store.submit({
-    editId, label: `${prop.name}`, mine: input === UNSET ? null : input, hasMine: true,
+  const editable = !readOnly && access.editable
+  const fields: FormField[] = content.schema.properties.map((prop) => ({
+    id: prop.key, name: prop.name, def: prop, value: content.props[prop.key], rev: content.key_revs[`p:${prop.key}`] ?? 0,
+    editId: `key:${entityId}:p:${prop.key}`, locked: editable ? null : '', testId: `aiws-prop-${prop.key}`,
+  }))
+  const write = (field: FormField, input: Input, baseRev: number) => store.submit({
+    editId: field.editId, label: field.name, mine: input === UNSET ? null : input, hasMine: true,
     operations: [input === UNSET
-      ? { op: 'entity.unset_keys', entity_id: entityId, keys: [{ key: `p:${prop.key}`, expect: { rev: baseRev } }] }
-      : { op: 'entity.set_keys', entity_id: entityId, keys: [{ key: `p:${prop.key}`, value: input, expect: { rev: baseRev } }] }],
+      ? { op: 'entity.unset_keys', entity_id: entityId, keys: [{ key: `p:${field.id}`, expect: { rev: baseRev } }] }
+      : { op: 'entity.set_keys', entity_id: entityId, keys: [{ key: `p:${field.id}`, value: input, expect: { rev: baseRev } }] }],
   })
-  const shown = pending ? (entry.mine === null ? '' : formatValue(prop, entry.mine)) : formatValue(prop, value)
-  return (
-    <tr data-testid={`aiws-prop-${prop.key}`} data-state={entry?.state ?? 'clean'}>
-      <th scope="row">{prop.name}{prop.required ? ' *' : ''}</th>
-      <td>
-        {editing ? (
-          <ValueEditor def={prop} value={value} initialText={editing.text} ariaLabel={prop.name} onCancel={() => setEditing(null)}
-            onCommit={(input) => { setEditing(null); void write(input, editing.baseRev) }} />
-        ) : (
-          <button type="button" className="aiws-cell-value" disabled={!editable} onClick={() => setEditing({ baseRev: rev })}>{shown || <span className="aiws-muted">{t('aiworkspace.blocks.value.unset')}</span>}</button>
-        )}
-        {entry && !editing && <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state" title={entry.detail}>{EDIT_STATE_LABEL[entry.state]}</span>}
-        {entry && entry.state === 'needs_attention' && !editing && (
-          <ConflictBox
-            store={store}
-            editId={editId}
-            theirs={entry.hasTheirs ? formatValue(prop, entry.theirs) || t('aiworkspace.blocks.value.unset') : null}
-            mine={entry.hasMine ? (entry.mine === null ? t('aiworkspace.blocks.value.cleared') : formatValue(prop, entry.mine ?? undefined)) : null}
-            detail={entry.detail ?? ''}
-            onKeepMine={entry.hasMine && entry.currentRev !== undefined ? () => { void write(entry.mine === null ? UNSET : (entry.mine as Json), entry.currentRev ?? 0) } : undefined}
-            onEditAgain={entry.hasMine ? () => setEditing({ baseRev: entry.currentRev ?? rev, text: entry.mine === null || typeof entry.mine === 'object' ? '' : String(entry.mine) }) : undefined}
-          />
-        )}
-      </td>
-    </tr>
-  )
+  return <RecordForm fields={fields} write={write} testId={`aiws-record-${entityId}`} />
 }
 
 // ---- asset (design §3.6)

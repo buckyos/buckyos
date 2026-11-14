@@ -1,6 +1,6 @@
 /* Sources and publication by path (内核架构改进 M4): a manager publishes a table; another workspace inserts the link
  * as data and the copy follows the publication (a refresh run); the copy is read-only; the publisher sees who reads it. */
-import { expect, openWorkspace, test } from './fixtures'
+import { expect, openWorkspace, test, treeMenu } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -24,7 +24,7 @@ test('M4: publish a table, insert its link elsewhere, the copy follows and stays
   // the consumer inserts the link as data: created, then refreshed at once
   await openWorkspace(page, ALICE, b.workspace_id)
   await page.getByTestId('aiws-top-sources').click()
-  await page.getByTestId('aiws-new-kind').selectOption('link')
+  await treeMenu(page, null, 'aiws-dm-menu-new', 'aiws-dm-new-link')
   await page.getByTestId('aiws-new-link').fill(link)
   await page.getByTestId('aiws-new-data').click()
   await expect(page.getByTestId('aiws-source')).toHaveAttribute('data-kind', 'workspace', { timeout: 30_000 })

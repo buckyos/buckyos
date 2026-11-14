@@ -29,7 +29,7 @@ async function showWorkspace(api: Api, title: string, grants: { subject: string;
 }
 
 async function startShow(page: Page, stepTitle?: string) {
-  await mainMenu(page, 'aiws-top-play')
+  await mainMenu(page, 'aiws-menu-collab', 'aiws-top-play')
   await expect(page.getByTestId('aiws-start-show')).toBeVisible()
   if (stepTitle) await page.getByTestId('aiws-start-step').selectOption({ label: stepTitle })
   await page.getByTestId('aiws-start-show-go').click()
@@ -227,7 +227,7 @@ test('P3-04 Viewport to Viewport: far apart it zooms out first, close by it does
       { id: 'a', target: { kind: 'viewport', entity_id: 'viewport1' } }, { id: 'b', target: { kind: 'viewport', entity_id: 'v-near' } }, { id: 'c', target: { kind: 'viewport', entity_id: 'v-far' } }] } },
   ])
   await openCanvas(page, ALICE, ws.workspace_id)
-  await mainMenu(page, 'aiws-top-play')
+  await mainMenu(page, 'aiws-menu-collab', 'aiws-top-play')
   await page.getByTestId('aiws-start-path').selectOption({ label: '飞行' })
   await page.getByTestId('aiws-start-show-go').click()
   await onStep(page, 'a')
@@ -335,7 +335,7 @@ test('P3-08 deleted targets become dangling steps: listed, skipped by the show, 
   await expect(page.getByTestId('aiws-path-step-s4')).toHaveAttribute('data-problem', 'missing')
   await expect(page.getByTestId('aiws-path-step-s5')).toHaveAttribute('data-problem', 'missing')
   await expect(page.getByTestId('aiws-path-editor')).toContainText('2 个失效项')
-  await mainMenu(page, 'aiws-top-play')
+  await mainMenu(page, 'aiws-menu-collab', 'aiws-top-play')
   await expect(page.getByTestId('aiws-start-summary')).toContainText('3 步')
   await page.getByTestId('aiws-start-show-go').click()
   await expect(page.getByTestId('aiws-show')).toHaveAttribute('data-count', '3')
@@ -393,7 +393,7 @@ test('P3-10 a share export leaves the speaker notes out; captions and paths trav
   await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'guide:path-guide': { index: 2, done: false } } })
   // the dialog: a share package defaults to no notes, a personal backup to notes
   await openCanvas(page, ALICE, ws.workspace_id)
-  await mainMenu(page, 'aiws-menu-export-menu', 'aiws-menu-export')
+  await mainMenu(page, 'aiws-menu-workspace', 'aiws-menu-export')
   await expect(page.getByTestId('aiws-export-notes')).not.toBeChecked()
   await page.getByTestId('aiws-export-dialog').getByLabel('导出方式').selectOption('personal_backup')
   await expect(page.getByTestId('aiws-export-notes')).toBeChecked()
@@ -417,7 +417,8 @@ test('P3-11 the guide: the rest is dimmed and inert, it ends where it is, resume
   const ws = await showWorkspace(api, `p3-11 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
   await expect(page.getByTestId('aiws-notice').filter({ hasText: '使用引导「首次使用」' })).toBeVisible()
-  await page.getByTestId('aiws-guide-start').click()
+  await page.getByTestId('aiws-collab-play').click()
+  await page.getByTestId('aiws-play-guide-path-guide').click()
   await expect(page.getByTestId('aiws-guide')).toHaveAttribute('data-step', 'g1')
   await expect(page.getByTestId('aiws-guide-caption')).toHaveText('欢迎：这是演示的第一页。')
   // everything but the step is dimmed; the step (a 16:9 Frame) is fitted into the canvas
@@ -447,7 +448,8 @@ test('P3-11 the guide: the rest is dimmed and inert, it ends where it is, resume
   await expect(page.getByTestId('aiws-guide')).toHaveCount(0)
   await expect.poll(async () => (await api.rpc(ALICE, 'ws.get_user_state', { workspace_id: ws.workspace_id })).entries['guide:path-guide']?.index).toBe(1)
   // it resumes where it ended
-  await page.getByTestId('aiws-guide-start').click()
+  await page.getByTestId('aiws-collab-play').click()
+  await page.getByTestId('aiws-play-guide-path-guide').click()
   await expect(page.getByTestId('aiws-guide')).toHaveAttribute('data-step', 'g2')
   await page.getByTestId('aiws-guide-next').click()
   await expect(page.getByTestId('aiws-guide-count')).toHaveText('3 / 3')
@@ -663,7 +665,7 @@ test('P3 dark theme: the path editor, the start dialog, the stage controls, the 
   await page.getByTestId('aiws-path-step-s1').click()
   await expect(page.getByTestId('aiws-step-props')).toBeVisible()
   await shot(page, 'dark-editor')
-  await mainMenu(page, 'aiws-top-play')
+  await mainMenu(page, 'aiws-menu-collab', 'aiws-top-play')
   await expect(page.getByTestId('aiws-start-show')).toBeVisible()
   await shot(page, 'dark-start')
   await page.getByTestId('aiws-start-show-go').click()
@@ -685,7 +687,8 @@ test('P3 dark theme: the path editor, the start dialog, the stage controls, the 
   await phone.close()
   await page.getByTestId('aiws-show-exit').click()
   await setCanvasMode(page, 'view')
-  await page.getByTestId('aiws-guide-start').click()
+  await page.getByTestId('aiws-collab-play').click()
+  await page.getByTestId('aiws-play-guide-path-guide').click()
   await expect(page.getByTestId('aiws-guide')).toBeVisible()
   await shot(page, 'dark-guide')
 })

@@ -174,6 +174,9 @@ async fn every_stable_method_keeps_its_recorded_shape() {
     s.rpc("doc.undo", wsp(json!({ "epoch": epoch, "commit_id": accepted["commit_id"], "idempotency_key": "u1" }))).await;
     // the maintenance channel (D19)
     let cp = s.http.post(&s.base).json(&json!({ "method": "doc.checkpoint", "params": wsp(json!({})), "sys": [9001, "tok-alice"] })).send().await.unwrap().json::<Value>().await.unwrap();
+    // the versions a checkpoint made addressable (UI 框架 PRD K9: stable)
+    let versions = s.rpc("doc.list_versions", wsp(json!({ "entity_id": "t1" }))).await;
+    assert!(!versions["versions"].as_array().unwrap().is_empty(), "{versions}");
     s.rpc("ws.release_retention", wsp(json!({ "kind": "export", "ref": export["result"]["export_id"] }))).await;
     s.rpc("ws.delete_checkpoint", wsp(json!({ "snapshot_id": cp["result"]["snapshot"] }))).await;
     s.rpc("ws.purge_deleted", wsp(json!({}))).await;

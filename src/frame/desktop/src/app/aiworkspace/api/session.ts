@@ -5,7 +5,6 @@
  * replica (design §6): reads come from the Replica Worker's working view, `commit` becomes
  * "saved on this device → queued → sent". Nothing above this file talks to the client directly. */
 
-import * as legacyGrants from './legacyGrants'
 import type { AccessDenial, AdjustLocation, DenyReason } from 'buckyos'
 import { ndm } from 'buckyos'
 import { AiwsClient, ServiceFailure, unwrap } from './client'
@@ -19,9 +18,10 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type SqlParams, type SqlResult, type WorkspaceInfo,
-  type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
+  type AnnotationRead, type ListAnnotationsParams, type DerivedRecord, type FreshnessInfo, type RelationsInfo,
   type Subject, type VersionInfo, type NeedsCodingReason, type WishChoices, type WishRunView, type ShowLockInfo, type ServiceError, type WishClaim, type WishToolAnswer, type WishStageFiles, type HostedExecConfig, type Publication, type Referrer,
   type BucketBinding, type StagedAsset, type ExtBuildResult, type ExtExportResult, type ExtMigration, type ExtPackResult, type LibraryPackage, type TemplateSpec,
+  type PresenceList, type WorkLogFilter, type WorkLogPage,
 } from './types'
 
 export type SessionStatus =
@@ -63,17 +63,25 @@ export const MEDIA_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 export const assetLimitOf = (file: Blob) => (/^(audio|video)\//.test(file.type) ? MEDIA_LIMIT_BYTES : ASSET_LIMIT_BYTES)
 const tooLarge = (file: Blob) => (assetLimitOf(file) === MEDIA_LIMIT_BYTES ? 'Audio and video are limited to 2 GiB per file.' : 'Workspace assets are limited to 32 MiB per file.')
 
-export async function uploadWorkspaceAsset(client: AiwsClient, workspaceId: string, file: File): Promise<StagedAsset> {
+/** An upload that can be followed and stopped (a directory's per-file progress, 框架 PRD §7.4): `onProgress` gets the
+ * bytes sent of the bytes to send; aborting `signal` stops hashing or sending. */
+export interface UploadControl { signal?: AbortSignal; onProgress?: (sent: number, total: number) => void }
+
+export async function uploadWorkspaceAsset(client: AiwsClient, workspaceId: string, file: File, control: UploadControl = {}): Promise<StagedAsset> {
   const options = await client.transport.importOptions()
   const own = await client.transport.ownBucket('assets')
-  const snapshot = await ndm.importFiles([file], { ...options, mode: 'single_file', autoStartUpload: false })
+  const { signal, onProgress } = control
+  const snapshot = await ndm.importFiles([file], { ...options, mode: 'single_file', autoStartUpload: false, signal })
   const ws = { workspace_id: workspaceId }
+  const sending = { signal, onProgress: onProgress && ((p: ndm.UploadProgress) => onProgress(p.uploadedBytes, p.totalBytes)) }
   try {
     if (!own) {
-      await ndm.ensureUploaded(snapshot.sessionId, options)
+      await ndm.ensureUploaded(snapshot.sessionId, { ...options, ...sending })
+      signal?.throwIfAborted()
       return unwrap(await client.assetImportObject(ws, { obj_id: snapshot.selection.objectId }))
     }
-    const status = await ndm.ensureUploaded(snapshot.sessionId, { ...options, bind: { bucketId: own, key: `${workspaceId}/${snapshot.selection.objectId}` } })
+    const status = await ndm.ensureUploaded(snapshot.sessionId, { ...options, ...sending, bind: { bucketId: own, key: `${workspaceId}/${snapshot.selection.objectId}` } })
+    signal?.throwIfAborted()
     if (!status.binding) throw new Error('the upload was not bound')
     return unwrap(await client.assetImportObject(ws, { bucket_id: status.binding.bucket_id, key: status.binding.key }))
   } finally { ndm.releaseImportSession(snapshot.sessionId) }
@@ -185,10 +193,10 @@ export interface WorkspaceSession {
   getUserState(): Promise<Record<string, Json>>
   setUserState(entries: Record<string, Json | null>): Promise<void>
 
-  /** Deployment management (online only; never queued, never undoable). */
-  listGrants(): Promise<GrantList>
-  grant(subject: string, capabilities: Capability[], scopeEntityId?: string): Promise<void>
-  revoke(subject: string, scopeEntityId?: string): Promise<void>
+  /** Deployment management (online only; never queued, never undoable). The permissions themselves (`acl.*`) are
+   * called through the client by ui/permissions; `subscribeAcl` tells when they moved (权限需求 R4): `info()` then
+   * carries the new `acl_rev` and the caller's Workspace capabilities. A session without its own follower omits it. */
+  subscribeAcl?(listener: () => void): () => void
   listSubjects(): Promise<Subject[]>
   /** The owner's hosted execution configuration (D22, T3-7); `manage`, online only. */
   setHostedExec(config: HostedExecConfig): Promise<HostedExecConfig>
@@ -232,7 +240,7 @@ export interface WorkspaceSession {
 
   /** A service method this interface does not wrap (a session's `session.*`, 第四期规划): raw kRPC, needs the backend. */
   call<T>(method: string, params: Record<string, unknown>): Promise<T>
-  uploadAsset(file: Blob, fileName?: string): Promise<StagedAsset>
+  uploadAsset(file: Blob, fileName?: string, control?: UploadControl): Promise<StagedAsset>
   /** A file into the content store only (not a Workspace asset, no bucket binding): the uploader holds it for a day,
    * long enough for a conversion (`repr`) to read it by `object_id`; nothing references it afterwards (Office 导入 Q14). */
   uploadTransient(file: Blob, fileName: string): Promise<{ object_id: string }>
@@ -262,6 +270,14 @@ export interface WorkspaceSession {
   procFiles(runId: string, attempt: number): Promise<WishStageFiles>
   /** A file object already in the Zone (a picture a wish macro generated) becomes a staged asset of this Workspace. */
   importObject(objId: string): Promise<StagedAsset>
+
+  /** Presence (UI 框架 PRD K2): this window (`sessionId` is its connection id) on `surfaceId`; a guest gives the name it
+   * chose. In memory on the service, never a Commit, never queued: needs the backend. */
+  presenceHeartbeat(surfaceId: string | null, name?: string): Promise<PresenceList>
+  presenceLeave(): Promise<void>
+  presenceList(): Promise<PresenceList>
+  /** The work log (K3): newest first, what this caller may read; `before` is the previous page's `next_before`. Needs the backend. */
+  workLog(params?: { before?: string | null; limit?: number; filter?: WorkLogFilter }): Promise<WorkLogPage>
 
   close(): void
   /** Resolves once a closed session released what it held exclusively (replica database, holder lock). */
@@ -321,6 +337,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   private catchUpChain: Promise<void> = Promise.resolve()
   private readonly statusListeners = new Set<() => void>()
   private readonly changeListeners = new Set<(event: CommitEvent) => void>()
+  private readonly aclListeners = new Set<() => void>()
   private readonly seqWaiters: { seq: number; resolve: () => void }[] = []
   /** Requests whose result is unknown, kept verbatim for a same-key resend. */
   private readonly unknown = new Map<string, { kind: 'commit'; request: CommitRequest } | { kind: 'undo'; params: Parameters<AiwsClient['undo']>[1] }>()
@@ -336,7 +353,8 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   }
 
   static async open(client: AiwsClient, workspaceId: string, mode: SessionMode = { kind: 'direct', reason: 'not_prepared', detail: aiwsT('aiworkspace.core.session.notPrepared') }): Promise<OnlineWorkspaceSession> {
-    const info = unwrap(await client.wsGetInfo({ workspace_id: workspaceId }))
+    // opening a Workspace session is what the home page's "recently opened" counts (UI 框架 PRD K6)
+    const info = unwrap(await client.wsGetInfo({ workspace_id: workspaceId }, { recordOpen: true }))
     if (info.principal) client.transport.learnPrincipal(info.principal)
     const session = new OnlineWorkspaceSession(client, info, mode, null)
     if (versionMismatch(info)) session.noteCode('VERSION_MISMATCH')
@@ -399,6 +417,22 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     return () => { this.changeListeners.delete(listener) }
   }
 
+  subscribeAcl(listener: () => void) {
+    this.aclListeners.add(listener)
+    return () => { this.aclListeners.delete(listener) }
+  }
+
+  /** The permissions moved past what this window knows (R4): read the caller's Workspace capabilities again. */
+  private async noteAclRev(rev: number | undefined) {
+    if (rev === undefined || rev <= (this.wsInfo.acl_rev ?? 0)) return
+    const info = await this.client.wsGetInfo(this.ws)
+    if (!info.ok) { this.handleStreamError(info.error.code, info.error.detail); return }
+    this.wsInfo = { ...this.wsInfo, capabilities: info.capabilities, acl_rev: info.acl_rev ?? rev, anonymous: info.anonymous, judged_as: info.judged_as, owner: info.owner, hosted_exec: info.hosted_exec }
+    for (const listener of [...this.aclListeners]) {
+      try { listener() } catch (error) { console.error('[aiworkspace] permission listener failed', error) }
+    }
+  }
+
   whenApplied(seq: number): Promise<void> {
     if (this.host) return this.host.whenApplied(seq)
     if (this.applied >= seq || this.currentStatus.kind === 'stopped') return Promise.resolve()
@@ -448,9 +482,12 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
         this.setStatus({ kind: 'live' })
         backoff = 500
         this.waitAbort = new AbortController()
-        const woke = await this.client.waitChanges(this.ws, this.epoch, this.applied, 25000, this.waitAbort.signal)
+        const woke = await this.client.waitChanges(this.ws, this.epoch, this.applied, 25000, this.waitAbort.signal, this.wsInfo.acl_rev)
         if (!woke.ok) this.handleStreamError(woke.error.code, woke.error.detail)
-        else this.noteShowLock(woke.show_lock ?? null)
+        else {
+          this.noteShowLock(woke.show_lock ?? null)
+          await this.noteAclRev(woke.acl_rev)
+        }
       } catch (error) {
         if (this.closed || this.isStopped()) break
         if (!(error instanceof TransportError)) throw error
@@ -573,15 +610,6 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     try { unwrap(await this.client.wsSetUserState(this.ws, entries)) } catch (error) { return this.fail(error) }
   }
 
-  async listGrants() {
-    try { return await legacyGrants.listGrants(this.client, this.ws) } catch (error) { return this.fail(error) }
-  }
-  async grant(subject: string, capabilities: Capability[], scopeEntityId?: string) {
-    try { await legacyGrants.grant(this.client, this.ws, subject, capabilities, scopeEntityId) } catch (error) { return this.fail(error) }
-  }
-  async revoke(subject: string, scopeEntityId?: string) {
-    try { await legacyGrants.revoke(this.client, this.ws, subject, scopeEntityId) } catch (error) { return this.fail(error) }
-  }
   async listSubjects() {
     try { return unwrap(await this.client.wsListSubjects(this.ws)).subjects } catch (error) { return this.fail(error) }
   }
@@ -734,10 +762,10 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
 
   // ---- assets (design §3.6): verified bytes first, then the reference is committed by the caller
 
-  async uploadAsset(file: Blob, fileName?: string) {
+  async uploadAsset(file: Blob, fileName?: string, control?: UploadControl) {
     if (file.size > assetLimitOf(file)) throw new Error(tooLarge(file))
     const source = file instanceof File ? file : new File([file], fileName ?? 'asset', { type: file.type })
-    return uploadWorkspaceAsset(this.client, this.workspaceId, source)
+    return uploadWorkspaceAsset(this.client, this.workspaceId, source, control)
   }
 
   contentServer() { return this.client.transport.importOptions() }
@@ -813,6 +841,10 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   async procProgram(runId: string, attempt: number, body: { source: string; results: Json | null; log: string; files: Json }) { return unwrap(await this.client.procProgram(this.ws, runId, attempt, body)) }
   async procFiles(runId: string, attempt: number) { return unwrap(await this.client.procFiles(this.ws, runId, attempt)) }
   async importObject(objId: string) { return unwrap(await this.client.assetImportObject(this.ws, { obj_id: objId })) }
+  async presenceHeartbeat(surfaceId: string | null, name?: string) { return unwrap(await this.client.presenceHeartbeat(this.ws, this.sessionId, surfaceId, name)) }
+  async presenceLeave() { unwrap(await this.client.presenceLeave(this.ws, this.sessionId)) }
+  async presenceList() { return unwrap(await this.client.presenceList(this.ws)) }
+  async workLog(params: { before?: string | null; limit?: number; filter?: WorkLogFilter } = {}) { return unwrap(await this.client.workLog(this.ws, params)) }
 
   close() {
     this.closed = true

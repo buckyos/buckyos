@@ -25,6 +25,9 @@ test('T5-1: a note draft recorded with its idempotency key — an accepted submi
   // device B opens note-a: the submission is found, the draft goes, nothing is resent
   await openWorkspace(page, ALICE, ws.workspace_id)
   await page.getByTestId('aiws-top-sources').click()
+  // notes are not data sources: the type filter shows them (UI 框架 PRD §5.2)
+  await page.getByTestId('aiws-dm-filter').click()
+  await page.getByTestId('aiws-dm-filter-type-annotation').check()
   await page.getByTestId('aiws-tree-note-a').click()
   await expect(page.getByTestId('aiws-note-note-a')).toContainText('改好的 A')
   await expect.poll(async () => (await api.rpc(ALICE, 'ws.get_user_state', { workspace_id: ws.workspace_id })).entries['block:note-a/draft:body'] ?? null).toBeNull()
@@ -50,7 +53,11 @@ test('T5-3: a $formula value is shown evaluated and materialized into a derived 
   await page.getByTestId('aiws-tree-sales').click()
   const shown = page.getByTestId('aiws-cell-s-1-target')
   await expect(shown).toContainText('52000')
-  await shown.getByTestId('aiws-cell-materialize').click()
+  // a formula is not edited in place; "materialize" is in the record's ⋯ (UI 框架 PRD §7.3)
+  await expect(shown).toHaveAttribute('data-editable', 'false')
+  await page.getByTestId('aiws-row-open-s-1').click()
+  await page.getByTestId('aiws-table-record-more').click()
+  await page.getByTestId('aiws-ctl-menu-record-materialize-target').click()
   await expect.poll(async () => (await api.cell(ALICE, ws.workspace_id, 'sales', 's-1', 'target')).value).toBe(52000)
   const record = (await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'sales', selector: { kind: 'table_record', record_id: 's-1' } })).content
   expect(record.meta?.target?.derived?.program, JSON.stringify(record)).toBe('formula')

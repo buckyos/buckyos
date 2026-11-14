@@ -823,15 +823,7 @@ pub fn summarize_checks(checks: &Value) -> Value {
 }
 
 fn surface_of(ctx: &dyn ReadCtx, id: &str) -> WsResult<Option<String>> {
-    let mut cur = id.to_string();
-    for _ in 0..32 {
-        let Some(edge) = ctx.edge(&cur)? else { return Ok(None) };
-        if edge.parent_id == SURFACES_ID {
-            return Ok(Some(cur));
-        }
-        cur = edge.parent_id;
-    }
-    Ok(None)
+    Ok(aiworkspace_core::plan::surface_of(ctx, id)?.map(|s| s.entity_id))
 }
 
 /// A Block's rectangle in Surface coordinates.
@@ -844,7 +836,7 @@ fn abs_rect(ctx: &dyn ReadCtx, id: &str) -> WsResult<(f64, f64, f64, f64)> {
     for _ in 0..32 {
         let Some(pid) = parent.clone() else { break };
         let Some(pe) = ctx.edge(&pid)? else { break };
-        if pe.parent_id == SURFACES_ID {
+        if ctx.entity(&pid)?.is_some_and(|e| e.type_id == TYPE_CONTAINER && e.payload.get("kind").and_then(Value::as_str) == Some("surface")) {
             break;
         }
         if let Some(pp) = &pe.placement {

@@ -1,0 +1,74 @@
+/* The Block's interface (UI 框架 PRD §6.2, §10): the properties panel, the context menu, the flow page's title row. */
+
+/* ---- properties panel */
+.aiws-props-panel {
+  position: absolute; z-index: 18; display: flex; flex-direction: column; box-sizing: border-box; padding: 0; overflow: hidden;
+  background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 12px; box-shadow: var(--cp-shadow);
+}
+.aiws-props-head { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--cp-border); flex: none; }
+.aiws-props-head.is-draggable { cursor: grab; }
+.aiws-props-heading { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.aiws-props-heading .aiws-muted { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-props-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 12px 12px; }
+.aiws-props-reason { font-size: 12px; padding: 6px 0 2px; }
+.aiws-props-section { border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 60%, transparent); }
+.aiws-props-section:last-child { border-bottom: none; }
+.aiws-root button.aiws-props-section-head {
+  display: flex; align-items: center; gap: 4px; width: 100%; border: none; background: none; padding: 8px 0 6px; font-weight: 600; font-size: 13px; text-align: left; color: var(--cp-text);
+}
+.aiws-root button.aiws-props-section-head:hover:not(:disabled) { background: none; color: var(--cp-accent); }
+.aiws-props-section-body { display: flex; flex-direction: column; gap: 6px; padding: 0 0 10px; }
+.aiws-props-field { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 13px; }
+.aiws-props-field.is-boolean { grid-template-columns: 96px auto; justify-content: start; }
+.aiws-props-field.is-color, .aiws-props-field.is-textarea { align-items: start; }
+.aiws-props-label { color: var(--cp-muted); overflow: hidden; text-overflow: ellipsis; }
+.aiws-props-field input:not([type='checkbox']), .aiws-props-field select, .aiws-props-field textarea { width: 100%; box-sizing: border-box; min-width: 0; }
+.aiws-props-field .aiws-palette-body { min-width: 0; }
+.aiws-props-field .aiws-palette-grid { grid-template-columns: repeat(auto-fill, 28px); gap: 6px; }
+.aiws-root .aiws-props-field button.aiws-palette-swatch { width: 28px; height: 28px; }
+.aiws-props-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.aiws-props-grid .aiws-props-field { grid-template-columns: 28px minmax(0, 1fr); }
+.aiws-props-diag { display: flex; flex-direction: column; gap: 4px; font-size: 12px; word-break: break-all; }
+.aiws-props-raw { margin: 0; font-size: 11px; max-height: 160px; overflow: auto; }
+.aiws-props-panel .aiws-details, .aiws-props-panel .aiws-inline-form { font-size: 13px; }
+.aiws-props-panel.is-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto; max-height: 70vh; border-radius: 14px 14px 0 0; z-index: 70;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.aiws-props-panel.is-sheet.is-full { top: env(safe-area-inset-top); max-height: none; }
+
+/* ---- context menu */
+.aiws-context-menu { position: absolute; z-index: 45; }
+.aiws-context-menu > .aiws-context-menu-list { position: static; }
+.aiws-context-menu.is-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 70; }
+.aiws-context-menu.is-sheet > .aiws-context-menu-list {
+  max-height: 60vh; overflow: auto; border-radius: 14px 14px 0 0; padding-bottom: calc(6px + env(safe-area-inset-bottom));
+}
+@media (pointer: coarse) {
+  .aiws-root .aiws-context-menu .aiws-menu-entry > button { min-height: 44px; }
+  .aiws-root .aiws-props-panel button.aiws-props-section-head { min-height: 44px; }
+}
+
+/* ---- the flow page's title row (§6.2): a titled type's heading line carries the tools; an untitled type gets a thin row
+   above it while it is focused or selected */
+.aiws-blockui-titleline { display: flex; align-items: center; gap: 6px; min-width: 0; margin-right: 120px; }
+.aiws-blockui-titleline > .aiws-fblock-title { margin-right: 0; flex: 0 1 auto; min-width: 0; }
+.aiws-blockui-typeicon { color: var(--cp-muted); flex: none; display: inline-flex; }
+.aiws-near.aiws-tool-row { position: static; box-shadow: none; border: none; background: none; padding: 0; gap: 0; flex: 0 1 auto; min-width: 0; }
+.aiws-root .aiws-tool-row button.aiws-near-btn { min-width: 28px; height: 28px; }
+.aiws-blockui-titleline .aiws-tool-row { opacity: 0; transition: opacity 0.12s; }
+.aiws-cell:hover > .aiws-blockui-titleline .aiws-tool-row, .aiws-cell:focus-within > .aiws-blockui-titleline .aiws-tool-row, .aiws-cell.is-selected > .aiws-blockui-titleline .aiws-tool-row,
+.aiws-blockui-titleline .aiws-tool-row:has([aria-expanded='true']) { opacity: 1; }
+.aiws-blockui-thinrow {
+  position: absolute; left: 0; top: -30px; z-index: 6; display: none; align-items: center; gap: 4px; padding: 0 4px; height: 30px; max-width: 100%; box-sizing: border-box;
+  background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 8px; box-shadow: var(--cp-shadow);
+}
+.aiws-blockui-thinrow > .aiws-tool-row { opacity: 1; }
+.aiws-cell.is-selected > .aiws-blockui-thinrow, .aiws-cell:focus-within > .aiws-blockui-thinrow, .aiws-blockui-thinrow:has([aria-expanded='true']) { display: flex; }
+@media (hover: hover) { .aiws-cell:hover > .aiws-blockui-thinrow { display: flex; } }
+.aiws-flow.is-dragging .aiws-blockui-thinrow { display: none; }
+@media (pointer: coarse) {
+  .aiws-blockui-titleline .aiws-tool-row { opacity: 1; }
+  .aiws-root .aiws-tool-row button.aiws-near-btn { min-width: 44px; height: 44px; }
+  .aiws-blockui-thinrow { top: -46px; height: 46px; }
+}

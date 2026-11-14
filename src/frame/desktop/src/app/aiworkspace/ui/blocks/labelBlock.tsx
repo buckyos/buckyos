@@ -8,14 +8,14 @@
  * records (G2, G7), so hundreds of them cost a span each. */
 
 import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
-import { AlignCenter, AlignLeft, AlignRight, Baseline, Bold, Type, WrapText } from 'lucide-react'
+import { AlignCenter, AlignLeft, AlignRight, Baseline, Bold, Tag, Type, WrapText } from 'lucide-react'
 import type { Json, RecordContent } from '../../api/types'
 import { aiwsT, aiwsText } from '../../i18n'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { consumeIntent, useIntent } from './editorToolbar'
 import { setCellConfig } from './ops'
-import type { BlockDefinition, RenderContext, ToolbarItem } from './registry'
+import type { BlockDefinition, ConfigField, RenderContext } from './registry'
 
 export const LABEL_VIEW = 'label'
 
@@ -235,41 +235,27 @@ function LabelEditor(context: RenderContext) {
   )
 }
 
-const canChange = (context: RenderContext): string | false => (context.capabilities.includes('update') && context.mode === 'edit' && context.readOnlyReason === null ? false : aiwsT('aiworkspace.blocks.noPermission'))
-
-function labelToolbar(context: RenderContext, store: ReturnType<typeof useStore>): ToolbarItem[] {
-  const config = context.payload.config ?? {}
-  const look = lookOf(config)
-  const disabled = canChange(context)
-  const set = (patch: Record<string, Json | null>, label: string) => setCellConfig(context, store, patch, label)
-  const items: ToolbarItem[] = [
-    { kind: 'menu', id: 'label-size', icon: Type, label: aiwsT('aiworkspace.label.fontSize'), value: String(look.font_size ?? 14), disabled,
-      items: SIZES.map((n) => ({ value: String(n), label: `${n}` })), onPick: (v) => set({ font_size: Number(v) }, aiwsT('aiworkspace.label.fontSize')) },
-    { kind: 'color', id: 'label-color', label: aiwsT('aiworkspace.label.color'), value: look.font_color, palette: 'ink', extras: [{ value: 'auto', label: aiwsT('aiworkspace.label.colorAuto') }], disabled,
-      onPick: (hex) => set({ font_color: hex === 'auto' ? null : hex }, aiwsT('aiworkspace.label.color')) },
-    { kind: 'button', id: 'label-bold', icon: Bold, label: aiwsT('aiworkspace.label.bold'), active: look.weight === 'bold', disabled,
-      run: () => set({ weight: look.weight === 'bold' ? null : 'bold' }, aiwsT('aiworkspace.label.bold')) },
-    { kind: 'menu', id: 'label-align', icon: look.align === 'center' ? AlignCenter : look.align === 'right' ? AlignRight : AlignLeft, label: aiwsT('aiworkspace.label.align'), value: look.align ?? 'left', disabled,
-      items: [{ value: 'left', label: aiwsT('aiworkspace.label.alignLeft'), icon: AlignLeft }, { value: 'center', label: aiwsT('aiworkspace.label.alignCenter'), icon: AlignCenter }, { value: 'right', label: aiwsT('aiworkspace.label.alignRight'), icon: AlignRight }],
-      onPick: (v) => set({ align: v === 'left' ? null : v }, aiwsT('aiworkspace.label.align')) },
-    { kind: 'button', id: 'label-wrap', icon: WrapText, label: aiwsT('aiworkspace.label.wrap'), active: Boolean(look.wrap), disabled,
-      run: () => set({ wrap: look.wrap ? null : true }, aiwsT('aiworkspace.label.wrap')) },
-  ]
-  if (context.source) {
-    items.push({ kind: 'menu', id: 'label-format', icon: Baseline, label: aiwsT('aiworkspace.label.format'), value: String(config.format ?? 'text'), disabled,
-      items: FORMATS.map((f) => ({ value: f, label: aiwsT(FORMAT_LABEL[f]!) })), onPick: (v) => set({ format: v === 'text' ? null : v }, aiwsT('aiworkspace.label.format')) })
-  }
-  return items
-}
+/** The label's look (its Cell configuration): the properties panel shows them all, the Block toolbar every one of them. */
+const labelFields = (): ConfigField[] => [
+  { key: 'font_size', id: 'label-size', label: aiwsT('aiworkspace.label.fontSize'), kind: 'number', quick: true, icon: Type, default: 14, presets: SIZES },
+  { key: 'font_color', id: 'label-color', label: aiwsT('aiworkspace.label.color'), kind: 'color', quick: true, palette: 'ink', default: 'auto', extras: [{ value: 'auto', label: aiwsT('aiworkspace.label.colorAuto') }] },
+  { key: 'weight', id: 'label-bold', label: aiwsT('aiworkspace.label.bold'), kind: 'boolean', quick: true, icon: Bold,
+    get: (context) => lookOf(context.payload.config).weight === 'bold', set: (context, store, value) => setCellConfig(context, store, { weight: value === true ? 'bold' : null }, aiwsT('aiworkspace.label.bold')) },
+  { key: 'align', id: 'label-align', label: aiwsT('aiworkspace.label.align'), kind: 'select', quick: true, default: 'left',
+    options: [{ value: 'left', label: aiwsT('aiworkspace.label.alignLeft'), icon: AlignLeft }, { value: 'center', label: aiwsT('aiworkspace.label.alignCenter'), icon: AlignCenter }, { value: 'right', label: aiwsT('aiworkspace.label.alignRight'), icon: AlignRight }] },
+  { key: 'wrap', id: 'label-wrap', label: aiwsT('aiworkspace.label.wrap'), kind: 'boolean', quick: true, icon: WrapText },
+  { key: 'format', id: 'label-format', label: aiwsT('aiworkspace.label.format'), kind: 'select', quick: true, icon: Baseline, default: 'text', when: (context) => Boolean(context.source),
+    options: FORMATS.map((f) => ({ value: f, label: aiwsT(FORMAT_LABEL[f]!) })) },
+]
 
 export const labelDefinition: BlockDefinition = {
   type: LABEL_VIEW, version: 1, get title() { return aiwsT('aiworkspace.label.blockTitle') }, accepts: ['buckyos.record', 'buckyos.table-source'], allowNoSource: true, pureUi: true,
-  defaultSize: { w: 160, h: 32 }, cost: { editor: false, html: false }, chrome: 'none',
+  defaultSize: { w: 160, h: 32 }, cost: { editor: false, html: false }, chrome: 'none', icon: Tag,
   Static: LabelStatic, Editor: LabelEditor,
   shape: 'rect',
   catalog: { group: 'text', get description() { return aiwsT('aiworkspace.label.description') }, needs: 'none', editAfterInsert: true },
   hover: () => [],
-  toolbar: labelToolbar,
+  get configFields() { return labelFields() },
   create: (args) => [{
     op: 'entity.create', entity_id: args.cellId, type_id: 'buckyos.cell', parent_id: args.parentId, order_key: args.orderKey, placement: args.placement,
     payload: { view: { type: LABEL_VIEW }, ...(args.title ? { title: args.title } : {}), ...(args.config ? { config: args.config } : {}) },

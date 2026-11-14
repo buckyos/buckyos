@@ -297,7 +297,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.datactl.alreadyDefault': '你的视图就是默认视图',
   'aiworkspace.datactl.copyLink': '复制链接',
   'aiworkspace.datactl.linkCopied': '链接已复制，打开后定位到这一项',
-  'aiworkspace.datactl.annotate': '批注',
+  'aiworkspace.datactl.annotate': '评论',
   'aiworkspace.datactl.openAsPage': '单独页面打开',
   'aiworkspace.datactl.backToCanvas': '回到画布',
   'aiworkspace.datactl.gone': '这个控件已经不在了。',

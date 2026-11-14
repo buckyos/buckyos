@@ -24,6 +24,7 @@ import { useReadOnlyReason, useStore, useEntity, useWorkspaceUi } from '../../..
 import { useAiwsText } from '../../../useAiwsText'
 import { LabelArt } from '../../blocks/labelBlock'
 import { ControlMenu, ControlPopover, anchorOf, type AnchorRect, type MenuItem } from '../data/ControlPopover'
+import { PublishActions } from '../../blockui/PublishActions'
 import { localPoint, trackPress, type Point } from '../data/gestures'
 import { registerControlKeys } from '../data/keys'
 import { copyRecordLink, openControlPage, recordAnchor, useRecordFocus } from '../data/focus'
@@ -521,6 +522,23 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
   useEffect(() => { keyRef.current = onKey })
   useEffect(() => registerControlKeys(containerId, (event) => keyRef.current(event)), [containerId])
 
+  // the view menu (UI 框架 PRD §10.1): this ⋯ and the Block's menu offer the same actions
+  const viewItems: (MenuItem | 'separator')[] = [
+    { id: 'week-mon', label: t('aiworkspace.calendar.weekStartsMonday'), checked: view.week_start === 0, icon: view.week_start === 0 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 0 }) },
+    { id: 'week-sun', label: t('aiworkspace.calendar.weekStartsSunday'), checked: view.week_start === 6, icon: view.week_start === 6 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 6 }) },
+    ...(todos.length ? [{ id: 'todo', label: t('aiworkspace.calendar.showTodo'), checked: view.show_todo, icon: view.show_todo ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ show_todo: !view.show_todo }) } as MenuItem] : []),
+    ...(calendars.length + todos.length > 1 ? [...calendars, ...todos].map((c): MenuItem => {
+      const hidden = (view.hidden ?? []).includes(c.binding)
+      return { id: `cal-${c.binding}`, label: store.outline.get(c.sourceId)?.name ?? c.binding, checked: !hidden, icon: <span className="aiws-cal-dot" style={{ background: hidden ? 'transparent' : c.color, borderColor: c.color }} />,
+        run: () => ctl.set({ hidden: hidden ? (view.hidden ?? []).filter((x) => x !== c.binding) : [...(view.hidden ?? []), c.binding] }) }
+    }) : []),
+    ...(canBind ? ['separator', { id: 'tables', label: t('aiworkspace.calendar.chooseTables'), icon: <Table2 size={14} />, run: () => void chooseTables() }] as (MenuItem | 'separator')[] : []),
+    ...(host !== 'page' ? [{ id: 'page', label: t('aiworkspace.datactl.openAsPage'), icon: <Expand size={14} />, run: () => openControlPage(containerId) } as MenuItem] : []),
+    'separator',
+    { id: 'set-default', label: t('aiworkspace.datactl.setDefault'), disabled: ctl.setDefault ? false : ctl.canChange ? t('aiworkspace.datactl.alreadyDefault') : t('aiworkspace.datactl.noUpdate'), run: () => ctl.setDefault?.() },
+    { id: 'reset', label: t('aiworkspace.datactl.resetView'), icon: <Undo2 size={14} />, disabled: Object.keys(ctl.personal).length ? false : t('aiworkspace.datactl.alreadyDefault'), run: () => ctl.reset() },
+  ]
+
   if (!container) return null
   if (!calendars.length) return <div className="aiws-dc aiws-cal"><UnboundSource containerId={containerId} /></div>
   const errors = sourceIds.map((id) => snapshots.get(id)?.error).filter(Boolean)
@@ -726,23 +744,10 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
       )}
       {popover?.kind === 'menu' && (
         <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.datactl.viewMenu')} width={260} side="below">
-          <ControlMenu label={t('aiworkspace.datactl.viewMenu')} onClose={() => setPopover(null)} items={[
-            { id: 'week-mon', label: t('aiworkspace.calendar.weekStartsMonday'), checked: view.week_start === 0, icon: view.week_start === 0 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 0 }) },
-            { id: 'week-sun', label: t('aiworkspace.calendar.weekStartsSunday'), checked: view.week_start === 6, icon: view.week_start === 6 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 6 }) },
-            ...(todos.length ? [{ id: 'todo', label: t('aiworkspace.calendar.showTodo'), checked: view.show_todo, icon: view.show_todo ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ show_todo: !view.show_todo }) } as MenuItem] : []),
-            ...(calendars.length + todos.length > 1 ? [...calendars, ...todos].map((c): MenuItem => {
-              const hidden = (view.hidden ?? []).includes(c.binding)
-              return { id: `cal-${c.binding}`, label: store.outline.get(c.sourceId)?.name ?? c.binding, checked: !hidden, icon: <span className="aiws-cal-dot" style={{ background: hidden ? 'transparent' : c.color, borderColor: c.color }} />,
-                run: () => ctl.set({ hidden: hidden ? (view.hidden ?? []).filter((x) => x !== c.binding) : [...(view.hidden ?? []), c.binding] }) }
-            }) : []),
-            ...(canBind ? ['separator', { id: 'tables', label: t('aiworkspace.calendar.chooseTables'), icon: <Table2 size={14} />, run: () => void chooseTables() }] as (MenuItem | 'separator')[] : []),
-            ...(host !== 'page' ? [{ id: 'page', label: t('aiworkspace.datactl.openAsPage'), icon: <Expand size={14} />, run: () => openControlPage(containerId) } as MenuItem] : []),
-            'separator',
-            { id: 'set-default', label: t('aiworkspace.datactl.setDefault'), disabled: ctl.setDefault ? false : ctl.canChange ? t('aiworkspace.datactl.alreadyDefault') : t('aiworkspace.datactl.noUpdate'), run: () => ctl.setDefault?.() },
-            { id: 'reset', label: t('aiworkspace.datactl.resetView'), icon: <Undo2 size={14} />, disabled: Object.keys(ctl.personal).length ? false : t('aiworkspace.datactl.alreadyDefault'), run: () => ctl.reset() },
-          ]} />
+          <ControlMenu label={t('aiworkspace.datactl.viewMenu')} onClose={() => setPopover(null)} items={viewItems} />
         </ControlPopover>
       )}
+      <PublishActions containerId={containerId} items={viewItems} />
     </div>
   )
 }

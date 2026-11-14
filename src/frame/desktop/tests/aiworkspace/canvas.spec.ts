@@ -2,7 +2,7 @@
  * Blocks sharing data, gestures as single commits, layout concurrency, mode dispatch and fallbacks.
  * Persistence is asserted through kRPC, not only through the DOM. */
 
-import { blockCenter, expect, hooks, openCanvas, openWorkspace, test, fitAll, setCanvasMode, zoomIn } from './fixtures'
+import { blockCenter, expect, fitAll, hooks, openCanvas, openWorkspace, setCanvasMode, test, treeMenu, zoomIn } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -98,6 +98,8 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   await page.getByTestId('aiws-surface-item-sf-analysis').getByRole('menuitem').click()
   await page.getByTestId('aiws-canvas-block-blk-kpi').click()
   await page.getByTestId('aiws-near-more').click()
+  // more than twelve items: "arrange" is a submenu (UI 框架 PRD §10.3)
+  await page.getByTestId('aiws-near-group-arrange').click()
   await page.getByTestId('aiws-near-move-surface').click()
   await page.getByTestId('aiws-picker-surface').selectOption(third.entity_id)
   await page.getByTestId('aiws-picker-confirm').click()
@@ -106,10 +108,11 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   expect((await api.outline(ALICE, ws.workspace_id)).find((e: { entity_id: string }) => e.entity_id === 'blk-kpi')?.source_id).toBe('sales')
   // deleting the table is refused: the pre-check names the Blocks (all readable here) and nothing else
   await page.getByTestId('aiws-top-sources').click()
-  await page.getByTestId('aiws-tree-sales').click()
-  await page.getByTestId('aiws-delete-entity').click()
+  await treeMenu(page, 'sales', 'aiws-delete-entity')
   await expect(page.getByTestId('aiws-delete-blocked')).toContainText('仍被引用')
   await expect(page.getByTestId('aiws-delete-confirm')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('aiws-delete-dialog')).toHaveCount(0)
   // bob reads only the data tree: the same pre-check tells him nothing about the Blocks
   await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'data', allow: ['read', 'delete'] }] })
   const prepared = await api.rpc(BOB, 'doc.prepare', { protocol_version: '1.0', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: 'bob-pre', session_id: 'bob', operations: [{ op: 'entity.delete', entity_id: 'intro', expect: { rev: (await api.read(BOB, ws.workspace_id, 'intro')).life_rev } }] })
@@ -375,8 +378,8 @@ test('UI08/UI09 edit and view sub-modes dispatch rendering, tools and writes; un
   await page.keyboard.press('Delete')
   await page.waitForTimeout(400)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
-  // the chart's view variant: values on hover (the right panel stays open across Surfaces: close it to give the canvas its width)
-  await page.getByTestId('aiws-side-close').click()
+  // the chart's view variant: values on hover (the properties panel is closed to give the canvas its room)
+  await page.getByTestId('aiws-props-close').click()
   await page.getByTestId('aiws-surface-switch').click()
   await page.getByTestId('aiws-surface-item-sf-detail').getByRole('menuitem').click()
   await expect(page.getByTestId('aiws-chart-blk-chart-2')).toHaveAttribute('data-interactive', 'true')
@@ -386,7 +389,7 @@ test('UI08/UI09 edit and view sub-modes dispatch rendering, tools and writes; un
   // annotation in view mode is the one allowed write
   await page.getByTestId('aiws-canvas-block-blk-sales-2').click()
   await page.getByTestId('aiws-near-annotate').click()
-  await page.getByLabel('批注内容').fill('查看模式下的批注')
+  await page.getByLabel('评论内容').fill('查看模式下的批注')
   await page.getByTestId('aiws-annotation-save').click()
   await expect.poll(async () => api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
   const outline = await api.outline(ALICE, ws.workspace_id)

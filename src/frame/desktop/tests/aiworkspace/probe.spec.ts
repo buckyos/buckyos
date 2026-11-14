@@ -7,7 +7,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import type { Page } from '@playwright/test'
-import { blockCenter, expect, hooks, openCanvas, test, type Api, fitAll, setCanvasMode } from './fixtures'
+import { blockCenter, expect, hooks, mainMenu, openCanvas, showAllWorkspaces, test, type Api, fitAll, setCanvasMode } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -19,6 +19,7 @@ async function openProductionApp(page: Page, token: string) {
   await page.goto(`http://127.0.0.1:${port}/?scenario=normal`)
   await page.getByTestId('desktop-app-aiworkspace').click()
   await expect(page.getByTestId('aiws-list')).toBeVisible({ timeout: 30_000 })
+  await showAllWorkspaces(page)
 }
 const THRESHOLDS = { firstViewMs: 2000, panP95Ms: 16.7, dragP95Ms: 32, longTaskMs: 200 }
 
@@ -343,8 +344,7 @@ test('P3-19 presentation probe: a show over 1,000 Blocks with HTML Blocks and ed
   await page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws.workspace_id}"]`).getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-surface-id', 'sf-show')
   // starting the show: the path's canvas has an operable Block, so the workspace is locked and cloned
-  await page.getByTestId('aiws-main-menu').click()
-  await page.getByTestId('aiws-top-play').click()
+  await mainMenu(page, 'aiws-menu-collab', 'aiws-top-play')
   await page.getByTestId('aiws-start-path').selectOption({ label: '探针路径' })
   const t0 = Date.now()
   await page.getByTestId('aiws-start-show-go').click()

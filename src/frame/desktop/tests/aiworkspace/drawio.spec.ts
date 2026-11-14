@@ -56,7 +56,7 @@ test('DR-render basic shapes, swimlanes and connectors from the fixtures draw in
 
 async function importFile(page: Page, file: string) {
   await expect(page.getByTestId('aiws-import-report')).toHaveCount(0)
-  await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-drawio'), `${FIXTURES}/${file}`)
+  await chooseFromZone(page, () => mainMenu(page, 'aiws-menu-insert', 'aiws-menu-import-file', 'aiws-menu-import-drawio'), `${FIXTURES}/${file}`)
 }
 
 const cellsOn = async (api: Api, ws: { workspace_id: string }, surface: string): Promise<Json[]> => {
@@ -421,7 +421,7 @@ test('DR-10 export: a canvas imported from draw.io and exported again keeps its 
     await expect.poll(async () => (await cellsOn(api, ws, 'sf-d')).filter((e: Json) => e.view_type === 'connector').length).toBe(8)
   }
   const download = page.waitForEvent('download')
-  await mainMenu(page, 'aiws-menu-export-menu', 'aiws-menu-export-drawio')
+  await mainMenu(page, 'aiws-menu-surface', 'aiws-menu-export-drawio')
   const file = await download
   expect(file.suggestedFilename()).toBe('画布.drawio')
   const exported = readFileSync(await file.path(), 'utf8')

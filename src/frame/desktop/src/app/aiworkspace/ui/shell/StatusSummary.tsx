@@ -1,17 +1,27 @@
-/* The status area, bottom right of the work area (UI improvement §10): the compact save / sync /
- * connection summary at the bottom, alerts and notices stacked above it. Status-like things — and the
- * expandable work logs to come — live here. Clicking the summary opens the "修改状态" panel (the pending
- * list, connection and offline details, export of what the backend does not have). Problems stay
- * visible: "needs attention" keeps its count on the summary, and stopped sync, storage failures and
- * read-only direct mode are persistent alerts with their recovery actions — never a toast that goes
- * away by itself. */
+/* The status bar, bottom right of the work area (UI 框架 PRD §4.5; UI improvement §10): collapsed, the online count
+ * (K2, while the service answers; it opens the online members — the way in on a phone) and the commit state (and,
+ * first, the connection when it is not normal; the offline copy, a running offline action, uploads and macro runs under
+ * way when there are). Clicking it opens the status panel in place, above it — at most half the work area, scrolling:
+ * "需要处理" (the edits that need a decision, are unsaved or only saved on this device, with their actions; absent when
+ * there are none), "连接与离线" (folded by default) and "最近工作日志" (K3, ui/framework/WorkLog.tsx). A new "needs
+ * attention" opens the panel; open or closed is the person's preference across Workspaces (`status.expanded`). A shared
+ * layer may hide the status bar (App mode, §4.6): it still shows while something is not saved or the connection is not
+ * normal. Alerts are not part of it: stopped sync, storage failures, read-only direct mode and the show lock stay
+ * stacked above the status bar with their recovery actions, never folded, hidden or configured away. */
 
-import { useState, useSyncExternalStore } from 'react'
+import { useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { unwrap } from '../../api/client'
 import { describeError } from '../../api/session'
-import { useAppCache, useEdits, useSessionStatus, useShowLock, useStore } from '../../state/hooks'
+import { useAppCache, useEdits, useOutlineVersion, useSessionStatus, useShowLock, useStore } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
+import { isActive } from '../wish/WishService'
+import '../framework/framework.css'
+import { useToolbarLayout } from '../framework/hooks'
+import { OnlineCount } from '../framework/members'
+import { useStatusExpanded } from '../framework/personal'
+import { useActiveUploads } from '../framework/activity'
+import { WorkLogSection } from '../framework/WorkLog'
 import { EditsPanel } from './panels'
 import { useShell } from './shellContext'
 
@@ -48,9 +58,12 @@ export function StatusSummary() {
   useSyncExternalStore(store.userState.subscribe, store.userState.snapshot)
   const userSync = store.userState.syncState
   const clean = counts.unsaved === 0 && counts.saved_locally === 0 && counts.needs_attention === 0
+  const [open, setOpen] = useStatusExpanded()
+  const uploads = useActiveUploads()
+  const running = useRunningMacros()
   return (
-    <button type="button" className={`aiws-panel aiws-status${counts.needs_attention > 0 ? ' is-attention' : ''}`} aria-pressed={shell.side === 'edits'} aria-label={t('aiworkspace.shell.status.label')} title={t('aiworkspace.shell.status.title')}
-      data-testid="aiws-status" onClick={() => shell.setSide(shell.side === 'edits' ? null : 'edits')}>
+    <button type="button" className={`aiws-panel aiws-status${counts.needs_attention > 0 ? ' is-attention' : ''}`} aria-expanded={open} aria-controls="aiws-status-panel" aria-label={t('aiworkspace.shell.status.label')}
+      title={t(open ? 'aiworkspace.framework.status.collapse' : 'aiworkspace.framework.status.expand')} data-testid="aiws-status" onClick={() => setOpen(!open)}>
       <span className={`aiws-conn aiws-conn-${status.kind}`} data-testid="aiws-conn" data-status={status.kind} data-browser-offline={status.kind === 'offline' ? String(status.browserOffline) : undefined} title={text}>
         <span className="aiws-dot" aria-hidden="true" />{status.kind !== 'live' && <span>{text}</span>}
       </span>
@@ -71,35 +84,112 @@ export function StatusSummary() {
       </span>
       {userSync === 'offline' && <span className="aiws-muted" data-testid="aiws-userstate-sync" data-sync={userSync} title={t('aiworkspace.shell.status.userSyncTitle')}>{t('aiworkspace.shell.status.userSync')}</span>}
       {shell.offlineBusy && <span className="aiws-muted" data-testid="aiws-offline-busy">{shell.offlineBusy}</span>}
+      {uploads > 0 && <span className="aiws-status-progress" data-testid="aiws-status-uploads" data-count={uploads}>{t('aiworkspace.worklog.status.uploads', { count: uploads })}</span>}
+      {running > 0 && <span className="aiws-status-progress" data-testid="aiws-status-running" data-count={running}>{t('aiworkspace.worklog.status.running', { count: running })}</span>}
     </button>
   )
 }
 
-/** The status area: placed by the view that owns the work area (canvas, data source), clear of the right panel. */
-export function StatusDock() {
+/** Wish and macro runs of this window under way (their entries are in the work log). */
+function useRunningMacros(): number {
+  const store = useStore()
+  useSyncExternalStore(store.wish.subscribe, store.wish.snapshot)
+  useOutlineVersion()
+  let count = 0
+  for (const e of store.outline.all()) if (e.type_id === 'buckyos.wish' && !e.deleted && (isActive(store.wish.run(e.entity_id)) || store.wish.busy.has(e.entity_id))) count += 1
+  return count
+}
+
+/** Something the person must see even where a shared layer hid the status bar: unsaved work, a connection that is not normal. */
+function useStatusNeeded(): boolean {
+  const counts = useSaveCounts()
+  const status = useSessionStatus()
+  return counts.unsaved + counts.saved_locally + counts.needs_attention > 0 || status.kind !== 'live'
+}
+
+/** The status bar: placed by the view that owns the work area (canvas, data source), clear of the side drawer. `info`:
+ * the data mode's bar across the bottom (§5.5) — the current object on its left half, this status on the right, the
+ * panel and the alerts above it. */
+export function StatusDock({ info }: { info?: ReactNode } = {}) {
+  const [open] = useStatusExpanded()
+  const layout = useToolbarLayout()
+  const needed = useStatusNeeded()
+  const shown = !layout.status.hidden || needed
+  if (info !== undefined) {
+    return (
+      <div className="aiws-status-dock is-bar" data-testid="aiws-status-dock" data-zone-hidden={layout.status.hidden ? 'true' : undefined}>
+        <div className="aiws-status-stack">
+          <ShellAlerts />
+          {open && shown && <StatusPanel />}
+        </div>
+        <div className="aiws-status-row is-bar" data-testid="aiws-status-row">
+          <div className="aiws-status-info">{info}</div>
+          {shown && !layout.status.hidden && <OnlineCount />}
+          {shown && <StatusSummary />}
+        </div>
+      </div>
+    )
+  }
   return (
-    <div className="aiws-status-dock" data-testid="aiws-status-dock">
+    <div className="aiws-status-dock" data-testid="aiws-status-dock" data-zone-hidden={layout.status.hidden ? 'true' : undefined}>
       <ShellAlerts />
-      <StatusSummary />
+      {open && shown && <StatusPanel />}
+      {shown && (
+        <div className="aiws-status-row" data-testid="aiws-status-row">
+          {!layout.status.hidden && <OnlineCount />}
+          <StatusSummary />
+        </div>
+      )}
     </div>
   )
 }
 
-/** The "修改状态" panel: connection and offline details, then the edits that are not committed. */
-export function StatusDetail() {
+/** The status panel (§4.5): what needs attention, then the connection and offline details (folded by default). */
+function StatusPanel() {
+  const { t } = useAiwsText()
+  const counts = useSaveCounts()
+  const ref = useRef<HTMLDivElement>(null)
+  // at most half the work area's height (the dock itself has no definite height to take a percentage of)
+  useLayoutEffect(() => {
+    const el = ref.current
+    const area = el?.closest<HTMLElement>('.aiws-canvas-main, .aiws-sources-work, .aiws-canvas-body')
+    if (!el || !area) return
+    const fit = () => { el.style.maxHeight = `${Math.max(120, Math.floor(area.clientHeight / 2))}px` }
+    fit()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(fit)
+    observer.observe(area)
+    return () => observer.disconnect()
+  }, [])
+  const attention = counts.unsaved + counts.saved_locally + counts.needs_attention > 0
+  return (
+    <div ref={ref} id="aiws-status-panel" className="aiws-panel aiws-status-panel aiws-status-detail" role="region" aria-label={t('aiworkspace.framework.status.panel')} data-testid="aiws-status-detail">
+      {attention && (
+        <section data-testid="aiws-status-attention">
+          <div className="aiws-panel-title">{t('aiworkspace.framework.status.attention')}</div>
+          <EditsPanel />
+        </section>
+      )}
+      <ConnectionDetail />
+      <WorkLogSection />
+    </div>
+  )
+}
+
+/** "连接与离线": the connection, the offline copy and its actions, export of what the backend does not have. */
+function ConnectionDetail() {
   const store = useStore()
   const shell = useShell()
   const { t, tNode } = useAiwsText()
   const { status, sessionMode, text } = useConnection()
   const unsavedInputs = useSyncExternalStore(store.subscribeUnsaved, store.unsavedSnapshot)
-  const counts = useSaveCounts()
   const replica = store.session.offline
   const pendingCount = replica?.pending().length ?? 0
   const workspaceId = store.session.workspaceId
   return (
-    <div className="aiws-status-detail" data-testid="aiws-status-detail">
-      <section>
-        <div className="aiws-panel-title">{t('aiworkspace.shell.detail.title')}</div>
+    <details data-testid="aiws-status-connection">
+      <summary data-testid="aiws-status-connection-toggle">{t('aiworkspace.framework.status.connection')}</summary>
+      <div>
         <div>{tNode('aiworkspace.shell.detail.connection', { state: <b>{text}</b> })}</div>
         <div className="aiws-muted">
           {sessionMode.kind === 'replica' ? t('aiworkspace.shell.detail.replica', { at: sessionMode.preparedAt })
@@ -122,10 +212,8 @@ export function StatusDetail() {
           )}
         </div>
         {store.userState.syncState === 'offline' && <div className="aiws-muted">{t('aiworkspace.shell.detail.userSync')}</div>}
-      </section>
-      <EditsPanel />
-      {counts.unsaved === 0 && counts.saved_locally === 0 && counts.needs_attention === 0 && <div className="aiws-muted" data-testid="aiws-edits-clean">{t('aiworkspace.shell.detail.clean')}</div>}
-    </div>
+      </div>
+    </details>
   )
 }
 

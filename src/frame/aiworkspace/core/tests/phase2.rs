@@ -310,11 +310,11 @@ fn two_trees_and_system_nodes() {
         assert_eq!(code(&ws.fail(json!([{ "op": "entity.rename", "entity_id": id, "name": "x", "expect": { "rev": 0 } }]))), "INVALID_OPERATION");
     }
     assert_eq!(ws.store.edges[CANVAS_CONTENT_ID].parent_id, DATA_ID);
-    // a surface needs its content folder under canvas-content; nothing but surfaces goes under `surfaces`
+    // a surface needs its content folder under canvas-content; nothing but surfaces and canvas folders goes under `surfaces`
     assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "s-bad", "type_id": TYPE_CONTAINER, "parent_id": SURFACES_ID, "order_key": "a",
         "payload": { "kind": "surface" } }]))), "INVALID_SCHEMA");
-    assert_eq!(sub(&ws.fail(json!([{ "op": "entity.create", "entity_id": "f-bad", "type_id": TYPE_CONTAINER, "parent_id": SURFACES_ID, "order_key": "a",
-        "payload": { "kind": "folder" } }]))), "CHILD_NOT_ALLOWED");
+    assert_eq!(sub(&ws.fail(json!([{ "op": "entity.create", "entity_id": "g-bad", "type_id": TYPE_CONTAINER, "parent_id": SURFACES_ID, "order_key": "a",
+        "payload": { "kind": "group" } }]))), "CHILD_NOT_ALLOWED");
     assert_eq!(sub(&ws.fail(json!([{ "op": "entity.create", "entity_id": "p-bad", "type_id": TYPE_CONTAINER, "parent_id": SURFACES_ID, "order_key": "a",
         "payload": { "kind": "page" } }]))), "CHILD_NOT_ALLOWED");
     ws.ok(json!(surface("s1", "free")));
@@ -358,6 +358,68 @@ fn two_trees_and_system_nodes() {
     assert_eq!(find("c1")["view_type"], "table");
     assert_eq!(find("c1")["source_id"], "t1");
     assert!(find("s1").get("icon").is_none());
+}
+
+fn folder(id: &str, parent: &str, title: &str) -> Value {
+    json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_CONTAINER, "parent_id": parent, "order_key": "a", "payload": { "kind": "folder", "title": title } })
+}
+
+fn surface_in(id: &str, parent: &str, title: &str) -> Vec<Value> {
+    vec![
+        json!({ "op": "entity.create", "entity_id": format!("{id}-content"), "type_id": TYPE_CONTAINER, "parent_id": CANVAS_CONTENT_ID, "order_key": "a",
+                "payload": { "kind": "folder", "system": "surface_content", "surface_id": id, "title": title } }),
+        json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_CONTAINER, "parent_id": parent, "order_key": "b",
+                "payload": { "kind": "surface", "layout": { "mode": "flow" }, "title": title, "content_folder_id": format!("{id}-content") } }),
+    ]
+}
+
+/// Canvas folders (UI 框架 PRD §4.1.1, Q5, K1): real folders under `surfaces`, any depth, holding canvases and folders
+/// only; their names follow their titles; a canvas's path runs through them; they stay in their tree, go only when
+/// empty, and a grant on one covers the canvases in it.
+#[test]
+fn canvas_folders_nest_and_hold_canvases_only() {
+    use aiworkspace_core::path;
+    let mut ws = MemWorkspace::new();
+    ws.ok(json!([folder("f-diary", SURFACES_ID, "日记"), folder("f-nov", "f-diary", "2026/11"), folder("f-diary2", SURFACES_ID, "日记")]));
+    let mut ops = surface_in("s1", "f-nov", "11-13");
+    ops.extend(surface_in("s2", SURFACES_ID, "首页"));
+    ws.ok(json!(ops));
+    let name = |ws: &MemWorkspace, id: &str| ws.store.entities[id].name.clone().unwrap();
+    assert_eq!((name(&ws, "f-diary"), name(&ws, "f-nov"), name(&ws, "f-diary2")), ("日记".into(), "2026-11".into(), "日记-2".into()));
+    let full = Access::full("alice");
+    assert_eq!(path::path_of(&ws.store, &full, "s1").unwrap(), "/surfaces/日记/2026-11/11-13");
+    assert_eq!(path::resolve(&ws.store, &full, "/surfaces/日记/2026-11/11-13").unwrap(), "s1");
+    assert_eq!(aiworkspace_core::plan::canvas_surfaces(&ws.store).unwrap().iter().map(|e| e.entity_id.as_str()).collect::<Vec<_>>(), vec!["s1", "s2"]);
+    // data, Blocks and groups never go into a canvas folder; canvases never into a data folder; no system role
+    ws.ok(json!([folder("data-f", DATA_ID, "资料")]));
+    assert_eq!(sub(&ws.fail(json!([table("t-bad", "f-diary")]))), "CHILD_NOT_ALLOWED");
+    assert_eq!(sub(&ws.fail(json!([cell("c-bad", "f-diary", None, "label", json!({ "x": 0, "y": 0, "w": 1, "h": 1 }))]))), "CHILD_NOT_ALLOWED");
+    assert_eq!(sub(&ws.fail(json!(surface_in("s-bad", "data-f", "x")))), "CHILD_NOT_ALLOWED");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "f-sys", "type_id": TYPE_CONTAINER, "parent_id": "f-diary", "order_key": "z",
+        "payload": { "kind": "folder", "system": "shows" } }]))), "INVALID_SCHEMA");
+    // moving a canvas into another folder changes its path, not its id; a folder never crosses trees
+    let rev = ws.store.edges["s1"].struct_rev;
+    let moved = ws.ok(json!([{ "op": "tree.move", "entity_id": "s1", "new_parent_id": "f-diary2", "order_key": "a", "expect": { "rev": rev } }]));
+    assert_eq!(path::path_of(&ws.store, &full, "s1").unwrap(), "/surfaces/日记-2/11-13");
+    assert_eq!(sub(&ws.fail(json!([{ "op": "tree.move", "entity_id": "f-nov", "new_parent_id": DATA_ID, "order_key": "a" }]))), "CHILD_NOT_ALLOWED");
+    assert_eq!(sub(&ws.fail(json!([{ "op": "tree.move", "entity_id": "data-f", "new_parent_id": "f-diary", "order_key": "a" }]))), "CHILD_NOT_ALLOWED");
+    assert_eq!(sub(&ws.fail(json!([{ "op": "tree.move", "entity_id": "data-f", "new_parent_id": SURFACES_ID, "order_key": "a" }]))), "CHILD_NOT_ALLOWED");
+    ws.ok(json!([{ "op": "tree.move", "entity_id": "f-nov", "new_parent_id": SURFACES_ID, "order_key": "c" }]));
+    assert_eq!(path::path_of(&ws.store, &full, "f-nov").unwrap(), "/surfaces/2026-11");
+    // a grant on a folder covers the canvases in it, wherever they came from
+    let bob = Access::granted("bob", CapSet::NONE, [("f-diary2".to_string(), CapSet::of(Cap::Read).union(CapSet::of(Cap::Update)))]);
+    assert!(bob.can(&ws.store, "s1", Cap::Update).unwrap());
+    assert!(!bob.can(&ws.store, "s2", Cap::Read).unwrap());
+    // only an empty canvas folder goes; undo puts the canvas back where it was
+    let f = ws.fail(json!([{ "op": "entity.delete", "entity_id": "f-diary2", "expect": { "rev": ws.store.entities["f-diary2"].life_rev } }]));
+    assert_eq!(sub(&f), "FOLDER_NOT_EMPTY", "{f}");
+    let f = ws.fail(json!([{ "op": "entity.delete", "entity_id": "f-diary2", "subtree": { "delete": ["s1"] }, "expect": { "rev": ws.store.entities["f-diary2"].life_rev } }]));
+    assert_eq!(sub(&f), "FOLDER_NOT_EMPTY", "{f}");
+    ws.ok(json!([{ "op": "entity.delete", "entity_id": "f-diary", "expect": { "rev": ws.store.entities["f-diary"].life_rev } }]));
+    assert!(!ws.store.entities["f-diary"].alive());
+    assert!(ws.undo(moved).is_ok());
+    assert_eq!(ws.store.edges["s1"].parent_id, "f-nov");
+    assert_eq!(path::path_of(&ws.store, &full, "s1").unwrap(), "/surfaces/2026-11/11-13");
 }
 
 #[test]

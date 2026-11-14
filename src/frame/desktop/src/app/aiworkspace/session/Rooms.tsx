@@ -9,6 +9,7 @@ import type { ShowPathPayload } from '../api/types'
 import type { MarkTool } from '../presentation/overlays'
 import type { WorkspaceStore } from '../state/store'
 import { TableImportHost } from '../ui/import/TableImportDialog'
+import { ContextZone } from '../ui/framework/ContextZone'
 import { useAiwsText } from '../useAiwsText'
 import type { SessionChannel, Welcome } from './channel'
 import { useChannelStatus } from './context'
@@ -141,7 +142,8 @@ export function PresenterRoom({ store, path, channel, welcome, model, snap }: { 
           </div>
         </div>
       )}
-      <div className="aiws-show-bar aiws-panel aiws-stage-ui aiws-session-bar" role="toolbar" aria-label={t('aiworkspace.session.presenter.controls')} data-testid="aiws-session-bar">
+      <ContextZone>
+      <div className="aiws-show-bar aiws-panel aiws-stage-ui aiws-context-bar aiws-session-bar" role="toolbar" aria-label={t('aiworkspace.session.presenter.controls')} data-testid="aiws-session-bar">
         <button type="button" className="aiws-tool" aria-label={t('aiworkspace.session.presenter.prev')} data-testid="aiws-session-prev" disabled={!live || !controls} onClick={() => run('prev')}><ChevronLeft size={18} /></button>
         <button type="button" className="aiws-tool aiws-show-counter" aria-label={t('aiworkspace.session.presenter.steps')} aria-pressed={panel === 'steps'} data-testid="aiws-session-counter" onClick={() => setPanel(panel === 'steps' ? 'none' : 'steps')}>
           <ListOrdered size={16} aria-hidden="true" /><span>{steps.length ? index + 1 : 0} / {steps.length}</span>
@@ -168,6 +170,7 @@ export function PresenterRoom({ store, path, channel, welcome, model, snap }: { 
         <span className="aiws-show-status" data-testid="aiws-session-status">{t(STATE_KEY[snap.state])}{channelStatus !== 'open' ? ` · ${t(CHANNEL_KEY[channelStatus])}` : ''}</span>
         {live && <button type="button" className="aiws-tool aiws-tool-text" data-testid="aiws-session-end" onClick={() => { void end() }}><LogOut size={16} /><span>{t('aiworkspace.session.presenter.end')}</span></button>}
       </div>
+      </ContextZone>
       {problem && <div className="aiws-show-note aiws-stage-ui aiws-warning" role="status" data-testid="aiws-session-problem">{problem}</div>}
       {panel === 'steps' && (
         <div className="aiws-show-panel aiws-panel aiws-stage-ui" data-testid="aiws-session-steps" role="listbox">
@@ -314,7 +317,8 @@ export function AudienceRoom({ store, path, channel, welcome, snap, following, s
         onPick={picking ? (p) => { void react({ kind: 'feedback', symbol: picking, x: p.x, y: p.y, surface_id: p.surfaceId }); setPicking(null) } : undefined} />
       {!live && <div className="aiws-session-overlay is-passive"><div className="aiws-panel aiws-session-start" data-testid="aiws-session-waiting"><b>{welcome.session.title}</b><span className="aiws-muted">{t('aiworkspace.session.audience.waiting')}</span></div></div>}
       {!display && (
-        <div className="aiws-show-bar aiws-panel aiws-stage-ui aiws-session-bar" role="toolbar" aria-label={t('aiworkspace.session.audience.controls')} data-testid="aiws-session-audience-bar">
+        <ContextZone>
+        <div className="aiws-show-bar aiws-panel aiws-stage-ui aiws-context-bar aiws-session-bar" role="toolbar" aria-label={t('aiworkspace.session.audience.controls')} data-testid="aiws-session-audience-bar">
           {following
             ? <span className="aiws-muted" data-testid="aiws-session-following">{t('aiworkspace.session.audience.following')}</span>
             : <button type="button" className="aiws-tool aiws-tool-text" data-testid="aiws-session-follow" onClick={() => { setFollowing(true); setBack((n) => n + 1) }}><RotateCcw size={16} /><span>{t('aiworkspace.session.audience.backToPresenter')}</span></button>}
@@ -334,6 +338,7 @@ export function AudienceRoom({ store, path, channel, welcome, snap, following, s
           {!interact && !display && <span className="aiws-muted" data-testid="aiws-session-watch-only">{t('aiworkspace.session.audience.watchOnly')}</span>}
           <span className="aiws-show-status">{welcome.name}{channelStatus !== 'open' ? ` · ${t(CHANNEL_KEY[channelStatus])}` : ''}</span>
         </div>
+        </ContextZone>
       )}
       {picking && <div className="aiws-show-hint aiws-stage-ui" role="status">{t('aiworkspace.session.audience.pickHint')}</div>}
       {problem && <div className="aiws-show-note aiws-stage-ui aiws-warning" role="status" data-testid="aiws-session-problem">{problem}</div>}

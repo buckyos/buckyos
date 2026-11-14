@@ -132,8 +132,7 @@ fn walk(ctx: &dyn ReadCtx, can_read: &dyn Fn(&EntityRow) -> WsResult<bool>, pare
 impl Canvas {
     pub fn build(ctx: &dyn ReadCtx, can_read: &dyn Fn(&EntityRow) -> WsResult<bool>) -> WsResult<Canvas> {
         let mut c = Canvas::default();
-        for edge in ctx.children(SURFACES_ID)? {
-            let Some(s) = ctx.entity(&edge.child_id)?.filter(|e| e.alive()) else { continue };
+        for s in aiworkspace_core::plan::canvas_surfaces(ctx)? {
             if !can_read(&s)? {
                 continue;
             }
