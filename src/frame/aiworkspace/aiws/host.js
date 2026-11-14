@@ -197,12 +197,15 @@ function dims(staged) {
   return i && Number(i.width) > 0 && Number(i.height) > 0 ? { width: Number(i.width), height: Number(i.height) } : {}
 }
 
-/** The output of a terminal AICC task record. */
+/** The answer of a terminal AICC task record: the inference response (`output.value`) with the stored files
+ * (`output.artifacts`) beside it — what a request answered at once carries directly. */
 function taskOutput(task) {
   const r = task?.result
   if (!r || typeof r !== 'object') return null
-  if (r.result && typeof r.result === 'object' && r.result.output && typeof r.result.output === 'object') return r.result.output
-  return r.output && typeof r.output === 'object' ? r.output : null
+  const out = r.result && typeof r.result === 'object' && r.result.output && typeof r.result.output === 'object' ? r.result.output
+    : r.output && typeof r.output === 'object' ? r.output : null
+  if (!out) return null
+  return out.value && typeof out.value === 'object' && !Array.isArray(out.value) ? { ...out.value, artifacts: out.artifacts ?? out.value.artifacts } : out
 }
 
 /** The one picture or video of an AICC answer: `{ obj_id, media_type?, metadata? }`, or a text saying why not. */
@@ -218,6 +221,15 @@ function mediaOf(kind, response) {
     resource = v?.resource ?? null
     media = typeof v?.media_type === 'string' ? v.media_type : null
     metadata = v?.measured_metadata ?? null
+  }
+  // the files AICC stored, with what it measured in them (`duration_ms`, `width`, `height`)
+  const stored = (Array.isArray(r.artifacts) ? r.artifacts : []).filter((a) => a?.resource?.kind === 'named_object' && String(a.mime ?? '').startsWith(`${kind}/`))
+  const art = stored.find((a) => a.resource.obj_id === resource?.obj_id) ?? (resource ? null : stored[0])
+  if (art) {
+    resource ??= art.resource
+    media ??= typeof art.mime === 'string' ? art.mime : null
+    const m = art.metadata ?? {}
+    if (!metadata && (Number(m.duration_ms) > 0 || Number(m.width) > 0)) metadata = { duration_seconds: Number(m.duration_ms) / 1000 || undefined, width: m.width, height: m.height }
   }
   if (!resource || typeof resource !== 'object') return { missing: `the AI service returned no ${kind}` }
   if (resource.kind !== 'named_object' || typeof resource.obj_id !== 'string') return { missing: `the AI service returned the ${kind} as ${resource.kind}, which a macro cannot keep` }

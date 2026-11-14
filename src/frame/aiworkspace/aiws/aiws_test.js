@@ -258,7 +258,10 @@ Deno.test('host.js: pictures and clips are generated with the session, imported,
   const task = async (tid) => {
     polled += 1
     return polled < 2 ? { task: { task_id: tid, phase: 'Running' } }
-      : { task: { task_id: tid, phase: 'Terminal', outcome: 'Succeeded', result: { result: { output: { videos: [{ media_type: 'video/mp4', resource: { kind: 'named_object', obj_id: id('9') }, measured_metadata: { duration_seconds: 4.03, width: 1280, height: 720 } }] } } } } }
+      // a task's output is the inference response under `value`, the stored files beside it (as AICC records it)
+      : { task: { task_id: tid, phase: 'Terminal', outcome: 'Succeeded', result: { result: { output: {
+        artifacts: [{ mime: 'video/mp4', name: 'video', resource: { kind: 'named_object', obj_id: id('9') }, metadata: { duration_ms: 4030, width: 1280, height: 720 } }],
+        value: { videos: [{ media_type: 'video/mp4', resource: { kind: 'named_object', obj_id: id('9') }, measured_metadata: { duration_seconds: 4.03, width: 1280, height: 720 } }] } } } } } }
   }
   const imported = []
   const importAsset = async (obj) => { imported.push(obj); return obj === id('9') ? { object_id: obj, media_type: 'video/mp4', size: 123 } : { object_id: obj, media_type: 'image/png', size: 123, image: { width: 864, height: 1536 } } }
@@ -280,6 +283,12 @@ Deno.test('host.js: pictures and clips are generated with the session, imported,
   // a clip runs as a task: followed until it ends, with what AICC measured
   const v = await host.handle('ai.video', { prompt: 'the courier from @{hero} runs', duration: 4, aspect: '16:9', resolution: '720p', references: { hero: a }, declare })
   assertEquals(v, { kind: 'video', object_id: id('9'), media_type: 'video/mp4', size: 123, duration: 4.03, width: 1280, height: 720, cached: false })
+  // only the stored file and what AICC measured in it: the same media reference
+  const fromArtifacts = createBridgeHost({ tool, infer: async () => ({}), importAsset, budget: { ...budget, video_max_calls: 2 },
+    aicc: async () => ({ status: 'running', task_id: 't-art' }),
+    task: async () => ({ task: { phase: 'Terminal', outcome: 'Succeeded', result: { result: { output: { artifacts: [{ mime: 'video/mp4', resource: { kind: 'named_object', obj_id: id('9') }, metadata: { duration_ms: 8000, width: 1344, height: 768 } }], value: {} } } } } }) })
+  const w = await fromArtifacts.handle('ai.video', { prompt: 'another shot', declare })
+  assertEquals([w.object_id, w.duration, w.width, w.height], [id('9'), 8, 1344, 768])
   const [, vreq] = sent.find(([m]) => m === 'helper.video_generate')
   assertEquals(vreq.output, { duration_seconds: 4, aspect_ratio: '16:9', size: { short_edge: 720 } })
   assertEquals(vreq.conditions, [{ type: 'reference_image', id: 'hero', resource: { kind: 'named_object', obj_id: id('1') } }])

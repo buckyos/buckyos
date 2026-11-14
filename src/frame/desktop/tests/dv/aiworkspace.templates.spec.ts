@@ -15,13 +15,21 @@ test.use({ viewport: { width: 1600, height: 1000 }, locale: 'zh-CN' })
 
 const STAGE_MS = 1_800_000
 
+/** `AIWS_DV_KEEP=1`: the workspaces stay after the test (a readable title, left out of the cleanup) to be looked at. */
+const KEEP = process.env.AIWS_DV_KEEP === '1'
+
 /** A template's workspace as the dialog creates it, with its content in Chinese. */
-async function template(actor: Actor, kind: 'quarterly' | 'film'): Promise<Workspace> {
+async function template(actor: Actor, kind: 'quarterly' | 'film', info: TestInfo): Promise<Workspace> {
   const { quarterlyDemoCommits, filmDemoCommits } = await import('../../src/app/aiworkspace/api/demos')
   const { setAiwsLocale } = await import('../../src/app/aiworkspace/i18n')
   setAiwsLocale('zh-CN')
-  const created = await actor.client.ok<WorkspaceSummary>('ws.create', { title: actor.client.prefix })
-  actor.client.owned.add(created.workspace_id)
+  const title = KEEP ? `${kind === 'film' ? 'AI 短片工作流' : '季度经营分析'}（DV ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC）` : actor.client.prefix
+  const created = await actor.client.ok<WorkspaceSummary>('ws.create', { title })
+  if (KEEP) {
+    const url = `https://aiws-${created.workspace_id.replace(/^ws_/, '')}.${new URL(actor.page.url()).host}/w`
+    console.log(`kept workspace ${created.workspace_id} "${title}": ${url}`)
+    await info.attach('kept-workspace', { body: Buffer.from(JSON.stringify({ workspace_id: created.workspace_id, title, url })), contentType: 'application/json' })
+  } else actor.client.owned.add(created.workspace_id)
   const ws: Workspace = { workspace_id: created.workspace_id, epoch: created.epoch }
   for (const c of kind === 'quarterly' ? quarterlyDemoCommits() : filmDemoCommits()) {
     const result = await actor.client.commit(ws, c.operations as Operation[])
@@ -111,7 +119,7 @@ async function media(actor: Actor, ws: Workspace, b: Binding) {
 
 test('[template-quarterly] the quarterly analysis wish: analyze without questions, code, apply, then run after a correction', async ({ owner }, info) => {
   test.setTimeout(2_400_000)
-  const ws = await template(owner, 'quarterly')
+  const ws = await template(owner, 'quarterly', info)
   const { panel, results } = await analyzeCodeApply(owner, ws, info, 'blk-wish', 'wish-analysis')
   const all = Object.values(results)
   expect(all.some((r) => r.type === 'richtext'), JSON.stringify(results)).toBe(true)
@@ -139,7 +147,7 @@ test('[template-quarterly] the quarterly analysis wish: analyze without question
 
 test('[template-film] the short-film wishes: character sheets → storyboard → preview clip, with the Zone image and video models', async ({ owner }, info) => {
   test.setTimeout(9_000_000)
-  const ws = await template(owner, 'film')
+  const ws = await template(owner, 'film', info)
 
   const sheets = await analyzeCodeApply(owner, ws, info, 'blk-wish-1', 'wish-characters')
   const pictures = Object.values(sheets.results).filter((r) => r.type === 'image')
