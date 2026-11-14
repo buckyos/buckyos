@@ -105,6 +105,8 @@ export interface HoverAffordance {
 export interface BlockAction {
   id: string
   label: string
+  /** The label as the Block is now ("run" / "run again"), where it differs from `label`. */
+  labelFor?: (context: RenderContext, store: WorkspaceStore) => string
   /** The toolbar button's icon (without one the label is shown). */
   icon?: LucideIcon
   primary?: boolean
@@ -120,11 +122,13 @@ export interface BlockAction {
   when?: (context: RenderContext, store: WorkspaceStore) => boolean
   /** Why it cannot run right now (offered disabled, with the reason), or false. */
   disabled?: (context: RenderContext, store: WorkspaceStore) => string | false
-  /** Shown pressed (a panel it opens is open). */
-  active?: (context: RenderContext) => boolean
+  /** Shown pressed (a panel it opens is open, a node is folded). */
+  active?: (context: RenderContext, store: WorkspaceStore) => boolean
   run: (context: RenderContext, store: WorkspaceStore) => void | Promise<void>
   /** Shown as a keyboard hint; the host binds it while the Block is selected. */
   key?: string
+  /** The menu group: `open` for the type's "edit content" (by default the action bound to Enter), else the type's own. */
+  group?: 'type' | 'open'
 }
 
 /** The stable action id (PRD §3.3): `block.<type>.<name>`; an id that already names its namespace is kept. */
@@ -235,15 +239,15 @@ export interface BlockDefinition {
   anchors?: readonly AnchorDef[] | ((payload: CellPayload) => readonly AnchorDef[])
   /** `locked`: corner handles keep the proportions (Shift frees them); `free`: Shift keeps them. */
   resize?: { aspect?: 'free' | 'locked' }
-  /** Hover affordances (§4.2); without it a Block with data shows the data's name. */
+  /** Hover affordances (§4.2); without it a Block with data shows the data's name. Each button names one of the type's
+   * actions (`action`), so a touch reaches it from the toolbar, the menu and the phone's context window (PRD §10.1). */
   hover?: (context: RenderContext, store: WorkspaceStore) => HoverAffordance[]
-  /** Tools of the near toolbar drawn by the type itself (types not yet declaring their tools as primary actions and
-   * quick properties: connector, mind map node, wish). Shown after the primary actions, edit mode only. */
-  toolbar?: (context: RenderContext, store: WorkspaceStore) => ToolbarItem[]
 }
 
-/** One property of a type (§10.1, §10.2): its control, default, where it shows. Without `get` / `set` it is `config.<key>`
- * of the Cell, written with `setCellConfig` (the default value is stored as absent). */
+/** One property of a type (§10.1, §10.2): its control, default, where it shows. Without `get` it reads `config.<key>` of
+ * the Cell; it writes `config.<key>` (the default value stored as absent), or the config `patch` it gives, or the
+ * operations of `ops` — each one undoable commit, and with several Blocks selected one commit for all of them (§10.2).
+ * `set` is for a writer that cannot be one of those (it is then not offered for several Blocks at once). */
 export interface ConfigField {
   key: string
   label: string
@@ -267,8 +271,14 @@ export interface ConfigField {
   /** A number's toolbar choices (font sizes); the panel keeps the number field. */
   presets?: number[]
   /** Shown only for some states (a line has no fill). */
-  when?: (context: RenderContext) => boolean
-  get?: (context: RenderContext) => Json | undefined
+  when?: (context: RenderContext, store: WorkspaceStore) => boolean
+  get?: (context: RenderContext, store: WorkspaceStore) => Json | undefined
+  /** The Cell's `config` keys to write for `value` (null removes one). */
+  patch?: (context: RenderContext, value: Json | null) => Record<string, Json | null>
+  /** The operations that write `value` (other keys, the data, another entity); none: nothing to change. */
+  ops?: (context: RenderContext, store: WorkspaceStore, value: Json | null) => Promise<Operation[]>
+  /** The edit history's label of a change (default "<label> → <value>"). */
+  editLabel?: (value: Json | null) => string
   set?: (context: RenderContext, store: WorkspaceStore, value: Json | null) => void
   /** Why it cannot be changed now (default: the Block's read-only reason, and `update` in edit mode). */
   readOnly?: (context: RenderContext) => string | false

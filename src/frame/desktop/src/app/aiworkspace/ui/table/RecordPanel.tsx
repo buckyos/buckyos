@@ -162,9 +162,9 @@ function EditRecord({ recordId, sourceId, cellId, fields, titleField, rows, page
 function NewRecord({ sourceId, fields, canAppend, readOnlyReason, onClose }: TableRecordPanelProps) {
   const { t } = useAiwsText()
   const store = useStore()
-  // the service fills a submitter field; references and JSON objects are not typed into a new record
+  // the service fills a submitter field; references are not typed into a new record; a default starts filled in (§7.3)
   const asked: DraftFieldDef[] = fields.filter((field) => !field.submitter && field.type !== 'object_ref')
-    .map((field) => ({ id: field.field_id, name: field.name, def: field, testId: `aiws-record-field-${field.field_id}` }))
+    .map((field) => ({ id: field.field_id, name: field.name, def: field, testId: `aiws-record-field-${field.field_id}`, ...(field.default !== undefined ? { fallback: field.default } : {}) }))
   const draft = useDraftRecord(asked)
   const [status, setStatus] = useState<{ kind: 'error' | 'info'; text: string } | null>(null)
   const [round, setRound] = useState(0)

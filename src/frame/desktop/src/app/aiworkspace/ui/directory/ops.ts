@@ -1,13 +1,14 @@
-/* Directory writes (框架 PRD §7.4), all through the existing operations: `dir.set_member` / `dir.remove_member` on the
- * directories, `entity.create` for a new subdirectory. A rename, a move between directories or folders and a removal
- * of several rows is one Commit (one undo step). Each write reads the directories it touches first, so the version
- * each member is expected at is the current one. */
+/* Directory writes (框架 PRD §7.4), all through `dir.set_member` / `dir.remove_member` on the directories: a sub-folder
+ * is part of its directory (Q25), so creating, renaming, moving or removing one changes that directory's members and
+ * nothing else. A rename, a move between directories or folders and a removal of several rows is one Commit (one undo
+ * step); the folder it happens in stays, empty or not. Each write reads the directories it touches first, so the
+ * version each member is expected at is the current one. */
 
 import { randomId } from '../../api/ids'
 import { aiwsT } from '../../i18n'
 import type { Operation } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
-import { keepBothName, keysOf, nameProblem, nameTaken, type DirectoryContent, type DirectoryMember, type Entry, type Place } from './model'
+import { folderExists, keepBothName, keysOf, nameProblem, nameTaken, type DirectoryContent, type DirectoryMember, type Entry, type Place } from './model'
 
 export type Resolution = 'replace' | 'keep' | 'skip'
 
@@ -23,10 +24,21 @@ const membersOf = (read: Awaited<ReturnType<typeof readDirectory>>) => read.cont
 const revOf = (read: Awaited<ReturnType<typeof readDirectory>>, key: string) => read.content.key_revs[`m:${key}`] ?? 0
 
 /** The member as it is written: files by their object (the service fills in type and size). */
-const written = (member: DirectoryMember): DirectoryMember => (member.kind === 'file' ? { kind: 'file', object_id: member.object_id } : { kind: 'dir', entity_id: member.entity_id })
+const written = (member: DirectoryMember): DirectoryMember => (member.kind === 'file' ? { kind: 'file', object_id: member.object_id } : member.kind === 'dir' ? { kind: 'dir', entity_id: member.entity_id } : { kind: 'folder' })
 
 const setOp = (entityId: string, key: string, member: DirectoryMember, rev: number): Operation => ({ op: 'dir.set_member', entity_id: entityId, name: key, member: written(member), expect: { rev } })
 const removeOp = (entityId: string, key: string, rev: number): Operation => ({ op: 'dir.remove_member', entity_id: entityId, name: key, expect: { rev } })
+
+/** The folder `place` is in keeps existing when what is left of `members` has nothing in it: its `folder` member. */
+function keepPlace(place: Place, members: Record<string, DirectoryMember>, rev: number): Operation[] {
+  if (!place.prefix || folderExists(members, place.prefix) || Object.hasOwn(members, place.prefix.slice(0, -1))) return []
+  return [setOp(place.entityId, place.prefix.slice(0, -1), { kind: 'folder' }, rev)]
+}
+const without = (members: Record<string, DirectoryMember>, keys: Iterable<string>) => {
+  const left = { ...members }
+  for (const key of keys) delete left[key]
+  return left
+}
 
 /** Commit; anything but an accepted (or locally saved) change is an error with the save state's reason. */
 export async function submitDirectory(store: WorkspaceStore, editId: string, label: string, operations: Operation[]) {
@@ -62,13 +74,17 @@ export async function renameEntry(store: WorkspaceStore, place: Place, entry: En
   await submitDirectory(store, `directory:${place.entityId}:rename:${from}`, aiwsT('aiworkspace.directory.renameEdit', { from: entry.name, to }), operations)
 }
 
-/** Remove rows (their members; a child directory is only unlinked). */
+/** Remove rows: a file, a folder with everything under it; a linked directory is only unlinked. */
 export async function removeEntries(store: WorkspaceStore, place: Place, entries: Entry[]) {
   const read = await readDirectory(store, place.entityId)
   const members = membersOf(read)
   const keys = [...new Set(entries.flatMap((entry) => keysOf(members, entry)))].filter((key) => Object.hasOwn(members, key))
   const label = entries.length === 1 ? aiwsT('aiworkspace.directory.removeEdit', { name: entries[0].name }) : aiwsT('aiworkspace.directory.removeManyEdit', { count: entries.length })
-  await submitDirectory(store, `directory:${place.entityId}:remove:${randomId()}`, label, keys.map((key) => removeOp(place.entityId, key, revOf(read, key))))
+  const placeKey = place.prefix.slice(0, -1)
+  await submitDirectory(store, `directory:${place.entityId}:remove:${randomId()}`, label, [
+    ...keys.map((key) => removeOp(place.entityId, key, revOf(read, key))),
+    ...keepPlace(place, without(members, keys), revOf(read, placeKey)),
+  ])
 }
 
 /** The names of `entries` already taken at `to` (each needs a resolution before a move). */
@@ -116,32 +132,26 @@ export async function moveEntries(store: WorkspaceStore, from: Place, entries: E
   // a replaced member is written over (its own version); one that only held the name goes
   for (const key of cleared) if (!sets.has(key) && !(same && removes.has(key))) operations.push(removeOp(to.entityId, key, revOf(target, key)))
   for (const [key, member] of sets) operations.push(setOp(to.entityId, key, member, revOf(target, key)))
+  // the folder the rows left stays where it was
+  const left = without(sourceMembers, [...removes.keys(), ...(same ? cleared : [])])
+  if (same) for (const [key, member] of sets) left[key] = member
+  operations.push(...keepPlace(from, left, revOf(source, from.prefix.slice(0, -1))))
   const editTarget = same ? from.entityId : `${from.entityId}:${to.entityId}`
   await submitDirectory(store, `directory:${editTarget}:move:${randomId()}`, aiwsT('aiworkspace.directory.moveEdit', { count: moved }), operations)
   return moved
 }
 
-/** A new, empty subdirectory: a `buckyos.dir` next to the directory it is created in (directories cannot hold tree
- * children), and its member in that directory. */
+/** A new, empty subdirectory: a `folder` member of the directory it is created in (Q25: no entity of its own). */
 export async function createSubdirectory(store: WorkspaceStore, place: Place, name: string) {
   const read = await readDirectory(store, place.entityId)
   const problem = nameError(membersOf(read), place.prefix, name)
   if (problem) throw new DirectoryError(problem)
-  const host = store.outline.get(place.entityId)
-  const parentId = host?.parent_id ?? 'data'
-  const siblings = store.outline.childrenOf(parentId)
-  const at = siblings.findIndex((item) => item.entity_id === place.entityId)
-  const orderKey = store.core.order_key_between(at >= 0 ? siblings[at].order_key : siblings.at(-1)?.order_key, at >= 0 ? siblings[at + 1]?.order_key : undefined)
-  const id = randomId('dir')
   const key = `${place.prefix}${name}`
-  await submitDirectory(store, `directory:${place.entityId}:mkdir:${key}`, aiwsT('aiworkspace.directory.newFolderEdit', { name }), [
-    { op: 'entity.create', entity_id: id, type_id: 'buckyos.dir', parent_id: parentId, order_key: orderKey, name, payload: { members: {} } },
-    setOp(place.entityId, key, { kind: 'dir', entity_id: id }, revOf(read, key)),
-  ])
-  return id
+  await submitDirectory(store, `directory:${place.entityId}:mkdir:${key}`, aiwsT('aiworkspace.directory.newFolderEdit', { name }), [setOp(place.entityId, key, { kind: 'folder' }, revOf(read, key))])
+  return key
 }
 
-/** An existing directory as a member. */
+/** An existing directory linked here as a member (it stays where it is; removing the row only unlinks it). */
 export async function addExistingDirectory(store: WorkspaceStore, place: Place, directoryId: string, name: string) {
   const read = await readDirectory(store, place.entityId)
   const problem = nameError(membersOf(read), place.prefix, name)

@@ -52,7 +52,7 @@ export interface CommitOptions {
   onPart?: (part: number, total: number) => void
 }
 
-export type ImportedAsset = { kind: 'file'; name: string; object_id: string; size: number } | { kind: 'dir'; name: string; children: ImportedAsset[] }
+export type ImportedAsset = { kind: 'file'; name: string; object_id: string; size: number; media_type: string } | { kind: 'dir'; name: string; children: ImportedAsset[] }
 
 /** One file into a Workspace (design §3.6, Durable Data Schema §3.3): uploaded through NDM and bound into the
  * caller's own `assets` bucket at finalize, then taken over by the service into the Workspace owner's bucket.
@@ -195,8 +195,8 @@ export interface WorkspaceSession {
 
   /** Deployment management (online only; never queued, never undoable). The permissions themselves (`acl.*`) are
    * called through the client by ui/permissions; `subscribeAcl` tells when they moved (权限需求 R4): `info()` then
-   * carries the new `acl_rev` and the caller's Workspace capabilities. A session without its own follower omits it. */
-  subscribeAcl?(listener: () => void): () => void
+   * carries the new `acl_rev` and the caller's Workspace capabilities (a replica window follows them too). */
+  subscribeAcl(listener: () => void): () => void
   listSubjects(): Promise<Subject[]>
   /** The owner's hosted execution configuration (D22, T3-7); `manage`, online only. */
   setHostedExec(config: HostedExecConfig): Promise<HostedExecConfig>
@@ -794,7 +794,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
           return { kind: 'dir', name: item.name, children }
         }
         const asset = unwrap(await this.client.assetImportObject(this.ws, { obj_id: item.objectId }))
-        return { kind: 'file', name: item.name, object_id: asset.object_id, size: asset.size }
+        return { kind: 'file', name: item.name, object_id: asset.object_id, size: asset.size, media_type: asset.media_type }
       }
       const items: ImportedAsset[] = []
       for (const item of snapshot.items) items.push(await stage(item))

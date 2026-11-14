@@ -19,7 +19,8 @@ import { boundIds, deleteRecordsOp, orderAt, orderKeysBetween, sortTodos, TODO_D
 import type { Json, Operation } from '../../../api/types'
 import { useEntity, useReadOnlyReason, useStore, useWorkspaceUi } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
-import { ControlMenu, ControlPopover, anchorOf, type AnchorRect, type MenuItem } from '../data/ControlPopover'
+import { ControlMenu, ControlPanel, anchorOf, type AnchorRect, type MenuItem } from '../data/ControlPopover'
+import { openBlockMenu } from '../../blockui/bus'
 import { PublishActions } from '../../blockui/PublishActions'
 import { edgeScroll, localPoint, trackPress, type Point } from '../data/gestures'
 import { ProjectedView, projectedAt } from '../data/ProjectedView'
@@ -44,7 +45,6 @@ type Drag =
 type Popover =
   | { kind: 'detail'; id: string; anchor: AnchorRect }
   | { kind: 'menu'; ids: string[]; anchor: AnchorRect }
-  | { kind: 'view'; anchor: AnchorRect }
 
 export function TodoBody({ containerId, mode, active, size, phone, host }: ControlBodyProps) {
   const { t } = useAiwsText()
@@ -389,8 +389,9 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
     return () => el.removeEventListener('scroll', update)
   }, [view.mode, size.w, size.h])
 
-  // the view menu (UI 框架 PRD §10.1): this ⋯ and the Block's menu offer the same actions ("open as a page" is the Block
-  // menu's "expand" there, so it is not published)
+  // the view menu (UI 框架 PRD §10.1): published to the Block's menu — the ⋯ of this title row on a canvas, of the Block's title row on a flow
+  // page (§6.2), its toolbar's "more", the phone's context window, the control page's bar; "open as a page" is the Block menu's "expand",
+  // so it is not published
   const viewItems: (MenuItem | 'separator')[] = [
     { id: 'hide-done', label: t('aiworkspace.todo.hideDone'), checked: view.hide_done, icon: view.hide_done ? <Check size={14} /> : null, run: () => ctl.set({ hide_done: !view.hide_done }) },
     ...(view.mode === 'board' ? [{ id: 'expand', label: t('aiworkspace.todo.expandColumns'), icon: <PanelLeftOpen size={14} />, disabled: view.collapsed.length ? false : t('aiworkspace.todo.noneFolded'), run: () => ctl.set({ collapsed: [] }) } as MenuItem] : []),
@@ -436,7 +437,8 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
 
   const header = (
     <div className="aiws-dc-head" data-testid={`aiws-todo-head-${containerId}`}>
-      <span className="aiws-dc-title" title={container.title ?? undefined}>{container.title || t('aiworkspace.todo.title')}</span>
+      {/* on a flow page the Block's title row (UI 框架 PRD §6.2) carries the title and ⋯ */}
+      {host !== 'flow' && <span className="aiws-dc-title" title={container.title ?? undefined}>{container.title || t('aiworkspace.todo.title')}</span>}
       <span className="aiws-dc-count" data-testid={`aiws-todo-count-${containerId}`}>{t('aiworkspace.todo.openCount', { n: open.length })}</span>
       <span className="aiws-dc-spacer" />
       <div className="aiws-dc-seg" role="radiogroup" aria-label={t('aiworkspace.todo.mode')}>
@@ -447,8 +449,10 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
           </button>
         ))}
       </div>
-      <button type="button" className="aiws-dc-iconbtn" aria-label={t('aiworkspace.datactl.viewMenu')} title={t('aiworkspace.datactl.viewMenu')} disabled={!active} data-testid={`aiws-todo-menu-${containerId}`}
-        onClick={(e) => setPopover({ kind: 'view', anchor: anchorOf(e.currentTarget) })}><Ellipsis size={16} aria-hidden="true" /></button>
+      {host === 'canvas' && (
+        <button type="button" className="aiws-dc-iconbtn" aria-label={t('aiworkspace.blockui.menu')} title={t('aiworkspace.blockui.menu')} disabled={!active} data-testid={`aiws-todo-menu-${containerId}`}
+          onClick={(e) => openBlockMenu(containerId, e.currentTarget)}><Ellipsis size={16} aria-hidden="true" /></button>
+      )}
     </div>
   )
 
@@ -563,19 +567,14 @@ export function TodoBody({ containerId, mode, active, size, phone, host }: Contr
         </div>
       )}
       {popover?.kind === 'detail' && byId.get(popover.id) && sourceId && (
-        <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.todo.detail')} sheet={phone} testId={`aiws-todo-detail-${containerId}`}>
+        <ControlPanel anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.todo.detail')} testId={`aiws-todo-detail-${containerId}`}>
           <TodoDetail sourceId={sourceId} item={byId.get(popover.id)!} options={options} canWrite={canWrite} noWrite={noWrite} onDelete={() => { removeItems([popover.id]); setPopover(null) }} />
-        </ControlPopover>
+        </ControlPanel>
       )}
       {popover?.kind === 'menu' && (
-        <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.todo.itemMenu')} sheet={phone} width={240} side="below">
+        <ControlPanel anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.todo.itemMenu')} width={240} side="below" testId={`aiws-todo-itemmenu-${containerId}`}>
           <ControlMenu items={menuItems(popover.ids)} onClose={() => setPopover(null)} label={t('aiworkspace.todo.itemMenu')} />
-        </ControlPopover>
-      )}
-      {popover?.kind === 'view' && (
-        <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.datactl.viewMenu')} width={260} side="below">
-          <ControlMenu label={t('aiworkspace.datactl.viewMenu')} onClose={() => setPopover(null)} items={viewItems} />
-        </ControlPopover>
+        </ControlPanel>
       )}
       <PublishActions containerId={containerId} items={viewItems} />
     </div>

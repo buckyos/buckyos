@@ -92,6 +92,10 @@ pub struct FieldDef {
     /// At most this many options in one `multi_select` value (1–1000, G20).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_items: Option<u32>,
+    /// What a new record holds when its insert does not give this field (UI 框架 PRD §7.3): a canonical value of the
+    /// field's type, filled in by `table.insert_records`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
 }
 
 pub const TEXT_MAX_UTF16: usize = 65_536;
@@ -113,6 +117,7 @@ impl FieldDef {
         let mut def: FieldDef = serde_json::from_value(v.clone())
             .map_err(|e| WsError::invalid_schema(format!("bad field definition: {e}")))?;
         def.validate()?;
+        def.normalize_default()?;
         if def.maintained_by.as_deref() == Some("human") {
             def.maintained_by = None;
         }
@@ -184,6 +189,38 @@ impl FieldDef {
             (Some(_), FieldType::MultiSelect) => return bad(format!("max_items must be 1-{MAX_ITEMS_LIMIT}")),
             (Some(_), _) => return bad("max_items is only valid on multi_select fields".into()),
             (None, _) => {}
+        }
+        if let Some(d) = &self.default {
+            self.default_value(d)?;
+        }
+        Ok(())
+    }
+
+    /// `v` as this field's default, in canonical form; refused on a field no default fits and for `null` or a formula.
+    pub fn default_value(&self, v: &Value) -> WsResult<Value> {
+        let bad = |m: &str| Err(WsError::invalid_schema(format!("field {}: {m}", self.field_id)));
+        if self.submitter {
+            return bad("a submitter field has no default (the service fills it with whoever inserts)");
+        }
+        if self.unique {
+            return bad("a unique field has no default (every new record would repeat it)");
+        }
+        if self.ty == FieldType::ObjectRef {
+            return bad("an object_ref field has no default");
+        }
+        if v.is_null() {
+            return bad("a default is never null (remove the default instead)");
+        }
+        if is_formula(v) {
+            return bad("a default is a value, not a formula");
+        }
+        self.normalize(v).map_err(|e| WsError { detail: format!("default: {}", e.detail), ..e })
+    }
+
+    /// The default in canonical form (a definition is stored with it so).
+    pub fn normalize_default(&mut self) -> WsResult<()> {
+        if let Some(d) = self.default.take() {
+            self.default = Some(self.default_value(&d)?);
         }
         Ok(())
     }

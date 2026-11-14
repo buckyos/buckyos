@@ -287,3 +287,125 @@ fn the_readers_of_a_sessions_permission_object_open_it_without_a_link() {
     assert_eq!(env.svc.readers_of_json(&third_row())["alive"], false);
     assert!(opens(&bob()), "who joined comes back");
 }
+
+/// Bytes the service takes for a PNG picture (it sniffs the magic), distinct per `tag`.
+fn png(tag: &str) -> Vec<u8> {
+    [&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a][..], tag.as_bytes()].concat()
+}
+
+/// An asset `id` of `bytes` in folder `folder`, shown by Block `cell` on canvas `surface` at `order` (and its poster).
+fn asset_block(ws: &mut aiworkspace_store::Workspace, bytes: &[u8], poster: Option<&[u8]>, id: &str, folder: &str, surface: &str, order: &str) {
+    let object = ws.stage_asset(&alice(), bytes).unwrap()["object_id"].as_str().unwrap().to_string();
+    let mut payload = json!({ "object_id": object, "file_name": format!("{id}.bin") });
+    if let Some(p) = poster {
+        payload["poster"] = ws.stage_asset(&alice(), p).unwrap()["object_id"].clone();
+    }
+    ok(ws, &alice(), json!([
+        { "op": "entity.create", "entity_id": id, "type_id": "buckyos.asset-ref", "parent_id": folder, "order_key": order, "payload": payload },
+        { "op": "entity.create", "entity_id": format!("c-{id}"), "type_id": "buckyos.cell", "parent_id": surface, "order_key": order,
+          "placement": { "x": 0, "y": 0, "w": 100, "h": 100 }, "payload": { "view": { "type": "asset", "version": 1 }, "source_ref": { "entity_id": id } } },
+    ]));
+}
+
+/// K6, the stopgap cover (UI 框架 PRD §9.2): the first Block showing a picture (or a file's poster) on the canvas changed
+/// last, as the caller reads it — the Block and the asset both — else null.
+#[test]
+fn the_workspace_cover_is_the_first_picture_of_the_canvas_changed_last_as_the_caller_reads_it() {
+    let env = env();
+    let id = env.svc.create_workspace(&alice(), "封面", None).unwrap()["workspace_id"].as_str().unwrap().to_string();
+    let cover = |who: &Caller| -> Value {
+        let list = env.svc.list_workspaces(who).unwrap();
+        list["workspaces"].as_array().unwrap().iter().find(|w| w["workspace_id"] == json!(id)).map(|w| w["cover"].clone()).unwrap_or(Value::Null)
+    };
+    let handle = env.svc.workspace(&id).unwrap();
+    {
+        let mut ws = handle.lock().unwrap();
+        ok(&mut ws, &alice(), json!([
+            { "op": "entity.create", "entity_id": "one-content", "type_id": "buckyos.container", "parent_id": "canvas-content", "order_key": "a", "payload": { "kind": "folder", "system": "surface_content", "surface_id": "one", "title": "一" } },
+            { "op": "entity.create", "entity_id": "one", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "a", "payload": { "kind": "surface", "layout": { "mode": "free" }, "title": "一", "content_folder_id": "one-content" } },
+            { "op": "entity.create", "entity_id": "two-content", "type_id": "buckyos.container", "parent_id": "canvas-content", "order_key": "b", "payload": { "kind": "folder", "system": "surface_content", "surface_id": "two", "title": "二" } },
+            { "op": "entity.create", "entity_id": "two", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "b", "payload": { "kind": "surface", "layout": { "mode": "flow" }, "title": "二", "content_folder_id": "two-content" } },
+        ]));
+    }
+    assert_eq!(cover(&alice()), Value::Null, "no picture anywhere: the placeholder");
+    let picture = {
+        let mut ws = handle.lock().unwrap();
+        // on the first canvas a file that is no picture and has no poster, then a picture: the picture
+        asset_block(&mut ws, b"just some text", None, "doc", "one-content", "one", "a");
+        asset_block(&mut ws, &png("one"), None, "pic", "one-content", "one", "b");
+        ws.read(&alice(), "pic", None).unwrap()["content"]["payload"]["object_id"].as_str().unwrap().to_string()
+    };
+    let got = cover(&alice());
+    assert_eq!(got, json!({ "workspace_id": id, "object_id": picture, "media_type": "image/png", "surface_id": "one", "entity_id": "pic" }));
+    // the second canvas changes later: its video's poster
+    let poster = {
+        let mut ws = handle.lock().unwrap();
+        asset_block(&mut ws, b"\0\0\0\x18ftypmp42\0\0\0\0mp42isomframes", Some(&png("poster")), "film", "two-content", "two", "a");
+        ws.read(&alice(), "film", None).unwrap()["content"]["payload"]["poster"].as_str().unwrap().to_string()
+    };
+    let got = cover(&alice());
+    assert_eq!((&got["object_id"], &got["media_type"], &got["surface_id"], &got["entity_id"]), (&json!(poster), &json!("image/png"), &json!("two"), &json!("film")));
+    // the first canvas changes again (a Block moves): its picture is back
+    {
+        let mut ws = handle.lock().unwrap();
+        ok(&mut ws, &alice(), json!([{ "op": "tree.move", "entity_id": "c-doc", "new_parent_id": "one", "order_key": "c" }]));
+    }
+    assert_eq!(cover(&alice())["surface_id"], "one");
+    // bob reads the second canvas and its data: his cover comes from there, whatever changed last
+    {
+        let mut ws = handle.lock().unwrap();
+        ws.grant(&alice(), "bob", Some("two"), &caps(&["read"])).unwrap();
+        ws.grant(&alice(), "bob", Some("two-content"), &caps(&["read"])).unwrap();
+    }
+    assert_eq!(cover(&bob())["entity_id"], "film");
+    // carol reads the first canvas but not the data on it: no picture she may see
+    let carol = Caller::user("carol");
+    handle.lock().unwrap().grant(&alice(), "carol", Some("one"), &caps(&["read"])).unwrap();
+    assert!(env.svc.list_workspaces(&carol).unwrap()["workspaces"].as_array().unwrap().iter().any(|w| w["workspace_id"] == json!(id)));
+    assert_eq!(cover(&carol), Value::Null);
+    // the picture's Block deleted: the next one in the canvas's order (none here but the poster elsewhere)
+    {
+        let mut ws = handle.lock().unwrap();
+        let life = ws.read(&alice(), "c-pic", None).unwrap()["life_rev"].as_u64().unwrap();
+        ok(&mut ws, &alice(), json!([{ "op": "entity.delete", "entity_id": "c-pic", "expect": { "rev": life } }]));
+    }
+    assert_eq!(cover(&alice())["entity_id"], "film");
+}
+
+/// K6 for a public lecture (UI 框架 PRD §9.2): the first picture on the canvases of its path — in the run Workspace for
+/// whoever reads it, else in the courseware as the caller reads it there; null otherwise.
+#[test]
+fn a_sessions_cover_comes_from_the_canvases_of_its_path_as_the_caller_reads_them() {
+    let env = env();
+    let src = courseware(&env);
+    {
+        let handle = env.svc.workspace(&src).unwrap();
+        let mut ws = handle.lock().unwrap();
+        asset_block(&mut ws, &png("stage"), None, "stage-pic", "s-launch-content", "s-launch", "z");
+    }
+    let created = env.svc.session_create(&alice(), &json!({ "workspace_id": src, "path_id": "path-intro", "title": "第一讲" })).unwrap();
+    let sid = created["session"]["session_id"].as_str().unwrap().to_string();
+    let row = env.svc.sessions.require(&sid).unwrap();
+    let cover = |who: &Caller| -> Value {
+        env.svc.session_list_open(who, 100).unwrap()["sessions"].as_array().unwrap().iter().find(|s| s["session_id"] == json!(sid)).map(|s| s["cover"].clone()).unwrap_or(Value::Null)
+    };
+    // the presenter reads the run Workspace: the picture there
+    let mine = cover(&alice());
+    assert_eq!((&mine["workspace_id"], &mine["surface_id"], &mine["entity_id"], &mine["media_type"]), (&json!(row.workspace_id), &json!("s-launch"), &json!("stage-pic"), &json!("image/png")));
+    // bob reads the presented canvas of the courseware but not its data: listed, without a cover
+    {
+        let handle = env.svc.workspace(&src).unwrap();
+        handle.lock().unwrap().grant(&alice(), "bob", Some("s-launch"), &caps(&["read"])).unwrap();
+    }
+    assert_eq!(cover(&bob()), Value::Null);
+    // with the canvas's data too: the courseware's picture (he cannot read the run Workspace before joining)
+    {
+        let handle = env.svc.workspace(&src).unwrap();
+        handle.lock().unwrap().grant(&alice(), "bob", Some("s-launch-content"), &caps(&["read"])).unwrap();
+    }
+    let his = cover(&bob());
+    assert_eq!((&his["workspace_id"], &his["entity_id"]), (&json!(src), &json!("stage-pic")));
+    // once joined he reads the run Workspace: its picture
+    env.svc.session_join(&row, &bob(), None, Some("Bob")).unwrap();
+    assert_eq!(cover(&bob())["workspace_id"], json!(row.workspace_id));
+}

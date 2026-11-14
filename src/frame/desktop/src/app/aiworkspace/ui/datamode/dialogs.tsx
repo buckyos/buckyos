@@ -1,22 +1,22 @@
 /* The dialogs of the object tree's actions (UI 框架 PRD §5.2): a name for new data (a link's address for linked data),
- * rename, move to a folder, place on a canvas, and the delete confirmation after the reference pre-check (unchanged:
- * still-referenced data is not deleted, references this caller cannot see are only said to exist). Full screen on a
- * phone (§6.1), a modal elsewhere. */
+ * rename, move to a folder and a place in it, place on a canvas, and the delete confirmation after the reference
+ * pre-check (unchanged: still-referenced data is not deleted, references this caller cannot see are only said to
+ * exist). Full screen on a phone (§6.1), a modal elsewhere. */
 
 import { createElement, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { describeError } from '../../api/session'
-import { DATA_ID, type EntityEnvelope } from '../../api/types'
-import { useStore } from '../../state/hooks'
+import { DATA_ID, type EntityEnvelope, type Json } from '../../api/types'
+import { useStore, useUserState } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { surfacesOf } from '../canvas/surfaceOps'
 import { useOverlayMounted } from '../shell/popover'
 import { usePhone, useShell } from '../shell/shellContext'
 import { entityLabel, type NewDataKind } from '../sources/dataOps'
 import type { DataDialog } from './actions'
-import { iconOf, nameOf, typeName } from './model'
-import { accepted, createData, createLinked, deleteData, move, moveTargets, placeOnCanvas, rename } from './ops'
+import { FILTER_KEY, iconOf, nameOf, parseFilter, treeView, typeName } from './model'
+import { accepted, createData, createLinked, deleteData, moveTargets, moveToPlace, placeAmong, placeOnCanvas, rename, type MovePlace } from './ops'
 
 function Dialog({ label, testId, onClose, children, actions }: { label: string; testId: string; onClose: () => void; children: ReactNode; actions: ReactNode }) {
   const { t } = useAiwsText()
@@ -165,16 +165,92 @@ function PickList({ items, testPrefix, onPick }: { items: EntityEnvelope[]; test
   )
 }
 
+/** "移动到…" (§5.2): a folder (its own included), then the place in it — first, or right after one of the rows the tree
+ * shows there with the person's filter. The way to reorder on a touch screen (a desktop also drags). One Commit. */
 function MoveTo({ entityId, onClose }: { entityId: string; onClose: () => void }) {
   const { t } = useAiwsText()
   const store = useStore()
+  const filterState = useUserState<Json>(FILTER_KEY)
+  const [folderId, setFolderId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const entity = store.outline.get(entityId)
   if (!entity) return null
-  const targets = moveTargets(store, entityId).filter((f) => f.entity_id !== entity.parent_id)
+  const view = treeView(store, parseFilter(filterState), '')
+  const rowsIn = (id: string) => store.outline.childrenOf(id).filter((e) => view.shown.has(e.entity_id) || e.entity_id === entityId)
+  const others = (id: string) => rowsIn(id).filter((e) => e.entity_id !== entityId)
+  const folderName = (f: EntityEnvelope | undefined, id: string) => (id === DATA_ID ? store.session.info().title : nameOf(store, f, id))
+  const depth = (e: EntityEnvelope) => Math.max(0, store.outline.ancestors(e.entity_id).length - 2)
+  const go = async (parentId: string, at: MovePlace) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const outcome = await moveToPlace(store, entityId, parentId, at)
+      if (accepted(outcome)) { onClose(); return }
+      setError(t('aiworkspace.objecttree.move.failed', { code: 'code' in outcome ? String(outcome.code) : outcome.status }))
+    } catch (failure) { setError(describeError(failure)) }
+    setBusy(false)
+  }
+  const pick = (folder: EntityEnvelope) => {
+    // an empty folder has one place: no second step
+    if (others(folder.entity_id).length === 0) void go(folder.entity_id, 'first')
+    else setFolderId(folder.entity_id)
+  }
+  const cancel = <button type="button" onClick={onClose}>{t('aiworkspace.common.cancel')}</button>
+  const label = t('aiworkspace.datamode.moveTitle', { name: entityLabel(entity) })
+  if (folderId === null) {
+    const targets = moveTargets(store, entityId)
+    const here = entity.parent_id ?? null
+    return (
+      <Dialog label={label} testId="aiws-dm-move-dialog" onClose={onClose} actions={cancel}>
+        <div className="aiws-muted" data-testid="aiws-dm-move-step" data-step="folder">{t('aiworkspace.objecttree.move.folders')}</div>
+        {targets.length === 0 ? <div className="aiws-muted">{t('aiworkspace.datamode.noFolders')}</div> : (
+          <ul className="aiws-dm-pick" role="listbox" aria-label={t('aiworkspace.objecttree.move.folders')}>
+            {targets.map((f) => {
+              const current = f.entity_id === here
+              // its own folder with nothing else in it: nowhere to go
+              const disabled = busy || (current && others(f.entity_id).length === 0)
+              return (
+                <li key={f.entity_id}>
+                  <button type="button" role="option" aria-selected={false} className="aiws-dm-pick-item" data-testid={`aiws-dm-move-${f.entity_id}`} data-current={current ? 'true' : undefined}
+                    style={{ paddingLeft: 8 + depth(f) * 14 }} disabled={disabled} onClick={() => pick(f)}>
+                    {createElement(iconOf(f), { size: 16, 'aria-hidden': true })}<span>{folderName(f, f.entity_id)}</span>
+                    {current && <small className="aiws-muted aiws-dm-pick-note">{t('aiworkspace.objecttree.move.here')}</small>}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+        {error && <div className="aiws-error" role="alert" data-testid="aiws-dm-move-error">{error}</div>}
+      </Dialog>
+    )
+  }
+  const folder = store.outline.get(folderId)
+  const now = folderId === entity.parent_id ? placeAmong(rowsIn(folderId), entityId) : null
+  const isNow = (at: MovePlace) => now !== null && (at === 'first' ? now === 'first' : now !== 'first' && now.after === at.after)
+  const places: { id: string; at: MovePlace; text: string }[] = [
+    { id: 'first', at: 'first', text: t('aiworkspace.objecttree.move.first') },
+    ...others(folderId).map((e) => ({ id: `after-${e.entity_id}`, at: { after: e.entity_id } as MovePlace, text: t('aiworkspace.objecttree.move.after', { name: nameOf(store, e, e.entity_id) }) })),
+  ]
   return (
-    <Dialog label={t('aiworkspace.datamode.moveTitle', { name: entityLabel(entity) })} testId="aiws-dm-move-dialog" onClose={onClose} actions={<button type="button" onClick={onClose}>{t('aiworkspace.common.cancel')}</button>}>
-      {targets.length === 0 ? <div className="aiws-muted">{t('aiworkspace.datamode.noFolders')}</div>
-        : <PickList items={targets} testPrefix="aiws-dm-move" onPick={(folder) => { void move(store, entityId, folder.entity_id).then((outcome) => { if (accepted(outcome)) onClose() }) }} />}
+    <Dialog label={label} testId="aiws-dm-move-dialog" onClose={onClose} actions={<>
+      <button type="button" data-testid="aiws-dm-move-back" disabled={busy} onClick={() => { setFolderId(null); setError(null) }}>{t('aiworkspace.objecttree.move.otherFolders')}</button>
+      {cancel}
+    </>}>
+      <div className="aiws-muted" data-testid="aiws-dm-move-step" data-step="place" data-folder={folderId}>{t('aiworkspace.objecttree.move.where', { folder: folderName(folder, folderId) })}</div>
+      <ul className="aiws-dm-pick" role="listbox" aria-label={t('aiworkspace.objecttree.move.where', { folder: folderName(folder, folderId) })}>
+        {places.map((p) => (
+          <li key={p.id}>
+            <button type="button" role="option" aria-selected={isNow(p.at)} className="aiws-dm-pick-item" data-testid={`aiws-dm-move-${p.id}`} data-current={isNow(p.at) ? 'true' : undefined}
+              disabled={busy || isNow(p.at)} onClick={() => { void go(folderId, p.at) }}>
+              <span>{p.text}</span>
+              {isNow(p.at) && <small className="aiws-muted aiws-dm-pick-note">{t('aiworkspace.objecttree.move.current')}</small>}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {error && <div className="aiws-error" role="alert" data-testid="aiws-dm-move-error">{error}</div>}
     </Dialog>
   )
 }

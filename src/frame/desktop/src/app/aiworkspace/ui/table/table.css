@@ -107,8 +107,6 @@
 
 /* pop-overs */
 .aiws-table-pop { display: flex; flex-direction: column; gap: 8px; }
-.aiws-table-pop-title { font-weight: 600; padding-right: 32px; }
-.aiws-table-pop .aiws-ctl-menu { margin-top: 0; }
 .aiws-table-pop-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .aiws-table-pop .aiws-filter-panel, .aiws-table-pop .aiws-fields { border: none; padding: 0; margin: 0; }
 .aiws-quick-field { display: flex; flex-direction: column; gap: 8px; }
@@ -170,12 +168,11 @@
   .aiws-field-check, .aiws-field-toggle { min-height: 44px; }
   .aiws-field-check input, .aiws-field-show input { width: 22px; height: 22px; }
   .aiws-root button.aiws-field-option { min-height: 44px; padding: 0 16px; }
-  .aiws-root .aiws-table-record-actions button, .aiws-root .aiws-table-pop button:not(.aiws-ctl-popover-close):not(.aiws-table-chip-remove), .aiws-root .aiws-fields button { min-height: 44px; }
+  .aiws-root .aiws-table-record-actions button, .aiws-root .aiws-table-pop button:not(.aiws-table-chip-remove), .aiws-root .aiws-fields button { min-height: 44px; }
   .aiws-field-item { min-height: 48px; }
   .aiws-field-grip { width: 44px; height: 44px; }
   .aiws-field-show { width: 44px; height: 44px; }
   .aiws-root button.aiws-field-open { min-height: 44px; }
-  .aiws-root .aiws-ctl-popover:has(.aiws-table-pop) .aiws-ctl-popover-close { width: 44px; height: 44px; right: 4px; top: 4px; }
   .aiws-root .aiws-table-pop .aiws-ctl-menu-item { min-height: 44px; }
   .aiws-th-rowhead .aiws-row-check { width: 22px; height: 22px; }
   .aiws-table[data-phone='true'] .aiws-td .aiws-cell-check input { width: 22px; height: 22px; }

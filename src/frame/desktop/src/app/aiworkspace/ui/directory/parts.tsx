@@ -4,12 +4,12 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type SyntheticEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronRight, File as FileIcon, FileText, Film, Folder, FolderOpen, Image as ImageIcon, Music, X, type LucideIcon } from 'lucide-react'
+import { Check, ChevronRight, File as FileIcon, FileText, Film, Folder, FolderOpen, FolderSymlink, Image as ImageIcon, Music, X, type LucideIcon } from 'lucide-react'
 import { ContentPreview } from '../../../../components/ContentPreview'
 import type { PreviewSessionContext } from '../../../../components/preview/types'
 import { useLoad, useOutlineVersion, useStore, useVersion } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
-import { ControlPopover, type AnchorRect } from '../controls/data/ControlPopover'
+import { ControlPanel, type AnchorRect } from '../controls/data/ControlPopover'
 import { mediaKindOf, type MediaKind } from '../media/kinds'
 import { assetSource } from '../media/source'
 import { useOverlayMounted } from '../shell/popover'
@@ -27,22 +27,24 @@ const stop = (event: SyntheticEvent) => event.stopPropagation()
 
 export interface DirMenuItem { id: string; label: string; icon?: LucideIcon; danger?: boolean; disabled?: string | false; testId: string; run: () => void }
 
-/** A menu beside its trigger, or a sheet from the bottom on a phone. */
+/** A menu in the framework's panel (UI 框架 PRD §6.1): floating below its trigger with the menu's name and ✕ on a computer,
+ * the window's bottom sheet on a phone. The first enabled entry takes the focus; the arrows move it. */
 export function DirMenu({ anchor, label, items, onClose, testId }: { anchor: AnchorRect; label: string; items: DirMenuItem[]; onClose: () => void; testId: string }) {
-  const phone = usePhone()
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => { ref.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus() }, [])
+  // once drawn where it goes (the floating panel is placed after its first render, a phone's sheet draws its content a
+  // render later)
+  const focusFirst = useCallback((el: HTMLDivElement | null) => {
+    if (el) requestAnimationFrame(() => el.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true }))
+  }, [])
   return (
-    <ControlPopover anchor={anchor} onClose={onClose} label={label} sheet={phone} width={260} testId={testId} side="below">
-      <div ref={ref} className="aiws-dir-menu" role="menu" aria-label={label}
+    <ControlPanel anchor={anchor} onClose={onClose} label={label} width={260} testId={testId} side="below">
+      <div ref={focusFirst} className="aiws-dir-menu" role="menu" aria-label={label}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
           event.preventDefault()
-          const buttons = [...(ref.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])]
+          const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
           const i = buttons.indexOf(document.activeElement as HTMLButtonElement)
           buttons[(i + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus()
         }}>
-        <div className="aiws-dir-menu-title">{label}</div>
         {items.map((item) => {
           const Icon = item.icon
           return (
@@ -54,7 +56,7 @@ export function DirMenu({ anchor, label, items, onClose, testId }: { anchor: Anc
           )
         })}
       </div>
-    </ControlPopover>
+    </ControlPanel>
   )
 }
 
@@ -236,7 +238,7 @@ export function MoveDialog({ rootId, rootName, crumbs: startCrumbs, from, moving
   )
 }
 
-/** An existing directory as a member: choose it, then its name here (its own name by default). */
+/** An existing directory linked as a member: choose it, then its name here (its own name by default). */
 export function ExistingDialog({ exclude, check, onAdd, onClose }: { exclude: ReadonlySet<string>; check: (name: string) => string | null; onAdd: (directoryId: string, name: string) => Promise<void>; onClose: () => void }) {
   const { t, compare } = useAiwsText()
   const store = useStore()
@@ -259,6 +261,7 @@ export function ExistingDialog({ exclude, check, onAdd, onClose }: { exclude: Re
       <button type="button" onClick={onClose}>{t('aiworkspace.common.cancel')}</button>
       <button type="button" className="is-primary" data-testid="aiws-directory-add" disabled={busy || !chosen} onClick={() => { void add() }}>{t('aiworkspace.directory.add')}</button>
     </>}>
+      <p className="aiws-muted" data-testid="aiws-directory-existing-hint">{t('aiworkspace.directory.existing.hint')}</p>
       <div className="aiws-dir-picklist" role="listbox" aria-label={t('aiworkspace.directory.selectDirectory')}>
         {directories.map((e) => (
           <button key={e.entity_id} type="button" role="option" aria-selected={chosen === e.entity_id} className="aiws-dir-pick" data-testid="aiws-directory-dir-target" data-entity-id={e.entity_id}
@@ -299,7 +302,8 @@ function thumbUrl(read: () => Promise<Blob>, objectId: string, mediaType: string
   return url
 }
 
-/** The picture of a row: a picture file's thumbnail once it is on screen, else its kind's icon; a folder icon. */
+/** The picture of a row: a picture file's thumbnail once it is on screen, else its kind's icon; a folder icon (a linked
+ * directory has its own). */
 export function Thumb({ kind, member, name }: { kind: Entry['kind']; member?: FileMember; name: string }) {
   const store = useStore()
   const ref = useRef<HTMLSpanElement>(null)
@@ -319,7 +323,7 @@ export function Thumb({ kind, member, name }: { kind: Entry['kind']; member?: Fi
     observer.observe(el)
     return () => { live = false; observer.disconnect() }
   }, [wanted, objectId, store, member?.media_type])
-  const Icon = kind === 'file' ? KIND_ICON[media] : kind === 'dir' ? FolderOpen : Folder
+  const Icon = kind === 'file' ? KIND_ICON[media] : kind === 'dir' ? FolderSymlink : Folder
   return (
     <span ref={ref} className={`aiws-dir-thumb is-${kind === 'file' ? media : 'folder'}`} aria-hidden="true">
       {url ? <img src={url} alt="" draggable={false} /> : <Icon size={22} />}

@@ -2,9 +2,9 @@
  * §12; K4, K6, K7): the Workspace's shared settings (written by managers, carried by a Clone), personal preferences
  * that follow a person from one Workspace origin to another (§15 #10), the home page's fields of `ws.list` (the open
  * record comes from opening the Workspace page), and the public lecture catalogue listing a room the caller never
- * joined but may open — he reads the session's permission object, the canvas it presents (§15 #29, Q19). The
- * interfaces are not on screen yet: the assertions go through the service and the Desktop's own preference store,
- * loaded on the Workspace pages. */
+ * joined but may open — he reads the session's permission object, the canvas it presents (§15 #29, Q19) — and the
+ * cards' covers (K6, a stopgap: the first picture of a canvas, as the caller reads it). The assertions go through the
+ * service and the Desktop's own preference store, loaded on the Workspace pages. */
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -21,6 +21,26 @@ const TOOLBAR = { zones: { collab: { items: [{ action: 'show.start' }, { action:
 
 async function setSettings(api: Api, token: string, ws: { workspace_id: string; epoch: string }, props: Json): Promise<Json> {
   return api.commit(token, ws, [{ op: 'entity.set_props', entity_id: 'root', key: 'config', props }])
+}
+
+/** A 1×1 PNG; bytes after its end make distinct objects of it that still decode. */
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+const png = (tag: string) => Buffer.concat([PNG, Buffer.from(tag)])
+
+/** A picture `id` (in `folder`) shown by a Block on canvas `surface`; its object id. */
+async function pictureBlock(api: Api, token: string, ws: { workspace_id: string; epoch: string }, surface: string, folder: string, id: string, bytes: Buffer): Promise<string> {
+  const up = await api.uploadAsset(token, ws.workspace_id, bytes)
+  const made = await api.commit(token, ws, [
+    { op: 'entity.create', entity_id: id, type_id: 'buckyos.asset-ref', parent_id: folder, order_key: 'z', payload: { object_id: up.object_id, file_name: `${id}.png` } },
+    { op: 'entity.create', entity_id: `c-${id}`, type_id: 'buckyos.cell', parent_id: surface, order_key: 'z', placement: { x: 0, y: 0, w: 200, h: 200 }, payload: { view: { type: 'asset', version: 1 }, source_ref: { entity_id: id } } },
+  ])
+  expect(made.status, JSON.stringify(made)).toBe('accepted')
+  return up.object_id as string
+}
+
+/** The bytes of an asset as `token` reads them through the asset route. */
+async function assetBytes(api: Api, token: string, workspaceId: string, objectId: string): Promise<Response> {
+  return fetch(`${api.base}/asset/${workspaceId}/${objectId}`, { headers: { Authorization: `Bearer ${token}` } })
 }
 
 function card(list: Json, workspaceId: string): Json {
@@ -159,4 +179,32 @@ test('§15-29 K7 Q19 the public lecture catalogue lists a room bob never joined 
   const closed = await api.rpc(ALICE, 'session.set_access', { session_id: lecture.session_id, access: 'closed' })
   expect(closed.ok).toBe(true)
   expect(new Set(ids(await api.rpc(BOB, 'session.list_open', {})))).toEqual(new Set([bobPresents.session_id, elsewhere.session_id]))
+})
+
+test('§9.2 K6 covers (a stopgap): ws.list names the first picture of a canvas as the caller reads it — the Block and its data —; a public lecture the first picture on its path\'s canvases, from the run Workspace for its presenter; the asset route gives the bytes', async ({ api }) => {
+  const ws = await api.freeCanvas(ALICE, '有封面')
+  expect(card(await api.rpc(ALICE, 'ws.list', {}), ws.workspace_id).cover).toBeNull()
+  const object = await pictureBlock(api, ALICE, ws, 'free', 'free-content', 'pic', png('k6-ws'))
+  expect(card(await api.rpc(ALICE, 'ws.list', {}), ws.workspace_id).cover).toEqual({ workspace_id: ws.workspace_id, object_id: object, media_type: 'image/png', surface_id: 'free', entity_id: 'pic' })
+  const bytes = await assetBytes(api, ALICE, ws.workspace_id, object)
+  expect(bytes.ok).toBe(true)
+  expect(bytes.headers.get('content-type')).toBe('image/png')
+  // bob reads the canvas but not the data on it: the card has no cover for him; with the data he gets the same one
+  expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'free', allow: ['read'] }] })).ok).not.toBe(false)
+  expect(card(await api.rpc(BOB, 'ws.list', {}), ws.workspace_id).cover).toBeNull()
+  expect((await assetBytes(api, BOB, ws.workspace_id, object)).ok).toBe(false)
+  expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'free-content', allow: ['read'] }] })).ok).not.toBe(false)
+  expect(card(await api.rpc(BOB, 'ws.list', {}), ws.workspace_id).cover).toMatchObject({ object_id: object, entity_id: 'pic' })
+  expect((await assetBytes(api, BOB, ws.workspace_id, object)).ok).toBe(true)
+
+  // a lecture: the picture on the canvas its path starts on, read in the run Workspace by its presenter
+  const course = await api.rpc(ALICE, 'ws.create', { title: '有封面的课件' }) as { workspace_id: string; epoch: string }
+  const fixture = JSON.parse(readFileSync(PRESENTATION, 'utf8')) as { commits: { operations: Json[] }[] }
+  for (const [i, c] of fixture.commits.entries()) expect((await api.commit(ALICE, course, c.operations, `cover/${i}`)).status).toBe('accepted')
+  const stage = await pictureBlock(api, ALICE, course, 's-launch', 's-launch-content', 'stage-pic', png('k6-stage'))
+  const lecture = (await api.rpc(ALICE, 'session.create', { workspace_id: course.workspace_id, path_id: 'path-intro', title: '有封面的课' })).session
+  const listed = ((await api.rpc(ALICE, 'session.list_open', {})).sessions as Json[]).find((s) => s.session_id === lecture.session_id)
+  expect(listed.cover).toMatchObject({ workspace_id: listed.workspace_id, object_id: stage, surface_id: 's-launch', entity_id: 'stage-pic', media_type: 'image/png' })
+  expect(listed.cover.workspace_id).not.toBe(course.workspace_id)
+  expect((await assetBytes(api, ALICE, listed.cover.workspace_id, stage)).ok).toBe(true)
 })

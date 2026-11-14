@@ -61,7 +61,7 @@ import { importOutline, outlineFileKind, richtextToMindmap } from '../controls/m
 import { resetLayoutOps } from '../controls/mindmap/ops'
 import { DefineControlDialog } from '../extensions/DefineControlDialog'
 import { isComposite, isFixedComposite, slotForDrop } from '../controls/composite/model'
-import { controlRegistry, type ControlCommandContext } from '../controls/registry'
+import { controlBlockDefinition, controlRegistry, type ControlCommandContext } from '../controls/registry'
 import { standardTableOf } from '../controls/data/source'
 import { bindPlacement, findData } from '../controls/data/binding'
 import { bindDialogs } from '../controls/data/dialogBus'
@@ -100,7 +100,7 @@ import { openLink } from '../blocks/affordances'
 import { copyBlockLink, expandOf, usePublishedActions } from '../blockui/commands'
 import { menuItemsOf, toolOf, typeEntries, type BlockEntry } from '../blockui/entries'
 import { iconByName } from '../blockui/icons'
-import { openPermissions } from '../blockui/bus'
+import { onOpenBlockMenu, openPermissions } from '../blockui/bus'
 import { PROPS_PANEL_KEY, PropertyPanel, type PanelLayout } from '../blockui/PropertyPanel'
 import { useUserPrefs } from '../../state/prefs'
 import { quickItems } from '../blockui/properties'
@@ -666,6 +666,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   useLayoutEffect(() => {
     commandRef.current = (command) => {
       if (command.kind === 'select') { setSelectionState(new Set(command.ids)); if (command.edit) setEditing(command.edit); return }
+      if (command.kind === 'run') { command.run(controlCtx(command.containerId, null)); return }
       if (command.kind === 'insert') {
         if (insertReason) { store.notify('info', insertReason); return }
         if (laid.get(command.nodeId)?.node) openCatalog('all', undefined, null, command.nodeId)
@@ -1268,7 +1269,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   if (propsFor && !panelPinned && propsFor.id !== subjectId) setPropsFor(null)
   /** The "properties" action (F2): for the Block `id` (selected first), or the page's (null). */
   const openProperties = (id: string | null = subjectId) => {
-    if (id && !selection.has(id)) setSelectionState(new Set([id]))
+    // several selected: the panel shows what they share (the selection stays)
+    if (id && id !== subjectId && !selection.has(id)) setSelectionState(new Set([id]))
     if (id === null && selection.size > 0) setSelectionState(new Set())
     setPropsFor({ id })
   }
@@ -1313,7 +1315,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // shows the Editor's tools while editing, the primary actions, the quick properties and the common zone (comment, lock,
   // AI). Lacking a capability an entry is offered disabled with the reason; meaningless in this mode it is not offered.
   const entries: BlockEntry[] = []
-  const typeTools: ToolbarItem[] = []
   let quickTools: ToolbarItem[] = []
   const topIds = topLevel(laid, selection)
   const lockable = topIds.length > 0 && topIds.every((id) => canLayoutBlock(id) && store.outline.get(id)?.capabilities.includes('update'))
@@ -1327,7 +1328,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const published = usePublishedActions(single?.type_id === 'buckyos.container' ? single.entity_id : null)
   if (single && policy.select) {
     const context = selectedBlock.context
-    const definition = selectedBlock.resolution?.ok ? context?.definition : undefined
+    // a control declares its actions and properties as a Block type does (its container is the Block)
+    const definition = selectedBlock.resolution?.ok ? context?.definition : single.type_id === 'buckyos.container' ? controlBlockDefinition(single.kind) : undefined
     const source = subject?.source_id ? store.outline.get(subject.source_id) : undefined
     // the type's declared actions and quick properties; a locked object offers reading only (§4.3)
     if (definition && context && !singleLocked) {
@@ -1350,15 +1352,6 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     }
     // what a control's body offers (a data control's view menu)
     if (!singleLocked) for (const a of published) entries.push({ id: `control-${a.id}`, actionId: `block.${single.kind}.${a.id}`, group: 'type', label: a.label, icon: a.icon, primary: a.primary, active: a.checked, disabled: a.disabled, run: a.run })
-    // tools a type still draws itself (connector, mind map node, wish): edit mode only, never on a locked object (§5.3)
-    if (definition?.toolbar && context && mode === 'edit' && !singleLocked) {
-      try { typeTools.push(...definition.toolbar(context, store)) } catch (error) { console.error('[aiworkspace] block toolbar failed', error) }
-    }
-    // a control's own tools (direction, edges, spacing) while it is selected
-    if (selectionControl && !selectionControl.nodeId && mode === 'edit' && !singleLocked) {
-      const def = controlRegistry.get(single.kind)
-      try { if (def?.toolbar) typeTools.push(...def.toolbar(controlCtx(selectionControl.containerId, null))) } catch (error) { console.error('[aiworkspace] control toolbar failed', error) }
-    }
     if (single.kind === 'group' && canLayout && !singleLocked) entries.push({ id: 'ungroup', actionId: 'block.ungroup', group: 'arrange', icon: Ungroup, label: t('aiworkspace.canvas.ungroup'), key: 'Ctrl+Shift+G', primary: mode === 'edit', run: ungroup })
     // a pinned node of another view goes back to the control's layout (§5.5); a text node has the tool on its toolbar
     const pin = laid.get(single.entity_id)?.node?.pinned && single.view_type !== 'mindnode' ? single.entity_id : null
@@ -1425,10 +1418,10 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const testId = flowId ? (single?.kind === 'group' ? `aiws-delete-group-${flowId}` : `aiws-delete-block-${flowId}`) : undefined
     entries.push({ id: 'delete', actionId: 'block.delete', group: 'delete', danger: true, label: t(flowId && single?.kind === 'group' ? 'aiworkspace.canvas.flow.deleteGroup' : 'aiworkspace.common.delete'), key: 'Delete', testId, disabled: deleteReason, run: () => { void deleteSelection() } })
   }
-  // the toolbar: the Editor's tools (while editing) | primary actions and the type's own tools | quick properties | common
+  // the toolbar: the Editor's tools (while editing) | primary actions | quick properties | common
   const editorItems = subject && editing === subject.entity_id ? toolbarSink.items() : []
   const nearItems: ToolbarItem[] = []
-  const primaryTools = [...entries.filter((e) => e.primary).map(toolOf), ...typeTools]
+  const primaryTools = entries.filter((e) => e.primary).map(toolOf)
   for (const part of [editorItems, primaryTools, quickTools, entries.filter((e) => e.common).map(toolOf)]) {
     if (part.length === 0) continue
     if (nearItems.length > 0) nearItems.push({ kind: 'separator', id: `sep-${nearItems.length}` })
@@ -1453,16 +1446,18 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     { id: 'page-settings', label: t('aiworkspace.blockui.pageSettings'), run: () => openProperties(null) },
   ].filter((item, i) => !(i === 0 && 'separator' in item))) : []
 
-  const subjectLaid = subject ? laid.get(single?.entity_id ?? subject.entity_id) : undefined
-  const panelLayout: PanelLayout | null = subject ? {
+  // several selected: the first one stands for the layout (the panel shows only the lock of them all)
+  const panelSubject = subject ?? selectedEntities[0]
+  const subjectLaid = panelSubject ? laid.get(single?.entity_id ?? panelSubject.entity_id) : undefined
+  const panelLayout: PanelLayout | null = panelSubject ? {
     laid: subjectLaid,
     reason: !policy.layout ? t(mode === 'view' ? 'aiworkspace.canvas.inspector.viewReadOnly' : 'aiworkspace.canvas.inspector.presentationReadOnly')
-      : !canLayoutBlock(single?.entity_id ?? subject.entity_id) ? t('aiworkspace.canvas.reason.noLayoutPermission') : subjectLaid?.locked ? t('aiworkspace.blockui.locked') : null,
-    place: (placement) => { const id = single?.entity_id ?? subject.entity_id; commitLayout([{ id, placement }]) },
+      : !canLayoutBlock(single?.entity_id ?? panelSubject.entity_id) ? t('aiworkspace.canvas.reason.noLayoutPermission') : subjectLaid?.locked ? t('aiworkspace.blockui.locked') : null,
+    place: (placement) => { const id = single?.entity_id ?? panelSubject.entity_id; commitLayout([{ id, placement }]) },
     setLocked: lockable && mode === 'edit' ? (locked) => { void setLocked(topIds, locked) } : null,
   } : null
   const propertyPanel = propsShown ? (
-    <PropertyPanel subject={selection.size === 0 ? null : subject ?? selectedEntities[0] ?? null} count={selection.size} context={selection.size === 1 ? panelBlock.context : null} resolved={Boolean(panelBlock.resolution?.ok)}
+    <PropertyPanel subject={selection.size === 0 ? null : subject ?? selectedEntities[0] ?? null} count={selection.size} selected={selectedEntities.map((e) => e.entity_id)} context={selection.size === 1 ? panelBlock.context : null} resolved={Boolean(panelBlock.resolution?.ok)}
       registryVersion={panelBlock.registryVersion} mode={phoneWrites ? 'edit' : mode} surface={surface} isFree={isFree} layout={panelLayout} anchor={propsAnchor} area={viewportSize} insets={insets}
       pinned={panelPinned} pinAt={typeof panelPref?.x === 'number' && typeof panelPref.y === 'number' ? { x: panelPref.x, y: panelPref.y } : null} phone={phone}
       onPin={(pinned) => { void prefs.set({ [PROPS_PANEL_KEY]: pinned ? { ...(panelPref ?? {}), pinned: true } : null }) }}
@@ -1504,6 +1499,10 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const r = anchor.getBoundingClientRect()
     setMenu({ at: { x: Math.round(r.left - (area?.left ?? 0)), y: Math.round(r.bottom - (area?.top ?? 0)) }, world: null, blockId })
   }
+  // a Block's content asks for its menu (a data control's title row ⋯): the same menu, here
+  const menuFromRef = useRef(menuFrom)
+  useLayoutEffect(() => { menuFromRef.current = menuFrom })
+  useEffect(() => onOpenBlockMenu((blockId, anchor) => menuFromRef.current(anchor, blockId)), [])
   /** A phone's context window of the selected Block (UI 框架 PRD §6.4), in place of the near toolbar. */
   const contextWindow = (bbox: Rect) => {
     if (!single || inkTool || expanded) return null

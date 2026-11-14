@@ -1,10 +1,13 @@
 /* Requests a Block inside a control sends to the canvas that owns selection and editing (脑图方案 §7.1): a node's
  * editor saving with Tab asks for a child, a toolbar button for a sibling or for the insert catalog (any object as a
- * child). The canvas performs them (one commit) and selects and edits the new Block. */
+ * child). The canvas performs them (one commit) and selects and edits the new Block. A control's action that needs the
+ * canvas (its layout, the selection) is run by the canvas with the control's command context (`run`). */
 
 import { Emitter } from '../../state/emitter'
+import type { ControlCommandContext } from './registry'
 
 export type ControlCommand = { kind: 'add-child' | 'add-sibling' | 'insert'; nodeId: string } | { kind: 'select'; ids: string[]; edit?: string }
+  | { kind: 'run'; containerId: string; run: (ctx: ControlCommandContext) => void }
 
 class ControlCommands {
   private readonly emitter = new Emitter()

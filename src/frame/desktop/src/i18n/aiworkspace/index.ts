@@ -5,6 +5,7 @@
 import * as activity from './activity'
 import * as blocks from './blocks'
 import * as blockui from './blockui'
+import * as blockprops from './blockprops'
 import * as canvas from './canvas'
 import * as common from './common'
 import * as core from './core'
@@ -14,11 +15,13 @@ import * as datamode from './datamode'
 import * as demos from './demos'
 import * as directory from './directory'
 import * as ext from './ext'
+import * as fielddefault from './fielddefault'
 import * as framework from './framework'
 import * as home from './home'
 import * as imports from './import'
 import * as members from './members'
 import * as mindmap from './mindmap'
+import * as objecttree from './objecttree'
 import * as office from './office'
 import * as pdf from './pdf'
 import * as permissions from './permissions'
@@ -31,10 +34,11 @@ import * as settings from './settings'
 import * as shell from './shell'
 import * as surfaces from './surfaces'
 import * as table from './table'
+import * as tablecurrent from './tablecurrent'
 import * as wish from './wish'
 import * as worklog from './worklog'
 
-const parts = [common, shell, canvas, blocks, wish, data, directory, presentation, richtext, core, demos, mindmap, pdf, ext, imports, session, office, schedule, framework, home, surfaces, settings, activity, table, permissions, blockui, customize, members, worklog, datamode, phone]
+const parts = [common, shell, canvas, blocks, wish, data, directory, presentation, richtext, core, demos, mindmap, pdf, ext, imports, session, office, schedule, framework, home, surfaces, settings, activity, table, permissions, blockui, blockprops, customize, members, worklog, datamode, phone, objecttree, fielddefault, tablecurrent]
 
 export const aiWorkspaceEn: Record<string, string> = Object.assign({}, ...parts.map((part) => part.en))
 export const aiWorkspaceZh: Record<string, string> = Object.assign({}, ...parts.map((part) => part.zh))

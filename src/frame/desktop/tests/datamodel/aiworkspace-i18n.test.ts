@@ -19,6 +19,7 @@
 import ts from 'typescript'
 import * as blocks from '../../src/i18n/aiworkspace/blocks.ts'
 import * as blockui from '../../src/i18n/aiworkspace/blockui.ts'
+import * as blockprops from '../../src/i18n/aiworkspace/blockprops.ts'
 import * as canvas from '../../src/i18n/aiworkspace/canvas.ts'
 import * as common from '../../src/i18n/aiworkspace/common.ts'
 import * as core from '../../src/i18n/aiworkspace/core.ts'
@@ -50,6 +51,7 @@ const PARTS: Part[] = [
   { name: 'canvas', prefixes: ['canvas', 'drawio'], ...canvas },
   { name: 'blocks', prefixes: ['blocks', 'connector'], ...blocks },
   { name: 'blockui', prefixes: ['blockui'], ...blockui },
+  { name: 'blockprops', prefixes: ['blockprops'], ...blockprops },
   { name: 'wish', prefixes: ['wish', 'extension'], ...wish },
   { name: 'data', prefixes: ['data'], ...data },
   { name: 'directory', prefixes: ['directory'], ...directory },

@@ -59,6 +59,9 @@
 .aiws-blockui-titleline .aiws-tool-row { opacity: 0; transition: opacity 0.12s; }
 .aiws-cell:hover > .aiws-blockui-titleline .aiws-tool-row, .aiws-cell:focus-within > .aiws-blockui-titleline .aiws-tool-row, .aiws-cell.is-selected > .aiws-blockui-titleline .aiws-tool-row,
 .aiws-blockui-titleline .aiws-tool-row:has([aria-expanded='true']) { opacity: 1; }
+/* an extension's composite on a page is a group of Blocks with a control's title row */
+.aiws-fgroup:hover > .aiws-blockui-titleline .aiws-tool-row, .aiws-fgroup:focus-within > .aiws-blockui-titleline .aiws-tool-row, .aiws-fgroup.is-selected > .aiws-blockui-titleline .aiws-tool-row { opacity: 1; }
+.aiws-blockui-titleline > .aiws-fgroup-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aiws-blockui-thinrow {
   position: absolute; left: 0; top: -30px; z-index: 6; display: none; align-items: center; gap: 4px; padding: 0 4px; height: 30px; max-width: 100%; box-sizing: border-box;
   background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 8px; box-shadow: var(--cp-shadow);

@@ -464,7 +464,7 @@ impl<'a> Builder<'a> {
         let mut out = Vec::new();
         for (name, m) in e.payload.get("members").and_then(Value::as_object).into_iter().flatten() {
             let line = match m.get("kind").and_then(Value::as_str) {
-                Some("dir") => format!("{name}/"),
+                Some("dir" | "folder") => format!("{name}/"),
                 _ => format!("{name} ({}, {} bytes)", m.get("media_type").and_then(Value::as_str).unwrap_or(""), m.get("size").and_then(Value::as_u64).unwrap_or(0)),
             };
             out.push(Part::sel(json!({ "kind": "folder_member", "name": name }), line));

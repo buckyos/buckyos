@@ -232,9 +232,10 @@ test('CA10 to-do lists on a calendar: an inserted calendar shows every to-do lis
   expect((await api.commit(ALICE, ws, todoList('work', 'Work', 'Send the report', 'w'))).status).toBe('accepted')
   const head = await page.getByTestId(`aiws-cal-head-${cal}`).boundingBox()
   await page.mouse.click(head!.x + head!.width / 2, head!.y + 14)
+  // the ⋯ of the calendar's title row is the Block's menu (UI 框架 PRD §6.2, §10.1): its view menu's items are there
   const tablesShown = async () => {
     await page.getByTestId(`aiws-cal-menu-${cal}`).click()
-    await page.getByTestId('aiws-ctl-menu-tables').click()
+    await page.getByTestId('aiws-context-menu').getByTestId('aiws-menu-control-tables').click()
   }
   const dialog = page.getByTestId('aiws-source-chooser')
   await tablesShown()

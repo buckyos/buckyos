@@ -53,9 +53,14 @@ export interface WorkspaceListItem extends WorkspaceSummary {
   published?: boolean
   /** Live presentation sessions of it as courseware. */
   live_sessions?: number
-  /** A picture of a canvas — not generated yet: always null; the card draws its placeholder. */
-  cover?: string | null
+  /** The card's cover (K6), or null: the card draws its placeholder. */
+  cover?: HomeCover | null
 }
+
+/** A home card's cover (UI 框架 PRD §9.2, K6 — a stopgap until canvases are pictured): the first Block showing a picture
+ * (or a file's poster) on a canvas, as the caller reads it. The bytes are the asset route's,
+ * `asset/<workspace_id>/<object_id>`. */
+export interface HomeCover { workspace_id: string; object_id: string; media_type: string; surface_id: string; entity_id: string }
 
 /** The Workspace's shared settings (UI 框架 PRD §4.6, K4): the root's `config`, read in `ws.get_info`, written by
  * `manage`. The keys are the client's; `toolbar` is the shared toolbar layer of the Workspace. */
@@ -342,6 +347,8 @@ export interface FieldDef {
   submitter?: boolean
   /** A `multi_select` holds at most this many options (G20). */
   max_items?: number
+  /** What a new record holds when its insert does not give this field (UI 框架 PRD §7.3); the service fills it in. */
+  default?: Json
   def_rev: number
   type_rev: number
   values_rev: number

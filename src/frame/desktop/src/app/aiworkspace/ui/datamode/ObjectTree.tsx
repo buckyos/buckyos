@@ -4,12 +4,19 @@
  * type's icon, the name, its marks (a generated result and its freshness, a write lock, published, an external source,
  * degraded content). A single click opens the object in the preview tab, a double click in a tab of its own. The menu
  * of a row (right click, a long press, its ⋯ — always shown on a touch screen), of the blank area and of the ＋ above the
- * tree is the data actions' (actions.ts). On a desktop rows drag into a folder or next to another row. */
+ * tree is the data actions' (actions.ts). On a desktop rows drag into a folder or next to another row; on a touch screen
+ * "移动到…" picks the folder and the place in it.
+ *
+ * The keyboard (WAI-ARIA tree pattern): the tree is one tab stop (a roving tabindex on the rows); ↑ ↓ move the focus,
+ * → unfolds (or goes to the first child), ← folds (or goes to the parent), Home / End to the first / last row, Enter
+ * opens the object in a tab of its own, Space in the preview tab, the menu key or Shift+F10 opens the row's menu (focus
+ * comes back when it closes), and typing the start of a name moves to the next row so named. */
 
-import { createElement, useCallback, useMemo, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { createElement, useCallback, useId, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, Ellipsis, Filter, Lock, Plus, Search, X } from 'lucide-react'
 import { DATA_ID, SHOWS_ID, SURFACES_ID, type EntityEnvelope, type Json, type Publication } from '../../api/types'
 import { useLoad, useOutlineVersion, useStore, useUserState, useVersion } from '../../state/hooks'
+import type { WorkspaceStore } from '../../state/store'
 import { useAiwsText } from '../../useAiwsText'
 import { useActionContext } from '../framework/hooks'
 import { useMacroWatch } from '../framework/macros'
@@ -20,6 +27,7 @@ import { FloatingMenu, SheetMenu, useLongPress, type MenuAt } from './menus'
 import { DEFAULT_FILTER, FILTER_KEY, FILTER_TYPES, filtering, iconOf, isFolder, nameOf, parseFilter, SESSION_FOLDER, treeView, typeName, type Origin, type TreeFilter } from './model'
 import { canMoveInto, move } from './ops'
 import { PERMISSIONS_TAB } from './tabs'
+import './objectTree.css'
 
 const EXPANDED_KEY = 'datatree:expanded'
 const DRAG_MIME = 'application/x-aiws-entity'
@@ -29,8 +37,18 @@ function foldedByDefault(entity: EntityEnvelope): boolean {
   return entity.entity_id === 'canvas-content' || entity.entity_id === SHOWS_ID || entity.entity_id === SESSION_FOLDER || entity.entity_id === SURFACES_ID || entity.system === 'surface_content' || entity.kind === 'surface'
 }
 
-type MenuState = { target: string | null; at: MenuAt; sheet: boolean }
+type MenuState = { target: string | null; at: MenuAt; sheet: boolean; /** Opened from the keyboard on this row: focus goes back to it. */ returnTo?: string }
 type DropAt = { id: string; where: 'before' | 'after' | 'into' }
+
+/** A row as the keyboard walks the tree: in the order shown, with its parent row (null at the top level). */
+interface FlatRow { id: string; parent: string | null; expandable: boolean; open: boolean }
+
+/** A row that unfolds: a folder, a canvas, or anything with children. */
+function expandableOf(store: WorkspaceStore, entity: EntityEnvelope): boolean {
+  return isFolder(entity) || entity.kind === 'surface' || entity.entity_id === SURFACES_ID || store.outline.childrenOf(entity.entity_id).length > 0
+}
+
+const TYPEAHEAD_MS = 600
 
 export function ObjectTree({ activeId, host, phone, coarse }: { activeId: string | null; host: DataHost; phone: boolean; coarse: boolean }) {
   const { t } = useAiwsText()
@@ -53,9 +71,14 @@ export function ObjectTree({ activeId, host, phone, coarse }: { activeId: string
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [drop, setDrop] = useState<DropAt | null>(null)
   const sheet = phone
-  const openMenu = (targetId: string | null, at: MenuAt) => setMenu({ target: targetId, at, sheet })
-  const isOpen = (e: EntityEnvelope) => view.searching || (filtering(filter) && filter.types.length > 0) ? true : expanded[e.entity_id] ?? !foldedByDefault(e)
+  const openMenu = (targetId: string | null, at: MenuAt, returnTo?: string) => setMenu({ target: targetId, at, sheet, ...(returnTo ? { returnTo } : {}) })
+  // the search and a type filter open every level: folding then means nothing
+  const forcedOpen = view.searching || (filtering(filter) && filter.types.length > 0)
+  const isOpen = (e: EntityEnvelope) => forcedOpen ? true : expanded[e.entity_id] ?? !foldedByDefault(e)
   const toggle = (e: EntityEnvelope) => store.userState.set(EXPANDED_KEY, { ...expanded, [e.entity_id]: !isOpen(e) })
+  const treeRef = useRef<HTMLUListElement>(null)
+  const [focusId, setFocusId] = useState<string | null>(null)
+  const typed = useRef<{ text: string; at: number }>({ text: '', at: 0 })
 
   const onDrop = (event: ReactDragEvent, at: DropAt) => {
     event.preventDefault()
@@ -69,13 +92,86 @@ export function ObjectTree({ activeId, host, phone, coarse }: { activeId: string
   }
 
   const rows = (parentId: string, depth: number): ReactNode[] => store.outline.childrenOf(parentId).filter((c) => view.shown.has(c.entity_id)).map((entity) => (
-    <TreeRow key={entity.entity_id} entity={entity} depth={depth} activeId={activeId} open={isOpen(entity)} hit={view.hits.has(entity.entity_id)} coarse={coarse}
+    <TreeRow key={entity.entity_id} entity={entity} depth={depth} activeId={activeId} open={isOpen(entity)} hit={view.hits.has(entity.entity_id)} coarse={coarse} tabStop={tabStop === entity.entity_id}
       published={published.has(entity.entity_id)} drop={drop?.id === entity.entity_id ? drop.where : null}
       onToggle={() => toggle(entity)} onOpen={(preview) => host.open(entity.entity_id, { preview })} onMenu={(at) => openMenu(entity.entity_id, at)}
       onDragOver={(where) => setDrop({ id: entity.entity_id, where })} onDragLeave={() => setDrop((d) => (d?.id === entity.entity_id ? null : d))} onDrop={(event, where) => onDrop(event, { id: entity.entity_id, where })}>
       {isOpen(entity) && rows(entity.entity_id, depth + 1)}
     </TreeRow>
   ))
+  // the rows in the order shown, as the keyboard walks them
+  const flat: FlatRow[] = []
+  const walk = (parentId: string, parent: string | null) => {
+    for (const entity of store.outline.childrenOf(parentId)) {
+      if (!view.shown.has(entity.entity_id)) continue
+      const open = isOpen(entity)
+      flat.push({ id: entity.entity_id, parent, expandable: expandableOf(store, entity), open })
+      if (open) walk(entity.entity_id, entity.entity_id)
+    }
+  }
+  walk(DATA_ID, null)
+  if (view.shown.has(SURFACES_ID)) walk('root', null)
+  // the tree's one tab stop: the row last focused, else the open object, else the first
+  const tabStop = flat.some((r) => r.id === focusId) ? focusId : flat.some((r) => r.id === activeId) ? activeId : flat[0]?.id ?? null
+  const rowElement = (id: string) => [...(treeRef.current?.querySelectorAll<HTMLElement>('[role="treeitem"]') ?? [])].find((el) => el.dataset.entityId === id) ?? null
+  const focusRow = (id: string) => { setFocusId(id); rowElement(id)?.focus() }
+  const rowMenuAt = (id: string): MenuAt => {
+    const r = rowElement(id)?.querySelector('.aiws-tree-row')?.getBoundingClientRect()
+    return r ? { x: r.left + 24, y: r.bottom + 2 } : { x: 0, y: 0 }
+  }
+  const closeMenu = () => {
+    const back = menu?.returnTo
+    setMenu(null)
+    // the menu took the focus: back to the row, unless a dialog it opened has it now
+    if (back) window.setTimeout(() => { if (!document.activeElement || document.activeElement === document.body) focusRow(back) }, 0)
+  }
+  const onTreeFocus = (event: ReactFocusEvent<HTMLUListElement>) => {
+    const id = (event.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]')?.dataset.entityId
+    if (id && id !== focusId) setFocusId(id)
+  }
+  const onTreeKey = (event: ReactKeyboardEvent<HTMLUListElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return
+    const id = (event.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]')?.dataset.entityId
+    const index = id ? flat.findIndex((r) => r.id === id) : -1
+    if (!id || index < 0) return
+    const row = flat[index]
+    const entity = store.outline.get(id)
+    const key = event.key
+    const done = () => { event.preventDefault(); event.stopPropagation() }
+    if (key === 'ContextMenu' || (key === 'F10' && event.shiftKey)) { done(); openMenu(id, rowMenuAt(id), id); return }
+    if (key.length === 1 && key !== ' ') {
+      // type-ahead: the next row whose name starts with what was typed
+      const now = Date.now()
+      const text = (now - typed.current.at < TYPEAHEAD_MS ? typed.current.text : '') + key.toLowerCase()
+      typed.current = { text, at: now }
+      const from = text.length > 1 ? index : index + 1
+      for (let i = 0; i < flat.length; i++) {
+        const candidate = flat[(from + i) % flat.length]
+        if (nameOf(store, store.outline.get(candidate.id), candidate.id).toLowerCase().startsWith(text)) { focusRow(candidate.id); break }
+      }
+      done()
+      return
+    }
+    if (event.shiftKey) return
+    switch (key) {
+      case 'ArrowDown': if (flat[index + 1]) focusRow(flat[index + 1].id); break
+      case 'ArrowUp': if (index > 0) focusRow(flat[index - 1].id); break
+      case 'Home': focusRow(flat[0].id); break
+      case 'End': focusRow(flat[flat.length - 1].id); break
+      case 'ArrowRight':
+        if (row.expandable && !row.open && entity) toggle(entity)
+        else if (row.open && flat[index + 1]?.parent === id) focusRow(flat[index + 1].id)
+        break
+      case 'ArrowLeft':
+        if (row.expandable && row.open && !forcedOpen && entity) toggle(entity)
+        else if (row.parent) focusRow(row.parent)
+        break
+      case 'Enter': host.open(id, { preview: false }); break
+      case ' ': host.open(id, { preview: true }); break
+      default: return
+    }
+    done()
+  }
   // with "everything", the canvases follow the data (the root's other child; `data` itself is never a row)
   const top = [...rows(DATA_ID, 0), ...(view.shown.has(SURFACES_ID) ? rows('root', 0) : [])]
   const typeLabel = (id: string) => typeName({ type_id: id } as EntityEnvelope)
@@ -116,7 +212,12 @@ export function ObjectTree({ activeId, host, phone, coarse }: { activeId: string
         </div>
       )}
       <div className="aiws-dm-tree-scroll" onContextMenu={(event) => { if (event.target === event.currentTarget || (event.target as HTMLElement).classList.contains('aiws-tree')) { event.preventDefault(); openMenu(null, { x: event.clientX, y: event.clientY }) } }}>
-        <ul role="tree" className="aiws-tree" aria-label={t('aiworkspace.datamode.tree')}>{top}</ul>
+        <ul ref={treeRef} role="tree" className="aiws-tree" aria-label={t('aiworkspace.datamode.tree')} onKeyDown={onTreeKey} onFocus={onTreeFocus}
+          onContextMenu={(event) => {
+            // the menu key on a focused row (its own handler took the keydown): no browser menu over it
+            const target = event.target as HTMLElement
+            if (target.getAttribute('role') === 'treeitem') { event.preventDefault(); event.stopPropagation(); const id = target.dataset.entityId; if (id) openMenu(id, rowMenuAt(id), id) }
+          }}>{top}</ul>
         {top.length === 0 && <div className="aiws-muted aiws-dm-tree-empty" data-testid="aiws-dm-tree-empty">{view.searching || filtering(filter) ? t('aiworkspace.datamode.noMatch') : t('aiworkspace.datamode.emptyTree')}</div>}
       </div>
       <div className="aiws-dm-tree-pinned">
@@ -126,8 +227,8 @@ export function ObjectTree({ activeId, host, phone, coarse }: { activeId: string
           onOpen={(preview) => host.open(PERMISSIONS_TAB, { preview })} onMenu={(at) => openMenu(PERMISSIONS_TAB, at)} />
       </div>
       {menu && (menu.sheet
-        ? <SheetMenu items={menuItems} label={menu.target ? nameOf(store, store.outline.get(menu.target), menu.target) : t('aiworkspace.datamode.tree')} testId="aiws-dm-menu" onClose={() => setMenu(null)} />
-        : <FloatingMenu at={menu.at} items={menuItems} label={t('aiworkspace.datamode.menu')} testId="aiws-dm-menu" onClose={() => setMenu(null)} />)}
+        ? <SheetMenu items={menuItems} label={menu.target ? nameOf(store, store.outline.get(menu.target), menu.target) : t('aiworkspace.datamode.tree')} testId="aiws-dm-menu" onClose={closeMenu} />
+        : <FloatingMenu at={menu.at} items={menuItems} label={t('aiworkspace.datamode.menu')} testId="aiws-dm-menu" onClose={closeMenu} />)}
     </div>
   )
 }
@@ -161,6 +262,8 @@ interface RowProps {
   open: boolean
   hit: boolean
   coarse: boolean
+  /** The tree's one tab stop (roving tabindex). */
+  tabStop: boolean
   published: boolean
   drop: DropAt['where'] | null
   onToggle: () => void
@@ -172,12 +275,13 @@ interface RowProps {
   children: ReactNode
 }
 
-function TreeRow({ entity, depth, activeId, open, hit, coarse, published, drop, onToggle, onOpen, onMenu, onDragOver, onDragLeave, onDrop, children }: RowProps) {
+function TreeRow({ entity, depth, activeId, open, hit, coarse, tabStop, published, drop, onToggle, onOpen, onMenu, onDragOver, onDragLeave, onDrop, children }: RowProps) {
   const { t } = useAiwsText()
   const store = useStore()
+  const labelId = useId()
   const folder = isFolder(entity) || entity.kind === 'surface' || entity.entity_id === SURFACES_ID
   const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children)
-  const expandable = folder || store.outline.childrenOf(entity.entity_id).length > 0
+  const expandable = expandableOf(store, entity)
   const press = useLongPress(onMenu)
   const draggable = !coarse && entity.capabilities.includes('structure') && entity.parent_id !== undefined && !entity.system && entity.type_id !== 'buckyos.cell' && entity.kind !== 'surface' && entity.entity_id !== SURFACES_ID
   const name = nameOf(store, entity, entity.entity_id)
@@ -188,7 +292,8 @@ function TreeRow({ entity, depth, activeId, open, hit, coarse, published, drop, 
   }
   const menuAt = (event: ReactMouseEvent<HTMLElement>): MenuAt => { const r = event.currentTarget.getBoundingClientRect(); return { x: r.left, y: r.bottom + 2 } }
   return (
-    <li role="treeitem" aria-expanded={expandable ? open : undefined} aria-selected={activeId === entity.entity_id} data-testid="aiws-tree-item" data-entity-id={entity.entity_id} data-type={entity.type_id} data-system={entity.system ?? undefined} data-hit={hit ? 'true' : undefined}>
+    <li role="treeitem" aria-expanded={expandable ? open : undefined} aria-selected={activeId === entity.entity_id} aria-level={depth + 1} aria-labelledby={labelId} tabIndex={tabStop ? 0 : -1}
+      data-testid="aiws-tree-item" data-entity-id={entity.entity_id} data-type={entity.type_id} data-system={entity.system ?? undefined} data-hit={hit ? 'true' : undefined}>
       <div className={`aiws-tree-row aiws-dm-row${activeId === entity.entity_id ? ' is-selected' : ''}${drop ? ` is-drop-${drop}` : ''}`} style={{ paddingLeft: 4 + depth * 14 }}
         draggable={draggable}
         onDragStart={(event) => { event.dataTransfer.setData(DRAG_MIME, entity.entity_id); event.dataTransfer.effectAllowed = 'move' }}
@@ -198,17 +303,17 @@ function TreeRow({ entity, depth, activeId, open, hit, coarse, published, drop, 
         onContextMenu={(event) => { event.preventDefault(); onMenu({ x: event.clientX, y: event.clientY }) }}
         onPointerDown={press.onPointerDown} onPointerMove={press.onPointerMove} onPointerUp={press.onPointerUp} onPointerCancel={press.onPointerCancel}>
         {expandable ? (
-          <button type="button" className="aiws-tree-toggle" aria-label={open ? t('aiworkspace.data.tree.collapse') : t('aiworkspace.data.tree.expand')} onClick={onToggle}>
+          <button type="button" className="aiws-tree-toggle" tabIndex={-1} aria-label={open ? t('aiworkspace.data.tree.collapse') : t('aiworkspace.data.tree.expand')} onClick={onToggle}>
             {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
           </button>
         ) : <span className="aiws-tree-toggle" />}
-        <button type="button" className="aiws-tree-label" data-testid={`aiws-tree-${entity.entity_id}`} title={`${typeName(entity)} · ${name}`}
+        <button type="button" id={labelId} className="aiws-tree-label" tabIndex={-1} data-testid={`aiws-tree-${entity.entity_id}`} title={`${typeName(entity)} · ${name}`}
           onClick={() => { if (!press.consumed()) onOpen(true) }} onDoubleClick={() => onOpen(false)}>
           <span className="aiws-dm-type" title={typeName(entity)}>{createElement(iconOf(entity), { size: 16, 'aria-hidden': true })}</span>
           <span className="aiws-outline-name">{name}</span>
           <Marks entity={entity} published={published} />
         </button>
-        <button type="button" className={`aiws-dm-row-more${coarse ? ' is-shown' : ''}`} aria-label={t('aiworkspace.datamode.more', { name })} title={t('aiworkspace.datamode.moreTitle')}
+        <button type="button" className={`aiws-dm-row-more${coarse ? ' is-shown' : ''}`} tabIndex={-1} aria-label={t('aiworkspace.datamode.more', { name })} title={t('aiworkspace.datamode.moreTitle')}
           data-testid={`aiws-tree-more-${entity.entity_id}`} onClick={(event) => onMenu(menuAt(event))}><Ellipsis size={16} aria-hidden="true" /></button>
       </div>
       {open && hasChildren && <ul role="group">{children}</ul>}

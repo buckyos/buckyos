@@ -268,7 +268,7 @@ test('§15-6 宏: two macros on the canvas drop down — wishes holding a progra
   await page.keyboard.press('Escape')
 })
 
-test('§15-8 the status bar: the online count and the commit state collapsed; in place it opens what needs attention, the connection and the work log, by itself on a new problem; alerts stay; a canvas configuration hides zones, never the alerts', async ({ page, api }) => {
+test('§15-8 the status bar: the online count and the commit state collapsed; in place it opens what needs attention, the connection and the work log, by itself on a new problem; alerts stay; a canvas configuration hides zones, never the alerts nor the status bar (Q28)', async ({ page, api }) => {
   const ws = await showWorkspace(api, `f08 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
   const status = page.getByTestId('aiws-status')
@@ -310,16 +310,16 @@ test('§15-8 the status bar: the online count and the commit state collapsed; in
   await expect(page.getByTestId('aiws-status-attention').getByTestId('aiws-edit-entry')).toHaveAttribute('data-state', 'needs_attention')
   await page.keyboard.press('Escape')
   // the canvas layer of the toolbar configuration (§4.6): it hides the collaboration zone and an object of the tool
-  // selection zone for everyone; the alerts are not configurable, and a status bar hidden by it still shows while
-  // something needs attention
+  // selection zone for everyone; the alerts are not configurable, and the status bar is never hidden (Q28): a layer
+  // saying so is ignored — the online count and the commit state stay
   const surface = await api.read(ALICE, ws.workspace_id, 's-launch')
   expect((await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 's-launch', keys: [{ key: 'config', expect: { rev: surface.content.key_revs.config ?? 0 },
     value: { ...(surface.content.payload.config ?? {}), toolbar: { zones: { collab: { hidden: true }, tools: { items: [{ id: 'insert:wish', action: 'block.insert', args: { entry: 'wish' }, hidden: true }] }, status: { hidden: true } } } } }] }])).status).toBe('accepted')
   await expect(page.getByTestId('aiws-view-toolbar')).toHaveCount(0)
   await expect(page.getByTestId('aiws-tool-insert-wish')).toHaveCount(0)
   await expect(page.getByTestId('aiws-tool-insert-note')).toBeVisible()
-  await expect(page.getByTestId('aiws-status-dock')).toHaveAttribute('data-zone-hidden', 'true')
   await expect(status).toBeVisible()
-  await expect(page.getByTestId('aiws-status-online')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-status-online')).toHaveText('在线 1')
+  await expect(page.getByTestId('aiws-save-summary')).toBeVisible()
   await expect(offer).toBeVisible()
 })

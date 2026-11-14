@@ -7,7 +7,8 @@
  *   - the items that changed (shown / hidden, their name and icon) and the ones added at the end, merged in place by
  *     their keys (`append`), when the order of what was there is kept — later built-in items still appear;
  *   - the whole list (`override`) once the order changed.
- * Hiding and locking a whole zone are flags of their own; App mode is all four zones hidden and locked. */
+ * Hiding and locking a whole zone are flags of their own; App mode is the three zones hidden and locked — the status
+ * bar is never hidden (Q28) and is not part of the draft. */
 
 import type { Json } from '../../api/types'
 import type { ZoneId } from '../framework/actions'
@@ -100,7 +101,7 @@ export function layerOf(below: ConfigLayer[], draft: Draft): ToolbarConfig | nul
   return Object.keys(zones).length ? { zones } : null
 }
 
-/** App mode (§4.6): every zone hidden and locked. */
+/** App mode (§4.6): every zone of the dialog hidden and locked (the status bar stays, Q28). */
 export function appModeDraft(draft: Draft): Draft {
   const out = { ...draft }
   for (const zone of CUSTOMIZABLE_ZONES) out[zone] = { ...draft[zone], hidden: true, locked: true }

@@ -95,6 +95,8 @@ export interface ReplicaApi {
   saveDraft(draft: RichTextDraftRow): null
   exportLocal(): LocalExport
   listAssets(): AssetRow[]
+  /** An asset the service staged after the replica was made (an upload from this window): local plans know it. */
+  noteAsset(asset: AssetRow): null
   putAsset(objectId: string, bytes: ArrayBuffer): null
   getAsset(objectId: string): ArrayBuffer | null
   /** Remove the replica database and the asset area of this Workspace. */

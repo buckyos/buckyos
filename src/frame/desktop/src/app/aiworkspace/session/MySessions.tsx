@@ -1,17 +1,20 @@
 /* Public class cards of the home (UI framework PRD §9.2): a presentation session the caller may open without a link,
  * across Workspaces (`session.list_open`, K7) — their own, the ones they present or joined, the open rooms of courseware
  * they may read. "我主讲" marks the ones they present (Q7). A click goes in (live, not started) or replays (ended,
- * saved), in a tab of its own on the courseware's origin; an expired one says why it cannot be opened. */
+ * saved), in a tab of its own on the courseware's origin; an expired one says why it cannot be opened. The cover is the
+ * first picture on the canvases of its path (K6, a stopgap: ui/home/CoverPicture.tsx), else the icon. */
 
 import { Presentation, Radio } from 'lucide-react'
+import type { Transport } from '../api/transport'
 import { useAiwsText } from '../useAiwsText'
+import { CoverPicture } from '../ui/home/CoverPicture'
 import { sessionAction } from '../ui/home/model'
 import { MY_ROLE_KEY, STATE_KEY } from './labels'
 import type { OpenSession } from './types'
 import './session.css'
 
 /** `onOpen`: the card was clicked and the session can be opened (the home notes it in "Recent", then opens it). */
-export function SessionCard({ session, onOpen }: { session: OpenSession; onOpen: (session: OpenSession) => void }) {
+export function SessionCard({ session, transport, onOpen }: { session: OpenSession; transport: Transport; onOpen: (session: OpenSession) => void }) {
   const { t, tNode, dateTime } = useAiwsText()
   const action = sessionAction(session)
   const from = session.baseline?.source.title
@@ -23,7 +26,7 @@ export function SessionCard({ session, onOpen }: { session: OpenSession; onOpen:
       <button type="button" className="aiws-home-card-main" data-testid="aiws-my-session-open" disabled={closed}
         title={action === 'expired' ? t('aiworkspace.home.session.expired') : undefined}
         onClick={() => onOpen(session)}>
-        <span className={`aiws-home-cover is-session${live ? ' is-live' : ''}`} aria-hidden="true"><Icon size={22} /></span>
+        <CoverPicture transport={transport} cover={session.cover} className={`aiws-home-cover is-session${live ? ' is-live' : ''}`}><Icon size={22} /></CoverPicture>
         <span className="aiws-home-card-body">
           <span className="aiws-home-card-title aiws-user-text">{session.title}</span>
           <span className="aiws-home-card-info">

@@ -315,6 +315,27 @@ export class Replica {
         }
     }
     /**
+     * An asset the service staged after the replica was made (an upload from this window): local plans know it.
+     * @param {string} object_id
+     * @param {string} media_type
+     * @param {number} size
+     */
+    note_asset(object_id, media_type, size) {
+        const val3 = +size;
+        let ptr0, len0, ptr1, len1;
+        try {
+            ptr0 = passStringToWasm0(object_id, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            len0 = WASM_VECTOR_LEN;
+            ptr1 = passStringToWasm0(media_type, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            len1 = WASM_VECTOR_LEN;
+        } catch (e) {
+            if (ptr1) { wasm.__wbindgen_export5(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_export5(ptr0, len0 * 1, 1); }
+            throw e;
+        }
+        wasm.replica_note_asset(this.__wbg_ptr, ptr0, len0, ptr1, len1, val3);
+    }
+    /**
      * @returns {string}
      */
     outline() {

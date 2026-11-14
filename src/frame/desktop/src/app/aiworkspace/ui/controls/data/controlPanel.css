@@ -1,0 +1,15 @@
+/* A data control's panel (UI 框架 PRD §7.5, §10.1): beside its anchor on a computer, with a title and ✕ like the
+   properties panel; on a phone the workspace's bottom sheet (ui/phone/sheets.css). */
+
+.aiws-ctl-panel { position: fixed; z-index: 80; box-sizing: border-box; display: flex; flex-direction: column; max-height: min(80vh, 640px);
+  box-shadow: var(--cp-shadow); color: var(--cp-text); font-size: 14px; }
+.aiws-ctl-panel-head { flex: none; display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 4px 6px 4px 14px; border-bottom: 1px solid var(--cp-border); }
+/* the title is a menu's name or a question (a confirmation): two lines at most */
+.aiws-ctl-panel-head > b { flex: 1 1 auto; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; font-size: 13px; }
+.aiws-ctl-panel-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 14px; }
+/* a menu fills the panel (its margins were for the pop-over's corner ✕) */
+.aiws-ctl-panel-body > .aiws-ctl-menu, .aiws-ctl-sheet .aiws-sheet-body > .aiws-ctl-menu { margin: -6px -8px; }
+.aiws-root .aiws-ctl-sheet .aiws-ctl-menu-item { min-height: 48px; font-size: 15px; }
+.aiws-control-page-menu { margin-left: auto; }
+/* touch: the ✕ is a finger's size */
+@media (pointer: coarse) { .aiws-root .aiws-ctl-panel-head > button.aiws-tool-small { min-width: 44px; height: 44px; } }

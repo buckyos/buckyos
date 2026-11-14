@@ -171,7 +171,7 @@
    "types": [
     "buckyos.dir"
    ],
-   "note": "Add or replace one member of a resource directory (`buckyos.dir`, D01/D25): `name`, `member: { kind: file, object_id } | { kind: dir, entity_id }`; `expect` is the member's own cell (`{ rev: 0 }` for a new name). A file member names an uploaded object (media type and size come from it); a child directory must be alive and must not contain this one."
+   "note": "Add or replace one member of a resource directory (`buckyos.dir`, D01/D25): `name` (a relative path: `a/b.txt` is a member of the sub-folder `a`), `member: { kind: file, object_id } | { kind: folder } | { kind: dir, entity_id }`; `expect` is the member's own cell (`{ rev: 0 }` for a new name). A file member names an uploaded object (media type and size come from it); a folder is a sub-folder of this directory, possibly empty; a name is never both a file and a folder; a linked child directory must be alive and must not contain this one."
   },
   {
    "op": "dir.remove_member",
@@ -201,7 +201,7 @@
    "types": [
     "buckyos.table-source"
    ],
-   "note": "Append records; `append` or `update` capability.",
+   "note": "Append records; `append` or `update` capability. A field a record does not give takes the field's default.",
    "params": "commit-request.schema.json#/$defs/table_insert_records"
   },
   {
@@ -266,7 +266,7 @@
    "types": [
     "buckyos.table-source"
    ],
-   "note": "Name, description, order, constraints. Tightening scans existing values."
+   "note": "Name, description, order, constraints, default (null removes it). Tightening scans existing values."
   },
   {
    "op": "table.delete_field",

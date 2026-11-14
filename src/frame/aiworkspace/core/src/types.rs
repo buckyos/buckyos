@@ -92,8 +92,8 @@ pub fn record_schema(payload: &JsonMap) -> WsResult<BTreeMap<String, FieldDef>> 
         let key = o.remove("key").ok_or_else(|| bad("property needs key"))?;
         o.insert("field_id".into(), key);
         let def = FieldDef::from_value(&Value::Object(o))?;
-        if def.unique || def.submitter {
-            return Err(bad("unique and submitter are not supported on record properties"));
+        if def.unique || def.submitter || def.default.is_some() {
+            return Err(bad("unique, submitter and default are not supported on record properties"));
         }
         if out.insert(def.field_id.clone(), def).is_some() {
             return Err(bad("duplicate property key"));
@@ -1285,8 +1285,8 @@ pub const MAX_DIR_MEMBERS: usize = 10_000;
 pub const MAX_DIR_META_BYTES: usize = 64 * 1024;
 
 /// A member name: a relative path of at most 255 bytes whose `/`-separated segments are non-empty and neither `.`
-/// nor `..` (no leading, trailing or doubled `/`, no NUL). A name with `/` encodes a file of a sub-folder of a flat
-/// member map (扩展控件 P1, Q23); a directory never nests through it.
+/// nor `..` (no leading, trailing or doubled `/`, no NUL). A name with `/` encodes a member of a sub-folder of the
+/// flat member map (扩展控件 P1, Q23); a `folder` member names a sub-folder of its own, empty or not (UI 框架 PRD Q25).
 pub fn check_member_name(name: &str) -> WsResult<()> {
     if name.is_empty() || name.len() > 255 || name.contains('\0') || name.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
         return Err(bad(format!("invalid directory member name {name:?}")));
@@ -1311,9 +1311,9 @@ fn dir_reaches(ctx: &dyn ReadCtx, from: &str, target: &str, depth: usize) -> WsR
     Ok(false)
 }
 
-/// Validator class: primitive (the member map's shape, names and limits); reference (file members name
-/// uploaded objects — media type and size come from the content; child directories are alive directories
-/// that do not contain this one).
+/// Validator class: primitive (the member map's shape, names and limits; a name is a file, a child directory or a
+/// folder, never also a folder of other names); reference (file members name uploaded objects — media type and size
+/// come from the content; child directories are alive directories that do not contain this one).
 pub fn validate_dir(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
     check_keys(&e.payload, DIR_KEYS, "dir")?;
     if let Some(s) = e.payload.get("source") {
@@ -1371,7 +1371,23 @@ pub fn validate_dir(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
                 }
                 out.insert(name.clone(), json!({ "kind": "dir", "entity_id": child }));
             }
-            _ => return Err(bad(format!("member {name}: kind must be file or dir"))),
+            Some("folder") => {
+                if o.len() != 1 {
+                    return Err(bad(format!("member {name}: unknown key")));
+                }
+                out.insert(name.clone(), json!({ "kind": "folder" }));
+            }
+            _ => return Err(bad(format!("member {name}: kind must be file, dir or folder"))),
+        }
+    }
+    for name in out.keys() {
+        let mut at = 0;
+        while let Some(i) = name[at..].find('/') {
+            let folder = &name[..at + i];
+            if out.get(folder).is_some_and(|m| m["kind"] != json!("folder")) {
+                return Err(bad(format!("member {folder} is not a folder: {name} cannot be inside it")));
+            }
+            at += i + 1;
         }
     }
     e.payload.insert("members".into(), Value::Object(out));
@@ -1406,9 +1422,11 @@ fn dir_refs(e: &EntityRow, out: &mut BTreeSet<RefEdge>) {
 }
 
 /// A DirObject (`cydir`) as a directory payload. `dirs` maps a child `cydir:` id to the entity holding it
-/// (children are imported before their parents). Inline `{ obj_type, body }` members are hashed to their id.
+/// (children are imported before their parents); an empty child DirObject not in `dirs` is a `folder` member.
+/// Inline `{ obj_type, body }` members are hashed to their id.
 pub fn dir_payload_from_dir_object(v: &Value, dirs: &BTreeMap<String, String>) -> WsResult<JsonMap> {
     let body = v.get("body").and_then(Value::as_object).ok_or_else(|| bad("DirObject needs a body"))?;
+    let (empty, _) = crate::canonical::dir_object(&[])?;
     let mut members = Map::new();
     for (name, item) in body {
         check_member_name(name)?;
@@ -1429,8 +1447,11 @@ pub fn dir_payload_from_dir_object(v: &Value, dirs: &BTreeMap<String, String>) -
             }
             members.insert(name.clone(), m);
         } else if id.starts_with("cydir:") {
-            let child = dirs.get(&id).ok_or_else(|| WsError::new(Code::DependencyUnavailable, format!("child directory {id} of {name} is not imported")))?;
-            members.insert(name.clone(), json!({ "kind": "dir", "entity_id": child }));
+            match dirs.get(&id) {
+                Some(child) => members.insert(name.clone(), json!({ "kind": "dir", "entity_id": child })),
+                None if id == empty => members.insert(name.clone(), json!({ "kind": "folder" })),
+                None => return Err(WsError::new(Code::DependencyUnavailable, format!("child directory {id} of {name} is not imported"))),
+            };
         } else {
             return Err(bad(format!("DirObject member {name} is neither a file nor a directory")));
         }

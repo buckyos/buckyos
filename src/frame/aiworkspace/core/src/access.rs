@@ -224,6 +224,24 @@ impl Access {
         mine && self.limit.as_ref().is_none_or(|l| l.anywhere(cap))
     }
 
+    /// The layers holding an entry that allows the caller `read` (`None`: it may be allowed anywhere — the owner, a
+    /// `@creator` entry). Below an entity the caller cannot read, something is readable only under one of them: the
+    /// layers between decide the same as for that entity, or refuse.
+    pub fn read_layers(&self) -> Option<Vec<String>> {
+        if self.has_creator || (self.full && self.limit.is_none()) {
+            return None;
+        }
+        let mut out: Vec<String> = if self.full {
+            Vec::new()
+        } else {
+            self.layers.iter().filter(|(k, v)| !k.is_empty() && v.iter().any(|a| a.allow.has(Cap::Read))).map(|(k, _)| k.clone()).collect()
+        };
+        if let Some(l) = &self.limit {
+            out.extend(l.read_layers()?);
+        }
+        Some(out)
+    }
+
     /// The layers from `entity_id` up to the Workspace: the entity, each ancestor, `""`. The root entity is the
     /// Workspace itself.
     fn chain(&self, ctx: &dyn ReadCtx, entity_id: &str) -> WsResult<Vec<String>> {

@@ -107,7 +107,9 @@ span.aiws-dir-crumb { display: inline-block; }
 
 /* menus and dialogs (drawn over the workspace) */
 .aiws-dir-menu { display: flex; flex-direction: column; gap: 1px; margin: 0 -6px -4px; }
-.aiws-dir-menu-title { padding: 0 34px 6px 10px; color: var(--cp-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* in the framework's panel (its title is the menu's name), the entries reach its edges */
+.aiws-ctl-panel-body > .aiws-dir-menu, .aiws-ctl-sheet .aiws-sheet-body > .aiws-dir-menu { margin: -6px -8px; }
+.aiws-root .aiws-ctl-sheet .aiws-dir-menu-item { min-height: 48px; font-size: 15px; }
 .aiws-root .aiws-dir-menu-item { display: flex; align-items: center; gap: 10px; border: none; background: none; text-align: left; padding: 8px 10px; border-radius: 8px; font-size: 14px; color: var(--cp-text); min-height: 40px; }
 .aiws-root .aiws-dir-menu-item:hover:not(:disabled), .aiws-root .aiws-dir-menu-item:focus-visible { background: var(--cp-surface-2); outline: none; }
 .aiws-root .aiws-dir-menu-item:disabled { color: var(--cp-muted); }
@@ -143,7 +145,6 @@ span.aiws-dir-crumb { display: inline-block; }
 
 /* touch: every control a finger uses is at least 44 × 44 */
 @media (pointer: coarse) {
-  .aiws-root .aiws-ctl-popover:has(> .aiws-dir-menu) > .aiws-ctl-popover-close { width: 44px; height: 44px; right: 4px; top: 4px; }
   .aiws-root .aiws-dir-bar > button:not(.aiws-dir-icon) { min-width: 44px; }
   .aiws-root .aiws-dir-icon { width: 44px; height: 44px; }
   .aiws-root .aiws-dir-add, .aiws-root .aiws-dir-crumb, .aiws-root .aiws-dir-bar > button:not(.aiws-dir-icon), .aiws-root .aiws-dir-empty-actions > button,

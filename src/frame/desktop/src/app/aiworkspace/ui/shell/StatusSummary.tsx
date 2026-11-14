@@ -4,10 +4,10 @@
  * way when there are). Clicking it opens the status panel in place, above it — at most half the work area, scrolling:
  * "需要处理" (the edits that need a decision, are unsaved or only saved on this device, with their actions; absent when
  * there are none), "连接与离线" (folded by default) and "最近工作日志" (K3, ui/framework/WorkLog.tsx). A new "needs
- * attention" opens the panel; open or closed is the person's preference across Workspaces (`status.expanded`). A shared
- * layer may hide the status bar (App mode, §4.6): it still shows while something is not saved or the connection is not
- * normal. Alerts are not part of it: stopped sync, storage failures, read-only direct mode and the show lock stay
- * stacked above the status bar with their recovery actions, never folded, hidden or configured away. */
+ * attention" opens the panel; open or closed is the person's preference across Workspaces (`status.expanded`). The
+ * status bar is never hidden (Q28): no layer of the toolbar configuration hides it, App mode included (§4.6). Alerts
+ * are not part of it: stopped sync, storage failures, read-only direct mode and the show lock stay stacked above the
+ * status bar with their recovery actions, never folded, hidden or configured away. */
 
 import { useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { EDIT_STATE_LABEL } from '../../state/edits'
@@ -17,7 +17,6 @@ import { useAppCache, useEdits, useOutlineVersion, useSessionStatus, useShowLock
 import { useAiwsText } from '../../useAiwsText'
 import { isActive } from '../wish/WishService'
 import '../framework/framework.css'
-import { useToolbarLayout } from '../framework/hooks'
 import { OnlineCount } from '../framework/members'
 import { useStatusExpanded } from '../framework/personal'
 import { useActiveUploads } from '../framework/activity'
@@ -100,46 +99,34 @@ function useRunningMacros(): number {
   return count
 }
 
-/** Something the person must see even where a shared layer hid the status bar: unsaved work, a connection that is not normal. */
-function useStatusNeeded(): boolean {
-  const counts = useSaveCounts()
-  const status = useSessionStatus()
-  return counts.unsaved + counts.saved_locally + counts.needs_attention > 0 || status.kind !== 'live'
-}
-
 /** The status bar: placed by the view that owns the work area (canvas, data source), clear of the side drawer. `info`:
  * the data mode's bar across the bottom (§5.5) — the current object on its left half, this status on the right, the
  * panel and the alerts above it. */
 export function StatusDock({ info }: { info?: ReactNode } = {}) {
   const [open] = useStatusExpanded()
-  const layout = useToolbarLayout()
-  const needed = useStatusNeeded()
-  const shown = !layout.status.hidden || needed
   if (info !== undefined) {
     return (
-      <div className="aiws-status-dock is-bar" data-testid="aiws-status-dock" data-zone-hidden={layout.status.hidden ? 'true' : undefined}>
+      <div className="aiws-status-dock is-bar" data-testid="aiws-status-dock">
         <div className="aiws-status-stack">
           <ShellAlerts />
-          {open && shown && <StatusPanel />}
+          {open && <StatusPanel />}
         </div>
         <div className="aiws-status-row is-bar" data-testid="aiws-status-row">
           <div className="aiws-status-info">{info}</div>
-          {shown && !layout.status.hidden && <OnlineCount />}
-          {shown && <StatusSummary />}
+          <OnlineCount />
+          <StatusSummary />
         </div>
       </div>
     )
   }
   return (
-    <div className="aiws-status-dock" data-testid="aiws-status-dock" data-zone-hidden={layout.status.hidden ? 'true' : undefined}>
+    <div className="aiws-status-dock" data-testid="aiws-status-dock">
       <ShellAlerts />
-      {open && shown && <StatusPanel />}
-      {shown && (
-        <div className="aiws-status-row" data-testid="aiws-status-row">
-          {!layout.status.hidden && <OnlineCount />}
-          <StatusSummary />
-        </div>
-      )}
+      {open && <StatusPanel />}
+      <div className="aiws-status-row" data-testid="aiws-status-row">
+        <OnlineCount />
+        <StatusSummary />
+      </div>
     </div>
   )
 }

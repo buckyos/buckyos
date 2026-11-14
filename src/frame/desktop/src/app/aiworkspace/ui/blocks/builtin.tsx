@@ -412,11 +412,13 @@ function guestAuthorName(store: WorkspaceStore): { author_name?: string } {
 }
 
 /** Change the note's look (`style` of the annotation: the author's, or anyone's with `manage`). */
-async function setNoteStyle(store: WorkspaceStore, noteId: string, patch: Record<string, Json>, label: string) {
+/** The note's style with `patch` (its data, not the Block's configuration). */
+async function noteStyleOps(store: WorkspaceStore, context: RenderContext, patch: Record<string, Json>): Promise<Operation[]> {
+  const noteId = context.source?.entity_id
+  if (!noteId) return []
   const read = await store.session.read<AnnotationContent>(noteId)
   const style = { ...(read.content.payload.style ?? {}), ...patch }
-  const outcome = await store.submit({ editId: `key:${noteId}:style`, label, operations: [{ op: 'entity.set_keys', entity_id: noteId, keys: [{ key: 'style', value: style, expect: { rev: read.content.key_revs.style ?? 0 } }] }] })
-  if (outcome.status === 'rejected') store.notify('error', aiwsT('aiworkspace.blocks.note.notChanged', { code: outcome.code }))
+  return [{ op: 'entity.set_keys', entity_id: noteId, keys: [{ key: 'style', value: style, expect: { rev: read.content.key_revs.style ?? 0 } }] }]
 }
 
 /** Reply to a note: a new annotation whose target is the note (§7.3). */
@@ -445,9 +447,9 @@ const note: BlockDefinition = {
   hover: (context) => (context.annotate ? [{ id: 'reply', kind: 'button', at: 'bottom-right-in', icon: Reply, label: aiwsT('aiworkspace.blocks.note.reply'), modes: ['edit', 'view'], action: 'note-reply' }] : []),
   configFields: [
     { key: 'color', id: 'note-color', get label() { return aiwsT('aiworkspace.blocks.note.color') }, kind: 'color', quick: true, palette: 'fill', readOnly: noteStyleReason, get: () => undefined,
-      set: (context, store, value) => { const noteId = context.source?.entity_id; if (noteId && typeof value === 'string' && value) void setNoteStyle(store, noteId, { color: value }, aiwsT('aiworkspace.blocks.note.color')) } },
+      ops: (context, store, value) => (typeof value === 'string' && value ? noteStyleOps(store, context, { color: value }) : Promise.resolve([])), editLabel: () => aiwsT('aiworkspace.blocks.note.color') },
     { key: 'size', id: 'note-size', get label() { return aiwsT('aiworkspace.blocks.fontSize') }, kind: 'select', quick: true, icon: ALargeSmall, get options() { return textSizes() }, readOnly: noteStyleReason, get: () => undefined,
-      set: (context, store, value) => { const noteId = context.source?.entity_id; if (noteId && typeof value === 'string') void setNoteStyle(store, noteId, { size: value }, aiwsT('aiworkspace.blocks.note.fontSize')) } },
+      ops: (context, store, value) => (typeof value === 'string' ? noteStyleOps(store, context, { size: value }) : Promise.resolve([])), editLabel: () => aiwsT('aiworkspace.blocks.note.fontSize') },
   ],
   create: (args) => (args.existingSourceId ? [cellOp(args, 'note', args.existingSourceId)] : [
     // a title given at insertion is the note's text (a note written first, then placed): the Block itself has none

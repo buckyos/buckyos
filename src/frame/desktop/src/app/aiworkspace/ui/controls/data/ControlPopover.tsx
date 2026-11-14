@@ -1,14 +1,20 @@
-/* eslint-disable react-refresh/only-export-components -- the pop-over and its menu helper */
-/* Pop-overs of a data control (控件机制 TODO G5): anchored on a projected Block — an event's details, a quick new
- * event, a day's "+N more", the repeat settings, a date — drawn in screen space (the canvas zoom does not scale them),
- * kept inside the window; on a phone a sheet from the bottom. The content is the host's record form and standard field
- * editors, not Blocks. Outside presses and Esc close it; while it is open the canvas takes no gestures. */
+/* eslint-disable react-refresh/only-export-components -- the panel and its menu helper */
+/* Pop-overs of a data control (控件机制 TODO G5) and of the table and directory editors: anchored on a projected Block or
+ * on the button that opened them — an event's details, a quick new event, a day's "+N more", the repeat settings, a
+ * date, an item's menu, a confirmation — drawn in screen space (the canvas zoom does not scale them) and kept inside
+ * the window. The content is the host's record form, standard field editors or a menu, not Blocks. Outside presses and
+ * Esc close them; while one is open the canvas takes no gestures.
+ *
+ * `ControlPanel` is the framework's form of them (UI 框架 PRD §6.1, §7.5, §10.1): on a computer a floating panel beside
+ * (or below) its anchor with a title and ✕, as the properties panel; on a phone the window's bottom sheet, the one every
+ * pop-over of the workspace becomes (`shell/popover.tsx`). */
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { useAiwsText } from '../../../useAiwsText'
-import { useOverlayMounted } from '../../shell/popover'
+import { Sheet, useOverlayMounted, usePhoneSheets } from '../../shell/popover'
+import './controlPanel.css'
 
 export interface AnchorRect { left: number; top: number; width: number; height: number }
 
@@ -26,26 +32,23 @@ function portalRoot(): HTMLElement {
   return (document.querySelector('.aiws-root') as HTMLElement | null) ?? document.body
 }
 
-export interface ControlPopoverProps {
+export interface ControlPanelProps {
   anchor: AnchorRect
   onClose: () => void
+  /** The panel's title (on a phone the sheet's). */
   label: string
   children: ReactNode
-  /** A sheet from the bottom instead of a panel beside the anchor. */
-  sheet?: boolean
   width?: number
   testId?: string
   /** Prefer the side of the anchor (default: right of it on wide screens, below it otherwise). */
   side?: 'right' | 'below'
 }
 
-export function ControlPopover({ anchor, onClose, label, children, sheet, width = 340, testId, side = 'right' }: ControlPopoverProps) {
-  const { t } = useAiwsText()
-  const ref = useRef<HTMLDivElement>(null)
+/** Where a panel beside `anchor` goes: right of it (else left) on wide screens, else below (or above), inside the window. */
+function useBeside(ref: RefObject<HTMLDivElement | null>, anchor: AnchorRect, side: 'right' | 'below') {
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
-  useOverlayMounted(true)
   useLayoutEffect(() => {
-    if (sheet || !ref.current) return
+    if (!ref.current) return
     const panel = ref.current.getBoundingClientRect()
     const bounds = portalRoot().getBoundingClientRect()
     const vw = Math.min(window.innerWidth, bounds.right), vh = window.innerHeight
@@ -65,7 +68,12 @@ export function ControlPopover({ anchor, onClose, label, children, sheet, width 
     left = Math.min(Math.max(margin, left), vw - margin - panel.width)
     top = Math.min(Math.max(margin, top), vh - margin - panel.height)
     setPos({ left, top })
-  }, [anchor.left, anchor.top, anchor.width, anchor.height, sheet, side])
+  }, [ref, anchor.left, anchor.top, anchor.width, anchor.height, side])
+  return pos
+}
+
+/** Outside presses and Esc close it (the press that opened it is over before these listen). */
+function useDismiss(ref: RefObject<HTMLDivElement | null>, onClose: () => void) {
   useEffect(() => {
     const onDown = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) onClose() }
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }
@@ -75,17 +83,49 @@ export function ControlPopover({ anchor, onClose, label, children, sheet, width 
       window.addEventListener('keydown', onKey, true)
     }, 0)
     return () => { window.clearTimeout(timer); window.removeEventListener('pointerdown', onDown, true); window.removeEventListener('keydown', onKey, true) }
-  }, [onClose])
-  const body = (
-    <div ref={ref} className={`aiws-ctl-popover${sheet ? ' is-sheet' : ''}`} role="dialog" aria-label={label} data-testid={testId}
-      style={sheet ? undefined : { width, left: pos?.left ?? anchor.left, top: pos?.top ?? anchor.top + anchor.height, visibility: pos ? 'visible' : 'hidden' }}
+  }, [ref, onClose])
+}
+
+/** A data control's or an editor's details, forms and menus in the framework's panel: beside the anchor on a computer, the
+ * bottom sheet on a phone. */
+export function ControlPanel(props: ControlPanelProps) {
+  return usePhoneSheets() ? <SheetPanel {...props} /> : <FloatingPanel {...props} />
+}
+
+function FloatingPanel({ anchor, onClose, label, children, width = 340, testId, side = 'right' }: ControlPanelProps) {
+  const { t } = useAiwsText()
+  const ref = useRef<HTMLDivElement>(null)
+  useOverlayMounted(true)
+  const pos = useBeside(ref, anchor, side)
+  useDismiss(ref, onClose)
+  return createPortal(
+    <div ref={ref} className="aiws-panel aiws-ctl-panel" role="dialog" aria-label={label} data-testid={testId}
+      style={{ width, left: pos?.left ?? anchor.left, top: pos?.top ?? anchor.top + anchor.height, visibility: pos ? 'visible' : 'hidden' }}
       onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-      {sheet && <div className="aiws-ctl-sheet-grip" aria-hidden="true" />}
-      <button type="button" className="aiws-ctl-popover-close" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} onClick={onClose}><X size={16} aria-hidden="true" /></button>
-      {children}
-    </div>
+      <div className="aiws-ctl-panel-head">
+        <b>{label}</b>
+        <button type="button" className="aiws-tool aiws-tool-small" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} data-testid="aiws-ctl-panel-close" onClick={onClose}><X size={16} aria-hidden="true" /></button>
+      </div>
+      <div className="aiws-ctl-panel-body">{children}</div>
+    </div>,
+    portalRoot(),
   )
-  return createPortal(sheet ? <div className="aiws-ctl-sheet-backdrop" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose() }}>{body}</div> : body, portalRoot())
+}
+
+function SheetPanel({ onClose, label, children, testId }: ControlPanelProps) {
+  const { t } = useAiwsText()
+  useOverlayMounted(true)
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+  return (
+    <Sheet label={label} testId={testId} className="aiws-sheet-panel aiws-ctl-sheet" onClose={onClose}
+      title={(close) => <div className="aiws-sheet-head"><b>{label}</b><span className="aiws-grow" /><button type="button" className="aiws-tool" aria-label={t('aiworkspace.common.close')} title={t('aiworkspace.common.close')} data-testid="aiws-sheet-close" onClick={close}><X size={20} /></button></div>}>
+      <div className="aiws-sheet-body" onKeyDown={(event) => event.stopPropagation()}>{children}</div>
+    </Sheet>
+  )
 }
 
 export interface MenuItem { id: string; label: string; icon?: ReactNode; danger?: boolean; disabled?: string | false; checked?: boolean; run: () => void }

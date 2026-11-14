@@ -1,8 +1,9 @@
 /* The standard editor of a directory (框架 PRD §7.1, §7.2, §7.4): one component in three sizes — a Block on a canvas or
  * a flow page (`embedded`), a tab of the data mode (`tab`), the phone's full screen (`full`). A breadcrumb on top (a
- * child directory or a folder of names opens in the same editor), the rows (picture or kind icon, name, size; folders
- * first) as a list or a thumbnail grid, "＋ Add" (from the Zone first, this device, a new subdirectory, an existing
- * directory), a ⋯ on every row, long press for several rows, the preview and the uploads. Everything works by tapping:
+ * folder of the directory or a linked directory opens in the same editor), the rows (picture or kind icon, name, size;
+ * folders first) as a list or a thumbnail grid, "＋ Add" (from the Zone first, this device, a new subdirectory — a
+ * folder of this directory, Q25 —, linking an existing directory), a ⋯ on every row, long press for several rows, the
+ * preview and the uploads. Everything works by tapping:
  * no hover, right click, keyboard or exact dragging is needed; on a desktop files can also be dropped in and rows
  * dragged onto a folder or a breadcrumb step. Writes go through ./ops (existing directory operations). */
 
@@ -23,7 +24,7 @@ import { useFilePicker } from '../shell/filePicker'
 import { usePhone } from '../shell/shellContext'
 import { entityLabel } from '../sources/dataOps'
 import { formatBytes } from './format'
-import { entriesAt, keepBothName, nameTaken, pathOf, placeInside, placeOf, resolvePath, samePlace, type Crumb, type DirectoryContent, type Entry, type Place } from './model'
+import { entriesAt, folderExists, keepBothName, nameTaken, pathOf, placeInside, placeOf, removalOf, resolvePath, samePlace, type Crumb, type DirectoryContent, type Entry, type Place } from './model'
 import { addExistingDirectory, createSubdirectory, moveConflicts, moveEntries, nameError, readDirectory, removeEntries, renameEntry, type Resolution } from './ops'
 import { ConfirmDialog, ConflictDialog, DirDialog, DirMenu, ExistingDialog, MoveDialog, NameDialog, PreviewPane, Thumb, UploadList, type DirMenuItem, type PreviewFile } from './parts'
 import { uploadQueue } from './uploads'
@@ -65,7 +66,7 @@ const linkRequests = new Map<string, string>()
 const LONG_PRESS_MS = 500
 
 export function DirectoryEditor({ entityId: rootId, size, variant = 'edit', readOnlyReason = null, cellId, onClose }: DirectoryEditorProps) {
-  const { t, compare } = useAiwsText()
+  const { t, compare, list } = useAiwsText()
   const store = useStore()
   const phone = usePhone()
   useOutlineVersion()
@@ -113,8 +114,8 @@ export function DirectoryEditor({ entityId: rootId, size, variant = 'edit', read
     setSeenPlace(placeKey); setSelecting(false); setSelected(new Set()); setMenu(null)
     setPreview(pendingPreview ? { key: pendingPreview, nonce: 0 } : null); setShownKey(pendingPreview); setPendingPreview(null)
   } else if (pendingPreview !== null) setPendingPreview(null)
-  // a folder of names that is gone (its last member moved or renamed elsewhere): up one level
-  if (data && place.prefix && crumbs.at(-1)?.kind === 'folder' && !Object.keys(members).some((key) => key.startsWith(place.prefix))) setCrumbs(crumbs.slice(0, -1))
+  // a folder that is gone (removed, renamed or moved elsewhere, here or by someone else): up one level
+  if (data && place.prefix && crumbs.at(-1)?.kind === 'folder' && !folderExists(members, place.prefix)) setCrumbs(crumbs.slice(0, -1))
 
   const enter = (entry: Entry) => {
     if (!placeInside(place, entry)) return
@@ -356,7 +357,14 @@ export function DirectoryEditor({ entityId: rootId, size, variant = 'edit', read
   )
 
   const metaOf = (entry: Entry) => entry.kind === 'file' ? (typeof entry.member.size === 'number' ? formatBytes(entry.member.size) : '')
-    : entry.kind === 'folder' ? t('aiworkspace.directory.items', { count: entry.count }) : t('aiworkspace.directory.subdirectory')
+    : entry.kind === 'folder' ? t('aiworkspace.directory.items', { count: entry.count }) : t('aiworkspace.directory.linked')
+  /** What a removal takes away, said before it is confirmed (a folder goes with everything in it). */
+  const removeBody = (entries: Entry[]) => {
+    const { files, folders, links } = removalOf(members, entries)
+    const what = [...(files ? [t('aiworkspace.directory.removeFiles', { count: files })] : []), ...(folders ? [t('aiworkspace.directory.removeFolders', { count: folders })] : [])]
+    if (!what.length) return t('aiworkspace.directory.removeLinksOnly')
+    return links ? t('aiworkspace.directory.removeBodyLinks', { what: list(what), count: links }) : t('aiworkspace.directory.removeBody', { what: list(what) })
+  }
 
   const row = (entry: Entry) => {
     const isSelected = selected.has(entry.id)
@@ -487,7 +495,7 @@ export function DirectoryEditor({ entityId: rootId, size, variant = 'edit', read
         {dialog?.kind === 'existing' && <ExistingDialog exclude={new Set([rootId, ...crumbs.flatMap((c) => (c.kind === 'dir' ? [c.entityId] : []))])} check={(name) => nameError(members, place.prefix, name)}
           onAdd={(id, name) => addExistingDirectory(store, place, id, name)} onClose={() => setDialog(null)} />}
         {dialog?.kind === 'remove' && <ConfirmDialog title={dialog.entries.length === 1 ? t('aiworkspace.directory.removeTitle', { name: dialog.entries[0].name }) : t('aiworkspace.directory.removeTitleMany', { count: dialog.entries.length })}
-          body={t(dialog.entries.some((e) => e.kind === 'dir') ? 'aiworkspace.directory.removeBodyDir' : 'aiworkspace.directory.removeBody')} confirm={t('aiworkspace.directory.remove')}
+          body={removeBody(dialog.entries)} confirm={t('aiworkspace.directory.remove')}
           onConfirm={async () => { await removeEntries(store, place, dialog.entries); setSelecting(false); setSelected(new Set()); if (preview && dialog.entries.some((e) => e.kind === 'file' && e.key === preview.key)) setPreview(null) }} onClose={() => setDialog(null)} />}
         {dialog?.kind === 'move' && <MoveDialog rootId={rootId} rootName={rootName} crumbs={crumbs} from={place} moving={dialog.entries} onPick={(to) => doMove(dialog.entries, to)} onClose={() => setDialog(null)} />}
         {dialog?.kind === 'conflict' && <ConflictDialog names={dialog.names} onDone={dialog.done} />}

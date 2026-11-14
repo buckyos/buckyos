@@ -1,6 +1,6 @@
 /* Field management of a table (UI 框架 PRD §7.3; design §3.4.4, §3.4.6): a list of the fields — name, type, shown in
  * this view, a handle to drag the order — and a field's details when its row is tapped: name, type (changed through the
- * pre-checked migration), options, required, default currency, the column's width and place in the view, delete. What
+ * pre-checked migration), options, required, default value, default currency, the column's width and place in the view, delete. What
  * the view shows (columns, order, width) belongs to the Block's view, or to this person when there is no Block; the
  * rest is the table's schema. */
 
@@ -12,9 +12,10 @@ import type { CellPayload, FieldDef, FieldType, Json, KeyedContent, Operation, P
 import { useStore } from '../state/hooks'
 import { useAiwsText } from '../useAiwsText'
 import { addFieldOps, CREATABLE_FIELD_TYPES } from './fieldOps'
-import { DEFAULT_WIDTH, WIDTHS, moveEntry, widthPreset, type ColumnEntry, type WidthPreset } from './table/model'
+import { DEFAULT_WIDTH, WIDTHS, inputOf, moveEntry, rawOf, sameRaw, widthPreset, type ColumnEntry, type Raw, type WidthPreset } from './table/model'
 import { FIELD_ICONS } from './table/fieldIcons'
-import { COMMON_CURRENCIES, FIELD_TYPE_LABEL, moneyParts } from './values'
+import { ValueControl } from './table/RecordForm'
+import { COMMON_CURRENCIES, FIELD_TYPE_LABEL, UNSET, formatValue, moneyParts, type ValueDef } from './values'
 
 /** Conversions the backend implements (anything else answers MIGRATION_UNSUPPORTED). */
 const MIGRATIONS: Partial<Record<FieldType, FieldType[]>> = { text: ['date', 'number', 'decimal'], number: ['decimal', 'currency'], decimal: ['decimal', 'currency'], select: ['text'], currency: ['decimal', 'text', 'currency'] }
@@ -32,7 +33,11 @@ function CurrencyInput({ value, onChange, label }: { value: string; onChange: (c
   )
 }
 
-interface MigrationReport { total: number; convertible: number; unset: number; failing: { count: number; sample: { record_id: string; value: Json }[] } }
+interface MigrationReport {
+  total: number; convertible: number; unset: number; failing: { count: number; sample: { record_id: string; value: Json }[] }
+  /** What becomes of the field's default (§7.3). */
+  default?: { value: Json; converted: Json | null; convertible: boolean }
+}
 
 function readReport(result: PrepareResult): MigrationReport | null {
   if (result.status === 'ok') {
@@ -162,6 +167,46 @@ function FieldList({ source, cell, entries, columnsReason, onColumns, structureR
   )
 }
 
+/** The field's default (§7.3): the control of its type, saved with its button; a field that takes none says why. */
+function DefaultSection({ field, locked, onChange }: { field: FieldDef; locked: boolean; onChange: (label: string, changes: Record<string, Json>) => void }) {
+  const { t } = useAiwsText()
+  const store = useStore()
+  const [raw, setRaw] = useState<Raw | null>(null)
+  const why = field.submitter ? t('aiworkspace.fielddefault.noneSubmitter') : field.unique ? t('aiworkspace.fielddefault.noneUnique')
+    : field.type === 'object_ref' ? t('aiworkspace.fielddefault.noneRef') : null
+  const stored = rawOf(field, field.default)
+  const clear = () => { setRaw(null); onChange(t('aiworkspace.fielddefault.clearEdit', { name: field.name }), { default: null }) }
+  const save = () => {
+    if (raw === null || sameRaw(raw, stored)) return
+    const parsed = inputOf(field, raw)
+    if (!parsed.ok) { store.notify('info', parsed.error); return }
+    if (parsed.value === UNSET) { if (field.default !== undefined) clear(); else setRaw(null); return }
+    setRaw(null)
+    onChange(t('aiworkspace.fielddefault.setEdit', { name: field.name, value: formatValue(field, parsed.value) }), { default: parsed.value })
+  }
+  return (
+    <div className="aiws-field-section" data-testid="aiws-field-default" data-default={field.default === undefined ? '' : JSON.stringify(field.default)}>
+      <span>{t('aiworkspace.fielddefault.title')}</span>
+      {why ? <span className="aiws-muted">{why}</span> : (
+        <>
+          {locked ? <span data-testid="aiws-field-default-value">{field.default === undefined ? t('aiworkspace.fielddefault.none') : formatValue(field, field.default)}</span> : (
+            <>
+              <div className="aiws-field-row">
+                <ValueControl def={field} raw={raw ?? stored} ariaLabel={t('aiworkspace.fielddefault.aria', { name: field.name })} deferChoices onChange={setRaw} onCommit={setRaw} />
+              </div>
+              <div className="aiws-field-row">
+                <button type="button" data-testid="aiws-field-default-save" disabled={raw === null || sameRaw(raw, stored)} onClick={save}>{t('aiworkspace.common.save')}</button>
+                <button type="button" data-testid="aiws-field-default-clear" disabled={field.default === undefined} onClick={clear}>{t('aiworkspace.fielddefault.clear')}</button>
+              </div>
+            </>
+          )}
+          <span className="aiws-muted">{t('aiworkspace.fielddefault.hint')}</span>
+        </>
+      )}
+    </div>
+  )
+}
+
 function FieldDetail({ source, entries, entry, columnsReason, onColumns, structureReason, onBack }: FieldManagerProps & { entry: ColumnEntry; onBack: () => void }) {
   const { t } = useAiwsText()
   const store = useStore()
@@ -175,6 +220,8 @@ function FieldDetail({ source, entries, entry, columnsReason, onColumns, structu
   const [asking, setAsking] = useState(false)
   const index = entries.findIndex((item) => item.field.field_id === field.field_id)
   const locked = structureReason !== null
+  /** The default uses the option: "delete" (refused while in use) would be refused; "delete & clear" takes it out of the default. */
+  const isDefault = (optionId: string) => field.default === optionId || (Array.isArray(field.default) && field.default.includes(optionId))
 
   const submit = (label: string, operations: Operation[]) => store.submit({ editId: `schema:${sourceId}:${randomId()}`, label, operations })
   const rename = () => {
@@ -260,6 +307,17 @@ function FieldDetail({ source, entries, entry, columnsReason, onColumns, structu
                 {migration.report.failing.sample.length > 0 && (
                   <ul>{migration.report.failing.sample.slice(0, 10).map((item) => <li key={item.record_id}>{t('aiworkspace.data.migration.sample', { record: item.record_id, value: JSON.stringify(item.value) })}</li>)}</ul>
                 )}
+                {migration.report.default && (() => {
+                  const fallback = migration.report.default
+                  const target: ValueDef = { type: migration.to, scale: Number(migration.scale) || 0, currency: migration.currency }
+                  return (
+                    <div data-testid="aiws-migration-default">
+                      {fallback.convertible && fallback.converted !== null
+                        ? t('aiworkspace.fielddefault.migration', { from: formatValue(field, fallback.value), to: formatValue(target, fallback.converted) })
+                        : t('aiworkspace.fielddefault.migrationFails', { from: formatValue(field, fallback.value) })}
+                    </div>
+                  )
+                })()}
               </div>
             )}
           </div>
@@ -300,7 +358,7 @@ function FieldDetail({ source, entries, entry, columnsReason, onColumns, structu
                   <input aria-label={t('aiworkspace.data.option.newNameAria', { id: option.option_id })} title={option.option_id} value={text ?? option.label} disabled={locked}
                     onChange={(event) => setOptionText({ ...optionText, [key]: event.target.value })} onBlur={commit}
                     onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commit() } }} />
-                  <button type="button" disabled={locked} title={t('aiworkspace.data.option.deleteTitle')} data-testid={`aiws-option-delete-${option.option_id}`} onClick={() => {
+                  <button type="button" disabled={locked || isDefault(option.option_id)} title={isDefault(option.option_id) ? t('aiworkspace.fielddefault.optionIsDefault') : t('aiworkspace.data.option.deleteTitle')} data-testid={`aiws-option-delete-${option.option_id}`} onClick={() => {
                     void submit(t('aiworkspace.data.option.deleteEdit', { name: option.label }), [{ op: 'table.delete_option', source_id: sourceId, field_id: field.field_id, option_id: option.option_id, on_values: 'reject_if_used', expect: { rev: field.def_rev } }])
                   }}>{t('aiworkspace.common.delete')}</button>
                   <button type="button" disabled={locked} title={t('aiworkspace.data.option.deleteClearTitle')} data-testid={`aiws-option-delete-clear-${option.option_id}`} onClick={() => {
@@ -330,6 +388,8 @@ function FieldDetail({ source, entries, entry, columnsReason, onColumns, structu
           onChange={(event) => { void change(t(event.target.checked ? 'aiworkspace.table.fields.requiredOnEdit' : 'aiworkspace.table.fields.requiredOffEdit', { name: field.name }), { required: event.target.checked }) }} />
         <span>{t('aiworkspace.table.fields.required')}</span>
       </label>
+
+      <DefaultSection key={`${field.field_id}:${field.def_rev}`} field={field} locked={locked} onChange={(label, changes) => { void change(label, changes) }} />
 
       <div className="aiws-field-section" title={columnsReason ?? undefined}>
         <span>{t('aiworkspace.table.fields.inView')}</span>

@@ -7,18 +7,18 @@ import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import { fetchUserList } from '../../../../api/user_mgr'
 import { unwrap } from '../../api/client'
 import type { WorkspaceSession } from '../../api/session'
-import type { AclAuditItem, AclChange, Json, Result, ShareEntry, Subject, WorkspaceInfo } from '../../api/types'
+import type { AclAuditItem, AclChange, Json, Result, ShareEntry, Subject } from '../../api/types'
 import { useLoad, useSessionStatus, useStore, type Loaded } from '../../state/hooks'
 import { useShell } from '../shell/shellContext'
 
 // ---- the permissions' revision
 
-interface RevState { local: number; listeners: Set<() => void>; pollers: number; timer: number | null }
+interface RevState { local: number; listeners: Set<() => void> }
 const revs = new WeakMap<WorkspaceSession, RevState>()
 
 function revState(session: WorkspaceSession): RevState {
   let state = revs.get(session)
-  if (!state) { state = { local: 0, listeners: new Set(), pollers: 0, timer: null }; revs.set(session, state) }
+  if (!state) { state = { local: 0, listeners: new Set() }; revs.set(session, state) }
   return state
 }
 
@@ -34,26 +34,16 @@ function currentRev(session: WorkspaceSession): number {
   return Math.max(session.info().acl_rev ?? 0, revState(session).local)
 }
 
-/** A session that does not follow the permissions itself (a replica window) is asked now and then. */
-async function pollRev(session: WorkspaceSession) {
-  try {
-    const info = await session.call<Result<WorkspaceInfo>>('ws.get_info', { workspace_id: session.workspaceId })
-    if (info.ok) noteAclRev(session, info.acl_rev)
-  } catch { /* offline: the next poll asks again */ }
-}
-
 /** The permissions' revision: it moves whenever an entry, a group, a member, anonymous access or a binding changes. */
 export function useAclRev(): number {
   const { session } = useStore()
   const subscribe = useCallback((listener: () => void) => {
     const state = revState(session)
     state.listeners.add(listener)
-    const off = session.subscribeAcl ? session.subscribeAcl(listener) : session.subscribeStatus(listener)
-    if (!session.subscribeAcl && ++state.pollers === 1) state.timer = window.setInterval(() => { void pollRev(session) }, 15000)
+    const off = session.subscribeAcl(listener)
     return () => {
       state.listeners.delete(listener)
       off()
-      if (!session.subscribeAcl && --state.pollers === 0 && state.timer !== null) { window.clearInterval(state.timer); state.timer = null }
     }
   }, [session])
   return useSyncExternalStore(subscribe, () => currentRev(session))

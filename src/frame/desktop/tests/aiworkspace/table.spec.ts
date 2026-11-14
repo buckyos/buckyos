@@ -1,6 +1,7 @@
 /* The standard table editor (UI 框架 PRD §7.1–§7.3): grid and cards (each person's choice, per device), the record
  * form (a side panel on a computer, the whole screen on a phone) written field by field, new records added in one
- * Commit, filters of several conditions shown as removable chips, selection and its bar, column width and order; and
+ * Commit, filters of several conditions shown as removable chips, selection and its bar, column width and order, a
+ * field's default (set, filled into new records by the service, filled in on the form, removed, converted); and
  * §15 scenario 20, the table half, on an emulated Pixel 7: new record, field type, filter, delete — taps only, no hover,
  * right click or keys. The phone's free canvas reaches the editor through "展开" (another package): here the editor is
  * on the flow page, which a phone edits in place. */
@@ -177,6 +178,87 @@ test('UI-T02 §7.3 on a computer: several filter conditions as chips under the t
   await page.mouse.up()
   await expect.poll(async () => ((await cellPayload(api, ws.workspace_id, 'cell-all-tasks')).fields as { field_id: string }[] | undefined)?.map((f) => f.field_id)[0]).toBe('due')
   await expect(all.locator('.aiws-th').first()).toContainText('截止日期')
+  await expectAllCommitted(page)
+})
+
+test('UI-T03 §7.3 a field\'s default: set in its details with the control of its type, filled into new records whoever adds them, filled in on the form, removed, converted by a type change', async ({ page, api }) => {
+  const ws = await api.sample(ALICE, `table default ${Date.now()}`)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  const all = page.getByTestId('aiws-table-cell-all-tasks')
+  const fieldOf = async (id: string) => ((await api.read(ALICE, ws.workspace_id, 'tasks')).content.fields as { field_id: string; type: string; default?: unknown }[]).find((f) => f.field_id === id)
+  const valuesOf = async (title: string) => (await rows(api, ws.workspace_id)).find((row) => row.values.title === title)?.values
+
+  // the field's details: a list for a select, a number keyboard's input for a decimal; saved with the button
+  await all.getByTestId('aiws-fields-cell-all-tasks').click()
+  const manager = all.getByTestId('aiws-field-manager')
+  const section = manager.getByTestId('aiws-field-default')
+  await manager.getByTestId('aiws-field-open-status').click()
+  await section.getByLabel('“状态”的默认值').selectOption('option-done')
+  await section.getByTestId('aiws-field-default-save').click()
+  await expect.poll(async () => (await fieldOf('status'))?.default).toBe('option-done')
+  // the option the default names cannot simply be deleted (it is in use), "delete & clear" can
+  await expect(manager.getByTestId('aiws-option-delete-option-done')).toBeDisabled()
+  await expect(manager.getByTestId('aiws-option-delete-clear-option-done')).toBeEnabled()
+  await manager.getByTestId('aiws-field-back').click()
+  await manager.getByTestId('aiws-field-open-budget').click()
+  await expect(section.getByLabel('“预算”的默认值')).toHaveAttribute('inputmode', 'decimal')
+  await section.getByLabel('“预算”的默认值').fill('100')
+  await section.getByTestId('aiws-field-default-save').click()
+  await expect.poll(async () => (await fieldOf('budget'))?.default).toBe('100.00')
+  await manager.getByTestId('aiws-field-back').click()
+  await all.getByTestId('aiws-fields-cell-all-tasks').click()
+
+  // the grid's quick line gives only the title: the service fills in the rest; so it does for an Agent or the CLI
+  await all.getByTestId('aiws-add-record-cell-all-tasks').click()
+  await all.getByTestId('aiws-new-record-input').fill('快速')
+  await all.getByTestId('aiws-new-record-input').press('Enter')
+  await expect.poll(() => valuesOf('快速')).toMatchObject({ status: 'option-done', budget: '100.00' })
+  expect((await api.commit(ALICE, ws, [{ op: 'table.insert_records', source_id: 'tasks', records: [{ record_id: 'by-agent', values: { title: 'Agent' } }] }])).status).toBe('accepted')
+  expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'by-agent', 'status')).value).toBe('option-done')
+
+  // the new record's form starts with the defaults; a field emptied there gets the default too, as it says
+  await all.getByTestId('aiws-table-menu-cell-all-tasks').click()
+  await page.getByTestId('aiws-ctl-menu-table-layout-cards').click()
+  await all.getByTestId('aiws-add-record-cell-all-tasks').click()
+  const form = page.getByTestId('aiws-table-record-panel')
+  await expect(form).toHaveAttribute('data-mode', 'new')
+  await expect(form.getByLabel('新记录 状态')).toHaveValue('option-done')
+  await expect(form.getByLabel('新记录 预算')).toHaveValue('100.00')
+  await expect(form.getByTestId('aiws-table-field-default')).toHaveCount(0)
+  await form.getByLabel('新记录 预算').fill('')
+  await expect(form.getByTestId('aiws-record-field-budget').getByTestId('aiws-table-field-default')).toContainText('100')
+  await form.getByLabel('新记录 状态').selectOption('option-open')
+  await form.getByLabel('新记录 任务').fill('表单')
+  await form.getByTestId('aiws-table-record-add').click()
+  await expect(form).toHaveCount(0)
+  await expect.poll(() => valuesOf('表单')).toMatchObject({ status: 'option-open', budget: '100.00' })
+
+  // removed: new records get nothing there; the records that have it keep it
+  await all.getByTestId('aiws-table-menu-cell-all-tasks').click()
+  await page.getByTestId('aiws-ctl-menu-table-layout-grid').click()
+  await all.getByTestId('aiws-fields-cell-all-tasks').click()
+  await manager.getByTestId('aiws-field-open-status').click()
+  await section.getByTestId('aiws-field-default-clear').click()
+  await expect.poll(async () => (await fieldOf('status'))?.default).toBeUndefined()
+  await expect(section.getByTestId('aiws-field-default-clear')).toBeDisabled()
+  expect((await api.commit(ALICE, ws, [{ op: 'table.insert_records', source_id: 'tasks', records: [{ record_id: 'after-clear', values: { title: '之后' } }] }])).status).toBe('accepted')
+  expect((await valuesOf('之后'))?.status).toBeUndefined()
+  expect((await valuesOf('快速'))?.status).toBe('option-done')
+  // undoable like any change of the schema
+  await page.getByTestId('aiws-undo').click()
+  await expect.poll(async () => (await fieldOf('status'))?.default).toBe('option-done')
+  await manager.getByTestId('aiws-field-back').click()
+
+  // a type change converts the default as it converts the values; the pre-check says what becomes of it
+  await manager.getByTestId('aiws-field-open-budget').click()
+  await manager.getByTestId('aiws-migrate-budget').click()
+  await manager.getByLabel('目标类型').selectOption('currency')
+  await manager.getByTestId('aiws-migration-precheck').click()
+  await expect(manager.getByTestId('aiws-migration-status')).toContainText('预检通过')
+  await expect(manager.getByTestId('aiws-migration-default')).toContainText('将变为')
+  await manager.getByTestId('aiws-migration-run').click()
+  await expect.poll(async () => (await fieldOf('budget'))?.default).toEqual({ amount: '100.00', currency: 'USD' })
+  await expect(section).toHaveAttribute('data-default', JSON.stringify({ amount: '100.00', currency: 'USD' }))
   await expectAllCommitted(page)
 })
 

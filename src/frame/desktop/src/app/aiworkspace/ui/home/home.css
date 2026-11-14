@@ -39,12 +39,14 @@
 .aiws-root .aiws-home .aiws-home-card-main:disabled { cursor: default; opacity: 1; }
 .aiws-home-session[data-action='expired'] { opacity: 0.72; }
 
-/* the cover: an icon on a colour of the workspace's own (no thumbnails yet, K6) */
+/* the cover: a canvas's first picture (K6, a stopgap), else an icon on a colour of the workspace's own */
 .aiws-home-cover { --aiws-home-hue: 220; flex: none; display: flex; align-items: center; justify-content: center; height: 84px; border-radius: 11px 11px 0 0;
   background: color-mix(in srgb, hsl(var(--aiws-home-hue) 70% 55%) 22%, var(--cp-surface)); color: color-mix(in srgb, hsl(var(--aiws-home-hue) 65% 38%) 75%, var(--cp-text)); }
 .aiws-home-cover.is-new { background: var(--cp-surface-2); color: var(--cp-accent); }
 .aiws-home-cover.is-session { background: color-mix(in srgb, var(--cp-accent) 14%, var(--cp-surface)); color: var(--cp-accent); }
 .aiws-home-cover.is-live { background: color-mix(in srgb, var(--cp-success) 20%, var(--cp-surface)); color: var(--cp-success); }
+.aiws-home-cover.has-picture { overflow: hidden; background: var(--cp-surface-2); }
+.aiws-home-cover-picture { display: block; width: 100%; height: 100%; object-fit: cover; }
 
 .aiws-home-card-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 12px 10px; }
 .aiws-home-card-title { font-weight: 600; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

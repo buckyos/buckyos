@@ -259,6 +259,11 @@ impl Replica {
         self.inner.discard(key).is_some()
     }
 
+    /// An asset the service staged after the replica was made (an upload from this window): local plans know it.
+    pub fn note_asset(&mut self, object_id: &str, media_type: &str, size: f64) {
+        self.inner.note_asset(aiworkspace_core::model::AssetInfo { object_id: object_id.to_string(), media_type: media_type.to_string(), size: size as u64 })
+    }
+
     /// The history was replaced: live submissions become conflicts to resend (D07).
     pub fn epoch_mismatch(&mut self, detail: &str) {
         self.inner.epoch_mismatch(detail)

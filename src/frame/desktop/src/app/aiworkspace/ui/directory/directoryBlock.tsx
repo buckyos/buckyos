@@ -45,12 +45,13 @@ export const directoryDefinition: BlockDefinition = {
   defaultSize: { w: 480, h: 360 }, cost: { editor: true, html: false },
   Static: DirectoryStatic, View: DirectoryView, Editor: DirectoryBlockEditor, Simplified: DirectorySimplified,
   catalog: { group: 'data', get description() { return aiwsT('aiworkspace.directory.blockDescription') }, needs: 'none' },
-  actions: [{ id: 'edit', get label() { return aiwsT('aiworkspace.blocks.action.editContent') }, modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
+  actions: [
+    { id: 'edit', get label() { return aiwsT('aiworkspace.blocks.action.editContent') }, modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' },
+    // while editing, the editor's own head has the tools
+    { id: 'directory-add', icon: Plus, primary: true, get label() { return aiwsT('aiworkspace.directory.add.title') }, modes: ['edit'], when: (context) => !context.editorActive && canAdd(context),
+      run: (context) => { requestIntent(context.cell.entity_id, 'add'); context.activateEditor() } },
+  ],
   hover: (context) => sourceLabel(context, FolderOpen),
-  // while editing, the editor's own head has the tools
-  toolbar: (context) => (context.editorActive || !canAdd(context) ? [] : [
-    { kind: 'button', id: 'directory-add', icon: Plus, label: aiwsT('aiworkspace.directory.add.title'), run: () => { requestIntent(context.cell.entity_id, 'add'); context.activateEditor() } },
-  ]),
   create: (args) => {
     if (args.existingSourceId) return [cellOp(args, 'directory', args.existingSourceId)]
     const name = freeTableName(args.store, args.contentFolderId, args.title || aiwsT('aiworkspace.directory.defaultName'))

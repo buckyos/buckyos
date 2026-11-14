@@ -408,20 +408,77 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
     }
 }
 
-/// All readable, alive entities in tree order (the "outline"), decorated with `outline_extras`.
+/// A path node of the outline: an entity the caller cannot read, listed because something below it is readable. It
+/// places that in the tree — id, type, a container's kind, parent and sibling order — and gives nothing else: no
+/// name or title (a printed path never names an unreadable ancestor either, `path::path_of`), no content, no
+/// capabilities.
+fn path_node(ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<Value> {
+    let mut v = json!({ "entity_id": e.entity_id, "type_id": e.type_id, "path_only": true });
+    if e.type_id == TYPE_CONTAINER {
+        v["kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);
+    }
+    if let Some(edge) = ctx.edge(&e.entity_id)? {
+        v["parent_id"] = json!(edge.parent_id);
+        v["order_key"] = json!(edge.order_key);
+    }
+    Ok(v)
+}
+
+/// The "outline": every readable, alive entity in tree order, decorated with `outline_extras`, and — so that what the
+/// caller may read below an entity it may not (a grant on one canvas folder, one canvas, `/data/销售`) still hangs
+/// in the two trees — each unreadable ancestor of one as a [`path_node`]. An entity outside the caller's scope hides
+/// its subtree.
 pub fn outline(ctx: &dyn ReadCtx, access: &Access) -> WsResult<Vec<Value>> {
+    // where an unreadable entity may still hold something readable: above a layer that allows `read`
+    let reach: Option<BTreeSet<String>> = match access.read_layers() {
+        None => None,
+        Some(layers) => {
+            let mut up = BTreeSet::new();
+            for layer in layers {
+                let mut cur = layer;
+                for _ in 0..4096 {
+                    match ctx.edge(&cur)? {
+                        Some(edge) if up.insert(edge.parent_id.clone()) => cur = edge.parent_id,
+                        _ => break,
+                    }
+                }
+            }
+            Some(up)
+        }
+    };
+    enum Step {
+        Visit(String),
+        /// Leaving a path node pushed at this index: dropped again when nothing readable came after it.
+        Leave(usize),
+    }
     let mut out = Vec::new();
-    let mut stack = vec![ROOT_ID.to_string()];
-    while let Some(id) = stack.pop() {
+    let mut stack = vec![Step::Visit(ROOT_ID.to_string())];
+    while let Some(step) = stack.pop() {
+        let id = match step {
+            Step::Visit(id) => id,
+            Step::Leave(at) => {
+                if out.len() == at + 1 {
+                    out.pop();
+                }
+                continue;
+            }
+        };
         let Some(e) = ctx.entity(&id)? else { continue };
-        if !e.alive() || !access.can_read(ctx, &e)? {
+        if !e.alive() || !access.sees_scope(&e) {
             continue;
         }
-        let mut env = envelope(ctx, access, &e)?;
-        outline_extras(&mut env, &e);
-        out.push(env);
+        if access.can_read(ctx, &e)? {
+            let mut env = envelope(ctx, access, &e)?;
+            outline_extras(&mut env, &e);
+            out.push(env);
+        } else if reach.as_ref().is_none_or(|r| r.contains(&id)) {
+            stack.push(Step::Leave(out.len()));
+            out.push(path_node(ctx, &e)?);
+        } else {
+            continue;
+        }
         for edge in ctx.children(&id)?.into_iter().rev() {
-            stack.push(edge.child_id);
+            stack.push(Step::Visit(edge.child_id));
         }
     }
     Ok(out)

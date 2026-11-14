@@ -1,6 +1,6 @@
 //! What the home page and the shell's configuration read (UI 框架 PRD §4.6, §9; K4, K6, K7): a Workspace's shared
-//! settings, when it last changed, whether it is public, and the presentation sessions a caller may open without a link
-//! (the readers of each session's permission object, Q19).
+//! settings, when it last changed, whether it is public, its cover, and the presentation sessions a caller may open
+//! without a link (the readers of each session's permission object, Q19).
 
 use crate::docdb::{db_err, meta_get};
 use crate::session::registry::{SessionRow, ARCHIVED, ENDED, EXPIRED, LIVE, PREPARED};
@@ -8,8 +8,8 @@ use crate::session::{session_json, Role};
 use crate::workspace::Caller;
 use crate::{Service, Workspace};
 use aiworkspace_core::access::{Access, Cap};
-use aiworkspace_core::model::{EntityRow, ReadCtx, ROOT_ID, SCOPE_SHARED};
-use aiworkspace_core::value::format_utc_ms;
+use aiworkspace_core::model::{EntityRow, ReadCtx, ROOT_ID, SCOPE_SHARED, SURFACES_ID, TYPE_ASSET, TYPE_CELL, TYPE_CONTAINER};
+use aiworkspace_core::value::{format_utc_ms, reference_entity_id, reference_is_local};
 use aiworkspace_core::WsResult;
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
@@ -46,14 +46,156 @@ impl Workspace {
     }
 }
 
+/// Pictures a cover may be: what the asset route serves as themselves (an SVG it serves as bytes: never a cover).
+const COVER_MEDIA_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp"];
+/// A picture larger than this is not a cover: the home page downloads each one whole.
+const COVER_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// How many Blocks one cover looks at, at most (a Workspace of many canvases answers `ws.list` in time).
+const COVER_SCAN_LIMIT: usize = 2_000;
+
+impl Workspace {
+    /// The cover of the home page's card (UI 框架 PRD §9.2, K6), a stopgap until canvases are pictured: on the canvas
+    /// changed last — then the others, most recently changed first, ties in tree order — the first Block (in the canvas's
+    /// own order) showing an asset that `access` reads, the Block too. A picture shows itself (at most 8 MiB); any other
+    /// file its poster (a video frame, a PDF's first page, an album cover). `{ workspace_id, object_id, media_type,
+    /// surface_id, entity_id }` — the bytes come from the asset route like every asset's — or null: the card draws its
+    /// placeholder.
+    pub fn cover(&self, access: &Access) -> WsResult<Value> {
+        let now = self.now();
+        let ctx = self.ctx(&now);
+        let mut surfaces = Vec::new();
+        surfaces_in_order(&ctx, SURFACES_ID, &mut surfaces, 0)?;
+        let changed = self.surface_changes()?;
+        // stable: equal changes keep the tree order
+        surfaces.sort_by_key(|id| std::cmp::Reverse(changed.get(id).copied().unwrap_or(0)));
+        self.cover_on(access, &surfaces)
+    }
+
+    /// The cover among `surfaces`, in that order (a session's: the canvases of its path, [`Service::session_cover`]).
+    pub fn cover_on(&self, access: &Access, surfaces: &[String]) -> WsResult<Value> {
+        let now = self.now();
+        let ctx = self.ctx(&now);
+        let mut budget = COVER_SCAN_LIMIT;
+        for id in surfaces {
+            let Some(surface) = ctx.entity(id)? else { continue };
+            if !surface.alive() || surface.scope != SCOPE_SHARED || !access.can_read(&ctx, &surface)? {
+                continue;
+            }
+            if let Some(mut picture) = first_picture(&ctx, access, id, &mut budget)? {
+                picture["workspace_id"] = json!(self.workspace_id);
+                picture["surface_id"] = json!(id);
+                return Ok(picture);
+            }
+            if budget == 0 {
+                break;
+            }
+        }
+        Ok(Value::Null)
+    }
+
+    /// The last change on each canvas: the highest version, by Commit seq, of the canvas and of everything below it
+    /// (its Blocks and their places; a deletion is a change). Moving the canvas itself is not one.
+    fn surface_changes(&self) -> WsResult<HashMap<String, u64>> {
+        let mut st = self
+            .doc
+            .prepare_cached(
+                "WITH RECURSIVE under(surface_id, id) AS ( \
+                   SELECT entity_id, entity_id FROM entities \
+                    WHERE type_id = ?1 AND deleted_seq IS NULL AND json_extract(payload_json, '$.kind') = 'surface' \
+                   UNION ALL \
+                   SELECT under.surface_id, t.child_id FROM tree_edges t JOIN under ON t.parent_id = under.id) \
+                 SELECT under.surface_id, MAX(MAX(e.meta_rev, e.content_rev, e.life_rev, COALESCE(t.struct_rev, 0))) \
+                   FROM under JOIN entities e ON e.entity_id = under.id \
+                   LEFT JOIN tree_edges t ON t.child_id = under.id AND under.id <> under.surface_id \
+                  GROUP BY under.surface_id",
+            )
+            .map_err(db_err)?;
+        let rows = st.query_map([TYPE_CONTAINER], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).map_err(db_err)?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (id, seq) = row.map_err(db_err)?;
+            out.insert(id, seq.max(0) as u64);
+        }
+        Ok(out)
+    }
+}
+
+/// The canvases under `parent` (through canvas folders, K1) in tree order.
+fn surfaces_in_order(ctx: &dyn ReadCtx, parent: &str, out: &mut Vec<String>, depth: usize) -> WsResult<()> {
+    if depth > 64 {
+        return Ok(());
+    }
+    for edge in ctx.children(parent)? {
+        let Some(e) = ctx.entity(&edge.child_id)? else { continue };
+        if !e.alive() || e.type_id != TYPE_CONTAINER {
+            continue;
+        }
+        match e.payload.get("kind").and_then(Value::as_str) {
+            Some("surface") => out.push(e.entity_id),
+            Some("folder") => surfaces_in_order(ctx, &e.entity_id, out, depth + 1)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The first Block below `parent`, depth first in its order, showing a picture `access` reads (see [`Workspace::cover`]):
+/// `{ object_id, media_type, entity_id }` (the asset's id).
+fn first_picture(ctx: &dyn ReadCtx, access: &Access, parent: &str, budget: &mut usize) -> WsResult<Option<Value>> {
+    for edge in ctx.children(parent)? {
+        if *budget == 0 {
+            return Ok(None);
+        }
+        *budget -= 1;
+        let Some(cell) = ctx.entity(&edge.child_id)? else { continue };
+        if !cell.alive() || cell.type_id != TYPE_CELL {
+            continue;
+        }
+        let source = cell.payload.get("source_ref").filter(|r| reference_is_local(r)).and_then(reference_entity_id);
+        if let Some(asset_id) = source {
+            if let Some(picture) = picture_of(ctx, access, &cell, asset_id)? {
+                return Ok(Some(picture));
+            }
+        }
+        if let Some(found) = first_picture(ctx, access, &cell.entity_id, budget)? {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
+/// What a Block showing asset `asset_id` gives a cover: the picture itself, else the asset's poster — when `access`
+/// reads both the Block and the asset and the bytes are here.
+fn picture_of(ctx: &dyn ReadCtx, access: &Access, cell: &EntityRow, asset_id: &str) -> WsResult<Option<Value>> {
+    let Some(asset) = ctx.entity(asset_id)? else { return Ok(None) };
+    if !asset.alive() || asset.type_id != TYPE_ASSET || asset.scope != SCOPE_SHARED {
+        return Ok(None);
+    }
+    if !access.can_read(ctx, cell)? || !access.can_read(ctx, &asset)? {
+        return Ok(None);
+    }
+    let stored = |key: &str| -> WsResult<Option<aiworkspace_core::model::AssetInfo>> {
+        match asset.payload.get(key).and_then(Value::as_str) {
+            Some(id) => ctx.asset(id),
+            None => Ok(None),
+        }
+    };
+    let picture = |info: &aiworkspace_core::model::AssetInfo| COVER_MEDIA_TYPES.contains(&info.media_type.as_str());
+    let chosen = match stored("object_id")? {
+        Some(info) if picture(&info) && info.size <= COVER_MAX_BYTES => Some(info),
+        _ => stored("poster")?.filter(picture),
+    };
+    Ok(chosen.map(|info| json!({ "object_id": info.object_id, "media_type": info.media_type, "entity_id": asset.entity_id })))
+}
+
 /// The run Workspaces' logical group holding those who came in without a link as readers of the session's permission
 /// object (see [`Service::may_open_unlinked`]): it reads the run Workspace, like a link's group.
 pub const SOURCE_READERS_GROUP: &str = "source-readers";
 
 /// The entity of the source Workspace whose readers may open the session without a link (UI 框架 PRD Q19), by id: what
-/// `session.create` chose — `policy.readers_of` — or, for a session made before there was one, the Workspace (`/`).
+/// `session.create` chose — `policy.readers_of`. A session without one lets nobody in without a link (Q33).
 pub fn readers_of(s: &SessionRow) -> String {
-    s.policy.get("readers_of").and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or(ROOT_ID).to_string()
+    s.policy.get("readers_of").and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
 /// The display name of an entity: its title, else its name, else its id.
@@ -132,12 +274,12 @@ impl Service {
     /// across Workspaces — those it owns, presents or joined (expired ones included, to say so), and those whose
     /// permission object it reads (see [`Self::may_open_unlinked`]). Live ones first, the rest by start (or creation)
     /// time, newest first. Each says how the caller would come in (`my_role`: presenter, owner, audience — joined
-    /// before — or member), whether it presents (`presenting`), when it was last there (`opened_at`) and `cover` (not
-    /// generated yet: null). The server adds `online` and `url`.
+    /// before — or member), whether it presents (`presenting`), when it was last there (`opened_at`) and its `cover`
+    /// ([`Self::session_cover`]). The server adds `online` and `url`.
     pub fn session_list_open(&self, caller: &Caller, limit: usize) -> WsResult<Value> {
         let mut rows = Vec::new();
         if caller.is_guest() {
-            return Ok(json!({ "ok": true, "sessions": rows }));
+            return Ok(json!({ "ok": true, "sessions": [] }));
         }
         let all = self.sessions.in_states(&[PREPARED, LIVE, ENDED, ARCHIVED, EXPIRED])?;
         // whether the caller reads each permission object, judged once per object
@@ -164,11 +306,43 @@ impl Service {
             v["my_role"] = json!(my_role);
             v["presenting"] = json!(s.presenter == caller.principal);
             v["opened_at"] = json!(participant.map(|p| format_utc_ms(p.last_seen_ms)));
-            v["cover"] = Value::Null;
-            rows.push((s.state == LIVE, s.started_ms.unwrap_or(s.created_ms), v));
+            rows.push((s.state == LIVE, s.started_ms.unwrap_or(s.created_ms), v, s));
         }
         rows.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-        let out: Vec<Value> = rows.into_iter().take(limit).map(|(_, _, v)| v).collect();
+        // the covers of what is listed only
+        let out: Vec<Value> = rows
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, mut v, s)| {
+                v["cover"] = self.session_cover(&s, caller);
+                v
+            })
+            .collect();
         Ok(json!({ "ok": true, "sessions": out }))
+    }
+
+    /// The cover of a public lecture's card (UI 框架 PRD §9.2, K6), the same stopgap as a Workspace's
+    /// ([`Workspace::cover`]): on the canvases of its presentation path, in the order of the steps, the first Block
+    /// showing a picture or a poster — in the run Workspace (what the stage shows) when the caller reads it there, else
+    /// in the courseware as the caller reads it now; null when neither gives one.
+    pub fn session_cover(&self, s: &SessionRow, caller: &Caller) -> Value {
+        for id in [&s.workspace_id, &s.source_workspace_id] {
+            let Ok(handle) = self.workspace(id) else { continue };
+            let ws = handle.lock().unwrap();
+            let Ok(access) = ws.require_ws_any(caller) else { continue };
+            let mut surfaces: Vec<String> = Vec::new();
+            for step in ws.path_steps(&s.path_id).unwrap_or_default() {
+                if let Some(surface) = step["surface_id"].as_str() {
+                    if !surfaces.iter().any(|known| known == surface) {
+                        surfaces.push(surface.to_string());
+                    }
+                }
+            }
+            match ws.cover_on(&access, &surfaces) {
+                Ok(cover) if !cover.is_null() => return cover,
+                _ => {}
+            }
+        }
+        Value::Null
     }
 }

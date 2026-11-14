@@ -427,8 +427,8 @@ impl Service {
                 item["anonymous"] = json!(anonymous);
                 item["published"] = json!(published);
                 item["live_sessions"] = json!(live.get(&name).copied().unwrap_or(0));
-                // a picture of a canvas is not generated yet (K6): the card draws its own placeholder
-                item["cover"] = Value::Null;
+                // a picture from a canvas as the caller reads it (K6, a stopgap: `Workspace::cover`), else the card's placeholder
+                item["cover"] = ws.cover(&access).unwrap_or(Value::Null);
                 out.push(item);
             }
         }

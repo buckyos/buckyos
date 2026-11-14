@@ -917,6 +917,9 @@
        "type": "integer",
        "minimum": 1,
        "maximum": 1000
+      },
+      "default": {
+       "description": "What a new record holds when its insert does not give this field: a value of the field's type (not null, not a formula); not on submitter, unique or object_ref fields. Existing records are not changed (backfill does that)."
       }
      }
     },

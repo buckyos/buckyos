@@ -1,0 +1,13 @@
+/* The object tree's keyboard focus and the "移动到…" places (UI 框架 PRD §5.2; ObjectTree.tsx, dialogs.tsx). */
+
+/* the row of the focused tree item carries the focus ring (the item itself holds its children too) */
+.aiws-dm-tree [role='treeitem']:focus { outline: none; }
+.aiws-dm-tree [role='treeitem']:focus-visible > .aiws-tree-row { outline: 2px solid var(--cp-focus-ring); outline-offset: -2px; }
+.aiws-dm-tree [role='treeitem']:focus-visible > .aiws-dm-row button.aiws-dm-row-more { visibility: visible; }
+
+.aiws-dm-pick-note { margin-left: auto; padding-left: 8px; }
+.aiws-root button.aiws-dm-pick-item:disabled { opacity: 1; color: var(--cp-muted); cursor: default; }
+.aiws-root button.aiws-dm-pick-item[data-current='true'] { background: var(--cp-surface-2); }
+@media (pointer: coarse) {
+  .aiws-root button.aiws-dm-pick-item { min-height: 44px; }
+}

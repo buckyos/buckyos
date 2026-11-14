@@ -1,14 +1,17 @@
 /* The home's workspace cards (UI framework PRD §9.2): a click anywhere on the card opens the workspace; the rest — a
  * new tab, Clone, export, offline, details, delete — is in its ⋯ menu. The information line: the owner (when it is not
- * me), the last modification, my role; the marks: prepared for offline, public, a public class live now (K6). Covers
- * are not generated yet: an icon on a colour derived from the workspace id, so cards tell apart. */
+ * me), the last modification, my role; the marks: prepared for offline, public, a public class live now (K6). The
+ * cover is the first picture of a canvas the service names (K6, a stopgap: CoverPicture.tsx), loaded lazily; without
+ * one — or until it loads, or when it fails — an icon on a colour derived from the workspace id, so cards tell apart. */
 
 import type { CSSProperties } from 'react'
 import { LayoutDashboard, MoreHorizontal, Plus, WifiOff } from 'lucide-react'
+import type { Transport } from '../../api/transport'
 import type { WorkspaceListItem } from '../../api/types'
 import type { PreparedHint } from '../../offline/holder'
 import { useAiwsText } from '../../useAiwsText'
 import { MenuButton, type MenuItem } from '../shell/popover'
+import { CoverPicture } from './CoverPicture'
 import { hueOf, isMine, ROLE_KEY, roleOf } from './model'
 
 export interface WorkspaceCardActions {
@@ -25,8 +28,10 @@ function Cover({ id, offline = false }: { id: string; offline?: boolean }) {
   return <span className="aiws-home-cover" aria-hidden="true" style={{ '--aiws-home-hue': hueOf(id) } as CSSProperties}><Icon size={22} /></span>
 }
 
-export function WorkspaceCard({ workspace, me, openedAt, prepared, opening, busy, restricted, offlineReason, onOpen, actions }: {
+export function WorkspaceCard({ workspace, transport, me, openedAt, prepared, opening, busy, restricted, offlineReason, onOpen, actions }: {
   workspace: WorkspaceListItem
+  /** The home's transport: the cover's bytes come through it. */
+  transport: Transport
   /** Who I am (the owner is named when it is someone else). */
   me: string | null
   /** When I last opened it ("Recent" shows it instead of the modification). */
@@ -58,7 +63,9 @@ export function WorkspaceCard({ workspace, me, openedAt, prepared, opening, busy
   return (
     <div className="aiws-home-card" data-testid="aiws-workspace-card" data-workspace-id={workspace.workspace_id} data-role={role} data-opening={opening || undefined}>
       <button type="button" className="aiws-home-card-main" data-testid="aiws-open" disabled={opening} onClick={onOpen}>
-        <Cover id={workspace.workspace_id} />
+        <CoverPicture transport={transport} cover={workspace.cover} className="aiws-home-cover" style={{ '--aiws-home-hue': hueOf(workspace.workspace_id) } as CSSProperties}>
+          <LayoutDashboard size={22} />
+        </CoverPicture>
         <span className="aiws-home-card-body">
           <span className="aiws-home-card-title aiws-user-text">{workspace.title}</span>
           <span className="aiws-home-card-info">

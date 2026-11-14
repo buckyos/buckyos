@@ -149,17 +149,19 @@ test('DIR-02 a directory Block from the insert catalog on a free canvas: add fro
   await page.waitForTimeout(500)
   expect(Object.keys(await membersOf(api, ws.workspace_id, dirId))).not.toContain('slow.txt')
 
-  // a new subdirectory is a directory of its own, linked here; a file moves into it by dragging its row onto it
+  // a new subdirectory is a folder of this directory (Q25), not a directory of its own; a file moves into it by
+  // dragging its row onto it
+  const directories = async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: Json) => e.type_id === 'buckyos.dir' && !e.deleted).length
+  expect(await directories()).toBe(1)
   await editor.getByTestId('aiws-directory-upload').click()
   await page.getByTestId('aiws-directory-add-folder').click()
   await page.getByTestId('aiws-directory-name').fill('归档')
   await page.getByTestId('aiws-directory-save').click()
-  await expect(member(editor, '归档')).toHaveAttribute('data-kind', 'dir')
-  const archive = (await membersOf(api, ws.workspace_id, dirId))['归档']
-  expect(archive.kind).toBe('dir')
+  await expect(member(editor, '归档')).toHaveAttribute('data-folder', 'true')
+  expect((await membersOf(api, ws.workspace_id, dirId))['归档']).toEqual({ kind: 'folder' })
+  expect(await directories()).toBe(1)
   await member(editor, 'b (2).txt').dragTo(member(editor, '归档'))
-  await expect.poll(async () => Object.keys(await membersOf(api, ws.workspace_id, archive.entity_id))).toEqual(['b (2).txt'])
-  expect(Object.keys(await membersOf(api, ws.workspace_id, dirId))).not.toContain('b (2).txt')
+  await expect.poll(async () => Object.keys(await membersOf(api, ws.workspace_id, dirId)).sort()).toEqual(['a.txt', 'b.txt', '归档', '归档/b (2).txt'])
 })
 
 test('DIR-03 a member\'s link opens its folder and previews it in the directory Block', async ({ page, context, api }) => {
@@ -247,8 +249,8 @@ test('DIR-20 (§15 #20, directory) a phone adds from the Zone, renames, moves an
   await page.getByTestId('aiws-directory-add-folder').tap()
   await page.getByTestId('aiws-directory-name').fill('票据')
   await page.getByTestId('aiws-directory-save').tap()
-  await expect(member(editor, '票据')).toHaveAttribute('data-kind', 'dir')
-  const sub = (await membersOf(api, ws.workspace_id, 'phone-dir'))['票据'].entity_id as string
+  await expect(member(editor, '票据')).toHaveAttribute('data-folder', 'true')
+  expect((await membersOf(api, ws.workspace_id, 'phone-dir'))['票据']).toEqual({ kind: 'folder' })
   await member(editor, '发票.png').getByTestId('aiws-directory-row-menu').tap()
   await actions.getByTestId('aiws-directory-move').tap()
   const move = page.getByTestId('aiws-directory-move-dialog')
@@ -256,7 +258,7 @@ test('DIR-20 (§15 #20, directory) a phone adds from the Zone, renames, moves an
   await move.locator('[data-testid="aiws-directory-move-folder"][data-name="票据"]').tap()
   await move.getByTestId('aiws-directory-move-here').tap()
   await expect(member(editor, '发票.png')).toHaveCount(0)
-  await expect.poll(async () => Object.keys(await membersOf(api, ws.workspace_id, sub))).toEqual(['发票.png'])
+  await expect.poll(async () => Object.keys(await membersOf(api, ws.workspace_id, 'phone-dir')).sort()).toEqual(['周末清单.txt', '票据', '票据/发票.png'].sort())
 
   // into the subdirectory and back by the breadcrumb
   await member(editor, '票据').getByTestId('aiws-directory-open').tap()
@@ -277,7 +279,7 @@ test('DIR-20 (§15 #20, directory) a phone adds from the Zone, renames, moves an
   await actions.getByTestId('aiws-directory-remove').tap()
   await page.getByTestId('aiws-directory-confirm-ok').tap()
   await expect(member(editor, '周末清单.txt')).toHaveCount(0)
-  await expect.poll(async () => Object.keys(await membersOf(api, ws.workspace_id, 'phone-dir'))).toEqual(['票据'])
+  await expect.poll(async () => Object.keys(await membersOf(api, ws.workspace_id, 'phone-dir')).sort()).toEqual(['票据', '票据/发票.png'])
 
   // a long press selects (several rows, one bar of actions)
   const cdp = await context.newCDPSession(page)

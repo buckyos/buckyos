@@ -2,8 +2,8 @@
  * there is any and the category kept once picked, search that filters as it is typed, filter settings kept over a reload
  * (the person's preference across Workspaces, K4), the card fields of K6 (owner, last change, my role, public, live),
  * cards opened by a click, the card menu (details, delete with a confirmation), every public class I may open (K7) going
- * in or replaying by state and marking the ones I present, a package exported into the Zone by default and imported
- * from it, and the phone layout. The test accounts open workspaces all through the suite: "Recent" is what the service
+ * in or replaying by state and marking the ones I present, the cards' covers (K6, a stopgap), a package exported into
+ * the Zone by default and imported from it, and the phone layout. The test accounts open workspaces all through the suite: "Recent" is what the service
  * recorded, so the specs decide what the home starts on from the service. */
 
 import { readFileSync } from 'node:fs'
@@ -53,6 +53,20 @@ async function hasRecent(api: Api, token: string): Promise<boolean> {
   const list = await api.rpc(token, 'ws.list', {})
   const open = await api.rpc(token, 'session.list_open', {})
   return (list.workspaces as Json[]).some((w) => w.opened_at) || (open.sessions as Json[]).some((s) => s.opened_at)
+}
+
+/** A 1×1 PNG; bytes after its end make distinct objects of it that still decode. */
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+
+/** A picture `id` (in `folder`) shown by a Block on canvas `surface`; its object id. */
+async function pictureBlock(api: Api, token: string, ws: { workspace_id: string; epoch: string }, surface: string, folder: string, id: string, tag: string): Promise<string> {
+  const up = await api.uploadAsset(token, ws.workspace_id, Buffer.concat([PNG, Buffer.from(tag)]))
+  const made = await api.commit(token, ws, [
+    { op: 'entity.create', entity_id: id, type_id: 'buckyos.asset-ref', parent_id: folder, order_key: 'z', payload: { object_id: up.object_id, file_name: `${id}.png` } },
+    { op: 'entity.create', entity_id: `c-${id}`, type_id: 'buckyos.cell', parent_id: surface, order_key: 'z', placement: { x: 0, y: 0, w: 200, h: 200 }, payload: { view: { type: 'asset', version: 1 }, source_ref: { entity_id: id } } },
+  ])
+  expect(made.status, JSON.stringify(made)).toBe('accepted')
+  return up.object_id as string
 }
 
 async function session(api: Api, token: string, workspaceId: string, title: string): Promise<string> {
@@ -249,6 +263,43 @@ test('§15-29 a card opens its workspace; every public class I may open is liste
   const recent = page.getByTestId('aiws-home-grid-recent')
   await expect(recent.locator(':scope > *').first()).toHaveAttribute('data-session-id', live)
   await expect(recent.locator(`[data-workspace-id="${mine.workspace_id}"]`)).toBeVisible()
+})
+
+test('§9.2 K6 covers on the cards (a stopgap): a canvas\'s picture filling the cover; the placeholder without one or when it cannot be fetched; a public class shows the picture on its stage\'s canvas', async ({ page, api }) => {
+  test.setTimeout(120_000)
+  const tag = tagOf(92)
+  const pictured = await api.freeCanvas(ALICE, `${tag} 有封面`)
+  await pictureBlock(api, ALICE, pictured, 'free', 'free-content', 'pic', `${tag}-a`)
+  const plain = await api.freeCanvas(ALICE, `${tag} 无封面`)
+  const broken = await api.freeCanvas(ALICE, `${tag} 取不到`)
+  const unreachable = await pictureBlock(api, ALICE, broken, 'free', 'free-content', 'pic', `${tag}-b`)
+  const course = await courseware(api, ALICE, `${tag} 课件`) as { workspace_id: string; epoch: string }
+  course.epoch = (await api.rpc(ALICE, 'ws.get_info', { workspace_id: course.workspace_id })).epoch
+  await pictureBlock(api, ALICE, course, 's-launch', 's-launch-content', 'stage-pic', `${tag}-c`)
+  const lecture = await session(api, ALICE, course.workspace_id, `${tag} 有封面的课`)
+  // the third picture cannot be fetched (the service would give it: the page is told otherwise)
+  await page.route((url) => url.href.includes(`/asset/`) && url.href.includes(unreachable), (route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"ok":false}' }))
+
+  await openHome(page, ALICE)
+  await tab(page, 'all').click()
+  await page.getByTestId('aiws-home-search').fill(tag)
+  const cover = (id: string) => card(page, id).getByTestId('aiws-home-cover')
+  await expect(cover(pictured.workspace_id)).toHaveAttribute('data-cover', 'shown')
+  const picture = cover(pictured.workspace_id).getByTestId('aiws-home-cover-picture')
+  await expect.poll(() => picture.evaluate((el) => (el as HTMLImageElement).complete ? (el as HTMLImageElement).naturalWidth : 0)).toBe(1)
+  // it fills the cover area
+  const area = (await cover(pictured.workspace_id).boundingBox())!
+  expect(Math.round((await picture.boundingBox())!.width)).toBe(Math.round(area.width))
+  // without a picture, and when it cannot be fetched: the placeholder (an icon on the card's own colour)
+  await expect(cover(plain.workspace_id)).toHaveAttribute('data-cover', 'none')
+  await expect(cover(plain.workspace_id).locator('svg')).toBeVisible()
+  await expect(cover(broken.workspace_id)).toHaveAttribute('data-cover', 'failed')
+  await expect(cover(broken.workspace_id).locator('svg')).toBeVisible()
+  await expect(cover(broken.workspace_id).getByTestId('aiws-home-cover-picture')).toHaveCount(0)
+  // the public class: the picture on the canvas its path starts on
+  await tab(page, 'sessions').click()
+  await expect(sessionCard(page, lecture).getByTestId('aiws-home-cover')).toHaveAttribute('data-cover', 'shown')
+  await expect(sessionCard(page, lecture).getByTestId('aiws-home-cover-picture')).toBeVisible()
 })
 
 test('§9.3 export saves the package into the Zone by default (the system file picker), or downloads it; Import takes it from the Zone', async ({ page, api }) => {

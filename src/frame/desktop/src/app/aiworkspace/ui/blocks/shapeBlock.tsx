@@ -276,7 +276,6 @@ const lineGroup = () => ({ id: 'shape-line', label: aiwsT('aiworkspace.blocks.sh
 
 function shapeFields(): ConfigField[] {
   const t = aiwsT
-  const write = (patch: Record<string, Json | null>, label: string) => (context: RenderContext, store: WorkspaceStore) => setCellConfig(context, store, patch, label)
   const kinds = SHAPE_KINDS.map((k) => ({ value: k.kind, label: t(KIND_LABEL[k.kind]) }))
   const widthList = widths(t)
   const dashList = dashes(t)
@@ -288,14 +287,16 @@ function shapeFields(): ConfigField[] {
     { key: 'shape', id: 'shape-kind', section: 'look', label: t('aiworkspace.blocks.shape.shape'), kind: 'select', quick: true, icon: Shapes,
       options: [...kinds, { value: 'svg', label: t(KIND_LABEL.svg) }], get: (c) => look(c).kind,
       picker: ({ value, pick }) => <ShapePicker value={value as ShapeKind} onPick={pick} />,
-      set: (c, store, value) => { const kind = String(value ?? 'rect') as ShapeKind; write({ shape: kind, ...(kind === 'svg' ? {} : { svg: null }) }, changed(t, t('aiworkspace.blocks.shape.shape'), SHAPE_KINDS.some((k) => k.kind === kind) ? t(KIND_LABEL[kind]) : kind))(c, store) } },
+      patch: (_c, value) => { const kind = String(value ?? 'rect'); return { shape: kind, ...(kind === 'svg' ? {} : { svg: null }) } },
+      editLabel: (value) => { const kind = String(value ?? 'rect') as ShapeKind; return changed(t, t('aiworkspace.blocks.shape.shape'), SHAPE_KINDS.some((k) => k.kind === kind) ? t(KIND_LABEL[kind]) : kind) } },
     { key: 'fill', id: 'shape-fill', section: 'look', label: t('aiworkspace.blocks.shape.fill'), kind: 'color', quick: true, palette: 'fill', extras: fillExtras(t), when: (c) => look(c).kind !== 'line', get: (c) => look(c).fill,
-      set: (c, store, value) => write({ fill: (value as string) || null }, t('aiworkspace.blocks.shape.fillEdit'))(c, store) },
+      patch: (_c, value) => ({ fill: (value as string) || null }), editLabel: () => t('aiworkspace.blocks.shape.fillEdit') },
     { key: 'stroke', id: 'shape-stroke', section: 'look', label: t('aiworkspace.blocks.shape.stroke'), kind: 'color', quick: true, palette: 'ink', extras: strokeExtras(t), get: (c) => look(c).stroke,
-      set: (c, store, value) => write({ stroke: (value as string) || null }, t('aiworkspace.blocks.shape.strokeEdit'))(c, store) },
+      patch: (_c, value) => ({ stroke: (value as string) || null }), editLabel: () => t('aiworkspace.blocks.shape.strokeEdit') },
     { key: 'stroke_width', id: 'shape-width', section: 'look', label: t('aiworkspace.blocks.shape.lineWidth'), kind: 'number', quickGroup: lineGroup(), options: widthList, min: 0,
       get: (c) => (look(c).stroke === 'none' ? 0 : look(c).strokeWidth),
-      set: (c, store, value) => { const n = Number(value ?? 2); write(n === 0 ? { stroke: 'none' } : { stroke_width: n === 2 ? null : n, ...(look(c).stroke === 'none' ? { stroke: null } : {}) }, changed(t, t('aiworkspace.blocks.shape.lineWidth'), String(n)))(c, store) } },
+      patch: (c, value) => { const n = Number(value ?? 2); return n === 0 ? { stroke: 'none' } : { stroke_width: n === 2 ? null : n, ...(look(c).stroke === 'none' ? { stroke: null } : {}) } },
+      editLabel: (value) => changed(t, t('aiworkspace.blocks.shape.lineWidth'), String(Number(value ?? 2))) },
     { key: 'dash', id: 'shape-dash', section: 'look', label: t('aiworkspace.blocks.lineStyle'), kind: 'select', quickGroup: lineGroup(), options: dashList, default: 'solid', get: (c) => look(c).dash },
     { key: 'opacity', id: 'shape-opacity', section: 'look', label: t('aiworkspace.blocks.shape.opacity'), kind: 'number', quickGroup: lineGroup(), options: OPACITIES, default: 1, min: 0, max: 1, get: (c) => look(c).opacity },
     { key: 'radius', id: 'shape-radius', section: 'look', label: t('aiworkspace.blocks.shape.cornerRadius'), kind: 'number', quickGroup: lineGroup(), options: radii(t), default: 0, min: 0, when: (c) => roundCorners(look(c).kind), get: (c) => look(c).radius },
@@ -307,12 +308,12 @@ function shapeFields(): ConfigField[] {
     { key: 'text', section: 'text', label: t('aiworkspace.blocks.shape.text'), kind: 'textarea', get: (c) => look(c).text, set: (c, store, value) => saveText(c, store, String(value ?? '')) },
     { key: 'font_size', id: 'shape-font-size', section: 'text', label: t('aiworkspace.blocks.fontSize'), kind: 'number', quick: true, icon: ALargeSmall, presets: FONT_SIZES, default: 14, min: 1, get: (c) => look(c).fontSize },
     { key: 'font_color', id: 'shape-font-color', section: 'text', label: t('aiworkspace.blocks.textColor'), kind: 'color', quick: true, palette: 'ink', extras: inkExtras(t), default: 'auto', get: (c) => look(c).fontColor || 'auto',
-      set: (c, store, value) => write({ font_color: value && value !== 'auto' ? (value as string) : null }, t('aiworkspace.blocks.textColor'))(c, store) },
+      patch: (_c, value) => ({ font_color: value && value !== 'auto' ? (value as string) : null }), editLabel: () => t('aiworkspace.blocks.textColor') },
     { key: 'bold', id: 'shape-bold', section: 'text', label: t('aiworkspace.blocks.shape.bold'), kind: 'boolean', quick: true, icon: Bold, get: (c) => look(c).bold },
     { key: 'italic', id: 'shape-italic', section: 'text', label: t('aiworkspace.blocks.shape.italic'), kind: 'boolean', quick: true, icon: Italic, get: (c) => look(c).italic },
     { key: 'underline', id: 'shape-underline', section: 'text', label: t('aiworkspace.blocks.shape.underline'), kind: 'boolean', quick: true, icon: Underline, get: (c) => look(c).underline },
     { key: 'align', id: 'shape-align', section: 'text', label: t('aiworkspace.blocks.shape.hAlign'), kind: 'select', quick: true, icon: AlignCenter, options: alignList, get: (c) => look(c).align,
-      set: (c, store, value) => write({ align: String(value ?? 'center') }, changed(t, t('aiworkspace.blocks.shape.alignEdit'), alignList.find((a) => a.value === value)?.label ?? String(value)))(c, store) },
+      patch: (_c, value) => ({ align: String(value ?? 'center') }), editLabel: (value) => changed(t, t('aiworkspace.blocks.shape.alignEdit'), alignList.find((a) => a.value === value)?.label ?? String(value)) },
     { key: 'valign', id: 'shape-valign', section: 'text', label: t('aiworkspace.blocks.shape.vAlign'), kind: 'select', quick: true, icon: AlignVerticalJustifyCenter, options: valignList, default: 'middle', get: (c) => look(c).valign },
     { key: 'font_family', section: 'text', label: t('aiworkspace.blocks.shape.fontFamily'), kind: 'select', default: '', get: (c) => look(c).fontFamily ?? '',
       options: [{ value: '', label: t('aiworkspace.blocks.shape.fontFamilyTheme') }, ...FONT_FAMILIES.map((f) => ({ value: f, label: t(FONT_FAMILY_LABEL[f]) }))] },

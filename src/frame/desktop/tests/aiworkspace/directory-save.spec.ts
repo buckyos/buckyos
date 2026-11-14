@@ -1,9 +1,11 @@
 /* "保存到 Zone" of a directory's files (UI 框架 PRD §7.4, needs `export`; the Zone is the user's main file system): a
  * row's ⋯ saves one file through the system file picker's save mode, the selection bar saves several into the folder
  * chosen in its folder mode — a taken name is never written over —, and downloading to this device stays the other
- * entry. Without `export` both are disabled and say why. */
+ * entry; a file inside a subdirectory (a folder of the directory, Q25) saves the same way, a selected folder does not.
+ * Without `export` both are disabled and say why. */
 
 import type { Locator, Page } from '@playwright/test'
+import { closeSelect } from '../e2e/fixtures/selectDialog'
 import { expect, openedPicker, openWorkspace, test, zoneGoto, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
@@ -11,7 +13,7 @@ const BOB = 'tok-bob'
 
 const member = (scope: Page | Locator, name: string) => scope.locator(`[data-testid="aiws-directory-member"][data-name="${name}"]`)
 
-/** A flow page with a directory Block of two text files. */
+/** A flow page with a directory Block of two text files and a subdirectory `归档` holding a third. */
 async function workspace(api: Api, title: string) {
   const ws = await api.rpc(ALICE, 'ws.create', { title }) as { workspace_id: string; epoch: string }
   const a = await api.uploadAsset(ALICE, ws.workspace_id, Buffer.from('file a'))
@@ -19,7 +21,7 @@ async function workspace(api: Api, title: string) {
   const made = await api.commit(ALICE, ws, [
     { op: 'entity.create', entity_id: 'page-content', type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: 'a', payload: { kind: 'folder', system: 'surface_content', surface_id: 'page', title: 'Page' } },
     { op: 'entity.create', entity_id: 'page', type_id: 'buckyos.container', parent_id: 'surfaces', order_key: 'a', payload: { kind: 'surface', layout: { mode: 'flow' }, title: 'Page', content_folder_id: 'page-content' } },
-    { op: 'entity.create', entity_id: 'files', type_id: 'buckyos.dir', parent_id: 'page-content', order_key: 'a', name: '资料', payload: { members: { 'a.txt': { kind: 'file', object_id: a.object_id }, 'b.txt': { kind: 'file', object_id: b.object_id } } } },
+    { op: 'entity.create', entity_id: 'files', type_id: 'buckyos.dir', parent_id: 'page-content', order_key: 'a', name: '资料', payload: { members: { 'a.txt': { kind: 'file', object_id: a.object_id }, 'b.txt': { kind: 'file', object_id: b.object_id }, '归档': { kind: 'folder' }, '归档/c.txt': { kind: 'file', object_id: b.object_id } } } },
     { op: 'entity.create', entity_id: 'cell-files', type_id: 'buckyos.cell', parent_id: 'page', order_key: 'a', payload: { view: { type: 'directory' }, source_ref: { entity_id: 'files' }, title: '资料' } },
   ])
   expect(made.status, JSON.stringify(made)).toBe('accepted')
@@ -65,7 +67,25 @@ test('§7.4 目录“保存到 Zone”：行菜单保存一个文件（保存模
   const check = (await openedPicker(page)).dialog
   await zoneGoto(check, ['Documents'])
   for (const name of ['a.txt', 'a (2).txt', 'b.txt']) await expect(check.locator('[data-testid="select-list"]').getByText(name, { exact: true })).toBeVisible()
-  await page.keyboard.press('Escape')
+  await closeSelect(page)
+  await expect(check).toHaveCount(0)
+
+  // a subdirectory is not saved as a file: selected, it disables the bar's save and says why
+  await member(editor, '归档').getByTestId('aiws-directory-row-menu').click()
+  await expect(actions.getByTestId('aiws-directory-save-zone')).toHaveCount(0)
+  await actions.getByTestId('aiws-directory-select').click()
+  await expect(bar.getByTestId('aiws-directory-bulk-save-zone')).toBeDisabled()
+  await expect(bar.getByTestId('aiws-directory-bulk-save-zone')).toHaveAttribute('title', '只能保存文件')
+  await bar.getByTestId('aiws-directory-bulk-cancel').click()
+  // a file inside it is saved like any other
+  await member(editor, '归档').getByTestId('aiws-directory-open').click()
+  await member(editor, 'c.txt').getByTestId('aiws-directory-row-menu').click()
+  await actions.getByTestId('aiws-directory-save-zone').click()
+  const inner = (await openedPicker(page)).dialog
+  await zoneGoto(inner, ['Documents'])
+  await expect(inner.getByTestId('select-name')).toHaveValue('c.txt')
+  await inner.getByTestId('select-confirm').click()
+  await expect(page.getByTestId('aiws-notice').filter({ hasText: '已保存到 /home/Documents/c.txt' })).toBeVisible({ timeout: 30_000 })
 })
 
 test('§7.4 没有 export：目录的“保存到 Zone”和“下载”都禁用并说明', async ({ page, api }) => {

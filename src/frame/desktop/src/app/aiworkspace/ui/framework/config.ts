@@ -7,7 +7,8 @@
  * Storage (K4): the Workspace layer is the root's `config.toolbar` (state/settings.ts `useWorkspaceSettings`), the canvas
  * layer the Surface's `config.toolbar` (`useSurfaceToolbar`), the personal layer the cross-workspace preference `zones`
  * (ui/framework/personal.ts). Hiding every zone of a canvas is App mode (§4.6): the title zone hidden leaves whoever
- * may change the layout the collapsed ⋯ of `AppModeEntry`. */
+ * may change the layout the collapsed ⋯ of `AppModeEntry`. The status bar is never hidden (Q28): no layer hides or
+ * locks it, App mode included. */
 
 import type { Json } from '../../api/types'
 import type { CanvasMode } from '../blocks/registry'
@@ -50,10 +51,13 @@ export interface ResolvedItem { key: string; action: string; args?: Json; title?
 export interface ResolvedZone { hidden: boolean; locked: boolean; items: ResolvedItem[] }
 export type ResolvedToolbar = Record<ZoneId, ResolvedZone>
 
-/** The zones a shared layer may arrange in the customize dialog (§4.6): the title zone and the status bar as a whole,
- * the collaboration zone and the tool selection zone's object group item by item. The context zone only shows with a
- * situation the person started; nothing configures it. */
-export const CUSTOMIZABLE_ZONES: ZoneId[] = ['title', 'collab', 'tools', 'status']
+/** The zones a shared layer may arrange in the customize dialog (§4.6): the title zone as a whole, the collaboration
+ * zone and the tool selection zone's object group item by item. The context zone only shows with a situation the
+ * person started; nothing configures it. The status bar is never hidden (Q28): it is not offered. */
+export const CUSTOMIZABLE_ZONES: ZoneId[] = ['title', 'collab', 'tools']
+
+/** Zones no layer hides or locks (Q28: the status bar — App mode hides the others): what a layer says of them is ignored. */
+export const NEVER_HIDDEN_ZONES: ZoneId[] = ['status']
 
 function stable(value: Json | undefined): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null)
@@ -168,14 +172,23 @@ function personal(zone: Working, config: ZoneConfig) {
   }
 }
 
+/** A zone's configuration without what hides or locks the zone itself (its items stay). */
+function shownZone(config: ZoneConfig): ZoneConfig {
+  const rest: ZoneConfig = { ...config }
+  delete rest.hidden
+  delete rest.locked
+  return rest.relation === 'hide' ? { ...rest, relation: 'inherit' } : rest
+}
+
 /** Merge the layers (in the order given: built-in, workspace, canvas, personal). `keepHidden`: the hidden items stay in
  * the result, marked (the customize dialog lists them unticked). */
 export function mergeToolbar(layers: ConfigLayer[], { keepHidden = false }: { keepHidden?: boolean } = {}): ResolvedToolbar {
   const work = Object.fromEntries(ZONES.map((zone): [ZoneId, Working] => [zone, { hidden: false, locked: false, items: [] }])) as Record<ZoneId, Working>
   for (const { layer, config } of layers) {
     for (const zone of ZONES) {
-      const zc = config?.zones?.[zone]
-      if (!zc) continue
+      const raw = config?.zones?.[zone]
+      if (!raw) continue
+      const zc = NEVER_HIDDEN_ZONES.includes(zone) ? shownZone(raw) : raw
       if (layer === 'personal') personal(work[zone], zc)
       else shared(work[zone], zc)
     }

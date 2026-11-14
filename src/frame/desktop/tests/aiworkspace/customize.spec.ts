@@ -1,8 +1,9 @@
 /* Toolbar customization and App mode (UI 框架 PRD §4.6; K4) against the real backend: "视图 ▸ 自定义工具栏…" edits the
  * shared layer of this canvas (`structure`) or this Workspace (`manage`) — a scope the person may not change is shown
  * disabled with the reason —, its result shows for everyone who opens it, a locked zone is beyond the person's own
- * switches, and the layer travels with a Clone. App mode hides and locks every zone: whoever may change the layout keeps a
- * collapsed ⋯ to show them for a while or customize; anyone else has no way in; the alerts stay. Acceptance §15 #9. */
+ * switches, and the layer travels with a Clone. App mode hides and locks every zone but the status bar, which is never
+ * hidden (Q28: the dialog does not offer it): whoever may change the layout keeps a collapsed ⋯ to show them for a while
+ * or customize; anyone else has no way in; the alerts stay. Acceptance §15 #9. */
 
 import type { Browser, Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
@@ -41,7 +42,7 @@ async function courseware(api: Api, title: string): Promise<{ workspace_id: stri
   return ws
 }
 
-test('§15-9 画布配置隐藏并锁定工具选择区：所有打开的人都看不到，个人设置改不回来；App 模式只给有 structure 的人留退出入口，告警仍然显示', async ({ page, api, browser }) => {
+test('§15-9 画布配置隐藏并锁定工具选择区：所有打开的人都看不到，个人设置改不回来；App 模式只给有 structure 的人留退出入口，告警和状态栏仍然显示（Q28）', async ({ page, api, browser }) => {
   test.slow()
   const ws = await courseware(api, `customize 9 ${Date.now()}`)
   // bob edits content but may not change the structure: no layout of his own to set here
@@ -49,9 +50,11 @@ test('§15-9 画布配置隐藏并锁定工具选择区：所有打开的人都�
   await openWorkspacePage(page, ALICE, ws.workspace_id)
   await expect(page.getByTestId('aiws-object-toolbar')).toBeVisible()
 
-  // this canvas: the tool selection zone hidden and locked
+  // this canvas: the tool selection zone hidden and locked; the status bar is not offered (never hidden, Q28)
   await customize(page)
   await expect(page.getByTestId('aiws-customize-scope-surface')).toBeChecked()
+  await expect(page.getByTestId('aiws-customize-zone-title')).toBeVisible()
+  await expect(page.getByTestId('aiws-customize-zone-status')).toHaveCount(0)
   const tools = page.getByTestId('aiws-customize-zone-tools')
   await tools.getByTestId('aiws-customize-zone-tools-shown').uncheck()
   await tools.getByTestId('aiws-customize-zone-tools-locked').check()
@@ -59,10 +62,12 @@ test('§15-9 画布配置隐藏并锁定工具选择区：所有打开的人都�
   await expect(page.getByTestId('aiws-object-toolbar')).toHaveCount(0)
   const surfaceId = await page.getByTestId('aiws-canvas').getAttribute('data-surface-id')
   expect((await api.read(ALICE, ws.workspace_id, surfaceId!)).content.payload.config.toolbar).toEqual({ zones: { tools: { hidden: true, locked: true } } })
-  // the person's own switch cannot bring it back: locked, said so
+  // the person's own switch cannot bring it back: locked, said so; "视图 ▸ 工具区" has no switch for the status bar
   await mainMenu(page, 'aiws-menu-view', 'aiws-menu-zones')
   await expect(page.getByTestId('aiws-menu-pref-object-toolbar')).toBeDisabled()
   await expect(page.getByTestId('aiws-menu-pref-object-toolbar')).toContainText('已由工作区或画布锁定')
+  await expect(page.getByTestId('aiws-menu-pref-view-toolbar')).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: '状态栏' })).toHaveCount(0)
   await page.keyboard.press('Escape')
 
   // bob sees it the same way; his own switch is locked too; the customize entry says why he may not
@@ -79,20 +84,29 @@ test('§15-9 画布配置隐藏并锁定工具选择区：所有打开的人都�
   const offer = bob.page.getByTestId('aiws-notice').filter({ hasText: '使用引导' })
   await expect(offer).toBeVisible()
 
-  // App mode on this canvas: every zone hidden and locked, at once for bob
+  // App mode on this canvas: every zone hidden and locked, at once for bob — but the status bar (Q28)
   await customize(page)
   await page.getByTestId('aiws-customize-app-mode').click()
   await expect(page.getByTestId('aiws-customize-zone-title-shown')).not.toBeChecked()
   await save(page)
+  expect(Object.keys((await api.read(ALICE, ws.workspace_id, surfaceId!)).content.payload.config.toolbar.zones).sort()).toEqual(['collab', 'title', 'tools'])
   for (const p of [page, bob.page]) {
     await expect(p.getByTestId('aiws-main-toolbar')).toHaveCount(0)
     await expect(p.getByTestId('aiws-view-toolbar')).toHaveCount(0)
     await expect(p.getByTestId('aiws-object-toolbar')).toHaveCount(0)
+    await expect(p.getByTestId('aiws-status')).toBeVisible()
+    await expect(p.getByTestId('aiws-save-summary')).toBeVisible()
   }
-  // nothing to change it with for bob: no ⋯, no status bar while all is saved; the alert stays
+  // nothing to change it with for bob: no ⋯; the status bar and the alert stay
   await expect(bob.page.getByTestId('aiws-app-mode-entry')).toHaveCount(0)
-  await expect(bob.page.getByTestId('aiws-status')).toHaveCount(0)
   await expect(offer).toBeVisible()
+  // a layer written by hand that hides the status bar is ignored
+  const config = (await api.read(ALICE, ws.workspace_id, surfaceId!)).content
+  expect((await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: surfaceId!, keys: [{ key: 'config', expect: { rev: config.key_revs.config },
+    value: { ...config.payload.config, toolbar: { zones: { ...config.payload.config.toolbar.zones, status: { hidden: true, locked: true } } } } }] }])).status).toBe('accepted')
+  await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, surfaceId!)).content.payload.config.toolbar.zones.status).toEqual({ hidden: true, locked: true })
+  await expect(bob.page.getByTestId('aiws-status')).toBeVisible()
+  await expect(bob.page.getByTestId('aiws-status-online')).toBeVisible()
   // alice may structure the canvas: the collapsed ⋯ shows the zones in her window only
   await page.getByTestId('aiws-app-mode-entry').click()
   await page.getByTestId('aiws-menu-app-mode-reveal').click()

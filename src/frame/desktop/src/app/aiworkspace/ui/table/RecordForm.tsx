@@ -234,13 +234,15 @@ export function RecordForm({ fields, write, testId, autoFocusFirst }: { fields: 
 
 // ---- a new record: the values are collected and written together
 
-export interface DraftFieldDef { id: string; name: string; def: ValueDef; testId: string }
+/** `fallback`: the field's default (§7.3), shown filled in; the service gives it to a field the insert leaves out, so a
+ * field emptied here gets it too. */
+export interface DraftFieldDef { id: string; name: string; def: ValueDef; testId: string; fallback?: Json }
 
 export function useDraftRecord(fields: readonly DraftFieldDef[]) {
   const { t } = useAiwsText()
   const [drafts, setDrafts] = useState<Record<string, Raw>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const rawFor = (field: DraftFieldDef): Raw => drafts[field.id] ?? (field.def.type === 'multi_select' ? [] : '')
+  const rawFor = (field: DraftFieldDef): Raw => drafts[field.id] ?? rawOf(field.def, field.fallback)
   const set = (id: string, raw: Raw) => { setDrafts((d) => ({ ...d, [id]: raw })); setErrors((e) => { if (!(id in e)) return e; const next = { ...e }; delete next[id]; return next }) }
   /** The values to insert, or null with every problem shown under its field. */
   const build = (): Record<string, Json> | null => {
@@ -248,14 +250,16 @@ export function useDraftRecord(fields: readonly DraftFieldDef[]) {
     const problems: Record<string, string> = {}
     for (const field of fields) {
       const raw = rawFor(field)
+      // left empty, a field with a default gets it from the service
+      const needed = field.def.required && field.fallback === undefined
       if (isEmptyRaw(raw) && !(field.def.type === 'boolean' && raw !== '')) {
-        if (field.def.required) problems[field.id] = t('aiworkspace.data.record.required', { name: field.name })
+        if (needed) problems[field.id] = t('aiworkspace.data.record.required', { name: field.name })
         continue
       }
       const parsed = inputOf(field.def, raw)
       if (!parsed.ok) { problems[field.id] = parsed.error; continue }
       if (parsed.value !== UNSET) values[field.id] = parsed.value
-      else if (field.def.required) problems[field.id] = t('aiworkspace.data.record.required', { name: field.name })
+      else if (needed) problems[field.id] = t('aiworkspace.data.record.required', { name: field.name })
     }
     setErrors(problems)
     return Object.keys(problems).length > 0 ? null : values
@@ -266,18 +270,23 @@ export function useDraftRecord(fields: readonly DraftFieldDef[]) {
 
 /** The fields of a new record: nothing is written until the host adds it. */
 export function DraftRecordForm({ fields, draft, ariaLabel, autoFocusFirst = true }: { fields: readonly DraftFieldDef[]; draft: ReturnType<typeof useDraftRecord>; ariaLabel: (name: string) => string; autoFocusFirst?: boolean }) {
+  const { t } = useAiwsText()
   return (
     <div className="aiws-record-form" data-testid="aiws-table-new-form">
       {fields.map((field, index) => {
         const id = `aiws-new-${field.id}`
         const error = draft.errors[field.id]
+        const raw = draft.rawFor(field)
         return (
           <div key={field.id} className="aiws-record-row" data-testid={field.testId} data-invalid={error ? 'true' : undefined} data-type={field.def.type}>
             <FieldLabel field={field} htmlFor={id} />
             <div className="aiws-record-control">
-              <ValueControl id={id} def={field.def} raw={draft.rawFor(field)} ariaLabel={ariaLabel(field.name)} autoFocus={autoFocusFirst && index === 0} deferChoices
-                onChange={(raw) => draft.set(field.id, raw)} onCommit={(raw) => draft.set(field.id, raw)} />
+              <ValueControl id={id} def={field.def} raw={raw} ariaLabel={ariaLabel(field.name)} autoFocus={autoFocusFirst && index === 0} deferChoices
+                onChange={(next) => draft.set(field.id, next)} onCommit={(next) => draft.set(field.id, next)} />
             </div>
+            {field.fallback !== undefined && isEmptyRaw(raw) && (
+              <div className="aiws-muted aiws-record-error" data-testid="aiws-table-field-default">{t('aiworkspace.fielddefault.emptyTakes', { value: formatValue(field.def, field.fallback) })}</div>
+            )}
             {error && <div className="aiws-error aiws-record-error" role="alert" data-testid="aiws-table-field-error">{error}</div>}
           </div>
         )

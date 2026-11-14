@@ -1,8 +1,9 @@
 /* The data mode (UI 框架 PRD §5; acceptance §15 #11–#15, #21): the object tree's default and filters, new data at a chosen
  * place through the tree's menu, tabs (preview, fixed, switching keeps what was typed, restored after a reload), the
  * "宏" group showing a macro's code, the "工作区权限" node opening the permission editor, the right sidebar following the
- * current tab with a version restored and undone, a directory entered and left; and the data mode on a phone (Pixel 7):
- * from the main menu, the tree full screen, the editor full screen, the sidebar as a bottom panel. */
+ * current tab with a version restored and undone, a directory entered and left; the tree by keyboard (the WAI-ARIA tree
+ * pattern); and the data mode on a phone (Pixel 7): from the main menu, the tree full screen, the editor full screen, the
+ * sidebar as a bottom panel, and "移动到…" choosing the folder and the place in it (the way to reorder by touch). */
 
 import { createHash } from 'node:crypto'
 import { devices, type Page } from '@playwright/test'
@@ -264,6 +265,45 @@ test('§15-15 the sidebar’s three tabs follow the current tab; a version resto
   await expect.poll(nameOf).toBe('新名称')
 })
 
+test('§5.5 the status bar shows the row a table is on: the current cell’s row, the record open in its form', async ({ page, api }) => {
+  const ws = await workspaceWithExtras(api)
+  await openWorkspace(page, ALICE, ws.workspace_id)
+  await dataMode(page)
+  await page.getByTestId('aiws-tree-sales').dblclick()
+  const info = page.getByTestId('aiws-dm-info-text')
+  // on no row yet: the table's size
+  await expect(info).toHaveText('表 · 12 行')
+  const grid = page.getByTestId('aiws-detail-sales')
+  const third = grid.getByTestId('aiws-row').nth(2)
+  const thirdId = await third.getAttribute('data-record-id')
+  // a cell of the third row edited, then left: the bar says where the table is
+  await third.locator('button.aiws-cell-value').first().click()
+  await page.keyboard.press('Escape')
+  await expect(info).toHaveText('表 · 第 3 行 / 共 12 行')
+  await expect(info).toHaveAttribute('data-record-id', thirdId!)
+  // arrows move the current cell, and the row with it
+  await page.keyboard.press('ArrowDown')
+  await expect(info).toHaveText('表 · 第 4 行 / 共 12 行')
+  // the record open in its form; its next record moves the table along, and it stays the current one when closed
+  const fifth = await grid.getByTestId('aiws-row').nth(4).getAttribute('data-record-id')
+  await grid.getByTestId(`aiws-row-open-${fifth}`).click()
+  await expect(info).toHaveText('表 · 第 5 行 / 共 12 行')
+  await page.getByTestId('aiws-table-record-next').click()
+  await expect(info).toHaveText('表 · 第 6 行 / 共 12 行')
+  await expect(info).toHaveAttribute('title', /当前记录：/)
+  await page.getByTestId('aiws-table-record-close').click()
+  await expect(info).toHaveText('表 · 第 6 行 / 共 12 行')
+  // a cell clicked again is the current one
+  await third.locator('button.aiws-cell-value').first().click()
+  await page.keyboard.press('Escape')
+  await expect(info).toHaveText('表 · 第 3 行 / 共 12 行')
+  // another tab has no row; the table's tab opened again starts on none
+  await page.getByTestId('aiws-tree-intro').dblclick()
+  await expect(info).not.toContainText('第')
+  await tab(page, 'sales').click()
+  await expect(info).toHaveText('表 · 12 行')
+})
+
 test('§15-21 a directory opened from the object tree: into a subdirectory and back', async ({ page, api }) => {
   const ws = await api.freeCanvas(ALICE, `dm dir ${Date.now()}`)
   const photo = await api.uploadAsset(ALICE, ws.workspace_id, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAJCAIAAAC0SDtlAAAAFElEQVR42mPQiDpBEmIY1TAoNAAAk1q5oVLxFXwAAAAASUVORK5CYII=', 'base64'))
@@ -285,6 +325,93 @@ test('§15-21 a directory opened from the object tree: into a subdirectory and b
   await editor.locator('[data-testid="aiws-directory-crumb"][data-depth="0"]').click()
   await expect(editor.locator('[data-testid="aiws-directory-member"][data-name="photo.png"]')).toBeVisible()
   await expect(page.getByTestId('aiws-dm-info')).toContainText('2')
+})
+
+/** An empty Workspace with data in a row and a folder: `x` (Xray), the folder `f-docs` (资料) holding `r-a` (Alpha),
+ * `r-b` (Bravo) and `r-c` (Charlie). */
+async function rowsWorkspace(api: Api, title: string) {
+  const ws = await api.rpc(ALICE, 'ws.create', { title }) as { workspace_id: string; epoch: string }
+  const text = (id: string, parent: string, order: string, name: string) => ({ op: 'entity.create', entity_id: id, type_id: 'buckyos.richtext', parent_id: parent, order_key: order, name, payload: {} })
+  const made = await api.commit(ALICE, ws, [
+    text('x', 'data', 'a', 'Xray'),
+    { op: 'entity.create', entity_id: 'f-docs', type_id: 'buckyos.container', parent_id: 'data', order_key: 'b', payload: { kind: 'folder', title: '资料' } },
+    text('r-a', 'f-docs', 'a', 'Alpha'), text('r-b', 'f-docs', 'b', 'Bravo'), text('r-c', 'f-docs', 'c', 'Charlie'),
+  ])
+  expect(made.status, JSON.stringify(made)).toBe('accepted')
+  return ws
+}
+
+/** The children of `parent` in their order (by order key). */
+async function order(api: Api, workspaceId: string, parent: string): Promise<string[]> {
+  return (await api.outline(ALICE, workspaceId)).filter((e) => e.parent_id === parent && !e.deleted)
+    .sort((a, b) => (a.order_key < b.order_key ? -1 : a.order_key > b.order_key ? 1 : 0)).map((e) => e.entity_id as string)
+}
+
+test('§5.2 the object tree by keyboard (WAI-ARIA tree): one tab stop; arrows move, unfold and fold; Home / End; type-ahead; Space previews, Enter opens; Shift+F10 and the menu key open the row menu, focus comes back', async ({ page, api }) => {
+  const ws = await rowsWorkspace(api, `keys ${Date.now()}`)
+  await openOwnPage(page, ws.workspace_id)
+  await dataMode(page)
+  const item = (id: string) => page.locator(`[role="treeitem"][data-entity-id="${id}"]`)
+  const focused = () => page.evaluate(() => document.activeElement?.closest('[role="treeitem"]')?.getAttribute('data-entity-id') ?? null)
+  const press = async (key: string, id: string) => { await page.keyboard.press(key); await expect.poll(focused).toBe(id) }
+  await expect(item('r-c')).toBeVisible()
+  const rows = await page.locator('[role="treeitem"]').evaluateAll((els) => els.map((el) => el.getAttribute('data-entity-id')))
+  expect(rows.slice(0, 5)).toEqual(['x', 'f-docs', 'r-a', 'r-b', 'r-c'])
+  // one tab stop: the first row while nothing is open
+  await expect(page.locator('[role="treeitem"][tabindex="0"]')).toHaveCount(1)
+  await expect(item('x')).toHaveAttribute('tabindex', '0')
+  await page.getByTestId('aiws-dm-search').focus()
+  await page.keyboard.press('Tab')
+  await expect.poll(focused).toBe('x')
+  // ↓ ↑, → into the folder's first row, ← back to it, ← folds, → unfolds
+  await press('ArrowDown', 'f-docs')
+  await expect(item('f-docs')).toHaveAttribute('aria-expanded', 'true')
+  await press('ArrowRight', 'r-a')
+  await press('ArrowDown', 'r-b')
+  await press('ArrowLeft', 'f-docs')
+  await page.keyboard.press('ArrowLeft')
+  await expect(item('f-docs')).toHaveAttribute('aria-expanded', 'false')
+  await expect(item('r-a')).toHaveCount(0)
+  await press('ArrowDown', rows[5] ?? 'f-docs')
+  await press('ArrowUp', 'f-docs')
+  await page.keyboard.press('ArrowRight')
+  await expect(item('f-docs')).toHaveAttribute('aria-expanded', 'true')
+  await expect.poll(focused).toBe('f-docs')
+  // Home / End
+  await press('End', rows.at(-1)!)
+  await press('Home', 'x')
+  // type-ahead: the next row whose name starts with what is typed
+  await page.keyboard.type('br')
+  await expect.poll(focused).toBe('r-b')
+  // Space: the preview tab, the focus stays in the tree; Enter: a tab of its own
+  await page.keyboard.press(' ')
+  await expect(tab(page, 'r-b')).toHaveAttribute('data-preview', 'true')
+  await expect.poll(focused).toBe('r-b')
+  await press('ArrowUp', 'r-a')
+  await page.keyboard.press('Enter')
+  await expect(tab(page, 'r-a')).toHaveAttribute('data-preview', 'false')
+  // the open object is the tab stop once the tree has no focus of its own (a reload)
+  await page.reload()
+  await expect(page.getByTestId('aiws-sources')).toBeVisible({ timeout: 30_000 })
+  await expect(item('r-a')).toHaveAttribute('tabindex', '0')
+  await item('r-a').focus()
+  // Shift+F10: the row's menu, its first entry focused; Esc closes it and the focus is on the row again
+  await page.keyboard.press('Shift+F10')
+  const menu = page.getByTestId('aiws-dm-menu')
+  await expect(menu.getByTestId('aiws-dm-menu-rename')).toBeVisible()
+  await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('role'))).toBe('menuitem')
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  await expect.poll(focused).toBe('r-a')
+  // the menu key does the same; a click on a row moves the tab stop there
+  await press('ArrowDown', 'r-b')
+  await page.keyboard.press('ContextMenu')
+  await expect(menu.getByTestId('aiws-dm-menu-rename')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect.poll(focused).toBe('r-b')
+  await page.getByTestId('aiws-tree-x').click()
+  await expect(item('x')).toHaveAttribute('tabindex', '0')
+  await expect(page.locator('[role="treeitem"][tabindex="0"]')).toHaveCount(1)
 })
 
 test.describe('on a phone', () => {
@@ -346,5 +473,52 @@ test.describe('on a phone', () => {
     await page.getByTestId('aiws-dm-phone-back').tap()
     await page.getByTestId('aiws-top-canvas').tap()
     await expect(page.getByTestId('aiws-canvas')).toBeVisible()
+  })
+
+  test('§5.2 “移动到…” on a phone: a folder, then the place in it — first or after a row; its own folder too, which is how a finger reorders', async ({ page, api }) => {
+    const ws = await rowsWorkspace(api, `move ${Date.now()}`)
+    await openWorkspacePage(page, ALICE, ws.workspace_id)
+    await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+    await page.getByTestId('aiws-main-menu').tap()
+    await page.getByTestId('aiws-main-menu-list').getByTestId('aiws-menu-data-mode').tap()
+    await expect(page.getByTestId('aiws-dm')).toHaveAttribute('data-layer', 'tree')
+    const dialog = page.getByTestId('aiws-dm-move-dialog')
+    const step = dialog.getByTestId('aiws-dm-move-step')
+    const moveTo = async (id: string) => {
+      await page.getByTestId(`aiws-tree-more-${id}`).tap()
+      await page.getByTestId('aiws-dm-menu').getByTestId('aiws-dm-menu-move').tap()
+      await expect(step).toHaveAttribute('data-step', 'folder')
+    }
+    // Charlie, last in 资料: its own folder is offered (marked), its place there is said and cannot be chosen
+    await moveTo('r-c')
+    const viewport = page.viewportSize()!
+    expect((await dialog.boundingBox())!.width).toBeGreaterThan(viewport.width - 2)
+    await expect(dialog.getByTestId('aiws-dm-move-f-docs')).toHaveAttribute('data-current', 'true')
+    await dialog.getByTestId('aiws-dm-move-f-docs').tap()
+    await expect(step).toHaveAttribute('data-step', 'place')
+    await expect(step).toContainText('资料')
+    await expect(dialog.getByTestId('aiws-dm-move-after-r-b')).toBeDisabled()
+    await expect(dialog.getByTestId('aiws-dm-move-after-r-b')).toHaveAttribute('data-current', 'true')
+    await expect(dialog.getByTestId('aiws-dm-move-after-r-c')).toHaveCount(0)
+    expect((await dialog.getByTestId('aiws-dm-move-first').boundingBox())!.height).toBeGreaterThanOrEqual(44)
+    // to the top: reordered in one Commit
+    await dialog.getByTestId('aiws-dm-move-first').tap()
+    await expect(dialog).toHaveCount(0)
+    await expect.poll(() => order(api, ws.workspace_id, 'f-docs')).toEqual(['r-c', 'r-a', 'r-b'])
+    const shown = () => page.locator('[role="treeitem"][data-entity-id="f-docs"] [role="treeitem"]').evaluateAll((els) => els.map((el) => el.getAttribute('data-entity-id')))
+    await expect.poll(shown).toEqual(['r-c', 'r-a', 'r-b'])
+    // Alpha into another folder, after a row there; "其他文件夹" goes back a step
+    await moveTo('r-a')
+    await dialog.getByTestId('aiws-dm-move-data').tap()
+    await expect(step).toHaveAttribute('data-folder', 'data')
+    await dialog.getByTestId('aiws-dm-move-back').tap()
+    await expect(step).toHaveAttribute('data-step', 'folder')
+    await dialog.getByTestId('aiws-dm-move-data').tap()
+    await expect(dialog.getByTestId('aiws-dm-move-after-f-docs')).toBeEnabled()
+    await dialog.getByTestId('aiws-dm-move-after-x').tap()
+    await expect(dialog).toHaveCount(0)
+    // (the system folders follow the data)
+    await expect.poll(async () => (await order(api, ws.workspace_id, 'data')).slice(0, 3)).toEqual(['x', 'r-a', 'f-docs'])
+    await expect.poll(() => order(api, ws.workspace_id, 'f-docs')).toEqual(['r-c', 'r-b'])
   })
 })

@@ -52,8 +52,8 @@ function offered(action: BlockAction, context: RenderContext, store: WorkspaceSt
   return { show: true, reason: action.disabled?.(context, store) ?? false }
 }
 
-/** The type's declared actions as entries: the one bound to Enter is its "edit content" (the open group), the others the
- * type group, primary ones first. A failing `when` or `disabled` offers the action disabled with the error. */
+/** The type's declared actions as entries: its "edit content" (by default the one bound to Enter) is in the open group,
+ * the others in the type group, primary ones first. A failing `when` or `disabled` offers the action disabled with the error. */
 export function typeEntries(definition: BlockDefinition, context: RenderContext, store: WorkspaceStore): BlockEntry[] {
   const out: BlockEntry[] = []
   for (const action of definition.actions ?? []) {
@@ -64,9 +64,11 @@ export function typeEntries(definition: BlockDefinition, context: RenderContext,
       void Promise.resolve().then(() => action.run(context, store)).catch((error: unknown) => store.notify('error', aiwsT('aiworkspace.canvas.extensionActionFailed', { reason: describeError(error) })))
     }
     let active = false
-    try { active = Boolean(action.active?.(context)) } catch { /* drawn unpressed */ }
+    try { active = Boolean(action.active?.(context, store)) } catch { /* drawn unpressed */ }
+    let label = action.label
+    try { if (action.labelFor) label = action.labelFor(context, store) } catch { /* the declared label */ }
     out.push({
-      id: action.id, actionId: actionStableId(definition.type, action.id), group: action.key === 'Enter' ? 'open' : 'type', label: action.label, icon: action.icon,
+      id: action.id, actionId: actionStableId(definition.type, action.id), group: action.group ?? (action.key === 'Enter' ? 'open' : 'type'), label, icon: action.icon,
       key: action.key, primary: action.primary, ai: action.ai, active, disabled: state.reason, run: state.reason ? () => undefined : run,
     })
   }

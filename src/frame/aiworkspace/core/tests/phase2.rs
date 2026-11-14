@@ -301,6 +301,66 @@ fn a_resource_directory_is_a_value_container_isomorphic_with_a_dir_object() {
 }
 
 #[test]
+fn a_directory_holds_its_own_sub_folders_empty_or_not() {
+    use aiworkspace_core::canonical::{chunk_id, dir_object, file_object, DirMember};
+    use aiworkspace_core::materialize::{dir_object_of, ObjectSink};
+    use aiworkspace_core::types::dir_payload_from_dir_object;
+    struct Sink;
+    impl ObjectSink for Sink {
+        fn put_object(&mut self, t: &str, text: &str) -> aiworkspace_core::WsResult<String> {
+            Ok(aiworkspace_core::canonical::named_object(t, &serde_json::from_str(text).unwrap())?.0)
+        }
+        fn put_file(&mut self, bytes: &[u8]) -> aiworkspace_core::WsResult<String> {
+            Ok(file_object(bytes.len() as u64, &chunk_id(bytes))?.0)
+        }
+    }
+    let mut ws = MemWorkspace::new();
+    let (fid, _) = file_object(5, &chunk_id(b"hello")).unwrap();
+    ws.store.assets.insert(fid.clone(), AssetInfo { object_id: fid.clone(), media_type: "text/plain".into(), size: 5 });
+    // an empty sub-folder is a `folder` member; a folder may hold names below it and other folders (UI 框架 PRD Q25)
+    let seq = ws.ok(json!([{ "op": "entity.create", "entity_id": "d", "type_id": TYPE_DIR, "parent_id": DATA_ID, "order_key": "a", "name": "d",
+        "payload": { "members": { "empty": { "kind": "folder" }, "docs": { "kind": "folder" }, "docs/a.txt": { "kind": "file", "object_id": fid }, "docs/old": { "kind": "folder" } } } }]));
+    assert_eq!(ws.store.entities["d"].payload["members"]["empty"], json!({ "kind": "folder" }));
+    // one level more inside an empty folder: a change of this directory, nothing else is created
+    let entities = ws.store.entities.len();
+    let seq2 = ws.ok(json!([{ "op": "dir.set_member", "entity_id": "d", "name": "empty/2026", "member": { "kind": "folder" }, "expect": { "rev": 0 } }]));
+    assert_eq!(ws.store.entities.len(), entities);
+    assert!(!ws.store.refs.iter().any(|r| r.src_entity_id == "d" && r.kind == "member"));
+    // a folder takes no other key; a name is a file or a folder, never both
+    assert_eq!(code(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "d", "name": "x", "member": { "kind": "folder", "entity_id": "d" }, "expect": { "rev": 0 } }]))), "INVALID_SCHEMA");
+    assert_eq!(code(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "d", "name": "docs/a.txt/b", "member": { "kind": "folder" }, "expect": { "rev": 0 } }]))), "INVALID_SCHEMA");
+    assert_eq!(code(&ws.fail(json!([{ "op": "dir.set_member", "entity_id": "d", "name": "docs", "member": { "kind": "file", "object_id": fid }, "expect": { "rev": seq } }]))), "INVALID_SCHEMA");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "bad", "type_id": TYPE_DIR, "parent_id": DATA_ID, "order_key": "b",
+        "payload": { "members": { "a": { "kind": "file", "object_id": fid }, "a/b": { "kind": "file", "object_id": fid } } } }]))), "INVALID_SCHEMA");
+    // removing a folder with what is under it is one Commit; one undo brings all of it back
+    let seq3 = ws.ok(json!([
+        { "op": "dir.remove_member", "entity_id": "d", "name": "docs", "expect": { "rev": seq } },
+        { "op": "dir.remove_member", "entity_id": "d", "name": "docs/a.txt", "expect": { "rev": seq } },
+        { "op": "dir.remove_member", "entity_id": "d", "name": "docs/old", "expect": { "rev": seq } }]));
+    let names = |ws: &MemWorkspace| ws.store.entities["d"].payload["members"].as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    assert_eq!(names(&ws), ["empty", "empty/2026"]);
+    ws.undo(seq3).map_err(|f| f.to_json()).unwrap();
+    assert_eq!(names(&ws), ["docs", "docs/a.txt", "docs/old", "empty", "empty/2026"]);
+    // its text lists folders as `name/`
+    let text = aiworkspace_core::body::read_body(&ws.store, &Access::full("alice"), &ws.store.entities["d"], &json!({}), None).unwrap()["text"].as_str().unwrap().to_string();
+    assert!(text.contains("empty/2026/") && text.contains("docs/old/"), "{text}");
+    // materialized: an empty folder is the empty DirObject, a folder holding members is said by them
+    let (empty, _) = dir_object(&[]).unwrap();
+    let (id, total) = dir_object_of(&ws.store, &ws.store.entities["d"], &mut Sink, 0).unwrap();
+    let (expect, _) = dir_object(&[
+        DirMember { name: "docs/a.txt".into(), object_id: fid.clone(), size: 5, is_file: true },
+        DirMember { name: "docs/old".into(), object_id: empty.clone(), size: 0, is_file: false },
+        DirMember { name: "empty/2026".into(), object_id: empty.clone(), size: 0, is_file: false },
+    ]).unwrap();
+    assert_eq!((id, total), (expect, 5));
+    // and an empty DirObject that is not an imported child comes back as a folder
+    let payload = dir_payload_from_dir_object(&json!({ "body": { "empty": empty } }), &std::collections::BTreeMap::new()).unwrap();
+    assert_eq!(payload["members"]["empty"], json!({ "kind": "folder" }));
+    ws.undo(seq2).map_err(|f| f.to_json()).unwrap();
+    assert_eq!(names(&ws), ["docs", "docs/a.txt", "docs/old", "empty"]);
+}
+
+#[test]
 fn two_trees_and_system_nodes() {
     let mut ws = MemWorkspace::new();
     // the system nodes exist from the start and are untouchable

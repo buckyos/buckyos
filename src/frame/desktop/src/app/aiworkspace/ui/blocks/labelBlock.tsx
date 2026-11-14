@@ -14,7 +14,6 @@ import { aiwsT, aiwsText } from '../../i18n'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { consumeIntent, useIntent } from './editorToolbar'
-import { setCellConfig } from './ops'
 import type { BlockDefinition, ConfigField, RenderContext } from './registry'
 
 export const LABEL_VIEW = 'label'
@@ -240,7 +239,7 @@ const labelFields = (): ConfigField[] => [
   { key: 'font_size', id: 'label-size', label: aiwsT('aiworkspace.label.fontSize'), kind: 'number', quick: true, icon: Type, default: 14, presets: SIZES },
   { key: 'font_color', id: 'label-color', label: aiwsT('aiworkspace.label.color'), kind: 'color', quick: true, palette: 'ink', default: 'auto', extras: [{ value: 'auto', label: aiwsT('aiworkspace.label.colorAuto') }] },
   { key: 'weight', id: 'label-bold', label: aiwsT('aiworkspace.label.bold'), kind: 'boolean', quick: true, icon: Bold,
-    get: (context) => lookOf(context.payload.config).weight === 'bold', set: (context, store, value) => setCellConfig(context, store, { weight: value === true ? 'bold' : null }, aiwsT('aiworkspace.label.bold')) },
+    get: (context) => lookOf(context.payload.config).weight === 'bold', patch: (_context, value) => ({ weight: value === true ? 'bold' : null }), editLabel: () => aiwsT('aiworkspace.label.bold') },
   { key: 'align', id: 'label-align', label: aiwsT('aiworkspace.label.align'), kind: 'select', quick: true, default: 'left',
     options: [{ value: 'left', label: aiwsT('aiworkspace.label.alignLeft'), icon: AlignLeft }, { value: 'center', label: aiwsT('aiworkspace.label.alignCenter'), icon: AlignCenter }, { value: 'right', label: aiwsT('aiworkspace.label.alignRight'), icon: AlignRight }] },
   { key: 'wrap', id: 'label-wrap', label: aiwsT('aiworkspace.label.wrap'), kind: 'boolean', quick: true, icon: WrapText },

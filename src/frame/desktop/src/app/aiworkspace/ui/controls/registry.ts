@@ -1,9 +1,9 @@
 /* Block-controls on the Desktop (脑图方案 §6.2, R2, R11): a container whose kind is a control id is laid out, drawn and
  * driven by its ContainerDefinition — the counterpart of the BlockRegistry for containers. The definition gives the
  * attributes (`configSchema`), the child rules, the named layout (from the shared module), the chrome the canvas draws
- * around the children (implicit edges, fold handles), how insertion creates an instance, its toolbar and keyboard
- * (the keys go to the control while one of its Blocks is selected) and the self-description Agents read. A kind with
- * no definition is drawn as an unrecognised group (R12). */
+ * around the children (implicit edges, fold handles), how insertion creates an instance, its actions and properties
+ * (declared as a Block type's, UI 框架 PRD §10.1), its keyboard (the keys go to the control while one of its Blocks is
+ * selected) and the self-description Agents read. A kind with no definition is drawn as an unrecognised group (R12). */
 
 import type { ComponentType, ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
@@ -11,7 +11,7 @@ import type { ControlDescriptor } from '@controls/catalog'
 import type { ControlSource, SolveOptions, SolvedControl } from '@controls/solve'
 import type { EntityEnvelope, Json, Operation } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
-import type { CanvasMode, CreateArgs, ToolbarItem } from '../blocks/registry'
+import type { BlockAction, BlockDefinition, CanvasMode, ConfigField, CreateArgs } from '../blocks/registry'
 import type { Laid } from '../canvas/layout'
 
 /** What the chrome of a control is drawn with (in its container's frame, local coordinates). */
@@ -90,8 +90,12 @@ export interface ContainerDefinition {
   Flow?: ComponentType<{ containerId: string; mode: CanvasMode }>
   /** Insertion: the container and its first content children. `args.cellId` is the Block to select and edit. */
   create: (args: CreateArgs) => Operation[]
-  /** The near toolbar of the selected container / of a selected node inside it. */
-  toolbar?: (ctx: ControlCommandContext) => ToolbarItem[]
+  /** The control's actions and properties, as a Block type declares them (PRD §10.1): read on the container's context, so
+   * the Block toolbar, the Block menu, the properties panel and the phone's context window show them as they show a
+   * Block's. An action that needs the canvas (its layout, the selection) asks for it with `controlCommands` `run`. */
+  actions?: BlockAction[]
+  configFields?: ConfigField[]
+  sections?: { id: string; label: string }[]
   /** Keys while the container or one of its Blocks is selected (true: handled). */
   keys?: (ctx: ControlCommandContext, event: KeyboardEvent) => boolean
   /** The properties panel of the container (direction, edges, spacing). */
@@ -110,6 +114,24 @@ class ControlRegistry {
 }
 
 export const controlRegistry = new ControlRegistry()
+
+const asBlocks = new WeakMap<ContainerDefinition, BlockDefinition>()
+/** A control as the Block type the Block toolbar, menu and properties panel read: its actions and properties (none when it
+ * declares neither). */
+export function controlBlockDefinition(kind: string | null | undefined): BlockDefinition | undefined {
+  const def = controlRegistry.get(kind)
+  if (!def || (!def.actions?.length && !def.configFields?.length)) return undefined
+  let block = asBlocks.get(def)
+  if (!block) {
+    block = {
+      type: def.kind, version: def.version, get title() { return def.title }, icon: def.icon, accepts: [], allowNoSource: true, pureUi: true,
+      defaultSize: def.defaultSize ?? { w: 320, h: 240 }, cost: { editor: false, html: false }, Static: () => null,
+      actions: def.actions, configFields: def.configFields, sections: def.sections,
+    }
+    asBlocks.set(def, block)
+  }
+  return block
+}
 
 /** A data control (a box control with a body): sized like a Block, its content projected from data. */
 export function isBoxControl(kind: string | null | undefined): boolean {

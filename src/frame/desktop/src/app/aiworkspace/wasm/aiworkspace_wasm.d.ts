@@ -43,6 +43,10 @@ export class Replica {
      * The next queued request ready to send, or `null`.
      */
     next_to_send(): string;
+    /**
+     * An asset the service staged after the replica was made (an upload from this window): local plans know it.
+     */
+    note_asset(object_id: string, media_type: string, size: number): void;
     outline(): string;
     pending(): string;
     /**
@@ -198,6 +202,7 @@ export interface InitOutput {
     readonly replica_mark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly replica_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
     readonly replica_next_to_send: (a: number, b: number) => void;
+    readonly replica_note_asset: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly replica_outline: (a: number, b: number) => void;
     readonly replica_pending: (a: number, b: number) => void;
     readonly replica_pending_richtext_updates: (a: number, b: number, c: number, d: number) => void;

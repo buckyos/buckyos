@@ -1,17 +1,21 @@
 /* The `mindmap` control (脑图方案 §6.2, R2): the first built-in Block-control. Its kind is the container's, its layout
  * the shared `tree` algorithm, its chrome the implicit edges and fold handles; inserting one creates the container and
  * a root to type into. With one of its nodes selected it takes the keys (§7.1): Tab adds a child, Enter a sibling, the
- * arrows walk the tree, Ctrl+/ folds. The container's toolbar sets the direction, the edges and the spacing. */
+ * arrows walk the tree, Ctrl+/ folds. Its properties are the direction, the edges and the spacing (quick ones on the
+ * Block toolbar); its actions turn it into an outline beside it, copy it or save it as Markdown / OPML. */
 
-import { ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ListTree, Network, Spline } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, ClipboardCopy, FileDown, ListTree, Network, Spline } from 'lucide-react'
 import { MINDMAP } from '@controls/mindmap'
 import { ALL_AUTO } from '@controls/placement'
 import { solveControl } from '@controls/solve'
 import { mindmapConfig, type Direction, type EdgeStyle } from '@controls/tree'
 import { randomId } from '../../../api/ids'
+import type { Json } from '../../../api/types'
 import { aiwsT } from '../../../i18n'
-import type { ToolbarItem } from '../../blocks/registry'
+import type { WorkspaceStore } from '../../../state/store'
+import type { BlockAction, ConfigField, RenderContext } from '../../blocks/registry'
 import { saveTextFile } from '../../canvas/drawioExport'
+import { controlCommands } from '../commands'
 import { foldBook } from '../folds'
 import type { ContainerDefinition, ControlCommandContext } from '../registry'
 import { MindmapChrome } from './Chrome'
@@ -36,46 +40,42 @@ export function addNode(ctx: ControlCommandContext, kind: 'child' | 'sibling', f
   })
 }
 
-function setConfig(ctx: ControlCommandContext, patch: Record<string, string | { sibling: number; level: number } | null>, label: string) {
-  void controlConfigOps(ctx.store, ctx.containerId, patch).then((operations) => ctx.store.submit({ editId: `key:${ctx.containerId}:config`, label, operations }))
-}
-
-/** The map as an outline: beside it as rich text, on the clipboard, or saved as Markdown / OPML (脑图方案 §8, §9). */
-function outlineAction(ctx: ControlCommandContext, value: string) {
+/** The map as an outline, beside it as rich text (脑图方案 §8): placed by the canvas's layout, then selected. */
+function toRichtext(ctx: ControlCommandContext) {
   const container = ctx.store.outline.get(ctx.containerId)
-  if (!container) return
-  const name = (container.title || aiwsT('aiworkspace.mindmap.title')).replace(/[\\/:*?"<>|]/g, '_')
-  if (value === 'richtext') void mindmapToRichtext(ctx.store, ctx.laid, container, ctx.surface).then((id) => { if (id) ctx.select([id]) })
-  else if (value === 'copy') void navigator.clipboard?.writeText(mindmapMarkdown(ctx.store, ctx.containerId)).then(() => ctx.store.notify('info', aiwsT('aiworkspace.mindmap.copied')))
-  else if (value === 'markdown') saveTextFile(`${name}.md`, mindmapMarkdown(ctx.store, ctx.containerId), 'text/markdown')
-  else if (value === 'opml') saveTextFile(`${name}.opml`, mindmapOpml(ctx.store, ctx.containerId), 'text/x-opml')
+  if (!container || !ctx.canEdit) return
+  void mindmapToRichtext(ctx.store, ctx.laid, container, ctx.surface).then((id) => { if (id) ctx.select([id]) })
 }
 
-function toolbar(ctx: ControlCommandContext): ToolbarItem[] {
-  if (ctx.nodeId) return []
-  const config = mindmapConfig(ctx.store.outline.get(ctx.containerId)?.config)
-  const disabled = ctx.canEdit ? false : aiwsT('aiworkspace.blocks.noPermission')
-  const dirIcon = { right: ArrowRight, left: ArrowLeft, both: ArrowLeftRight, down: ArrowDown }
-  return [
-    { kind: 'menu', id: 'mindmap-direction', icon: dirIcon[config.direction], label: aiwsT('aiworkspace.mindmap.direction'), value: config.direction, disabled,
-      items: (['right', 'left', 'both', 'down'] as Direction[]).map((d) => ({ value: d, label: aiwsT(`aiworkspace.mindmap.dir.${d}`), icon: dirIcon[d] })),
-      onPick: (value) => setConfig(ctx, { direction: value }, aiwsT('aiworkspace.mindmap.direction')) },
-    { kind: 'menu', id: 'mindmap-edge', icon: Spline, label: aiwsT('aiworkspace.mindmap.edge'), value: config.edge, disabled,
-      items: (['curve', 'elbow', 'straight'] as EdgeStyle[]).map((e) => ({ value: e, label: aiwsT(`aiworkspace.mindmap.edgeStyle.${e}`) })),
-      onPick: (value) => setConfig(ctx, { edge: value }, aiwsT('aiworkspace.mindmap.edge')) },
-    { kind: 'menu', id: 'mindmap-spacing', label: aiwsT('aiworkspace.mindmap.spacing'), value: spacingName(config.spacing), disabled,
-      items: Object.keys(SPACINGS).map((k) => ({ value: k, label: aiwsT(`aiworkspace.mindmap.spacingName.${k}`) })),
-      onPick: (value) => setConfig(ctx, { spacing: SPACINGS[value] ?? SPACINGS.normal }, aiwsT('aiworkspace.mindmap.spacing')) },
-    { kind: 'menu', id: 'mindmap-outline', icon: ListTree, label: aiwsT('aiworkspace.mindmap.toOutline'),
-      items: [
-        ...(ctx.canEdit ? [{ value: 'richtext', label: aiwsT('aiworkspace.mindmap.toOutline') }] : []),
-        { value: 'copy', label: aiwsT('aiworkspace.mindmap.copyMarkdown') },
-        { value: 'markdown', label: aiwsT('aiworkspace.mindmap.exportMarkdown') },
-        { value: 'opml', label: aiwsT('aiworkspace.mindmap.exportOpml') },
-      ],
-      onPick: (value) => outlineAction(ctx, value) },
-  ]
-}
+/** The file name of the map's export. */
+const fileName = (store: WorkspaceStore, id: string) => (store.outline.get(id)?.title || aiwsT('aiworkspace.mindmap.title')).replace(/[\\/:*?"<>|]/g, '_')
+
+const config = (context: RenderContext) => mindmapConfig(context.cell.config)
+const configOps = (patch: (value: string) => Record<string, Json | null>) => (context: RenderContext, store: WorkspaceStore, value: Json | null) => controlConfigOps(store, context.cell.entity_id, patch(String(value ?? '')))
+const dirIcons = { right: ArrowRight, left: ArrowLeft, both: ArrowLeftRight, down: ArrowDown }
+
+const fields: ConfigField[] = [
+  { key: 'direction', id: 'mindmap-direction', get label() { return aiwsT('aiworkspace.mindmap.direction') }, kind: 'select', quick: true, default: 'right',
+    get options() { return (['right', 'left', 'both', 'down'] as Direction[]).map((d) => ({ value: d, label: aiwsT(`aiworkspace.mindmap.dir.${d}`), icon: dirIcons[d] })) },
+    get: (context) => config(context).direction, ops: configOps((value) => ({ direction: value })), editLabel: () => aiwsT('aiworkspace.mindmap.direction') },
+  { key: 'edge', id: 'mindmap-edge', get label() { return aiwsT('aiworkspace.mindmap.edge') }, kind: 'select', quick: true, icon: Spline, default: 'curve',
+    get options() { return (['curve', 'elbow', 'straight'] as EdgeStyle[]).map((e) => ({ value: e, label: aiwsT(`aiworkspace.mindmap.edgeStyle.${e}`) })) },
+    get: (context) => config(context).edge, ops: configOps((value) => ({ edge: value })), editLabel: () => aiwsT('aiworkspace.mindmap.edge') },
+  { key: 'spacing', id: 'mindmap-spacing', get label() { return aiwsT('aiworkspace.mindmap.spacing') }, kind: 'select', quick: true, default: 'normal',
+    get options() { return Object.keys(SPACINGS).map((k) => ({ value: k, label: aiwsT(`aiworkspace.mindmap.spacingName.${k}`) })) },
+    get: (context) => spacingName(config(context).spacing), ops: configOps((value) => ({ spacing: SPACINGS[value] ?? SPACINGS.normal })), editLabel: () => aiwsT('aiworkspace.mindmap.spacing') },
+]
+
+const actions: BlockAction[] = [
+  { id: 'mindmap-outline', icon: ListTree, primary: true, get label() { return aiwsT('aiworkspace.mindmap.toOutline') }, modes: ['edit'], needs: ['update'],
+    run: (context) => controlCommands.send({ kind: 'run', containerId: context.cell.entity_id, run: toRichtext }) },
+  { id: 'mindmap-copy-markdown', icon: ClipboardCopy, get label() { return aiwsT('aiworkspace.mindmap.copyMarkdown') }, modes: ['edit', 'view'],
+    run: (context, store) => { void navigator.clipboard?.writeText(mindmapMarkdown(store, context.cell.entity_id)).then(() => store.notify('info', aiwsT('aiworkspace.mindmap.copied'))) } },
+  { id: 'mindmap-export-markdown', icon: FileDown, get label() { return aiwsT('aiworkspace.mindmap.exportMarkdown') }, modes: ['edit', 'view'],
+    run: (context, store) => saveTextFile(`${fileName(store, context.cell.entity_id)}.md`, mindmapMarkdown(store, context.cell.entity_id), 'text/markdown') },
+  { id: 'mindmap-export-opml', icon: FileDown, get label() { return aiwsT('aiworkspace.mindmap.exportOpml') }, modes: ['edit', 'view'],
+    run: (context, store) => saveTextFile(`${fileName(store, context.cell.entity_id)}.opml`, mindmapOpml(store, context.cell.entity_id), 'text/x-opml') },
+]
 
 function keys(ctx: ControlCommandContext, event: KeyboardEvent): boolean {
   const mod = event.ctrlKey || event.metaKey
@@ -132,7 +132,8 @@ export const mindmapControl: ContainerDefinition = {
         payload: { view: { type: NODE_VIEW }, title } },
     ]
   },
-  toolbar,
+  actions,
+  configFields: fields,
   keys,
   agent: MINDMAP,
 }

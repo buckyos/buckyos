@@ -7,7 +7,8 @@
  * The cards carry what `ws.list` gives (K6: owner, last modification, public, live classes) and `session.list_open`
  * lists every public class I may open (K7). "Recent" is the service's record of what I opened, on any device (with
  * what this window opened a moment ago). The category and the filters are my preference across Workspaces and devices
- * (home/prefs.ts). Covers are not generated yet: the cards draw a placeholder. */
+ * (home/prefs.ts). A card's cover is the first picture of a canvas the service names (K6, a stopgap), loaded lazily;
+ * without one the card draws a placeholder. */
 
 import { useCallback, useMemo, useState } from 'react'
 import { Plus, RefreshCw, Search, SlidersHorizontal, Upload, X } from 'lucide-react'
@@ -142,11 +143,11 @@ export function WorkspaceList({ client, onOpen, opening, restricted = false }: P
   const offlineReason = useMemo(() => offlineUnavailableReason(), [])
 
   const workspaceCard = (workspace: WorkspaceListItem, openedAt?: string) => (
-    <WorkspaceCard key={`ws:${workspace.workspace_id}`} workspace={workspace} me={facts.me} openedAt={openedAt} prepared={facts.prepared.has(workspace.workspace_id)}
+    <WorkspaceCard key={`ws:${workspace.workspace_id}`} workspace={workspace} transport={transport} me={facts.me} openedAt={openedAt} prepared={facts.prepared.has(workspace.workspace_id)}
       opening={opening === workspace.workspace_id} busy={busy !== null} restricted={restricted} offlineReason={offlineReason}
       onOpen={() => openWorkspace(workspace.workspace_id)} actions={cardActions(workspace)} />
   )
-  const sessionCard = (session: OpenSession) => <SessionCard key={`s:${session.session_id}`} session={session} onOpen={openClass} />
+  const sessionCard = (session: OpenSession) => <SessionCard key={`s:${session.session_id}`} session={session} transport={transport} onOpen={openClass} />
 
   // what the category shows, filtered by the search and the settings
   const filtered = !category ? [] : category === 'all'

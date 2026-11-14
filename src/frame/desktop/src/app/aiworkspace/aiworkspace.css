@@ -1379,16 +1379,8 @@
 .aiws-board-newcol > input { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--cp-accent); border-radius: 8px; outline: none;
   background: var(--cp-surface-opaque, var(--cp-surface)); color: var(--cp-text); }
 
-/* pop-overs of a data control (G5): beside the item on wide screens, a sheet from the bottom on phones */
-.aiws-ctl-popover { position: fixed; z-index: 80; box-sizing: border-box; max-height: min(80vh, 640px); overflow: auto; padding: 14px 14px 12px;
-  background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 14px; box-shadow: var(--cp-shadow); color: var(--cp-text); font-size: 14px; }
-.aiws-ctl-sheet-backdrop { position: fixed; inset: 0; z-index: 80; background: rgb(0 0 0 / 28%); display: flex; align-items: flex-end; }
-.aiws-ctl-popover.is-sheet { position: relative; width: 100%; max-height: 86vh; border-radius: 16px 16px 0 0; border-bottom: none; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-.aiws-ctl-sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--cp-border); margin: -6px auto 10px; }
-.aiws-root .aiws-ctl-popover-close { position: absolute; right: 8px; top: 8px; border: none; background: none; width: 28px; height: 28px; border-radius: 6px; justify-content: center;
-  color: var(--cp-muted); cursor: pointer; z-index: 1; }
-.aiws-root .aiws-ctl-popover-close:hover { background: var(--cp-surface-2); color: var(--cp-text); }
-.aiws-ctl-menu { display: flex; flex-direction: column; gap: 1px; margin: 14px -6px -4px; }
+/* a data control's menus (G5), in the framework's panel (ui/controls/data/controlPanel.css) */
+.aiws-ctl-menu { display: flex; flex-direction: column; gap: 1px; margin: 0 -6px -4px; }
 .aiws-root .aiws-ctl-menu-item { display: flex; align-items: center; gap: 10px; border: none; background: none; text-align: left; padding: 8px 10px; border-radius: 8px;
   font-size: 14px; color: var(--cp-text); cursor: pointer; min-height: 36px; }
 .aiws-root .aiws-ctl-menu-item:hover:not(:disabled), .aiws-root .aiws-ctl-menu-item:focus-visible { background: var(--cp-surface-2); outline: none; }

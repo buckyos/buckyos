@@ -5,27 +5,32 @@
  * the page's properties when nothing is selected. Its height is at most the room between the tool areas and 560 px; the
  * body scrolls under a fixed title. Sections fold, and how each was left is remembered per Block type (user state
  * `ui:props-sections:<type>`). Every change is one undoable commit; without the right or in view mode it is read-only
- * and says why. On a phone it is a sheet from the bottom. */
+ * and says why. With several Blocks selected it shows what they share — the properties of their type, or those of the
+ * same name and kind — with "several values" where they differ; a change is written to all of them in one commit. On a
+ * phone it is a sheet from the bottom. */
 
-import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, ChevronsUp, FileText, Pin, PinOff, SlidersHorizontal, X } from 'lucide-react'
 import { num } from '@controls/placement'
 import { describeError } from '../../api/session'
-import type { EntityEnvelope, Json, StoredPlacement } from '../../api/types'
+import type { EntityEnvelope, Json, KeyedContent, Operation, StoredPlacement } from '../../api/types'
+import { aiwsT } from '../../i18n'
+import type { WorkspaceStore } from '../../state/store'
 import { setLive } from '../../presentation/pathOps'
 import { useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { BlockBoundary } from '../blocks/BlockHost'
 import { setCellConfig } from '../blocks/ops'
-import type { CanvasMode, RenderContext } from '../blocks/registry'
+import type { BlockDefinition, CanvasMode, ConfigField, RenderContext } from '../blocks/registry'
+import { useBlockContext } from '../blocks/useBlockContext'
 import { InstanceConfig, InstanceData, InstanceEvents, isInstance } from '../controls/composite/Inspector'
-import { controlRegistry } from '../controls/registry'
+import { controlBlockDefinition, controlRegistry } from '../controls/registry'
 import { MetadataForm } from '../canvas/MetadataForm'
 import type { Laid } from '../canvas/layout'
 import type { Rect } from '../canvas/render/camera'
 import { renameBase, renameSurface, setSurfaceBackground, surfaceWriteReason, useSurfaceConfig } from '../canvas/surfaceManage'
 import { PaletteGrid } from '../canvas/tools'
-import { fieldsOf, PropertyControl } from './properties'
+import { batchable, changeLabel, FieldControl, fieldsOf, PropertyControl, readOnlyOf, valueOf, writeFieldAll } from './properties'
 import './blockui.css'
 
 const WIDTH = 320
@@ -50,6 +55,8 @@ export interface PropertyPanelProps {
   subject: EntityEnvelope | null
   /** How many objects are selected (several: only what they share). */
   count: number
+  /** The selected objects (several: the panel reads each of them). */
+  selected: readonly string[]
   context: RenderContext | null
   resolved: boolean
   registryVersion: number
@@ -160,8 +167,9 @@ export function PropertyPanel(props: PropertyPanelProps) {
     head.addEventListener('pointercancel', end)
   }
   const Icon = definition?.icon ?? (subject ? controlRegistry.get(subject.kind)?.icon : FileText) ?? SlidersHorizontal
-  const typeTitle = subject ? definition?.title ?? controlRegistry.get(subject.kind)?.title ?? subject.kind ?? subject.view_type ?? '' : t('aiworkspace.blockui.page')
-  const name = subject ? subject.title ?? context?.payload.title ?? '' : props.surface.title ?? props.surface.name ?? ''
+  const several = props.count > 1
+  const typeTitle = several ? t('aiworkspace.blockui.multiple', { count: props.count }) : subject ? definition?.title ?? controlRegistry.get(subject.kind)?.title ?? subject.kind ?? subject.view_type ?? '' : t('aiworkspace.blockui.page')
+  const name = several ? '' : subject ? subject.title ?? context?.payload.title ?? '' : props.surface.title ?? props.surface.name ?? ''
   const reason = subject ? context?.readOnlyReason ?? null : surfaceWriteReason(store, props.surface, mode !== 'edit', null)
   return (
     <div ref={ref} className={`aiws-panel aiws-props-panel${phone ? ' is-sheet' : ''}${phone && full ? ' is-full' : ''}`} role="dialog" aria-label={t('aiworkspace.canvas.inspector.title')}
@@ -189,12 +197,12 @@ export function PropertyPanel(props: PropertyPanelProps) {
 
 interface SectionsProps { collapsed: (id: string) => boolean; toggle: (id: string) => void }
 
-function BlockSections({ subject: cell, count, context, resolved, registryVersion, mode, isFree, layout, collapsed, toggle }: PropertyPanelProps & SectionsProps & { subject: EntityEnvelope }) {
+function BlockSections({ subject: cell, count, selected, context, resolved, registryVersion, mode, isFree, layout, collapsed, toggle }: PropertyPanelProps & SectionsProps & { subject: EntityEnvelope }) {
   const store = useStore()
   const ui = useWorkspaceUi()
   const { t, tNode } = useAiwsText()
   const live = context?.cell ?? cell
-  const definition = resolved ? context?.definition : undefined
+  const definition = resolved ? context?.definition : cell.type_id === 'buckyos.container' ? controlBlockDefinition(cell.kind) : undefined
   const source = context?.source
   const payload = context?.payload
   const keyRevs = context?.keyRevs ?? {}
@@ -204,18 +212,8 @@ function BlockSections({ subject: cell, count, context, resolved, registryVersio
     if (!payload || readOnly || title === (payload.title ?? '')) return
     void store.submit({ editId: `key:${cell.entity_id}:title`, label: title ? t('aiworkspace.canvas.blockTitleLabel', { title }) : t('aiworkspace.canvas.blockTitleClearedLabel'), operations: [title ? { op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'title', value: title, expect: { rev: keyRevs.title ?? 0 } }] } : { op: 'entity.unset_keys', entity_id: cell.entity_id, keys: [{ key: 'title', expect: { rev: keyRevs.title ?? 0 } }] }] })
   }
-  if (count > 1) {
-    return (
-      <>
-        <div className="aiws-muted" data-testid="aiws-props-multi">{t('aiworkspace.blockui.multiple', { count })}</div>
-        {layout?.setLocked && section('layout', t('aiworkspace.blockui.section.layout'), (
-          <label className="aiws-props-field is-boolean"><span className="aiws-props-label">{t('aiworkspace.canvas.lock.lock')}</span>
-            <input type="checkbox" checked={Boolean(layout.laid?.locked)} data-testid="aiws-props-locked" onChange={(e) => layout.setLocked?.(e.target.checked)} /></label>
-        ))}
-      </>
-    )
-  }
-  const fields = fieldsOf(definition, context)
+  if (count > 1) return <MultiSections ids={selected} mode={mode} layout={layout} section={section} />
+  const fields = fieldsOf(definition, context, store)
   const typeSections = definition?.sections ?? (definition ? [{ id: 'type', label: definition.title }] : [])
   const firstSection = typeSections[0]?.id ?? 'type'
   const instance = isInstance(cell, store)
@@ -305,6 +303,114 @@ function BlockSections({ subject: cell, count, context, resolved, registryVersio
           <div>{t('aiworkspace.blockui.diag.renderer')} <code>{live.view_type ?? live.kind ?? live.type_id}{live.view_version ? ` v${live.view_version}` : ''}</code></div>
           {live.placement && <div className="aiws-muted">{t('aiworkspace.canvas.inspector.placement', { x: String(live.placement.x), y: String(live.placement.y), w: String(live.placement.w), h: String(live.placement.h), order: live.order_key ?? '' })}</div>}
         </div>
+      ))}
+    </>
+  )
+}
+
+// ---- several Blocks selected (§10.2): what they share
+
+interface Probed { sig: string; context: RenderContext; definition: BlockDefinition | undefined }
+
+/** One selected Block's context — the one its own toolbar and panel read — reported to the panel of several. */
+function Probe({ id, mode, onRead }: { id: string; mode: CanvasMode; onRead: (id: string, probed: Probed | null) => void }) {
+  const { context, resolution } = useBlockContext({ cellId: id, mode, view: 'canvas', selected: true })
+  const definition = !context ? undefined : resolution?.ok ? context.definition : context.cell.type_id === 'buckyos.container' ? controlBlockDefinition(context.cell.kind) : undefined
+  // what the shared values and the reasons are read from: re-reported only when one of these changes
+  const sig = context ? [context.cell.content_rev, context.cell.meta_rev, context.cell.capabilities.join(','), context.cell.branch_color ?? '', context.cell.side ?? '', JSON.stringify(context.cell.config ?? null),
+    JSON.stringify(context.keyRevs), JSON.stringify(context.payload), context.readOnlyReason ?? '', context.source?.content_rev ?? '', definition?.type ?? ''].join('|') : ''
+  useEffect(() => { onRead(id, context ? { sig, context, definition } : null) })
+  useEffect(() => () => onRead(id, null), [id, onRead])
+  return null
+}
+
+interface SharedField { field: ConfigField; targets: { field: ConfigField; context: RenderContext }[] }
+
+const sameOptions = (a: ConfigField, b: ConfigField) => JSON.stringify((a.options ?? []).map((o) => o.value)) === JSON.stringify((b.options ?? []).map((o) => o.value))
+
+/** The properties every selected Block has: of one type, its properties; of several, those of the same name and kind
+ * (a choice also with the same choices). Only those written as keys, patches or operations (one commit for all). */
+function sharedFields(blocks: Probed[], store: WorkspaceStore): SharedField[] {
+  if (blocks.length === 0 || blocks.some((b) => !b.definition)) return []
+  const lists = blocks.map((b) => fieldsOf(b.definition, b.context, store).filter(batchable))
+  const out: SharedField[] = []
+  for (const field of lists[0]) {
+    const matches = lists.map((list) => list.find((f) => f.key === field.key && f.kind === field.kind && (f.kind !== 'select' || sameOptions(f, field))))
+    if (matches.some((m) => !m)) continue
+    out.push({ field, targets: matches.map((m, i) => ({ field: m!, context: blocks[i].context })) })
+  }
+  return out
+}
+
+/** Show the Blocks while a show runs: one commit for all of them. */
+async function setLiveAll(store: WorkspaceStore, ids: string[], live: boolean) {
+  const operations: Operation[] = []
+  for (const id of ids) {
+    const read = await store.session.read<KeyedContent<Record<string, Json>>>(id)
+    const current = (read.content.payload.presentation as Record<string, Json> | undefined) ?? {}
+    if ((current.live === true) === live) continue
+    const next: Record<string, Json> = { ...current }
+    if (live) next.live = true
+    else delete next.live
+    operations.push({ op: 'entity.set_keys', entity_id: id, keys: [{ key: 'presentation', value: Object.keys(next).length ? next : null, expect: { rev: read.content.key_revs?.presentation ?? 0 } }] })
+  }
+  if (operations.length) await store.submit({ editId: `live:${ids.join(',')}`, label: aiwsT(live ? 'aiworkspace.presentation.edit.liveOn' : 'aiworkspace.presentation.edit.liveOff'), operations })
+}
+
+function MultiSections({ ids, mode, layout, section }: { ids: readonly string[]; mode: CanvasMode; layout: PanelLayout | null; section: (id: string, title: string, body: ReactNode) => ReactNode }) {
+  const store = useStore()
+  const { t } = useAiwsText()
+  const [probed, setProbed] = useState<ReadonlyMap<string, Probed>>(() => new Map())
+  const onRead = useCallback((id: string, next: Probed | null) => setProbed((current) => {
+    const before = current.get(id)
+    if (next ? before?.sig === next.sig : !before) return current
+    const out = new Map(current)
+    if (next) out.set(id, next)
+    else out.delete(id)
+    return out
+  }), [])
+  const blocks = ids.map((id) => probed.get(id)).filter((b): b is Probed => Boolean(b))
+  const ready = blocks.length === ids.length
+  const shared = ready ? sharedFields(blocks, store) : []
+  const types = new Set(blocks.map((b) => b.definition?.type ?? ''))
+  const one = types.size === 1 ? blocks[0]?.definition : undefined
+  const fail = (error: unknown) => store.notify('error', describeError(error))
+  const control = ({ field, targets }: SharedField) => {
+    const values = targets.map((target) => valueOf(target.field, target.context, store))
+    const mixed = values.some((v) => JSON.stringify(v ?? null) !== JSON.stringify(values[0] ?? null))
+    const reason = targets.map((target) => readOnlyOf(target.field, target.context)).find((r) => r) ?? false
+    return <FieldControl key={field.key} field={field} value={values[0]} mixed={mixed} reason={reason} testId={one ? `aiws-${one.type}-field-${field.key}` : `aiws-multi-field-${field.key}`}
+      onWrite={(value) => { void writeFieldAll(targets, store, value, t('aiworkspace.blockprops.changeMany', { change: changeLabel(field, value), count: targets.length })).catch(fail) }} />
+  }
+  // of one type: its sections (the common one first); of several: what they share is the common section
+  const typeSections = one ? one.sections ?? [{ id: 'type', label: one.title }] : []
+  const firstSection = typeSections[0]?.id ?? 'type'
+  const inCommon = shared.filter((s) => !one || s.field.section === 'common')
+  const cells = blocks.filter((b) => b.context.cell.type_id === 'buckyos.cell' && b.context.cell.view_type !== 'frame' && b.context.cell.view_type !== 'connector')
+  const liveShared = ready && cells.length === blocks.length
+  const liveValues = cells.map((b) => b.context.payload.presentation?.live === true)
+  const liveReason = cells.map((b) => b.context.readOnlyReason).find((r) => r) ?? null
+  return (
+    <>
+      {ids.map((id) => <Probe key={id} id={id} mode={mode} onRead={onRead} />)}
+      <span hidden data-testid="aiws-props-multi" data-ready={ready ? 'true' : 'false'} data-count={ids.length} />
+      {ready && shared.length === 0 && <div className="aiws-muted" data-testid="aiws-props-multi-none">{t('aiworkspace.blockprops.noneShared')}</div>}
+      {section('common', t('aiworkspace.blockui.section.common'), inCommon.length > 0 && <>{inCommon.map(control)}</>)}
+      {one && typeSections.map((s) => {
+        const own = shared.filter((f) => f.field.section !== 'common' && (f.field.section ?? firstSection) === s.id)
+        return section(`type-${s.id}`, s.label, own.length > 0 && <>{own.map(control)}</>)
+      })}
+      {layout?.setLocked && section('layout', t('aiworkspace.blockui.section.layout'), (
+        <label className="aiws-props-field is-boolean"><span className="aiws-props-label">{t('aiworkspace.canvas.lock.lock')}</span>
+          <input type="checkbox" checked={ready && blocks.every((b) => b.context.cell.locked)} data-testid="aiws-props-locked" onChange={(e) => layout.setLocked?.(e.target.checked)} /></label>
+      ))}
+      {section('presentation', t('aiworkspace.blockui.section.presentation'), liveShared && (
+        <label className="aiws-props-field is-boolean" title={liveReason ?? t('aiworkspace.canvas.inspector.liveTip')}>
+          <span className="aiws-props-label">{t('aiworkspace.canvas.inspector.live')}</span>
+          <input type="checkbox" data-testid="aiws-inspector-live" checked={liveValues.every(Boolean)} disabled={liveReason !== null} data-mixed={liveValues.some((v) => v !== liveValues[0]) ? 'true' : undefined}
+            ref={(el) => { if (el) el.indeterminate = liveValues.some((v) => v !== liveValues[0]) }}
+            onChange={(event) => { void setLiveAll(store, cells.map((b) => b.context.cell.entity_id), event.target.checked).catch(fail) }} />
+        </label>
       ))}
     </>
   )

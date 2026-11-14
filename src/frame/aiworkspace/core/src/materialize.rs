@@ -55,14 +55,25 @@ fn file_ref(sink: &mut dyn ObjectSink, lines: &[Value]) -> WsResult<Value> {
 }
 
 /// The DirObject (`cydir`) of a directory entity, child directories materialized first (D25): returns its
-/// id and the bytes under it. The object text goes to the sink.
+/// id and the bytes under it. The object text goes to the sink. A `folder` member is the empty DirObject when
+/// nothing is under it, else its members say it.
 pub fn dir_object_of(ctx: &dyn ReadCtx, e: &EntityRow, sink: &mut dyn ObjectSink, depth: usize) -> WsResult<(ObjId, u64)> {
     if depth > 64 {
         return Err(WsError::limit("directory nesting exceeds 64"));
     }
+    let all = e.payload.get("members").and_then(Value::as_object);
+    let holding: BTreeSet<&str> = all.into_iter().flatten().flat_map(|(name, _)| name.match_indices('/').map(|(i, _)| &name[..i])).collect();
     let mut members = Vec::new();
-    for (name, m) in e.payload.get("members").and_then(Value::as_object).into_iter().flatten() {
+    for (name, m) in all.into_iter().flatten() {
         match m["kind"].as_str() {
+            Some("folder") => {
+                if holding.contains(name.as_str()) {
+                    continue;
+                }
+                let (id, text) = crate::canonical::dir_object(&[])?;
+                sink.put_object(crate::canonical::OBJ_TYPE_DIR, &text)?;
+                members.push(crate::canonical::DirMember { name: name.clone(), object_id: id, size: 0, is_file: false });
+            }
             Some("file") => members.push(crate::canonical::DirMember { name: name.clone(), object_id: m["object_id"].as_str().unwrap_or("").to_string(), size: m["size"].as_u64().unwrap_or(0), is_file: true }),
             Some("dir") => {
                 let child_id = m["entity_id"].as_str().unwrap_or("");

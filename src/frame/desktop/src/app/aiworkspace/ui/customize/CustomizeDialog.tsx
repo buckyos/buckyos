@@ -1,9 +1,9 @@
 /* 自定义工具栏… (UI 框架 PRD §4.6): the shared layers of the toolbar. First the scope — this canvas (`structure` on it)
  * or this Workspace (`manage`); a scope the person may not change is disabled with the reason — then the zones:
- * the title zone and the status bar as a whole, the collaboration zone and the tool selection zone's objects item by
- * item: tick to show, drag to reorder (move up / down on a touch screen), add an action or a macro (with a name and an
- * icon of its own) or an object type, lock a zone against personal changes, restore the defaults, or hide and lock
- * everything (App mode). Saving is one undoable Commit of the chosen layer; it travels with templates, Clones and
+ * the title zone as a whole, the collaboration zone and the tool selection zone's objects item by item: tick to show,
+ * drag to reorder (move up / down on a touch screen), add an action or a macro (with a name and an icon of its own) or
+ * an object type, lock a zone against personal changes, restore the defaults, or hide and lock all of them (App mode).
+ * The status bar is not listed: it is never hidden (Q28). Saving is one undoable Commit of the chosen layer; it travels with templates, Clones and
  * exports. Hiding is not a permission: what people may do is still checked by the service. Not offered on a phone. */
 
 import { createElement, useMemo, useState, type DragEvent } from 'react'
@@ -28,9 +28,8 @@ import './customize.css'
 
 type Scope = 'surface' | 'workspace'
 
-const ZONE_LABEL: Record<ZoneId, string> = {
+const ZONE_LABEL: Record<string, string> = {
   title: 'aiworkspace.customize.zone.title', collab: 'aiworkspace.framework.zone.collab', tools: 'aiworkspace.framework.zone.tools',
-  context: 'aiworkspace.framework.zone.context', status: 'aiworkspace.customize.zone.status',
 }
 const ITEM_ZONES: ZoneId[] = ['collab', 'tools']
 

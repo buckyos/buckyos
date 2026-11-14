@@ -368,6 +368,14 @@ impl Replica {
         self.rebuild();
     }
 
+    /// An asset the service staged for this Workspace after the replica was made (an upload from this window,
+    /// `asset.import_object`'s answer): the confirmed layer knows it as the service does, so a local submission naming
+    /// it plans as it will there. The durable form stores the row itself (it is not in `take_confirmed_delta`).
+    pub fn note_asset(&mut self, info: AssetInfo) {
+        self.working.assets.insert(info.object_id.clone(), info.clone());
+        self.confirmed.assets.insert(info.object_id.clone(), info);
+    }
+
     /// Rows of the confirmed layer that `apply_remote` changed since the last call, in the shape
     /// of `dump_rows` plus `refs_deleted`. Every row is an upsert by its primary key; the confirmed
     /// layer never deletes rows other than references. The durable form writes this delta, the new

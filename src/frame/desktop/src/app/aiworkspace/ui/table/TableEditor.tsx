@@ -7,8 +7,7 @@
  * capability, the read-only reason, undo, the save state. */
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { ClipboardCopy, Columns3, LayoutGrid, ListChecks, ListFilter, Lock, MoreHorizontal, Plus, Rows3, Upload, X } from 'lucide-react'
-import { TABULAR_ACCEPT } from '@table/files'
+import { ClipboardCopy, Columns3, LayoutGrid, ListChecks, ListFilter, Lock, MoreHorizontal, Plus, Rows3, X } from 'lucide-react'
 import { languageCurrency } from '@table/currency'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
@@ -23,8 +22,6 @@ import { annotatedRecords, useRecordFocus } from '../controls/data/focus'
 import { FieldManager } from '../FieldManager'
 import { addFieldOps, CREATABLE_FIELD_TYPES } from '../fieldOps'
 import { COPY_LIMIT, tableClipboard } from '../import/copyTable'
-import { tableImports, type TableDestination } from '../import/tableImportRequest'
-import { useFilePicker } from '../shell/filePicker'
 import { usePhone } from '../shell/shellContext'
 import { TablePager, type PagerQuery } from '../tablePager'
 import { FIELD_TYPE_LABEL } from '../values'
@@ -32,9 +29,10 @@ import { PhoneEditBar } from './EditBar'
 import { FIELD_ICONS } from './fieldIcons'
 import { FilterSortPanel } from './FilterPanel'
 import {
-  blockColumns, conditionText, conditionsOf, listedOf, personalColumns, personalOf, sortText, titleFieldOf, withoutCondition,
+  blockColumns, conditionText, conditionsOf, listedOf, personalColumns, personalOf, recordTitle, sortText, titleFieldOf, withoutCondition,
   type Column, type ColumnEntry, type PersonalColumns, type SessionView, type TableEditorSize, type TableLayout,
 } from './model'
+import { publishTableCurrent } from './current'
 import { TableRecordPanel, type RecordPanelState } from './RecordPanel'
 import { TableCards } from './TableCards'
 import { TableGrid, type CellRef } from './TableGrid'
@@ -107,10 +105,10 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
   const intentKey = sourceMode || compact ? '' : cellId
   const intent = useIntent(intentKey)
   const [intentSeen, setIntentSeen] = useState(0)
-  const [asked, setAsked] = useState<{ copy: number; import: number }>({ copy: 0, import: 0 })
+  const [askedCopy, setAskedCopy] = useState(0)
   if (intent && intent.seq !== intentSeen) {
     setIntentSeen(intent.seq)
-    if (intent.value === 'copy' || intent.value === 'import') setAsked((a) => ({ ...a, [intent.value]: intent.seq }))
+    if (intent.value === 'copy') setAskedCopy(intent.seq)
     else if (intent.value === 'add') setRecord({ kind: 'new' })
     else if (intent.value === 'select') setSelection(new Set())
     else if (intent.value === 'filter' || intent.value === 'fields') setPanel(intent.value)
@@ -187,35 +185,7 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
   useEffect(() => { copyRef.current = copyRows })
   const copiedFor = useRef(0)
   const columnsReady = columns.length > 0
-  useEffect(() => { if (asked.copy && columnsReady && copiedFor.current !== asked.copy) { copiedFor.current = asked.copy; copyRef.current(null) } }, [asked.copy, columnsReady])
-
-  // ---- import (§7.3 "导入数据…"): the table wizard, the file chosen from the Zone first; the result is a new table next to this one
-  const pickFile = useFilePicker((message) => store.notify('error', message))
-  const surface = sourceMode ? undefined : store.outline.ancestors(cellId).map((id) => store.outline.get(id)).find((e) => e?.kind === 'surface')
-  const folderId = entity?.parent_id
-  const importTarget: { destination: TableDestination; reason: string | null } | null = surface
-    ? {
-        reason: surface.capabilities.includes('structure') ? null : t('aiworkspace.table.import.noPermission'),
-        destination: { canvas: {
-          surfaceId: surface.entity_id, isFree: surface.layout?.mode === 'free', contentFolderId: surface.content_folder_id ?? '',
-          at: (() => { const p = store.outline.get(cellId)?.placement as { x?: number; y?: number; h?: number } | undefined; return surface.layout?.mode === 'free' && p && typeof p.x === 'number' ? { x: p.x, y: (p.y ?? 0) + (p.h ?? 0) + 40 } : null })(),
-          center: { x: 0, y: 0 }, afterId: cellId,
-        } },
-      }
-    : folderId ? { reason: store.outline.get(folderId)?.capabilities.includes('structure') ? null : t('aiworkspace.table.import.noPermission'), destination: { folderId } } : null
-  const importReason = directReason ?? importTarget?.reason ?? (importTarget ? null : t('aiworkspace.table.import.noPlace'))
-  const runImport = async () => {
-    if (!importTarget || importReason) { if (importReason) store.notify('info', importReason); return }
-    if (tableImports.busy) { store.notify('info', t('aiworkspace.import.busy')); return }
-    const file = await pickFile.file(TABULAR_ACCEPT)
-    if (!file) return
-    const bytes = new Uint8Array(await file.arrayBuffer())
-    tableImports.open({ source: { kind: 'file', name: file.name, bytes }, step: 'wizard', destination: importTarget.destination })
-  }
-  const importRef = useRef(runImport)
-  useEffect(() => { importRef.current = runImport })
-  const importedFor = useRef(0)
-  useEffect(() => { if (asked.import && importedFor.current !== asked.import) { importedFor.current = asked.import; void importRef.current() } }, [asked.import])
+  useEffect(() => { if (askedCopy && columnsReady && copiedFor.current !== askedCopy) { copiedFor.current = askedCopy; copyRef.current(null) } }, [askedCopy, columnsReady])
 
   // ---- selection
   const toggle = (id: string, on: boolean) => setSelection((current) => { const next = new Set(current ?? []); if (on) next.add(id); else next.delete(id); return next })
@@ -242,8 +212,6 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
     ...(inline && phone && canFields ? [{ id: 'table-fields', label: t('aiworkspace.data.table.fields'), icon: <Columns3 size={14} />, run: () => togglePanel('fields') }] : []),
     { id: 'table-select', label: t('aiworkspace.table.selection.start'), icon: <ListChecks size={14} />, run: () => setSelection(new Set()) },
     { id: 'table-copy', label: t('aiworkspace.data.table.copyAsTable'), icon: <ClipboardCopy size={14} />, run: () => copyRows(null) },
-    'separator',
-    { id: 'table-import', label: t('aiworkspace.table.import.label'), icon: <Upload size={14} />, disabled: importReason ?? false, run: () => { void runImport() } },
   ]
   const tools: ToolbarItem[] | null = compact || !source.data ? null : [
     { kind: 'button', id: 'table-filter', icon: ListFilter, label: filterLabel, active: panel === 'filter' || filtered, run: () => togglePanel('filter') },
@@ -262,6 +230,22 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
   // an open record follows its row (a refused write keeps it; a deleted record closes it once it is gone from the view)
   const editBarRow = editBar ? rows.rows.find((row) => row?.record_id === editBar.recordId) : undefined
   const editBarField = editBar ? fields?.find((field) => field.field_id === editBar.fieldId) : undefined
+
+  // ---- the record this editor is on (§5.5): the one open in the form, else the row of the current cell
+  const [focusedRecord, setFocusedRecord] = useState<string | null>(null)
+  // the form's record stays current once the form is closed (its previous / next move the table along)
+  const openRecord = record?.kind === 'edit' ? record.recordId : null
+  if (openRecord && openRecord !== focusedRecord) setFocusedRecord(openRecord)
+  const rowOf = (id: string | null | undefined) => (id ? rows.rows.findIndex((row) => row?.record_id === id) : -1)
+  const currentId = [openRecord, phoneCell?.recordId, focusedRecord].find((id) => rowOf(id) >= 0) ?? null
+  const currentIndex = rowOf(currentId)
+  const currentTitle = currentIndex >= 0 ? recordTitle(titleField, rows.rows[currentIndex], '') || null : null
+  const publishes = size === 'tab' && !compact
+  useEffect(() => {
+    if (!publishes) return
+    publishTableCurrent(sourceId, currentId ? { recordId: currentId, index: currentIndex + 1, total: rows.total, title: currentTitle } : null)
+  }, [publishes, sourceId, currentId, currentIndex, currentTitle, rows.total])
+  useEffect(() => (publishes ? () => publishTableCurrent(sourceId, null) : undefined), [publishes, sourceId])
 
   if (source.error && !source.data) return <div className="aiws-error" role="alert">{t('aiworkspace.data.table.sourceReadError', { error: source.error })}</div>
   if (!source.data || !fields) return <div className="aiws-muted">{t('aiworkspace.data.table.sourceLoading')}</div>
@@ -321,7 +305,8 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
 
   return (
     <div ref={bindRoot} className="aiws-table" data-testid={`aiws-table-${tableId}`} data-total={rows.total} data-loaded={rows.rows.length} data-compact={compact ? 'true' : 'false'}
-      data-layout={layout} data-size={size} data-phone={phone ? 'true' : undefined} data-selecting={selection ? 'true' : undefined}>
+      data-layout={layout} data-size={size} data-phone={phone ? 'true' : undefined} data-selecting={selection ? 'true' : undefined}
+      onFocusCapture={publishes ? (event) => { const id = (event.target as HTMLElement).closest<HTMLElement>('.aiws-tr[data-record-id]')?.dataset.recordId; if (id) setFocusedRecord(id) } : undefined}>
       {!compact && !inNearToolbar && (
         <div className="aiws-table-bar" data-testid={`aiws-table-bar-${tableId}`}>
           <button type="button" className="aiws-table-tool" aria-label={t('aiworkspace.data.table.filterSort')} title={filterLabel} aria-pressed={panel === 'filter' || filtered} data-testid={`aiws-filter-open-${tableId}`}
@@ -431,7 +416,7 @@ export function TableEditorBody({ cell, sourceMode, size, readOnly, readOnlyReas
 /** A phone's sheet for the filter and the fields: up from the bottom, over the page. */
 function SheetPanel({ label, testId, onClose, children }: { label: string; testId: string; onClose: () => void; children: ReactNode }) {
   const anchor = anchorOf(null)
-  return <TablePop anchor={anchor} onClose={onClose} label={label} testId={testId}><div className="aiws-table-pop-title">{label}</div>{children}</TablePop>
+  return <TablePop anchor={anchor} onClose={onClose} label={label} testId={testId}>{children}</TablePop>
 }
 
 /** "+" of the header: a field by name and type, nothing else asked (the field manager has the rest). */
@@ -473,12 +458,13 @@ function NewRecordRow({ store, source, cellId, onNeedForm }: { store: WorkspaceS
   const { t } = useAiwsText()
   const fields = source.content.fields
   const titleField = fields.find((field) => field.field_id === source.content.payload.title_field_id) ?? fields.find((field) => field.type === 'text')
-  const otherRequired = fields.some((field) => field.required && field.field_id !== titleField?.field_id)
+  // a required field with a default gets it from the service (§7.3)
+  const otherRequired = fields.some((field) => field.required && field.default === undefined && field.field_id !== titleField?.field_id)
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const insert = async (title: string) => {
-    if (titleField?.required && !title) { setError(t('aiworkspace.data.record.required', { name: titleField.name })); return }
+    if (titleField?.required && titleField.default === undefined && !title) { setError(t('aiworkspace.data.record.required', { name: titleField.name })); return }
     const values: Record<string, Json> = titleField && title ? { [titleField.field_id]: title } : {}
     const recordId = randomId('r')
     const outcome = await store.submit({

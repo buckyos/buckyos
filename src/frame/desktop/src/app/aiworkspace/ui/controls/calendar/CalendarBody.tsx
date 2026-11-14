@@ -23,7 +23,8 @@ import type { Json, Operation } from '../../../api/types'
 import { useReadOnlyReason, useStore, useEntity, useWorkspaceUi } from '../../../state/hooks'
 import { useAiwsText } from '../../../useAiwsText'
 import { LabelArt } from '../../blocks/labelBlock'
-import { ControlMenu, ControlPopover, anchorOf, type AnchorRect, type MenuItem } from '../data/ControlPopover'
+import { ControlPanel, anchorOf, type AnchorRect, type MenuItem } from '../data/ControlPopover'
+import { openBlockMenu } from '../../blockui/bus'
 import { PublishActions } from '../../blockui/PublishActions'
 import { localPoint, trackPress, type Point } from '../data/gestures'
 import { registerControlKeys } from '../data/keys'
@@ -63,7 +64,6 @@ type Popover =
   | { kind: 'scope'; verb: 'edit' | 'delete'; p: Placed; change: EventChange | null; anchor: AnchorRect }
   | { kind: 'more'; day: number; anchor: AnchorRect }
   | { kind: 'jump'; anchor: AnchorRect }
-  | { kind: 'menu'; anchor: AnchorRect }
 
 const snap = (min: number, step = SNAP) => Math.round(min / step) * step
 let edits = 0
@@ -522,7 +522,8 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
   useEffect(() => { keyRef.current = onKey })
   useEffect(() => registerControlKeys(containerId, (event) => keyRef.current(event)), [containerId])
 
-  // the view menu (UI 框架 PRD §10.1): this ⋯ and the Block's menu offer the same actions
+  // the view menu (UI 框架 PRD §10.1): published to the Block's menu — the ⋯ of this title row on a canvas, of the Block's title row on a flow
+  // page (§6.2), its toolbar's "more", the phone's context window, the control page's bar
   const viewItems: (MenuItem | 'separator')[] = [
     { id: 'week-mon', label: t('aiworkspace.calendar.weekStartsMonday'), checked: view.week_start === 0, icon: view.week_start === 0 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 0 }) },
     { id: 'week-sun', label: t('aiworkspace.calendar.weekStartsSunday'), checked: view.week_start === 6, icon: view.week_start === 6 ? <CalendarCheck2 size={14} /> : null, run: () => ctl.set({ week_start: 6 }) },
@@ -581,7 +582,8 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
 
   const header = (
     <div className="aiws-dc-head aiws-cal-head" data-testid={`aiws-cal-head-${containerId}`}>
-      <span className="aiws-dc-title">{container.title || t('aiworkspace.calendar.title')}</span>
+      {/* on a flow page the Block's title row (UI 框架 PRD §6.2) carries the title and ⋯ */}
+      {host !== 'flow' && <span className="aiws-dc-title">{container.title || t('aiworkspace.calendar.title')}</span>}
       <button type="button" className="aiws-cal-today" disabled={!active} data-testid={`aiws-cal-today-${containerId}`} onClick={() => go(null)} title="T">{t('aiworkspace.calendar.today')}</button>
       <button type="button" className="aiws-dc-iconbtn" disabled={!active} aria-label={t('aiworkspace.calendar.prev')} title={`${t('aiworkspace.calendar.prev')} (←)`} data-testid={`aiws-cal-prev-${containerId}`} onClick={() => step(-1)}><ChevronLeft size={16} aria-hidden="true" /></button>
       <button type="button" className="aiws-dc-iconbtn" disabled={!active} aria-label={t('aiworkspace.calendar.next')} title={`${t('aiworkspace.calendar.next')} (→)`} data-testid={`aiws-cal-next-${containerId}`} onClick={() => step(1)}><ChevronRight size={16} aria-hidden="true" /></button>
@@ -595,8 +597,8 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
       </div>
       {canCreate && !phone && <button type="button" className="aiws-dc-iconbtn" disabled={!active} aria-label={t('aiworkspace.calendar.newEvent')} title={`${t('aiworkspace.calendar.newEvent')} (N)`} data-testid={`aiws-cal-new-${containerId}`}
         onClick={(e) => setPopover({ kind: 'form', draft: newEventDraft(anchor, 9 * 60), p: null, anchor: anchorOf(e.currentTarget) })}><Plus size={16} aria-hidden="true" /></button>}
-      <button type="button" className="aiws-dc-iconbtn" disabled={!active} aria-label={t('aiworkspace.datactl.viewMenu')} title={t('aiworkspace.datactl.viewMenu')} data-testid={`aiws-cal-menu-${containerId}`}
-        onClick={(e) => setPopover({ kind: 'menu', anchor: anchorOf(e.currentTarget) })}><Ellipsis size={16} aria-hidden="true" /></button>
+      {host === 'canvas' && <button type="button" className="aiws-dc-iconbtn" disabled={!active} aria-label={t('aiworkspace.blockui.menu')} title={t('aiworkspace.blockui.menu')} data-testid={`aiws-cal-menu-${containerId}`}
+        onClick={(e) => openBlockMenu(containerId, e.currentTarget)}><Ellipsis size={16} aria-hidden="true" /></button>}
     </div>
   )
 
@@ -687,7 +689,7 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
       )}
 
       {popover?.kind === 'detail' && (
-        <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.calendar.detail')} sheet={phone} testId={`aiws-cal-popover-${containerId}`}>
+        <ControlPanel anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.calendar.detail')} testId={`aiws-cal-popover-${containerId}`}>
           <EventDetail p={popover.p} sourceId={sourceOf(popover.p.calendar)} canWrite={!popover.p.todo && writable(sourceOf(popover.p.calendar))} noWrite={noWrite}
             onEdit={() => setPopover({ kind: 'form', draft: draftOf(popover.p.occ, popover.p.calendar), p: popover.p, anchor: popover.anchor })}
             onDelete={() => { if (popover.p.occ.recurring) setPopover({ kind: 'scope', verb: 'delete', p: popover.p, change: null, anchor: popover.anchor }); else { removeEvent(popover.p, 'one'); setPopover(null) } }}
@@ -699,33 +701,33 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
             onDuplicate={() => { duplicate(popover.p); setPopover(null) }}
             onCopyLink={() => copyRecordLink(store, containerId, (popover.p.occ.master ?? popover.p.occ.row).record_id, popover.p.occ.original ?? null, t('aiworkspace.datactl.linkCopied'))}
             onAnnotate={ui.annotate && !popover.p.todo ? () => { const p = popover.p; setPopover(null); ui.annotate?.(recordAnchor(sourceOf(p.calendar), p.occ.row.record_id, p.occ.title)) } : null} />
-        </ControlPopover>
+        </ControlPanel>
       )}
       {popover?.kind === 'quick' && (
-        <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.calendar.newEvent')} sheet={phone} width={300} testId={`aiws-cal-popover-${containerId}`}>
+        <ControlPanel anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.calendar.newEvent')} width={300} testId={`aiws-cal-popover-${containerId}`}>
           <QuickCreate summary={summaryOf(popover.draft, loc)} disabled={canCreate ? null : noWrite}
             onCreate={(title) => { createEvent({ ...popover.draft, title }); setPopover(null) }}
             onMore={(title) => setPopover({ kind: 'form', draft: { ...popover.draft, title }, p: null, anchor: popover.anchor })} />
-        </ControlPopover>
+        </ControlPanel>
       )}
       {popover?.kind === 'form' && (
-        <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={popover.p ? t('aiworkspace.calendar.editEvent') : t('aiworkspace.calendar.newEvent')} sheet={phone} width={380} testId={`aiws-cal-popover-${containerId}`}>
+        <ControlPanel anchor={popover.anchor} onClose={() => setPopover(null)} label={popover.p ? t('aiworkspace.calendar.editEvent') : t('aiworkspace.calendar.newEvent')} width={380} testId={`aiws-cal-popover-${containerId}`}>
           <EventForm initial={popover.draft} isNew={!popover.p} calendars={calendars.map((c) => ({ id: c.binding, label: store.outline.get(c.sourceId)?.name ?? c.binding, color: c.color }))}
             disabled={popover.p ? (writable(sourceOf(popover.p.calendar)) ? null : noWrite) : canCreate ? null : noWrite}
             onSave={(draft) => saveForm(draft, popover.p, popover.anchor)} onCancel={() => setPopover(null)} />
-        </ControlPopover>
+        </ControlPanel>
       )}
       {popover?.kind === 'scope' && (
-        <ControlPopover anchor={popover.anchor} onClose={() => { setPopover(null); setSettling(null) }} label={t('aiworkspace.calendar.scope.title')} sheet={phone} width={280} testId={`aiws-cal-popover-${containerId}`}>
+        <ControlPanel anchor={popover.anchor} onClose={() => { setPopover(null); setSettling(null) }} label={t('aiworkspace.calendar.scope.title')} width={280} testId={`aiws-cal-popover-${containerId}`}>
           <ScopeAsk verb={popover.verb} onPick={(scope) => {
             const pending = popover
             setPopover(null)
             if (pending.verb === 'delete') { setSettling(null); removeEvent(pending.p, scope) } else void applyEdit(pending.p, pending.change!, scope, settling?.drag)
           }} />
-        </ControlPopover>
+        </ControlPanel>
       )}
       {popover?.kind === 'more' && (
-        <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.calendar.dayEvents')} sheet={phone} width={280} testId={`aiws-cal-popover-${containerId}`}>
+        <ControlPanel anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.calendar.dayEvents')} width={280} testId={`aiws-cal-popover-${containerId}`}>
           <div className="aiws-cal-daylist">
             <div className="aiws-cal-daylist-title">{new Intl.DateTimeFormat(loc === 'zh' ? 'zh-CN' : 'en', { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'UTC' }).format(new Date(popover.day * DAY_MS))}</div>
             {placed.filter((p) => p.startDay <= popover.day && p.endDay >= popover.day).sort((a, b) => Number(!a.allDay) - Number(!b.allDay) || a.startMin - b.startMin).map((p) => (
@@ -735,17 +737,12 @@ export function CalendarBody({ containerId, mode, active, size, phone, host }: C
               </button>
             ))}
           </div>
-        </ControlPopover>
+        </ControlPanel>
       )}
       {popover?.kind === 'jump' && (
-        <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.calendar.jump')} width={260} side="below">
+        <ControlPanel anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.calendar.jump')} width={260} side="below" testId={`aiws-cal-popover-${containerId}`}>
           <MiniMonth value={dateOfDay(anchor)} today={dateOfDay(today)} weekStart={view.week_start} onPick={(date) => { go(dayOfDate(date)); setPopover(null) }} />
-        </ControlPopover>
-      )}
-      {popover?.kind === 'menu' && (
-        <ControlPopover anchor={popover.anchor} onClose={() => setPopover(null)} label={t('aiworkspace.datactl.viewMenu')} width={260} side="below">
-          <ControlMenu label={t('aiworkspace.datactl.viewMenu')} onClose={() => setPopover(null)} items={viewItems} />
-        </ControlPopover>
+        </ControlPanel>
       )}
       <PublishActions containerId={containerId} items={viewItems} />
     </div>

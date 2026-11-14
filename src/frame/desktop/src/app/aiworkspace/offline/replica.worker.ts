@@ -551,6 +551,12 @@ const handlers: Handlers = {
     return select('SELECT object_id, media_type, size FROM assets').map((row) => ({ object_id: String(row.object_id), media_type: String(row.media_type), size: Number(row.size) }))
   },
 
+  noteAsset(asset: AssetRow) {
+    transaction(() => upsert('assets', { object_id: asset.object_id, media_type: asset.media_type, size: asset.size, first_seq: 0 }))
+    engine(() => core().note_asset(asset.object_id, asset.media_type, asset.size))
+    return null
+  },
+
   async putAsset(objectId: string, bytes: ArrayBuffer) {
     try {
       const directory = await assetDirectory(true)

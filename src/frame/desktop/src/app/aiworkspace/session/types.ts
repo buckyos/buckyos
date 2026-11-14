@@ -1,6 +1,6 @@
 /* The presentation session's wire shapes (第四期规划; service README “Presentation sessions”). */
 
-import type { Json, SessionFeed } from '../api/types'
+import type { HomeCover, Json, SessionFeed } from '../api/types'
 
 export type SessionState = 'prepared' | 'live' | 'ended' | 'archived' | 'expired'
 export type SessionRole = 'presenter' | 'owner' | 'audience' | 'display' | 'prompter'
@@ -95,8 +95,8 @@ export interface OpenSession extends Omit<SessionInfo, 'online'> {
   opened_at: string | null
   /** Connections in the room now, while the service has a room for it in memory; else null. */
   online: number | null
-  /** A picture of the stage — not generated yet: always null. */
-  cover: string | null
+  /** The card's cover (K6: a picture on the canvases of its path, as the caller reads it), or null. */
+  cover: HomeCover | null
   /** The room on its courseware's origin (absent without a public base). */
   url?: string
 }

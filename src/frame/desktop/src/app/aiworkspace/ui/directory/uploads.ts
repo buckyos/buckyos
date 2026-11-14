@@ -110,7 +110,7 @@ export class UploadQueue {
           this.update(job.id, { sent, total: total || file.size })
         },
       })
-      // a session that cannot stop the transfer (a replica window) still drops a cancelled upload here
+      // cancelled as the transfer finished: dropped here, never added
       controller.signal.throwIfAborted()
       this.update(job.id, { state: 'saving', sent: file.size })
       const added = await commitFile(this.store, job.place, job.name, asset.object_id, job.mode)

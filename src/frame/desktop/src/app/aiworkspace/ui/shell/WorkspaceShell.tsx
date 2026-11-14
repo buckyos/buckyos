@@ -289,7 +289,8 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   // Ctrl/Cmd+Z goes to the UndoCoordinator: exactly one step per key press (design §2.7)
   useEffect(() => {
     let active = true
-    const onPointer = (event: PointerEvent) => { active = Boolean(rootRef.current?.contains(event.target as Node)) }
+    // dialogs and sheets of this workspace are mounted beside it in the app's root: a pointer there keeps the keys here
+    const onPointer = (event: PointerEvent) => { const target = event.target as Node; active = Boolean(rootRef.current?.contains(target) || rootRef.current?.closest('.aiws-root')?.contains(target)) }
     const onKey = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.defaultPrevented || event.isComposing) return
       // the stage of a show never undoes the workspace's edits

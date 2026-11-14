@@ -1,5 +1,6 @@
 /* The writes of the object tree (UI 框架 PRD §5.2), each one ordinary, undoable Commit through the store: new data at a
- * chosen place (in a folder: at its end; on an object: right after it), imports, rename, move and reorder, place on a
+ * chosen place (in a folder: at its end; on an object: right after it), imports, rename, move and reorder (a drag on a
+ * desktop; "移动到…" — a folder and a place in it — everywhere, the way to reorder on a touch screen), place on a
  * canvas, and the delete pre-check that names only the referrers this caller can see (unchanged). */
 
 import { randomId } from '../../api/ids'
@@ -100,7 +101,7 @@ export function canMoveInto(store: WorkspaceStore, id: string, parentId: string)
   return acceptsData(store.outline.get(parentId)) && parentId !== id && !store.outline.ancestors(parentId).includes(id)
 }
 
-/** The folders an object can move into (the data root first). */
+/** The folders an object can move into (the data root first), its own folder included (to reorder it there). */
 export function moveTargets(store: WorkspaceStore, id: string): EntityEnvelope[] {
   const out: EntityEnvelope[] = []
   const walk = (parentId: string) => {
@@ -114,6 +115,25 @@ export function moveTargets(store: WorkspaceStore, id: string): EntityEnvelope[]
   if (root) out.push(root)
   walk(DATA_ID)
   return out
+}
+
+/** A place in a folder for "移动到…": first, or right after one of the folder's entries. */
+export type MovePlace = 'first' | { after: string }
+
+/** Move `entityId` into `parentId` at `at` (one Commit). "first" is before everything there, rows the tree does not show
+ * included; an empty folder takes it at its end. */
+export function moveToPlace(store: WorkspaceStore, entityId: string, parentId: string, at: MovePlace): Promise<CommitOutcome> {
+  if (at !== 'first') return move(store, entityId, parentId, { after: at.after })
+  const first = store.outline.childrenOf(parentId).find((e) => e.entity_id !== entityId)
+  return move(store, entityId, parentId, first ? { before: first.entity_id } : null)
+}
+
+/** Where `entityId` is among `rows` (the folder's entries as shown, itself included): first, after the row before it,
+ * or null when it is not one of them. */
+export function placeAmong(rows: EntityEnvelope[], entityId: string): MovePlace | null {
+  const at = rows.findIndex((e) => e.entity_id === entityId)
+  if (at < 0) return null
+  return at === 0 ? 'first' : { after: rows[at - 1].entity_id }
 }
 
 /** Rename: an object with a title gets a new title; one without gets a new lookup name (its path step). */

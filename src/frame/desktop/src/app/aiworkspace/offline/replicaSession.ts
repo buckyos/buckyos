@@ -20,7 +20,7 @@
 
 import { ServiceFailure, type AiwsClient } from '../api/client'
 import { OnlineWorkspaceSession, SESSION_STOP_CODES, SESSION_STOP_TEXT, browserOffline, refusedVersion, versionMismatch } from '../api/session'
-import type { CommitOptions, OfflineControls, ReadOk, SessionMode, SessionStatus, SubmissionEvent, WorkspaceSession } from '../api/session'
+import type { CommitOptions, ImportedAsset, OfflineControls, ReadOk, SessionMode, SessionStatus, SubmissionEvent, UploadControl, WorkspaceSession } from '../api/session'
 import { TransportError } from '../api/transport'
 import { aiwsT, localizedLabels } from '../i18n'
 import {
@@ -119,6 +119,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   private readonly statusListeners = new Set<() => void>()
   private readonly changeListeners = new Set<(event: CommitEvent) => void>()
   private readonly submissionListeners = new Set<(event: SubmissionEvent) => void>()
+  private readonly aclListeners = new Set<() => void>()
   private readonly seqWaiters: { seq: number; resolve: () => void }[] = []
   private readonly onOnline = () => this.wake()
   private readonly offDeath: () => void
@@ -187,6 +188,13 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   subscribeChanges(listener: (event: CommitEvent) => void) {
     this.changeListeners.add(listener)
     return () => { this.changeListeners.delete(listener) }
+  }
+
+  /** The permissions moved (权限需求 R4): the long poll wakes on `acl_rev`, the reconnect reads the caller's Workspace
+   * capabilities again; `info()` has them when the listeners are told. */
+  subscribeAcl(listener: () => void) {
+    this.aclListeners.add(listener)
+    return () => { this.aclListeners.delete(listener) }
   }
 
   whenApplied(seq: number): Promise<void> {
@@ -295,7 +303,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
         // its request simply has the abandoned long poll run out in the background)
         const poll = new AbortController()
         this.waitAbort = poll
-        const remote = this.client.waitChanges(this.ws, this.epoch, this.confirmedSeq, 25000, poll.signal)
+        const remote = this.client.waitChanges(this.ws, this.epoch, this.confirmedSeq, 25000, poll.signal, this.wsInfo.acl_rev)
         const wakeSignal = this.wakeAbort.signal
         const local = new Promise<null>((resolve) => { wakeSignal.addEventListener('abort', () => resolve(null), { once: true }) })
         const woke = await Promise.race([remote, local])
@@ -338,11 +346,18 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     this.openRecorded = true
     if (versionMismatch(info)) { this.stop('VERSION_MISMATCH'); return }
     if (info.epoch !== this.epoch) { this.stop('EPOCH_MISMATCH'); return }
-    if (info.title !== this.wsInfo.title || info.capabilities.join() !== this.wsInfo.capabilities.join()) {
+    const shown = info.title !== this.wsInfo.title || info.capabilities.join() !== this.wsInfo.capabilities.join()
+    const aclMoved = (info.acl_rev ?? 0) !== (this.wsInfo.acl_rev ?? 0)
+    if (shown || aclMoved) {
       this.wsInfo = { ...info, head_seq: this.confirmedSeq }
       noteTitle(this.workspaceId, info.title)
       await this.replica.call('updateInfo', this.wsInfo)
-      this.emitChange({ seq: this.confirmedSeq, local: true, touched: [{ entity_id: 'root', change: 'renamed', rev: 0 }] })
+      if (shown) this.emitChange({ seq: this.confirmedSeq, local: true, touched: [{ entity_id: 'root', change: 'renamed', rev: 0 }] })
+      if (aclMoved) {
+        for (const listener of [...this.aclListeners]) {
+          try { listener() } catch (error) { console.error('[aiworkspace] permission listener failed', error) }
+        }
+      }
     }
     // 3. catch up and rebase
     await this.catchUp()
@@ -708,9 +723,17 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   lockBreak(entityId: string) { return this.direct.lockBreak(entityId) }
   lockList() { return this.direct.lockList() }
 
-  async uploadAsset(file: Blob, fileName?: string) {
+  /** A staged asset becomes known to the replica as it is to the service: the local plan of the Commit that names it
+   * (a directory member, an asset reference) checks it as the service will. */
+  private async noteAsset(asset: { object_id: string; media_type: string; size: number }) {
+    await this.replica.call('noteAsset', { object_id: asset.object_id, media_type: asset.media_type, size: asset.size })
+  }
+
+  async uploadAsset(file: Blob, fileName?: string, control?: UploadControl) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.upload'))
-    return this.direct.uploadAsset(file, fileName)
+    const asset = await this.direct.uploadAsset(file, fileName, control)
+    await this.noteAsset(asset)
+    return asset
   }
 
   contentServer() { return this.direct.contentServer() }
@@ -722,7 +745,13 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
 
   async importAssets(files: File[], folder: boolean, signal?: AbortSignal) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.upload'))
-    return this.direct.importAssets(files, folder, signal)
+    const items = await this.direct.importAssets(files, folder, signal)
+    const note = async (item: ImportedAsset): Promise<void> => {
+      if (item.kind === 'file') await this.noteAsset(item)
+      else for (const child of item.children) await note(child)
+    }
+    for (const item of items) await note(item)
+    return items
   }
 
   call<T>(method: string, params: Record<string, unknown>): Promise<T> {
@@ -805,7 +834,9 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   }
   async importObject(objId: string) {
     if (!this.isLive()) throw this.offlineFailure(aiwsT('aiworkspace.core.replica.offline.wishStart'))
-    return this.direct.importObject(objId)
+    const asset = await this.direct.importObject(objId)
+    await this.noteAsset(asset)
+    return asset
   }
   // presence and the work log (UI 框架 PRD K2, K3): the service's, never queued
   async presenceHeartbeat(surfaceId: string | null, name?: string) {
@@ -835,6 +866,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     this.statusListeners.clear()
     this.changeListeners.clear()
     this.submissionListeners.clear()
+    this.aclListeners.clear()
     this.seqWaiters.splice(0).forEach((waiter) => waiter.resolve())
     // the lock is released only after the database is closed: the next holder must find the files free
     this.released = this.serial.then(() => this.replica.close()).catch(() => undefined).then(() => this.lock.release())

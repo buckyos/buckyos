@@ -24,13 +24,12 @@ import { requestIntent } from '../blocks/editorToolbar'
 import { FlowBlockContext, type FlowBlockApi } from '../blocks/flowContext'
 import { controlRegistry } from '../controls/registry'
 import { blockRegistry, modePolicy, type CanvasMode } from '../blocks/registry'
-import { FlowRowTools } from '../blockui/FlowTools'
+import { FlowRowTools, FlowTitleOnly } from '../blockui/FlowTools'
 import { insideSheet, MenuList, useOverlayMounted, type MenuItem } from '../shell/popover'
 import { useShell } from '../shell/shellContext'
 import { registryEntries, type CatalogEntry } from './catalog'
 import { flowChildren } from './flowOps'
 import { accepted, renameBase, renameSurface, surfaceWriteReason } from './surfaceManage'
-import { ToolRow } from './tools'
 import { FormatScope } from '../phone/FormatBar'
 
 interface DropTarget { parentId: string; refId: string | null; before: boolean; line: { top: number; left: number; width: number } }
@@ -304,11 +303,19 @@ function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: En
   // a composite's Blocks fill its slots: they are added on the canvas, where the slots show
   const canInsert = policy.insert && group.kind !== 'composite' && group.capabilities.includes('structure')
   const children = flowChildren(store, group.entity_id)
+  // an extension's composite is a control (§6.2): its title row has the actions it declares and ⋯, as a titled Block's
+  const composite = group.kind === 'composite'
+  const name = group.title ?? group.name ?? (composite ? store.outline.get(group.def_id ?? '')?.title : null) ?? t('aiworkspace.canvas.group')
+  const title = <div className="aiws-fgroup-title" data-testid={composite ? `aiws-flow-composite-title-${group.entity_id}` : undefined}>{name}</div>
   return (
     <section className={`aiws-group aiws-fgroup${isSelected ? ' is-selected' : ''}${props.dragging === group.entity_id ? ' is-dragged' : ''}`} data-testid={`aiws-group-${group.entity_id}`}
-      data-cell-id={group.entity_id} data-parent-id={group.parent_id ?? undefined} data-flow-item="group" tabIndex={-1}>
+      data-cell-id={group.entity_id} data-parent-id={group.parent_id ?? undefined} data-flow-item="group" data-kind={group.kind ?? undefined} tabIndex={-1}
+      onContextMenu={composite ? (event) => { if (!policy.select || (event.target as HTMLElement).closest(OWN_CONTEXT_MENU) || (event.target as HTMLElement).closest('[data-flow-item]') !== event.currentTarget) return; event.preventDefault(); props.onBlockMenu(group.entity_id, contextPoint(event)) } : undefined}>
       <Gutter entity={group} siblings={siblings} index={index} kind="group" {...props} />
-      <div className="aiws-fgroup-title">{group.title ?? group.name ?? t('aiworkspace.canvas.group')}</div>
+      {composite && policy.select
+        ? <FlowRowTools cellId={group.entity_id} mode={props.mode} editorActive={policy.editContent} selected={isSelected} untitled={false} title={title}
+            onMore={(anchor) => props.onBlockMenu(group.entity_id, menuPoint(anchor))} />
+        : title}
       <ContainerFlow container={group} {...props} />
       {canInsert && (
         <div className="aiws-fgroup-tail" data-flow-item="tail" data-flow-into={group.entity_id}>
@@ -321,23 +328,24 @@ function FlowGroup({ group, siblings, index, ...props }: ItemProps & { group: En
   )
 }
 
-/** A control on a page (脑图方案 §6.3): one self-contained Block — its own drawing, moved and deleted as a whole. */
+/** A control on a page (脑图方案 §6.3): one self-contained Block — its own drawing, moved and deleted as a whole. Its title
+ * row is a titled Block's (§6.2): the type's icon, its title, its primary actions and quick properties, ⋯. */
 function FlowControl({ control, siblings, index, ...props }: ItemProps & { control: EntityEnvelope; siblings: EntityEnvelope[]; index: number }) {
   const def = controlRegistry.get(control.kind)
   const { t } = useAiwsText()
   const Flow = def?.Flow
+  const isSelected = props.selected.has(control.entity_id)
+  // a control is a titled type: its row shows even before it has a title of its own
+  const title = <div className="aiws-fblock-title" data-testid={`aiws-flow-control-title-${control.entity_id}`}>{control.title || def?.title || control.kind}</div>
   return (
-    <section className={`aiws-cell aiws-fblock aiws-fcontrol${props.selected.has(control.entity_id) ? ' is-selected' : ''}${props.dragging === control.entity_id ? ' is-dragged' : ''}`} tabIndex={-1}
+    <section className={`aiws-cell aiws-fblock aiws-fcontrol${isSelected ? ' is-selected' : ''}${props.dragging === control.entity_id ? ' is-dragged' : ''}`} tabIndex={-1}
       data-testid={`aiws-flow-control-${control.entity_id}`} data-cell-id={control.entity_id} data-parent-id={control.parent_id ?? undefined} data-flow-item="block" data-kind={control.kind}
       onContextMenu={(event) => { if (!props.policy.select || (event.target as HTMLElement).closest(OWN_CONTEXT_MENU)) return; event.preventDefault(); props.onBlockMenu(control.entity_id, contextPoint(event)) }}>
       <Gutter entity={control} siblings={siblings} index={index} kind="block" {...props} />
-      {control.title && (
-        <div className="aiws-blockui-titleline" data-testid={`aiws-flow-row-${control.entity_id}`}>
-          {def && <span className="aiws-blockui-typeicon" title={def.title}><def.icon size={15} aria-hidden="true" /></span>}
-          <div className="aiws-fblock-title">{control.title}</div>
-          {props.policy.select && <ToolRow items={[]} label={def?.title ?? control.title} moreTestId={`aiws-flow-more-${control.entity_id}`} onMore={(anchor) => props.onBlockMenu(control.entity_id, menuPoint(anchor))} />}
-        </div>
-      )}
+      {props.policy.select
+        ? <FlowRowTools cellId={control.entity_id} mode={props.mode} editorActive={props.policy.editContent} selected={isSelected} untitled={false} title={title}
+            onMore={(anchor) => props.onBlockMenu(control.entity_id, menuPoint(anchor))} />
+        : <FlowTitleOnly entityId={control.entity_id} title={title} />}
       {Flow ? <Flow containerId={control.entity_id} mode={props.mode} /> : <div className="aiws-muted">{t('aiworkspace.mindmap.unknownKind', { kind: control.kind ?? '' })}</div>}
     </section>
   )

@@ -324,6 +324,17 @@ fn insert_records(p: &mut Planner, op: &Value) -> OpResult {
             rec.revs.insert(sf.clone(), seq);
             touched_fields.insert(sf.clone());
         }
+        if service_fills(p) {
+            // a field the insert does not give takes its default (UI 框架 PRD §7.3), whoever inserts; undo, import and
+            // replay keep what was recorded
+            for f in fields.values() {
+                if let Some(d) = f.def.default.as_ref().filter(|_| !rec.values.contains_key(&f.field_id)) {
+                    rec.values.insert(f.field_id.clone(), d.clone());
+                    rec.revs.insert(f.field_id.clone(), seq);
+                    touched_fields.insert(f.field_id.clone());
+                }
+            }
+        }
         for f in fields.values() {
             if f.def.required && !rec.values.contains_key(&f.field_id) {
                 return Err(WsError::invalid_schema(format!("field {} is required", f.field_id)).at(format!("/records/{i}/values")));
@@ -850,10 +861,18 @@ fn update_field(p: &mut Planner, op: &Value) -> OpResult {
                 tightened |= n.is_some_and(|n| f.def.max_items.map_or(true, |old| n < old));
                 f.def.max_items = n;
             }
+            // what a new record gets when its insert does not give the field; `null` removes it. Stored values are
+            // never touched
+            "default" => {
+                restore.insert(k.clone(), f.def.default.clone().unwrap_or(Value::Null));
+                f.def.default = (!v.is_null()).then(|| v.clone());
+            }
             _ => return Err(WsError::invalid_op(format!("field property {k} cannot be changed here"))),
         }
     }
+    // the default is judged under the definition as changed (options, max_items, submitter, unique)
     f.def.validate()?;
+    f.def.normalize_default()?;
     let seq = p.seq();
     if tightened {
         let (total, sample) = violations(p, &sid, &f.def)?;
@@ -1090,15 +1109,29 @@ fn delete_option(p: &mut Planner, op: &Value) -> OpResult {
         }
         Ok(true)
     })?;
-    let Some(replace) = replace.or(if users.is_empty() { Some(None) } else { None }) else {
-        return Err(WsError::invalid_op(format!("option {oid} is used by {} records", users.len()))
-            .with_data(json!({ "used_by": users.len() })));
+    // the field's default is a use too: `reject_if_used` keeps it, `unset` / `replace_with` change it like the values
+    let default_uses = f.def.default.as_ref().is_some_and(&uses);
+    let Some(replace) = replace.or(if users.is_empty() && !default_uses { Some(None) } else { None }) else {
+        let detail = if users.is_empty() { format!("option {oid} is the field's default") } else { format!("option {oid} is used by {} records", users.len()) };
+        return Err(WsError::invalid_op(detail).with_data(json!({ "used_by": users.len(), "default": default_uses })));
     };
     if replace.is_none() && f.def.required && !multi && !users.is_empty() {
         return Err(WsError::invalid_op("cannot unset values of a required field"));
     }
     let seq = p.seq();
     let removed = f.def.options.as_mut().unwrap().remove(pos);
+    let old_default = f.def.default.clone();
+    if default_uses {
+        f.def.default = match (&replace, old_default.as_ref().and_then(Value::as_array)) {
+            (_, Some(ids)) => {
+                let mut set: BTreeSet<String> = ids.iter().filter_map(Value::as_str).filter(|s| *s != oid).map(str::to_string).collect();
+                set.extend(replace.clone());
+                (!set.is_empty()).then(|| json!(set))
+            }
+            (Some(rep), None) => Some(json!(rep)),
+            (None, None) => None,
+        };
+    }
     let mut restore = Vec::new();
     for mut r in users {
         let old = r.values[fid].clone();
@@ -1138,6 +1171,9 @@ fn delete_option(p: &mut Planner, op: &Value) -> OpResult {
     let mut inverse = vec![json!({ "op": "table.add_option", "source_id": sid, "field_id": fid,
                                    "option": { "option_id": removed.option_id, "label": removed.label }, "index": pos,
                                    "expect": { "rev": seq } })];
+    if default_uses {
+        inverse.push(json!({ "op": "table.update_field", "source_id": sid, "field_id": fid, "changes": { "default": old_default }, "expect": { "rev": seq } }));
+    }
     if !restore.is_empty() {
         inverse.push(json!({ "op": "table.set_values", "source_id": sid, "values": restore }));
     }
@@ -1164,7 +1200,8 @@ fn migrate_field(p: &mut Planner, op: &Value) -> OpResult {
     let mut to_json = from.to_value();
     {
         let o = to_json.as_object_mut().unwrap();
-        for k in ["scale", "options", "target_types", "currency"] {
+        // the default is converted below, like the records' values
+        for k in ["scale", "options", "target_types", "currency", "default"] {
             o.remove(k);
         }
         for (k, v) in to {
@@ -1180,7 +1217,7 @@ fn migrate_field(p: &mut Planner, op: &Value) -> OpResult {
             }
         }
     }
-    let target = FieldDef::from_value(&to_json)?;
+    let mut target = FieldDef::from_value(&to_json)?;
     if p.env.schema_checks {
         crate::standard::check_field_change(&src, fid, Some(target.ty))?;
     }
@@ -1220,12 +1257,24 @@ fn migrate_field(p: &mut Planner, op: &Value) -> OpResult {
     if total > p.env.limits.max_migrate_rows {
         return Err(WsError::limit(format!("migration of more than {} rows is not supported", p.env.limits.max_migrate_rows)));
     }
-    let report = json!({ "total": total, "convertible": total - unset - failing,
-                         "failing": { "count": failing, "sample": sample }, "unset": unset });
+    // the default converts as a value does (UI 框架 PRD §7.3): one that does not fails the migration, or is removed
+    // with `on_failure: unset`
+    let new_default = from.default.as_ref().map(|d| value::migrate_value(&from, &target, d).and_then(|n| target.default_value(&n).map_err(|e| e.detail)));
+    let mut report = json!({ "total": total, "convertible": total - unset - failing,
+                             "failing": { "count": failing, "sample": sample }, "unset": unset });
+    if let (Some(d), Some(n)) = (&from.default, &new_default) {
+        report["default"] = json!({ "value": d, "converted": n.as_ref().ok(), "convertible": n.is_ok() });
+    }
     p.reports.push(json!({ "op_index": p.op_index, "kind": "migration", "field_id": fid, "report": report }));
     if failing > 0 && !unset_failures {
         return Err(WsError::invalid_op(format!("{failing} values cannot be converted")).with_data(json!({ "report": report })));
     }
+    if let Some(Err(why)) = &new_default {
+        if !unset_failures {
+            return Err(WsError::invalid_op(format!("the default cannot be converted: {why}")).with_data(json!({ "report": report })));
+        }
+    }
+    target.default = new_default.and_then(Result::ok);
     let mut cells = Vec::new();
     for (mut r, new) in rewritten {
         let old = r.values.get(fid).cloned();
