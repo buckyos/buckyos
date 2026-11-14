@@ -272,6 +272,8 @@ export function Sheet({ label, testId, className = '', onClose, title, children,
 }) {
   const [place, setPlace] = useState<HTMLElement | null>(null)
   const pressed = useRef(false)
+  /** A press that began on the backdrop: the sheet closes on its click, so the click never reaches what lies beneath. */
+  const backdrop = useRef(false)
   // over the workspace window the sheet's place is in (its phone styles apply)
   const host = place ? place.closest<HTMLElement>('.aiws-workspace') ?? place.closest<HTMLElement>('.aiws-root') ?? document.body : null
   const close = () => { if (onClose) onClose(); else place?.dispatchEvent(new Event(SHEET_CLOSE, { bubbles: true })) }
@@ -279,8 +281,11 @@ export function Sheet({ label, testId, className = '', onClose, title, children,
     <>
       <span ref={setPlace} hidden />
       {host && createPortal(
-        <div className="aiws-sheet-layer" onPointerDown={(event) => { event.stopPropagation(); if (event.target === event.currentTarget) close() }}
-          onClickCapture={(event) => { if (!pressed.current && event.detail > 0) { event.preventDefault(); event.stopPropagation() } }}>
+        <div className="aiws-sheet-layer" onPointerDown={(event) => { event.stopPropagation(); backdrop.current = event.target === event.currentTarget }}
+          onClickCapture={(event) => {
+            if (backdrop.current && event.target === event.currentTarget) { event.preventDefault(); event.stopPropagation(); backdrop.current = false; close(); return }
+            if (!pressed.current && event.detail > 0) { event.preventDefault(); event.stopPropagation() }
+          }}>
           <div className={`aiws-sheet ${className}`} role={role === 'none' ? undefined : role} aria-label={role === 'none' ? undefined : label} data-testid={testId}
             onPointerDown={() => { pressed.current = true }}>
             <div className="aiws-sheet-grip" aria-hidden="true" />

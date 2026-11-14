@@ -114,7 +114,7 @@ test('UI-PH16 §15 #16 the phone keeps the title zone and the status bar; its ma
   expect(await entries(menu)).toEqual(['aiws-menu-workspace', 'aiws-menu-surface', 'aiws-menu-import-doc', 'aiws-menu-ink', 'aiws-menu-collab', 'aiws-menu-edit', 'aiws-menu-view', 'aiws-menu-data-mode'])
   await page.screenshot({ path: `${SHOTS}/ph16-menu.png` })
   await menu.getByTestId('aiws-menu-workspace').tap()
-  expect(await entries(menu)).toEqual(['aiws-menu-new', 'aiws-menu-open-workspace', 'aiws-menu-clone', 'aiws-menu-import', 'aiws-menu-export', 'aiws-back'])
+  expect(await entries(menu)).toEqual(['aiws-menu-new', 'aiws-menu-open-workspace', 'aiws-menu-clone', 'aiws-menu-import', 'aiws-menu-export', 'aiws-menu-cover', 'aiws-back'])
   await menu.getByTestId('aiws-menu-back').tap()
   await menu.getByTestId('aiws-menu-surface').tap()
   expect(await entries(menu)).toEqual(['aiws-menu-new-canvas', 'aiws-menu-page-settings'])

@@ -95,7 +95,7 @@ export interface OpenSession extends Omit<SessionInfo, 'online'> {
   opened_at: string | null
   /** Connections in the room now, while the service has a room for it in memory; else null. */
   online: number | null
-  /** The card's cover (K6: a picture on the canvases of its path, as the caller reads it), or null. */
+  /** The card's cover (Q37: its courseware's, when the caller reads the courseware's settings), or null. */
   cover: HomeCover | null
   /** The room on its courseware's origin (absent without a public base). */
   url?: string

@@ -31,8 +31,8 @@ export interface SharedConfig<T> {
 export interface WorkspaceSettingsState extends SharedConfig<WorkspaceSettings> {
   /** The `config` key's version (`ws.get_info.settings_rev`, then the root's `key_revs.config`). */
   rev: number
-  /** Set (null: remove) top-level settings: one undoable Commit. */
-  update(changes: Record<string, Json | null>): Promise<CommitOutcome>
+  /** Set (null: remove) top-level settings: one undoable Commit (`label`: what the history calls it). */
+  update(changes: Record<string, Json | null>, label?: string): Promise<CommitOutcome>
 }
 
 export interface SurfaceToolbarState extends SharedConfig<Json | null> {
@@ -43,7 +43,7 @@ export interface SurfaceToolbarState extends SharedConfig<Json | null> {
 /** The operation writing `changes` into `entity_id`'s `config`: each property expected at the version of the entity's
  * `key_revs` just read (a property never written is at 0); without a read (a member who cannot read the root) the
  * properties merge unconditionally. */
-function setConfigOp(entityId: string, changes: Record<string, Json | null>, revs: Record<string, number> | null): Operation {
+export function setConfigOp(entityId: string, changes: Record<string, Json | null>, revs: Record<string, number> | null): Operation {
   const expect = revs ? Object.fromEntries(Object.keys(changes).map((name) => [name, revs[`p:config.${name}`] ?? 0])) : null
   return { op: 'entity.set_props', entity_id: entityId, key: 'config', props: changes, ...(expect ? { expect } : {}) } as Operation
 }
@@ -72,9 +72,9 @@ export function useWorkspaceSettings(): WorkspaceSettingsState {
   const read = useLoad(load, version)
   const caps = store.session.info().capabilities as Capability[]
   const writeReason = !caps.includes('manage') ? aiwsT('aiworkspace.settings.needManage') : readOnly
-  const update = useCallback(async (changes: Record<string, Json | null>) => {
+  const update = useCallback(async (changes: Record<string, Json | null>, label?: string) => {
     const latest = (await readConfig(store, 'root'))?.revs ?? null
-    return store.submit({ editId: 'workspace:settings', label: aiwsT('aiworkspace.settings.workspaceLabel'), operations: [setConfigOp('root', changes, latest)] })
+    return store.submit({ editId: 'workspace:settings', label: label ?? aiwsT('aiworkspace.settings.workspaceLabel'), operations: [setConfigOp('root', changes, latest)] })
   }, [store])
   return { value: (read.data?.config ?? {}) as WorkspaceSettings, rev: read.data?.revs.config ?? 0, loading: read.loading, error: read.error, writeReason, update }
 }

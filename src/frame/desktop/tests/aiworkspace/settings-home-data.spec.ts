@@ -3,7 +3,7 @@
  * that follow a person from one Workspace origin to another (§15 #10), the home page's fields of `ws.list` (the open
  * record comes from opening the Workspace page), and the public lecture catalogue listing a room the caller never
  * joined but may open — he reads the session's permission object, the canvas it presents (§15 #29, Q19) — and the
- * cards' covers (K6, a stopgap: the first picture of a canvas, as the caller reads it). The assertions go through the
+ * cards' covers (Q37: the picture its managers chose in the settings, read by whoever reads them). The assertions go through the
  * service and the Desktop's own preference store, loaded on the Workspace pages. */
 
 import { readFileSync } from 'node:fs'
@@ -181,30 +181,39 @@ test('§15-29 K7 Q19 the public lecture catalogue lists a room bob never joined 
   expect(new Set(ids(await api.rpc(BOB, 'session.list_open', {})))).toEqual(new Set([bobPresents.session_id, elsewhere.session_id]))
 })
 
-test('§9.2 K6 covers (a stopgap): ws.list names the first picture of a canvas as the caller reads it — the Block and its data —; a public lecture the first picture on its path\'s canvases, from the run Workspace for its presenter; the asset route gives the bytes', async ({ api }) => {
+test('§9.2 Q37 covers: no cover until a manager chooses one in the settings (a picture on a canvas is none); whoever reads the settings lists it and gets the bytes; a public lecture has its courseware\'s', async ({ api }) => {
   const ws = await api.freeCanvas(ALICE, '有封面')
   expect(card(await api.rpc(ALICE, 'ws.list', {}), ws.workspace_id).cover).toBeNull()
-  const object = await pictureBlock(api, ALICE, ws, 'free', 'free-content', 'pic', png('k6-ws'))
-  expect(card(await api.rpc(ALICE, 'ws.list', {}), ws.workspace_id).cover).toEqual({ workspace_id: ws.workspace_id, object_id: object, media_type: 'image/png', surface_id: 'free', entity_id: 'pic' })
-  const bytes = await assetBytes(api, ALICE, ws.workspace_id, object)
+  await pictureBlock(api, ALICE, ws, 'free', 'free-content', 'pic', png('q37-canvas'))
+  expect(card(await api.rpc(ALICE, 'ws.list', {}), ws.workspace_id).cover).toBeNull()
+  const object = (await api.uploadAsset(ALICE, ws.workspace_id, png('q37-cover'))).object_id as string
+  // bob reads the canvas only: he does not manage the Workspace, his choice is refused
+  expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'free', allow: ['read'] }] })).ok).not.toBe(false)
+  const refused = await setSettings(api, BOB, ws, { cover: { object_id: object } })
+  expect(refused.status).toBe('rejected')
+  expect(refused.code).toBe('PERMISSION_DENIED')
+  expect((await setSettings(api, ALICE, ws, { cover: { object_id: object } })).status).toBe('accepted')
+  expect(card(await api.rpc(ALICE, 'ws.list', {}), ws.workspace_id).cover).toEqual({ workspace_id: ws.workspace_id, object_id: object, media_type: 'image/png' })
+  expect((await api.rpc(BOB, 'ws.get_info', { workspace_id: ws.workspace_id })).settings.cover).toEqual({ object_id: object, media_type: 'image/png', size: png('q37-cover').length })
+  // he reads the settings, so the card's cover and its bytes
+  expect(card(await api.rpc(BOB, 'ws.list', {}), ws.workspace_id).cover).toMatchObject({ object_id: object })
+  const bytes = await assetBytes(api, BOB, ws.workspace_id, object)
   expect(bytes.ok).toBe(true)
   expect(bytes.headers.get('content-type')).toBe('image/png')
-  // bob reads the canvas but not the data on it: the card has no cover for him; with the data he gets the same one
-  expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'free', allow: ['read'] }] })).ok).not.toBe(false)
-  expect(card(await api.rpc(BOB, 'ws.list', {}), ws.workspace_id).cover).toBeNull()
-  expect((await assetBytes(api, BOB, ws.workspace_id, object)).ok).toBe(false)
-  expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: 'free-content', allow: ['read'] }] })).ok).not.toBe(false)
-  expect(card(await api.rpc(BOB, 'ws.list', {}), ws.workspace_id).cover).toMatchObject({ object_id: object, entity_id: 'pic' })
-  expect((await assetBytes(api, BOB, ws.workspace_id, object)).ok).toBe(true)
+  // not a picture: refused
+  const text = (await api.uploadAsset(ALICE, ws.workspace_id, Buffer.from('not a picture'))).object_id as string
+  const wrong = await setSettings(api, ALICE, ws, { cover: { object_id: text } })
+  expect(wrong.status).toBe('rejected')
+  expect(wrong.code).toBe('INVALID_SCHEMA')
 
-  // a lecture: the picture on the canvas its path starts on, read in the run Workspace by its presenter
+  // a lecture: its courseware's cover
   const course = await api.rpc(ALICE, 'ws.create', { title: '有封面的课件' }) as { workspace_id: string; epoch: string }
   const fixture = JSON.parse(readFileSync(PRESENTATION, 'utf8')) as { commits: { operations: Json[] }[] }
   for (const [i, c] of fixture.commits.entries()) expect((await api.commit(ALICE, course, c.operations, `cover/${i}`)).status).toBe('accepted')
-  const stage = await pictureBlock(api, ALICE, course, 's-launch', 's-launch-content', 'stage-pic', png('k6-stage'))
+  const picture = (await api.uploadAsset(ALICE, course.workspace_id, png('q37-course'))).object_id as string
+  expect((await setSettings(api, ALICE, course, { cover: { object_id: picture } })).status).toBe('accepted')
   const lecture = (await api.rpc(ALICE, 'session.create', { workspace_id: course.workspace_id, path_id: 'path-intro', title: '有封面的课' })).session
   const listed = ((await api.rpc(ALICE, 'session.list_open', {})).sessions as Json[]).find((s) => s.session_id === lecture.session_id)
-  expect(listed.cover).toMatchObject({ workspace_id: listed.workspace_id, object_id: stage, surface_id: 's-launch', entity_id: 'stage-pic', media_type: 'image/png' })
-  expect(listed.cover.workspace_id).not.toBe(course.workspace_id)
-  expect((await assetBytes(api, ALICE, listed.cover.workspace_id, stage)).ok).toBe(true)
+  expect(listed.cover).toEqual({ workspace_id: course.workspace_id, object_id: picture, media_type: 'image/png' })
+  expect((await assetBytes(api, ALICE, course.workspace_id, picture)).ok).toBe(true)
 })

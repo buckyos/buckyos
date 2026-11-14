@@ -17,6 +17,7 @@ import { actionRegistry, type ActionCandidate, type ActionContext, type ActionDe
 import { mayCustomize, requestCustomize, setZonesRevealed, zonesRevealed } from './appMode'
 import { listMacros, runMacro } from './macros'
 import { requestPageSettings } from './pageSettings'
+import { requestCoverDialog } from '../cover/cover'
 
 const notOnCanvas = () => aiwsT('aiworkspace.shell.notOnCanvas')
 const caps = ({ store }: ActionContext) => store.session.info().capabilities
@@ -117,6 +118,11 @@ export const BUILTIN_ACTIONS: ActionDef[] = [
   { id: 'ws.export', label: () => aiwsT('aiworkspace.framework.ws.export'), phone: true, visible: member,
     menu: { group: 'workspace', order: 60, id: 'export', hint: () => aiwsT('aiworkspace.shell.menu.exportPackageHint') },
     reason: (ctx) => (caps(ctx).includes('export') ? null : aiwsT('aiworkspace.shell.menu.noExportPermission')), run: ({ shell }) => shell.openDialog({ kind: 'export' }) },
+  // the home card's cover (Q37): a picture its managers choose, a Workspace setting
+  { id: 'ws.cover', label: () => aiwsT('aiworkspace.cover.menu'), phone: true, visible: member,
+    menu: { group: 'workspace', order: 65, id: 'cover' },
+    reason: (ctx) => (!caps(ctx).includes('manage') ? aiwsT('aiworkspace.cover.needManage') : !live(ctx) ? aiwsT('aiworkspace.shell.needsOnline') : null),
+    run: () => requestCoverDialog() },
   { id: 'ws.offline', label: () => aiwsT('aiworkspace.shell.menu.offline'), visible: member,
     menu: { group: 'workspace', order: 70, id: 'offline', submenu: true },
     candidates: (ctx) => {

@@ -493,6 +493,10 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
     // the root's own keys (layout/title) and policy
     let root_entry = &by_id[ROOT_ID];
     let root_obj = parse_strict(&src.get_object(root_entry["object_id"].as_str().unwrap_or(""))?)?;
+    // the Workspace's cover (its settings, UI 框架 PRD Q37)
+    if let Some(content) = root_obj["content"].as_object() {
+        assets.extend(types::asset_object_ids(TYPE_CONTAINER, content).into_iter().map(str::to_string));
+    }
     let keys: Vec<Value> = root_obj["content"]
         .as_object()
         .into_iter()

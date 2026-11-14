@@ -7,8 +7,8 @@
  * The cards carry what `ws.list` gives (K6: owner, last modification, public, live classes) and `session.list_open`
  * lists every public class I may open (K7). "Recent" is the service's record of what I opened, on any device (with
  * what this window opened a moment ago). The category and the filters are my preference across Workspaces and devices
- * (home/prefs.ts). A card's cover is the first picture of a canvas the service names (K6, a stopgap), loaded lazily;
- * without one the card draws a placeholder. */
+ * (home/prefs.ts). A card's cover is the picture the workspace's managers chose (Q37: its ⋯ menu sets it, ui/cover/),
+ * loaded lazily; without one the card draws a placeholder. */
 
 import { useCallback, useMemo, useState } from 'react'
 import { Plus, RefreshCw, Search, SlidersHorizontal, Upload, X } from 'lucide-react'
@@ -21,6 +21,8 @@ import type { OpenSession } from '../session/types'
 import { useLoad } from '../state/hooks'
 import { forgetOpened, noteOpened, readRecentList, type RecentEntry } from '../state/recent'
 import { useAiwsText } from '../useAiwsText'
+import { writeCoverFromHome } from './cover/cover'
+import { CoverDialog } from './cover/CoverDialog'
 import { loadHomeSessions, openSession, openWorkspaceInNewTab } from './home/actions'
 import { NewWorkspaceCard, PreparedCard, WorkspaceCard } from './home/cards'
 import { FilterButton, FilterSheet } from './home/Filters'
@@ -72,6 +74,7 @@ export function WorkspaceList({ client, onOpen, opening, restricted = false }: P
   const [exporting, setExporting] = useState<WorkspaceListItem | null>(null)
   const [details, setDetails] = useState<WorkspaceListItem | null>(null)
   const [deleting, setDeleting] = useState<WorkspaceListItem | null>(null)
+  const [covering, setCovering] = useState<WorkspaceListItem | null>(null)
   /** The offline index is this browser's: read again after a card prepared a workspace. */
   const [preparedTick, setPreparedTick] = useState(0)
   const pickFile = useFilePicker((text) => setMessage({ kind: 'error', text }))
@@ -127,6 +130,7 @@ export function WorkspaceList({ client, onOpen, opening, restricted = false }: P
         }, (error) => (error instanceof OfflineUnavailable ? t('aiworkspace.core.app.offlineUnavailable', { reason: error.message }) : t('aiworkspace.core.app.prepareFailed', { error: describeError(error) })))
       },
       details: () => setDetails(workspace),
+      cover: () => setCovering(workspace),
       remove: () => setDeleting(workspace),
     }
   }
@@ -235,6 +239,11 @@ export function WorkspaceList({ client, onOpen, opening, restricted = false }: P
       {exporting && <ExportDialog client={client} workspace={exporting} onClose={() => setExporting(null)} />}
       {details && <DetailsDialog workspace={details} me={facts.me} prepared={prepared[details.workspace_id]} onClose={() => setDetails(null)} />}
       {deleting && <DeleteDialog workspace={deleting} busy={busy !== null} onConfirm={() => confirmDelete(deleting)} onClose={() => setDeleting(null)} />}
+      {covering && (
+        <CoverDialog target={{ workspaceId: covering.workspace_id, title: covering.title, current: covering.cover ?? null, transport, reason: null, write: (file) => writeCoverFromHome(client, covering, file) }}
+          onClose={() => setCovering(null)}
+          onDone={(removed) => { setMessage({ kind: 'info', text: t(removed ? 'aiworkspace.cover.removed' : 'aiworkspace.cover.saved', { name: covering.title }) }); list.reload(); sessions.reload() }} />
+      )}
     </div>
   )
 }

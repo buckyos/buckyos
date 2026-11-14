@@ -53,18 +53,22 @@ export interface WorkspaceListItem extends WorkspaceSummary {
   published?: boolean
   /** Live presentation sessions of it as courseware. */
   live_sessions?: number
-  /** The card's cover (K6), or null: the card draws its placeholder. */
+  /** The card's cover (the Workspace's settings, Q37), or null: the card draws its placeholder. */
   cover?: HomeCover | null
 }
 
-/** A home card's cover (UI 框架 PRD §9.2, K6 — a stopgap until canvases are pictured): the first Block showing a picture
- * (or a file's poster) on a canvas, as the caller reads it. The bytes are the asset route's,
- * `asset/<workspace_id>/<object_id>`. */
-export interface HomeCover { workspace_id: string; object_id: string; media_type: string; surface_id: string; entity_id: string }
+/** A home card's cover (UI 框架 PRD §9.2, Q37): the picture the Workspace's managers chose in its settings (a public
+ * class: its courseware's). The bytes are the asset route's, `asset/<workspace_id>/<object_id>`. */
+export interface HomeCover { workspace_id: string; object_id: string; media_type: string }
+
+/** The Workspace's cover as its settings hold it (`config.cover` on the root): an uploaded picture, its media type and
+ * size from the verified bytes. */
+export type WorkspaceCover = { object_id: string; media_type: string; size: number }
 
 /** The Workspace's shared settings (UI 框架 PRD §4.6, K4): the root's `config`, read in `ws.get_info`, written by
- * `manage`. The keys are the client's; `toolbar` is the shared toolbar layer of the Workspace. */
-export interface WorkspaceSettings { toolbar?: Json; [key: string]: Json | undefined }
+ * `manage`. The keys are the client's — `toolbar` is the shared toolbar layer of the Workspace — but `cover`, which the
+ * service checks (an uploaded picture, Q37). */
+export interface WorkspaceSettings { toolbar?: Json; cover?: WorkspaceCover; [key: string]: Json | undefined }
 
 /** The caller's own preferences across Workspaces (`user.get_prefs` / `user.set_prefs`, K4): top-level keys merge. */
 export interface UserPrefsRead { prefs: Record<string, Json>; revision: number; updated_at: string | null }

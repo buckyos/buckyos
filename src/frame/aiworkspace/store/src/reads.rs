@@ -530,7 +530,8 @@ impl Workspace {
         let ids: Vec<String> = st.query_map([object_id], |r| r.get(0)).map_err(db_err)?.collect::<rusqlite::Result<_>>().map_err(db_err)?;
         for id in ids {
             if let Some(e) = ctx.entity(&id)? {
-                if e.alive() && access.can_read(&ctx, &e)? {
+                // the root references the Workspace's cover (its settings, UI 框架 PRD Q37): read by whoever enters, like them
+                if e.alive() && (e.entity_id == ROOT_ID || access.can_read(&ctx, &e)?) {
                     return Ok(true);
                 }
             }

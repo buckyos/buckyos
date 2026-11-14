@@ -290,15 +290,13 @@ start (else creation) time, newest first. Each carries `my_role` (`presenter`, `
 it, or null), `online` (connections now, while it has a room in memory; else null), `cover` (see “Covers” below) and
 `url`. None of the three is a channel call.
 
-**Covers (UI 框架 PRD §9.2, K6 — a stopgap until canvases are pictured).** A `ws.list` item's `cover` is the first Block,
-in the canvas's own order (depth first through nested Blocks), showing an asset on the canvas changed last — then the
-other canvases, most recently changed first (the highest Commit seq of the canvas and everything below it; moving the
-canvas itself is no change), ties in tree order: a picture (PNG, JPEG, GIF, WebP, AVIF or BMP, at most 8 MiB) shows
-itself, any other file its poster. A session's `cover` (`session.list_open`) looks at the canvases of its path's steps in
-their order — in the run Workspace when the caller may read it, else in the courseware. Only what the caller reads
-counts (the Block and its asset, the bytes stored); at most 2 000 Blocks are looked at. The value is `{ workspace_id,
-object_id, media_type, surface_id, entity_id }` (`entity_id`: the asset), its bytes are `GET …/asset/<workspace_id>/
-<object_id>` like every asset's, or null: the card draws its placeholder.
+**Covers (UI 框架 PRD §9.2, Q37).** A Workspace's cover is the picture its managers chose: `cover` in its settings
+(the root's `config`, see “Workspace settings”) — nothing is taken from the canvases. A `ws.list` item's `cover` is
+`{ workspace_id, object_id, media_type }` when one is set and its bytes are stored here, else null: the card draws its
+placeholder. A session's `cover` (`session.list_open`) is its courseware's, for a caller who may enter the courseware
+(who reads its settings, as `ws.get_info` asks); null otherwise. The bytes are `GET …/asset/<workspace_id>/<object_id>`
+like every asset's: the root references the cover, and the asset route admits that reference to whoever may enter the
+Workspace — the readers of the settings, a reader of one canvas included.
 
 **Readers of the permission object (K7, UI 框架 PRD Q19).** Each session has a permission object: an entity of the
 source Workspace — a Surface, a folder, a Block, or the Workspace itself (`root`) — kept by id in `policy.readers_of`, so
@@ -1071,7 +1069,11 @@ Shared configuration is content. The **Workspace's settings** are the root's `co
 client owns the keys, `toolbar` first): written with `entity.set_keys` / `entity.unset_keys` / `entity.set_props { key:
 config }` on `root`, which needs `manage` on `/` besides the usual `update`; committed, undoable, carried by clones,
 packages and templates like the root's title. Every member reads them in `ws.get_info` (`settings`, `settings_rev`: the
-`config` key's version for `expect`), whatever it may read of the tree. A **Surface's** toolbar is `config.toolbar` on the
+`config` key's version for `expect`), whatever it may read of the tree. `cover` is the one key the service checks
+(`root_cover`, UI 框架 PRD Q37): `{ object_id }` of an uploaded PNG, JPEG, GIF, WebP, AVIF or BMP picture of at most
+8 MiB, stored as `{ object_id, media_type, size }` from the verified content. It is an asset of the root (retained like
+any), so it travels with the settings: a self-contained package, a clone and a template carry its bytes; a package
+without assets lists it as missing, and where its bytes are absent `ws.list` has no cover. A **Surface's** toolbar is `config.toolbar` on the
 Surface; changing it needs `structure` on that Surface. A load (package, clone, template) and a replay take both as they
 are.
 
@@ -1459,6 +1461,7 @@ they were judged where the Commit was admitted. The doc comment of each validato
 | asset | `validate_asset` (object lookup) | reference | the object was uploaded and verified (`DEPENDENCY_UNAVAILABLE`); import tolerates a listed but missing object |
 | container | `container_primitive` (keys, kind, layout, system nodes) | primitive | tree node kinds `folder` / `surface` / `group` and the control kinds (`mindmap`, `composite`, `todo`, `calendar`); `root` / `data` / `surfaces` only internal; kind never changes; `layout.mode` (implied by a control's kind; `def` for a composite, `data` for a data control); `system` only on a folder, `surface_id` only on a folder; `def_ref` / `on` only on a composite, `bindings` on a composite or a data control |
 | container | `container_primitive` (`content_folder_id`) | reference | a Surface's content folder exists, is a folder and sits under `canvas-content` |
+| container (root) | `root_cover` (`config.cover`, UI 框架 PRD Q37) | primitive, reference | judged when it changes: only `object_id`, `media_type`, `size`; the object is uploaded and a PNG, JPEG, GIF, WebP, AVIF or BMP picture of at most 8 MiB, media type and size from the verified content; a load takes one whose bytes it did not bring when it names `media_type` and `size` |
 | container (composite) | `composite_refs` | reference | `def_ref` is required, local, names a live `kind: composite` definition when created and never changes; `bindings` targets are data entities |
 | container | `check_slot` (`slot` of a group or a control) | reference | only inside a control; inside a composite required and a slot of the definition; elsewhere unique among siblings |
 | container | `container_schema` (`title`, `icon`, `config`, `locked`) | schema | preset icon id only on a Surface; `config` ≤ 64 KiB only on a Surface or a control, a mind map's values checked (`check_control_config`), a composite's left to its `config_schema` in the clients; `locked` only on a group or a control |
@@ -1556,7 +1559,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `ws.create` | stable | `title`, `workspace_id?`, `name?` (see “Workspace names”; a name the caller already uses is `INVALID_OPERATION` / `NAME_CONFLICT` with `data.workspace_id`) → `workspace_id`, `epoch`, `head_seq`, `title`, `name?` |
 | `ws.ensure` | stable | `name`, `title?` (default: the name), no `workspace_id` → `workspace_id`, `name`, `title`, `epoch`, `head_seq`, `created` — the caller's Workspace of that name, created when it has none (callers as for `ws.create`) |
 | `ws.time` | stable | none → `server_ms` (unix ms of the service clock); any session, guests included |
-| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.cloned_from` names the source of a clone or a `new` import. `ws.list` items also carry what the home page's cards show (UI 框架 PRD §9.2, K6): `owner_principal`, `updated_at` (the last accepted Commit, else the creation), `opened_at` (when the caller last opened it, or null), `public` (`anonymous` — anonymous access on and something granted to `@guest` — or `published` by path), `live_sessions` (live sessions of it as courseware) and `cover` (a stopgap: a picture on a canvas, see “Covers”, or null). `ws.get_info` carries `settings` (the Workspace's shared settings, the root's `config`, see “Workspace settings”) and `settings_rev`; `record_open: true` records that the caller opened it now, for `opened_at`) |
+| `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.cloned_from` names the source of a clone or a `new` import. `ws.list` items also carry what the home page's cards show (UI 框架 PRD §9.2, K6): `owner_principal`, `updated_at` (the last accepted Commit, else the creation), `opened_at` (when the caller last opened it, or null), `public` (`anonymous` — anonymous access on and something granted to `@guest` — or `published` by path), `live_sessions` (live sessions of it as courseware) and `cover` (the picture chosen in the settings, `{ workspace_id, object_id, media_type }`, see “Covers”, or null). `ws.get_info` carries `settings` (the Workspace's shared settings, the root's `config`, see “Workspace settings”) and `settings_rev`; `record_open: true` records that the caller opened it now, for `opened_at`) |
 | `ws.clone` | stable | none → `workspace_id`, `epoch`, `head_seq`, `content_root`, `cloned_from { workspace_id, snapshot }`, `excluded_entities` — a new Workspace the caller owns, copied from what the caller may read (workspace-level `export`; see “Workspace clone”) |
 | `acl.set` | stable | `changes: [{ subject, resource?, allow?, deny? }]` (≤ 500): each replaces the subject's entry on the resource (path or id, default `/`; both empty removes it), all or none, one record; `manage` on each resource, the owner's when `manage` is touched |
 | `acl.query` | stable | `by: entity` (`resource`, `expand?`: every subject with entries on its chain, their effective capabilities, each entry's source — direct, inherited, workspace — and what a denial overrides; macros bound to those groups and who may change them; managers), `by: subject` (`subject?`: its entries; for a group, its members; for a single caller, its judgment — groups and how, `@guest`, judged as), `by: explain` (`resource`, `principal?`: each capability allowed or refused and by which entry), `by: all` (every entry with who wrote it, `complete: true`, for a manager; otherwise the entries that apply to the caller — its own, its groups', `@all`, `@guest` while it is a guest — without who wrote them). Anyone may ask about itself; the rest is the managers' |
@@ -1684,7 +1687,7 @@ a capability on `/` or on a named entity) before the handler, which keeps its fi
 | `lock.release` | stable | may enter |
 | `lock.break` | stable | `manage` on `entity_id` |
 | `lock.list` | stable | may enter; `read` on each entity |
-| `doc.outline` | internal | may enter; `read` on each entity (an unreadable ancestor of a readable one: a path node only) |
+| `doc.outline` | internal | may enter; `read` on each entity |
 | `doc.source_capabilities` | internal | may enter; `read` on each entity |
 | `doc.source_query` | internal | may enter; `read` on each entity |
 | `doc.index` | internal | may enter; `read` on each entity |
@@ -1784,7 +1787,7 @@ HTTP routes (same port, `Authorization: Bearer <session token>`):
 
 | Route | Use |
 | --- | --- |
-| `GET /kapi/aiworkspace/asset/<workspace_id>/<object_id>` | asset bytes from the named store, authorized through an entity that references the asset — an AssetRef's poster too (collaborators, guests and run tokens have no rights on the owner's bucket); served with the sniffed type for pictures, PDF, plain text, audio and video, as `application/octet-stream` otherwise (SVG, HTML) |
+| `GET /kapi/aiworkspace/asset/<workspace_id>/<object_id>` | asset bytes from the named store, authorized through an entity that references the asset — an AssetRef's poster too, the Workspace's cover (the root's settings) for whoever may enter it (collaborators, guests and run tokens have no rights on the owner's bucket); served with the sniffed type for pictures, PDF, plain text, audio and video, as `application/octet-stream` otherwise (SVG, HTML) |
 | `GET /kapi/aiworkspace/stream/<token>` | the bytes of one asset by `Range` (no bearer: the token from `asset.stream_url` is the credential), for `<video>` / `<audio>` |
 | `GET /kapi/aiworkspace/session/ws` | the session channel (WebSocket; the first message carries the session token or link) |
 

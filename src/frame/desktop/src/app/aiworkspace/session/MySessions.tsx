@@ -1,8 +1,8 @@
 /* Public class cards of the home (UI framework PRD §9.2): a presentation session the caller may open without a link,
  * across Workspaces (`session.list_open`, K7) — their own, the ones they present or joined, the open rooms of courseware
  * they may read. "我主讲" marks the ones they present (Q7). A click goes in (live, not started) or replays (ended,
- * saved), in a tab of its own on the courseware's origin; an expired one says why it cannot be opened. The cover is the
- * first picture on the canvases of its path (K6, a stopgap: ui/home/CoverPicture.tsx), else the icon. */
+ * saved), in a tab of its own on the courseware's origin; an expired one says why it cannot be opened. The cover is its
+ * courseware's (Q37, for whoever reads the courseware's settings: ui/home/CoverPicture.tsx), else the icon. */
 
 import { Presentation, Radio } from 'lucide-react'
 import type { Transport } from '../api/transport'

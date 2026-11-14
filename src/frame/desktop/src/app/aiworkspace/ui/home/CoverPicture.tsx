@@ -1,7 +1,8 @@
-/* A home card's cover (UI 框架 PRD §9.2, K6 — a stopgap until canvases are pictured): `ws.list` and `session.list_open`
- * name the first picture Block of a canvas the caller reads; its bytes come from the asset route with the caller's own
- * token once the card is near the screen (covers load lazily, §9.3) and stay for the page as a blob URL. While it loads,
- * or when it cannot be loaded or drawn, the card keeps its placeholder (an icon on a colour of its own). */
+/* A home card's cover (UI 框架 PRD §9.2, Q37): `ws.list` and `session.list_open` name the picture the Workspace's
+ * managers chose in its settings (a public class: its courseware's); its bytes come from the asset route with the
+ * caller's own token once the card is near the screen (covers load lazily, §9.3) and stay for the page as a blob URL.
+ * Without one, while it loads, or when it cannot be loaded or drawn, the card keeps its placeholder (an icon on a
+ * colour of its own). The cover dialog (ui/cover/) shows the current one the same way. */
 
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Transport } from '../../api/transport'

@@ -1,8 +1,9 @@
 /* The home's workspace cards (UI framework PRD §9.2): a click anywhere on the card opens the workspace; the rest — a
  * new tab, Clone, export, offline, details, delete — is in its ⋯ menu. The information line: the owner (when it is not
  * me), the last modification, my role; the marks: prepared for offline, public, a public class live now (K6). The
- * cover is the first picture of a canvas the service names (K6, a stopgap: CoverPicture.tsx), loaded lazily; without
- * one — or until it loads, or when it fails — an icon on a colour derived from the workspace id, so cards tell apart. */
+ * cover is the picture the workspace's managers chose in its settings (Q37; "设置封面…" in the ⋯ menu for them),
+ * loaded lazily (CoverPicture.tsx); without one — or until it loads, or when it fails — an icon on a colour derived
+ * from the workspace id, so cards tell apart. */
 
 import type { CSSProperties } from 'react'
 import { LayoutDashboard, MoreHorizontal, Plus, WifiOff } from 'lucide-react'
@@ -20,6 +21,8 @@ export interface WorkspaceCardActions {
   exportPackage: () => void
   prepare: () => void
   details: () => void
+  /** "设置封面…" (Q37), for its managers. */
+  cover: () => void
   remove: () => void
 }
 
@@ -58,6 +61,7 @@ export function WorkspaceCard({ workspace, transport, me, openedAt, prepared, op
     ...(can('export') ? [{ id: 'export', label: t('aiworkspace.home.menu.export'), run: actions.exportPackage, testId: 'aiws-home-export' }] : []),
     { id: 'prepare', label: t('aiworkspace.shell.prepareOffline'), disabled: busy || offlineReason !== null, reason: offlineReason, explain: true, run: actions.prepare, testId: 'aiws-home-prepare' },
     { id: 'details', label: t('aiworkspace.home.menu.details'), run: actions.details, testId: 'aiws-home-details' },
+    ...(can('manage') ? [{ id: 'cover', label: t('aiworkspace.cover.menu'), disabled: busy, run: actions.cover, testId: 'aiws-home-cover-set' }] : []),
     ...(can('manage') ? [{ id: 'sep', separator: true }, { id: 'delete', label: t('aiworkspace.core.list.delete'), danger: true, disabled: busy, run: actions.remove, testId: 'aiws-delete' }] : []),
   ]
   return (

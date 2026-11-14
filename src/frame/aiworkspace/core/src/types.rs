@@ -1024,8 +1024,8 @@ fn composite_refs(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) ->
 /// Validator class: schema (title, icon, page / control config, `locked`).
 /// A Surface may carry `icon`, the stable id of a preset icon chosen by the client (the client owns the preset list;
 /// an unknown id shows its default), and `config`, its page settings (background, page size, toolbar; ≤ 64 KiB, checked
-/// by the client like a Cell's). The root's `config` is the Workspace's shared settings (toolbar; ≤ 64 KiB, the client
-/// checks the keys). A control's `config` is its attributes: a mind map's are checked here, a composite's
+/// by the client like a Cell's). The root's `config` is the Workspace's shared settings (toolbar, cover; ≤ 64 KiB, the
+/// client checks the keys but the cover's, `root_cover`). A control's `config` is its attributes: a mind map's are checked here, a composite's
 /// by its definition's `config_schema` in the clients (Q15).
 fn container_schema(e: &EntityRow) -> WsResult<()> {
     let kind = e.payload.get("kind").and_then(Value::as_str).unwrap_or("");
@@ -1275,6 +1275,41 @@ fn validate_asset(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
             return Err(bad(format!("asset {key} must be a positive integer")));
         }
     }
+    Ok(())
+}
+
+/// Pictures a Workspace's cover may be: what the asset route serves as themselves (an SVG it serves as bytes: never).
+pub const COVER_MEDIA_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp"];
+/// A cover is at most 8 MiB: the home page downloads each one whole.
+pub const COVER_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Validator class: primitive; reference for the uploaded picture. The Workspace's cover (UI 框架 PRD §9.2, Q37) is
+/// `config.cover` on the root, a setting like the others (`manage` writes it): `{ object_id, media_type, size }` of an
+/// uploaded PNG, JPEG, GIF, WebP, AVIF or BMP picture of at most 8 MiB, the media type and size from the verified
+/// content. Judged when it changes; a package may name one it did not bring (it reads back as no cover).
+fn root_cover(p: &mut Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
+    let cover = |m: &JsonMap| m.get("config").and_then(|c| c.get("cover")).cloned();
+    let Some(c) = cover(&e.payload) else { return Ok(()) };
+    if !p.env.import && before.is_some_and(|b| cover(&b.payload).as_ref() == Some(&c)) {
+        return Ok(());
+    }
+    let o = c.as_object().filter(|o| o.keys().all(|k| matches!(k.as_str(), "object_id" | "media_type" | "size"))).ok_or_else(|| bad("config.cover must be { object_id }"))?;
+    let object_id = o.get("object_id").and_then(Value::as_str).filter(|id| crate::canonical::is_obj_id(id)).ok_or_else(|| bad("config.cover.object_id must be a type:hex object id"))?.to_string();
+    let Some(info) = p.ov.asset(&object_id)? else {
+        if p.env.import && o.get("media_type").is_some_and(Value::is_string) && o.get("size").is_some_and(Value::is_u64) {
+            return Ok(());
+        }
+        return Err(WsError::new(Code::DependencyUnavailable, format!("cover {object_id} has not been uploaded")));
+    };
+    if !COVER_MEDIA_TYPES.contains(&info.media_type.as_str()) {
+        return Err(bad(format!("the cover must be a PNG, JPEG, GIF, WebP, AVIF or BMP picture, not {}", info.media_type)));
+    }
+    if info.size > COVER_MAX_BYTES {
+        return Err(WsError::limit(format!("the cover is limited to {COVER_MAX_BYTES} bytes")));
+    }
+    let value = json!({ "object_id": object_id, "media_type": info.media_type, "size": info.size });
+    p.ov.assets.insert(object_id, info);
+    e.payload.get_mut("config").and_then(Value::as_object_mut).expect("config is an object").insert("cover".into(), value);
     Ok(())
 }
 
@@ -2522,7 +2557,13 @@ pub fn validate_primitive(p: &mut Planner, before: Option<&EntityRow>, e: &mut E
     }
     let has = |k: &str| changed.is_none_or(|c| c.iter().any(|x| x == k));
     match e.type_id.as_str() {
-        TYPE_CONTAINER => container_primitive(p, e, before),
+        TYPE_CONTAINER => {
+            container_primitive(p, e, before)?;
+            if e.payload.get("kind").and_then(Value::as_str) == Some("root") {
+                root_cover(p, e, before)?;
+            }
+            Ok(())
+        }
         TYPE_CELL => {
             // a line and a box are different geometries over the same placement: one object never turns into the other
             if let Some(b) = before {
@@ -2952,13 +2993,15 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
     Ok(out)
 }
 
-/// The stored content objects an entity's payload names: an AssetRef's file and its poster, a Block snapshot, a wish program.
+/// The stored content objects an entity's payload names: an AssetRef's file and its poster, a Block snapshot, a wish program,
+/// the Workspace's cover (the root's settings).
 pub fn asset_object_ids<'a>(type_id: &str, payload: &'a JsonMap) -> Vec<&'a str> {
     let text = |v: Option<&'a Value>| v.and_then(Value::as_str);
     match type_id {
         TYPE_ASSET => [text(payload.get("object_id")), text(payload.get("poster"))].into_iter().flatten().collect(),
         TYPE_CELL => text(payload.get("config").and_then(|c| c.get("snapshot")).and_then(|s| s.get("object_id"))).into_iter().collect(),
         TYPE_WISH => text(payload.get("program").and_then(|p| p.get("source"))).into_iter().collect(),
+        TYPE_CONTAINER if text(payload.get("kind")) == Some("root") => text(payload.get("config").and_then(|c| c.get("cover")).and_then(|c| c.get("object_id"))).into_iter().collect(),
         _ => vec![],
     }
 }
