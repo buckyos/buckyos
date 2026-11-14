@@ -134,7 +134,9 @@ test('UI-M01 a phone opens the canvas in view mode with one toolbar: canvas icon
   await page.getByTestId('aiws-zoom-25').tap()
   await expect(page.getByTestId('aiws-zoom')).toHaveText('25%')
   await page.waitForTimeout(1500) // the user work state goes out after 0.8 s
-  const desktop = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
+  // a desktop of its own: a context made in this file starts from the phone it uses (Pixel 7: touch, a phone's screen)
+  const desktop = await browser.newContext({ userAgent: devices['Desktop Chrome'].userAgent, isMobile: false, hasTouch: false, deviceScaleFactor: 1,
+    viewport: { width: 1600, height: 1000 }, screen: { width: 1600, height: 1000 } })
   const other = await desktop.newPage()
   await openWorkspacePage(other, ALICE, ws.workspace_id)
   await expect(other.getByTestId('aiws-workspace')).not.toHaveAttribute('data-phone', 'true')
@@ -278,7 +280,9 @@ test('UI-M03 the guide on a phone (第三期规划 §7.3): offered in the one to
 
 test('UI-M04 notes on a phone: a public link guest long-presses blank canvas or uses the annotate menu, writes the note and finds it where it asked', async ({ page, api }) => {
   const ws = await quarterly(api, `m04 ${Date.now()}`)
-  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'public', allow: ['read', 'comment'] }] })
+  // public: anonymous access on and `@guest` reading and commenting (权限需求 §4.2)
+  await api.rpc(ALICE, 'acl.set_anonymous', { workspace_id: ws.workspace_id, enabled: true })
+  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: '@guest', allow: ['read', 'comment'] }] })
   await openWorkspacePage(page, { guest: true }, ws.workspace_id)
   await expect(page.getByTestId('aiws-principal')).toHaveAttribute('data-guest', 'true')
   await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')

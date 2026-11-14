@@ -147,7 +147,10 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         STAGE_CODE => StageKind::Code,
         _ => StageKind::Run,
     };
-    let snap = state.with_ws(ws_id, |ws| ws.wish_snapshot(caller))?;
+    // coding and running read as the macro identity (§4.5): bounded by the wish's group when it is bound with
+    // `intersection`, so a macro never reads what it could not write about
+    let as_macro = Caller { macro_of: super::macro_scope(&run), ..caller.clone() };
+    let snap = state.with_ws(ws_id, |ws| ws.wish_snapshot(&as_macro))?;
     // running the stored macro: only what its manifest declares is materialized
     let manifest = if kind == StageKind::Run && !mock {
         snap.readable(&wish_id)?.payload.get("program").and_then(|p| p.get("manifest")).cloned().filter(|m| m.is_object())
@@ -214,6 +217,7 @@ pub fn open_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &
         failure: Mutex::new(None),
         budget: budget(&state.wish.config, &stage_name),
         ai_user: run["detail"]["aicc"]["user_id"].as_str().unwrap_or("").to_string(),
+        max_tool_rounds: run["detail"]["context"]["executor"]["limits"]["max_tool_iterations"].as_u64(),
         prompts,
         tool_calls: Default::default(),
         program_runs: Default::default(),
@@ -279,7 +283,8 @@ async fn finish_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, st: &
         d["progress"]["phase"] = json!("waiting_confirmation");
         ws.wish_run_set(&rid, Some("validating"), Some(&candidate), Some(&evidence), None, Some(&d))?;
         let run = ws.wish_run(&c, &rid)?;
-        let plan = super::plan_for(ws, &c, &run, &json!({}))?;
+        let identity = super::run_identity(ws, &c, &run)?;
+        let plan = super::plan_for(ws, &c, &run, &json!({}), &identity)?;
         ws.wish_run_keep_plan(&rid, &plan)?;
         ws.wish_run_set(&rid, Some("waiting_confirmation"), None, None, None, None)
     })

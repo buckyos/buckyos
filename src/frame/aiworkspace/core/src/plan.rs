@@ -2084,6 +2084,13 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
                 item["value"] = v.clone();
             }
         }
+        // a run's page trusted as it was written (权限需求 Q32): history carries the vouch, so a replay need not judge
+        // who wrote it
+        if e.type_id == TYPE_BLOCK_DEF && p.env.origin == "program" && !changed.iter().any(|k| k == "trusted") {
+            if let Some(t) = e.payload.get("trusted").filter(|t| before.payload.get("trusted") != Some(*t)) {
+                norm["keys"].as_array_mut().unwrap().push(json!({ "key": "trusted", "value": t, "expect": { "rev": before.key_rev("trusted") } }));
+            }
+        }
     }
     p.ov.put_entity(e);
     let mut inverse = Vec::new();

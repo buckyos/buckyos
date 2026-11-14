@@ -160,20 +160,28 @@ fn u16_at(b: &[u8], at: usize) -> Option<usize> {
     b.get(at..at + 2).map(|v| u16::from_le_bytes([v[0], v[1]]) as usize)
 }
 
-/// `(name, method, data…)` of each zip local header in `head`. Found by
-/// signature, not by hopping sizes: writers that stream (LibreOffice) put the
-/// sizes in a data descriptor after the data.
+/// `(name, method, data…)` of each zip local header in `head`. A header that
+/// names its size is followed past its data; writers that stream (LibreOffice)
+/// put the sizes in a data descriptor after the data, so the next header is
+/// then found by signature.
 fn zip_entries(head: &[u8]) -> Vec<(&[u8], usize, &[u8])> {
     let mut entries = Vec::new();
     let mut at = 0;
     while let Some(i) = head.get(at..).and_then(|rest| rest.windows(4).position(|w| w == b"PK\x03\x04")) {
         let h = at + i;
-        at = h + 4;
-        let (Some(method), Some(name_len), Some(extra_len)) = (u16_at(head, h + 8), u16_at(head, h + 26), u16_at(head, h + 28)) else { break };
+        let (Some(flags), Some(method), Some(size), Some(name_len), Some(extra_len)) = (u16_at(head, h + 6), u16_at(head, h + 8), u32_at(head, h + 18), u16_at(head, h + 26), u16_at(head, h + 28)) else { break };
         let Some(name) = head.get(h + 30..h + 30 + name_len) else { break };
-        entries.push((name, method, head.get(h + 30 + name_len + extra_len..).unwrap_or_default()));
+        let data = h + 30 + name_len + extra_len;
+        entries.push((name, method, head.get(data..).unwrap_or_default()));
+        // the next header follows this entry's data, so a zip stored inside it (a chart's embedded workbook) is never
+        // read as entries of this one; a header without sizes (a data descriptor follows) leaves the signature search
+        at = if flags & 0x8 == 0 && size > 0 { data + size } else { h + 4 };
     }
     entries
+}
+
+fn u32_at(b: &[u8], at: usize) -> Option<usize> {
+    b.get(at..at + 4).map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]]) as usize)
 }
 
 /// Whether an OLE2 directory entry (128 bytes on a 128-byte boundary after the
@@ -531,6 +539,28 @@ mod tests {
         h.extend(name.as_bytes());
         h.extend(data);
         h
+    }
+
+    /// An entry with its sizes in the header (no data descriptor).
+    fn sized_entry(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut h = b"PK\x03\x04\x14\0\0\0\0\0".to_vec();
+        h.extend([0u8; 8]);
+        h.extend((data.len() as u32).to_le_bytes());
+        h.extend((data.len() as u32).to_le_bytes());
+        h.extend((name.len() as u16).to_le_bytes());
+        h.extend([0u8; 2]);
+        h.extend(name.as_bytes());
+        h.extend(data);
+        h
+    }
+
+    #[test]
+    fn a_workbook_stored_inside_a_presentation_is_not_the_presentation() {
+        // a chart's embedded workbook, stored uncompressed before the presentation part (an importer's one-chart deck)
+        let workbook = [sized_entry("[Content_Types].xml", &[3; 9]), sized_entry("xl/workbook.xml", &[4; 9])].concat();
+        let deck = [sized_entry("[Content_Types].xml", &[1; 9]), sized_entry("ppt/embeddings/Microsoft_Excel_Worksheet.xlsx", &workbook), sized_entry("ppt/presentation.xml", &[2; 9])].concat();
+        assert_eq!(document(&deck, None), Some("pptx"));
+        assert_eq!(document(&workbook, None), Some("xlsx"));
     }
 
     #[test]

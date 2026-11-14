@@ -291,15 +291,26 @@ test('CN17 anchors: 8 per Block, 16 with room; the id survives an outline change
   await fitAll(page)
   const snaps = page.locator('[data-testid^="aiws-snap-anchor-"]')
   const zoom = async () => Number(await page.getByTestId('aiws-canvas').getAttribute('data-zoom'))
+  /** The zoom once the view settled: the canvas shows it after the camera stops moving (`SETTLE_MS`). */
+  const steady = async () => {
+    let last = await zoom()
+    for (let i = 0; i < 20; i++) {
+      await page.waitForTimeout(200)
+      const now = await zoom()
+      if (now === last) return now
+      last = now
+    }
+    return last
+  }
   const zoomBy = async (button: 'aiws-zoom-in' | 'aiws-zoom-out') => {
-    const before = await zoom()
+    const before = await steady()
     await page.getByTestId('aiws-zoom-menu').click()
     await page.getByTestId(button).click()
     await page.keyboard.press('Escape')
     await expect.poll(zoom).not.toBe(before)
   }
   // b is 160 × 100: its minor anchors are 25 apart on the short sides, so they show from zoom 1.28
-  while (await zoom() >= 1.2) await zoomBy('aiws-zoom-out')
+  while (await steady() >= 1.2) await zoomBy('aiws-zoom-out')
   // over b: its 8 major anchors, the facing one marked
   await page.getByTestId('aiws-canvas-block-a').click()
   let from = await center(page, 'aiws-connect-e')
@@ -313,7 +324,7 @@ test('CN17 anchors: 8 per Block, 16 with room; the id survives an outline change
   await page.mouse.up()
   // zoomed in: 16; released on a minor one, the end names it
   await page.mouse.click(5, 500)
-  while (await zoom() < 1.3) await zoomBy('aiws-zoom-in')
+  while (await steady() < 1.3) await zoomBy('aiws-zoom-in')
   await page.getByTestId('aiws-canvas-block-a').click()
   from = await center(page, 'aiws-connect-e')
   const wnw = await spot(page, 'b', 0, 0.25)

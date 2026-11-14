@@ -1,7 +1,8 @@
 /* A wish's three stages on a real Zone with the real model, from the browser (notepads/aiws-ai-native-phase1-todo.md
  * T7-3): analyze → code (the model writes the macro and trial-runs it; applying stores it with its results) → the data
  * changes → run (the stored macro only, no model loop; the commentary follows the data) → a renamed field changes
- * nothing → a deleted declared field asks for coding again. */
+ * nothing → a deleted declared field asks for coding again. The CLI as an executor runs the macro restricted; with a
+ * second real account, a run is written as its macro identity (权限需求 §4.5, Q31–Q32). */
 
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -161,69 +162,178 @@ export default async function main(aiws) {
 }
 `
 
-test('[macro-hosted] the Owner\'s executor works a hosted wish through the CLI: a restricted macro run, its AI with its own session', async ({ owner, baseURL }) => {
-  test.setTimeout(900_000)
-  const ws = await setup(owner)
-  const token = (await owner.page.context().cookies()).find((c) => c.name === 'buckyos_session_token')!.value
-  const work = mkdtempSync(join(tmpdir(), 'aiws-hosted-dv-'))
-  const run = (...args: string[]) => cli(token, baseURL!, work, 'aiws', ...args, '--workspace', ws.workspace_id)
-  // an Agent nobody can reach: the dispatch is recorded unavailable and the claim token waits on the run
-  await owner.client.ok('ws.set_hosted_exec', { workspace_id: ws.workspace_id, config: { enabled: true, agent_id: 'dv-unreachable.test.buckyos.io', allowed_wishes: ['wish-sales'] } })
+/** `actor` works runs of wish-sales through the CLI as their executor: `run-start` (a local run it executes itself),
+ * claim, the stage folder; `settle` previews and applies as `actor`. */
+function executor(actor: Actor, token: string, baseURL: string, ws: Workspace) {
+  const work = mkdtempSync(join(tmpdir(), 'aiws-cli-dv-'))
+  const run = (...args: string[]) => cli(token, baseURL, work, 'aiws', ...args, '--workspace', ws.workspace_id)
   let n = 0
-  const hosted = async (stage: 'analyze' | 'code' | 'run') => {
-    const started = await owner.client.ok<WishRunView>('proc.start', { workspace_id: ws.workspace_id, program: 'wish.xllm@1', idempotency_key: `dv-hosted-${++n}-${Date.now()}`,
-      params: { wish_id: 'wish-sales', stage, execution: { mode: 'hosted' } } })
-    let view = started
-    await expect.poll(async () => { view = await owner.client.ok<WishRunView>('proc.get', { workspace_id: ws.workspace_id, run_id: started.run_id }); return view.dispatch?.claim_token ?? null }, { timeout: 60_000 }).not.toBeNull()
-    const claimed = run('run-claim', '--run', started.run_id, '--claim-token', view.dispatch!.claim_token!)
+  const start = (stage: 'analyze' | 'code' | 'run') => {
+    const started = run('run-start', '--wish', 'wish-sales', '--stage', stage) as { run_id: string; claim_token: string }
+    const claimed = run('run-claim', '--run', started.run_id, '--claim-token', started.claim_token)
     writeFileSync(join(work, 'claim.json'), JSON.stringify(claimed))
-    const dir = `stage-${n}`
+    const dir = `stage-${++n}`
     run('run-files', '--run', started.run_id, '--attempt', String(claimed.attempt), '--dir', dir)
     return { run_id: started.run_id, attempt: String(claimed.attempt), dir, stage: claimed.stage as { kind: string; manifest?: unknown; budget?: Record<string, unknown> } }
   }
   const settle = async (runId: string) => {
     let view: WishRunView | null = null
-    await expect.poll(async () => { view = await owner.client.ok<WishRunView>('proc.get', { workspace_id: ws.workspace_id, run_id: runId, choices: {} }); return view.state }, { timeout: 120_000 }).not.toMatch(/^(queued|snapshotting|running|validating)$/)
+    await expect.poll(async () => { view = await actor.client.ok<WishRunView>('proc.get', { workspace_id: ws.workspace_id, run_id: runId, choices: {} }); return view.state }, { timeout: 120_000 }).not.toMatch(/^(queued|snapshotting|running|validating)$/)
     expect(view!.state, JSON.stringify(view)).toBe('waiting_confirmation')
     expect(view!.preview?.ready, JSON.stringify(view!.preview)).toBe(true)
-    await owner.client.ok('proc.apply', { workspace_id: ws.workspace_id, run_id: runId, plan_digest: view!.preview!.plan_digest, session_id: 'dv-aiws' })
+    await actor.client.ok('proc.apply', { workspace_id: ws.workspace_id, run_id: runId, plan_digest: view!.preview!.plan_digest, session_id: 'dv-aiws' })
     return view!
   }
+  const analyze = async (results: unknown[]) => {
+    const a = start('analyze')
+    const analysis = { schema_version: 'wish.analysis.v3', status: 'ready', inputs: [{ name: 'sales', ref: 'orders' }],
+      context_prompt: '读取 sales 的全部订单，只算 状态=已结算，按月份汇总销售额与订单数。', output_contract: { results }, checks: [], blockers: [], warnings: [] }
+    writeFileSync(join(work, 'analysis.json'), JSON.stringify({ analysis }))
+    expect(run('run-tool', '--run', a.run_id, '--attempt', a.attempt, '--name', 'submit_analysis', '--args-file', 'analysis.json').status).toBe('ok')
+    run('run-report', '--run', a.run_id, '--attempt', a.attempt, '--finished')
+    return settle(a.run_id)
+  }
+  const code = async (source: string) => {
+    const c = start('code')
+    writeFileSync(join(work, c.dir, 'program/main.js'), source)
+    const trial = run('run-program', '--run', c.run_id, '--attempt', c.attempt, '--dir', c.dir)
+    expect(trial.status, JSON.stringify(trial)).toBe('ok')
+    expect(run('run-tool', '--run', c.run_id, '--attempt', c.attempt, '--name', 'finish', '--args', '{"summary":"DV"}').status).toBe('ok')
+    run('run-report', '--run', c.run_id, '--attempt', c.attempt, '--finished')
+    return { trial, view: await settle(c.run_id) }
+  }
+  const rerun = async () => {
+    const r = start('run')
+    expect(r.stage.kind).toBe('program')
+    const ran = run('run-program', '--run', r.run_id, '--attempt', r.attempt, '--dir', r.dir)
+    expect(ran.status, JSON.stringify(ran)).toBe('ok')
+    run('run-report', '--run', r.run_id, '--attempt', r.attempt, '--finished')
+    return settle(r.run_id)
+  }
+  return { run, start, settle, analyze, code, rerun }
+}
+
+const MONTHLY_AND_COMMENTARY = [{ name: 'monthly', type: 'table', title: '月度汇总', key: ['月份'] }, { name: 'commentary', type: 'richtext', title: '解读' }]
+
+// The hosted dispatch itself is not exercised here: since 权限需求 S6 the claim token reaches only the configured Agent.
+test('[macro-cli] an executor outside the browser works a wish through the CLI: a restricted macro run, its AI with its own session', async ({ owner, baseURL }) => {
+  test.setTimeout(900_000)
+  const ws = await setup(owner)
+  const token = (await owner.page.context().cookies()).find((c) => c.name === 'buckyos_session_token')!.value
+  const ex = executor(owner, token, baseURL!, ws)
 
   // analyze: an analysis worked out by the executor, through the stage tool
-  const a = await hosted('analyze')
-  const analysis = { schema_version: 'wish.analysis.v3', status: 'ready', inputs: [{ name: 'sales', ref: 'orders' }],
-    context_prompt: '读取 sales 的全部订单，只算 状态=已结算，按月份汇总销售额与订单数；让模型用 facts 写一句解读。',
-    output_contract: { results: [{ name: 'monthly', type: 'table', title: '月度汇总', key: ['月份'] }, { name: 'commentary', type: 'richtext', title: '解读' }] },
-    checks: [], blockers: [], warnings: [] }
-  writeFileSync(join(work, 'analysis.json'), JSON.stringify({ analysis }))
-  expect(run('run-tool', '--run', a.run_id, '--attempt', a.attempt, '--name', 'submit_analysis', '--args-file', 'analysis.json').status).toBe('ok')
-  run('run-report', '--run', a.run_id, '--attempt', a.attempt, '--finished')
-  await settle(a.run_id)
+  await ex.analyze(MONTHLY_AND_COMMENTARY)
 
   // code: the macro runs restricted (no claim.json, no environment), its SQL by the service, its AI with this session
-  const c = await hosted('code')
-  writeFileSync(join(work, c.dir, 'program/main.js'), HOSTED_MACRO)
-  const trial = run('run-program', '--run', c.run_id, '--attempt', c.attempt, '--dir', c.dir)
-  expect(trial.status, JSON.stringify(trial)).toBe('ok')
+  const { trial, view: coded } = await ex.code(HOSTED_MACRO)
   expect(String(trial.text)).toContain('reads sales: 月份, 销售额, 状态')
-  expect(run('run-tool', '--run', c.run_id, '--attempt', c.attempt, '--name', 'finish', '--args', '{"summary":"hosted DV"}').status).toBe('ok')
-  run('run-report', '--run', c.run_id, '--attempt', c.attempt, '--finished')
-  const coded = await settle(c.run_id)
   const facts = (coded.candidate as unknown as { facts: Record<string, unknown> }).facts
   expect(['NotCapable', 'PermissionDenied']).toContain(facts.claim)
   expect(['NotCapable', 'PermissionDenied']).toContain(facts.env)
   const first = await wish(owner, ws)
   expect(first.payload.program.api_version).toBe(3)
 
-  // the data changes; running the stored macro hosted updates the table and the commentary
+  // the data changes; running the stored macro updates the table and the commentary
   await setAmount(owner, ws, 'o0', '9000.00')
-  const r = await hosted('run')
-  expect(r.stage.kind).toBe('program')
-  const ran = run('run-program', '--run', r.run_id, '--attempt', r.attempt, '--dir', r.dir)
-  expect(ran.status, JSON.stringify(ran)).toBe('ok')
-  run('run-report', '--run', r.run_id, '--attempt', r.attempt, '--finished')
-  const done = await settle(r.run_id)
+  const done = await ex.rerun()
   expect((done.candidate as unknown as { facts: { total: number } }).facts.total).toBeGreaterThan((facts.total as number))
   expect((await freshness(owner, ws)).status).toBe('current')
+})
+
+const PAGE_MACRO = `
+export default async function main(aiws) {
+  aiws.declare({ inputs: { sales: ['月份', '销售额', '状态'] } })
+  const { rows } = await aiws.sql('SELECT "月份", round(sum("销售额"), 2) AS "销售额" FROM sales WHERE "状态" = ? GROUP BY 1 ORDER BY 1', ['已结算'])
+  aiws.result.table('monthly', rows, { key: ['月份'], fields: { 月份: 'date', 销售额: 'decimal' } })
+  aiws.result.html('dash', { html: '<div id=n>月度看板</div>', bindings: { monthly: 'result:monthly' } })
+}
+`
+
+const EDITOR = ['read', 'comment', 'append', 'update', 'delete', 'structure']
+
+test('[macro-permissions] a run is written as its macro identity: an editor\'s page waits for a manager, only run starts nothing, an intersection group bounds the reads', async ({ owner, peer, baseURL }, info) => {
+  test.setTimeout(900_000)
+  const ws = await setup(owner)
+  const at = { workspace_id: ws.workspace_id }
+  const cookie = async (actor: Actor) => (await actor.page.context().cookies()).find((c) => c.name === 'buckyos_session_token')!.value
+  const audits = async () => (await owner.client.ok<{ items: { action: string }[] }>('acl.audit', at)).items.filter((i) => i.action === 'macro.changed').length
+  await owner.client.ok('acl.set_group', { ...at, group_id: 'writers', title: 'DV 写结果' })
+  await owner.client.ok('acl.bind_macro', { ...at, wish: '~wish-sales', group_id: 'writers', mode: 'union' })
+
+  // an editor without manage analyzes and codes through the CLI (no model, no AI): its page is written, not trusted
+  await owner.client.ok('acl.set', { ...at, changes: [{ subject: peer.userId, resource: '/', allow: EDITOR }] })
+  const editor = executor(peer, await cookie(peer), baseURL!, ws)
+  await editor.analyze([{ name: 'monthly', type: 'table', title: '月度汇总', key: ['月份'] }, { name: 'dash', type: 'html', title: '月度看板' }])
+  expect(await audits(), 'an analysis is no change of the macro').toBe(0)
+  await editor.code(PAGE_MACRO)
+  expect(await audits(), 'a new macro of a bound wish is on the record').toBe(1)
+  const coded = await wish(owner, ws)
+  const dash = coded.payload.last_run.result_bindings.results.dash as { entity_id: string; cells: string[] }
+  const def = async () => (await owner.client.ok<{ content: { payload: Record<string, any>; key_revs: Record<string, number> } }>('doc.read', { ...at, entity_id: dash.entity_id })).content // eslint-disable-line @typescript-eslint/no-explicit-any
+  expect((await def()).payload.trusted ?? null, 'an editor\'s page is not vouched for').toBeNull()
+
+  // the owner's canvas: starting the untrusted page asks first
+  const page = owner.page
+  await openWorkspace(owner, ws)
+  const top = page.getByTestId('aiws-top-canvas')
+  if (await top.isVisible()) await top.click()
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-fit-all').click()
+  const toggle = page.getByTestId('aiws-run-toggle')
+  if ((await toggle.getAttribute('data-interactive')) !== 'true') await toggle.click()
+  const cell = dash.cells[0]
+  await expect(page.getByTestId(`aiws-html-start-${cell}`)).toHaveAttribute('data-untrusted', 'true')
+  await page.getByTestId(`aiws-html-start-${cell}`).click()
+  await expect(page.getByTestId(`aiws-html-untrusted-${cell}`)).toBeVisible()
+  await screenshot(page, info, 'permissions-untrusted-page')
+
+  // a manager vouches: trusted by the owner, and it starts without asking
+  const current = await def()
+  await commit(owner, ws, [{ op: 'entity.set_keys', entity_id: dash.entity_id, keys: [{ key: 'trusted', value: true, expect: { rev: current.key_revs.trusted ?? 0 } }] } as Operation])
+  expect((await def()).payload.trusted.by).toBe(owner.userId)
+  await openWorkspace(owner, ws)
+  if (await top.isVisible()) await top.click()
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-fit-all').click()
+  if ((await toggle.getAttribute('data-interactive')) !== 'true') await toggle.click()
+  await page.getByTestId(`aiws-html-start-${cell}`).click()
+  await expect(page.getByTestId(`aiws-html-untrusted-${cell}`)).toHaveCount(0)
+  await expect(page.getByTestId(`aiws-html-active-${cell}`)).toBeVisible({ timeout: 30_000 })
+  await screenshot(page, info, 'permissions-trusted-page')
+
+  // the data changes; the owner's run moves only data, and is no change of the macro
+  await setAmount(owner, ws, 'o0', '9000.00')
+  await executor(owner, await cookie(owner), baseURL!, ws).rerun()
+  expect(await audits()).toBe(1)
+
+  // holding only run: nothing it could run would ever be applied, so nothing starts
+  await owner.client.ok('acl.set', { ...at, changes: [{ subject: peer.userId, resource: '/', allow: ['read', 'run'] }] })
+  const refused = await peer.client.call<{ ok: boolean; error?: { code: string; sub_code?: string } }>('proc.start', { ...at, program: 'wish.xllm@1', idempotency_key: `dv-run-only-${Date.now()}`,
+    params: { wish_id: 'wish-sales', stage: 'run', execution: { mode: 'local' } } })
+  expect(refused, JSON.stringify(refused)).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', sub_code: 'MACRO_CANNOT_WRITE' } })
+  await openWorkspace(peer, ws)
+  const ptop = peer.page.getByTestId('aiws-top-canvas')
+  if (await ptop.isVisible()) await ptop.click()
+  await peer.page.getByTestId('aiws-zoom-menu').click()
+  await peer.page.getByTestId('aiws-fit-all').click()
+  await peer.page.getByTestId('aiws-canvas-block-blk-wish').click()
+  await peer.page.getByTestId('aiws-near-wish-open').click()
+  await expect(peer.page.getByTestId('aiws-wish-run-only')).toBeVisible()
+  await expect(peer.page.getByTestId('aiws-wish-run')).toBeDisabled()
+  await screenshot(peer.page, info, 'permissions-run-only')
+
+  // bound with intersection to a group that cannot read the input: even the owner's run reads no more than the group
+  await owner.client.ok('acl.set', { ...at, changes: [
+    { subject: '@writers', resource: '/', allow: EDITOR },
+    { subject: '@writers', resource: '~orders', deny: ['read'] }] })
+  await owner.client.ok('acl.bind_macro', { ...at, wish: '~wish-sales', group_id: 'writers', mode: 'intersection' })
+  await setAmount(owner, ws, 'o1', '9100.00')
+  const started = await owner.client.ok<WishRunView & { claim_token: string }>('proc.start', { ...at, program: 'wish.xllm@1', idempotency_key: `dv-bounded-${Date.now()}`,
+    params: { wish_id: 'wish-sales', stage: 'run', execution: { mode: 'local' } } })
+  await owner.client.call('proc.claim', { ...at, run_id: started.run_id, claim_token: started.claim_token })
+  let bounded: WishRunView | null = null
+  await expect.poll(async () => { bounded = await owner.client.ok<WishRunView>('proc.get', { ...at, run_id: started.run_id }); return bounded.state }, { timeout: 60_000 }).toBe('failed')
+  expect(JSON.stringify(bounded!.error)).toContain('not readable')
+  await owner.client.ok('acl.bind_macro', { ...at, wish: '~wish-sales', group_id: null })
 })

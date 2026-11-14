@@ -2,12 +2,14 @@
  * the Block to open. Leaving goes to the Zone host — the list on closing, the Desktop from "home" — and signing out
  * ends this origin's session before the Zone host's login page is shown. */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { buckyos } from 'buckyos'
 import { useI18n } from '../../../i18n/provider'
 import { useDocumentTitle } from '../../../presentation/documentHead'
 import { isMockRuntime } from '../../../runtime'
 import { AIWorkspaceAppPanel, type TabHost } from '../AIWorkspaceAppPanel'
+import { AiwsClient } from '../api/client'
+import { resolveTransport } from '../api/transport'
 import { openWorkspaceById } from '../launch'
 import { loginUrl, targetOf, workspaceIdOfHost, WORKSPACE_ROUTE, zoneOrigin } from '../links'
 import { SessionPage } from '../session/SessionPage'
@@ -27,9 +29,30 @@ async function goToWorkspace(workspaceId: string) {
   if (!(await openWorkspaceById(workspaceId))) window.location.assign(`${zoneOrigin()}${WORKSPACE_ROUTE}`)
 }
 
+/** Arriving from an entry link (`?entry=<entry id>`): the visitor joins the entry's group before the workspace opens
+ * (权限需求 R8) — a guest with this origin's own guest token, which only this page holds. A join that fails (the entry
+ * closed, expired or full) leaves the workspace to say what the visitor may do. */
+function useEntryJoin(): boolean {
+  const [entryId] = useState(() => new URLSearchParams(window.location.search).get('entry'))
+  const [joined, setJoined] = useState(!entryId)
+  useEffect(() => {
+    if (!entryId) return
+    const availability = resolveTransport()
+    const join = availability.ok ? new AiwsClient(availability.transport).wsJoinEntry(entryId).catch(() => null) : Promise.resolve(null)
+    void join.then(() => {
+      const url = new URL(window.location.href)
+      url.searchParams.delete('entry')
+      window.history.replaceState(window.history.state, '', url)
+      setJoined(true)
+    })
+  }, [entryId])
+  return joined
+}
+
 export function StandalonePage() {
   const { t } = useI18n()
   const workspaceId = useMemo(() => workspaceIdOfHost(), [])
+  const joined = useEntryJoin()
   const [target] = useState(() => targetOf(new URLSearchParams(window.location.search)))
   const appName = t('apps.aiworkspace')
   const [shownTitle, setShownTitle] = useState<string | null>(null)
@@ -66,7 +89,7 @@ export function StandalonePage() {
 
   return (
     <main className="h-dvh w-full overflow-hidden bg-[color:var(--cp-bg)]" data-testid="aiws-tab">
-      <AIWorkspaceAppPanel tab={tab} />
+      {joined ? <AIWorkspaceAppPanel tab={tab} /> : <div className="aiws-root"><div className="aiws-muted" data-testid="aiws-entry-joining">{t('aiworkspace.core.app.joiningEntry')}</div></div>}
     </main>
   )
 }

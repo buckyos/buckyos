@@ -1922,7 +1922,23 @@ fn block_def_primitive(p: &Planner, e: &mut EntityRow, changed: Option<&[String]
     let html = e.payload.get("kind").and_then(Value::as_str) == Some("html");
     let code = html && HTML_CODE_KEYS.iter().any(|k| is_changed(k));
     let vouched = changed.is_some_and(|c| c.iter().any(|x| x == "trusted"));
-    if code || vouched {
+    if code && !vouched && p.env.origin == "program" {
+        // a run's result (origin `program`: proc.apply only, R32) writes its macro's page without `manage` — the code was
+        // fixed when the macro was coded, and the run is written as its macro identity — but it is trusted only when that
+        // identity may vouch for it (权限需求 Q32). A replay takes what history recorded: a created definition's stored
+        // payload; a changed one carries `trusted` beside its code when it was trusted.
+        let trusted = if p.env.replay {
+            changed.is_none() && e.payload.get("trusted").is_some_and(|t| t.get("by").is_some())
+        } else {
+            p.can(&e.entity_id, crate::access::Cap::Manage)?
+        };
+        if trusted {
+            e.payload.insert("trusted".into(), json!({ "by": p.env.principal, "rev": p.seq() }));
+            e.key_revs.insert("trusted".into(), p.seq());
+        } else {
+            e.payload.remove("trusted");
+        }
+    } else if code || vouched {
         if !(p.env.import || p.env.internal || p.env.replay) {
             p.require(&e.entity_id, crate::access::Cap::Manage)?;
         }

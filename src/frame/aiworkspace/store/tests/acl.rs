@@ -352,6 +352,18 @@ fn html_code_needs_manage_and_is_marked_trusted() {
     let rev = ws.read(&alice(), "card", None).unwrap()["content"]["key_revs"]["html"].clone();
     let r = commit(&mut ws, &bob(), json!([{ "op": "entity.set_keys", "entity_id": "card", "keys": [{ "key": "html", "value": { "html": "<b>x</b>" }, "expect": { "rev": rev } }] }]));
     assert_eq!(code(&r), "PERMISSION_DENIED");
+    // trust is this Workspace's, never content: a package carries the code, whoever brings it in decides again
+    let r = ws.export(&alice(), "share", true, None).unwrap();
+    let pkg = fetched(&ws.objects, &r);
+    drop(ws);
+    let imported = env.svc.import(&alice(), &pkg, "new", false).unwrap();
+    let new_id = imported["workspace_id"].as_str().unwrap().to_string();
+    let h = env.svc.workspace(&new_id).unwrap();
+    let copy = h.lock().unwrap();
+    assert_eq!(copy.read(&alice(), "card", None).unwrap()["content"]["payload"]["trusted"]["by"], "alice", "the importer vouches");
+    drop(copy);
+    let cloned = env.svc.clone_workspace(&alice(), &id).unwrap();
+    assert!(cloned["workspace_id"].is_string(), "{cloned}");
 }
 
 /// §4.5: a macro bound with `intersection` never writes beyond the group, whoever runs it — the owner included; `union`
@@ -378,10 +390,18 @@ fn macro_identity_is_the_trigger_bounded_by_an_intersection_group() {
     set(&mut ws, json!([{ "subject": "bob", "resource": "/", "allow": ["read", "run"] }]));
     ws.acl_bind_macro(&alice(), "w1", Some("signup"), "union").unwrap();
     assert_eq!(now_caps(&ws, &bob(), "tasks"), ["read", "run"]);
-    // changing a bound macro is on the record (Q10)
+    // changing a bound macro is on the record (Q10); the wish's other keys are no change of the macro
+    let changed = |ws: &Workspace| ws.acl_audit(&alice(), 0, 1000).unwrap()["items"].as_array().unwrap().iter().filter(|i| i["action"] == "macro.changed" && i["target"]["wish_id"] == "w1").count();
     let rev = ws.read(&alice(), "w1", None).unwrap()["content"]["key_revs"]["prompt"].clone();
     ok(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "prompt", "value": "改了", "expect": { "rev": rev } }] }]));
-    assert!(ws.acl_audit(&alice(), 0, 1000).unwrap()["items"].as_array().unwrap().iter().any(|i| i["action"] == "macro.changed" && i["target"]["wish_id"] == "w1"));
+    assert_eq!(changed(&ws), 0);
+    let source = "export default async function main(aiws) { aiws.declare({ inputs: {} }) }";
+    let manifest = json!({ "inputs": {}, "results": {} });
+    let staged = ws.stage_asset(&alice(), source.as_bytes()).unwrap();
+    let program = json!({ "language": "js", "api_version": aiworkspace_core::wish::PROGRAM_API_VERSION, "source": staged["object_id"],
+                          "digest": aiworkspace_core::wish::macro_digest(source, &manifest), "manifest": manifest, "produces": [] });
+    ok(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "program", "value": program, "expect": { "rev": 0 } }] }]));
+    assert_eq!(changed(&ws), 1);
     // a macro's group never holds manage: not while bound, and a group holding it is not bound; binding is a manager's
     assert_eq!(ws.acl_set(&alice(), &json!([{ "subject": "@signup", "resource": "/data/项目说明", "allow": ["manage"] }])).unwrap_err().code, Code::InvalidOperation);
     group(&mut ws, "admins", &[]);

@@ -775,6 +775,8 @@ async fn run_token_caller(state: &Arc<AppState>, ws_id: Option<&str>, token: &st
     let mut caller = wish::delegated(state, ws_id, &run).await;
     caller.kind = Some("run".into());
     caller.run_scope = run["run_id"].as_str().map(str::to_string);
+    // a coding or running stage reads as its macro identity (权限需求 §4.5), its executor's reads too
+    caller.macro_of = wish::macro_scope(&run);
     Ok(caller)
 }
 

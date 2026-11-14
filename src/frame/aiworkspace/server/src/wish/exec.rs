@@ -3,7 +3,7 @@
 //! Session the Owner configured (hosted) — claims the run, keeps a lease alive, works on the service's
 //! stage and reports when done; the service plans what the stage collected and the user confirms it.
 
-use super::{run_view, stages};
+use super::stages;
 use crate::AppState;
 use aiworkspace_core::canonical::sha256_hex;
 use aiworkspace_core::value::format_utc_ms;
@@ -151,21 +151,14 @@ fn hosted_stage(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) 
 /// `proc.tool { run_id, attempt, name, args }`.
 pub async fn tool(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> WsResult<Value> {
     let (st, c, w, body) = (state.clone(), caller.clone(), ws_id.to_string(), p.clone());
-    let (stage, run_id, _) = tokio::task::spawn_blocking(move || hosted_stage(&st, &c, &w, &body)).await.map_err(|e| WsError::io(e.to_string()))??;
-    // the owner's tool-round limit of a hosted run (权限需求 R30)
-    let (st, c, w, rid) = (state.clone(), caller.clone(), ws_id.to_string(), run_id.clone());
-    let limit = tokio::task::spawn_blocking(move || st.with_ws(&w, |ws| Ok(ws.wish_run(&c, &rid)?["detail"]["context"]["executor"]["limits"]["max_tool_iterations"].as_u64())))
-        .await
-        .map_err(|e| WsError::io(e.to_string()))??;
-    if let Some(max) = limit {
-        let mut calls = state.wish.tool_calls.lock().unwrap();
-        let n = calls.entry(run_id).or_insert(0);
-        *n += 1;
-        if *n > max {
+    let (stage, _, _) = tokio::task::spawn_blocking(move || hosted_stage(&st, &c, &w, &body)).await.map_err(|e| WsError::io(e.to_string()))??;
+    let name = p.get("name").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("name required"))?;
+    // the owner's limit on the model's tool rounds in a hosted run (权限需求 R30); a macro's SQL and AI cache are no rounds
+    if let Some(max) = stage.max_tool_rounds.filter(|_| name != "sql" && name != "llm_cache") {
+        if stage.tool_rounds() >= max {
             return Err(WsError::limit(format!("the owner allows {max} tool rounds per hosted run")));
         }
     }
-    let name = p.get("name").and_then(Value::as_str).ok_or_else(|| WsError::invalid_op("name required"))?;
     Ok(stages::host_tool(&stage, name, p.get("args").unwrap_or(&Value::Null)).await)
 }
 
@@ -279,7 +272,7 @@ pub fn report(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) ->
     }
     state.with_ws(ws_id, |ws| {
         let run = ws.wish_run(caller, &run_id)?;
-        Ok(run_view(&state.wish, &run, false))
+        super::view_for(ws, caller, &state.wish, &run, false)
     })
 }
 

@@ -1,7 +1,7 @@
 ---
 name: aiworkspace_template_dev
 description: Build and maintain AI Workspaces from the command line — create a workspace, add tables, documents and Blocks by committing operations, import table files and Word / PowerPoint documents, put mind maps (Block-controls) on a canvas from a Markdown outline, keep the user's to-dos and calendar (`buckyos aiws todo` / `cal`), develop controls (component.json in a home folder, build, pull, events and handlers, upgrades with migrations, export to the library or a .pikg, import), save and create workspaces from templates, export and import packages, reference data across workspaces, run wish blocks, publish data by path and insert published links.
-requires: the buckyos command (agent container: /opt/buckyos/bin/agent-tools/buckyos; host: $BUCKYOS_ROOT/bin/buckyos) signed in; Deno for scripts that use the websdk directly; the workspace must give you the capability each step needs (structure/update to write, manage to share, publish or write HTML control code, update on a wish to analyze or code it, run to run it); while a workspace names nothing for you as an Agent you act with your owner's rights
+requires: the buckyos command (agent container: /opt/buckyos/bin/agent-tools/buckyos; host: $BUCKYOS_ROOT/bin/buckyos) signed in; Deno for scripts that use the websdk directly; the workspace must give you the capability each step needs (structure/update to write, manage to share, publish or write HTML control code, update on a wish to analyze, code or run it — a run writes its results as whoever starts it, so `run` alone runs nothing yet); while a workspace names nothing for you as an Agent you act with your owner's rights
 baseline: standard
 commands: deno, node
 ---
@@ -78,7 +78,7 @@ buckyos aiws template create <pkg_id>#<template id> --title "Red team" --param t
 
 #### When it fails
 - `rejected` with `errors[]`: read `code` / `sub_code` (`ID_CONFLICT`, `NAME_CONFLICT`, `SOURCE_READ_ONLY`, `LOCK_REQUIRED`, `QUOTA_EXCEEDED`…), never the text. A conflict answers the current revision in `conflicts[]`: read again, resend with the new `expect`.
-- `PERMISSION_DENIED`: `ws.get_info.capabilities` lists what you may do; `buckyos aiws acl explain <path>` says which entry decided; a manager gives more with `acl-edit set`. Writing an HTML control's code (`ext.build` of an `html` control, its `html` / `on_bind`) needs manage: it marks the definition `trusted`, and only trusted code runs by itself for viewers.
+- `PERMISSION_DENIED`: `ws.get_info.capabilities` lists what you may do; `buckyos aiws acl explain <path>` says which entry decided; a manager gives more with `acl-edit set`. Writing an HTML control's code (`ext.build` of an `html` control, its `html` / `on_bind`) needs manage: it marks the definition `trusted`, and only trusted code runs by itself for viewers. A wish's HTML result is the exception: applying the run writes it without manage, trusted only when the run's identity manages it; otherwise a manager vouches (`entity.set_keys` of `trusted: true`) before viewers see it run.
 - `epoch` mismatch after an import or restore: call `ws.get_info` again.
 - An unknown result (the request timed out): `doc.get_submission { epoch, idempotency_key }` — `accepted` means it is in; otherwise resend the same key.
 

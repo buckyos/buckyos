@@ -4,7 +4,7 @@
  * commit counts are asserted through kRPC and the dev-override hooks, not only through the DOM. */
 
 import type { Page } from '@playwright/test'
-import { asUser, closeWorkspace, expect, fitAll, hooks, mainMenu, openCanvas, openWorkspacePage, test, workspaceOrigin, workspacePage, type Api } from './fixtures'
+import { asUser, closeWorkspace, expect, fitAll, hooks, mainMenu, openCanvas, openWorkspacePage, setCanvasMode, test, workspaceOrigin, workspacePage, type Api } from './fixtures'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- RPC results
 type Json = any
@@ -458,7 +458,12 @@ test('UI-P16 one-click public link: a guest opens it without signing in, reads a
   const token = await guest.evaluate(() => window.localStorage.getItem('aiworkspace.guest'))
   expect(token).toMatch(/^gt_[A-Za-z0-9_-]{43}$/)
   expect(principal).not.toContain(token!.slice(3, 13))
-  // read and comment, nothing else: of the insert tools only the note (a note is an annotation), no new workspace, no way to manage the link
+  // a guest who may not update starts in view mode (控件机制 TODO Q27 修订, 11-12); in edit mode it reads and comments,
+  // nothing else: of the insert tools only the note (a note is an annotation), no new workspace, no way to manage the link
+  await expect(guest.getByTestId('aiws-mode-note')).toBeVisible()
+  await expect(guest.getByTestId('aiws-tool-insert-note')).toHaveCount(0)
+  await setCanvasMode(guest, 'edit')
+  await expect(guest.getByTestId('aiws-mode-note')).toHaveCount(0)
   await expect(guest.getByTestId('aiws-tool-insert-note')).toBeVisible()
   await expect(guest.getByTestId('aiws-tool-insert-richtext')).toHaveCount(0)
   await expect(guest.getByTestId('aiws-tool-catalog')).toHaveCount(0)

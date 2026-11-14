@@ -11,7 +11,8 @@ pub mod tools;
 
 use crate::AppState;
 use aiworkspace_core::model::ReadCtx;
-use aiworkspace_core::wish::{STAGES, STAGE_ANALYZE, STAGE_RUN};
+use aiworkspace_core::access::{Access, Cap};
+use aiworkspace_core::wish::{STAGES, STAGE_ANALYZE, STAGE_CODE, STAGE_RUN};
 use aiworkspace_core::{Code, WsError, WsResult};
 use aiworkspace_store::wish::context::Stage;
 use aiworkspace_store::wish::plan::{Plan, PlanRequest};
@@ -136,13 +137,11 @@ pub struct WishRuntime {
     active: Mutex<HashMap<String, Arc<ActiveRun>>>,
     /// run id → the stage an executor works on, from its claim to its report
     hosted: Mutex<HashMap<String, Arc<StageState>>>,
-    /// run id → the stage tool calls of a hosted run so far (its `limits.max_tool_iterations`, 权限需求 R30)
-    pub tool_calls: Mutex<HashMap<String, u64>>,
 }
 
 impl WishRuntime {
     pub fn new(config: WishConfig) -> Arc<WishRuntime> {
-        Arc::new(WishRuntime { config, active: Mutex::default(), hosted: Mutex::default(), tool_calls: Mutex::default() })
+        Arc::new(WishRuntime { config, active: Mutex::default(), hosted: Mutex::default() })
     }
 
     pub fn active(&self, run_id: &str) -> Option<Arc<ActiveRun>> {
@@ -196,6 +195,9 @@ pub struct StageState {
     /// Whose AI the run uses (its `aicc.user_id`): the AI answer cache is kept per that user, so one person's executor
     /// never answers another's runs from what it wrote (权限需求 R35).
     pub ai_user: String,
+    /// The owner's limit on the model's tool rounds in a hosted run (`limits.max_tool_iterations`, 权限需求 R30); a
+    /// macro's own bridge calls (`sql`, `llm_cache`) are not rounds.
+    pub max_tool_rounds: Option<u64>,
     prompts: Vec<String>,
     tool_calls: AtomicU32,
     program_runs: AtomicU32,
@@ -205,6 +207,11 @@ pub struct StageState {
 impl StageState {
     pub fn cancelled(&self) -> bool {
         self.active.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// The model's tool rounds so far.
+    pub fn tool_rounds(&self) -> u64 {
+        self.tool_calls.load(Ordering::SeqCst) as u64
     }
 
     pub fn note_tool(&self, name: &str) {
@@ -351,6 +358,64 @@ pub async fn delegated(state: &Arc<AppState>, ws_id: &str, run: &Value) -> Calle
     c
 }
 
+/// Whether a run of `wish_id` written as `identity` could be applied at all: its results and last run are kept on the
+/// wish (`update` there), and it writes where its results go — the output container, or a result it produced before.
+/// The Commit itself checks each operation; this only keeps a run nobody could apply from starting.
+fn macro_can_write(ctx: &dyn ReadCtx, identity: &Access, wish_id: &str, payload: &aiworkspace_core::model::JsonMap, group: Option<&str>) -> WsResult<()> {
+    let refuse = |what: &str| {
+        let within = group.map(|g| format!(", within the group @{g} its macro is bound to with intersection")).unwrap_or_default();
+        WsError::sub(Code::PermissionDenied, "MACRO_CANNOT_WRITE", format!(
+            "A run writes its results as whoever starts it{within}, and that cannot write {what}. Someone holding only run on a wish cannot run it yet: its results would need a trusted executor"))
+            .with_data(json!({ "missing": what, "group_id": group }))
+    };
+    if !identity.can(ctx, wish_id, Cap::Update)? {
+        return Err(refuse("the wish (update: its results and last run are kept there)"));
+    }
+    let mut places: Vec<String> = payload.get("output").and_then(|o| o.get("container_id")).and_then(Value::as_str).map(str::to_string)
+        .or_else(|| ctx.edge(wish_id).ok().flatten().map(|e| e.parent_id)).into_iter().collect();
+    places.extend(aiworkspace_core::wish::current_results(payload).iter().filter_map(|(_, b)| b.get("entity_id").and_then(Value::as_str).map(str::to_string)));
+    for id in &places {
+        if identity.caps(ctx, id)?.any_write() {
+            return Ok(());
+        }
+    }
+    Err(refuse("where its results go"))
+}
+
+/// Whose permissions a run's result is written with (§4.5, R28): an analysis is its analyst's own work — the trigger as
+/// it is now; coding and running write as the macro identity.
+pub fn run_identity(ws: &aiworkspace_store::workspace::Workspace, trigger: &Caller, run: &Value) -> WsResult<Access> {
+    let wish_id = run["params"]["wish_id"].as_str().unwrap_or("");
+    if run["params"]["stage"] == json!(STAGE_ANALYZE) {
+        ws.access(trigger)
+    } else {
+        ws.macro_access(trigger, wish_id)
+    }
+}
+
+/// The wish a run's macro acts for: its coding and running stages read and write as the macro identity (§4.5); an
+/// analysis is its analyst's.
+pub fn macro_scope(run: &Value) -> Option<String> {
+    let stage = run["params"]["stage"].as_str().unwrap_or("");
+    (is_wish_program(run["program"].as_str().unwrap_or("")) && (stage == STAGE_CODE || stage == STAGE_RUN)).then(|| run["params"]["wish_id"].as_str().map(str::to_string)).flatten()
+}
+
+/// [`run_view`] as `caller` may see it: how the owner's hosted execution is configured (its limits, its digest, the
+/// Agent's goal) only for whoever manages the Workspace (权限需求 V1).
+fn view_for(ws: &aiworkspace_store::workspace::Workspace, caller: &Caller, rt: &WishRuntime, run: &Value, full: bool) -> WsResult<Value> {
+    let mut v = run_view(rt, run, full);
+    if !ws.access(caller)?.ws_caps.has(Cap::Manage) {
+        if let Some(e) = v["context"].get_mut("executor").and_then(Value::as_object_mut) {
+            e.remove("limits");
+            e.remove("config_digest");
+        }
+        if v["dispatch"].is_object() {
+            v["dispatch"] = json!({ "status": v["dispatch"]["status"], "at": v["dispatch"]["at"] });
+        }
+    }
+    Ok(v)
+}
+
 /// `proc.start` for `wish.xllm@1` (stages `analyze`, `code`, `run`) and `wish.mock@1` (`run`).
 pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str, params: &Value, idem: &str) -> WsResult<Value> {
     let wish_id = s(params, "wish_id")?.to_string();
@@ -392,6 +457,15 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
         if program == PROGRAM_XLLM {
             let payload = read["content"]["payload"].as_object().cloned().unwrap_or_default();
             ws.read_ctx(|ctx| ready(ctx, &payload, &stage))?;
+        }
+        // a run is applied as its macro identity — this phase the trigger, bounded by an `intersection` group; only a
+        // trusted executor could write more (§4.5, Q12): a run that could never be applied does not start, and spends
+        // nobody's AI — a collaborator holding only `run` waits for trusted executors (权限需求 Q31)
+        if stage != STAGE_ANALYZE {
+            let identity = ws.macro_access(caller, &wish_id)?;
+            let binding = ws.macro_binding(&wish_id)?;
+            let payload = read["content"]["payload"].as_object().cloned().unwrap_or_default();
+            ws.read_ctx(|ctx| macro_can_write(ctx, &identity, &wish_id, &payload, binding.as_ref().map(|(g, _)| g.as_str())))?;
         }
         let aicc = run_attribution(ws, caller, mode)?;
         let hosted = if mode == exec::Mode::Hosted { Some(ws.hosted_exec_admits(caller, &wish_id)?) } else { None };
@@ -442,6 +516,13 @@ pub fn start(state: &Arc<AppState>, caller: &Caller, ws_id: &str, program: &str,
 /// plan for the given `choices` (kept for `proc.apply`).
 pub fn get(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, choices: &Value) -> WsResult<Value> {
     let rt = state.wish.clone();
+    // a preview is judged as the apply will be (R28): the trigger's identity, memberships settled outside the writer
+    let trigger = if choices.is_null() {
+        None
+    } else {
+        let seen = state.with_ws(ws_id, |ws| ws.wish_run(caller, run_id))?;
+        Some(tokio::runtime::Handle::current().block_on(delegated(state, ws_id, &seen)))
+    };
     state.with_ws(ws_id, |ws| {
         let mut run = ws.wish_run(caller, run_id)?;
         if exec::expire_if_due(ws, &run)? {
@@ -462,16 +543,19 @@ pub fn get(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id: &str, ch
             run = ws.wish_run(caller, run_id)?;
         }
         if !choices.is_null() && matches!(run["state"].as_str(), Some("waiting_confirmation" | "conflict" | "rejected")) {
-            let plan = plan_for(ws, caller, &run, choices)?;
+            let identity = run_identity(ws, trigger.as_ref().unwrap_or(caller), &run)?;
+            let plan = plan_for(ws, caller, &run, choices, &identity)?;
             ws.wish_run_keep_plan(run_id, &plan)?;
             run = ws.wish_run(caller, run_id)?;
         }
-        Ok(run_view(&rt, &run, true))
+        view_for(ws, caller, &rt, &run, true)
     })
 }
 
 /// The plan of a waiting run (analysis write-back or results).
-pub fn plan_for(ws: &mut aiworkspace_store::workspace::Workspace, caller: &Caller, run: &Value, choices: &Value) -> WsResult<Plan> {
+/// `identity`: what the apply will write as ([`run_identity`]); the pre-check is judged as it, so a preview is ready only
+/// when the apply can go through.
+pub fn plan_for(ws: &mut aiworkspace_store::workspace::Workspace, caller: &Caller, run: &Value, choices: &Value, identity: &Access) -> WsResult<Plan> {
     let cand = &run["candidate"];
     if run["params"]["stage"] == json!(STAGE_ANALYZE) {
         return ws.wish_analysis_plan(caller, cand);
@@ -482,7 +566,8 @@ pub fn plan_for(ws: &mut aiworkspace_store::workspace::Workspace, caller: &Calle
         let req = json!({ "protocol_version": aiworkspace_core::model::PROTOCOL_VERSION, "workspace_id": ws.workspace_id, "epoch": ws.epoch,
                           "idempotency_key": format!("precheck/{}", run["run_id"].as_str().unwrap_or("")), "origin": "program", "run_id": run["run_id"],
                           "preconditions": plan.preconditions, "operations": plan.operations });
-        let pre = ws.prepare(&req, caller);
+        let opts = aiworkspace_store::workspace::CommitOpts { as_principal: run["principal"].as_str().map(str::to_string), authorize_as: Some(identity.clone()), ..Default::default() };
+        let pre = ws.prepare_with(&req, caller, &opts);
         if pre["status"] != json!("ok") {
             plan.ready = false;
             let detail = pre["errors"][0]["detail"].as_str().or(pre["code"].as_str()).unwrap_or("").to_string();
@@ -540,12 +625,12 @@ pub fn apply(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> 
         // written as the macro identity ∩ the declared outputs, not as whoever clicks apply (§4.5, R28): the trigger's
         // permissions as they are now, bounded by the wish's group when it is bound with `intersection`
         let wish_id = run["params"]["wish_id"].as_str().unwrap_or("");
-        let identity = ws.macro_access(&trigger, wish_id)?;
+        let identity = run_identity(ws, &trigger, &run)?;
         let attribution = json!({ "triggered_by": run["principal"], "executed_by": run["detail"]["exec"]["executor"]["principal"], "applied_by": caller.principal,
                                   "judged_as": identity.principal, "macro": ws.macro_binding(wish_id)?.map(|(g, m)| json!({ "group_id": g, "mode": m })) });
         let applied = ws.wish_apply_as(caller, run_id, &digest, p.get("session_id").and_then(Value::as_str), Some(identity), Some(attribution))?;
         let run = ws.wish_run(caller, run_id)?;
-        let mut v = run_view(&state.wish, &run, true);
+        let mut v = view_for(ws, caller, &state.wish, &run, true)?;
         v["applied"] = applied;
         Ok(v)
     })
@@ -575,7 +660,8 @@ pub fn list(state: &Arc<AppState>, caller: &Caller, ws_id: &str, p: &Value) -> W
     let rt = state.wish.clone();
     state.with_ws(ws_id, |ws| {
         let runs = ws.wish_runs_list(caller, p.get("wish_id").and_then(Value::as_str), p.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize)?;
-        Ok(json!({ "ok": true, "runs": runs.iter().map(|r| run_view(&rt, r, false)).collect::<Vec<_>>() }))
+        let views = runs.iter().map(|r| view_for(ws, caller, &rt, r, false)).collect::<WsResult<Vec<_>>>()?;
+        Ok(json!({ "ok": true, "runs": views }))
     })
 }
 

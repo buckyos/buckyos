@@ -954,7 +954,23 @@ an Account, or an Agent that started the run itself; anybody else is `AI_ATTRIBU
 service), uses the owner's AI resources and works through `buckyos aiws run-*`; without a Zone runtime the dispatch is recorded
 `unavailable` and the run waits to be claimed. Applying checks the delegation: a changed wish configuration is `DELEGATION_STALE`, a
 candidate of a superseded attempt or a cancelled run is `RUN_REVOKED`, and results may only land where the task declared
-(`OUTPUT_NOT_DECLARED`).
+(`OUTPUT_NOT_DECLARED`). The hosted configuration's details in a run (`context.executor.limits`, `config_digest`, the Agent's goal
+in `dispatch`) show to managers only; `limits.max_tool_iterations` counts the model's stage tools, never a macro's `sql` /
+`llm_cache`.
+
+**The macro identity (权限需求 §4.5, Q31–Q32).** Coding and running read and write as the macro identity: the trigger's permissions
+as they are now, bounded by the wish's group when it is bound with `intersection` (`acl.bind_macro`; `union` adds nothing until
+trusted executors). It bounds the stage snapshot, the macro's `sql`, the run token's reads (an input the group cannot read fails the
+run: `DEPENDENCY_UNAVAILABLE`), the preview's pre-check and the apply; an analysis is written as its analyst. A run is applied as
+that identity whoever clicks, and it always writes the wish (`last_run`, results) — so `proc.start` of `code` / `run` refuses with
+`PERMISSION_DENIED` / `MACRO_CANNOT_WRITE` (`data { missing, group_id }`) when the identity cannot update the wish or write where its
+results go: someone holding only `run` cannot run anything yet. An HTML page a run writes (origin `program`) needs no `manage`, but is
+`trusted` only when the identity manages the definition; a manager vouches later (`entity.set_keys trusted: true`), which is no
+hand edit of the result. `trusted` is this Workspace's state, not content: packages, templates, clones and versions carry the code
+without it, and whoever brings it in decides again. Only writes of `program` on a bound wish are audited (`macro.changed`). `aiws.zone.fetch` carries the
+runner's session: a macro written by someone with `update` reads, when a manager runs it, what that manager may read (a known risk,
+Q33). A wish's freshness shows each viewer what it may read: an input it cannot read is `input_problems: [{ reason: unreadable }]`
+and never a `needs_coding` reason about its fields; core `main_status` calls that `no_access` (next action `none`).
 
 Configuration: `AiWorkspaceSettings.wish` — `analyze_model`, `execute_model`, `map_model`, `complete_model` (AICC selectors),
 `analyze_tool_iterations`, `execute_tool_iterations`, `max_output_tokens`, `program_timeout_secs`, `llm_map_max_items`,
@@ -1243,7 +1259,9 @@ its Workspace, `<workspace_id>~se_<26 chars>`, so a link resolves without a serv
 - Nobody gets anything from an entry without presenting it: `ws.join_entry` makes the visitor a member of the group
   (`via_entry`). A signed-in visitor (account or External) joins if the entry ∩ the Zone switches (`system/sso/settings`)
   admit the session's sign-in method — `did_federation` needs `did_login`, any local method `password` / `self_register`
-  — or if the entry is open to guests; a guest (its token) joins an entry open to guests. Joining again changes nothing;
+  — or if the entry is open to guests; a guest (its token) joins an entry open to guests. The entry page joins a signed-in
+  visitor itself; "continue as a guest" goes to the workspace's page with `?entry=<entry_id>`, which joins with that origin's
+  own guest token before the workspace opens (Desktop `StandalonePage`). Joining again changes nothing;
   nobody becomes the owner. A member of a group is no longer in `@guest`.
 - `ws.close_entry { entry_id, remove_members? }` stops new joins; with `remove_members` those who joined through it leave
   the group too.
@@ -1426,7 +1444,7 @@ browser-first execution and the three wish stages). The list is `server/src/meth
 | `ws.list`, `ws.get_info`, `ws.delete` | stable | (`ws.list` items and `ws.get_info` carry `name` when the Workspace has one; `ws.get_info.cloned_from` names the source of a clone or a `new` import) |
 | `ws.clone` | stable | none → `workspace_id`, `epoch`, `head_seq`, `content_root`, `cloned_from { workspace_id, snapshot }`, `excluded_entities` — a new Workspace the caller owns, copied from what the caller may read (workspace-level `export`; see “Workspace clone”) |
 | `acl.set` | stable | `changes: [{ subject, resource?, allow?, deny? }]` (≤ 500): each replaces the subject's entry on the resource (path or id, default `/`; both empty removes it), all or none, one record; `manage` on each resource, the owner's when `manage` is touched |
-| `acl.query` | stable | `by: entity` (`resource`, `expand?`: every subject with entries on its chain, their effective capabilities, each entry's source — direct, inherited, workspace — and what a denial overrides; macros bound to those groups and who may change them; managers), `by: subject` (`subject?`: its entries; for a group, its members; for a single caller, its judgment — groups and how, `@guest`, judged as), `by: explain` (`resource`, `principal?`: each capability allowed or refused and by which entry), `by: all` (every entry, `complete: true`, for a manager; the caller's own otherwise). Anyone may ask about itself; the rest is the managers' |
+| `acl.query` | stable | `by: entity` (`resource`, `expand?`: every subject with entries on its chain, their effective capabilities, each entry's source — direct, inherited, workspace — and what a denial overrides; macros bound to those groups and who may change them; managers), `by: subject` (`subject?`: its entries; for a group, its members; for a single caller, its judgment — groups and how, `@guest`, judged as), `by: explain` (`resource`, `principal?`: each capability allowed or refused and by which entry), `by: all` (every entry with who wrote it, `complete: true`, for a manager; otherwise the entries that apply to the caller — its own, its groups', `@all`, `@guest` while it is a guest — without who wrote them). Anyone may ask about itself; the rest is the managers' |
 | `acl.groups` | stable | every group with its members (`via_entry`) for a manager; the caller's own groups otherwise |
 | `acl.set_group` / `acl.delete_group` | stable | `group_id` (`[a-z0-9][a-z0-9_-]{0,63}`, never `owner`, `all`, `guest`, `creator`, `pub`), `title?`, `description?`; deleting takes the group's entries, members and macro bindings along and closes its entries |
 | `acl.members` | stable | `group_id`, `add?`, `remove?`: principals, `group:<id>`, `contact:<your did>#<tag>`, `*` |

@@ -125,6 +125,28 @@
 
 内核文档 02、04、07、08、09、11 与内核 README 的 GAP 已按需求 §10 回写；服务 README（Permissions、方法表、生成的授权表、宏的桥）、宏指南 `aiws/README.md` 已更新。
 
+### 3.7 与许愿格的衔接（2026-11-13，实施后复核）
+
+对照第一期许愿格复核时，用临时服务端测试实测了三处挡住正常使用的问题，owner 定了 Q31–Q33（需求 §7.1），其余直接修：
+
+- **Q31 只有 `run` 的人：** `proc.start` 的 `code` / `run` 先算宏身份，不能 `update` 许愿格、或在输出文件夹 / 已有结果上没有任何写能力时，返回 `PERMISSION_DENIED` / `MACRO_CANNOT_WRITE`（`data { missing, group_id }`），不建运行、不花 AI。Desktop 面板只对有 `update` 的人给分析 / 编码 / 运行，只有 `run` 时显示说明；去掉 `runOnly`（原 D22 的“只有 run 走托管”）。
+- **Q32 许愿格的 HTML：** 计划器对来源 `program` 的代码写入不要求 `manage`，宏身份能管理该定义才写 `trusted`，否则去掉；规范化历史带上这个结论（新建随存储的 payload，修改时附带 `trusted` 键），重放不需要判断权限。管理者事后 `entity.set_keys trusted: true` 确认；确认不算对结果的手改（core `freshness::hand_edited`）。设计模式点开未信任的 HTML 控件先提示。
+- **Q33 `zone.fetch`：** 维持现状，风险写进内核文档 08、服务 README。
+- **读取按宏身份：** `Caller.macro_of`；编码 / 运行阶段的快照和 run token 都带它，`Workspace::access` 按绑定的交集组收紧。交集组读不到的输入，运行以 `DEPENDENCY_UNAVAILABLE`（input … is not readable）失败。分析仍按分析者本人。
+- **预览按宏身份：** `plan_for` 的预检用 `prepare_with`（`authorize_as` = 宏身份，分析阶段 = 触发者本人），预览可以应用时应用一定过权限检查；分析的应用也改为按触发者本人。
+- **`macro.changed`：** 只在绑定了组的许愿格的 `program` 键被写时记录。
+- **托管工具轮数：** 只数模型循环的工具调用，宏的 `sql` / `llm_cache` 不算；计数放在阶段状态里，删掉全局计数表。
+- **小项：** 读不到输入的人，主状态为 `no_access`（core `main_status`，WASM 已重建），`needs_coding` 里不出现那张表的字段原因；运行记录里托管配置的 `limits`、配置摘要、派发目标只给管理者。
+- **验证中发现的回归（第 1 步带来，基线即失败）：** HTML 定义的 `trusted { by, rev }` 被算进内容根，导入时按导入者重写，`rev` 变了，带 HTML 控件的自带包导入（`ws.import new`、按模板新建、Clone）都以“import verification failed: content root …”失败（Desktop e2e UI16）。改为物化内容时不带 `trusted`：信任是本工作区的决定，包、模板、版本只带代码，引入者重新决定（内核文档 11 “HTML 扩展的信任在引入工作区时决定”）。旧包里带的 `trusted` 仍会导致校验失败（不兼容旧包）。
+- **DV（2026-11-13，本机 Zone，release 部署）：** `tests/dv/aiworkspace.macro.spec.ts` 三例通过：`[macro]`（真实模型，浏览器执行器）；`[macro-cli]`（原 `[macro-hosted]`：S6 之后领取令牌只发给配置的 Agent，测试拿不到，改为 CLI 用 `run-start` 作本地执行器，仍验证受限 Deno 跑宏和执行者自己的 AI；托管派发给真实 Agent 未验）；新增 `[macro-permissions]`（真实临时账号：编辑者经 CLI 编码出的页面未信任、设计模式点开先提示、owner 确认后直接运行；只有 run 时 `MACRO_CANNOT_WRITE`、面板显示说明且运行按钮禁用；交集组读不到输入时 owner 的运行失败；`macro.changed` 只在写宏时记录）。
+- **Desktop e2e 的 12 例基线失败（2026-11-13 修完）：**
+  - 产品问题 4 处：
+    - 经入口加入：入口页“以访客继续”直接跳到工作区，工作区应用里也没人调用 `ws.join_entry`，所以新模型下访客经入口进不去。改为跳转时带 `?entry=`，工作区页（`StandalonePage`）用本源的访客令牌先加入再打开。
+    - `acl.query { by: all }`：非管理者原来只看到主体正是自己的条目，访客因此看不到 `@guest`、判断不出“已公开”。改为返回对调用者生效的主体（本人、所属组、`@all`、生效时的 `@guest`）的条目；`updated_by` / `updated_at` 只给管理者（读者看不到是谁授权的）。
+    - nfs_server 的 zip 类型探测按签名线性扫描本地文件头，不跳过条目数据，演示文稿里不压缩存放的内嵌工作簿会被当成外层条目，图表子文档被认成 xlsx。没装 Calc 时转换失败，图表退回占位框。改为按头里的大小跳过数据（流式写入时再退回签名查找）。
+  - 用例过时 8 处：`program-sandbox` 三例改用宏 API v3（`aiws.declare`、通用桥、`ai.map`、新的出网报错文字）；UI14 改用 `acl.query`；UI-SSO1 按入口指向组、经入口加入来写；UI-P16、UI-M04 按访客默认查看模式和“匿名访问 + `@guest`”来写；UI-M01 的桌面上下文显式设为桌面设备（同文件 `test.use(Pixel 7)` 会被新上下文继承）；CN17 等缩放稳定再读（`data-zoom` 在视口停稳后才更新）；OX06 等新组被选中再按取消分组；i18n 等外观设置写回账号再重载（语言跟随账号同步）。另修了偶发的 P3-01b（等新建的演示路径被选中再读）。复跑完整套件：288 通过，剩手写 H03 偶发（单独复跑通过）。
+- 测试：服务端 `tests/wish_permissions.rs`（5 例），core `tests/trust.rs`（页面信任与重放一致），`main_status` 用例加 `no_access`。托管工具轮数没有端到端用例：测试里拿不到只发给 Agent 的领取令牌。
+
 ## 4. 偏差与待确认
 
 - **D1 不可变发布与 MyContent 登记没做。** ShareContentMgr 目前只接受 DFS 路径作分享来源，也没有登记其他服务的发布、接收访问统计的接口；需求 §8 把这列为第 5 步的前提。需要它提供：`share.create` 接受对象来源（`{ object: { obj_id, name, media_type } }`，跳过快照，直接以对象为内容根并绑定保留）、`share.register_external { service, ref, url, title }`、`share.report_reads { ref, count, last_at }`。AIWS 侧已经有 inner-path 发布的读取计数，接上即可。

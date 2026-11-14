@@ -63,13 +63,14 @@ async function openPage(page: Page) {
 
 type Outcome = { results: Record<string, unknown> | null; log: string; files: Record<string, unknown> }
 
-/** `runProgram` in the page; `llm.map` requests are answered by `answer(req)` there and recorded. */
+/** `runProgram` in the page; the bridge answers `llm.map` there (upper-cased items) and records it; anything else is refused. */
 async function run(page: Page, source: string, opts: { files?: Record<string, unknown>; timeoutMs?: number; abortAfterMs?: number } = {}): Promise<Outcome & { mapRequests: unknown[]; aborted?: string }> {
   return page.evaluate(async ({ source, files, timeoutMs, abortAfterMs }) => {
-    type Host = { runProgram: (s: string, f: unknown, m: (req: unknown) => Promise<unknown>, o: { timeoutMs: number; signal?: AbortSignal }) => Promise<Outcome> }
+    type Host = { runProgram: (s: string, f: unknown, b: (op: string, req: unknown) => Promise<unknown>, o: { timeoutMs: number; signal?: AbortSignal }) => Promise<Outcome> }
     const host = (window as unknown as { programHost: Host }).programHost
     const mapRequests: unknown[] = []
-    const llmMap = async (req: unknown) => {
+    const bridge = async (op: string, req: unknown) => {
+      if (op !== 'llm.map') return { error: `${op} is not answered in this test` }
       mapRequests.push(req)
       const { items } = req as { items: string[] }
       return { results: items.map((i) => ({ value: i.toUpperCase() })), calls: 1, cached: 0 }
@@ -77,7 +78,7 @@ async function run(page: Page, source: string, opts: { files?: Record<string, un
     const abort = new AbortController()
     if (abortAfterMs !== undefined) setTimeout(() => abort.abort(), abortAfterMs)
     try {
-      return { ...await host.runProgram(source, files, llmMap, { timeoutMs, signal: abort.signal }), mapRequests }
+      return { ...await host.runProgram(source, files, bridge, { timeoutMs, signal: abort.signal }), mapRequests }
     } catch (error) {
       return { results: null, log: '', files: {}, mapRequests, aborted: String(error) }
     }
@@ -142,7 +143,7 @@ test('a program reaches nothing of the page and nothing outside; the same probes
   // WebKit lets an opaque origin write a Cache Storage of its own, which nobody else sees (checked below and by the next run)
   expect(cache).toMatch(/^(blocked: |ok written)/)
   // a failing fetch says why, in words a model can act on (TW-4)
-  expect(facts.probes.external_post).toContain('no network access')
+  expect(facts.probes.external_post).toContain('a wish macro reaches nothing directly')
   expect(pageHits()).toEqual([])
   expect(outside.hits).toEqual([])
   expect(await held()).toEqual({ cookie: 'sid=secret', indexeddb: 'page', cache: 'page', caches: ['aiws-probe'] })
@@ -173,6 +174,7 @@ const INPUT_FILES = {
 }
 
 const NORMAL = `export default async function main(aiws) {
+  aiws.declare({ inputs: { data: ['region', 'revenue'] } })
   const totals = {}
   for (const r of aiws.input('data').rows()) totals[r.region] = (totals[r.region] ?? 0) + r.revenue
   const rows = Object.entries(totals).map(([region, total]) => ({ region, total }))
@@ -189,15 +191,15 @@ const NORMAL = `export default async function main(aiws) {
 test('a normal program produces its results and files, and llm.map answers through the bridge', async ({ page }) => {
   await openPage(page)
   const out = await run(page, NORMAL, { files: INPUT_FILES })
-  const results = out.results as { results: { name: string; rows?: unknown[]; markdown?: string }[]; facts: unknown; checks: unknown[]; external: string[]; llm_map: unknown; error: string | null }
+  const results = out.results as { results: { name: string; rows?: unknown[]; markdown?: string }[]; facts: unknown; checks: unknown[]; external: string[]; ai: { map: unknown }; error: string | null }
   expect(results.error).toBeNull()
   expect(results.results.find((r) => r.name === 'by_region')?.rows).toEqual([{ region: 'east', total: 17 }, { region: 'west', total: 5 }])
   expect(results.results.find((r) => r.name === 'note')?.markdown).toBe('Regions: EAST, WEST')
   expect(results.facts).toEqual({ total: 22, today: '2026-11-07' })
   expect(results.checks).toEqual([{ id: 'total', passed: true, detail: null }])
   expect(results.external).toEqual([])
-  expect(results.llm_map).toEqual({ calls: 1, items: 2, cached: 0 })
-  expect(out.mapRequests).toEqual([{ items: ['east', 'west'], instruction: 'upper-case it', schema: { type: 'string' }, batch: 20 }])
+  expect(results.ai.map).toEqual({ calls: 1, items: 2, cached: 0 })
+  expect(out.mapRequests).toEqual([{ items: ['east', 'west'], instruction: 'upper-case it', schema: { type: 'string' }, batch: 20, declare: { inputs: { data: ['region', 'revenue'] } } }])
   expect(out.files).toEqual({ 'output/report.md': '# EAST WEST', 'output/copy.bin': { base64: 'AAEC' } })
   expect(out.log).toContain('done with 2 regions')
   expect(out.log).toContain('table by_region: 2 rows')

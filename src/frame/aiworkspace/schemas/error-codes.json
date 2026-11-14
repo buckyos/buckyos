@@ -67,7 +67,10 @@
    "code": "PERMISSION_DENIED",
    "retryable": false,
    "status": "rejected",
-   "meaning": "The trusted principal lacks the capability."
+   "meaning": "The trusted principal lacks the capability.",
+   "sub_codes": [
+    "MACRO_CANNOT_WRITE"
+   ]
   },
   {
    "code": "REVISION_CONFLICT",

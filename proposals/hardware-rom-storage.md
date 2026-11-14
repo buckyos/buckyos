@@ -1,218 +1,135 @@
 # BuckyOS 预装硬件 ROM 与本地存储方案
 
-状态：设计提案，尚未实现或通过整机验证。
+更新日期：2026-11-13。状态：硬件规格和用户呈现目标已明确；软件栈为待验证候选，尚未实现或通过整机验收。
 
-日期：2026-11-06。
+本次修订依据双 256 GB SSD、四块 8 TB HDD 的产品规格。BuckyOS 路径和恢复约束沿用此前对 `d48fd2b34`（0.7.0）的源码核查，具体依据保留在[单 SSD + ZFS 参考方案](hardware-rom-storage-zfs.md)；不代表已经重新审计当前分支的全部写入路径。实施前须复核最新源码。
 
-源码核查基线：BuckyOS `d48fd2b34`，版本 `0.7.0`；同时核查同级安装器、devkit 和 buckyos-base。这里的提交号用于记录核查范围，不改变仓库依赖策略。
+## 1. 产品规格与主候选
 
-## 1. 方案结论
-
-采用 Ubuntu Server LTS 最小化系统、四块 HDD 的单个 ZFS RAIDZ1 vdev，以及单块 SSD 的系统区和 L2ARC 读缓存。首版参考环境使用与[现有 CI](../.github/workflows/build-linux.yml)一致的 Ubuntu 24.04；量产版本冻结前完成支持周期评估，若转向 26.04，需要执行相同的整机验收。
-
-整个 `/opt/buckyos` 默认位于 HDD ZFS 存储池，`/opt/buckyos/data` 保持为业务数据入口。明确可重建的缓存才允许单独挂载到 SSD。首版仅将顶级 `/opt/buckyos/cache` 列为迁往 SSD 的应用缓存目录；当前 `data/cache` 仍保留在 ZFS，因为其中还包含预安装包和恢复时需要的种子内容。
-
-这样，新增加的 BuckyOS 目录默认获得单盘冗余，设备身份、系统配置、数据库、程序版本和用户数据也留在同一个可恢复的存储池中。SSD L2ARC 仅保存数据副本，不承担唯一持久数据。
-
-目标产品为封闭式、开箱即用设备。用户不创建阵列、不选择 RAID 级别、不手工挂载或更换硬盘；故障后的硬件维修和恢复冗余由售后完成。本方案不启用企业多节点 DFS。
-
-## 2. 数据安全承诺与边界
-
-| 场景 | 首版要求 |
+| 项目 | 设计目标 |
 | --- | --- |
-| 四块 HDD 中任意一块完全故障，其余设备正常 | 已持久化数据仍可访问；允许降级启动，明确提示检修 |
-| 单块 SSD 完全故障 | HDD 池保有业务数据及恢复原 Zone 所需状态；维修后可恢复，允许停机 |
-| L2ARC 缓存分区不可用 | 不影响 HDD 数据完整性；读取回退到主池 |
-| SSD 应用缓存清空 | 可自动重建或从保留的种子恢复，不要求重新创建 Zone |
-| 突然断电 | 文件系统可恢复；应用已承诺持久化的事务不得因违反 flush/fsync 语义而丢失，需整机实测 |
-| 第一块 HDD 故障后又出现第二块故障或无法恢复的读错误 | 不在 RAIDZ1 单盘容错承诺内，必须在售后流程中尽快恢复冗余 |
+| SSD | 256 GB × 2，共同承载冗余系统区和冗余读写缓存 |
+| HDD | 8 TB × 4，RAID5，3+1 单重分布式校验 |
+| 用户看到的存储 | 一个逻辑系统盘，以及标称 24 TB 的数据存储；缓存不单独呈现为可存文件的磁盘 |
+| 数据入口 | `/opt/buckyos/data`；整个 `/opt/buckyos` 默认进入受冗余缓存加速的数据卷 |
+| 故障目标 | 任意一块 HDD 或 SSD 完全故障，其余设备正常时，已持久化数据不丢失；允许维护停机 |
+| 交付与维护 | 工厂初始化、开箱激活；用户不管理 RAID 或更换硬盘，由售后维修恢复冗余 |
+| Linux 基础 | Ubuntu Server LTS 最小化系统；24.04 为[现有 CI](../.github/workflows/build-linux.yml)参考基线，量产版本按支持周期和整机验收冻结 |
 
-“已持久化”不能只依据业务 API 返回成功判断。SQLite、sled、消息队列和文件写入各自的提交与 flush 行为需要核验；尚在应用或内存中的异步写入不自动获得断电不丢的保证。保持 ZFS `sync=standard`，不使用 `sync=disabled` 提升跑分。
+主候选为 **mdadm RAID5 + LVM dm-cache 冗余写回缓存 + ext4**。这条路线提供通用热点读缓存和写回缓冲，更接近本产品期望的透明读写加速。它是本产品拟验证的实现组合，不宣称与群晖内部实现相同。
 
-RAIDZ1 的 3+1 表示单重分布式校验，不是三块数据盘加一块热备。等容量四盘的可用容量约为三盘容量，实际还受校验布局、元数据和空间预留影响。RAID 与同池快照均不替代独立备份。[OpenZFS 池与 RAIDZ 语义](https://openzfs.github.io/openzfs-docs/man/v2.2/7/zpoolconcepts.7.html)
+ZFS RAIDZ1 + L2ARC 保留为读缓存备选。ZFS 的镜像 SLOG 主要服务同步写入日志，不等于通用 SSD 写回缓存；不把增加第二块 SSD 视为原 ZFS 方案自动获得相同能力，也不在本候选中给 ZFS 再套一层 dm-cache。
 
-## 3. 物理布局
+## 2. 容量与 SSD 分区预算
+
+四块 HDD 的原始容量为 32 TB，RAID5 校验后理论容量为 `(4 - 1) × 8 TB = 24 TB`，约 **21.83 TiB**。实际文件系统总量和用户可用空间还要扣除阵列/LVM/文件系统元数据、系统文件和必要预留。
+
+界面可标注“24 TB 存储规格”，同时展示实际总量、已用量和可用量；不得把 21.83 TiB 标成 21.83 TB，也不承诺开机就有 24 TB 空闲。放在 `/opt/buckyos` 的服务状态、程序和恢复种子都计入数据卷已用空间。ext4 的 inode 数量及保留块比例需针对该大容量卷配置并验收，既不无意沿用过大的百分比预留，也不未经验证就取消全部维护空间。
+
+双 SSD 镜像容量受较小成员限制，第二块提供冗余，不把容量翻倍。两块 256 GB SSD 的系统与缓存逻辑预算合计约为一块 SSD，即 **238.42 GiB**；不能同时承诺“256 GB 系统盘”和“256 GB 缓存”。[群晖 RAID1 缓存容量规则](https://kb.synology.com/en-br/DSM/help/DSM/StorageManager/ssd_cache_replace_drive?version=7)
+
+每块 SSD 的初始分区预算示例：
+
+| 用途 | 每块 SSD 预算 | 冗余方式 |
+| --- | --- | --- |
+| EFI 启动区 | 1 GiB | 两盘各自独立可读的 EFI 文件与启动入口，升级同步 |
+| Linux 系统 A 槽 | 16 GiB | SSD1-A 与 SSD2-A 镜像 |
+| Linux 系统 B 槽 | 16 GiB | SSD1-B 与 SSD2-B 镜像 |
+| 宿主机运行区 | 32 GiB | 跨 SSD 镜像，容纳 Docker 镜像、运行文件及应用缓存 |
+| cache data | 160 GiB | 跨 SSD 镜像，仅供 dm-cache 使用 |
+| cache metadata | 1 GiB | 跨 SSD 镜像，实际需求按缓存块大小和工具计算 |
+| 余量 | 约 12.4 GiB | GPT、对齐、LVM 元数据、metadata spare 和空间预留 |
+
+上述 64 GiB 系统预算包含 A/B 和运行区，不等于用户拥有一个 64 GiB 的活动根文件系统。160 GiB 是扣除系统后的缓存预算示例，不是已冻结的量产参数，也不增加数据卷容量。最终需按系统镜像、容器镜像、更新峰值、缓存块数与 SSD 耐久度复核；metadata spare 用于维修，不替代在线元数据镜像。
+
+## 3. 块设备与文件系统布局
 
 ```mermaid
 flowchart TD
-    SSD["单块 SSD"] --> BOOT["EFI / Linux A、B 系统区 / 恢复组件"]
-    SSD --> CACHE["ext4 可重建区：应用缓存、容器镜像"]
-    SSD --> L2["独立原始分区：ZFS L2ARC"]
-    HDD["4 块 HDD，直接暴露给 ZFS"] --> POOL["bucky：单个 RAIDZ1 vdev"]
-    POOL --> ROOT["/opt/buckyos：默认持久运行树"]
-    ROOT --> DATA["data：业务数据"]
-    ROOT --> STATE["etc / security / local / storage"]
-    ROOT --> CODE["bin / libexec / tools"]
-    CACHE --> APP_CACHE["bind mount 到 /opt/buckyos/cache"]
-    L2 -. "热点读取加速" .-> POOL
+    SSD["256 GB SSD × 2"] --> SYS["对应系统区分别镜像；两盘均可启动"]
+    SSD --> CD["cache data：RAID1"]
+    SSD --> CM["cache metadata：RAID1"]
+    HDD["8 TB HDD × 4"] --> MD["mdadm RAID5：标称 24 TB"]
+    MD --> ORIGIN["LVM origin LV"]
+    ORIGIN --> CACHED["dm-cache cached LV：writeback"]
+    CD --> CACHED
+    CM --> CACHED
+    CACHED --> FS["ext4：/opt/buckyos"]
+    FS --> DATA["data：业务数据入口"]
+    FS --> STATE["local / storage / etc / security / 程序与恢复种子"]
 ```
 
-SSD 的 Linux 系统区、ext4 缓存区和原始 L2ARC 分区必须互不重叠。L2ARC 分区不创建 ext4，也不挂载为目录。多个分区仍属于同一个物理故障域。Linux A/B 用于系统升级回退，不能抵抗整块 SSD 损坏。
+文件系统只使用组合后的 cached LV；缓存不增加其逻辑地址空间。挂载、fsck、块级备份和恢复均不得绕过缓存层直接操作可能陈旧的 HDD origin。
 
-Linux 启动、磁盘检测、ZFS 导入、恢复界面和恢复工具必须能在未挂载 `/opt/buckyos` 时独立工作。恢复组件放在 Linux 镜像中；SSD 完全损坏时，售后使用独立恢复介质重新部署系统。
+cache data 与 cache metadata 必须都跨两块物理 SSD 冗余。样机可使用 md 镜像作为缓存 LV 的后端，或使用 LVM RAID1 LV；选定一种可验证、可恢复的布局，避免无目的叠加镜像。LVM 支持缓存数据和元数据分别使用 RAID1。[lvmcache 手册](https://man7.org/linux/man-pages/man7/lvmcache.7.html)
 
-HDD 不再叠加 mdadm 或硬件 RAID。设备由 WWN/序列号和池 GUID 识别，不依赖 `/dev/sda` 等枚举顺序。制造阶段记录硬盘槽位与序列号，正常开机只导入既有池，绝不因为导入失败自动格式化或创建新池。
+系统 A/B 解决升级回退，RAID1 解决单 SSD 故障，二者分别实现。不能把 A 槽仅放 SSD1、B 槽仅放 SSD2 就视为系统镜像。EFI 分区各盘独立维护；系统区镜像本身不保证固件能从另一盘启动，必须分别拔除每块 SSD 验证冷启动。
 
-首版不确定各分区的固定 GB 数；根据最终 SSD 容量、离线镜像包体积、升级峰值空间、内存和工作集测量后冻结。优先保证系统双槽、恢复及缓存重建空间，再分配 L2ARC。
+## 4. 写回缓存的数据安全约束
 
-## 4. ZFS 数据集与目录映射
+写回模式下，最新数据可能只存在于 SSD 镜像，HDD 上仍是旧版本。因此这里的 SSD 缓存是持久数据链路的一部分，不能像 L2ARC 一样任意清空或丢弃。应用提交、fsync、块层 flush/FUA、缓存元数据和底层设备必须共同满足持久化语义；业务 API 返回成功不能单独证明已经持久化。[内核 dm-cache 文档](https://docs.kernel.org/admin-guide/device-mapper/cache.html)
 
-`bucky` 为池名及根数据集。根数据集必须实际挂载到 `/opt/buckyos`，不能只创建一个没有挂载的逻辑父节点，否则未单列的路径会落回 SSD。所有子数据集共享同一个 RAIDZ1 池的空间与冗余。
-
-| 数据集或目录 | 挂载路径 | 处理原则 |
-| --- | --- | --- |
-| `bucky` 根数据集 | `/opt/buckyos` | 兜底保护所有未单列目录 |
-| 根数据集中的普通目录 | `bin/`、`libexec/`、`tools/` 及安装记录 | 随运行版本保留，首次冷读来自 HDD，热点可进入 ARC/L2ARC |
-| `bucky/data` | `/opt/buckyos/data` | 用户文件、AgentRoot、RDB、服务数据；包含 `data/var` 与首版的 `data/cache` |
-| `bucky/storage` | `/opt/buckyos/storage` | named store、内核数据库及实际对象内容 |
-| `bucky/local` | `/opt/buckyos/local` | system-config、identity、kmsg、executor 及其他本机状态，首版全部保护 |
-| `bucky/etc` | `/opt/buckyos/etc` | 运行配置；不放应隔离的私钥 |
-| `bucky/security` | `/opt/buckyos/security` | 身份私钥与敏感材料，保持现有严格属主和权限 |
-| `bucky/logs` | `/opt/buckyos/logs` | 诊断日志，设置容量上限与轮转 |
-| SSD ext4 下独立目录 | bind 到 `/opt/buckyos/cache` | 可重建应用缓存；使用真实挂载，不用符号链接 |
-| 根数据集中的其他目录 | 包括当前可能出现的 `tmp/` | 默认仍在 ZFS，逐项核实生命周期后再决定是否外移 |
-
-不为 `bin/<module>`、`libexec/<module>`、工具版本目录等会被安装器整体替换的路径单独创建数据集。这样可避免删除模块目录时碰到挂载点。父数据集保护这些普通目录即可。
-
-当前路径中有两种 cache：
-
-- `runtime.get_cache_folder()` 返回顶级 `cache/**`，见 [runtime.rs](../src/kernel/buckyos-api/src/runtime.rs)。
-- RDB cache 分区与 AppLoader 使用 `data/cache/**`，见 [rdb_mgr.rs](../src/kernel/buckyos-api/src/rdb_mgr.rs) 和 [app_loader.rs](../src/kernel/node_daemon/src/app_loader.rs)。构建清单还将预安装 PIKG 放入这里，见 [bucky_project.yaml](../src/bucky_project.yaml)。
-
-首版不顺带统一这两个接口，也不把它们 bind 到同一个物理目录，以免不同命名空间互相覆盖。顶级 cache 在迁出前也要完成写入者盘点与清空恢复测试。后续若将 `data/cache` 迁至 SSD，须先在 ZFS 保留完整、可校验的离线种子，再使用独立 SSD 子目录挂载到原路径。
-
-`data/var` 和 `local` 均不按名字视为缓存：当前 `data/var` 包含会话与网关凭据；`local/system_config` 保存系统配置真相源，`local/kmsg` 保存持久队列。将它们留在池中符合“修复 SSD 后恢复原 Zone”的要求。相关实现见 [msg_center](../src/frame/msg_center/src/main.rs)、[verify_hub](../src/kernel/verify_hub/src/main.rs)、[网关探测凭据](../src/kernel/node_daemon/src/gateway_tunnel_probe.rs)、[配置库](../src/kernel/sys_config_service/src/sled_provider.rs)、[消息队列](../src/kernel/kmsg/src/sled_msg_queue.rs)。
-
-`security` 不进入用户数据目录，不以“隐藏文件夹”替代权限隔离，也不对整个 `/opt/buckyos` 做递归放宽权限。Agent 的挂载校验会拒绝部分目录通过符号链接重定向，采用 ZFS 直接挂载或 bind mount 保留现有路径语义。
-
-## 5. SSD 读缓存与性能策略
-
-L2ARC 是块级读缓存，和 `/opt/buckyos/cache` 这个应用缓存目录是两个独立概念。前者缓存 HDD 数据副本；后者保存软件明确允许重建的文件。
-
-首版采用以下策略：
-
-- 只添加 `cache` vdev，不添加单 SSD `log`、`special` 或普通数据 vdev，不启用 SSD 写回缓存。
-- 以 RAM 中的 ARC 作为第一层读缓存，L2ARC 只作为扩展。根据 BuckyOS、Agent 与容器的内存峰值设定 ARC 预算；L2ARC 索引也消耗内存，容量不能只按 SSD 剩余空间决定。
-- 开始时允许普通数据和元数据进入缓存，日志数据集可关闭 L2ARC 缓存，避免占用热点空间；最终策略以命中率和业务延迟测试为准。
-- 数据集使用 `compression=lz4`、`dedup=off`、`sync=standard`。首版保留默认 recordsize，数据库单独调参须有实际负载证据。不全局设置 `exec=off`，Agent 工作目录和工具需要执行能力。
-
-程序、工具和数据库放在 HDD 池是可行的，但 L2ARC 命中并无保证：初次开机、替换 SSD、缓存工作集变化时会出现 HDD 冷读。随机写入和同步提交仍主要受 HDD RAIDZ1 限制。验收必须包含缓存完全为空的启动和业务路径，不能只测预热后的性能。[OpenZFS 缓存机制](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Pool%20Structure/Caching.html)、[数据集属性](https://openzfs.github.io/openzfs-docs/man/v2.2/7/zfsprops.7.html)
-
-## 6. Docker 与目录外状态
-
-仅把 `/opt/buckyos` 放入 ZFS 还不足以覆盖当前所有状态。AppLoader 使用 `buckyos-instance-*` named volume；其中有 package 工作副本、保留的本地修改和私有运行环境，不能整体当缓存。见 [AppLoader](../src/kernel/node_daemon/src/app_loader.rs)、[容器入口](../publish/aios/entrypoint.sh)、[工作副本同步](../publish/aios/sync_tree.ts)。
-
-首版 ROM 需要实现以下 Linux volume 后端适配，不能把它当作现有能力：
-
-1. 保留容器内 `/opt/buckyos/instance` 与既有稳定卷名。
-2. 每个实例的实际目录放在 `/opt/buckyos/local/instances/<runtime_key>`，由 ZFS 保护。首版把整个实例目录保留，内部依赖缓存暂不拆分。
-3. 使用 Docker local volume 的 bind 选项将卷指向该目录，或采用经一致验证的显式 bind mount。若保留 named volume，登记卷名、runtime_key、后端路径、UID/GID、初始化版本，登记表也保存在 ZFS。
-4. 创建或启动前检查既有卷的 Driver、Options 和实际后端；同名卷不会因为再次创建就自动迁移。发现旧 SSD 卷时停止实例，完成一致性迁移和校验后再切换。
-5. 新建卷使用 `volume-nocopy` 关闭 Docker 的隐式内容复制，由 BuckyOS 显式初始化。恢复已存在实例时，缺少后端目录必须报错，不以空目录和重新播种掩盖数据遗漏。
-
-Docker 的镜像存储和可重建容器层可以留在 SSD ext4，沿用验证过的 Docker 存储后端，不因 BuckyOS 使用 ZFS 就自动切换 Docker ZFS driver。Docker/containerd 的实际数据路径随所选 Engine 配置一并记录，不能假定调整 Docker `data-root` 就迁移了全部内容。
-
-允许上机的 App 必须将需要保留的数据写入上述持久卷或声明的 ZFS bind mount；普通容器可写层不能保存唯一业务状态。其他 named volume、插件状态和宿主机运行模式的写入也必须进入清单，未完成盘点前不能宣布全机状态可恢复。[Docker volumes](https://docs.docker.com/engine/storage/volumes/)、[Docker 存储后端](https://docs.docker.com/engine/storage/drivers/overlayfs-driver/)
-
-ROM 预置专用宿主账号，其需要保留的 home 放入 ZFS，恢复时保持数值 UID/GID 一致；同时保留 BuckyOS `host_account.json` 等绑定关系。池 GUID、数据集映射、卷登记、所需软件版本及账号映射形成恢复清单。公有布局信息可放 `etc/`，私密凭据保存在 `security/`，不把私钥写进镜像或普通日志。
-
-为支持更换 SSD 后离线恢复，匹配当前 BuckyOS 版本的容器镜像归档和必要工具种子必须在 ZFS 保留，校验其摘要并纳入空间预算。SSD 上的镜像副本可删除，HDD 上最后一份恢复种子不能被通用缓存清理回收。
-
-## 7. 开机、挂载与运行状态
-
-ROM 负责存储生命周期，BuckyOS 在存储就绪后启动。建议首版由 ROM 显式生成 systemd `.mount` 单元管理上述数据集，使用 ZFS `mountpoint=legacy`，避免与 ZFS 自动挂载同时管理同一路径；表中的路径是最终系统挂载点。所有数据集保持可挂载，根数据集先于其子挂载完成。
-
-开机顺序：
-
-1. Linux 启动独立诊断与恢复入口，加载与当前内核匹配的 ZFS 模块。
-2. 通过批准的池 GUID 导入已有池，不依赖 SSD 上唯一一份 `zpool.cache`；恢复环境能从 HDD 标签发现池。按制造清单核对设备身份，正常启动不批量导入未知池。
-3. 挂载 `/opt/buckyos` 与全部必需子数据集，再挂载 SSD 应用缓存。L2ARC 缺失允许降速使用，不能成为主池数据可用性的前置条件。
-4. 执行 ROM 的存储就绪检查：验证池 GUID、池健康状态、每个路径的实际 ZFS dataset、可写状态、版本和实例目录。已激活设备必须保有原身份文件；只有明确处于工厂未激活状态的设备允许进入首次激活。仅检查目录存在或顶层 mountpoint 不够。
-5. 启动 Docker，核对或恢复持久卷映射、从保留的归档导入缺失镜像；随后启动 BuckyOS。
-
-`buckyos.service` 的发行版 drop-in 依赖存储就绪服务与实际 mount 单元，并在 `ExecStartPre` 中复核。`RequiresMountsFor` 可建立挂载依赖，但不能单独证明来源是预期数据集。Docker 的自动启动及容器 restart policy 同样要位于存储就绪之后，避免绕过 BuckyOS 直接启动容器。[systemd unit 依赖](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
-
-首版由 node-daemon 管理应用生命周期；若保留 Docker restart policy，也必须通过上述就绪检查。缓存和业务子挂载在容器启动前完成，不依赖运行中挂载传播。池失效时显式停止容器；若启用 Docker `live-restore`，不能把停止 dockerd 等同于业务已经停止。[Docker 自动重启](https://docs.docker.com/engine/containers/start-containers-automatically/)、[live restore](https://docs.docker.com/engine/daemon/live-restore/)
-
-当前安装器仅配置 `After=network.target`，需要补齐上述 ROM 集成。根池或任一必需子数据集未挂载时不启动业务，不允许应用在 SSD 或父数据集的同名空目录中创建新的身份、空数据库或第二套数据。恢复工具位于 Linux 镜像中，不能依赖尚未挂载的运行目录。
-
-SSD 应用缓存挂载失败时，进入缓存修复或维护流程；只对已明确标记为可重建的缓存执行重建，不静默改写到父 ZFS 的同名目录。L2ARC 缺失可直接回源，与应用缓存目录挂载失败分别处理。
-
-运行时监视池状态与 I/O 错误，不只做开机检查：
-
-| 状态 | 行为 |
+| 场景 | 要求 |
 | --- | --- |
-| 正常 | 业务正常运行，后台巡检 |
-| 单 HDD 故障、池仍可读写 | 保持可用，持续提示检修，生成售后诊断信息 |
-| L2ARC 缺失 | 保持主池运行，记录缓存降速状态 |
-| 必需挂载缺失、池暂停 I/O 或不可写 | 进入恢复状态，停止相关业务与自动重启，不切换到另一目录写入 |
-| 硬件替换后重建 | 展示维护状态，重建完成并校验后恢复健康标记 |
+| 任意一块 HDD 故障 | RAID5 降级运行，数据仍经过缓存层；提示检修，售后换盘重建 |
+| 任意一块 SSD 故障 | 系统、缓存数据和缓存元数据同时降级；保留剩余副本，受控停止新增脏缓存并刷回 HDD，必要时暂停业务 |
+| 缓存元数据故障或无法组装 | 进入维护恢复流程，不创建新的空缓存来掩盖错误 |
+| 缓存中仍有脏块 | 不允许绕过缓存挂载 HDD origin，不允许先清空 SSD 再恢复 |
+| 两块 SSD 同时丢失 | 超出单盘容错范围，尚未刷回的写入可能丢失，不能承诺 HDD 独立保有最新状态 |
+| 重装或更新系统 | 保留缓存数据、元数据和设备映射，不把整块系统 SSD 格式化 |
 
-## 8. 工厂初始化与日常维护
+SSD 降级后停止新增脏缓存、继续刷回已有脏块和安全切换的策略需要 ROM 实现并验证，不能假定 dm-cache 自动提供完整产品流程。切换期间所有读写仍须经过一致的缓存路径；只有确认缓存清洁并按工具流程安全解绑后，才允许直接使用 origin。无法在线保证一致性时，停止业务后处理。
 
-制造流程由明确的工厂模式执行：核对四块 HDD 和 SSD 的序列号，创建唯一 RAIDZ1 池及数据集，写入布局清单，安装未激活的 BuckyOS，预置可校验的恢复种子，执行基础巡检，然后封装出厂。
+SSD 型号需验证掉电保护、flush 语义、耐久度和写延迟；两盘镜像不能替代掉电保护。系统与缓存共享 SSD I/O，需测试升级、镜像解压与缓存刷回并发时的延迟。HDD RAID5 还需验证掉电后的校验一致性，可评估 md PPL；PPL 不保证所有在途数据写入，也不能与 write-intent bitmap 随意组合。[内核 RAID5 PPL 文档](https://docs.kernel.org/driver-api/md/raid5-ppl.html)
 
-设备身份在用户激活时生成，不把同一私钥、已激活 Zone 或登录状态复制到不同设备。用户正常开箱只需激活，存储已经就绪。
+本方案的 RAID5 + ext4 不自动继承 ZFS 的端到端数据校验与自修复能力。需要恢复原有 ZFS 快照/校验目标时必须另作设计；RAID 和缓存冗余也不替代独立备份。
 
-ROM 自动管理 SMART 检查、ZFS scrub、容量阈值、日志轮转与快照保留。首版可从每月一次 scrub 起步，再按磁盘容量和前台负载调整。单盘故障后安排维修或整机迁移，不能把“用户无需换盘”实现为无限期忽略故障。
+## 5. BuckyOS 目录和容器状态
 
-为 `logs` 设置独立限额；为业务数据和快照设置容量预算，为系统状态及维护操作预留空间。日志或快照不得耗尽池空间导致身份、配置库无法提交。具体阈值由样机负载测试冻结。[OpenZFS scrub](https://openzfs.github.io/openzfs-docs/man/v2.2/8/zpool-scrub.8.html)
+ext4 卷挂载到 `/opt/buckyos`，目录仍按现有路径组织，不再使用 ZFS dataset。未单列的新目录默认进入这一受保护的数据卷。
 
-## 9. 升级、快照与恢复
+| 路径或内容 | 放置与恢复原则 |
+| --- | --- |
+| `data/`、`storage/`、`local/` | 放在数据卷，保护用户内容、数据库、配置真相源、队列和本机状态 |
+| `etc/`、`security/` | 放在数据卷，保留设备身份、原 Zone 和严格的属主权限 |
+| `bin/`、`libexec/`、`tools/` 与安装记录 | 放在数据卷，按版本清单更新；缓存加速不改变恢复职责 |
+| `logs/`、`data/var/` | 默认留在数据卷；日志限额与轮转，不能将整个 `data/var` 当作临时目录清空 |
+| 顶级 `cache/` | 完成可重建性审计后，可 bind 到 SSD 运行区的独立目录 |
+| `data/cache/` | 首版保留在数据卷，包含预安装包及恢复所需种子，不与顶级 cache 混同 |
+| Docker 实例工作副本 | 拟迁入 `local/instances/<runtime_key>`，保留稳定卷名并登记后端、UID/GID 和初始化版本 |
+| Docker/containerd 镜像及可重建层 | 可留 SSD 运行区；数据卷保留恢复所需的镜像归档和离线种子 |
 
-### 9.1 Linux 与 BuckyOS 分开更新
+顶级应用 cache 是文件目录，dm-cache 是透明块缓存，两者独立。迁移目录使用真实挂载或 bind mount，保留现有路径语义。现有路径依据见 [runtime](../src/kernel/buckyos-api/src/runtime.rs)、[RDB](../src/kernel/buckyos-api/src/rdb_mgr.rs)、[AppLoader](../src/kernel/node_daemon/src/app_loader.rs) 与[路径说明](../doc/path_usage.md)。
 
-Linux 基础系统在 SSD 的 A/B 槽更新；成功判定必须包含 ZFS 导入、完整挂载和 BuckyOS 健康检查，不能只以 Linux 启动成功为准。升级时验证 kernel、ZFS 模块、用户态工具和池 feature flags 的兼容性，保留旧系统可导入池的能力，不在普通 OTA 中自动执行池特性升级。
+Docker 实例卷包含可能需要保留的工作副本，不能整体按镜像缓存处理。上述实例后端迁移是待实现工作，不能当作已有能力。同名旧卷必须核对实际后端并停机迁移；恢复时后端缺失须报错，不能以空目录重新初始化。所有其他持久卷、容器可写层及宿主机 home 的唯一状态也须盘点；需要保留的 host home 放入数据卷并登记账号映射。沿用[原提案中的源码审计与 Docker 恢复要求](hardware-rom-storage-zfs.md)，将其 ZFS 后端替换为本方案的数据卷，不能沿用“SSD 全部可重建”的假设。
 
-BuckyOS 程序和状态都在 ZFS，具有自己的发布清单与更新事务。Linux 槽回退不会自动回退池中的 BuckyOS，也不会自动撤销数据库迁移。每次发布记录允许的 Linux/BuckyOS/数据格式组合，只有兼容组合才能自动启动。
+## 6. ROM 启动、升级与维修
 
-### 9.2 不复用通用重装作为 ROM 升级
+启动顺序为：冗余系统启动 → 核对并组装 HDD/SSD 阵列 → 激活带原缓存元数据的 cached LV → 挂载数据卷 → 核对身份、版本及持久卷映射 → 启动 Docker 与 BuckyOS。
 
-当前 manifest 的 `clean_paths` 包含 `local`、`security`、`etc`、`data/var` 等；通用卸载与开发重装可能递归删除这些路径。把目录挂进 ZFS 不会阻止删除，删除挂载点还可能先清空其内容、最后才报错。
+恢复界面和磁盘工具放在 Linux ROM 内，不能依赖尚未挂载的 `/opt/buckyos`。使用 WWN/序列号、阵列 UUID 和 LV 身份识别设备，不使用易变化的 `/dev/sdX`。只有明确工厂模式可以初始化磁盘；日常启动遇到无法安全降级的缺盘、缓存激活失败或错误卷时进入维护，不自动格式化、不创建空数据库或第二个 Zone。
 
-ROM 的普通更新与 SSD 恢复入口必须保留上述持久状态。恢复出厂是单独的显式擦除流程，不能被“修复启动”“更新软件”调用。涉及路径见 [安装清单](../src/bucky_project.yaml)、[卸载](../src/uninstall.py)、[开发启动](../src/start.py)。
+挂载检查需验证实际设备来源、读写状态及身份文件，不能只检查目录存在。Docker 自动启动、restart policy 和 BuckyOS 服务都必须经过存储就绪门禁；池失效时停止相关业务，避免写入未挂载目录。当前安装器与 AppLoader 的对应集成仍需实现。
 
-首版更新可使用维护窗口：停止应用写入和数据库服务，校验布局，记录更新清单与一致性快照，安装已校验产物，再验证服务后提交。程序目录可以替换；持久目录及子挂载点使用明确保留策略。Linux 包管理数据库在 SSD，而运行产物在 ZFS，恢复和更新器必须能根据发布清单重建安装记录，不能只信任 SSD 的包版本。
+Linux A/B 升级需保持 md、LVM、dm-cache 元数据格式兼容，并测试旧槽恢复。回退 Linux 槽不回退业务状态；不能只回滚 HDD origin 而保留与之不匹配的缓存。ext4 路线没有原 ZFS 提案中的原生 dataset 快照，升级恢复采用停写、应用一致备份和发布清单，具体工具另行验证。
 
-### 9.3 快照与回退
+当前通用重装/卸载可能清理 `local`、`security`、`etc`、`data/var` 等路径，ROM 更新和保数据维修不得直接复用该流程。源码依据见[安装清单](../src/bucky_project.yaml)、[卸载](../src/uninstall.py)和[开发启动](../src/start.py)。恢复出厂须为独立的显式擦除流程。
 
-同池递归快照提供统一的文件系统时间点，但不自动等于跨服务的业务事务一致性。首版一致性恢复点在停止写入、完成数据库提交后创建。SSD 应用缓存不进入 ZFS 快照，也不能包含恢复时唯一需要的种子。
+单 SSD 维修时先保住剩余 SSD 上的缓存数据及元数据，恢复一致访问并安全刷回，再按经过验证的流程更换成员、重建系统及缓存镜像。恢复后核对原身份、原 Zone、数据库、实例工作副本和队列。两块 SSD 全丢后的处理不能照搬旧 L2ARC 方案。若启用静态加密，解锁与独立恢复密钥生命周期另行设计。
 
-禁止自动对整个池回滚来修复一次程序升级：这可能撤销用户文件、消息、身份变更和数据库提交。程序可单独回退时仅恢复对应产物；数据格式不可逆时使用明确的迁移/维修策略。完整状态回退需要单独确认恢复点及可能撤销的数据，并处理仍留在 SSD 的 Docker/系统记录。
+用户界面展示一个逻辑系统盘状态和一个标称 24 TB 数据空间，不另展示可写入的缓存盘；系统盘不能重复计算 SSD 缓存占用。健康状态使用“正常／需检修／恢复中”，同时保留售后可查看的物理故障信息。自动维护包括 SMART、阵列一致性检查、容量监控、日志轮转和维修后的重建验证；封闭机箱不意味着首块盘故障后可以永久不维修。
 
-### 9.4 SSD 完全损坏后的恢复
+## 7. 样机验收与待冻结参数
 
-1. 售后更换 SSD，部署兼容 Linux ROM 和恢复工具，不执行 BuckyOS 全新激活或通用重装清理。
-2. 从 HDD 发现并核对原池，导入后验证布局和版本；原 L2ARC 允许缺失。正常恢复不自动使用可能丢弃事务的强制恢复选项。
-3. 挂载原有运行树，恢复账号 UID/GID、主机策略和卷登记，重新创建空的应用缓存与 L2ARC。
-4. 从保留的归档恢复镜像，重新建立指向原实例目录的 Docker 卷，验证设备身份和 system-config，再启动服务。
-5. 验证原 Zone、用户数据、Agent 工作副本和持久队列；不得生成第二个 Zone 来掩盖恢复失败。
+1. 分别移除任意一块 SSD，在缓存存在脏块时验证数据完整性、剩余盘冷启动、元数据恢复、安全刷回及换盘重建。
+2. 在数据库提交、缓存写入/刷回、系统更新期间反复断电，对已确认持久化的数据做哈希及数据库校验。
+3. 分别模拟四块 HDD 故障，验证降级读写、重启和换盘重建；额外测试降级期间断电，明确这属于组合故障测试。
+4. 注入缓存元数据损坏、错误 UUID、缺失挂载及错误 Docker 后端，确认进入维护且不创建空状态。
+5. 验证 A/B 回退和仅重刷系统区，确保保留缓存、用户数据、原身份和卷映射；离线种子能恢复所需组件。
+6. 核对 32 TB 原始容量、24 TB 标称阵列容量、实际文件系统容量和用户可用空间；SSD 系统与缓存不重复计量。
+7. 测试冷读、热读、随机写、持续大文件写、缓存写满及系统 I/O 并发，确定约 160 GiB 缓存的实际收益，不能用短时缓存吞吐量代表持续写入速度。
+8. 验证 Docker 工作副本、host home、持久队列、离线恢复和日志/运行区容量边界；维护空间不足时仍能恢复。
 
-如果产品后续启用静态数据加密，还需单独设计解锁和恢复密钥机制。密钥不能只存在系统 SSD，也不能只锁在它所解锁的同一个加密池内；当前提案不宣称已完成加密密钥生命周期设计。[OpenZFS 导入与恢复选项](https://openzfs.github.io/openzfs-docs/man/v2.2/8/zpool-import.8.html)
+待冻结项包括 CPU/RAM、SSD 型号与耐久度、系统镜像及 Docker 空间预算、缓存块大小与元数据容量、ext4 格式化参数、RAID5 一致性策略、售后恢复时限和产品支持周期。当前硬件容量明确，但“日常读写达到 SSD 水平”仍需按实际热点和写入工作集验收。
 
-## 10. 实施工作与验收
-
-| 工作 | 主要落点 | 完成标准 |
-| --- | --- | --- |
-| ROM 构建与磁盘布局 | 新的硬件镜像构建/工厂工具 | 可重复生成系统镜像，区分工厂建池与日常导入 |
-| 导入、挂载和故障状态 | ROM systemd 单元、独立恢复工具 | 来源核验通过才启动；单盘降级可启动；缺失子挂载不落错盘 |
-| Docker 持久卷后端 | node-daemon AppLoader | 实例目录进入 ZFS；旧卷迁移、SSD 丢失后的登记重建可验证 |
-| 缓存审计与种子保留 | runtime、RDB、安装器、工具分发 | 仅已证明可重建的路径位于 SSD；缓存清空仍可离线恢复 |
-| 保数据更新与恢复 | 安装器、devkit、ROM updater | 普通更新和 SSD 修复不删除身份、local、storage、data |
-| 状态展示和售后 | control-panel 与硬件诊断 | 用户看到设备健康/需检修/恢复中，无须管理 RAID |
-| 使用手册联动 | `buckyos_admin`、`buckyos_dev_release` 等 | 实现后更新 ROM 诊断、更新和恢复流程 |
-
-必须执行的整机验收：
-
-1. 分别模拟四块 HDD 故障，验证运行中读写、降级重启、文件校验与数据库读取；售后换盘后完成重建并再次校验。
-2. 完全移除原 SSD，用空白 SSD 恢复，验证原设备身份、Zone 配置、AgentRoot、instance 本地修改、对象存储和已持久化队列。
-3. 单独清空 L2ARC 和应用 cache，验证冷启动、离线种子补齐及核心业务；记录冷/热缓存性能差异。
-4. 在业务写入、容器部署和系统更新期间分别断电，验证池导入、应用提交语义、更新事务与回退行为。
-5. 故意缺少 `data`、`local`、`security` 等子挂载，使用错误池或错误 Docker 卷配置，确认业务拒绝启动且没有创建空状态。
-6. 填满日志配额、逼近数据容量阈值、累积快照，验证维护空间及系统配置写入能力。
-7. 更新 Linux 内核/ZFS 后回退旧槽，验证池 feature flags、运行程序及数据库格式仍与所选组合兼容。
-8. 在冷缓存与 AI/Agent 内存压力下测试数据库同步写延迟、前台响应、ARC/L2ARC 内存和 SSD 写入量，再冻结 RAM、SSD 分区和缓存参数。
-
-量产前还需确定 CPU/内存、磁盘容量、目标性能、产品支持年限及售后恢复时限。本方案可据此进入样机实现，不以尚未测试的吞吐量、RTO 或缓存命中率作承诺。
-
-本文仅新增设计提案，没有修改运行路径、CLI、协议、服务或依赖，因此当前不改分发的 cmd_skills。实施上述工作时按仓库规则同步更新相应手册。文档验证限于源码依据、链接和差异检查；尚未运行故障注入、ROM 构建或恢复测试。
+本次仅修订设计文档，没有修改运行路径实现、CLI、服务、协议或依赖，因此不改变分发的 cmd_skills。实施时按仓库规则联动相应使用手册。当前验证限于容量计算、文档路径与差异检查，尚未执行 ROM 构建、阵列组装、掉电或单盘故障测试。

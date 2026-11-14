@@ -148,8 +148,11 @@ test('i18n: the film demo in English; a live language switch re-renders the open
   await expect(page.getByRole('toolbar', { name: 'Main toolbar' })).toBeVisible()
   await expectEnglish(page, 'after switching back to English without a reload')
 
-  // a stored choice survives a reload (init scripts run in order: this one after the spec's English)
-  await page.addInitScript((key) => window.localStorage.setItem(key, 'zh-CN'), LOCALE_STORAGE_KEY)
+  // the choice is the account's (AccountAppearanceSync): made in Settings, it comes back after a reload whatever this page
+  // stored (the spec's English init script runs again)
+  await switchLanguage(page, 'zh-CN')
+  // saved to the account before the page goes (nothing left pending, AppearanceSync)
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem('buckyos.desktop.appearance-pending.v1'))).toBeNull()
   await page.reload()
   await page.getByTestId('desktop-app-aiworkspace').click()
   await backToList(page)

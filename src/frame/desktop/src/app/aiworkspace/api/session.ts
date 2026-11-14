@@ -899,6 +899,7 @@ export function wishRunCodeText(subCode: string | undefined, data: Record<string
       return reasons.length ? aiwsT('aiworkspace.wish.error.needsCoding', { reasons: aiwsText().clauses(reasons.map(needsCodingReasonText)) }) : aiwsT('aiworkspace.wish.error.needsCodingNoMacro')
     }
     case 'MACRO_CODE_CHANGED': return aiwsT('aiworkspace.wish.error.macroCodeChanged')
+    case 'MACRO_CANNOT_WRITE': return aiwsT(data?.group_id ? 'aiworkspace.wish.error.macroCannotWriteGroup' : 'aiworkspace.wish.error.macroCannotWrite', { group: String(data?.group_id ?? '') })
     case 'SNAPSHOT_TOO_LARGE': return aiwsT('aiworkspace.wish.error.snapshotTooLarge', { size: formatBytes(Number(data?.bytes ?? 0)), limit: formatBytes(Number(data?.limit ?? 0)) })
     default: return undefined
   }

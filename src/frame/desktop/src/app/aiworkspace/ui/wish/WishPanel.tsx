@@ -22,7 +22,7 @@ const BUSY_LABEL: Record<WishBusy, string> = {
 const EXECUTION_LABEL: Record<WishExecutionMode, string> = { local: 'aiworkspace.wish.execution.local', hosted: 'aiworkspace.wish.execution.hosted' }
 const MAIN_LABEL: Record<WishMainStatus['main'], string> = {
   needs_input: 'aiworkspace.wish.main.needsInput', needs_analysis: 'aiworkspace.wish.main.needsAnalysis', needs_coding: 'aiworkspace.wish.main.needsCoding',
-  waiting_data: 'aiworkspace.wish.main.waitingData', cannot_run: 'aiworkspace.wish.main.cannotRun', in_progress: 'aiworkspace.wish.main.inProgress',
+  waiting_data: 'aiworkspace.wish.main.waitingData', no_access: 'aiworkspace.wish.main.noAccess', cannot_run: 'aiworkspace.wish.main.cannotRun', in_progress: 'aiworkspace.wish.main.inProgress',
   pending_confirmation: 'aiworkspace.wish.main.pendingConfirmation', stale: 'aiworkspace.wish.main.stale', current: 'aiworkspace.wish.main.current',
 }
 const NEXT_LABEL: Record<Exclude<WishMainStatus['next_action'], 'none'>, string> = {
@@ -183,7 +183,7 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
     if (!cellId || startIntent?.value !== 'start' || startIntent.seq <= startsDone.current || !read.data || !entity) return
     startsDone.current = startIntent.seq
     consumeIntent(cellId, startIntent)
-    if (readOnly || !(entity.capabilities.includes('update') || store.wish.runOnly(wishId)) || isActive(store.wish.run(wishId)) || store.wish.busy.get(wishId)) return
+    if (readOnly || !entity.capabilities.includes('update') || isActive(store.wish.run(wishId)) || store.wish.busy.get(wishId)) return
     const before = store.wish.run(wishId)?.run_id
     store.wish.next(wishId, { cellId })
       .then((run) => { if (!run || (run.run_id !== before && run.stage === 'analyze')) setMessage({ kind: 'info', text: t('aiworkspace.wish.analysisWritten') }) })
@@ -197,9 +197,10 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
   const payload = read.data.content.payload
   const keyRevs = read.data.content.key_revs
   const canEdit = !readOnly && entity.capabilities.includes('update')
-  // a collaborator with only `run`: the owner's Agent executes and writes (D22)
-  const runOnly = !readOnly && !canEdit && store.wish.runOnly(wishId)
-  const canRun = canEdit || runOnly
+  // a run writes its results as whoever starts it (权限需求 §4.5, Q31): without `update` on the wish nobody could apply
+  // it, so only `run` runs nothing yet
+  const canRun = canEdit
+  const runOnly = !readOnly && !canEdit && entity.capabilities.includes('run')
   const executionModes = payload.executor === 'xllm' ? store.wish.executionModes() : []
   const analysis = payload.analysis
   const needsAnalysis = freshness?.needs_analysis ?? !analysis
@@ -262,15 +263,15 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
           <option value="xllm">{t('aiworkspace.wish.executor.xllm')}</option>
           <option value="mock">{t('aiworkspace.wish.executor.mock')}</option>
         </select>
-        {executionModes.length > 1 && !runOnly && (
-          <select data-testid="aiws-wish-exec-mode" aria-label={t('aiworkspace.wish.execution')} value={store.wish.executionMode(wishId)} disabled={running} onChange={(e) => store.wish.setExecutionMode(e.target.value as WishExecutionMode)}>
+        {executionModes.length > 1 && canRun && (
+          <select data-testid="aiws-wish-exec-mode" aria-label={t('aiworkspace.wish.execution')} value={store.wish.executionMode()} disabled={running} onChange={(e) => store.wish.setExecutionMode(e.target.value as WishExecutionMode)}>
             {executionModes.map((mode) => <option key={mode} value={mode}>{t(EXECUTION_LABEL[mode])}</option>)}
           </select>
         )}
         <FreshnessBadge entityId={wishId} />
         {busy && <span className="aiws-muted" data-testid="aiws-wish-busy">{t(BUSY_LABEL[busy])}</span>}
       </div>
-      {runOnly && <div className="aiws-muted" data-testid="aiws-wish-run-only">{t('aiworkspace.wish.runOnlyHosted')}</div>}
+      {runOnly && <div className="aiws-muted" data-testid="aiws-wish-run-only">{t('aiworkspace.wish.runOnlyUnavailable')}</div>}
       <label className="aiws-wish-prompt">
         <span className="aiws-muted">{t('aiworkspace.wish.request')}</span>
         <textarea data-testid="aiws-wish-prompt" rows={compact ? 2 : 3} value={prompt ?? payload.prompt} disabled={!canEdit} onChange={(event) => setPrompt(event.target.value)} onBlur={savePrompt} />

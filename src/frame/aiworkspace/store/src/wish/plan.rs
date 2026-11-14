@@ -428,7 +428,7 @@ impl Workspace {
             }
             let mut new_copy = false;
             if let Some(e) = &existing {
-                let manual = e.derived.as_ref().is_some_and(|d| e.content_rev > d.get("generated_rev").and_then(Value::as_u64).unwrap_or(0));
+                let manual = e.derived.as_ref().is_some_and(|d| aiworkspace_core::freshness::hand_edited(e, d.get("generated_rev").and_then(Value::as_u64).unwrap_or(0)));
                 if manual {
                     match choice.as_deref() {
                         Some("keep") | Some("replace") => {}
@@ -544,7 +544,7 @@ impl Workspace {
             let mut cells: Vec<String> = it.binding.as_ref().and_then(|b| b["cells"].as_array()).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             let mut binding = json!({ "type": it.ty, "entity_id": it.entity_id, "approach": approach, "title": it.r.get("title") });
             if it.existing.is_some() && it.choice.as_deref() == Some("keep") && p.manual.iter().all(|m| m["name"] != json!(it.name)) {
-                let is_manual = it.existing.as_ref().is_some_and(|e| e.derived.as_ref().is_some_and(|d| e.content_rev > d.get("generated_rev").and_then(Value::as_u64).unwrap_or(0)));
+                let is_manual = it.existing.as_ref().is_some_and(|e| e.derived.as_ref().is_some_and(|d| aiworkspace_core::freshness::hand_edited(e, d.get("generated_rev").and_then(Value::as_u64).unwrap_or(0))));
                 if is_manual {
                     // the user confirms keeping their version: re-recorded with this run's read set (§11.3)
                     let mut d = derived_base(&it.name, &approach);

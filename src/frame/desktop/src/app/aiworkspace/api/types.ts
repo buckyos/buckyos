@@ -530,8 +530,8 @@ export interface WishRunView {
   aicc?: WishRunAicc | null
   /** The execution context the run bound (§9.6). */
   context?: Record<string, Json> | null
-  /** Hosted runs: how the Agent was reached (`unavailable` carries the claim token for whoever hands it on). */
-  dispatch?: { status: string; claim_token?: string; detail?: string } | null
+  /** Hosted runs: how the Agent was reached; its goal and detail only for whoever manages the Workspace. */
+  dispatch?: { status: string; at?: string; agent_id?: string; detail?: string } | null
   execution?: { mode: WishExecutionMode; attempt: number; lease_until?: string | null; executor?: Json }
   /** Once, to the browser that started a local run: what claims it. */
   claim_token?: string
@@ -572,7 +572,7 @@ export interface WishStageFiles { files: Record<string, { text?: string; base64?
 export interface NeedsCodingReason { code: 'no_macro' | 'api_version' | 'input_unbound' | 'input_changed' | 'input_missing' | 'field_deleted' | 'field_type_changed' | 'program_failed'; input?: string; field_id?: string; name?: string; from?: string; to?: string; run_code?: string }
 /** The one main state of a wish and its next action (PRD §5.8; core `main_status`). */
 export interface WishMainStatus {
-  main: 'needs_input' | 'needs_analysis' | 'needs_coding' | 'waiting_data' | 'cannot_run' | 'in_progress' | 'pending_confirmation' | 'stale' | 'current'
+  main: 'needs_input' | 'needs_analysis' | 'needs_coding' | 'waiting_data' | 'no_access' | 'cannot_run' | 'in_progress' | 'pending_confirmation' | 'stale' | 'current'
   next_action: 'answer' | 'analyze' | 'code' | 'view_inputs' | 'fix' | 'cancel' | 'apply' | 'run' | 'none'
   reasons: Json[]
   /** The applied results are out of date, whatever the main state says. */

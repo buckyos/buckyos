@@ -249,15 +249,8 @@ export class WishService {
     return info.hosted_exec?.enabled ? ['local', 'hosted'] : ['local']
   }
 
-  /** A collaborator with only `run` on the wish runs it hosted (the owner's Agent writes the results). */
-  runOnly(wishId: string): boolean {
-    const caps = this.store.outline.get(wishId)?.capabilities ?? []
-    return !caps.includes('update') && caps.includes('run') && this.executionModes().includes('hosted')
-  }
-
-  executionMode(wishId?: string): WishExecutionMode {
+  executionMode(): WishExecutionMode {
     const modes = this.executionModes()
-    if (wishId && this.runOnly(wishId)) return 'hosted'
     let saved: string | null = null
     try { saved = window.localStorage.getItem(EXECUTION_KEY) } catch { saved = null }
     if (saved && modes.includes(saved as WishExecutionMode)) return saved as WishExecutionMode
@@ -300,7 +293,7 @@ export class WishService {
 
   private async start(wishId: string, program: 'wish.xllm@1' | 'wish.mock@1', stage: WishStage, extra: Record<string, Json>, cellId?: string, raised?: { event: Json; key: string }): Promise<WishRunView> {
     const params: Record<string, Json> = { wish_id: wishId, stage, location: this.location(wishId, cellId) as unknown as Json, request: { ...this.request(), ...(raised ? { event: raised.event } : {}) }, ...extra }
-    if (program === 'wish.xllm@1' && this.executionModes().length) params.execution = { mode: this.executionMode(wishId) }
+    if (program === 'wish.xllm@1' && this.executionModes().length) params.execution = { mode: this.executionMode() }
     const started = await this.store.session.wishStart(program, params, raised?.key)
     this.setRun(started)
     if (started.claim_token) this.runLocally(started.run_id, started.claim_token, wishId)

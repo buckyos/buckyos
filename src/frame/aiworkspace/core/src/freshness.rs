@@ -198,7 +198,7 @@ fn entity_freshness_inner(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, vis
         "changed_inputs": changed,
         "upstream": upstream,
         // the content moved on after generation and not through the wish (a later run re-records)
-        "manual_modified": e.content_rev > generated_rev,
+        "manual_modified": hand_edited(e, generated_rev),
         "imported_stale": imported_stale,
         "config_changed": config_changed,
         "generated_rev": generated_rev,
@@ -337,7 +337,23 @@ fn wish_freshness(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult
     if config_changed && status != Status::None {
         status = worse(status, Status::Stale);
     }
-    let coding = crate::wish::macro_check(ctx, &e.payload)?;
+    // what the viewer cannot read stays out of the reasons: an input it cannot read is an input problem (`unreadable`),
+    // never a story of its fields
+    let manifest_inputs = e.payload.get("program").and_then(|p| p.get("manifest")).and_then(|m| m.get("inputs"));
+    let mut coding = Vec::new();
+    for r in crate::wish::macro_check(ctx, &e.payload)? {
+        let id = r.get("entity_id").and_then(Value::as_str).or_else(|| {
+            let name = r.get("input").and_then(Value::as_str)?;
+            manifest_inputs.and_then(|m| m.get(name)).and_then(|d| d.get("entity_id")).and_then(Value::as_str)
+        });
+        let hidden = match id.map(|id| ctx.entity(id)).transpose()?.flatten() {
+            Some(t) if t.alive() => !access.can_read(ctx, &t)?,
+            _ => false,
+        };
+        if !hidden {
+            coding.push(r);
+        }
+    }
     let changed: Vec<Value> = lines.iter().filter(|l| l["changed"] == json!(true)).cloned().collect();
     Ok(json!({
         "entity_id": e.entity_id,
@@ -360,6 +376,15 @@ fn wish_freshness(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult
     }))
 }
 
+/// Whether `e` changed after a run generated it (at `generated_rev`) other than through a run. A manager vouching for a
+/// definition's code (`trusted`, 权限需求 Q32) changes no content.
+pub fn hand_edited(e: &EntityRow, generated_rev: u64) -> bool {
+    if e.content_rev <= generated_rev {
+        return false;
+    }
+    e.type_id != TYPE_BLOCK_DEF || e.key_revs.iter().any(|(k, r)| k != "trusted" && *r > generated_rev)
+}
+
 /// Run codes that send a wish back to coding: the macro failed, its code changed, or it no longer fits its inputs.
 const CODING_CODES: &[&str] = &["PROGRAM_FAILED", "MACRO_CODE_CHANGED", "NEEDS_CODING"];
 /// Run codes that say the wish cannot run here now (permissions, AI quota, execution environment).
@@ -374,8 +399,8 @@ fn run_code(run: &Value) -> Option<&str> {
 }
 
 /// The one main state of a wish and its next action (PRD §5.8, 第一期 §2.7): the first that holds of
-/// needs_input, needs_analysis, needs_coding, waiting_data, cannot_run, in_progress, pending_confirmation, stale,
-/// current. `freshness` is `wish_freshness`; `runs` what the caller knows of the wish's runs: `{ active?: { stage,
+/// needs_input, needs_analysis, needs_coding, waiting_data (no_access when the caller cannot read an input: nothing
+/// to wait for), cannot_run, in_progress, pending_confirmation, stale, current. `freshness` is `wish_freshness`; `runs` what the caller knows of the wish's runs: `{ active?: { stage,
 /// state }, waiting?: { stage, run_id }, last_failed?: { stage, error: { code, sub_code } } }`. `stale` stays true
 /// when an earlier state wins, so a running or failed run never hides that the applied results are out of date.
 pub fn main_status(freshness: &Value, runs: &Value) -> Value {
@@ -412,7 +437,11 @@ pub fn main_status(freshness: &Value, runs: &Value) -> Value {
         ("needs_coding", "code")
     } else if let Some(p) = f.get("input_problems").and_then(Value::as_array).filter(|p| !p.is_empty()) {
         reasons.extend(p.iter().cloned());
-        ("waiting_data", "view_inputs")
+        if p.iter().any(|x| x["reason"] == json!("unreadable")) {
+            ("no_access", "none")
+        } else {
+            ("waiting_data", "view_inputs")
+        }
     } else if let Some(code) = failed_code.filter(|c| CANNOT_RUN_CODES.contains(c)) {
         reasons.push(json!({ "code": code }));
         ("cannot_run", "fix")
@@ -572,6 +601,9 @@ mod tests {
         f["input_problems"] = json!([{ "entity_id": "orders", "reason": "view_missing", "cell_id": "blk" }]);
         assert_eq!(main_of(&f, &runs), s("waiting_data", "view_inputs", true), "4 waiting data over cannot run");
         assert_eq!(main_status(&f, &runs)["reasons"][0]["reason"], "view_missing");
+        let mut g = f.clone();
+        g["input_problems"] = json!([{ "entity_id": "orders", "reason": "unreadable" }]);
+        assert_eq!(main_of(&g, &runs), s("no_access", "none", true), "4 an input the caller cannot read: nothing to wait for");
         f["needs_coding"] = json!({ "reasons": [{ "code": "field_deleted", "input": "sales", "field_id": "month", "name": "月份" }] }); // i18n-exempt: test data (user-written names and text)
         assert_eq!(main_of(&f, &runs), s("needs_coding", "code", true), "3 needs coding over waiting data");
         assert_eq!(main_status(&f, &runs)["reasons"][0]["code"], "field_deleted");

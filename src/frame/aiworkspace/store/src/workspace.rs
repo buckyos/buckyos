@@ -73,6 +73,10 @@ pub struct Caller {
     pub acting_for: Option<Box<Caller>>,
     /// The reader of an inner-path publication (R26): it holds that publication's own subject and nothing else.
     pub publication: Option<String>,
+    /// The wish whose macro this caller acts as (a coding or running stage, its run token): what it reads and writes
+    /// is the macro identity — its own permissions bounded by the wish's group when bound with `intersection`
+    /// (权限需求 §4.5 “读取也按宏身份”).
+    pub macro_of: Option<String>,
 }
 
 /// Member spec: every unrestricted account of the Zone.
@@ -96,7 +100,7 @@ pub enum MemberMatch {
 impl Caller {
     fn with_class(principal: &str, class: CallerClass) -> Caller {
         Caller { principal: principal.to_string(), app_id: None, class, kind: None, run_scope: None, auth_method: None, contacts: BTreeSet::new(), unconfirmed: BTreeSet::new(),
-                 acting_for: None, publication: None }
+                 acting_for: None, publication: None, macro_of: None }
     }
     /// The holder of a run token (M3): acts as the run's principal, for that run only.
     pub fn run_token(principal: &str, run_id: &str) -> Caller {
@@ -1230,7 +1234,12 @@ impl Workspace {
 
     /// `doc.prepare`: steps 1–3 and the read-only part of step 4. Nothing is stored.
     pub fn prepare(&mut self, req: &Value, caller: &Caller) -> Value {
-        match self.commit_inner(req, caller, &CommitOpts::default(), true) {
+        self.prepare_with(req, caller, &CommitOpts::default())
+    }
+
+    /// [`Self::prepare`] under `opts` (a run's pre-check: written as the run, authorized as its macro identity).
+    pub fn prepare_with(&mut self, req: &Value, caller: &Caller, opts: &CommitOpts) -> Value {
+        match self.commit_inner(req, caller, opts, true) {
             Ok(v) => v,
             Err(f) => {
                 let mut v = f.to_json();
@@ -1454,9 +1463,15 @@ impl Workspace {
         for w in &widened {
             let _ = self.audit(caller, "visibility.widened", &json!({ "entity_id": w["entity_id"], "commit_id": commit_id, "seq": seq }), Some(&json!({ "parent": w["from_parent"] })), Some(&json!({ "parent": w["to_parent"], "gained": w["gained"] })));
         }
-        // a change to a wish whose macro is bound to a group: whoever may change it holds the group through it (Q10, R19)
-        let touched_ids: BTreeSet<&str> = touched.iter().filter(|t| t.change != "created").map(|t| t.entity_id.as_str()).collect();
-        for id in touched_ids {
+        // a change to the macro of a wish bound to a group: whoever may change it holds the group through it (Q10, R19).
+        // Only the macro itself (`program`): a run's results and the wish's other keys are no change of the macro
+        let macro_writes: BTreeSet<&str> = ops
+            .iter()
+            .filter(|o| matches!(o.op["op"].as_str(), Some("entity.set_keys" | "entity.unset_keys")))
+            .filter(|o| o.op["keys"].as_array().is_some_and(|ks| ks.iter().any(|k| k["key"] == json!("program"))))
+            .filter_map(|o| o.op["entity_id"].as_str())
+            .collect();
+        for id in macro_writes {
             if let Ok(Some((group, mode))) = self.macro_binding(id) {
                 let _ = self.audit(caller, "macro.changed", &json!({ "wish_id": id, "commit_id": commit_id, "seq": seq }), None, Some(&json!({ "group_id": group, "mode": mode })));
             }

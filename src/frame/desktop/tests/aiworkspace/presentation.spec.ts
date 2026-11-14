@@ -146,9 +146,10 @@ test('P3-01b the editor builds a path from the UI: new path, Frames, the current
   await openCanvas(page, ALICE, ws.workspace_id)
   await setCanvasMode(page, 'presentation_edit')
   await page.getByTestId('aiws-path-new').click()
+  // the existing path stays selected until the new one is created and chosen
+  await expect(page.getByTestId('aiws-path-select')).not.toHaveValue('path-intro')
   await expect(page.getByTestId('aiws-path-select')).toHaveValue(/.+/)
   const pathId = await page.getByTestId('aiws-path-select').inputValue()
-  expect(pathId).not.toBe('path-intro')
   await page.getByTestId('aiws-path-add-frame').selectOption('frame2')
   await page.getByTestId('aiws-path-add-frame').selectOption('frame1')
   await page.getByTestId('aiws-path-add-view').click()

@@ -47,6 +47,13 @@ function entryKey(): string {
  * sign-in leaves a marker in this tab, so only a return from it enters on its
  * own; a crafted `join=1` link still asks the visitor to continue.
  */
+/** A resource's page with the entry it is entered through (`?entry=`). */
+function withEntry(path: string, entryId: string): string {
+  const url = new URL(path, window.location.href)
+  url.searchParams.set('entry', entryId)
+  return url.toString()
+}
+
 function joinUrl(): string {
   try {
     window.sessionStorage.setItem(PENDING_JOIN_KEY, entryKey())
@@ -383,7 +390,8 @@ export function EntryPage() {
     const closed = new Set(descriptor.zone_disabled ?? [])
     const offered = (['guest', 'password', 'self_register', 'did_login'] as const).filter((method) => methods[method] || closed.has(method))
     const open = (method: EntryMethod) => {
-      if (method === 'guest') window.location.assign(resource.path)
+      // a guest joins on the workspace's own page, with that origin's guest token (AI Workspace: `?entry=`)
+      if (method === 'guest') window.location.assign(service === 'aiworkspace' ? withEntry(resource.path, entryId) : resource.path)
       else if (method === 'password') window.location.assign(`/login?redirect_url=${encodeURIComponent(joinUrl())}`)
       else if (method === 'self_register') setPanel('register')
       else setPanel('did')

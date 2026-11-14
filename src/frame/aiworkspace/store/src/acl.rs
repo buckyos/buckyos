@@ -343,10 +343,14 @@ impl Workspace {
         judge(&self.acl_data()?, caller)
     }
 
-    /// The caller's effective permissions here.
+    /// The caller's effective permissions here (a macro's caller: its macro identity, [`Self::macro_access`]).
     pub fn access(&self, caller: &Caller) -> WsResult<Access> {
         let data = self.acl_data()?;
-        Ok(access_of(&data, &judge(&data, caller)?))
+        let base = access_of(&data, &judge(&data, caller)?);
+        match caller.macro_of.as_deref() {
+            Some(wish_id) => self.bounded_by_binding(&data, base, wish_id),
+            None => Ok(base),
+        }
     }
 
     pub fn subjects_of(&self, caller: &Caller) -> WsResult<BTreeSet<String>> {
@@ -840,8 +844,12 @@ impl Workspace {
     pub fn macro_access(&self, triggerer: &Caller, wish_id: &str) -> WsResult<Access> {
         let data = self.acl_data()?;
         let base = access_of(&data, &judge(&data, triggerer)?);
+        self.bounded_by_binding(&data, base, wish_id)
+    }
+
+    fn bounded_by_binding(&self, data: &AclData, base: Access, wish_id: &str) -> WsResult<Access> {
         match self.macro_binding(wish_id)? {
-            Some((g, mode)) if mode == "intersection" && data.groups.contains_key(&g) => Ok(base.bounded_by(group_access(&data, &g))),
+            Some((g, mode)) if mode == "intersection" && data.groups.contains_key(&g) => Ok(base.bounded_by(group_access(data, &g))),
             _ => Ok(base),
         }
     }
@@ -967,12 +975,23 @@ impl Workspace {
             }
             // every entry (a manager), or the caller's own: what a client lists before it edits
             "all" => {
+                // a manager sees every entry; anyone else the entries that apply to it — its own, its groups', `@all`, and
+                // `@guest` while it is a guest (Q6: one's own groups, never their members)
+                let mine = if manage { BTreeSet::new() } else { judge(&data, caller)?.subjects() };
                 let entries: Vec<Value> = data
                     .entries
                     .iter()
-                    .filter(|e| manage || e.subject == caller.principal)
-                    .map(|e| json!({ "subject": e.subject, "kind": subject_kind(&e.subject), "resource": self.resource_json(&access, &e.scope),
-                                     "allow": caps_json(e.allow), "deny": caps_json(e.deny), "updated_by": e.updated_by, "updated_at": e.updated_at }))
+                    .filter(|e| manage || mine.contains(&e.subject))
+                    .map(|e| {
+                        let mut v = json!({ "subject": e.subject, "kind": subject_kind(&e.subject), "resource": self.resource_json(&access, &e.scope),
+                                            "allow": caps_json(e.allow), "deny": caps_json(e.deny) });
+                        // who wrote an entry is the managers' to know (the operation record is theirs too)
+                        if manage {
+                            v["updated_by"] = json!(e.updated_by);
+                            v["updated_at"] = json!(e.updated_at);
+                        }
+                        v
+                    })
                     .collect();
                 Ok(json!({ "ok": true, "by": "all", "entries": entries, "complete": manage, "owner": if manage { json!(data.owner) } else { Value::Null },
                            "principal": caller.principal, "anonymous": data.anonymous }))

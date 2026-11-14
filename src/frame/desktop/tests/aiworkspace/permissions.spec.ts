@@ -25,13 +25,15 @@ test('UI14 presets, canvas permissions and what a restricted principal can see',
   await expect(page.getByTestId('aiws-permissions-message')).toContainText('（画布）')
   await expect(page.locator('[data-testid="aiws-grant"][data-subject="bob"][data-scope=""]').getByTestId('aiws-grant-preset')).toHaveText('阅读者')
   await expect(page.locator('[data-testid="aiws-grant"][data-subject="bob"][data-scope="sf-detail"]').getByTestId('aiws-grant-preset')).toHaveText('编辑者')
-  const grants = await api.rpc(ALICE, 'ws.list_grants', { workspace_id: ws.workspace_id })
-  const bobs = grants.grants.filter((g: { subject: string }) => g.subject === 'bob').map((g: { scope_entity_id: string | null }) => g.scope_entity_id).sort()
+  // the entries behind the panel (acl.query by: all): the workspace, the canvas and its content folder
+  type Entry = { subject: string; resource: { entity_id: string | null } }
+  const entries = async (token: string) => api.rpc(token, 'acl.query', { workspace_id: ws.workspace_id, by: 'all' }) as Promise<{ entries: Entry[]; complete: boolean }>
+  const bobs = (await entries(ALICE)).entries.filter((e) => e.subject === 'bob').map((e) => e.resource.entity_id).sort()
   expect(bobs).toEqual([null, 'sf-detail', 'sf-detail-content'].sort())
   // bob: edits on the detail canvas are accepted (union), first-level data edits are refused
-  const bobGrants = await api.rpc(BOB, 'ws.list_grants', { workspace_id: ws.workspace_id })
+  const bobGrants = await entries(BOB)
   expect(bobGrants.complete).toBe(false)
-  expect(bobGrants.grants.every((g: { subject: string }) => g.subject === 'bob')).toBe(true)
+  expect(bobGrants.entries.every((e) => e.subject === 'bob')).toBe(true)
   expect(JSON.stringify(bobGrants)).not.toContain('"alice"')
   const place = await api.commit(BOB, ws, [{ op: 'tree.place', entity_id: 'blk-chart-2', placement: { x: 1, y: 2, w: 420, h: 300 } }])
   expect(place.status).toBe('accepted')
@@ -46,8 +48,7 @@ test('UI14 presets, canvas permissions and what a restricted principal can see',
   // revoking the canvas permission removes both rows; the workspace grant still makes bob a reader
   await page.locator('[data-testid="aiws-grant"][data-subject="bob"][data-scope="sf-detail"]').getByTestId('aiws-revoke').click()
   await expect(page.locator('[data-testid="aiws-grant"][data-subject="bob"][data-scope="sf-detail"]')).toHaveCount(0)
-  const after = await api.rpc(ALICE, 'ws.list_grants', { workspace_id: ws.workspace_id })
-  expect(after.grants.filter((g: { subject: string }) => g.subject === 'bob')).toHaveLength(1)
+  expect((await entries(ALICE)).entries.filter((e) => e.subject === 'bob')).toHaveLength(1)
   expect((await api.rpc(BOB, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'sales' })).ok).toBe(true)
   // a principal reading only a subtree learns nothing about referrers or dependencies elsewhere
   await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob' }] })

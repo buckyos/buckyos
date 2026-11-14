@@ -252,6 +252,8 @@ test('OX06/OX07 resize by corner and edge (notes keep their proportions), rotate
   await page.getByTestId('aiws-near-group').click()
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).find((e: { entity_id: string }) => e.entity_id === 'blk-shape').parent_id).not.toBe('sf-analysis')
   expect((await placement('blk-shape')).rotation).toBe(90)
+  // the new group is selected once its Commit is answered: then the shortcut ungroups it
+  await expect(page.getByTestId('aiws-near-ungroup')).toBeVisible()
   await page.keyboard.press('Control+Shift+G')
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).find((e: { entity_id: string }) => e.entity_id === 'blk-shape').parent_id).toBe('sf-analysis')
   expect((await placement('blk-shape')).rotation).toBe(90)

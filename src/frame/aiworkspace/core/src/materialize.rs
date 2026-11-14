@@ -137,6 +137,13 @@ pub fn entity_content(ctx: &dyn ReadCtx, e: &EntityRow, sink: &mut dyn ObjectSin
             json!({ "editor_schema": richtext::EDITOR_SCHEMA, "doc": doc })
         }
         TYPE_DIR => dir_content(ctx, e, sink)?,
+        TYPE_BLOCK_DEF => {
+            // who vouched for the code is this Workspace's decision (权限需求 R37), never content: a package, a template
+            // or a version carries the code, and whoever brings it in decides again
+            let mut payload = e.payload.clone();
+            payload.remove("trusted");
+            Value::Object(payload)
+        }
         _ => Value::Object(e.payload.clone()),
     })
 }

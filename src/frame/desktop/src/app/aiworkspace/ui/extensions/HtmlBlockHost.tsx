@@ -35,13 +35,26 @@ function Snapshot(context: RenderContext & { label?: string }) {
 
 function HtmlStatic(context: RenderContext) {
   const { t } = useAiwsText()
+  const [confirming, setConfirming] = useState(false)
   const name = context.documentDefinition?.title ?? context.payload.title ?? t('aiworkspace.extension.html.title')
+  // code no manager vouched for (权限需求 R37): it runs with the viewer's rights, so the viewer is told before it starts
+  const untrusted = Boolean(context.documentDefinition) && !context.documentDefinition?.trusted
+  const cellId = context.cell.entity_id
   return (
     <>
       <Snapshot {...context} label={name} />
       {/* run mode (Q27): a click on the Block mounts it (within the `html` budget); design mode selects it */}
-      {context.interactive && context.depth === 0 && <button type="button" className="aiws-html-start" data-testid={`aiws-html-start-${context.cell.entity_id}`} aria-label={t('aiworkspace.extension.html.start', { name })} onClick={context.activateEditor} />}
-      <EventNote cellId={context.cell.entity_id} />
+      {context.interactive && context.depth === 0 && !confirming && <button type="button" className="aiws-html-start" data-testid={`aiws-html-start-${cellId}`} data-untrusted={untrusted ? 'true' : undefined} aria-label={t('aiworkspace.extension.html.start', { name })} onClick={untrusted ? () => setConfirming(true) : context.activateEditor} />}
+      {confirming && (
+        <div className="aiws-html-untrusted" role="alertdialog" data-testid={`aiws-html-untrusted-${cellId}`}>
+          <p>{t('aiworkspace.extension.html.untrusted')}</p>
+          <div className="aiws-html-untrusted-actions">
+            <button type="button" data-testid={`aiws-html-run-untrusted-${cellId}`} onClick={() => { setConfirming(false); context.activateEditor() }}>{t('aiworkspace.extension.html.runUntrusted')}</button>
+            <button type="button" onClick={() => setConfirming(false)}>{t('aiworkspace.common.cancel')}</button>
+          </div>
+        </div>
+      )}
+      <EventNote cellId={cellId} />
     </>
   )
 }
