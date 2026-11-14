@@ -791,13 +791,6 @@ fn gpt_6_1_presets_match_provider_channels_and_reject_unsupported_efforts() {
         .unwrap();
         assert!(inventory.unmatched_models.is_empty(), "{provider}");
         assert!(inventory.unavailable_presets.is_empty(), "{provider}");
-        if provider == "sn" {
-            assert!(
-                inventory.models.is_empty(),
-                "unlisted SN models must remain excluded"
-            );
-            continue;
-        }
         assert_eq!(inventory.models.len(), 2, "{provider}");
         let registry =
             crate::service::builtin_registry_for_test(&catalog, &[inventory.as_model_inventory()]);
@@ -1527,6 +1520,78 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
 }
 
 #[test]
+fn reviewed_channel_limits_and_glm_variants_are_effective() {
+    let catalog = catalog();
+    for (provider, driver, model, channel_model, expected) in [
+        (
+            "sn",
+            "mistral",
+            "voxtral-small-24b-2507",
+            "voxtral-small-24b-2507",
+            26214,
+        ),
+        ("sn", "xai", "grok-4.7", "grok-4.7", 450000),
+        ("openrouter", "xai", "grok-4.7", "x-ai/grok-4.7", 450000),
+    ] {
+        let facts = catalog
+            .resolve_model(driver, model)
+            .unwrap()
+            .semantics
+            .capabilities
+            .unwrap();
+        let rule = catalog
+            .resolve_provider_rule(provider, channel_model, &Default::default())
+            .unwrap()
+            .unwrap();
+        let narrowed = rule.action.narrow(&BTreeSet::new(), &facts);
+        assert_eq!(narrowed.capabilities["max_output_tokens"], expected);
+    }
+    let flash = catalog.llm_model("glm", "glm-5.3-flash").unwrap();
+    let flashx = catalog.llm_model("glm", "glm-5.3-flashx").unwrap();
+    assert_eq!(flash.semantics.spec, "glm-flash");
+    assert_eq!(flashx.semantics.spec, "glm-flashx");
+    assert_eq!(flash.semantics.default_effort.as_str(), "max");
+    for provider in ["doubao", "doubao-agent-plan"] {
+        assert!(!catalog
+            .provider_rules(provider)
+            .unwrap()
+            .variants
+            .iter()
+            .any(|variant| {
+                variant.model_driver == "glm"
+                    && variant.variant == "reasoning-medium"
+                    && serde_json::to_string(&variant.match_rule)
+                        .unwrap()
+                        .contains("glm-5.3-flash")
+            }));
+    }
+    let context = BTreeMap::from([("region".into(), json!("china"))]);
+    let pricing = catalog
+        .resolve_provider_rule("kimi", "kimi-k3.1-pro", &context)
+        .unwrap()
+        .unwrap()
+        .action
+        .pricing
+        .unwrap();
+    let snapshot = crate::execution::PinnedPricingSnapshot::from_pricing(
+        &pricing,
+        None,
+        std::time::SystemTime::now(),
+    )
+    .unwrap()
+    .unwrap();
+    let cost = snapshot
+        .completion_cost(&buckyos_api::AiUsage {
+            input_tokens: Some(1_000_000),
+            output_tokens: Some(1_000_000),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(cost.currency, "CNY");
+    assert!((cost.amount - 81.0).abs() < 1e-9);
+}
+
+#[test]
 fn provider_pricing_contains_all_rebased_model_defaults() {
     let catalog = catalog();
     for (provider, expected_count) in [
@@ -1537,9 +1602,9 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("fal", 4),
         ("gemini", 32),
         ("glm", 101),
-        ("kimi", 4),
+        ("kimi", 5),
         ("minimax", 23),
-        ("openai", 30),
+        ("openai", 32),
         ("qwen", 99),
     ] {
         assert_eq!(
@@ -1606,7 +1671,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 328);
+    assert_eq!(pricing_count, 331);
 }
 
 #[test]

@@ -712,6 +712,9 @@ impl ProviderRuleAction {
                 contract.clone(),
             );
         }
+        for (name, limit) in &self.capability_limits {
+            capabilities.entry(name.clone()).or_insert_with(|| Value::from(*limit));
+        }
         NarrowedCapabilities {
             api_types: api_types
                 .difference(&self.remove_api_types)

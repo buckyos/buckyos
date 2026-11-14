@@ -44,6 +44,8 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
     "github.com",
     "openrouter.ai",
     "platform.kimi.com",
+    "platform.moonshot.cn",
+    "docs.x.ai",
     "docs.z.ai",
     "www.alibabacloud.com",
     "help.aliyun.com",
@@ -90,11 +92,13 @@ export type ProviderProtocolContract = {
   body_field_formats?: Record<string, "http_url" | "http_url_or_data_uri">;
   required_body_values?: Record<string, unknown>;
   required_body_values_by_model?: Record<string, Record<string, unknown>>;
+  optional_body_values_by_model?: Record<string, Record<string, unknown>>;
   json_string_body_values?: Record<string, Record<string, unknown>>;
   required_body_paths?: string[];
   forbidden_body_paths?: string[];
   forbidden_body_paths_by_model?: Record<string, string[]>;
   canonical_request_overrides?: Record<string, unknown>;
+  cross_provider_target?: { provider_driver: string; contract_id: string; api_type: string };
   generation_config?: {
     allowed_fields: string[];
     thinking_level_values?: string[];
@@ -560,6 +564,26 @@ export function validateProviderProtocolCatalog(
           }
         }
       }
+      if (contract.optional_body_values_by_model !== undefined) {
+        const byModel = object(
+          contract.optional_body_values_by_model,
+          `${id}.optional_body_values_by_model`,
+        );
+        for (const [modelId, rawValues] of Object.entries(byModel)) {
+          nonEmptyString(modelId, `${id}.optional_body_values_by_model key`);
+          const values = object(
+            rawValues,
+            `${id}.optional_body_values_by_model.${modelId}`,
+          );
+          for (const pointer of Object.keys(values)) {
+            if (!pointer.startsWith("/")) {
+              throw new Error(
+                `${id}.optional_body_values_by_model.${modelId} keys must be JSON pointers`,
+              );
+            }
+          }
+        }
+      }
       if (contract.json_string_body_values !== undefined) {
         const values = object(
           contract.json_string_body_values,
@@ -826,6 +850,14 @@ export function validateProviderProtocolCatalog(
           throw new Error(
             `${id}.provider_artifact_identity.cross_provider_reuse is invalid`,
           );
+        }
+      }
+      if (contract.cross_provider_target !== undefined) {
+        const target = object(contract.cross_provider_target, `${id}.cross_provider_target`);
+        const targetProvider = (root.providers as ProviderProtocolCatalog["providers"])
+          .find((provider) => provider.provider_driver === target.provider_driver);
+        if (!targetProvider?.contracts.some((candidate) => candidate.id === target.contract_id && candidate.api_types.includes(String(target.api_type)))) {
+          throw new Error(`${id}.cross_provider_target references an unknown Provider contract/API`);
         }
       }
       const sources = stringArray(
@@ -1211,6 +1243,15 @@ export function validateProviderRequest(
     const actual = pointerValue(pointer);
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
       errors.push(`body ${pointer} must equal ${JSON.stringify(expected)}`);
+    }
+  }
+  const optionalModelValues = typeof body.model === "string"
+    ? contract.optional_body_values_by_model?.[body.model] ?? {}
+    : {};
+  for (const [pointer, expected] of Object.entries(optionalModelValues)) {
+    const actual = pointerValue(pointer);
+    if (actual !== undefined && JSON.stringify(actual) !== JSON.stringify(expected)) {
+      errors.push(`body ${pointer} must equal ${JSON.stringify(expected)} when supplied`);
     }
   }
   for (const [pointer, expected] of Object.entries(contract.json_string_body_values ?? {})) {
@@ -1638,7 +1679,10 @@ function validateNestedProviderBody(
       errors.push(`body field ${field} must be a positive integer`);
     }
   }
-  if (
+  if (contract.operation === "ark.contents.generate" && apiType === "video.edit") {
+    if (body.duration !== -1) errors.push("video edit duration must equal -1");
+    if (body.ratio !== "adaptive") errors.push("video edit ratio must equal adaptive");
+  } else if (
     ["ark.contents.generate", "videos.generate", "video_generation.v2.create"]
       .includes(contract.operation) &&
     body.duration !== undefined &&
@@ -2555,6 +2599,17 @@ export function buildT15Manifest(
             model_selector: { kind: "exact", value: modelId },
             mock_scenario: "success",
           } as AcceptanceCase);
+          if (TASK_RESULT_ARTIFACT_API_TYPES.has(apiType)) {
+            cases.push({
+              ...common,
+              case_id: caseId(`t1.5.${provider.provider_driver}.${contract.id}.${apiType}.model.${modelId}.task-result-artifact`),
+              tags: [...common.tags!, "model_api_conformance", "task_result_artifact"],
+              model_selector: { kind: "exact", value: modelId },
+              mock_scenario: "success",
+              expected_wire_fixture: `${contract.id}.request.task-result-artifact`,
+              response_fixture: `${contract.id}.success`,
+            } as AcceptanceCase);
+          }
         }
         if (TASK_RESULT_ARTIFACT_API_TYPES.has(apiType)) {
           cases.push({
@@ -2598,6 +2653,32 @@ export function buildT15Manifest(
             expected_wire_fixture:
               `${contract.id}.request.inline-artifact-provider-state`,
             response_fixture: `${contract.id}.inline-artifact-success`,
+          } as AcceptanceCase);
+        }
+        if (contract.cross_provider_target) {
+          const target = contract.cross_provider_target;
+          const targetProvider = catalog.providers.find((provider) => provider.provider_driver === target.provider_driver)!;
+          const targetContract = targetProvider.contracts.find((candidate) => candidate.id === target.contract_id)!;
+          cases.push({
+            ...common,
+            case_id: caseId(`t1.5.resource.${common.provider_driver}.${contract.id}.${apiType}.to.${target.provider_driver}.${target.contract_id}.${target.api_type}.cross-provider`),
+            tags: [...common.tags!, "generated_artifact_id", "cross_provider_artifact_id"],
+            provider_driver: target.provider_driver,
+            provider_instance: `t15-${target.provider_driver}`,
+            expected_provider_instance: `t15-${target.provider_driver}`,
+            api_type: target.api_type,
+            method: methodsForApiType(target.api_type)[0],
+            protocol_contract_id: target.contract_id,
+            protocol_adapter_id: targetContract.protocol_adapter_id,
+            provider_api_version: targetContract.api_version,
+            mock_scenario: "success",
+            expected_wire_fixture: `${target.contract_id}.request.cross-provider-resource`,
+            response_fixture: `${target.contract_id}.success`,
+            artifact_source_provider_driver: common.provider_driver,
+            artifact_source_contract_id: contract.id,
+            artifact_source_api_type: apiType,
+            artifact_source_model_id: contractTestModelId(provider, contract, apiType),
+            artifact_target_expect_provider_id: false,
           } as AcceptanceCase);
         }
         const artifactIdentity = contract.provider_artifact_identity;
@@ -2742,12 +2823,12 @@ export function buildT15Manifest(
               ),
               priority: "P1",
               mock_scenario: scenario,
-              expected_task_status: "failed",
-              expected_error_class: "provider_protocol_failed",
+              expected_task_status: scenario === "async_poll_timeout" ? "running" : "failed",
+              expected_error_class: scenario === "async_poll_timeout" ? null : "provider_protocol_failed",
               expected_wire_fixture: `${contract.id}.request.async`,
               response_fixture: `${contract.id}.${scenario}`,
               timeout_ms: scenario === "async_poll_timeout"
-                ? 5_000
+                ? 15_000
                 : common.timeout_ms,
             } as AcceptanceCase);
           }
@@ -3075,6 +3156,14 @@ export function buildT15Manifest(
       response_fixture: `${contract.id}.success`,
       expected_provider_options: variant.expected_provider_options,
     });
+    if (TASK_RESULT_ARTIFACT_API_TYPES.has(variant.api_type)) {
+      const success = cases.at(-1)!;
+      cases.push({
+        ...success,
+        case_id: `${success.case_id}.task-result-artifact`,
+        tags: [...success.tags, "task_result_artifact"],
+      });
+    }
   }
   return cases;
 }

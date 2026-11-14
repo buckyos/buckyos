@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-26.1",
-  "checked_at": "2026-10-26",
+  "revision": "2026-11-12.1",
+  "checked_at": "2026-11-12",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -170,7 +170,9 @@
           "gpt-5.4-pro",
           "gpt-5.4-mini",
           "gpt-5.4-nano",
-          "gpt-image-2"
+          "gpt-image-2",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst"
         ],
         "image.img2img": [
           "gpt-6.1-sol",
@@ -183,10 +185,14 @@
           "gpt-5.4",
           "gpt-5.4-mini",
           "gpt-5.4-nano",
-          "gpt-image-2"
+          "gpt-image-2",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst"
         ],
         "image.inpaint": [
-          "gpt-image-2"
+          "gpt-image-2",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst"
         ],
         "audio.tts": [
           "gpt-4o-mini-tts"
@@ -772,7 +778,13 @@
             "https://platform.openai.com/docs/api-reference/images/create",
             "https://platform.openai.com/docs/guides/error-codes/api-errors"
           ],
-          "evidence_summary": "Image generation uses POST /v1/images/generations with model/prompt and returns image data."
+          "evidence_summary": "Image generation uses POST /v1/images/generations with model/prompt and returns image data.",
+          "conformance_test_model_ids": {
+            "image.txt2img": [
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ]
+          }
         },
         {
           "id": "openai.images.edits.v1",
@@ -840,7 +852,17 @@
             "https://platform.openai.com/docs/api-reference/images/createEdit",
             "https://platform.openai.com/docs/guides/error-codes/api-errors"
           ],
-          "evidence_summary": "Image editing uses multipart POST /v1/images/edits with model, image and prompt; mask is used for inpainting."
+          "evidence_summary": "Image editing uses multipart POST /v1/images/edits with model, image and prompt; mask is used for inpainting.",
+          "conformance_test_model_ids": {
+            "image.img2img": [
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ],
+            "image.inpaint": [
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ]
+          }
         },
         {
           "id": "openai.audio.speech.v1",
@@ -1016,7 +1038,11 @@
           "evidence_summary": "Video create posts model/prompt to /v1/videos and returns a video task that is retrieved until completed.",
           "video_generate_scenarios": [
             "keyframe"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
+          }
         },
         {
           "id": "openai.videos.edits.v1",
@@ -1075,7 +1101,11 @@
             "https://platform.openai.com/docs/api-reference/videos",
             "https://platform.openai.com/docs/api-reference/videos/retrieve"
           ],
-          "evidence_summary": "The OpenAI Videos API (CreateVideoEdit in the official OpenAPI spec, marked deprecated) posts the completed source video and an edit prompt, and nothing else, to /v1/videos/edits and returns the same video job, which is retrieved until completed."
+          "evidence_summary": "The OpenAI Videos API (CreateVideoEdit in the official OpenAPI spec, marked deprecated) posts the completed source video and an edit prompt, and nothing else, to /v1/videos/edits and returns the same video job, which is retrieved until completed.",
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
+          }
         }
       ]
     },
@@ -1562,6 +1592,14 @@
                 "thinking_level": "high"
               }
             }
+          }
+        },
+        {
+          "model_ids": [
+            "gemini-2.5-flash-lite"
+          ],
+          "variants": {
+            "reasoning-none": {}
           }
         }
       ],
@@ -2385,7 +2423,10 @@
             "https://fal.ai/models/fal-ai/esrgan/api",
             "https://fal.ai/docs/documentation/model-apis/inference/queue"
           ],
-          "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle uses the app root, with canonical result retrieval at /requests/{request_id} and a returned response_url ending in /response."
+          "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle uses the app root, with canonical result retrieval at /requests/{request_id} and a returned response_url ending in /response.",
+          "aicc_error_code_by_scenario": {
+            "validation": "invalid_request"
+          }
         },
         {
           "id": "fal.imageutils-rembg.queue-v1",
@@ -2463,7 +2504,10 @@
             "https://fal.ai/docs/model-api-reference/image-generation-api/imageutils",
             "https://fal.ai/docs/documentation/model-apis/inference/queue"
           ],
-          "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle strips the /rembg subpath to the fal-ai/imageutils app root, while returned response_url uses the /response alias."
+          "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle strips the /rembg subpath to the fal-ai/imageutils app root, while returned response_url uses the /response alias.",
+          "aicc_error_code_by_scenario": {
+            "validation": "invalid_request"
+          }
         },
         {
           "id": "fal.deepfilternet3.queue-v1",
@@ -2545,7 +2589,10 @@
             "https://fal.ai/models/fal-ai/deepfilternet3/api",
             "https://fal.ai/docs/documentation/model-apis/inference/queue"
           ],
-          "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle exposes canonical result retrieval and the returned /response alias."
+          "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3; fal Files accepts hosted HTTP(S) URLs or Base64 data URIs. Queue lifecycle exposes canonical result retrieval and the returned /response alias.",
+          "aicc_error_code_by_scenario": {
+            "validation": "invalid_request"
+          }
         },
         {
           "id": "fal.video-upscaler.queue-v1",
@@ -2620,7 +2667,10 @@
             "https://fal.ai/models/fal-ai/video-upscaler/api",
             "https://fal.ai/docs/documentation/model-apis/inference/queue"
           ],
-          "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and accepts hosted HTTP(S) URLs or Base64 data URIs through fal Files. Queue lifecycle exposes canonical result retrieval and the returned /response alias."
+          "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and accepts hosted HTTP(S) URLs or Base64 data URIs through fal Files. Queue lifecycle exposes canonical result retrieval and the returned /response alias.",
+          "aicc_error_code_by_scenario": {
+            "validation": "invalid_request"
+          }
         }
       ]
     },
@@ -3263,7 +3313,7 @@
         "llm": [
           "openai/gpt-6.1-sol",
           "openai/gpt-6.1-terra",
-          "openai/gpt-5.6",
+          "openai/gpt-5.6-luna",
           "openai/gpt-5.5",
           "openai/gpt-5.4",
           "anthropic/claude-fable-5",
@@ -3300,7 +3350,6 @@
           "openai/gpt-5.4-nano",
           "openai/gpt-5.4-pro",
           "openai/gpt-5.5-pro",
-          "openai/gpt-5.6-luna",
           "openai/gpt-5.6-sol",
           "openai/gpt-5.6-terra",
           "openai/gpt-6-astra",
@@ -3313,7 +3362,8 @@
           "z-ai/glm-4.7",
           "z-ai/glm-5.2",
           "z-ai/glm-5.3",
-          "z-ai/glm-5.3-flash"
+          "z-ai/glm-5.3-flash",
+          "moonshotai/kimi-k3.1-pro"
         ],
         "embedding.text": [
           "openai/text-embedding-3-small"
@@ -3403,7 +3453,8 @@
           "openai/gpt-6-luna",
           "openai/gpt-6-sol",
           "qwen/qwen3.8-max-0902",
-          "z-ai/glm-5.3-flash"
+          "z-ai/glm-5.3-flash",
+          "moonshotai/kimi-k3.1-pro"
         ],
         "vision.caption": [
           "openai/gpt-6.1-sol",
@@ -3449,7 +3500,8 @@
           "openai/gpt-6-luna",
           "openai/gpt-6-sol",
           "qwen/qwen3.8-max-0902",
-          "z-ai/glm-5.3-flash"
+          "z-ai/glm-5.3-flash",
+          "moonshotai/kimi-k3.1-pro"
         ]
       },
       "official_variant_sources": [
@@ -3493,43 +3545,6 @@
         {
           "model_ids": [
             "openai/gpt-6.1-terra"
-          ],
-          "variants": {
-            "reasoning-none": {
-              "reasoning": {
-                "effort": "none"
-              }
-            },
-            "reasoning-low": {
-              "reasoning": {
-                "effort": "low"
-              }
-            },
-            "reasoning-medium": {
-              "reasoning": {
-                "effort": "medium"
-              }
-            },
-            "reasoning-high": {
-              "reasoning": {
-                "effort": "high"
-              }
-            },
-            "reasoning-xhigh": {
-              "reasoning": {
-                "effort": "xhigh"
-              }
-            },
-            "reasoning-max": {
-              "reasoning": {
-                "effort": "max"
-              }
-            }
-          }
-        },
-        {
-          "model_ids": [
-            "openai/gpt-5.6"
           ],
           "variants": {
             "reasoning-none": {
@@ -3618,10 +3633,441 @@
               }
             }
           }
+        },
+        {
+          "model_ids": [
+            "z-ai/glm-5.3-flashx"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "x-ai/grok-4.7"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "z-ai/glm-5.3-flash"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "moonshotai/kimi-k3.1-pro"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.6-luna"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "anthropic/claude-fable-5",
+            "anthropic/claude-fable-5.1",
+            "anthropic/claude-haiku-5.5",
+            "anthropic/claude-opus-4.7",
+            "anthropic/claude-opus-4.8",
+            "anthropic/claude-opus-5",
+            "anthropic/claude-opus-5.5",
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-sonnet-5.5",
+            "openai/gpt-6-astra"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "anthropic/claude-opus-4.6",
+            "anthropic/claude-sonnet-4.6"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek/deepseek-v4-flash-vision-exp"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek/deepseek-v4-flash",
+            "deepseek/deepseek-v4-pro",
+            "z-ai/glm-5.2"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek/deepseek-v4.1-flash",
+            "moonshotai/kimi-k3",
+            "z-ai/glm-5.3"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.1-pro-preview",
+            "google/gemini-3.1-pro-preview-customtools",
+            "google/gemini-3.5-flash",
+            "google/gemini-3.5-flash-lite",
+            "google/gemini-3.6-flash",
+            "google/gemini-3.7-flash",
+            "google/gemini-3.8-flash",
+            "google/gemini-4-argon"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.3-codex"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.4-mini",
+            "openai/gpt-5.4-nano"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.4-pro",
+            "openai/gpt-5.5-pro"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "openai/gpt-5.6-sol",
+            "openai/gpt-5.6-terra",
+            "openai/gpt-6-luna",
+            "openai/gpt-6-sol"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen/qwen3.8-2.4t-a95b",
+            "qwen/qwen3.8-27b"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
         }
       ],
       "test_model_ids": {
-        "llm": "openai/gpt-5.6",
+        "llm": "openai/gpt-5.6-luna",
         "vision.ocr": "anthropic/claude-sonnet-5.5",
         "vision.caption": "anthropic/claude-sonnet-5.5",
         "image.txt2img": "openai/gpt-image-2",
@@ -3645,6 +4091,9 @@
             "anthropic/claude-haiku-5.5": [
               "/temperature",
               "/top_p"
+            ],
+            "moonshotai/kimi-k3.1-pro": [
+              "/thinking"
             ]
           },
           "protocol_adapter_id": "openrouter-responses",
@@ -3656,13 +4105,22 @@
           ],
           "conformance_test_model_ids": {
             "llm": [
-              "google/gemini-4-argon"
+              "z-ai/glm-5.3-flash",
+              "z-ai/glm-5.3-flashx",
+              "x-ai/grok-4.7",
+              "moonshotai/kimi-k3.1-pro"
             ],
             "vision.ocr": [
-              "google/gemini-4-argon"
+              "z-ai/glm-5.3-flash",
+              "z-ai/glm-5.3-flashx",
+              "x-ai/grok-4.7",
+              "moonshotai/kimi-k3.1-pro"
             ],
             "vision.caption": [
-              "google/gemini-4-argon"
+              "z-ai/glm-5.3-flash",
+              "z-ai/glm-5.3-flashx",
+              "x-ai/grok-4.7",
+              "moonshotai/kimi-k3.1-pro"
             ]
           },
           "operation": "responses.create",
@@ -3829,7 +4287,16 @@
             "https://openrouter.ai/docs/api/api-reference/responses/create-responses",
             "https://openrouter.ai/openapi.yaml"
           ],
-          "evidence_summary": "OpenRouter Responses uses POST /api/v1/responses with Bearer authentication and the OpenResponses model/input, output item, usage, tool, and SSE event shapes."
+          "evidence_summary": "OpenRouter Responses uses POST /api/v1/responses with Bearer authentication and the OpenResponses model/input, output item, usage, tool, and SSE event shapes.",
+          "optional_body_values_by_model": {
+            "moonshotai/kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
+          }
         },
         {
           "id": "openrouter.images.v1",
@@ -4319,7 +4786,21 @@
             "https://openrouter.ai/docs/guides/overview/multimodal/audio",
             "https://openrouter.ai/openapi.json"
           ],
-          "evidence_summary": "OpenRouter chat audio output requires stream=true and returns incremental base64 audio and transcript in choices[].delta.audio SSE chunks terminated by [DONE]."
+          "evidence_summary": "OpenRouter chat audio output requires stream=true and returns incremental base64 audio and transcript in choices[].delta.audio SSE chunks terminated by [DONE].",
+          "forbidden_body_paths_by_model": {
+            "moonshotai/kimi-k3.1-pro": [
+              "/thinking"
+            ]
+          },
+          "optional_body_values_by_model": {
+            "moonshotai/kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
+          }
         },
         {
           "id": "openrouter.decisions.alpha",
@@ -4516,9 +4997,32 @@
             "keyframe",
             "keyframes",
             "reference-images"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         }
-      ]
+      ],
+      "official_aggregated_model_ids": {
+        "llm": [
+          "z-ai/glm-5.3-flash",
+          "z-ai/glm-5.3-flashx",
+          "x-ai/grok-4.7",
+          "moonshotai/kimi-k3.1-pro"
+        ],
+        "vision.ocr": [
+          "z-ai/glm-5.3-flash",
+          "z-ai/glm-5.3-flashx",
+          "x-ai/grok-4.7",
+          "moonshotai/kimi-k3.1-pro"
+        ],
+        "vision.caption": [
+          "z-ai/glm-5.3-flash",
+          "z-ai/glm-5.3-flashx",
+          "x-ai/grok-4.7",
+          "moonshotai/kimi-k3.1-pro"
+        ]
+      }
     },
     {
       "provider_driver": "kimi",
@@ -4530,19 +5034,22 @@
           "kimi-k3",
           "kimi-k2.7-code",
           "kimi-k2.7-code-highspeed",
-          "kimi-k2.6"
+          "kimi-k2.6",
+          "kimi-k3.1-pro"
         ],
         "vision.ocr": [
           "kimi-k3",
           "kimi-k2.7-code",
           "kimi-k2.7-code-highspeed",
-          "kimi-k2.6"
+          "kimi-k2.6",
+          "kimi-k3.1-pro"
         ],
         "vision.caption": [
           "kimi-k3",
           "kimi-k2.7-code",
           "kimi-k2.7-code-highspeed",
-          "kimi-k2.6"
+          "kimi-k2.6",
+          "kimi-k3.1-pro"
         ]
       },
       "official_variant_sources": [
@@ -4595,6 +5102,22 @@
               "thinking": {
                 "type": "disabled"
               }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "kimi-k3.1-pro"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning_effort": "low"
+            },
+            "reasoning-high": {
+              "reasoning_effort": "high"
+            },
+            "reasoning-max": {
+              "reasoning_effort": "max"
             }
           }
         }
@@ -4699,9 +5222,35 @@
           },
           "official_sources": [
             "https://platform.kimi.com/docs/api/chat",
-            "https://platform.kimi.com/docs/api/errors"
+            "https://platform.kimi.com/docs/api/errors",
+            "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart"
           ],
-          "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE]."
+          "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE].",
+          "conformance_test_model_ids": {
+            "llm": [
+              "kimi-k3.1-pro"
+            ],
+            "vision.ocr": [
+              "kimi-k3.1-pro"
+            ],
+            "vision.caption": [
+              "kimi-k3.1-pro"
+            ]
+          },
+          "forbidden_body_paths_by_model": {
+            "kimi-k3.1-pro": [
+              "/thinking"
+            ]
+          },
+          "optional_body_values_by_model": {
+            "kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
+          }
         }
       ]
     },
@@ -4734,21 +5283,24 @@
           "glm-4.5-airx",
           "glm-4.5-flash",
           "glm-4.5v",
-          "glm-4-32b-0414-128k"
+          "glm-4-32b-0414-128k",
+          "glm-5.3-flashx"
         ],
         "vision.ocr": [
           "glm-5.3-flash",
           "glm-4.6v",
           "glm-4.6v-flash",
           "glm-4.6v-flashx",
-          "glm-4.5v"
+          "glm-4.5v",
+          "glm-5.3-flashx"
         ],
         "vision.caption": [
           "glm-5.3-flash",
           "glm-4.6v",
           "glm-4.6v-flash",
           "glm-4.6v-flashx",
-          "glm-4.5v"
+          "glm-4.5v",
+          "glm-5.3-flashx"
         ],
         "embedding.text": [
           "embedding-3",
@@ -4785,8 +5337,6 @@
       "official_variant_rules": [
         {
           "model_ids": [
-            "glm-5.3",
-            "glm-5.3-flash",
             "glm-5.2",
             "glm-5.1",
             "glm-5-turbo",
@@ -4852,6 +5402,29 @@
           "model_ids": [
             "glm-5.3",
             "glm-5.3-flash"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning_effort": "low"
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-flashx"
+          ],
+          "variants": {
+            "reasoning-high": {
+              "reasoning_effort": "high"
+            },
+            "reasoning-max": {
+              "reasoning_effort": "max"
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-flashx"
           ],
           "variants": {
             "reasoning-low": {
@@ -4952,7 +5525,21 @@
             "https://docs.z.ai/api-reference/llm/chat-completion",
             "https://docs.bigmodel.cn/cn/api/api-code"
           ],
-          "evidence_summary": "GLM Chat Completion uses POST /api/paas/v4/chat/completions with Bearer authentication and JSON model/messages; streaming is standard SSE terminated by [DONE]."
+          "evidence_summary": "GLM Chat Completion uses POST /api/paas/v4/chat/completions with Bearer authentication and JSON model/messages; streaming is standard SSE terminated by [DONE].",
+          "conformance_test_model_ids": {
+            "llm": [
+              "glm-5.3-flash",
+              "glm-5.3-flashx"
+            ],
+            "vision.ocr": [
+              "glm-5.3-flash",
+              "glm-5.3-flashx"
+            ],
+            "vision.caption": [
+              "glm-5.3-flash",
+              "glm-5.3-flashx"
+            ]
+          }
         },
         {
           "id": "glm.embeddings.v4",
@@ -5246,7 +5833,10 @@
           "evidence_summary": "GLM video generation submits to videos/generations and polls async-result until video_result is available. The official MetaGLM cookbook shows successful query responses with id=None and a request_id; polling must retain the original submitted task ID.",
           "video_generate_scenarios": [
             "keyframe"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_parameters": "invalid_request"
+          }
         }
       ]
     },
@@ -5545,11 +6135,6 @@
             "reasoning-low": {
               "reasoning": {
                 "effort": "low"
-              }
-            },
-            "reasoning-medium": {
-              "reasoning": {
-                "effort": "high"
               }
             },
             "reasoning-high": {
@@ -5957,7 +6542,10 @@
             "keyframe",
             "keyframes",
             "reference-images"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         },
         {
           "id": "doubao-agent-plan.tts.plan-v3",
@@ -6295,7 +6883,10 @@
           "official_sources": [
             "https://www.volcengine.com/docs/6561/1354868?lang=zh"
           ],
-          "evidence_summary": "Doubao Voice ASR standard submits one absolute audio URL to the AUC bigmodel submit path with resource id volc.seedasr.auc, then polls the query path with the returned X-Api-Request-Id until X-Api-Status-Code reports 20000000 and the transcript arrives in result.text."
+          "evidence_summary": "Doubao Voice ASR standard submits one absolute audio URL to the AUC bigmodel submit path with resource id volc.seedasr.auc, then polls the query path with the returned X-Api-Request-Id until X-Api-Status-Code reports 20000000 and the transcript arrives in result.text.",
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         }
       ]
     },
@@ -6663,7 +7254,10 @@
             "keyframe",
             "keyframes",
             "reference-images"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request"
+          }
         },
         {
           "id": "doubao.embedding-multimodal.v3",
@@ -6865,7 +7459,8 @@
           "qwen-image-3.0-pro"
         ],
         "video.generate": [
-          "wan2.6-t2v"
+          "wan2.6-t2v",
+          "wan3.0-video"
         ]
       },
       "official_aggregated_model_ids": {
@@ -7477,6 +8072,10 @@
             "usage": {
               "image_count": 1
             }
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
           }
         },
         {
@@ -7568,6 +8167,10 @@
             "usage": {
               "image_count": 1
             }
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
           }
         },
         {
@@ -7708,6 +8311,115 @@
               "video_count": 1,
               "duration": 5
             }
+          },
+          "model_ids_by_api_type": {
+            "video.generate": [
+              "wan2.6-t2v"
+            ]
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
+          }
+        },
+        {
+          "id": "qwen.dashscope.wan3.video_synthesis.v1",
+          "protocol_adapter_id": "qwen-responses",
+          "api_version": "compatible-v1",
+          "api_types": [
+            "video.generate"
+          ],
+          "operation": "dashscope.video_synthesis",
+          "http_method": "POST",
+          "path": "/api/v1/services/aigc/video-generation/video-synthesis",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "parameters"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "object"
+            ],
+            "parameters": [
+              "object"
+            ]
+          },
+          "official_sources": [
+            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference"
+          ],
+          "evidence_summary": "Wan 3.0 uses the documented synthesis envelope with integer durations from 2 to 30; this minimal text cell verifies the lower bound independently of legacy Wan contracts.",
+          "required_headers": {
+            "x-dashscope-async": "enable"
+          },
+          "async_protocol": "qwen_media",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            },
+            {
+              "name": "result",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            }
+          ],
+          "success_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "PENDING"
+            }
+          },
+          "async_result_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "SUCCEEDED",
+              "video_url": "http://mock-artifact/artifacts/result.mp4"
+            },
+            "usage": {
+              "video_count": 1,
+              "duration": 2
+            }
+          },
+          "test_model_ids": {
+            "video.generate": "wan3.0-video"
+          },
+          "model_ids_by_api_type": {
+            "video.generate": [
+              "wan3.0-video"
+            ]
+          },
+          "canonical_request_overrides": {
+            "output": {
+              "duration_seconds": 2
+            }
+          },
+          "required_body_values": {
+            "/parameters/duration": 2
+          },
+          "forbidden_body_paths": [
+            "/input/img_url",
+            "/parameters/size"
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_request": "invalid_request",
+            "not_found": "invalid_request"
           }
         }
       ]
@@ -7739,7 +8451,29 @@
           "qwen3.7-plus",
           "qwen3.8-max-0902",
           "ui-tars-1.5-7b",
-          "voxtral-small-24b-2507"
+          "voxtral-small-24b-2507",
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro",
+          "claude-opus-5.5",
+          "claude-sonnet-5.5",
+          "claude-haiku-5.5",
+          "gemini-4-argon",
+          "gemini-3.8-flash",
+          "grok-4.7",
+          "qwen3.8-flash",
+          "qwen3.8-omni-flash",
+          "qwen3.8-max-prime",
+          "qwen3.8-27b",
+          "qwen3.8-2.4t-a95b",
+          "kimi-k3.1-pro",
+          "glm-5.3-flash",
+          "glm-5.3-flashx",
+          "glm-5.3-prime",
+          "minimax-m3.1-flash",
+          "deepseek-v4.1-flash-1017",
+          "deepseek-v4-pro-0813"
         ],
         "vision.ocr": [
           "gpt-6-astra",
@@ -7757,7 +8491,23 @@
           "gpt-5.3-codex",
           "kimi-k3",
           "qwen3.7-plus",
-          "ui-tars-1.5-7b"
+          "ui-tars-1.5-7b",
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro",
+          "claude-opus-5.5",
+          "claude-sonnet-5.5",
+          "claude-haiku-5.5",
+          "gemini-4-argon",
+          "gemini-3.8-flash",
+          "grok-4.7",
+          "qwen3.8-flash",
+          "kimi-k3.1-pro",
+          "glm-5.3-flash",
+          "glm-5.3-flashx",
+          "minimax-m3.1-flash",
+          "deepseek-v4.1-flash-1017"
         ],
         "vision.caption": [
           "gpt-6-astra",
@@ -7777,7 +8527,25 @@
           "qwen3.6-plus",
           "qwen3.7-plus",
           "qwen3.8-max-0902",
-          "ui-tars-1.5-7b"
+          "ui-tars-1.5-7b",
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro",
+          "claude-opus-5.5",
+          "claude-sonnet-5.5",
+          "claude-haiku-5.5",
+          "gemini-4-argon",
+          "gemini-3.8-flash",
+          "grok-4.7",
+          "qwen3.8-flash",
+          "qwen3.8-omni-flash",
+          "qwen3.8-max-prime",
+          "kimi-k3.1-pro",
+          "glm-5.3-flash",
+          "glm-5.3-flashx",
+          "minimax-m3.1-flash",
+          "deepseek-v4.1-flash-1017"
         ],
         "embedding.text": [
           "text-embedding-3-large",
@@ -7798,7 +8566,13 @@
           "gpt-5.4-mini",
           "gpt-5.4-nano",
           "gpt-image-2",
-          "qwen-image-3-pro"
+          "qwen-image-3-pro",
+          "gpt-6.1-sol",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro"
         ],
         "image.img2img": [
           "gpt-6-astra",
@@ -7812,10 +8586,18 @@
           "gpt-5.4-mini",
           "gpt-5.4-nano",
           "gpt-image-2",
-          "qwen-image-3-pro"
+          "qwen-image-3-pro",
+          "gpt-6.1-sol",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro"
         ],
         "image.inpaint": [
-          "gpt-image-2"
+          "gpt-image-2",
+          "gpt-image-2.5-flare",
+          "gpt-image-2.5-sunburst"
         ],
         "audio.tts": [
           "gpt-4o-mini-tts"
@@ -7823,7 +8605,9 @@
         "audio.asr": [
           "gpt-4o-mini-transcribe",
           "gpt-4o-transcribe-diarize",
-          "voxtral-small-24b-2507"
+          "voxtral-small-24b-2507",
+          "gemini-4-argon",
+          "gemini-3.8-flash"
         ],
         "video.generate": [
           "wan-3.0"
@@ -7834,7 +8618,11 @@
           "gpt-6-luna",
           "gpt-5.6-sol",
           "gpt-5.6-terra",
-          "gpt-5.6-luna"
+          "gpt-5.6-luna",
+          "gpt-6.1-sol",
+          "gpt-6.1-terra",
+          "gpt-6.1-terra-pro",
+          "gpt-6.1-sol-pro"
         ],
         "video.edit": [
           "wan-3.0"
@@ -7848,7 +8636,12 @@
         "https://openrouter.ai/z-ai/glm-5",
         "https://openrouter.ai/z-ai/glm-5.3",
         "https://platform.kimi.com/docs/guide/kimi-k3.html",
-        "https://openrouter.ai/qwen/qwen3.8-max-0902"
+        "https://openrouter.ai/qwen/qwen3.8-max-0902",
+        "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+        "https://developers.openai.com/api/docs/guides/reasoning",
+        "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+        "https://platform.moonshot.cn/docs/intro",
+        "https://docs.x.ai/developers/models"
       ],
       "official_variant_rules": [
         {
@@ -8109,6 +8902,626 @@
               }
             }
           }
+        },
+        {
+          "model_ids": [
+            "gpt-6.1-sol"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gpt-6.1-terra"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gpt-6.1-terra-pro"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "effort": "none",
+                "mode": "pro"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low",
+                "mode": "pro"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium",
+                "mode": "pro"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high",
+                "mode": "pro"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh",
+                "mode": "pro"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max",
+                "mode": "pro"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gpt-6.1-sol-pro"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low",
+                "mode": "pro"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium",
+                "mode": "pro"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high",
+                "mode": "pro"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh",
+                "mode": "pro"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max",
+                "mode": "pro"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "claude-opus-5.5"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "claude-sonnet-5.5"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "claude-haiku-5.5"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gemini-4-argon"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "gemini-3.8-flash"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "grok-4.7"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-flash"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-omni-flash"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-max-prime"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-27b"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "qwen3.8-2.4t-a95b"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "kimi-k3.1-pro"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-flash"
+          ],
+          "variants": {
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-flashx"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "glm-5.3-prime"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "minimax-m3.1-flash"
+          ],
+          "variants": {
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-medium": {
+              "reasoning": {
+                "effort": "medium"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-xhigh": {
+              "reasoning": {
+                "effort": "xhigh"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek-v4.1-flash-1017"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
+        },
+        {
+          "model_ids": [
+            "deepseek-v4-pro-0813"
+          ],
+          "variants": {
+            "reasoning-none": {
+              "reasoning": {
+                "enabled": false
+              }
+            },
+            "reasoning-low": {
+              "reasoning": {
+                "effort": "low"
+              }
+            },
+            "reasoning-high": {
+              "reasoning": {
+                "effort": "high"
+              }
+            },
+            "reasoning-max": {
+              "reasoning": {
+                "effort": "max"
+              }
+            }
+          }
         }
       ],
       "test_model_ids": {
@@ -8144,7 +9557,19 @@
             "vision.ocr": [
               "kimi-k3",
               "qwen3.7-plus",
-              "ui-tars-1.5-7b"
+              "ui-tars-1.5-7b",
+              "claude-opus-5.5",
+              "claude-sonnet-5.5",
+              "claude-haiku-5.5",
+              "gemini-4-argon",
+              "gemini-3.8-flash",
+              "grok-4.7",
+              "qwen3.8-flash",
+              "kimi-k3.1-pro",
+              "glm-5.3-flash",
+              "glm-5.3-flashx",
+              "minimax-m3.1-flash",
+              "deepseek-v4.1-flash-1017"
             ]
           },
           "operation": "responses.create",
@@ -8258,7 +9683,131 @@
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/litellm/mod.rs"
           ],
-          "evidence_summary": "SN public source at main exposes POST /api/v1/ai/responses with Bearer authentication and forwards the Responses JSON/SSE wire to LiteLLM /v1/responses."
+          "evidence_summary": "SN public source at main exposes POST /api/v1/ai/responses with Bearer authentication and forwards the Responses JSON/SSE wire to LiteLLM /v1/responses.",
+          "conformance_test_model_ids": {
+            "llm": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-5.3-codex",
+              "glm-5",
+              "glm-5.3",
+              "kimi-k3",
+              "qwen3.6-plus",
+              "qwen3.7-plus",
+              "qwen3.8-max-0902",
+              "ui-tars-1.5-7b",
+              "voxtral-small-24b-2507",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro",
+              "claude-opus-5.5",
+              "claude-sonnet-5.5",
+              "claude-haiku-5.5",
+              "gemini-4-argon",
+              "gemini-3.8-flash",
+              "grok-4.7",
+              "qwen3.8-flash",
+              "qwen3.8-omni-flash",
+              "qwen3.8-max-prime",
+              "qwen3.8-27b",
+              "qwen3.8-2.4t-a95b",
+              "kimi-k3.1-pro",
+              "glm-5.3-flash",
+              "glm-5.3-flashx",
+              "glm-5.3-prime",
+              "minimax-m3.1-flash",
+              "deepseek-v4.1-flash-1017",
+              "deepseek-v4-pro-0813"
+            ],
+            "vision.ocr": [
+              "kimi-k3",
+              "qwen3.7-plus",
+              "ui-tars-1.5-7b",
+              "claude-opus-5.5",
+              "claude-sonnet-5.5",
+              "claude-haiku-5.5",
+              "gemini-4-argon",
+              "gemini-3.8-flash",
+              "grok-4.7",
+              "qwen3.8-flash",
+              "kimi-k3.1-pro",
+              "glm-5.3-flash",
+              "glm-5.3-flashx",
+              "minimax-m3.1-flash",
+              "deepseek-v4.1-flash-1017"
+            ],
+            "vision.caption": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-5.3-codex",
+              "kimi-k3",
+              "qwen3.6-plus",
+              "qwen3.7-plus",
+              "qwen3.8-max-0902",
+              "ui-tars-1.5-7b",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro",
+              "claude-opus-5.5",
+              "claude-sonnet-5.5",
+              "claude-haiku-5.5",
+              "gemini-4-argon",
+              "gemini-3.8-flash",
+              "grok-4.7",
+              "qwen3.8-flash",
+              "qwen3.8-omni-flash",
+              "qwen3.8-max-prime",
+              "kimi-k3.1-pro",
+              "glm-5.3-flash",
+              "glm-5.3-flashx",
+              "minimax-m3.1-flash",
+              "deepseek-v4.1-flash-1017"
+            ]
+          },
+          "required_body_values_by_model": {
+            "gpt-6.1-sol-pro": {
+              "/reasoning/mode": "pro"
+            },
+            "gpt-6.1-terra-pro": {
+              "/reasoning/mode": "pro"
+            }
+          },
+          "forbidden_body_paths_by_model": {
+            "kimi-k3.1-pro": [
+              "/thinking"
+            ]
+          },
+          "optional_body_values_by_model": {
+            "kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
+          }
         },
         {
           "id": "sn.openai-responses.background.v1",
@@ -8276,7 +9825,11 @@
               "gpt-5.4-pro",
               "gpt-5.4-mini",
               "gpt-5.4-nano",
-              "gpt-5.3-codex"
+              "gpt-5.3-codex",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
             ],
             "image.txt2img": [
               "gpt-6-astra",
@@ -8290,7 +9843,11 @@
               "gpt-5.4",
               "gpt-5.4-pro",
               "gpt-5.4-mini",
-              "gpt-5.4-nano"
+              "gpt-5.4-nano",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
             ],
             "image.img2img": [
               "gpt-6-astra",
@@ -8302,7 +9859,11 @@
               "gpt-5.5",
               "gpt-5.4",
               "gpt-5.4-mini",
-              "gpt-5.4-nano"
+              "gpt-5.4-nano",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
             ]
           },
           "protocol_adapter_id": "sn-openai",
@@ -8468,6 +10029,69 @@
           "aicc_error_code_by_scenario": {
             "invalid_argument": "invalid_request",
             "timeout": "timeout"
+          },
+          "conformance_test_model_ids": {
+            "vision.ocr": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-5.3-codex",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
+            ],
+            "image.txt2img": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5-pro",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-pro",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
+            ],
+            "image.img2img": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-5.5",
+              "gpt-5.4",
+              "gpt-5.4-mini",
+              "gpt-5.4-nano",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
+            ]
+          },
+          "required_body_values_by_model": {
+            "gpt-6.1-sol-pro": {
+              "/reasoning/mode": "pro"
+            },
+            "gpt-6.1-terra-pro": {
+              "/reasoning/mode": "pro"
+            }
           }
         },
         {
@@ -8546,7 +10170,43 @@
           "official_sources": [
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
           ],
-          "evidence_summary": "SN forwards the Responses computer tool request and computer_call action output unchanged through its public Responses route."
+          "evidence_summary": "SN forwards the Responses computer tool request and computer_call action output unchanged through its public Responses route.",
+          "conformance_test_model_ids": {
+            "agent.computer_use": [
+              "gpt-6-astra",
+              "gpt-6-sol",
+              "gpt-6-luna",
+              "gpt-5.6-sol",
+              "gpt-5.6-terra",
+              "gpt-5.6-luna",
+              "gpt-6.1-sol",
+              "gpt-6.1-terra",
+              "gpt-6.1-terra-pro",
+              "gpt-6.1-sol-pro"
+            ]
+          },
+          "required_body_values_by_model": {
+            "gpt-6.1-sol-pro": {
+              "/reasoning/mode": "pro"
+            },
+            "gpt-6.1-terra-pro": {
+              "/reasoning/mode": "pro"
+            }
+          },
+          "forbidden_body_paths_by_model": {
+            "kimi-k3.1-pro": [
+              "/thinking"
+            ]
+          },
+          "optional_body_values_by_model": {
+            "kimi-k3.1-pro": {
+              "/temperature": 1,
+              "/top_p": 0.95,
+              "/n": 1,
+              "/presence_penalty": 0,
+              "/frequency_penalty": 0
+            }
+          }
         },
         {
           "id": "sn.openai-embeddings.v1",
@@ -8608,7 +10268,14 @@
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
             "https://openrouter.ai/docs/api-reference/embeddings"
           ],
-          "evidence_summary": "SN proxies POST /api/v1/ai/embeddings to LiteLLM's OpenAI-compatible embedding endpoint."
+          "evidence_summary": "SN proxies POST /api/v1/ai/embeddings to LiteLLM's OpenAI-compatible embedding endpoint.",
+          "conformance_test_model_ids": {
+            "embedding.text": [
+              "text-embedding-3-large",
+              "text-embedding-3-small",
+              "qwen3-embedding-8b"
+            ]
+          }
         },
         {
           "id": "sn.openai-images-generations.v1",
@@ -8673,8 +10340,22 @@
           "evidence_summary": "SN proxies OpenAI-compatible image generation to its configured Qwen Image 3 Pro OpenRouter route.",
           "model_ids_by_api_type": {
             "image.txt2img": [
-              "gpt-image-2"
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
             ]
+          },
+          "conformance_test_model_ids": {
+            "image.txt2img": [
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ]
+          },
+          "cross_provider_target": {
+            "provider_driver": "openai",
+            "contract_id": "openai.images.edits.v1",
+            "api_type": "image.img2img"
           }
         },
         {
@@ -8747,10 +10428,26 @@
           "evidence_summary": "SN accepts and forwards multipart OpenAI-compatible image editing requests for Qwen Image 3 Pro and GPT Image 2.",
           "model_ids_by_api_type": {
             "image.img2img": [
-              "gpt-image-2"
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
             ],
             "image.inpaint": [
-              "gpt-image-2"
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ]
+          },
+          "conformance_test_model_ids": {
+            "image.img2img": [
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
+            ],
+            "image.inpaint": [
+              "gpt-image-2",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-sunburst"
             ]
           }
         },
@@ -8802,7 +10499,12 @@
           "official_sources": [
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
           ],
-          "evidence_summary": "SN proxies OpenAI-compatible speech creation and returns the generated audio bytes."
+          "evidence_summary": "SN proxies OpenAI-compatible speech creation and returns the generated audio bytes.",
+          "conformance_test_model_ids": {
+            "audio.tts": [
+              "gpt-4o-mini-tts"
+            ]
+          }
         },
         {
           "id": "sn.openai-audio-transcriptions.v1",
@@ -8865,7 +10567,13 @@
           "official_sources": [
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
           ],
-          "evidence_summary": "SN proxies multipart OpenAI-compatible audio transcription and returns transcript text with usage where supported."
+          "evidence_summary": "SN proxies multipart OpenAI-compatible audio transcription and returns transcript text with usage where supported.",
+          "conformance_test_model_ids": {
+            "audio.asr": [
+              "gpt-4o-mini-transcribe",
+              "gpt-4o-transcribe-diarize"
+            ]
+          }
         },
         {
           "id": "sn.audio-chat.v1",
@@ -8879,7 +10587,9 @@
           },
           "model_ids_by_api_type": {
             "audio.asr": [
-              "voxtral-small-24b-2507"
+              "voxtral-small-24b-2507",
+              "gemini-4-argon",
+              "gemini-3.8-flash"
             ]
           },
           "operation": "chat.completions.create",
@@ -8897,7 +10607,8 @@
           ],
           "allowed_body_fields": [
             "model",
-            "messages"
+            "messages",
+            "reasoning"
           ],
           "body_field_types": {
             "model": [
@@ -8905,6 +10616,9 @@
             ],
             "messages": [
               "array"
+            ],
+            "reasoning": [
+              "object"
             ]
           },
           "required_body_values": {
@@ -8940,9 +10654,17 @@
           "official_sources": [
             "https://openrouter.ai/docs/guides/overview/multimodal/audio",
             "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
-            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs"
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/public.rs",
+            "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
           ],
-          "evidence_summary": "The Voxtral chat alias accepts base64 input_audio on Chat Completions. OpenRouter lists the dedicated transcription endpoint under a different -stt model ID; SN publishes the chat alias, so canonical ASR uses audio chat and returns the transcript text."
+          "evidence_summary": "The Voxtral chat alias accepts base64 input_audio on Chat Completions. OpenRouter lists the dedicated transcription endpoint under a different -stt model ID; SN publishes the chat alias, so canonical ASR uses audio chat and returns the transcript text. Gemini audio Chat Completions accepts the documented optional reasoning object; reasoning presets are forwarded unchanged.",
+          "conformance_test_model_ids": {
+            "audio.asr": [
+              "voxtral-small-24b-2507",
+              "gemini-4-argon",
+              "gemini-3.8-flash"
+            ]
+          }
         },
         {
           "id": "sn.openai-videos.v1",
@@ -8987,14 +10709,14 @@
             "output": {
               "duration_seconds": 2,
               "size": {
-                "width": 1080,
-                "height": 1920
+                "width": 854,
+                "height": 480
               }
             }
           },
           "required_body_values": {
             "/seconds": "2",
-            "/size": "1080x1920"
+            "/size": "854x480"
           },
           "async_protocol": "openai_video",
           "async_steps": [
@@ -9027,7 +10749,17 @@
           "base_contract_id": "openai.videos.v1",
           "video_generate_scenarios": [
             "keyframe"
-          ]
+          ],
+          "aicc_error_code_by_scenario": {
+            "invalid_argument": "invalid_request",
+            "timeout": "timeout",
+            "upstream_json_required": "invalid_request"
+          },
+          "conformance_test_model_ids": {
+            "video.generate": [
+              "wan-3.0"
+            ]
+          }
         },
         {
           "id": "sn.openai-video-edits.v1",
@@ -9098,9 +10830,10 @@
           "official_sources": [
             "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/service.rs",
             "https://github.com/BerriAI/litellm/blob/main/litellm/llms/openai/videos/transformation.py",
-            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference"
+            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
+            "https://github.com/buckyos/sn-business/blob/main/src/modules/sn_aicc/src/http/request_policy.rs"
           ],
-          "evidence_summary": "SN forwards video edits/extensions to the matching LiteLLM OpenAI-compatible routes. Validate the advertised transport independently of current upstream model availability.",
+          "evidence_summary": "SN admission extracts the mandatory model from both JSON native-video references and multipart uploaded-video edit requests before routing to LiteLLM. The upload success cell must retain model, prompt and video; missing model is rejected independently of upstream model availability.",
           "test_model_ids": {
             "video.edit": "wan-3.0"
           },
@@ -9122,6 +10855,16 @@
             ],
             "same_provider_reuse": "required",
             "cross_provider_reuse": "forbidden"
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_argument": "invalid_request",
+            "timeout": "timeout",
+            "upstream_json_required": "invalid_request"
+          },
+          "conformance_test_model_ids": {
+            "video.edit": [
+              "wan-3.0"
+            ]
           }
         },
         {
@@ -9223,6 +10966,16 @@
           ],
           "required_body_values": {
             "/seconds": "2"
+          },
+          "aicc_error_code_by_scenario": {
+            "invalid_argument": "invalid_request",
+            "timeout": "timeout",
+            "upstream_json_required": "invalid_request"
+          },
+          "conformance_test_model_ids": {
+            "video.extend": [
+              "wan-3.0"
+            ]
           }
         },
         {
@@ -9294,6 +11047,11 @@
           },
           "test_model_ids": {
             "image.txt2img": "qwen-image-3-pro"
+          },
+          "conformance_test_model_ids": {
+            "image.txt2img": [
+              "qwen-image-3-pro"
+            ]
           }
         },
         {
@@ -9372,6 +11130,11 @@
           },
           "test_model_ids": {
             "image.img2img": "qwen-image-3-pro"
+          },
+          "conformance_test_model_ids": {
+            "image.img2img": [
+              "qwen-image-3-pro"
+            ]
           }
         }
       ],

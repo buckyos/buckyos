@@ -86,6 +86,8 @@ T1.5 可以用 `--start-local-mock` 启动本机 Mock；只有 AICC 服务也能
 
 T1 的 `t1.config.cloud_update_dynamic_catalog` 通过 NDN 连续发布两个完整 cloud revision：修改已有 Model Driver 的逻辑挂载、删除并恢复已有模型项，并动态增加 Provider Rules 和 Known Provider 文件；断言 cache 原子提交、全局 metadata sequence 收敛、动态 Provider 路由和真实 Mock 访问。T1.5 的 `t1.5.openai.openai.responses.v1.llm.cloud-update` 覆盖云端 Provider Rules 更新，并从真实 Adapter 的捕获请求确认 `service_tier` 已生效。两者都在结束时发布更高 revision 的 tombstone、禁用更新并恢复原始 system-config。
 
+Metadata 按 `(catalog_kind, catalog_id)` 整份配置文件选择，优先级为 system-config > 本地 > 云端 > 内置，不按其中的模型合并。云更新用例会按发布文件的这些身份隔离高优先级覆盖：本地文件按内容身份识别并重命名为同目录隐藏备份，system-config 的 `services/aicc/driver_metadata` 中移除对应整份 catalog，保留其他 catalog。清理时恢复本地原文件及 system-config 原始字符串，并刷新 AICC；准备阶段失败同样回滚。执行用户需要能读写本机 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local` 的相关目录；路径由 `ndn_system_root` / `AICC_NDN_SYSTEM_ROOT` 定位。
+
 NDN fixture 默认使用 `/opt/buckyos`；临时 devtest root 可通过 `AICC_NDN_GATEWAY_BINARY`、`AICC_NDN_NAMED_STORE_CONFIG`、`AICC_NDN_GATEWAY_CONTROL_URL`、`AICC_NDN_SYSTEM_ROOT` 和 `AICC_CLOUD_CACHE_ROOT` 覆盖。T1 也可在 TOML `[fixtures]` 中配置对应的小写字段。fixture 使用当前 cyfs-gateway 文档定义的 `cyfs-dir` process chain 语义路径绑定，因此运行环境的 gateway binary 必须包含该契约。
 
 T1.5 与其它层共用 `schema_version=1` 的 acceptance report，输出到 `<report-dir>/<run-id>/`，包含 `summary.json`、Markdown 摘要、逐 case evidence 和零费用 finance 文件；即使初始化失败，也会记录 runner failure、未执行 manifest 单元和 cleanup 结果。
@@ -107,6 +109,8 @@ T1 会临时写入带 `run_id` 的 Mock Provider instance，并在 `finally` 中
 T2 会为 OpenAI、Claude、Google Gemini、Fal、MiniMax、OpenRouter、Kimi、GLM、DeepSeek、Doubao、Qwen、TypeSafe 和 SN 生成全部 active 基础物理模型的最小 `ProviderInstance × model × API-Type` 矩阵；是否实际执行由 `--provider`、凭据和真实调用开关共同决定。可用报告中的 `targeted_retest_command`，或重复传入 `--case <case_id>`，只重跑失败单元。没有账号或明确禁止执行的 Provider 仍保留基线和用例，但不应开启真实调用。
 
 普通 `chat.completions.create` 用例显式关闭 AICC 默认附加的 `web_search`，避免把基础聊天错误地限定为必须支持联网搜索；联网搜索作为独立 capability 分支验证。Provider 凭据临时写入后，runner 会等待 system-config 与 AICC runtime settings 收敛，再验证 settings 字节恢复、运行时 inventory、Named Data 和消息资源清理。
+
+T2 的 Named Data 读取默认使用 NDM Proxy。运行环境只提供原生 NDN GET 时，可在 TOML `[fixtures]` 设置 `named_data_read_mode = "ndn"`；runner 使用现有 `cyfs-dir` 服务和测试期 Gateway 路由读取制品，并在结束时移除路由。此选项不改变 Provider 请求，也不补齐 NDM Proxy 删除接口；无法清理的对象仍会如实报告。 临时路由安装后，Gateway 的旧 HTTP 长连接可能仍使用旧路由并返回 403；本地测试可把 `[fixtures].ndn_public_gateway_url` 设置为 `http://localhost:3180`，与 RPC 的 `http://127.0.0.1:3180` 使用不同连接池。该配置仍经过同一个 Gateway，不修改 NDN 实现。
 
 T2 在提供用户名和密码时会提前续期 Gateway 登录，并在服务明确返回 token 过期时重新登录后重发同一请求，保留原 idempotency key；Provider 协议或推理错误不会触发此重发。RPC、任务查询和 NDN 下载使用同一份更新后的登录凭据。仅提供 session token 时无法自动重新登录，应确保其有效期覆盖整轮测试。计划调用数和费用包含按模型/源 API 去重的生成物前置调用。
 
@@ -142,8 +146,12 @@ Provider attempt、60 秒、USD 0.01。它临时将已有实例的 timeout 设�
 凭据读取忽略的 TOML `[auth]`，结果写入忽略的 `reports/openrouter-jev-smoke.json`。
 DV 自签名证书需按本地测试证书配置运行环境，不改变生产 HTTP transport。
 
-SN 真实测试需要区分账户权限：OpenAI 模型使用设备身份动态登录的 `sn-ai-provider-main`；受限测试 key 使用独立实例。不得把测试 key 注入动态登录实例。两类凭据分别读取各自的官方模型目录并形成 T2 矩阵；动态登录实例的目录 token 只用于目录校验，真实推理由 AICC 自行登录。
+SN 真实测试按凭据权限分别建立实例：`GLOBAL_OPEN` 与 `US_FULL` 各自读取官方模型目录并形成 T2 矩阵，只在临时测试实例注入对应 key，不修改设备身份动态登录的 `sn-ai-provider-main`。Realtime 仅提供 WebSocket 推理，仍按 `unsupported_canonical_protocol` 排除；旧的 OCR、图片和 Wan 禁用标记不能沿用，必须与当前官方依据及对应 T1.5/T2 用例一起复核。相同物理模型的 Pro/吞吐别名在 T1.5 验证参数，在 T2 按能力基线去重。
 
 Native task 的 TaskMgr 暂时进度上报失败由执行器保持原远端任务继续轮询，不能重新提交模型任务；故障注入单测覆盖可重试及不可重试路径。
+
+T1.5 的 `async_poll_timeout` 验证 runner 等待期限届满时任务仍在运行，并且至少已经发出一次合法的 Provider poll；它不把 runner 等待超时当作 AICC 的失败终态。等待窗口为 15 秒，覆盖 Qwen 默认 5 秒首次轮询及后续轮询。该 case 结束后先删除本轮临时 Provider 并等待旧任务终止，再切换 Mock 场景和重建实例，避免未结束任务读到后续 case 的响应。AICC 自身轮询截止时间的终态、结算和输入释放由执行器单测验证。
+
+跨 Provider 资源回归可在源协议契约声明 `cross_provider_target`，显式指定目标 Provider、contract 和 API。SN 图片源使用已启用的 `gpt-image-2`，向 OpenAI 图片编辑传递稳定资源引用；图片 API 未声明供应商制品 ID 时，不伪造 ID 复用断言。跨渠道用例同时检查源端和目标端的禁用策略，已禁用的 Wan 视频组合继续按策略跳过。
 
 定向验证某个物理模型的所有预设时，可用 `--model <provider-model-id>` 隔离库存；它要求同时指定一个 `--provider` 和明确的 `--case`。Runner 保留选中模型的官方预设契约，并通过临时实例规则排除其他模型，防止其他模型掩盖缺口或阻塞无关的定向回归。未知模型和未知 case 仍会失败。默认参数用途的网关回归以 `server_default_mode` 标记，验证高级配置回读、模型/预设发现、基础模型准入和最终请求不注入思考档位。

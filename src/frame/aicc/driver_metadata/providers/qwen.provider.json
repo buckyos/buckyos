@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 12,
+  "revision_seq": 14,
   "provider_profile_id": "qwen",
   "model_driver_overrides": {
     "deepseek-v4-flash-0731": "deepseek/deepseek-v4-flash",
@@ -76,7 +76,8 @@
       "id": "MiniMax/MiniMax-M2.7",
       "operations": { "llm": "chat.completions.create" },
       "capability_limits": { "max_output_tokens": 131072 }
-    }
+    },
+    {"id": "wan3.0-video", "operations": {"video.generate": "dashscope.video_synthesis"}}
   ],
   "patterns": [
     { "match": "qwen*-latest", "exclude": true },

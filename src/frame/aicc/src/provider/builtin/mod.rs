@@ -318,6 +318,7 @@ mod wp08d_tests {
                     glm_model_driver(),
                     // OpenRouter maps its H3 channel IDs onto the MiniMax driver.
                     super::builtin_model_driver("minimax"),
+                    super::builtin_model_driver("xai"),
                 ],
                 provider_rules: vec![
                     openrouter_provider_rules(1),
@@ -412,7 +413,7 @@ mod wp08d_tests {
             .chain(kimi_catalog_files())
             .chain(glm_catalog_files())
             .chain(
-                super::builtin_catalog_files(&["minimax"])
+                super::builtin_catalog_files(&["minimax", "xai"])
                     .into_iter()
                     .filter(|file| file.kind == crate::catalog::CatalogKind::ModelDriver),
             )

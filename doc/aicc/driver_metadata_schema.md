@@ -350,3 +350,21 @@ OpenRouter Jev 渠道通过 Provider Rules `capability_limits` 将上述模型�
 子集并整体替换它，OpenRouter discovery 再用 `/api/v1/videos/models` 的事实覆盖输出字段。三处使用同一
 校验，未知字段拒绝；没有合同的模型不进入 `video.generate` 路由。合同字段、执行顺序与 Provider 支持矩阵
 见 [统一视频生成协议](video_generation.md)。
+
+## Reviewed parameter descriptions
+
+`capabilities.image_generation_parameters` records vendor image parameter enums,
+defaults and numeric bounds. `capabilities.sampling_parameters` records fixed or
+bounded sampling values; `effective_max` distinguishes the sampling ceiling from
+the accepted API range. `active_parameters` is the activated parameter count;
+`thinking_required` describes a model that cannot disable reasoning. These are
+model metadata descriptions exposed with the existing capability map, not new
+request validators or provider options. Image dimensions and every quality tier
+are not automatically exercised by a default success cell.
+
+Wire normalization continues to use Provider Rules `request_rules`. In particular,
+Kimi K3.1 Pro's fixed sampling fields are omitted on native Kimi, SN and OpenRouter;
+this follows the vendor recommendation to omit them and rely on fixed defaults.
+The strict mock accepts the documented fixed values if supplied and rejects other
+values, so omission does not become an invented vendor prohibition. Source review
+and remaining validation scope: [2026-11-02 review](driver_metadata_review_20261102.md).
