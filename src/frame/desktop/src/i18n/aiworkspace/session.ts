@@ -82,6 +82,12 @@ export const en: Record<string, string> = {
   'aiworkspace.session.links.copy': 'Copy link',
   'aiworkspace.session.links.copied': 'Copied',
   'aiworkspace.session.links.revoke': 'Revoke',
+  'aiworkspace.session.readers.title': 'Who may come in without a link:',
+  'aiworkspace.session.readers.of': 'people who can read “{{name}}”',
+  'aiworkspace.session.readers.workspace': 'people who can read the whole workspace',
+  'aiworkspace.session.readers.gone': 'nobody: the object is gone, only a link lets people in',
+  'aiworkspace.session.readers.change': 'Change…',
+  'aiworkspace.session.readers.help': 'Read permission counts as the permission editor sets it, inherited from the folders above too; the object stays the same when it is renamed or moved.',
 
   // people
   'aiworkspace.session.people.title': 'Participants',
@@ -272,6 +278,12 @@ export const zh: Record<string, string> = {
   'aiworkspace.session.links.copy': '复制链接',
   'aiworkspace.session.links.copied': '已复制',
   'aiworkspace.session.links.revoke': '撤销',
+  'aiworkspace.session.readers.title': '谁能不凭链接进入：',
+  'aiworkspace.session.readers.of': '能读「{{name}}」的人',
+  'aiworkspace.session.readers.workspace': '能读整个工作区的人',
+  'aiworkspace.session.readers.gone': '没有人：对象已不存在，只能凭链接进入',
+  'aiworkspace.session.readers.change': '更改…',
+  'aiworkspace.session.readers.help': '读权限按权限面板的设置判定，包括从上级目录继承的；对象改名或移动后仍然有效。',
 
   'aiworkspace.session.people.title': '参与者',
   'aiworkspace.session.people.count': '{{all}} 人中 {{online}} 人在线',

@@ -110,4 +110,10 @@ async fn preferences_settings_opened_and_the_public_lecture_catalogue() {
     let run = joined["workspace_id"].as_str().unwrap().to_string();
     srv.ok("tok-bob", "doc.outline", json!({ "workspace_id": run })).await;
     assert_eq!(srv.ok("tok-bob", "session.list_open", json!({})).await["sessions"][0]["my_role"], "audience");
+    // the permission object (Q19): the presenter sees it named and may choose another over kRPC; the audience is not told
+    let own = srv.ok("tok-alice", "session.get", json!({ "session_id": sid })).await;
+    assert_eq!((&own["readers_of"]["entity_id"], &own["readers_of"]["path"]), (&json!("s-launch"), &json!("/surfaces/发布会")), "{own}");
+    let set = srv.ok("tok-alice", "session.set_access", json!({ "session_id": sid, "readers_of": "/surfaces/总结" })).await;
+    assert_eq!(set["readers_of"]["entity_id"], "s-work", "{set}");
+    assert!(srv.ok("tok-bob", "session.get", json!({ "session_id": sid })).await.get("readers_of").is_none());
 }

@@ -129,7 +129,7 @@ fn links_let_the_audience_in_and_revocation_takes_it_back() {
     let at2 = invite(&env, &s, "at");
     let mut s2 = fresh(&env, &s);
     let pa = presenter(&env, &s2);
-    env.svc.session_set_access(&mut s2, &pa, &json!({ "access": "closed" })).unwrap();
+    env.svc.session_set_access(&mut s2, &pa, &alice(), &json!({ "access": "closed" })).unwrap();
     assert_eq!(env.svc.session_join(&s2, &Caller::user("carol"), Some(&at2), None).unwrap_err().sub, Some("SESSION_CLOSED"));
 }
 

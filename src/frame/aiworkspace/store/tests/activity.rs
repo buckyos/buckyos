@@ -204,6 +204,8 @@ fn runs_start_and_end_in_the_log_as_proc_get_shows_them() {
     assert_eq!(bobs.len(), 2, "{bobs:?}");
     assert_eq!((bobs[0]["phase"].as_str(), bobs[0]["state"].as_str(), bobs[0]["error_code"].as_str()), (Some("end"), Some("failed"), Some("PROGRAM_FAILED")));
     assert_eq!((bobs[1]["phase"].as_str(), bobs[1]["actor"].as_str(), bobs[1]["actor_kind"].as_str()), (Some("start"), Some("bob"), Some("macro")));
+    // a run of the Mock executor runs no macro (UI 框架 PRD Q27): the log says so
+    assert!(bobs.iter().all(|r| r["simulated"] == json!(true)), "{bobs:?}");
     assert_eq!(bobs[0]["target"]["surface_id"], "s1", "{}", bobs[0]);
     let ended = bobs[0]["at"].as_str().unwrap();
     let started = bobs[1]["at"].as_str().unwrap();

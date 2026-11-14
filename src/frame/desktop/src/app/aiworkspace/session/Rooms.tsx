@@ -14,6 +14,7 @@ import { useAiwsText } from '../useAiwsText'
 import type { SessionChannel, Welcome } from './channel'
 import { useChannelStatus } from './context'
 import { LiveStage } from './LiveStage'
+import { SessionReadersOf } from './ReadersOf'
 import type { RoomModel, RoomSnapshot } from './room'
 import { stepOf, useSteps } from './steps'
 import type { Invite, SessionParticipant, SessionStage } from './types'
@@ -218,6 +219,7 @@ function LinksPanel({ channel, welcome, onClose }: { channel: SessionChannel; we
     <div className="aiws-show-panel aiws-panel aiws-stage-ui aiws-session-links" data-testid="aiws-session-links-panel">
       <div className="aiws-dialog-head"><b>{t('aiworkspace.session.links.title')}</b><span className="aiws-grow" /><button type="button" onClick={onClose}>{t('aiworkspace.common.close')}</button></div>
       <div className="aiws-muted">{t('aiworkspace.session.links.help')}</div>
+      <SessionReadersOf channel={channel} initial={welcome.session.readers_of} editable={welcome.role === 'presenter' || welcome.role === 'owner'} />
       <div className="aiws-dialog-actions">
         <button type="button" data-testid="aiws-session-new-at" onClick={() => { void make('at') }}>{t('aiworkspace.session.links.newAudience')}</button>
         <button type="button" data-testid="aiws-session-new-dt" onClick={() => { void make('dt', { voice: false }) }}>{t('aiworkspace.session.links.newDisplay')}</button>

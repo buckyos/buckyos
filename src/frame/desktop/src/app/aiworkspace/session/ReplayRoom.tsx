@@ -15,6 +15,7 @@ import { useAiwsText } from '../useAiwsText'
 import type { SessionChannel, Welcome } from './channel'
 import { SessionContext, useSession, type SessionUi } from './context'
 import { LiveStage } from './LiveStage'
+import { SessionReadersOf } from './ReadersOf'
 import { loadReplay, ReplayEngine, replaySession } from './replay'
 import { useSteps } from './steps'
 import type { SessionInfo, SessionPost } from './types'
@@ -102,6 +103,9 @@ export function ReplayRoom({ path, channel, welcome, roomState }: { store: Works
         {owner && state === 'ended' && <button type="button" className="is-primary" data-testid="aiws-session-save" onClick={() => { void save() }}>{t('aiworkspace.session.replay.save')}</button>}
         {owner && <button type="button" className="aiws-tool" aria-label={t('aiworkspace.session.replay.delete')} data-testid="aiws-session-delete" onClick={() => { void remove() }}><Trash2 size={16} /></button>}
       </div>
+      {(welcome.role === 'presenter' || welcome.role === 'owner') && state !== 'expired' && (
+        <div className="aiws-panel aiws-session-replay-access"><SessionReadersOf channel={channel} initial={welcome.session.readers_of} editable /></div>
+      )}
       {problem && <div className="aiws-error" role="alert" data-testid="aiws-session-replay-problem">{problem}</div>}
       {replay ? <ReplayPlayer engine={replay.engine} store={replay.store} path={path} live={live} channel={channel} timeRef={timeRef} />
         : !problem && <div className="aiws-session-center aiws-muted">{t('aiworkspace.session.replay.loading')}</div>}

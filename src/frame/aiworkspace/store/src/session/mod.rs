@@ -332,9 +332,14 @@ impl Workspace {
     /// The playable steps of the session's path as the run Workspace has them now: `{ id, kind, target_id, surface_id, title, transition }`.
     pub fn session_steps(&self) -> WsResult<Vec<Value>> {
         let path_id = meta_get(&self.doc, "session_path")?.unwrap_or_default();
+        self.path_steps(&path_id)
+    }
+
+    /// The playable steps of a presentation path (enabled steps with live targets), each with the Surface it is on.
+    pub fn path_steps(&self, path_id: &str) -> WsResult<Vec<Value>> {
         let now = self.now();
         let ctx = self.ctx(&now);
-        let Some(path) = ctx.entity(&path_id)?.filter(|e| e.alive()) else { return Ok(Vec::new()) };
+        let Some(path) = ctx.entity(path_id)?.filter(|e| e.alive()) else { return Ok(Vec::new()) };
         let mut out = Vec::new();
         for step in path.payload.get("steps").and_then(Value::as_array).into_iter().flatten() {
             if step.get("enabled") == Some(&json!(false)) {
@@ -559,15 +564,18 @@ impl Service {
         self.sessions.by_run_workspace(ws_id)
     }
 
-    /// `session.create { workspace_id, path_id, title?, presenter?, policy? }` (§3.1, §3.2): the caller becomes the owner;
-    /// it needs workspace-level `read` and `update` on the source (授课只要求创建本场及 Presenter 所需权限, not the Host).
+    /// `session.create { workspace_id, path_id, title?, presenter?, policy?, readers_of? }` (§3.1, §3.2): the caller becomes
+    /// the owner; it needs workspace-level `read` and `update` on the source (授课只要求创建本场及 Presenter 所需权限, not
+    /// the Host). `readers_of` (UI 框架 PRD Q19): the entity of the source whose readers may come in without a link — a
+    /// path or an entity id the caller may read; by default the Surface of the path's first step (the Workspace when no
+    /// step is on one). It is kept by id (`policy.readers_of`): renaming or moving it changes nothing.
     pub fn session_create(&self, caller: &Caller, p: &Value) -> WsResult<Value> {
         if caller.is_restricted() || caller.is_guest() {
             return Err(WsError::refused(Code::PermissionDenied, aiworkspace_core::Deny::SessionKindNotAllowed, "this kind of account cannot create a session"));
         }
         let source_id = s(p, "workspace_id")?.to_string();
         let path_id = s(p, "path_id")?.to_string();
-        let policy = normalize_policy(p.get("policy"))?;
+        let mut policy = normalize_policy(p.get("policy"))?;
         let presenter = p.get("presenter").and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or(&caller.principal).to_string();
         // the presenter is a person of this Zone (权限需求 R27): never a guest, a link, a group or a made-up name (the
         // service checks the Zone's users before this)
@@ -585,6 +593,15 @@ impl Service {
             if read["type_id"] != json!(TYPE_SHOW_PATH) {
                 return Err(WsError::invalid_op(format!("{path_id} is not a presentation path")));
             }
+            let object = match p.get("readers_of") {
+                None | Some(Value::Null) => {
+                    let steps = ws.path_steps(&path_id)?;
+                    steps.iter().find_map(|st| st["surface_id"].as_str().map(str::to_string)).unwrap_or_else(|| ROOT_ID.to_string())
+                }
+                Some(Value::String(r)) => ws.permission_object(&access, r)?,
+                Some(_) => return Err(WsError::invalid_op("readers_of must be a path or an entity id")),
+            };
+            policy["readers_of"] = json!(object);
             p.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_string).or_else(|| read["content"]["payload"]["title"].as_str().map(str::to_string)).unwrap_or_else(|| ws.title())
         };
         if title.chars().count() > 256 {
@@ -630,11 +647,13 @@ impl Service {
         };
         self.sessions.insert(&row)?;
         log::info!("session {session_id} created on {} by {} (run workspace {})", row.source_workspace_id, caller.principal, row.workspace_id);
-        Ok(json!({ "ok": true, "session": session_json(&row, Some(Role::Presenter)) }))
+        let mut v = session_json(&row, Some(Role::Presenter));
+        v["readers_of"] = self.readers_of_json(&row);
+        Ok(json!({ "ok": true, "session": v }))
     }
 
-    /// Who `caller` is in `s`: the presenter, the owner, a joined participant, a reader of the courseware while the room
-    /// is open (as audience, [`Service::source_reader_may_open`]), or — through a link — a display or a prompter.
+    /// Who `caller` is in `s`: the presenter, the owner, a joined participant, a reader of the session's permission object
+    /// while the room is open (as audience, [`Service::may_open_unlinked`]), or — through a link — a display or a prompter.
     /// `None`: nobody (a link is needed to join).
     pub fn session_actor(&self, s: &SessionRow, caller: &Caller, via: Option<&InviteRow>) -> WsResult<Option<Actor>> {
         let class = |c: &Caller| match c.class {
@@ -660,8 +679,8 @@ impl Service {
             let level = if p.level == "guest" { "guest" } else { "verified" };
             return Ok(Some(Actor { principal: caller.principal.clone(), role: Role::Participant, class: p.class, level, name: p.name }));
         }
-        // a reader of the courseware comes in as audience without a link (UI 框架 PRD §9.1, K7)
-        if self.source_reader_may_open(s, caller)? {
+        // a reader of the permission object comes in as audience without a link (UI 框架 PRD §9.1, K7, Q19)
+        if self.may_open_unlinked(s, caller)? {
             return Ok(Some(Actor { principal: caller.principal.clone(), role: Role::Participant, class: class(caller).into(), level: "verified", name: caller.principal.clone() }));
         }
         Ok(None)
@@ -692,6 +711,8 @@ impl Service {
             }
         }
         if actor.role.reviews() {
+            // who may come in without a link (Q19)
+            v["readers_of"] = self.readers_of_json(s);
             // who came in, and whether they are here (§5.4: the presenter's own view of the room)
             v["participants"] = json!(self.sessions.participants(&s.session_id)?.iter().map(|p| json!({
                 "principal": p.principal, "name": p.name, "class": p.class, "level": p.level, "role": p.role, "online": p.online,
@@ -917,9 +938,10 @@ impl Service {
         Ok(())
     }
 
-    /// `session.set_access { access?, posts? }` (§3.2, §8): closing the room to new audience and closing comments are
-    /// separate switches.
-    pub fn session_set_access(&self, s: &mut SessionRow, actor: &Actor, p: &Value) -> WsResult<Value> {
+    /// `session.set_access { access?, posts?, guest_interact?, readers_of? }` (§3.2, §8): closing the room to new audience
+    /// and closing comments are separate switches; `readers_of` (the owner or the presenter, Q19) chooses another
+    /// permission object — a path or an entity id of the source Workspace the caller may read there.
+    pub fn session_set_access(&self, s: &mut SessionRow, actor: &Actor, caller: &Caller, p: &Value) -> WsResult<Value> {
         if !actor.is_owner(s) && !actor.role.presents() {
             return Err(WsError::denied("the owner or the presenter sets the room's access"));
         }
@@ -941,8 +963,21 @@ impl Service {
             }
             s.policy["guest_interact"] = json!(v.as_bool().ok_or_else(|| WsError::invalid_op("guest_interact must be a boolean"))?);
         }
+        if let Some(v) = p.get("readers_of") {
+            if !actor.is_owner(s) && actor.role != Role::Presenter {
+                return Err(WsError::denied("the owner or the presenter chooses who may come in without a link"));
+            }
+            let r = v.as_str().ok_or_else(|| WsError::invalid_op("readers_of must be a path or an entity id"))?;
+            let object = {
+                let handle = self.workspace(&s.source_workspace_id)?;
+                let ws = handle.lock().unwrap();
+                let access = ws.require_ws_any(caller)?;
+                ws.permission_object(&access, r)?
+            };
+            s.policy["readers_of"] = json!(object);
+        }
         self.sessions.update(s)?;
-        Ok(json!({ "ok": true, "access": s.access, "posts": s.posts, "policy": s.policy }))
+        Ok(json!({ "ok": true, "access": s.access, "posts": s.posts, "policy": s.policy, "readers_of": self.readers_of_json(s) }))
     }
 
     // ---- invites (Q14) ----
@@ -1028,7 +1063,7 @@ impl Service {
                 return Ok((actor, json!({}), false));
             }
             let name = name.map(clean_name).filter(|n| !n.is_empty()).unwrap_or(actor.name.clone());
-            // a courseware reader coming in for the first time reads the run Workspace through the readers' group
+            // a reader of the permission object coming in for the first time reads the run Workspace through their group
             if actor.role == Role::Participant && self.sessions.participant(&s.session_id, &actor.principal)?.is_none() {
                 self.with_run(s, |ws| invite_member(ws, &s.owner, crate::home::SOURCE_READERS_GROUP, &actor.principal))?;
             }

@@ -1186,6 +1186,8 @@ export interface WorkLogEntry {
   stage?: WishStage
   state?: WishRunState
   error_code?: string | null
+  /** A run of the Mock executor, or a Commit of its results: no macro ran (UI 框架 PRD Q27). */
+  simulated?: boolean
   // permission changes
   action?: string
   detail?: Json

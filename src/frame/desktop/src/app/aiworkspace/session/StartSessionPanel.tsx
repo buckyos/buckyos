@@ -1,7 +1,8 @@
 /* eslint-disable react-refresh/only-export-components -- the panel and the address it opens */
 /* "开公开课" (第四期规划 §3.1, Q03, Q13): a session of a presentation path — a room with its own links, recorded from
  * the start, on the Workspace's own host. The room's policy is set here (guest interaction, voice, the audience it
- * expects); the courseware's earlier sessions are listed below it (§8: 历次演示). */
+ * expects) and who may come in without a link (UI 框架 PRD Q19: the readers of an object, by default the canvas of the
+ * path's first step); the courseware's earlier sessions are listed below it (§8: 历次演示). */
 
 import { useEffect, useState } from 'react'
 import { describeError } from '../api/session'
@@ -10,9 +11,20 @@ import { openWorkspacePage } from '../launch'
 import { workspacePageUrl, workspaceSlug } from '../links'
 import type { WorkspaceStore } from '../state/store'
 import { useAiwsText } from '../useAiwsText'
+import { entityLabel } from '../ui/sources/dataOps'
 import { createSession, listSessions } from './api'
-import type { SessionInfo } from './types'
+import { ReadersOfRow } from './ReadersOf'
+import type { ReadersOf, SessionInfo } from './types'
 import { STATE_KEY } from './labels'
+
+/** The permission object as this window's outline names it (the service names it once the room exists). */
+function localReadersOf(store: WorkspaceStore, entityId: string): ReadersOf {
+  if (entityId === 'root') return { entity_id: 'root', path: '/', title: null, type_id: null, kind: 'workspace', alive: true }
+  const e = store.outline.get(entityId)
+  return e && !e.deleted
+    ? { entity_id: entityId, path: null, title: entityLabel(e), type_id: e.type_id, kind: e.kind ?? null, alive: true }
+    : { entity_id: entityId, path: null, title: null, type_id: null, kind: null, alive: false }
+}
 
 /** A session's address: the Workspace's own page with `?session=`. */
 export function sessionPageUrl(store: WorkspaceStore, sessionId: string): string {
@@ -21,8 +33,12 @@ export function sessionPageUrl(store: WorkspaceStore, sessionId: string): string
   return `${page}?session=${encodeURIComponent(sessionId)}`
 }
 
-export function StartSessionPanel({ store, transport, pathId, title, disabled, onStarted }: { store: WorkspaceStore; transport: Transport; pathId: string; title: string; disabled: boolean; onStarted: () => void }) {
+/** `firstSurfaceId`: the canvas of the path's first playable step — the default permission object (Q19). */
+export function StartSessionPanel({ store, transport, pathId, title, firstSurfaceId, disabled, onStarted }: { store: WorkspaceStore; transport: Transport; pathId: string; title: string; firstSurfaceId: string | null; disabled: boolean; onStarted: () => void }) {
   const { t } = useAiwsText()
+  // a choice holds for the path it was made on; another path starts from its own first canvas
+  const [picked, setPicked] = useState<{ pathId: string; entityId: string } | null>(null)
+  const readersOf = picked?.pathId === pathId ? picked.entityId : firstSurfaceId ?? 'root'
   const [name, setName] = useState(title)
   const [guests, setGuests] = useState(false)
   const [voice, setVoice] = useState(true)
@@ -33,7 +49,7 @@ export function StartSessionPanel({ store, transport, pathId, title, disabled, o
     setBusy(true)
     setError(null)
     try {
-      const { session } = await createSession(transport, { workspace_id: store.session.workspaceId, path_id: pathId, title: name.trim() || title, policy: { guest_interact: guests, voice, expected_audience: expected } })
+      const { session } = await createSession(transport, { workspace_id: store.session.workspaceId, path_id: pathId, title: name.trim() || title, policy: { guest_interact: guests, voice, expected_audience: expected }, readers_of: readersOf })
       await openWorkspacePage(sessionPageUrl(store, session.session_id), { newTab: true })
       onStarted()
     } catch (e) {
@@ -53,6 +69,7 @@ export function StartSessionPanel({ store, transport, pathId, title, disabled, o
       <label className="aiws-inline-form">{t('aiworkspace.session.create.expected')}
         <input type="number" min={1} max={10000} value={expected} onChange={(event) => setExpected(Math.max(1, Math.min(10000, Number(event.target.value) || 1)))} />
       </label>
+      <ReadersOfRow value={localReadersOf(store, readersOf)} onPick={(entityId) => setPicked({ pathId, entityId })} busy={busy} />
       {error && <div className="aiws-error" role="alert">{t('aiworkspace.session.create.failed', { detail: error })}</div>}
       <div className="aiws-dialog-actions">
         <button type="button" className="is-primary" data-testid="aiws-session-create-go" disabled={disabled || busy} onClick={() => { void go() }}>{busy ? t('aiworkspace.session.create.creating') : t('aiworkspace.session.create.go')}</button>

@@ -171,7 +171,7 @@ test('§15-28 three categories, Recent first once there is any, the category kep
   expect((await api.rpc(ALICE, 'ws.list', {})).workspaces.some((w: { workspace_id: string }) => w.workspace_id === second.workspace_id)).toBe(false)
 })
 
-test('§15-29 a card opens its workspace; every public class I may open is listed (K7) — one I never joined too — going in or replaying by state, marking the ones I present; Recent mixes both', async ({ page, api, context }) => {
+test('§15-29 a card opens its workspace; every public class I may open is listed (K7) — one I never joined too, as a reader of the canvas it presents (Q19), never one whose object I cannot read — going in or replaying by state, marking the ones I present; Recent mixes both', async ({ page, api, context }) => {
   test.setTimeout(180_000)
   const tag = tagOf(29)
   const mine = await courseware(api, ALICE, `${tag} 课件`)
@@ -180,13 +180,16 @@ test('§15-29 a card opens its workspace; every public class I may open is liste
   const ended = await session(api, ALICE, mine.workspace_id, `${tag} 回放课`)
   expect((await api.rpc(ALICE, 'session.start', { session_id: ended })).ok).toBe(true)
   expect((await api.rpc(ALICE, 'session.end', { session_id: ended })).ok).toBe(true)
-  // bob's courseware, readable by alice: one class she attended through its link, one she never joined
+  // bob's courseware, of which alice reads only the canvas the path starts on (发布会, Q19): one class she attended through
+  // its link, one she never joined (its permission object is that canvas, the default), one whose object is the other
+  // canvas (总结), which she cannot read
   const theirs = await courseware(api, BOB, `${tag} 别人的课件`)
-  expect((await api.rpc(BOB, 'acl.set', { workspace_id: theirs.workspace_id, changes: [{ subject: 'alice', allow: ['read'] }] })).ok).not.toBe(false)
+  expect((await api.rpc(BOB, 'acl.set', { workspace_id: theirs.workspace_id, changes: [{ subject: 'alice', resource: '/surfaces/发布会', allow: ['read'] }] })).ok).not.toBe(false)
   const attended = await session(api, BOB, theirs.workspace_id, `${tag} 听过的课`)
   const at = (await api.rpc(BOB, 'session.invite', { session_id: attended, kind: 'at' })).invite.token as string
   expect((await api.rpc(ALICE, 'session.join', { session_id: attended, link: at, name: 'alice' })).ok).toBe(true)
   const unseen = await session(api, BOB, theirs.workspace_id, `${tag} 没参加的课`)
+  const elsewhere = (await api.rpc(BOB, 'session.create', { workspace_id: theirs.workspace_id, path_id: 'path-intro', title: `${tag} 别的画布的课`, readers_of: '/surfaces/总结' })).session.session_id as string
 
   await openHome(page, ALICE)
   await tab(page, 'all').click()
@@ -208,11 +211,13 @@ test('§15-29 a card opens its workspace; every public class I may open is liste
   await expect(sessionCard(page, ended).getByTestId('aiws-home-presenting')).toBeVisible()
   await expect(sessionCard(page, attended)).toHaveAttribute('data-role', 'audience')
   await expect(sessionCard(page, attended).getByTestId('aiws-home-presenting')).toHaveCount(0)
-  // §15 #29: a public class I never joined but may open (I read its courseware, its room is open) is listed too (K7)
+  // §15 #29: a public class I never joined but may open (I read the canvas it presents, its room is open) is listed too
+  // (K7, Q19); one whose permission object is a canvas I cannot read is not
   await expect(sessionCard(page, unseen)).toBeVisible()
   await expect(sessionCard(page, unseen)).toHaveAttribute('data-role', 'member')
   await expect(sessionCard(page, unseen)).toHaveAttribute('data-action', 'enter')
   await expect(sessionCard(page, unseen).getByTestId('aiws-home-presenting')).toHaveCount(0)
+  await expect(sessionCard(page, elsewhere)).toHaveCount(0)
 
   // the filters of public classes: status, only those I present
   await page.getByTestId('aiws-home-filter').click()
@@ -227,7 +232,13 @@ test('§15-29 a card opens its workspace; every public class I may open is liste
   await panel.getByTestId('aiws-home-filter-reset').click()
   await page.keyboard.press('Escape')
 
-  // a click on the live class goes into its room, in a tab of its own on the courseware's origin
+  // a click on the class I may open as a reader of its canvas goes into its room (as audience), in a tab of its own on
+  // its courseware's origin; so does one on the live class
+  const [their] = await Promise.all([context.waitForEvent('page'), sessionCard(page, unseen).getByTestId('aiws-my-session-open').click()])
+  await expect.poll(() => their.url()).toContain(`session=${unseen}`)
+  expect(new URL(their.url()).host).toBe(new URL(workspaceOrigin(theirs.workspace_id)).host)
+  await their.close()
+  expect((await api.rpc(ALICE, 'session.get', { session_id: unseen })).role).toBe('audience')
   const [room] = await Promise.all([context.waitForEvent('page'), sessionCard(page, live).getByTestId('aiws-my-session-open').click()])
   await expect.poll(() => room.url()).toContain(`session=${live}`)
   expect(new URL(room.url()).host).toBe(new URL(workspaceOrigin(mine.workspace_id)).host)

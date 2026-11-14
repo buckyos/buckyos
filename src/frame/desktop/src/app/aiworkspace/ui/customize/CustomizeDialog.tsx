@@ -19,6 +19,8 @@ import { actionRegistry, type ZoneId } from '../framework/actions'
 import { builtinToolbar, CUSTOMIZABLE_ZONES, INSERT_ACTION, parseToolbarConfig, type ConfigLayer } from '../framework/config'
 import { useActionContext } from '../framework/hooks'
 import { ACTION_ICONS, iconOf } from '../framework/icons'
+import { useMacroWatch } from '../framework/macros'
+import { holdsMacro } from '../wish/macro'
 import { Modal } from '../shell/dialogs'
 import { useShell } from '../shell/shellContext'
 import { appModeDraft, defaultDraft, draftOf, isAppModeDraft, layerOf, moveItem, placeBefore, type Draft, type DraftItem, type DraftZone } from './model'
@@ -219,7 +221,8 @@ function AddObject({ value, onChange }: { value: DraftZone; onChange: (next: Dra
   )
 }
 
-/** An action, or a macro, for the collaboration zone — with a name and an icon of its own if wanted. */
+/** An action, or a macro, for the collaboration zone — with a name and an icon of its own if wanted. The macros are the
+ * wishes holding one (Q27: not the Mock executor's), whether or not they can run at this moment. */
 function AddAction({ value, onChange }: { value: DraftZone; onChange: (next: DraftZone) => void }) {
   const store = useStore()
   const { t } = useAiwsText()
@@ -227,7 +230,8 @@ function AddAction({ value, onChange }: { value: DraftZone; onChange: (next: Dra
   const [chosen, setChosen] = useState('')
   const [title, setTitle] = useState('')
   const [icon, setIcon] = useState('')
-  const wishes = store.outline.all().filter((e) => e.type_id === 'buckyos.wish' && !e.deleted)
+  useMacroWatch()
+  const wishes = store.outline.all().filter((e) => holdsMacro(e, store.freshness.get(e.entity_id)))
   const actions = actionRegistry.list().filter((def) => (def.run || def.candidates) && !def.zone?.control && def.id !== 'collab.macro')
   const label = (id: string) => { try { return actionRegistry.get(id)?.label(ctx) ?? id } catch { return id } }
   const add = () => {

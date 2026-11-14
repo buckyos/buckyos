@@ -140,12 +140,13 @@ export function useWorkLog({ filter = 'all', limit = WORK_LOG_PAGE, enabled = tr
 
 const targetText = (e: WorkLogEntry) => e.target?.title?.trim() || e.target?.name || (e.target ? e.target.entity_id : aiwsT('aiworkspace.activity.untitled'))
 
-/** Who did it, as the log shows it: a guest's short label, an Agent or a macro marked as such, the service as 系统. */
+/** Who did it, as the log shows it: a guest's short label, an Agent or a macro marked as such (the Mock executor is no
+ * macro, Q27), the service as 系统. */
 export function workLogActor(entry: WorkLogEntry): string {
   const name = isGuestPrincipal(entry.actor) ? guestLabel(entry.actor) : entry.actor
   switch (entry.actor_kind) {
     case 'agent': return aiwsT('aiworkspace.activity.actor.agent', { name })
-    case 'macro': return aiwsT('aiworkspace.activity.actor.macro', { name })
+    case 'macro': return aiwsT(entry.simulated ? 'aiworkspace.activity.actor.simulated' : 'aiworkspace.activity.actor.macro', { name })
     case 'system': return aiwsT('aiworkspace.activity.actor.system')
     default: return name
   }
@@ -186,7 +187,7 @@ export function describeWorkLogEntry(entry: WorkLogEntry): string {
     case 'import':
       return entry.message?.trim() || aiwsT('aiworkspace.activity.import.package')
     case 'run': {
-      const what = aiwsT(`aiworkspace.activity.run.${entry.stage === 'analyze' || entry.stage === 'code' ? entry.stage : 'run'}`, { target: targetText(entry) })
+      const what = aiwsT(`aiworkspace.activity.run.${entry.stage === 'analyze' || entry.stage === 'code' ? entry.stage : entry.simulated ? 'simulated' : 'run'}`, { target: targetText(entry) })
       if (entry.phase === 'start') return aiwsT('aiworkspace.activity.run.started', { what })
       return aiwsT(RUN_END[entry.state ?? ''] ?? 'aiworkspace.activity.run.failed', { what })
     }

@@ -2,8 +2,9 @@
  * §12; K4, K6, K7): the Workspace's shared settings (written by managers, carried by a Clone), personal preferences
  * that follow a person from one Workspace origin to another (§15 #10), the home page's fields of `ws.list` (the open
  * record comes from opening the Workspace page), and the public lecture catalogue listing a room the caller never
- * joined but may open (§15 #29). The interfaces are not on screen yet: the assertions go through the service and the
- * Desktop's own preference store, loaded on the Workspace pages. */
+ * joined but may open — he reads the session's permission object, the canvas it presents (§15 #29, Q19). The
+ * interfaces are not on screen yet: the assertions go through the service and the Desktop's own preference store,
+ * loaded on the Workspace pages. */
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -118,31 +119,44 @@ test('§9.2 K6 ws.list carries the card fields; opening the Workspace page recor
   expect(after.updated_at > before.updated_at).toBe(true)
 })
 
-test('§15-29 K7 the public lecture catalogue lists a room bob never joined but may open; the presenter\'s is marked', async ({ api }) => {
+test('§15-29 K7 Q19 the public lecture catalogue lists a room bob never joined but may open — he reads the canvas it presents; a room whose permission object is another canvas is not his; the presenter\'s is marked', async ({ api }) => {
   const ws = await api.rpc(ALICE, 'ws.create', { title: '课件目录' }) as { workspace_id: string; epoch: string }
   const fixture = JSON.parse(readFileSync(PRESENTATION, 'utf8')) as { commits: { operations: Json[] }[] }
   for (const [i, c] of fixture.commits.entries()) expect((await api.commit(ALICE, ws, c.operations, `catalogue/${i}`)).status).toBe('accepted')
   const lecture = (await api.rpc(ALICE, 'session.create', { workspace_id: ws.workspace_id, path_id: 'path-intro', title: '第一讲' })).session
   const bobPresents = (await api.rpc(ALICE, 'session.create', { workspace_id: ws.workspace_id, path_id: 'path-intro', title: '第二讲', presenter: 'bob' })).session
+  // the permission object (Q19): by default the canvas of the path's first step (frame1 is on 发布会), named for the presenter
+  expect(lecture.policy.readers_of).toBe('s-launch')
+  expect(lecture.readers_of).toMatchObject({ entity_id: 's-launch', path: '/surfaces/发布会', title: '发布会', alive: true })
+  // another room of the same path whose object is the other canvas (总结), named by path
+  const elsewhere = (await api.rpc(ALICE, 'session.create', { workspace_id: ws.workspace_id, path_id: 'path-intro', title: '第三讲', readers_of: '/surfaces/总结' })).session
+  expect(elsewhere.policy.readers_of).toBe('s-work')
   // the backend is shared by the specs: only this courseware's sessions count
   const ids = (list: Json) => (list.sessions as Json[]).filter((s) => s.source_workspace_id === ws.workspace_id).map((s) => s.session_id)
   // bob presents the second one; the first is not his to open yet
   const first = await api.rpc(BOB, 'session.list_open', {})
   expect(ids(first)).toEqual([bobPresents.session_id])
   expect((first.sessions as Json[]).find((s) => s.session_id === bobPresents.session_id)).toMatchObject({ my_role: 'presenter', presenting: true })
-  // as a reader of the courseware he may open the first without a link: listed, never joined, not his own
-  await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: '/', allow: ['read'] }] })
+  // as a reader of the presented canvas only (not of the workspace, not of 总结) he may open the first without a link:
+  // listed, never joined, not his own; the room whose object is 总结 is not offered
+  expect((await api.rpc(ALICE, 'acl.set', { workspace_id: ws.workspace_id, changes: [{ subject: 'bob', resource: '/surfaces/发布会', allow: ['read'] }] })).ok).toBe(true)
   const open = await api.rpc(BOB, 'session.list_open', {})
   expect(new Set(ids(open))).toEqual(new Set([lecture.session_id, bobPresents.session_id]))
   const offered = (open.sessions as Json[]).find((s) => s.session_id === lecture.session_id)
   expect(offered).toMatchObject({ my_role: 'member', presenting: false, opened_at: null, cover: null, state: 'prepared', title: '第一讲' })
+  expect(offered.readers_of).toBeUndefined()
   expect(String(offered.url)).toContain(`?session=${lecture.session_id}`)
   expect(ids(await api.rpc(BOB, 'session.list_mine', {}))).not.toContain(lecture.session_id)
-  // the service opens it for him without a link (the room page's first call), as audience
+  // the service opens it for him without a link (the room page's first call), as audience; not the other one
   const got = await api.rpc(BOB, 'session.get', { session_id: lecture.session_id })
   expect(got).toMatchObject({ ok: true, role: 'audience' })
+  expect((await api.rpc(BOB, 'session.get', { session_id: elsewhere.session_id })).error?.code).toBe('NOT_FOUND')
+  // the owner points the third room at the canvas he reads: now it is offered too
+  const moved = await api.rpc(ALICE, 'session.set_access', { session_id: elsewhere.session_id, readers_of: 's-launch' })
+  expect(moved.readers_of).toMatchObject({ entity_id: 's-launch', title: '发布会' })
+  expect(ids(await api.rpc(BOB, 'session.list_open', {}))).toContain(elsewhere.session_id)
   // a room closed to new audience is no longer offered to him
   const closed = await api.rpc(ALICE, 'session.set_access', { session_id: lecture.session_id, access: 'closed' })
   expect(closed.ok).toBe(true)
-  expect(ids(await api.rpc(BOB, 'session.list_open', {}))).toEqual([bobPresents.session_id])
+  expect(new Set(ids(await api.rpc(BOB, 'session.list_open', {})))).toEqual(new Set([bobPresents.session_id, elsewhere.session_id]))
 })

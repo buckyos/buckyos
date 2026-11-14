@@ -195,7 +195,7 @@ paths and Viewports and nothing else; neither type is allowed anywhere else (`pl
 A **session** is a public presentation room of one Workspace's presentation path: a row of the service's registry
 (`sessions.sqlite`: state, owner, presenter, policy, baseline, archive, links, participants, posts) and a **run
 Workspace** (`purpose = session`) the service keeps for it. `session.create { workspace_id, path_id, title?, presenter?,
-policy? }` (workspace-level `read` + `update` on the source; the caller becomes the owner) clones the source whole
+policy?, readers_of? }` (workspace-level `read` + `update` on the source; the caller becomes the owner) clones the source whole
 (`VACUUM INTO` in its writer) and, before anyone opens the clone: gives it a new epoch, cuts its history to the clone
 point (`base_seq`; earlier commits, versions and snapshots go; rich texts become shallow snapshots), resets its grants to
 the owner (all) and the presenter (all but `manage`), drops entries, publications, runs, locks, user state and uploads,
@@ -205,9 +205,13 @@ binds every live asset under the run Workspace's own key in the owner's `assets`
 Workspaces are not listed, not swept as show clones and not counted among them.
 
 `policy`: `guest_interact` (false: guests watch only), `voice` (true), `show_names` (true), `expected_audience` (50),
-`media_limit_mib` (2048). States: `prepared → live → ended → archived`, or `expired` (an ended, unsaved session past
-`session_retention_days`, 7 by default: the run Workspace goes, the row stays); `access` (`open | closed`: new audience)
-and `posts` (`open | closed`) are switches of their own, `session.delete` a third.
+`media_limit_mib` (2048), and `readers_of` — set by the service, never in the `policy` parameter: the session's
+permission object (see “Readers of the permission object”). States: `prepared → live → ended → archived`, or `expired`
+(an ended, unsaved session past `session_retention_days`, 7 by default: the run Workspace goes, the row stays); `access`
+(`open | closed`: new audience) and `posts` (`open | closed`) are switches of their own, `session.delete` a third.
+`session.set_access { access?, posts?, guest_interact?, readers_of? }` (owner, presenter or prompter; `guest_interact`
+the owner only; `readers_of` the owner or the presenter in person, not a prompter link) answers `{ access, posts,
+policy, readers_of }`.
 
 **Roles and links (Q14).** The presenter controls the stage and runs tasks; the owner (when not the presenter) manages,
 saves, deletes and reads everything; participants joined through a link. `session.invite { kind, label?, config? }`
@@ -278,17 +282,25 @@ caller owns, presents or joined across Workspaces, newest first, each with `my_r
 `audience`) and, when the deployment knows its public base, `url` — the room on its courseware's origin
 (`<public_base>/<slug>?session=<id>`). `session.list_open { limit? }` (所有公开课, UI 框架 PRD §9.1, K7; same limits): every
 session the caller may open without a link, across Workspaces — those it owns, presents or joined (expired ones too) and,
-while their room is open (`access: open`) and not expired, those of courseware it reads — live ones first, the rest by
+while their room is open (`access: open`) and not expired, those whose permission object it reads — live ones first, the rest by
 start (else creation) time, newest first. Each carries `my_role` (`presenter`, `owner`, `audience`: joined before,
-`member`: a courseware reader who has not), `presenting` (the caller presents it), `opened_at` (the caller's last time in
+`member`: a reader of its permission object who has not), `presenting` (the caller presents it), `opened_at` (the caller's last time in
 it, or null), `online` (connections now, while it has a room in memory; else null), `cover` (null: not generated yet) and
 `url`. None of the three is a channel call.
 
-**Courseware readers (K7).** A person (not a guest or a link) whom the source Workspace names in its own right — what
-`ws.list` lists — with `read` on its `/` may open its sessions without a link while the room is `open` and not expired:
-`session.get` answers them as `audience`, `session.join` makes them participants and puts them in the run Workspace's
-`source-readers` group (`read`, like a link's group). Their memberships (`group:` / `contact:`) are settled against the
-courseware's entries.
+**Readers of the permission object (K7, UI 框架 PRD Q19).** Each session has a permission object: an entity of the
+source Workspace — a Surface, a folder, a Block, or the Workspace itself (`root`) — kept by id in `policy.readers_of`, so
+renaming or moving it changes nothing. `session.create`'s `readers_of` names it as a path or an entity id the caller may
+read there (resolved like an entry's resource); by default it is the Surface of the path's first playable step (the
+Workspace when no step is on a Surface). `session.set_access { readers_of }` chooses another, resolved the same way for
+the caller. A person (not a guest, a link or a run) whom the source Workspace names in its own right — what `ws.list`
+lists — holding `read` on the object (path inheritance, deny first, as every read) may open the session without a link
+while the room is `open` and not expired: `session.get` answers them as `audience`, `session.join` makes them
+participants and puts them in the run Workspace's `source-readers` group (`read` on the whole run Workspace, like a
+link's group). An object that is deleted or gone admits nobody this way until another is chosen; those who joined stay.
+Their memberships (`group:` / `contact:`) are settled against the courseware's entries. The presenter and the owner see
+the object in `session.create`, `session.get` and `session.set_access` as `readers_of { entity_id, path, title, type_id,
+kind, alive }`; nobody else is told.
 
 ## Presence and the work log (UI 框架 PRD §4.2, §4.5, §12, K2, K3)
 
@@ -320,7 +332,8 @@ Every entry has `id`, `at`, `actor`, `actor_kind` (`agent` for origin `agent`, `
 `target` (`{ entity_id, type_id, name, title, kind, deleted, surface_id }`: the first readable non-system entity a Commit
 touched, a run's wish, a show's path; `surface_id` is the Surface it is on — itself, the Surface above a Block, or the one
 whose content folder holds it — when readable) or `null`; a Commit also has `targets` (how many readable entities it
-touched). `filter: mine` keeps the caller's own entries; `automation` keeps Commits of origin `agent` / `program` and the
+touched). A run of the Mock executor (`wish.mock@1`) and a Commit of its results (or of `mock.*`) carry `simulated:
+true`: no macro ran (UI 框架 PRD Q27), the client does not call it one. `filter: mine` keeps the caller's own entries; `automation` keeps Commits of origin `agent` / `program` and the
 runs. Pages: entries strictly older than `before` (the `next_before` of the previous page, `"<at>|<id>"`); each source
 looks at no more than 1 000 rows per call, so a page after a long stretch of unreadable rows may come back short (even
 empty) with `more: true` and a `next_before` to go on from. Commit messages are the author's text in the author's

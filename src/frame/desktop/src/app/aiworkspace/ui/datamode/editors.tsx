@@ -124,8 +124,8 @@ function MacroEditor({ entity, readOnly, page, onPage }: { entity: EntityEnvelop
       </div>
       <div className="aiws-dm-page" role="tabpanel">
         {page === 'task' && <WishPanel wishId={entity.entity_id} readOnly={readOnly} />}
-        {page === 'code' && (payload && !payload.program && payload.executor === 'xllm'
-          ? <div className="aiws-muted" data-testid="aiws-dm-code-none">{t('aiworkspace.datamode.code.none')}</div>
+        {page === 'code' && (payload && !payload.program
+          ? <div className="aiws-muted" data-testid="aiws-dm-code-none">{t(payload.executor === 'xllm' ? 'aiworkspace.datamode.code.none' : 'aiworkspace.datamode.code.mock')}</div>
           : <ProgramView wishId={entity.entity_id} canEdit={!readOnly && codeReason === null} reason={codeReason} page />)}
         {page === 'runs' && <RunList wishId={entity.entity_id} />}
       </div>

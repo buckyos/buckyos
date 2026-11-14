@@ -5,7 +5,7 @@ import { ServiceFailure } from '../api/client'
 import { randomId } from '../api/ids'
 import type { Transport } from '../api/transport'
 import type { Json, Result } from '../api/types'
-import type { Invite, MySession, OpenSession, ReplayBundle, SessionEvent, SessionInfo, SessionPost, SessionStage, SessionStep } from './types'
+import type { Invite, MySession, OpenSession, ReadersOf, ReplayBundle, SessionEvent, SessionInfo, SessionPost, SessionStage, SessionStep } from './types'
 
 export function unwrapResult<T>(r: Result<T> | undefined): T {
   if (r && r.ok) return r as T
@@ -35,7 +35,7 @@ export class SessionApi {
   end() { return this.call<{ state: string; expires_at: string }>('session.end') }
   save() { return this.call<{ state: string; archive: Json }>('session.save') }
   remove() { return this.call<object>('session.delete') }
-  setAccess(params: { access?: 'open' | 'closed'; posts?: 'open' | 'closed'; guest_interact?: boolean }) { return this.call<{ access: string; posts: string }>('session.set_access', params) }
+  setAccess(params: { access?: 'open' | 'closed'; posts?: 'open' | 'closed'; guest_interact?: boolean; readers_of?: string }) { return this.call<{ access: string; posts: string; readers_of: ReadersOf }>('session.set_access', params) }
   invite(kind: 'at' | 'dt' | 'pt', config?: Record<string, Json>, label?: string) { return this.call<{ invite: Invite }>('session.invite', { kind, ...(config ? { config } : {}), ...(label ? { label } : {}) }) }
   invites() { return this.call<{ invites: Invite[] }>('session.list_invites') }
   revokeInvite(invite_id: string) { return this.call<{ revoked: boolean }>('session.revoke_invite', { invite_id }) }
@@ -60,7 +60,8 @@ export class SessionApi {
 }
 
 /** Calls that name no session: creating one, a Workspace's sessions, a courseware's sample feed, a media address. */
-export async function createSession(transport: Transport, params: { workspace_id: string; path_id: string; title?: string; presenter?: string; policy?: Record<string, Json> }): Promise<{ session: SessionInfo }> {
+/** `readers_of`: the permission object (a path or an entity id; by default the canvas of the path's first step, Q19). */
+export async function createSession(transport: Transport, params: { workspace_id: string; path_id: string; title?: string; presenter?: string; policy?: Record<string, Json>; readers_of?: string }): Promise<{ session: SessionInfo }> {
   return unwrapResult(await transport.call<Result<{ session: SessionInfo }>>('session.create', params))
 }
 

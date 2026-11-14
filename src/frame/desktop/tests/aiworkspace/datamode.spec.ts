@@ -175,7 +175,7 @@ test('§15-13 three objects in three tabs: a preview is reused, switching keeps 
 
 test('§15-14 a macro under “宏” opens on its code; “工作区权限” turns the editing area into the permission editor', async ({ page, api }) => {
   const ws = await workspaceWithExtras(api)
-  // a macro: the wish's saved program
+  // a macro: the wish's saved program (the demo's wish is on the Mock executor here)
   const source = "aiws.declare({ inputs: {}, results: {} })\nconst rows = aiws.input('sales')\naiws.result.table('summary', rows)\n"
   const uploaded = await api.uploadAsset(ALICE, ws.workspace_id, new TextEncoder().encode(source))
   const manifest = { inputs: {}, results: {} }
@@ -186,6 +186,12 @@ test('§15-14 a macro under “宏” opens on its code; “工作区权限” t
   await openWorkspace(page, ALICE, ws.workspace_id)
   await dataMode(page)
   const macros = page.getByTestId('aiws-dm-macros')
+  // Q27: a Mock wish is no macro, even with a program in it; on the real executor it is
+  await expect(macros).toHaveAttribute('data-count', '0')
+  await expect(macros.getByTestId('aiws-dm-macro-wish-analysis')).toHaveCount(0)
+  const mock = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
+  const real = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [{ key: 'executor', value: 'xllm', expect: { rev: mock.content.key_revs.executor } }] }])
+  expect(real.status, JSON.stringify(real)).toBe('accepted')
   await expect(macros.getByTestId('aiws-dm-macro-wish-analysis')).toBeVisible()
   await macros.getByTestId('aiws-dm-macro-wish-analysis').click()
   const editor = page.getByTestId('aiws-dm-macro-editor-wish-analysis')

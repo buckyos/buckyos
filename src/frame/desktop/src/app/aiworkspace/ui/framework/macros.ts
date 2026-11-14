@@ -1,6 +1,7 @@
-/* Macros (UI 框架 PRD §4.2): a macro is a wish's saved program. The "宏" entry lists the wishes of the outline whose
- * macro the current user can run now — they may update the wish, the analysis is ready and the macro fits its inputs
- * (not "needs coding"; the Mock executor counts as having one, as in the wish panel). The one used last comes first
+/* Macros (UI 框架 PRD §4.2, Q27): a macro is the runnable product of a wish — its program and declaration manifest,
+ * made by the coding stage (`ui/wish/macro.ts` says which wishes hold one; the Mock executor's never do). The "宏" entry
+ * lists the wishes of the outline whose macro the current user can run now — they may update the wish, the analysis is
+ * ready and the macro fits its inputs (not "needs coding"). The one used last comes first
  * (per workspace, user state), then the macros on the current canvas, then the rest. Running one is exactly the wish
  * panel's "运行" (`WishService.runMacro`): same identity, same result handling — a candidate waits in the wish. Its start,
  * progress and result are entries of the status bar's work log (K3), not notices; only a run the service never took (it
@@ -12,6 +13,7 @@ import type { EntityEnvelope } from '../../api/types'
 import { aiwsT } from '../../i18n'
 import { useOutlineVersion, useStore } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
+import { macroRunnable } from '../wish/macro'
 import { isActive } from '../wish/WishService'
 
 export const RECENT_MACRO_KEY = 'ui:recent-macro'
@@ -43,10 +45,7 @@ export function listMacros(store: WorkspaceStore, surfaceId: string | null): Mac
   const cells = store.outline.all().filter((e) => e.type_id === 'buckyos.cell' && !e.deleted && e.source_id)
   const out: Macro[] = []
   for (const wish of wishes(store)) {
-    if (!wish.capabilities.includes('update')) continue
-    const fresh = store.freshness.get(wish.entity_id)
-    if (!fresh || fresh.needs_analysis || fresh.analysis_status !== 'ready') continue
-    if (wish.executor !== 'mock' && fresh.needs_coding) continue
+    if (!macroRunnable(wish, store.freshness.get(wish.entity_id))) continue
     const views = cells.filter((cell) => cell.source_id === wish.entity_id)
     const here = surfaceId ? views.find((cell) => store.outline.ancestors(cell.entity_id).includes(surfaceId)) : undefined
     out.push({

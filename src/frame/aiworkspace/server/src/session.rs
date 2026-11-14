@@ -284,7 +284,7 @@ pub async fn handle(state: &Arc<AppState>, method: &str, p: &Value, caller: Call
         let (st, c, row, inv) = (state.clone(), caller.clone(), s.clone(), link.clone());
         blocking(move || st.svc.require_actor(&row, &c, inv.as_ref())).await?
     };
-    call(state, s, &actor, method, p, None).await
+    call(state, s, &actor, &caller, method, p, None).await
 }
 
 /// `session.get` with the media state of the room.
@@ -299,9 +299,10 @@ async fn get(state: &Arc<AppState>, s: &SessionRow, actor: &Actor) -> WsResult<V
 }
 
 /// The methods of a known actor — over kRPC and over the channel (`terminal`: the connection's own control terminal).
-async fn call(state: &Arc<AppState>, s: SessionRow, actor: &Actor, method: &str, p: &Value, terminal: Option<&str>) -> WsResult<Value> {
+async fn call(state: &Arc<AppState>, s: SessionRow, actor: &Actor, caller: &Caller, method: &str, p: &Value, terminal: Option<&str>) -> WsResult<Value> {
     let st = state.clone();
     let a = actor.clone();
+    let c = caller.clone();
     let p2 = p.clone();
     let mut row = s.clone();
     let result = match method {
@@ -317,7 +318,7 @@ async fn call(state: &Arc<AppState>, s: SessionRow, actor: &Actor, method: &str,
             state.rooms.map.lock().unwrap().remove(&s.session_id);
             return Ok(v);
         }
-        "session.set_access" => blocking(move || st.svc.session_set_access(&mut row, &a, &p2)).await?,
+        "session.set_access" => blocking(move || st.svc.session_set_access(&mut row, &a, &c, &p2)).await?,
         "session.invite" => blocking(move || st.svc.session_invite(&row, &a, &p2)).await?,
         "session.list_invites" => blocking(move || st.svc.session_invites(&row, &a)).await?,
         "session.revoke_invite" => {
@@ -668,7 +669,7 @@ async fn connection(state: Arc<AppState>, socket: WebSocket) -> Result<(), Strin
                         params["_conn"] = json!(conn_id);
                         let row = match state.svc.sessions.require(&sid) { Ok(r) => r, Err(e) => break Err(e.to_string()) };
                         let out = if method.starts_with("session.") && !matches!(method.as_str(), "session.create" | "session.list" | "session.list_mine" | "session.list_open" | "session.join" | "session.feed_sample") {
-                            call(&state, row, &actor, &method, &params, Some(terminal.as_str()).filter(|t| !t.is_empty())).await
+                            call(&state, row, &actor, &caller, &method, &params, Some(terminal.as_str()).filter(|t| !t.is_empty())).await
                         } else {
                             Err(WsError::invalid_op(format!("{method} is not a session call")))
                         };

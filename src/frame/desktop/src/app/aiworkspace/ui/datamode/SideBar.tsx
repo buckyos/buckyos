@@ -166,6 +166,8 @@ function Properties({ entity, focus }: { entity: EntityEnvelope; focus: { sectio
 // ---- 修改记录
 
 function originText(t: (key: string) => string, v: VersionInfo): string {
+  // the Mock executor's results are no macro's (Q27)
+  if (v.derived?.simulated) return t('aiworkspace.datamode.origin.simulated')
   if (v.run_id || v.derived || v.origin === 'program') return t('aiworkspace.datamode.origin.macro')
   switch (v.origin) {
     case 'agent': return t('aiworkspace.datamode.origin.agent')

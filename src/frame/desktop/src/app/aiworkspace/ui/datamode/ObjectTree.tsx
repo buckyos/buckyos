@@ -8,11 +8,12 @@
 
 import { createElement, useCallback, useMemo, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, Ellipsis, Filter, Lock, Plus, Search, X } from 'lucide-react'
-import type { ReadOk } from '../../api/session'
-import { DATA_ID, SHOWS_ID, SURFACES_ID, type EntityEnvelope, type Json, type Publication, type WishPayloadRead } from '../../api/types'
+import { DATA_ID, SHOWS_ID, SURFACES_ID, type EntityEnvelope, type Json, type Publication } from '../../api/types'
 import { useLoad, useOutlineVersion, useStore, useUserState, useVersion } from '../../state/hooks'
 import { useAiwsText } from '../../useAiwsText'
 import { useActionContext } from '../framework/hooks'
+import { useMacroWatch } from '../framework/macros'
+import { holdsMacro } from '../wish/macro'
 import { FreshnessBadge } from '../sources/FreshnessBadge'
 import { dataMenu, type DataHost } from './actions'
 import { FloatingMenu, SheetMenu, useLongPress, type MenuAt } from './menus'
@@ -131,20 +132,12 @@ export function ObjectTree({ activeId, host, phone, coarse }: { activeId: string
   )
 }
 
-/** The wishes holding a macro (a program), the "宏" group (§5.2): read from their payloads. */
+/** The wishes holding a macro, the "宏" group (§5.2, Q27): what `holdsMacro` says from their freshness (kept fetched
+ * by `useMacroWatch`) — the collaboration zone's "宏" asks the same, and also whether it can run now. */
 function useMacros(): EntityEnvelope[] {
   const store = useStore()
-  const outlineVersion = useOutlineVersion()
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- the outline version invalidates the list
-  const wishes = useMemo(() => store.outline.all().filter((e) => e.type_id === 'buckyos.wish' && !e.deleted), [store, outlineVersion])
-  const key = wishes.map((w) => `${w.entity_id}@${w.content_rev}`).join(',')
-  const load = useCallback(async () => {
-    const reads = await Promise.all(wishes.map((w) => store.readBatched<WishPayloadRead>(w.entity_id).then((r: ReadOk<WishPayloadRead>) => (r.content.payload.program ? w.entity_id : null), () => null)))
-    return new Set(reads.filter((id): id is string => id !== null))
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` names the wishes and their content versions
-  }, [store, key])
-  const withProgram = useLoad(load, key).data
-  return wishes.filter((w) => withProgram?.has(w.entity_id))
+  useMacroWatch()
+  return store.outline.all().filter((e) => holdsMacro(e, store.freshness.get(e.entity_id)))
 }
 
 function Marks({ entity, published }: { entity: EntityEnvelope; published: boolean }) {

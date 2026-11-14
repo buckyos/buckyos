@@ -229,6 +229,7 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
   const analysis = payload.analysis
   const needsAnalysis = freshness?.needs_analysis ?? !analysis
   const ready = analysis?.status === 'ready' && !needsAnalysis
+  // the Mock executor runs without a macro (Q27: it makes none); a real one runs its stored macro
   const hasMacro = mock || Boolean(payload.program)
   const repair = repairOf(run)
   const inputs = payload.inputs ?? []
@@ -389,7 +390,7 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
         </label>
         <button type="button" data-testid="aiws-wish-analyze" disabled={!canRun || running || Boolean(busy)} onClick={() => { void analyze() }}>{t('aiworkspace.wish.analyze')}</button>
         {!mock && <button type="button" data-testid="aiws-wish-code" data-repair={repair ? 'true' : 'false'} disabled={!canRun || running || Boolean(busy) || !ready} title={t(stageHint ?? (repair ? 'aiworkspace.wish.codeHint.repair' : 'aiworkspace.wish.codeHint.ready'))} onClick={() => { void code() }}>{t('aiworkspace.wish.code')}</button>}
-        <button type="button" data-testid="aiws-wish-run" disabled={!canRun || running || Boolean(busy) || !ready || !hasMacro} title={t(stageHint ?? (hasMacro ? 'aiworkspace.wish.runHint.ready' : 'aiworkspace.wish.runHint.noMacro'))} onClick={() => { void runMacro() }}>{t('aiworkspace.wish.run')}</button>
+        <button type="button" data-testid="aiws-wish-run" disabled={!canRun || running || Boolean(busy) || !ready || !hasMacro} title={t(stageHint ?? (mock ? 'aiworkspace.wish.runHint.mock' : hasMacro ? 'aiworkspace.wish.runHint.ready' : 'aiworkspace.wish.runHint.noMacro'))} onClick={() => { void runMacro() }}>{t('aiworkspace.wish.run')}</button>
       </div>
       <AiccLine run={run} />
       {run && isActive(run) && <Progress run={run} onCancel={() => { void cancel() }} />}

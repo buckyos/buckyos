@@ -1,6 +1,7 @@
 /* The UI framework (UI 框架 PRD §3.3, §4): actions registered once and shown by the tool zones and the main menu;
- * the main menu's height rules; the collaboration zone's 播放 and 宏 (its runs in the work log, K3); the status bar's
- * panel; the canvas layer of the toolbar configuration. Acceptance scenarios of §15 by number. */
+ * the main menu's height rules; the collaboration zone's 播放 and 宏 (wishes holding a program, Q27; its runs in the work
+ * log, K3); the status bar's panel; the canvas layer of the toolbar configuration. Acceptance scenarios of §15 by
+ * number. */
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -179,36 +180,71 @@ test('§15-5 播放: one path starts it at once; a path and a guide drop down; n
   await bob.close()
 })
 
-test('§15-6 宏: two macros on the canvas drop down; running one is the wish panel\'s run, its start and end are in the work log, and it comes first next time', async ({ page, api }) => {
+test('§15-6 宏: two macros on the canvas drop down — wishes holding a program, never the Mock executor\'s; running one is the wish panel\'s run, its start and end are in the work log, and it comes first next time', async ({ page, api }) => {
   test.slow()
+  // the scripted model (mock-llm.mjs) analyses and codes the real executor's wish in this browser
+  const llm = `http://127.0.0.1:${process.env.AIWS_E2E_LLM_PORT}/v1`
+  await page.addInitScript((baseUrl) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ llm: { baseUrl } })), llm)
   const ws = await api.demo(ALICE, 'quarterly', `f06 ${Date.now()}`)
-  // a second wish beside the first one, on the same canvas
+  const wish = await api.read(ALICE, ws.workspace_id, 'wish-analysis')
+  // the demo's wish on the real executor; a Mock wish beside it, on the same canvas
   const outline = await api.outline(ALICE, ws.workspace_id) as { entity_id: string; parent_id?: string; order_key?: string }[]
   const last = (parent: string) => outline.filter((e) => e.parent_id === parent).map((e) => e.order_key ?? '').sort().at(-1)
   const result = await api.commit(ALICE, ws, [
-    { op: 'entity.create', entity_id: 'wish-second', type_id: 'buckyos.wish', parent_id: 'sf-analysis-content', order_key: core().order_key_between(last('sf-analysis-content'), undefined), name: '第二个宏',
-      payload: { title: '第二个宏', prompt: '按产品汇总「原始销售数据」的销售额', executor: 'mock', output_mode: 'overwrite', inputs: [{ entity_id: 'sales', version: { mode: 'follow' } }],
-        output: { container_id: 'sf-analysis-content', surface_id: 'sf-analysis', name: '第二个宏的结果' } } },
-    { op: 'entity.create', entity_id: 'blk-wish-second', type_id: 'buckyos.cell', parent_id: 'sf-analysis', order_key: core().order_key_between(last('sf-analysis'), undefined),
-      placement: { x: 1460, y: 190, w: 420, h: 300 }, payload: { view: { type: 'wish' }, source_ref: { entity_id: 'wish-second' } } },
+    { op: 'entity.set_keys', entity_id: 'wish-analysis', keys: [
+      { key: 'executor', value: 'xllm', expect: { rev: wish.content.key_revs.executor } },
+      { key: 'prompt', value: '按区域汇总「原始销售数据」的销售额，并写一段解读', expect: { rev: wish.content.key_revs.prompt } }] },
+    { op: 'entity.create', entity_id: 'wish-mock', type_id: 'buckyos.wish', parent_id: 'sf-analysis-content', order_key: core().order_key_between(last('sf-analysis-content'), undefined), name: '模拟的许愿格',
+      payload: { title: '模拟的许愿格', prompt: '按产品汇总「原始销售数据」的销售额', executor: 'mock', output_mode: 'overwrite', inputs: [{ entity_id: 'sales', version: { mode: 'follow' } }],
+        output: { container_id: 'sf-analysis-content', surface_id: 'sf-analysis', name: '模拟的结果' } } },
+    { op: 'entity.create', entity_id: 'blk-wish-mock', type_id: 'buckyos.cell', parent_id: 'sf-analysis', order_key: core().order_key_between(last('sf-analysis'), undefined),
+      placement: { x: 1460, y: 190, w: 420, h: 300 }, payload: { view: { type: 'wish' }, source_ref: { entity_id: 'wish-mock' } } },
   ])
   expect(result.status, JSON.stringify(result)).toBe('accepted')
   await openCanvas(page, ALICE, ws.workspace_id)
   // no analysis yet: no macro can run, the entry is not shown
   await expect(page.getByTestId('aiws-view-toolbar')).toBeVisible()
-  await expect(page.getByTestId('aiws-collab-macro')).toHaveCount(0)
-  for (const block of ['blk-wish', 'blk-wish-second']) {
-    await fitAll(page)
-    await page.getByTestId(`aiws-canvas-block-${block}`).dblclick()
-    await page.getByTestId('aiws-wish-analyze').click()
-    await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible({ timeout: 30_000 })
-    await page.getByTestId('aiws-side-close').click()
-  }
   const macro = page.getByTestId('aiws-collab-macro')
+  await expect(macro).toHaveCount(0)
+  const panelOf = async (block: string) => { await fitAll(page); await page.getByTestId(`aiws-canvas-block-${block}`).dblclick() }
+  // the Mock wish analysed: it can run, but it holds no macro (Q27) — still no entry
+  await panelOf('blk-wish-mock')
+  await page.getByTestId('aiws-wish-analyze').click()
+  await expect(page.getByTestId('aiws-wish-analysis')).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-next', 'run')
+  await page.getByTestId('aiws-side-close').click()
+  await page.waitForTimeout(1000) // the freshness of both wishes is in
+  await expect(macro).toHaveCount(0)
+  // the real one: analysed, coded (its macro and trial run), applied — now it holds a macro
+  await panelOf('blk-wish')
+  await page.getByTestId('aiws-wish-analyze').click()
+  await expect(page.getByTestId('aiws-wish-contract')).toContainText('summary', { timeout: 30_000 })
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'needs_coding')
+  await page.getByTestId('aiws-wish-next').click()
+  await expect(page.getByTestId('aiws-wish-candidate')).toHaveAttribute('data-stage', 'code', { timeout: 60_000 })
+  await page.getByTestId('aiws-wish-apply').click()
+  await expect(page.getByTestId('aiws-wish-main')).toHaveAttribute('data-main', 'current', { timeout: 30_000 })
+  await page.getByTestId('aiws-side-close').click()
+  // a second wish holding the same macro (its task contract and program), on the same canvas
+  const coded = (await api.read(ALICE, ws.workspace_id, 'wish-analysis')).content.payload
+  expect(coded.program.api_version).toBe(3)
+  const now = await api.outline(ALICE, ws.workspace_id) as { entity_id: string; parent_id?: string; order_key?: string }[]
+  const lastNow = (parent: string) => now.filter((e) => e.parent_id === parent).map((e) => e.order_key ?? '').sort().at(-1)
+  const second = await api.commit(ALICE, { workspace_id: ws.workspace_id, epoch: ws.epoch }, [
+    { op: 'entity.create', entity_id: 'wish-second', type_id: 'buckyos.wish', parent_id: 'sf-analysis-content', order_key: core().order_key_between(lastNow('sf-analysis-content'), undefined), name: '第二个宏',
+      payload: { title: '第二个宏', prompt: coded.prompt, executor: 'xllm', output_mode: 'overwrite', inputs: coded.inputs, analysis: coded.analysis, program: coded.program,
+        output: { container_id: 'sf-analysis-content', surface_id: 'sf-analysis', name: '第二个宏的结果' } } },
+    { op: 'entity.create', entity_id: 'blk-wish-second', type_id: 'buckyos.cell', parent_id: 'sf-analysis', order_key: core().order_key_between(lastNow('sf-analysis'), undefined),
+      placement: { x: 1460, y: 560, w: 420, h: 300 }, payload: { view: { type: 'wish' }, source_ref: { entity_id: 'wish-second' } } },
+  ])
+  expect(second.status, JSON.stringify(second)).toBe('accepted')
+  // two macros: a drop-down of the two, without the Mock wish
   await expect(macro).toHaveAttribute('aria-haspopup', 'menu', { timeout: 15_000 })
   await macro.click()
   const list = page.getByTestId('aiws-collab-macro-list')
   await expect(list.locator('[data-testid^="aiws-macro-"]')).toHaveCount(2)
+  await expect(list.getByTestId('aiws-macro-wish-analysis')).toBeVisible()
+  await expect(list.getByTestId('aiws-macro-wish-mock')).toHaveCount(0)
   await list.getByTestId('aiws-macro-wish-second').click()
   // the same run as the wish panel's: its candidate waits in the wish; its start and its end are entries of the status
   // bar's work log (K3), not notices
@@ -225,9 +261,10 @@ test('§15-6 宏: two macros on the canvas drop down; running one is the wish pa
   await expect(list.locator('[data-testid^="aiws-macro-"]').first()).toHaveAttribute('data-testid', 'aiws-macro-wish-second')
   await page.keyboard.press('Escape')
   await expect.poll(async () => (await api.rpc(ALICE, 'ws.get_user_state', { workspace_id: ws.workspace_id })).entries['ui:recent-macro']).toBe('wish-second')
-  // the main menu lists the same macros under 协作 ▸ 运行宏
+  // the main menu lists the same macros under 协作 ▸ 运行宏, the Mock wish not among them
   await mainMenu(page, 'aiws-menu-collab', 'aiws-menu-macros')
   await expect(page.getByTestId('aiws-macro-wish-second')).toBeVisible()
+  await expect(page.getByTestId('aiws-macro-wish-mock')).toHaveCount(0)
   await page.keyboard.press('Escape')
 })
 

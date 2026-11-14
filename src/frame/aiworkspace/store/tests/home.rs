@@ -187,7 +187,7 @@ fn the_public_lecture_catalogue_lists_what_the_caller_may_open_without_a_link() 
     assert_eq!(titles(&carol).len(), 1);
     let mut closed = env.svc.sessions.require(&sid).unwrap();
     let presenter = env.svc.require_actor(&closed, &alice(), None).unwrap();
-    env.svc.session_set_access(&mut closed, &presenter, &json!({ "access": "closed" })).unwrap();
+    env.svc.session_set_access(&mut closed, &presenter, &alice(), &json!({ "access": "closed" })).unwrap();
     assert!(titles(&carol).is_empty());
     assert!(env.svc.session_actor(&env.svc.sessions.require(&sid).unwrap(), &carol, None).unwrap().is_none());
     assert_eq!(titles(&bob()).len(), 1, "who joined keeps it");
@@ -196,4 +196,94 @@ fn the_public_lecture_catalogue_lists_what_the_caller_may_open_without_a_link() 
     let mine = env.svc.session_list_open(&bob(), 100).unwrap();
     let second = mine["sessions"].as_array().unwrap().iter().find(|s| s["session_id"] == other["session"]["session_id"]).unwrap();
     assert_eq!((&second["my_role"], &second["presenting"]), (&json!("presenter"), &json!(true)));
+}
+
+/// Q19: a session's permission object is the Surface of its path's first step unless named; its readers (by path
+/// inheritance, deny first) open the room without a link; it is bound by id, so renaming or moving the Surface keeps
+/// it; the owner or the presenter may choose another object; one that is gone admits nobody.
+#[test]
+fn the_readers_of_a_sessions_permission_object_open_it_without_a_link() {
+    let env = env();
+    let src = courseware(&env);
+    let created = env.svc.session_create(&alice(), &json!({ "workspace_id": src, "path_id": "path-intro", "title": "第一讲" })).unwrap();
+    let sid = created["session"]["session_id"].as_str().unwrap().to_string();
+    // the default: the canvas of the first step (frame1 is on 发布会), by id, named for the presenter
+    assert_eq!(created["session"]["policy"]["readers_of"], "s-launch");
+    assert_eq!((&created["session"]["readers_of"]["path"], &created["session"]["readers_of"]["title"], &created["session"]["readers_of"]["alive"]), (&json!("/surfaces/发布会"), &json!("发布会"), &json!(true)));
+    let row = || env.svc.sessions.require(&sid).unwrap();
+    let opens = |who: &Caller| env.svc.session_actor(&row(), who, None).unwrap().is_some_and(|a| a.role.as_str() == "audience");
+    let listed = |who: &Caller| env.svc.session_list_open(who, 100).unwrap()["sessions"].as_array().unwrap().iter().any(|s| s["session_id"] == json!(sid));
+    let carol = Caller::user("carol");
+    let handle = env.svc.workspace(&src).unwrap();
+    {
+        let mut ws = handle.lock().unwrap();
+        // bob reads only the canvas being presented, carol only the other one
+        ws.grant(&alice(), "bob", Some("s-launch"), &caps(&["read"])).unwrap();
+        ws.grant(&alice(), "carol", Some("s-work"), &caps(&["read"])).unwrap();
+    }
+    assert!(opens(&bob()) && listed(&bob()), "a reader of the presented canvas");
+    assert!(!opens(&carol) && !listed(&carol), "a reader of another canvas only");
+    // inherited from above, and refused by a deny on the way down
+    let dave = Caller::user("dave");
+    {
+        let mut ws = handle.lock().unwrap();
+        ws.grant(&alice(), "dave", Some("/surfaces"), &caps(&["read"])).unwrap();
+    }
+    assert!(opens(&dave) && listed(&dave), "read inherited from the canvases' folder");
+    handle.lock().unwrap().acl_set(&alice(), &json!([{ "subject": "dave", "resource": "s-launch", "deny": ["read"] }])).unwrap();
+    assert!(!opens(&dave) && !listed(&dave), "a deny on the canvas wins");
+    // renamed and moved into a canvas folder: the same object, the same readers
+    {
+        let mut ws = handle.lock().unwrap();
+        let life = ws.read(&alice(), "s-launch", None).unwrap()["life_rev"].as_u64().unwrap();
+        ok(&mut ws, &alice(), json!([
+            { "op": "entity.create", "entity_id": "cf-a", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "y", "payload": { "kind": "folder", "title": "归档" } },
+            { "op": "entity.rename", "entity_id": "s-launch", "name": "发布会-改", "expect": { "rev": life } },
+            { "op": "tree.move", "entity_id": "s-launch", "new_parent_id": "cf-a", "order_key": "a" },
+        ]));
+    }
+    assert!(opens(&bob()) && listed(&bob()), "bob still reads it after the move");
+    assert_eq!(env.svc.readers_of_json(&row())["path"], "/surfaces/归档/发布会-改");
+    // the owner or the presenter may choose another object (a path or an id the caller reads there)
+    let mut s = row();
+    let owner = env.svc.require_actor(&s, &alice(), None).unwrap();
+    let changed = env.svc.session_set_access(&mut s, &owner, &alice(), &json!({ "readers_of": "/surfaces/总结" })).unwrap();
+    assert_eq!((&changed["policy"]["readers_of"], &changed["readers_of"]["title"]), (&json!("s-work"), &json!("总结")));
+    assert!(opens(&carol) && listed(&carol), "carol reads the new object");
+    assert!(!opens(&bob()) && !listed(&bob()), "bob does not");
+    // the whole Workspace is an object too
+    env.svc.session_set_access(&mut s, &owner, &alice(), &json!({ "readers_of": "/" })).unwrap();
+    assert_eq!(env.svc.readers_of_json(&row())["path"], "/");
+    assert!(!opens(&carol), "carol reads one canvas, not the Workspace");
+    // who joined keeps the room; nobody else may choose; an object the caller cannot read is not found
+    env.svc.session_set_access(&mut s, &owner, &alice(), &json!({ "readers_of": "s-launch" })).unwrap();
+    env.svc.session_join(&row(), &bob(), None, Some("Bob")).unwrap();
+    let audience = env.svc.require_actor(&row(), &bob(), None).unwrap();
+    let mut s = row();
+    assert_eq!(env.svc.session_set_access(&mut s, &audience, &bob(), &json!({ "readers_of": "/" })).unwrap_err().code.as_str(), "PERMISSION_DENIED");
+    let other = env.svc.session_create(&alice(), &json!({ "workspace_id": src, "path_id": "path-intro", "title": "第二讲", "presenter": "bob" })).unwrap();
+    let mut s2 = env.svc.sessions.require(other["session"]["session_id"].as_str().unwrap()).unwrap();
+    let presenter = env.svc.require_actor(&s2, &bob(), None).unwrap();
+    assert_eq!(env.svc.session_set_access(&mut s2, &presenter, &bob(), &json!({ "readers_of": "s-work" })).unwrap_err().code.as_str(), "NOT_FOUND");
+    assert_eq!(env.svc.session_set_access(&mut s2, &presenter, &bob(), &json!({ "readers_of": "s-launch" })).unwrap()["policy"]["readers_of"], "s-launch");
+    assert!(env.svc.session_create(&bob(), &json!({ "workspace_id": src, "path_id": "path-intro", "readers_of": 7 })).is_err());
+    // named at creation; deleted later: nobody comes in without a link, those who joined stay
+    {
+        let mut ws = handle.lock().unwrap();
+        ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "d-class", "type_id": "buckyos.container", "parent_id": "data", "order_key": "zz", "name": "班级", "payload": { "kind": "folder", "title": "班级" } }]));
+        ws.grant(&alice(), "carol", Some("d-class"), &caps(&["read"])).unwrap();
+    }
+    let third = env.svc.session_create(&alice(), &json!({ "workspace_id": src, "path_id": "path-intro", "title": "第三讲", "readers_of": "/data/班级" })).unwrap();
+    let tid = third["session"]["session_id"].as_str().unwrap().to_string();
+    assert_eq!(third["session"]["policy"]["readers_of"], "d-class");
+    let third_row = || env.svc.sessions.require(&tid).unwrap();
+    assert!(env.svc.session_actor(&third_row(), &carol, None).unwrap().is_some());
+    {
+        let mut ws = handle.lock().unwrap();
+        let life = ws.read(&alice(), "d-class", None).unwrap()["life_rev"].as_u64().unwrap();
+        ok(&mut ws, &alice(), json!([{ "op": "entity.delete", "entity_id": "d-class", "expect": { "rev": life } }]));
+    }
+    assert!(env.svc.session_actor(&third_row(), &carol, None).unwrap().is_none());
+    assert_eq!(env.svc.readers_of_json(&third_row())["alive"], false);
+    assert!(opens(&bob()), "who joined comes back");
 }

@@ -6,7 +6,12 @@ export type SessionState = 'prepared' | 'live' | 'ended' | 'archived' | 'expired
 export type SessionRole = 'presenter' | 'owner' | 'audience' | 'display' | 'prompter'
 export type LinkKind = 'at' | 'dt' | 'pt'
 
-export interface SessionPolicy { guest_interact: boolean; voice: boolean; show_names: boolean; expected_audience: number; media_limit_mib: number }
+export interface SessionPolicy { guest_interact: boolean; voice: boolean; show_names: boolean; expected_audience: number; media_limit_mib: number; readers_of?: string }
+
+/** The session's permission object (UI 框架 PRD Q19): an entity of the source Workspace (`root`: the Workspace) whose
+ * readers may come in without a link; `alive: false` when it is gone (then only a link lets people in). The presenter's
+ * and the owner's (session.create / get / set_access). */
+export interface ReadersOf { entity_id: string; path: string | null; title: string | null; type_id: string | null; kind: string | null; alive: boolean }
 
 /** The authoritative stage (Q01-C): what the service last confirmed. */
 export interface SessionStage {
@@ -53,6 +58,7 @@ export interface SessionInfo {
   expires_at: string | null
   controller: string | null
   policy?: SessionPolicy
+  readers_of?: ReadersOf
   baseline?: { seq: number; epoch: string; snapshot_id: string; content_root: string; notes_entity_id?: string | null; source: { workspace_id: string; epoch: string; seq: number; title?: string } }
   archive?: SessionArchive
   // session.get / join

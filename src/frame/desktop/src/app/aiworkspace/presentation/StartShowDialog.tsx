@@ -108,7 +108,7 @@ export function StartShowDialog({ initialPathId, initialStepId, onClose, onStart
           </>
         )}
         {kind === 'session' && transport && pathId && (
-          <StartSessionPanel store={store} transport={transport} pathId={pathId} title={paths.find((p) => p.entity_id === pathId)?.title ?? store.session.info().title} disabled={steps.length === 0} onStarted={onClose} />
+          <StartSessionPanel store={store} transport={transport} pathId={pathId} title={paths.find((p) => p.entity_id === pathId)?.title ?? store.session.info().title} firstSurfaceId={steps[0]?.surfaceId ?? null} disabled={steps.length === 0} onStarted={onClose} />
         )}
         {error && <div className="aiws-error" role="alert">{t('aiworkspace.presentation.start.failed', { detail: error })}</div>}
         {kind === 'local' && <div className="aiws-dialog-actions">
