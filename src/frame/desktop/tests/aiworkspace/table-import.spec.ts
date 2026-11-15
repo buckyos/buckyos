@@ -156,6 +156,7 @@ test('TI-04 a flow page: the table Block goes after the selected Block; one undo
     { op: 'entity.create', entity_id: 'c1', type_id: 'buckyos.cell', parent_id: 'sf-t', order_key: 'a', payload: { view: { type: 'richtext' }, source_ref: { entity_id: 't1' } } },
     { op: 'entity.create', entity_id: 'c2', type_id: 'buckyos.cell', parent_id: 'sf-t', order_key: 'b', payload: { view: { type: 'richtext' }, source_ref: { entity_id: 't2' } } }])
   await openCanvas(page, ALICE, ws.workspace_id)
+  await page.getByTestId('aiws-cell-frame-c1').hover()
   await page.getByTestId('aiws-flow-handle-c1').click()
   await paste(page, { text: 'name\tqty\na\t1\nb\t2\n' })
   await wizard(page).getByTestId('aiws-table-start').click()

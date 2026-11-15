@@ -6277,24 +6277,6 @@
       "licenseFileCount": 1
     },
     {
-      "id": "5df3f459c99dba9ef1dc",
-      "name": "buckyos",
-      "version": "0.7.183",
-      "ecosystem": "npm",
-      "description": "BuckyOS WebSDK for browser and Node.js environments",
-      "homepage": "https://github.com/buckyos/buckyos-websdk#readme",
-      "repository": "https://github.com/buckyos/buckyos-websdk.git",
-      "revision": "",
-      "license": "Apache-2.0",
-      "scopes": [
-        "opendan",
-        "sdk-tool",
-        "sys-test",
-        "sys-test-web"
-      ],
-      "licenseFileCount": 2
-    },
-    {
       "id": "d40bb9d59ae410aa55c6",
       "name": "buckyos",
       "version": "0.7.184",
@@ -6306,6 +6288,10 @@
       "license": "Apache-2.0",
       "scopes": [
         "desktop",
+        "opendan",
+        "sdk-tool",
+        "sys-test",
+        "sys-test-web",
         "text-editor"
       ],
       "licenseFileCount": 2

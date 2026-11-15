@@ -391,7 +391,7 @@ test('UI-M06 extension controls on a phone (扩展控件 M6; 控件机制 G22, H
   expect((await api.rpc(ALICE, 'ws.get_info', { workspace_id: ws.workspace_id })).head_seq).toBe(seq)
 })
 
-test('UI-M07 a phone edits a flow page (§16.5): typing in place, ＋ inserts below, ⋮⋮ moves (menu or finger) and deletes, undo in the title zone; a free canvas stays view only', async ({ page, api }) => {
+test('UI-M07 a phone edits a flow page (§16.5): typing in place, ＋ inserts above, ⋮⋮ moves (menu or finger) and deletes, undo in the title zone; a free canvas stays view only', async ({ page, api }) => {
   const ws = await api.sample(ALICE, `phone flow ${Date.now()}`)
   // a free canvas after the page
   expect((await api.commit(ALICE, ws, [
@@ -435,7 +435,13 @@ test('UI-M07 a phone edits a flow page (§16.5): typing in place, ＋ inserts be
   await expect.poll(async () => JSON.stringify(await api.ast(ALICE, ws.workspace_id, 'notes'))).toContain('typed on a phone')
   await expect(toolbar.getByTestId('aiws-undo')).toBeEnabled()
 
-  // ＋ inserts below the Block; its menu stays on the screen
+  // the Block being edited shows ＋ on the line above it: it inserts before the Block; its menu stays on the screen
+  await expect(page.getByTestId('aiws-flow-plus-cell-notes')).toBeVisible()
+  await expect(page.getByTestId('aiws-flow-plus-cell-all-tasks')).toBeHidden()
+  const notesPlus = (await page.getByTestId('aiws-flow-plus-cell-notes').boundingBox())!
+  const notesGrip = (await page.getByTestId('aiws-flow-handle-cell-notes').boundingBox())!
+  expect(Math.abs(notesPlus.x - notesGrip.x)).toBeLessThan(1)
+  expect(notesPlus.y + notesPlus.height).toBeLessThanOrEqual(notesGrip.y + 1)
   await page.getByTestId('aiws-flow-plus-cell-notes').tap()
   const addMenu = page.getByTestId('aiws-flow-add-menu')
   await expect(addMenu).toBeVisible()
@@ -444,14 +450,19 @@ test('UI-M07 a phone edits a flow page (§16.5): typing in place, ＋ inserts be
   expect(addBox.x + addBox.width).toBeLessThanOrEqual(viewport.width)
   await addMenu.getByTestId('aiws-flow-add-table').tap()
   await expect.poll(async () => (await order()).length).toBe(6)
-  const added = (await order())[1]
-  expect(await order()).toEqual(['cell-notes', added, 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
+  const added = (await order())[0]
+  expect(await order()).toEqual([added, 'cell-notes', 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
   await expect(frame(added)).toBeVisible()
 
-  // ⋮⋮ opens the Block's menu: move down
+  // ⋮⋮ opens the Block's menu: move down, twice
+  await page.getByTestId(`aiws-flow-handle-${added}`).tap()
+  await page.getByTestId('aiws-flow-block-menu').getByTestId(`aiws-down-${added}`).tap()
+  await expect.poll(order).toEqual(['cell-notes', added, 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
   await page.getByTestId(`aiws-flow-handle-${added}`).tap()
   await page.getByTestId('aiws-flow-block-menu').getByTestId(`aiws-down-${added}`).tap()
   await expect.poll(order).toEqual(['cell-notes', 'cell-all-tasks', added, 'cell-open-tasks', 'cell-info', 'cell-diagram'])
+  await expect.poll(() => page.locator('[data-testid="aiws-flow"] > [data-cell-id]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-cell-id'))))
+    .toEqual(['cell-notes', 'cell-all-tasks', added, 'cell-open-tasks', 'cell-info', 'cell-diagram'])
 
   // a finger on ⋮⋮ drags the Block: dropped on the lower half of the table below, it goes after it
   const fingers = await Fingers.of(page)

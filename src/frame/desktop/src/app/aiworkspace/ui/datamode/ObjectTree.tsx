@@ -2,7 +2,8 @@
  * folders holding them; "画布自带的数据" folded; then the "宏" folder — a folder like the others, listing the wishes that
  * hold a macro wherever they are — and, always the last top-level row, "工作区权限" (owner 11-14: no group or area of
  * their own). Its head is the data mode's way back to the canvas and to the main menu (`lead`, owner 11-14: no title
- * row above the data mode), the Workspace's name, ＋ and the filter. Search keeps the
+ * row above the data mode) and ＋; the filter is at the end of the search row (owner 11-14: the Workspace's name is in
+ * the status bar, folding the tree is the tab row's). Search keeps the
  * levels; the filters (types, origin, everything) and what is unfolded are the person's (user state). Each row: the
  * type's icon, the name, its marks (a generated result and its freshness, a write lock, published, an external source,
  * degraded content). A single click opens the object in the preview tab, a double click in a tab of its own. The menu
@@ -227,24 +228,25 @@ export function ObjectTree({ activeId, host, phone, coarse, lead, tail }: {
     <NodeRow key={PERMISSIONS_TAB} id={PERMISSIONS_TAB} testId="aiws-dm-perm-item" labelTestId="aiws-dm-perm-node" active={activeId === PERMISSIONS_TAB} tabStop={tabStop === PERMISSIONS_TAB} coarse={coarse}
       onOpen={(preview) => host.open(PERMISSIONS_TAB, { preview })} onMenu={(at) => openMenu(PERMISSIONS_TAB, at)} />,
   ]
-  const title = store.session.info().title
   const typeLabel = (id: string) => typeName({ type_id: id } as EntityEnvelope)
   const menuItems = menu ? dataMenu({ ...actions, target: menu.target, host }) : []
   return (
     <div className="aiws-dm-tree" data-testid="aiws-datatree" data-filtering={filtering(filter) ? 'true' : 'false'}>
       <div className="aiws-dm-tree-head">
         {lead}
-        <b className="aiws-dm-tree-title" title={title} data-testid="aiws-dm-workspace-title">{title}</b>
+        <span className="aiws-grow" />
         {tail}
         <button type="button" className="aiws-tool" aria-label={t('aiworkspace.datamode.add')} title={t('aiworkspace.datamode.addHint')} data-testid="aiws-dm-tree-add"
           onClick={(event) => { const r = event.currentTarget.getBoundingClientRect(); openMenu(activeId && activeId !== PERMISSIONS_TAB ? activeId : null, { x: r.left, y: r.bottom + 4 }) }}><Plus size={18} /></button>
+      </div>
+      <div className="aiws-dm-search-row">
+        <label className="aiws-dm-search">
+          <Search size={16} aria-hidden="true" />
+          <input type="search" aria-label={t('aiworkspace.data.tree.search')} placeholder={t('aiworkspace.datamode.searchPlaceholder')} data-testid="aiws-dm-search" value={query} onChange={(event) => setQuery(event.target.value)} />
+          {query && <button type="button" className="aiws-tool aiws-tool-small" aria-label={t('aiworkspace.datamode.clearSearch')} onClick={() => setQuery('')}><X size={14} /></button>}
+        </label>
         <button type="button" className="aiws-tool" aria-label={t('aiworkspace.datamode.filter')} title={t('aiworkspace.datamode.filter')} aria-pressed={filtering(filter)} aria-expanded={filterOpen} data-testid="aiws-dm-filter" onClick={() => setFilterOpen((v) => !v)}><Filter size={18} /></button>
       </div>
-      <label className="aiws-dm-search">
-        <Search size={16} aria-hidden="true" />
-        <input type="search" aria-label={t('aiworkspace.data.tree.search')} placeholder={t('aiworkspace.datamode.searchPlaceholder')} data-testid="aiws-dm-search" value={query} onChange={(event) => setQuery(event.target.value)} />
-        {query && <button type="button" className="aiws-tool aiws-tool-small" aria-label={t('aiworkspace.datamode.clearSearch')} onClick={() => setQuery('')}><X size={14} /></button>}
-      </label>
       {filterOpen && (
         <div className="aiws-dm-filter" data-testid="aiws-dm-filter-panel">
           <div className="aiws-muted">{t('aiworkspace.data.tree.typeFilter')}</div>

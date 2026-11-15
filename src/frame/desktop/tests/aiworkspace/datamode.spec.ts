@@ -77,15 +77,25 @@ test('§15-11 the object tree lists only the data sources by default; the filter
   const topLevel = await page.locator('[role="tree"] > [role="treeitem"]').evaluateAll((els) => els.map((el) => el.getAttribute('data-entity-id')))
   expect(topLevel.slice(-2)).toEqual(['@macros', '@permissions'])
   await expect(page.getByTestId('aiws-dm-perm-node')).toBeVisible()
-  // no row above the data mode (owner 11-14): "返回画布" and the main menu head the tree, with the Workspace's name
+  // no row above the data mode (owner 11-14): "返回画布" and the main menu head the tree; the Workspace's name is on
+  // the status bar's left, the filter ends the search row, the tree's fold starts the tab row
   for (const gone of ['aiws-view-toolbar', 'aiws-main-toolbar']) await expect(page.getByTestId(gone), gone).toHaveCount(0)
   const left = page.getByTestId('aiws-dm-left')
   await expect(left.getByTestId('aiws-top-canvas')).toBeVisible()
   await expect(left.getByTestId('aiws-main-menu')).toBeVisible()
-  await expect(left.getByTestId('aiws-dm-workspace-title')).toHaveText(/datamode/)
+  await expect(left.getByTestId('aiws-dm-workspace-title')).toHaveCount(0)
+  await expect(page.getByTestId('aiws-status-row').getByTestId('aiws-dm-workspace-title')).toHaveText(/datamode/)
+  await expect(page.getByTestId('aiws-dm-ws-more')).toContainText('所有者')
   const head = (await left.locator('.aiws-dm-tree-head').boundingBox())!
   const body = (await page.getByTestId('aiws-dm').boundingBox())!
   expect(head.y - body.y).toBeLessThan(8)
+  const search = (await page.getByTestId('aiws-dm-search').boundingBox())!
+  const filterButton = (await page.getByTestId('aiws-dm-filter').boundingBox())!
+  expect(Math.abs((filterButton.y + filterButton.height / 2) - (search.y + search.height / 2))).toBeLessThan(6)
+  const fold = (await page.getByTestId('aiws-dm-tree-hide').boundingBox())!
+  const main = (await page.locator('.aiws-dm-main').boundingBox())!
+  expect(fold.x).toBeGreaterThanOrEqual(main.x)
+  expect(fold.x - main.x).toBeLessThan(12)
   // the tree put away: they start the tab row; the main menu's "添加评论" is about the current object
   await page.getByTestId('aiws-dm-tree-hide').click()
   await expect(left).toHaveCount(0)
@@ -396,7 +406,10 @@ test('§5.2 the object tree by keyboard (WAI-ARIA tree): one tab stop; arrows mo
   // one tab stop: the first row while nothing is open
   await expect(page.locator('[role="treeitem"][tabindex="0"]')).toHaveCount(1)
   await expect(item('x')).toHaveAttribute('tabindex', '0')
+  // the filter ends the search row: Tab from the search reaches it, then the tree
   await page.getByTestId('aiws-dm-search').focus()
+  await page.keyboard.press('Tab')
+  await expect(page.getByTestId('aiws-dm-filter')).toBeFocused()
   await page.keyboard.press('Tab')
   await expect.poll(focused).toBe('x')
   // ↓ ↑, → into the folder's first row, ← back to it, ← folds, → unfolds
@@ -519,10 +532,11 @@ test.describe('on a phone', () => {
     const mode = page.getByTestId('aiws-dm')
     await expect(mode).toHaveAttribute('data-layout', 'phone')
     await expect(mode).toHaveAttribute('data-layer', 'tree')
-    // the tree's head is the top bar: "返回画布", the main menu, the Workspace's name, ＋ — one row
+    // the tree's head is the top bar: "返回画布", the main menu, ＋ — one row; the Workspace's name in the status bar
     await expect(page.getByTestId('aiws-dm-phone-bar')).toHaveCount(0)
     const left = page.getByTestId('aiws-dm-left')
-    for (const id of ['aiws-top-canvas', 'aiws-main-menu', 'aiws-dm-workspace-title', 'aiws-dm-tree-add']) await expect(left.getByTestId(id), id).toBeVisible()
+    for (const id of ['aiws-top-canvas', 'aiws-main-menu', 'aiws-dm-tree-add', 'aiws-dm-filter']) await expect(left.getByTestId(id), id).toBeVisible()
+    await expect(page.getByTestId('aiws-status-row').getByTestId('aiws-dm-workspace-title')).toBeVisible()
     const headBox = (await left.locator('.aiws-dm-tree-head').boundingBox())!
     expect(headBox.height).toBeLessThan(60)
     // the tree: the whole screen, rows of at least 48 px with their ⋯ always shown

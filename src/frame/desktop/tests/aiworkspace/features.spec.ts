@@ -659,6 +659,10 @@ test('an unreachable backend is shown as such, edits stay unsaved, and work resu
   await openWorkspace(page, ALICE, ws.workspace_id)
   const all = page.getByTestId('aiws-table-cell-all-tasks')
   await expect(all.getByTestId('aiws-row')).toHaveCount(5)
+  // the page reads its tables again while it loads: the backend goes away only once those reads are over
+  let lastRead = Date.now()
+  page.on('request', (request) => { if (request.url().includes('/kapi/aiworkspace') && !/"method":"(doc\.wait_changes|presence\.heartbeat|ws\.time)"/.test(request.postData() ?? '')) lastRead = Date.now() })
+  await expect.poll(() => Date.now() - lastRead, { intervals: [100] }).toBeGreaterThan(500)
   let down = true
   await page.route('**/kapi/aiworkspace', async (route) => { if (down) await route.abort('connectionrefused'); else await route.continue() })
   await all.getByTestId('aiws-cell-task-40-owner').getByRole('button').first().click()

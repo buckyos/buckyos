@@ -1,9 +1,10 @@
 /* A flow-layout Surface (phase two §8.1; 流式页交互改进 §2): a document column in Notion's manner. Blocks and
  * groups follow in sibling order with no frame of their own; in edit mode every editor is live, so clicking puts
- * the caret where it lands. Hovering a Block shows its handles in the left margin: ＋ inserts below, ⋮⋮ drags it
- * to another place (or into a group) and, clicked, selects it and opens its menu. Below the last Block a click
- * continues writing. Moves are auto-merge (`tree.place` / `tree.move`). A phone edits a page the same way (UI
- * improvement §16.5): touch has no hover, so the handles stay faintly shown and a finger drags ⋮⋮.
+ * the caret where it lands. Hovering a Block shows its handles in one column of the left margin: ⋮⋮ beside its first
+ * line drags it to another place (or into a group) and, clicked, selects it and opens its menu; ＋ on the line above
+ * inserts before it. Below the last Block a click continues writing. Moves are auto-merge (`tree.place` /
+ * `tree.move`). A phone edits a page the same way (UI improvement §16.5): touch has no hover, so ⋮⋮ stays faintly
+ * shown, ＋ shows for the Block being edited, and a finger drags ⋮⋮.
  *
  * A Block's title row (UI 框架 PRD §6.2) carries its tools: the type's icon, at most two primary actions, its quick
  * properties and ⋯ — the Block's whole menu (§10.3), which the canvas view builds and shows (the same list as on a free
@@ -242,8 +243,9 @@ function ContainerFlow({ container, ...props }: ItemProps & { container: EntityE
   )
 }
 
-/** ＋ and ⋮⋮ in the left margin of a hovered Block or group: ＋ opens the insert menu; ⋮⋮ drags, or (clicked) selects it
- * and opens its menu — the Block's whole menu, shown by the canvas view (§10.3). */
+/** ⋮⋮ and ＋ stacked in the left margin of a hovered Block or group: ⋮⋮ beside its first line drags, or (clicked) selects
+ * it and opens its menu — the Block's whole menu, shown by the canvas view (§10.3); ＋ on the line above opens the menu
+ * that inserts before it. */
 function Gutter({ entity, kind, ...props }: ItemProps & { entity: EntityEnvelope; siblings: EntityEnvelope[]; index: number; kind: 'block' | 'group' }) {
   const store = useStore()
   const { t } = useAiwsText()
@@ -264,12 +266,14 @@ function Gutter({ entity, kind, ...props }: ItemProps & { entity: EntityEnvelope
   const canInsert = policy.insert && Boolean(parent?.capabilities.includes('structure'))
   if (!policy.select && !canInsert) return null
   const name = entity.title ?? entity.name ?? (kind === 'group' ? t('aiworkspace.canvas.group') : entity.view_type ?? 'Block')
+  // before this item: right after the one above it, first when it is the first
+  const afterId = props.siblings[props.index - 1]?.entity_id ?? null
   const addItems: MenuItem[] = [
     // a type that is canvas-only says so itself (`traits.flowInsertable`)
     ...registryEntries().filter((entry) => entry.catalog.standard && entry.definition.traits?.flowInsertable !== false).map((entry): MenuItem => ({
-      id: `add-${entry.definition.type}`, testId: `aiws-flow-add-${entry.definition.type}`, label: entry.title, run: () => props.insertAt(entry, parentId, entity.entity_id),
+      id: `add-${entry.definition.type}`, testId: `aiws-flow-add-${entry.definition.type}`, label: entry.title, run: () => props.insertAt(entry, parentId, afterId),
     })),
-    { id: 'add-group', testId: 'aiws-flow-add-group', label: t('aiworkspace.canvas.group'), run: () => props.insertGroup(parentId, entity.entity_id) },
+    { id: 'add-group', testId: 'aiws-flow-add-group', label: t('aiworkspace.canvas.group'), run: () => props.insertGroup(parentId, afterId) },
     { id: 'sep-add', separator: true },
     { id: 'add-more', testId: 'aiws-flow-add-more', label: t('aiworkspace.canvas.flow.more'), run: () => { if (ref.current) props.onInsertMenu(parentId, menuPoint(ref.current)) } },
   ]
@@ -277,7 +281,7 @@ function Gutter({ entity, kind, ...props }: ItemProps & { entity: EntityEnvelope
   return (
     <div ref={ref} className={`aiws-flow-gutter${open ? ' is-open' : ''}`} onPointerDown={(event) => event.stopPropagation()}>
       {canInsert && (
-        <button type="button" className="aiws-flow-handle" aria-label={t('aiworkspace.canvas.flow.insertBelow')} title={t('aiworkspace.canvas.flow.insertBelow')} data-testid={`aiws-flow-plus-${entity.entity_id}`} aria-expanded={open}
+        <button type="button" className="aiws-flow-handle aiws-flow-plus" aria-label={t('aiworkspace.canvas.flow.insertAbove')} title={t('aiworkspace.canvas.flow.insertAbove')} data-testid={`aiws-flow-plus-${entity.entity_id}`} aria-expanded={open}
           onMouseDown={(event) => event.preventDefault()} onClick={() => setOpen(!open)}><Plus size={16} aria-hidden="true" /></button>
       )}
       {policy.select && (
@@ -287,7 +291,7 @@ function Gutter({ entity, kind, ...props }: ItemProps & { entity: EntityEnvelope
           <GripVertical size={16} aria-hidden="true" />
         </button>
       )}
-      {open && <MenuList items={addItems} label={t('aiworkspace.canvas.flow.insertBelow')} className="aiws-popover aiws-popover-start aiws-flow-menu" testId="aiws-flow-add-menu" onDone={() => setOpen(false)} />}
+      {open && <MenuList items={addItems} label={t('aiworkspace.canvas.flow.insertAbove')} className="aiws-popover aiws-popover-start aiws-flow-menu" testId="aiws-flow-add-menu" onDone={() => setOpen(false)} />}
     </div>
   )
 }

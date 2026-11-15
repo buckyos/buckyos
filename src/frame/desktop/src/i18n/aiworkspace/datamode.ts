@@ -172,6 +172,8 @@ export const en: Record<string, string> = {
   'aiworkspace.datamode.origin.source': 'Source refresh',
   'aiworkspace.datamode.origin.system': 'System',
   'aiworkspace.datamode.info.none': 'Nothing open',
+  'aiworkspace.datamode.info.objects': '{{count}} data objects',
+  'aiworkspace.datamode.info.objects_one': '{{count}} data object',
   'aiworkspace.datamode.info.readOnly': '{{reason}}',
 
   'aiworkspace.datamode.back': 'Back',
@@ -349,6 +351,7 @@ export const zh: Record<string, string> = {
   'aiworkspace.datamode.origin.source': '来源刷新',
   'aiworkspace.datamode.origin.system': '系统',
   'aiworkspace.datamode.info.none': '没有打开的对象',
+  'aiworkspace.datamode.info.objects': '{{count}} 个数据对象',
   'aiworkspace.datamode.info.readOnly': '{{reason}}',
 
   'aiworkspace.datamode.back': '返回',

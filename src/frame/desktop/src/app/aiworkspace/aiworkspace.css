@@ -149,7 +149,7 @@
 .aiws-entity-actions { border-top: 1px solid var(--cp-border); margin-top: 8px; padding-top: 6px; }
 
 /* flow page (流式页交互改进 §2): a document column; Blocks have no frame, their handles show in the left margin */
-.aiws-flow { position: relative; max-width: 880px; margin: 0 auto; padding: 8px 8px 0 56px; box-sizing: border-box; }
+.aiws-flow { position: relative; max-width: 880px; margin: 0 auto; padding: 8px 8px 0 32px; box-sizing: border-box; }
 .aiws-flow-host { scroll-padding-top: 80px; }
 .aiws-root .aiws-page-title { font-size: 30px; line-height: 1.25; font-weight: 700; margin: 12px 0 18px; padding: 2px 0; border-radius: 6px; overflow-wrap: anywhere; }
 .aiws-page-title.is-editable { cursor: text; }
@@ -166,36 +166,44 @@
 .aiws-fblock-title.is-editable { cursor: text; }
 .aiws-root input.aiws-fblock-title-input:not([type='checkbox']) { display: block; width: calc(100% - 120px); box-sizing: border-box; border: none; background: none; padding: 6px 0 4px; font-size: 16px; font-weight: 650; }
 .aiws-root input.aiws-fblock-title-input:not([type='checkbox']):focus-visible { box-shadow: none; }
-.aiws-group { position: relative; margin: 10px 0; padding: 4px 0 4px 14px; border-left: 2px solid color-mix(in srgb, var(--cp-accent) 30%, var(--cp-border)); outline: none; }
+.aiws-group { position: relative; margin: 10px 0; padding: 4px 0 4px 30px; border-left: 2px solid color-mix(in srgb, var(--cp-accent) 30%, var(--cp-border)); outline: none; }
 .aiws-fgroup-title { font-size: 12px; font-weight: 600; color: var(--cp-muted); padding: 2px 0 6px; letter-spacing: 0.02em; }
 .aiws-fgroup-tail { min-height: 8px; }
 .aiws-fgroup-tail .aiws-link { color: var(--cp-muted); font-size: 12px; opacity: 0; }
 .aiws-group:hover > .aiws-fgroup-tail .aiws-link, .aiws-fgroup-tail .aiws-link:focus-visible, .aiws-flow.is-dragging .aiws-fgroup-tail .aiws-link { opacity: 1; }
-/* handles: ＋ and ⋮⋮ beside the first line of the hovered item */
-.aiws-flow-gutter { position: absolute; left: -52px; top: 2px; width: 48px; display: flex; justify-content: flex-end; gap: 0; opacity: 0; transition: opacity 0.12s; z-index: 5; }
-.aiws-group > .aiws-flow-gutter { left: -66px; }
-.aiws-cell:hover > .aiws-flow-gutter, .aiws-group:hover > .aiws-flow-gutter, .aiws-flow-gutter.is-open, .aiws-flow-gutter:focus-within, .aiws-cell.is-selected > .aiws-flow-gutter { opacity: 1; }
-.aiws-flow.is-dragging .aiws-flow-gutter { opacity: 0; }
+/* handles: one column in the left margin, ⋮⋮ beside the item's first line and ＋ on the line above (it inserts before the
+   item). A group's items keep theirs inside its padding, apart from the group's own. Only the active item shows ＋; it
+   lies over the line of the item above, whose ⋮⋮ steps aside meanwhile. */
+.aiws-flow-gutter { position: absolute; left: -28px; top: 2px; width: 28px; opacity: 0; transition: opacity 0.12s; z-index: 5; }
+.aiws-group > .aiws-flow-gutter { left: -30px; }
+.aiws-root button.aiws-flow-plus { position: absolute; left: 0; bottom: 100%; visibility: hidden; transition: visibility 0s 0.12s; }
+.aiws-cell:hover > .aiws-flow-gutter, .aiws-group:hover > .aiws-flow-gutter, .aiws-flow-gutter.is-open, .aiws-flow-gutter:focus-within, .aiws-cell.is-selected > .aiws-flow-gutter { opacity: 1; z-index: 6; }
+.aiws-cell:hover > .aiws-flow-gutter > .aiws-flow-plus, .aiws-group:hover > .aiws-flow-gutter > .aiws-flow-plus, .aiws-flow-gutter.is-open > .aiws-flow-plus, .aiws-flow-gutter:focus-within > .aiws-flow-plus { visibility: visible; transition-delay: 0s; }
+[data-flow-item]:has(+ :is(.aiws-cell, .aiws-group):hover > .aiws-flow-gutter > .aiws-flow-plus, + [data-flow-item] > .aiws-flow-gutter:is(.is-open, :focus-within) > .aiws-flow-plus) > .aiws-flow-gutter > .aiws-flow-grip:not(:focus-visible) { visibility: hidden; }
+.aiws-flow.is-dragging [data-flow-item] > .aiws-flow-gutter { opacity: 0; }
 .aiws-root button.aiws-flow-handle { width: 24px; height: 26px; padding: 0; border: none; background: none; color: var(--cp-muted); display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; }
 .aiws-root button.aiws-flow-handle:hover:not(:disabled), .aiws-root button.aiws-flow-handle[aria-expanded='true'] { background: var(--cp-surface-2); color: var(--cp-text); }
 .aiws-root button.aiws-flow-grip { cursor: grab; touch-action: none; }
 .aiws-flow-menu { left: 0; min-width: 220px; }
+.aiws-popover.aiws-flow-menu { top: 4px; }
 .aiws-flow-drop { position: absolute; height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--cp-accent) 70%, transparent); pointer-events: none; z-index: 6; }
 /* below the last Block: continue writing */
-.aiws-flow-tail { display: flex; align-items: flex-start; gap: 4px; margin: 6px 0 0 -30px; min-height: 120px; }
-.aiws-root button.aiws-flow-tail-add { width: 26px; height: 28px; padding: 0; border: none; background: none; color: var(--cp-muted); display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; flex: none; }
+.aiws-flow-tail { display: flex; align-items: flex-start; gap: 4px; margin: 6px 0 0 -28px; min-height: 120px; }
+.aiws-root button.aiws-flow-tail-add { width: 24px; height: 28px; padding: 0; border: none; background: none; color: var(--cp-muted); display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; flex: none; }
 .aiws-root button.aiws-flow-tail-add:hover { background: var(--cp-surface-2); color: var(--cp-text); }
 .aiws-root button.aiws-flow-continue { flex: 1 1 auto; min-height: 120px; border: none; background: none; text-align: left; align-self: stretch; padding: 4px 0; color: transparent; cursor: text; border-radius: 6px; }
 .aiws-root button.aiws-flow-continue:hover:not(:disabled), .aiws-root button.aiws-flow-continue:focus-visible { color: var(--cp-muted); background: none; }
 .aiws-flow-empty { padding: 12px 0; }
-/* touch: no hover — the handles stay faintly visible */
+/* touch: no hover — ⋮⋮ stays faintly visible, and the Block being edited shows ＋ */
 @media (hover: none) {
   .aiws-flow-gutter { opacity: 0.55; }
+  .aiws-flow:not(.is-dragging) .aiws-cell:focus-within > .aiws-flow-gutter { opacity: 1; z-index: 6; }
+  .aiws-cell:focus-within > .aiws-flow-gutter > .aiws-flow-plus { visibility: visible; transition-delay: 0s; }
+  [data-flow-item]:has(+ .aiws-cell:focus-within > .aiws-flow-gutter > .aiws-flow-plus) > .aiws-flow-gutter > .aiws-flow-grip:not(:focus-visible) { visibility: hidden; }
   .aiws-flow .aiws-fblock[data-view='table'] .aiws-table-bar .aiws-table-tool, .aiws-flow .aiws-table-foot .aiws-table-count, .aiws-root button.aiws-md-toggle, .aiws-root button.aiws-row-delete { opacity: 1; }
 }
-/* a phone edits the page (UI improvement §16.5): a narrower margin that still holds ＋ and ⋮⋮ */
-.aiws-workspace[data-phone='true'] .aiws-flow { padding-left: 48px; padding-right: 0; }
-.aiws-workspace[data-phone='true'] .aiws-flow-gutter { left: -48px; width: 48px; }
+/* a phone edits the page (UI improvement §16.5): the margin holds just the handle column */
+.aiws-workspace[data-phone='true'] .aiws-flow { padding-left: 28px; padding-right: 0; }
 .aiws-workspace[data-phone='true'] button.aiws-flow-handle { height: 30px; }
 .aiws-workspace[data-phone='true'] .aiws-page-title { font-size: 24px; }
 /* a record on a page: Notion's property list */

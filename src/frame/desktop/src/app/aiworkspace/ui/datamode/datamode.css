@@ -1,6 +1,7 @@
 /* The data mode (UI 框架 PRD §5): tree | editing area with tabs | sidebar, the status bar across the bottom — no row
- * above them, "返回画布" and the main menu head the tree; the phone's single column; the menus, sheets and dialogs of
- * the object tree. Colours and controls come from aiworkspace.css. */
+ * above them, "返回画布" and the main menu head the tree, the tree's fold starts the tab row, the Workspace's name is on
+ * the status bar's left; the phone's single column; the menus, sheets and dialogs of the object tree. Colours and
+ * controls come from aiworkspace.css. */
 
 .aiws-dm { position: relative; }
 .aiws-dm-work { flex-direction: column; }
@@ -10,9 +11,8 @@
 .aiws-dm-left { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--cp-border); background: var(--cp-bg); }
 .aiws-dm-left.is-drawer { position: absolute; top: 0; bottom: 0; left: 0; z-index: 46; width: min(320px, calc(100% - 40px)); box-shadow: var(--cp-shadow); background: var(--cp-surface-opaque, var(--cp-surface)); }
 .aiws-dm-left.is-phone { width: 100%; border-right: none; }
-.aiws-root .aiws-dm-left-hide { position: absolute; top: 6px; right: 4px; z-index: 2; display: none; }
-.aiws-dm-left:hover .aiws-dm-left-hide, .aiws-dm-left:focus-within .aiws-dm-left-hide, .aiws-dm-left.is-drawer .aiws-dm-left-hide { display: inline-flex; }
-.aiws-dm-left .aiws-dm-tree-head { padding-right: 34px; }
+.aiws-root .aiws-dm-left-hide { position: absolute; top: 6px; right: 4px; z-index: 2; }
+.aiws-dm-left.is-drawer .aiws-dm-tree-head { padding-right: 34px; }
 .aiws-dm-splitter { flex: none; width: 6px; margin: 0 -3px; z-index: 3; cursor: col-resize; touch-action: none; }
 .aiws-dm-splitter:hover, .aiws-dm-splitter:active { background: color-mix(in srgb, var(--cp-accent) 30%, transparent); }
 .aiws-dm-side { flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--cp-border); background: var(--cp-bg); }
@@ -26,11 +26,14 @@
 /* the object tree */
 .aiws-dm-tree { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .aiws-dm-tree-head { display: flex; align-items: center; gap: 2px; padding: 6px 6px 2px 4px; }
-.aiws-dm-tree-title { flex: 1 1 auto; min-width: 0; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* the tree put away: "显示对象树", "返回画布" and the main menu start the tab row */
+/* the tree's fold starts the tab row; with the tree put away "返回画布" and the main menu follow it */
 .aiws-dm-mainbar-nav { flex: none; display: inline-flex; align-items: center; gap: 2px; padding-right: 4px; margin-right: 2px; border-right: 1px solid var(--cp-border); }
-.aiws-dm-search { display: flex; align-items: center; gap: 6px; margin: 4px 8px; padding: 0 8px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); color: var(--cp-muted); }
-.aiws-dm-search input { flex: 1 1 auto; min-width: 0; border: none; background: none; padding: 6px 0; outline: none; color: var(--cp-text); }
+.aiws-dm-search-row { display: flex; align-items: center; gap: 2px; margin: 4px 4px 4px 8px; }
+.aiws-dm-search { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); color: var(--cp-muted); }
+/* one box: the field inside the search row has no box of its own, the row takes the focus ring */
+.aiws-root .aiws-dm-search input:not([type='checkbox']) { flex: 1 1 auto; min-width: 0; border: none; border-radius: 0; background: none; padding: 6px 0; outline: none; box-shadow: none; color: var(--cp-text); }
+.aiws-root .aiws-dm-search input:not([type='radio']):not([type='checkbox']):focus-visible { box-shadow: none; }
+.aiws-dm-search:focus-within { border-color: color-mix(in srgb, var(--cp-accent) 55%, var(--cp-border)); box-shadow: 0 0 0 3px var(--cp-focus-ring); }
 .aiws-dm-filter { margin: 2px 8px 6px; padding: 8px; border: 1px solid var(--cp-border); border-radius: 8px; background: var(--cp-surface); display: flex; flex-direction: column; gap: 6px; }
 .aiws-dm-filter-types { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 2px 8px; }
 .aiws-dm-check { display: inline-flex; align-items: center; gap: 6px; }
@@ -117,11 +120,17 @@
 .aiws-dm-version-message { white-space: pre-wrap; }
 
 /* the status bar across the bottom (§5.5): the object on the left, the status on the right, panel and alerts above */
-.aiws-status-dock.is-bar { position: relative; right: auto; bottom: auto; flex: none; width: 100%; max-height: none; z-index: 50; border-top: 1px solid var(--cp-border); background: var(--cp-bg); pointer-events: auto; }
+.aiws-status-dock.is-bar { position: relative; right: auto; bottom: auto; flex: none; width: 100%; max-height: none; z-index: 50; align-items: stretch; border-top: 1px solid var(--cp-border); background: var(--cp-bg); pointer-events: auto; }
 .aiws-status-dock.is-bar > .aiws-status-stack { position: absolute; right: 12px; bottom: calc(100% + 8px); width: min(440px, calc(100% - 24px)); max-height: 60vh; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; }
 .aiws-status-dock.is-bar > .aiws-status-stack > * { pointer-events: auto; }
-.aiws-status-row.is-bar { display: flex; align-items: center; gap: 8px; padding: 3px 8px; min-height: 32px; box-sizing: border-box; }
-.aiws-status-info { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+.aiws-status-row.is-bar { display: flex; align-items: center; justify-content: flex-start; gap: 8px; padding: 3px 8px; min-height: 32px; box-sizing: border-box; }
+.aiws-status-info { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; }
+/* the Workspace, first on the left: its icon and name, the caller's role, how many data objects */
+.aiws-dm-ws-info { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 6px; padding: 0 6px; font-size: 12px; color: var(--cp-muted); white-space: nowrap; }
+.aiws-dm-ws-title { min-width: 0; color: var(--cp-text); overflow: hidden; text-overflow: ellipsis; }
+.aiws-dm-ws-more { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.aiws-dm-ws-info + .aiws-dm-info { flex: 0 1 auto; padding-left: 10px; border-left: 1px solid var(--cp-border); }
+.aiws-root .aiws-dm-ws-info + button.aiws-dm-info { padding-left: 10px; }
 .aiws-dm-info { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; font-size: 12px; color: var(--cp-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .aiws-root button.aiws-dm-info { border: none; background: none; padding: 4px 6px; border-radius: 6px; min-height: 36px; }
 .aiws-dm-info-name { color: var(--cp-text); overflow: hidden; text-overflow: ellipsis; }
@@ -161,13 +170,16 @@
 .aiws-dm.is-phone .aiws-tree-label { min-height: 44px; }
 .aiws-dm.is-phone .aiws-tree-toggle { min-width: 32px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
 .aiws-dm.is-phone button.aiws-dm-row-more { width: 44px; height: 44px; visibility: visible; }
-.aiws-dm.is-phone .aiws-dm-search input { padding: 10px 0; font-size: 16px; }
+.aiws-root .aiws-dm.is-phone .aiws-dm-search input:not([type='checkbox']) { padding: 10px 0; font-size: 16px; }
+.aiws-dm.is-phone .aiws-dm-search-row .aiws-tool { min-width: 44px; height: 44px; }
 .aiws-dm.is-phone .aiws-dm-tree-head .aiws-tool { min-width: 44px; height: 44px; }
 /* the tree's head is the phone's top bar */
 .aiws-dm.is-phone .aiws-dm-left .aiws-dm-tree-head { padding: max(4px, env(safe-area-inset-top)) 4px 2px; }
 .aiws-dm.is-phone .aiws-dm-detail { padding: 8px 12px 24px; }
 .aiws-dm.is-phone .aiws-dm-detail.is-bare { padding: 0; }
 .aiws-dm.is-phone .aiws-status-row.is-bar { padding-bottom: max(3px, env(safe-area-inset-bottom)); }
+/* a phone's status bar is narrow: the Workspace's icon and name only */
+.aiws-dm.is-phone .aiws-dm-ws-more { display: none; }
 @media (pointer: coarse) {
   .aiws-root button.aiws-dm-row-more { visibility: visible; width: 40px; height: 40px; }
   .aiws-dm-row { min-height: 44px; }

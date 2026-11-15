@@ -1,13 +1,14 @@
 /* The data mode on a phone (UI 框架 PRD §5.6): one column in three layers. (1) The object tree, the whole screen: its
- * head is the top bar — "返回画布", the main menu, the Workspace's name, how many objects are open, ＋ and the filter (one
- * row, owner 11-14: the height is the content's) — then the search, rows at least 48 px with their ⋯ always shown. (2)
+ * head is the top bar — "返回画布" (a back arrow), the main menu, how many objects are open and ＋ (one row, owner 11-14:
+ * the height is the content's) — then the search with the filter, rows at least 48 px with their ⋯ always shown; the
+ * Workspace's name is on the left of the status bar while the tree shows (owner 11-14, as on a desktop). (2)
  * The editor of the current object, the whole
  * screen: a top bar with "back", the object's name, how many objects are open (tap to switch, like the tabs) and ⋯.
  * (3) The right sidebar's three tabs as a bottom panel, from ⋯ or from the object's line in the status bar. "Back" from
  * an editor that a canvas's "展开" opened goes straight back to the canvas. */
 
 import { createElement, useState } from 'react'
-import { ArrowLeft, ChevronLeft, Ellipsis, LayoutDashboard, X } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, Ellipsis, X } from 'lucide-react'
 import { DATA_ID, type EntityEnvelope } from '../../api/types'
 import { useOverlayMounted, type MenuItem } from '../shell/popover'
 import { AnnotationsPanel } from '../shell/AnnotationsPanel'
@@ -25,7 +26,7 @@ import { acceptsData, iconOf, nameOf, sideTabsOf } from './model'
 import { ObjectTree } from './ObjectTree'
 import { PhoneMainMenu } from './PhoneMenu'
 import { SideContent } from './SideBar'
-import { ObjectInfo } from './StatusInfo'
+import { ObjectInfo, WorkspaceInfo } from './StatusInfo'
 import { useDirty } from './hooks'
 import { dataTabsOf, PERMISSIONS_TAB } from './tabs'
 
@@ -92,7 +93,7 @@ export function PhoneDataMode({ data }: { data: DataController }) {
               <ObjectTree activeId={state.active} host={{ ...host, open: (id, options) => host.open(id, { ...options, preview: false }) }} phone coarse
                 lead={(
                   <>
-                    <button type="button" className="aiws-tool" aria-label={t('aiworkspace.shell.toolbar.backToCanvas')} data-testid="aiws-top-canvas" data-action="view.data-mode" onClick={() => shell.setTopMode('canvas')}><LayoutDashboard size={20} /></button>
+                    <button type="button" className="aiws-tool" aria-label={t('aiworkspace.shell.toolbar.backToCanvas')} data-testid="aiws-top-canvas" data-action="view.data-mode" onClick={() => shell.setTopMode('canvas')}><ArrowLeft size={20} /></button>
                     <PhoneMainMenu canvas={null} />
                   </>
                 )}
@@ -102,7 +103,7 @@ export function PhoneDataMode({ data }: { data: DataController }) {
             </aside>
           )}
         </div>
-        <StatusDock info={<ObjectInfo id={editing ? state.active : null} entity={editing ? activeEntity : undefined} onOpen={editing ? () => setPanel(data.sideTab) : undefined} />} />
+        <StatusDock info={editing ? <ObjectInfo id={state.active} entity={activeEntity} onOpen={() => setPanel(data.sideTab)} /> : <WorkspaceInfo />} />
       </div>
       {panel && activeTab && <SidePanelSheet id={activeTab.id} entity={activeEntity} tab={sideTabsOf(activeTab.id).includes(panel) ? panel : 'history'} onTab={(tab) => { data.setSideTab(tab); setPanel(tab) }} focus={data.focus} onClose={closePanel} />}
       <SidePanel tabs={['annotations']} render={() => <AnnotationsPanel parentId={commentFolder} />} />
