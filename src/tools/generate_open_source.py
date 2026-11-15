@@ -156,7 +156,7 @@ def collect_cargo(repo: Path, metadata_path: Path | None, offline: bool = False)
         metadata = read_json(metadata_path)
     else:
         metadata = json.loads(subprocess.check_output(
-            ["cargo", "metadata", "--locked", *(["--offline"] if offline else []), "--format-version", "1"], cwd=repo / "src", text=True,
+            ["cargo", "metadata", "--locked", *(["--offline"] if offline else []), "--format-version", "1"], cwd=repo / "src", text=True, encoding="utf-8",
         ))
     members = set(metadata["workspace_members"])
     nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
