@@ -5,7 +5,8 @@ import {
   openrouterDecisionFixture,
 } from "./decision.ts";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
@@ -74,6 +75,7 @@ import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import {
   buildNdnGatewayConfig,
   gatewayRouterArgs,
+  readNdnFixtureObject,
 } from "./ndn_fixture_service.ts";
 import {
   buildCloudUpdateFiles,
@@ -81,7 +83,7 @@ import {
   CLOUD_TEST_MOUNT_V2,
   cloudUpdateTombstones,
 } from "./cloud_update_cases.ts";
-import { backupCloudUpdateConfig } from "./cloud_update_transaction.ts";
+import { backupCloudUpdateConfig, isolateCloudMetadataOverrides } from "./cloud_update_transaction.ts";
 import { withMockQuotaTruth } from "./quota_transaction.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
@@ -119,6 +121,8 @@ import {
   channelDisablesCase,
   scopeProtocolModels,
   protocolModelIds,
+  TaskWaitTimeout,
+  terminal as waitT15Task,
 } from "./run_t15_gateway.ts";
 import {
   createT15MockHandler,
@@ -291,6 +295,11 @@ function t15ProviderRequest(
       t15FieldValue(field, contract, model, apiType),
     ]),
   );
+  if (contract.operation === "ark.contents.generate" && apiType === "video.edit") {
+    fields.duration = -1;
+    fields.ratio = "adaptive";
+    fields.omni_reference_task_type = "edit";
+  }
   for (
     const [pointer, value] of Object.entries({
       ...(contract.required_body_values ?? {}),
@@ -390,6 +399,20 @@ function t15ProviderRequest(
   };
 }
 
+test("T2 reads Named Data from the configured native NDN route and preserves HTTP failures", async () => {
+  const reader = await readNdnFixtureObject("http://gateway.test/aicc-test-ndn-run/", {
+    obj_id: "cyfile:4827",
+  }, async (url) => {
+    assert.equal(String(url), "http://gateway.test/aicc-test-ndn-run/cyfile:4827");
+    return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
+  });
+  assert.equal(reader.totalSize, 3);
+  assert.deepEqual(new Uint8Array(await new Response(reader.body).arrayBuffer()), new Uint8Array([1, 2, 3]));
+  await assert.rejects(() => readNdnFixtureObject("http://gateway.test/ndn", {
+    obj_id: "cyfile:missing",
+  }, async () => new Response(null, { status: 404 })), /HTTP 404/);
+});
+
 test("T2 fixture NDN service is isolated and routed only for the run lifetime", () => {
   const config = buildNdnGatewayConfig({
     controlPort: 13452,
@@ -476,6 +499,104 @@ test("cloud update fixtures replace complete catalog files and tombstone every c
       "known_provider:aicc-cloud-update-openai",
     ],
   );
+});
+
+test("cloud isolation removes whole catalog files by identity and restores their bytes and modes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "aicc-cloud-isolation-"));
+  const original = JSON.stringify({schema_version: 1, model_drivers: [
+    {model_driver_id: "openai", models: [{id: "target"}, {id: "unrelated-model-in-same-file"}]},
+    {model_driver_id: "kimi", models: [{id: "keep"}]},
+  ], provider_rules: [{provider_profile_id: "openai"}], known_providers: [{catalog_id: "cloud-test"}]}, null, 2) + "\n";
+  let stored = original;
+  const client: RpcClient = {call: async (method, params) => {
+    if (method === "sys_config_get") return {value: stored};
+    assert.equal(method, "sys_config_set");
+    stored = (params as {value: string}).value;
+    return null;
+  }};
+  try {
+    await mkdir(join(root, "models"));
+    await mkdir(join(root, "providers"));
+    const file = join(root, "models", "custom-name.json");
+    const bytes = ' {"model_driver_id":"openai","models":[{"id":"target"},{"id":"another"}]}\n';
+    await writeFile(file, bytes);
+    await chmod(file, 0o640);
+    const before = await stat(file);
+    await writeFile(join(root, "models", "kimi.json"), '{"model_driver_id":"kimi"}');
+    await writeFile(join(root, "providers", "openai.json"), '{"provider_profile_id":"openai"}');
+    const restore = await isolateCloudMetadataOverrides({systemConfig: client, localRoot: root, catalogs: [
+      {catalog_kind: "model_driver", catalog_id: "openai"},
+      {catalog_kind: "known_provider", catalog_id: "cloud-test"},
+    ]});
+    await assert.rejects(readFile(file), {code: "ENOENT"});
+    assert.deepEqual(JSON.parse(stored).model_drivers, [{model_driver_id: "kimi", models: [{id: "keep"}]}]);
+    assert.deepEqual(JSON.parse(stored).provider_rules, [{provider_profile_id: "openai"}]);
+    assert.deepEqual(JSON.parse(stored).known_providers, []);
+    assert.equal(await readFile(join(root, "providers", "openai.json"), "utf8"), '{"provider_profile_id":"openai"}');
+    assert.equal(await readFile(join(root, "models", "kimi.json"), "utf8"), '{"model_driver_id":"kimi"}');
+    await restore();
+    await restore();
+    assert.equal(stored, original);
+    assert.equal(await readFile(file, "utf8"), bytes);
+    assert.equal((await stat(file)).mode, before.mode);
+    assert.deepEqual((await readdir(join(root, "models"))).sort(), ["custom-name.json", "kimi.json"]);
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("cloud isolation rolls back moved files when setup fails after a system-config write", async () => {
+  const root = await mkdtemp(join(tmpdir(), "aicc-cloud-rollback-"));
+  const original = '{"schema_version":1,"provider_rules":[{"provider_profile_id":"openai"}]}';
+  let stored = original;
+  let writes = 0;
+  const client: RpcClient = {call: async (method, params) => {
+    if (method === "sys_config_get") return {value: stored};
+    stored = (params as {value: string}).value;
+    if (++writes === 1) throw new Error("connection lost after write");
+    return null;
+  }};
+  try {
+    await mkdir(join(root, "providers"));
+    const file = join(root, "providers", "override.json");
+    const bytes = '{"provider_profile_id":"openai","models":[{"id":"whole-file"}]}';
+    await writeFile(file, bytes);
+    await assert.rejects(isolateCloudMetadataOverrides({systemConfig: client, localRoot: root,
+      catalogs: [{catalog_kind: "provider_rules", catalog_id: "openai"}]}), /connection lost/);
+    assert.equal(stored, original);
+    assert.equal(await readFile(file, "utf8"), bytes);
+    assert.deepEqual(await readdir(join(root, "providers")), ["override.json"]);
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("cloud metadata restoration retries with refreshed authentication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "aicc-cloud-auth-"));
+  const original = '{"schema_version":1,"model_drivers":[{"model_driver_id":"openai"}]}';
+  let expired = false;
+  const client: RpcClient = {call: async (method) => {
+    if (method === "sys_config_get") return {value: original};
+    if (expired) throw new Error("ExpiredSignature");
+    return null;
+  }};
+  try {
+    const restore = await isolateCloudMetadataOverrides({systemConfig: client, localRoot: root,
+      catalogs: [{catalog_kind: "model_driver", catalog_id: "openai"}]});
+    expired = true;
+    await assert.rejects(restore(), AggregateError);
+    let restored = 0;
+    await restore({call: async (method, params) => {
+      assert.equal(method, "sys_config_set");
+      assert.equal((params as {value: string}).value, original);
+      restored += 1;
+      return null;
+    }});
+    await restore();
+    assert.equal(restored, 1);
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
 });
 
 test("cloud update config cleanup retries with refreshed authentication", async () => {
@@ -3483,6 +3604,15 @@ test("T2 generated media requests use minimum-cost output settings", async () =>
     size: "1024x1024",
     quality: "low",
   });
+  const snVideoDefaults = defaults("sn-ai-provider", "wan-3.0", "video.generate");
+  assert.deepEqual(snVideoDefaults, {
+    output: { duration_seconds: 2, size: { width: 854, height: 480 } },
+  });
+  const snVideoInput = request("video.generate", snVideoDefaults).input_json;
+  assert.deepEqual(snVideoInput.output, snVideoDefaults?.output);
+  for (const field of ["duration_seconds", "resolution", "aspect_ratio"]) {
+    assert.equal(field in snVideoInput, false);
+  }
   assert.deepEqual(defaults("google-gemini", "gemini-omni-*", "video.generate"), {
     output: { duration_seconds: 4, size: { short_edge: 720 } },
   });
@@ -3835,15 +3965,18 @@ test("SN matrix uses its inventory and original-vendor capability evidence", asy
         api_types: ["embedding.text"],
         logical_mounts: [],
       }, {
-        exact_model: "qwen-image-3-pro@sn-default",
-        provider_model_id: "qwen-image-3-pro",
-        api_types: [],
+        exact_model: "gpt-image-2@sn-default",
+        provider_model_id: "gpt-image-2",
+        api_types: ["image.txt2img", "image.img2img", "image.inpaint"],
         logical_mounts: [],
       }],
     }]),
   });
   assert.deepEqual([...new Set(cells.map((cell) => cell.api_type))].sort(), [
     "embedding.text",
+    "image.img2img",
+    "image.inpaint",
+    "image.txt2img",
     "llm",
     "vision.caption",
   ]);
@@ -5023,6 +5156,14 @@ test("T1.5 Provider mock implements each machine discovery contract and rejects 
       assert.ok(Array.isArray(fixture.items));
     } else {
       assert.ok(Array.isArray(fixture.data));
+      if (provider.provider_driver === "openrouter") {
+        const models = fixture.data as Array<{id: string; architecture: {input_modalities: string[]; output_modalities: string[]}}>;
+        for (const id of ["z-ai/glm-5.3-flashx", "moonshotai/kimi-k3.1-pro", "x-ai/grok-4.7"]) {
+          const model = models.find((model) => model.id === id)!;
+          assert.ok(model.architecture.input_modalities.includes("image"), id);
+          assert.deepEqual(model.architecture.output_modalities, ["text"], id);
+        }
+      }
       if (provider.provider_driver === "doubao") {
         const models = fixture.data as Array<Record<string, unknown>>;
         assert.ok(models.every((model) => Array.isArray(model.task_type)));
@@ -5911,14 +6052,29 @@ test("T2 excludes independently callable metadata variants", async () => {
   assert.ok(cells.every((cell) => !cell.provider_model_id.includes(":")));
 });
 
+test("report secret checks catch escaped and embedded keys while preserving case IDs", () => {
+  for (const prefix of ["", "\n", "\t", "\\n", "\\t", "error_", "error-"]) {
+    const report = { error: `${prefix}sk-proj-example123456789` };
+    assert.throws(() => assertNoSecrets(report), /sensitive data/);
+    assert.doesNotThrow(() => assertNoSecrets(redact(report)));
+    assert.ok(!JSON.stringify(redact(report)).includes("sk-proj-"));
+  }
+  const report = { case_id: "t1.5.sn.image.inpaint.task-result-artifact" };
+  assert.deepEqual(redact(report), report);
+  assert.doesNotThrow(() => assertNoSecrets(report));
+  assert.throws(() => assertNoSecrets({error: "sk-task-result-artifact"}), /sensitive data/);
+});
+
 test("report redaction removes secrets and totals statuses", () => {
   const safe = redact({
     api_key: "sk-secret-value-1234567890",
     nested: { authorization: "Bearer abc.def.ghi" },
+    case_id: "t1.5.sn.image.inpaint.task-result-artifact",
   });
   assert.deepEqual(safe, {
     api_key: "[REDACTED]",
     nested: { authorization: "[REDACTED]" },
+    case_id: "t1.5.sn.image.inpaint.task-result-artifact",
   });
   assert.doesNotThrow(() => assertNoSecrets(safe));
   const base = {
@@ -6554,6 +6710,48 @@ test("SN credentials create an isolated API-key instance and preserve activation
   assert.equal(original.providers.length, 1);
 });
 
+test("T1.5 derives TaskMgr artifact regressions for every image conformance model", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const cases = buildT15Manifest(catalog);
+  for (const provider of ["sn-ai-provider", "openai"]) {
+    for (const model of ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]) {
+      for (const api of ["image.txt2img", "image.img2img", "image.inpaint"]) {
+        const selected = cases.filter((item) => item.provider_driver === provider && item.api_type === api && item.model_selector?.value === model);
+        assert.ok(selected.some((item) => item.tags.includes("model_api_conformance") && item.case_id.endsWith(".success")));
+        assert.ok(selected.some((item) => item.tags.includes("task_result_artifact")));
+      }
+    }
+  }
+});
+
+test("T1.5 image variants retain wire expectations in derived TaskMgr regressions", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const cases = buildT15Manifest(catalog, [{
+    provider_driver: "sn-ai-provider", contract_id: "sn.openai-responses.background.v1", api_type: "image.txt2img",
+    model: { exact_model: "gpt-6-sol:reasoning-low@mock", provider_model_id: "gpt-6-sol:reasoning-low", api_types: ["image.txt2img"], logical_mounts: [] },
+    expected_provider_options: { reasoning: { effort: "low" } },
+  }]);
+  const source = cases.find((item) => item.tags.includes("variant") && !item.tags.includes("task_result_artifact"))!;
+  const derived = cases.find((item) => item.case_id === `${source.case_id}.task-result-artifact`)!;
+  assert.ok(derived.tags.includes("task_result_artifact"));
+  assert.deepEqual(derived.expected_provider_options, source.expected_provider_options);
+  assert.deepEqual(derived.model_selector, source.model_selector);
+});
+
+test("SN uploaded video edits require the model used by gateway admission", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contract = protocolContract(catalog, "sn-ai-provider", "sn.openai-video-edits.v1");
+  const body: Record<string, unknown> = {
+    model: "wan-3.0", prompt: "edit motion",
+    video: { filename: "source.mp4", content_type: "video/mp4", bytes: 5 },
+  };
+  const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(),
+    headers: new Headers({ authorization: "Bearer mock-token", "content-type": "multipart/form-data; boundary=fixture" }), body };
+  assert.deepEqual(validateProviderRequest(contract, captured, "video.edit"), []);
+  delete body.model;
+  assert.ok(validateProviderRequest(contract, captured, "video.edit").includes("missing body field model"));
+});
+
 test("SN audio chat wire rejects URL audio and uncorrelated content shapes", async () => {
   const catalog = await loadProviderProtocolCatalog();
   const contract = protocolContract(catalog, "sn-ai-provider", "sn.audio-chat.v1");
@@ -6561,6 +6759,12 @@ test("SN audio chat wire rejects URL audio and uncorrelated content shapes", asy
   const body = JSON.parse(request.init.body as string);
   const captured = {method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body};
   assert.deepEqual(validateProviderRequest(contract, captured, "audio.asr"), []);
+  body.model = "gemini-4-argon";
+  body.reasoning = { effort: "high" };
+  assert.deepEqual(validateProviderRequest(contract, captured, "audio.asr"), []);
+  body.reasoning = "high";
+  assert.ok(validateProviderRequest(contract, captured, "audio.asr").some((error) => error.includes("reasoning")));
+  delete body.reasoning;
   body.messages[0].content[0].input_audio.url = "https://example.invalid/audio.wav";
   assert.ok(validateProviderRequest(contract, captured, "audio.asr").some((error) => error.includes("inline input_audio")));
   delete body.messages[0].content[0].input_audio.url;
@@ -6584,7 +6788,8 @@ test("channel-disabled APIs retain vendor facts and reject leaked runtime capabi
   const source = await baseline();
   const rule = source.providers.find((provider) => provider.provider_driver === "sn-ai-provider")!.rules.find((rule) => rule.model_pattern === "qwen3.7-plus")!;
   assert.ok(rule.api_types.includes("vision.ocr"));
-  assert.ok(rule.disabled_api_types?.includes("vision.ocr"));
+  assert.equal(rule.disabled_api_types, undefined);
+  rule.disabled_api_types = ["vision.ocr"];
   const inventories = [{ provider_instance_name: "sn-disabled", provider_driver: "sn-ai-provider", models: [{ exact_model: "qwen3.7-plus@sn-disabled", provider_model_id: "qwen3.7-plus", api_types: ["llm", "vision.caption"], logical_mounts: [] }] }];
   const cells = buildProviderMatrix({ baseline: source, ...matrixInputs(inventories) });
   assert.equal(cells.length, 2);
@@ -6595,19 +6800,33 @@ test("channel-disabled APIs retain vendor facts and reject leaked runtime capabi
 });
 
 
-test("T1.5 skips only explicitly disabled channel cells and preserves working SN protocol coverage", async () => {
+test("SN channel exclusions preserve vendor fixtures and keep proven APIs enabled", async () => {
   const catalog = await loadProviderProtocolCatalog();
   const source = await baseline();
   const cases = buildT15Manifest(catalog).filter((item) => item.provider_driver === "sn-ai-provider");
-  const disabled = cases.filter((item) => channelDisablesCase(catalog, source, item));
-  assert.ok(disabled.length > 0);
-  assert.ok(disabled.some((item) => item.api_type === "video.generate"));
-  assert.ok(disabled.some((item) => item.api_type === "image.inpaint"));
-  assert.ok(disabled.some((item) => item.protocol_contract_id === "sn.qwen-images-generations.v1"));
-  assert.ok(!disabled.some((item) => item.api_type === "llm" || item.api_type === "audio.asr"));
-  assert.ok(cases.some((item) => item.api_type === "vision.ocr" && !channelDisablesCase(catalog, source, item)));
+  const profile = source.providers.find((item) => item.provider_driver === "sn-ai-provider")!;
+  for (const model of ["qwen-image-3-pro", "wan-3.0"]) {
+    const rule = profile.rules.find((item) => item.model_pattern === model)!;
+    assert.deepEqual(rule.disabled_api_types, rule.api_types);
+    assert.equal(profile.coverage_rules!.find((item) => item.model_pattern === model)!.action, "exclude");
+    for (const api of rule.api_types) {
+      const fixture = cases.find((item) => item.model_selector?.kind === "exact" && item.model_selector.value === model && item.api_type === api);
+      assert.ok(fixture, `${model}/${api} retains its protocol fixture`);
+      assert.equal(channelDisablesCase(catalog, source, fixture), true);
+    }
+  }
+  for (const model of ["grok-4.7", "gpt-6.1-terra", "qwen3.7-plus"]) {
+    for (const fixture of cases.filter((item) => item.model_selector?.kind === "exact" && item.model_selector.value === model)) {
+      assert.equal(channelDisablesCase(catalog, source, fixture), false, fixture.case_id);
+    }
+  }
+  const inventories: ProviderInventory[] = [{provider_instance_name:"sn-disabled",provider_driver:"sn-ai-provider",models:[
+    {exact_model:"qwen3.7-plus@sn-disabled",provider_model_id:"qwen3.7-plus",api_types:["llm","vision.ocr","vision.caption"],logical_mounts:[]},
+  ]}];
+  const official = structuredClone(inventories);
+  official[0].models.push({exact_model:"qwen-image-3-pro@sn-disabled",provider_model_id:"qwen-image-3-pro",api_types:["image.txt2img","image.img2img"],logical_mounts:[]});
+  assert.equal(buildProviderMatrix({baseline:source,officialInventories:official,aiccInventories:inventories}).length, 3);
 });
-
 
 test("unified video results validate typed videos and nested document resources", () => {
   const cell = { api_type: "video.edit", output_kinds: ["video"] } as Parameters<typeof assertResponseShape>[0];
@@ -6655,6 +6874,13 @@ test("SN background error expectations retain the detailed canonical task code",
     assert.equal(item.expected_aicc_error_code, code);
     assert.equal(item.expected_provider_error_code, scenario);
   }
+  for (const contract of ["sn.openai-videos.v1", "sn.openai-video-edits.v1", "sn.openai-video-extensions.v1"]) {
+    const api = contract.includes("edits") ? "video.edit" : contract.includes("extensions") ? "video.extend" : "video.generate";
+    for (const [scenario, code] of [["invalid_argument", "invalid_request"], ["timeout", "timeout"], ["upstream_json_required", "invalid_request"]]) {
+      const item = cases.find((item) => item.case_id === `t1.5.sn-ai-provider.${contract}.${api}.error.${scenario}`)!;
+      assert.equal(item.expected_aicc_error_code, code);
+    }
+  }
   const defaults = cases.find((item) => item.tags.includes("server_default_mode"))!;
   assert.equal(defaults.model_selector?.value, "qwen3.7-plus");
   assert.equal(defaults.method, "chat.completions.create");
@@ -6678,4 +6904,137 @@ test("T3 provider attribution uses public provider profiles without inferring fr
   assert.equal(instanceDriver({ provider_profile_id: "sn", provider_instance_name: "temporary" }), "sn-ai-provider");
   assert.equal(instanceDriver({ provider_profile_id: "gemini" }), "google-gemini");
   assert.equal(instanceDriver({ provider_instance_name: "sn-ai-provider-main" }), "");
+});
+
+test("Kimi K3.1 Pro wire accepts fixed sampling values and rejects incompatible parameters", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const [driver, contractId, model] of [
+    ["kimi", "kimi.chat-completions.v1", "kimi-k3.1-pro"],
+    ["openrouter", "openrouter.responses.v1", "moonshotai/kimi-k3.1-pro"],
+    ["sn-ai-provider", "sn.openai-responses.v1", "kimi-k3.1-pro"],
+  ]) {
+    const contract = protocolContract(catalog, driver, contractId);
+    const request = t15ProviderRequest("https://mock.invalid", contract, model, {}, "llm");
+    const body = JSON.parse(request.init.body as string);
+    const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(request.init.headers), body };
+    for (const field of ["temperature", "top_p", "n", "presence_penalty", "frequency_penalty", "thinking"]) delete body[field];
+    assert.deepEqual(validateProviderRequest(contract, captured, "llm"), []);
+    for (const [field, value] of Object.entries({ temperature: 1, top_p: 0.95, n: 1, presence_penalty: 0, frequency_penalty: 0 })) {
+      if (!contract.allowed_body_fields.includes(field)) continue;
+      body[field] = value;
+      assert.deepEqual(validateProviderRequest(contract, captured, "llm"), [], `${driver} accepts fixed ${field}`);
+      delete body[field];
+    }
+    for (const [field, value] of Object.entries({ temperature: 0.2, top_p: 0.5, n: 2, presence_penalty: 1, frequency_penalty: 1, thinking: { type: "disabled" } })) {
+      body[field] = value;
+      assert.ok(validateProviderRequest(contract, captured, "llm").some((error) => error.includes(field)), `${driver} must reject ${field}`);
+      delete body[field];
+    }
+  }
+});
+
+test("SN FlashX retains independent T2 cells and never deduplicates to Flash", async () => {
+  const source = await baseline();
+  const inventories: ProviderInventory[] = [{
+    provider_instance_name: "sn-flashx-identity",
+    provider_driver: "sn-ai-provider",
+    models: ["glm-5.3-flash", "glm-5.3-flashx"].map((model) => ({
+      exact_model: `${model}@sn-flashx-identity`, provider_model_id: model,
+      api_types: ["llm", "vision.ocr", "vision.caption"], logical_mounts: [],
+    })),
+  }];
+  const cells = buildProviderMatrix({ baseline: source, ...matrixInputs(inventories) });
+  assert.equal(cells.filter((cell) => cell.baseline_status === "active").length, 6);
+  for (const model of ["glm-5.3-flash", "glm-5.3-flashx"]) {
+    assert.equal(cells.filter((cell) => cell.provider_model_id === model && cell.baseline_status === "active").length, 3);
+  }
+});
+
+test("native client errors retain explicit canonical classifications without changing synchronous errors", async () => {
+  const cases = buildT15Manifest(await loadProviderProtocolCatalog());
+  for (const caseId of [
+    "t1.5.openai.openai.videos.v1.video.generate.error.invalid_request",
+    "t1.5.openai.openai.videos.v1.video.generate.error.not_found",
+    "t1.5.openrouter.openrouter.videos.v1.video.generate.error.invalid_request",
+    "t1.5.glm.glm.videos.generations.v4.video.generate.error.invalid_parameters",
+    "t1.5.fal.fal.esrgan.queue-v1.image.upscale.error.validation",
+    "t1.5.doubao.doubao.video-tasks.v3.video.generate.error.invalid_request",
+    "t1.5.qwen.qwen.dashscope.image_synthesis.v1.image.txt2img.error.not_found",
+  ]) assert.equal(cases.find((item) => item.case_id === caseId)?.expected_aicc_error_code, "invalid_request", caseId);
+  for (const caseId of [
+    "t1.5.openai.openai.responses.v1.llm.error.not_found",
+    "t1.5.google-gemini.gemini.interactions.v1beta.llm.error.invalid_argument",
+    "t1.5.openrouter.openrouter.responses.v1.llm.error.invalid_request",
+    "t1.5.sn-ai-provider.sn.openai-responses.v1.llm.error.invalid_argument",
+  ]) assert.equal(cases.find((item) => item.case_id === caseId)?.expected_aicc_error_code, "provider_error", caseId);
+});
+
+test("Seedance edit preserves duration while generation rejects invalid duration", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const [driver, id] of [["doubao", "doubao.video-tasks.v3"], ["doubao-agent-plan", "doubao-agent-plan.video-tasks.plan-v3"]]) {
+    const contract = protocolContract(catalog, driver, id);
+    const model = catalog.providers.find((provider) => provider.provider_driver === driver)!.test_model_ids["video.edit"];
+    const wire = t15ProviderRequest("http://localhost", contract, model, {}, "video.edit");
+    const captured = { method: "POST", pathname: contract.path, query: new URLSearchParams(), headers: new Headers(wire.init.headers), body: JSON.parse(String(wire.init.body)) };
+    assert.deepEqual(validateProviderRequest(contract, captured, "video.edit"), []);
+    for (const duration of [5, 0, -2, -1.5]) {
+      captured.body.duration = duration;
+      assert.ok(validateProviderRequest(contract, captured, "video.edit").includes("video edit duration must equal -1"));
+    }
+    captured.body.duration = -1;
+    assert.ok(validateProviderRequest(contract, captured, "video.generate").includes("duration must be a positive integer"));
+  }
+});
+
+test("native polling wait timeouts are distinct from failed TaskMgr outcomes", async () => {
+  const value = { status: "running", task_id: "polling-task" };
+  await assert.rejects(() => waitT15Task({} as GatewaySession, value, 0), (error) => error instanceof TaskWaitTimeout && error.taskId === "polling-task");
+  const session = { taskManager: { call: async () => ({ phase: "Terminal", outcome: "Failed", error: {code: "provider_error"} }) } } as unknown as GatewaySession;
+  await assert.rejects(() => waitT15Task(session, value, 1000), (error) => error instanceof Error && !(error instanceof TaskWaitTimeout));
+  const timeout = buildT15Manifest(await loadProviderProtocolCatalog()).find((item) => item.case_id === "t1.5.qwen.qwen.dashscope.image_synthesis.v1.image.txt2img.async_poll_timeout")!;
+  assert.equal(timeout.expected_task_status, "running");
+  assert.equal(timeout.expected_error_class, null);
+  assert.ok(timeout.timeout_ms > 10_000);
+});
+
+test("reviewed official variants include Flash-Lite default-off and current GLM efforts", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const gemini = catalog.providers.find((provider) => provider.provider_driver === "google-gemini")!;
+  assert.ok(gemini.official_variant_rules!.some((rule) => rule.model_ids.includes("gemini-2.5-flash-lite") && "reasoning-none" in rule.variants));
+  const glm = catalog.providers.find((provider) => provider.provider_driver === "glm")!;
+  const efforts = glm.official_variant_rules!.filter((rule) => rule.model_ids.includes("glm-5.3")).flatMap((rule) => Object.keys(rule.variants));
+  assert.deepEqual(efforts.sort(), ["reasoning-high", "reasoning-low", "reasoning-max"]);
+  const openrouter = catalog.providers.find((provider) => provider.provider_driver === "openrouter")!;
+  assert.equal(openrouter.test_model_ids.llm, "openai/gpt-5.6-luna");
+  assert.ok(!JSON.stringify(openrouter).includes('"openai/gpt-5.6"'));
+});
+
+test("SN cross-provider resources use an enabled image source and keep Wan disabled", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const cases = buildT15Manifest(catalog);
+  const cross = cases.find((item) => item.case_id.startsWith("t1.5.resource.sn-ai-provider."))!;
+  assert.equal(cross.artifact_source_model_id, "gpt-image-2");
+  assert.equal(cross.artifact_source_api_type, "image.txt2img");
+  assert.equal(cross.provider_driver, "openai");
+  assert.equal(cross.api_type, "image.img2img");
+  assert.equal(channelDisablesCase(catalog, await baseline(), { ...cross, provider_driver: "sn-ai-provider", protocol_contract_id: cross.artifact_source_contract_id, api_type: "image.txt2img" }), false);
+  assert.equal(channelDisablesCase(catalog, await baseline(), { ...cross, provider_driver: "sn-ai-provider", protocol_contract_id: "sn.openai-video-edits.v1", api_type: "video.edit", model_selector: {kind: "exact", value: "wan-3.0"} }), true);
+});
+
+test("added OpenRouter presets are supported by the frozen official reasoning metadata", async () => {
+  const evidence = JSON.parse(await readFile(join(here, "../fixtures/openrouter-reasoning-20261112.json"), "utf8"));
+  const facts = new Map<string, {supported_efforts:string[];mandatory?:boolean}>(evidence.models.map((model: {id:string;reasoning:{supported_efforts:string[]}}) => [model.id,model.reasoning]));
+  const catalog = await loadProviderProtocolCatalog();
+  const provider = catalog.providers.find((provider) => provider.provider_driver === "openrouter")!;
+  for (const rule of provider.official_variant_rules!) {
+    for (const model of rule.model_ids) {
+      const metadata = facts.get(model);
+      if (!metadata) continue;
+      for (const [variant, options] of Object.entries(rule.variants)) {
+        const effort = variant.replace(/^reasoning-/, "");
+        assert.ok(metadata.supported_efforts.includes(effort), `${model}/${effort}`);
+        assert.deepEqual(options, {reasoning:{effort}});
+      }
+    }
+  }
 });

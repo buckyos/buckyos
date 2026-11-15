@@ -58,6 +58,7 @@ import {
 } from "./cloud_update_cases.ts";
 import {
   backupCloudUpdateConfig,
+  isolateCloudMetadataOverrides,
   disableCloudUpdate,
   setCloudUpdateSource,
   waitCloudUpdateConverged,
@@ -3021,8 +3022,15 @@ async function runCases(
     let cloudCatalogActive = false;
     let cloudStage = "start_fixture";
     let executionError: unknown;
+    let restoreMetadataOverrides: (() => Promise<void>) | undefined;
     const cleanupErrors: unknown[] = [];
     try {
+      const filesV1 = await buildCloudUpdateFiles(revisionV1, "v1");
+      restoreMetadataOverrides = await isolateCloudMetadataOverrides({
+        systemConfig: adminSystemConfig,
+        localRoot: join(input.ndnSystemRoot, "etc/aicc/driver_metadata/local"),
+        catalogs: filesV1,
+      });
       fixture = await CloudUpdateFixtureService.start({
         gatewayUrl: input.gatewayUrl,
         sessionToken: session.sessionToken,
@@ -3035,7 +3043,7 @@ async function runCases(
       cloudStage = "publish_v1";
       const releaseV1 = await fixture.publish({
         revisionSeq: revisionV1,
-        files: await buildCloudUpdateFiles(revisionV1, "v1"),
+        files: filesV1,
       });
       cloudStage = "converge_v1";
       await setCloudUpdateSource(cloudAdmin, releaseV1.sourceUrl);
@@ -3269,6 +3277,8 @@ async function runCases(
         }
       }
       await disableCloudUpdate(cloudAdmin).catch((error) => cleanupErrors.push(error));
+      await restoreMetadataOverrides?.().catch((error) => cleanupErrors.push(error));
+      await cloudAdmin.call("service.reload_settings", {}).catch((error) => cleanupErrors.push(error));
       await restoreCloudConfig().catch((error) => cleanupErrors.push(error));
       await fixture?.stop().catch((error) => cleanupErrors.push(error));
       if (cleanupErrors.length > 0) {

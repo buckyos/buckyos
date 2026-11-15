@@ -82,6 +82,7 @@ import { inventoriesFromModelsList } from "./inventory.ts";
 import { methodsForApiType } from "./canonical.ts";
 import {
   startNdnFixtureService,
+  readNdnFixtureObject,
   type NdnFixtureService,
 } from "./ndn_fixture_service.ts";
 
@@ -130,6 +131,7 @@ type Options = {
   ndnGatewayControlUrl: string;
   ndnSystemRoot: string;
   ndnPublicGatewayUrl?: string;
+  namedDataReadMode: string;
 };
 
 type AiMethodResponse = {
@@ -523,6 +525,7 @@ async function parseOptions(args: string[]): Promise<Options> {
       env("AICC_NDN_SYSTEM_ROOT") ?? "/opt/buckyos",
     ndnPublicGatewayUrl: tomlString(config, "fixtures.ndn_public_gateway_url") ??
       env("AICC_NDN_PUBLIC_GATEWAY_URL"),
+    namedDataReadMode: tomlString(config, "fixtures.named_data_read_mode") ?? "proxy",
     fixtures: {
       image: resource("image", tomlString(config, "fixtures.image"), "image/png"),
       mask: resource("mask", tomlString(config, "fixtures.mask"), "image/png"),
@@ -602,6 +605,9 @@ async function parseOptions(args: string[]): Promise<Options> {
   }
   options.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
   if (!options.gatewayUrl) throw new Error("gateway URL is required");
+  if (!["proxy", "ndn"].includes(options.namedDataReadMode)) {
+    throw new Error("fixtures.named_data_read_mode must be proxy or ndn");
+  }
   if (!Number.isInteger(options.maxRealCalls) || options.maxRealCalls < 0) {
     throw new Error("max_real_calls must be a non-negative integer");
   }
@@ -1187,6 +1193,7 @@ async function executeAcceptance(input: {
     removeChunk: (request: { chunk_id: string }) => Promise<unknown>;
     removeObject: (request: { obj_id: string }) => Promise<unknown>;
   };
+  let artifactReader: ReadableNamedData = ndm;
   const selectedDrivers = options.providers.length > 0
     ? options.providers
     : baseline.providers.map((provider) => provider.provider_driver);
@@ -1551,7 +1558,7 @@ async function executeAcceptance(input: {
     const uploadFixtures = selectedCells.some((cell) =>
       cell.resource_representation === "named_object" || cell.resource_representation === "url"
     );
-    if (executeRealModelCalls && uploadFixtures) {
+    if (executeRealModelCalls && (uploadFixtures || options.namedDataReadMode === "ndn")) {
       ndnFixtureService = await startNdnFixtureService({
         gatewayUrl: options.ndnPublicGatewayUrl ?? options.gatewayUrl,
         runId,
@@ -1560,13 +1567,19 @@ async function executeAcceptance(input: {
         gatewayControlUrl: options.ndnGatewayControlUrl,
         systemRoot: options.ndnSystemRoot,
       });
+      if (options.namedDataReadMode === "ndn") {
+        const baseUrl = ndnFixtureService.publicBaseUrl;
+        artifactReader = { openReader: (request) => readNdnFixtureObject(baseUrl, request) };
+      }
+    }
+    if (executeRealModelCalls && uploadFixtures) {
       options.fixtures = await loadDefaultFixtures(
         configuredFixtures,
         runId,
         options.gatewayUrl,
         session.sessionToken,
         true,
-        ndnFixtureService.publicBaseUrl,
+        ndnFixtureService!.publicBaseUrl,
         uploadedFixtureIds,
       );
     } else if (!executeRealModelCalls) {
@@ -1653,7 +1666,7 @@ async function executeAcceptance(input: {
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           const artifacts = await validateTerminalArtifacts({
             terminal,
-            ndm,
+            ndm: artifactReader,
             gatewayUrl: options.gatewayUrl,
             sessionToken: session.sessionToken,
             capture: captureArtifacts(prerequisiteCell.case_id,initial.task_id),
@@ -1757,7 +1770,7 @@ async function executeAcceptance(input: {
           assertResponseShape(cell, terminal);
           const artifacts = await validateTerminalArtifacts({
             terminal,
-            ndm,
+            ndm: artifactReader,
             gatewayUrl: options.gatewayUrl,
             sessionToken: session.sessionToken,
             capture: captureArtifacts(cell.case_id,initial.task_id),

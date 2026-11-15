@@ -257,7 +257,7 @@ mod tests {
             known.ui_hints["instance_fields"]["region"]["mode"],
             "unsupported"
         );
-        assert_eq!(rules.revision_seq, 5);
+        assert_eq!(rules.revision_seq, 6);
         assert_eq!(
             rules.patterns[0].operations["image.txt2img"],
             OPENAI_RESPONSES_OPERATION_ID
@@ -312,8 +312,8 @@ mod tests {
             catalog.known_provider("openai").unwrap().display_name,
             "OpenAI"
         );
-        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 5);
-        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 7);
+        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 6);
+        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 9);
     }
 
     #[tokio::test]

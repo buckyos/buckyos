@@ -968,10 +968,10 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID => 13,
-                    DOUBAO_AGENT_PLAN_PROFILE_ID => 11,
+                    DOUBAO_PROFILE_ID => 14,
+                    DOUBAO_AGENT_PLAN_PROFILE_ID => 12,
                     DEEPSEEK_PROFILE_ID => 5,
-                    QWEN_PROFILE_ID => 12,
+                    QWEN_PROFILE_ID => 14,
                     "openai" => 4,
                     _ => 3,
                 }

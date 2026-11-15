@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-10-26.1",
-  "checked_at": "2026-10-26",
+  "baseline_revision": "2026-11-09.1",
+  "checked_at": "2026-11-09",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -2100,7 +2100,8 @@
           ],
           "evidence_summary": "The fal video upscaler applies RealESRGAN to video frames."
         }
-      ]
+      ],
+      "coverage_rules": []
     },
     {
       "provider_driver": "minimax",
@@ -2397,7 +2398,8 @@
           ],
           "evidence_summary": "Music generation remains available to existing paid accounts."
         }
-      ]
+      ],
+      "coverage_rules": []
     },
     {
       "provider_driver": "openrouter",
@@ -2480,6 +2482,117 @@
         "preview_allowlist": "Private/preview models require account access and aliases are resolved before physical-model coverage."
       },
       "rules": [
+        {
+          "model_pattern": "z-ai/glm-5.3-flash",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://docs.z.ai/guides/vlm/glm-5.3-flash"
+          ],
+          "evidence_summary": "Vendor duration/effort constraints checked 2026-10-30; native adapter execution coverage is explicit."
+        },
+        {
+          "model_pattern": "x-ai/grok-4.7",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://openrouter.ai/api/v1/models",
+            "https://docs.x.ai/developers/grok-4-7"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: 500000 context, no vendor text output hard limit, low/medium/high/xhigh (default high); proxy ceiling remains a channel fact. No new T2 execution."
+        },
+        {
+          "model_pattern": "z-ai/glm-5.3-flashx",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://openrouter.ai/api/v1/models",
+            "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: vendor lists FlashX as a distinct callable model code; SN forwards it to openrouter/z-ai/glm-5.3-flashx. Separate model identity and T2 cells are retained; shared architecture and faster throughput do not establish alias equivalence. No independent FlashX T2 execution yet."
+        },
+        {
+          "model_pattern": "moonshotai/kimi-k3.1-pro",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership_intersected_with_publisher_capability",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://openrouter.ai/api/v1/models",
+            "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: 1M context, max completion 1048576 (default 131072), low/high/max effort, fixed sampling; channel output ceiling remains 943718 where declared. No new T2 execution."
+        },
         {
           "model_pattern": "typesafe/jev-1.13",
           "status": "active",
@@ -2855,6 +2968,41 @@
       ],
       "rules": [
         {
+          "model_pattern": "kimi-k3.1-pro",
+          "status": "active",
+          "source_status": "kimi_official_documentation",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "request_defaults": {
+            "llm": {
+              "max_output_tokens": 256
+            }
+          },
+          "source_urls": [
+            "https://platform.moonshot.cn/docs/api/models-overview",
+            "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: 1M context, max completion 1048576 (default 131072), low/high/max effort, fixed sampling; channel output ceiling remains 943718 where declared. No new T2 execution."
+        },
+        {
           "model_pattern": "kimi-k3",
           "status": "active",
           "source_status": "kimi_official_documentation",
@@ -3016,6 +3164,61 @@
         }
       ],
       "rules": [
+        {
+          "model_pattern": "glm-5.3-flash",
+          "status": "active",
+          "source_status": "glm_models_api_runtime_membership",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://docs.z.ai/guides/vlm/glm-5.3-flash"
+          ],
+          "evidence_summary": "Vendor duration/effort constraints checked 2026-10-30; native adapter execution coverage is explicit."
+        },
+        {
+          "model_pattern": "glm-5.3-flashx",
+          "status": "active",
+          "source_status": "glm_models_api_runtime_membership",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+            "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: vendor lists FlashX as a distinct callable model code; SN forwards it to openrouter/z-ai/glm-5.3-flashx. Separate model identity and T2 cells are retained; shared architecture and faster throughput do not establish alias equivalence. No independent FlashX T2 execution yet."
+        },
         {
           "model_pattern": "*",
           "status": "active",
@@ -4254,6 +4457,34 @@
       ],
       "rules": [
         {
+          "model_pattern": "wan3.0-video",
+          "status": "active",
+          "source_status": "qwen_models_api_runtime_membership",
+          "api_types": [
+            "video.generate"
+          ],
+          "methods": [
+            "video.generate"
+          ],
+          "input_kinds": [
+            "text",
+            "image",
+            "document"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "document_formats": [
+            "pdf"
+          ],
+          "source_urls": [
+            "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference"
+          ],
+          "evidence_summary": "Vendor duration is 2–30 seconds; the current native Qwen adapter exposes generation only, while SN has separate edit/extension operations."
+        },
+        {
           "model_pattern": "qwen3.8-max",
           "status": "active",
           "source_status": "qwen_models_api_runtime_membership",
@@ -4795,11 +5026,16 @@
       ],
       "model_driver_ids": [
         "bytedance",
+        "claude",
+        "deepseek",
+        "gemini",
         "glm",
         "kimi",
+        "minimax",
         "mistral",
         "openai",
-        "qwen"
+        "qwen",
+        "xai"
       ],
       "discovery": "internal_inventory",
       "official_catalog": {
@@ -4812,9 +5048,9 @@
         "https://openrouter.ai/models"
       ],
       "protocol_evidence": {
-        "documentation_version": "SN source 3907a51, authenticated live inventory, upstream vendor documentation and OpenRouter endpoint metadata checked 2026-10-21",
-        "streaming_semantics": "SN forwards Responses-compatible language and visual-understanding requests to its configured LiteLLM/OpenRouter routes; all 33 release aliases are classified explicitly.",
-        "async_operation_semantics": "SN Responses background operations and Wan video generation use authenticated submit/status/result lifecycles. Sora aliases remain excluded after the upstream shutdown; GPT Realtime remains excluded because SN exposes only WebSocket inference for it.",
+        "documentation_version": "SN source c23a55b4, authenticated GLOBAL_OPEN/US_FULL catalogs and original-vendor documentation checked 2026-10-30",
+        "streaming_semantics": "SN forwards Responses-compatible requests via LiteLLM. Release has 56 aliases, with two Realtime aliases excluded because canonical transport is unavailable.",
+        "async_operation_semantics": "Responses background and Wan tasks use authenticated submit/status/result lifecycles. Realtime uses WebSocket inference outside canonical AICC APIs.",
         "usage_semantics": "SN usage, credit, and raw cost must be reported through AICC durable finance snapshots.",
         "input_output_formats": "Capabilities are the intersection of current SN inventory, original-vendor model facts, SN public routes, and OpenRouter endpoint restrictions.",
         "item_request_batch_limits": "The stricter of SN gateway policy and the underlying OpenAI model/endpoint limits applies.",
@@ -4836,22 +5072,71 @@
           "evidence_summary": "SN now exposes WebSocket Realtime sessions, but no HTTP inference equivalent; AICC has no canonical Realtime transport."
         },
         {
-          "model_pattern": "sora-2",
+          "model_pattern": "gpt-realtime-2.1-mini",
           "action": "exclude",
-          "reason": "deprecated_or_retiring",
+          "reason": "unsupported_canonical_protocol",
           "source_urls": [
-            "https://developers.openai.com/api/docs/deprecations"
+            "https://developers.openai.com/api/docs/guides/realtime"
           ],
-          "evidence_summary": "OpenAI has discontinued Sora 2 and Sora 2 Pro; keep them excluded independently of SN video transport support."
+          "evidence_summary": "Realtime inference requires a transport absent from AICC canonical APIs; SN HTTP routes do not offer equivalent inference."
         },
         {
-          "model_pattern": "sora-2-pro",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
+          "model_pattern": "gpt-6.1-sol-pro",
+          "action": "alias",
+          "physical_model_id": "gpt-6.1-sol",
+          "reason": "logical_alias",
           "source_urls": [
-            "https://developers.openai.com/api/docs/deprecations"
+            "https://developers.openai.com/api/docs/guides/reasoning"
           ],
-          "evidence_summary": "OpenAI has discontinued Sora 2 and Sora 2 Pro; keep them excluded independently of SN video transport support."
+          "evidence_summary": "Same underlying model served with a different inference mode or throughput; T1.5 covers wire parameters and T2 deduplicates physical inference."
+        },
+        {
+          "model_pattern": "gpt-6.1-terra-pro",
+          "action": "alias",
+          "physical_model_id": "gpt-6.1-terra",
+          "reason": "logical_alias",
+          "source_urls": [
+            "https://developers.openai.com/api/docs/guides/reasoning"
+          ],
+          "evidence_summary": "Same underlying model served with a different inference mode or throughput; T1.5 covers wire parameters and T2 deduplicates physical inference."
+        },
+        {
+          "model_pattern": "glm-5.3-prime",
+          "action": "alias",
+          "physical_model_id": "glm-5.3",
+          "reason": "logical_alias",
+          "source_urls": [
+            "https://openrouter.ai/z-ai/glm-5.3-prime"
+          ],
+          "evidence_summary": "Same underlying model served with a different inference mode or throughput; T1.5 covers wire parameters and T2 deduplicates physical inference."
+        },
+        {
+          "model_pattern": "qwen3.8-max-prime",
+          "action": "alias",
+          "physical_model_id": "qwen3.8-max-0902",
+          "reason": "logical_alias",
+          "source_urls": [
+            "https://openrouter.ai/qwen/qwen3.8-max-prime"
+          ],
+          "evidence_summary": "Same underlying model served with a different inference mode or throughput; T1.5 covers wire parameters and T2 deduplicates physical inference."
+        },
+        {
+          "model_pattern": "qwen-image-3-pro",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/issues/49"
+          ],
+          "evidence_summary": "SN channel disabled by user decision after failed T2 and unresolved SN/LiteLLM upstream protocol incompatibility; original vendor API capabilities remain intact. Evidence: sn-business #49."
+        },
+        {
+          "model_pattern": "wan-3.0",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/issues/49"
+          ],
+          "evidence_summary": "SN channel disabled by user decision after failed T2 and unresolved SN/LiteLLM upstream protocol incompatibility; original vendor API capabilities remain intact. Evidence: sn-business #49."
         }
       ],
       "rules": [
@@ -5093,10 +5378,7 @@
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.4-mini"
           ],
-          "evidence_summary": "SN publishes GPT-5.4 Mini with its documented Responses capabilities.",
-          "disabled_api_types": [
-            "vision.ocr"
-          ]
+          "evidence_summary": "SN publishes GPT-5.4 Mini with its documented Responses capabilities."
         },
         {
           "model_pattern": "gpt-5.4-nano",
@@ -5130,10 +5412,7 @@
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-5.4-nano"
           ],
-          "evidence_summary": "SN publishes GPT-5.4 Nano with its documented Responses capabilities.",
-          "disabled_api_types": [
-            "vision.ocr"
-          ]
+          "evidence_summary": "SN publishes GPT-5.4 Nano with its documented Responses capabilities."
         },
         {
           "model_pattern": "gpt-5.3-codex",
@@ -5191,10 +5470,7 @@
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-image-2"
           ],
-          "evidence_summary": "SN exposes GPT Image 2 through its OpenAI-compatible image generation and edit routes.",
-          "disabled_api_types": [
-            "image.inpaint"
-          ]
+          "evidence_summary": "SN exposes GPT Image 2 through its OpenAI-compatible image generation and edit routes."
         },
         {
           "model_pattern": "text-embedding-3-*",
@@ -5238,7 +5514,12 @@
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-4o-mini-transcribe"
           ],
-          "evidence_summary": "SN exposes GPT-4o Mini Transcribe through its OpenAI-compatible transcription route."
+          "evidence_summary": "SN exposes GPT-4o Mini Transcribe through its OpenAI-compatible transcription route.",
+          "request_defaults": {
+            "audio.asr": {
+              "language": "en"
+            }
+          }
         },
         {
           "model_pattern": "gpt-4o-transcribe-diarize",
@@ -5260,7 +5541,12 @@
             "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
             "https://developers.openai.com/api/docs/models/gpt-4o-transcribe-diarize"
           ],
-          "evidence_summary": "SN exposes the diarizing transcription alias through its OpenAI-compatible transcription route."
+          "evidence_summary": "SN exposes the diarizing transcription alias through its OpenAI-compatible transcription route.",
+          "request_defaults": {
+            "audio.asr": {
+              "language": "en"
+            }
+          }
         },
         {
           "model_pattern": "gpt-4o-mini-tts",
@@ -5413,10 +5699,7 @@
           "source_urls": [
             "https://openrouter.ai/qwen/qwen3.7-plus"
           ],
-          "evidence_summary": "SN's Qwen3.7 Plus route accepts text and image input and returns text.",
-          "disabled_api_types": [
-            "vision.ocr"
-          ]
+          "evidence_summary": "SN's Qwen3.7 Plus route accepts text and image input and returns text."
         },
         {
           "model_pattern": "qwen3.8-max-0902",
@@ -5490,9 +5773,10 @@
           "resource_representation": "base64",
           "source_urls": [
             "https://www.alibabacloud.com/help/en/model-studio/qwen-image-3-0-pro",
-            "https://openrouter.ai/qwen/qwen-image-3-pro"
+            "https://openrouter.ai/qwen/qwen-image-3-pro",
+            "https://github.com/buckyos/sn-business/issues/49"
           ],
-          "evidence_summary": "SN maps its Qwen Image 3 Pro alias to the original generation/editing model and OpenAI-compatible image routes.",
+          "evidence_summary": "SN channel disabled by user decision after failed T2 and unresolved SN/LiteLLM upstream protocol incompatibility; original vendor API capabilities remain intact. Evidence: sn-business #49.",
           "disabled_api_types": [
             "image.txt2img",
             "image.img2img"
@@ -5549,9 +5833,13 @@
           ],
           "request_defaults": {
             "video.generate": {
-              "duration_seconds": 2,
-              "resolution": "480p",
-              "aspect_ratio": "4:3"
+              "output": {
+                "duration_seconds": 2,
+                "size": {
+                  "width": 854,
+                  "height": 480
+                }
+              }
             }
           },
           "source_urls": [
@@ -5559,9 +5847,10 @@
             "https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference",
             "https://openrouter.ai/alibaba/wan-3.0",
             "https://openrouter.ai/docs/cookbook/video-generation/text-to-video",
-            "https://openrouter.ai/docs/cookbook/video-generation/image-to-video"
+            "https://openrouter.ai/docs/cookbook/video-generation/image-to-video",
+            "https://github.com/buckyos/sn-business/issues/49"
           ],
-          "evidence_summary": "SN maps Wan 3.0 to OpenRouter through LiteLLM OpenAI compatibility. SN exposes authenticated create, edit and extension routes with shared status/content endpoints. Native video IDs are required for extension; actual Wan support depends on the upstream proxy channel.",
+          "evidence_summary": "SN channel disabled by user decision after failed T2 and unresolved SN/LiteLLM upstream protocol incompatibility; original vendor API capabilities remain intact. Evidence: sn-business #49.",
           "disabled_api_types": [
             "video.generate",
             "video.edit",
@@ -5593,9 +5882,726 @@
             "https://docs.mistral.ai/getting-started/models/models_overview",
             "https://openrouter.ai/mistralai/voxtral-small-24b-2507",
             "https://openrouter.ai/docs/guides/overview/multimodal/stt",
-            "https://openrouter.ai/docs/guides/overview/multimodal/audio"
+            "https://openrouter.ai/docs/guides/overview/multimodal/audio",
+            "https://huggingface.co/mistralai/Voxtral-Small-24B-2507"
           ],
-          "evidence_summary": "Voxtral supports text and audio input. SN publishes the chat alias, whereas OpenRouter dedicated STT inventory uses a distinct -stt ID. Canonical ASR transcribes using the documented base64 input_audio Chat Completions protocol."
+          "evidence_summary": "Voxtral supports text and audio input. SN publishes the chat alias, whereas OpenRouter dedicated STT inventory uses a distinct -stt ID. Canonical ASR transcribes using the documented base64 input_audio Chat Completions protocol. The original model card lists eight supported languages without Chinese; the T2 speech fixture and language hint use English.",
+          "request_defaults": {
+            "audio.asr": {
+              "language": "en"
+            }
+          }
+        },
+        {
+          "model_pattern": "gpt-6.1-sol",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption",
+            "image.txt2img",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption",
+            "images.generate",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://developers.openai.com/api/docs/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "gpt-image-2.5-flare",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "image.txt2img",
+            "image.img2img",
+            "image.inpaint"
+          ],
+          "methods": [
+            "images.generate",
+            "image.img2img",
+            "image.inpaint"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "image"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://developers.openai.com/api/docs/models",
+            "https://developers.openai.com/api/docs/guides/image-prompting"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: auto/low/medium/high/xhigh/max quality, 16-pixel edges, 655360..8294400 pixels, max edge 3840 and aspect ratio 3:1. No new T2 execution."
+        },
+        {
+          "model_pattern": "gpt-image-2.5-sunburst",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "image.txt2img",
+            "image.img2img",
+            "image.inpaint"
+          ],
+          "methods": [
+            "images.generate",
+            "image.img2img",
+            "image.inpaint"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "image"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://developers.openai.com/api/docs/models",
+            "https://developers.openai.com/api/docs/guides/image-prompting"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: auto/low/medium/high/xhigh/max quality, 16-pixel edges, 655360..8294400 pixels, max edge 3840 and aspect ratio 3:1. No new T2 execution."
+        },
+        {
+          "model_pattern": "gpt-6.1-terra",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption",
+            "image.txt2img",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption",
+            "images.generate",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://developers.openai.com/api/docs/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "gpt-6.1-terra-pro",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption",
+            "image.txt2img",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption",
+            "images.generate",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://developers.openai.com/api/docs/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "gpt-6.1-sol-pro",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption",
+            "image.txt2img",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption",
+            "images.generate",
+            "image.img2img",
+            "agent.computer_use"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://developers.openai.com/api/docs/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "claude-opus-5.5",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://platform.claude.com/docs/en/about-claude/models/overview"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "claude-sonnet-5.5",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://platform.claude.com/docs/en/about-claude/models/overview"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "claude-haiku-5.5",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://platform.claude.com/docs/en/about-claude/models/overview"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "gemini-4-argon",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption",
+            "audio.asr"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption",
+            "audio.asr"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://ai.google.dev/gemini-api/docs/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30.",
+          "request_defaults": {
+            "audio.asr": {
+              "language": "en"
+            }
+          }
+        },
+        {
+          "model_pattern": "gemini-3.8-flash",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption",
+            "audio.asr"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption",
+            "audio.asr"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://ai.google.dev/gemini-api/docs/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30.",
+          "request_defaults": {
+            "audio.asr": {
+              "language": "en"
+            }
+          }
+        },
+        {
+          "model_pattern": "grok-4.7",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://docs.x.ai/developers/models",
+            "https://docs.x.ai/developers/grok-4-7"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: 500000 context, no vendor text output hard limit, low/medium/high/xhigh (default high); proxy ceiling remains a channel fact. No new T2 execution."
+        },
+        {
+          "model_pattern": "qwen3.8-flash",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://www.alibabacloud.com/help/en/model-studio/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "qwen3.8-omni-flash",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://www.alibabacloud.com/help/en/model-studio/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "qwen3.8-max-prime",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://www.alibabacloud.com/help/en/model-studio/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "qwen3.8-27b",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm"
+          ],
+          "methods": [
+            "chat.completions.create"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://www.alibabacloud.com/help/en/model-studio/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "qwen3.8-2.4t-a95b",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm"
+          ],
+          "methods": [
+            "chat.completions.create"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://www.alibabacloud.com/help/en/model-studio/models"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "kimi-k3.1-pro",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://platform.moonshot.cn/docs/intro",
+            "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: 1M context, max completion 1048576 (default 131072), low/high/max effort, fixed sampling; channel output ceiling remains 943718 where declared. No new T2 execution."
+        },
+        {
+          "model_pattern": "glm-5.3-flash",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://docs.z.ai/guides/vlm/glm-5.3-flash"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "glm-5.3-flashx",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+            "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash"
+          ],
+          "evidence_summary": "Rechecked 2026-11-02: vendor lists FlashX as a distinct callable model code; SN forwards it to openrouter/z-ai/glm-5.3-flashx. Separate model identity and T2 cells are retained; shared architecture and faster throughput do not establish alias equivalence. FlashX requires independent T2 coverage for each selected SN account and API type."
+        },
+        {
+          "model_pattern": "glm-5.3-prime",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm"
+          ],
+          "methods": [
+            "chat.completions.create"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://docs.z.ai/guides/vlm/glm-5.3-flash"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "minimax-m3.1-flash",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://platform.minimax.io/docs/guides/models-intro"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "deepseek-v4.1-flash-1017",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://api-docs.deepseek.com/quick_start/pricing"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
+        },
+        {
+          "model_pattern": "deepseek-v4-pro-0813",
+          "status": "active",
+          "source_status": "sn_runtime_inventory",
+          "api_types": [
+            "llm"
+          ],
+          "methods": [
+            "chat.completions.create"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "json",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://github.com/buckyos/sn-business/blob/main/CD/cluster_config/release/apps.ts",
+            "https://api-docs.deepseek.com/quick_start/pricing"
+          ],
+          "evidence_summary": "Exact SN alias checked against authenticated account catalogs and original-vendor model documentation on 2026-10-30."
         }
       ]
     }

@@ -368,11 +368,12 @@ impl<'a> CallResolver<'a> {
             &decision.selected.model_driver_id,
             &decision.selected.origin_model_id,
         )?;
-        let model_max_output_tokens = model
-            .semantics
-            .capabilities
-            .as_ref()
-            .and_then(|capabilities| capabilities.get("max_output_tokens"))
+        let capabilities = model.semantics.capabilities.clone().unwrap_or_default();
+        let capabilities = provider_rule.as_ref().map_or(capabilities.clone(), |rule| {
+            rule.action.narrow(&BTreeSet::new(), &capabilities).capabilities
+        });
+        let model_max_output_tokens = capabilities
+            .get("max_output_tokens")
             .and_then(Value::as_u64);
         let mut canonical_fields = model.semantics.canonical_fields.unwrap_or_default();
         if let Some(rule) = &provider_rule {
@@ -479,6 +480,16 @@ impl<'a> CallResolver<'a> {
         let binding = descriptor
             .binding(api_type)
             .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?;
+        if normalized
+            .get("max_output_tokens")
+            .and_then(Value::as_u64)
+            .zip(model_max_output_tokens)
+            .is_some_and(|(requested, limit)| requested > limit)
+        {
+            return Err(CallLoweringError::InvalidCanonicalRequest(
+                "max_output_tokens exceeds the selected channel limit".into(),
+            ));
+        }
         if let Some(default) = binding.default_max_output_tokens {
             fill_default_max_output_tokens(
                 &mut normalized,
@@ -1852,6 +1863,48 @@ mod tests {
         for key in ["reasoning", "thinking", "reasoning_effort"] {
             assert!(body.get(key).is_none(), "{body}");
         }
+    }
+
+    #[test]
+    fn channel_output_limit_rejects_oversized_calls_without_vendor_limit() {
+        let base = catalog();
+        let mut rules = base.provider_rules("openai").unwrap().clone();
+        rules.models[0]
+            .capability_limits
+            .insert("max_output_tokens".into(), 150);
+        let catalog = CatalogSnapshot::build(
+            11,
+            CatalogDocuments {
+                model_drivers: vec![base.model_driver("openai").unwrap().clone()],
+                provider_rules: vec![rules],
+                ..Default::default()
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        let codecs = codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        let mut call = call();
+        let route = decision(call_exact_model(&call).unwrap());
+        assert!(matches!(
+            resolver.lower(&route, &call, target("secret")),
+            Err(CallLoweringError::InvalidCanonicalRequest(_))
+        ));
+        let AiccCall::ChatCompletionsCreate(request) = &mut call else {
+            unreachable!()
+        };
+        request.max_output_tokens = Some(150);
+        let lowered = resolver.lower(&route, &call, target("secret")).unwrap();
+        assert_eq!(lowered.model_max_output_tokens, Some(150));
+        let AiccCall::ChatCompletionsCreate(request) = &mut call else {
+            unreachable!()
+        };
+        request.max_output_tokens = None;
+        let lowered = resolver.lower(&route, &call, target("secret")).unwrap();
+        let AiccCall::ChatCompletionsCreate(request) = lowered.input.canonical_request else {
+            unreachable!()
+        };
+        assert_eq!(request.max_output_tokens, Some(100));
     }
 
     #[test]

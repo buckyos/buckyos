@@ -218,14 +218,13 @@ impl NativeTaskCodec for SnVideoCodec {
             }
             if matches!(&codec.canonical_request, AiccCall::VideoEdit(_)) {
                 let mut wire = self.inner.encode_native(input)?;
-                if let HttpBody::Json(body) = &mut wire.body {
-                    body["model"] = input
-                        .resolved_parameters
-                        .get("provider_model_id")
-                        .cloned()
-                        .ok_or_else(|| {
-                            ProtocolError::invalid_request("SN video requires a model")
-                        })?;
+                let model = input.resolved_parameters.get("provider_model_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| ProtocolError::invalid_request("SN video requires a model"))?;
+                match &mut wire.body {
+                    HttpBody::Json(body) => body["model"] = serde_json::json!(model),
+                    HttpBody::Multipart(body) => body.push(super::MultipartPart::bytes("model", model.to_owned()))?,
+                    _ => return Err(ProtocolError::invalid_request("SN video edit requires a request body")),
                 }
                 return Ok(wire);
             }
@@ -312,7 +311,7 @@ impl OperationCodec for SnAudioTranscriptionCodec {
             .input
             .resolved_parameters
             .keys()
-            .any(|key| key != "provider_model_id")
+            .any(|key| !matches!(key.as_str(), "provider_model_id" | "reasoning"))
         {
             return Err(ProtocolError::invalid_request(
                 "SN audio chat has unsupported provider parameters",
@@ -362,6 +361,16 @@ impl OperationCodec for SnAudioTranscriptionCodec {
                 {"type": "text", "text": prompt}
             ]}]}),
         );
+        if let Some(reasoning) = call.input.resolved_parameters.get("reasoning") {
+            if !reasoning.is_object() {
+                return Err(ProtocolError::invalid_request(
+                    "SN audio chat reasoning must be an object",
+                ));
+            }
+            if let HttpBody::Json(body) = &mut wire.body {
+                body["reasoning"] = reasoning.clone();
+            }
+        }
         call.context.finalize_request(
             &mut wire,
             CredentialKind::Bearer,
@@ -563,6 +572,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn uploaded_video_edit_retains_model_for_sn_admission() {
+        let mut registry = CodecRegistry::default();
+        let (adapter, codecs) = openai_responses_adapter();
+        registry.register_codecs(adapter, codecs).unwrap();
+        register_sn_openai_adapter(&mut registry).unwrap();
+        let source = buckyos_api::ResourceRef::base64("video/mp4".into(), "dmlkZW8=".into());
+        let mut context = context();
+        context.resources.insert(
+            crate::resource::ResourceKey::from_ref(&source).into_string(),
+            crate::protocol::MaterializedResource::new(bytes::Bytes::from_static(b"video"), "video/mp4", None).unwrap(),
+        );
+        let input = CodecInput {
+            canonical_request: AiccCall::VideoEdit(buckyos_api::VideoEditRequest::new("wan-3.0@sn", source, "edit motion".into())),
+            resolved_parameters: BTreeMap::new(),
+        };
+        let parameters = BTreeMap::from([("provider_model_id".into(), serde_json::json!("wan-3.0"))]);
+        let wire = registry.encode_native(SN_OPENAI_ADAPTER_ID, "videos.create", ApiType::VideoEdit, &NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&input),
+            resolved_parameters: &parameters,
+            context: &context,
+        }).unwrap();
+        let HttpBody::Multipart(body) = wire.body else { panic!("expected multipart video edit") };
+        assert!(body.parts().iter().any(|part| part.name == "model" && part.bytes.as_ref() == b"wan-3.0"));
+        assert!(body.parts().iter().any(|part| part.name == "video" && part.bytes.as_ref() == b"video"));
+    }
+
     #[tokio::test]
     async fn audio_chat_transcribes_bytes_and_preserves_usage() {
         let codec = sn_audio_registration().1;
@@ -602,6 +640,33 @@ mod tests {
             body["messages"][0]["content"][0],
             serde_json::json!({"type":"input_audio","input_audio":{"data":"UklGRm1vY2s=","format":"wav"}})
         );
+        let mut reasoning_input = CodecInput {
+            canonical_request: input.canonical_request.clone(),
+            resolved_parameters: input.resolved_parameters.clone(),
+        };
+        reasoning_input.resolved_parameters.insert("provider_model_id".into(), serde_json::json!("gemini-4-argon"));
+        reasoning_input.resolved_parameters.insert("reasoning".into(), serde_json::json!({"effort":"high"}));
+        let wire = codec.encode(&CodecCall {
+            api_type: ApiType::AudioSpeechRecognition,
+            input: &reasoning_input,
+            context: &context,
+        }).unwrap();
+        let HttpBody::Json(body) = wire.body else { panic!("expected JSON audio chat") };
+        assert_eq!(body["model"], "gemini-4-argon");
+        assert_eq!(body["reasoning"], serde_json::json!({"effort":"high"}));
+        reasoning_input.resolved_parameters.insert("reasoning".into(), serde_json::json!("high"));
+        assert!(codec.encode(&CodecCall {
+            api_type: ApiType::AudioSpeechRecognition,
+            input: &reasoning_input,
+            context: &context,
+        }).is_err());
+        reasoning_input.resolved_parameters.remove("reasoning");
+        reasoning_input.resolved_parameters.insert("messages".into(), serde_json::json!([]));
+        assert!(codec.encode(&CodecCall {
+            api_type: ApiType::AudioSpeechRecognition,
+            input: &reasoning_input,
+            context: &context,
+        }).is_err());
         let response = HttpResponse {status: reqwest::StatusCode::OK, headers: reqwest::header::HeaderMap::new(),
             body: bytes::Bytes::from_static(br#"{"id":"chat_1","object":"chat.completion","model":"voxtral-small-24b-2507","choices":[{"index":0,"message":{"role":"assistant","content":"A spoken sentence."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}"#),
             request_id:"audio-chat-test".into(), retry_after:None};

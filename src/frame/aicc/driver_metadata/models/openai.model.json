@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 1,
   "model_driver_id": "openai",
-  "revision_seq": 7,
+  "revision_seq": 9,
   "specs": [
     {"id": "gpt-nano"},
     {"id": "gpt-mini"},
@@ -435,6 +435,168 @@
             "sizes": ["1280x720", "720x1280", "1792x1024", "1024x1792"],
             "audio": "always",
             "media_types": ["video/mp4"]
+          }
+        }
+      }
+    },
+    {
+      "id": "gpt-image-2.5-flare",
+      "api_types": [
+        "image.txt2img",
+        "image.img2img",
+        "image.inpaint"
+      ],
+      "logical_mounts": [
+        "image.txt2img",
+        "image.txt2img.openai",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.openai",
+        "image.img2img.{model}",
+        "image.inpaint",
+        "image.inpaint.openai",
+        "image.inpaint.{model}",
+        "image.txt2img.gpt_image",
+        "image.img2img.gpt_image"
+      ],
+      "capabilities": {
+        "streaming": false,
+        "vision": true,
+        "image_generation": true,
+        "tool_call": false,
+        "json_schema": false,
+        "image_generation_parameters": {
+          "quality": {
+            "values": [
+              "auto",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "auto"
+          },
+          "size": {
+            "default": "auto",
+            "automatic": true,
+            "edge_multiple": 16,
+            "max_edge": 3840,
+            "max_aspect_ratio": 3,
+            "min_pixels": 655360,
+            "max_pixels": 8294400,
+            "experimental_above_pixels": 3686400
+          },
+          "n": {
+            "min": 1,
+            "max": 10,
+            "default": 1
+          },
+          "background": {
+            "values": [
+              "auto",
+              "opaque",
+              "transparent"
+            ],
+            "default": "auto"
+          },
+          "output_format": {
+            "values": [
+              "png",
+              "jpeg",
+              "webp"
+            ],
+            "default": "png"
+          },
+          "output_compression": {
+            "min": 0,
+            "max": 100,
+            "default": 100,
+            "formats": [
+              "jpeg",
+              "webp"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "gpt-image-2.5-sunburst",
+      "api_types": [
+        "image.txt2img",
+        "image.img2img",
+        "image.inpaint"
+      ],
+      "logical_mounts": [
+        "image.txt2img",
+        "image.txt2img.openai",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.openai",
+        "image.img2img.{model}",
+        "image.inpaint",
+        "image.inpaint.openai",
+        "image.inpaint.{model}",
+        "image.txt2img.gpt_image",
+        "image.img2img.gpt_image"
+      ],
+      "capabilities": {
+        "streaming": false,
+        "vision": true,
+        "image_generation": true,
+        "tool_call": false,
+        "json_schema": false,
+        "image_generation_parameters": {
+          "quality": {
+            "values": [
+              "auto",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "auto"
+          },
+          "size": {
+            "default": "auto",
+            "automatic": true,
+            "edge_multiple": 16,
+            "max_edge": 3840,
+            "max_aspect_ratio": 3,
+            "min_pixels": 655360,
+            "max_pixels": 8294400,
+            "experimental_above_pixels": 3686400
+          },
+          "n": {
+            "min": 1,
+            "max": 10,
+            "default": 1
+          },
+          "background": {
+            "values": [
+              "auto",
+              "opaque",
+              "transparent"
+            ],
+            "default": "auto"
+          },
+          "output_format": {
+            "values": [
+              "png",
+              "jpeg",
+              "webp"
+            ],
+            "default": "png"
+          },
+          "output_compression": {
+            "min": 0,
+            "max": 100,
+            "default": 100,
+            "formats": [
+              "jpeg",
+              "webp"
+            ]
           }
         }
       }

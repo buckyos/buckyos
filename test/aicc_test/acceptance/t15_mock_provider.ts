@@ -249,11 +249,11 @@ function discoveryFixture(
   shape: NonNullable<DiscoveryContract["response_shape"]>,
   selectionSeed?: string,
 ): unknown {
-  const officialModels = Object.values(
-    provider.official_first_party_model_ids ?? {},
-  ).flat().concat(
-    Object.values(provider.official_aggregated_model_ids ?? {}).flat(),
+  const documentedModels = Object.fromEntries(
+    [...new Set([...Object.keys(provider.official_first_party_model_ids ?? {}), ...Object.keys(provider.official_aggregated_model_ids ?? {})])]
+      .map((api) => [api, [...new Set([...(provider.official_first_party_model_ids?.[api] ?? []), ...(provider.official_aggregated_model_ids?.[api] ?? [])])]]),
   );
+  const officialModels = Object.values(documentedModels).flat();
   const documentedSupplements = new Set(
     T15_PROVIDER_DISCOVERY_CONTRACTS[provider.provider_driver]
       .documented_supplemental_model_ids ?? [],
@@ -308,7 +308,7 @@ function discoveryFixture(
           .openai_model_capabilities
         ? {
           supports_image_in: Object.entries(
-            provider.official_first_party_model_ids ?? {},
+            documentedModels,
           ).some(([apiType, ids]) =>
             apiType.startsWith("vision.") && ids.includes(id)
           ),
@@ -322,28 +322,28 @@ function discoveryFixture(
           .volcengine_ark_capabilities
         ? {
           task_type: [
-            ...(provider.official_first_party_model_ids?.llm?.includes(id)
+            ...(documentedModels?.llm?.includes(id)
               ? ["TextGeneration"]
               : []),
-            ...(provider.official_first_party_model_ids?.["vision.ocr"]?.includes(id)
+            ...(documentedModels?.["vision.ocr"]?.includes(id)
               ? ["VisualQuestionAnswering"]
               : []),
-            ...(provider.official_first_party_model_ids?.["embedding.multimodal"]?.includes(id)
+            ...(documentedModels?.["embedding.multimodal"]?.includes(id)
               ? ["ImageEmbedding"]
               : []),
-            ...(provider.official_first_party_model_ids?.["image.txt2img"]?.includes(id)
+            ...(documentedModels?.["image.txt2img"]?.includes(id)
               ? ["TextToImage"]
               : []),
-            ...(provider.official_first_party_model_ids?.["image.img2img"]?.includes(id)
+            ...(documentedModels?.["image.img2img"]?.includes(id)
               ? ["ImageToImage"]
               : []),
-            ...(provider.official_first_party_model_ids?.["video.generate"]?.includes(id)
+            ...(documentedModels?.["video.generate"]?.includes(id)
               ? ["MultimodalToVideo"]
               : []),
-            ...(provider.official_first_party_model_ids?.["video.edit"]?.includes(id)
+            ...(documentedModels?.["video.edit"]?.includes(id)
               ? ["VideoEditing"]
               : []),
-            ...(provider.official_first_party_model_ids?.["video.extend"]?.includes(id)
+            ...(documentedModels?.["video.extend"]?.includes(id)
               ? ["VideoExtension"]
               : []),
           ],
@@ -367,30 +367,30 @@ function discoveryFixture(
           architecture: {
             input_modalities: openrouterVideoCatalog.data.some((model) => model.id === id)
               ? ["text", "image"]
-              : provider.official_first_party_model_ids?.["audio.asr"]?.includes(id)
+              : documentedModels?.["audio.asr"]?.includes(id)
               ? ["audio"]
-              : provider.official_first_party_model_ids?.["audio.music"]?.includes(id) ||
-                  provider.official_first_party_model_ids?.["image.img2img"]?.includes(id) ||
-                  provider.official_first_party_model_ids?.["vision.ocr"]?.includes(id) ||
-                  provider.official_first_party_model_ids?.["vision.caption"]?.includes(id)
+              : documentedModels?.["audio.music"]?.includes(id) ||
+                  documentedModels?.["image.img2img"]?.includes(id) ||
+                  documentedModels?.["vision.ocr"]?.includes(id) ||
+                  documentedModels?.["vision.caption"]?.includes(id)
               ? ["text", "image"]
               : ["text"],
             output_modalities: id === "typesafe/jev-1.13" ? ["decisions"] : openrouterVideoCatalog.data.some((model) => model.id === id)
               ? ["video"]
               : id.startsWith("cohere/rerank-")
               ? ["rerank"]
-              : provider.official_first_party_model_ids?.["embedding.text"]?.includes(id)
+              : documentedModels?.["embedding.text"]?.includes(id)
               ? ["embeddings"]
-              : provider.official_first_party_model_ids?.["audio.tts"]?.includes(id)
+              : documentedModels?.["audio.tts"]?.includes(id)
               ? ["speech"]
-              : provider.official_first_party_model_ids?.["audio.asr"]?.includes(id)
+              : documentedModels?.["audio.asr"]?.includes(id)
               ? ["transcription"]
-              : provider.official_first_party_model_ids?.["audio.music"]?.includes(id)
+              : documentedModels?.["audio.music"]?.includes(id)
               ? ["text", "audio"]
-              : provider.official_first_party_model_ids?.["video.generate"]?.includes(id)
+              : documentedModels?.["video.generate"]?.includes(id)
               ? ["video"]
-              : provider.official_first_party_model_ids?.["image.txt2img"]?.includes(id) ||
-                  provider.official_first_party_model_ids?.["image.img2img"]?.includes(id)
+              : documentedModels?.["image.txt2img"]?.includes(id) ||
+                  documentedModels?.["image.img2img"]?.includes(id)
               ? ["image"]
               : ["text"],
           },

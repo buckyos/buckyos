@@ -19,6 +19,7 @@ import {
 import { CloudUpdateFixtureService } from "./cloud_update_fixture_service.ts";
 import {
   backupCloudUpdateConfig,
+  isolateCloudMetadataOverrides,
   disableCloudUpdate,
   setCloudUpdateSource,
   waitCloudUpdateConverged,
@@ -77,6 +78,7 @@ type CaseResult = {
   provider_driver: string | null;
   provider_instance?: string;
   exact_model?: string;
+  task_id?: string;
   api_type?: string;
   method: string;
   protocol_contract_id?: string;
@@ -1134,7 +1136,15 @@ export function buildT15TypedParams(
   }
 }
 
-async function terminal(
+export class TaskWaitTimeout extends Error {
+  readonly taskId: string;
+  constructor(taskId: string) {
+    super(`task ${taskId} timed out while waiting for its terminal state`);
+    this.taskId = taskId;
+  }
+}
+
+export async function terminal(
   session: GatewaySession,
   value: unknown,
   timeoutMs: number,
@@ -1175,7 +1185,7 @@ async function terminal(
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
-  throw new Error(`task ${response.task_id} timed out`);
+  throw new TaskWaitTimeout(response.task_id);
 }
 
 function hasMappedField(
@@ -1459,6 +1469,7 @@ async function executeCase(
   const startedAt = new Date(started).toISOString();
   await selectMock(controlUrl, testCase, runId);
   let selectedExactModel: string | undefined;
+  let taskId: string | undefined;
   let failed: unknown;
   let terminalValue: unknown;
   try {
@@ -1510,6 +1521,7 @@ async function executeCase(
         ...(contract.canonical_request_overrides ?? {}),
       },
     ) as Record<string, unknown>;
+    if (typeof result.task_id === "string") taskId = result.task_id;
     if (testCase.mock_scenario === "async_cancel") {
       if (result.status !== "running" || typeof result.task_id !== "string") {
         throw new Error(
@@ -1583,8 +1595,11 @@ async function executeCase(
   const validationErrors = requests.flatMap((request) =>
     request.validation_errors ?? []
   );
-  const expectsFailure = Boolean(testCase.expected_error_class);
+  const expectsFailure = Boolean(testCase.expected_error_class) || testCase.mock_scenario === "async_poll_timeout";
   const diagnostics: string[] = [];
+  if (testCase.mock_scenario === "async_poll_timeout" && !(failed instanceof TaskWaitTimeout)) {
+    diagnostics.push("expected the runner wait deadline with the native task still running");
+  }
   if (requests.length === 0) {
     diagnostics.push("Provider mock received no request");
   }
@@ -1757,6 +1772,7 @@ async function executeCase(
     provider_driver: testCase.provider_driver,
     provider_instance: testCase.provider_instance ?? undefined,
     exact_model: selectedExactModel,
+    task_id: taskId,
     api_type: testCase.api_type ?? undefined,
     method: testCase.method,
     protocol_contract_id: testCase.protocol_contract_id,
@@ -2045,6 +2061,9 @@ async function executeGeneratedArtifactCase(
     method: methodsForApiType(sourceApiType)[0] ?? sourceApiType,
     mock_scenario: "success",
     expected_error_class: null,
+    model_selector: testCase.artifact_source_model_id
+      ? { kind: "exact", value: `${testCase.artifact_source_model_id}@${sourceInventory.provider_instance_name}` }
+      : null,
   };
   testCase.provider_instance = targetInventory.provider_instance_name;
   testCase.expected_provider_instance = targetInventory.provider_instance_name;
@@ -2154,10 +2173,8 @@ async function executeGeneratedArtifactCase(
     );
   }
   const targetBody = targetRequests.find((request) => request.body)?.body;
-  const hasProviderArtifactId = containsString(
-    targetBody,
-    sourceContract.provider_artifact_identity!.fixture_artifact_id,
-  );
+  const providerArtifactId = sourceContract.provider_artifact_identity?.fixture_artifact_id;
+  const hasProviderArtifactId = providerArtifactId ? containsString(targetBody, providerArtifactId) : false;
   if (testCase.artifact_target_expect_provider_id && !hasProviderArtifactId) {
     diagnostics.push(
       "same provider/original_provider did not reuse generated content provider artifact id",
@@ -2237,19 +2254,13 @@ export function variantCells(
   const runtime = new Map(
     runtimeVariants.map((model) => [model.provider_model_id, model]),
   );
-  for (const key of expected.keys()) {
-    if (!runtime.has(key)) {
-      throw new Error(
-        `${inventory.provider_driver} is missing official metadata variant ${key}`,
-      );
-    }
-  }
-  for (const key of runtime.keys()) {
-    if (!expected.has(key)) {
-      throw new Error(
-        `${inventory.provider_driver} exposes undocumented metadata variant ${key}`,
-      );
-    }
+  const missing = [...expected.keys()].filter((key) => !runtime.has(key));
+  const undocumented = [...runtime.keys()].filter((key) => !expected.has(key));
+  if (missing.length || undocumented.length) {
+    throw new Error([
+      ...missing.map((key) => `${inventory.provider_driver} is missing official metadata variant ${key}`),
+      ...undocumented.map((key) => `${inventory.provider_driver} exposes undocumented metadata variant ${key}`),
+    ].join("; "));
   }
   return runtimeVariants.flatMap((model) => {
     const baseModelId = model.provider_actual_model_id ??
@@ -2398,6 +2409,9 @@ async function main(): Promise<void> {
   let restoreCloudConfig:
     | ((refreshedSystemConfig?: RpcClient) => Promise<void>)
     | undefined;
+  let restoreMetadataOverrides:
+    | ((refreshedSystemConfig?: RpcClient) => Promise<void>)
+    | undefined;
   let restoreNamedObjectSettings:
     | ((systemConfig: RpcClient, aicc: RpcClient) => Promise<void>)
     | undefined;
@@ -2443,6 +2457,12 @@ async function main(): Promise<void> {
         : 1;
       cloudRevision = Math.max(Date.now(), currentSeq + 10);
       cloudCleanupRevision = cloudRevision + 1;
+      restoreMetadataOverrides = await isolateCloudMetadataOverrides({
+        systemConfig: sudoSystemConfig,
+        localRoot: join(input.ndnSystemRoot, "etc/aicc/driver_metadata/local"),
+        catalogs: await buildT15OpenAiRules(cloudRevision),
+      });
+      await cloudAdmin.call("service.reload_settings", {});
       cloudFixture = await CloudUpdateFixtureService.start({
         gatewayUrl: input.gatewayUrl,
         sessionToken: session.sessionToken,
@@ -2469,6 +2489,7 @@ async function main(): Promise<void> {
       )
     }\n`);
     for (const driver of selectedProviders) {
+      try {
       phase = `provider:${driver}:setup`;
       if (input.username && input.password) {
         session = await loginGateway({
@@ -2563,7 +2584,24 @@ async function main(): Promise<void> {
               const release = await cloudFixture.publish({
                 revisionSeq: cloudRevision,
                 files: await buildT15OpenAiRules(cloudRevision),
+              }).catch((error: unknown) => {
+                results.push({
+                  case_id: testCase.case_id,
+                  provider_driver: driver,
+                  provider_instance: instance,
+                  api_type: testCase.api_type ?? undefined,
+                  method: testCase.method,
+                  protocol_contract_id: testCase.protocol_contract_id,
+                  scenario: testCase.mock_scenario ?? null,
+                  status: "failed",
+                  diagnostic: `cloud fixture publish failed: ${String(error)}`,
+                  captured_requests: 0,
+                  started_at: new Date().toISOString(),
+                  elapsed_ms: 0,
+                });
+                return undefined;
               });
+              if (!release) continue;
               await setCloudUpdateSource(cloudAdmin, release.sourceUrl);
               await session!.aicc.call("provider.refresh_models", {
                 provider_instance_name: instance,
@@ -2623,8 +2661,8 @@ async function main(): Promise<void> {
                 input.timeoutMs,
               );
             results.push(result);
-            if (testCase.expected_task_status === "failed") {
-              if (testCase.mock_scenario === "not_found") {
+            if (testCase.expected_task_status === "failed" || testCase.mock_scenario === "async_poll_timeout") {
+              if (["not_found", "async_poll_timeout"].includes(testCase.mock_scenario ?? "")) {
                 const priorInstance = instance;
                 await session!.aicc.call("provider.delete", {
                   provider_instance_name: priorInstance,
@@ -2635,6 +2673,21 @@ async function main(): Promise<void> {
                   input.timeoutMs,
                 );
                 created.splice(created.indexOf(priorInstance), 1);
+                if (testCase.mock_scenario === "async_poll_timeout" && result.task_id) {
+                  const deadline = Date.now() + input.timeoutMs;
+                  let stopped = false;
+                  while (Date.now() < deadline) {
+                    const raw = await session!.taskManager.call("get_task", { task_id: result.task_id }) as Record<string, unknown>;
+                    const task = (raw.task ?? raw) as Record<string, unknown>;
+                    if (task.phase === "Terminal") {
+                      if (task.outcome === "Succeeded") throw new Error("timed-out Mock task unexpectedly succeeded during isolation");
+                      stopped = true;
+                      break;
+                    }
+                    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+                  }
+                  if (!stopped) throw new Error("timed-out Mock task did not stop before the next scenario");
+                }
                 isolationGeneration += 1;
                 instance = `${baseInstance}-isolation-${isolationGeneration}`;
                 await selectMock(
@@ -2735,6 +2788,44 @@ async function main(): Promise<void> {
         providerInstances.delete(driver);
         providerInventories.delete(driver);
       }
+      } catch (error: unknown) {
+        const diagnostic = `${phase}: ${String(error)}`;
+        results.push({
+          case_id: `t1.5.provider.${driver}.setup`,
+          provider_driver: driver,
+          method: "provider.add/models.list",
+          scenario: null,
+          status: "failed",
+          diagnostic,
+          captured_requests: 0,
+          started_at: new Date().toISOString(),
+          elapsed_ms: 0,
+        });
+        providerInstances.delete(driver);
+        providerInventories.delete(driver);
+        for (const testCase of scopedStaticManifest.filter((item) =>
+          item.provider_driver === driver &&
+          !item.tags.includes("provider_switch_matrix") &&
+          !item.tags.includes("cross_provider_artifact_id") &&
+          !item.tags.includes("custom_provider") &&
+          !results.some((result) => result.case_id === item.case_id)
+        )) {
+          unmatchedCaseIds.delete(testCase.case_id);
+          results.push({
+            case_id: testCase.case_id,
+            provider_driver: driver,
+            api_type: testCase.api_type ?? undefined,
+            method: testCase.method,
+            protocol_contract_id: testCase.protocol_contract_id,
+            scenario: testCase.mock_scenario ?? null,
+            status: "skipped",
+            diagnostic: `Not executed because Provider preparation failed: ${diagnostic}`,
+            captured_requests: 0,
+            started_at: new Date().toISOString(),
+            elapsed_ms: 0,
+          });
+        }
+      }
     }
     if (providerSwitchCases.length > 0) {
       session = await refreshLogin(input, session);
@@ -2758,6 +2849,23 @@ async function main(): Promise<void> {
             }
             plannedCaseIds.add(testCase.case_id);
             unmatchedCaseIds.delete(testCase.case_id);
+            const sourceCase = {
+              ...testCase,
+              provider_driver: testCase.artifact_source_provider_driver,
+              protocol_contract_id: testCase.artifact_source_contract_id,
+              api_type: testCase.artifact_source_api_type,
+              model_selector: testCase.artifact_source_model_id
+                ? { kind: "exact" as const, value: testCase.artifact_source_model_id }
+                : null,
+            };
+            if (channelDisablesCase(catalog, capabilityBaseline, testCase) ||
+              testCase.artifact_source_provider_driver && channelDisablesCase(catalog, capabilityBaseline, sourceCase as AcceptanceCase)) {
+              results.push({ case_id: testCase.case_id, provider_driver: testCase.provider_driver ?? null,
+                method: testCase.method, scenario: testCase.mock_scenario ?? null, status: "skipped",
+                diagnostic: "Explicitly disabled by the reviewed source or target channel capability policy; no inference sent",
+                captured_requests: 0, started_at: new Date().toISOString(), elapsed_ms: 0 });
+              continue;
+            }
             const sourceInventory = providerInventories.get(
               testCase.switch_source_provider_driver ??
                 testCase.artifact_source_provider_driver!,
@@ -2766,9 +2874,18 @@ async function main(): Promise<void> {
               testCase.provider_driver!,
             );
             if (!sourceInventory || !targetInventory) {
-              throw new Error(
-                `Provider switch case ${testCase.case_id} is missing source or target inventory`,
-              );
+              results.push({
+                case_id: testCase.case_id,
+                provider_driver: testCase.provider_driver ?? null,
+                method: testCase.method,
+                scenario: testCase.mock_scenario ?? null,
+                status: "skipped",
+                diagnostic: "Not executed because Provider preparation failed: missing source or target inventory",
+                captured_requests: 0,
+                started_at: new Date().toISOString(),
+                elapsed_ms: 0,
+              });
+              continue;
             }
             session = await refreshLogin(input, session!);
             results.push(
@@ -3036,6 +3153,24 @@ async function main(): Promise<void> {
           elapsed_ms: 0,
         })
       );
+    }
+    if (restoreMetadataOverrides) {
+      try {
+        await restoreMetadataOverrides(cloudSystemConfig);
+        await cloudAdmin?.call("service.reload_settings", {});
+      } catch (error) {
+        results.push({
+          case_id: "t1.5.cleanup.cloud-metadata-overrides",
+          provider_driver: null,
+          method: "sys_config_set/service.reload_settings",
+          scenario: null,
+          status: "failed",
+          diagnostic: String(error),
+          captured_requests: 0,
+          started_at: new Date().toISOString(),
+          elapsed_ms: 0,
+        });
+      }
     }
     await restoreCloudConfig?.(cloudSystemConfig).catch((error) =>
       results.push({
