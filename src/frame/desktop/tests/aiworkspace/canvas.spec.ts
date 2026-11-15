@@ -452,5 +452,7 @@ test('UI17 both demos open through the normal UI with every Block rendered by th
     await expect(page.getByTestId(`aiws-canvas-block-${id}`)).toBeVisible()
   }
   await expect(page.locator('[data-testid^="aiws-block-fallback-"]')).toHaveCount(0)
-  await expect(page.getByTestId('aiws-wish-card-wish-characters')).toContainText('模拟')
+  // the wishes are cards on the real executor (许愿格交互升级 §3.10 D): their title, the analysis to do first
+  await expect(page.getByTestId('aiws-wish-card-wish-characters').getByTestId('aiws-wish-title')).toHaveText('许愿格 ①：生成角色设定图')
+  for (const id of ['wish-characters', 'wish-storyboard', 'wish-video']) await expect(page.getByTestId(`aiws-wish-card-${id}`)).toHaveAttribute('data-next', 'analyze')
 })

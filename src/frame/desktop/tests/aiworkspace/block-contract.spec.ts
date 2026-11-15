@@ -5,6 +5,7 @@
  * use the framework's panels and the Block's menu instead of their own ⋯ (§7.5). Real backend. */
 
 import { devices, type CDPSession, type Page } from '@playwright/test'
+import { createHash } from 'node:crypto'
 import { blockCenter, core, fitAll, openCanvas, openStatus, openWorkspacePage, setCanvasMode, test, expect, wishCard, wishStep, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
@@ -157,8 +158,9 @@ async function giveMacro(api: Api, ws: { workspace_id: string; epoch: string }, 
   const source = "export default async function main(aiws) { aiws.declare({ inputs: {} }) }\n"
   const uploaded = await api.uploadAsset(ALICE, ws.workspace_id, new TextEncoder().encode(source))
   const manifest = { inputs: {}, results: {} }
+  const digest = createHash('sha256').update(`${source}\n${JSON.stringify(manifest)}`).digest('hex')
   const wish = await api.read(ALICE, ws.workspace_id, wishId)
-  const set = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: wishId, keys: [{ key: 'program', value: { language: 'js', api_version: 3, source: uploaded.object_id, digest: 'e2e-macro', manifest, produces: [], edited_by: 'alice' }, expect: { rev: wish.content.key_revs?.program ?? 0 } }] }])
+  const set = await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: wishId, keys: [{ key: 'program', value: { language: 'js', api_version: 3, source: uploaded.object_id, digest, manifest, produces: [], edited_by: 'alice' }, expect: { rev: wish.content.key_revs?.program ?? 0 } }] }])
   expect(set.status, JSON.stringify(set)).toBe('accepted')
 }
 
